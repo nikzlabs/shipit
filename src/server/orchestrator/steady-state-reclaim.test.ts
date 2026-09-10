@@ -16,13 +16,6 @@ import {
   OVERLAY_BASE_CLAIM_MS,
 } from "./overlay-base-claims.js";
 
-/**
- * Build a `runDocker` stub that simulates a RUNNING session-worker container
- * pinning each given `overlay-base/<hash>/g<N>` lowerdir as a live overlay mount
- * (planning#195 live-mount check). Any docker call the overlay sweep makes
- * (`ps -q` → `container inspect` → `volume inspect`) is answered; everything else
- * returns empty.
- */
 function liveMountDocker(genLowerdirs: string[]): (args: string[]) => Promise<string> {
   const vols = genLowerdirs.map((_, i) => `shipit-${i.toString(16).padStart(12, "0")}_overlay-0000000${i}`);
   return (args: string[]): Promise<string> => {
@@ -37,7 +30,6 @@ function liveMountDocker(genLowerdirs: string[]): (args: string[]) => Promise<st
   };
 }
 
-/** The overlay volume name a session-worker container mounts (overlay-volume.ts). */
 function overlayVolName(i: number): string {
   return `shipit-${i.toString(16).padStart(12, "0")}_overlay-dba27c31`;
 }
@@ -60,8 +52,6 @@ describe("runSteadyStateReclaim", () => {
     underlyingDb = null;
     dbManager = null;
     if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
-    // The claim registry is process-wide (planning#440), so a case that claims
-    // would otherwise protect the next case's fixtures.
     clearOverlayBaseClaims();
     vi.restoreAllMocks();
   });
@@ -85,7 +75,7 @@ describe("runSteadyStateReclaim", () => {
         ({ scopeHashes: new Set<string>(), cacheHashes: new Set([pluginBare]) }),
     });
 
-    expect(result.cachesRemoved).toBe(2); // the orphan, in both subtrees
+    expect(result.cachesRemoved).toBe(2);
     expect(fs.existsSync(path.join(tmpDir, "repo-cache", pluginBare))).toBe(true);
     expect(fs.existsSync(path.join(tmpDir, "dep-cache", pluginBare))).toBe(true);
   });
@@ -106,9 +96,6 @@ describe("runSteadyStateReclaim", () => {
       livePluginStoreArtifacts: async () => { throw new Error("state dir unreadable"); },
     });
 
-    // Failing open here is not "sweep less carefully", it is "delete every
-    // plugin artifact" — including bases that are live overlay lowerdirs. The
-    // pass fires on every session activation, so skipping one costs nothing.
     expect(result.cachesRemoved).toBe(0);
     expect(result.overlayBasesRemoved).toBe(0);
     expect(fs.existsSync(path.join(tmpDir, "dep-cache", orphan))).toBe(true);
@@ -194,8 +181,6 @@ describe("runSteadyStateReclaim", () => {
     setup();
     const repoStore = new RepoStore(dbManager!);
 
-    // Seed a stale overlay-base dir; without a live-scope-hash source the sweep
-    // must NOT touch it (we can't confirm it isn't a live lowerdir).
     const baseDir = path.join(tmpDir, "overlay-base", "0123456789abcdef");
     fs.mkdirSync(baseDir, { recursive: true });
     fs.writeFileSync(path.join(baseDir, "marker"), "x");
@@ -212,9 +197,6 @@ describe("runSteadyStateReclaim", () => {
   });
 
   it("overlay-base sweep reclaims obsolete bases immediately via the live-mount check (no age gate)", async () => {
-    // planning#195: a scope is reclaimable the moment it has zero live mounts — age is
-    // not a factor. "Live" = the resumable-session union OR a generation pinned by
-    // a running container right now.
     setup();
     const repoStore = new RepoStore(dbManager!);
 
@@ -228,20 +210,16 @@ describe("runSteadyStateReclaim", () => {
       fs.utimesSync(d, t, t);
       return d;
     };
-    const resumable = mk("aaaaaaaaaaaaaaaa", 99);   // in resumable union → keep despite age
-    const orphanOld = mk("bbbbbbbbbbbbbbbb", 99);   // no live mount, old → REMOVE
-    const orphanYoung = mk("cccccccccccccccc", 1);  // no live mount, YOUNG → REMOVE (age no longer protects)
-    const runningMount = mk("dddddddddddddddd", 99); // pinned by a running container → keep
-    // A stray file (not a dir) must be ignored.
+    const resumable = mk("aaaaaaaaaaaaaaaa", 99);
+    const orphanOld = mk("bbbbbbbbbbbbbbbb", 99);
+    const orphanYoung = mk("cccccccccccccccc", 1);
+    const runningMount = mk("dddddddddddddddd", 99);
     fs.writeFileSync(path.join(root, "stray.txt"), "x");
 
     const result = await runSteadyStateReclaim({
       repoStore, stateDir: tmpDir,
       cacheDays: 30,
       liveOverlayScopeHashes: () => new Set(["aaaaaaaaaaaaaaaa"]),
-      // A running container mounts dddd…/g4 as its lowerdir — even though that
-      // scope is not in the resumable union (e.g. an old-image container still
-      // running mid-turn), the mount check keeps it.
       runDocker: liveMountDocker([path.join(runningMount, "g4")]),
     });
 
@@ -253,7 +231,6 @@ describe("runSteadyStateReclaim", () => {
     expect(result.overlayBasesRemoved).toBe(2);
   });
 
-  // docs/197 Part 2 — pnpm shared-store sweep.
   it("pnpm-store sweep is skipped when pnpmStoreRuntimeHash is not provided", async () => {
     setup();
     const repoStore = new RepoStore(dbManager!);
@@ -286,10 +263,10 @@ describe("runSteadyStateReclaim", () => {
       return d;
     };
     const liveHash = pnpmStoreHash(overlayRuntimeKey());
-    const liveStore = mk(liveHash, 99);                 // current runtime → keep despite age
-    const staleStore = mk("bbbbbbbbbbbbbbbb", 99);      // old, non-current → REMOVE
-    const youngStore = mk("cccccccccccccccc", 1);       // non-current but young → keep
-    fs.writeFileSync(path.join(root, "stray.txt"), "x"); // non-dir → ignored
+    const liveStore = mk(liveHash, 99);
+    const staleStore = mk("bbbbbbbbbbbbbbbb", 99);
+    const youngStore = mk("cccccccccccccccc", 1);
+    fs.writeFileSync(path.join(root, "stray.txt"), "x");
 
     const result = await runSteadyStateReclaim({
       repoStore, stateDir: tmpDir,
@@ -321,7 +298,7 @@ describe("runSteadyStateReclaim", () => {
     const result = await runSteadyStateReclaim({
       repoStore, stateDir: tmpDir,
       cacheDays: 30,
-      pnpmStoreRuntimeHash: () => null, // feature off → nothing is live
+      pnpmStoreRuntimeHash: () => null,
       runDocker: () => Promise.resolve(""),
     });
 
@@ -329,11 +306,6 @@ describe("runSteadyStateReclaim", () => {
   });
 
   it("reaps superseded generations inside a LIVE scope via the live-mount check, keeping g0 + current + pinned", async () => {
-    // planning#195: a live scope dir is never removed, but superseded `g<N>` children
-    // are reaped the moment nothing pins them — age is not a factor. Kept: `g0`
-    // (cold-start lowerdir), the pointer's current generation, and any generation
-    // a running container still mounts. A crash-orphaned `.tmp-*` gets a short
-    // grace window (it's never mounted, but an in-flight publish may be writing it).
     setup();
     const repoStore = new RepoStore(dbManager!);
 
@@ -347,14 +319,13 @@ describe("runSteadyStateReclaim", () => {
       fs.utimesSync(d, t, t);
       return d;
     };
-    const g0 = mkGen("g0", 99);            // cold-start lowerdir → always kept
-    const g1 = mkGen("g1", 99);            // superseded, unmounted, old → REMOVE
-    const g2 = mkGen("g2", 99);            // superseded but PINNED by a running container → keep
-    const g3 = mkGen("g3", 99);            // current per pointer → keep
-    const g4 = mkGen("g4", 0.0001);        // superseded, unmounted, YOUNG → REMOVE (age no longer protects)
-    const tmpOld = mkGen(".tmp-g9-ab12", 99);   // crash orphan, past grace → REMOVE
-    const tmpYoung = mkGen(".tmp-g9-cd34", 0);   // crash orphan, within grace → keep
-    // Pointer names g3 as current.
+    const g0 = mkGen("g0", 99);
+    const g1 = mkGen("g1", 99);
+    const g2 = mkGen("g2", 99);
+    const g3 = mkGen("g3", 99);
+    const g4 = mkGen("g4", 0.0001);
+    const tmpOld = mkGen(".tmp-g9-ab12", 99);
+    const tmpYoung = mkGen(".tmp-g9-cd34", 0);
     const metaDir = path.join(tmpDir, "overlay-base-meta");
     fs.mkdirSync(metaDir, { recursive: true });
     fs.writeFileSync(
@@ -366,7 +337,6 @@ describe("runSteadyStateReclaim", () => {
       repoStore, stateDir: tmpDir,
       cacheDays: 30,
       liveOverlayScopeHashes: () => new Set([hash]),
-      // A running container pins g2 as its lowerdir.
       runDocker: liveMountDocker([g2]),
     });
 
@@ -382,12 +352,6 @@ describe("runSteadyStateReclaim", () => {
   });
 
   describe("live-mount probe failures (planning#439)", () => {
-    /**
-     * Fixture in the shape of the 2026-08-18 prod incident: one LIVE scope whose
-     * pointer sits at `g273` while running containers still pin the superseded
-     * `g269`–`g272`, plus a second scope that belongs to a WARM-pool session and
-     * so is absent from the resumable-session union.
-     */
     function incidentFixture() {
       const liveHash = "8769b50c2dd9cea5";
       const warmHash = "45dab20e664868ce";
@@ -397,7 +361,6 @@ describe("runSteadyStateReclaim", () => {
         fs.writeFileSync(path.join(d, "marker"), "x");
         return d;
       };
-      // Superseded but pinned: six containers were on g272 alone, others on g269–g271.
       const pinned = [269, 270, 271, 272].map((g) => mkGen(liveHash, g));
       const current = mkGen(liveHash, 273);
       const warmGen = mkGen(warmHash, 1);
@@ -418,15 +381,9 @@ describe("runSteadyStateReclaim", () => {
     }
 
     it("sweeps NOTHING when the live-mount reading cannot be completed", async () => {
-      // Prod: `docker container inspect` exited 1, the catch discarded the whole
-      // reading as an empty set, and 0.5 s later the sweep deleted a generation
-      // six running containers had mounted — and a whole warm scope dir. An
-      // unreadable live set must mean "sweep nothing", never "nothing is mounted".
       setup();
       const repoStore = new RepoStore(dbManager!);
       const fx = incidentFixture();
-      // A base that really is reclaimable — it must ALSO survive, because the
-      // pass cannot tell it apart from the live ones without the probe.
       const orphan = path.join(tmpDir, "overlay-base", "cccccccccccccccc");
       fs.mkdirSync(orphan, { recursive: true });
 
@@ -444,14 +401,10 @@ describe("runSteadyStateReclaim", () => {
       for (const gen of fx.pinned) expect(fs.existsSync(gen)).toBe(true);
       expect(fs.existsSync(fx.current)).toBe(true);
       expect(fs.existsSync(fx.warmGen)).toBe(true);
-      expect(fs.existsSync(orphan)).toBe(true); // deferred to the next pass, not deleted
+      expect(fs.existsSync(orphan)).toBe(true);
     });
 
     it("keeps reclaiming when a container merely VANISHED between ps and inspect", async () => {
-      // The common case on a busy host, and the one that must NOT freeze the
-      // sweep: the batch `container inspect` exits 1 because one listed id has
-      // exited, having printed valid output for every survivor. Re-reading the
-      // ids one at a time recovers the live set; the exited one pins nothing.
       setup();
       const repoStore = new RepoStore(dbManager!);
       const fx = incidentFixture();
@@ -465,8 +418,7 @@ describe("runSteadyStateReclaim", () => {
           if (args[0] === "ps") return Promise.resolve("live0\nexited1\n");
           if (args[0] === "container" && args[1] === "inspect") {
             const ids = args.slice(4);
-            // Docker prints the survivors' mounts and STILL exits 1; that stdout
-            // is unreachable through the rejection, hence the per-id re-read.
+            // Docker fails the batch if any requested container has vanished.
             if (ids.includes("exited1")) {
               return Promise.reject(new Error(
                 `docker container exited 1: ${vol}\nError: No such container: exited1`,
@@ -483,8 +435,6 @@ describe("runSteadyStateReclaim", () => {
         },
       });
 
-      // g272 is pinned by the surviving container → kept. g269–g271 are pinned by
-      // nothing in this reading → reclaimed, which is the sweep doing its job.
       expect(fs.existsSync(fx.pinned[3])).toBe(true);
       expect(fs.existsSync(fx.pinned[0])).toBe(false);
       expect(fs.existsSync(fx.current)).toBe(true);
@@ -516,17 +466,12 @@ describe("runSteadyStateReclaim", () => {
         liveOverlayScopeHashes: () => new Set([fx.liveHash, fx.warmHash]),
       };
 
-      // An unexplained failure is a HOLE in the reading — sweep nothing. Run this
-      // first, on the intact fixture, so the pass below can only reclaim what
-      // this one refused to.
       const unexplained = await runSteadyStateReclaim({
         ...deps, runDocker: runDocker(new Error("Cannot connect to the Docker daemon")),
       });
       expect(unexplained.overlayBasesRemoved).toBe(0);
       for (const gen of fx.pinned) expect(fs.existsSync(gen)).toBe(true);
 
-      // A removed volume has no container using it (the daemon refuses that), so
-      // it pins nothing and the reading stays complete.
       const vanished = await runSteadyStateReclaim({
         ...deps, runDocker: runDocker(new Error(`Error: No such volume: ${gone}`)),
       });
@@ -535,9 +480,6 @@ describe("runSteadyStateReclaim", () => {
     });
 
     it("counts WARM-pool sessions as live — the union must come from listAllIncludingWarm", async () => {
-      // The warm session whose scope dir prod deleted had no user, no branch and
-      // no PR, so `listAll()` (which filters `warm = 0`) never mentioned it: the
-      // docker probe was its ONLY protection, and the probe had just failed.
       setup();
       const sessionManager = new SessionManager(dbManager!);
       const repoStore = new RepoStore(dbManager!);
@@ -554,7 +496,6 @@ describe("runSteadyStateReclaim", () => {
       const warmBase = path.join(tmpDir, "overlay-base", warmHash);
       fs.mkdirSync(warmBase, { recursive: true });
 
-      // What prod ran: the warm row is invisible, so the base reads as an orphan.
       expect(
         liveOverlayScopeHashes(sessionManager.listAll(), () => depDirs, env).has(warmHash),
       ).toBe(false);
@@ -573,14 +514,6 @@ describe("runSteadyStateReclaim", () => {
   });
 
   describe("in-flight base-generation claims (planning#440)", () => {
-    /**
-     * The window `docker ps` cannot see into: a session's overlay volume names
-     * `…/overlay-base/<hash>/g<N>` as its lowerdir BEFORE its container exists,
-     * so between the spec decision and `container.start()` a same-scope publish
-     * moves the pointer to `g<N+1>` and `g<N>` reads as neither current nor
-     * mounted. Without a claim the sweep deletes it — with no age delay — and
-     * the starting container mounts a lowerdir that is gone.
-     */
     function creatingFixture() {
       const hash = "1f2e3d4c5b6a7988";
       const mkGen = (gen: number) => {
@@ -589,9 +522,9 @@ describe("runSteadyStateReclaim", () => {
         fs.writeFileSync(path.join(d, "marker"), "x");
         return d;
       };
-      const claimed = mkGen(7);      // what the in-flight container will mount
-      const superseded = mkGen(6);   // nothing pins it — genuinely reclaimable
-      const current = mkGen(8);      // the publish that raced the create
+      const claimed = mkGen(7);
+      const superseded = mkGen(6);
+      const current = mkGen(8);
       const metaDir = path.join(tmpDir, "overlay-base-meta");
       fs.mkdirSync(metaDir, { recursive: true });
       fs.writeFileSync(
@@ -609,9 +542,6 @@ describe("runSteadyStateReclaim", () => {
       const repoStore = new RepoStore(dbManager!);
       const fx = creatingFixture();
 
-      // What `prepareOverlaySpecs` does on a creation path, and the ONLY thing
-      // standing between g7 and deletion: no container exists yet, so the
-      // live-mount probe reads an empty (but complete) set.
       claimOverlayBaseGeneration(fx.hash, 7);
 
       const result = await runSteadyStateReclaim({
@@ -623,16 +553,11 @@ describe("runSteadyStateReclaim", () => {
 
       expect(fs.existsSync(fx.claimed)).toBe(true);
       expect(fs.existsSync(fx.current)).toBe(true);
-      // The claim protects exactly what it names — it must not turn the sweep off.
       expect(fs.existsSync(fx.superseded)).toBe(false);
       expect(result.overlayBasesRemoved).toBe(1);
     });
 
     it("keeps the whole scope dir alive on the claim alone, when nothing else vouches for it", async () => {
-      // A warm standby being created: no running container, and its scope is
-      // absent from the resumable-session union. Whole-scope removal and
-      // generation reaping are two different arms of the sweep, and the claim
-      // has to reach both — the scope dir is what holds the generation.
       setup();
       const repoStore = new RepoStore(dbManager!);
       const fx = creatingFixture();
@@ -648,16 +573,11 @@ describe("runSteadyStateReclaim", () => {
 
       expect(fs.existsSync(path.join(tmpDir, "overlay-base", fx.hash))).toBe(true);
       expect(fs.existsSync(fx.claimed)).toBe(true);
-      // The scope survives on the claim; inside it, only the unclaimed
-      // superseded generation goes — the sweep is still doing its job.
       expect(fs.existsSync(fx.superseded)).toBe(false);
       expect(result.overlayBasesRemoved).toBe(1);
     });
 
     it("stops protecting once the claim expires, so a dead create cannot pin a base forever", async () => {
-      // The release path, such as it is: an orchestrator that dies mid-create
-      // never mounted the generation, so the claim must lapse rather than
-      // retain the directory for the life of the process.
       setup();
       const repoStore = new RepoStore(dbManager!);
       const fx = creatingFixture();
@@ -680,9 +600,6 @@ describe("runSteadyStateReclaim", () => {
     });
 
     it("never widens the sweep: an unreadable live-mount reading still skips the pass", async () => {
-      // planning#439's rule outranks the claim. The claim is additive — it can
-      // only ever protect more — so a hole in the docker reading must still stop
-      // the pass, claim or no claim.
       setup();
       const repoStore = new RepoStore(dbManager!);
       const fx = creatingFixture();
@@ -705,10 +622,6 @@ describe("runSteadyStateReclaim", () => {
   });
 
   it("retains EVERY per-(session, dep-dir) base in the live-set; reaps only unreferenced ones", async () => {
-    // End-to-end: a live session with N declared dep dirs contributes N scope
-    // hashes to the live-set (via the real `liveOverlayScopeHashes`), and the
-    // overlay-base sweep must keep ALL of them while still reaping a stale base
-    // that belongs to no live (session, dep-dir).
     setup();
     const sessionManager = new SessionManager(dbManager!);
     const repoStore = new RepoStore(dbManager!);
@@ -733,9 +646,7 @@ describe("runSteadyStateReclaim", () => {
       fs.utimesSync(d, t, t);
       return d;
     };
-    // One stale base per (live session × dep dir) — all must survive despite age.
     const liveBases = depDirs.map((d) => mkBase(overlayScopeHash(remoteUrl, runtimeKey, d), 99));
-    // A stale base for a dep dir no live session declares — must be reaped.
     const orphanBase = mkBase(overlayScopeHash(remoteUrl, runtimeKey, "vendor/bundle"), 99);
 
     const result = await runSteadyStateReclaim({
@@ -752,19 +663,13 @@ describe("runSteadyStateReclaim", () => {
   });
 
   describe("cache-side LFS object sweep (docs/232)", () => {
-    /**
-     * Register a repo as live and return its cache hash. Required: without a
-     * `repos` row the whole `repo-cache/<hash>` dir is an orphan and
-     * `sweepOrphanedCaches` removes it before the LFS sweep ever sees it — which
-     * is correct behavior, just not what these tests are exercising.
-     */
+    // Prevent the whole-cache sweep from removing fixtures before the LFS sweep.
     function liveRepoHash(repoStore: RepoStore, url: string): string {
       repoStore.add(url);
       repoStore.setReady(url);
       return repoUrlToHash(url);
     }
 
-    /** Write `<stateDir>/repo-cache/<hash>/lfs/objects/<ab>/<cd>/<oid>`, aged. */
     function writeCacheLfsObject(hash: string, oid: string, ageDays: number, body = "asset-bytes"): string {
       const p = path.join(tmpDir, "repo-cache", hash, "lfs", "objects", oid.slice(0, 2), oid.slice(2, 4), oid);
       fs.mkdirSync(path.dirname(p), { recursive: true });
@@ -792,8 +697,6 @@ describe("runSteadyStateReclaim", () => {
       const repoStore = new RepoStore(dbManager!);
       const hash = liveRepoHash(repoStore, "https://github.com/example/assets.git");
       const cacheObj = writeCacheLfsObject(hash, "1122334455667788", 999);
-      // What `linkLfsObjectsIntoClone` does — this is the liveness signal the
-      // sweep reads, and it must beat any age cutoff.
       const cloneObj = path.join(tmpDir, "sessions", "s1", ".git", "lfs", "objects", "11", "22", "1122334455667788");
       fs.mkdirSync(path.dirname(cloneObj), { recursive: true });
       fs.linkSync(cacheObj, cloneObj);
@@ -821,7 +724,6 @@ describe("runSteadyStateReclaim", () => {
       setup();
       const repoStore = new RepoStore(dbManager!);
       const hash = liveRepoHash(repoStore, "https://github.com/example/assets.git");
-      // `ab/cd` goes fully empty; `ab/ef` keeps a fresh object.
       writeCacheLfsObject(hash, "abcd000000000001", 30);
       writeCacheLfsObject(hash, "abef000000000002", 1);
       const objectsRoot = path.join(tmpDir, "repo-cache", hash, "lfs", "objects");

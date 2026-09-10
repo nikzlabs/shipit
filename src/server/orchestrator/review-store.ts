@@ -25,15 +25,6 @@ interface CommentRow {
   review_id: string;
   kind: string;
   line: number | null;
-  // Legacy columns from migration 7 — retained for back-compat with sent
-  // review history (see migration 16). New writes use the selection columns.
-  //
-  // The table also still carries a `source` column ('human' | 'ai'). It is
-  // deliberately neither read nor written here: the AI write path is gone
-  // (docs/203, docs/220), so every comment is human-authored. The column keeps
-  // its `NOT NULL DEFAULT 'human'`, which is what lets the inserts below omit
-  // it — and leaving it in place keeps a downgrade to an older ShipIt (which
-  // still writes it) working.
   section_heading: string | null;
   section_index: number | null;
   quoted_text: string | null;
@@ -43,15 +34,7 @@ interface CommentRow {
   created_at: string;
 }
 
-/**
- * FileReviewStore — server-side persistence for the unified review surface.
- *
- * Reviews are scoped to a `(sessionId, filePath)` pair. Each session can
- * carry at most one draft per file and an unbounded history of sent reviews.
- * Both line-anchored (code) and selection-anchored (markdown) comments live
- * in the same `file_review_comments` table, discriminated by the `kind`
- * column.
- */
+// Inserts omit the legacy source column, which must retain its 'human' default.
 export class FileReviewStore {
   private db;
 
@@ -100,7 +83,6 @@ export class FileReviewStore {
     ).all(reviewId) as CommentRow[];
   }
 
-  /** List all reviews for a (session, file) pair, newest first. */
   listReviews(sessionId: string, filePath: string): FileReview[] {
     const rows = this.db.prepare(
       "SELECT * FROM file_reviews WHERE session_id = ? AND file_path = ? ORDER BY created_at DESC",
@@ -108,7 +90,6 @@ export class FileReviewStore {
     return rows.map((row) => this.toReview(row, this.getCommentsForReview(row.id)));
   }
 
-  /** Get a specific review by ID. */
   getReview(reviewId: string): FileReview | null {
     const row = this.db.prepare(
       "SELECT * FROM file_reviews WHERE id = ?",
@@ -117,7 +98,6 @@ export class FileReviewStore {
     return this.toReview(row, this.getCommentsForReview(row.id));
   }
 
-  /** Get the current draft review for a (session, file) pair, or null. */
   getDraft(sessionId: string, filePath: string): FileReview | null {
     const row = this.db.prepare(
       "SELECT * FROM file_reviews WHERE session_id = ? AND file_path = ? AND status = 'draft'",
@@ -126,10 +106,6 @@ export class FileReviewStore {
     return this.toReview(row, this.getCommentsForReview(row.id));
   }
 
-  /**
-   * Create a new draft review. Returns the existing draft if one already
-   * exists for the (session, file) pair (drafts are unique per pair).
-   */
   createDraft(
     sessionId: string,
     filePath: string,
@@ -168,7 +144,6 @@ export class FileReviewStore {
     };
   }
 
-  /** Add a line-anchored comment to a draft review. */
   addLineComment(
     reviewId: string,
     line: number,
@@ -184,7 +159,6 @@ export class FileReviewStore {
     return { id, kind: "line", line, text };
   }
 
-  /** Add a selection-anchored comment to a draft review. */
   addSelectionComment(
     reviewId: string,
     quotedText: string,
@@ -217,7 +191,6 @@ export class FileReviewStore {
     };
   }
 
-  /** Update a comment's text. */
   updateComment(reviewId: string, commentId: string, text: string): void {
     this.db.prepare(
       "UPDATE file_review_comments SET text = ? WHERE id = ? AND review_id = ?",
@@ -225,7 +198,6 @@ export class FileReviewStore {
     this.touchReview(reviewId);
   }
 
-  /** Delete a comment from a review. */
   deleteComment(reviewId: string, commentId: string): void {
     this.db.prepare(
       "DELETE FROM file_review_comments WHERE id = ? AND review_id = ?",
@@ -233,18 +205,9 @@ export class FileReviewStore {
     this.touchReview(reviewId);
   }
 
-  /** Mark a review as sent. */
-  /**
-   * Mark a draft sent. Returns false when the row was NOT a draft any more —
-   * the `status = 'draft'` clause is the atomic half of the double-send guard:
-   * `sendReview` checks the status, then awaits file I/O before getting here,
-   * so two concurrent sends both pass that check and only this UPDATE can tell
-   * them apart. The loser gets 0 changes and is rejected (docs/260).
-   */
+  // sendReview awaits I/O after its status check; the UPDATE must reject concurrent sends.
   markSent(reviewId: string, note?: string): boolean {
     const now = new Date().toISOString();
-    // A whitespace-only note is stored as NULL: "sent without a note" gets one
-    // representation, so readers never have to treat "" and NULL alike.
     const trimmed = note?.trim();
     const result = this.db.prepare(
       "UPDATE file_reviews SET status = 'sent', sent_at = ?, updated_at = ?, note = ? WHERE id = ? AND status = 'draft'",
@@ -252,7 +215,6 @@ export class FileReviewStore {
     return result.changes > 0;
   }
 
-  /** Delete a draft review and its comments. */
   deleteDraft(reviewId: string): void {
     this.db.transaction(() => {
       this.db.prepare("DELETE FROM file_review_comments WHERE review_id = ?").run(reviewId);

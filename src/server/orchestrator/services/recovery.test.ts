@@ -1,21 +1,3 @@
-/**
- * Unit tests for `restartContainer` (Rescue session) — Phase 3.1+3.2.
- *
- * Verifies the full ordered flow:
- *   1. emit phase=stopping_stack
- *   2. serviceManager.stop()
- *   3. killAgentOnWorker (best-effort)
- *   4. runnerRegistry.dispose({force:true})
- *   5. emit phase=destroying_container
- *   6. containerManager.destroy()
- *   7. containerManager.reapOrphans()
- *   8. emit phase=creating_container
- *   9. runnerRegistry.getOrCreate() — creates a fresh runner
- *   10. emit phase=starting_stack and phase=ready (or phase=failed)
- *
- * See docs/124-session-rescue-and-diagnostics §3.1, §3.2.
- */
-
 import { describe, it, expect } from "vitest";
 import { EventEmitter } from "node:events";
 import { restartAgent, restartContainer } from "./recovery.js";
@@ -54,14 +36,6 @@ function makeStubRunner(sessionId: string, withServiceManager: boolean): StubRun
     lastSseEventAt: 0,
     disposed: false,
     wasInterrupted: false,
-    /**
-     * Mirrors the real ContainerSessionRunner field. The `restartAgent`
-     * service writes `true` to this before disposing so the runner's
-     * `disposed` lifecycle handler in app-lifecycle.ts skips `mgr.stop()`.
-     * Initial value is `false` so the test starts in the same state as a
-     * fresh production runner — assertions then verify `restartAgent`
-     * flipped it before forcing the dispose.
-     */
     preserveComposeOnDispose: false,
     serviceManager: stubMgr,
     killAgentOnWorkerCalls: 0,
@@ -97,8 +71,6 @@ function makeStubContainerManager(opts: {
   let destroyCalls = 0;
   let reapCalls = 0;
 
-  // Drive the polling loop after destroy: depending on finalState, simulate
-  // what the readiness window observes.
   const finalize = () => {
     if (opts.finalState === "missing") {
       createError = { error: opts.createError ?? "no image", at: Date.now() };
@@ -107,7 +79,6 @@ function makeStubContainerManager(opts: {
     } else if (opts.finalState === "starting") {
       existing = { id: "new-container", status: "starting" };
     }
-    // "pending" → leave existing as-is
   };
 
   const destroy = async () => {
@@ -127,9 +98,6 @@ function makeStubContainerManager(opts: {
     reapOrphans: async () => {
       reapCalls += 1;
       order.push({ name: "reapOrphans", at: Date.now() });
-      // Also drive the post-create transition from the no-container path
-      // (where destroy is skipped) — restartContainer always calls
-      // reapOrphans as defense-in-depth, so it's a reliable seam.
       if (destroyCalls === 0) setTimeout(finalize, 50);
     },
     getLastCreateError: () => createError as never,
@@ -194,27 +162,19 @@ describe("restartContainer (docs/124 §3.1, §3.2)", () => {
 
     expect(result).toMatchObject({ ok: true, newContainerState: "running", noContainer: false });
 
-    // serviceManager.stop() was called before dispose
     expect((oldRunner.serviceManager as unknown as { _stopCalls: number })._stopCalls).toBe(1);
 
-    // killAgentOnWorker was called (best-effort)
     expect((oldRunner as unknown as { killAgentOnWorkerCalls: number }).killAgentOnWorkerCalls).toBe(1);
 
-    // dispose was forced
     expect(registry._disposeCalls).toEqual([{ sessionId: "rescue-1", force: true }]);
 
-    // destroy + reapOrphans both called
     const cmAny = cm as unknown as { _destroyCalls: () => number; _reapCalls: () => number; _order: () => { name: string }[] };
     expect(cmAny._destroyCalls()).toBe(1);
     expect(cmAny._reapCalls()).toBe(1);
-    // reap runs after destroy
     expect(cmAny._order().map((o) => o.name)).toEqual(["destroy", "reapOrphans"]);
 
-    // A fresh runner was created
     expect(registry._getOrCreateCalls).toBe(1);
 
-    // Phased progress: stopping_stack came before destroying_container,
-    // which came before creating_container, ready was the final phase.
     const phases = oldRunner.emitted
       .filter((m): m is WsContainerRestarting => m.type === "container_restarting")
       .map((m) => m.phase);
@@ -222,8 +182,6 @@ describe("restartContainer (docs/124 §3.1, §3.2)", () => {
     expect(phases).toContain("destroying_container");
     expect(phases).toContain("creating_container");
 
-    // The new runner gets `starting_stack` and `ready` after dispose, since
-    // emitMessage on the old runner can't reach reconnecting viewers.
     const freshPhases = freshRunner.emitted
       .filter((m): m is WsContainerRestarting => m.type === "container_restarting")
       .map((m) => m.phase);
@@ -298,21 +256,11 @@ describe("restartContainer (docs/124 §3.1, §3.2)", () => {
     );
 
     expect(result.noContainer).toBe(true);
-    // `destroy` now runs even with no container record (review of PR #2587):
-    // "no container" and "nothing to tear down" are different facts. A creation
-    // still in its preflight has published no record, and `destroy` is what
-    // cancels it — otherwise it finishes moments later, beside the replacement
-    // Rescue is about to build. It is a cheap no-op when there is genuinely
-    // nothing there. `reapOrphans` still runs as defense in depth.
     const cmAny = cm as unknown as { _destroyCalls: () => number; _reapCalls: () => number };
     expect(cmAny._destroyCalls()).toBe(1);
     expect(cmAny._reapCalls()).toBe(1);
   });
 });
-
-// ---------------------------------------------------------------------------
-// restartAgent (docs/127-restart-agent)
-// ---------------------------------------------------------------------------
 
 describe("restartAgent (docs/127)", () => {
   it("destroys and recreates the agent container WITHOUT touching compose", async () => {
@@ -333,29 +281,19 @@ describe("restartAgent (docs/127)", () => {
 
     expect(result).toMatchObject({ ok: true, newContainerState: "running" });
 
-    // CRITICAL: serviceManager.stop() must NOT be called. The whole point of
-    // restartAgent is to preserve the compose stack.
     expect((oldRunner.serviceManager as unknown as { _stopCalls: number })._stopCalls).toBe(0);
 
-    // killAgentOnWorker is called (best-effort, same as restartContainer)
     expect((oldRunner as unknown as { killAgentOnWorkerCalls: number }).killAgentOnWorkerCalls).toBe(1);
 
-    // preserveComposeOnDispose was set to true on the OLD runner before dispose
-    // so app-lifecycle's disposed handler skips mgr.stop().
     expect((oldRunner as unknown as { preserveComposeOnDispose: boolean }).preserveComposeOnDispose).toBe(true);
 
-    // dispose was forced
     expect(registry._disposeCalls).toEqual([{ sessionId: "rescue-1", force: true }]);
 
-    // destroy WAS called for the agent container
     const cmAny = cm as unknown as { _destroyCalls: () => number; _reapCalls: () => number; _order: () => { name: string }[] };
     expect(cmAny._destroyCalls()).toBe(1);
 
-    // CRITICAL: reapOrphans was NOT called — it would force-kill the running
-    // compose containers (they carry `shipit-parent-session=<sid>`).
     expect(cmAny._reapCalls()).toBe(0);
 
-    // A fresh runner was created
     expect(registry._getOrCreateCalls).toBe(1);
   });
 
@@ -365,7 +303,6 @@ describe("restartAgent (docs/127)", () => {
     const registry = makeStubRegistry({ "restart-1": oldRunner }, freshRunner);
     const cm = makeStubContainerManager({ hasExisting: true, finalState: "running" });
 
-    // Use a session id known to the sessionManager stub
     await restartAgent(
       {
         sessionManager: {
@@ -392,7 +329,6 @@ describe("restartAgent (docs/127)", () => {
     expect(phases).toContain("destroying_container");
     expect(phases).toContain("creating_container");
     expect(phases).toContain("ready");
-    // No compose phases
     expect(phases).not.toContain("stopping_stack");
     expect(phases).not.toContain("starting_stack");
   });
@@ -447,7 +383,6 @@ describe("restartAgent (docs/127)", () => {
       "rescue-1",
     );
 
-    // Restart still succeeded — kill failure is non-blocking by design.
     expect(result.newContainerState).toBe("running");
 
     const sessionStatus = oldRunner.emitted.find(
@@ -458,11 +393,6 @@ describe("restartAgent (docs/127)", () => {
   });
 
   it("two consecutive restartAgent calls each preserve compose (idempotent chaining)", async () => {
-    // Three runners total: r0 is the original, r1 is the first replacement
-    // produced by the first restartAgent, r2 is the second replacement.
-    // Each round MUST set preserveComposeOnDispose=true on the runner
-    // being disposed (r0 in round 1, r1 in round 2) — that's the
-    // invariant that lets the compose stack survive both restarts.
     const r0 = makeStubRunner("rescue-1", true);
     const r1 = makeStubRunner("rescue-1", true);
     const r2 = makeStubRunner("rescue-1", true);
@@ -486,7 +416,6 @@ describe("restartAgent (docs/127)", () => {
       },
     } as unknown as SessionRunnerRegistry;
 
-    // Round 1: r0 → r1
     const cm1 = makeStubContainerManager({ hasExisting: true, finalState: "running" });
     const result1 = await restartAgent(
       {
@@ -501,8 +430,6 @@ describe("restartAgent (docs/127)", () => {
     expect((r0 as unknown as { preserveComposeOnDispose: boolean }).preserveComposeOnDispose).toBe(true);
     expect((r1 as unknown as { preserveComposeOnDispose: boolean }).preserveComposeOnDispose).toBe(false);
 
-    // Round 2: r1 → r2 (chaining — the runner that was just adopted is
-    // now being disposed again).
     const cm2 = makeStubContainerManager({ hasExisting: true, finalState: "running" });
     const result2 = await restartAgent(
       {
@@ -517,24 +444,7 @@ describe("restartAgent (docs/127)", () => {
     expect((r1 as unknown as { preserveComposeOnDispose: boolean }).preserveComposeOnDispose).toBe(true);
     expect((r2 as unknown as { preserveComposeOnDispose: boolean }).preserveComposeOnDispose).toBe(false);
 
-    // NOTE: We intentionally do NOT assert on `serviceManager._stopCalls`
-    // here. The stub runner's `dispose: () => undefined` never invokes
-    // the real disposed-handler (which lives in app-lifecycle.ts and is
-    // where `mgr.stop()` actually gates on the preserve flag). End-to-end
-    // verification of "preserve flag → mgr.stop() not called" lives in
-    // `integration_tests/service-manager-adoption.test.ts`, which
-    // exercises the disposed handler directly with a real
-    // ContainerSessionRunner.
-    //
-    // What this test DOES verify: `restartAgent` correctly sets the
-    // preserve flag on whichever runner it's disposing — including the
-    // runner adopted by a previous restartAgent (r1 in round 2). Without
-    // that, the adoption handoff would silently fall back to "tear down
-    // compose" on the second iteration.
-
-    // Two destroys, two getOrCreates, two forced disposes; zero reaps
-    // across both rounds (reaping by `shipit-parent-session` label would
-    // kill the surviving compose containers).
+    // This stub cannot test the disposed handler; service-manager-adoption.test.ts covers it.
     expect((cm1 as unknown as { _reapCalls: () => number })._reapCalls()).toBe(0);
     expect((cm2 as unknown as { _reapCalls: () => number })._reapCalls()).toBe(0);
     expect(disposeCalls).toHaveLength(2);
@@ -544,23 +454,11 @@ describe("restartAgent (docs/127)", () => {
 
 });
 
-// ---------------------------------------------------------------------------
-// Breaker + loop-detector reset on user-initiated restart
-// ---------------------------------------------------------------------------
-// Regression for Bug B: `restartContainer`/`restartAgent` reset the OOM
-// breaker but used to leave the loop detector's independent event window
-// intact. Since both gate the same runner factory — and the loop detector
-// can re-`forceTrip` the breaker off its stale window — a restart that
-// only cleared the breaker stayed sticky.
-
 describe("recovery clears BOTH the OOM breaker and the loop detector", () => {
   it("restartContainer forgets the loop-detector window and un-trips the breaker", async () => {
     const oomBreaker = createOomCircuitBreaker();
     const loopDetector = createSessionLoopDetector();
 
-    // Drive the loop: 3 container_started events trip the detector, which
-    // force-trips the breaker — the exact state a session lands in after
-    // the create/phantom-exit loop.
     loopDetector.recordContainerStarted("rescue-1");
     loopDetector.recordContainerStarted("rescue-1");
     const alert = loopDetector.recordContainerStarted("rescue-1");
@@ -586,8 +484,6 @@ describe("recovery clears BOTH the OOM breaker and the loop detector", () => {
       "rescue-1",
     );
 
-    // Both gates must be clear, or the very next create the user asked for
-    // would be refused (breaker) or instantly re-tripped (loop detector).
     expect(oomBreaker.isTripped("rescue-1")).toBe(false);
     expect(loopDetector.countInWindow("rescue-1")).toBe(0);
   });

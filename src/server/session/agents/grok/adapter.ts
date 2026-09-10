@@ -1,77 +1,3 @@
-/**
- * GrokAdapter — spawn-per-turn `grok -p` implementing AgentProcess
- * (docs/274-grok-build-harness). Claude-shaped: NDJSON on stdout, one process
- * per turn.
- *
- * The wire is the reason this adapter is small. Grok Build's
- * `--output-format streaming-messages-json` is Claude Code's `stream-json`
- * **near verbatim** — `system`/`init`, `assistant`/`user` envelopes holding
- * Anthropic Messages objects, a terminal `result` with `total_cost_usd` and
- * `usage` — so the event mapping mirrors `claude/adapter.ts` rather than
- * inventing a vocabulary. Every fact below was verified against CLI 1.0.1 in a
- * container on 2026-08-18; the captures that prove them are replayed byte-for-
- * byte by `adapter.test.ts`.
- *
- * Three places it is NOT Claude, each load-bearing:
- *
- *  - **The prompt goes in a FILE** (`--prompt-file`), not on argv and not on
- *    stdin. `-p <PROMPT>` is argv, which has a 128 KiB per-argument ceiling on
- *    Linux that assembled prompts exceed; `--prompt-file` is first-party and
- *    was verified to run a full turn.
- *  - **The session id is PRE-ASSIGNED** (`-s <uuid>`), not parsed out of the
- *    stream. Verified: a new conversation adopts the caller's UUID and both the
- *    init and result events carry it back, so ShipIt never has to race the
- *    first event to learn what to resume.
- *  - **MCP config has exactly one delivery path: `$GROK_HOME/config.toml`**,
- *    so this adapter gives every spawn a config root of its OWN. There is no
- *    `--mcp-config` flag and no config-pointing env var — probed directly:
- *    `GROK_CONFIG` and `GROK_CONFIG_PATH` are both inert (the init event
- *    reported `mcp_servers: []` under each), and neither name appears in the
- *    binary. That single fixed path is a problem, because a container can have
- *    TWO grok processes alive at once — a turn, plus a `shipit agent run`
- *    sub-agent spawned during it — and the worker builds the sub-agent's
- *    adapter with no scoped home, so both resolve the same root. Sharing one
- *    mutable `config.toml` between them means whichever finishes last decides
- *    what is left on disk. So each spawn writes into a throwaway root and
- *    symlinks `sessions/` (and `auth.json`, when there is one) back to the real
- *    one. Verified live: MCP servers connect, session state writes through the
- *    link, and `-r` resumes a conversation started under a *different*
- *    throwaway root.
- *
- *    **`auth.json` is not safe as a symlink alone** (planning#448). The CLI
- *    refreshes by atomic-rename onto `$GROK_HOME/auth.json`, which *replaces*
- *    the symlink with a regular file. The live token then lives only in the
- *    throwaway root — the session credentials copy the orchestrator watches
- *    never moves, so publish-back is a no-op and `rmSync` at turn end would
- *    delete the rotation. `publishSpawnAuthBack` copies a replaced file back
- *    onto the shared root (freshness-guarded) so the existing token-sync path
- *    can see it.
- *
- * ## Two Claude events this adapter never emits, and the basis for each
- *
- * Stated here rather than left as an absence, per docs/266 item 13's
- * probed / structural / not-wired rule.
- *
- *  - **`agent_rate_limits` — probed, and not a gap.** The wire carries no
- *    window: the terminal `result` reports cost and tokens, never a
- *    percentage, a window length or a reset instant, and the ONLY reader of a
- *    `Retry-After` header anywhere in the 1.0.1 binary is the GCS file
- *    uploader (`xai-file-utils/src/storage_client.rs`) — the inference client
- *    has none, so a 429's reset time is discarded before the CLI formats
- *    anything. Measured 2026-08-23 at a local recorder answering 429 with
- *    `Retry-After` and `x-ratelimit-*`: none of it reached stdout. Nothing is
- *    missing downstream, because `xai:sub` gets its meter from a different
- *    mechanism entirely — `XaiLimitsProvider` (`xai-plan-usage`) pulls
- *    `GET /v1/billing?format=credits`. Grok's badge is populated; it is simply
- *    not populated from here.
- *  - **`agent_user_replay` — structural.** It echoes a steer the CLI accepted
- *    mid-turn. Grok is one spawn per turn with the prompt in a file and stdin
- *    `ignore`d, so no user message ever reaches a running process and there is
- *    nothing to echo (`supportsSteering: false`; see `case "user"`, where every
- *    event on this wire is a tool result instead). Not deferred work — the
- *    shape forecloses it, and only a resident process would change that.
- */
-
 import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import path from "node:path";
@@ -105,45 +31,9 @@ import { renderGrokConfigToml, type GrokMcpServer } from "./config-toml.js";
 
 const GROK_REASONING = HARNESSES.find((h) => h.id === "grok")?.capabilities.reasoning;
 
-/**
- * A `node_modules/.bin` directory, as a PATH entry.
- *
- * Anchored at the END so it matches the directory itself and not a package that
- * merely lives under one, and tolerant of a trailing separator because a PATH
- * entry may carry one.
- */
 const NPM_BIN_DIR = /(^|[\\/])node_modules[\\/]\.bin[\\/]?$/;
 
-/**
- * The grok binary a spawn must exec — resolved to an absolute path, never left
- * to `$PATH` (planning#444).
- *
- * `@xai-official/grok` publishes TWO different programs under the same name,
- * and until now ShipIt got the wrong one:
- *
- *   - `node_modules/.bin/grok` is a JS **launcher**. Its own resolution order
- *     starts at `$GROK_HOME/bin/grok`, and when that is absent it BOOTSTRAPS —
- *     decompressing the ~157 MB platform payload into `$GROK_HOME`. This
- *     adapter gives every spawn a fresh throwaway `GROK_HOME` (see the header),
- *     so the launcher would pay that 157 MB on EVERY TURN, and write it into
- *     the per-session credentials volume whenever the real root is usable.
- *     That is verbatim the cost planning#442 exists to prevent.
- *   - `/usr/local/bin/grok` is the installer's link straight at the decompressed
- *     platform binary (`install-agent-clis.sh` → `harness_link_target`), which
- *     needs no bootstrap and writes no payload anywhere.
- *
- * Every image prepends `/opt/agent-cli/node_modules/.bin` to `PATH`, so the
- * launcher WINS a bare-name lookup — measured in a live container:
- * `command -v grok` answered `/opt/agent-cli/node_modules/.bin/grok`. The
- * installer's comment claimed "PATH points straight at it and the launcher is
- * never involved"; that was false as shipped. The installer now unlinks the
- * shim, and this resolver is the second half: it skips any `node_modules/.bin`
- * candidate outright, so an image built before that change still spawns the
- * real binary.
- *
- * Falls back to the bare name when nothing else on `PATH` answers — a spawn
- * that runs the launcher is bad, and a spawn that runs nothing is worse.
- */
+// Skip npm launchers: they unpack ~157 MB into each temporary GROK_HOME.
 export function resolveGrokBinary(pathEnv = process.env.PATH ?? ""): string {
   for (const dir of pathEnv.split(path.delimiter)) {
     if (!dir || NPM_BIN_DIR.test(dir)) continue;
@@ -162,22 +52,7 @@ export function resolveGrokBinary(pathEnv = process.env.PATH ?? ""): string {
   return "grok";
 }
 
-/**
- * Harness-compatibility toggles, set explicitly on every spawn (docs/274).
- *
- * `grok inspect` shows Grok reading OTHER agents' project files by default —
- * Claude's and Cursor's skills, rules, agents, MCP servers, hooks and sessions,
- * plus Codex sessions — each behind a `GROK_<VENDOR>_<AREA>_ENABLED` toggle.
- * Left alone, a ShipIt turn would pick up `.claude/settings.json`, `.mcp.json`
- * and hook definitions behind ShipIt's back, on a repo ShipIt configured for a
- * different harness.
- *
- * So every toggle is stated rather than defaulted, and the two left ON are the
- * two ShipIt WANTS: `.claude/skills` disclosure (verified live — Grok surfaces
- * both `.grok/skills` and `.claude/skills`, which is why no symlink is needed)
- * and Claude rules (`CLAUDE.md`, alongside the `AGENTS.md` it reads natively).
- * Everything that could execute code or redirect a tool is off.
- */
+// Import shared rules and skills, but not other harnesses' executable configuration.
 const COMPAT_TOGGLES: Record<string, string> = {
   GROK_CLAUDE_SKILLS_ENABLED: "1",
   GROK_CLAUDE_RULES_ENABLED: "1",
@@ -194,36 +69,10 @@ const COMPAT_TOGGLES: Record<string, string> = {
   GROK_CODEX_SESSIONS_ENABLED: "0",
 };
 
-/**
- * How long the process gets to exit on its own after the terminal `result`
- * before the adapter kills it.
- *
- * Grok exits promptly by itself in every observed run. This is the OpenCode
- * lesson applied pre-emptively rather than a defect being worked around: MCP
- * children can hold a CLI's event loop open indefinitely, and a turn that has
- * already delivered its result must not be what keeps the session busy.
- */
 const RESULT_EXIT_GRACE_MS = 5_000;
 
-/**
- * How often to stat `$GROK_HOME/auth.json` for a CLI rotation that replaced
- * the symlink (planning#448). Bounds the window the mid-turn publisher
- * (docs/153) cannot see to roughly this plus its own poll. Cleanup always
- * publishes once more, so a missed poll cannot strand the token.
- */
 const SPAWN_AUTH_WATCH_MS = 1_000;
 
-/**
- * Best-effort `expires_at` from a grok `auth.json`, for copy-back ordering
- * only.
- *
- * The orchestrator's `readXaiTokenFreshnessFile` is the reader that guards
- * publish-back; this one exists so the session adapter does not import the
- * orchestrator package to answer a single question — "is the throwaway copy
- * newer than the shared root?". Both walk the same scope-keyed `expires_at`
- * ISO string the live file actually writes. A parse failure here fails
- * closed (do not overwrite a dest we cannot prove is older).
- */
 function grokAuthExpiryMs(file: string): number | null {
   try {
     const parsed = JSON.parse(fs.readFileSync(file, "utf8")) as unknown;
@@ -241,7 +90,6 @@ function grokAuthExpiryMs(file: string): number | null {
   return null;
 }
 
-/** Copy `src` onto `dst` via temp + rename so a concurrent reader never sees a partial write. */
 function atomicCopyFile(src: string, dst: string): void {
   fs.mkdirSync(path.dirname(dst), { recursive: true });
   const tmp = `${dst}.tmp-${process.pid}-${Date.now()}`;
@@ -263,101 +111,45 @@ export class GrokAdapter
 
   readonly capabilities: AgentCapabilities = {
     supportsResume: true,
-    // Mirrors the catalogue row (docs/274), where the live probe is recorded:
-    // the image content block is accepted and its content does not reach the
-    // model. Verified false, not merely unobserved.
     supportsImages: false,
     supportsSystemPrompt: true,
     supportsPermissionModes: true,
     supportedPermissionModes: GROK_PERMISSION_MODES,
     toolNames: [...GROK_TOOL_NAMES],
-    // Which models exist is a property of the service join, not the CLI
-    // (docs/252); the registry resolves them. Nothing reads this field off a
-    // live adapter (ProxyAgentProcess hardcodes its own stub).
     models: [],
     ...(GROK_REASONING ? { reasoning: GROK_REASONING } : {}),
-    // Mirrors the catalogue row, where the probe is recorded (planning#459).
     supportsReview: true,
     supportsSteering: false,
-    // docs/276 — the CLI intercepts `/compact` in the prompt in headless mode
-    // (Claude's in-band shape), so `run({ compact: true })` is the whole
-    // mechanism and needs no special argv.
     supportsCompaction: true,
     skillsDirName: ".grok",
     skillInvocationPrefix: "/",
   };
 
   private readonly resolveHome: AgentHomeResolver | undefined;
-  /** Injectable for tests — replays captured streams without a real CLI. */
   private readonly spawnFn: (cmd: string, args: string[], opts: SpawnOptions) => ChildProcess;
   private proc: ChildProcess | null = null;
   private buffer = "";
   private stderrBuffer = "";
   private promptPath: string | null = null;
   private systemPromptPath: string | null = null;
-  /**
-   * docs/276 — true when this turn was spawned purely to compact
-   * (`run({ compact: true })`), so the `compact_boundary` it produces can be
-   * labeled `"manual"`.
-   *
-   * This correlation is not optional politeness, it is the only way to tell:
-   * Grok stamps `compact_metadata.trigger` `"auto"` on EVERY compaction,
-   * including one it performed because ShipIt asked (verified — the manual
-   * `/compact` runs that produced the docs/276 token measurements all reported
-   * `"auto"` on the wire while writing `"trigger": "manual"` into their own
-   * `compaction_requests/` record). Trusting the wire field would mislabel
-   * every user-triggered compaction. Same fix, same reason, as Codex's
-   * `compactionRequested`.
-   */
+  // Grok reports "auto" even for requested compaction; label it by correlation.
   private compactionRequested = false;
-  /** This turn's throwaway config root, removed wholesale at turn end. */
   private spawnHome: string | null = null;
-  /**
-   * The shared-root `auth.json` this turn linked (and must copy a CLI rotation
-   * back onto). Null in key mode and on the self-contained fallback, where
-   * there is no durable file to publish to.
-   */
   private spawnAuthDest: string | null = null;
-  /** Stat-poller that copies a CLI-replaced `auth.json` back mid-turn. */
   private spawnAuthWatch: { path: string; listener: () => void } | null = null;
-  /**
-   * Whether this turn's config root reaches a real `auth.json` — i.e. whether a
-   * subscription login is what authenticates it.
-   *
-   * Set by {@link makeSpawnHome}, which is the one place that knows: it is the
-   * step that links the durable `auth.json` in, and it is also the step that can
-   * FAIL to (an unusable shared root falls back to a self-contained one with no
-   * link, and a turn that believed it had a login there would then scrub its own
-   * only credential).
-   */
+  // Set only when the durable auth file was linked successfully.
   private spawnHomeHasAuth = false;
   private resultKillTimer: NodeJS.Timeout | null = null;
   private interruptKillTimer: NodeJS.Timeout | null = null;
   private watchdog: NodeJS.Timeout | null = null;
-  /** The id this turn runs under — pre-assigned, so it is known before the CLI starts. */
   private turnSessionId = "";
   private sawResult = false;
   private sawAnyEvent = false;
-  /**
-   * The text of a fatal `{"type":"error","message":…}` event, held for the
-   * synthesized result.
-   *
-   * Held rather than emitted (Claude's contract): no `result` event follows a
-   * fatal error, so the close handler is the only place a terminal result can
-   * come from, and it used to name only the exit code. That threw away the one
-   * sentence saying *why* — including, when the provider refuses a turn on this
-   * shape, the quota wording the orchestrator's exhaustion classifier reads.
-   */
+  // Fatal errors have no result event; preserve their quota wording for close.
   private fatalErrorText: string | null = null;
   private latestCallContextTokens: number | undefined;
-  /**
-   * This turn's tool_use id → RAW wire tool name. Grok's tool_result blocks
-   * carry only the id, so result normalization (`normalizeGrokToolResult`)
-   * needs the call side remembered. Reset per run(): the CLI is spawn-per-turn,
-   * so a result always lands in the same turn as its call.
-   */
+  // Results carry only IDs; normalization needs the call's raw tool name.
   private turnCallNames = new Map<string, string>();
-  /** Resolved MCP servers, captured by writeMcpConfig for run() to render. */
   private pendingMcpServers: Record<string, GrokMcpServer> = {};
 
   constructor(opts?: {
@@ -369,10 +161,6 @@ export class GrokAdapter
     this.spawnFn = opts?.spawnFn ?? nodeSpawn;
   }
 
-  /**
-   * One process per turn, no resident stream. `startsOwnTurns` is false for the
-   * same reason: this CLI cannot begin a turn ShipIt did not ask for.
-   */
   readonly isStreaming = false;
 
   run(params: AgentRunParams): void {
@@ -385,72 +173,24 @@ export class GrokAdapter
     this.fatalErrorText = null;
     this.latestCallContextTokens = undefined;
     this.turnCallNames.clear();
-    // docs/276 — a compaction spawn needs NO special argv. Grok intercepts a
-    // leading `/compact` in the prompt itself (the Claude shape, not Codex's
-    // out-of-band RPC), and `params.prompt` already IS `/compact` on this path,
-    // so the ordinary spawn below carries the trigger. All this flag does is
-    // label the resulting boundary; see the field's docstring for why the
-    // wire's own `trigger` cannot.
     this.compactionRequested = params.compact === true;
     if (this.compactionRequested) {
-      // Grok emits no progress event for compaction (Claude's
-      // `status:"compacting"` has no Grok counterpart), so the "Compacting…"
-      // indicator would never appear. We know we asked for it, so say so.
+      // Grok emits no compaction progress event.
       this.emit("event", { type: "agent_compaction_started", trigger: "manual" });
     }
 
-    // Pre-assign rather than parse (verified live): `-s <uuid>` on a new
-    // conversation is adopted verbatim and echoed on both init and result, so
-    // the id ShipIt will resume with is known before the CLI has spoken. `-r`
-    // takes over once there is one to resume.
     this.turnSessionId = params.sessionId ?? randomUUID();
 
     const args = [
       "--output-format", "streaming-messages-json",
       "--no-auto-update",
-      // Grok gates a checkout's own project-local surfaces on FOLDER TRUST as a
-      // GROUP, and an untrusted folder skips them silently: the repo's
-      // `.grok/hooks`, its repo-local MCP/LSP servers, and its project
-      // permission rules from `.grok/config.toml` AND `.claude/settings.json`
-      // (the Claude-compat layer). Skills are NOT gated, so ShipIt's plugin
-      // skills always loaded — which is why this never showed up as a symptom.
-      // Same class of gap as Codex's project trust
-      // (`session/agents/codex/project-trust.ts`), found by probing the pinned
-      // CLI after that one.
-      //
-      // Measured against the pinned grok 1.0.12 in a session container:
-      // `grok inspect` (its own "what did I discover here" command) reports
-      // `Project trusted: no` in `/workspace`; `--trust` on a headless run
-      // flips it to yes and records `[folders."/workspace"] trusted = true` in
-      // `$GROK_HOME/trusted_folders.toml`; and in a checkout carrying a
-      // `.claude/settings.json`, `inspect` goes from `Permissions → Source:
-      // (none), 0 loaded` to naming that file with its rules loaded. Passed as
-      // a flag rather than written as a file so the CLI owns that format; the
-      // per-turn spawn home is thrown away each turn, so re-granting on every
-      // spawn is both necessary and self-healing.
-      //
-      // **The blast radius is wider than "the log goes quiet", deliberately.**
-      // `--always-approve` below does not make project policy inert: the
-      // repo's own DENY rules and its hooks still apply, and under
-      // `--permission-mode auto` (ShipIt's `guarded`) its allow rules change
-      // what needs classifying. Review also reports that upstream gates
-      // `.claude/settings*.json` ENVIRONMENT injection on the same flag, which
-      // would reach spawned commands — read from upstream source, not
-      // reproduced here, so treat it as one more reason the grant is a real
-      // decision rather than as a measured fact. We take it because Codex
-      // offers no partial trust either, because the session container IS the
-      // sandbox (CLAUDE.md §5), and because honoring the checkout's own
-      // configuration is the point: ShipIt already trusts the same workspace
-      // for Claude and Codex.
+      // Required each spawn to load project hooks, MCP/LSP servers and permission rules.
       "--trust",
       "--cwd", params.cwd,
     ];
     args.push(params.sessionId ? "-r" : "-s", this.turnSessionId);
 
-    // ShipIt's three permission modes onto Grok's wider native set. `auto` is
-    // `--always-approve` (the container IS the sandbox); `guarded` is Grok's
-    // own classifier-gated `auto`, which collides by name with ShipIt's — the
-    // one place the two vocabularies use the same word for different things.
+    // Grok's classifier mode "auto" is ShipIt's "guarded".
     switch (params.permissionMode) {
       case "plan":
         args.push("--permission-mode", "plan");
@@ -465,23 +205,10 @@ export class GrokAdapter
 
     if (params.model) args.push("-m", params.model);
 
-    // `--reasoning-effort` IS passed now (planning#435), and the gate that
-    // decides whether it means anything is upstream rather than here.
-    //
-    // The flag reaches the wire under a SUBSCRIPTION and is silently discarded
-    // under an API key — both recorder-verified with a negative control. That
-    // gate is `capabilities.reasoning.billingModes` in the catalogue, composed
-    // by `reasoningOptionsFor`, so a key-billed selection can offer no level for
-    // a user, a role or a reviewer to pick and nothing arrives here to pass on.
-    // Re-testing the billing mode in the adapter would be a second copy of one
-    // rule; what the adapter owes is delivering what it was given.
     if (params.reasoningEffort) args.push("--reasoning-effort", params.reasoningEffort);
 
     if (params.systemPrompt) {
-      // `--rules <FILE>` APPENDS to the CLI's own system prompt;
-      // `--system-prompt-override` would replace it, discarding Grok's own tool
-      // instructions along with it. ShipIt's prompt is standing instructions,
-      // not a replacement for the harness's operating manual.
+      // --rules appends; --system-prompt-override discards Grok's tool instructions.
       this.systemPromptPath = `/tmp/grok-system-prompt-${randomUUID()}.md`;
       try {
         fs.writeFileSync(this.systemPromptPath, params.systemPrompt);
@@ -493,19 +220,10 @@ export class GrokAdapter
       }
     }
 
-    // Env discipline — the order is load-bearing and is claude/process.ts's:
-    // HOME first, then the credential scrub, then service delivery, because the
-    // scrub deletes the very variable the delivery writes. A per-spawn
-    // `homeDir` (a same-harness sub-agent's isolated credential root) outranks
-    // the constructor-injected resolver; the throwaway spawn home below then
-    // links its durable auth.json out of THAT root's `.grok` instead of the
-    // session's.
     const scopedHome = params.homeDir ?? this.resolveHome?.();
     const home = resolveAgentHome(scopedHome);
     const configRoot = this.makeSpawnHome(grokHome(home));
     if (configRoot === null) {
-      // Nothing usable to point GROK_HOME at. Fail loudly rather than spawn: the
-      // CLI's own error for a broken config root names no path (planning#444).
       this.cleanupTurnFiles();
       this.emit(
         "error",
@@ -518,38 +236,16 @@ export class GrokAdapter
     const spawnEnv: Record<string, string> = {
       ...(process.env as Record<string, string>),
       HOME: home,
-      // This turn's own config root — NOT `$HOME/.grok`, which two concurrent
-      // spawns would fight over (see the header). It carries this turn's
-      // `config.toml` and links back to the real root for everything durable.
       GROK_HOME: configRoot,
-      // The pinned binary must never self-replace (dependency policy). Belt
-      // and braces with `--no-auto-update` above: the flag covers this
-      // invocation, the env var covers anything it spawns.
       GROK_DISABLE_AUTOUPDATER: "1",
       GROK_TELEMETRY_ENABLED: "0",
       DISABLE_TELEMETRY: "1",
       GROK_ERROR_REPORTING: "0",
       DISABLE_ERROR_REPORTING: "1",
-      // Tags xAI's OAuth flow with the integrating product, the way T3 Code
-      // sends `t3code` (docs/274, prior art). Inert on the key-billed path
-      // ShipIt launches with; set now so the subscription work of planning#435
-      // is not attributed to nobody.
       GROK_OAUTH2_REFERRER: "shipit",
       ...COMPAT_TOGGLES,
     };
-    // Grok prefers `XAI_API_KEY` over its on-disk login, and `GROK_AUTH` /
-    // `GROK_AUTH_PATH` redirect it at a different token store entirely — any
-    // one of them inherited from the worker would silently bill the wrong
-    // account. Scrub them all, then deliver exactly one.
-    //
-    // **Gated on there being a credential to deliver**, which is Claude's rule
-    // (`claude/process.ts` scrubs only under a scoped home) reached from the
-    // other direction. Scrubbing unconditionally looked stricter and was a
-    // trap: an unrouted spawn would have its ambient key removed and nothing
-    // put back, so it fails at the CLI with an auth error that names no cause.
-    // Every catalogue selection Grok can run carries routing (one service, key
-    // mode), so this branch is the manual/dogfood path — where "use the key in
-    // my environment" is the only thing an unrouted spawn could mean.
+    // Scrub before delivery. Unrouted runs without file auth need the ambient key.
     if (params.serviceRouting) {
       scrubHarnessEnvCredentials(spawnEnv, "grok");
       const routing = params.serviceRouting;
@@ -569,33 +265,13 @@ export class GrokAdapter
         `[grok] service routing: ${routing.serviceId}/${routing.billingMode} -> ${routing.baseUrl}`,
       );
     } else if (this.spawnHomeHasAuth) {
-      // **A SUBSCRIPTION turn, and the scrub is the whole of its credential
-      // handling** (planning#435). An account-delivered credential carries no
-      // routing at all — `serviceRoutingForSelection` returns nothing for one,
-      // because a login IS the vendor's own and its token exchange is bound to
-      // the vendor's own endpoint — so the branch above never runs and the CLI
-      // reaches `cli-chat-proxy.grok.com` by itself off `auth.json`.
-      //
-      // Which is exactly why the env has to be scrubbed here rather than only
-      // there. Grok prefers `XAI_API_KEY` over its on-disk login, and the worker
-      // is handed every stored service credential regardless of which route the
-      // turn is pinned to (`collectServiceCredentialEnv`) — so an install that
-      // has ever saved an xAI key would have every "subscription" turn silently
-      // billed to that key, with ShipIt attributing it to the account. Same for
-      // `GROK_AUTH` / `GROK_AUTH_PATH`, which redirect the CLI at a different
-      // token store and defeat the scoped home just as thoroughly.
-      //
-      // The gate is the auth FILE, not a scoped home: `resolveHome` is undefined
-      // inside a container (the image symlinks `~/.grok` at the per-session
-      // credentials mount instead), so a scoped-home test — Claude's shape —
-      // would be false on the one path that matters most. This is the Codex
-      // adapter's rule, which deletes `OPENAI_API_KEY` when file auth wins.
+      // Environment credentials override file auth. Gate on the file, since
+      // container accounts have no scoped resolver.
       scrubHarnessEnvCredentials(spawnEnv, "grok");
       console.log("[grok] subscription login on disk — env credentials scrubbed so it cannot be out-preferred");
     }
 
-    // The prompt is a file, not argv (see the header). Written before the
-    // config so a failure here leaves no config.toml behind to restore.
+    // A file avoids Linux's 128 KiB per-argument limit.
     this.promptPath = `/tmp/grok-prompt-${randomUUID()}.txt`;
     try {
       fs.writeFileSync(this.promptPath, params.prompt);
@@ -607,9 +283,6 @@ export class GrokAdapter
     }
     args.push("--prompt-file", this.promptPath);
 
-    // An absolute path, never the bare name — see `resolveGrokBinary`. Logged
-    // because "which grok did this turn run" is exactly the question planning#444
-    // could not answer from the outside.
     const binary = resolveGrokBinary();
 
     console.log(
@@ -661,16 +334,7 @@ export class GrokAdapter
     });
   }
 
-  /**
-   * Warn-only inactivity watchdog (Claude parity — `claude/process.ts`).
-   *
-   * It deliberately does NOT kill, and Grok gives it a specific job: on an
-   * upstream 5xx the CLI retries internally and emits NOTHING to stdout while
-   * it does (observed against the recorder). A silent minute is therefore a
-   * real state the CLI reaches on its own, not necessarily a hang — so this
-   * narrates and leaves the decision to the user, whose interrupt is the
-   * escape hatch.
-   */
+  // Warn only: Grok retries upstream errors without emitting output.
   private armWatchdog(): void {
     if (this.watchdog) clearTimeout(this.watchdog);
     this.watchdog = setTimeout(() => {
@@ -680,47 +344,8 @@ export class GrokAdapter
     }, 60_000);
   }
 
-  /**
-   * Build this turn's throwaway config root and return the path to use as
-   * `GROK_HOME`.
-   *
-   * It holds this turn's `config.toml` — the only way to deliver MCP servers —
-   * and symlinks the two things that must OUTLIVE the turn back to the real
-   * root: `sessions/`, without which `-r` could not resume, and `auth.json`
-   * when one exists (key mode has none). The `auth.json` link is the starting
-   * state, not the finishing one: the CLI's refresh rename replaces it, and
-   * {@link publishSpawnAuthBack} is what makes the rotation durable
-   * (planning#448). Everything else the CLI writes there (logs, caches, its
-   * bundled docs) is genuinely per-run and goes away with the directory.
-   *
-   * **It never returns a root it has just proven unusable** (planning#444).
-   *
-   * The previous fallback returned `realRoot` on any failure, arguing that "a
-   * turn that runs against the shared root might race a concurrent spawn over
-   * one file, while a turn refused for a mkdir is no turn at all". That reasoning
-   * assumes the shared root WORKS, and the one failure it actually met was the
-   * case where it does not: every session image symlinks `~/.grok` at
-   * `/credentials/.grok`, key-billed Grok writes no credential material, so
-   * nothing created the target and the link DANGLED. A recursive `mkdir` through
-   * a dangling symlink throws (ENOENT on Node's recursive form; the raw syscall
-   * reports EEXIST, because the link is an existing directory entry — the same
-   * trap `shared/opencode-data-dir.ts` documents). The `catch` then handed the
-   * CLI that very path as `GROK_HOME`, which died at its own session creation
-   * with `FS_OTHER / "File exists (os error 17)"` and `duration_ms: 0`, before
-   * emitting any stream event. A silent fallback onto a broken path turned a
-   * repairable condition into a total turn failure naming no cause.
-   *
-   * So the throwaway root is built FIRST and unconditionally, and linking the
-   * durable state back is what may fail. When it does, the turn still runs — on
-   * a fully self-contained root, with a local `sessions/` so the CLI can create
-   * its session — and the condition is narrated to the transcript rather than
-   * swallowed. What is lost in that state is cross-turn resume (this turn's
-   * session state goes away with the directory) and any `auth.json`, which is
-   * strictly more than the zero turns the old behaviour delivered.
-   *
-   * Returns `null` only when even a temp root could not be made — a genuinely
-   * unusable `os.tmpdir()`. The caller fails the turn loudly instead of spawning.
-   */
+  // MCP config has no alternate path. Isolate concurrent spawns' config.toml,
+  // linking durable sessions and auth back. Never fall back to a broken realRoot.
   private makeSpawnHome(realRoot: string): string | null {
     this.spawnHomeHasAuth = false;
     this.unwatchSpawnAuth();
@@ -736,11 +361,6 @@ export class GrokAdapter
     this.spawnHome = spawnHome;
 
     try {
-      // Created rather than assumed: on a cold credentials tree the directory
-      // does not exist yet. This is also the line that fails when `realRoot` is
-      // a dangling symlink — deliberately not "repaired" here, because the
-      // credentials tree is per-session and uid-sensitive (docs/150, docs/270)
-      // and the orchestrator owns what is created inside it.
       fs.mkdirSync(realRoot, { recursive: true });
       const sessions = path.join(realRoot, "sessions");
       fs.mkdirSync(sessions, { recursive: true });
@@ -757,13 +377,6 @@ export class GrokAdapter
         `[grok] the shared config root ${realRoot} is unusable (${String(err)}) — running this turn on a `
           + "self-contained root instead. Cross-turn resume and any auth.json there are unavailable until it is repaired.",
       );
-      // BILLING, not just resume. `spawnHomeHasAuth` stays false here, so the
-      // subscription scrub below does not fire — and if the worker's environment
-      // carries `XAI_API_KEY` (it does whenever the install has ever stored one),
-      // the CLI silently falls back to that key while ShipIt attributes the turn
-      // to the account. That needs two unlikely states at once, which is exactly
-      // why it must be said out loud rather than left to be inferred from a
-      // resume warning. Raised in review of planning#435.
       if (process.env.XAI_API_KEY) {
         console.warn(
           "[grok] …and XAI_API_KEY is present, so a subscription-pinned turn would authenticate with "
@@ -777,8 +390,6 @@ export class GrokAdapter
           + "Conversation resume is unavailable until it is repaired.",
       );
       try {
-        // A local sessions/ rather than a link: the CLI creates a session before
-        // it does anything, and the whole failure this replaces was that step.
         fs.mkdirSync(path.join(spawnHome, "sessions"), { recursive: true });
       } catch {
         // The CLI makes its own under a writable GROK_HOME; nothing more to do.
@@ -818,8 +429,6 @@ export class GrokAdapter
   private handleEvent(raw: GrokEvent): void {
     this.sawAnyEvent = true;
 
-    // docs/088 parity — the init event carries per-server MCP status, which is
-    // what makes a dropped server visible instead of merely absent.
     if (raw.type === "system" && raw.subtype === "init" && raw.mcp_servers) {
       const statuses: McpServerStatus[] = raw.mcp_servers.map((s) =>
         s.status === "connected"
@@ -834,9 +443,7 @@ export class GrokAdapter
 
     if (raw.type === "result") {
       this.sawResult = true;
-      // The turn is over as far as ShipIt is concerned. Grok exits on its own
-      // promptly, so this timer normally never fires; it exists so an MCP
-      // child holding the event loop open cannot keep the session busy.
+      // MCP children can prevent exit after the result.
       if (!this.resultKillTimer && this.proc) {
         this.resultKillTimer = setTimeout(() => {
           this.resultKillTimer = null;
@@ -846,34 +453,16 @@ export class GrokAdapter
     }
   }
 
-  /**
-   * Record one model call's prompt size.
-   *
-   * Same rule as the Claude adapter's: real context occupancy is the LAST
-   * call's `input + cache_read + cache_creation`, because the result event's
-   * totals are sums across every call in the turn and would report a multiple
-   * of the true prompt size. Grok's result carries no per-iteration list at
-   * all, so this running value is the ONLY source — dropping it would leave
-   * the context dial empty on every turn.
-   */
+  // Context occupancy uses the last call; terminal usage sums all calls.
   private recordCallContext(usage: { input_tokens?: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number } | undefined): void {
     if (!usage) return;
     const contextTokens =
       (usage.input_tokens ?? 0) +
       (usage.cache_read_input_tokens ?? 0) +
       (usage.cache_creation_input_tokens ?? 0);
-    // An output-only or zeroed usage object has no context reading. Do not turn
-    // it into an authoritative zero that empties the dial.
     if (contextTokens > 0) this.latestCallContextTokens = contextTokens;
   }
 
-  /**
-   * Translate every tool_use block in an assistant envelope to the transcript
-   * vocabulary (`grok-tool-normalizer.ts`), remembering the RAW name by call id
-   * for the result side. Non-tool blocks (text, thinking) pass by reference —
-   * the wire carries block types the `AgentContentBlock` union doesn't name,
-   * and this touches only what it recognizes.
-   */
   private normalizeToolCalls(content: AgentContentBlock[]): AgentContentBlock[] {
     return content.map((block) => {
       if (block?.type !== "tool_use" || typeof block.name !== "string") return block;
@@ -886,11 +475,9 @@ export class GrokAdapter
     });
   }
 
-  /** Unwrap recognized result envelopes (the subagent report — see the normalizer). */
   private normalizeToolResults(content: AgentContentBlock[]): AgentContentBlock[] {
     return content.map((block) => {
-      // tool_result blocks are not in the AgentContentBlock union but ride the
-      // wire and the persisted transcript unchanged — read them structurally.
+      // The wire carries tool_result blocks outside AgentContentBlock's union.
       const result = block as unknown as { type?: string; tool_use_id?: string; content?: unknown };
       if (result?.type !== "tool_result" || typeof result.content !== "string") return block;
       const rawName = result.tool_use_id ? this.turnCallNames.get(result.tool_use_id) : undefined;
@@ -901,20 +488,13 @@ export class GrokAdapter
     });
   }
 
-  /** Convert one raw Grok event into the normalized AgentEvent schema. */
   private mapEvent(raw: GrokEvent): AgentEvent | null {
     switch (raw.type) {
       case "system":
-        // docs/276 — Grok's compaction boundary is byte-for-byte Claude's:
-        // `system`/`subtype:"compact_boundary"` carrying `compact_metadata`.
-        // It reports `pre_tokens` but NO `post_tokens` and no `duration_ms`,
-        // and the card degrades to the fields it does have.
         if (raw.subtype === "compact_boundary") {
           const pre = raw.compact_metadata?.pre_tokens;
           return {
             type: "agent_compacted",
-            // NOT `raw.compact_metadata.trigger` — it is always `"auto"`. See
-            // `compactionRequested`.
             trigger: this.compactionRequested ? "manual" : "auto",
             ...(typeof pre === "number" ? { preTokens: pre } : {}),
           };
@@ -929,53 +509,33 @@ export class GrokAdapter
         };
 
       case "assistant":
-        // `parent_tool_use_id` is carried for parity with Claude's subagent
-        // transparency, but it was NULL on every event of every capture,
-        // including turns that ran `spawn_subagent` — Grok does not stream a
-        // subagent's internals headlessly, only the spawn's tool_result. So
-        // the transcript shows a subagent's report, never its work, and that
-        // is the CLI's behaviour rather than a mapping gap.
         if (!raw.parent_tool_use_id) this.recordCallContext(raw.message?.usage);
         return {
           type: "agent_assistant",
-          // Raw wire names miss every recognition registry (planning#437) —
-          // translate to the transcript vocabulary before anything persists.
           content: this.normalizeToolCalls(raw.message?.content ?? []),
           ...(raw.parent_tool_use_id ? { parentToolUseId: raw.parent_tool_use_id } : {}),
         };
 
       case "user":
-        // Grok has no `--replay-user-messages` equivalent, so unlike Claude
-        // every `user` event on this wire is a tool result rather than a steer
-        // echo. There is no `isReplay` branch because there is nothing that
-        // would set it.
+        // Grok's user events contain tool results, never steer echoes.
         return {
           type: "agent_tool_result",
-          // The subagent envelope would render as raw JSON where the report
-          // belongs — unwrap before anything persists (planning#437).
           content: this.normalizeToolResults(raw.message?.content ?? []),
           ...(raw.parent_tool_use_id ? { parentToolUseId: raw.parent_tool_use_id } : {}),
         };
 
       case "result": {
         const u = raw.usage;
-        // Token semantics are DISJOINT — verified arithmetically on a real
-        // terminal event (29623 + 88128 + 0 + 857 + 0 = 118608 = the total), so
-        // unlike Codex this backend needs no `<id>-token-usage.ts` normalizer
-        // and these figures can be summed as they stand.
+        // Grok's input and cache token counts are disjoint.
         const contextTokens = this.latestCallContextTokens;
         this.latestCallContextTokens = undefined;
-        // Authoritative window from `modelUsage.<model>.contextWindow`; prefer
-        // the largest across models touched in the turn, matching Claude.
         let contextWindow: number | undefined;
         for (const m of Object.values(raw.modelUsage ?? {})) {
           if (m?.contextWindow && (!contextWindow || m.contextWindow > contextWindow)) {
             contextWindow = m.contextWindow;
           }
         }
-        // `subtype` is not the success flag — the same trap Claude's adapter
-        // documents. An API-error turn ends `subtype: "success"` with
-        // `is_error: true`, so both signals decide it.
+        // API errors can carry subtype="success" with is_error=true.
         const errored = raw.is_error === true || (raw.subtype !== undefined && raw.subtype !== "success");
         return {
           type: "agent_result",
@@ -1000,9 +560,6 @@ export class GrokAdapter
       }
 
       case "error":
-        // The unauthenticated / fatal shape: `{"type":"error","message":…}` on
-        // stdout followed by exit 1 (verified on an unauthenticated run). No
-        // result ever follows, so the close handler synthesizes one from this.
         if (raw.message_text) this.fatalErrorText = raw.message_text;
         this.emit("log", "server", `Grok error: ${raw.message_text ?? "unknown"}`);
         return null;
@@ -1012,28 +569,14 @@ export class GrokAdapter
     }
   }
 
-  /**
-   * The result for a turn that ended without one — a crash, a fatal `error`
-   * event, or a kill.
-   *
-   * A SIGNAL death emits nothing, matching the Claude one-shot contract, so a
-   * user interrupt settles as *interrupted* rather than as a completed empty
-   * turn. `close` passes the exit code alone; a killed process reports a null
-   * code, which is exactly the case that must stay silent.
-   */
+  // Signal deaths stay silent so interrupts do not appear as completed turns.
   private emitSynthesizedResult(exitCode: number | null): void {
     if (exitCode === null) return;
     if (exitCode === 0 && !this.sawAnyEvent) {
-      // Exit 0 having said nothing: not a success and not obviously an error —
-      // no result, like Claude's silent zero-output turn. The orchestrator's
-      // abnormal-exit path owns it.
       console.warn("[grok] process exited 0 with no stream events — no result to synthesize");
       return;
     }
     if (exitCode === 0) return;
-    // The CLI's own reason wins over the exit code when it gave one. The exit
-    // code is a fact about the process; `message_text` is what the provider
-    // said, and it is the only form a quota refusal takes on this shape.
     this.emit("event", {
       type: "agent_result",
       status: "error",
@@ -1044,19 +587,7 @@ export class GrokAdapter
     });
   }
 
-  /**
-   * docs/276 — mid-turn compaction, which this adapter cannot do. Grok is one
-   * spawn per turn with the prompt in a file and stdin `ignore`d, so there is
-   * no channel into a running process and nothing resident between turns.
-   *
-   * That is not a gap: the orchestrator only calls `compact()` when a turn is
-   * IN FLIGHT, and routes the ordinary `/compact` (no turn running) through
-   * `run({ compact: true })`, which is the path that actually works here — the
-   * CLI intercepts `/compact` in the prompt. So this warns rather than
-   * throwing, mirroring the Claude adapter's non-streaming branch: a
-   * compaction the user asked for mid-turn is best-effort, and failing it must
-   * not tear down the turn it was asked about.
-   */
+  // Compaction requires a new /compact run; a mid-turn request must not abort this turn.
   compact(_instructions?: string): void {
     console.warn(
       "[grok-adapter] compact() called mid-turn — Grok has no resident process to compact (the orchestrator should have spawned a /compact run instead)",
@@ -1064,9 +595,6 @@ export class GrokAdapter
   }
 
   sendUserMessage(text: string): void {
-    // supportsSteering is false; the orchestrator's steering gate should never
-    // route here. Mirror the Claude adapter's loud-failure contract rather than
-    // silently dropping the user's message.
     console.warn(
       `[grok-adapter] sendUserMessage called on a one-shot adapter — message DROPPED (text=${JSON.stringify(text.slice(0, 80))})`,
     );
@@ -1077,15 +605,11 @@ export class GrokAdapter
   }
 
   writeStdin(data: string): void {
-    // stdin is `ignore` at spawn — the prompt travels by file, so there is no
-    // channel to write to and pretending otherwise would drop bytes silently.
     console.warn(`[grok] writeStdin: this adapter spawns with no stdin — ${data.length} bytes dropped`);
   }
 
   interrupt(): void {
-    // Captured at entry (CLAUDE.md: never read `this.proc` inside an async
-    // callback) — this adapter instance is reused across turns, so a stale
-    // escalation would otherwise SIGTERM the NEXT turn's process.
+    // Capture the process so a delayed escalation cannot kill the next turn.
     const proc = this.proc;
     if (!proc) return;
     killChild(proc, "SIGINT");
@@ -1111,12 +635,7 @@ export class GrokAdapter
     this.watchdog = null;
   }
 
-  /**
-   * Stat-poll `$GROK_HOME/auth.json` so a CLI rotation that replaced the
-   * symlink is copied back onto the shared root *during* the turn, not only
-   * at cleanup. `fs.watch` (inotify) would follow the original symlink's
-   * inode and miss the rename; path-based `watchFile` sees both.
-   */
+  // watchFile detects replacement by rename; fs.watch follows the old inode.
   private watchSpawnAuth(spawnAuth: string): void {
     this.unwatchSpawnAuth();
     const listener = (): void => {
@@ -1124,9 +643,7 @@ export class GrokAdapter
     };
     this.spawnAuthWatch = { path: spawnAuth, listener };
     fs.watchFile(spawnAuth, { interval: SPAWN_AUTH_WATCH_MS, persistent: false }, listener);
-    // `watchFile` takes its baseline stat asynchronously, so a write that
-    // lands between this call and that baseline is invisible to the poller
-    // forever (same reason session-token-publisher.ts publishes at arm time).
+    // Publish now to cover writes before watchFile's asynchronous baseline stat.
     this.publishSpawnAuthBack();
   }
 
@@ -1141,17 +658,8 @@ export class GrokAdapter
     }
   }
 
-  /**
-   * If the CLI replaced `$GROK_HOME/auth.json` (the symlink is now a regular
-   * file) with a strictly fresher token, copy it onto the shared root the
-   * orchestrator watches.
-   *
-   * Returns `"strand"` when the spawn copy is a replaced regular file that we
-   * refused (or failed) to publish — the caller MUST quarantine it before
-   * `rmSync` of the throwaway root, otherwise the only live token is deleted
-   * (planning#448 review). `"done"` covers everything else, including "still
-   * a symlink, dest is already current" and "older than dest, safe to drop".
-   */
+  // Refresh replaces the auth symlink with a file. "strand" requires quarantine
+  // before cleanup, since that file can hold the only live token.
   private publishSpawnAuthBack(): "done" | "strand" {
     const spawnHome = this.spawnHome;
     const dest = this.spawnAuthDest;
@@ -1161,7 +669,7 @@ export class GrokAdapter
       const st = fs.lstatSync(spawnAuth);
       if (st.isSymbolicLink() || !st.isFile()) return "done";
     } catch {
-      return "done"; // gone already (cleanup raced the watcher)
+      return "done";
     }
     const spawnAt = grokAuthExpiryMs(spawnAuth);
     if (spawnAt === null) {
@@ -1195,19 +703,7 @@ export class GrokAdapter
     }
   }
 
-  /**
-   * Copy a replaced `$GROK_HOME/auth.json` next to the shared root instead of
-   * letting `rmSync` destroy it. The dest itself is left untouched (the
-   * publish was refused). Next-turn diagnosis can diff the two.
-   *
-   * `dest` is only DURABLE for an ordinary turn. In a same-harness sub-agent
-   * spawn it is the isolated per-spawn home, which the orchestrator deletes
-   * moments later — so the name below is a contract, not a local choice: the
-   * orchestrator's release carries `.stranded-` files out of a home before
-   * removing it (planning#475). Hence the shared constant; the two sides used
-   * to spell it separately, in different processes, where a rename on either
-   * would leave both suites green and the rescue deleted for real.
-   */
+  // The orchestrator recognizes this marker and rescues files before deleting child homes.
   private quarantineSpawnAuth(): void {
     const spawnHome = this.spawnHome;
     const dest = this.spawnAuthDest;
@@ -1236,14 +732,9 @@ export class GrokAdapter
     }
     this.promptPath = null;
     this.systemPromptPath = null;
-    // Publish BEFORE deleting the throwaway root: if the CLI replaced the
-    // auth.json symlink, the live token lives only there (planning#448).
     this.unwatchSpawnAuth();
     if (this.publishSpawnAuthBack() === "strand") this.quarantineSpawnAuth();
     this.spawnAuthDest = null;
-    // The whole throwaway root goes, config and links together. `rmSync` does
-    // not follow remaining symlinks, so the real `sessions/` (and an
-    // unpublished `auth.json` we still held as a link) are untouched.
     if (this.spawnHome) {
       try {
         fs.rmSync(this.spawnHome, { recursive: true, force: true });
@@ -1254,11 +745,6 @@ export class GrokAdapter
     this.spawnHome = null;
   }
 
-  /**
-   * Capture the MCP server set for the per-turn `config.toml` that `run()`
-   * writes. There is no separate config path to hand back to the worker, so
-   * the result carries only the cleanup.
-   */
   writeMcpConfig(ctx: AgentMcpWriteContext): AgentMcpWriteResult {
     const servers: Record<string, GrokMcpServer> = {
       playwright: {
@@ -1269,12 +755,6 @@ export class GrokAdapter
     };
 
     if (ctx.shipitBridge) {
-      // The consolidated shipit bridge (planning#130 / docs/199). Tool subset
-      // is this adapter's own: no `permission` tool, because headless Grok runs
-      // `--always-approve` and there is no `--permission-prompt-tool` to route
-      // a gate through; `ask` included even though Grok has a native
-      // `ask_user_question`, because the native one is the CLI's own surface
-      // and ShipIt's card is the one the transcript renders.
       servers.shipit = {
         command: ctx.shipitBridge.tsxBin,
         args: [ctx.shipitBridge.bridgePath],
@@ -1293,9 +773,6 @@ export class GrokAdapter
           url?: string;
           headers?: Record<string, string>;
         };
-        // ShipIt's stored shape is Claude-style ({command, args, env} or
-        // {url, headers}); Grok's TOML wants the same fields with `transport`
-        // naming the remote kinds (shape read off a real `grok mcp add` run).
         servers[server.name] = r.url
           ? {
               transport: "http",

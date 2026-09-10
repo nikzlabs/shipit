@@ -1,11 +1,3 @@
-/**
- * The preview proxy absorbs a dev server that is not listening yet (docs/286).
- *
- * These are the tests that used to be impossible to write on the client: the
- * wait now happens in one place, so "a preview opened too early still shows the
- * app" is a property of the proxy rather than of a poll loop plus an overlay.
- */
-
 import { describe, it, expect, afterEach } from "vitest";
 import Fastify, { type FastifyInstance } from "fastify";
 import http from "node:http";
@@ -27,7 +19,6 @@ afterEach(async () => {
   while (teardown.length) await teardown.pop()!();
 });
 
-/** Start the proxy in front of a container IP that may have nothing on it yet. */
 async function startProxy(opts: { connectRetryMs?: number } = {}): Promise<string> {
   const app: FastifyInstance = Fastify();
   registerPreviewProxy(app, {
@@ -42,7 +33,6 @@ async function startProxy(opts: { connectRetryMs?: number } = {}): Promise<strin
   return `http://127.0.0.1:${(app.server.address() as AddressInfo).port}`;
 }
 
-/** An upstream "dev server" the test can start late, the way a real one boots. */
 async function startUpstream(
   port: number,
   body: string,
@@ -57,16 +47,7 @@ async function startUpstream(
   teardown.push(() => new Promise<void>((resolve) => { server.close(() => resolve()); }));
 }
 
-/** A free port nothing is listening on yet. */
-/**
- * A port nothing can be listening on, for the cases that need a REFUSED connect
- * rather than a free port to bind later. {@link reservePort} cannot serve those:
- * it hands back a port it has just closed, and in a suite running hundreds of
- * files in parallel another test's ephemeral server can take it in the gap. The
- * request then reaches a stranger, and the assertion reads as a mechanism
- * failure — a 404 where a 502 was expected, which is exactly how this surfaced
- * in CI. Port 1 is privileged, so no unprivileged test process can occupy it.
- */
+// Avoid ephemeral-port reuse by another test when a refused connection is needed.
 const NEVER_LISTENING_PORT = 1;
 
 async function reservePort(): Promise<number> {
@@ -83,10 +64,6 @@ interface PreviewResponse {
   body: string;
 }
 
-/**
- * Issue a preview request. `node:http` rather than `fetch`, because routing is
- * decided by the `Host` header and undici refuses to let a caller set one.
- */
 function previewRequest(
   base: string,
   port: number,
@@ -119,9 +96,6 @@ function previewRequest(
 
 describe("preview proxy — connect retry", () => {
   it("serves the app when the dev server comes up after the request", async () => {
-    // The case the client's health poll existed to cover: the iframe asks
-    // before anything is listening. The request is held and retried, so the
-    // one load an iframe gets lands on the real app (req 2).
     const port = await reservePort();
     const base = await startProxy();
 
@@ -144,15 +118,11 @@ describe("preview proxy — connect retry", () => {
     expect(res.status).toBe(503);
     expect(res.headers["content-type"]).toContain("text/html");
     expect(body).toContain(`Connecting to the dev server on port <code>${port}</code>`);
-    // Served through the bootstrap, so it posts `loaded` like any other preview
-    // document — otherwise PreviewFrame's auth detector would reload it twice
-    // and then report "Preview authentication required" (req 6).
+    // The auth detector needs the bootstrap's loaded message on this page too.
     expect(body).toContain('postMessage({source:"shipit-preview",type:"loaded"}');
   });
 
   it("gives an asset the JSON error, not an HTML page", async () => {
-    // A stylesheet or an XHR handed HTML would be a parse error in the app
-    // rather than an honest failure.
     const port = NEVER_LISTENING_PORT;
     const base = await startProxy({ connectRetryMs: 0 });
 
@@ -163,11 +133,6 @@ describe("preview proxy — connect retry", () => {
   });
 
   it("gives up inside the window when the target never answers the connect", async () => {
-    // A container whose address is stale drops the SYN rather than refusing it,
-    // so no error ever fires and the retry deadline — only consulted from an
-    // error callback — is never reached. Without the connect-phase timeout the
-    // request hangs forever and the connecting page never appears.
-    // 203.0.113.0/24 is TEST-NET-3: reserved for documentation, routed nowhere.
     const app: FastifyInstance = Fastify();
     registerPreviewProxy(app, {
       containerManager: { get: () => ({ containerIp: "203.0.113.1" }) } as unknown as SessionContainerManager,
@@ -184,9 +149,6 @@ describe("preview proxy — connect retry", () => {
   }, 15_000);
 
   it("does not retry a request whose body it cannot replay", async () => {
-    // A POST body is consumed by the first attempt, so a retry would send an
-    // empty one. It fails as it always did — and fast, which is what this
-    // asserts: the whole call finishes well inside the retry window.
     const port = NEVER_LISTENING_PORT;
     const base = await startProxy();
 
@@ -199,11 +161,6 @@ describe("preview proxy — connect retry", () => {
 });
 
 describe("preview proxy — renderer isolation", () => {
-  // Every preview origin is a subdomain of the host ShipIt itself is served
-  // from, so a browser's site-keyed process model puts them all in one
-  // renderer — one main thread, and one 16-context WebGL budget shared by every
-  // open session. `Origin-Agent-Cluster: ?1` is what splits them.
-
   it("marks a served page, so its origin gets its own renderer", async () => {
     const port = await reservePort();
     const base = await startProxy();
@@ -216,11 +173,6 @@ describe("preview proxy — renderer isolation", () => {
   });
 
   it("marks the connecting page, which is the origin's first document on a cold boot", async () => {
-    // The load-bearing one. An origin's agent-cluster key is decided by the
-    // first document it serves and then held for the whole browsing-context
-    // group, so a preview opened before its dev server is listening would be
-    // pinned site-keyed for the rest of the session if only the real page
-    // carried the header.
     const port = NEVER_LISTENING_PORT;
     const base = await startProxy({ connectRetryMs: 0 });
 
@@ -242,8 +194,6 @@ describe("preview proxy — renderer isolation", () => {
   });
 
   it("marks the unreachable-asset response too", async () => {
-    // Not a document itself, but it is served on the preview origin and it
-    // costs nothing to keep every path on the same contract.
     const port = NEVER_LISTENING_PORT;
     const base = await startProxy({ connectRetryMs: 0 });
 
@@ -254,10 +204,6 @@ describe("preview proxy — renderer isolation", () => {
   });
 
   it("overrides an app that opts itself out of origin keying", async () => {
-    // How ShipIt spreads sessions across renderer processes is the platform's
-    // decision. A previewed app answering `?0` would re-collapse every open
-    // session into one renderer, and the user would see the damage in a
-    // different session from the one that caused it.
     const port = await reservePort();
     const base = await startProxy();
     await startUpstream(port, "<html><head></head><body>up</body></html>", "text/html", {
@@ -297,8 +243,6 @@ describe("wantsHtmlDocument", () => {
 
 describe("buildConnectingPage", () => {
   it("cannot be broken out of by the error text it embeds", () => {
-    // The message comes from a connect error. It is quoted into an inline
-    // script, so a literal </script> in it must not end the element.
     const page = buildConnectingPage(3000, "</script><img src=x onerror=alert(1)>");
     expect(page).not.toContain("</script><img");
     expect(page).toContain("\\u003c/script>");
@@ -306,8 +250,6 @@ describe("buildConnectingPage", () => {
 
   it("polls and only then reloads, so it does not flicker through a slow boot", () => {
     const page = buildConnectingPage(3000, "ECONNREFUSED");
-    // A blind reload on a timer would flash the pane for the whole of a boot;
-    // this page is what the user watches for that entire time.
     expect(page).toContain("fetch(location.href");
     expect(page).toContain("res.status !== 503");
     expect(page).toContain("location.reload()");

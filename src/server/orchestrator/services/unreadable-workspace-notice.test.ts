@@ -1,12 +1,3 @@
-/**
- * docs/266-orchestrator-git-trust-boundary reqs 14 + 15 / planning#407 — the words, in one place.
- *
- * The requirement that the two states get DIFFERENT words is the reason
- * docs/266 states them as two requirements; a single vague notice would satisfy
- * neither. Now that four call sites share this module, that difference is worth
- * asserting here rather than re-asserting per caller.
- */
-
 import { describe, it, expect } from "vitest";
 import {
   formatUnreadableWorkspaceNotice,
@@ -18,18 +9,10 @@ describe("formatUnreadableWorkspaceNotice", () => {
     const text = formatUnreadableWorkspaceNotice({ kind: "omitted", detail: "pgdata/" }, { committed: true });
     expect(text).toContain("pgdata/");
     expect(text).toContain("short");
-    // The commit exists — the notice must not claim the work was lost.
     expect(text).toContain("everything else was committed normally");
     expect(text).not.toContain("NOT committed");
   });
 
-  /**
-   * An `omitted` result does not imply a commit: when the unreadable directory
-   * hides the only changes git can see, `autoCommit` returns a null hash from
-   * its clean-tree branch — and so do the conflict and secret refusals.
-   * Reporting "this commit is short… everything else was committed normally"
-   * there is req 15's outcome wearing req 14's words (review finding).
-   */
   it("does NOT claim a short commit when there was no commit at all", () => {
     const text = formatUnreadableWorkspaceNotice({ kind: "omitted", detail: "pgdata/" }, { committed: false });
     expect(text).toContain("pgdata/");
@@ -63,12 +46,10 @@ describe("formatUncommittedTurnNotice", () => {
   });
 
   it("redacts the quoted message — it is arbitrary text from a failing command", () => {
-    // Fabricated, and marked so ShipIt's own secret scanner doesn't refuse the
-    // commit that adds this test.
     const fakePat = "ghp_AbCdEfGhIjKlMnOpQrStUvWxYz0123456789"; // gitleaks:allow
     const text = formatUncommittedTurnNotice(`fatal: credential helper rejected ${fakePat}`);
     expect(text).not.toContain(fakePat);
-    expect(text).toContain("ghp_");  // the redaction keeps the public prefix
+    expect(text).toContain("ghp_");
   });
 
   it("bounds the quote, so a runaway git message cannot flood the transcript", () => {

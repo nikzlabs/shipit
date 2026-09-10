@@ -5,12 +5,7 @@ export function resolvedAt(session: SessionInfo): string | undefined {
   return session.mergedAt ?? session.closedAt;
 }
 
-/**
- * True when a merged or closed PR is still the session's last lifecycle event.
- * Terminal timestamps come from SQLite `datetime('now')`, while `lastUsedAt`
- * is ISO. `parseTimestampMs` normalizes both as UTC; lexical comparison and
- * plain `Date.parse` can misorder the suffix-less SQLite form outside UTC.
- */
+// SQLite and ISO timestamps must be compared as UTC instants.
 export function isTerminalPrResolved(session: SessionInfo): boolean {
   const terminalAt = resolvedAt(session);
   if (!terminalAt) return false;

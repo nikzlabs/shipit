@@ -15,7 +15,6 @@ describe("parseIssueRef", () => {
   });
 
   it("parses a bare Linear key into the native key", () => {
-    // The form a doc's `issue:` pointer (or "work on TRACKER-28") most often holds.
     expect(parseIssueRef("TRACKER-28")).toEqual({
       tracker: "linear:TRACKER",
       identifier: "TRACKER-28",
@@ -34,8 +33,6 @@ describe("parseIssueRef", () => {
   it("parses a GitHub owner/repo#N short pointer into the bare number", () => {
     const ref = parseIssueRef("octocat/hello-world#42");
     expect(ref).toEqual({
-      // docs/248 — the repository the pointer named IS the destination, so it
-      // rides on `tracker` rather than surviving only as display text.
       tracker: "github:octocat/hello-world",
       identifier: "octocat/hello-world#42",
       issueId: "42",
@@ -85,10 +82,6 @@ describe("extractIssueRefsFromText", () => {
     expect(extractIssueRefsFromText(undefined)).toEqual([]);
   });
 
-  // The round trip that keeps the seed's wording honest: whatever
-  // `buildIssueSeedPrompt` writes, this parser has to read back as the issue
-  // the session was started from. It holds only because the seed keeps its
-  // `issue <identifier>` lead-in — a bare key is deliberately not matched.
   it("extracts the pointer from a seeded first message", () => {
     const refs = extractIssueRefsFromText(
       buildIssueSeedPrompt({ identifier: "SHI-90", title: "Durable egress allowlist" }),
@@ -112,7 +105,6 @@ describe("extractIssueRefsFromText", () => {
   });
 
   it("does NOT mint phantom issues from bare key-shaped tokens", () => {
-    // No `issue` lead-in, no URL — these must not match.
     expect(ids("encoded as UTF-8 per ISO-8601")).toEqual([]);
     expect(ids("use GPT-4 for the H-1B form")).toEqual([]);
     expect(ids("just SHI-90 on its own")).toEqual([]);

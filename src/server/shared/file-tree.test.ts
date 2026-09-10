@@ -121,9 +121,6 @@ describe("scanFileTree", () => {
   });
 
   it("shows dotfiles by default (.npmrc, .gitignore, .env, rc files)", async () => {
-    // Dotfiles are real, editable source and must be visible in the IDE just
-    // like VS Code shows them. Show-by-default replaces the old allowlist —
-    // see docs/096-claude-skills-access/plan.md.
     fs.writeFileSync(path.join(tmpDir, ".env"), "SECRET=123");
     fs.writeFileSync(path.join(tmpDir, ".env.local"), "SECRET=local");
     fs.writeFileSync(path.join(tmpDir, ".npmrc"), "registry=https://example.com");
@@ -162,8 +159,6 @@ describe("scanFileTree", () => {
   });
 
   it("keeps WORKSPACE_SKIP_DIRS hidden even though they are dotfiles", async () => {
-    // Inverting dotfile visibility must NOT regress the directory skips —
-    // .git internals and the ShipIt-in-ShipIt metadir skips (feature 118).
     fs.mkdirSync(path.join(tmpDir, ".git"));
     fs.writeFileSync(path.join(tmpDir, ".git", "HEAD"), "");
     fs.mkdirSync(path.join(tmpDir, ".shipit"));
@@ -184,12 +179,6 @@ describe("scanFileTree", () => {
   });
 
   it("hides the uid sentinel whatever identity it is stamped with", async () => {
-    // docs/150 stamps `.shipit-uid-<uid>`; docs/270 added the gid, making it
-    // `.shipit-uid-<uid>-<gid>` so a change to EITHER half rotates it. The skip
-    // list was an exact-match Set holding the literal `.shipit-uid-1000`, so the
-    // rename silently un-hid the sentinel in every session — including legacy
-    // ones, which now stamp `.shipit-uid-1000-1000`. A prefix is the only form
-    // that survives the next identity change, so assert the shape, not a value.
     fs.mkdirSync(path.join(tmpDir, ".shipit-uid-1000-1000"));
     fs.mkdirSync(path.join(tmpDir, ".shipit-uid-2000042-1000"));
     fs.mkdirSync(path.join(tmpDir, ".shipit-uid-1000"));
@@ -201,9 +190,6 @@ describe("scanFileTree", () => {
   });
 
   it("shows .claude/ in the tree (skills are part of the codebase)", async () => {
-    // See docs/096-claude-skills-access/plan.md — `.claude/skills/` files are
-    // editable artifacts that ship with the project; they must be visible in
-    // the IDE file panel just like any other source file.
     fs.mkdirSync(path.join(tmpDir, ".claude", "skills", "my-skill"), { recursive: true });
     fs.writeFileSync(path.join(tmpDir, ".claude", "skills", "my-skill", "SKILL.md"), "# my skill");
     fs.writeFileSync(path.join(tmpDir, "index.ts"), "");
@@ -213,7 +199,6 @@ describe("scanFileTree", () => {
     expect(names).toContain(".claude");
     expect(names).toContain("index.ts");
 
-    // Recursively walk into .claude — SKILL.md should be discoverable.
     const claude = tree.find((n) => n.name === ".claude");
     expect(claude?.type).toBe("directory");
     const skills = (claude as { children?: { name: string }[] }).children?.find((c) => c.name === "skills");
@@ -237,8 +222,6 @@ describe("scanFileTree", () => {
   });
 
   it("does not include uploads when workspace is a subdirectory of session dir", async () => {
-    // The session dir layout is: {sessionDir}/workspace/ (git repo) + {sessionDir}/uploads/
-    // scanFileTree only runs on the workspace subdir, so uploads are invisible.
     const sessionDir = tmpDir;
     const workspaceDir = path.join(sessionDir, "workspace");
     const uploadsDir = path.join(sessionDir, "uploads");
@@ -247,7 +230,6 @@ describe("scanFileTree", () => {
     fs.writeFileSync(path.join(workspaceDir, "index.ts"), "");
     fs.writeFileSync(path.join(uploadsDir, "photo.png"), Buffer.alloc(10));
 
-    // Scanning the workspace dir should not include uploads (they're a sibling)
     const tree = await scanFileTree(workspaceDir);
     expect(tree).toEqual([
       { name: "index.ts", path: "index.ts", type: "file" },

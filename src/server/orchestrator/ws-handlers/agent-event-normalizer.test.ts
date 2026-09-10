@@ -64,12 +64,6 @@ describe("per-tool timing derivation (docs/185)", () => {
       expect(entry.durationMs).toBeUndefined();
     });
 
-    // nikzlabs/shipit#1874 — `content` is `string | ContentBlock[]` per the
-    // Anthropic schema, and a bare string reached production. Unguarded
-    // `content.filter(...)` threw `TypeError: content.filter is not a
-    // function` inside the event listener, stranding the whole turn: no
-    // result, no teardown, a spinner that never stops. These are the
-    // direct unit cases — the integration test covers turn survival.
     it("does not throw on a non-array content (string)", () => {
       const event = { type: "agent_tool_result", content: "plain string result" } as unknown as AgentEvent;
       expect(() => extractToolResults(event)).not.toThrow();
@@ -148,7 +142,6 @@ describe("createAgentToolTracker (docs/088 MCP crash attribution)", () => {
     tracker.reportMcpCrashesFromResults([
       { toolUseId: "t1", content: "exploded", isError: true },
     ]);
-    // A second failure from the same server is deduped per-turn-per-server.
     tracker.reportMcpCrashesFromResults([
       { toolUseId: "t1", content: "again", isError: true },
     ]);
@@ -183,7 +176,6 @@ describe("createAgentToolTracker (docs/088 MCP crash attribution)", () => {
     tracker.recordToolUses([{ id: "t1", name: "Read" }]);
     const start = tracker.toolUseStartTimes.get("t1");
     expect(typeof start).toBe("number");
-    // First observation wins — a later re-record never moves the start.
     tracker.recordToolUses([{ id: "t1", name: "Read" }]);
     expect(tracker.toolUseStartTimes.get("t1")).toBe(start);
   });

@@ -1,15 +1,3 @@
-/**
- * Integration tests for the Codex agent adapter.
- *
- * Tests the agent selection and message flow through the server, verifying
- * that agent switching works correctly and agent_event messages are
- * properly relayed to clients.
- *
- * Agent selection now uses defaultAgentId in buildApp (was previously
- * a per-connection WS set_agent message). Validation uses HTTP
- * POST /api/settings/agent.
- */
-
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { EventEmitter } from "node:events";
 import fs from "node:fs";
@@ -40,10 +28,6 @@ import {
 } from "./test-helpers.js";
 import { DatabaseManager } from "../../shared/database.js";
 
-/**
- * FakeCodexProcess simulates the CodexAdapter for integration tests.
- * The test controls it by emitting events, just like FakeClaudeProcess.
- */
 class FakeCodexProcess extends EventEmitter<AgentProcessEvents> implements AgentProcess {
   readonly agentId: AgentId = "codex";
   readonly capabilities: AgentCapabilities = {
@@ -92,14 +76,12 @@ class FakeCodexProcess extends EventEmitter<AgentProcessEvents> implements Agent
     return {};
   }
 
-  /** Helper: simulate a complete Codex turn. */
   finish(threadId = "codex-thread-001", code = 0) {
     this.emit("event", { type: "agent_result", status: "success", sessionId: threadId });
     this.emit("done", code);
   }
 }
 
-/** Wait for a FakeCodexProcess to be started. */
 async function waitForCodex(
   getCodex: () => FakeCodexProcess | null,
   notInstance?: FakeCodexProcess | null,
@@ -114,11 +96,6 @@ async function waitForCodex(
   }
 }
 
-/**
- * Receive the next message of a specific type, skipping others.
- * Useful when the server sends multiple message types (agent_event,
- * log_entry, model_info, session_started, etc.).
- */
 async function receiveByType(
   client: TestClient,
   type: string,
@@ -133,7 +110,6 @@ async function receiveByType(
   }
 }
 
-/** Shared agent factory builder for codex tests. */
 function makeAgentFactory(
   _getLastClaude: () => FakeClaudeProcess,
   setLastClaude: (c: FakeClaudeProcess) => void,
@@ -152,7 +128,6 @@ function makeAgentFactory(
   };
 }
 
-/** Build an agent registry with codex detected and auth-configured. */
 async function makeRegistry(): Promise<AgentRegistry> {
   const registry = new AgentRegistry({
     checkBinary: async (binary) => binary === "claude" || binary === "codex",
@@ -223,53 +198,39 @@ describe("Integration: Codex agent — defaultAgentId=codex message flow", () =>
 
   it("defaultAgentId=codex uses Codex adapter for send_message", async () => {
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
-    // Send a message — should use Codex adapter (defaultAgentId is "codex")
     client.send({ type: "send_message", text: "Hello Codex" });
 
     const codex = await waitForCodex(() => lastCodex);
     expect(codex.runCalled).toBe(true);
     expect(codex.lastParams?.prompt).toBe("Hello Codex");
 
-    // Claude should NOT have been used
     expect(lastClaude).toBeNull();
 
     client.close();
   });
 
   it("model param wins over a stale agent param for an unpinned session (docs/142 C)", async () => {
-    // defaultAgentId is codex. The client sends the user's real model (Opus,
-    // Claude-only) alongside a stale agent=codex param. The model is the single
-    // source of truth, so the unpinned session must derive Claude and run it —
-    // this is the server-side guard against the Opus→gpt-5.5 silent switch.
     const client = await TestClient.connect(port, undefined, { model: "claude-opus-5", agent: "codex" });
-    await client.receive(); // preview_status
+    await client.receive();
 
     client.send({ type: "send_message", text: "Hello" });
 
     const claude = await waitForClaude(() => lastClaude);
     expect(claude.runCalled).toBe(true);
-    // Codex (the default + the stale param) must NOT have run.
     expect(lastCodex).toBeNull();
 
     client.close();
   });
 
   it("set_model with another agent's model self-heals by switching agent (Codex → Opus)", async () => {
-    // Repro: new session defaults to Codex; user picks Opus from the grouped
-    // model picker. The picker fires set_agent THEN set_model, but if set_agent
-    // is dropped/raced, set_model used to reject ("Model is not available for
-    // Codex") and the model stayed locked to gpt-5.5. The handler now switches
-    // to the agent that owns the model.
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
-    // Send ONLY set_model — deliberately omit set_agent to prove self-healing.
     client.send({ type: "set_model", model: "claude-opus-5" });
     await new Promise((r) => setTimeout(r, 50));
 
-    // A subsequent message must run on Claude (the owner of "opus"), not Codex.
     client.send({ type: "send_message", text: "Hello" });
     const claude = await waitForClaude(() => lastClaude);
     expect(claude.runCalled).toBe(true);
@@ -279,17 +240,6 @@ describe("Integration: Codex agent — defaultAgentId=codex message flow", () =>
   });
 
   it("carries a session pinned to a RETIRED model onto its successor (docs/252 req 13)", async () => {
-    // The catalogue drops models on purpose (req 6), and a session already
-    // pinned to one must keep working. `gpt-5.6` is the retirement the shipped
-    // catalogue declares; a row holding it is what a session written before the
-    // removal looks like.
-    //
-    // The discriminator is the BILLING MODE, not the model id. Without the
-    // retirement resolver the connect-time self-heal drops the session onto the
-    // harness's first model and re-resolves its service — landing on OpenAI's
-    // `sub` mode, i.e. silently moving a metered session onto a subscription.
-    // Resolving through the retirement record holds the mode fixed, which is
-    // the whole point of keying the record per `(service, billing mode)`.
     sessions.track("s-retired");
     sessions.setAgentId("s-retired", "codex" as AgentId);
     sessions.setAgentPinned("s-retired");
@@ -300,14 +250,13 @@ describe("Integration: Codex agent — defaultAgentId=codex message flow", () =>
     });
 
     const client = await TestClient.connect(port, "s-retired");
-    await client.receive(); // preview_status
+    await client.receive();
 
     const session = sessions.get("s-retired");
     expect(session?.model).toBe("gpt-5.6-sol");
     expect(session?.serviceId).toBe("openai");
     expect(session?.billingMode).toBe("key");
 
-    // …and the turn actually runs on the successor, not on the retired id.
     client.send({ type: "send_message", text: "Hello" });
     const codex = await waitForCodex(() => lastCodex);
     expect(codex.lastParams?.model).toBe("gpt-5.6-sol");
@@ -317,7 +266,7 @@ describe("Integration: Codex agent — defaultAgentId=codex message flow", () =>
 
   it("set_model rejects a model no installed+authed agent supports", async () => {
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
     client.send({ type: "set_model", model: "totally-made-up-model" });
 
@@ -329,13 +278,12 @@ describe("Integration: Codex agent — defaultAgentId=codex message flow", () =>
 
   it("Codex agent_event messages are relayed to the client", async () => {
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
     client.send({ type: "send_message", text: "Write hello world" });
 
     const codex = await waitForCodex(() => lastCodex);
 
-    // Simulate Codex emitting an agent_init event
     codex.emit("event", {
       type: "agent_init",
       agentId: "codex",
@@ -344,7 +292,6 @@ describe("Integration: Codex agent — defaultAgentId=codex message flow", () =>
       tools: ["shell", "apply_patch"],
     });
 
-    // Client should receive the agent_event (skip log_entry etc.)
     const agentEventMsg = await receiveByType(client, "agent_event");
     expect((agentEventMsg as any).event.type).toBe("agent_init");
     expect((agentEventMsg as any).event.agentId).toBe("codex");
@@ -355,13 +302,12 @@ describe("Integration: Codex agent — defaultAgentId=codex message flow", () =>
 
   it("Codex assistant events are relayed as agent_event", async () => {
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
     client.send({ type: "send_message", text: "Hello" });
 
     const codex = await waitForCodex(() => lastCodex);
 
-    // Init first to establish session
     codex.emit("event", {
       type: "agent_init",
       agentId: "codex",
@@ -369,16 +315,13 @@ describe("Integration: Codex agent — defaultAgentId=codex message flow", () =>
       model: "codex-mini-latest",
     });
 
-    // Wait for session_started
     await receiveByType(client, "session_started");
 
-    // Now emit an assistant event with text content
     codex.emit("event", {
       type: "agent_assistant",
       content: [{ type: "text", text: "I can help with that!" }],
     });
 
-    // Find the agent_event with assistant content
     const assistantEvent = await receiveByType(client, "agent_event");
     expect((assistantEvent as any).event.type).toBe("agent_assistant");
     expect((assistantEvent as any).event.content[0].text).toBe("I can help with that!");
@@ -388,13 +331,12 @@ describe("Integration: Codex agent — defaultAgentId=codex message flow", () =>
 
   it("Codex tool_use events are relayed as agent_event", async () => {
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
     client.send({ type: "send_message", text: "Run ls" });
 
     const codex = await waitForCodex(() => lastCodex);
 
-    // Init to establish session
     codex.emit("event", {
       type: "agent_init",
       agentId: "codex",
@@ -402,7 +344,6 @@ describe("Integration: Codex agent — defaultAgentId=codex message flow", () =>
     });
     await receiveByType(client, "session_started");
 
-    // Emit a tool_use event
     codex.emit("event", {
       type: "agent_assistant",
       content: [{
@@ -413,7 +354,6 @@ describe("Integration: Codex agent — defaultAgentId=codex message flow", () =>
       }],
     });
 
-    // Find the agent_event with tool_use
     const toolEvent = await receiveByType(client, "agent_event");
     expect((toolEvent as any).event.type).toBe("agent_assistant");
     expect((toolEvent as any).event.content[0].type).toBe("tool_use");
@@ -425,13 +365,12 @@ describe("Integration: Codex agent — defaultAgentId=codex message flow", () =>
 
   it("Codex agent_result event completes the turn", async () => {
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
     client.send({ type: "send_message", text: "Done?" });
 
     const codex = await waitForCodex(() => lastCodex);
 
-    // Init
     codex.emit("event", {
       type: "agent_init",
       agentId: "codex",
@@ -439,7 +378,6 @@ describe("Integration: Codex agent — defaultAgentId=codex message flow", () =>
     });
     await receiveByType(client, "session_started");
 
-    // Finish the turn
     codex.emit("event", {
       type: "agent_result",
       status: "success",
@@ -448,7 +386,6 @@ describe("Integration: Codex agent — defaultAgentId=codex message flow", () =>
     });
     codex.emit("done", 0);
 
-    // Find agent_result event
     const resultEvent = await receiveByType(client, "agent_event");
     expect((resultEvent as any).event.type).toBe("agent_result");
     expect((resultEvent as any).event.status).toBe("success");
@@ -458,7 +395,7 @@ describe("Integration: Codex agent — defaultAgentId=codex message flow", () =>
 
   it("Codex error event is relayed to client", async () => {
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
     client.send({ type: "send_message", text: "Fail" });
 
@@ -495,7 +432,6 @@ describe("Integration: Codex agent — validation and default agent", () => {
     const chatHistoryManager = new ChatHistoryManager(dbManager);
     const registry = await makeRegistry();
 
-    // Default agent is "claude" — tests that need the default behavior
     app = await buildApp({
       credentialStore: createTestCredentialStore(tmpDir),
       createGitManager: (dir: string) => new GitManager(dir),
@@ -551,11 +487,6 @@ describe("Integration: Codex agent — validation and default agent", () => {
   });
 
   it("activation adopts the session's persisted agent over a pre-seeded runner", async () => {
-    // Repro for "issue with the selected model (gpt-5.5)": a runner is seeded
-    // with the global default agent (claude) at creation (warm pool / recovery),
-    // but the session committed agent_id=codex (+ model gpt-5.5). If activation
-    // doesn't reconcile the runner to the session's agent, getActiveAgentId()
-    // returns claude and the turn spawns `claude --model gpt-5.5`.
     const created = await app.inject({
       method: "POST",
       url: "/api/_test/sessions",
@@ -563,20 +494,17 @@ describe("Integration: Codex agent — validation and default agent", () => {
     });
     const sessionId = created.json().sessionId as string;
 
-    // Session committed to codex + a codex model.
     sessionManager.setAgentId(sessionId, "codex" as AgentId);
     sessionManager.setModel(sessionId, "gpt-5.5");
 
-    // Pre-seed a runner as claude (the global default) — mimics the warm pool.
     await app.inject({
       method: "POST",
       url: `/api/_test/runner/${sessionId}/running`,
       payload: { running: false },
     });
 
-    // Connect and send — must run on Codex, the session's committed agent.
     const client = await TestClient.connect(port, sessionId);
-    await client.receive(); // preview_status
+    await client.receive();
     client.send({ type: "send_message", text: "what model are you?" });
 
     const codex = await waitForCodex(() => lastCodex);
@@ -588,9 +516,8 @@ describe("Integration: Codex agent — validation and default agent", () => {
 
   it("default agent is claude when defaultAgentId is not set", async () => {
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
-    // Send message — should use Claude (default)
     client.send({ type: "send_message", text: "Hello Claude" });
 
     await waitForClaude(() => lastClaude);
@@ -603,14 +530,12 @@ describe("Integration: Codex agent — validation and default agent", () => {
 
   it("docs/138: set_agent is rejected once the session is pinned (first turn)", async () => {
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
-    // First turn pins the agent (claude, the default) for this session.
     client.send({ type: "send_message", text: "Hello" });
     await waitForClaude(() => lastClaude);
     expect(lastClaude.runCalled).toBe(true);
 
-    // Switching to a different agent is now rejected with a "locked" error.
     client.send({ type: "set_agent", agentId: "codex" });
     const err = await receiveByType(client, "error");
     expect((err as { message: string }).message).toContain("locked to claude");
@@ -620,15 +545,12 @@ describe("Integration: Codex agent — validation and default agent", () => {
 
   it("docs/138: re-selecting the SAME agent after pin is a no-op (no error)", async () => {
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
     client.send({ type: "send_message", text: "Hello" });
     await waitForClaude(() => lastClaude);
 
-    // Re-selecting the already-pinned agent must NOT error.
     client.send({ type: "set_agent", agentId: "claude" });
-    // Send a follow-up message; the next agent_event proves no error short-
-    // circuited the connection and claude is still the agent.
     client.send({ type: "send_message", text: "Again" });
     await waitForClaude(() => lastClaude);
     expect(lastClaude.runCalled).toBe(true);
@@ -637,48 +559,35 @@ describe("Integration: Codex agent — validation and default agent", () => {
   });
 
   it("set_model within the pinned agent's lineup succeeds mid-session", async () => {
-    // After a session pins claude (first turn), the user can still pick a
-    // different *claude* model (sonnet → opus 5). The change persists to the
-    // session record and doesn't error — only cross-agent picks are blocked.
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
-    // First turn pins the agent (claude, the default).
     client.send({ type: "send_message", text: "Hello" });
     await waitForClaude(() => lastClaude);
     const sid = client.sessionId;
     expect(sessionManager.get(sid)?.agentPinned).toBe(true);
 
-    // Now switch to a different claude model mid-session. No error expected.
     client.send({ type: "set_model", model: "claude-opus-5" });
-    // Give the handler a tick to persist.
     await new Promise((r) => setTimeout(r, 50));
     expect(sessionManager.get(sid)?.model).toBe("claude-opus-5");
-    // Agent must stay claude — set_model within the same agent never moves it.
     expect(sessionManager.get(sid)?.agentId).toBe("claude");
 
     client.close();
   });
 
   it("set_model is rejected mid-session when the model belongs to a different agent", async () => {
-    // After pin, picking a model from another agent (e.g. claude session →
-    // gpt-5.5) is rejected: the auto-heal that swaps agents is only valid
-    // pre-pin, since the pinned agent's credentials are the only ones present.
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
-    // Pin claude with the first turn.
     client.send({ type: "send_message", text: "Hello" });
     await waitForClaude(() => lastClaude);
     const sid = client.sessionId;
     expect(sessionManager.get(sid)?.agentPinned).toBe(true);
 
-    // Try to pick a codex model. Must error and not mutate session state.
     client.send({ type: "set_model", model: "gpt-5.5" });
     const err = await receiveByType(client, "error");
     expect((err as { message: string }).message).toContain("locked to Claude Code");
     expect((err as { message: string }).message).toContain("gpt-5.5");
-    // Agent and model unchanged.
     expect(sessionManager.get(sid)?.agentId).toBe("claude");
     expect(sessionManager.get(sid)?.model).not.toBe("gpt-5.5");
 

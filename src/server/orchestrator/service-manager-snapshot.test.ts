@@ -4,8 +4,6 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 
-// Capture every `docker` invocation and let each test drive what the snapshot
-// (`logs --tail`, no `-f`) call writes to stdout.
 const spawnCalls: string[][] = [];
 let snapshotStdout = "";
 let snapshotShouldError = false;
@@ -21,11 +19,9 @@ vi.mock("node:child_process", () => ({
     proc.stdout = new EventEmitter();
     proc.stderr = new EventEmitter();
     proc.kill = () => {};
-    // composeArgs always carries `-f <file>` flags, so follow mode is detected
-    // by `-f` appearing immediately after the `logs` subcommand, not anywhere.
+    // Earlier -f flags select Compose files, not log follow mode.
     const logsIdx = args.indexOf("logs");
     const isFollow = logsIdx >= 0 && args[logsIdx + 1] === "-f";
-    // Snapshot reads (logs, not following) emit canned output then close.
     if (logsIdx >= 0 && !isFollow) {
       queueMicrotask(() => {
         if (snapshotShouldError) {
@@ -53,11 +49,8 @@ describe("ServiceManager.snapshotLogs", () => {
     if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  /** Build a manager and white-box-register a service (no docker start). */
   function makeManager(logStore?: InstanceType<typeof LogStore>): InstanceType<typeof ServiceManager> {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "svc-snap-"));
-    // A real session layout: the clone is `<sessionDir>/workspace`, which is what
-    // the state dir (where the compose override goes) is resolved from.
     const workspaceDir = path.join(tmpDir, "workspace");
     fs.mkdirSync(workspaceDir, { recursive: true });
     fs.writeFileSync(
@@ -67,22 +60,18 @@ describe("ServiceManager.snapshotLogs", () => {
     const mgr = new ServiceManager({
       sessionId: "test-session",
       workspaceDir,
-      // Sibling of the clone — ServiceManager requires a service-env root
-      // outside it (planning#292).
       serviceEnvDir: path.join(tmpDir, "service-env"),
       composeConfig: { file: "docker-compose.yml", dockerSocket: false },
       composeRunner: () => Promise.resolve(),
       pollIntervalMs: 0,
       ...(logStore ? { logStore } : {}),
     });
-    // Register `web` without going through start() (which spawns docker).
     (mgr as unknown as { services: Map<string, { name: string }> }).services.set("web", { name: "web" });
     return mgr;
   }
 
   it("returns a fresh `logs --tail` snapshot, not the in-memory buffer", async () => {
     const mgr = makeManager();
-    // Seed the stale ring buffer with different content to prove it's not used.
     (mgr as unknown as { logBuffers: Map<string, string> }).logBuffers.set("web", "STALE\n");
 
     snapshotStdout = "line one\nline two\nline three\n";
@@ -93,8 +82,6 @@ describe("ServiceManager.snapshotLogs", () => {
     expect(snapArgs).toBeDefined();
     expect(snapArgs).toContain("--tail");
     expect(snapArgs).toContain("500");
-    // One-shot read: no follow flag immediately after the `logs` subcommand
-    // (the `-f` that is present belongs to the `-f <compose-file>` flags).
     const logsIdx = snapArgs!.indexOf("logs");
     expect(snapArgs![logsIdx + 1]).not.toBe("-f");
   });
@@ -104,20 +91,12 @@ describe("ServiceManager.snapshotLogs", () => {
     try {
       const logStore = new LogStore(storeRoot);
       const mgr = makeManager(logStore);
-      // Stale Docker output must be ignored when the store has content.
       snapshotStdout = "DOCKER STALE\n";
       logStore.append("test-session", "service:web", "durable line one\ndurable line two\n");
-      // `drain()`, not a sleep: `append` is fire-and-forget, so a fixed delay
-      // is a guess. Under CI load the write had not landed, the read fell
-      // through to the docker fallback, and the test failed reporting
-      // "DOCKER STALE" — a load failure wearing the costume of a logic failure.
-      // `log-store.test.ts` replaced its own 20 ms sleep with this for the same
-      // reason; this file kept the sleep and inherited the flake.
       await logStore.drain();
 
       const out = await mgr.snapshotLogs("web");
       expect(out).toBe("durable line one\ndurable line two\n");
-      // Store hit → no `docker compose logs` snapshot spawned at all.
       expect(spawnCalls.find((a) => a.includes("logs"))).toBeUndefined();
     } finally {
       fs.rmSync(storeRoot, { recursive: true, force: true });

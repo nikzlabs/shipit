@@ -23,20 +23,7 @@ export interface AskQuestionItem {
   multiSelect: boolean;
 }
 
-/**
- * Deliver the user's answers to the agent.
- *
- * MUST return whether the answer was accepted for delivery. The card's
- * answered-state lock is gated on it: a send dropped on a non-OPEN socket must
- * leave the question answerable rather than showing an answered state for a
- * message the agent never received.
- *
- * `dictated` (docs/144) marks an "Other" answer that was spoken rather than
- * typed, so the resulting turn's prompt carries the transcription hint.
- *
- * Named rather than written inline because the same signature is threaded
- * through four components; a fifth inline copy is a fifth chance to drift.
- */
+/** Returns whether the answer was accepted for delivery. */
 export type AnswerQuestionFn = (
   toolUseId: string,
   answers: Record<string, string>,
@@ -49,28 +36,10 @@ interface AskUserQuestionProps {
   questions: AskQuestionItem[];
   onAnswer: AnswerQuestionFn;
   disabled: boolean;
-  /**
-   * The agent's tool_result content for this question, when it has been
-   * answered. Local component state (`submittedAnswers`) is the source of
-   * truth during a live session; this prop is what populates the answered
-   * state after a page reload, where the local state is gone but the
-   * tool_result is persisted in chat history.
-   *
-   * For multi-question prompts the content is a bullet list of
-   * "- {question}: {answer}" pairs; for single-question prompts it's the
-   * bare answer. Legacy ", "-joined content is still accepted for older
-   * persisted history.
-   */
+  /** Persisted tool result, used after reload. */
   resolvedAnswer?: string;
 }
 
-/**
- * Format the user's per-question answers into a single text string sent to
- * the agent (and stored verbatim as the user's chat bubble). For a single
- * question we emit just the bare answer text. For multiple questions we
- * emit a bullet list with the question text inline so commas inside an
- * answer don't get confused with the separator between answers.
- */
 export function formatAnswerText(
   questions: AskQuestionItem[],
   answers: Record<string, string>,
@@ -87,20 +56,6 @@ export function formatAnswerText(
   return lines.join("\n");
 }
 
-/**
- * Reconstruct a `submittedAnswers` map from the persisted tool_result
- * content. Two formats are accepted:
- *
- *  - Bullet list (current): "- {question}: {answer}" per line. Each line
- *    is matched against its question by `question` text prefix, so commas
- *    inside an answer no longer get split.
- *  - Comma-joined (legacy): "Redis, Postgres". Each comma-separated chunk
- *    is greedily matched against option labels; unmatched chunks fold
- *    into the first unanswered question as free-form text.
- *
- * Returning `null` means we couldn't derive anything — caller can still
- * show the raw answer text as a fallback.
- */
 function deriveAnswersFromResult(
   questions: AskQuestionItem[],
   content: string,
@@ -108,7 +63,6 @@ function deriveAnswersFromResult(
   const trimmed = content.trim();
   if (!trimmed) return null;
 
-  // Bullet format — only meaningful when there are multiple questions.
   if (questions.length > 1 && trimmed.startsWith("- ")) {
     const lineAnswers: Record<string, string> = {};
     for (const rawLine of trimmed.split("\n")) {
@@ -128,20 +82,9 @@ function deriveAnswersFromResult(
 
   const parts = trimmed.split(",").map((p) => p.trim()).filter(Boolean);
   const answers: Record<string, string> = {};
-  // Greedy assignment: each part picks the first question whose options
-  // include it. Multi-select answers (which arrive joined) attach to the
-  // matching question; truly free-form answers fall through.
   const used = new Set<number>();
   const remaining: string[] = [];
-  // Once a segment fails to match, everything after it is free text — a live
-  // single-question answer is ", "-joined with the "Other" text appended LAST
-  // (`buildAnswers`), so matching a LATER segment against a label would both
-  // resurrect a checkbox the user never ticked and reorder the answer: free
-  // text "custom, Cache" came back as "Cache, custom" with Cache highlighted.
-  // Scoped to the single-question case because that is the only shape current
-  // code writes here — multi-question content reaches this path only as legacy
-  // history (current writes use the bullet format above), where the greedy
-  // heuristic is still the better guess.
+  // buildAnswers appends free text last; later segments can resemble option labels.
   const stopAtFreeText = questions.length === 1;
   for (const part of parts) {
     let matched = -1;
@@ -157,26 +100,16 @@ function deriveAnswersFromResult(
     if (matched >= 0) {
       const existing = answers[String(matched)];
       answers[String(matched)] = existing ? `${existing}, ${part}` : part;
-      // For single-select questions, mark used so the next part picks a
-      // different question; multi-select questions can accumulate multiple
-      // labels.
       if (!questions[matched].multiSelect) used.add(matched);
     } else {
       remaining.push(part);
     }
   }
   if (remaining.length > 0) {
-    // Attach leftover free-form text to the first question that doesn't
-    // already have an answer; if all questions are answered, append it
-    // to question 0 so it still surfaces.
     let target = 0;
     for (let q = 0; q < questions.length; q++) {
       if (answers[String(q)] === undefined) { target = q; break; }
     }
-    // APPEND, never replace: a multi-select "Auth, Cache, my own idea" matches
-    // two labels and leaves the free text over, and overwriting here dropped
-    // the two checked boxes on reload. Appending also keeps the free text last,
-    // which is the ordering `splitAnsweredValue` reads back.
     const existing = answers[String(target)];
     const rest = remaining.join(", ");
     answers[String(target)] = existing ? `${existing}, ${rest}` : rest;
@@ -184,16 +117,6 @@ function deriveAnswersFromResult(
   return Object.keys(answers).length > 0 ? answers : null;
 }
 
-/**
- * Split a submitted answer back into the option labels it checked plus any
- * free-form ("Other") remainder, so the answered card highlights every box the
- * user actually ticked instead of only an answer that equals a label outright.
- *
- * A multi-select answer is ", "-joined with the free text appended LAST
- * (`buildAnswers`), so the remainder is contiguous at the end: matching leading
- * segments against option labels and rejoining the rest keeps free text that
- * itself contains ", " intact.
- */
 function splitAnsweredValue(
   q: AskQuestionItem,
   answered: string,
@@ -211,22 +134,6 @@ function splitAnsweredValue(
   return { labels, extra: rest.length > 0 ? rest.join(", ") : null };
 }
 
-/**
- * True when the press that produced this click left a live text selection
- * inside `el`.
- *
- * The option rows are `<button>`s, whose text a browser refuses to select
- * until `user-select: text` is set on them (verified in Chrome: without it a
- * drag over the row selects nothing). Setting it alone is not enough — the
- * drag STILL ends in a `click` on the row, so highlighting an option to quote
- * it would answer the question. Swallowing that click is the other half of the
- * fix, and it is scoped to the row rather than the whole card so a
- * keyboard-activated option (Enter/Space, which fires `click` with whatever
- * selection the page already had) is never suppressed.
- *
- * A plain mouse click is safe by construction: the mousedown collapses the
- * selection before the click, so there is nothing here to find.
- */
 function hasLiveSelectionIn(el: HTMLElement): boolean {
   if (typeof window === "undefined") return false;
   const sel = window.getSelection();
@@ -236,32 +143,14 @@ function hasLiveSelectionIn(el: HTMLElement): boolean {
 }
 
 export function AskUserQuestion({ toolUseId, questions, onAnswer, disabled, resolvedAnswer }: AskUserQuestionProps) {
-  // Track selected options: questionIndex -> Set of selected labels (for multi-select)
   const [selections, setSelections] = useState<Map<number, Set<string>>>(new Map());
-  // Track "Other" text inputs per question
   const [otherTexts, setOtherTexts] = useState<Map<number, string>>(new Map());
-  // Track which questions are using the "Other" option
   const [usingOther, setUsingOther] = useState<Set<number>>(new Set());
-  // Track the submitted answers (for showing after submit). Local state is
-  // the source of truth during a live session.
   const [localSubmitted, setLocalSubmitted] = useState<Record<string, string> | null>(null);
-  // docs/144 — questions whose "Other" free text was dictated. A dictated
-  // answer becomes the next turn's prompt, so it carries the same STT artifacts
-  // a dictated chat message does and gets the same hint. Set-valued because a
-  // multi-question card can mix spoken and typed answers; any one of them
-  // dictated is enough to flag the turn.
   const [dictatedOther, setDictatedOther] = useState<Set<number>>(new Set());
   const markDictated = useCallback((qIndex: number) => {
     setDictatedOther((prev) => new Set(prev).add(qIndex));
   }, []);
-  /**
-   * Drop the dictated mark when the transcript stops being able to reach the
-   * prompt — the field was emptied, or "Other" was abandoned. Without this the
-   * stale mark collides with the submitted-text match in `submitAnswers`:
-   * dictating "Cache", unticking Other, then picking the PRESET "Cache" answers
-   * with a label that happens to equal the abandoned transcript, and the turn
-   * got a `<dictated_input>` hint for text it never carried.
-   */
   const clearDictated = useCallback((qIndex: number) => {
     setDictatedOther((prev) => {
       if (!prev.has(qIndex)) return prev;
@@ -271,9 +160,6 @@ export function AskUserQuestion({ toolUseId, questions, onAnswer, disabled, reso
     });
   }, []);
 
-  // Effective submitted answers = local state during the session, OR the
-  // server-persisted result on reload. `useMemo` keeps the reference stable
-  // so the answered-state UI doesn't flicker between renders.
   const persistedAnswers = useMemo(
     () => (resolvedAnswer ? deriveAnswersFromResult(questions, resolvedAnswer) : null),
     [resolvedAnswer, questions],
@@ -281,29 +167,11 @@ export function AskUserQuestion({ toolUseId, questions, onAnswer, disabled, reso
   const submittedAnswers = localSubmitted ?? persistedAnswers;
   const setSubmittedAnswers = setLocalSubmitted;
 
-  /**
-   * Send the answers and lock the card ONLY if they reached the wire. The lock
-   * used to be unconditional, so a send dropped by `useWebSocket.send` (silent
-   * no-op when the socket isn't OPEN) rendered an answered card for a message
-   * the agent never got — the same defect as the action-checklist card's
-   * "Submitted" ack. `sendUserMessage` already toasts on the failure, so the
-   * only thing needed here is to stay answerable.
-   */
   const submitAnswers = useCallback(
     (answers: Record<string, string>, freeTextQuestions: Set<number>) => {
-      // docs/144 — flag the turn when a transcript actually reaches the prompt.
-      // `freeTextQuestions` is the caller's authoritative list of questions
-      // whose "Other" text landed in `answers`, which is why it's threaded in
-      // rather than re-derived here: `handleOptionClick` submits in the SAME
-      // TICK it clears `usingOther`/`dictatedOther`, so any state this closure
-      // reads is one render stale. The previous fix — matching the transcript
-      // against the submitted text — dodged the staleness but flagged a typed
-      // preset whose label happened to equal an abandoned transcript (dictate
-      // "Cache", abandon Other, pick the preset "Cache").
+      // The caller supplies current free-text membership; React state can be one render behind.
       const dictated = [...freeTextQuestions].some((qi) => dictatedOther.has(qi));
       const text = formatAnswerText(questions, answers);
-      // Omitted rather than passed as `false`, mirroring the wire shape it ends
-      // up in: absent means typed.
       const accepted = dictated
         ? onAnswer(toolUseId, answers, text, true)
         : onAnswer(toolUseId, answers, text);
@@ -313,23 +181,6 @@ export function AskUserQuestion({ toolUseId, questions, onAnswer, disabled, reso
     [onAnswer, toolUseId, questions, setSubmittedAnswers, dictatedOther],
   );
 
-  /**
-   * Collect the current selections into the wire-shaped answers map.
-   *
-   * The one rule worth stating: on a MULTI-select question "Other" is one more
-   * checked box, so its free text is appended to the checked labels rather than
-   * replacing them. On a single-select question it is genuinely exclusive —
-   * `handleOtherClick` clears that question's selections — so the two are not
-   * the same code path even though they read alike.
-   *
-   * Shared by `handleSubmit` and the `hasAnyAnswer` gate so the button's enabled
-   * state can never disagree with what submitting would actually send.
-   *
-   * Also reports `freeTextQuestions` — the questions whose "Other" text really
-   * made it into an answer — which is what `submitAnswers` needs for the
-   * docs/144 dictation flag. Emitting it from the one place that decides the
-   * answer's content is what keeps the flag honest.
-   */
   const buildAnswers = useCallback(() => {
     const answers: Record<string, string> = {};
     const freeTextQuestions = new Set<number>();
@@ -359,9 +210,6 @@ export function AskUserQuestion({ toolUseId, questions, onAnswer, disabled, reso
   const handleOptionClick = useCallback((qIndex: number, label: string, multiSelect: boolean) => {
     if (disabled || submittedAnswers) return;
 
-    // Picking a predefined option clears "Other" only on a single-select
-    // question, where the two are mutually exclusive. On a multi-select one
-    // they coexist, so leave `usingOther` (and the typed text) alone.
     if (!multiSelect) {
       setUsingOther((prev) => {
         if (!prev.has(qIndex)) return prev;
@@ -385,18 +233,11 @@ export function AskUserQuestion({ toolUseId, questions, onAnswer, disabled, reso
         return next;
       });
     } else {
-      // Single select: set and submit immediately. The sibling questions come
-      // from `buildAnswers`; this question's own entry is overwritten because
-      // the `setUsingOther` above hasn't landed yet in this closure. For the
-      // same reason its free-text contribution is dropped by hand — this
-      // question is answering with a preset label, so whatever was typed or
-      // spoken into its "Other" box is not going anywhere near the prompt.
       const built = buildAnswers();
       const answers = { ...built.answers, [String(qIndex)]: label };
       const freeText = new Set(built.freeTextQuestions);
       freeText.delete(qIndex);
 
-      // If there are multiple questions, just select — don't auto-submit
       if (questions.length > 1) {
         setSelections((prev) => {
           const next = new Map(prev);
@@ -409,12 +250,6 @@ export function AskUserQuestion({ toolUseId, questions, onAnswer, disabled, reso
     }
   }, [disabled, submittedAnswers, buildAnswers, questions, submitAnswers, clearDictated]);
 
-  /**
-   * "Other" TOGGLES, like every other option. It used to only ever add, so a
-   * mis-click was unrecoverable: the free-text row could not be dismissed, and
-   * on a multi-select question `usingOther` also suppressed the checked boxes,
-   * leaving the card looking frozen.
-   */
   const handleOtherClick = useCallback((qIndex: number) => {
     if (disabled || submittedAnswers) return;
     const turningOn = !usingOther.has(qIndex);
@@ -424,11 +259,7 @@ export function AskUserQuestion({ toolUseId, questions, onAnswer, disabled, reso
       else next.delete(qIndex);
       return next;
     });
-    // Unticking takes the free text out of the answer, so its dictation
-    // provenance goes with it.
     if (!turningOn) clearDictated(qIndex);
-    // Single-select only: "Other" replaces the picked option rather than adding
-    // to it, so turning it on clears that question's selection.
     if (turningOn && !questions[qIndex].multiSelect) {
       setSelections((prev) => {
         const next = new Map(prev);
@@ -444,15 +275,9 @@ export function AskUserQuestion({ toolUseId, questions, onAnswer, disabled, reso
       next.set(qIndex, text);
       return next;
     });
-    // docs/144 — the transcript is gone once the field is emptied, so whatever
-    // the user types next is typed, not spoken.
     if (text.trim() === "") clearDictated(qIndex);
   }, [clearDictated]);
 
-  // Submit a single-question "Other" answer (Enter key). Mirrors the inline
-  // submit that used to live in the textarea's onKeyDown — only the one
-  // question's free-text answer is sent, which is all the bare-answer (no
-  // submit button) case ever has.
   const submitOther = useCallback((qIndex: number) => {
     if (disabled || submittedAnswers) return;
     const text = otherTexts.get(qIndex)?.trim();
@@ -470,14 +295,8 @@ export function AskUserQuestion({ toolUseId, questions, onAnswer, disabled, reso
     submitAnswers(answers, freeTextQuestions);
   }, [disabled, submittedAnswers, buildAnswers, submitAnswers]);
 
-  // Determine if submit button should be shown (multi-select or multi-question)
   const needsSubmitButton = questions.length > 1 || questions.some((q) => q.multiSelect);
-  // Also surface the Submit button whenever "Other" is active — even for a
-  // single single-select question — so a typed free-text answer has a visible
-  // way to submit instead of relying on the (undiscoverable) Enter key.
   const showSubmitButton = needsSubmitButton || usingOther.size > 0;
-  // Derived from the same collection the submit uses: an empty "Other" box next
-  // to two checked options is still an answer, and the button must say so.
   const hasAnyAnswer = Object.keys(buildAnswers().answers).length > 0;
 
   const isAnswered = !!submittedAnswers;
@@ -492,21 +311,15 @@ export function AskUserQuestion({ toolUseId, questions, onAnswer, disabled, reso
 
         return (
           <div key={qIndex} className={`p-3 ${qIndex > 0 ? "border-t border-(--color-border-secondary)" : ""}`}>
-            {/* Header tag */}
             {q.header && (
               <Badge variant="info" className="text-[10px] uppercase tracking-wider mb-1.5">
                 {q.header}
               </Badge>
             )}
-            {/* Question text */}
             <p className="text-sm text-(--color-text-primary) mb-2">{q.question}</p>
 
-            {/* Options */}
             <div className="space-y-1.5">
               {q.options.map((opt) => {
-                // On a multi-select question "Other" sits ALONGSIDE the checked
-                // boxes, so it must not blank them out — that suppression is
-                // what made the card look like it had cleared and locked up.
                 const isSelected = selectedSet.has(opt.label) && (q.multiSelect || !isOther);
                 const wasAnswered = !!answered?.labels.has(opt.label);
 
@@ -514,14 +327,10 @@ export function AskUserQuestion({ toolUseId, questions, onAnswer, disabled, reso
                   <button
                     key={opt.label}
                     onClick={(e) => {
-                      // Highlighting the row to quote it must not answer with it.
                       if (hasLiveSelectionIn(e.currentTarget)) return;
                       handleOptionClick(qIndex, opt.label, q.multiSelect);
                     }}
                     disabled={disabled || isAnswered}
-                    // `select-text`: a <button>'s text is unselectable by
-                    // default, which blocked highlighting an option to quote it
-                    // back at the agent (ChatQuoteReply's "Reply" affordance).
                     className={`w-full text-left rounded-md px-3 py-2 text-sm transition-colors border select-text ${
                       isAnswered
                         ? wasAnswered
@@ -534,7 +343,6 @@ export function AskUserQuestion({ toolUseId, questions, onAnswer, disabled, reso
                     data-testid={`option-${opt.label}`}
                   >
                     <div className="flex items-start gap-2">
-                      {/* Checkbox/radio indicator */}
                       <span className={`mt-0.5 shrink-0 w-4 h-4 rounded${q.multiSelect ? "" : "-full"} border flex items-center justify-center ${
                         isSelected || wasAnswered
                           ? "border-(--color-accent) bg-(--color-accent)"
@@ -555,7 +363,6 @@ export function AskUserQuestion({ toolUseId, questions, onAnswer, disabled, reso
                 );
               })}
 
-              {/* "Other" option */}
               {!isAnswered && (
                 <div>
                   <button
@@ -594,8 +401,6 @@ export function AskUserQuestion({ toolUseId, questions, onAnswer, disabled, reso
                 </div>
               )}
 
-              {/* Show the answered "Other" free text (multi-select: alongside
-                  the checked option rows above, not instead of them) */}
               {isAnswered && answered?.extra && (
                 <div className="rounded-md px-3 py-2 text-sm border border-(--color-accent) bg-(--color-accent-subtle) text-(--color-text-link)">
                   <div className="flex items-start gap-2">
@@ -611,7 +416,6 @@ export function AskUserQuestion({ toolUseId, questions, onAnswer, disabled, reso
         );
       })}
 
-      {/* Submit button for multi-select, multi-question, or an active "Other" */}
       {showSubmitButton && !isAnswered && (
         <div className="px-3 pb-3">
           <Button
@@ -629,20 +433,6 @@ export function AskUserQuestion({ toolUseId, questions, onAnswer, disabled, reso
   );
 }
 
-/**
- * The "Other" free-text answer field, with voice dictation (docs/144).
- *
- * Reuses the exact same voice stack as the main composer: `useVoiceInput`
- * owns the recording state machine, `MicButton` renders the four states, and
- * `spliceTranscript` inserts the cleaned transcript at the cursor. The only
- * deliberate difference is that there is **no push-to-talk hotkey** here — the
- * global hotkey belongs to the chat composer, and binding it again would fire
- * every mounted question card's recorder at once. The mic is button-only.
- *
- * `value`/`onChange` are read through refs inside the transcript subscription
- * so it wires up once and still splices into freshly-typed text without
- * re-subscribing on every keystroke.
- */
 function OtherAnswerInput({
   value,
   onChange,
@@ -652,7 +442,6 @@ function OtherAnswerInput({
 }: {
   value: string;
   onChange: (text: string) => void;
-  /** docs/144 — fired when a transcript is spliced in, so the parent can flag the turn. */
   onDictated: () => void;
   onEnterSubmit: () => void;
   allowEnterSubmit: boolean;
@@ -667,16 +456,13 @@ function OtherAnswerInput({
 
   const voice = useVoiceInput({
     enabled: voiceInputEnabled,
-    hotkey: "",
+    hotkey: "", // The global hotkey belongs to the main composer.
     cleanup: cleanupEnabled,
     language: voiceLanguage || undefined,
     sttProvider,
   });
-  // `onTranscript` is a stable `useCallback`, so depending on it directly
-  // (rather than on the whole `voice` object) wires the subscription up once.
   const { onTranscript } = voice;
 
-  // Keep latest value/onChange in refs so the subscription wires up once.
   const valueRef = useRef(value);
   valueRef.current = value;
   const onChangeRef = useRef(onChange);
@@ -706,8 +492,6 @@ function OtherAnswerInput({
     });
   }, [onTranscript]);
 
-  // Reserve room on the right for the mic so dictated/typed text never slides
-  // under it; the mobile mic is a larger thumb target so it needs more space.
   const rightPad = !voiceInputEnabled ? "pr-3" : isMobile ? "pr-14" : "pr-10";
 
   return (
@@ -741,7 +525,6 @@ function OtherAnswerInput({
           />
         </div>
       )}
-      {/* Mobile full-screen recording surface — null when idle, so harmless. */}
       {voiceInputEnabled && isMobile && <MobileRecordingOverlay voice={voice} />}
     </div>
   );

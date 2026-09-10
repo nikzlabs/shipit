@@ -7,111 +7,29 @@ import { getErrorMessage } from "./validation.js";
 import type { SessionManager } from "./sessions.js";
 import { holdsActiveReservation } from "./sessions.js";
 
-// ---- Idle container enforcement ----
-
-/**
- * docs/284 — the hooks the enforcer needs to reclaim a session's Compose stack
- * *separately* from its agent container. Optional: without them (local mode,
- * unit tests) tier 1 degrades to today's full teardown and tier 2 is inert.
- */
 export interface IdleServiceHooks {
-  /** Sessions that currently have a live Compose stack. */
   liveSessions: () => string[];
-  /** Whether this session has a live Compose stack right now. */
   has: (sessionId: string) => boolean;
-  /** Stop the stack and drop its manager. Fire-and-forget. */
   stop: (sessionId: string) => void;
 }
 
-/** Dependencies for idle container enforcement. */
 export interface IdleEnforcementDeps {
   containerManager: SessionContainerManager | null;
   runnerRegistry: SessionRunnerRegistry;
-  /** Reservation source of truth. Reserved sessions are never eviction candidates. */
   sessionManager?: SessionManager;
-  /**
-   * Returns the most recent Docker memory snapshot, or `null` when stats
-   * aren't available yet.
-   *
-   * docs/284 — this is now the ONLY thing that triggers reclaim. The
-   * `maxIdleContainers` count it used to override was removed: a count treated
-   * an idle shell and a Postgres service as equal claims on the machine, when
-   * what the user is rationing is memory (req 3). With no stats there is
-   * nothing to reclaim *against*, so the enforcer does nothing and says so —
-   * there is deliberately no count to fall back to.
-   */
   getMemoryStats?: () => DockerMemoryStats | null;
-  /** docs/284 — lets tier 1 keep a session's preview alive past its agent container. */
   services?: IdleServiceHooks;
-  /**
-   * Optional broadcast hook. When provided, the enforcer fires a
-   * `session_status` SSE event with `reason: "agent-reclaimed"` (tier 1) or
-   * `"memory-pressure"` (tier 2) before tearing down the runner. The
-   * orchestrator uses this to surface the pause in the client — without it,
-   * the user sees `containerState: missing` in the health strip with no
-   * explanation. See docs/124-session-rescue-and-diagnostics §1.6.
-   */
   sseBroadcast?: (event: string, data: unknown) => void;
-  /**
-   * Optional per-session log hook. Mirrors the `session_status` SSE event
-   * into the per-session Logs ring buffer so a viewer that reconnects
-   * later still sees why their container went away.
-   */
   broadcastLog?: (sessionId: string, source: LogSource, text: string) => void;
 }
 
-/**
- * A session the enforcer may reclaim.
- *
- * docs/284 replaced the old fixed grace period (10 minutes, during which a
- * runner was exempt outright) with this ordering. The window existed to
- * protect a transient WebSocket disconnect — a page reload, a network blip —
- * from costing the user a container start, and ordering gives that protection
- * without the cost the veto carried: reclaim now runs ONLY when ShipIt is over
- * its memory budget, and refusing to touch a recently-detached session in that
- * state would mean refusing to free memory the host needs. Longest-idle first
- * means the just-detached session is reached last, and only if everything
- * older failed to cover the shortfall — which is what the window was really
- * saying. Under real pressure the old code bypassed the window entirely, so
- * nothing is protected here that was protected before.
- */
 interface Candidate {
   sessionId: string;
   runner: SessionRunnerInterface | undefined;
-  /** Smaller = idle for longer. 0 for "never had a viewer" / no runner. */
   idleSince: number;
 }
 
-/**
- * Create the `enforceIdleContainerLimit` function.
- *
- * docs/284 — ShipIt reclaims idle sessions when, and only when, it is over the
- * user's memory budget, and it does so in two tiers so the cheapest loss goes
- * first:
- *
- *  - **Tier 1** stops the longest-idle session's *agent container* and leaves
- *    its Compose stack running, whole (req 1, req 7). Every idle session goes
- *    through tier 1 before any tier 2 happens, which is what maximises the
- *    number of previews that survive.
- *  - **Tier 2** stops the surviving stacks, longest-idle first, once tier 1 has
- *    been exhausted and usage is still over budget.
- *
- * Important invariants (unchanged):
- *  - Never disposes a runner that is busy (`runner.agentBusy` — a running turn,
- *    pending background work, or an in-flight sub-agent consult).
- *  - Never disposes a runner with an attached viewer.
- *  - Never touches a session holding an always-on reservation (docs/241).
- *  - Runner disposal is TOCTOU-safe: state is re-checked at dispose time, and
- *    `runner.dispose()` itself refuses to run while the agent is active.
- *  - The container is destroyed only AFTER the runner accepted disposal
- *    (planning#298). A declined dispose leaves the container running, so the
- *    runner-level guards and the enforcer can never disagree about whether the
- *    session is reclaimable.
- *
- * This function MUST NOT be called synchronously from a WebSocket close
- * handler. WebSocket lifecycle is independent from runner/container
- * lifecycle. Schedule via the periodic timer instead.
- */
+// Run from memory-pressure or periodic checks, never directly from a WebSocket close.
 export function createIdleEnforcer(
   enforceDeps: IdleEnforcementDeps,
 ): () => void {
@@ -120,56 +38,20 @@ export function createIdleEnforcer(
     services, sseBroadcast, broadcastLog,
   } = enforceDeps;
 
-  /**
-   * When each session's agent container was reclaimed by tier 1. Tier 2 orders
-   * by this, because a preview-only session has no runner left to carry
-   * `lastViewerDetachAt`. A stack this process never tier-1'd (it survived an
-   * orchestrator restart) sorts as oldest, which is correct — it has been idle
-   * since before we started.
-   */
   const tier1At = new Map<string, number>();
-  /**
-   * The snapshot the last reclaiming pass acted on. Two triggers can fire
-   * between two polls — the 30s timer and the edge-triggered pressure
-   * crossing — and the second would read the same pre-reclaim `usedBytes` and
-   * stop another session for memory the first one had already given back.
-   * Identity is the exact test: the poller replaces the holder's value with a
-   * new object on every read, so a snapshot we have already acted on is
-   * literally the same object.
-   */
+  // Do not reclaim twice against the same snapshot or memory still being returned.
   let actedOn: DockerMemoryStats | null = null;
-  /**
-   * Teardowns this enforcer started that have not finished. A `docker stop`
-   * takes seconds, so a snapshot taken while one is in flight still counts
-   * memory that is on its way back — acting on it would reclaim a second
-   * session for bytes the first one was already returning. The identity guard
-   * above cannot see this: that snapshot is genuinely new.
-   */
   let teardownsInFlight = 0;
 
-  /** Shared guards: is this session reclaimable at all right now? */
   function isReclaimable(sessionId: string, runner: SessionRunnerInterface | undefined): boolean {
-    // docs/241 — the reservation is a user-facing always-on guarantee, so it
-    // wins over reclaim. `holdsActiveReservation`, not the raw flag: an
-    // archived row that still carries the flag is ignored by admission, so
-    // protecting its surviving container here would hold RAM for a reservation
-    // the books no longer count.
     if (holdsActiveReservation(sessionManager?.get(sessionId))) return false;
     if (!runner) return true;
-    // docs/235 — `agentBusy`, not `running`. `running` is only ever set by an
-    // orchestrator-initiated turn, so a session whose agent woke ITSELF (a
-    // background task finished and the CLI started a fresh turn) reads as
-    // idle here and gets its container destroyed mid-turn. `agentBusy` also
-    // covers the quieter case: a task still pending between turns, which is
-    // work that will resume and must not be reclaimed — and (planning#298) a
-    // backgrounded sub-agent consult, which has neither a running turn nor a
-    // resident streaming process yet is very much live work.
+    // agentBusy includes autonomous turns and pending background work.
     if (runner.agentBusy) return false;
     if (runner.viewerCount > 0) return false;
     return true;
   }
 
-  /** Longest-idle first. See {@link Candidate}. */
   function byReclaimOrder(a: Candidate, b: Candidate): number {
     return a.idleSince - b.idleSince;
   }
@@ -188,33 +70,14 @@ export function createIdleEnforcer(
 
     const usage = stats?.bySession ?? {};
     let reclaimedSomething = false;
-    /**
-     * Set when a reclaim freed an unknown amount, which means the shortfall we
-     * are still carrying is stale. Tier 2 must not run on it: tier 1 has just
-     * preserved a preview precisely so it can survive, and spending the same
-     * unadjusted `need` on tier 2 would stop that stack in the same pass —
-     * turning "keep the preview" back into today's full teardown.
-     */
+    // Unknown reclaimed bytes require a fresh snapshot before further eviction.
     let shortfallIsStale = false;
 
-    // ---- Tier 0: give back the speculative capacity first ----
-    // A standby is a container the warm pool made on the chance that someone
-    // starts a session on this repo. Nobody has claimed it, so reclaiming a
-    // real session's agent container while one sits there spends a user's work
-    // to protect a guess. The enforcer used to skip standbys unconditionally,
-    // which was defensible when the limit was a count they did not enter into;
-    // under a memory budget they occupy the same bytes as anything else.
+    // Reclaim unclaimed standbys, including their pre-started previews, first.
     for (const sc of containerManager.getAll()) {
       if (need <= 0) break;
       if (!containerManager.isStandby(sc.sessionId)) continue;
       const measured = usage[sc.sessionId];
-      // docs/288 req 4 — a warm standby can now own a PRE-STARTED Compose stack,
-      // and it is the most speculative thing on the machine: nobody has opened
-      // the session at all. So tier 0 takes both halves and credits both. Two
-      // bugs live in getting this wrong. Crediting only `agentBytes` under-counts
-      // the reclaim and evicts a second victim for bytes already coming back;
-      // and destroying the container without stopping the manager leaves the
-      // manager polling Docker for a session that no longer has one.
       const hasPreview = !!services?.has(sc.sessionId);
       need -= (measured?.agentBytes ?? 0) + (hasPreview ? measured?.serviceBytes ?? 0 : 0);
       reclaimedSomething = true;
@@ -222,18 +85,13 @@ export function createIdleEnforcer(
         `[idle-cleanup] Dropping standby container for ${sc.sessionId} (over memory budget`
         + `${hasPreview ? ", including its pre-started preview" : ""})`,
       );
-      // Before the destroy, so the manager is out of the registry and its poll
-      // loop stopped rather than left chasing a container being torn down.
-      // `destroy()` sweeps the `shipit-parent-session` containers itself, so
-      // this is about the MANAGER; the containers go either way.
+      // Stop the manager's polling before destroying its containers.
       if (hasPreview) services?.stop(sc.sessionId);
-      // No runner, no viewer, no session row — a standby has nothing to
-      // announce and nothing to preserve, so this is the full teardown.
       trackTeardown(containerManager.destroy(sc.sessionId), sc.sessionId);
       if (!measured) { shortfallIsStale = true; break; }
     }
 
-    // ---- Tier 1: stop agent containers, keep the previews running ----
+    // Stop idle agent containers before stopping any claimed session's preview.
     const tier1: Candidate[] = [];
     for (const sc of containerManager.getAll()) {
       if (containerManager.isStandby(sc.sessionId)) continue;
@@ -245,34 +103,22 @@ export function createIdleEnforcer(
 
     for (const c of (shortfallIsStale ? [] : tier1)) {
       if (need <= 0) break;
-      // TOCTOU re-check: between the scan and now, the runner may have become
-      // active (new viewer attached, agent started). Dispose only if it is
-      // still safe. `runner.dispose()` also enforces this at the runner level
-      // (defense in depth).
       const runner = runnerRegistry.get(c.sessionId);
       if (!isReclaimable(c.sessionId, runner)) continue;
 
-      // Keep the stack only when there IS one — otherwise `preserveCompose`
-      // would strand an empty ServiceManager in the map forever.
       const keepsPreview = !!services?.has(c.sessionId);
       if (keepsPreview && runner) {
         (runner as SessionRunnerInterface & { preserveComposeOnDispose?: boolean })
           .preserveComposeOnDispose = true;
       }
 
-      // planning#298 — dispose FIRST, and treat a declined dispose as "leave
-      // this container alone". Previously `destroy` was fired unconditionally
-      // and `dispose` ran after it, so the runner-level guards could only
-      // decline *after* `container.stop` was already issued: the work died
-      // anyway, and the surviving runner was left pointed at a dead container.
+      // Disposal can refuse; destroy only after it accepts.
       runnerRegistry.dispose(c.sessionId);
       if (runner && !runner.disposed) {
         console.log(
           `[idle-cleanup] Skipping container destroy for session ${c.sessionId}`
           + ` — runner declined disposal (still holds live work)`,
         );
-        // Do not leave a stale preserve flag on a runner that stayed alive: the
-        // next, unrelated dispose would silently skip its compose teardown.
         if (keepsPreview && runner) {
           (runner as SessionRunnerInterface & { preserveComposeOnDispose?: boolean })
             .preserveComposeOnDispose = false;
@@ -294,29 +140,16 @@ export function createIdleEnforcer(
       );
       announce(c.sessionId, keepsPreview ? "agent-reclaimed" : "memory-pressure", idleMs, runner?.queueLength ?? 0);
       destroyAgentOnly(c.sessionId);
-      // Nothing measured this session, so we cannot tell how much of the
-      // shortfall it just covered. Stop here and let the next snapshot decide:
-      // subtracting 0 and carrying on would walk the whole idle list and empty
-      // the machine over an overage one container may already have settled.
       if (!measured) { shortfallIsStale = true; break; }
     }
 
-    // ---- Tier 2: stop the surviving preview stacks ----
     if (need > 0 && !shortfallIsStale && services) {
       const tier2: Candidate[] = [];
       for (const sessionId of services.liveSessions()) {
-        // ONLY stacks tier 1 orphaned. "Has a manager and no runner" is not
-        // enough: `restartAgent` (`services/recovery.ts`) disposes the old
-        // runner with `preserveComposeOnDispose` and creates the replacement
-        // container asynchronously, so a session actively restarting looks
-        // exactly like a preview-only one for the length of that window — and
-        // tier 2 would stop the stack out from under it.
+        // A missing runner alone can mean an active restart, not an idle preview.
         if (!tier1At.has(sessionId)) continue;
         const runner = runnerRegistry.get(sessionId);
-        // A stack whose session came back into use is not idle slack.
         if (!isReclaimable(sessionId, runner)) continue;
-        // Reattached since tier 1: its stack was adopted by a live runner, so
-        // drop the marker rather than carrying a stale claim on it.
         if (runner) { tier1At.delete(sessionId); continue; }
         tier2.push({ sessionId, runner: undefined, idleSince: tier1At.get(sessionId) ?? 0 });
       }
@@ -336,14 +169,12 @@ export function createIdleEnforcer(
         );
         announce(c.sessionId, "memory-pressure", undefined, 0);
         services.stop(c.sessionId);
-        if (!measured) break; // same reasoning as tier 1
+        if (!measured) break;
       }
     }
 
     if (reclaimedSomething) actedOn = stats;
     else {
-      // Over budget with nothing reclaimable is req 11's case: warn, never
-      // refuse. The banner is already up; this line is the server-side record.
       console.log(
         `[idle-cleanup] Over memory budget by ≈${Math.round(need / 1024 / 1024)}MB`
         + ` with nothing idle to reclaim — every session is in use`,
@@ -351,15 +182,6 @@ export function createIdleEnforcer(
     }
   };
 
-  /**
-   * Surface the reclaim to the user before tearing down. Without this, the
-   * user comes back to a tab that just shows `containerState: missing` with no
-   * explanation. The SSE event is delivered via the global event channel; the
-   * runner-attached emitMessage path is unavailable because the runner is
-   * already disposed. The per-session Logs ring gets a copy so a future
-   * reconnect / diagnostics dump still has the record.
-   * See docs/124-session-rescue-and-diagnostics §1.6.
-   */
   function announce(
     sessionId: string,
     reason: "agent-reclaimed" | "memory-pressure",
@@ -386,17 +208,7 @@ export function createIdleEnforcer(
     }
   }
 
-  /**
-   * Tier 1's teardown, and the reason it is NOT `containerManager.destroy()`.
-   *
-   * `destroy()` is the FULL session teardown: it runs
-   * `cleanupSessionDockerResources`, which sweeps every
-   * `shipit-parent-session=<sid>` container plus the session's networks — i.e.
-   * exactly the Compose stack this tier exists to keep alive.
-   * `destroyAgentContainer()` is the same call with `preserveChildResources`,
-   * built for the agent-restart path (`session-container.ts`), and it is the
-   * one that matches what tier 1 promises the user.
-   */
+  // Full destroy also sweeps the Compose resources this tier must preserve.
   function destroyAgentOnly(sessionId: string): void {
     trackTeardown(containerManager?.destroyAgentContainer(sessionId), sessionId);
   }
@@ -407,8 +219,6 @@ export function createIdleEnforcer(
     p.catch((err: unknown) => {
       const errMsg = getErrorMessage(err);
       console.error(`[idle-cleanup] Failed to destroy container ${sessionId}:`, errMsg);
-      // The runner was already disposed above — its emitMessage path is gone —
-      // so the only durable way to surface this is the per-session log ring.
       if (broadcastLog) {
         broadcastLog(
           sessionId,

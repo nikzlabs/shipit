@@ -177,8 +177,8 @@ github.com page — that fails on private repos and goes through an
 unauthenticated path.
 
 ```sh
-gh pr view 42 --comments     # everything a reviewer left, rendered as text
-gh pr view                   # the PR + a one-line summary of how much discussion it has
+gh pr view 42 --comments
+gh pr view
 ```
 
 Plain `gh pr view` always ends with either a summary
@@ -198,7 +198,7 @@ may use any of them. All three are available as `--json` fields:
 
 ```sh
 gh pr view 42 --json reviews -q '.reviews[].state'
-gh pr view 42 --json reviewThreads     # file/line/diff-anchored findings, as JSON
+gh pr view 42 --json reviewThreads
 ```
 
 Reading is read-only. To *reply*, use `gh pr comment` (a new conversation
@@ -231,8 +231,8 @@ Arm an async watch and **end your turn** instead. ShipIt starts a *new* turn her
 when the PR merges:
 
 ```sh
-shipit session notify-on-merge --self       # this session's own PR
-shipit session notify-on-merge <child-id>   # a child session's PR
+shipit session notify-on-merge --self
+shipit session notify-on-merge <child-id>
 ```
 
 Both return immediately (exit 0, "armed"). See [sessions.md](sessions.md) for
@@ -414,8 +414,8 @@ blip against an external service. Check the failure first (`gh run view
 roll dice on a real failure.
 
 ```sh
-gh run rerun --failed        # just the failed jobs of this branch's latest run
-gh run rerun 1234567890      # the whole run, by id
+gh run rerun --failed
+gh run rerun 1234567890
 ```
 
 Do **not** push an empty commit to force a fresh run — that pollutes the branch
@@ -463,9 +463,9 @@ with no failed jobs — or an org policy / SSO requirement applies.
 payload, so the idiomatic one-liner works:
 
 ```bash
-state=$(gh pr view 42 --json state -q .state)     # → open | closed
-merged=$(gh pr view 42 --json merged -q .merged)  # → true | false
-gh run list --json conclusion -q '.[].conclusion'  # one per line
+state=$(gh pr view 42 --json state -q .state)
+merged=$(gh pr view 42 --json merged -q .merged)
+gh run list --json conclusion -q '.[].conclusion'
 ```
 
 `state` is GitHub's REST spelling (`open`/`closed`), so a merged PR reads as

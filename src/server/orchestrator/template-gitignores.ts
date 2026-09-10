@@ -1,17 +1,3 @@
-// ---------------------------------------------------------------------------
-// One comprehensive .gitignore for every template
-// ---------------------------------------------------------------------------
-//
-// ShipIt scaffolds many stacks (Vite, Next.js, Astro, plain Node backends,
-// Python) and the user can switch package managers freely (npm/yarn/pnpm/bun)
-// since corepack is enabled in the session image. Rather than ship a different
-// per-framework ignore — which always drifts and leaves gaps the moment a repo
-// adopts a tool its template didn't anticipate — every template uses this single
-// union. Extra patterns for a tool a given project doesn't use are harmless
-// (they simply never match), so the cost of over-covering is zero and the
-// benefit is that no template ever commits a `node_modules`, a `.env`, a build
-// cache, or an editor turd. Keep this sorted into clearly-labeled sections so
-// it stays easy to extend.
 export const UNIVERSAL_GITIGNORE = `# ---- Dependencies ----
 node_modules/
 .pnp

@@ -1,18 +1,3 @@
-/**
- * Test for the preview-proxy error reporter wiring.
- *
- * Verifies that when the proxy can't reach a container (or HMR upgrade
- * fails), the reporter writes a `log_append` record for the Logs panel,
- * and that repeats for the same (sessionId, port) within the throttle
- * window are suppressed.
- *
- * Logs-only since planning#489: the reporter also painted an in-pane
- * "Preview unreachable on port N" banner, which duplicated the connecting
- * page (docs/286) and never cleared on recovery.
- *
- * See docs/124-session-rescue-and-diagnostics §1.5.
- */
-
 import { describe, it, expect, vi } from "vitest";
 import { EventEmitter } from "node:events";
 import { createPreviewErrorReporter } from "../preview-proxy.js";
@@ -64,11 +49,9 @@ describe("createPreviewErrorReporter (docs/124 §1.5)", () => {
       { now: () => nowMs, graceMs: 2_000 },
     );
 
-    // First error only starts the streak clock — nothing surfaces yet.
     report("sess-1", 5173, "Connection refused", false);
     expect(emitted.length).toBe(0);
 
-    // A later error, still unresolved past the grace window, surfaces.
     nowMs += 2_500;
     report("sess-1", 5173, "Connection refused", false);
 
@@ -99,10 +82,6 @@ describe("createPreviewErrorReporter (docs/124 §1.5)", () => {
     nowMs += 2_500;
     report("sess-p", 5173, "Connection refused", false);
 
-    // The live emit alone is not enough: a reconnect skips buffered
-    // `log_append` events because it expects the durable snapshot to carry
-    // them, so an emit-only record vanishes on reload. Since the in-pane
-    // banner is gone, this line is the only account of the failure.
     expect(emitted.some((m) => m.type === "log_append")).toBe(true);
     expect(persisted).toEqual([
       { sessionId: "sess-p", source: "preview", text: expect.stringContaining("Preview unreachable on port 5173") as string },
@@ -117,16 +96,12 @@ describe("createPreviewErrorReporter (docs/124 §1.5)", () => {
       { now: () => nowMs, graceMs: 2_000 },
     );
 
-    // EHOSTUNREACH during container bring-up — held back.
     report("sess-tr", 3000, "connect EHOSTUNREACH 172.16.2.2:3000", false);
     expect(emitted.length).toBe(0);
 
-    // The next request reaches the upstream — streak cleared.
     nowMs += 500;
     report.success("sess-tr", 3000);
 
-    // Even well past the grace window, a fresh lone error stays silent
-    // because the streak was reset.
     nowMs += 5_000;
     report("sess-tr", 3000, "connect EHOSTUNREACH 172.16.2.2:3000", false);
     expect(emitted.length).toBe(0);
@@ -160,34 +135,26 @@ describe("createPreviewErrorReporter (docs/124 §1.5)", () => {
       { now: () => nowMs, throttleMs: 5_000, graceMs: 2_000 },
     );
 
-    // Start the streak, then push past the grace window so errors surface.
     report("sess-3", 5173, "boom", false);
     nowMs += 2_500;
     report("sess-3", 5173, "boom", false);
     expect(emitted.filter((m) => m.type === "log_append").length).toBe(1);
 
-    // Inside the throttle window — suppressed.
     nowMs += 1_000;
     report("sess-3", 5173, "boom", false);
     expect(emitted.filter((m) => m.type === "log_append").length).toBe(1);
 
-    // Different port — needs its own streak past the grace window.
     report("sess-3", 5174, "boom", false);
     nowMs += 2_500;
     report("sess-3", 5174, "boom", false);
     expect(emitted.filter((m) => m.type === "log_append").length).toBe(2);
 
-    // After the throttle window — releases for port 5173 (streak still open).
     nowMs += 6_000;
     report("sess-3", 5173, "boom", false);
     expect(emitted.filter((m) => m.type === "log_append").length).toBe(3);
   });
 
   it("closes the activation→preview-ready measurement on the first answered request", () => {
-    // The proxy has no separate readiness signal: `report.success` IS the
-    // "a request reached the upstream" hook, so the measurement hangs off it.
-    // Without this the timing module's own tests would still pass with the
-    // proxy-side call deleted.
     const report = createPreviewErrorReporter(makeFakeRegistry({}));
     markStackUp("sess-timing", [{ name: "web", port: 5173 }]);
     const logged: string[] = [];

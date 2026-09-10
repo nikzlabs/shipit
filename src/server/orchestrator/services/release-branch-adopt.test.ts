@@ -4,14 +4,6 @@ import type { SessionManager } from "../sessions.js";
 import type { PrStatusPoller } from "../pr-status-poller.js";
 import type { SessionInfo } from "../../shared/types.js";
 
-/**
- * docs/214 — unit tests for the release-branch adoption helper. After
- * `shipit release prepare` opens the bump PR (head `release/<version>`), the
- * session must adopt that branch so the inline PR lifecycle card (keyed by
- * `session.branch` in the poller) discovers + broadcasts the release PR, giving
- * the user an in-ShipIt merge button (CLAUDE.md §1/§2).
- */
-
 function makeSession(over: Partial<SessionInfo> = {}): SessionInfo {
   return {
     id: "s1",
@@ -110,7 +102,7 @@ describe("adoptReleaseBranch (docs/214)", () => {
 
   it("still repoints + rebroadcasts when no poller is wired (degraded setup)", async () => {
     const h = harness({ session: makeSession() });
-    expect(await h.run("release/0.3.0", /* withPoller */ false)).toBe(true);
+    expect(await h.run("release/0.3.0", false)).toBe(true);
 
     expect(h.setBranch).toHaveBeenCalledWith("s1", "release/0.3.0");
     expect(h.reArm).not.toHaveBeenCalled();

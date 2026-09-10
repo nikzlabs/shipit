@@ -1,24 +1,3 @@
-/**
- * Rebase driver — orchestrates the full rebase flow with agent-driven conflict
- * resolution.
- *
- * Lifecycle:
- *   1. Fetch latest from origin.
- *   2. Check ancestry — if HEAD is up-to-date, emit complete and return.
- *   3. Attempt git rebase onto base ref.
- *   4. On conflicts: emit `rebase_started` + `rebase_conflicts`, send the agent
- *      a system message with conflict context, await agent completion, then
- *      stage all files and run `git rebase --continue`. Repeat until clean
- *      (multi-commit rebases may surface conflicts at multiple steps).
- *   5. Once the rebase completes cleanly, force-push (best-effort — no auth
- *      means we still report `rebase_complete` with `forcePushed: false`).
- *
- * The driver bypasses the standard system-turn flow because system turns
- * auto-commit + auto-push, both of which would corrupt a rebase. Instead it
- * spawns an agent directly, persists chat messages manually, and handles its
- * own lifecycle.
- */
-
 import { randomUUID } from "node:crypto";
 import type { GitManager, RebaseConflictFile } from "../../shared/git.js";
 import type { GitHubAuthManager } from "../github-auth.js";
@@ -40,34 +19,6 @@ import type { AutoResolveResult } from "../auto-conflict-resolve-manager.js";
 import { prepareDispatch } from "../prepared-dispatch.js";
 import { onWorkspaceRewritten } from "../workspace-rewrite.js";
 
-// Hand the whole session workspace (worktree + `.git`) back after the driver's
-// git ops (planning#146). A rebase rewrites BOTH, and because the driver
-// dispatches turns with `postTurn: "none"` the normal post-turn handoff never
-// runs — so without this the non-root agent can be left unable to run git or to
-// EDIT the conflicted files it must resolve. Shared with the session-setup +
-// fork-merge paths via `handWorkspaceBackToWorker` (session-worker-uid.ts).
-//
-// planning#412 — this used to say those ops "run as root" and rewrite the tree
-// "as root:root". They do NOT. Every git here goes through
-// `createGitManager(sessionDir)` → `safeSimpleGit(sessionDir)`, and since
-// docs/266-orchestrator-git-trust-boundary E1 that drops to the session's own
-// identity (`git-tree-uid.ts` → `session-identity.ts`), so the rebase writes
-// `.git` and worktree files owned by the session. The tree is an EXISTING
-// session clone, which is exactly the case the drop covers — a tree a git op
-// CREATES is the case it does not (`git-hooks-guard.ts`), and this driver
-// creates none.
-//
-// What the handback is for now: `.git` is reconciled with `resolveGitDirOwner`
-// — the identity that will next RUN git in it, which is not always the recorded
-// one — and the worktree is handed to the identity the container runs as. Both
-// halves self-gate, and both are no-ops where no identity resolves (local mode,
-// dev, tests), which is also the only place these ops still write as root.
-
-/**
- * Maximum number of conflict iterations before bailing out. A multi-commit
- * rebase may surface conflicts more than once, but we cap iterations so a
- * misbehaving agent (or pathological repo state) cannot loop forever.
- */
 export const MAX_REBASE_ITERATIONS = 10;
 
 export interface RebaseDriverDeps {
@@ -76,128 +27,32 @@ export interface RebaseDriverDeps {
   runner: SessionRunnerInterface;
   sessionManager: SessionManager;
   chatHistoryManager: ChatHistoryManager;
-  /**
-   * Usage + auth managers needed by the shared agent listener
-   * (`wireAgentListeners`). Without these the conflict-resolution turn would
-   * skip per-turn cost/token tracking and couldn't kick off OAuth on
-   * `auth_required`. Shared with the WS path so the rebase turn is just
-   * "a user turn with the post-turn commit/push elided" — see
-   * `runRebaseResolutionTurn`.
-   */
   usageManager: UsageManager;
-  /** Factory for creating agents. Falls back to runner.createAgent if available. */
   agentFactory?: (agentId: AgentId) => AgentProcess;
   sseBroadcast: (event: string, data: unknown) => void;
-  /**
-   * docs/146 — fired immediately after `runner.setAgent(agent)` in
-   * `runRebaseResolutionTurn`, so the auto-resolve wrapper can mark the
-   * "agent was spawned" boundary. Anything thrown BEFORE this fires is a
-   * pre-spawn failure (fetch, ancestry check) and should not burn a budget
-   * attempt; anything thrown AFTER means real work happened. Optional —
-   * user-driven rebases ignore this.
-   */
+  /** Marks the dispatch boundary for automatic attempt accounting. */
   onAgentSpawned?: () => void;
-  /**
-   * docs/146 — drain callback fired after an auto-resolve attempt fully
-   * settles, so a user message queued during the attempt drains only after
-   * the rebase is continued/aborted and the repo is out of the conflict
-   * state. Optional — tests / user-driven rebases can leave it unset.
-   */
   drainQueue?: () => Promise<void> | void;
-  /**
-   * docs/221 — "a human asked for this sync out of band". Set true ONLY by the
-   * manual "Sync with <base>" route; the automatic conflict-resolve-on-idle path
-   * leaves it unset.
-   *
-   * Two things still hang off it, and one no longer does:
-   *
-   *  - **The agent-facing notice** (`buildBranchSyncAgentNotice`) — still gated.
-   *    A rebase the agent's own idle triggered is not "rewritten from outside
-   *    the session" news in the way a human's click is, and the auto path's
-   *    conflict-resolution turns already ran inside the rewrite.
-   *  - **The card on the UP-TO-DATE path** — still gated. A manual sync reports
-   *    "already current" as a durable confirmation of the action the user took;
-   *    an automatic no-op has no action to confirm and would be pure noise.
-   *  - **The card on the two paths that actually REWROTE the branch** — no
-   *    longer gated (2026-08-17 incident). It was, and the auto path's transient
-   *    `auto_resolve_result` envelope left nothing in the transcript: a user
-   *    whose branch was rebased, whose conflicts were resolved by an agent they
-   *    never asked, and whose history was force-pushed, saw the conflict prompt
-   *    and then nothing at all — no way to tell whether the branch was healthy.
-   *    That is the case that needs the reassurance MOST, not least.
-   *
-   * The local `<base>` fast-forward itself is unconditional (plain correctness).
-   */
+  /** Manual sync: persist no-op confirmations and notify the agent of rewrites. */
   recordSyncCard?: boolean;
-  /**
-   * The PR-status poller, so a push made by this flow can tell the poller about
-   * itself. Structurally typed (not `PrStatusPoller`) to keep the driver free of
-   * that import and let tests pass a two-method stub; optional because several
-   * test setups construct the driver without a poller at all.
-   *
-   * Why the driver and not the call sites (planning#369): a rebase + force-push is what CLEARS
-   * GitHub's `CONFLICTING` state, and until the poller observes that, the PR card
-   * keeps its "Merge conflicts" chip and "Resolve conflicts" button. Nothing else
-   * tells it. `POST /git/rebase` never called `forceRefreshSession`, and
-   * `tryForcePush` never called `notifyAutoPush` (only the auto-push scheduler
-   * did), so the session stayed in the 120s slow bucket and the chip survived the
-   * fix that removed the conflict — up to two minutes, and indefinitely while the
-   * polling gate is closed. Putting both calls next to the push itself means every
-   * caller (the user-driven route AND the auto-conflict-resolve path) inherits
-   * them, and a future caller cannot forget.
-   */
   prStatusPoller?: RebasePrStatusPoller | null;
-  /**
-   * Save whatever the session still has in its working tree, through the
-   * ESTABLISHED post-turn commit pipeline (`postTurnCommit`): the same
-   * `git add -A`, the same secret scan, the same conflict / rebase-in-progress
-   * refusals, the same transcript bookkeeping. Never a stash, never a discard.
-   *
-   * Wired ONLY by the manual "Sync with `<base>`" route. The automatic
-   * conflict-resolve path deliberately leaves it unset — `runAutoResolveAttempt`
-   * turns a dirty tree into a DEFERRAL, because it must never commit work the
-   * user did not ask it to commit — so there it has nothing to save and
-   * `prepareWorkspaceForRebase` refuses instead.
-   *
-   * The auto-push that pipeline defers is handed over through `deferPushArm`
-   * **the moment it exists**, not on return. That ordering is the whole
-   * contract: the pipeline can throw after producing the arm (chat-history
-   * bookkeeping runs after the commit), and an arm returned only on the happy
-   * path is an arm that vanishes on the unhappy one — leaving a commit local,
-   * unpushed and unexplained. `runRebaseFlow` owns it from that instant and
-   * decides in its `finally` whether to fire it.
-   *
-   * Returns the commit hash — null when the tree was already clean, or when the
-   * pipeline REFUSED (a likely secret in the diff, unresolved conflict markers).
-   */
+  /** Manual sync only. Hand over the push arm before later commit bookkeeping can throw. */
   commitPendingWork?: (
     deferPushArm: (arm: () => void) => void,
   ) => Promise<{ commitHash: string | null }>;
 }
 
-/**
- * The slice of `PrStatusPoller` the rebase driver uses after a push.
- * `notifyAutoPush` moves the session into the fast (15s) cadence bucket;
- * `forceRefreshSession` is the immediate one-shot that bypasses the global gate.
- */
 export interface RebasePrStatusPoller {
   notifyAutoPush(sessionId: string): void;
   forceRefreshSession(sessionId: string): Promise<void>;
 }
 
 export type RebaseFlowOutcome =
-  /**
-   * HEAD already contained `<base>`, so nothing was replayed — but the branch
-   * may still have been pushed, when it held commits origin had never seen.
-   * `forcePushed` is what the auto-resolve wrapper needs to tell a genuine
-   * no-op apart from a push that just changed the head SHA on GitHub.
-   */
   | { status: "up_to_date"; forcePushed: boolean }
   | { status: "rebased"; forcePushed: boolean }
   | { status: "conflicts_resolved"; iterations: number; forcePushed: boolean }
   | { status: "aborted"; reason: string };
 
-/** Build the conflict resolution prompt sent to the agent. */
 export function buildRebaseConflictPrompt(
   baseBranch: string,
   conflicts: RebaseConflictFile[],
@@ -214,24 +69,12 @@ export function buildRebaseConflictPrompt(
   ].join("\n");
 }
 
-/** docs/221 — the local-`<base>`-ref move outcome (`from`/`to` shas). */
 interface LocalBaseMove {
-  /** Local `<base>` sha before the move; null if the local ref didn't exist. */
   from: string | null;
-  /** `origin/<base>` sha the local ref now points at. */
   to: string;
 }
 
-/**
- * docs/221 — fast-forward the session clone's local `<base>` ref up to
- * `origin/<base>` after a fetch, WITHOUT checking it out. A session clone's
- * default refspec only advances `origin/<base>`; local `<base>` stays frozen at
- * clone time (docs/157), so the agent's `git diff main...HEAD` etc. reference
- * stale code after a sync. Best-effort: any failure logs and returns null
- * (a ref-move must never abort the rebase). Returns null when `origin/<base>`
- * doesn't resolve. Skips the actual move (but still reports the shas) when the
- * session is somehow ON the base branch, since `git branch -f` refuses that.
- */
+// Fetch advances only the remote-tracking ref; local base comparisons need this move.
 async function syncLocalBaseRef(git: GitManager, baseBranch: string): Promise<LocalBaseMove | null> {
   try {
     const to = await git.getRefHash(`origin/${baseBranch}`);
@@ -249,27 +92,7 @@ async function syncLocalBaseRef(git: GitManager, baseBranch: string): Promise<Lo
   }
 }
 
-/**
- * docs/221 — emit the persisted branch-updated card that says the sync finished.
- * The clean-rebase path is not an agent turn, so the card is appended directly
- * to chat history AND broadcast over WS, sharing one `cardId` the client dedupes
- * on (mirrors `emitNoticePostTurn`). Returns true when a card was emitted — the
- * caller uses that to suppress the redundant "Already up to date" toast on the
- * up-to-date path.
- *
- * Appended (not `emitChatCard`'d) because every call site runs with the flow's
- * turns already finalized, which is the append path `emitChatCard` would pick
- * anyway; the direct call keeps the driver free of the runner-shaped card
- * plumbing. It lands at the current end of history, which is also its true
- * position: it is the LAST thing the flow does, so it sits below the conflict
- * prompt, the resolution turn, and anything the flow warned about on the way —
- * which is the only order in which "it finished, your branch is fine" reassures
- * anybody.
- *
- * Best-effort: by the time this runs the rebase has landed and, usually, been
- * pushed. A failed history write must not turn that into a reported failure —
- * on the automatic path it would additionally be counted as a burned attempt.
- */
+// Resolution turns are finalized before this card is appended to history.
 function emitSyncCard(
   deps: RebaseDriverDeps,
   opts: { baseBranch: string; headFrom: string | null; headTo: string | null; baseMove: LocalBaseMove | null; forcePushed: boolean },
@@ -295,12 +118,6 @@ function emitSyncCard(
   }
 }
 
-/**
- * docs/221 — record the agent-facing notice for a manual sync that actually
- * moved the branch. Best-effort: the sync itself succeeded and is already
- * recorded for the user, so a failed DB write must not turn a completed rebase
- * into a reported failure.
- */
 function recordAgentNotice(
   deps: RebaseDriverDeps,
   opts: { baseBranch: string; headFrom: string | null; headTo: string | null; forcePushed: boolean; resolvedConflicts: boolean },
@@ -315,20 +132,6 @@ function recordAgentNotice(
   }
 }
 
-/**
- * docs/221 — the agent-facing counterpart of the "Synced with `<base>`" card.
- *
- * The card tells the USER what happened; nothing told the AGENT. A manual sync
- * runs outside any turn (`runRebaseFlow` refuses while one is running), so
- * there is no prompt to prepend to at the time — but the agent is resumed with
- * a conversation that predates the rewrite, and every file it read earlier may
- * now differ. Recorded as a pending notice and drained by the next interactive
- * turn (`agent-execution.ts`), mirroring the docs/218 post-merge reset prefix.
- *
- * Only emitted when the branch actually moved. A sync that merely fast-forwards
- * the local `<base>` ref leaves the agent's working tree byte-identical, so it
- * has nothing to warn about.
- */
 export function buildBranchSyncAgentNotice(opts: {
   baseBranch: string;
   headFrom: string | null;
@@ -351,42 +154,12 @@ export function buildBranchSyncAgentNotice(opts: {
   );
 }
 
-/**
- * A rebase rewrites the whole working tree from the ORCHESTRATOR, outside the
- * session container — so the newly-checked-out `shipit.yaml` / compose file can
- * declare services, an install step, or a compose path the running session
- * knows nothing about, and the newly-checked-out lockfile can name dependencies
- * the container's `node_modules` has never held (nikzlabs/shipit#2429).
- *
- * The session's compose stack and its dependency tree are otherwise
- * re-evaluated only when the in-container inotify watcher reports the file
- * changed, which is the wrong signal for this: it is started best-effort (a
- * single fire-and-forget POST per runner) and watches a bind mount the
- * orchestrator wrote to from another container. When it misses the write — or
- * was never started — the user rebases onto the latest base and the new service
- * simply never appears, or the dev server starts fine and then fails every
- * request on an import it cannot resolve.
- *
- * The orchestrator knows exactly when it rewrote the tree, so it says so
- * directly. See `workspace-rewrite.ts` for both halves; best-effort throughout,
- * since neither may fail a rebase that already landed.
- */
+// The container's file watcher may miss a rewrite from the orchestrator.
 function reevaluateSessionAfterRewrite(runner: SessionRunnerInterface): void {
   onWorkspaceRewritten(runner, "rebase");
 }
 
-/**
- * nikzlabs/shipit#2349 — restore the LFS content this flow's worktree rewrite turned
- * back into pointer text, holding the runner while it runs.
- *
- * The hold is the CLAUDE.md invariant-5 rule, and this call needs it for exactly
- * the reason that invariant exists. The restore runs with `running` already
- * false, and `systemTurnInProgress` is not consulted by `agentBusy` or by
- * `dispose()` — so without a lease the idle enforcer sees an idle runner and may
- * destroy the container mid-restore. That is not a corner case here: the
- * auto-resolve path runs *precisely* on idle, viewerless sessions, and a pull on
- * an asset-heavy repo is the longest window in the flow.
- */
+// The runner is no longer running; hold it against disposal during restoration.
 async function restoreLfsForSync(deps: RebaseDriverDeps, baseBranch: string): Promise<void> {
   const { runner } = deps;
   runner.beginPostTurnWork();
@@ -399,25 +172,7 @@ async function restoreLfsForSync(deps: RebaseDriverDeps, baseBranch: string): Pr
   }
 }
 
-/**
- * Refuse a sync before it touches git, and leave a record the user still has
- * tomorrow.
- *
- * `POST /git/rebase` answers `{ status: "started" }` the moment the flow is
- * kicked off and reports every later failure through a **transient**
- * `rebase_aborted` event — so before this, a sync that could not start cleared
- * the banner and left nothing in the transcript to say why. That is the
- * emit-only-card class `CLAUDE.md` names: it renders live, survives a
- * reconnect, and vanishes on reload.
- *
- * The notice is persisted only for a MANUAL sync (`recordSyncCard`). The
- * automatic conflict-resolve path already treats every pre-flight refusal as a
- * silent deferral it will retry, and a notice per poll would be pure noise.
- *
- * `409` is deliberate: `runAutoResolveAttempt` maps that status onto
- * "deferred, no budget burned", which is exactly right for a workspace that is
- * momentarily not in a state to be rebased.
- */
+// HTTP 409 defers automatic resolution without consuming an attempt.
 function refuseSync(deps: RebaseDriverDeps, baseBranch: string, reason: string): ServiceError {
   const message = `Sync with \`${baseBranch}\` did not start — ${reason}`;
   const explained = persistSyncNotice(deps, message);
@@ -425,14 +180,6 @@ function refuseSync(deps: RebaseDriverDeps, baseBranch: string, reason: string):
   return explained ? markSyncFailureExplained(err) : err;
 }
 
-/**
- * Append a durable sync notice, for a MANUAL sync only. Returns whether one was
- * actually written, which is what the caller tags the error with.
- *
- * The automatic conflict-resolve path stays silent by design: it treats every
- * pre-flight refusal as a deferral it will retry, so a notice per poll would be
- * pure noise. Best-effort — losing the notice must never change the outcome.
- */
 function persistSyncNotice(deps: RebaseDriverDeps, message: string): boolean {
   if (!deps.recordSyncCard) return false;
   try {
@@ -450,21 +197,7 @@ function persistSyncNotice(deps: RebaseDriverDeps, message: string): boolean {
   }
 }
 
-/**
- * Marks a sync failure that has ALREADY left its own persisted explanation.
- *
- * The route's catch persists a generic "the sync failed" notice for everything
- * else — the original incident's reporting gap was that `POST /git/rebase`
- * answers `{ status: "started" }` and then reports every later failure through a
- * transient `rebase_aborted` alone. Without this tag that generic notice would
- * stack on top of the specific ones the driver writes, and the user would read
- * two rows saying different amounts about one failure.
- *
- * A symbol property rather than an error subclass because two of the tagged
- * throws are RETHROWS of somebody else's error (the conflict loop's
- * abort-and-rethrow), which a subclass cannot cover without wrapping — and
- * wrapping would change what `runAutoResolveAttempt` sees.
- */
+// Prevent duplicate notices without wrapping the error and changing its classification.
 const SYNC_FAILURE_EXPLAINED = Symbol("shipit.syncFailureExplained");
 
 export function markSyncFailureExplained<T>(err: T): T {
@@ -474,7 +207,6 @@ export function markSyncFailureExplained<T>(err: T): T {
   return err;
 }
 
-/** True when {@link markSyncFailureExplained} tagged this failure. */
 export function syncFailureAlreadyExplained(err: unknown): boolean {
   return (
     err !== null
@@ -483,7 +215,6 @@ export function syncFailureAlreadyExplained(err: unknown): boolean {
   );
 }
 
-/** The user-facing half of an unreadable-workspace refusal. */
 function unreadableReason(detail: string): string {
   return (
     `git cannot read \`${detail}\` in this workspace, so a rebase would rewrite the `
@@ -491,61 +222,7 @@ function unreadableReason(detail: string): string {
   );
 }
 
-/**
- * Bring the workspace into the state `git rebase` requires, or refuse the sync
- * with something the user can act on. Runs before the fetch, i.e. before
- * anything in the flow has written to `.git` or the worktree.
- *
- * **The production failure this closes** (2026-09-07, session 43c732e1): a
- * manual "Sync with `<base>`" ran `git rebase origin/main` against a workspace
- * whose index was not empty, and git refused — `cannot rebase: Your index
- * contains uncommitted changes`. The flow's own guards cannot see that state.
- * `runner.running` and `runner.systemTurnInProgress` describe a TURN, and the
- * post-turn commit runs after both are false: `tryDrain` clears `running` at
- * `agent_result`, and `runCommitAndPr` — `git add -A` then `git commit` — runs
- * several awaits later (`turn-executor.ts`). A sync clicked in that window
- * passed both guards and started a rebase alongside a live `git add -A` on the
- * same workspace. The automatic path has always pre-flighted a dirty tree
- * (`runAutoResolveAttempt`); the manual path had no equivalent at all.
- *
- * Three steps, in this order, and each closes a different half:
- *
- *  1. **A rebase already in progress** is named on its own. `autoCommit`
- *     refuses to commit into one by design, so letting step 3 report it would
- *     blame the tree for a state it was never allowed to clean.
- *  2. **Take the per-workspace mutex `postTurnCommit` holds** for the whole of
- *     its `git add -A` + `git commit` (`withWorkspaceLock`, shared with the
- *     plugin-install path). Queueing behind it IS the synchronisation the guards
- *     could not provide: by the time this inspection runs, an in-flight commit
- *     has finished and the tree it left behind is the one we read. Nothing NEW
- *     can start behind it either — `runRebaseFlow` has already taken the
- *     `systemTurnInProgress` hold every user-turn entry path respects, so there
- *     is no next turn to have a post-turn commit.
- *  3. **A still-dirty tree is SAVED, never stashed or discarded**, through the
- *     established pipeline (`commitPendingWork` → `postTurnCommit`), so the
- *     secret scan and the conflict refusals all still apply. If the pipeline
- *     refuses — that is its job — the sync stops with the tree untouched and
- *     says so; `postTurnCommit` has already persisted its own notice naming the
- *     specific reason, and ours points at it.
- *
- * The tree is inspected once MORE, inside the same critical section as
- * `git.rebase` itself (`runRebaseFlow`). This function releases the mutex
- * between its steps, and the flow then fetches — seconds during which a writer
- * that is not a turn (a file save from the editor, `api-routes-files.ts`) can
- * dirty the tree again. Two separately-locked operations do not preserve the
- * condition the first one established; only the re-check under the rebase's own
- * lock does.
- *
- * Deliberately NOT a stash: `git stash pop` on top of a rebase is a hazard, and
- * a sync that silently moves the user's uncommitted work somewhere they did not
- * put it is the failure this whole area keeps re-learning.
- *
- * `deferPushArm` hands the saved commit's auto-push to the FLOW the instant it
- * exists, rather than returning it. Anything after the save can throw — the
- * second inspection here, `postTurnCommit`'s own chat bookkeeping — and an arm
- * that travels on the return value is an arm lost on exactly those paths,
- * leaving the commit local, unpushed and unexplained.
- */
+// Share the post-turn commit mutex, then recheck under the rebase lock after fetch.
 async function prepareWorkspaceForRebase(
   deps: RebaseDriverDeps,
   baseBranch: string,
@@ -568,9 +245,6 @@ async function prepareWorkspaceForRebase(
   if (state.unreadable) throw refuseSync(deps, baseBranch, unreadableReason(state.unreadable.detail));
   if (state.clean) return { savedCommit: null };
 
-  // The tree carries work that no post-turn commit is going to collect — an
-  // agent killed mid-turn, an edit made in the terminal panel, a `git add` the
-  // agent ran and never committed.
   if (!deps.commitPendingWork) {
     throw refuseSync(
       deps,
@@ -595,125 +269,54 @@ async function prepareWorkspaceForRebase(
   return { savedCommit: saved.commitHash };
 }
 
-/**
- * Run the full rebase flow. Emits WS events through the runner so the client
- * can update its UI as the flow progresses.
- *
- * Throws ServiceError on validation problems (e.g. agent already running,
- * unresolvable base branch). Internal failures (force push errors, etc.) are
- * reported via WS events rather than thrown.
- */
 export async function runRebaseFlow(
   deps: RebaseDriverDeps,
   baseBranch: string,
 ): Promise<RebaseFlowOutcome> {
   const { git, runner } = deps;
   const recordSync = deps.recordSyncCard ?? false;
-  // nikzlabs/shipit#2349 — flipped the moment the flow can have re-materialized
-  // worktree files, so the `finally` knows whether it owes an LFS restore. Set
-  // before `git.rebase`, which is the first op here that writes the worktree:
-  // the fetch and the local-base-ref move touch only `.git`, and the up-to-date
-  // short-circuit returns without rewriting anything.
   let worktreeRewritten = false;
 
   if (runner.running) {
     throw new ServiceError(409, "Cannot rebase while an agent turn is in progress");
   }
-  // planning#338 — the hold below is exclusive. A second flow entering while the
-  // first holds the session between its own turns (`running` false, flag true)
-  // would run two rebases against one working tree and clear the shared flag on
-  // its own teardown. The auto path translates this 409 into a deferral.
   if (runner.systemTurnInProgress) {
     throw new ServiceError(409, "Cannot rebase while a system turn is in progress");
   }
 
-  // planning#338 — hold the system-turn marker for the WHOLE flow, not just while a
-  // resolution turn is in flight. The per-turn flag has two gaps a user turn
-  // slipped through in production: (a) the executor's `tryDrain` clears
-  // `running` at `agent_result`, seconds before `done` settles the turn, and
-  // (b) between resolution turns (and around the final continue/force-push) the
-  // driver runs git against the workspace with no turn in flight at all. A user
-  // message dispatched in either gap displaces the resolution turn's agent slot
-  // and strands the workspace mid-rebase — auto-commit then refuses forever
-  // ("rebase in progress") until a human aborts by hand. Every user-turn entry
-  // path (WS send, `dispatchOnRunner`, `releaseQueuedTurn`) now respects this
-  // flag, so messages queue and drain after the flow settles (docs/146's
-  // original intent). The executor still clears the flag at each resolution
-  // turn's teardown; `runRebaseResolutionTurn.onTurnComplete` re-asserts it
-  // synchronously, so there is no observable gap.
+  // Keep user turns queued between resolution turns and through the final push.
   runner.systemTurnInProgress = true;
 
-  /**
-   * The auto-push the pre-sync commit deferred (`prepareWorkspaceForRebase`),
-   * owned by the flow from the instant the commit produces it.
-   *
-   * A debounced plain push racing the flow's own force-push is rejected
-   * non-fast-forward and reports a branch divergence that never happened —
-   * the same reason `turn-executor.ts` defers its arm past the PR flow. So the
-   * arm fires from the `finally`, and only on the paths where this flow neither
-   * published the commit itself (`published`) nor deliberately declined to
-   * (`pushProhibited`).
-   */
-  // Held in an object rather than a bare `let` for the reason
-  // `services/post-interrupt-commit.ts` does the same: assigned only from a
-  // callback, a plain local is narrowed to `never` at the read below.
+  // Defer auto-push so it cannot race the force-push. The object avoids TS callback narrowing.
   const pendingPush: { arm: (() => void) | null } = { arm: null };
   let published = false;
-  /**
-   * The flow REFUSED to publish, rather than merely not having got there.
-   *
-   * Set only on the up-to-date path with the session checked out on `<base>`,
-   * where `pushIfAheadOfRemote` declines on purpose: pushing there would land
-   * commits straight on `main` and bypass the pull request. Firing the deferred
-   * arm would do exactly the thing that refusal exists to prevent — it is a
-   * plain `git push origin <branch>`, and `<branch>` is the base branch.
-   */
   let pushProhibited = false;
-  /** The pre-sync commit, for the notice explaining why it stayed local. */
   let savedCommit: string | null = null;
 
   try {
-    // 0. Settle the workspace first: wait out an in-flight post-turn commit,
-    //    save anything it was never going to collect, and refuse with an
-    //    actionable, persisted explanation if the tree cannot be made clean.
-    //    Runs before the fetch, so a refusal has written nothing at all.
     savedCommit = (await prepareWorkspaceForRebase(
       deps,
       baseBranch,
       (arm) => { pendingPush.arm = arm; },
     )).savedCommit;
 
-    // 1. Fetch latest from origin.
     await git.fetch("origin");
 
-    // 2. Resolve the base branch ref.
     const baseRef = await git.resolveBaseBranchRef(baseBranch);
     if (!baseRef) {
       throw new ServiceError(400, `Cannot resolve base branch: ${baseBranch}`);
     }
 
-    // docs/221 — fast-forward the local `<base>` ref to origin/<base> (the fetch
-    // above only advanced the remote-tracking ref) and snapshot the session
-    // branch HEAD, so a successful sync can record both moves on the card.
     const headBefore = await git.getHeadHash();
     const baseMove = await syncLocalBaseRef(git, baseBranch);
 
-    // 3. Check ancestry — already up-to-date?
     const isAncestor = await git.isAncestor(baseRef, "HEAD");
     if (isAncestor) {
-      // ...locally. GitHub computes `mergeable` from the PUSHED head, so a
-      // branch that already contains `<base>` but never reached origin (an
-      // auto-push rejected as non-fast-forward, a push that failed while the
-      // container was going away) is still CONFLICTING as far as the PR card is
-      // concerned — and this path used to return without pushing anything, so
-      // every further click on "Resolve conflicts" repeated the same no-op.
-      // Publish the commits the remote is missing; that is the whole fix.
+      // GitHub computes mergeability from the pushed head, which may still be behind.
       const pushOutcome = await pushIfAheadOfRemote(deps, baseBranch);
       const forcePushed = pushOutcome === "pushed";
       published = forcePushed;
       pushProhibited = pushOutcome === "refused";
-      // Manual syncs always leave a durable confirmation card, including the
-      // already-current case. Automatic conflict resolution remains cardless.
       const cardEmitted = recordSync
         ? emitSyncCard(deps, { baseBranch, headFrom: headBefore, headTo: headBefore, baseMove, forcePushed })
         : false;
@@ -721,22 +324,9 @@ export async function runRebaseFlow(
       return { status: "up_to_date", forcePushed };
     }
 
-    // 4. Begin rebase.
     runner.emitMessage({ type: "rebase_started", sessionId: runner.sessionId, baseBranch });
 
-    // Errors propagate to the route's `flowPromise.catch`, which emits a single
-    // `rebase_aborted` carrying the error message. Don't emit here too — before
-    // this dedupe the user got two aborts for one failure.
-    // The tree is re-inspected and rebased in ONE critical section. Two
-    // separately-locked operations do not preserve the condition the first one
-    // established: `prepareWorkspaceForRebase` releases the mutex between its
-    // steps, and the fetch above takes seconds, during which a writer that is
-    // not a turn — a file save from the editor (`api-routes-files.ts`), whose
-    // own commit guard consults only `running` — can dirty the tree again.
-    // Checking inside the lock that also runs `git rebase` is what closes the
-    // TOCTOU rather than narrowing it, and a late writer is now REFUSED with an
-    // explanation instead of surfacing as git's raw "index contains uncommitted
-    // changes".
+    // Inspect and rebase under one lock: editor saves can dirty the tree during fetch.
     let result = await withWorkspaceLock(runner.sessionDir, async () => {
       const state = await git.inspectWorkingTree();
       if (state.unreadable) throw refuseSync(deps, baseBranch, unreadableReason(state.unreadable.detail));
@@ -748,22 +338,14 @@ export async function runRebaseFlow(
           + "uncommitted changes again. Nothing was rebased and your work is untouched — sync again.",
         );
       }
-      // Set inside the lock, immediately before the first op that writes the
-      // worktree, so a refusal above does not make the `finally` owe an LFS
-      // restore for a rewrite that never happened.
       worktreeRewritten = true;
       return git.rebase(baseRef);
     });
 
-    // 5. Clean rebase — go straight to force push.
     if (result.status === "clean") {
       reevaluateSessionAfterRewrite(runner);
       const forcePushed = await tryForcePush(deps);
       published = forcePushed;
-      // The card is unconditional here: the branch WAS rewritten, on whichever
-      // trigger, and the transcript is the only surface that still says so
-      // tomorrow. Only the agent-facing notice stays gated on `recordSync` —
-      // see `RebaseDriverDeps.recordSyncCard`.
       const headAfter = await git.getHeadHash();
       emitSyncCard(deps, { baseBranch, headFrom: headBefore, headTo: headAfter, baseMove, forcePushed });
       if (recordSync) {
@@ -773,7 +355,6 @@ export async function runRebaseFlow(
       return { status: "rebased", forcePushed };
     }
 
-    // 6. Conflict loop — delegate resolution to the agent.
     let iter = 0;
     while (result.status === "conflicts") {
       iter++;
@@ -791,32 +372,14 @@ export async function runRebaseFlow(
         conflicts: result.conflicts.map((c) => ({ path: c.path })),
       });
 
-      // planning#146: `git.rebase` above rewrote BOTH `.git` AND the worktree —
-      // including the conflicted files this turn's agent must EDIT. Hand the
-      // whole workspace back BEFORE the resolution turn so the non-root agent
-      // can both run git and write those files. See the file-header note: since
-      // docs/266-orchestrator-git-trust-boundary E1 that rebase runs as the
-      // session's identity and does not leave the tree root-owned, so this is
-      // the `.git`/worktree ownership reconciliation, not a root repair.
+      // Reconcile git and worktree ownership before the worker edits conflict files.
       handWorkspaceBackToWorker(runner.sessionDir);
 
       const prompt = buildRebaseConflictPrompt(baseBranch, result.conflicts);
       try {
         await runRebaseResolutionTurn(deps, prompt);
       } catch (err) {
-        // planning#338 — the resolution turn ended without completing: an agent
-        // process error, a no-result exit, a runner disposal, or a newer turn
-        // displacing its agent slot. Abort HERE, before rethrowing, so the
-        // workspace can never strand mid-rebase with auto-commit refusing every
-        // later turn. (The auto-resolve wrapper aborts on its own catch too —
-        // idempotent — but the user-driven route only emits `rebase_aborted`
-        // and never touched git, which is exactly how the production incident
-        // stuck.) The notice is persisted, not just emitted: it is the whole
-        // durable record of why the sync the user asked for did not happen.
-        // A failed abort must not masquerade as a clean one: the notice below
-        // is the durable record, and telling the user "the branch is
-        // unchanged" while the workspace is still mid-rebase re-creates the
-        // silent-stranding this path exists to prevent. Verify.
+        // Abort before rethrowing; verify failures before reporting the branch unchanged.
         let stillInProgress = false;
         let explained = false;
         try {
@@ -825,7 +388,7 @@ export async function runRebaseFlow(
           try {
             stillInProgress = await git.isRebaseInProgress();
           } catch {
-            stillInProgress = true; // can't verify — assume the worst, say so
+            stillInProgress = true;
           }
         }
         const outcomeText = stillInProgress
@@ -843,78 +406,35 @@ export async function runRebaseFlow(
         } catch (noticeErr) {
           console.error("[rebase] abort notice failed:", getErrorMessage(noticeErr));
         }
-        // This notice IS the durable record of the failure, so the route must
-        // not stack its generic one on top of it.
         throw explained ? markSyncFailureExplained(err) : err;
       }
 
       try {
-        // The agent may have left files unmodified or staged. `add -A` covers
-        // both. Staged and continued as ONE locked step, so the index this
-        // rebase step commits is the one the agent's resolution produced and
-        // not one a concurrent post-turn `git add -A` widened underneath it.
+        // Keep another commit from changing the index between staging and continuing.
         result = await withWorkspaceLock(runner.sessionDir, async () => {
           await git.stageAll();
           return git.rebaseContinue();
         });
       } catch (err) {
-        // Continue can fail if there is nothing staged (agent didn't actually
-        // resolve anything). Abort to leave the tree clean. The route's
-        // `flowPromise.catch` emits a single `rebase_aborted` with the reason.
         try { await git.rebaseAbort(); } catch { /* may already be aborted */ }
         throw err;
       }
     }
 
-    // 7. Force push after successful resolution.
     reevaluateSessionAfterRewrite(runner);
     const forcePushed = await tryForcePush(deps);
     published = forcePushed;
-    // Unconditional for the same reason as the clean path — and with more force.
-    // An automatic rebase that resolved conflicts and force-pushed is exactly the
-    // sequence the user never asked for: they saw the conflict prompt scroll past
-    // and, before this card, nothing that said it ended well. The card lands
-    // after everything the flow emitted, so it reads as the conclusion it is.
     const headAfterResolve = await git.getHeadHash();
     emitSyncCard(deps, { baseBranch, headFrom: headBefore, headTo: headAfterResolve, baseMove, forcePushed });
-    // The conflict-resolution turns told the agent about the *conflicts*, not
-    // about the branch move that follows them — and those turns end before the
-    // continue/force-push. It still needs the same "your tree was rewritten"
-    // notice on its next turn.
     if (recordSync) {
       recordAgentNotice(deps, { baseBranch, headFrom: headBefore, headTo: headAfterResolve, forcePushed, resolvedConflicts: true });
     }
     runner.emitMessage({ type: "rebase_complete", sessionId: runner.sessionId, forcePushed });
     return { status: "conflicts_resolved", iterations: iter, forcePushed };
   } finally {
-    // nikzlabs/shipit#2349 — the rebase re-materialized worktree files through the
-    // ORCHESTRATOR's git, whose LFS smudge filter is disabled by design, so every
-    // LFS-tracked path it touched is now ~130 bytes of pointer text while the
-    // tree reads CLEAN. Restore the content before anyone looks at it.
-    //
-    // In the `finally` rather than on the two success paths because an ABORT
-    // rewrites the worktree too — it checks the pre-rebase tree back out through
-    // the same filter-less git, so a failed sync leaves stubs where a successful
-    // one would have. By the time this runs the tree is settled (every path that
-    // leaves the loop mid-rebase aborts first), which is the precondition
-    // `restoreLfsAfterTreeRewrite` documents.
-    //
-    // Ahead of the queue release, not after it: a turn queued during the sync
-    // would otherwise start against the stubs, which is the exact failure this
-    // closes. Non-LFS repos pay one `git grep` for that ordering.
+    // Aborts also restore LFS pointers; recover content before releasing queued turns.
     if (worktreeRewritten) await restoreLfsForSync(deps, baseBranch);
-    // The pre-sync commit is published by whichever push actually happened. On
-    // a flow that never reached one — a refusal, an abort, a failed rebase —
-    // that commit would otherwise sit local and unpushed with nothing said,
-    // which is the one outcome `CLAUDE.md` invariant 5 forbids. Ahead of the
-    // queue release so the arm is taken before a queued turn starts.
-    //
-    // `pushProhibited` is NOT "we didn't push yet": it is the up-to-date path
-    // declining to publish a `<base>` checkout, and this arm is a plain push to
-    // the checked-out branch. Firing it there would land the commit directly on
-    // `main`, bypassing the pull request — the exact move `pushIfAheadOfRemote`
-    // clause 1 exists to prevent. So the commit stays local, and a manual sync
-    // is told why rather than left to discover it.
+    // Consume successful or prohibited pushes; a fallback on base would bypass the PR.
     if (published) {
       pendingPush.arm = null;
     } else if (pushProhibited) {
@@ -939,31 +459,10 @@ export async function runRebaseFlow(
         }
       }
     }
-    // planning#146 / docs/150 §7: every orchestrator git op above (fetch,
-    // rebase, rebaseContinue, stageAll, forcePush, rebaseAbort) rewrites BOTH
-    // `.git` and worktree files. Unlike a normal turn, the rebase driver
-    // dispatches its resolution turns with `postTurn: "none"`, which elides the
-    // post-turn handoff — so this is the ONLY place either half is reconciled
-    // on this path. Hand the whole workspace back on every exit path (clean,
-    // resolved, up-to-date, abort, throw).
-    //
-    // planning#412 — those ops do not leave the tree root-owned; they run as
-    // the session's identity (file-header note). What the agent would hit
-    // without this is `.git` handed to a uid other than the one that will run
-    // git in it, not a `root:root` tree.
     handWorkspaceBackToWorker(runner.sessionDir);
-    // planning#338 — release the flow's hold, then start the head of the queue.
-    // Skipped while a DISPLACING turn still owns the runner (`running` — it is
-    // never a system turn, so the flag is not its): clearing under it would
-    // re-enable steering into it mid-turn, and its own post-turn drain owns the
-    // queue. The release covers the user-driven path, which — unlike the
-    // auto-resolve path with its `drainQueue` callback — previously had no
-    // post-flow drain at all, so a message queued during the flow just sat
-    // there. `releaseQueuedTurn` no-ops on an empty queue.
+    // A displacing turn owns its flag and queue drain.
     if (!runner.running) {
       runner.systemTurnInProgress = false;
-      // Defensive: a disposed runner refuses dispatch; a failed release must
-      // not turn a settled flow into an unhandled rejection.
       try {
         releaseQueuedTurn(runner);
       } catch (releaseErr) {
@@ -973,30 +472,9 @@ export async function runRebaseFlow(
   }
 }
 
-/**
- * Attempt a force push with lease. Returns true on success, false if push
- * was skipped (no auth) or failed.
- *
- * Emits the same WS events as the regular auto-push flow so the user sees
- * confirmation on success and an actionable error on failure — without these,
- * the rebase appears "complete" while the rewritten history never reaches
- * origin (see also `scheduleAutoPush` in index.ts / app-lifecycle.ts).
- *
- * On success it also notifies the PR-status poller — see `prStatusPoller` in
- * `RebaseDriverDeps` for why that call lives here rather than at the call sites.
- */
 async function tryForcePush(
   deps: RebaseDriverDeps,
-  /**
-   * Lease against THIS sha instead of the remote's live tip.
-   *
-   * `git.forcePush()` re-reads the live tip and leases against whatever it finds,
-   * which is right after a rebase (ShipIt owns the branch, and the only
-   * legitimate remote state is the pre-rebase commits it pushed itself) but wrong
-   * for a caller that decided to push *because* it verified a specific remote
-   * sha: a commit landing between that check and the push would become the lease
-   * and be overwritten. Pass the checked sha and the push is rejected instead.
-   */
+  /** Lease against the verified SHA so a later remote commit cannot be overwritten. */
   expectedRemoteSha?: string,
 ): Promise<boolean> {
   const { git, githubAuthManager, runner } = deps;
@@ -1011,11 +489,6 @@ async function tryForcePush(
     return true;
   } catch (err) {
     const errMsg = getErrorMessage(err);
-    // The class rides the log line for the same reason it does in
-    // `auto-push-scheduler.ts`: it is what an operator reading `docker logs`
-    // needs to tell "the remote moved" apart from "the credential is dead" or
-    // "the LFS objects never went up" — and until 2026-08-18 the raw stderr of a
-    // rejected push was recorded nowhere at all.
     const failure = classifyPushFailure(err);
     console.error(`[rebase] force push failed [${failure}]:`, errMsg);
     if (isNonFastForwardError(err)) {
@@ -1037,54 +510,9 @@ async function tryForcePush(
   }
 }
 
-/**
- * Push on the up-to-date path when the local branch is strictly AHEAD of
- * `origin/<branch>` — i.e. it holds commits the remote has never seen.
- *
- * The up-to-date short-circuit answers a purely LOCAL question ("does HEAD
- * already contain `<base>`?"), while the PR card's conflict state is computed by
- * GitHub from the PUSHED head. Those disagree exactly when a commit never made
- * it to origin, and the user experiences it as a "Resolve conflicts" button that
- * does nothing, forever, however many times they press it.
- *
- * Deliberately narrow — four things must all hold, and each excludes a way this
- * could publish something nobody asked it to:
- *
- *  1. **The session is not on the base branch.** `syncLocalBaseRef` already
- *     handles a session sitting on `<base>`, so it happens. `origin/main` is
- *     trivially an ancestor of a `main` checkout carrying local commits, and
- *     without this clause "Sync with main" would push straight to `main`,
- *     bypassing the pull request entirely.
- *  2. **The branch ref resolves to HEAD.** On a detached HEAD
- *     `getCurrentBranch()` falls back to the literal `"main"`, so the ancestry
- *     question would be asked of one ref and the push aimed at another — landing
- *     commits on a branch the caller never named and reporting success.
- *  3. **`origin/<branch>` exists.** Publishing a branch for the first time
- *     belongs to the auto-push path, not to "sync with base".
- *  4. **The remote tip is an ANCESTOR of HEAD** — the fast-forward case, and the
- *     one this bug produces. A genuinely diverged remote is left alone; resolving
- *     that is the rebase path's job, not a silent history rewrite from the no-op
- *     branch. The verified sha is then handed to the push as its lease, so a
- *     commit that lands in between is rejected rather than clobbered.
- *
- * Clause 1 answers `"refused"` rather than `"not-pushed"`, and the distinction
- * is load-bearing rather than descriptive. The caller holds a DEFERRED auto-push
- * for the pre-sync commit and fires it wherever the flow did not publish — and
- * that arm is a plain `git push origin <branch>`, which on a `<base>` checkout
- * is a push straight to `main`. Reporting "we didn't push" for a case that means
- * "we must not push" would hand the fallback the exact action this clause exists
- * to prevent. Every other clause is a genuine "not this time".
- *
- * Any inspection failure answers `"not-pushed"`: an unpushed commit is a
- * recoverable state, and a git error here must not fail a sync that is otherwise
- * a no-op.
- */
 type UpToDatePushOutcome =
-  /** The branch held commits origin had never seen, and they are published now. */
   | "pushed"
-  /** Nothing to publish, or the push failed. A deferred arm may still try. */
   | "not-pushed"
-  /** Publishing from here is PROHIBITED — it would bypass the pull request. */
   | "refused";
 
 async function pushIfAheadOfRemote(
@@ -1094,13 +522,12 @@ async function pushIfAheadOfRemote(
   const { git } = deps;
   try {
     const branch = await git.getCurrentBranch();
-    // Asked FIRST, and ahead of the auth check, because it is the one clause
-    // that must hold whether or not a push was ever possible: the caller reads
-    // this answer to decide whether its fallback push is allowed to run.
+    // Refuse before checking auth: the caller must also suppress its fallback push.
     if (branch === baseBranch) return "refused";
     if (!deps.githubAuthManager.authenticated) return "not-pushed";
     const localHead = await git.getHeadHash();
     if (!localHead) return "not-pushed";
+    // getCurrentBranch() falls back to main on detached HEAD; verify the push target.
     if ((await git.getRefHash(branch)) !== localHead) return "not-pushed";
     const remoteHead = await git.getRefHash(`origin/${branch}`);
     if (!remoteHead || remoteHead === localHead) return "not-pushed";
@@ -1112,19 +539,7 @@ async function pushIfAheadOfRemote(
   }
 }
 
-/**
- * Tell the PR-status poller that this session's branch just reached origin:
- * move it into the fast cadence bucket, then poll once immediately.
- *
- * Both halves are needed. `forceRefreshSession` alone gives one fresh reading,
- * but GitHub recomputes `mergeable` asynchronously and often answers `UNKNOWN`
- * on the first ask; `notifyAutoPush` alone leaves the session waiting up to a
- * full slow tick (120s) for that first reading. Together the card converges in
- * seconds.
- *
- * Best-effort and non-blocking: the push already succeeded, so neither a missing
- * poller nor a failed refresh may turn a completed rebase into a reported failure.
- */
+// Refresh now and keep polling quickly while GitHub recomputes mergeability.
 function notifyPrStatusPollerOfPush(deps: RebaseDriverDeps): void {
   const poller = deps.prStatusPoller;
   if (!poller) return;
@@ -1139,25 +554,6 @@ function notifyPrStatusPollerOfPush(deps: RebaseDriverDeps): void {
   }
 }
 
-/**
- * Run an agent turn dedicated to resolving rebase conflicts.
- *
- * docs/169 — the turn lifecycle now lives entirely on the shared dispatch path
- * (`runner.dispatch` → `runDispatchedTurn` → `executeAgentTurn`). That path
- * already owns: a fresh agent, the `running` / `systemTurnInProgress` flag
- * management, the synchronous `_isRunning=true` race fix, the shared
- * `wireAgentListeners` (so chat history accumulates the same message-group
- * structure as a WS user turn), and the error/done teardown. Previously this
- * function hand-rolled ALL of that, which meant a fix to the turn lifecycle had
- * to be mirrored here by hand.
- *
- * The ONE carve-out is post-turn behavior — `postTurn: "none"` elides
- * auto-commit / auto-push / queue-drain — because the rebase machinery commits
- * via `git rebase --continue` and force-pushes after the whole flow; an
- * auto-commit mid-rebase would corrupt it. The completion signal
- * (`onTurnComplete`) is what lets this multi-turn driver await one resolution
- * turn, run its git step, then dispatch the next.
- */
 function runRebaseResolutionTurn(
   deps: RebaseDriverDeps,
   prompt: string,
@@ -1166,31 +562,20 @@ function runRebaseResolutionTurn(
 
   return new Promise<void>((resolve, reject) => {
     let turnSettled = false;
-    // A user (or another system) turn slipped in between rebase iterations —
-    // `dispatch` would enqueue rather than start, and `onTurnComplete` would
-    // never fire, hanging this promise until the wall-clock timeout. Reject so
-    // the conflict loop aborts the in-progress rebase cleanly instead.
+    // A queued dispatch would never settle this callback; abort if another turn owns the runner.
     if (runner.running) {
       reject(new ServiceError(409, "Cannot resolve conflicts while an agent turn is in progress"));
       return;
     }
 
-    // docs/146 — signal "real work has started" so the auto-resolve wrapper
-    // classifies a downstream throw as a post-spawn error (count it) rather
-    // than a pre-spawn defer. The conflict loop only calls this after all
-    // pre-flight (fetch, ancestry, base-ref) has passed, so the dispatch
-    // boundary IS the spawn boundary.
     deps.onAgentSpawned?.();
 
     runner.dispatch(prepareDispatch({
       text: prompt,
       agentInterface: undefined,
       activity: "Resolving conflicts...",
-      // Elide the post-turn commit/push/PR/drain — the rebase owns committing.
+      // Rebase owns the commits, push, and queue drain.
       postTurn: "none",
-      // Suppress live-steering for the duration so a concurrent user message
-      // is queued (and drained after the flow) rather than injected into the
-      // resolution turn and derailing it.
       systemTurn: true,
       execution: undefined,
       images: undefined,
@@ -1199,40 +584,19 @@ function runRebaseResolutionTurn(
       permissionMode: undefined,
       deliveryId: undefined,
       dictated: undefined,
-      // No composer involved — a server-originated dispatch has no tick boxes.
       resetMergedBranch: undefined,
       compactContext: undefined,
       silent: undefined,
       onTurnComplete: (outcome) => {
-        // The raw callback is NOT once-only: `withSettlement` latches the
-        // settlement promise but invokes the chained original on every call,
-        // and a runner disposal/abandonment settlement can be followed by a
-        // late terminal event from the dying process. A second invocation
-        // after the flow's `finally` has released the hold would re-lock an
-        // idle runner with no flow left to clear it — latch here.
+        // Late duplicate callbacks must not re-lock the runner after the flow releases it.
         if (turnSettled) return;
         turnSettled = true;
-        // planning#338 — `finishTurn` cleared the per-turn system-turn flag in the
-        // same synchronous call stack that runs this callback. The FLOW still
-        // owns the session (more git work, possibly another resolution turn),
-        // so re-assert its hold before any await can let a user turn in —
-        // unless a displacing turn already claimed the runner (`running`),
-        // in which case the flag is that turn's to keep false.
+        // Restore the flow's hold synchronously after finishTurn clears the per-turn flag.
         if (!runner.running) runner.systemTurnInProgress = true;
         if (outcome.status === "completed") {
           resolve();
           return;
         }
-        // planning#338 — anything short of `completed` means the conflicted files
-        // are NOT reliably resolved: an agent process error (the shared
-        // listener already wrote the error row), a no-result exit, `dropped`
-        // (runner disposed / queue cleared), or `interrupted` — the user
-        // pressed stop, or a newer turn took the agent slot (the production
-        // displacement). The pre-planning#338 code resolved on those (`errored`
-        // was the only reject), so the driver ran `git add -A && git rebase
-        // --continue` over a half-resolved — or someone else's — working tree.
-        // Rejecting routes every one of them through the conflict loop's
-        // abort-and-rethrow.
         reject(new Error(
           outcome.status === "errored"
             ? "Agent error during rebase conflict resolution"
@@ -1243,67 +607,21 @@ function runRebaseResolutionTurn(
   });
 }
 
-// ---------------------------------------------------------------------------
-// runAutoResolveAttempt — docs/146 wrapper around runRebaseFlow.
-// ---------------------------------------------------------------------------
-
-/** Default wall-clock cap on a single auto-resolve attempt. */
 export const AUTO_RESOLVE_ATTEMPT_TIMEOUT_MS = 10 * 60 * 1000;
 
-/**
- * Wraps `runRebaseFlow` for the auto-conflict-resolve path. (docs/146)
- *
- * Pre-flight gates (don't burn budget):
- *   - dirty tree, in-progress rebase, no GitHub auth → deferred.
- *
- * Translation of `runRebaseFlow`'s outcome:
- *   - `up_to_date` with NO push (GitHub said CONFLICTING but our local view
- *     disagrees, and the remote already has our head) → deferred with
- *     `suppressEmit: true` so the WS layer doesn't flash "rebased then deferred"
- *     after the inner `rebase_complete`.
- *   - `up_to_date` that DID push (the branch held commits origin never saw —
- *     which is why GitHub still said CONFLICTING) → success carrying
- *     `forcePushed`, so the manager arms the settle window for the new head.
- *   - `rebased` / `conflicts_resolved` → success carrying `forcePushed`.
- *   - `ServiceError(409)` from the running-guard → deferred (TOCTOU backstop).
- *   - Any throw BEFORE `onAgentSpawned` fires (fetch failure, ancestry
- *     check, base-ref resolution) → deferred with a synthetic label, so a
- *     network blip doesn't burn budget. Anything thrown AFTER spawn → error
- *     (real work happened).
- *
- * Wall-clock timeout (default 10 min, overridable via `timeoutMs`): if the
- * agent never finishes, this wrapper does the full runner-state teardown
- * `git.rebaseAbort()` alone doesn't cover. See "Timeout teardown" in doc 146.
- *
- * Does NOT emit `auto_resolve_started` / `auto_resolve_result` itself — the
- * manager owns those envelopes and ties them to attempt accounting. The inner
- * `rebase_started` / `rebase_conflicts` / `rebase_complete` / `rebase_aborted`
- * events still fire from `runRebaseFlow` as a side effect.
- */
 export async function runAutoResolveAttempt(
   deps: RebaseDriverDeps & {
-    /** Wall-clock timeout for the whole attempt. Default 10 min. */
     timeoutMs?: number;
-    /** Injectable clock — included for symmetry with the manager but currently unused inside the wrapper. */
     now?: () => number;
   },
   baseBranch: string,
 ): Promise<AutoResolveResult> {
   const { git, githubAuthManager, runner } = deps;
 
-  // Pre-flight 1: no GitHub auth. The auto-path diverges from doc 094's
-  // user-driven flow here — without auth the agent would do real work, the
-  // local rebase would succeed, but the force-push silently no-ops while the
-  // PR on GitHub still shows CONFLICTING. Burning agent turns on a remote
-  // that will never see the result is wasteful; the failure mode is
-  // structurally invisible. Pre-flight gate skips the attempt entirely.
   if (!githubAuthManager.authenticated) {
     return { outcome: "deferred", lastError: "no_github_auth", didWork: false };
   }
 
-  // Pre-flight 2: dirty tree. Defensive — shouldn't happen for an idle
-  // session, but the auto-path must NEVER stash silently (a stash here would
-  // surprise the user, and `git stash pop` on top of a rebase is a hazard).
   try {
     const clean = await git.isClean();
     if (!clean) {
@@ -1313,17 +631,9 @@ export async function runAutoResolveAttempt(
     return { outcome: "deferred", lastError: `is_clean_failed: ${getErrorMessage(err)}`, didWork: false };
   }
 
-  // Pre-flight 3: stale rebase from a previous orchestrator crash mid-flight.
-  // `runRebaseFlow` would call `git.rebase(baseRef)` which fails when a
-  // rebase is already in progress. Abort and defer; the next poll retries
-  // from a clean state without burning budget.
   try {
     if (await git.isRebaseInProgress()) {
       try { await git.rebaseAbort(); } catch { /* may already be aborted */ }
-      // planning#146: the abort above rewrote `.git` + worktree; hand the whole
-      // workspace back so the next agent op isn't blocked on a `.git` owned by
-      // someone other than the uid that runs git in it. (It ran as the session's
-      // identity, not as root — file-header note.)
       handWorkspaceBackToWorker(runner.sessionDir);
       return { outcome: "deferred", lastError: "stale_rebase", didWork: false };
     }
@@ -1331,9 +641,6 @@ export async function runAutoResolveAttempt(
     return { outcome: "deferred", lastError: `is_rebase_in_progress_failed: ${getErrorMessage(err)}`, didWork: false };
   }
 
-  // `didSpawn` flips true inside `runRebaseResolutionTurn` via the
-  // `onAgentSpawned` callback. Used to classify a downstream throw: pre-spawn
-  // → deferred (no budget burn); post-spawn → error (real work happened).
   let didSpawn = false;
   const wrappedDeps: RebaseDriverDeps = {
     ...deps,
@@ -1342,11 +649,6 @@ export async function runAutoResolveAttempt(
 
   const timeoutMs = deps.timeoutMs ?? AUTO_RESOLVE_ATTEMPT_TIMEOUT_MS;
 
-  // Wall-clock timeout. Resolves the outer promise early with an error
-  // outcome and tears down all the runner state `git.rebaseAbort()` alone
-  // doesn't cover. Without the teardown, the session is left with
-  // `running = true` and a zombie agent ref, blocking every subsequent user
-  // turn until the orchestrator restarts.
   let settled = false;
   let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
   const timeoutPromise = new Promise<AutoResolveResult>((resolve) => {
@@ -1354,69 +656,34 @@ export async function runAutoResolveAttempt(
       if (settled) return;
       settled = true;
       void (async () => {
-        // 1. Kill the in-flight agent process.
         try { runner.getAgent()?.kill(); } catch { /* defensive */ }
-        // 2. Clear the agent ref so the next turn doesn't pick up the dead reference.
         runner.setAgent(null);
-        // 3. Reset running flag; the listener's normal `agent_result` reset
-        //    never runs because we killed before completion.
         runner.running = false;
-        // 4. Clear system-turn flag so live steering is allowed again.
         runner.systemTurnInProgress = false;
-        // 5. Emit "idle" so any deferred subscribers re-evaluate.
         runner.onAgentFinished();
-        // 6. Abort the underlying git rebase (best-effort).
         try { await git.rebaseAbort(); } catch { /* may already be aborted */ }
-        // 7. Surface a `rebase_aborted` so the UI clears the rebase banner
-        //    doc 094 raised. The inner driver doesn't emit this on our
-        //    timeout path because it never gets the chance.
         runner.emitMessage({ type: "rebase_aborted", sessionId: runner.sessionId });
         resolve({ outcome: "error", lastError: "timeout", didWork: true });
       })();
     }, timeoutMs);
   });
 
-  // The actual flow. Wrap the throwing/early-exit cases into the AutoResolveResult shape.
   const flowPromise = (async (): Promise<AutoResolveResult> => {
     try {
       const result = await runRebaseFlow(wrappedDeps, baseBranch);
       if (result.status === "up_to_date" && !result.forcePushed) {
-        // GitHub said CONFLICTING; our local view says HEAD already contains
-        // every commit in base, AND the remote already has that head. Races
-        // between GraphQL mergeability recompute and our local fetch. Suppress
-        // the `auto_resolve_result deferred` emit on this specific path —
-        // `runRebaseFlow` already emitted `rebase_complete { forcePushed: false }`
-        // and a contradicting `auto_resolve_result deferred` would flash
-        // "rebased then deferred" in the UI.
+        // rebase_complete already cleared the banner; avoid a contradictory deferred event.
         return { outcome: "deferred", didWork: false, suppressEmit: true };
       }
-      // An up-to-date flow that DID push is a success, not a deferral. Reporting
-      // it as deferred would hand `writeBack` `pushed: false`, so it would skip
-      // the settle window and leave the arbiter's await-fresh-signal unarmed —
-      // and the next poll, still holding GitHub's pre-push CONFLICTING verdict,
-      // would re-fire against a head that no longer has the conflict. That is
-      // the docs/146 spin, which `writeBack`'s own comment records as having
-      // been reached once before "through the one path that used to hard-code
-      // `false`".
-      // up_to_date-with-push / rebased / conflicts_resolved
+      // A push needs the settle window even when no rebase was needed.
       return { outcome: "success", forcePushed: result.status !== "aborted" && "forcePushed" in result ? result.forcePushed : false, didWork: true };
     } catch (err) {
-      // 409 from the running-guard. Pre-spawn, no real work; defer.
       if (err instanceof ServiceError && err.statusCode === 409) {
         return { outcome: "deferred", didWork: false };
       }
-      // Pre-spawn throw (fetch failure, ancestry check, base-ref resolution).
-      // Defer rather than count against budget — a network blip should not
-      // exhaust the per-session attempts.
       if (!didSpawn) {
         return { outcome: "deferred", lastError: getErrorMessage(err), didWork: false };
       }
-      // Post-spawn throw. Real work happened (one or more agent turns).
-      // Ensure the underlying rebase is aborted before returning — without
-      // this cleanup the next attempt's stale-rebase pre-flight defers and
-      // the per-session budget never reaches the cap. `runRebaseFlow` aborts
-      // on its own internal paths (lockfile/abort/continue failures) but a
-      // bubbled-up agent process error escapes before those run.
       try { await git.rebaseAbort(); } catch { /* may already be aborted */ }
       return { outcome: "error", lastError: getErrorMessage(err), didWork: true };
     }
@@ -1425,21 +692,8 @@ export async function runAutoResolveAttempt(
   const winner = await Promise.race([flowPromise, timeoutPromise]);
   settled = true;
   if (timeoutHandle) clearTimeout(timeoutHandle);
-  // planning#146: on the timeout path the teardown's `git.rebaseAbort()`
-  // resolves the race only after it completes, so `.git` + worktree can be left
-  // rewritten without `runRebaseFlow`'s finally having the last write. Hand the
-  // whole workspace back here too — redundant but harmless on the normal path.
-  // (That abort runs as the session's identity, not as root — file-header note;
-  // what is owed afterwards is the ownership reconciliation, not a root repair.)
   handWorkspaceBackToWorker(runner.sessionDir);
-  // nikzlabs/shipit#2349 — and restore LFS content here too, even though
-  // `runRebaseFlow`'s own finally will restore as it unwinds. On the TIMEOUT path
-  // that finally is not enough: the teardown's `git.rebaseAbort()` rewrites the
-  // worktree, then this function drains the queue IMMEDIATELY, while the flow is
-  // still waiting for the killed resolution turn to settle. Without this the
-  // queued turn starts against the stubs — the exact failure #2349 reports — and
-  // the flow's restore lands underneath an already-running turn. The two calls
-  // cannot collide: `restoreLfsAfterTreeRewrite` serializes per workspace.
+  // Timeout aborts can outlast the flow's restoration. Restore again before draining.
   await restoreLfsForSync(deps, baseBranch);
   try {
     await deps.drainQueue?.();

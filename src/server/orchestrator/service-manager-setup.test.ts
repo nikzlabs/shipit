@@ -1,18 +1,3 @@
-/**
- * Focused unit tests for the docs/178 trust gate inside `setupServiceManager`.
- *
- * The gate is the on-activation half of the repo trust boundary: a repo-backed
- * session whose remote has NOT been trusted must defer all repo-declared
- * auto-execution (`agent.install` + compose startup). A session with no remote
- * is authored locally and is trusted by construction.
- *
- * We drive `setupServiceManager` with a minimal fake runner + fake session
- * manager and a real in-memory `RepoStore`, then observe whether it proceeds
- * past the gate. The tell is the `compose_not_configured` emit: the function
- * reaches it only when the gate lets it through (the temp workspace has no
- * `docker-compose.yml`, so a trusted run falls through to that emit; an
- * untrusted run returns before emitting anything).
- */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
@@ -68,14 +53,13 @@ function makeDeps(remoteUrl: string | undefined) {
     composeWarnings: new Map<string, string>(),
     composeNotConfigured: new Set<string>(),
     containerManager: null,
-    // Sibling of the workspace — required (planning#292) and must resolve outside it.
     serviceEnvDir: path.join(tmpDir, "..", "service-env"),
   };
 }
 
 describe("setupServiceManager trust gate (docs/178)", () => {
   it("defers setup for an untrusted remote — nothing is emitted", () => {
-    repoStore.add(REMOTE); // untrusted by default
+    repoStore.add(REMOTE);
     const runner = makeRunner();
     const deps = makeDeps(REMOTE);
 
@@ -93,8 +77,6 @@ describe("setupServiceManager trust gate (docs/178)", () => {
 
     setupServiceManager(runner, deps);
 
-    // No docker-compose.yml in the temp workspace → it reaches the
-    // compose-not-configured branch, proving the gate let it through.
     expect(runner.emitMessage).toHaveBeenCalledWith(
       expect.objectContaining({ type: "compose_not_configured", sessionId: "s1" }),
     );
@@ -103,7 +85,7 @@ describe("setupServiceManager trust gate (docs/178)", () => {
 
   it("treats a session with no remote as trusted (locally authored)", () => {
     const runner = makeRunner();
-    const deps = makeDeps(""); // empty remote = local session
+    const deps = makeDeps("");
 
     setupServiceManager(runner, deps);
 
@@ -113,20 +95,6 @@ describe("setupServiceManager trust gate (docs/178)", () => {
   });
 });
 
-/**
- * The overlay publish hook must not treat a synthesized install success as an
- * installed tree (found by review, 2026-08-20).
- *
- * `publishOverlayBases` takes `installOk` at face value and stamps the base
- * pointer's `markerStamp.installCommands` with the declared list — and that
- * pointer is exactly what `preStampInstallMarker` later reads to decide that a
- * fresh session's dependencies are already installed AND that its command list
- * is accepted. Three paths resolve `ok: true` having observed no install at all
- * (dispose, dispose-before-worker-ready, and the reconnect resync that cannot
- * tell success from failure), so without the `unverified` gate a dropped SSE
- * stream could publish a missing or half-installed dep tree as the SHARED base
- * for the whole scope.
- */
 describe("setupServiceManager — overlay publish gate", () => {
   function runnerWithInstall(): ContainerSessionRunner {
     fs.writeFileSync(path.join(tmpDir, "shipit.yaml"), "agent:\n  install:\n    - npm ci\n");
@@ -148,7 +116,6 @@ describe("setupServiceManager — overlay publish gate", () => {
     vi.spyOn(runner, "emitMessage").mockImplementation(() => undefined);
     const publishOverlayBases = vi.fn(async () => []);
     setupServiceManager(runner, { ...makeDeps(REMOTE), publishOverlayBases });
-    // The publish rides an un-awaited async IIFE hanging off the install promise.
     await vi.waitFor(() => expect(runner.runInstall).toHaveBeenCalled());
     await new Promise((r) => setImmediate(r));
     return publishOverlayBases.mock.calls.length;
@@ -162,12 +129,6 @@ describe("setupServiceManager — overlay publish gate", () => {
     expect(await publishCallsFor({ ok: true, unverified: true })).toBe(0);
   });
 
-  /**
-   * A publish that errors is best-effort and harms nothing — but before this line
-   * the ONLY signal on the host was a `console.warn` inside the session container,
-   * so the tar race measured on 2026-09-02 (18 of 46 live containers) was invisible
-   * to an ops session reading `shipit session logs`.
-   */
   async function logsForOutcomes(outcomes: DepDirPublishOutcome[]): Promise<
     { sessionId: string; source: string; text: string }[]
   > {
@@ -194,18 +155,11 @@ describe("setupServiceManager — overlay publish gate", () => {
     ]);
     expect(lines).toEqual([{
       sessionId: "s1",
-      // `SERVER_LOG_SOURCES` is the cheap first cut in `queryHostSessionLogs`: any
-      // other source is dropped before the template is even consulted, so a source
-      // regression would make this invisible to ops with the text still perfect.
       source: "server",
       text: "Dependency cache: 2 of 3 dependency directories could not be snapshotted as a shared base."
         + " Later sessions of this repository reinstall instead of reusing it.",
     }]);
-    // The producer's real string must match the docs/264 template, or the line is
-    // withheld from `shipit session logs` and the failure stays invisible anyway.
     expect(isOpsSafeLine(lines[0]?.text ?? "")).toBe(true);
-    // Counts only — a repo-declared `agent.dep-dirs` name must never reach the
-    // ops-readable channel.
     expect(lines[0]?.text).not.toMatch(/node_modules/);
   });
 
@@ -217,18 +171,7 @@ describe("setupServiceManager — overlay publish gate", () => {
   });
 });
 
-/**
- * `applyShipitConfigChange` — the incremental "the workspace config moved under
- * us" path, driven both by the in-container file watcher and by
- * orchestrator-side workspace rewrites (rebase / rollback).
- *
- * The bug this covers: a `ServiceManager` captures its `compose:` block (and
- * the session captures `agent.install`) once at setup, so `reconcile()` alone
- * re-parses only the compose FILE. A session rebased onto a base whose
- * `shipit.yaml` changed would keep running the old definition forever.
- */
 describe("applyShipitConfigChange", () => {
-  /** Minimal ServiceManager stand-in — records what the applier asked of it. */
   function makeFakeManager() {
     return {
       composeFile: "docker-compose.yml",
@@ -255,18 +198,12 @@ describe("applyShipitConfigChange", () => {
     return deps;
   }
 
-  // docs/262 — an activation round settles on every session activation and every
-  // shipit.yaml edit, so the reconcile it can trigger must be gated on the
-  // plugin services actually having changed, and must never overlap the first
-  // start() (which is what `serializeStackOp` guarantees).
   describe("plugin services on an activation round (docs/262)", () => {
     function makePluginManager(services: unknown[]) {
       return {
         ...makeFakeManager(),
         setPluginServices: vi.fn((next: unknown[]) =>
           JSON.stringify(next) !== JSON.stringify(services)),
-        // req 23 — a settled round also resyncs the declared credential names,
-        // so a manager in the map has to answer this too.
         refreshSecretsStatus: vi.fn(async () => { /* no secrets store in tests */ }),
       };
     }
@@ -306,21 +243,7 @@ describe("applyShipitConfigChange", () => {
     });
   });
 
-  /**
-   * docs/262 req 20 — a collision the project's OWN compose file gains after the
-   * last activation round.
-   *
-   * The plugin service set is derived from three inputs: the declaration, each
-   * repository's live generation, and the project's own service names
-   * (`collectPluginFragments` seeds its name domain with them). Only the first
-   * two used to re-resolve it. So a user who added a service under a name an
-   * imported plugin already surfaces got both definitions handed to Compose as
-   * one service — the plugin's overlaying theirs — with the collision computed
-   * only when some later activation round happened to settle, which for a
-   * repository that has to be fetched is a network round-trip away.
-   */
   describe("plugin services on a project config change (docs/262 req 20)", () => {
-    /** A manager that records the ORDER the applier drives it in. */
     function makeRecordingManager(surfacedLastRound: unknown[]) {
       const calls: string[] = [];
       const mgr = {
@@ -337,8 +260,6 @@ describe("applyShipitConfigChange", () => {
     it("re-resolves the plugin services before the reconcile runs the new file", async () => {
       writeConfig("compose: docker-compose.yml\n");
       const runner = makeRunner();
-      // Last round surfaced the plugin's `probe`; the project's compose file has
-      // just taken that name, so this round withholds it.
       const { mgr, calls } = makeRecordingManager([{ name: "probe" }]);
       const deps = { ...makeLiveDeps(mgr), resolvePluginServices: vi.fn(async () => [] as never) };
 
@@ -346,9 +267,6 @@ describe("applyShipitConfigChange", () => {
       await vi.waitFor(() => expect(mgr.reconcile).toHaveBeenCalled());
 
       expect(deps.resolvePluginServices).toHaveBeenCalledWith("s1", tmpDir);
-      // BEFORE, not after: `reconcile()` regenerates the override and runs
-      // `compose up`, so a set resolved afterwards is one the ambiguous service
-      // has already been started against.
       expect(calls).toEqual(["setPluginServices", "reconcile"]);
     });
 
@@ -361,9 +279,6 @@ describe("applyShipitConfigChange", () => {
       applyShipitConfigChange(runner, deps);
       await vi.waitFor(() => expect(mgr.reconcile).toHaveBeenCalled());
 
-      // The withholding alone would make the plugin's service vanish with no
-      // reason attached. The card recomputes the collision on every snapshot, so
-      // the push is what makes the reason arrive with the change.
       expect(runner.emitMessage).toHaveBeenCalledWith({
         type: "plugin_repos_updated",
         sessionId: "s1",
@@ -379,20 +294,11 @@ describe("applyShipitConfigChange", () => {
       applyShipitConfigChange(runner, deps);
       await vi.waitFor(() => expect(mgr.reconcile).toHaveBeenCalled());
 
-      // An ordinary compose edit that collides with nothing must not light the
-      // Plugins tab up — the reconcile is the whole of its effect.
       expect(runner.emitMessage).not.toHaveBeenCalledWith(
         expect.objectContaining({ type: "plugin_repos_updated" }),
       );
     });
 
-    // The last-resort path. The resolver's own contract is that it never fails a
-    // session — its one daemon round-trip degrades to a per-repository reason on
-    // the card (`plugin-services.ts`) — so reaching this catch at all means an
-    // unattributable fault. Then: reconcile the project's file anyway on the
-    // previous plugin set. Refusing the project's own reconcile over a plugin
-    // fault inverts req 14, and dropping every repository's services over a
-    // fault none of them can be blamed for takes working siblings away.
     it("reconciles anyway when the resolution itself fails", async () => {
       writeConfig("compose: docker-compose.yml\n");
       const runner = makeRunner();
@@ -404,8 +310,6 @@ describe("applyShipitConfigChange", () => {
 
       applyShipitConfigChange(runner, deps);
 
-      // req 13 — the project's own stack comes up regardless, on the previous
-      // plugin set rather than on none.
       await vi.waitFor(() => expect(mgr.reconcile).toHaveBeenCalled());
       expect(mgr.setPluginServices).not.toHaveBeenCalled();
     });
@@ -419,9 +323,6 @@ describe("applyShipitConfigChange", () => {
     applyShipitConfigChange(runner, makeLiveDeps(mgr));
     await vi.waitFor(() => expect(mgr.reconcile).toHaveBeenCalled());
 
-    // docs/262 — the second argument says whether the project HAS a compose file
-    // of its own, which it does not only when its stack is its declared plugins
-    // alone.
     expect(mgr.updateComposeConfig).toHaveBeenCalledWith(
       { file: "docker-compose.yml", dockerSocket: false },
       { noProjectCompose: false },
@@ -437,8 +338,6 @@ describe("applyShipitConfigChange", () => {
     applyShipitConfigChange(runner, makeLiveDeps(mgr));
     await vi.waitFor(() => expect(mgr.reconcile).toHaveBeenCalled());
 
-    // Without this the reconcile would re-parse the ORIGINAL compose file and
-    // the services declared in the new one would never appear.
     expect(mgr.composeFile).toBe("deploy/compose.yml");
     expect(mgr.dockerSocket).toBe(true);
   });
@@ -476,8 +375,6 @@ describe("applyShipitConfigChange", () => {
   });
 
   it("falls back to full setup when no ServiceManager exists yet", () => {
-    // Compose was never configured for this session — the delta path can't
-    // diff anything, so it must delegate to the full setup.
     writeConfig("agent:\n  install: npm ci\n");
     const runner = makeRunner();
     const deps = makeDeps("");
@@ -523,13 +420,6 @@ describe("applyShipitConfigChange", () => {
   });
 });
 
-/**
- * `resolveShipitConfig` falls back to defaults — which carry `compose:
- * undefined` — for a file that is MISSING *or* merely unreadable. The mid-
- * session applier reads `compose: undefined` as "tear the stack down", so it
- * has to tell those two apart: a transient read failure while git rewrites the
- * working tree must not kill a running preview.
- */
 describe("applyShipitConfigChange — compose-removal is gated on a trustworthy read", () => {
   function makeFakeManager() {
     return {
@@ -544,7 +434,6 @@ describe("applyShipitConfigChange — compose-removal is gated on a trustworthy 
     const runner = makeRunner();
     const deps = makeDeps("");
     deps.serviceManagers.set("s1", makeFakeManager() as unknown as ServiceManager);
-    // No shipit.yaml written at all — ENOENT is a real "no compose declared".
 
     applyShipitConfigChange(runner, deps);
 
@@ -576,7 +465,6 @@ describe("applyShipitConfigChange — compose-removal is gated on a trustworthy 
       spy.mockRestore();
     }
 
-    // Unreadable ≠ removed: the running stack survives untouched.
     expect(deps.serviceManagers.has("s1")).toBe(true);
     expect(deps.composeNotConfigured.has("s1")).toBe(false);
     expect(mgr.stop).not.toHaveBeenCalled();
@@ -584,22 +472,8 @@ describe("applyShipitConfigChange — compose-removal is gated on a trustworthy 
   });
 });
 
-/**
- * planning#292 — `serviceEnvDir` is required, and the wiring hop that supplies it is
- * `ServiceSetupDeps → ServiceManagerOptions → ServiceSecretsResolver`.
- *
- * The `ServiceManager` tests construct a manager directly with an explicit root,
- * so they prove the resolver honours whatever root it is handed but not that
- * `setupServiceManager` hands it the deps' one. That gap matters because the
- * failure mode is a *type-correct* mistake: pass a clone-derived root and the
- * compiler is satisfied while `assertServiceEnvRootOutsideWorkspace` fails the
- * whole stack at start. This test closes it by asserting the effect — where the
- * env file actually lands — through the real construction path.
- */
 describe("setupServiceManager threads serviceEnvDir to the secrets resolver (planning#292)", () => {
   it("writes service env files under the deps' root, never into the clone", async () => {
-    // A real session layout: the clone at `<sessionDir>/workspace`, which is what
-    // `ServiceManager` resolves its state dir from.
     const sessionDir = path.join(tmpDir, "session");
     const clone = path.join(sessionDir, "workspace");
     fs.mkdirSync(clone, { recursive: true });
@@ -612,7 +486,7 @@ describe("setupServiceManager threads serviceEnvDir to the secrets resolver (pla
 
     const runner = makeRunner();
     const deps = {
-      ...makeDeps(""), // no remote → trusted, so the gate lets it through
+      ...makeDeps(""),
       sessionManager: {
         get: () => ({ workspaceDir: clone, remoteUrl: undefined }),
       } as unknown as SessionManager,
@@ -623,8 +497,6 @@ describe("setupServiceManager threads serviceEnvDir to the secrets resolver (pla
 
     const mgr = deps.serviceManagers.get("s1");
     expect(mgr).toBeDefined();
-    // `refreshSecrets()` runs the resolver and returns early when the stack
-    // isn't started, so this needs no Docker.
     await mgr!.refreshSecrets();
 
     expect(fs.existsSync(path.join(serviceEnvDir, "s1", ".env.api"))).toBe(true);
@@ -632,18 +504,7 @@ describe("setupServiceManager threads serviceEnvDir to the secrets resolver (pla
   });
 });
 
-/**
- * Follow-up to nikzlabs/shipit#2429 — the condition is detected where the
- * dependency-input set is resolved, so the user learns from the diagnostics
- * panel that content-keying is off *before* the failure it eventually causes.
- *
- * Driven through `applyShipitConfigChange` because that is the path a user's
- * `shipit.yaml` edit takes, and it is where the record can go stale: the
- * remedy (`agent.install-inputs`) leaves `agent.install` untouched, so a check
- * living inside the command-list delta would never see it.
- */
 describe("content-key reporting (install-content-key.ts)", () => {
-  /** A production-shaped clone — the state dir derives from `<sessionDir>/workspace`. */
   function makeClone(): string {
     const clone = path.join(tmpDir, "session", "workspace");
     fs.mkdirSync(clone, { recursive: true });
@@ -699,8 +560,6 @@ describe("content-key reporting (install-content-key.ts)", () => {
     applyShipitConfigChange(runner, deps);
     expect(installContentKeyDiagnostic(clone)).not.toBeNull();
 
-    // The remedy the notice names. The command list does not move, so this is
-    // exactly what a check inside the `sameCommands` delta would miss.
     fs.writeFileSync(
       path.join(clone, "shipit.yaml"),
       `${install}  install-inputs: [package.json, package-lock.json, prisma/schema.prisma]\n`,
@@ -711,10 +570,6 @@ describe("content-key reporting (install-content-key.ts)", () => {
     runner.dispose({ force: true });
   });
 
-  // The other tests here drive `applyShipitConfigChange`. This one drives the
-  // INITIAL setup, which is where the spec puts the detection: the two paths
-  // are separate call sites, so an early return added to one would otherwise
-  // diverge silently from the other.
   it("detects at first setup, not only on a later config change", () => {
     const clone = makeClone();
     fs.writeFileSync(
@@ -722,7 +577,6 @@ describe("content-key reporting (install-content-key.ts)", () => {
       "agent:\n  install:\n    - npm ci\n    - npm run build\n",
     );
     const runner = makeContainerRunner(clone);
-    // The install itself needs a worker; the detection sits beside it and does not.
     vi.spyOn(runner, "runInstall").mockResolvedValue({ ok: true });
     const deps = makeDeps("");
     deps.sessionManager = {
@@ -750,13 +604,6 @@ describe("content-key reporting (install-content-key.ts)", () => {
   });
 });
 
-/**
- * planning#496 — `onStopped` is what tells every browser that a session's
- * previews are gone, and a viewer acts on it by dropping that session's
- * iframes. So it must fire on the stop having SUCCEEDED, never on it having
- * been started: `compose down` is asynchronous and allowed to fail, and either
- * mistake discards a document that is still being served.
- */
 describe("trackComposeStop — onStopped", () => {
   it("does not fire while the stop is still in flight", async () => {
     const { trackComposeStop } = await import("./service-manager-setup.js");
@@ -787,8 +634,6 @@ describe("trackComposeStop — onStopped", () => {
   });
 
   it("does not report a throwing callback as a failed stop", async () => {
-    // The callback is an SSE broadcast; if it threw, the shared `.catch` would
-    // otherwise log "Failed to stop compose stack" for a stop that worked.
     const { trackComposeStop } = await import("./service-manager-setup.js");
     const mgr = { stop: () => Promise.resolve() };
     const errors = vi.spyOn(console, "error").mockImplementation(() => {});

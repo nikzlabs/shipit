@@ -1,10 +1,3 @@
-/**
- * Unit tests for Docker API proxy.
- *
- * Uses a mock Docker daemon (http server on Unix socket) to test proxy
- * policy enforcement without a real Docker daemon.
- */
-
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
@@ -14,26 +7,14 @@ import os from "node:os";
 import { createDockerProxy, PARENT_SESSION_LABEL } from "./docker-proxy.js";
 import type { SessionInfo, DockerProxyDeps } from "./docker-proxy.js";
 
-// ---------------------------------------------------------------------------
-// Mock Docker daemon — a simple HTTP server on a Unix socket
-// ---------------------------------------------------------------------------
-
 interface MockDaemon {
   server: http.Server;
   socketPath: string;
-  /** Containers stored by the mock. Map of id → { labels, running, hostConfig } */
   containers: Map<string, { labels: Record<string, string>; running: boolean; hostConfig?: Record<string, unknown> }>;
-  /** Networks stored by the mock. */
   networks: Map<string, { labels: Record<string, string> }>;
-  /** Volumes stored by the mock. */
   volumes: Map<string, { labels: Record<string, string> }>;
-  /** Exec instances. Map of exec_id → container_id */
+  /** exec_id → container_id */
   execs: Map<string, string>;
-  /**
-   * Called as the daemon begins serving a request — i.e. at the moment the real
-   * daemon would be acting on it. The only place a test can observe orchestrator
-   * state *while* a Docker mutation is in flight.
-   */
   onServe?: (method: string, url: string) => void;
   close: () => Promise<void>;
 }
@@ -54,7 +35,6 @@ function createMockDaemon(): MockDaemon {
     const method = (req.method ?? "GET").toUpperCase();
     daemon.onServe?.(method, url);
 
-    // Read body for POST/PUT
     const chunks: Buffer[] = [];
     req.on("data", (chunk: Buffer) => chunks.push(chunk));
     req.on("end", () => {
@@ -64,15 +44,11 @@ function createMockDaemon(): MockDaemon {
         try { body = JSON.parse(bodyStr); } catch { /* ignore */ }
       }
 
-      // Route handling
       const respond = (status: number, data: unknown) => {
         res.writeHead(status, { "Content-Type": "application/json" });
         res.end(JSON.stringify(data));
       };
 
-      // Validate content-type for POST/PUT requests with JSON bodies.
-      // The real Docker daemon requires application/json; our mock should too
-      // to catch missing content-type forwarding in the proxy.
       const contentType = req.headers["content-type"] ?? "";
       const expectsJson = (method === "POST" || method === "PUT") && bodyStr && !(/\/build/.exec(url));
       if (expectsJson && !contentType.includes("application/json")) {
@@ -80,26 +56,22 @@ function createMockDaemon(): MockDaemon {
         return;
       }
 
-      // GET /_ping
       if (url === "/_ping" && method === "GET") {
         res.writeHead(200, { "Content-Type": "text/plain" });
         res.end("OK");
         return;
       }
 
-      // GET /version
       if ((/\/v[\d.]+\/version$|^\/version$/.exec(url)) && method === "GET") {
         respond(200, { Version: "20.10.0", ApiVersion: "1.41" });
         return;
       }
 
-      // GET /info
       if ((/\/info$/.exec(url)) && method === "GET") {
         respond(200, { ID: "mock-daemon" });
         return;
       }
 
-      // POST /containers/create
       if ((/\/containers\/create/.exec(url)) && method === "POST") {
         containerCounter++;
         const id = `mock-container-${containerCounter}`;
@@ -110,7 +82,6 @@ function createMockDaemon(): MockDaemon {
         return;
       }
 
-      // GET /containers/json
       if ((/\/containers\/json/.exec(url)) && method === "GET") {
         const list = [...containers.entries()].map(([id, c]) => ({
           Id: id,
@@ -121,7 +92,6 @@ function createMockDaemon(): MockDaemon {
         return;
       }
 
-      // GET /containers/{id}/json
       const containerInspectMatch = /\/containers\/([^/]+)\/json/.exec(url);
       if (containerInspectMatch && method === "GET") {
         const id = containerInspectMatch[1];
@@ -131,7 +101,6 @@ function createMockDaemon(): MockDaemon {
         return;
       }
 
-      // POST /containers/{id}/start
       const containerStartMatch = /\/containers\/([^/]+)\/start/.exec(url);
       if (containerStartMatch && method === "POST") {
         const id = containerStartMatch[1];
@@ -142,7 +111,6 @@ function createMockDaemon(): MockDaemon {
         return;
       }
 
-      // POST /containers/{id}/stop
       const containerStopMatch = /\/containers\/([^/]+)\/stop/.exec(url);
       if (containerStopMatch && method === "POST") {
         const id = containerStopMatch[1];
@@ -153,7 +121,6 @@ function createMockDaemon(): MockDaemon {
         return;
       }
 
-      // DELETE /containers/{id}
       const containerDeleteMatch = (/\/containers\/([^/]+)$/.exec(url)) && method === "DELETE";
       if (containerDeleteMatch) {
         const id = /\/containers\/([^/]+)$/.exec(url)![1];
@@ -162,7 +129,6 @@ function createMockDaemon(): MockDaemon {
         return;
       }
 
-      // POST /containers/{id}/exec
       const execCreateMatch = /\/containers\/([^/]+)\/exec/.exec(url);
       if (execCreateMatch && method === "POST") {
         const containerId = execCreateMatch[1];
@@ -175,7 +141,6 @@ function createMockDaemon(): MockDaemon {
         return;
       }
 
-      // GET /exec/{id}/json
       const execInspectMatch = /\/exec\/([^/]+)\/json/.exec(url);
       if (execInspectMatch && method === "GET") {
         const execId = execInspectMatch[1];
@@ -185,7 +150,6 @@ function createMockDaemon(): MockDaemon {
         return;
       }
 
-      // POST /exec/{id}/start
       const execStartMatch = /\/exec\/([^/]+)\/start/.exec(url);
       if (execStartMatch && method === "POST") {
         const execId = execStartMatch[1];
@@ -195,7 +159,6 @@ function createMockDaemon(): MockDaemon {
         return;
       }
 
-      // POST /networks/create
       if ((/\/networks\/create/.exec(url)) && method === "POST") {
         const id = `mock-network-${Date.now()}`;
         const labels = (body.Labels ?? {}) as Record<string, string>;
@@ -204,7 +167,6 @@ function createMockDaemon(): MockDaemon {
         return;
       }
 
-      // GET /networks
       if ((/\/networks(\?|$)/.exec(url)) && method === "GET" && !(/\/networks\/[^?]/.exec(url))) {
         const list = [...networks.entries()].map(([id, n]) => ({
           Id: id, Name: id, Labels: n.labels,
@@ -213,7 +175,6 @@ function createMockDaemon(): MockDaemon {
         return;
       }
 
-      // GET /networks/{id}
       const networkInspectMatch = /\/networks\/([^/?]+)$/.exec(url);
       if (networkInspectMatch && method === "GET") {
         const id = networkInspectMatch[1];
@@ -223,7 +184,6 @@ function createMockDaemon(): MockDaemon {
         return;
       }
 
-      // DELETE /networks/{id}
       if (networkInspectMatch && method === "DELETE") {
         const id = /\/networks\/([^/?]+)$/.exec(url)![1];
         networks.delete(id);
@@ -231,7 +191,6 @@ function createMockDaemon(): MockDaemon {
         return;
       }
 
-      // POST /volumes/create
       if ((/\/volumes\/create/.exec(url)) && method === "POST") {
         const name = (body.Name as string) ?? `mock-vol-${Date.now()}`;
         const labels = (body.Labels ?? {}) as Record<string, string>;
@@ -240,7 +199,6 @@ function createMockDaemon(): MockDaemon {
         return;
       }
 
-      // GET /volumes
       if ((/\/volumes(\?|$)/.exec(url)) && method === "GET" && !(/\/volumes\/[^?]/.exec(url))) {
         const list = [...volumes.entries()].map(([name, v]) => ({
           Name: name, Labels: v.labels,
@@ -249,7 +207,6 @@ function createMockDaemon(): MockDaemon {
         return;
       }
 
-      // GET /volumes/{name}
       const volumeInspectMatch = /\/volumes\/([^/?]+)$/.exec(url);
       if (volumeInspectMatch && method === "GET") {
         const name = volumeInspectMatch[1];
@@ -259,7 +216,6 @@ function createMockDaemon(): MockDaemon {
         return;
       }
 
-      // DELETE /volumes/{name}
       if (volumeInspectMatch && method === "DELETE") {
         const name = /\/volumes\/([^/?]+)$/.exec(url)![1];
         volumes.delete(name);
@@ -267,31 +223,26 @@ function createMockDaemon(): MockDaemon {
         return;
       }
 
-      // GET /images/json
       if ((/\/images/.exec(url)) && method === "GET") {
         respond(200, []);
         return;
       }
 
-      // POST /images/create
       if ((/\/images\/create/.exec(url)) && method === "POST") {
         respond(200, {});
         return;
       }
 
-      // POST /build
       if ((/\/build/.exec(url)) && method === "POST") {
         respond(200, { stream: "built" });
         return;
       }
 
-      // POST /networks/{id}/connect
       if ((/\/networks\/[^/]+\/connect/.exec(url)) && method === "POST") {
         respond(200, {});
         return;
       }
 
-      // POST /networks/{id}/disconnect
       if ((/\/networks\/[^/]+\/disconnect/.exec(url)) && method === "POST") {
         respond(200, {});
         return;
@@ -319,17 +270,12 @@ function createMockDaemon(): MockDaemon {
   return daemon;
 }
 
-// ---------------------------------------------------------------------------
-// Test helpers
-// ---------------------------------------------------------------------------
-
 function makeRequest(
   proxyUrl: string,
   method: string,
   path: string,
   body?: unknown,
   sourceIp?: string,
-  /** Headers set after the body's own, so a test can state its own content type. */
   extraHeaders?: Record<string, string>,
 ): Promise<{ status: number; body: unknown }> {
   return new Promise((resolve, reject) => {
@@ -369,16 +315,11 @@ function makeRequest(
   });
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
 describe("Docker API proxy", () => {
   let daemon: MockDaemon;
   let proxy: http.Server;
   let proxyUrl: string;
   let sessionMap: Map<string, SessionInfo>;
-  /** Currently-open topology brackets, and how many were ever opened. */
   let openBrackets: number;
   let bracketOpensSeen: number;
 
@@ -387,7 +328,6 @@ describe("Docker API proxy", () => {
     await new Promise<void>((resolve) => daemon.server.listen(daemon.socketPath, resolve));
 
     sessionMap = new Map();
-    // Default session with Docker access
     sessionMap.set("127.0.0.1", {
       sessionId: "session-1",
       hostWorkspaceDir: "/workspace/sessions/session-1",
@@ -419,11 +359,8 @@ describe("Docker API proxy", () => {
     await daemon.close();
   });
 
-  // --- Source IP routing ---
-
   describe("source IP routing", () => {
     it("returns 403 for unknown source IPs", async () => {
-      // Mock a session on a different IP
       sessionMap.clear();
       sessionMap.set("10.0.0.99", {
         sessionId: "remote-session",
@@ -449,8 +386,6 @@ describe("Docker API proxy", () => {
     });
   });
 
-  // --- System endpoints ---
-
   describe("system endpoints", () => {
     it("allows GET /_ping", async () => {
       const res = await makeRequest(proxyUrl, "GET", "/_ping");
@@ -469,8 +404,6 @@ describe("Docker API proxy", () => {
     });
   });
 
-  // --- Default deny ---
-
   describe("default deny", () => {
     it("returns 403 for unknown endpoints", async () => {
       const res = await makeRequest(proxyUrl, "POST", "/v1.41/swarm/init");
@@ -479,34 +412,7 @@ describe("Docker API proxy", () => {
     });
   });
 
-  // --- Topology announcements to the API trust boundary ---
-
-  /**
-   * `sanitizeContainerCreate` stamps `shipit-parent-session` on every container
-   * the agent creates through this proxy, which makes those containers callers
-   * `api-container-guard.ts` has to recognise — it denies them the whole `/api/*`
-   * surface. It recognises them through a periodically-rebuilt IP index, and an
-   * unrecognised source IP reads as "browser or host", i.e. as MORE trusted than
-   * the agent that created the container. So a mutating proxy request has to say
-   * so, on both sides of the handler: the announcement AFTER it is what stops a
-   * snapshot that began before the new container from publishing as
-   * authoritative.
-   */
-  /**
-   * docs/201 — the container-topology bracket.
-   *
-   * `sanitizeContainerCreate` stamps `shipit-parent-session` on every container
-   * the agent creates through this proxy, which makes those containers callers
-   * `api-container-guard.ts` has to recognise — it denies them the whole `/api/*`
-   * surface. It recognises them through an IP index that answers from a
-   * periodically-refreshed snapshot, and an unrecognised source IP reads as
-   * "browser or host", i.e. as MORE trusted than the agent that created the
-   * container. So the operations that put a RUNNING container on a session
-   * network are bracketed, and the bracket has to still be open while the daemon
-   * acts.
-   */
   describe("container-topology brackets", () => {
-    /** How many brackets were open at the moment the daemon served the request. */
     async function openWhileServing(
       method: string,
       path: string,
@@ -526,10 +432,6 @@ describe("Docker API proxy", () => {
     }
 
     it("holds one across a container START, which is when code begins running", async () => {
-      // The case that matters most and the one that is easiest to get wrong:
-      // this route forwards with `pipeToDocker`, which used to be
-      // fire-and-forget — so the handler resolved, the bracket closed, and only
-      // THEN did the daemon start the container.
       const id = await createContainer();
 
       const { status, open } = await openWhileServing("POST", `/v1.41/containers/${id}/start`);
@@ -561,8 +463,6 @@ describe("Docker API proxy", () => {
     });
 
     it("opens nothing for a create — a created container runs nothing and holds no address", async () => {
-      // Scope discipline, not an omission. A bracket suspends the API guard's
-      // fast path, so every one that buys nothing is pure latency.
       bracketOpensSeen = 0;
       const res = await makeRequest(proxyUrl, "POST", "/v1.41/containers/create", { Image: "alpine" });
 
@@ -571,8 +471,6 @@ describe("Docker API proxy", () => {
     });
 
     it("opens nothing for reads, or for mutations that only remove", async () => {
-      // A stop/kill/delete can only remove an index entry, and a stale positive
-      // fails toward denial.
       const id = await createContainer();
 
       await makeRequest(proxyUrl, "GET", "/_ping");
@@ -584,10 +482,6 @@ describe("Docker API proxy", () => {
     });
 
     it("opens nothing for a start the label check refuses", async () => {
-      // The bracket is taken after authorisation, not at dispatch. Otherwise a
-      // caller with no right to the container — or one that simply sends its
-      // body slowly — could hold the whole orchestrator's browser traffic on the
-      // Docker path for as long as it liked.
       daemon.containers.set("foreign", { labels: { [PARENT_SESSION_LABEL]: "other-session" }, running: false });
       bracketOpensSeen = 0;
 
@@ -597,8 +491,6 @@ describe("Docker API proxy", () => {
       expect(bracketOpensSeen).toBe(0);
     });
   });
-
-  // --- Container create sanitization ---
 
   describe("container create sanitization", () => {
     it("rejects privileged containers", async () => {
@@ -806,13 +698,6 @@ describe("Docker API proxy", () => {
       expect(container?.hostConfig?.NetworkMode).toBe("shipit-session-abc123");
     });
 
-    // --- planning#137: create-time network-ownership enforcement ---
-    // A named NetworkMode (or NetworkingConfig entry) must belong to the session,
-    // mirroring the POST /networks/{id}/connect ownership check. Otherwise a child
-    // container could be created directly on the orchestrator's network, where its
-    // IP is not a known session-container IP and the API guard treats it as a
-    // trusted browser origin.
-
     it("rejects NetworkMode naming a network owned by another session", async () => {
       daemon.networks.set("orchestrator-net", { labels: { [PARENT_SESSION_LABEL]: "other-session" } });
       const res = await makeRequest(proxyUrl, "POST", "/v1.41/containers/create", {
@@ -824,7 +709,6 @@ describe("Docker API proxy", () => {
     });
 
     it("rejects NetworkMode naming a network the proxy cannot see (e.g. orchestrator network)", async () => {
-      // Network not present in the daemon's session-visible set → inspect is 404 → not owned.
       const res = await makeRequest(proxyUrl, "POST", "/v1.41/containers/create", {
         Image: "alpine",
         HostConfig: { NetworkMode: "shipit_default" },
@@ -879,17 +763,13 @@ describe("Docker API proxy", () => {
       const largeBody = { Image: "alpine", HostConfig: {}, data: "x".repeat(11 * 1024 * 1024) };
       try {
         const res = await makeRequest(proxyUrl, "POST", "/v1.41/containers/create", largeBody);
-        // If we get a response, it should be a 400
         expect(res.status).toBe(400);
         expect((res.body as any).message).toContain("too large");
       } catch (err) {
-        // Connection may be reset before response is sent — this is acceptable
         expect((err as Error).message).toMatch(/ECONNRESET|socket hang up|EPIPE/);
       }
     });
   });
-
-  // --- Unsupported container endpoints ---
 
   describe("unsupported container endpoints", () => {
     it("blocks POST /containers/{id}/rename with clear message", async () => {
@@ -905,20 +785,16 @@ describe("Docker API proxy", () => {
     });
   });
 
-  // --- Label-based scoping ---
-
   describe("label-based container scoping", () => {
     let ownedContainerId: string;
     let foreignContainerId: string;
 
     beforeEach(async () => {
-      // Create a container owned by session-1
       const res1 = await makeRequest(proxyUrl, "POST", "/v1.41/containers/create", {
         Image: "alpine", HostConfig: {},
       });
       ownedContainerId = (res1.body as any).Id;
 
-      // Create a foreign container directly in the mock daemon
       daemon.containers.set("foreign-container", {
         labels: { [PARENT_SESSION_LABEL]: "other-session" },
         running: true,
@@ -965,28 +841,22 @@ describe("Docker API proxy", () => {
     });
   });
 
-  // --- Exec scoping ---
-
   describe("exec-to-container resolution", () => {
     it("allows exec on owned container", async () => {
-      // Create a container owned by session-1
       const createRes = await makeRequest(proxyUrl, "POST", "/v1.41/containers/create", {
         Image: "alpine", HostConfig: {},
       });
       const containerId = (createRes.body as any).Id;
 
-      // Create exec via proxy
       const execRes = await makeRequest(proxyUrl, "POST", `/v1.41/containers/${containerId}/exec`, {
         Cmd: ["ls"],
       });
       expect(execRes.status).toBe(201);
       const execId = (execRes.body as any).Id;
 
-      // GET exec inspect
       const inspectRes = await makeRequest(proxyUrl, "GET", `/v1.41/exec/${execId}/json`);
       expect(inspectRes.status).toBe(200);
 
-      // POST exec start
       const startRes = await makeRequest(proxyUrl, "POST", `/v1.41/exec/${execId}/start`, {
         Detach: false, Tty: false,
       });
@@ -994,22 +864,18 @@ describe("Docker API proxy", () => {
     });
 
     it("rejects exec on foreign container", async () => {
-      // Create foreign exec in mock daemon directly
       daemon.containers.set("foreign-c", {
         labels: { [PARENT_SESSION_LABEL]: "other-session" },
         running: true,
       });
       daemon.execs.set("foreign-exec-1", "foreign-c");
 
-      // Try to start it via proxy
       const res = await makeRequest(proxyUrl, "POST", "/v1.41/exec/foreign-exec-1/start", {
         Detach: false,
       });
       expect(res.status).toBe(403);
     });
   });
-
-  // --- Network scoping ---
 
   describe("network scoping", () => {
     it("POST /networks/create overwrites session label", async () => {
@@ -1019,16 +885,13 @@ describe("Docker API proxy", () => {
       });
       expect(res.status).toBe(201);
 
-      // Verify the label was overwritten in the daemon
       const network = [...daemon.networks.values()][0];
       expect(network.labels[PARENT_SESSION_LABEL]).toBe("session-1");
     });
 
     it("GET /networks filters to session networks", async () => {
-      // Create owned network
       await makeRequest(proxyUrl, "POST", "/v1.41/networks/create", { Name: "owned-net" });
 
-      // Create foreign network in daemon
       daemon.networks.set("foreign-net", { labels: { [PARENT_SESSION_LABEL]: "other-session" } });
 
       const res = await makeRequest(proxyUrl, "GET", "/v1.41/networks");
@@ -1052,7 +915,6 @@ describe("Docker API proxy", () => {
 
     it("POST /networks/{id}/connect rejects foreign network", async () => {
       daemon.networks.set("foreign-net", { labels: { [PARENT_SESSION_LABEL]: "other-session" } });
-      // Create an owned container to connect
       const createRes = await makeRequest(proxyUrl, "POST", "/v1.41/containers/create", {
         Image: "alpine",
         HostConfig: {},
@@ -1065,8 +927,6 @@ describe("Docker API proxy", () => {
       expect(res.status).toBe(403);
     });
   });
-
-  // --- Volume scoping ---
 
   describe("volume scoping", () => {
     it("POST /volumes/create overwrites session label", async () => {
@@ -1100,10 +960,8 @@ describe("Docker API proxy", () => {
     });
 
     it("GET /volumes filters to session volumes", async () => {
-      // Create owned volume
       await makeRequest(proxyUrl, "POST", "/v1.41/volumes/create", { Name: "owned-vol" });
 
-      // Create foreign volume in daemon
       daemon.volumes.set("foreign-vol", { labels: { [PARENT_SESSION_LABEL]: "other-session" } });
 
       const res = await makeRequest(proxyUrl, "GET", "/v1.41/volumes");
@@ -1126,8 +984,6 @@ describe("Docker API proxy", () => {
     });
   });
 
-  // --- Resource limit enforcement ---
-
   describe("resource limit enforcement", () => {
     beforeEach(() => {
       sessionMap.set("127.0.0.1", {
@@ -1135,7 +991,7 @@ describe("Docker API proxy", () => {
         hostWorkspaceDir: "/workspace/sessions/session-1",
         dockerAccess: true,
         resourceLimits: {
-          memory: 512 * 1024 * 1024, // 512 MB
+          memory: 512 * 1024 * 1024,
           cpuQuota: 200_000,
           pidsLimit: 1024,
         },
@@ -1195,8 +1051,6 @@ describe("Docker API proxy", () => {
     });
   });
 
-  // --- Image endpoints (unscoped) ---
-
   describe("image endpoints", () => {
     it("allows GET /images/json", async () => {
       const res = await makeRequest(proxyUrl, "GET", "/v1.41/images/json");
@@ -1218,11 +1072,6 @@ describe("Docker API proxy", () => {
       expect(res.status).toBe(200);
     });
 
-    /**
-     * The build endpoint takes its network mode as a QUERY parameter, so the
-     * container-create sanitizer never sees it. Same daemon, same host
-     * namespace — one rule.
-     */
     it("blocks POST /build?networkmode=host", async () => {
       const res = await makeRequest(proxyUrl, "POST", "/v1.41/build?t=app&networkmode=host");
       expect(res.status).toBe(403);
@@ -1234,12 +1083,6 @@ describe("Docker API proxy", () => {
       expect(res.status).toBe(403);
     });
 
-    /**
-     * `FormValue` reads the BODY first for a form content type, so a query
-     * string saying `none` and a form body saying `host` would leave the
-     * daemon acting on `host`. The content type that makes that possible is
-     * refused, whatever the query says.
-     */
     it("blocks a form-encoded POST /build, which could override the query", async () => {
       const res = await makeRequest(
         proxyUrl, "POST", "/v1.41/build?remote=http://example.invalid/ctx&networkmode=none",

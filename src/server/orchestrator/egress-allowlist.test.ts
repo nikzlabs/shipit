@@ -1,7 +1,3 @@
-/**
- * Tests for the egress allowlist (docs/172 Gap 1, planning#92).
- */
-
 import { describe, it, expect } from "vitest";
 import {
   EGRESS_DEFAULT_ALLOWLIST,
@@ -26,10 +22,6 @@ import type { CredentialStore } from "./credential-store.js";
 import type { McpServerConfig, OAuthTokens } from "../shared/types/mcp-types.js";
 import type { SessionInfo } from "../shared/types.js";
 
-// ---------------------------------------------------------------------------
-// normalizeHost / hostMatchesEntry
-// ---------------------------------------------------------------------------
-
 describe("normalizeHost", () => {
   it("lowercases and strips a single trailing dot", () => {
     expect(normalizeHost("API.GitHub.COM")).toBe("api.github.com");
@@ -52,7 +44,6 @@ describe("hostMatchesEntry", () => {
   });
 
   it("suffix entry does NOT match a look-alike that merely ends in the string", () => {
-    // The classic allowlist bypass: "evil-github.com" should not match ".github.com".
     expect(hostMatchesEntry("evilgithub.com", ".github.com")).toBe(false);
     expect(hostMatchesEntry("github.com.attacker.com", ".github.com")).toBe(false);
   });
@@ -61,10 +52,6 @@ describe("hostMatchesEntry", () => {
     expect(hostMatchesEntry("API.GITHUB.COM.", ".github.com")).toBe(true);
   });
 });
-
-// ---------------------------------------------------------------------------
-// makeAllowlist
-// ---------------------------------------------------------------------------
 
 describe("makeAllowlist", () => {
   it("de-duplicates normalized entries", () => {
@@ -77,10 +64,6 @@ describe("makeAllowlist", () => {
     expect(al.isAllowed("")).toBe(false);
   });
 });
-
-// ---------------------------------------------------------------------------
-// parseAllowlistEnv / hostFromUrl
-// ---------------------------------------------------------------------------
 
 describe("parseAllowlistEnv", () => {
   it("splits on commas and whitespace, trims, drops blanks", () => {
@@ -101,10 +84,6 @@ describe("hostFromUrl", () => {
     expect(hostFromUrl("not a url")).toBeNull();
   });
 });
-
-// ---------------------------------------------------------------------------
-// mcpHostsFromCredentialStore — minimal stub of the store surface used
-// ---------------------------------------------------------------------------
 
 function stubStore(opts: {
   servers?: Record<string, McpServerConfig>;
@@ -138,10 +117,6 @@ describe("mcpHostsFromCredentialStore", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// buildEgressAllowlist — composition + acceptance-style checks
-// ---------------------------------------------------------------------------
-
 describe("buildEgressAllowlist", () => {
   it("allows the core agent / git / registry hosts by default", () => {
     const al = buildEgressAllowlist();
@@ -153,26 +128,20 @@ describe("buildEgressAllowlist", () => {
     expect(al.isAllowed("codeload.github.com")).toBe(true);
     expect(al.isAllowed("registry.npmjs.org")).toBe(true);
     expect(al.isAllowed("api.openai.com")).toBe(true);
-    // Node headers tarball for node-gyp native-module builds (node-pty, etc.)
     expect(al.isAllowed("nodejs.org")).toBe(true);
   });
 
-  // docs/213 — the baked Android toolchain needs Gradle/Maven dependency repos
-  // reachable, or every build fails at resolution. These are read-only artifact
-  // registries (the JVM analog of npm/pypi).
   it("allows JVM/Android build artifact registries by default", () => {
     const al = buildEgressAllowlist();
-    expect(al.isAllowed("services.gradle.org")).toBe(true); // wrapper distributions
-    expect(al.isAllowed("plugins.gradle.org")).toBe(true); // plugin portal
-    expect(al.isAllowed("dl.google.com")).toBe(true); // Google Maven (AGP, AndroidX) + sdkmanager
+    expect(al.isAllowed("services.gradle.org")).toBe(true);
+    expect(al.isAllowed("plugins.gradle.org")).toBe(true);
+    expect(al.isAllowed("dl.google.com")).toBe(true);
     expect(al.isAllowed("maven.google.com")).toBe(true);
-    expect(al.isAllowed("repo.maven.apache.org")).toBe(true); // Maven Central
-    expect(al.isAllowed("repo1.maven.org")).toBe(true); // Maven Central alias
+    expect(al.isAllowed("repo.maven.apache.org")).toBe(true);
+    expect(al.isAllowed("repo1.maven.org")).toBe(true);
     expect(al.isAllowed("oss.sonatype.org")).toBe(true);
   });
 
-  // The Google Maven entry MUST be exact (dl.google.com), never a ".google.com"
-  // suffix — the bare suffix would re-open Gmail/Drive/Forms as exfil channels.
   it("does NOT open the rest of google.com via the Google Maven entry", () => {
     const al = buildEgressAllowlist();
     expect(al.isAllowed("mail.google.com")).toBe(false);
@@ -185,9 +154,7 @@ describe("buildEgressAllowlist", () => {
     const al = buildEgressAllowlist();
     expect(al.isAllowed("attacker.com")).toBe(false);
     expect(al.isAllowed("evil.example.com")).toBe(false);
-    // look-alike that ends with an allowlisted suffix but isn't a subdomain
     expect(al.isAllowed("api.anthropic.com.attacker.com")).toBe(false);
-    // look-alike for the new Google Maven exact entry
     expect(al.isAllowed("dl.google.com.attacker.com")).toBe(false);
   });
 
@@ -218,7 +185,7 @@ describe("buildEgressAllowlist", () => {
   it("base default list is non-empty and all suffix/exact entries normalize", () => {
     expect(EGRESS_DEFAULT_ALLOWLIST.length).toBeGreaterThan(0);
     for (const e of EGRESS_DEFAULT_ALLOWLIST) {
-      expect(normalizeHost(e)).toBe(e); // already normalized in source
+      expect(normalizeHost(e)).toBe(e);
     }
   });
 
@@ -239,10 +206,6 @@ describe("buildEgressAllowlist", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// composeEgressExtraHosts — the shared resolver/proxy extra-host seam
-// ---------------------------------------------------------------------------
-
 describe("composeEgressExtraHosts", () => {
   it("returns [] for an empty env + no sources", () => {
     expect(composeEgressExtraHosts({ env: {} })).toEqual([]);
@@ -260,7 +223,7 @@ describe("composeEgressExtraHosts", () => {
     const hosts = composeEgressExtraHosts({
       env: { SESSION_EGRESS_ALLOWLIST: "ops.corp" },
       credentialStore: store,
-      durableHosts: ["Durable.Example.com.", "ops.corp"], // dup + needs-normalize
+      durableHosts: ["Durable.Example.com.", "ops.corp"],
     });
     expect(hosts).toEqual(["ops.corp", "mcp.acme.dev", "durable.example.com"]);
   });
@@ -269,10 +232,6 @@ describe("composeEgressExtraHosts", () => {
     expect(composeEgressExtraHosts({ env: {}, durableHosts: [".user.example.com"] })).toEqual([".user.example.com"]);
   });
 });
-
-// ---------------------------------------------------------------------------
-// buildEffectiveAllowlist — provenance view for the Settings editor
-// ---------------------------------------------------------------------------
 
 describe("buildEffectiveAllowlist", () => {
   it("tags built-in defaults AND user hosts as removable (overridable defaults)", () => {
@@ -292,7 +251,6 @@ describe("buildEffectiveAllowlist", () => {
     expect(all.some((e) => e.host === ".github.com")).toBe(true);
     const withSuppressed = buildEffectiveAllowlist({ env: {}, suppressedDefaults: [".github.com"] });
     expect(withSuppressed.some((e) => e.host === ".github.com")).toBe(false);
-    // other defaults remain
     expect(withSuppressed.some((e) => e.host === ".anthropic.com")).toBe(true);
   });
 
@@ -316,15 +274,11 @@ describe("buildEffectiveAllowlist", () => {
 describe("isBuiltinDefault", () => {
   it("recognizes a built-in default (normalized), rejects others", () => {
     expect(isBuiltinDefault(".github.com")).toBe(true);
-    expect(isBuiltinDefault(".GitHub.com.")).toBe(true); // case + trailing dot
+    expect(isBuiltinDefault(".GitHub.com.")).toBe(true);
     expect(isBuiltinDefault("attacker.com")).toBe(false);
-    expect(isBuiltinDefault("api.github.com")).toBe(false); // not the exact default entry
+    expect(isBuiltinDefault("api.github.com")).toBe(false);
   });
 });
-
-// ---------------------------------------------------------------------------
-// composeEgressIdentityRules (Phase 2 — SNI-scoped tenant identity)
-// ---------------------------------------------------------------------------
 
 describe("composeEgressIdentityRules", () => {
   const env = (v?: string): NodeJS.ProcessEnv => ({ SESSION_EGRESS_IDENTITY_RULES: v } as NodeJS.ProcessEnv);
@@ -373,17 +327,12 @@ describe("composeEgressIdentityRules", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// docs/211 — sandbox lifeline-only egress (network capability OFF)
-// ---------------------------------------------------------------------------
 describe("sandboxLifelineBase", () => {
   it("is the LLM-API lifeline only — no registries, no git host — when git is off", () => {
     const base = sandboxLifelineBase({ git: false });
     expect(base).toEqual([...EGRESS_LIFELINE_ALLOWLIST]);
-    // The agent's own API is reachable…
     expect(base).toContain(".anthropic.com");
     expect(base).toContain("platform.claude.com");
-    // …but the package registries and git host of the FULL default base are not.
     expect(base).not.toContain(".npmjs.org");
     expect(base).not.toContain(".github.com");
   });
@@ -391,7 +340,6 @@ describe("sandboxLifelineBase", () => {
   it("re-opens github.com when git is granted, so push/PR still work", () => {
     const base = sandboxLifelineBase({ git: true });
     expect(base).toContain(".github.com");
-    // Still no package registries — github is the only addition.
     expect(base).not.toContain(".npmjs.org");
   });
 });
@@ -421,12 +369,7 @@ describe("sandboxLifelineEgressConfig", () => {
   });
 
   it("network OFF states that it admits no user hosts, rather than leaving it inferred", () => {
-    // planning#380 — an empty `extraHosts` cannot be told apart from "this user
-    // added no hosts", and every reader that guessed got it wrong in the same
-    // direction. The flag is what the decision route and the Plugins card ask.
     expect(sandboxLifelineEgressConfig(sandbox({ network: false }), "")!.userHostsExcluded).toBe(true);
-    // Never set on the paths that DO carry user hosts — a normal session's config
-    // comes from `index.ts`, which does not set it at all.
     expect(sandboxLifelineEgressConfig(sandbox({ network: true }), "")).toBeNull();
   });
 

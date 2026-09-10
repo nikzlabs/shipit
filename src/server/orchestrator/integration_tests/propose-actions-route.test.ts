@@ -20,14 +20,6 @@ import type { CredentialStore } from "../credential-store.js";
 import type { WsActionChecklistCard } from "../../shared/types.js";
 import { MAX_PAYLOAD_LEN } from "../../shared/propose-actions-validation.js";
 
-/**
- * docs/207 — the `propose_actions` route is the AUTHORITATIVE validator, and
- * that is the half no other test covered. The pure validator has unit tests and
- * the session-side tool has a fail-fast test, but both would stay green if the
- * route stopped validating: a request straight to this container-accessible
- * endpoint (the tool is not the only way in) could then persist a malformed
- * card. So this drives the real HTTP surface.
- */
 describe("Integration: propose-actions route", () => {
   let app: FastifyInstance;
   let port: number;
@@ -75,7 +67,7 @@ describe("Integration: propose-actions route", () => {
 
   it("emits a card for a well-formed proposal", async () => {
     const client = await TestClient.connect(port, sessionId);
-    await client.receive(); // preview_status
+    await client.receive();
 
     const res = await post({
       title: "Optional follow-ups",

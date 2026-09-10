@@ -1,18 +1,3 @@
-/**
- * docs/264 — unit tests for the Ops log read.
- *
- * The load-bearing tests here are the two halves of the boundary in
- * `/shipit-docs/ops-session.md`:
- *
- *  - the producer cut — a sweep over EVERY `LogSource`, derived from the union
- *    itself so adding a member without deciding about it fails to compile;
- *  - the CONTENT cut — the real one. The first version of this feature filtered
- *    on `source === "server"` alone, and an independent review showed that is
- *    not a content classification: workspace-controlled compose values reach a
- *    `"server"` line verbatim. `withholds a server line that quotes workspace
- *    content` is that exact path, and it must never be deleted.
- */
-
 import { describe, it, expect } from "vitest";
 import { DatabaseManager } from "../../shared/database.js";
 import { SessionManager } from "../sessions.js";
@@ -30,14 +15,6 @@ import {
   type LogStoreReader,
 } from "./host-session-logs.js";
 
-/**
- * Every `LogSource`, derived from the union rather than retyped.
- *
- * `Record<LogSource, true>` is exhaustive at COMPILE time — adding a member to
- * `LogSource` makes this object literal a type error until the new source is
- * listed here, which is what forces a decision about it. An earlier version
- * hard-coded the tuple and claimed the same protection while providing none.
- */
 const ALL_SOURCES = Object.keys({
   stderr: true,
   stdout: true,
@@ -46,13 +23,6 @@ const ALL_SOURCES = Object.keys({
   install: true,
 } satisfies Record<LogSource, true>) as LogSource[];
 
-/**
- * Every `PushFailureClass`, derived from the union rather than retyped — same
- * compile-time exhaustiveness as `ALL_SOURCES` above, and for the same reason:
- * the failure-class template ENUMERATES the classes, so a member added to the
- * union without a matching alternation would silently stop crossing the session
- * boundary. This makes that a red build instead.
- */
 const PUSH_FAILURE_CLASSES = Object.keys({
   "non-fast-forward": true,
   "invalid-refspec": true,
@@ -63,7 +33,6 @@ const PUSH_FAILURE_CLASSES = Object.keys({
   unknown: true,
 } satisfies Record<PushFailureClass, true>) as PushFailureClass[];
 
-/** A line every ops-safe template test can rely on being returned. */
 const SAFE_LINE = "Auto-push rejected: this session's branch and its remote have diverged. Measuring which side carries what.";
 
 const SUBJECT = "7bc72326-c1ad-48fd-ac95-12149a000000";
@@ -74,15 +43,7 @@ function createSessionManager(): { sessionManager: SessionManager; close: () => 
   return { sessionManager, close: () => db.close() };
 }
 
-/**
- * A fake durable store.
- *
- * `rotated` models the store's SECOND retained generation: `snapshotEntries`
- * returns it only when the caller asks for the full retained window. The real
- * `LogStore` defaults to one generation, so a reader that forgets to widen the
- * byte cap silently loses these — which is exactly the bug an earlier version
- * of this service shipped.
- */
+// Match the store's default one-generation limit unless the caller widens the byte cap.
 function fakeStore(
   entries: { ts: string; source: string; text: string }[],
   opts: { retained?: boolean; rotated?: { ts: string; source: string; text: string }[] } = {},
@@ -97,7 +58,6 @@ function fakeStore(
 }
 
 
-/** Shorthand for a seeded entry. */
 function entry(ts: string, source: string, text: string): { ts: string; source: string; text: string } {
   return { ts, source, text };
 }
@@ -107,13 +67,6 @@ describe("the content boundary (the one that matters)", () => {
     const { sessionManager, close } = createSessionManager();
     try {
       sessionManager.track(SUBJECT, "Subject session");
-      // The exact chain an independent review found against the first design:
-      // an invalid value in the project's own docker-compose.yml is quoted
-      // VERBATIM by compose-generator.ts, raised as a ComposeValidationError,
-      // and broadcast as source "server" by handleStackError. Filtering on the
-      // source alone returned it — i.e. returned workspace content, which
-      // requirement 4 forbids. If this test ever goes green with the marker
-      // present, the boundary is broken again.
       const store = fakeStore([
         entry(
           "2026-08-15T10:00:00.000Z",
@@ -128,8 +81,6 @@ describe("the content boundary (the one that matters)", () => {
 
       expect(JSON.stringify(result)).not.toContain("WORKSPACE-SECRET-MARKER");
       expect(result.entries.map((e) => e.text)).toEqual([SAFE_LINE]);
-      // Withheld, never silently dropped — and named by ShipIt's own label for
-      // the producer, which is the whole of what the breakdown may say about it.
       expect(result.withheldTotal).toBe(1);
       expect(result.withheldByShape).toEqual([{ shape: "compose: stack error", count: 1 }]);
       expect(result.withheldUnclassified).toBe(0);
@@ -142,9 +93,6 @@ describe("the content boundary (the one that matters)", () => {
     const { sessionManager, close } = createSessionManager();
     try {
       sessionManager.track(SUBJECT, "Subject session");
-      // Each of these shares a prefix with a template but continues into text
-      // ShipIt does not control (git stderr, Docker stderr, provider errors).
-      // Anchoring is what stops the prefix from being enough.
       const store = fakeStore([
         entry("2026-08-15T10:00:00.000Z", "server", "Auto-push failed: fatal: unable to access 'https://u:pw@github.com/o/r.git/'"),
         entry("2026-08-15T10:01:00.000Z", "server", "Session container exited unexpectedly: OCI runtime error /workspace/x"),
@@ -156,8 +104,6 @@ describe("the content boundary (the one that matters)", () => {
       const result = queryHostSessionLogs(sessionManager, store, SUBJECT);
       expect(result.entries).toEqual([]);
       expect(result.withheldTotal).toBe(5);
-      // Every one of them is a shape ShipIt can name, so the operator learns
-      // which producers those five were — and still not one byte of any line.
       expect(result.withheldByShape.map((s) => s.shape).sort()).toEqual([
         "agent: process error",
         "auto-push: other",
@@ -168,8 +114,6 @@ describe("the content boundary (the one that matters)", () => {
       expect(result.withheldUnclassified).toBe(0);
       expect(JSON.stringify(result)).not.toContain("REDACT-ME");
       expect(JSON.stringify(result)).not.toContain("u:pw@");
-      // The service name in `[compose] api-1 exited …` is the PROJECT's, and the
-      // label must not carry it.
       expect(JSON.stringify(result.withheldByShape)).not.toContain("api-1");
     } finally {
       close();
@@ -198,8 +142,6 @@ describe("the content boundary (the one that matters)", () => {
   });
 
   it("keeps every template anchored and free of wildcards", () => {
-    // A `.*` in one of these patterns silently re-opens the hole the table
-    // exists to close, and would pass every other test in this file.
     for (const { producer, pattern } of OPS_SAFE_TEMPLATES) {
       const src = pattern.source;
       expect(src.startsWith("^"), `${producer} must be anchored at the start`).toBe(true);
@@ -209,19 +151,10 @@ describe("the content boundary (the one that matters)", () => {
   });
 
   it("keeps every withheld-shape pattern a ShipIt-authored prefix", () => {
-    // These read the withheld text, so they get the same anchoring discipline as
-    // the ops-safe table minus the end anchor (the rest of the line is the free
-    // text nobody may read). A wildcard here would collapse the breakdown into
-    // one label for everything, which is worse than no breakdown at all.
     for (const { shape, pattern } of WITHHELD_SHAPES) {
       const src = pattern.source;
       expect(src.startsWith("^"), `${shape} must be anchored at the start`).toBe(true);
       expect(src, `${shape} must not use a free-text wildcard`).not.toMatch(/\.\*|\.\+|\[\\s\\S\]|\\S\*/);
-      // The stated exception, bounded: a pattern may bridge ONE interpolated
-      // value with `\S+`, and only to reach more of ShipIt's own text on the
-      // far side. Trailing, it would be a wildcard by another name — the whole
-      // match would then be "prefix + anything", which is what the ban above is
-      // for. Two of them is a pattern that has stopped being authored text.
       const bridges = src.match(/\\S\+/g) ?? [];
       expect(bridges.length, `${shape} may bridge at most one interpolated value`).toBeLessThanOrEqual(1);
       if (bridges.length === 1) {
@@ -234,8 +167,6 @@ describe("the content boundary (the one that matters)", () => {
     const { sessionManager, close } = createSessionManager();
     try {
       sessionManager.track(SUBJECT, "Subject session");
-      // A producer nobody has classified — the drift case. It must show up as
-      // volume with no name attached, never absorbed into a neighbour's label.
       const store = fakeStore([
         entry("2026-08-15T10:00:00.000Z", "server", "Some future producer said UNNAMED-MARKER"),
         entry("2026-08-15T10:01:00.000Z", "server", "[compose] Stack error: bad value"),
@@ -245,7 +176,6 @@ describe("the content boundary (the one that matters)", () => {
       const result = queryHostSessionLogs(sessionManager, store, SUBJECT);
       expect(result.withheldTotal).toBe(3);
       expect(result.withheldUnclassified).toBe(1);
-      // Largest first — the ordering that makes "one chatty producer" readable.
       expect(result.withheldByShape).toEqual([{ shape: "compose: stack error", count: 2 }]);
       expect(JSON.stringify(result)).not.toContain("UNNAMED-MARKER");
     } finally {
@@ -260,10 +190,6 @@ describe("the content boundary (the one that matters)", () => {
   });
 
   it("passes the measured divergence shape — the line that says which side is at risk", () => {
-    // The 2026-08-30 incident was diagnosed from the orchestrator's own log. The
-    // counts are what distinguish "your commit is unpushed" from "your commit is
-    // only on the remote", so an ops session that cannot read them cannot tell
-    // the two apart — which is the mistake the notice itself used to make.
     expect(isOpsSafeLine(
       "Divergence shape: 0 commit(s) only in this session, 1 commit(s) only on the remote branch."
       + " A force-push would discard 1 commit(s) from the remote.",
@@ -279,25 +205,18 @@ describe("the content boundary (the one that matters)", () => {
   });
 
   it("passes a SUCCESSFUL auto-push — the line whose absence made silence unreadable", () => {
-    // Before this, every auto-push template was a failure path, so a window
-    // with no push line meant "pushed fine" OR "nothing to push" OR "failed
-    // with no template" OR "aged out of the ring". An operator asking whether
-    // the last five turns produced commits could not tell those apart.
     expect(isOpsSafeLine(
       "Auto-push completed in 412ms: 3 commit(s) were ahead of the last known remote tip.",
     )).toBe(true);
     expect(isOpsSafeLine(
       "Auto-push completed in 0ms: 1 commit(s) was ahead of the last known remote tip.",
     )).toBe(true);
-    // The distinction that carries most of the value: a push with nothing to
-    // send is not a push that failed.
     expect(isOpsSafeLine(
       "Auto-push completed in 88ms: nothing was ahead of the last known remote tip.",
     )).toBe(true);
     expect(isOpsSafeLine(
       "Auto-push completed in 88ms: the commit count could not be measured.",
     )).toBe(true);
-    // Both skips, which mean the commit is still local.
     expect(isOpsSafeLine(
       "Not pushed: this session's workspace has no `origin` remote. The commit stays in local history.",
     )).toBe(true);
@@ -307,9 +226,6 @@ describe("the content boundary (the one that matters)", () => {
   });
 
   it("passes the authored half of a split failure and withholds git's own half", () => {
-    // The producer split (`auto-push-scheduler.ts`): ShipIt's classification on
-    // one line, git's words on the next. The first is what an ops session needs
-    // — WHICH kind of failure — and the second is what it must never see.
     expect(isOpsSafeLine(
       "Auto-push failed (lfs). The commit stays in this session's local history.",
     )).toBe(true);
@@ -317,9 +233,6 @@ describe("the content boundary (the one that matters)", () => {
       "Auto-push failed (unknown). The commit stays in this session's local history.",
     )).toBe(true);
     expect(isOpsSafeLine("Git said: fatal: unable to access 'https://u:pw@github.com/o/r.git/'")).toBe(false);
-    // The class is ENUMERATED, not a slug shape. A slug pattern would have
-    // passed both of these — the second is the one that matters: it looks
-    // exactly like a class and is not one.
     expect(isOpsSafeLine(
       "Auto-push failed (remote said 'secret path /workspace/x'). The commit stays in this session's local history.",
     )).toBe(false);
@@ -329,8 +242,6 @@ describe("the content boundary (the one that matters)", () => {
   });
 
   it("enumerates every PushFailureClass, so a new class cannot silently stop crossing", () => {
-    // The other half of enumerating rather than slug-matching: the table has to
-    // be updated when the union is, and this is what says so out loud.
     for (const cls of PUSH_FAILURE_CLASSES) {
       expect(
         isOpsSafeLine(`Auto-push failed (${cls}). The commit stays in this session's local history.`),
@@ -370,15 +281,12 @@ describe("queryHostSessionLogs (docs/264)", () => {
     const { sessionManager, close } = createSessionManager();
     try {
       sessionManager.track(SUBJECT, "Subject session");
-      // Every source carries the SAME ops-safe text, so the only thing that can
-      // exclude the non-server ones is the producer cut.
       const store = fakeStore(
         ALL_SOURCES.map((source, i) => entry(`2026-08-15T10:0${i}:00.000Z`, source, SAFE_LINE)),
       );
 
       const result = queryHostSessionLogs(sessionManager, store, SUBJECT);
       expect(result.entries.map((e) => e.source)).toEqual(["server"]);
-      // A non-server line is not "withheld" — it is not a candidate at all.
       expect(result.withheldUnclassified).toBe(0);
     } finally {
       close();
@@ -406,10 +314,6 @@ describe("queryHostSessionLogs (docs/264)", () => {
     const { sessionManager, close } = createSessionManager();
     try {
       sessionManager.track(SUBJECT, "Subject session");
-      // The rotated generation holds the server lines; the active one is all
-      // agent stdout. Reading a single generation would return nothing at all,
-      // while the evidence sat on disk — the failure mode that made the first
-      // version's "no auto-push failures" answer untrustworthy.
       const store = fakeStore(
         Array.from({ length: 50 }, (_, i) =>
           entry(`2026-08-15T11:${String(i).padStart(2, "0")}:00.000Z`, "stdout", "chatty agent output"),
@@ -459,8 +363,6 @@ describe("queryHostSessionLogs (docs/264)", () => {
     const { sessionManager, close } = createSessionManager();
     try {
       sessionManager.track(SUBJECT, "Subject session");
-      // Defense in depth, not the boundary: the template already guarantees the
-      // text is ShipIt's own, and redaction still collapses the URL it embeds.
       const store = fakeStore([
         entry(
           "2026-08-15T10:00:00.000Z",
@@ -606,23 +508,16 @@ describe("parseTimeBound", () => {
   });
 
   it("rejects an unparseable bound instead of ignoring it", () => {
-    // A silently-dropped bound returns the whole history dressed as the window
-    // the operator asked for — the one failure mode that misleads a triage.
     expect(() => parseTimeBound("1 hour ago", "--since", nowMs)).toThrow(ServiceError);
     expect(() => parseTimeBound("2hours", "--until", nowMs)).toThrow(/Invalid --until/);
   });
 
   it("rejects a non-ISO form Date.parse would otherwise accept", () => {
-    // `Date.parse` takes implementation-defined formats, which would make the
-    // enforced contract wider than the documented one.
     expect(() => parseTimeBound("Aug 15 2026", "--since", nowMs)).toThrow(ServiceError);
     expect(() => parseTimeBound("2026/08/15", "--since", nowMs)).toThrow(ServiceError);
   });
 
   it("rejects a relative age that overflows", () => {
-    // Without the finite check this lands at -Infinity, which compares as
-    // "before everything" and silently widens the window to the whole history.
-    // The pattern accepts arbitrarily many digits, so this is reachable.
     expect(() => parseTimeBound(`${"9".repeat(320)}d`, "--since", nowMs)).toThrow(/out of range/);
   });
 });
@@ -645,11 +540,9 @@ describe("line caps", () => {
       expect(queryHostSessionLogs(sessionManager, store, SUBJECT).entries).toHaveLength(
         DEFAULT_LOG_LINES,
       );
-      // Clamping DOWN stays silent: `truncated` + `total` already say so.
       expect(
         queryHostSessionLogs(sessionManager, store, SUBJECT, { lines: 99_999 }).entries,
       ).toHaveLength(MAX_LOG_LINES);
-      // A bound that was never applied must not look like one that was.
       for (const lines of [0, -5, 2.5, Number.NaN]) {
         expect(() => queryHostSessionLogs(sessionManager, store, SUBJECT, { lines }), `lines=${lines}`)
           .toThrow(/must be a positive integer/);
@@ -661,9 +554,6 @@ describe("line caps", () => {
 });
 
 describe("template patterns vs the strings their producers actually build", () => {
-  // Each case is the literal a producer composes, next to whether it may cross
-  // the boundary. Written as one table so a pattern edit is checked against the
-  // real string rather than against another regex.
   const CASES: { text: string; allowed: boolean; why: string }[] = [
     {
       text: "Session container exited unexpectedly (exit 137).",

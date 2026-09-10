@@ -1,24 +1,3 @@
-/**
- * docs/252 phase 5, req 12 — the same-turn quota failover, gated on the billing
- * mode and reachable from BOTH terminal shapes.
- *
- * Two holes this pins shut, both found by reading the code rather than by a
- * failing report:
- *
- *  - **The retry had no billing-mode gate.** Account benching checks the route
- *    kind and bails for a metered one; this retry fired on any detected
- *    exhaustion. On a key there is nowhere to fail over to, so the turn was
- *    re-run in full against the credential that had just refused it, repeating
- *    every side effect the first attempt had.
- *  - **It watched `agent_result` only.** Codex reports a spent subscription by
- *    refusing `turn/start`, and a rejected JSON-RPC request becomes an
- *    adapter-level `error` — so a Codex subscription running out mid-turn
- *    reached neither the retry nor the exhaustion stamp.
- *
- * Drives the real executor in-process with a fake agent, as `turn-crash-commit`
- * does. The observable is the agent factory's call count: a retry re-dispatches
- * on a FRESH agent, so a second call is a failover and one call is a stop.
- */
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
 import { EventEmitter } from "node:events";
 import fs from "node:fs";
@@ -58,15 +37,7 @@ async function waitFor(fn: () => boolean, label: string, timeoutMs = 5000): Prom
   throw new Error(`Timed out waiting for ${label}`);
 }
 
-/**
- * The reset instant must stay in the FUTURE forever, hence 2099 — the same
- * literal every sibling quota fixture uses. `resolveResetAt` accepts a stated
- * reset only while `parsed > now` (a past one describes the window that just
- * ended), so a near-future date does not fail loudly when it arrives: the
- * detector quietly reports `resetAt: null` and the stamp becomes
- * `now + UNKNOWN_RESET_LOCKOUT_MS`. This fixture said 2026-09-01 and broke CI on
- * 2026-09-01, nine hours after midnight UTC.
- */
+// Past reset dates trigger the unknown-reset fallback.
 const RESET_AT = "2099-01-01T00:00:00.000Z";
 const EXHAUSTED = `You've hit your weekly usage limit. It resets at ${RESET_AT}.`;
 
@@ -156,8 +127,6 @@ describe("same-turn quota failover (docs/252 phase 5, req 12)", () => {
     first.emit("event", { type: "agent_result", status: "error", error: EXHAUSTED });
     await waitFor(() => !runner.running, "turn settled");
 
-    // No fresh agent was ever built: the turn retired with the provider's own
-    // error instead of being re-run against the same bad key.
     expect(agents).toHaveLength(0);
     runner.dispose({ force: true });
   });
@@ -184,8 +153,6 @@ describe("same-turn quota failover (docs/252 phase 5, req 12)", () => {
       providerRouteId: "acct-old",
     } as Partial<SessionInfo>;
     const { deps, runner } = harness(oldSession);
-    // docs/260 §1b — the captured route is env-prep's RETURNED turn route, a
-    // value, never a session row re-read.
     deps.prepareAgentEnv = vi.fn(async () => ({
       turnRoute: { kind: "account" as const, id: "acct-new" },
     }));
@@ -211,7 +178,6 @@ describe("same-turn quota failover (docs/252 phase 5, req 12)", () => {
   });
 
   it("fails over from an adapter-level error too, and benches the credential", async () => {
-    // The Codex shape: a rejected `turn/start` never produces an `agent_result`.
     const session = { billingMode: "sub", providerRouteBillingMode: "sub", serviceId: "openai" };
     const { agents, deps, runner, markSessionAccountExhausted } = harness(session as Partial<SessionInfo>);
     const first = makeFakeAgent();
@@ -220,8 +186,6 @@ describe("same-turn quota failover (docs/252 phase 5, req 12)", () => {
     first.emit("error", new Error(`JSON-RPC error -32000: ${EXHAUSTED}`));
     await waitFor(() => agents.length === 1, "retry dispatched from the error path");
 
-    // Stamped here rather than in `agent-listeners`, which only stamps on
-    // `agent_result` — without it the retry re-selects the spent credential.
     expect(markSessionAccountExhausted).toHaveBeenCalledWith(
       "s1",
       Date.parse(RESET_AT),
@@ -245,11 +209,6 @@ describe("same-turn quota failover (docs/252 phase 5, req 12)", () => {
   });
 
   it("finalizes the first attempt's output before the retry resets the accumulators", async () => {
-    // The `agent_result` path gets this from `wireAgentListeners`, which runs
-    // its own handler first. This gate runs at the TOP of the listener's error
-    // handler — ahead of the persistence it stands the listener down from — so
-    // without an explicit finalize a retry that fails before producing output
-    // rebuilds history from empty groups and deletes what the user already saw.
     const session = { billingMode: "sub", providerRouteBillingMode: "sub", serviceId: "openai" };
     const { agents, deps, runner } = harness(session as Partial<SessionInfo>);
     const first = makeFakeAgent();

@@ -5,20 +5,6 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFileSync, execSync, spawn } from "node:child_process";
 
-/**
- * Drives the REAL host-side self-updater (deployment/vps/update.sh) end to end
- * against a throwaway git checkout + a real bare "origin", rather than asserting
- * an isolated `git reset`. The script must NOT use `git pull`: when a release
- * cut rewrites/force-pushes `stable` (so the new release tag is on a commit that
- * is NOT a fast-forward descendant of the running checkout), `git pull` would
- * abort with "branches have diverged". The updater resolves the latest final tag
- * reachable from origin/stable and `git reset --hard`s to its commit, which
- * advances across a divergence transparently — that is the property under test.
- *
- * Only the Docker build (deploy.sh) is stubbed, via SHIPIT_DEPLOY_SCRIPT — every
- * other step (channel resolution, fetch, tag selection, reset, rollback trap,
- * failure breadcrumb) is the production code path.
- */
 const UPDATE_SCRIPT = fileURLToPath(
   new URL("../../../../deployment/vps/update.sh", import.meta.url),
 );
@@ -40,7 +26,6 @@ describe("deployment/vps/update.sh (host self-updater)", () => {
 
   const head = (dir: string): string => run("git rev-parse HEAD", dir).trim();
 
-  /** Run the real update.sh with SHIPIT_DIR pointed at our temp checkout. */
   const runUpdate = (
     channel: string,
     {
@@ -49,8 +34,6 @@ describe("deployment/vps/update.sh (host self-updater)", () => {
     }: { deployExit?: number; env?: Record<string, string> } = {},
   ): { code: number; stdout: string } => {
     fs.writeFileSync(path.join(shipitDir, ".release-channel"), channel);
-    // Stub deploy.sh: records that it ran, then exits with the requested code so
-    // we can exercise both the success path and the rollback/failure trap.
     fs.writeFileSync(
       deployStub,
       `#!/bin/bash\necho ran > "${deployMarker}"\nexit ${deployExit}\n`,
@@ -73,13 +56,6 @@ describe("deployment/vps/update.sh (host self-updater)", () => {
     }
   };
 
-  /**
-   * Put a `git` shim ahead of the real one on the script's PATH. It logs every
-   * `fetch` invocation (so a run's round-trips can be counted) and can make a
-   * fetch fail the way GitHub's intermittent 401 does, or STALL the way a dead
-   * connection does; everything else execs the real git. The stall redirects its
-   * own stdio so the killed attempt leaves nothing holding the run's pipes open.
-   */
   const installGitShim = ({
     failFirstFetch = false,
     stallFetch,
@@ -102,12 +78,7 @@ describe("deployment/vps/update.sh (host self-updater)", () => {
   fi
 `
       : "";
-    // Far longer than any timeout the tests set: if the bound does not fire, the
-    // assertion on elapsed time is what fails, not a passing-by-luck race.
-    // `deafToTerm` ignores SIGTERM, so only `timeout -k`'s SIGKILL ends it — the
-    // wedged connection a plain `timeout` would wait on forever. It waits in
-    // slices because `timeout` signals the whole process group: one long `sleep`
-    // would die of the TERM the shim itself is ignoring.
+    // Short sleeps keep the TERM-ignoring shim stalled after its process group is signalled.
     const stall = deafToTerm
       ? `  trap '' TERM
   for _i in $(seq 1 300); do sleep 0.1 </dev/null >/dev/null 2>&1; done
@@ -142,17 +113,9 @@ exec ${realGit} "$@"
     };
   };
 
-  /**
-   * Start the real update.sh on the edge channel and kill its process GROUP once
-   * the deploy stub is in flight — what systemd's TimeoutStartSec= does to a run
-   * wedged in the build. `afterStart` is extra shell the stub runs before it
-   * hangs, so a test can model the restart having already happened.
-   */
   const killDuringDeploy = (beforeReady = ""): Promise<number | null> =>
     new Promise((resolve) => {
-      // `beforeReady` runs FIRST and the polled marker last, so the kill can
-      // never land between them — the test would otherwise pass or fail on
-      // which of two writes won a race.
+      // Write the polled marker last so the signal cannot precede beforeReady.
       fs.writeFileSync(
         deployStub,
         `#!/bin/bash\n${beforeReady}echo ran > "${deployMarker}"\nsleep 30\n`,
@@ -162,15 +125,13 @@ exec ${realGit} "$@"
       const child = spawn("bash", [UPDATE_SCRIPT], {
         env: { ...process.env, SHIPIT_DIR: shipitDir, SHIPIT_DEPLOY_SCRIPT: deployStub },
         stdio: ["pipe", "pipe", "pipe"],
-        detached: true, // its own process group, like a unit's control group
+        detached: true,
       });
       const waitForBuild = setInterval(() => {
         if (!fs.existsSync(deployMarker)) return;
         clearInterval(waitForBuild);
         process.kill(-child.pid!, "SIGTERM");
       }, 50);
-      // Also clears the timer when the script dies before the stub ever runs,
-      // which would otherwise leave it polling for the rest of the suite.
       child.on("exit", (code) => {
         clearInterval(waitForBuild);
         resolve(code);
@@ -192,12 +153,10 @@ exec ${realGit} "$@"
     run(`git clone ${bareDir} .`, seedDir);
     run("git config user.email test@test.com && git config user.name Test", seedDir);
 
-    // main @ C0 (this is also where the "running" checkout will sit).
     fs.writeFileSync(path.join(seedDir, "v.txt"), "0\n");
     run("git add -A && git commit -m c0", seedDir);
     run("git push origin main", seedDir);
 
-    // The deployment checkout: a clone parked at C0, like a running install.
     run(`git clone ${bareDir} .`, shipitDir);
     run("git config user.email test@test.com && git config user.name Test", shipitDir);
   });
@@ -207,22 +166,16 @@ exec ${realGit} "$@"
   });
 
   it("advances stable across a DIVERGED (force-pushed) branch where git pull would abort", () => {
-    // Cut a first release on a stable branch: v1.0.0 @ C1.
     run("git checkout -b stable", seedDir);
     fs.writeFileSync(path.join(seedDir, "v.txt"), "1\n");
     run("git add -A && git commit -m c1", seedDir);
     run("git tag v1.0.0 && git push origin stable --tags", seedDir);
 
-    // Park the DEPLOYMENT checkout on the v1.0.0 release (C1) — this is the
-    // running install we're about to update from.
     run("git fetch origin --tags", shipitDir);
     run("git reset --hard v1.0.0", shipitDir);
     const oldRelease = head(shipitDir);
 
-    // Now REWRITE stable's history (a release cut that rebases/amends) so the
-    // NEW release commit is NOT a descendant of C1 — a genuine divergence from
-    // what's deployed — and cut v1.1.0 on it, then force-push.
-    run("git reset --hard HEAD~1", seedDir); // back to C0
+    run("git reset --hard HEAD~1", seedDir);
     fs.writeFileSync(path.join(seedDir, "v.txt"), "1.1-rewritten\n");
     run("git add -A && git commit -m c1-prime", seedDir);
     fs.writeFileSync(path.join(seedDir, "v.txt"), "2\n");
@@ -230,18 +183,15 @@ exec ${realGit} "$@"
     run("git tag v1.1.0 && git push origin stable --force --tags", seedDir);
     const target = head(seedDir);
 
-    // Sanity: the new release does NOT descend from the deployed commit, so a
-    // `git pull --ff-only origin stable` from here would abort. The updater,
-    // resolving the tag + `git reset --hard`, must advance anyway.
     expect(
       run(`git merge-base --is-ancestor ${oldRelease} ${target}; echo $?`, seedDir).trim(),
-    ).toBe("1"); // non-zero => oldRelease is NOT an ancestor of target
+    ).toBe("1");
 
     const { code } = runUpdate("stable");
 
     expect(code).toBe(0);
-    expect(head(shipitDir)).toBe(target); // reset --hard landed on v1.1.0's commit
-    expect(fs.existsSync(deployMarker)).toBe(true); // build was invoked
+    expect(head(shipitDir)).toBe(target);
+    expect(fs.existsSync(deployMarker)).toBe(true);
     expect(fs.existsSync(path.join(shipitDir, ".update-failed"))).toBe(false);
   });
 
@@ -250,7 +200,6 @@ exec ${realGit} "$@"
     fs.writeFileSync(path.join(seedDir, "v.txt"), "final\n");
     run("git add -A && git commit -m rel", seedDir);
     const relCommit = head(seedDir);
-    // Order matters: an rc tag and a lower final tag must both lose to v2.0.0.
     run("git tag v2.0.0-rc.1 && git tag v1.9.0 && git tag v2.0.0", seedDir);
     run("git push origin stable --tags", seedDir);
 
@@ -264,14 +213,14 @@ exec ${realGit} "$@"
     run("git checkout -b stable", seedDir);
     fs.writeFileSync(path.join(seedDir, "v.txt"), "unreleased\n");
     run("git add -A && git commit -m wip", seedDir);
-    run("git tag v3.0.0-rc.1 && git push origin stable --tags", seedDir); // rc only
+    run("git tag v3.0.0-rc.1 && git push origin stable --tags", seedDir);
     const before = head(shipitDir);
 
     const { code } = runUpdate("stable");
 
     expect(code).not.toBe(0);
-    expect(head(shipitDir)).toBe(before); // never reset to the branch tip
-    expect(fs.existsSync(deployMarker)).toBe(false); // build never ran
+    expect(head(shipitDir)).toBe(before);
+    expect(fs.existsSync(deployMarker)).toBe(false);
   });
 
   it("edge channel advances to the origin/main tip", () => {
@@ -288,7 +237,7 @@ exec ${realGit} "$@"
   });
 
   it("rolls the checkout back to the running commit and writes a breadcrumb when the build fails", () => {
-    const prior = head(shipitDir); // running image's commit (C0)
+    const prior = head(shipitDir);
     run("git checkout -b stable", seedDir);
     fs.writeFileSync(path.join(seedDir, "v.txt"), "1\n");
     run("git add -A && git commit -m c1", seedDir);
@@ -299,8 +248,6 @@ exec ${realGit} "$@"
     const { code } = runUpdate("stable", { deployExit: 1 });
 
     expect(code).not.toBe(0);
-    // The whole invariant: a failed build must NOT leave the checkout ahead of
-    // the still-running image.
     expect(head(shipitDir)).toBe(prior);
     const failPath = path.join(shipitDir, ".update-failed");
     expect(fs.existsSync(failPath)).toBe(true);
@@ -327,17 +274,15 @@ exec ${realGit} "$@"
 
   it("fails closed when the origin keeps refusing", () => {
     const before = head(shipitDir);
-    // An origin that can never answer stands in for GitHub refusing every
-    // attempt: the retry must run out, not loop forever or update anyway.
     run(`git remote set-url origin ${path.join(root, "gone.git")}`, shipitDir);
 
     const { code, stdout } = runUpdate("edge", {
       env: { SHIPIT_FETCH_RETRY_DELAYS: "0 0" },
     });
 
-    expect(code).toBe(128); // git's own exit code, not a swallowed one
-    expect(stdout.match(/retrying in/g)).toHaveLength(2); // 2 delays => 3 attempts
-    expect(head(shipitDir)).toBe(before); // HEAD moves only after a good fetch
+    expect(code).toBe(128);
+    expect(stdout.match(/retrying in/g)).toHaveLength(2);
+    expect(head(shipitDir)).toBe(before);
     expect(fs.existsSync(deployMarker)).toBe(false);
     const marker = JSON.parse(
       fs.readFileSync(path.join(shipitDir, ".update-failed"), "utf8"),
@@ -359,9 +304,7 @@ exec ${realGit} "$@"
     });
 
     expect(code).toBe(0);
-    expect(stdout.match(/retrying in/g)).toHaveLength(1); // recovered on attempt 2
-    // Exactly two: one refused, one that worked. Pins the removal of the
-    // redundant per-channel fetch — a second round-trip would make this 3.
+    expect(stdout.match(/retrying in/g)).toHaveLength(1);
     expect(shim.fetchCount()).toBe(2);
     expect(head(shipitDir)).toBe(target);
     expect(fs.existsSync(deployMarker)).toBe(true);
@@ -378,7 +321,6 @@ exec ${realGit} "$@"
     const { code } = runUpdate("stable", { env: { PATH: shim.pathPrefix } });
 
     expect(code).toBe(0);
-    // origin/stable and the tags both come from the ONE `--tags --prune` fetch.
     expect(shim.fetchCount()).toBe(1);
     expect(head(shipitDir)).toBe(target);
   });
@@ -389,7 +331,6 @@ exec ${realGit} "$@"
     run("git add -A && git commit -m c-edge4", seedDir);
     run("git push origin main", seedDir);
     const target = head(seedDir);
-    // A hung connection, not a refusal: git would wait forever on its own.
     const shim = installGitShim({ stallFetch: "first" });
 
     const startedAt = Date.now();
@@ -402,7 +343,6 @@ exec ${realGit} "$@"
     });
 
     expect(code).toBe(0);
-    // The stall is 30s: finishing at all means the bound fired and the retry ran.
     expect(Date.now() - startedAt).toBeLessThan(20_000);
     expect(stdout.match(/retrying in/g)).toHaveLength(1);
     expect(head(shipitDir)).toBe(target);
@@ -428,8 +368,6 @@ exec ${realGit} "$@"
     });
 
     expect(code).toBe(0);
-    // Without `timeout -k` the TERM is ignored and the attempt runs its full
-    // 30s: the bound is only real because something escalates to SIGKILL.
     expect(Date.now() - startedAt).toBeLessThan(20_000);
     expect(stdout.match(/retrying in/g)).toHaveLength(1);
     expect(head(shipitDir)).toBe(target);
@@ -447,7 +385,7 @@ exec ${realGit} "$@"
       },
     });
 
-    expect(code).toBe(124); // `timeout`'s code, distinguishing a stall from a 401
+    expect(code).toBe(124);
     expect(shim.fetchCount()).toBe(3);
     expect(head(shipitDir)).toBe(before);
     expect(fs.existsSync(deployMarker)).toBe(false);
@@ -466,8 +404,7 @@ exec ${realGit} "$@"
 
     const code = await killDuringDeploy();
 
-    expect(code).toBe(143); // 128+SIGTERM, not the bare 0 an untrapped kill left
-    // The invariant the whole script exists for still holds under a kill.
+    expect(code).toBe(143);
     expect(head(shipitDir)).toBe(prior);
     const marker = JSON.parse(
       fs.readFileSync(path.join(shipitDir, ".update-failed"), "utf8"),
@@ -483,16 +420,11 @@ exec ${realGit} "$@"
     run("git push origin main", seedDir);
     const target = head(seedDir);
 
-    // deploy.sh keeps working after `docker compose up -d` returns (its EXIT
-    // trap prunes the build cache), so a timeout can land once the NEW image is
-    // already live. Rolling back there would leave the checkout BEHIND what is
-    // running — the mirror of the bug the rollback exists to prevent.
     const code = await killDuringDeploy('echo built > "$SHIPIT_RESTART_MARKER"\n');
 
-    expect(code).toBe(0); // the update did succeed; only its cleanup was cut short
+    expect(code).toBe(0);
     expect(head(shipitDir)).toBe(target);
     expect(fs.existsSync(path.join(shipitDir, ".update-failed"))).toBe(false);
-    // The marker must not survive to make the NEXT run's failure read as success.
     expect(fs.existsSync(path.join(shipitDir, ".deploy-restarted"))).toBe(false);
   });
 });

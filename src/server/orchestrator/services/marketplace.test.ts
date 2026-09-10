@@ -1,14 +1,3 @@
-/**
- * Marketplace service tests (docs/149).
- *
- * Builds a fake catalog clone on disk and exercises the listPlugins /
- * installPlugin flow against it. (Uninstall is not a ShipIt feature — the
- * agent handles removal; see docs/149.)
- * No network calls — `ensureCatalogCloned` is bypassed by pre-populating the
- * cache dir. The git operations run against a real `simpleGit` repo in a
- * temp dir so `commitPaths` is verified end-to-end too.
- */
-
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
@@ -45,13 +34,11 @@ function makeFakeCatalog(cacheRoot: string, id: string): string {
         source: `./plugins/${PLUGIN_NAME}`,
         author: { name: "Anthropic" },
       },
-      // External plugin — must be filtered out by listPlugins in v1.
       {
         name: "external-thing",
         description: "External plugin (git source)",
         source: { source: "url", url: "https://example.com/x.git", sha: "abc" },
       },
-      // No-skills plugin — also filtered.
       {
         name: "commands-only",
         description: "Only commands, no skills",
@@ -64,7 +51,6 @@ function makeFakeCatalog(cacheRoot: string, id: string): string {
     JSON.stringify(manifest, null, 2),
   );
 
-  // Plugin with two skills
   const pluginRoot = path.join(cacheDir, "plugins", PLUGIN_NAME);
   fs.mkdirSync(path.join(pluginRoot, "skills", SKILL_NAME_A), { recursive: true });
   fs.writeFileSync(
@@ -77,7 +63,6 @@ function makeFakeCatalog(cacheRoot: string, id: string): string {
     "---\nname: push\ndescription: push to remote\n---\n\nPush\n",
   );
 
-  // Commands-only plugin (no skills dir on purpose)
   fs.mkdirSync(path.join(cacheDir, "plugins", "commands-only", "commands"), { recursive: true });
 
   return cacheDir;
@@ -121,11 +106,7 @@ function makeFakeCodexCatalog(cacheRoot: string, id: string): string {
   return cacheDir;
 }
 
-/**
- * A real git repo laid out as a Claude marketplace, served to the code under
- * test over `file://` — so `ensureCatalogCloned` runs actual clone/fetch/pull
- * with no network. `--depth 1` needs the `file://` TRANSPORT, not a bare path.
- */
+// Use file:// transport to exercise shallow cloning; a bare path ignores --depth.
 async function makeOriginRepo(dir: string, marker: string): Promise<void> {
   fs.mkdirSync(path.join(dir, ".claude-plugin"), { recursive: true });
   const sg = simpleGit(dir);
@@ -137,7 +118,6 @@ async function makeOriginRepo(dir: string, marker: string): Promise<void> {
   await sg.commit("catalog");
 }
 
-/** Rewrite the origin's catalog so a later fetch has something to pick up. */
 async function writeOriginCatalog(dir: string, marker: string): Promise<void> {
   fs.writeFileSync(
     path.join(dir, ".claude-plugin", "marketplace.json"),
@@ -163,8 +143,6 @@ async function commitOriginCatalog(dir: string, marker: string): Promise<void> {
 
 async function initRepo(workspace: string): Promise<GitManager> {
   fs.mkdirSync(workspace, { recursive: true });
-  // Need an initial commit so commitPaths has a base. We also configure
-  // identity locally so this test doesn't depend on global git config.
   const sg = simpleGit(workspace);
   await sg.init(["--initial-branch=main"]);
   await sg.addConfig("user.name", "Test", undefined, "local");
@@ -201,8 +179,6 @@ describe("services/marketplace (docs/149)", () => {
       agentId: "codex",
       autoUpdate: true,
     });
-    // Populate the real registry from AGENT_DEFS — feeds skillsDirName /
-    // skillInvocationPrefix into install/uninstall via capability reads.
     agentRegistry = new AgentRegistry({ checkBinary: () => Promise.resolve(true) });
     await agentRegistry.detect();
   });
@@ -244,8 +220,6 @@ describe("services/marketplace (docs/149)", () => {
     it("writes flat <plugin>__<skill>/ dirs with rewritten frontmatter and a marker, and commits path-scoped", async () => {
       const workspace = path.join(tmp, "ws");
       const git = await initRepo(workspace);
-      // Write an unrelated dirty file BEFORE install — the path-scoped commit
-      // must NOT include it (this is the whole point of `commitPaths`).
       fs.writeFileSync(path.join(workspace, "scratch.txt"), "user edit\n");
 
       const result = await withWorkspaceLock(workspace, async () =>
@@ -268,13 +242,11 @@ describe("services/marketplace (docs/149)", () => {
       ]);
       expect(result.commitHash).toBeTruthy();
 
-      // Files landed at the expected flat-dir paths.
       const dirA = path.join(workspace, ".claude", "skills", `${PLUGIN_NAME}__${SKILL_NAME_A}`);
       expect(fs.existsSync(path.join(dirA, "SKILL.md"))).toBe(true);
       const skillBody = fs.readFileSync(path.join(dirA, "SKILL.md"), "utf-8");
       expect(skillBody).toMatch(/^name: commit-commands:commit$/m);
 
-      // Marker is present and well-formed.
       const marker = JSON.parse(
         fs.readFileSync(path.join(dirA, INSTALL_MARKER_FILENAME), "utf-8"),
       ) as { marketplaceId: string; pluginName: string; skillMdHash: string };
@@ -282,7 +254,6 @@ describe("services/marketplace (docs/149)", () => {
       expect(marker.pluginName).toBe(PLUGIN_NAME);
       expect(marker.skillMdHash).toMatch(/^[0-9a-f]{64}$/);
 
-      // The unrelated scratch.txt is still uncommitted (no `git add -A`).
       const status = await simpleGit(workspace).status();
       expect(status.not_added).toContain("scratch.txt");
     });
@@ -308,7 +279,6 @@ describe("services/marketplace (docs/149)", () => {
           }),
         ),
       ).rejects.toMatchObject({ statusCode: 409 });
-      // Hand-written file untouched.
       expect(fs.readFileSync(path.join(handDir, "SKILL.md"), "utf-8")).toMatch(/mine/);
     });
 
@@ -344,11 +314,6 @@ describe("services/marketplace (docs/149)", () => {
     });
 
     it("handles plugins where the skill's source directory name differs from its frontmatter name (e.g. hookify)", async () => {
-      // Some upstream Claude plugins ship a directory like `skills/writing-rules/`
-      // whose `SKILL.md` has frontmatter `name: writing-hookify-rules`. The
-      // listing exposes the invocable frontmatter name to the client, but the
-      // install reader must use the source directory name on disk. Regression
-      // for the bug surfaced during dogfooding of this branch.
       const cacheDir = path.join(cacheRoot, "mismatch-catalog");
       fs.mkdirSync(path.join(cacheDir, ".claude-plugin"), { recursive: true });
       fs.writeFileSync(
@@ -371,13 +336,10 @@ describe("services/marketplace (docs/149)", () => {
         autoUpdate: true,
       });
 
-      // Listing exposes the frontmatter (invocable) name.
       const plugins = await listPlugins(store, "mismatch-catalog", cacheRoot);
       expect(plugins[0].skills[0].name).toBe("writing-hookify-rules");
       expect(plugins[0].skills[0].dirName).toBe("writing-rules");
 
-      // The preview endpoint resolves the URL's invocable name back to the
-      // source directory and reads the right SKILL.md.
       const body = await readPluginSkillBody(
         store,
         "mismatch-catalog",
@@ -387,8 +349,6 @@ describe("services/marketplace (docs/149)", () => {
       );
       expect(body).toContain("name: writing-hookify-rules");
 
-      // Install lands at `hookify__writing-hookify-rules/` (using the
-      // invocable name, since that's what the user types).
       const workspace = path.join(tmp, "ws-mismatch");
       const git = await initRepo(workspace);
       const result = await withWorkspaceLock(workspace, async () =>
@@ -449,21 +409,14 @@ describe("services/marketplace (docs/149)", () => {
         withWorkspaceLock(workspace, () => slowOp("b")),
       ]);
       expect(order).toEqual(["a-start", "a-end", "b-start", "b-end"]);
-      // Make sure `git` ref doesn't trip an unused-var lint in the test.
       void git;
     });
   });
 
-  /**
-   * planning#418 — the Discover tab's only recovery affordance is Retry, which
-   * re-enters `ensureCatalogCloned`. So every state it cannot get out of is a
-   * permanently dead skill browser for the user.
-   */
   describe("ensureCatalogCloned recovery", () => {
     let originDir: string;
     let liveRoot: string;
 
-    /** Seed a marketplace row pointing at the local `file://` origin. */
     function seedLiveCatalog(id: string): void {
       store.seedIfMissing({
         id,
@@ -494,10 +447,6 @@ describe("services/marketplace (docs/149)", () => {
       await ensureCatalogCloned(store, "live", liveRoot);
       await commitOriginCatalog(originDir, "second");
 
-      // Corrupt the clone so every git command inside it fails. Stands in for
-      // the reported production state — a `.git` the orchestrator cannot write,
-      // where `git fetch` reports "insufficient permission for adding an object
-      // to repository database .git/objects" on every single Retry.
       const cacheDir = path.join(liveRoot, "live");
       fs.writeFileSync(path.join(cacheDir, ".git", "config"), "this is not a git config\n[");
 
@@ -506,15 +455,13 @@ describe("services/marketplace (docs/149)", () => {
       expect(dir).toBe(cacheDir);
       expect(store.get("live")?.status).toBe("ok");
       expect(store.get("live")?.fetchError).toBeUndefined();
-      // The rebuild is a real fresh clone, so it carries the newer upstream state.
       const plugins = await listPlugins(store, "live", liveRoot);
       expect(plugins.map((p) => p.name)).toEqual(["second"]);
-      // And it leaves no staging/stale directories behind.
       expect(fs.readdirSync(liveRoot)).toEqual(["live"]);
     });
 
     it("recovers from a clone whose .git is not writable", async () => {
-      // Root ignores the mode bits, so this can only assert anything unprivileged.
+      // Root bypasses this mode-bit failure.
       if (process.getuid?.() === 0) return;
       seedLiveCatalog("live");
       await ensureCatalogCloned(store, "live", liveRoot);
@@ -522,7 +469,6 @@ describe("services/marketplace (docs/149)", () => {
 
       fs.chmodSync(path.join(liveRoot, "live", ".git", "objects"), 0o500);
       try {
-        // Precondition: this is the exact failure from the bug report.
         await expect(simpleGit(path.join(liveRoot, "live")).fetch("origin")).rejects.toThrow(
           /insufficient permission for adding an object/,
         );
@@ -531,13 +477,9 @@ describe("services/marketplace (docs/149)", () => {
         expect(store.get("live")?.status).toBe("ok");
         const plugins = await listPlugins(store, "live", liveRoot);
         expect(plugins.map((p) => p.name)).toEqual(["second"]);
-        // The replaced tree is one whose files cannot be unlinked, so it is
-        // renamed aside and left for the next rebuild's sweep — one directory
-        // per incident, never a growing pile.
         expect(fs.readdirSync(liveRoot).filter((n) => n.startsWith("live.stale-"))).toHaveLength(1);
       } finally {
-        // The unwritable tree moved during the rebuild; hand every copy back so
-        // the suite's temp-dir cleanup can remove it.
+        // Restore permissions on moved copies so teardown can delete them.
         for (const name of fs.readdirSync(liveRoot)) {
           const objects = path.join(liveRoot, name, ".git", "objects");
           if (fs.existsSync(objects)) fs.chmodSync(objects, 0o700);
@@ -548,16 +490,13 @@ describe("services/marketplace (docs/149)", () => {
     it("keeps serving a readable stale cache when the remote is unreachable", async () => {
       seedLiveCatalog("live");
       await ensureCatalogCloned(store, "live", liveRoot);
-      // Both the fetch and the rebuild clone now fail: there is no origin left.
       fs.rmSync(originDir, { recursive: true, force: true });
 
       const dir = await ensureCatalogCloned(store, "live", liveRoot);
 
       expect(dir).toBe(path.join(liveRoot, "live"));
-      // The failure is still reported — the Discover row keeps its Retry chip.
       expect(store.get("live")?.status).toBe("fetch-failed");
       expect(store.get("live")?.fetchError).toMatch(/rebuilding the cache also failed/);
-      // …but the catalog the user came for still lists.
       const plugins = await listPlugins(store, "live", liveRoot);
       expect(plugins.map((p) => p.name)).toEqual(["first"]);
     });
@@ -571,15 +510,11 @@ describe("services/marketplace (docs/149)", () => {
 
       await ensureCatalogCloned(store, "live", liveRoot);
 
-      // The old tree is still in place, and nothing partial was left around it.
       expect(fs.existsSync(path.join(cacheDir, ".claude-plugin", "marketplace.json"))).toBe(true);
       expect(fs.readdirSync(liveRoot)).toEqual(["live"]);
     });
 
     it("serializes concurrent callers so one rebuild cannot sweep another's staging clone", async () => {
-      // The boot pre-clone fires one call per marketplace in a single tick while
-      // the Discover route can call in on demand. Unserialized, `sweepRebuildLeftovers`
-      // deletes a concurrent rebuild's staging tree mid-clone.
       seedLiveCatalog("live");
       await ensureCatalogCloned(store, "live", liveRoot);
       await commitOriginCatalog(originDir, "second");
@@ -600,23 +535,20 @@ describe("services/marketplace (docs/149)", () => {
     });
 
     it("drops the staging clone when the cache dir cannot be renamed aside", async () => {
-      // Root ignores the mode bits, so this can only assert anything unprivileged.
+      // Root bypasses this mode-bit failure.
       if (process.getuid?.() === 0) return;
       seedLiveCatalog("live");
       await ensureCatalogCloned(store, "live", liveRoot);
       const cacheDir = path.join(liveRoot, "live");
       fs.writeFileSync(path.join(cacheDir, ".git", "config"), "not a git config\n[");
-      // The clone succeeds; the rename out of a read-only cache root does not.
       fs.chmodSync(liveRoot, 0o500);
       try {
         const dir = await ensureCatalogCloned(store, "live", liveRoot);
-        // The old cache is still readable, so it is served with the failure recorded.
         expect(dir).toBe(cacheDir);
         expect(store.get("live")?.status).toBe("fetch-failed");
       } finally {
         fs.chmodSync(liveRoot, 0o700);
       }
-      // No half-finished staging clone was left behind.
       expect(fs.readdirSync(liveRoot)).toEqual(["live"]);
     });
 
@@ -628,8 +560,6 @@ describe("services/marketplace (docs/149)", () => {
       fs.writeFileSync(path.join(cacheDir, ".git", "config"), "not a git config\n[");
       fs.rmSync(originDir, { recursive: true, force: true });
 
-      // Returning this dir would just move the dead end into `listPlugins`,
-      // which throws 500 — and the client hides that behind the Retry row.
       await expect(ensureCatalogCloned(store, "live", liveRoot)).rejects.toThrow(ServiceError);
       expect(store.get("live")?.status).toBe("fetch-failed");
     });

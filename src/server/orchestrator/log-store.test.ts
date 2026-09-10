@@ -9,10 +9,6 @@ describe("LogStore", () => {
   let root: string;
   let store: LogStore;
 
-  // Append is async (serialised per channel), so wait on the chain itself
-  // before asserting on disk / snapshotting. This used to be a fixed 20 ms
-  // sleep, which the rotation case (~1.5 MB across 15 chained appends) outran
-  // on a loaded CI box — a flake with no bearing on the code under test.
   function flush(): Promise<void> {
     return store.drain();
   }
@@ -55,12 +51,10 @@ describe("LogStore", () => {
     expect(store.snapshotEntries("s1", "agent").map((e) => e.text)).toEqual(["a-agent"]);
     expect(store.snapshotText("s1", "service:web")).toBe("a-web\n");
     expect(store.snapshotEntries("s2", "agent").map((e) => e.text)).toEqual(["b-agent"]);
-    // s1's agent channel must not see s2's logs.
     expect(store.snapshotEntries("s1", "agent").map((e) => e.text)).not.toContain("b-agent");
   });
 
   it("rotates at the cap and a snapshot spans rotated + active", async () => {
-    // Write ~1.5 MB in 100 KB chunks → forces a rotation (cap is 1 MB).
     const chunk = `${"x".repeat(100_000)}\n`;
     for (let i = 0; i < 15; i++) store.append("s1", "service:big", chunk);
     await flush();
@@ -68,7 +62,6 @@ describe("LogStore", () => {
     const active = path.join(root, "s1", "logs", "service-big.log");
     const rotated = `${active}.1`;
     expect(fs.existsSync(rotated)).toBe(true);
-    // Active file stays under the cap; total retained is bounded at ~2× cap.
     expect(fs.statSync(active).size).toBeLessThanOrEqual(1_000_000);
     const snap = store.snapshotText("s1", "service:big");
     expect(snap.length).toBeLessThanOrEqual(1_000_000);
@@ -83,7 +76,6 @@ describe("LogStore", () => {
     store.clear("s1", "agent");
     await flush();
     expect(store.snapshotEntries("s1", "agent")).toEqual([]);
-    // clear is per-channel — the service channel is untouched.
     expect(store.snapshotText("s1", "service:web")).toBe("svc\n");
 
     store.remove("s1");
@@ -91,8 +83,6 @@ describe("LogStore", () => {
   });
 
   it("tolerates a torn last line", async () => {
-    // Simulate a half-written record (e.g. crash mid-append) by writing the
-    // file directly without the trailing newline / closing brace.
     const dir = path.join(root, "s1", "logs");
     await fsp.mkdir(dir, { recursive: true });
     const good = JSON.stringify({ ts: "t", source: "stdout", text: "intact" });
@@ -106,7 +96,6 @@ describe("LogStore", () => {
     store.appendEntry("s1", "agent", { ts: "t", source: "server", text: "before restart" });
     await flush();
 
-    // Simulate an orchestrator restart: brand-new instance, same root.
     const reopened = new LogStore(root);
     expect(reopened.snapshotEntries("s1", "agent").map((e) => e.text)).toEqual(["before restart"]);
   });

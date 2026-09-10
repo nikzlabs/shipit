@@ -1,13 +1,3 @@
-/**
- * docs/266-plugin-install-diagnosability reqs 3, 4 — the durable answer to "what did the last install do".
- *
- * The property under test is not the JSON. It is that every one of the five
- * outcomes stays DISTINGUISHABLE after a round trip: "succeeded", "skipped"
- * and "not run" are three different things that all look like success from
- * outside, and telling them apart is the whole reason nikzlabs/shipit#2323's
- * author could not diagnose their own plugin.
- */
-
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
@@ -44,7 +34,6 @@ describe("plugin install record", () => {
   });
 
   it("sits beside the generations, so it survives one that is never published", async () => {
-    // The failing install's generation is deleted; this must not be under it.
     writeInstallRecord(dir, "tools", RECORD);
     expect(installRecordPath(dir, "tools")).toBe(path.join(dir, "tools", "last-install.json"));
     fs.rmSync(path.join(dir, "tools", "generations"), { recursive: true, force: true });
@@ -66,8 +55,6 @@ describe("plugin install record", () => {
   });
 
   it("rejects a record whose outcome is not one this code knows", async () => {
-    // A hand-edited or future-version file must not become an unhandled state
-    // in the renderer, which switches exhaustively on the outcome.
     fs.mkdirSync(path.join(dir, "tools"), { recursive: true });
     fs.writeFileSync(
       installRecordPath(dir, "tools"),
@@ -77,9 +64,6 @@ describe("plugin install record", () => {
   });
 
   it("round-trips a SUCCESSFUL install's output", async () => {
-    // planning#416 — the field that answers "it installed, so what did it
-    // write?". `detail` cannot carry it: on a success there is no detail, and
-    // on a failure it is prose a machine reader would have to parse.
     const succeeded: PluginInstallRecord = {
       commit: "b".repeat(40),
       at: "2026-08-16T10:00:00.000Z",
@@ -91,14 +75,8 @@ describe("plugin install record", () => {
   });
 
   it("round-trips the reason an install shared nothing, without touching its outcome", async () => {
-    // planning#511 — the cost that used to be recorded as a plain success. It
-    // is a field of its own rather than part of `detail` because it is
-    // advisory: the install worked, and no reader may treat this as a failure.
     const shared: PluginInstallRecord = {
       commit: "b".repeat(40),
-      // The BUILD, not just the commit: a rebuild of the live commit runs under
-      // its own id, and a reader that could not tell them apart would describe
-      // a rejected build as a property of the one that is running.
       generationId: `${"b".repeat(40)}.a1b2c3d4`,
       at: "2026-09-05T10:00:00.000Z",
       outcome: "succeeded",
@@ -109,8 +87,6 @@ describe("plugin install record", () => {
   });
 
   it("drops a depStoreReason that is not a string", async () => {
-    // Same rule as `output`, and for the same reason: this file is on disk,
-    // hand-editable, and the value is rendered onto a card.
     fs.mkdirSync(path.join(dir, "tools"), { recursive: true });
     fs.writeFileSync(
       installRecordPath(dir, "tools"),
@@ -122,9 +98,6 @@ describe("plugin install record", () => {
   });
 
   it("drops an output that is not a string rather than carrying it through", async () => {
-    // The file is on disk and hand-editable, and its output is quoted into
-    // issues on other people's repositories. A non-string here would reach the
-    // shim's JSON as whatever it is.
     fs.mkdirSync(path.join(dir, "tools"), { recursive: true });
     fs.writeFileSync(
       installRecordPath(dir, "tools"),
@@ -134,7 +107,6 @@ describe("plugin install record", () => {
   });
 
   it("never throws when the tree cannot be written", async () => {
-    // A diagnostic that can fail an install is worse than no diagnostic.
     const file = path.join(dir, "not-a-dir");
     fs.writeFileSync(file, "");
     expect(() => writeInstallRecord(file, "tools", RECORD)).not.toThrow();
@@ -143,23 +115,12 @@ describe("plugin install record", () => {
   it("renders each outcome as something a reader can act on", async () => {
     const at = "2026-08-16T10:00:00.000Z";
     const base = { commit: "b".repeat(40), at };
-    // The absence names BOTH its causes: a repository that declares no install
-    // writes nothing here, and so does one whose record was lost or predates the
-    // feature. One of those is fine and the other is the reported bug, so this
-    // line must not read as reassurance (review finding).
     expect(describeInstallRecord(null)).toContain("declares no install");
     expect(describeInstallRecord(null)).toContain("none has run since");
     expect(describeInstallRecord({ ...base, outcome: "succeeded" })).toContain("succeeded");
-    // planning#416 — "succeeded" is exactly where the reader still has a
-    // question, so the line says where the answer is. And says the opposite when
-    // there is nothing there: pointing at an empty field costs a call and
-    // answers nothing.
     expect(describeInstallRecord({ ...base, outcome: "succeeded", output: "added 41 packages" }))
       .toContain("--json");
-    // "nothing was captured", never "it printed nothing": a best-effort log read
-    // that failed is indistinguishable here from a silent install.
     expect(describeInstallRecord({ ...base, outcome: "succeeded" })).toContain("no output was captured");
-    // The three that must never read as plain success.
     expect(describeInstallRecord({ ...base, outcome: "failed", detail: "exited 1" }))
       .toContain("FAILED");
     expect(describeInstallRecord({ ...base, outcome: "failed", detail: "exited 1" }))

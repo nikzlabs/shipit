@@ -3,23 +3,6 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-/**
- * docs/260-attention-sidebar-view req 16 — the sidebar's "Needs you" switch must be legible in every
- * theme, light and dark.
- *
- * This is a guard test rather than a review note because the failure is
- * invisible in a diff and was already shipped once: `--color-attention` is
- * tuned as a 3px marker on a row, and at that job it works — but reused as
- * 10–16px text and glyph it measures **2.35–2.89:1** on the light themes'
- * surfaces, well under the 4.5:1 WCAG AA asks of small text. `--color-attention-text`
- * exists to carry the same amber at a shade that clears the bar, and nothing
- * except this test would notice a future palette edit undoing that.
- *
- * Both surfaces the control can sit on are checked: the header
- * (`--color-bg-primary`) at rest, and the pressed chip (`--color-bg-tertiary`),
- * which is the darker of the two on light themes and therefore the binding one.
- */
-
 const themesDir = path.join(path.dirname(fileURLToPath(import.meta.url)), "themes");
 
 /** WCAG 2.x relative luminance. */

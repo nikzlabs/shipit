@@ -66,14 +66,11 @@ describe("per-repo Claude memory sharing (docs/155)", () => {
     fs.mkdirSync(sharedDir(), { recursive: true });
     const sharedFile = path.join(sharedDir(), "kept.md");
     fs.writeFileSync(sharedFile, "original");
-    // Back-date the shared file so any naive copy-back (which would set a
-    // newer mtime) is detectable.
     const old = new Date(Date.now() - 60_000);
     fs.utimesSync(sharedFile, old, old);
     const originalMtime = fs.statSync(sharedFile).mtimeMs;
 
     provisionRepoMemory(root, sid, repoHash);
-    // Session didn't touch the file — sync-back must not rewrite it.
     syncMemoryBack(root, sid, repoHash);
 
     expect(fs.readFileSync(sharedFile, "utf8")).toBe("original");
@@ -88,7 +85,6 @@ describe("per-repo Claude memory sharing (docs/155)", () => {
     fs.utimesSync(sharedFile, old, old);
 
     provisionRepoMemory(root, sid, repoHash);
-    // The session's CLI rewrites the memory (newer mtime than the shared copy).
     const sessionFile = path.join(sessionMemoryDir(), "evolving.md");
     fs.writeFileSync(sessionFile, "v2");
 

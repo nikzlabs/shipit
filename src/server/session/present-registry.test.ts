@@ -1,6 +1,3 @@
-/**
- * Unit tests for PresentRegistry (docs/093).
- */
 import { describe, it, expect } from "vitest";
 import { PresentRegistry, derivePresentId } from "./present-registry.js";
 

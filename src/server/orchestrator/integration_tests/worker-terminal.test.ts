@@ -1,15 +1,3 @@
-/**
- * Integration tests for worker terminal endpoints and ContainerSessionRunner
- * terminal proxy.
- *
- * Tests cover:
- * 1. Worker terminal HTTP endpoints (start, input, resize) + SSE events
- * 2. ContainerSessionRunner terminal proxy (SSE → emitMessage)
- * 3. SSE backpressure → PTY pause/resume
- *
- * Uses in-process Fastify with stubs — no Docker or real processes.
- */
-
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import http from "node:http";
 import { SessionWorker } from "../../session/session-worker.js";
@@ -24,10 +12,6 @@ import {
   collectSSE,
   waitFor,
 } from "./container-test-helpers.js";
-
-// ---------------------------------------------------------------------------
-// Worker Terminal Endpoints
-// ---------------------------------------------------------------------------
 
 describe("Worker Terminal Endpoints", () => {
   let worker: SessionWorker;
@@ -127,10 +111,8 @@ describe("Worker Terminal Endpoints", () => {
     const events: { type: string; data: unknown }[] = [];
     const sse = collectSSE(workerUrl, (type, data) => events.push({ type, data }));
 
-    // Give SSE time to connect
     await new Promise((r) => setTimeout(r, 100));
 
-    // Start terminal and simulate output
     await worker.getApp().inject({ method: "POST", url: "/terminal/start", payload: {} });
     lastTerminal.emit("data", "hello world");
 
@@ -160,10 +142,6 @@ describe("Worker Terminal Endpoints", () => {
     sse.close();
   });
 });
-
-// ---------------------------------------------------------------------------
-// ContainerSessionRunner Terminal Proxy
-// ---------------------------------------------------------------------------
 
 describe("ContainerSessionRunner Terminal Proxy", () => {
   let worker: SessionWorker;
@@ -216,7 +194,6 @@ describe("ContainerSessionRunner Terminal Proxy", () => {
     expect(lastTerminal.lastRows).toBe(30);
     expect(runner.remoteTerminalRunning).toBe(true);
 
-    // Simulate terminal output
     lastTerminal.emit("data", "$ ls\nfile.txt\n");
 
     await waitFor(
@@ -286,7 +263,6 @@ describe("ContainerSessionRunner Terminal Proxy", () => {
     await runner.startTerminalOnWorker();
     expect(runner.remoteTerminalRunning).toBe(true);
 
-    // Simulate terminal exit
     lastTerminal.emit("exit", 0);
 
     await waitFor(
@@ -300,10 +276,6 @@ describe("ContainerSessionRunner Terminal Proxy", () => {
     runner.dispose();
   });
 });
-
-// ---------------------------------------------------------------------------
-// Terminal Backpressure
-// ---------------------------------------------------------------------------
 
 describe("Terminal SSE Backpressure", () => {
   let worker: SessionWorker;
@@ -333,7 +305,6 @@ describe("Terminal SSE Backpressure", () => {
     const address = worker.getApp().server.address();
     const port = typeof address === "object" && address ? address.port : 0;
 
-    // Connect an SSE client that pauses reading to simulate backpressure
     const connected = new Promise<http.IncomingMessage>((resolve) => {
       const req = http.request(
         { hostname: "127.0.0.1", port, path: "/events", method: "GET", headers: { Accept: "text/event-stream" } },
@@ -344,40 +315,27 @@ describe("Terminal SSE Backpressure", () => {
 
     const res = await connected;
 
-    // Give SSE time to connect
     await new Promise((r) => setTimeout(r, 100));
 
-    // Start terminal
     await worker.getApp().inject({ method: "POST", url: "/terminal/start", payload: {} });
     expect(lastTerminal.paused).toBe(false);
 
-    // Pause the response stream to stop draining the server's write buffer.
-    // This causes reply.raw.write() to eventually return false.
     res.pause();
 
-    // Flood terminal data until the server-side write buffer fills up.
-    // Node.js default highWaterMark is 16KB, so 64KB of data should trigger it.
     const chunk = "x".repeat(1024);
     for (let i = 0; i < 128; i++) {
       lastTerminal.emit("data", chunk);
     }
 
-    // The PTY should be paused due to backpressure
     await waitFor(() => lastTerminal.paused, 2000, "terminal paused");
 
-    // Resume reading on the client side — this drains the buffer
     res.resume();
 
-    // The PTY should resume once the buffer drains
     await waitFor(() => !lastTerminal.paused, 2000, "terminal resumed");
 
     res.destroy();
   });
 });
-
-// ---------------------------------------------------------------------------
-// Terminal Buffer Truncation
-// ---------------------------------------------------------------------------
 
 describe("truncateTerminalBuffer", () => {
   it("returns buffer unchanged if within limit", () => {
@@ -386,27 +344,19 @@ describe("truncateTerminalBuffer", () => {
 
   it("truncates at newline boundary", () => {
     const buf = "line1\nline2\nline3\nline4\n";
-    // Request max 12 bytes — should cut at a newline boundary from the end
     const result = truncateTerminalBuffer(buf, 12);
-    // The tail 12 chars of the buffer is "line3\nline4\n" (12 chars), but
-    // truncation searches forward from the cut point for a newline
     expect(result).not.toContain("line1");
-    // Result should start at a line boundary
     expect(result).toMatch(/^line/);
     expect(result).toContain("line4\n");
   });
 
   it("truncates at ANSI reset sequence when no newline found", () => {
-    // No newlines, but has ANSI reset sequences
     const buf = "\x1b[31mredtext\x1b[0m\x1b[32mgreentext\x1b[0mnormaltext";
-    // Request small enough to force truncation
     const result = truncateTerminalBuffer(buf, 20);
-    // Should cut at an \x1b[0m boundary, not mid-escape
     expect(result).not.toContain("\x1b[31m");
   });
 
   it("falls back to raw cut when no boundary found", () => {
-    // No newlines, no ANSI resets — just a long string of chars
     const buf = "a".repeat(200);
     const result = truncateTerminalBuffer(buf, 100);
     expect(result.length).toBe(100);
@@ -418,19 +368,13 @@ describe("truncateTerminalBuffer", () => {
   });
 
   it("prefers newline over ANSI reset when both present", () => {
-    // Newline appears before ANSI reset in the search window
     const head = "x".repeat(100);
     const tail = "after-newline\x1b[0mafter-reset-end";
     const buf = `${head  }\n${  tail}`;
     const result = truncateTerminalBuffer(buf, tail.length + 5);
-    // Should cut at the newline, not the ANSI reset
     expect(result).toBe(tail);
   });
 });
-
-// ---------------------------------------------------------------------------
-// SSE Disconnect → Terminal Reconnect
-// ---------------------------------------------------------------------------
 
 describe("ContainerSessionRunner SSE Disconnect Handling", () => {
   let worker: SessionWorker;
@@ -477,7 +421,6 @@ describe("ContainerSessionRunner SSE Disconnect Handling", () => {
     runner.attachViewer();
     await new Promise((r) => setTimeout(r, 200));
 
-    // Start terminal and produce output
     await runner.startTerminalOnWorker(80, 24);
     lastTerminal.emit("data", "$ hello\n");
 
@@ -487,10 +430,8 @@ describe("ContainerSessionRunner SSE Disconnect Handling", () => {
       "terminal_output message",
     );
 
-    // Now stop the worker to simulate SSE disconnection
     await worker.stop();
 
-    // Should receive terminal_reconnecting
     await waitFor(
       () => messages.some((m) => m.type === "terminal_reconnecting"),
       5000,
@@ -521,7 +462,6 @@ describe("ContainerSessionRunner SSE Disconnect Handling", () => {
     runner.attachViewer();
     await new Promise((r) => setTimeout(r, 200));
 
-    // Start terminal and produce output
     await runner.startTerminalOnWorker(80, 24);
     lastTerminal.emit("data", "buffered output\n");
 
@@ -531,7 +471,6 @@ describe("ContainerSessionRunner SSE Disconnect Handling", () => {
       "terminal_output",
     );
 
-    // Stop then restart worker to trigger SSE disconnect + reconnect
     await worker.stop();
     await waitFor(
       () => messages.some((m) => m.type === "terminal_reconnecting"),
@@ -539,7 +478,6 @@ describe("ContainerSessionRunner SSE Disconnect Handling", () => {
       "terminal_reconnecting",
     );
 
-    // Restart the worker on the same port
     const newWorker = new SessionWorker({
       agentFactory: () => new FakeWorkerAgent(),
       port: Number(new URL(workerUrl).port),
@@ -554,7 +492,6 @@ describe("ContainerSessionRunner SSE Disconnect Handling", () => {
     });
     await newWorker.start();
 
-    // Wait for reconnect — should replay buffer with \x1bc prefix
     await waitFor(
       () => messages.some((m) =>
         m.type === "terminal_output" &&
@@ -588,15 +525,10 @@ describe("ContainerSessionRunner SSE Disconnect Handling", () => {
     runner.attachViewer();
     await new Promise((r) => setTimeout(r, 200));
 
-    // Start terminal
     await runner.startTerminalOnWorker(80, 24);
 
-    // Stop the worker — no restart, so all reconnect attempts will fail
     await worker.stop();
 
-    // Should eventually get terminal_exit after all reconnect attempts fail.
-    // Backoff delays: 1s + 2s + 4s = 7s minimum, plus connection timeout,
-    // so allow generous wait time.
     await waitFor(
       () => messages.some((m) => m.type === "terminal_exit"),
       25_000,
@@ -605,7 +537,6 @@ describe("ContainerSessionRunner SSE Disconnect Handling", () => {
 
     expect(runner.remoteTerminalRunning).toBe(false);
 
-    // Should have received multiple terminal_reconnecting messages
     const reconnectMsgs = messages.filter((m) => m.type === "terminal_reconnecting");
     expect(reconnectMsgs.length).toBeGreaterThanOrEqual(3);
 
@@ -620,14 +551,11 @@ describe("ContainerSessionRunner SSE Disconnect Handling", () => {
       workerUrl,
     });
 
-    // Write more than 10KB but less than 80KB — old limit would truncate
     const data = "x".repeat(50_000);
     runner.appendTerminalOutput(data);
     expect(runner.getTerminalOutputBuffer().length).toBe(50_000);
 
-    // Write enough to exceed 80KB
     runner.appendTerminalOutput("y".repeat(50_000));
-    // Buffer should be truncated to approximately 80KB
     expect(runner.getTerminalOutputBuffer().length).toBeLessThanOrEqual(80_000);
     expect(runner.getTerminalOutputBuffer().length).toBeGreaterThan(0);
 

@@ -21,8 +21,6 @@ describe("turnAttributionFor", () => {
   });
 
   it("is absent — a `legacy` row — when the triple names no catalogue row", () => {
-    // Guessing here would produce a confidently wrong split of real money, which
-    // is exactly what the legacy bucket exists to avoid.
     expect(turnAttributionFor(undefined)).toBeUndefined();
     expect(
       turnAttributionFor({ serviceId: "nope", billingMode: "key", modelId: "whatever" }),
@@ -35,7 +33,6 @@ describe("turnAttributionFor", () => {
 
 describe("costFromRates", () => {
   it("prices each token class independently, per million", () => {
-    // 1M input at $10 + 0.5M output at $20 + 2M cache reads at $1 = 10 + 10 + 2.
     expect(
       costFromRates(RATES, { input: 1_000_000, output: 500_000, cacheRead: 2_000_000 }),
     ).toBeCloseTo(22, 10);
@@ -48,9 +45,6 @@ describe("costFromRates", () => {
 
 describe("resolveTurnCost — the column has ONE meaning: money that left the account", () => {
   it("a subscription turn costs zero, whatever the harness reported", () => {
-    // The harness's figure on a subscription turn describes a turn where nothing
-    // was billed. It is not metered spend and it is not an at-API-rates
-    // valuation either — nothing establishes it is one.
     const resolved = resolveTurnCost({
       harnessId: "claude",
       attribution: attribution({ serviceId: "anthropic", billingMode: "sub" }),
@@ -61,9 +55,6 @@ describe("resolveTurnCost — the column has ONE meaning: money that left the ac
   });
 
   it("a metered turn on the harness's OWN vendor keeps the harness's figure, still cumulative", () => {
-    // The one cell where an existing accuracy claim holds (`usage.ts` calls its
-    // delta "the true session bill"), so the design is not entitled to replace a
-    // genuinely-billed number with a four-rate approximation.
     const resolved = resolveTurnCost({
       harnessId: "claude",
       attribution: attribution({ serviceId: "anthropic", billingMode: "key" }),
@@ -74,10 +65,6 @@ describe("resolveTurnCost — the column has ONE meaning: money that left the ac
   });
 
   it("a metered turn on the harness's own vendor that reported NOTHING is priced from the rates", () => {
-    // Codex declares `nativeService: "openai"` and emits no dollar figure at
-    // all. Reading "reported nothing" as "cost nothing" is what made every
-    // metered OpenAI turn look free — the one column req 16 exists to make
-    // honest.
     const resolved = resolveTurnCost({
       harnessId: "codex",
       attribution: attribution({ serviceId: "openai", billingMode: "key" }),
@@ -88,8 +75,6 @@ describe("resolveTurnCost — the column has ONE meaning: money that left the ac
   });
 
   it("a redirected metered turn ignores the harness's figure and uses the rates", () => {
-    // The figure comes from a CLI that was never told which vendor it is talking
-    // to, so whatever it means, it is not that vendor's price.
     const resolved = resolveTurnCost({
       harnessId: "claude",
       attribution: attribution({ serviceId: "deepseek", billingMode: "key" }),
@@ -119,11 +104,6 @@ describe("resolveTurnCost — the column has ONE meaning: money that left the ac
   });
 
   it("a consult on a metered key that reported NOTHING is priced from the rates, not free", () => {
-    // The sub-agent runner starts `costUsd` at 0 and only assigns on a reported
-    // figure, so a caller that forwards it blindly tells this rule "the harness
-    // said $0". Codex reports no dollar figure at all, so every metered OpenAI
-    // consult would have been recorded as free — `services/sub-agent.ts` passes
-    // `undefined` unless `costReported` is set.
     expect(
       resolveTurnCost({
         harnessId: "codex",
@@ -162,9 +142,6 @@ describe("selectionOf", () => {
 });
 
 describe("the delta chain across a billing-mode switch", () => {
-  // Documented here rather than in `usage.test.ts` because the SHAPE of the bug
-  // belongs to this rule: it exists only because `cost_usd` stopped always
-  // coming from the harness's running total.
   it("a subscription turn takes zero for the column and still carries the snapshot", () => {
     const resolved = resolveTurnCost({
       harnessId: "claude",
@@ -176,12 +153,7 @@ describe("the delta chain across a billing-mode switch", () => {
       reportedCostUsd: 7.5,
       tokens: {},
     });
-    // The column: nothing was billed.
     expect(resolved.costUsd).toBe(0);
-    // The chain: `agent-listeners` passes the reported 7.5 as
-    // `cumulativeSnapshot` regardless, so a later metered turn of the same
-    // resumed conversation diffs against it instead of recording the whole
-    // conversation as one turn's spend.
     expect(resolved.costSource).toBe("per-turn");
   });
 });

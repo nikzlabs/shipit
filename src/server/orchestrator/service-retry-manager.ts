@@ -1,62 +1,14 @@
-/**
- * ServiceRetryManager — owns the retry timers, backoff schedule, and OOM
- * auto-retry budget for compose services.
- *
- * Extracted from `service-manager.ts` so the retry/OOM bookkeeping has a
- * single home and the manager can stay focused on compose CLI invocation
- * and lifecycle. The manager delegates four kinds of events to this class:
- *
- *   - `scheduleRetryWhileInstalling(name, exitCode)` — a `preview: auto`
- *     service exited non-zero while `agent.install` is in flight.
- *   - `scheduleOomRetry(name)` — a `preview: auto` service exited with
- *     code 137 (OOM-killed).
- *   - `armOomStableResetIfNeeded(name)` — the service has recovered to
- *     `running` after at least one OOM retry; arm a stable-uptime timer
- *     so the OOM budget resets if it stays healthy long enough.
- *   - `cancelOomStableTimer(name)` — the service left `running`; cancel
- *     any armed stable-uptime timer.
- *
- * The manager owns the actual restart action (it has the compose CLI
- * wiring) and supplies it as the `runRetryNow` callback. The retry
- * manager itself never touches Docker.
- */
-
 const RETRY_BACKOFF_MS = [1_000, 2_000, 4_000, 8_000, 10_000];
 const MAX_OOM_AUTO_RETRIES = 3;
 const OOM_STABLE_RESET_MS = 60_000;
-/**
- * How many times a gated service that crashes just after the install gate
- * opens is restarted with backoff before latching to `error`. The cumulative
- * backoff (1+2+4+8+10 = 25s) comfortably covers the gap between a premature
- * install-complete signal (observed ~2s on warm/reused fast-install paths)
- * and a real `npm install` finishing (~16s), so a service that only failed
- * because `node_modules/.bin` wasn't on disk yet recovers on its own. See
- * docs/137-depends-on-install.
- */
 const MAX_POST_GATE_RETRIES = 5;
-/**
- * How long a formerly-gated service must stay `running` before it leaves the
- * post-gate recovery window. "Running" alone is not establishment for a
- * `command: sh -c "npm install && npm run dev"` service — the container is
- * `running` a minute before the dev server exists, and a crash in that
- * establishment phase (observed live: an ETXTBSY in the service's own npm
- * install ~60s after start, docs/183 FINDINGS) used to fall outside the
- * window and latch straight to `error` with zero retries. Same shape as the
- * OOM stable-uptime reset.
- */
+// A running container may still be installing dependencies.
 const POST_GATE_STABLE_MS = 60_000;
 
 export interface ServiceRetryManagerOptions {
   sessionId: string;
-  /** Returns `true` once the parent `ServiceManager.stop()` has been called. */
   isDisposed: () => boolean;
-  /** Update a service's status (delegates to the manager). */
   updateServiceStatus: (name: string, status: "starting" | "error", error?: string) => void;
-  /**
-   * Run a single restart attempt for the named service. Resolves on success;
-   * on failure, the manager is expected to either schedule another retry
-   * (install window) or latch to `error`.
-   */
   runRetryNow: (name: string) => Promise<void>;
 }
 
@@ -66,51 +18,11 @@ export class ServiceRetryManager {
   private readonly updateServiceStatus: ServiceRetryManagerOptions["updateServiceStatus"];
   private readonly runRetryNow: (name: string) => Promise<void>;
 
-  // --- Install-window retry state ---
-  /** Per-service backoff timer for retry-while-installing. */
   private retryTimers = new Map<string, ReturnType<typeof setTimeout>>();
-  /** Per-service retry attempt counter (drives exponential backoff). */
   private retryAttempts = new Map<string, number>();
-
-  // --- OOM auto-retry state ---
-  /**
-   * Per-service OOM attempt counter — separate from `retryAttempts` (which
-   * tracks install-window retries). Counts consecutive OOM-killed exits
-   * (code 137) for a `preview: auto` service. Reset when:
-   *   - The service runs for `OOM_STABLE_RESET_MS` without OOMing again
-   *     (the typical "one-off pressure spike" case).
-   *   - The service is explicitly stopped or restarted by the user.
-   *   - The manager is reconciled / disposed.
-   * NOT reset on every momentary `running` poll — a service that flaps in
-   * and out of `running` while OOMing every few seconds must NOT loop
-   * forever; the cap forces the user to intervene after MAX retries.
-   */
   private oomRetryAttempts = new Map<string, number>();
-  /**
-   * Per-service stable-uptime timers. When a service comes up `running`
-   * after at least one OOM-retry, we arm a timer to clear the OOM counter
-   * if it stays running long enough. The timer is cancelled if the
-   * service leaves `running` before it fires.
-   */
   private oomStableTimers = new Map<string, ReturnType<typeof setTimeout>>();
-
-  // --- Post-gate recovery state (docs/137) ---
-  /**
-   * Per-service counter of bounded restarts attempted for a gated service
-   * that crashed shortly after the install gate opened. Separate from both
-   * `retryAttempts` (install-window) and `oomRetryAttempts`. Reset when the
-   * service finally reaches `running`, when the budget is exhausted, on an
-   * explicit user action, or on manager-wide cleanup.
-   */
   private postGateRetryAttempts = new Map<string, number>();
-  /**
-   * Per-service stable-uptime timers for the post-gate window. Armed when a
-   * formerly-gated service reaches `running`; if it stays up for
-   * `POST_GATE_STABLE_MS` the window closes (the manager drops it from
-   * `postGateServices` via the callback) and the attempt budget clears. The
-   * timer is cancelled if the service leaves `running` first, so a crash in
-   * the establishment phase still finds the window open.
-   */
   private postGateStableTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
   constructor(opts: ServiceRetryManagerOptions) {
@@ -120,15 +32,8 @@ export class ServiceRetryManager {
     this.runRetryNow = opts.runRetryNow;
   }
 
-  /**
-   * Schedule a retry for a service that exited non-zero while
-   * `agent.install` is still in flight. Uses exponential backoff capped at
-   * 10s. The service is held in `starting` state (not `error`) so the user
-   * sees a benign "still coming up" rather than a failure.
-   */
   scheduleRetryWhileInstalling(name: string, exitCode: number): void {
     if (this.isDisposed()) return;
-    // If a retry is already pending, leave it in place.
     if (this.retryTimers.has(name)) return;
 
     const attempt = this.retryAttempts.get(name) ?? 0;
@@ -140,7 +45,6 @@ export class ServiceRetryManager {
       `[compose:${this.sessionId}] ${name} exited ${exitCode} while install in progress — retry #${attempt + 1} in ${delay}ms`,
     );
 
-    // Reflect "still coming up" to the UI rather than `error`.
     this.updateServiceStatus(name, "starting");
 
     const timer = setTimeout(() => {
@@ -150,38 +54,14 @@ export class ServiceRetryManager {
     this.retryTimers.set(name, timer);
   }
 
-  /**
-   * Schedule an OOM-recovery retry for a `preview: auto` service that
-   * just exited with code 137. Mirrors `scheduleRetryWhileInstalling` but
-   * is bounded by `MAX_OOM_AUTO_RETRIES` — after that many consecutive
-   * OOMs without a stable-uptime window in between, we latch to `error`
-   * so the user can investigate.
-   *
-   * PRECONDITION: the caller has CONFIRMED the OOM against the container's
-   * `State.OOMKilled` — bare exit 137 is not enough (docs/239). Both the log
-   * line and the budget-exhausted error below state OOMKilled as fact and tell
-   * the user to raise a memory limit, which is actively misleading advice for
-   * an ordinary SIGKILL. `ServiceManager.handleNonZeroExit` is the only caller
-   * and enforces this; keep it that way.
-   */
+  // The caller must confirm State.OOMKilled; exit 137 alone is insufficient.
   scheduleOomRetry(name: string): void {
     if (this.isDisposed()) return;
-    // If a retry is already pending, leave it in place.
     if (this.retryTimers.has(name)) return;
 
     const attempt = this.oomRetryAttempts.get(name) ?? 0;
     if (attempt >= MAX_OOM_AUTO_RETRIES) {
-      // Exhausted — latch to error with a message that explicitly names
-      // the retry budget so the user knows we already tried (and that
-      // Rescue session won't help here, only fixing the underlying memory
-      // pressure will).
-      //
-      // We intentionally do NOT delete the counter here: the next periodic
-      // pollStatus tick will see the service still in `exited`/`dead` state
-      // and re-enter this method. Leaving the counter at MAX_OOM_AUTO_RETRIES
-      // keeps the gate closed so we don't kick off a fresh retry loop. The
-      // counter is reset only by an explicit user action (startService /
-      // restartService) or by manager-wide cleanup (cancelAll).
+      // Keep the exhausted counter so repeated polls cannot restart the loop.
       this.updateServiceStatus(
         name,
         "error",
@@ -198,9 +78,6 @@ export class ServiceRetryManager {
       `[compose:${this.sessionId}] ${name} OOMKilled — retry #${attempt + 1}/${MAX_OOM_AUTO_RETRIES} in ${delay}ms`,
     );
 
-    // Reflect "still coming up" to the UI rather than `error`. The
-    // PreviewFrame banner / service dot stay yellow during the retry
-    // window instead of going red.
     this.updateServiceStatus(name, "starting");
 
     const timer = setTimeout(() => {
@@ -210,34 +87,12 @@ export class ServiceRetryManager {
     this.retryTimers.set(name, timer);
   }
 
-  /**
-   * Schedule a bounded restart for a `preview: auto` gated service that
-   * crashed shortly AFTER the install gate opened (docs/137). On warm /
-   * reused fast-install paths the install-complete signal can fire before
-   * `node_modules/.bin` is fully on disk, so the service's first boot crashes
-   * (e.g. `astro: not found`, exit 127). Without this, the crash is observed
-   * by the poller once the gate is already closed and the service is no longer
-   * gated — so neither the install-window backoff nor the one-shot
-   * post-install pass owns it, and it latches to `error` permanently until a
-   * manual restart.
-   *
-   * Retry with the standard backoff so it recovers once deps finish landing.
-   * Bounded by `MAX_POST_GATE_RETRIES` so a genuinely broken service (bad
-   * command, missing binary that install never produces) still surfaces as
-   * `error` rather than looping forever.
-   *
-   * @returns `true` if a retry was scheduled (or one is already pending), so
-   *   the caller holds the service in `starting`; `false` once the budget is
-   *   exhausted, so the caller latches to `error`.
-   */
   schedulePostGateRetry(name: string): boolean {
     if (this.isDisposed()) return true;
-    // If a retry is already pending, leave it in place.
     if (this.retryTimers.has(name)) return true;
 
     const attempt = this.postGateRetryAttempts.get(name) ?? 0;
     if (attempt >= MAX_POST_GATE_RETRIES) {
-      // Exhausted — clear the counter and tell the caller to latch to error.
       this.postGateRetryAttempts.delete(name);
       console.log(
         `[compose:${this.sessionId}] ${name} still crashing after ${MAX_POST_GATE_RETRIES} post-install retries — marking error`,
@@ -253,7 +108,6 @@ export class ServiceRetryManager {
       `[compose:${this.sessionId}] ${name} crashed just after install gate opened — retry #${attempt + 1}/${MAX_POST_GATE_RETRIES} in ${delay}ms`,
     );
 
-    // Reflect "still coming up" to the UI rather than `error`.
     this.updateServiceStatus(name, "starting");
 
     const timer = setTimeout(() => {
@@ -264,22 +118,10 @@ export class ServiceRetryManager {
     return true;
   }
 
-  /**
-   * Drop the post-gate recovery budget for a service. Called when the service
-   * finally reaches `running` (its first boot succeeded after the gate opened)
-   * or when it is re-held for a mid-session re-install.
-   */
   clearPostGateState(name: string): void {
     this.postGateRetryAttempts.delete(name);
   }
 
-  /**
-   * Arm the post-gate stable-uptime timer for a formerly-gated service that
-   * just reached `running`. When it fires (the service stayed up for
-   * `POST_GATE_STABLE_MS`), the attempt budget clears and `onStable` runs —
-   * the manager uses it to drop the service from its post-gate window. No-op
-   * if a timer is already armed (a `running` poll repeats every cycle).
-   */
   armPostGateStableClear(name: string, onStable: () => void): void {
     if (this.postGateStableTimers.has(name)) return;
     const timer = setTimeout(() => {
@@ -290,7 +132,6 @@ export class ServiceRetryManager {
     this.postGateStableTimers.set(name, timer);
   }
 
-  /** Cancel the post-gate stable timer for a service (when it leaves `running`). */
   cancelPostGateStableTimer(name: string): void {
     const timer = this.postGateStableTimers.get(name);
     if (timer) {
@@ -299,12 +140,7 @@ export class ServiceRetryManager {
     }
   }
 
-  /**
-   * Arm a stable-uptime timer for a service that has reached `running`
-   * after at least one OOM auto-retry. If the service stays running for
-   * `OOM_STABLE_RESET_MS` the OOM counter resets; if it leaves `running`
-   * first, the timer is cancelled by the next exited-state poll.
-   */
+  // Brief returns to running must not reset the OOM budget.
   armOomStableResetIfNeeded(name: string): void {
     if (!this.oomRetryAttempts.has(name)) return;
     if (this.oomStableTimers.has(name)) return;
@@ -315,7 +151,6 @@ export class ServiceRetryManager {
     this.oomStableTimers.set(name, timer);
   }
 
-  /** Cancel the stable-uptime timer for a service (when it leaves `running`). */
   cancelOomStableTimer(name: string): void {
     const timer = this.oomStableTimers.get(name);
     if (timer) {
@@ -324,7 +159,6 @@ export class ServiceRetryManager {
     }
   }
 
-  /** Clear any retry state for a service that has recovered or stopped cleanly. */
   clearRetryState(name: string): void {
     const timer = this.retryTimers.get(name);
     if (timer) {
@@ -334,27 +168,15 @@ export class ServiceRetryManager {
     this.retryAttempts.delete(name);
   }
 
-  /**
-   * Drop the OOM auto-retry budget for a single service. Called from
-   * explicit user actions (`startService`, `restartService`) — if the user
-   * says "try again," respect that and give the service a fresh budget.
-   */
   resetOomBudget(name: string): void {
     this.cancelOomStableTimer(name);
     this.oomRetryAttempts.delete(name);
   }
 
-  /**
-   * Drop the OOM auto-retry budget for a service that exited cleanly
-   * (exit code 0). Distinct from `resetOomBudget` only by intent — both
-   * paths clear the counter without touching the stable-uptime timer
-   * (the caller has already cancelled it).
-   */
   clearOomBudget(name: string): void {
     this.oomRetryAttempts.delete(name);
   }
 
-  /** Cancel all pending retries — used during `stop()` / `reconcile()`. */
   cancelAll(): void {
     for (const timer of this.retryTimers.values()) clearTimeout(timer);
     this.retryTimers.clear();
@@ -367,22 +189,10 @@ export class ServiceRetryManager {
     this.postGateRetryAttempts.clear();
   }
 
-  /**
-   * Called when `setInstallRunning(false)` is invoked. Cancels pending
-   * install-window backoff timers and returns the union of:
-   *   - services that had a pending retry timer (we just cancelled them)
-   *   - services in `errorServices` (passed in by the manager — typically
-   *     every `preview: auto` service currently in `error`)
-   *
-   * The manager then runs one explicit restart for each name in the
-   * returned set, so a service that latched to `error` before the retry
-   * path was reached (e.g. stack-level start failure) still gets one
-   * post-install try.
-   */
   collectPostInstallRetryTargets(errorServices: Iterable<string>): Set<string> {
     const targets = new Set<string>();
 
-    // Cancel pending backoff timers — caller will restart immediately.
+    // The caller restarts these immediately after install completes.
     for (const [name, timer] of this.retryTimers) {
       clearTimeout(timer);
       targets.add(name);
@@ -396,11 +206,6 @@ export class ServiceRetryManager {
     return targets;
   }
 
-  /**
-   * After `collectPostInstallRetryTargets()` returns its target set, the
-   * caller invokes this once per target to clear the per-service install
-   * retry counter so a fresh post-install run starts from attempt 0.
-   */
   resetInstallAttempts(name: string): void {
     this.retryAttempts.delete(name);
   }

@@ -20,21 +20,8 @@ import {
 import { DatabaseManager } from "../../shared/database.js";
 import { RepoStore } from "../repo-store.js";
 
-/**
- * The remote both tests attach to their session. docs/243 gates every agent
- * turn on runner-owned trust admission against the session's remote, so the
- * fixture registers this URL as trusted — the release flow needs turns to run,
- * and the trust gate has its own coverage elsewhere.
- */
 const REPO_URL = "https://github.com/owner/repo";
 
-/**
- * docs/171 Phase 1 — confirm → tag → publish, end to end. Drives the WS turn
- * loop with a fake agent that emits release markers, and a fake GitHub auth
- * manager that serves the gate status + the published Release. Asserts the
- * orchestrator's release flow advances the inline card from `proposed` →
- * `released`.
- */
 describe("Integration: release flow — propose → tag → publish", () => {
   let app: FastifyInstance;
   let port: number;
@@ -52,9 +39,7 @@ describe("Integration: release flow — propose → tag → publish", () => {
     githubAuthManager = new StubGitHubAuthManager();
     await githubAuthManager.setToken("test-token");
 
-    // Registered (but deliberately NOT marked ready — that would make the
-    // startup pass try to warm a session against a bare cache this suite
-    // never seeds) purely so the trust flag has a row to land on.
+    // Leave the repo unready: this test has no bare cache for warm sessions.
     const repoStore = new RepoStore(dbManager);
     repoStore.add(REPO_URL);
     repoStore.setTrusted(REPO_URL, true);
@@ -106,7 +91,6 @@ describe("Integration: release flow — propose → tag → publish", () => {
     return sessionId;
   }
 
-  /** Run one turn whose assistant text carries the given marker payload. */
   async function runTurnWithText(client: TestClient, userText: string, assistantText: string): Promise<void> {
     lastClaude = null;
     client.send({ type: "send_message", text: userText });
@@ -132,14 +116,12 @@ describe("Integration: release flow — propose → tag → publish", () => {
 
   it("advances the card from proposed to released across two turns", async () => {
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
     const sessionId = await createSession(client);
     expect(sessionId).toBeTruthy();
-    // Releases require a remote — wire one onto the session.
     sessionManager.setRemoteUrl(sessionId, "https://github.com/owner/repo");
 
-    // Turn 1: the agent proposes. The card should land in `proposed`.
     await runTurnWithText(
       client,
       "cut a 0.3.0 release",
@@ -154,7 +136,6 @@ describe("Integration: release flow — propose → tag → publish", () => {
     expect(proposed.tag).toBe("v0.3.0");
     expect(proposed.bumpType).toBe("minor");
 
-    // The gate passes and the repo's CI publishes the Release.
     githubAuthManager.setCheckStatus({ state: "success", total: 2, passed: 2, failed: 0, pending: 0 });
     githubAuthManager.setReleaseByTag({
       name: "v0.3.0",
@@ -165,7 +146,6 @@ describe("Integration: release flow — propose → tag → publish", () => {
       tagName: "v0.3.0",
     });
 
-    // Turn 2: the user confirms; the agent tags + pushes and emits `tagged`.
     await runTurnWithText(
       client,
       "yes, ship it",
@@ -179,9 +159,6 @@ describe("Integration: release flow — propose → tag → publish", () => {
     expect(released.release?.htmlUrl).toContain("releases/tag/v0.3.0");
     expect(released.notes).toContain("Features");
 
-    // docs/171 — the card is a persisted transcript card now: a single
-    // `release_card` row, upserted across phases by `cardId`, must be in
-    // `/history` so it survives a reload + orchestrator restart.
     const historyRes = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/history` });
     const history = historyRes.json() as { messages: { releaseCard?: { phase: string; cardId: string } }[] };
     const releaseCards = history.messages.filter((m) => m.releaseCard);
@@ -215,7 +192,6 @@ describe("Integration: release flow — propose → tag → publish", () => {
 <!--shipit:release {"action":"already-released","tag":"v1.0.0","version":"1.0.0"}-->`,
     );
 
-    // already-released resolves to a terminal released card flagged as such.
     const phase = await waitForPhase(sessionId, "released");
     expect(phase).toBe("released");
     expect(app.releaseStatusPoller!.getStatus(sessionId)?.alreadyReleased).toBe(true);

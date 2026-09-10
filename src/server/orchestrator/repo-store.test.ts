@@ -37,10 +37,6 @@ describe("RepoStore", () => {
     expect(repo2.url).toBe("https://github.com/owner/repo.git");
   });
 
-  // docs/262 req 19 — the row key is the credential-free URL, in EVERY method
-  // that takes one. Stripping in `add` alone would store the clean URL and then
-  // leave `setReady`/`get`/`setWarmSessionId` addressing a row that never
-  // existed, which is a repo stuck at status "cloning" forever.
   it("treats a credentialed URL and its clean twin as one row", () => {
     const credentialed = "https://x-access-token:pw@github.com/owner/repo.git";
     const clean = "https://github.com/owner/repo.git";
@@ -106,7 +102,6 @@ describe("RepoStore", () => {
   it("list sorts by lastUsedAt descending", () => {
     store.add("https://github.com/a/repo.git");
     store.add("https://github.com/b/repo.git");
-    // The second add is more recent, so it should be first
     const list = store.list();
     expect(list[0].url).toBe("https://github.com/b/repo.git");
     expect(list[1].url).toBe("https://github.com/a/repo.git");
@@ -143,9 +138,6 @@ describe("RepoStore", () => {
     });
 
     it("is keyed by GitHub identity — including the spellings trust cannot collapse", () => {
-      // canonicalRepoKey (which `trusted` uses) splits these three; a
-      // permission must not, or a grant made under one spelling silently
-      // fails to apply under another.
       store.add(URL);
       store.setAllowAgentMerge("git@github.com:Owner/Repo.git", true);
       expect(store.allowsAgentMerge(URL)).toBe(true);
@@ -166,7 +158,6 @@ describe("RepoStore", () => {
       expect(store.setAllowAgentMerge("https://gitlab.com/owner/repo", false)).toBe("no-identity");
       expect(store.setAllowAgentMerge("not a url", true)).toBe("no-identity");
       expect(store.allowsAgentMerge("https://gitlab.com/owner/repo")).toBe(false);
-      // A near-miss host must never inherit the grant.
       store.setAllowAgentMerge(URL, true);
       expect(store.allowsAgentMerge("https://github.com.evil.example/owner/repo")).toBe(false);
     });
@@ -176,16 +167,10 @@ describe("RepoStore", () => {
     });
 
     it("says WHY nothing was written — no identity, or no such repository", () => {
-      // The two failures are not the same answer, and reporting "ok" for the
-      // second granted a repository ShipIt does not hold: the write matched
-      // zero rows, the route answered 200, and adding that repository later
-      // started it with the grant OFF (cross-agent review finding).
       store.add(URL);
       expect(store.setAllowAgentMerge("https://gitlab.com/owner/repo", true)).toBe("no-identity");
       expect(store.setAllowAgentMerge("https://github.com/never/added.git", true)).toBe("not-found");
       expect(store.setAllowAgentMerge(URL, true)).toBe("ok");
-      // …and the untracked one really did write nothing, so adding it now
-      // starts from the default.
       const added = store.add("https://github.com/never/added.git");
       expect(added.allowAgentMerge).toBe(false);
     });
@@ -193,17 +178,11 @@ describe("RepoStore", () => {
     it("is read from the row, not cached on the store instance", () => {
       store.add(URL);
       store.setAllowAgentMerge(URL, true);
-      // Same connection — this proves only that a second store sees it, which
-      // is a weaker claim than durability. The next test makes that one.
       const reopened = new RepoStore(dbManager);
       expect(reopened.allowsAgentMerge(URL)).toBe(true);
     });
 
     it("survives closing and reopening the database file", () => {
-      // The durability claim, on a real file: the grant is a permission, and a
-      // migration that ran but did not persist the column — or a value held
-      // only in memory — would silently revoke it on the next restart. Reopening
-      // also re-runs the migrations over a populated database.
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), "repo-store-grant-"));
       const file = path.join(dir, "shipit.db");
       try {
@@ -245,10 +224,6 @@ describe("RepoStore", () => {
     });
 
     it("trust is keyed by canonical repo identity, not the raw URL", () => {
-      // Stored with the .git suffix; trusted via the suffix-less form. The
-      // .git suffix, a trailing slash, and host casing all collapse to the
-      // same canonical key. (scp-style SSH is a genuinely distinct key under
-      // canonicalRepoKey, so it is intentionally not asserted equal here.)
       store.add(URL);
       store.setTrusted("https://github.com/owner/repo", true);
       expect(store.isTrusted(URL)).toBe(true);
@@ -304,7 +279,6 @@ describe("RepoStore", () => {
       const readded = store.add(URL);
       expect(readded.hidden).toBe(false);
       expect(store.get(URL)?.hidden).toBe(false);
-      // Still a single row — re-add dedups, it doesn't duplicate.
       expect(store.list()).toHaveLength(1);
     });
 
@@ -330,8 +304,6 @@ describe("RepoStore", () => {
       store.add("https://github.com/a/repo.git");
       store.add("https://github.com/b/repo.git");
       store.add("https://github.com/c/repo.git");
-      // Default order is lastUsedAt desc — c, b, a.
-      // Reverse to a, b, c.
       store.setOrder([
         "https://github.com/a/repo.git",
         "https://github.com/b/repo.git",
@@ -349,11 +321,9 @@ describe("RepoStore", () => {
       store.add("https://github.com/a/repo.git");
       store.add("https://github.com/b/repo.git");
       store.add("https://github.com/c/repo.git");
-      // Only set order for c — a and b should come after by lastUsedAt desc.
       store.setOrder(["https://github.com/c/repo.git"]);
       const list = store.list();
       expect(list[0].url).toBe("https://github.com/c/repo.git");
-      // Then b (more recent) before a.
       expect(list[1].url).toBe("https://github.com/b/repo.git");
       expect(list[2].url).toBe("https://github.com/a/repo.git");
     });
@@ -430,7 +400,6 @@ describe("RepoStore", () => {
     });
   });
 
-  // docs/254 — per-repo identity color for the sidebar's group edge.
   describe("colorIndex", () => {
     const a = "https://github.com/owner/a.git";
     const b = "https://github.com/owner/b.git";
@@ -439,15 +408,12 @@ describe("RepoStore", () => {
       expect(store.add(a).colorIndex).toBe(REPO_COLOR_ASSIGNMENT_ORDER[0]);
     });
 
-    // req 5 — no two repos share a color while unused colors remain.
     it("gives each new repo a distinct color", () => {
       const urls = Array.from({ length: 16 }, (_, i) => `https://github.com/owner/r${i}.git`);
       const assigned = urls.map((u) => store.add(u).colorIndex);
       expect(new Set(assigned).size).toBe(16);
     });
 
-    // req 6 — stable across re-add, which is how unhiding works (add() clears
-    // `hidden`), so a repo coming back out of the Hidden section keeps its color.
     it("does not reassign on re-add", () => {
       store.add(a);
       store.setColorIndex(a, 7);
@@ -458,8 +424,6 @@ describe("RepoStore", () => {
     it("does not hand a second repo the colour a hidden repo is holding", () => {
       store.add(a);
       store.setHidden(a, true);
-      // `a` still holds its color while hidden; `b` must not collide with it, or
-      // unhiding `a` would produce two identical edges.
       expect(store.add(b).colorIndex).toBe(REPO_COLOR_ASSIGNMENT_ORDER[1]);
     });
 
@@ -474,8 +438,8 @@ describe("RepoStore", () => {
     });
 
     it("reuses a freed color after a removal", () => {
-      store.add(a);            // assignment order [0]
-      store.add(b);            // assignment order [1]
+      store.add(a);
+      store.add(b);
       store.remove(a);
       expect(store.add("https://github.com/owner/c.git").colorIndex).toBe(REPO_COLOR_ASSIGNMENT_ORDER[0]);
     });

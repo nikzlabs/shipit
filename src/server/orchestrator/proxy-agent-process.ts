@@ -1,24 +1,8 @@
-/**
- * ProxyAgentProcess — bridges worker events to the AgentProcess interface.
- * Extracted from container-session-runner.ts for single-responsibility.
- */
-
 import { EventEmitter } from "node:events";
 import { randomUUID } from "node:crypto";
 import type { AgentProcess, AgentId, AgentEvent, AgentMcpWriteContext, AgentMcpWriteResult, AgentRunParams, PermissionMode, PermissionDecision } from "../shared/types.js";
 import { WorkerTimeoutError } from "./worker-http.js";
 
-/**
- * Translate a worker HTTP failure into a user-facing chat error message.
- * `WorkerTimeoutError` ("Worker request timed out after 10000ms: /agent/stdin")
- * carries no actionable hint — wrap it in copy that points the user at the
- * recovery affordances (Rescue session, Kill agent) instead. Note that
- * `/agent/start` itself is unbounded (see `_startAgentViaProxy`) — SSE owns
- * worker-liveness signalling — so the "start" branch below is reached only
- * for non-timeout transport errors.
- *
- * See docs/124-session-rescue-and-diagnostics §1.3.
- */
 function describeWorkerError(err: unknown, op: "start" | "stdin" | "interrupt"): Error {
   if (err instanceof WorkerTimeoutError) {
     const hint = op === "start"
@@ -33,10 +17,6 @@ function describeWorkerError(err: unknown, op: "start" | "stdin" | "interrupt"):
   return err instanceof Error ? err : new Error(String(err));
 }
 
-/**
- * Interface for the subset of ContainerSessionRunner methods that
- * ProxyAgentProcess needs. Avoids a circular import dependency.
- */
 export interface ProxyAgentRunner {
   _startAgentViaProxy(agentId: AgentId, params: AgentRunParams, runToken?: string, deliveryId?: string): Promise<void>;
   writeAgentStdin(data: string): Promise<void>;
@@ -48,44 +28,16 @@ export interface ProxyAgentRunner {
   resolvePermissionOnWorker(requestId: string, decision: PermissionDecision): Promise<void>;
 }
 
-/**
- * A proxy AgentProcess that doesn't own a real process — it represents
- * the agent running inside the worker. Events are pushed in by the
- * ContainerSessionRunner's SSE listener. Methods delegate to the worker
- * via HTTP through the parent ContainerSessionRunner.
- */
 export class ProxyAgentProcess extends EventEmitter<{
   event: [AgentEvent];
   done: [exitCode: number];
   error: [Error];
   auth_required: [];
   log: [source: string, text: string];
-  /** planning#318 — a newer spawn took this proxy's runner slot. See `AgentProcessEvents`. */
   superseded: [];
 }> implements AgentProcess {
   readonly agentId: AgentId;
-  /**
-   * Per-SPAWN correlation token (a "run epoch"), distinct from `agentId`
-   * (which is the agent *type* — "claude"/"codex" — and is reused across
-   * turns). Generated once per proxy instance. The orchestrator sends this
-   * to the worker on `/agent/start`; the worker stamps it on every
-   * `agent_done`/`agent_error`/`agent_auth_required` it broadcasts for the
-   * spawn it belongs to. The SSE relay (`container-session-runner.ts`
-   * `handleSSEEvent`) compares the incoming token against the proxy that
-   * currently occupies the runner's `_agent` slot and IGNORES a slot-ending
-   * event whose token doesn't match — i.e. a STALE exit from a previous
-   * spawn that the rebase / Fix-CI flow killed when it reused the slot.
-   *
-   * Without this, the prior resident process's late `agent_done` (e.g. a
-   * SIGTERM `143`) was emitted onto the freshly-spawned agent, whose own
-   * object-identity-guarded done handler then nulled `_agent`, stranding
-   * the entire resolution turn's event stream. See docs/146 follow-up.
-   *
-   * docs/240 — a proxy re-created to ADOPT a turn that outlived an orchestrator
-   * restart inherits the worker's recorded token (via the constructor's
-   * `runToken` option) rather than minting a new one, so the adopted turn's
-   * `agent_done` / `agent_error` still correlate and aren't ignored as stale.
-   */
+  /** Correlates spawn events to reject stale exits. Inherit it when adopting a running worker. */
   readonly runToken: string;
   readonly capabilities = {
     supportsResume: true,
@@ -95,9 +47,7 @@ export class ProxyAgentProcess extends EventEmitter<{
     supportedPermissionModes: [] as PermissionMode[],
     toolNames: [] as string[],
     models: [] as string[],
-    // Conservative default — the proxy doesn't know its target's capabilities
-    // here; the orchestrator publishes the real flag via the agent registry,
-    // which is what the client uses to gate the AI review affordance.
+    // The agent registry publishes the target's actual capabilities.
     supportsReview: false,
     supportsSteering: false,
     supportsCompaction: false,
@@ -105,18 +55,7 @@ export class ProxyAgentProcess extends EventEmitter<{
     skillInvocationPrefix: "/",
   };
 
-  /**
-   * planning#266 — the durable DELIVERY id of the turn this proxy is about to run (or
-   * is adopting), when the turn was dispatched on behalf of a server-side
-   * delivery. Sent to the worker on `/agent/start` beside {@link runToken} and
-   * reported back from `/agent/status`, so an orchestrator that restarts
-   * mid-turn can tell WHICH delivery the surviving turn belongs to.
-   *
-   * Distinct from `runToken` on purpose: the run token identifies a SPAWN (it
-   * exists so a stale exit can be ignored) and is minted fresh per proxy; the
-   * delivery id identifies the WORK, survives a restart, and is the same across
-   * an adopted turn and the turn it adopts.
-   */
+  /** Durable work identity, distinct from the spawn's runToken. */
   deliveryId: string | undefined;
 
   private runner: ProxyAgentRunner;
@@ -129,19 +68,16 @@ export class ProxyAgentProcess extends EventEmitter<{
     this.deliveryId = opts?.deliveryId;
   }
 
-  /** planning#266 — stamp the delivery id onto the next spawn (see {@link deliveryId}). */
   setDeliveryId(deliveryId: string): void {
     this.deliveryId = deliveryId;
   }
 
-  /** Fire-and-forget POST to worker /agent/start. Errors emitted as events. */
   run(params: AgentRunParams): void {
     this.runner._startAgentViaProxy(this.agentId, params, this.runToken, this.deliveryId).catch((err: unknown) => {
       this.emit("error", describeWorkerError(err, "start"));
     });
   }
 
-  /** Fire-and-forget POST to worker /agent/stdin. */
   writeStdin(data: string): void {
     this.runner.writeAgentStdin(data).catch((err: unknown) => {
       this.emit("error", describeWorkerError(err, "stdin"));
@@ -151,12 +87,6 @@ export class ProxyAgentProcess extends EventEmitter<{
   readonly isStreaming = false;
 
   sendUserMessage(text: string, _opts?: { images?: unknown[] }): void {
-    // Delegate to worker /agent/message so the real streaming logic inside
-    // the session container handles the injection (docs/140).
-    //
-    // Diag: log dispatch + outcome so a repro pins where the chain breaks.
-    // Pair with `[steer-send]` upstream and `[streaming-claude] sendUserMessage`
-    // / `[steer-worker]` downstream.
     console.log(
       `[steer-proxy] agentId=${this.agentId} → /agent/message (bytes=${text.length}, text=${JSON.stringify(text.slice(0, 80))})`,
     );
@@ -174,19 +104,13 @@ export class ProxyAgentProcess extends EventEmitter<{
     }
   }
 
-  /** Fire-and-forget POST to worker /agent/interrupt. */
   interrupt(): void {
     this.runner.interruptAgentOnWorker().catch((err: unknown) => {
       this.emit("error", describeWorkerError(err, "interrupt"));
     });
   }
 
-  /**
-   * Fire-and-forget POST to worker /agent/permission-mode. Failures land on
-   * the Logs panel rather than `error`: a failed mode switch shouldn't tear
-   * down the turn (the CLI keeps its previous mode and the user can re-try),
-   * and the next user message still goes through.
-   */
+  // Log control failures; emitting error would end the active turn.
   setPermissionMode(mode: PermissionMode | undefined): void {
     this.runner.setAgentPermissionModeOnWorker(mode).catch((err: unknown) => {
       const msgText = err instanceof Error ? err.message : String(err);
@@ -194,13 +118,6 @@ export class ProxyAgentProcess extends EventEmitter<{
     });
   }
 
-  /**
-   * docs/193 — fire-and-forget POST to worker /agent/permission/resolve,
-   * delivering the user's approve/deny answer to the broker (which unblocks the
-   * held bridge/RPC call). Failures land on the Logs panel rather than `error`:
-   * a failed resolve shouldn't tear down the turn — the broker's timeout is the
-   * backstop, and the user can re-answer.
-   */
   resolvePermission(requestId: string, decision: PermissionDecision): void {
     this.runner.resolvePermissionOnWorker(requestId, decision).catch((err: unknown) => {
       const msgText = err instanceof Error ? err.message : String(err);
@@ -208,12 +125,6 @@ export class ProxyAgentProcess extends EventEmitter<{
     });
   }
 
-  /**
-   * docs/178 — fire-and-forget POST to worker /agent/compact. Failures land on
-   * the Logs panel rather than `error`: a failed compaction shouldn't tear down
-   * the turn (the context is simply not summarized), and the next user message
-   * still goes through.
-   */
   compact(instructions?: string): void {
     this.runner.compactAgentOnWorker(instructions).catch((err: unknown) => {
       const msgText = err instanceof Error ? err.message : String(err);
@@ -221,21 +132,7 @@ export class ProxyAgentProcess extends EventEmitter<{
     });
   }
 
-  /**
-   * Fire-and-forget POST to worker /agent/kill. Surfaces failures via the
-   * `log` event (Logs panel) rather than `error` because:
-   *   - the agent may legitimately already be dead (benign race), and an
-   *     `error` event would clear runner state + dump a chat error;
-   *   - on a wedged worker, the user clicking Interrupt or Rescue session
-   *     deserves *some* feedback that the kill failed, not silence.
-   * The Logs panel is the right surface — visible, badged, but
-   * non-disruptive. See docs/124-session-rescue-and-diagnostics §1.4.
-   *
-   * The kill names ITS OWN spawn (`victimRunToken`) so a late-executing
-   * worker-side kill cannot SIGTERM a newer resident process that has since
-   * taken the slot (prod incident 2026-08-09 — the fire-and-forget POST
-   * resolved ~9 minutes late and killed the live turn's process).
-   */
+  // Target this spawn so a delayed kill cannot terminate its replacement.
   kill(): void {
     this.runner.killAgentOnWorker({ victimRunToken: this.runToken }).catch((err: unknown) => {
       const msg = err instanceof Error ? err.message : String(err);
@@ -243,15 +140,6 @@ export class ProxyAgentProcess extends EventEmitter<{
     });
   }
 
-  /**
-   * MCP-config writing happens inside the worker container, on the real
-   * Claude/Codex adapter the worker constructs there — not on this
-   * orchestrator-side proxy. The worker calls `agent.writeMcpConfig(...)`
-   * unconditionally before spawn (see `session-worker.ts` /agent/start).
-   * Reaching this method on the proxy means the worker delegated MCP
-   * writing to the orchestrator, which is the wrong direction and would
-   * skip per-turn JSON / config.toml regeneration — fail loudly.
-   */
   writeMcpConfig(_ctx: AgentMcpWriteContext): AgentMcpWriteResult {
     throw new Error("writeMcpConfig is not supported on ProxyAgentProcess — the worker writes its own MCP config before spawning the in-container adapter");
   }

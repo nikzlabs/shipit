@@ -6,16 +6,6 @@ import type { GitHubAuthManager } from "../github-auth.js";
 import type { PrStatusPoller } from "../pr-status-poller.js";
 import type { AutoMergeState, PrStatusSummary } from "../../shared/types/github-types.js";
 
-/**
- * docs/077 — an auto-merge arming belongs to ONE pull request, and the poller
- * drops it the moment that PR goes terminal. Both writers here land AFTER an
- * awaited GitHub round-trip, so the merge can be observed inside that window: an
- * unconditional write then RE-CREATES the arming for a PR that no longer exists.
- * That strands the toggle ON in the UI and — worse — a lingering `enabled` is
- * what `activatePendingAutoMergeForPr` reads as a deliberate pre-arm, so the
- * session's NEXT pull request would merge without the user ever asking.
- */
-
 const PR_URL = "https://github.com/o/r/pull/42";
 
 function summary(over: Partial<PrStatusSummary> = {}): PrStatusSummary {
@@ -37,14 +27,9 @@ function summary(over: Partial<PrStatusSummary> = {}): PrStatusSummary {
   } as PrStatusSummary;
 }
 
-/**
- * A poller stub whose last-known summary can flip mid-call, standing in for the
- * merge landing while GitHub answers.
- */
 function makePoller(
   initial: PrStatusSummary,
   armed?: AutoMergeState,
-  /** docs/266 — does the session have a live runner? Drives managed-vs-native arming. */
   opts: { liveRunner?: boolean } = {},
 ) {
   let status: PrStatusSummary | undefined = initial;
@@ -67,12 +52,10 @@ function makePoller(
     } as unknown as PrStatusPoller,
     setAutoMergeEnabled,
     setAutoMergeManaged,
-    /** The poller observes the terminal PR and retires the arming (docs/077). */
     observeMerge: () => {
       status = summary({ prState: "merged" });
       autoMerge = undefined;
     },
-    /** The poller has moved on to a different PR entirely. */
     setStatus: (next: PrStatusSummary) => { status = next; },
   };
 }
@@ -91,7 +74,6 @@ describe("toggleAutoMerge — PR merges during the GitHub round-trip", () => {
     const result = await toggleAutoMerge(githubAuth, p.poller, "s1", true);
 
     expect(p.setAutoMergeEnabled).not.toHaveBeenCalled();
-    // Reported truthfully: nothing is armed, so the client converges too.
     expect(result).toEqual({ enabled: false, mergeMethod: "squash" });
   });
 
@@ -126,12 +108,6 @@ describe("toggleAutoMerge — PR merges during the GitHub round-trip", () => {
   });
 });
 
-/**
- * docs/266 — GitHub native auto-merge merges inside GitHub, which cannot see a
- * ShipIt turn: that is how PR #2327 merged while its agent was still applying
- * reviewer feedback. So a PR whose session is live is never handed to native;
- * it stays on the ShipIt-managed loop, where the busy gate is enforceable.
- */
 describe("arming while the session is live", () => {
   it("toggleAutoMerge keeps the merge managed instead of arming GitHub native", async () => {
     const p = makePoller(summary(), undefined, { liveRunner: true });
@@ -151,9 +127,6 @@ describe("arming while the session is live", () => {
     });
   });
 
-  // The false-error trap: `managed` used to mean exactly "GitHub refused", and
-  // it carries the settingsUrl/reason the card renders as a repo
-  // misconfiguration tooltip. A deliberate managed arming must carry neither.
   it("does not report a live session as a repository misconfiguration", async () => {
     const p = makePoller(summary(), undefined, { liveRunner: true });
     const githubAuth = {
@@ -169,8 +142,6 @@ describe("arming while the session is live", () => {
     expect(managedCall?.[2]).not.toHaveProperty("settingsUrl");
   });
 
-  // The GitHub-refused fallback keeps its meaning — and now says so explicitly,
-  // so the client can tell the two managed states apart.
   it("still reports native-unavailable when GitHub refuses on a quiet session", async () => {
     const p = makePoller(summary());
     const githubAuth = {
@@ -189,13 +160,6 @@ describe("arming while the session is live", () => {
     });
   });
 
-  /**
-   * The same decision on a different signal. Native auto-merge cannot be called
-   * back once armed: GitHub merges the branch as it currently has it the moment
-   * the checks pass. So a session holding commits GitHub has never seen must not
-   * hand the merge over — ShipIt's own loop can wait for the push to land, and
-   * GitHub cannot.
-   */
   describe("arming while the branch is not on GitHub yet", () => {
     const unsynced = (state: "ahead" | "diverged") =>
       summary({ branchSync: { state, ahead: 2, behind: state === "diverged" ? 1 : 0 } });
@@ -216,7 +180,6 @@ describe("arming while the session is live", () => {
           managed: true,
           managedReason: "branch-unsynced",
         });
-        // Not a misconfiguration: no settings link, no GitHub error text.
         expect(p.setAutoMergeManaged.mock.calls.at(-1)?.[2]).toEqual({ managedReason: "branch-unsynced" });
       },
     );
@@ -254,8 +217,6 @@ describe("arming while the session is live", () => {
   });
 
   it("activatePendingAutoMergeForPr arms managed for an agent-opened PR", async () => {
-    // The common case: activation runs in the post-turn flow, whose runner is
-    // still alive.
     const p = makePoller(summary(), { enabled: true, mergeMethod: "squash" }, { liveRunner: true });
     const enableAutoMerge = vi.fn(async () => ({ success: true }));
     const githubAuth = { enableAutoMerge } as unknown as GitHubAuthManager;
@@ -294,10 +255,6 @@ describe("activatePendingAutoMergeForPr — PR merges during the GitHub round-tr
     expect(p.setAutoMergeManaged).not.toHaveBeenCalled();
   });
 
-  // The guard compares PR NUMBERS on purpose. Right after `gh pr create` on a
-  // chained session the poller still holds the PREVIOUS, just-merged PR (see
-  // `self-merge-watch.test.ts`); a bare "is the status terminal?" check would
-  // refuse to arm the brand-new PR.
   it("still arms the new PR while the poller holds a terminal OLDER one", async () => {
     const p = makePoller(
       summary({ prNumber: 41, prState: "merged" }),
@@ -314,13 +271,6 @@ describe("activatePendingAutoMergeForPr — PR merges during the GitHub round-tr
   });
 });
 
-/**
- * docs/266 — the UI merge button's own arming path. "Merge" on a PR whose checks
- * are still running does not merge; it falls back to ARMING auto-merge, and that
- * fallback used to go straight to GitHub native. The session that clicked it is
- * quiet right now (the route 409s otherwise) but is one message away from a
- * turn, which is the state that merged PR #2327.
- */
 describe("mergePullRequest — auto-merge fallback while checks are pending", () => {
   function makeGitAndAuth() {
     const git = {
@@ -364,12 +314,6 @@ describe("mergePullRequest — auto-merge fallback while checks are pending", ()
   });
 });
 
-/**
- * docs/266 req 7 — the UI merge button is the common way a ShipIt PR gets
- * merged, and it logged nothing. That is the silence the ops review of PR #2327
- * hit: it could rule out managed auto-merge (no `[auto-merge]` line all day) but
- * had no way to tell the merge button apart from GitHub's own web UI.
- */
 describe("mergePullRequest — the merge record", () => {
   function makeGitAndAuth(mergeResult: { success: boolean; message: string }) {
     const git = {
@@ -406,8 +350,6 @@ describe("mergePullRequest — the merge record", () => {
     }
   });
 
-  // Arming is not merging. A click on a PR whose checks are still running ends in
-  // an arming — GitHub's or ShipIt's — and neither is a merge that has happened.
   it("records nothing when the click only arms auto-merge", async () => {
     resetMergeAttribution();
     const log = vi.spyOn(console, "log").mockImplementation(() => { /* silence */ });
@@ -426,13 +368,6 @@ describe("mergePullRequest — the merge record", () => {
   });
 });
 
-/**
- * docs/266 — changing the merge method rewrites an arming, and the old code
- * rewrote it straight onto GitHub: `disableAutoMerge` + `enableAutoMerge`
- * whenever local state said enabled. For a managed arming there is nothing on
- * GitHub to re-point (the method is read from our state at merge time), and
- * arming native there would leave BOTH loops owning the same PR.
- */
 describe("updateMergeMethod — does not hand a managed PR to GitHub", () => {
   function authStub() {
     return {
@@ -455,8 +390,6 @@ describe("updateMergeMethod — does not hand a managed PR to GitHub", () => {
     expect(result).toEqual({ mergeMethod: "rebase" });
   });
 
-  // Armed native while the session was quiet, then the session came alive.
-  // Re-arming native is exactly the hand-off req 4 forbids.
   it("takes ownership instead of re-arming native when the session is now live", async () => {
     const p = makePoller(summary(), { enabled: true, mergeMethod: "squash" }, { liveRunner: true });
     const githubAuth = authStub();

@@ -56,7 +56,6 @@ describe("validateStringArray", () => {
 describe("validateNonEmptyString", () => {
   it("returns the value when it is a non-empty string", () => {
     expect(validateNonEmptyString("hello", "field")).toBe("hello");
-    // Surrounding whitespace is preserved on the returned value.
     expect(validateNonEmptyString("  x  ", "field")).toBe("  x  ");
   });
 

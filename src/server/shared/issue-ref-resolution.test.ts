@@ -2,7 +2,6 @@ import { describe, it, expect } from "vitest";
 import type { TrackerDestination } from "./declared-tracker.js";
 import { resolveDestinationByName, resolveIssueRef } from "./issue-ref-resolution.js";
 
-/** The session's own repository — req 12's one unnamed destination. */
 const OWN: TrackerDestination = { id: "github", kind: "github", key: "acme/app" };
 const PLANNING: TrackerDestination = {
   id: "github:acme/planning",
@@ -43,8 +42,6 @@ describe("resolveIssueRef — the three reference forms (req 10)", () => {
     });
   });
 
-  // req 5 — the declaration's team key is what completes a bare number into a
-  // Linear key. That is the whole reason the key lives in the declaration.
   it("completes `name#<number>` on Linear from the declared team key", () => {
     const ref = ok(resolveIssueRef("roadmap#304", [OWN, ROADMAP]));
     expect(ref).toMatchObject({ tracker: "linear:SHI", issueId: "SHI-304", identifier: "roadmap#SHI-304" });
@@ -52,8 +49,6 @@ describe("resolveIssueRef — the three reference forms (req 10)", () => {
 
   it("resolves a GitHub canonical address through the declaration that names it", () => {
     const ref = ok(resolveIssueRef("acme/planning#42", [OWN, PLANNING]));
-    // req 15 — the resolved identifier is rendered in the NAME form, because
-    // that is what ShipIt writes back into cards, branches and CLI output.
     expect(ref).toMatchObject({
       tracker: "github:acme/planning",
       trackerName: "planning",
@@ -96,8 +91,6 @@ describe("resolveIssueRef — the session's own repository (req 12)", () => {
     expect(ref.trackerName).toBeUndefined();
   });
 
-  // A self-declaration wins over the unnamed fallback, so its references render
-  // in the name form (req 15) and route through the declared destination.
   it("prefers a self-declaration over the unnamed own-repo fallback", () => {
     const selfDeclared: TrackerDestination = {
       id: "github:acme/app",
@@ -120,9 +113,6 @@ describe("resolveIssueRef — fail closed (req 11)", () => {
     expect(result.message).toContain("roadmap");
   });
 
-  // Recognizing an address is not the same as reaching it: req 1 leaves no
-  // destination outside the declarations, so a well-formed address for an
-  // undeclared repository has nowhere to go.
   it("rejects a canonical GitHub address for an undeclared repository", () => {
     const result = resolveIssueRef("someone-else/private-notes#9", [OWN, PLANNING]);
     expect(result.ok).toBe(false);
@@ -137,8 +127,6 @@ describe("resolveIssueRef — fail closed (req 11)", () => {
     expect(result.reason).toBe("undeclared");
   });
 
-  // Where more than one declaration matches, the reference fails rather than
-  // resolving to one of them.
   it("rejects an address matching two declarations as ambiguous", () => {
     const alias: TrackerDestination = {
       id: "github:acme/planning",
@@ -165,9 +153,6 @@ describe("resolveIssueRef — fail closed (req 11)", () => {
     expect(resolveIssueRef("#42", [OWN, PLANNING]).ok).toBe(false);
   });
 
-  // Still fails closed, and is NOT the name-wins case below: a GitHub tracker's
-  // issues are numbered, so `planning#5` names no issue there at all. There is nothing
-  // to prefer the name *to*, which is the difference from a Linear team key.
   it("rejects a Linear-shaped suffix on a GitHub tracker", () => {
     const result = resolveIssueRef("planning#SHI-3", [OWN, PLANNING]);
     expect(result.ok).toBe(false);
@@ -175,12 +160,6 @@ describe("resolveIssueRef — fail closed (req 11)", () => {
     expect(result.reason).toBe("mismatched");
   });
 
-  // req 16 — in a name form the NAME wins and an embedded backend id is
-  // advisory. This is what lets `planning#306`, written before `roadmap` was
-  // re-pointed to another team, keep resolving instead of failing on the stale
-  // key. Deliberately an exception to reqs 11/17: nothing is guessed, one of two
-  // stated things is preferred, and the name still identifies exactly one
-  // declared destination.
   it("re-targets a key from another team to the name's current team", () => {
     const result = resolveIssueRef("roadmap#OPS-3", [OWN, ROADMAP]);
     expect(result.ok).toBe(true);
@@ -206,8 +185,6 @@ describe("resolveIssueRef — fail closed (req 11)", () => {
 });
 
 describe("resolveIssueRef — resolution happens at use (req 16)", () => {
-  // Nothing pins a reference to what it resolved to when written: the same
-  // string routes wherever the name points *now*.
   it("re-targets an existing reference when the name is re-pointed", () => {
     const before = ok(resolveIssueRef("planning#42", [OWN, PLANNING]));
     expect(before.tracker).toBe("github:acme/planning");
@@ -247,11 +224,6 @@ describe("resolveDestinationByName", () => {
   });
 });
 
-/**
- * docs/262 req 25 — a declared plugin repository is a reachable destination
- * under its `plugins.repos` name. It resolves like any other; what it must not
- * do is disturb the trackers that were already there.
- */
 describe("plugin repository destinations (docs/262 req 25)", () => {
   const TOOLS: TrackerDestination = {
     id: "github:acme/dev-tools",
@@ -277,9 +249,6 @@ describe("plugin repository destinations (docs/262 req 25)", () => {
     expect(named.issueId).toBe("42");
   });
 
-  // The reason the registry aliases instead of registering a second
-  // destination: two NAMED destinations with one backend identity make the
-  // canonical form ambiguous, which would break the tracker that already worked.
   it("keeps a repository that is both tracker and plugin repo addressable by both names, unambiguously", () => {
     const both: TrackerDestination = { ...PLANNING, pluginNames: ["tools"] };
     expect(resolveDestinationByName([OWN, both], "planning").ok).toBe(true);
@@ -289,8 +258,6 @@ describe("plugin repository destinations (docs/262 req 25)", () => {
     expect(ok(resolveIssueRef("acme/planning#42", [OWN, both])).tracker).toBe("github:acme/planning");
   });
 
-  // The alias is what the reference USED, and it survives resolution: the
-  // choice of name is the statement of intent, so erasing it would erase that.
   it("keeps the plugin name a reference used on a repository declared both ways", () => {
     const both: TrackerDestination = { ...PLANNING, pluginNames: ["tools"] };
     const viaPlugin = ok(resolveIssueRef("tools#42", [OWN, both]));

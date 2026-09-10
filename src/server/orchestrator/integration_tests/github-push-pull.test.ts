@@ -30,7 +30,6 @@ describe("Integration: GitHub push, pull & remotes", () => {
     dbManager = createTestDatabaseManager();
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-gh-pushpull-"));
 
-    // Pre-create a session directory with its own git repo
     sessionId = crypto.randomUUID();
     const sessionDir = path.join(tmpDir, "sessions", sessionId);
     fs.mkdirSync(sessionDir, { recursive: true });

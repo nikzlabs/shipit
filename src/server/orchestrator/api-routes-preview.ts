@@ -1,8 +1,3 @@
-/**
- * Preview API routes.
- * Handles: preview status, preview restart, preview error reporting.
- */
-
 import type { FastifyInstance } from "fastify";
 import type { ApiDeps } from "./api-routes.js";
 
@@ -21,7 +16,6 @@ export async function registerPreviewRoutes(
 ): Promise<void> {
   const { sessionManager } = deps;
 
-  // GET /api/sessions/:id/preview-status — current preview state
   app.get<{ Params: { id: string } }>("/api/sessions/:id/preview-status", async (request, reply) => {
     const session = sessionManager.get(request.params.id);
     if (!session) {
@@ -36,30 +30,13 @@ export async function registerPreviewRoutes(
     return { known: true, ...status };
   });
 
-  // GET /api/sessions/:id/services — list compose services with status
-  // Container-facing (docs/201): documented direct curl for the agent.
   app.get<{ Params: { id: string } }>("/api/sessions/:id/services", { config: { containerAccessible: true } }, async (request, reply) => {
     const mgr = deps.serviceManagers?.get(request.params.id);
     if (!mgr) {
       reply.code(404).send({ error: "No compose stack for this session" });
       return;
     }
-    // planning#382 — `failure` rides ALONGSIDE the list rather than replacing
-    // it with a 4xx. An empty list is still a valid answer (the stack has not
-    // parsed yet, the project declares no compose file), and a refused project
-    // file can co-exist with plugin services this session does surface — so the
-    // caller gets both facts and does not have to infer one from the other.
-    // Without it, "refused, here is the line to add" and "nothing is declared"
-    // are the same response.
     const failure = mgr.projectComposeFailure;
-    // nikzlabs/shipit#2429 — `dependencies` rides alongside for the same reason
-    // `failure` does: a service row cannot explain a failure whose cause is that
-    // the tree moved under an install that did not re-run. Sourced from the
-    // RUNNER, not the manager, because it is a fact about the session's install
-    // rather than about its compose stack. A session with a manager but no live
-    // runner reports no gap, which is the right answer rather than a tolerated
-    // one: the gap describes what a RUNNING container has installed, and the
-    // next start installs against the tree as it now stands.
     const gap = deps.runnerRegistry.get(request.params.id)?.dependencyGap ?? null;
     return {
       services: mgr.getServices(),
@@ -68,7 +45,6 @@ export async function registerPreviewRoutes(
     };
   });
 
-  // GET /api/sessions/:id/services/:name/logs — fetch service logs (ANSI stripped)
   app.get<{ Params: { id: string; name: string }; Querystring: { lines?: string } }>(
     "/api/sessions/:id/services/:name/logs",
     { config: { containerAccessible: true } },
@@ -83,9 +59,7 @@ export async function registerPreviewRoutes(
         reply.code(404).send({ error: `Unknown service: ${request.params.name}` });
         return;
       }
-      // Snapshot fresh from Docker (see ServiceManager.snapshotLogs): the
-      // in-memory ring buffer rotates and is wiped on reconcile, so it drops
-      // history the caller expects to still be there.
+      // Read Docker's logs; reconciliation clears the in-memory buffer.
       const lines = parseInt(request.query.lines ?? "", 10);
       const tail = Number.isFinite(lines) && lines > 0 ? lines : undefined;
       const logs = stripAnsi(await mgr.snapshotLogs(request.params.name, tail ?? 2000));
@@ -93,7 +67,6 @@ export async function registerPreviewRoutes(
     },
   );
 
-  // POST /api/sessions/:id/preview-errors — report preview error
   app.post<{ Params: { id: string }; Body: { message: string; stack?: string } }>(
     "/api/sessions/:id/preview-errors",
     async (request, reply) => {
@@ -103,7 +76,6 @@ export async function registerPreviewRoutes(
         if (validated.stack) parts.push(validated.stack);
         const text = parts.join("\n");
         deps.broadcastLog(request.params.id, "preview", text);
-        // Also emit to the session's runner so connected WS viewers receive it
         const runner = deps.runnerRegistry.get(request.params.id);
         if (runner) {
           runner.emitMessage(agentLogAppend("preview", text));

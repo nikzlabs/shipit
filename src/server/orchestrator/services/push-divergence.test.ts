@@ -9,20 +9,6 @@ import {
   type PushDivergence,
 } from "./push-divergence.js";
 
-/**
- * The 2026-08-30 incident, pinned: a session's pull request merged, the docs/218
- * pre-turn auto-reset moved the branch to the fresh base and healed the remote,
- * a later turn pushed one commit that belonged to no pull request — and then an
- * agent-side rebase dropped that commit LOCALLY. From then on every auto-push
- * was rejected, and the notice told the user their commit was safe locally
- * (there was no local commit) while pointing them at the one recovery that would
- * have deleted the commit from the only place it still existed.
- *
- * So these assert the two things the old notice could not do: it MEASURES the
- * shape, and it names the ONE recovery that fits it. The shapes are built from
- * counts alone — no network, no repository.
- */
-
 function fakeGit(overrides: Partial<PushDivergenceGit> = {}): PushDivergenceGit {
   return {
     currentBranchOrNull: vi.fn(async () => "shipit/feature"),
@@ -34,7 +20,6 @@ function fakeGit(overrides: Partial<PushDivergenceGit> = {}): PushDivergenceGit 
   };
 }
 
-/** A measured shape, straight to the formatter. */
 function shape(over: Partial<Extract<PushDivergence, { measured: true }>> = {}) {
   return {
     measured: true as const,
@@ -52,12 +37,6 @@ function shape(over: Partial<Extract<PushDivergence, { measured: true }>> = {}) 
 
 describe("measurePushDivergence", () => {
   it("fetches the branch BEFORE counting, so a stale tracking ref cannot decide the advice", async () => {
-    // The counts pick the recovery, and one of the two recoveries destroys the
-    // remote's commits. Reading a tracking ref this clone last wrote itself
-    // would report "nothing only on the remote" for a remote that moved
-    // elsewhere. The ORDER is the guarantee, so assert the order — a fetch that
-    // happened after the count would satisfy a call-count assertion and change
-    // nothing.
     const calls: string[] = [];
     const git = fakeGit({
       fetchBranch: vi.fn(async () => { calls.push("fetch"); }),
@@ -81,10 +60,6 @@ describe("measurePushDivergence", () => {
   });
 
   it("gives up on a fetch that never returns, rather than hanging the notice", async () => {
-    // The caller marks the divergence episode notified BEFORE awaiting this, so
-    // a fetch that never settles would take the persisted notice with it and
-    // suppress every later attempt for the life of the episode. simple-git has
-    // no timeout of its own.
     vi.useFakeTimers();
     try {
       const git = fakeGit({
@@ -156,8 +131,6 @@ describe("measurePushDivergence", () => {
       mergeBase: vi.fn(async () => { throw new Error("boom"); }),
       commitSubjects: vi.fn(async () => { throw new Error("boom"); }),
     });
-    // A failed merge-base must not invent an "unrelated histories" claim — that
-    // reading only ever ADDS a warning, so it fails toward the ordinary shape.
     expect(await measurePushDivergence(git)).toMatchObject({
       measured: true, sharedBase: true, remoteOnly: [],
     });
@@ -187,27 +160,15 @@ describe("formatDivergedPushNotice — only the remote is ahead (the 2026-08-30 
   it("warns against the force-push instead of offering it", () => {
     expect(notice).toContain("Do NOT force-push");
     expect(notice).not.toContain("git push --force-with-lease");
-    // The recovery the old notice emphasised. `reset-to-base --force` resets to
-    // the base and force-pushes the heal, so here it deletes the one commit that
-    // exists anywhere — it must not be named as the remedy for this shape.
     expect(notice).not.toContain("reset-to-base");
   });
 
   it("does not claim a local commit is waiting, because none is", () => {
-    // The old notice opened with "The commit is safe in this session's local
-    // history" on every shape. In this one there was no local commit at all.
     expect(notice).not.toContain("would merge WITHOUT");
   });
 });
 
 describe("formatDivergedPushNotice — nothing exists only on the remote", () => {
-  // `aheadBehind` counts the symmetric difference, so `behind === 0` means every
-  // commit on the remote ref is reachable from HEAD — the remote IS an ancestor
-  // and a PLAIN push fast-forwards. So these counts contradict the rejection
-  // that produced them, and reading them as "the branch was rewritten, force-push
-  // it" is how a stale tracking ref talks someone into overwriting a remote that
-  // is actually ahead. Verified against git directly:
-  //   git rev-list --left-right --count <ancestor>...HEAD  =>  0  N
   const notice = formatDivergedPushNotice(shape({ ahead: 2, behind: 0 }));
 
   it("says the counts do not explain the rejection", () => {
@@ -245,22 +206,11 @@ describe("formatDivergedPushNotice — both sides carry work (the rewritten bran
   });
 
   it("states what the remote is missing without over-claiming about the pull request", () => {
-    // `gh pr create` pushes before it opens or reprints a PR, and ShipIt's own
-    // merge button holds on a diverged branch (`services/branch-sync.ts`), so
-    // "the PR would merge WITHOUT these commits" over-claims. What IS true is
-    // what the remote branch contains.
     expect(notice).toContain("does not contain 3 commits from this session");
     expect(notice).not.toContain("would merge WITHOUT");
   });
 
   it("says who can still run the force-push when the merged-branch hook blocks the agent", () => {
-    // planning#267 arms `SHIPIT_GUARD_DESTRUCTIVE_GIT=1` on a merged branch, and
-    // `block-branch-ops.mjs` refuses a hand-rolled force-push outright. A remedy
-    // the agent is refused when it runs it is the same dead end in a friendlier
-    // voice — but SUBSTITUTING `reset-to-base` would be a lie, because that
-    // command discards this branch's history instead of publishing it. So the
-    // command stays, with a note about who may run it and what the brokered
-    // alternative actually does.
     const blocked = formatDivergedPushNotice(both, { forcePushBlocked: true });
     expect(blocked).toContain("git push --force-with-lease origin shipit/feature");
     expect(blocked).toContain("the user can run it from the terminal");
@@ -274,9 +224,6 @@ describe("formatDivergedPushNotice — both sides carry work (the rewritten bran
 });
 
 describe("baseRebaseIsSafe — may the client's one-click rebase banner be armed?", () => {
-  // The banner's "Update branch" button rebases onto the base and force-pushes
-  // (`services/rebase-driver.ts`). That republishes a rewritten branch, and it
-  // DESTROYS the remote's commits when the branch has nothing to republish.
   it("allows it for the rewritten-branch shape, which the force-push repairs", () => {
     expect(baseRebaseIsSafe(shape({ ahead: 3, behind: 2 }))).toBe(true);
   });
@@ -317,7 +264,6 @@ describe("formatDivergedPushNotice — the shapes with no safe default", () => {
     });
     expect(notice).toContain("could not measure");
     expect(notice).toContain("this clone has no origin/shipit/feature");
-    // The command that answers the question, rather than a guess at the answer.
     expect(notice).toContain("git rev-list --left-right --count HEAD...origin/shipit/feature");
     expect(notice).not.toContain("Recovery:");
     expect(notice).not.toContain("--force-with-lease");
@@ -338,10 +284,6 @@ describe("formatDivergedPushNotice — the shapes with no safe default", () => {
   });
 
   it("names no recovery at all when the counts could not be refreshed", () => {
-    // A stale ref understates `behind`, which is the number the whole decision
-    // rests on — so an unrefreshed measurement reports its counts and stops. A
-    // caveat the reader skims is not a substitute for not making the
-    // recommendation.
     const notice = formatDivergedPushNotice(shape({ ahead: 1, behind: 1, refreshed: false }));
     expect(notice).toContain("last-known remote state");
     expect(notice).toContain("git fetch origin shipit/feature");
@@ -350,9 +292,6 @@ describe("formatDivergedPushNotice — the shapes with no safe default", () => {
   });
 
   it("allows that an unrelated-histories reading may itself be a failed comparison", () => {
-    // `GitManager.mergeBase` maps every error to null, so "no merge base" and
-    // "the read failed" are the same value here. The notice must not assert the
-    // stronger of the two.
     const notice = formatDivergedPushNotice(shape({ ahead: 1, behind: 1, sharedBase: false }));
     expect(notice).toContain("or the comparison itself failed");
   });
@@ -376,15 +315,6 @@ describe("formatDivergedPushNotice — what every shape says", () => {
   });
 
   it("states that the AUTO-push will not force the divergence open", () => {
-    // The rule is correct and stays; what this fix changed is the report around
-    // it. Every shape has to say the branch on GitHub is frozen until resolved,
-    // or the user reads a rejection as a transient blip.
-    //
-    // Scoped to the auto-push deliberately: ShipIt DOES force the remote
-    // elsewhere — the docs/218 pre-turn reset heals the branch that way, and
-    // `gh pr create` force-pushes when re-arming past a merged PR — so a flat
-    // "ShipIt never force-pushes" would be a fresh false statement in a notice
-    // that exists because of one.
     for (const d of every) {
       const notice = formatDivergedPushNotice(d);
       expect(notice).toContain("The post-turn auto-push never forces a divergence open");

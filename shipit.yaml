@@ -1,33 +1,13 @@
 agent:
-  # Keep this as a bare package-manager command: the session worker tunes a
-  # bare `npm install` with `--prefer-offline --no-audit --no-fund` so it lands
-  # fast on the warm download cache (/dep-cache). Shell wrappers bypass that
-  # tuning.
+  # A bare command lets the worker apply its download-cache options.
   install: npm install
-# ShipIt-in-ShipIt (feature 118): tells the outer orchestrator to start the
-# `dev` Compose service when this repo is opened. Without this line the
-# `setupServiceManager` short-circuits on the missing `compose:` key and the
-# inner UI never boots. See docs/118-shipit-ui-local/plan.md.
 compose: docker-compose.yml
-# docs/248 — every issue tracker this repository uses is declared here. ShipIt has
-# no built-in tracker any more, so without this block a session reaches only this
-# repository's own GitHub Issues. The credential is configured in ShipIt settings;
-# the declaration gives the tracker the name every reference and `--tracker` uses.
 issues:
   trackers:
-    # docs/247 — ShipIt's own planning lives in a private repository, separate
-    # from this public source repo.
     - kind: github
       repo: nikzlabs/shipit-planning
       name: planning
-      # `name` is the address (`planning#42`); `label` is what the Issues tab
-      # shows. Without it the tab would render the lower-case slug.
       label: Planning
-# docs/262 — plugin repositories. Both blocks are the feature's live fixture
-# (test-plugin/README.md): ShipIt exports one deliberately tiny plugin and
-# declares it back into itself with `repo: self`, so the repo that implements
-# the feature also dogfoods it. Slice-2 parsing will read these; until then the
-# keys are reserved (known-but-ignored) in shipit-config.ts.
 exports:
   plugins:
     probe:
@@ -38,13 +18,6 @@ exports:
       install: node test-plugin/install.mjs
       install-inputs: [test-plugin/install.mjs]
       credentials: [PROBE_TOKEN]
-      # reqs 23, 24 — declared OPTIONAL, which is what the probe actually is:
-      # `probe --host-check` reaches example.com or reports `allowed: false`,
-      # and either way the report prints and the command exits 0 ("the probe
-      # reports; it does not judge"). Nothing else about the host changes — it
-      # is still declared, still resolved against this session's egress, and
-      # still grantable from the card. `PROBE_TOKEN` stays REQUIRED, so this
-      # fixture exercises both halves of the grammar.
       hosts: [{ name: example.com, optional: true }]
       settings:
         greeting:
@@ -58,24 +31,11 @@ plugins:
     - plugin: probe
       from: shipit-dev
       overrides:
-        # req 26's CONSUMER half. The manifest's default is "hello from the
-        # probe"; this value can only have come from here, so a build that
-        # ignored `overrides.settings` reports the default and the fixture sees
-        # it (nikzlabs/shipit#2298 finding 2 was reported precisely because
-        # nothing here ever set one). Note the nesting: `settings:` one level
-        # up, on the `use` entry, is not read.
         settings:
           greeting: hello from the consuming project
         services:
           probe:
-            # The dev service is this repo's primary preview; the probe UI is
-            # started on demand (and exercises the req 16 consumer override).
             autostart: false
-# Release auto-publish (docs/214): ShipIt cuts releases by merging a version-bump
-# PR into the `stable` maintenance branch. On merge, .github/workflows/release.yml
-# derives the tag `v<package.json version>`, gates on a green build, tags the
-# merged commit, and publishes the GitHub Release — no hand-pushed tags. See
-# RELEASING.md.
 release:
   mechanism: release-branch
   branch: stable

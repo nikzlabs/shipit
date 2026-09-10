@@ -1,21 +1,4 @@
-/**
- * Integration tests for subagent transparency (109).
- *
- * These exercise the full path from FakeClaude → orchestrator → WS client →
- * persisted chat history. The Claude CLI emits subagent events with a
- * top-level `parent_tool_use_id`, which the orchestrator preserves on the
- * outgoing AgentEvent so the client can render the subagent's prompt, work,
- * and final report under the parent tool call.
- *
- * The fake stream uses the tool name the CLI actually emits — `Agent`, verified
- * against Claude Code CLI 2.1.219. These tests previously injected a synthetic
- * `Task`, a name the real CLI never sends, which is precisely why they stayed
- * green through the whole life of the docs/109 renderer bug: the client gated
- * its transparency view on `Task`, so the branch under test was the one branch
- * production never reached. The orchestrator half is name-agnostic (it routes
- * on `parentToolUseId` alone); the client-side handling of legacy persisted
- * `Task` rows is covered in `MessageList.test.tsx`.
- */
+// Agent tool name verified against Claude Code CLI 2.1.219.
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
@@ -80,13 +63,13 @@ describe("Integration: Subagent transparency (109)", () => {
     try {
       fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
     } catch {
-      // ignore — OS will clean up
+      // Ignore cleanup errors.
     }
   });
 
   it("forwards parentToolUseId on nested subagent events to the WS client", async () => {
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
     client.send({ type: "send_message", text: "Audit the review feature" });
     await waitForClaude(() => lastClaude);
@@ -94,7 +77,6 @@ describe("Integration: Subagent transparency (109)", () => {
     lastClaude.emit("event", { type: "system", subtype: "init", session_id: "subagent-session-1" });
     await client.receiveType("session_started");
 
-    // Parent assistant message with an Agent tool call
     lastClaude.emit("event", {
       type: "assistant",
       message: {
@@ -112,7 +94,6 @@ describe("Integration: Subagent transparency (109)", () => {
     const parentEvent = await client.receiveType("agent_event");
     expect((parentEvent as { event: { type: string } }).event.type).toBe("agent_assistant");
 
-    // Nested subagent assistant event — carries parent_tool_use_id
     lastClaude.emit("event", {
       type: "assistant",
       parent_tool_use_id: "task-1",
@@ -128,7 +109,6 @@ describe("Integration: Subagent transparency (109)", () => {
     expect(ne.type).toBe("agent_assistant");
     expect(ne.parentToolUseId).toBe("task-1");
 
-    // Nested tool_result also gets the parent id
     lastClaude.emit("event", {
       type: "user",
       parent_tool_use_id: "task-1",
@@ -146,7 +126,7 @@ describe("Integration: Subagent transparency (109)", () => {
 
   it("persists subagent events on the parent message in chat history", async () => {
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
     client.send({ type: "send_message", text: "Spawn a subagent" });
     await waitForClaude(() => lastClaude);
@@ -155,7 +135,6 @@ describe("Integration: Subagent transparency (109)", () => {
     const sessionStarted = await client.receiveType("session_started");
     const appSessionId = (sessionStarted as { session: { id: string } }).session.id;
 
-    // Parent: Agent tool call
     lastClaude.emit("event", {
       type: "assistant",
       message: {
@@ -171,7 +150,6 @@ describe("Integration: Subagent transparency (109)", () => {
       },
     });
 
-    // Nested subagent steps
     lastClaude.emit("event", {
       type: "assistant",
       parent_tool_use_id: "task-1",
@@ -197,7 +175,6 @@ describe("Integration: Subagent transparency (109)", () => {
       },
     });
 
-    // Parent receives the Agent tool's final result
     lastClaude.emit("event", {
       type: "user",
       message: {
@@ -205,14 +182,9 @@ describe("Integration: Subagent transparency (109)", () => {
       },
     });
 
-    // Parent finalizes
     lastClaude.finish("subagent-session-2");
     try { for (let i = 0; i < 20; i++) await client.receive(300); } catch { /* drain */ }
 
-    // The persisted message should have:
-    //   - toolUse: [Agent tool]
-    //   - toolResults: [the Agent tool's final result]
-    //   - subagentEvents: [3 entries — assistant, tool_result, assistant]
     const messages = chatHistoryManager.load(appSessionId);
     const assistantMsg = messages.find((m) => m.role === "assistant" && m.toolUse?.some((t) => t.name === "Agent"));
     expect(assistantMsg).toBeDefined();
@@ -222,8 +194,6 @@ describe("Integration: Subagent transparency (109)", () => {
     expect(assistantMsg!.toolResults![0].toolUseId).toBe("task-1");
     expect(assistantMsg!.toolResults![0].content).toContain("Audit Report");
 
-    // Subagent events were preserved with parent ids and split between assistant
-    // and tool_result kinds.
     expect(assistantMsg!.subagentEvents).toBeDefined();
     expect(assistantMsg!.subagentEvents).toHaveLength(3);
     expect(assistantMsg!.subagentEvents![0].kind).toBe("assistant");
@@ -237,7 +207,7 @@ describe("Integration: Subagent transparency (109)", () => {
 
   it("does not pollute the main message stream with nested subagent tool calls", async () => {
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
     client.send({ type: "send_message", text: "Spawn subagent" });
     await waitForClaude(() => lastClaude);
@@ -246,7 +216,6 @@ describe("Integration: Subagent transparency (109)", () => {
     const sessionStarted = await client.receiveType("session_started");
     const appSessionId = (sessionStarted as { session: { id: string } }).session.id;
 
-    // Parent message: an Agent tool call
     lastClaude.emit("event", {
       type: "assistant",
       message: {
@@ -256,9 +225,6 @@ describe("Integration: Subagent transparency (109)", () => {
       },
     });
 
-    // Subagent does its own Bash call — this MUST NOT end up in the parent
-    // message's toolUse list, otherwise the user sees nested actions floating
-    // outside their Agent call.
     lastClaude.emit("event", {
       type: "assistant",
       parent_tool_use_id: "task-1",
@@ -288,17 +254,12 @@ describe("Integration: Subagent transparency (109)", () => {
     const messages = chatHistoryManager.load(appSessionId);
     const assistantMsg = messages.find((m) => m.role === "assistant" && m.toolUse?.some((t) => t.name === "Agent"));
     expect(assistantMsg).toBeDefined();
-    // The parent's toolUse should ONLY contain the Agent tool — never the
-    // subagent's Bash. The subagent's Bash should live in subagentEvents.
     expect(assistantMsg!.toolUse).toHaveLength(1);
     expect(assistantMsg!.toolUse![0].name).toBe("Agent");
-    // The Bash lives in subagentEvents.
     const subBashStep = assistantMsg!.subagentEvents?.find(
       (e) => e.kind === "assistant" && e.toolUse.some((t) => t.name === "Bash"),
     );
     expect(subBashStep).toBeDefined();
-    // The parent's toolResults should ONLY contain the Agent's result, not the
-    // subagent's Bash result.
     expect(assistantMsg!.toolResults).toHaveLength(1);
     expect(assistantMsg!.toolResults![0].toolUseId).toBe("task-1");
 
@@ -306,11 +267,6 @@ describe("Integration: Subagent transparency (109)", () => {
   });
 
   it("separates multiple text blocks in a single subagent assistant event with paragraph breaks", async () => {
-    // Regression: an `assistant` event whose content is
-    //   [text "A.", tool_use, text "B.", tool_use, text "C."]
-    // used to render as "A.B.C." (joined with ""), losing the boundaries
-    // between distinct preambles. Each text block is its own narration and
-    // must stay separated so `whitespace-pre-wrap` renders them as paragraphs.
     const client = await TestClient.connect(port);
     await client.receive();
 
@@ -330,9 +286,6 @@ describe("Integration: Subagent transparency (109)", () => {
       },
     });
 
-    // Subagent emits a single assistant event with three text blocks
-    // separated by tool_use blocks — the shape that interleaved-thinking
-    // serial tool calls produce in one turn.
     lastClaude.emit("event", {
       type: "assistant",
       parent_tool_use_id: "task-1",
@@ -363,7 +316,6 @@ describe("Integration: Subagent transparency (109)", () => {
     const subStep = assistantMsg!.subagentEvents?.find((e) => e.kind === "assistant");
     expect(subStep).toBeDefined();
     if (subStep?.kind !== "assistant") throw new Error("expected assistant step");
-    // Critical: the three preambles must stay separated, not run together.
     expect(subStep.text).not.toContain("file A.Now let me");
     expect(subStep.text).toContain("Now let me look at file A.");
     expect(subStep.text).toContain("Now let me look at file B.");

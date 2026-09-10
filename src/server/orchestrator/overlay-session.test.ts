@@ -1,14 +1,3 @@
-/**
- * docs/183 — overlay-session gating/scope/GC tests.
- *
- * Covers the design-agnostic reusable foundation: the feature gate + eligibility,
- * the orchestrator runtime fingerprint, and the GC live-source set. The per-session
- * mount-spec construction, snapshot pull, and publish-after-install flow were
- * whole-workspace-shaped and removed in the dep-dir pivot (they will be rebuilt
- * per declared dep dir); the publish CAS itself remains covered by
- * `overlay-base.test.ts`.
- */
-
 import { describe, expect, it, afterEach, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
@@ -39,8 +28,6 @@ import { computeInstallDepsHash } from "../shared/deps-hash.js";
 import type { SessionInfo } from "../shared/types.js";
 
 const ON = { OVERLAY_DEP_STORE: "1" } as NodeJS.ProcessEnv;
-// Default-on (planning#129): an unset env var is ON; the kill switch is the explicit
-// `OVERLAY_DEP_STORE=0`/`false`.
 const OFF = { OVERLAY_DEP_STORE: "0" } as NodeJS.ProcessEnv;
 
 function session(over: Partial<SessionInfo> = {}): SessionInfo {
@@ -56,20 +43,17 @@ function session(over: Partial<SessionInfo> = {}): SessionInfo {
 
 describe("overlay feature gate + eligibility", () => {
   it("is on by default; only OVERLAY_DEP_STORE=0/false kills it (planning#129)", () => {
-    // Default-on: an unset flag enables the store.
     expect(isOverlayEnabled({} as NodeJS.ProcessEnv)).toBe(true);
     expect(isOverlayEnabled({ OVERLAY_DEP_STORE: "1" } as NodeJS.ProcessEnv)).toBe(true);
     expect(isOverlayEnabled({ OVERLAY_DEP_STORE: "true" } as NodeJS.ProcessEnv)).toBe(true);
-    // Any non-kill value keeps the default on.
     expect(isOverlayEnabled({ OVERLAY_DEP_STORE: "yes" } as NodeJS.ProcessEnv)).toBe(true);
     expect(isOverlayEnabled({ OVERLAY_DEP_STORE: "" } as NodeJS.ProcessEnv)).toBe(true);
-    // The explicit kill switch — and only these two values — forces it off.
     expect(isOverlayEnabled({ OVERLAY_DEP_STORE: "0" } as NodeJS.ProcessEnv)).toBe(false);
     expect(isOverlayEnabled({ OVERLAY_DEP_STORE: "false" } as NodeJS.ProcessEnv)).toBe(false);
   });
 
   it("requires the flag, a remote, and a non-ops kind", () => {
-    expect(isOverlayEligible(session(), OFF)).toBe(false); // flag off
+    expect(isOverlayEligible(session(), OFF)).toBe(false);
     expect(isOverlayEligible(session(), ON)).toBe(true);
     expect(isOverlayEligible(session({ remoteUrl: "" }), ON)).toBe(false);
     expect(isOverlayEligible(session({ kind: "ops" }), ON)).toBe(false);
@@ -99,9 +83,6 @@ describe("overlayRuntimeKey (planning#196 — pinned base digest, not the full i
     expect(overlayRuntimeKey({} as NodeJS.ProcessEnv)).toBe(`unknown|${process.arch}`);
   });
 
-  // Safety guard #1: an app-code-only rebuild (worker image id churns, base digest
-  // fixed) MUST preserve the scope key — no fresh base minted, post-deploy installs
-  // stay warm.
   it("a no-op app rebuild preserves the scope key", () => {
     const before = overlayRuntimeKey({
       BASE_IMAGE_DIGEST: "sha256:base",
@@ -114,17 +95,12 @@ describe("overlayRuntimeKey (planning#196 — pinned base digest, not the full i
     expect(after).toBe(before);
   });
 
-  // Safety guard #2: a base-image bump MUST roll the scope key.
   it("a base-digest bump changes the scope key", () => {
     expect(overlayRuntimeKey({ BASE_IMAGE_DIGEST: "sha256:base-A" } as NodeJS.ProcessEnv))
       .not.toBe(overlayRuntimeKey({ BASE_IMAGE_DIGEST: "sha256:base-B" } as NodeJS.ProcessEnv));
   });
 });
 
-// docs/248 — a repo's Node pin has to split the base scope, or a base of native
-// addons built under the image's Node gets mounted into a differently-pinned
-// session (the worker-side marker mismatch only triggers `npm install`, which
-// does not rebuild an addon that is already present).
 describe("overlayPinSegment (docs/248 — repo Node pin)", () => {
   const ENV = { BASE_IMAGE_DIGEST: "sha256:base", WORKER_IMAGE_NODE_VERSION: "24.15.0" } as NodeJS.ProcessEnv;
   let dir: string;
@@ -147,8 +123,6 @@ describe("overlayPinSegment (docs/248 — repo Node pin)", () => {
   });
 
   it("is empty when the image's Node already satisfies the pin", () => {
-    // The common case. Splitting here would rotate the base for most repos
-    // that merely declare an `engines.node` field.
     const w = ws({ "package.json": JSON.stringify({ engines: { node: ">=20" } }) });
     expect(overlayPinSegment(w, ENV)).toBe("");
   });
@@ -204,11 +178,10 @@ describe("liveOverlayScopeHashes", () => {
     const sessions = [
       session({ id: "a", remoteUrl: "https://github.com/acme/one.git" }),
       session({ id: "b", remoteUrl: "https://github.com/acme/two.git" }),
-      session({ id: "c", remoteUrl: "" }), // no remote → skipped
-      session({ id: "d", remoteUrl: "https://github.com/acme/three.git", kind: "ops" }), // ops → skipped
-      session({ id: "e", remoteUrl: "https://github.com/acme/four.git", diskTier: "evicted" }), // evicted → skipped
+      session({ id: "c", remoteUrl: "" }),
+      session({ id: "d", remoteUrl: "https://github.com/acme/three.git", kind: "ops" }),
+      session({ id: "e", remoteUrl: "https://github.com/acme/four.git", diskTier: "evicted" }),
     ];
-    // The first session declares two dep dirs; the rest declare one.
     const resolve = (s: SessionInfo): string[] =>
       s.remoteUrl === "https://github.com/acme/one.git"
         ? ["node_modules", "packages/app/node_modules"]
@@ -227,7 +200,6 @@ describe("liveOverlayScopeHashes", () => {
     const rt = overlayRuntimeKey(ON);
     const live = liveOverlayScopeHashes([session({ id: "a" })], () => ["node_modules"], ON);
     expect(live).toContain(overlayScopeHash("https://github.com/acme/repo.git", rt, "node_modules"));
-    // The legacy 2-arg hash must NOT appear — it would never match a dep-dir base.
     expect(live).not.toContain(overlayScopeHash("https://github.com/acme/repo.git", rt));
   });
 });
@@ -252,7 +224,6 @@ describe("buildOverlaySpecs", () => {
     expect(nm.scopeHash).toBe(hash);
     expect(nm.scope).toEqual({ ...scope, depDir: "node_modules" });
     expect(nm.mountPath).toBe("/workspace/node_modules");
-    // No generation resolver → generation 0, the empty cold-start lowerdir.
     expect(nm.lowerdir).toBe(`${MP}/overlay-base/${hash}/g0`);
     expect(nm.upperdir).toBe(`${MP}/sessions/${sessionId}/overlay/${hash}/g0/upper`);
     expect(nm.workdir).toBe(`${MP}/sessions/${sessionId}/overlay/${hash}/g0/work`);
@@ -308,13 +279,9 @@ describe("buildOverlaySpecs", () => {
     });
     expect(nm.lowerdir).toBe(`${MP}/overlay-base/${nmHash}/g4`);
     expect(nm.orchDirs?.lowerdir).toBe(`/workspace/overlay-base/${nmHash}/g4`);
-    // The other dep dir's scope has no base yet — cold-start g0.
     expect(vendor.lowerdir).toBe(`${MP}/overlay-base/${vendor.scopeHash}/g0`);
   });
 
-  // The ops finding of 2026-08-17: the lowerdir was generation-pinned while the
-  // upper/work dirs were keyed on the scope hash alone, so a publish that rotated
-  // the base remounted the OLD upper over a DIFFERENT lower.
   it("keys the per-session upper/work on the SAME generation the lowerdir pins", () => {
     const sessionId = "11112222333344445555";
     const build = (generation: number) => buildOverlaySpecs({
@@ -331,12 +298,10 @@ describe("buildOverlaySpecs", () => {
     const hash = overlayScopeHash(scope.repoUrl, scope.runtimeKey, "node_modules");
     expect(before.upperdir).toBe(`${MP}/sessions/${sessionId}/overlay/${hash}/g262/upper`);
     expect(after.upperdir).toBe(`${MP}/sessions/${sessionId}/overlay/${hash}/g265/upper`);
-    // The lower moved, so every per-session dir moved with it.
     expect(after.lowerdir).not.toBe(before.lowerdir);
     expect(after.upperdir).not.toBe(before.upperdir);
     expect(after.workdir).not.toBe(before.workdir);
     expect(after.orchDirs?.upperdir).not.toBe(before.orchDirs?.upperdir);
-    // …but the scope dir is stable, so the reset can find what it supersedes.
     expect(after.orchDirs?.sessionScopeDir).toBe(before.orchDirs?.sessionScopeDir);
   });
 });
@@ -344,7 +309,6 @@ describe("buildOverlaySpecs", () => {
 describe("overlayDepDirsFromMounts (#2426 — adopted containers)", () => {
   const SID = "f0d898c7-1db5-4914-af35-78911563838b";
 
-  /** The workspace + state mounts every session container carries. */
   const BASE_MOUNTS = [
     { Type: "volume", Name: "shipit_workspace", Destination: "/workspace" },
     { Type: "bind", Source: "/host/uploads", Destination: "/uploads" },
@@ -357,8 +321,6 @@ describe("overlayDepDirsFromMounts (#2426 — adopted containers)", () => {
       depDirs: ["node_modules", "packages/app/node_modules"],
       volumeMountpoint: "/var/lib/docker/volumes/shipit-workspace/_data",
     });
-    // The mount table Docker reports for a container created from those specs —
-    // `container-lifecycle.ts` pushes `{Type: volume, Source: volumeName, Target: mountPath}`.
     const mounts = [
       ...BASE_MOUNTS,
       ...specs.map((s) => ({ Type: "volume", Name: s.volumeName, Destination: s.mountPath })),
@@ -370,11 +332,6 @@ describe("overlayDepDirsFromMounts (#2426 — adopted containers)", () => {
   });
 
   it("orders the pairs independently of the mount table's order", () => {
-    // The override is generated FROM this list, so its order is part of the
-    // override's bytes and compose recreates a service whenever they change.
-    // Nothing documents `docker inspect`'s `Mounts` as ordered, so two inspects
-    // that merely disagreed would rewrite the override — and recreate every
-    // compose service in the fleet — on each orchestrator restart.
     const vols = {
       nm: overlayVolumeName(SID, "node_modules"),
       dist: overlayVolumeName(SID, "dist"),
@@ -394,12 +351,9 @@ describe("overlayDepDirsFromMounts (#2426 — adopted containers)", () => {
   });
 
   it("agrees with the order the create path records, for the same set", () => {
-    // The two recording sites must agree, or a session alternating between
-    // created and rediscovered rewrites the override on every transition.
     const specs = buildOverlaySpecs({
       sessionId: SID,
       scope: { repoUrl: "https://github.com/acme/repo.git", runtimeKey: "img|x64" },
-      // Declared in an order that is NOT sorted, as a shipit.yaml may well be.
       depDirs: ["packages/app/node_modules", "node_modules"],
       volumeMountpoint: "/var/lib/docker/volumes/shipit-workspace/_data",
     });
@@ -414,8 +368,6 @@ describe("overlayDepDirsFromMounts (#2426 — adopted containers)", () => {
   });
 
   it("returns [] for a container that genuinely has no dep-dir overlay", () => {
-    // Authoritative, not "unknown": the mount table IS what the agent has, so a
-    // pnpm repo / pre-feature container correctly reports no overlay.
     expect(overlayDepDirsFromMounts(SID, BASE_MOUNTS)).toEqual([]);
     expect(overlayDepDirsFromMounts(SID, undefined)).toEqual([]);
   });
@@ -423,11 +375,7 @@ describe("overlayDepDirsFromMounts (#2426 — adopted containers)", () => {
   it("ignores the workspace volume, the pnpm store, and another session's volumes", () => {
     const mounts = [
       ...BASE_MOUNTS,
-      // The pnpm store lives UNDER /workspace but is not an overlay volume
-      // (`PNPM_STORE_CONTAINER_PATH`); mounting it as a dep dir would hand
-      // compose a bogus `.pnpm-store` overlay.
       { Type: "bind", Source: "/state/pnpm-store/abc", Destination: "/workspace/.pnpm-store" },
-      // A volume whose name matches another session's overlay set.
       {
         Type: "volume",
         Name: overlayVolumeName("99998888777766665555", "node_modules"),
@@ -438,8 +386,6 @@ describe("overlayDepDirsFromMounts (#2426 — adopted containers)", () => {
   });
 
   it("ignores an overlay volume mounted outside the workspace", () => {
-    // Not a dep dir under the workspace mount, so there is no `<service-target>/<dep-dir>`
-    // for a compose service to nest — the pair would be meaningless.
     const mounts = [
       { Type: "volume", Name: overlayVolumeName(SID, "node_modules"), Destination: "/workspace" },
       { Type: "volume", Name: overlayVolumeName(SID, "vendor"), Destination: "/elsewhere/vendor" },
@@ -483,10 +429,6 @@ describe("supersededSessionOverlayLayers", () => {
     expect(supersededSessionOverlayLayers(dir, 2)).toEqual([path.join(dir, "g1")]);
   });
 
-  // The upgrade case: every session on disk when this ships has the bare
-  // pre-`g<N>` layout. Counting it is what makes the first post-deploy container
-  // create drop the install marker — otherwise the session silently moves to an
-  // empty `g<N>/upper` while the marker still claims its deps are installed.
   it("counts the legacy generation-agnostic upper/work as superseded", () => {
     const dir = scopeDir(["upper", "work"]);
     expect(supersededSessionOverlayLayers(dir, 3).sort()).toEqual([
@@ -545,11 +487,6 @@ describe("validDepDirsForOverlay", () => {
   });
 
   it("keeps a dep dir matched by a directory-only pattern when the dir does not exist yet", async () => {
-    // The fresh-clone case the overlay targets: `node_modules/` (trailing
-    // slash) is the common .gitignore form, and the dep dir is absent until
-    // the first install. `git check-ignore node_modules` does NOT match a
-    // directory-only pattern for a non-existent path — only the slash-form
-    // query does. Regression: prod fresh sessions silently got no overlay.
     const dir = await repo({ gitignore: "node_modules/\n" });
     expect(await validDepDirsForOverlay(["node_modules"], dir)).toEqual(["node_modules"]);
   });
@@ -573,13 +510,11 @@ describe("validDepDirsForOverlay", () => {
 
   it("drops a dep dir that is tracked source (not git-ignored)", async () => {
     const dir = await repo({ gitignore: "node_modules\n", dirs: ["src"] });
-    // `src` exists and is committed-style source — not ignored → must not be overlaid.
     expect(await validDepDirsForOverlay(["src"], dir)).toEqual([]);
   });
 
   it("drops a dep dir whose parent directory does not exist", async () => {
     const dir = await repo({ gitignore: "node_modules\n" });
-    // packages/app was never created → no real parent to nest the overlay onto.
     expect(await validDepDirsForOverlay(["packages/app/node_modules"], dir)).toEqual([]);
   });
 
@@ -615,12 +550,6 @@ describe("preStampInstallMarker (docs/183 base-hit pre-stamp)", () => {
     for (const d of tmpDirs.splice(0)) fs.rmSync(d, { recursive: true, force: true });
   });
 
-  /**
-   * A real session layout — the clone at `<sessionDir>/workspace`. docs/246 puts
-   * the install marker in the `state/` sibling, resolved from the clone path, and
-   * planning#288 made a clone that isn't `workspace/` an error rather than a fallback
-   * into `<clone>/.shipit/`.
-   */
   async function gitWorkspace(installCmd = "npm install"): Promise<{ dir: string; head: string }> {
     const sessionDir = fs.mkdtempSync(path.join(os.tmpdir(), "prestamp-"));
     tmpDirs.push(sessionDir);
@@ -664,7 +593,6 @@ describe("preStampInstallMarker (docs/183 base-hit pre-stamp)", () => {
     };
   }
 
-  /** Write npm dep input files into a workspace and return their content key. */
   function writeNpmDepFiles(dir: string, lock = '{"lockfileVersion":3}'): string {
     fs.writeFileSync(path.join(dir, "package.json"), '{"name":"x"}');
     fs.writeFileSync(path.join(dir, "package-lock.json"), lock);
@@ -675,7 +603,6 @@ describe("preStampInstallMarker (docs/183 base-hit pre-stamp)", () => {
 
   const WORKER_RT = "img|x64|glibc-2.36|node24";
 
-  /** Where docs/246 puts the marker for a clone: `<sessionDir>/state/shared/`. */
   function markerPathFor(workspaceDir: string): string {
     return path.join(path.dirname(workspaceDir), "state", "shared", ".install-done");
   }
@@ -696,8 +623,6 @@ describe("preStampInstallMarker (docs/183 base-hit pre-stamp)", () => {
       runtimeKey: WORKER_RT,
       installCommands: ["npm install"],
     });
-    // docs/197 — no package.json/lockfile in this workspace, so there is nothing
-    // to content-key: the pre-stamp records a null depsHash (commit-only).
     expect(written.depsHash).toBeNull();
   });
 
@@ -720,10 +645,10 @@ describe("preStampInstallMarker (docs/183 base-hit pre-stamp)", () => {
   it("declines on commit mismatch, generation mismatch, command mismatch, or a pointer without marker", async () => {
     const { dir, head } = await gitWorkspace();
     const cases = [
-      pointer("f".repeat(40), 3, { runtimeKey: WORKER_RT, installCommands: ["npm install"] }), // other commit
-      pointer(head, 4, { runtimeKey: WORKER_RT, installCommands: ["npm install"] }),           // pointer moved on
-      pointer(head, 3, { runtimeKey: WORKER_RT, installCommands: ["pnpm install"] }),          // other commands
-      pointer(head, 3),                                                                        // no marker recorded
+      pointer("f".repeat(40), 3, { runtimeKey: WORKER_RT, installCommands: ["npm install"] }),
+      pointer(head, 4, { runtimeKey: WORKER_RT, installCommands: ["npm install"] }),
+      pointer(head, 3, { runtimeKey: WORKER_RT, installCommands: ["pnpm install"] }),
+      pointer(head, 3),
     ];
     for (const ptr of cases) {
       expect(await preStampInstallMarker({
@@ -744,8 +669,6 @@ describe("preStampInstallMarker (docs/183 base-hit pre-stamp)", () => {
       chown,
     });
     expect(ok).toBe(true);
-    // Both the `.shipit` dir and the marker file are chowned to the worker uid,
-    // so the worker can later overwrite the marker when HEAD invalidates it.
     expect(chown).toHaveBeenCalledWith(path.dirname(markerPathFor(dir)));
     expect(chown).toHaveBeenCalledWith(markerPathFor(dir));
   });
@@ -778,10 +701,6 @@ describe("preStampInstallMarker (docs/183 base-hit pre-stamp)", () => {
     expect(fs.readFileSync(markerPathFor(dir), "utf8")).toBe("EXISTING");
   });
 
-  // docs/198 — the content path: a base built at a DIFFERENT commit whose dep
-  // files hash identically still pre-stamps. This is the live canary regression
-  // (overlay-canary-183: main advanced by a README-only commit, dep files
-  // byte-identical to the pointer commit, yet a fresh session ran a FULL install).
   it("stamps on a commit MISMATCH when the pointer's depsHash matches this workspace (docs/198)", async () => {
     const { dir, head } = await gitWorkspace();
     const depsHash = writeNpmDepFiles(dir);
@@ -789,13 +708,11 @@ describe("preStampInstallMarker (docs/183 base-hit pre-stamp)", () => {
       stateDir: "/state",
       workspaceDir: dir,
       specs: [spec("h1", 3)],
-      // Pointer built at a DIFFERENT commit, but its content key matches.
       readPointer: () =>
         pointer("f".repeat(40), 3, { runtimeKey: WORKER_RT, installCommands: ["npm install"], depsHash }),
     });
     expect(ok).toBe(true);
     const written = JSON.parse(fs.readFileSync(markerPathFor(dir), "utf8"));
-    // sourceCommit is THIS session's HEAD, not the pointer's — truthful for this workspace.
     expect(written.sourceCommit).toBe(head);
     expect(written.depsHash).toBe(depsHash);
   });
@@ -803,7 +720,6 @@ describe("preStampInstallMarker (docs/183 base-hit pre-stamp)", () => {
   it("does NOT stamp on a commit mismatch when the dep files DIFFER (docs/198)", async () => {
     const { dir } = await gitWorkspace();
     writeNpmDepFiles(dir, '{"lockfileVersion":3}');
-    // Pointer's recorded content key is for a DIFFERENT dep set.
     const otherHash = "a".repeat(64);
     const ok = await preStampInstallMarker({
       stateDir: "/state",
@@ -819,7 +735,6 @@ describe("preStampInstallMarker (docs/183 base-hit pre-stamp)", () => {
   it("does NOT take the content path against a legacy pointer with no depsHash (docs/198)", async () => {
     const { dir } = await gitWorkspace();
     writeNpmDepFiles(dir);
-    // Pre-docs/198 pointer: marker present but no depsHash → exact-commit-only.
     const ok = await preStampInstallMarker({
       stateDir: "/state",
       workspaceDir: dir,
@@ -831,8 +746,6 @@ describe("preStampInstallMarker (docs/183 base-hit pre-stamp)", () => {
   });
 
   it("does NOT take the content path when this workspace has no content key (commit mismatch, null hash)", async () => {
-    // No dep files → computeInstallDepsHash is null → a null never content-matches,
-    // even if the pointer carries a hash. Degrades to exact-commit-only.
     const { dir } = await gitWorkspace();
     const ok = await preStampInstallMarker({
       stateDir: "/state",
@@ -847,7 +760,6 @@ describe("preStampInstallMarker (docs/183 base-hit pre-stamp)", () => {
   it("content path still requires command + runtime agreement (docs/198)", async () => {
     const { dir } = await gitWorkspace();
     const depsHash = writeNpmDepFiles(dir);
-    // depsHash matches but the install command differs → no stamp.
     const ok = await preStampInstallMarker({
       stateDir: "/state",
       workspaceDir: dir,
@@ -862,7 +774,7 @@ describe("preStampInstallMarker (docs/183 base-hit pre-stamp)", () => {
     const { dir, head } = await gitWorkspace();
     const ptrs: Record<string, ReturnType<typeof pointer> | null> = {
       h1: pointer(head, 3, { runtimeKey: WORKER_RT, installCommands: ["npm install"] }),
-      h2: null, // second dep dir has no base yet
+      h2: null,
     };
     const ok = await preStampInstallMarker({
       stateDir: "/state",
@@ -873,10 +785,6 @@ describe("preStampInstallMarker (docs/183 base-hit pre-stamp)", () => {
     expect(ok).toBe(false);
   });
 });
-
-// ---------------------------------------------------------------------------
-// docs/197 Part 2 — pnpm detection + shared store helpers
-// ---------------------------------------------------------------------------
 
 describe("isPnpmRepo (docs/197 Part 2)", () => {
   const tmpDirs: string[] = [];
@@ -899,7 +807,6 @@ describe("isPnpmRepo (docs/197 Part 2)", () => {
 
   it("signal 1: packageManager field is authoritative either way", () => {
     expect(isPnpmRepo(workspace({ "package.json": JSON.stringify({ packageManager: "pnpm@9.1.0" }) }))).toBe(true);
-    // npm@ field wins even when a stray pnpm-lock.yaml is present.
     expect(isPnpmRepo(workspace({
       "package.json": JSON.stringify({ packageManager: "npm@10.0.0" }),
       "pnpm-lock.yaml": "lockfileVersion: '9.0'\n",
@@ -909,7 +816,6 @@ describe("isPnpmRepo (docs/197 Part 2)", () => {
 
   it("signal 2: a pnpm invocation in agent.install (outranks lockfile)", () => {
     expect(isPnpmRepo(workspace({ "shipit.yaml": "agent:\n  install:\n    - pnpm install --frozen-lockfile\n" }))).toBe(true);
-    // npm install command wins over a stray pnpm-lock.yaml (3 > 2).
     expect(isPnpmRepo(workspace({
       "shipit.yaml": "agent:\n  install:\n    - npm ci\n",
       "pnpm-lock.yaml": "lockfileVersion: '9.0'\n",
@@ -928,7 +834,6 @@ describe("isPnpmRepo (docs/197 Part 2)", () => {
   });
 
   it("degrades each signal to absent on unreadable inputs", () => {
-    // Invalid package.json → no signal 1; falls through to lockfile.
     expect(isPnpmRepo(workspace({ "package.json": "{not json", "pnpm-lock.yaml": "x" }))).toBe(true);
   });
 });
@@ -937,7 +842,7 @@ describe("pnpm store helpers (docs/197 Part 2)", () => {
   it("pnpmStoreHash is a stable 16-hex digest of the runtime key", () => {
     const h = pnpmStoreHash("img@sha256:abc|x64");
     expect(h).toMatch(/^[a-f0-9]{16}$/);
-    expect(pnpmStoreHash("img@sha256:abc|x64")).toBe(h); // deterministic
+    expect(pnpmStoreHash("img@sha256:abc|x64")).toBe(h);
     expect(pnpmStoreHash("other|x64")).not.toBe(h);
   });
 

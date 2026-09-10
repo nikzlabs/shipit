@@ -1,7 +1,3 @@
-/**
- * docs/128 — unit tests for getHostOverview (Host tab data source).
- */
-
 import { describe, it, expect } from "vitest";
 import type Docker from "dockerode";
 import { getHostOverview } from "./host.js";
@@ -93,7 +89,6 @@ describe("getHostOverview", () => {
 
     expect(result.dockerAvailable).toBe(true);
     expect(result.totals).toEqual({ containers: 2, running: 1 });
-    // Sorted most-recently-created first.
     expect(result.containers[0].id).toBe("111111111111");
     expect(result.containers[0].sessionId).toBe("sess-a");
     expect(result.containers[0].sessionTitle).toBe("Fix login bug");

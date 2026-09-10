@@ -9,10 +9,6 @@ const REPO_ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 describe("the seed step order", () => {
   it("seeds credentials, then roles, then repos", () => {
-    // Credentials before roles because a role names a harness and a model, and
-    // the role seeder resolves those against the models this install can run —
-    // which is exactly what the credential step has just widened. Repos last
-    // because a cold clone takes minutes.
     expect(SEED_STEPS.map((s) => s.name)).toEqual(["credentials", "roles", "repos"]);
   });
 });
@@ -28,8 +24,6 @@ describe("runAll", () => {
   });
 
   it("carries on after a step throws, so one bug cannot cancel the rest (req 5)", async () => {
-    // The guarantee a single entry point owes the three separate invocations it
-    // replaced: they could not take each other down, and neither may this.
     const order: string[] = [];
     const logged: string[] = [];
     await runAll(
@@ -45,13 +39,6 @@ describe("runAll", () => {
   });
 });
 
-/**
- * The failure mode no unit test can otherwise see: a seeder that passes every
- * test and is never run at boot.
- *
- * Every step exits 0 on failure by design, so "seeded nothing" and "was never
- * launched" look identical in the `[seed]` logs. This asserts the wiring itself.
- */
 describe("the dev service's seed step", () => {
   const compose = parse(readFileSync(path.join(REPO_ROOT, "docker-compose.yml"), "utf8")) as {
     services: Record<string, { command?: string }>;

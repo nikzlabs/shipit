@@ -1,13 +1,3 @@
-/**
- * Integration tests for the container agent wiring — validates that
- * ProxyAgentProcess.run()/interrupt()/kill()/writeStdin() delegate to the
- * worker via HTTP, and that events flow back via SSE.
- *
- * These tests exercise the createAgent() + proxy.run() path (used by the
- * dynamic agentFactory in index.ts) rather than the startAgentOnWorker()
- * convenience method.
- */
-
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { EventEmitter } from "node:events";
 import fs from "node:fs";
@@ -19,10 +9,6 @@ import type { SystemTurnDeps } from "../session-runner.js";
 import { prepareDispatch, type PreparedDispatch } from "../prepared-dispatch.js";
 import { TURN_COMPLETED, type TurnOutcome } from "../turn-settlement.js";
 import type { AgentProcess, AgentProcessEvents, AgentId, AgentRunParams, PermissionMode } from "../../shared/types.js";
-
-// ---------------------------------------------------------------------------
-// Fake AgentProcess for worker tests
-// ---------------------------------------------------------------------------
 
 class FakeWorkerAgent extends EventEmitter<AgentProcessEvents> implements AgentProcess {
   readonly agentId: AgentId = "claude";
@@ -75,10 +61,6 @@ class FakeWorkerAgent extends EventEmitter<AgentProcessEvents> implements AgentP
   }
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
 async function waitFor(
   fn: () => boolean,
   timeoutMs = 3000,
@@ -92,14 +74,6 @@ async function waitFor(
   throw new Error(`waitFor(${label}) timed out after ${timeoutMs}ms`);
 }
 
-/**
- * planning#282 — a runner that can start dispatched turns but never actually runs
- * one: `runDispatchedTurn` is replaced by a recorder that hangs, which is
- * exactly the field condition (a turn whose every event was dropped, so it never
- * reaches the executor's settling teardown). `dispatchOnRunner` still runs for
- * real, so `running`, `activeDeliveryId`, and the settlement all behave as they
- * do in production.
- */
 function makeDispatchStubbedRunner(
   sessionId: string,
   workerUrl: string,
@@ -110,7 +84,7 @@ function makeDispatchStubbedRunner(
     defaultAgentId: "claude",
     workerUrl,
   }) as ContainerSessionRunner & { dispatched: PreparedDispatch[] };
-  // Only `canRunDispatchedTurn` is read before the stub takes over.
+  // Dependencies only need to pass canRunDispatchedTurn; the executor is stubbed.
   runner.setSystemTurnDeps({} as SystemTurnDeps);
   runner.dispatched = [];
   runner.runDispatchedTurn = async (opts: PreparedDispatch): Promise<void> => {
@@ -119,10 +93,6 @@ function makeDispatchStubbedRunner(
   };
   return runner;
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
   let worker: SessionWorker;
@@ -152,8 +122,6 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
     await new Promise((r) => setTimeout(r, 50));
   });
 
-  // ---- createAgent + proxy.run() ----
-
   it("proxy.run() POSTs to worker /agent/start and agent runs inside worker", async () => {
     const runner = new ContainerSessionRunner({
       sessionId: "test-proxy-run",
@@ -165,18 +133,14 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
     runner.attachViewer();
     await new Promise((r) => setTimeout(r, 200));
 
-    // Use createAgent (the path used by dynamic agentFactory)
     const proxy = runner.createAgent("claude");
     expect(proxy.agentId).toBe("claude");
 
-    // Call run() — fire-and-forget POST to worker
     proxy.run({ prompt: "Hello from proxy", cwd: "/some/host/path" });
 
-    // Wait for the worker to receive the request
     await waitFor(() => lastAgent?.runCalled, 3000, "agent.run()");
 
     expect(lastAgent.lastParams?.prompt).toBe("Hello from proxy");
-    // The worker overrides cwd to /workspace (session-worker.ts fix)
     expect(lastAgent.lastParams?.cwd).toBe("/workspace");
 
     runner.dispose();
@@ -202,11 +166,9 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
       proxy.on("done", (code: number) => resolve(code));
     });
 
-    // Start the agent via proxy
     proxy.run({ prompt: "Event test", cwd: "/workspace" });
     await waitFor(() => lastAgent?.runCalled, 3000, "agent.run()");
 
-    // Simulate events on the worker side
     lastAgent.emit("event", {
       type: "agent_init",
       agentId: "claude",
@@ -231,17 +193,6 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
     runner.dispose();
   });
 
-  // Regression for the spawn-path SSE race: when an agent spawns a child
-  // session via `shipit session create`, the orchestrator calls
-  // `runner.dispatch(...)` synchronously after creating the
-  // runner — no viewer is attached, so `attachViewer()` has not connected
-  // SSE first. If `/agent/start` is POSTed before SSE is connected, the
-  // worker's first agent events stream to a channel with no listener and
-  // are dropped (the worker's `GET /events` does not replay agent events).
-  // The runner is stuck at running=true with no output forever.
-  //
-  // Without the fix in `_startAgentViaProxy` (await SSE before POST),
-  // this test races and intermittently misses the first event.
   it("proxy.run() receives events when called without prior attachViewer (spawn-path)", async () => {
     const runner = new ContainerSessionRunner({
       sessionId: "test-proxy-no-attach",
@@ -250,8 +201,6 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
       workerUrl,
     });
 
-    // Deliberately do NOT call attachViewer — exercises the spawn path
-    // where runner.dispatch runs before any viewer connects.
     const proxy = runner.createAgent("claude");
 
     const events: { type: string }[] = [];
@@ -264,8 +213,6 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
     proxy.run({ prompt: "Spawn-path test", cwd: "/workspace" });
     await waitFor(() => lastAgent?.runCalled, 3000, "agent.run()");
 
-    // Emit events on the worker side immediately — these would be lost
-    // if SSE were connected only after the POST returned.
     lastAgent.emit("event", {
       type: "agent_init",
       agentId: "claude",
@@ -355,31 +302,7 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
     runner.dispose();
   });
 
-  // Regression for the post-deploy double-render on an INTERACTIVE session
-  // (the bug the test above misses because it never attaches a viewer):
-  //
-  // After an orchestrator restart the runner is fresh (SSE cursor at 0) but the
-  // worker container kept running, so its ring buffer still holds the previous
-  // turn that finished while the orchestrator was down. A human is VIEWING the
-  // session, so a viewer attaches first — `attachViewer()` →
-  // `ensureWorkerResourcesStarted()` sets `_workerResourcesStarted`, which made
-  // `fastForwardStaleWorkerEventsBeforeFreshStart()` short-circuit, so nothing
-  // fast-forwarded the cursor. When the user's next message creates the fresh
-  // `_agent` before the `since=0` replay drains, the completed turn is routed
-  // into the live agent and re-persisted → the turn renders twice and the
-  // duplicate survives a reload.
-  //
-  // The fix fast-forwards the cursor on the viewer-driven first connect too
-  // (gated on the worker being idle), so the completed turn is never replayed.
-  //
-  // Determinism: `attachViewer()` kicks off `ensureWorkerResourcesStarted()`,
-  // which suspends at its first `await` before connecting SSE. Creating the
-  // proxy synchronously right after sets `_agent` before the replay can drain —
-  // exactly the prod ordering, and the only ordering in which the stale events
-  // reach a live slot (rather than being dropped as "no _agent").
   it("attaching a viewer before a fresh turn does not replay the prior completed turn (post-restart double-render)", async () => {
-    // A turn that completed BEFORE the orchestrator restarted — its events sit
-    // in the worker's SSE ring buffer.
     const oldStart = await fetch(`${workerUrl}/agent/start`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -414,7 +337,6 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
     expect(idle.running).toBe(false);
     expect(idle.latestSseSeq).toBeGreaterThan(0);
 
-    // Fresh orchestrator: brand-new runner (so its SSE cursor starts at 0).
     const runner = new ContainerSessionRunner({
       sessionId: "test-viewer-stale-replay",
       sessionDir: "/tmp/test",
@@ -422,20 +344,16 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
       workerUrl,
     });
 
-    // A human is viewing the session: attach a viewer, then synchronously
-    // create the fresh turn's `_agent` before SSE connects (see header).
+    // Create the proxy synchronously, before attachViewer's async SSE setup resumes.
     runner.attachViewer();
     const proxy = runner.createAgent("claude");
     const events: unknown[] = [];
     proxy.on("event", (event) => events.push(event));
 
-    // Let SSE connect and any ring-buffer replay drain. Without the attach-time
-    // fast-forward, the since=0 replay re-delivers the completed turn into the
-    // now-set `_agent`.
+    // Allow stale replay to arrive before checking the canary.
     await new Promise((r) => setTimeout(r, 300));
     expect(JSON.stringify(events)).not.toContain("STALE_REPLAY_CANARY");
 
-    // The fresh turn still receives its own events end-to-end.
     proxy.run({ prompt: "fresh turn", cwd: "/workspace" });
     await waitFor(() => lastAgent !== oldAgent && lastAgent?.runCalled, 3000, "fresh agent.run()");
     expect(lastAgent.lastParams?.prompt).toBe("fresh turn");
@@ -454,8 +372,6 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
     runner.dispose();
   });
 
-  // ---- proxy.interrupt() ----
-
   it("proxy.interrupt() POSTs to worker /agent/interrupt", async () => {
     const runner = new ContainerSessionRunner({
       sessionId: "test-proxy-interrupt",
@@ -471,7 +387,6 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
     proxy.run({ prompt: "Interrupt me", cwd: "/workspace" });
     await waitFor(() => lastAgent?.runCalled, 3000, "agent.run()");
 
-    // Interrupt via proxy
     proxy.interrupt();
     await waitFor(() => lastAgent?.interrupted, 3000, "agent.interrupted");
 
@@ -479,8 +394,6 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
 
     runner.dispose();
   });
-
-  // ---- proxy.writeStdin() ----
 
   it("proxy.writeStdin() POSTs to worker /agent/stdin", async () => {
     const runner = new ContainerSessionRunner({
@@ -497,7 +410,6 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
     proxy.run({ prompt: "Ask me something", cwd: "/workspace" });
     await waitFor(() => lastAgent?.runCalled, 3000, "agent.run()");
 
-    // Write stdin via proxy
     proxy.writeStdin("yes\n");
     await waitFor(() => lastAgent?.stdinData.length > 0, 3000, "stdin data");
 
@@ -505,8 +417,6 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
 
     runner.dispose();
   });
-
-  // ---- proxy.kill() ----
 
   it("proxy.kill() POSTs to worker /agent/kill", async () => {
     const runner = new ContainerSessionRunner({
@@ -523,7 +433,6 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
     proxy.run({ prompt: "Kill me", cwd: "/workspace" });
     await waitFor(() => lastAgent?.runCalled, 3000, "agent.run()");
 
-    // Kill via proxy
     proxy.kill();
     await waitFor(() => lastAgent?.killed, 3000, "agent.killed");
 
@@ -532,15 +441,6 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
     runner.dispose();
   });
 
-  // Prod incident 2026-08-09 (session 468191f5): a fire-and-forget
-  // `/agent/kill` aimed at a retired proxy executed on the worker ~9 minutes
-  // late, when the slot (and the worker's resident process) already belonged
-  // to a NEWER spawn mid-turn — and SIGTERMed it, silently killing the live
-  // turn. planning#290 guarded only the orchestrator-side slot clear; the kill
-  // request itself carried no victim identity. Now `ProxyAgentProcess.kill()`
-  // names its own spawn (`runToken`) and the worker no-ops when the resident
-  // is not that victim; the orchestrator likewise refuses to clear a slot
-  // occupied by a different spawn than the one it asked to kill.
   it("a late kill from a retired proxy does not kill or unhook the newer resident spawn", async () => {
     const runner = new ContainerSessionRunner({
       sessionId: "test-late-kill-wrong-victim",
@@ -551,7 +451,6 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
     runner.attachViewer();
     await new Promise((r) => setTimeout(r, 200));
 
-    // Spawn A runs and exits normally; the worker slot frees up.
     const proxyOld = runner.createAgent("claude");
     proxyOld.run({ prompt: "old spawn", cwd: "/workspace" });
     await waitFor(() => lastAgent?.runCalled, 3000, "old agent.run()");
@@ -559,7 +458,6 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
     oldAgent.emit("done", 0);
     await new Promise((r) => setTimeout(r, 200));
 
-    // Spawn B is now the resident — the live turn.
     const proxyNew = runner.createAgent("claude");
     const newEvents: string[] = [];
     proxyNew.on("event", (e: { type?: string }) => { if (e.type) newEvents.push(e.type); });
@@ -571,12 +469,9 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
     );
     const newAgent = lastAgent;
 
-    // The retired proxy's kill lands while B owns the slot — the incident's
-    // worker-side execution timing, reproduced by simply issuing it now.
     proxyOld.kill();
     await new Promise((r) => setTimeout(r, 300));
 
-    // The live spawn survives, keeps the slot, and its events still route.
     expect(newAgent.killed).toBe(false);
     expect(runner.getAgent()).toBe(proxyNew);
     newAgent.emit("event", { type: "agent_result", status: "success", sessionId: "s-new" });
@@ -584,8 +479,6 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
 
     runner.dispose({ force: true });
   });
-
-  // ---- Sequential agent runs ----
 
   it("supports sequential agent runs (new proxy after done)", async () => {
     const runner = new ContainerSessionRunner({
@@ -598,7 +491,6 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
     runner.attachViewer();
     await new Promise((r) => setTimeout(r, 200));
 
-    // First run
     const proxy1 = runner.createAgent("claude");
     proxy1.run({ prompt: "First run", cwd: "/workspace" });
     await waitFor(() => lastAgent?.runCalled, 3000, "first agent.run()");
@@ -606,14 +498,11 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
     const firstAgent = lastAgent;
     expect(firstAgent.lastParams?.prompt).toBe("First run");
 
-    // Complete first run
     firstAgent.emit("event", { type: "agent_result", status: "success", sessionId: "s1" });
     firstAgent.emit("done", 0);
 
-    // Wait for done event and worker to clear agent
     await new Promise((r) => setTimeout(r, 200));
 
-    // Second run (simulates answer_question creating a new agent)
     const proxy2 = runner.createAgent("claude");
     proxy2.run({ prompt: "Second run", sessionId: "s1", cwd: "/workspace" });
     await waitFor(() => lastAgent?.runCalled && lastAgent !== firstAgent, 3000, "second agent.run()");
@@ -623,14 +512,12 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
     runner.dispose();
   });
 
-  // ---- Error handling ----
-
   it("proxy.run() emits error when worker is unreachable", async () => {
     const runner = new ContainerSessionRunner({
       sessionId: "test-proxy-error",
       sessionDir: "/tmp/test",
       defaultAgentId: "claude",
-      workerUrl: "http://127.0.0.1:1", // unreachable
+      workerUrl: "http://127.0.0.1:1",
     });
 
     const proxy = runner.createAgent("claude");
@@ -647,14 +534,7 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
     runner.dispose();
   });
 
-  // Regression: the worker rejects /agent/start with 409 if `this.agent` is
-  // still set when the new request lands. That happens in a microseconds-wide
-  // race after `agent_done` but before the worker's done handler clears the
-  // slot. _startAgentViaProxy retries once after 150ms — long enough to let
-  // the worker finish its cleanup.
   it("_startAgentViaProxy retries once on 409 'Agent already running'", async () => {
-    // Pre-occupy the worker's agent slot so the next POST /agent/start gets
-    // 409 — simulates the race where a previous turn's cleanup hasn't run yet.
     const preStartRes = await fetch(`${workerUrl}/agent/start`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -673,14 +553,11 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
     runner.attachViewer();
     await new Promise((r) => setTimeout(r, 200));
 
-    // Within the 150ms retry window, free the slot by emitting `done` on the
-    // occupier — its wireAgentEvents listener sets `worker.this.agent = null`.
+    // Free the slot within the 150ms retry window.
     setTimeout(() => occupier.emit("done", 0), 50);
 
-    // _startAgentViaProxy: first attempt → 409, wait 150ms, retry → success.
     await runner._startAgentViaProxy("claude", { prompt: "retry-me", cwd: "/workspace" });
 
-    // The retry should have started a NEW agent on the worker for our prompt.
     await waitFor(
       () => lastAgent !== occupier && lastAgent.lastParams?.prompt === "retry-me",
       3000,
@@ -691,14 +568,7 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
     runner.dispose();
   });
 
-  // docs/142 (B2): if the retry ALSO 409s, the worker is holding a stale agent
-  // that won't clear on its own (e.g. a persistent streaming process whose turn
-  // errored without exiting). _startAgentViaProxy is only reached when the
-  // orchestrator believes no turn is active, so a lingering worker agent is a
-  // desync — kill it and start fresh rather than stranding the session.
   it("_startAgentViaProxy kills the stale agent and restarts when the slot stays busy", async () => {
-    // Pre-occupy and DON'T release — both /agent/start attempts will 409, so
-    // recovery must go through the kill path.
     const preStartRes = await fetch(`${workerUrl}/agent/start`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -717,11 +587,8 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
     runner.attachViewer();
     await new Promise((r) => setTimeout(r, 200));
 
-    // First attempt → 409, retry → 409, kill the stale agent (frees the slot),
-    // start fresh → success.
     await runner._startAgentViaProxy("claude", { prompt: "wont-fit", cwd: "/workspace" });
 
-    // The stale agent was killed, and a brand-new agent started for our prompt.
     expect(stale.killed).toBe(true);
     await waitFor(
       () => lastAgent !== stale && lastAgent.lastParams?.prompt === "wont-fit",
@@ -733,15 +600,7 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
     runner.dispose();
   });
 
-  // docs/124 (SIGTERM-loop follow-up): repeated/concurrent start sequences must
-  // not race each other through B2's kill+restart. Without serialization, each
-  // caller's kill tears down the agent another caller just started, producing
-  // the field SIGHUP/SIGTERM loop ("Agent process exited with code 129 / 143").
-  // The per-runner `_startInFlight` mutex chains them so every start observes a
-  // settled worker state. All callers must resolve cleanly.
   it("_startAgentViaProxy serializes concurrent start sequences (no kill+restart race)", async () => {
-    // Pre-occupy and DON'T release — every caller is forced through B2's
-    // kill+restart path, the exact codepath that races without the mutex.
     const preStartRes = await fetch(`${workerUrl}/agent/start`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -759,9 +618,6 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
     runner.attachViewer();
     await new Promise((r) => setTimeout(r, 200));
 
-    // Fire N concurrent starts. Serialized through `_startInFlight`, each one
-    // runs after the previous settles, so all resolve. Unserialized, the
-    // interleaved kills make all-but-one reject with "Agent already running".
     const N = 5;
     const results = await Promise.all(
       Array.from({ length: N }, async (_, i): Promise<{ ok: true } | { ok: false; err: unknown }> => {
@@ -780,8 +636,6 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
 
     runner.dispose();
   });
-
-  // ---- auth_required ----
 
   it("proxy receives auth_required event via SSE", async () => {
     const runner = new ContainerSessionRunner({
@@ -803,33 +657,13 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
     proxy.run({ prompt: "Auth test", cwd: "/workspace" });
     await waitFor(() => lastAgent?.runCalled, 3000, "agent.run()");
 
-    // Simulate auth event on worker
     lastAgent.emit("auth_required");
 
-    await authPromise; // Should resolve without timeout
+    await authPromise;
 
     runner.dispose();
   });
 
-  // ---- stale-spawn (run-token) guard ----
-
-  // Production repro (Fix-CI / Merge-Conflicts button): the rebase resolution
-  // turn rebased + force-pushed successfully, but the agent's reply never
-  // reached chat — every event of the resolution turn was sse-dropped with
-  // `agent_event ... dropped (no _agent)`.
-  //
-  // Root cause: the runner's single `_agent` slot is REUSED across spawns. The
-  // rebase flow killed the resident streaming process and spawned a fresh agent
-  // into the slot. The killed process's late `agent_done` (code 143, SIGTERM)
-  // arrived ~20s later — AFTER the new proxy occupied the slot — and the SSE
-  // relay blindly emitted it onto the live agent, whose object-identity-guarded
-  // done handler PASSED (it *was* the current agent) and nulled `_agent`,
-  // stranding the resolution turn's whole event stream.
-  //
-  // The fix: the worker stamps the spawning proxy's `runToken` onto
-  // agent_done/error/auth_required; the relay ignores a slot-ending event whose
-  // token doesn't match the proxy currently in the slot. Object identity can't
-  // span the SSE boundary or survive slot reuse — the per-spawn token can.
   it("a stale agent_done from a reused (killed) spawn does NOT strand the new turn's events", async () => {
     const runner = new ContainerSessionRunner({
       sessionId: "test-stale-done-slot-reuse",
@@ -840,22 +674,15 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
     runner.attachViewer();
     await new Promise((r) => setTimeout(r, 200));
 
-    // 1. Resident turn (the original "Work on: …" streaming turn). proxy1
-    //    occupies the slot; the worker wires agent1 with proxy1.runToken.
     const proxy1 = runner.createAgent("claude");
     proxy1.run({ prompt: "resident turn", cwd: "/workspace" });
     await waitFor(() => lastAgent?.runCalled, 3000, "agent1.run()");
     const agent1 = lastAgent;
     expect(proxy1.runToken).toBeTruthy();
 
-    // 2. Fix-CI / rebase takes over the slot: a NEW proxy is created and the
-    //    worker's resident agent is killed + replaced (409 → kill → restart).
     const proxy2 = runner.createAgent("claude");
     expect(proxy2.runToken).not.toBe(proxy1.runToken);
 
-    // Mirror the rebase-driver / turn-executor done handler: object-identity-
-    // guarded setAgent(null). This is the handler that — fed a stale done —
-    // nulled the live slot in prod.
     let proxy2Done = false;
     proxy2.on("done", () => {
       proxy2Done = true;
@@ -873,19 +700,12 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
     const agent2 = lastAgent;
     expect(agent1.killed).toBe(true);
 
-    // 3. The PRIOR spawn's late exit arrives AFTER the slot was reused — the
-    //    code-143 SIGTERM `done` from the killed resident process. It carries
-    //    proxy1's runToken, not proxy2's.
     agent1.emit("done", 143);
 
-    // 4. The stale done must be IGNORED: proxy2 keeps the slot, its done
-    //    handler never runs, `_agent` is not nulled.
     await new Promise((r) => setTimeout(r, 200));
     expect(proxy2Done).toBe(false);
     expect(runner.getAgent()).toBe(proxy2);
 
-    // 5. The resolution turn's real events now flow to proxy2 instead of being
-    //    sse-dropped (no _agent) — the user-visible fix.
     agent2.emit("event", { type: "agent_init", agentId: "claude", sessionId: "s-rebase", model: "claude-sonnet-4-6", tools: ["Read"] });
     agent2.emit("event", {
       type: "agent_assistant",
@@ -897,8 +717,6 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
     expect(proxy2Events).toContain("agent_assistant");
     expect(proxy2Events).toContain("agent_result");
 
-    // 6. proxy2's OWN done (matching token) still finalizes the turn normally —
-    //    the guard only blocks the MISMATCHED stale exit, not the real one.
     agent2.emit("done", 0);
     await waitFor(() => proxy2Done, 3000, "proxy2 own done");
     expect(runner.getAgent()).toBeNull();
@@ -906,14 +724,6 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
     runner.dispose({ force: true });
   });
 
-  // docs/146 follow-up (prod sse-drop): a stale / one-shot spawn displaced the
-  // resident streaming proxy in the single `_agent` slot and then exited,
-  // nulling `_agent` while the live streaming process kept emitting. With the
-  // slot null, every assistant/tool_result/result event of the live turn was
-  // sse-dropped `(no _agent)` and the whole turn vanished from the UI. The relay
-  // now tracks the live streaming proxy separately and RE-ADOPTS it when an
-  // agent_event arrives with `_agent === null` while streaming is still active,
-  // so a stale spawn's exit can't strand a live streaming turn.
   it("re-adopts the live streaming proxy when a stale spawn's exit nulled the slot — events are NOT dropped", async () => {
     const runner = new ContainerSessionRunner({
       sessionId: "test-stream-readopt",
@@ -924,9 +734,6 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
     runner.attachViewer();
     await new Promise((r) => setTimeout(r, 200));
 
-    // 1. The resident STREAMING turn. proxyStream occupies the slot and the
-    //    worker runs agent1 for it. Marking the runner streaming-active makes the
-    //    runner hold a stable reference to the live streaming proxy.
     const proxyStream = runner.createAgent("claude");
     proxyStream.run({ prompt: "streaming work", cwd: "/workspace", useStreaming: true });
     await waitFor(() => lastAgent?.runCalled, 3000, "agent1.run()");
@@ -936,40 +743,20 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
     const streamEvents: string[] = [];
     proxyStream.on("event", (e: { type?: string }) => { if (e.type) streamEvents.push(e.type); });
 
-    // 2. A stale / one-shot spawn exits and its identity-guarded done handler
-    //    nulls the slot — exactly what strands events in prod. The live streaming
-    //    process (agent1) is still running on the worker, and the runner is still
-    //    streaming-active (the one-shot never owned the streaming turn).
     runner.setAgent(null);
     expect(runner.getAgent()).toBeNull();
 
-    // 3. The live streaming process keeps emitting. Old code dropped every event
-    //    `(no _agent)`; the re-adopt guard routes them to the tracked streaming
-    //    proxy instead.
     agent1.emit("event", { type: "agent_init", agentId: "claude", sessionId: "s-stream", model: "claude-sonnet-4-6", tools: ["Read"] });
     agent1.emit("event", { type: "agent_assistant", content: [{ type: "text", text: "Working." }] });
     agent1.emit("event", { type: "agent_result", status: "success", sessionId: "s-stream" });
     await waitFor(() => streamEvents.includes("agent_result"), 3000, "streaming events re-adopted");
     expect(streamEvents).toContain("agent_init");
     expect(streamEvents).toContain("agent_assistant");
-    // The slot was re-adopted, so it points back at the live streaming proxy.
     expect(runner.getAgent()).toBe(proxyStream);
 
     runner.dispose({ force: true });
   });
 
-  // The same stranding, one event later and far more expensive: the live
-  // streaming process's own EXIT.
-  //
-  // `agent_event` re-adopts the tracked streaming proxy when a stale spawn's
-  // exit nulled the slot (the test above); `agent_done` did not, and dropped the
-  // exit with no log line at all. That loses the streaming abnormal-exit branch
-  // (drain → finished-SSE → `runCommitAndPr` → idle), so the turn's edits stay
-  // uncommitted — CLAUDE.md post-turn invariant 2 — and, because the executor's
-  // process-state teardown is additionally identity-gated on the slot, leaves
-  // the runner holding `isStreamingActive` and the dead CLI's background-task
-  // list: a spinner on every open and `agentBusy` true, so the container is
-  // never reclaimed.
   it("delivers the live streaming process's own exit after a stale spawn nulled the slot", async () => {
     const runner = new ContainerSessionRunner({
       sessionId: "test-stream-done-readopt",
@@ -989,27 +776,17 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
     let exitCode: number | null = null;
     proxyStream.on("done", (code: number) => { exitCode = code; });
 
-    // A stale / one-shot spawn's identity-guarded done handler nulls the slot
-    // while the streaming process is still alive on the worker.
     runner.setAgent(null);
     expect(runner.getAgent()).toBeNull();
 
-    // Now the streaming process itself dies (crash / OOM / a kill).
     agent1.emit("done", 137);
     await waitFor(() => exitCode !== null, 3000, "streaming exit delivered");
     expect(exitCode).toBe(137);
-    // Re-installed before the emit — the teardown the exit owns runs only if the
-    // slot points back at the exiting proxy.
     expect(runner.getAgent()).toBe(proxyStream);
 
     runner.dispose({ force: true });
   });
 
-  // `agent_error` is the same shape and owns the same teardown (the `error`
-  // listener in `agent-listeners.ts` runs `setAgent(null)` /
-  // `isStreamingActive = false` / `clearBackgroundTasks()` behind the same
-  // identity guard, and some adapters emit `error` with no follow-up `done`).
-  // Leaving it asymmetric with `agent_done` would just be the next incident.
   it("delivers the live streaming process's error after a stale spawn nulled the slot", async () => {
     const runner = new ContainerSessionRunner({
       sessionId: "test-stream-error-readopt",
@@ -1039,10 +816,6 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
     runner.dispose({ force: true });
   });
 
-  // The flip side: a GENUINELY-orphaned stream (turn finalized — no live
-  // streaming turn) must still be dropped, not resurrected. `isStreamingActive`
-  // is the discriminator: the streaming `done` clears it, so re-adoption only
-  // fires while a streaming turn is actually live.
   it("still drops events from a genuinely-orphaned stream when no streaming turn is live", async () => {
     const runner = new ContainerSessionRunner({
       sessionId: "test-orphan-drop",
@@ -1063,16 +836,10 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
     let sawDone = false;
     proxy.on("done", () => { sawDone = true; });
 
-    // Turn finalized: streaming inactive AND slot nulled (the normal end state).
     runner.isStreamingActive = false;
     runner.setAgent(null);
 
-    // A late event from the now-orphaned worker process must be dropped — there
-    // is no live streaming turn to re-adopt into.
     agent1.emit("event", { type: "agent_assistant", content: [{ type: "text", text: "stale" }] });
-    // …and so must its late EXIT, now that `agent_done` re-adopts too: running
-    // the terminal teardown for a turn the orchestrator already finalized is the
-    // docs/146 stale-exit hazard the re-adopt must not reopen.
     agent1.emit("done", 0);
     await new Promise((r) => setTimeout(r, 300));
     expect(events).toHaveLength(0);
@@ -1082,15 +849,6 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
     runner.dispose({ force: true });
   });
 
-  // The OTHER half: stopping the state from STAYING stale.
-  //
-  // Any path that loses a resident process's exit leaves the runner believing a
-  // streaming CLI is resident when the container has none — a spinner on every
-  // open and `agentBusy` true, so the container is never reclaimed. Both
-  // reconcilers used to return early unless `running` was true, and some of
-  // those paths clear `running` on their way past (the docs/179 auth recovery
-  // settles the adopted turn it kills), so the only repair path in the system
-  // could not see a fault whose own failure mode clears the flag it is gated on.
   it("reconciles an idle runner that still believes a streaming process is resident", async () => {
     const runner = new ContainerSessionRunner({
       sessionId: "test-stale-resident-reconcile",
@@ -1101,17 +859,11 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
     runner.attachViewer();
     await new Promise((r) => setTimeout(r, 200));
 
-    // No turn is running, no agent occupies the worker's slot (none was ever
-    // started here), but the runner still holds a dead process's streaming flag
-    // and its background-task list.
     runner.isStreamingActive = true;
     runner.setBackgroundTasks([{ id: "bg-1", description: "npm test" }]);
     expect(runner.running).toBe(false);
     expect(runner.backgroundWorkDescriptions).toEqual(["npm test"]);
 
-    // The per-session message that clears the OPEN chat's status line. The
-    // sidebar's `session_attention` broadcast does not touch it, so without this
-    // the chat the user is looking at keeps saying "Waiting for: npm test".
     const emitted: { type: string }[] = [];
     runner.on("message", (m) => emitted.push(m as { type: string }));
 
@@ -1127,15 +879,6 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
     runner.dispose({ force: true });
   });
 
-  // …and it must not do that to a turn that is merely still STARTING.
-  //
-  // `/agent/status` reports an occupied slot, not an admitted turn, and a
-  // dispatch sets `running` synchronously while agent creation is still awaiting
-  // env-prep. So a probe answered `running: false` can be about a runner that
-  // acquired a turn while the request was in flight — and acting on it would
-  // abandon that turn (`turn_abandoned`, the queue released, the fresh agent
-  // pulled out of the slot). The reading is compared against the state it was
-  // taken from rather than trusted.
   it("stands down when a turn starts while the worker probe is in flight", async () => {
     const runner = new ContainerSessionRunner({
       sessionId: "test-verify-race",
@@ -1152,7 +895,6 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
     runner.on("turn_abandoned", () => { abandoned = true; });
 
     const verifying = runner.verifyRunningState();
-    // The dispatch lands mid-probe: `running` first, the agent a few awaits later.
     runner.running = true;
     const fresh = runner.createAgent("claude");
 
@@ -1161,40 +903,12 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
     expect(abandoned).toBe(false);
     expect(runner.running).toBe(true);
     expect(runner.getAgent()).toBe(fresh);
-    // Nothing was cleared, so the next tick looks again with a coherent reading.
     expect(runner.isStreamingActive).toBe(true);
 
     runner.running = false;
     runner.dispose({ force: true });
   });
 
-  // planning#290 (prod incident 2026-08-03, three sessions, every agent event
-  // dropped `(no _agent)` for a whole turn): the retirement blocks in
-  // `dispatched-turn.ts` — the system-turn one (docs/179 §4) and the
-  // account-failover one (docs/150) — retire a resident process with the
-  // synchronous sequence
-  //
-  //     outgoing.kill(); runner.setAgent(null); createAgent(); // → new proxy
-  //
-  // `ProxyAgentProcess.kill()` is FIRE-AND-FORGET: it starts
-  // `killAgentOnWorker()`, whose `POST /agent/kill` is still in flight when the
-  // next two statements run. `killAgentOnWorker` then nulled `_agent`
-  // UNCONDITIONALLY when the POST resolved — tens of ms later, by which time the
-  // slot held the INCOMING proxy. Nothing reinstalls the slot afterwards, so the
-  // new turn's own `agent_init` and `agent_result` were dropped along with every
-  // assistant/tool_result event in between.
-  //
-  // The docs/146 re-adopt net could not save it: the retirement block also sets
-  // `isStreamingActive = false`, and that setter nulls `_streamingProxy`.
-  //
-  // Blast radius in prod: with `agent_result` dropped, `onTurnComplete` never
-  // fired, so `runRebaseResolutionTurn` hung until its 10-minute timeout and ran
-  // `git rebase --abort` — discarding a conflict resolution the agent had
-  // already completed correctly.
-  //
-  // The fix is an identity guard on the kill: `killAgentOnWorker` captures the
-  // proxy it was asked to kill and clears the slot only if that same proxy is
-  // still in it.
   it("a fire-and-forget kill of the outgoing proxy does NOT null the incoming proxy's slot", async () => {
     const runner = new ContainerSessionRunner({
       sessionId: "test-kill-races-new-spawn",
@@ -1205,18 +919,13 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
     runner.attachViewer();
     await new Promise((r) => setTimeout(r, 200));
 
-    // 1. A resident STREAMING process from a previous turn. `running` is already
-    //    false — a resident streaming process outlives its turn — which is
-    //    exactly why the retirement block believed nothing live was interrupted.
     const proxyStream = runner.createAgent("claude");
     proxyStream.run({ prompt: "resident streaming work", cwd: "/workspace", useStreaming: true });
     await waitFor(() => lastAgent?.runCalled, 3000, "resident agent.run()");
     const residentAgent = lastAgent;
     runner.isStreamingActive = true;
 
-    // 2. The retirement block, verbatim and synchronous — no await between the
-    //    fire-and-forget kill and the new spawn, which is what makes the POST
-    //    still be in flight.
+    // Do not await the kill: the new proxy must occupy the slot before its response.
     const outgoing = runner.getAgent();
     expect(outgoing).toBe(proxyStream);
     outgoing?.kill();
@@ -1236,14 +945,9 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
     const systemAgent = lastAgent;
     expect(residentAgent.killed).toBe(true);
 
-    // 3. Give the in-flight `POST /agent/kill` every chance to resolve and wipe
-    //    the slot. Before the fix this is where `_agent` went null.
     await new Promise((r) => setTimeout(r, 300));
     expect(runner.getAgent()).toBe(proxySystem);
 
-    // 4. The system turn's own events must be ROUTED, not dropped. `agent_result`
-    //    is the one that matters most: it is what settles the turn and lets the
-    //    rebase driver keep the resolution instead of aborting it on timeout.
     systemAgent.emit("event", { type: "agent_init", agentId: "claude", sessionId: "s-sys", model: "claude-sonnet-4-6", tools: ["Read"] });
     systemAgent.emit("event", { type: "agent_assistant", content: [{ type: "text", text: "Resolved 6 conflicts." }] });
     systemAgent.emit("event", { type: "agent_result", status: "success", sessionId: "s-sys" });
@@ -1253,17 +957,6 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
     runner.dispose({ force: true });
   });
 
-  // planning#290 defect 2. With the slot correctly held by the incoming proxy, the
-  // RETIRED process's late events are no longer dropped — they are routed into
-  // whatever proxy occupies the slot, because `agent_event` (unlike
-  // `agent_done` / `agent_error` / `agent_auth_required`) carried no `runToken`
-  // and had no `isStaleSpawnEvent` guard.
-  //
-  // A late `agent_result` from the killed process is the dangerous one: it is
-  // the canonical turn-ended signal, so it would settle the INCOMING turn
-  // moments after it started — the post-turn commit runs against a tree the new
-  // agent has not written yet, and the real result later lands on a turn that
-  // already finalized. Stamping the token on the event channel too closes it.
   it("a late agent_event from the retired spawn is not routed into the incoming turn", async () => {
     const runner = new ContainerSessionRunner({
       sessionId: "test-stale-agent-event",
@@ -1292,14 +985,11 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
     );
     const newAgent = lastAgent;
 
-    // The retired process's late result — stamped with the OLD spawn's token.
     oldAgent.emit("event", { type: "agent_result", status: "success", sessionId: "s-old" });
     await new Promise((r) => setTimeout(r, 300));
     expect(newEvents).toHaveLength(0);
     expect(runner.getAgent()).toBe(proxyNew);
 
-    // The incoming spawn's own events still flow — the guard blocks only the
-    // mismatched token, never the live turn.
     newAgent.emit("event", { type: "agent_init", agentId: "claude", sessionId: "s-new", model: "claude-sonnet-4-6", tools: ["Read"] });
     newAgent.emit("event", { type: "agent_result", status: "success", sessionId: "s-new" });
     await waitFor(() => newEvents.includes("agent_result"), 3000, "incoming events delivered");
@@ -1307,8 +997,6 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
 
     runner.dispose({ force: true });
   });
-
-  // ---- tryPushAgentSecrets (docs/088 compose-less agent-env path) ----
 
   describe("tryPushAgentSecrets()", () => {
     it("pushes account-level agent env into the worker's process.env", async () => {
@@ -1322,11 +1010,9 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
       const key = "mcp__test__PUSH_KEY";
       try {
         await runner.tryPushAgentSecrets({ [key]: "secret-value" });
-        // Worker runs in-process in this test — PUT /secrets mutates the
-        // shared process.env directly.
+        // The in-process worker shares process.env with this test.
         expect(process.env[key]).toBe("secret-value");
 
-        // A subsequent push REPLACES the tracked set: the old key is unset.
         await runner.tryPushAgentSecrets({});
         expect(process.env[key]).toBeUndefined();
       } finally {
@@ -1341,11 +1027,9 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
         sessionId: "test-push-unreachable",
         sessionDir: "/tmp/test",
         defaultAgentId: "claude",
-        workerUrl: "http://127.0.0.1:1", // unreachable
+        workerUrl: "http://127.0.0.1:1",
       });
 
-      // Must not throw — callers (agent-execution.ts) await this on the
-      // hot path and a transient worker failure must not abort the turn.
       await expect(
         runner.tryPushAgentSecrets({ mcp__test__KEY: "v" }),
       ).resolves.toBeUndefined();
@@ -1354,13 +1038,8 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
     });
   });
 
-  // ---- verifyRunningState (stuck running flag recovery) ----
-
   describe("verifyRunningState() stuck-running recovery", () => {
     it("returns false and resets running=true when worker reports no agent", async () => {
-      // Reproduces the user-visible bug: orchestrator missed `agent_done`
-      // (e.g. SSE drop mid-turn) so `running=true` is stuck. Without
-      // verifyRunningState() the next send_message would queue forever.
       const runner = new ContainerSessionRunner({
         sessionId: "test-stuck-running",
         sessionDir: "/tmp/test",
@@ -1371,14 +1050,9 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
       runner.attachViewer();
       await new Promise((r) => setTimeout(r, 200));
 
-      // Simulate the stuck-running state: orchestrator thinks agent is
-      // running, but the worker has no agent (the terminal SSE event
-      // never arrived).
       runner.running = true;
-      // Sanity check: worker has no agent active.
       expect(lastAgent).toBeNull();
 
-      // Listen for the recovery session_status broadcast.
       const messages: { type: string; running?: boolean; error?: string }[] = [];
       runner.on("message", (m: { type: string; running?: boolean; error?: string }) => messages.push(m));
 
@@ -1392,25 +1066,14 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
       expect(runner.running).toBe(false);
       expect(runner.getAgent()).toBeNull();
 
-      // Recovery session_status should be emitted to all viewers.
       const recovery = messages.find((m) => m.type === "session_status" && m.running === false);
       expect(recovery).toBeDefined();
       expect(recovery?.error).toMatch(/out of sync/i);
 
-      // Idle event fires so the runner can be reclaimed normally.
       await idlePromise;
 
       runner.dispose();
     });
-
-    // ---- planning#282 ----
-    //
-    // The reset above is only half a recovery. In the field a session sat wedged
-    // for 40+ minutes with a `Child PR #… merged` wake-turn frozen in its queue:
-    // every SSE event of the running turn was dropped (`no _agent` in the slot
-    // from `agent_init` onward), so the turn never settled, the merge wake was
-    // enqueued behind it, and when the reconciler finally reset `running` it
-    // released neither the queue nor the abandoned turn's settlement.
 
     it("releases a queued entry through the branded dispatch path after the reset", async () => {
       const runner = makeDispatchStubbedRunner("test-stuck-drains-queue", workerUrl);
@@ -1429,13 +1092,10 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
       runner.running = true;
       expect(await runner.verifyRunningState()).toBe(false);
 
-      // The entry left the queue and became a real turn.
       expect(runner.queueLength).toBe(0);
       expect(runner.dispatched).toHaveLength(1);
       expect(runner.running).toBe(true);
 
-      // …and it went through `queuedMessageToDispatchOptions`, not a narrowed
-      // interactive re-entry: every turn-execution field survived.
       const opts = runner.dispatched[0];
       expect(opts.text).toMatch(/Child PR #1939 merged/);
       expect(opts.execution).toBe("dispatched");
@@ -1443,8 +1103,6 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
       expect(opts.postTurn).toBe("none");
       expect(opts.activity).toBe("Waking on merge…");
       expect(opts.deliveryId).toBe("delivery-queued");
-      // The settlement is chained onto the entry's own callback, so the released
-      // turn still reports completion to the watch that queued it.
       expect(typeof opts.onTurnComplete).toBe("function");
       opts.onTurnComplete?.(TURN_COMPLETED);
       expect(outcomes).toEqual([TURN_COMPLETED]);
@@ -1455,9 +1113,6 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
     it("settles the abandoned turn as dropped and stops publishing its delivery", async () => {
       const runner = makeDispatchStubbedRunner("test-stuck-settles-turn", workerUrl);
 
-      // A dispatched turn that starts and then loses every event: the stub never
-      // reaches a terminal agent event, so nothing inside the turn machinery can
-      // settle it. Only the reconciler notices.
       const handle = runner.dispatch(prepareDispatch({
         text: "wake up",
         agentInterface: undefined,
@@ -1472,7 +1127,6 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
         onTurnComplete: undefined,
         deliveryId: "delivery-running",
         dictated: undefined,
-        // No composer involved — a server-originated dispatch has no tick boxes.
         resetMergedBranch: undefined,
         compactContext: undefined,
         silent: undefined,
@@ -1482,15 +1136,11 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
 
       expect(await runner.verifyRunningState()).toBe(false);
 
-      // Bounded so a regression fails as an unsettled handle rather than hanging
-      // the suite — which is the exact production symptom.
       const settled = await Promise.race<TurnOutcome | null>([
         handle.settled,
         new Promise<null>((r) => setTimeout(() => r(null), 1000)),
       ]);
 
-      // `dropped`, so the merge-watch supervisor retries instead of reading the
-      // dead attempt as indefinitely in flight.
       expect(settled?.status).toBe("dropped");
       expect(runner.activeDeliveryId).toBeUndefined();
       expect(runner.hasDelivery("delivery-running")).toBe(false);
@@ -1522,7 +1172,6 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
       runner.attachViewer();
       await new Promise((r) => setTimeout(r, 200));
 
-      // Start an agent through the proxy, then check verification agrees.
       const proxy = runner.createAgent("claude");
       proxy.run({ prompt: "Still running", cwd: "/workspace" });
       await waitFor(() => lastAgent?.runCalled, 3000, "agent.run()");
@@ -1546,7 +1195,6 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
         workerUrl,
       });
 
-      // No attach — no SSE setup needed; the early-return path skips HTTP.
       expect(runner.running).toBe(false);
       const actuallyRunning = await runner.verifyRunningState();
       expect(actuallyRunning).toBe(false);
@@ -1555,13 +1203,11 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
     });
 
     it("keeps running=true when worker is unreachable (defensive fallback)", async () => {
-      // If we can't reach the worker, we can't safely declare the agent
-      // dead — the SSE reconnect loop should recover instead.
       const runner = new ContainerSessionRunner({
         sessionId: "test-unreachable",
         sessionDir: "/tmp/test",
         defaultAgentId: "claude",
-        workerUrl: "http://127.0.0.1:1", // unreachable
+        workerUrl: "http://127.0.0.1:1",
       });
 
       runner.running = true;
@@ -1575,29 +1221,6 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
     });
   });
 });
-
-// ---------------------------------------------------------------------------
-// Regression: spawn-child install-gate deadlock
-// ---------------------------------------------------------------------------
-//
-// Sessions spawned by an agent (`shipit session create --prompt-file -`) never get a
-// viewer attached at dispatch time, so nothing on the orchestrator side calls
-// `attachViewer()` — the only other caller of `ensureWorkerResourcesStarted()`.
-// `_startAgentViaProxy` used to await `_waitForInstallBeforeAgent()` BEFORE
-// kicking SSE setup, so the install-gate promise (resolved by the SSE-delivered
-// `install_done` event) never resolved: the orchestrator never opened its end
-// of the pipe, the worker's `install_done` sat in the ring buffer forever, and
-// `/agent/start` was never POSTed. The session showed `running=false` in the
-// worker and no chat output, until a viewer happened to open it.
-//
-// These tests use a real SessionWorker against a tmp workspaceDir + stateDir (so
-// the install marker doesn't pollute the repo; docs/246 moved it out of the
-// clone onto the `/session-state` mount, which an in-process worker lacks) and a trivial
-// install command (`true`) so the worker's `runInstallCommands` finishes
-// near-instantly. The key contract: with NO viewer attached, both
-// `runner.runInstall(...)` and `runner._startAgentViaProxy(...)` must complete
-// without anyone calling `attachViewer()`.
-// ---------------------------------------------------------------------------
 
 describe("Integration: spawn-child install gate (no viewer attached)", () => {
   let worker: SessionWorker;
@@ -1648,14 +1271,7 @@ describe("Integration: spawn-child install gate (no viewer attached)", () => {
     });
 
     try {
-      // Deliberately do NOT call attachViewer(). This is the production
-      // spawn-child shape: orchestrator creates the runner via
-      // `onRunnerCreated` → `setupServiceManager` → `runInstall(...)`, then
-      // `runner.dispatch(...)` → `_startAgentViaProxy(...)`. No WS viewer
-      // ever attaches.
-      //
-      // Create the proxy BEFORE issuing the install/start so its SSE event
-      // listener is wired by the time the worker emits agent events.
+      // Attach the event listener before starting the worker agent.
       const proxy = runner.createAgent("claude");
       const proxyDone = new Promise<number>((resolve) => {
         proxy.on("done", (code: number) => resolve(code));
@@ -1667,11 +1283,6 @@ describe("Integration: spawn-child install gate (no viewer attached)", () => {
         cwd: "/workspace",
       });
 
-      // Both must resolve. With the deadlock present, `runInstall` never
-      // resolved because its `_installComplete` resolver is only ever
-      // called from the SSE handler — and SSE was never connected.
-      // `_startAgentViaProxy` chained on `_waitForInstallBeforeAgent` so it
-      // never reached the `/agent/start` POST.
       const installResult = await Promise.race([
         installPromise,
         new Promise<never>((_, reject) =>
@@ -1687,16 +1298,9 @@ describe("Integration: spawn-child install gate (no viewer attached)", () => {
         ),
       ]);
 
-      // The worker must have actually received /agent/start and instantiated
-      // the agent.
       await waitFor(() => lastAgent?.runCalled, 3000, "agent.run() on worker");
       expect(lastAgent.lastParams?.prompt).toBe("spawn-child no-viewer");
 
-      // Drive the agent through to completion via the worker → SSE pipe.
-      // The proxy's `done` event must fire — proving that agent events flow
-      // end-to-end on the spawn-child path with no viewer attached. This is
-      // the user-visible guarantee: a spawned child runs to completion even
-      // if nobody opens it in the UI.
       lastAgent.emit("event", { type: "agent_result", status: "success", sessionId: "s1" });
       lastAgent.emit("done", 0);
       const exitCode = await Promise.race([

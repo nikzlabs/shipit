@@ -4,7 +4,6 @@ import { toQueuedMessage } from "./session-runner.js";
 import type { AgentDispatchOptions, QueuedMessage, SessionRunnerInterface } from "./session-runner.js";
 import { testDispatch } from "./integration_tests/dispatch-test-helpers.js";
 
-/** Minimal runner surface `startQueuedMessage` touches. */
 function fakeRunner(opts: { canRunDispatchedTurn?: boolean } = {}) {
   const ran: AgentDispatchOptions[] = [];
   const runner = {
@@ -33,7 +32,6 @@ describe("queue drain routing (planning#257)", () => {
 
     expect(runInteractive).not.toHaveBeenCalled();
     expect(ran).toHaveLength(1);
-    // The whole option set survives — these two are what the WS drain dropped.
     expect(ran[0]).toMatchObject({
       text: "child PR merged",
       activity: "Resuming after child PR merged…",
@@ -87,15 +85,8 @@ describe("queue drain routing (planning#257)", () => {
       dictated: true,
     };
 
-    // docs/240 — `toQueuedMessage` now takes a branded `PreparedDispatch` (so
-    // the queue can't be entered around the brand either); `testDispatch` is the
-    // test-only shim that mints one from a partial literal. The property under
-    // test is unchanged: nothing may be lost on the way in or out.
     const restored = queuedMessageToDispatchOptions(toQueuedMessage(testDispatch(opts)));
 
-    // Every key the caller set is still set after the queue round-trip. This is
-    // the guard: adding a field to AgentDispatchOptions without teaching
-    // `toQueuedMessage` / `queuedMessageToDispatchOptions` about it fails here.
     for (const key of Object.keys(opts) as (keyof AgentDispatchOptions)[]) {
       expect(restored[key], `field "${key}" was dropped by the queue round-trip`).toEqual(opts[key]);
     }
@@ -104,7 +95,6 @@ describe("queue drain routing (planning#257)", () => {
 });
 
 describe("releaseQueuedTurn (planning#338)", () => {
-  /** Minimal runner surface `releaseQueuedTurn` touches. */
   function fakeReleaseRunner(opts: {
     running?: boolean;
     systemTurnInProgress?: boolean;
@@ -132,9 +122,6 @@ describe("releaseQueuedTurn (planning#338)", () => {
   }
 
   it("refuses to release while a system flow holds the session between its own turns", () => {
-    // The rebase driver clears `running` when each resolution turn settles but
-    // keeps running git against the workspace — releasing a user turn into
-    // that window is how a production session stranded mid-rebase.
     const { runner, dispatched, dequeueCount } = fakeReleaseRunner({
       running: false,
       systemTurnInProgress: true,
@@ -146,9 +133,6 @@ describe("releaseQueuedTurn (planning#338)", () => {
   });
 
   it("refuses to release while ShipIt is merging this session's pull request", () => {
-    // docs/288 req 6 — `dispatch` would only re-queue the entry under the hold,
-    // so dequeuing here costs a `queue_updated` broadcast showing the queue
-    // shrink and grow again for no reason.
     const { runner, dispatched, dequeueCount } = fakeReleaseRunner({
       running: false,
       mergeHold: true,

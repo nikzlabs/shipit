@@ -11,20 +11,12 @@ import { OPS_TEMPLATE, OPS_TEMPLATE_ID } from "./templates-ops.js";
 
 export { OPS_TEMPLATE, OPS_TEMPLATE_ID, buildOpsInvestigationSeed } from "./templates-ops.js";
 
-// Re-export sub-module symbols for backwards compatibility
 export { UNIVERSAL_GITIGNORE } from "./template-gitignores.js";
 export { FRONTEND_TEMPLATES } from "./templates-frontend.js";
 export { FULLSTACK_TEMPLATES } from "./templates-fullstack.js";
 export { BACKEND_TEMPLATES } from "./templates-backend.js";
 export { PYTHON_TEMPLATES } from "./templates-python.js";
 
-// ---------------------------------------------------------------------------
-// Empty template
-// ---------------------------------------------------------------------------
-
-// A blank repository with just a README — for users who want to start from
-// scratch (or describe what they want and let the agent scaffold it) rather
-// than picking a framework. No build tooling, no preview, no shipit.yaml.
 const EMPTY_TEMPLATE: ProjectTemplate = {
   id: "empty",
   name: "Empty",
@@ -40,28 +32,15 @@ scaffold it for you, or start adding files yourself.
   },
 };
 
-// ---------------------------------------------------------------------------
-// Merged template list
-// ---------------------------------------------------------------------------
-
 const TEMPLATES: ProjectTemplate[] = [
   ...FRONTEND_TEMPLATES,
   ...FULLSTACK_TEMPLATES,
-  // EMPTY_TEMPLATE leads its `utility` group in the picker (the grid preserves
-  // array order within a category), so it must come before any other utility
-  // template — e.g. the Node.js CLI inside BACKEND_TEMPLATES.
+  // Keep Empty first in the utility picker group.
   EMPTY_TEMPLATE,
   ...BACKEND_TEMPLATES,
   ...PYTHON_TEMPLATES,
 ];
 
-// ---------------------------------------------------------------------------
-// Public API
-// ---------------------------------------------------------------------------
-
-/**
- * Return all available templates (metadata only, no file contents).
- */
 export function listTemplates(): Omit<ProjectTemplate, "files">[] {
   return TEMPLATES.map((t) => ({
     id: t.id,
@@ -72,22 +51,12 @@ export function listTemplates(): Omit<ProjectTemplate, "files">[] {
   }));
 }
 
-/**
- * Find a template by ID.
- *
- * The ops template (docs/128) is resolvable here so `applyTemplate` can scaffold
- * it, but it is deliberately absent from `listTemplates()` — it is created only
- * from the gated Settings affordance, never the general new-project grid.
- */
+// Ops is available for scaffolding but excluded from the project picker.
 export function getTemplate(id: string): ProjectTemplate | undefined {
   if (id === OPS_TEMPLATE_ID) return OPS_TEMPLATE;
   return TEMPLATES.find((t) => t.id === id);
 }
 
-/**
- * Scaffold a template's files into the given directory.
- * Creates subdirectories as needed. Returns the list of files written.
- */
 export async function applyTemplate(
   template: ProjectTemplate,
   targetDir: string,
@@ -104,27 +73,17 @@ export async function applyTemplate(
   return written;
 }
 
-// Package managers we know how to generate a lockfile for. The manager is the
-// project's choice, not ShipIt's — we detect it from the scaffolded package.json
-// rather than hardcoding npm, so a pnpm/yarn template gets the right lockfile.
 type JsPackageManager = "npm" | "pnpm" | "yarn";
 
-// Lockfile-only command per manager: produce/refresh the lockfile WITHOUT
-// installing node_modules (the agent container does the real install later).
+// The agent container installs dependencies later.
 const LOCK_ONLY_COMMAND: Record<JsPackageManager, [string, string[]]> = {
   npm: ["npm", ["install", "--package-lock-only", "--ignore-scripts"]],
   pnpm: ["pnpm", ["install", "--lockfile-only"]],
   yarn: ["yarn", ["install", "--mode", "update-lockfile"]],
 };
 
-// Lockfiles that, if already shipped by the template, mean we skip regeneration.
 const KNOWN_LOCKFILES = ["package-lock.json", "pnpm-lock.yaml", "yarn.lock"];
 
-/**
- * Detect the JS package manager for a scaffolded project from package.json's
- * `packageManager` field (the corepack convention, e.g. `"pnpm@9.1.0"`).
- * Falls back to npm when the field is absent or unrecognized.
- */
 function detectPackageManager(dir: string): JsPackageManager {
   try {
     const pkg = JSON.parse(fsSync.readFileSync(path.join(dir, "package.json"), "utf-8")) as {
@@ -140,16 +99,6 @@ function detectPackageManager(dir: string): JsPackageManager {
   return "npm";
 }
 
-/**
- * Generate a lockfile (without installing node_modules) for a scaffolded JS
- * project, using the manager the project declares (npm/pnpm/yarn). Rejects if
- * the command fails. Callers gate on `package.json` presence, so this is never
- * invoked for non-JS templates (e.g. Python, which brings its own
- * requirements.txt / uv.lock / poetry.lock — ShipIt does not impose one).
- *
- * If the template already ships a lockfile, regeneration is skipped so a
- * hand-tuned lockfile is respected.
- */
 export function generatePackageLock(dir: string): Promise<void> {
   if (KNOWN_LOCKFILES.some((f) => fsSync.existsSync(path.join(dir, f)))) {
     return Promise.resolve();

@@ -1,45 +1,3 @@
-/**
- * `shipit issue *` handlers — tracker-neutral issue access (docs/175 read +
- * docs/177 + docs/187 write, reworked by docs/248).
- *
- * `shipit issue` is the ONE issue interface, identical across every backend.
- * Read = view/list; write = create/comment/comment edit/edit/status/assign.
- * `comment edit` (planning#88) rewrites a comment ShipIt itself posted — someone
- * else's is refused server-side, and there is no `comment delete`. Creation is
- * do-then-surface (docs/187) — the issue is created immediately and a provenance
- * card with Undo (which cancels it) is posted. The `shipit issue` dispatch + the
- * rejected-subcommand gate live in `shipit.ts`.
- *
- * docs/248 — **every operation names the tracker it acts on.** The trackers a
- * session can reach are the ones its repository declared in `shipit.yaml`, plus
- * the session's own GitHub Issues; there is no built-in tracker and no implicit
- * fallback (req 1). So this module starts by asking the orchestrator for that
- * set (`/agent-ops/issue/trackers`) and resolves the reference locally against
- * it, which is what lets a failure — an unrecognized shape, a name nobody
- * declared, an ambiguous address — be reported in CLI output with the declared
- * names in hand (reqs 8, 19) instead of coming back as an opaque 404 from a
- * write that should never have been attempted.
- *
- * Two shapes of destination-naming, matching requirements 12 and 13:
- *
- *  - An operation on an **existing** issue names its tracker in the pointer
- *    (`planning#42`, `roadmap#SHI-304`, `owner/repo#42`, `SHI-304`) or with
- *    `--tracker <name>`. The one exception is the session's own repository,
- *    which needs no declaration and no name — a bare pointer and a bare `list`
- *    both mean it.
- *  - **`create` always names its destination** (req 13). There is no default and
- *    no unnamed fallback, because for a public code repository the unnamed
- *    destination is the *public* repo: a forgotten flag would file a planning
- *    issue publicly. To file into its own repository, a repository declares it.
- *
- * docs/262 req 25 adds one more kind of destination to that same set: a declared
- * **plugin repository**, under the name of its `plugins.repos` entry. Declaring
- * the plugin is what grants the channel, and it is the ordinary `create` path —
- * no second issue command, and the token still never enters this container. The
- * orchestrator stamps the running plugin commit onto the report, because the
- * checkout the agent browses is a staged export with no `HEAD` to read.
- */
-
 import {
   describeDeclaredNames,
   matchedDestinationName,
@@ -61,28 +19,16 @@ import {
 } from "./shim-common.js";
 import { REJECTED_HELP, formatError, type RunDeps } from "./shipit.js";
 
-/** A destination an operation resolved to: the routing id plus the name used. */
 interface ResolvedTarget {
   tracker: string;
   trackerName?: string;
 }
 
-/** A resolved issue target: a destination plus the tracker-native issue id. */
 interface ResolvedIssueTarget extends ResolvedTarget {
   id: string;
   identifier: string;
 }
 
-/**
- * Fetch the destinations this session can reach, and print the repository's
- * declaration warnings (req 8) to stderr before anything else runs.
- *
- * The warnings go to stderr rather than being folded into the command's output
- * so they surface on a *successful* command too: an entry dropped for a
- * duplicate `name` or an unrecognized `kind` is exactly the case where the rest
- * of the command still works and the agent would otherwise never learn the
- * declaration is broken.
- */
 async function loadDestinations(deps: RunDeps): Promise<TrackerDestination[]> {
   const res = await deps.call("GET", "/agent-ops/issue/trackers", undefined, deps.env);
   if (res.status < 200 || res.status >= 300) {
@@ -94,19 +40,6 @@ async function loadDestinations(deps: RunDeps): Promise<TrackerDestination[]> {
   return (res.body.destinations as TrackerDestination[] | undefined) ?? [];
 }
 
-/**
- * Resolve an issue pointer to a destination + a tracker-native id (docs/248
- * req 10). All three reference forms are accepted, and requirement 11's
- * fail-closed rules apply: a well-formed reference naming no declared
- * destination, or naming more than one, is an error here rather than a request
- * routed at a guess.
- *
- * `--tracker <name>` names the destination for a pointer that carries none — a
- * bare `42` or `SHI-9` with no declaration to match. Passing both is only
- * allowed when they agree, because silently preferring either one is exactly the
- * substitution requirement 17 forbids: an operation that names two different
- * destinations is a mistake, not a precedence question.
- */
 function resolveIssuePointer(
   io: ShimIO,
   verb: string,
@@ -140,13 +73,7 @@ function resolveIssuePointer(
     };
   }
 
-  // Only an *unrecognized shape* may be resolved by naming a destination: the
-  // pointer is then a bare native id (a GitHub number, a Linear key) for that
-  // destination. With no `--tracker`, a bare id means the session's own
-  // repository — req 12's one unnamed exception, the same default `list` takes.
-  // A recognized reference that failed to resolve — undeclared, ambiguous,
-  // mismatched — is a real routing failure and is reported as one, never
-  // silently redirected at the session's repo.
+  // Never redirect a recognized but unresolved reference to another tracker.
   if (resolution.reason === "unrecognized") {
     const target = named ?? ownRepoTarget(destinations);
     if (target) {
@@ -163,11 +90,6 @@ function resolveIssuePointer(
   fail(io, `shipit issue ${verb}: ${resolution.message}`);
 }
 
-/**
- * Interpret a bare id (`42`, `SHI-9`) against an explicitly named destination.
- * GitHub wants a number; Linear wants a key, and a bare number is completed from
- * the declaration's team key — the same completion `roadmap#304` gets.
- */
 function nativeIdFor(io: ShimIO, verb: string, target: ResolvedTarget, raw: string): string {
   if (isGitHubTracker(target.tracker)) {
     if (!/^\d+$/.test(raw)) {
@@ -181,10 +103,6 @@ function nativeIdFor(io: ShimIO, verb: string, target: ResolvedTarget, raw: stri
   fail(io, `shipit issue ${verb}: "${raw}" is not a Linear issue key.`);
 }
 
-/**
- * Resolve `--tracker <name>` to a declared destination, failing closed with the
- * declared names when it matches none (reqs 11, 19).
- */
 function requireDestination(
   io: ShimIO,
   verb: string,
@@ -195,11 +113,7 @@ function requireDestination(
   if (!found.ok) {
     fail(io, `shipit issue ${verb}: ${found.message}`);
   }
-  // docs/262 req 25 — report the name that MATCHED, which differs from the
-  // destination's primary name only for a plugin repository aliased onto a
-  // tracker the project also declares. There the choice of name is the intent
-  // (feedback on the plugin vs an issue on my tracker), so the orchestrator has
-  // to see the one that was typed.
+  // Preserve the alias: it distinguishes plugin feedback from project issues.
   const matched = matchedDestinationName(found.destination, name);
   return {
     tracker: found.destination.id,
@@ -207,13 +121,6 @@ function requireDestination(
   };
 }
 
-/**
- * The destination for a verb that has no pointer to infer one from — `list`,
- * `labels`, `statuses`. With no `--tracker` this is the session's own repository
- * (req 12's one unnamed exception); that is deliberately NOT true of `create`,
- * which has its own required-destination rule (req 13, {@link requireCreateTarget}).
- */
-/** The session's own repository, when it has one (req 12's unnamed exception). */
 function ownRepoTarget(destinations: TrackerDestination[]): ResolvedTarget | null {
   const own = destinations.find((d) => !d.name);
   return own ? { tracker: own.id } : null;
@@ -236,13 +143,6 @@ function resolveListTarget(
   return own;
 }
 
-/**
- * docs/248-declared-issue-trackers req 13 — a create ALWAYS names its destination. No default, and no
- * unnamed fallback to the session's own repository: for a public code repository
- * that fallback is the *public* repo, so a forgotten flag would file a planning
- * issue publicly. A repository that wants `create` to reach its own issues
- * declares itself and gives it a name.
- */
 function requireCreateTarget(
   io: ShimIO,
   verb: string,
@@ -258,19 +158,11 @@ function requireCreateTarget(
   return requireDestination(io, verb, trackerFlag, destinations);
 }
 
-/**
- * Provenance label for the untrusted-input envelope, e.g. `linear:SHI-28` or
- * `github:planning#42`.
- *
- * Uses the tracker *kind*, not the full id: a GitHub `identifier` already names
- * its destination, so a qualified id would render it twice (docs/248).
- */
 function provenanceLabel(tracker: string, identifier: string): string {
   const kind = isGitHubTracker(tracker) ? "github" : isLinearTracker(tracker) ? "linear" : tracker;
   return `${kind}:${identifier}`;
 }
 
-/** Read a write body from `--body` (inline) or `--body-file` (file / `-` stdin). */
 async function readIssueBody(
   values: Record<string, string>,
   deps: RunDeps,
@@ -282,16 +174,8 @@ async function readIssueBody(
   return undefined;
 }
 
-/** Normalized priority levels accepted by `--priority` (Linear-only). */
 const VALID_PRIORITIES = new Set(["urgent", "high", "medium", "low", "none"]);
 
-/**
- * Validate `--priority` against the tracker (planning#94). GitHub has no native
- * priority field, so `--priority` is rejected there with a pointer at the label
- * convention rather than silently dropped. On Linear we accept the normalized
- * levels (the server also accepts native names, but the shim keeps the surface
- * tight). Returns the value to send, or fails the command.
- */
 function validatePriority(
   io: RunDeps["io"],
   verb: string,
@@ -315,20 +199,8 @@ function validatePriority(
   return priority.toLowerCase();
 }
 
-/** `--parent` values that DETACH (clear the parent), mirroring `assign --none`. */
 const PARENT_DETACH = new Set(["none", "null", "detach"]);
 
-/**
- * Validate + normalize `--parent` against the tracker (planning#208). Sub-issue
- * nesting is **Linear-only** — GitHub issues are flat — so `--parent` is rejected
- * on GitHub with a pointer at the limitation, mirroring how `--priority` is
- * rejected. On Linear, `none`/`null`/`detach` clears the parent; otherwise the
- * value is resolved as a tracker-neutral pointer (`planning#206` or a Linear URL) to
- * the parent's issue key. Returns:
- *   - `undefined` → the flag wasn't passed (leave the parent untouched),
- *   - `null`      → detach (clear the parent),
- *   - `string`    → the parent issue key to nest under.
- */
 function validateParent(
   io: RunDeps["io"],
   verb: string,
@@ -345,11 +217,6 @@ function validateParent(
     );
   }
   if (PARENT_DETACH.has(parent.trim().toLowerCase())) return null;
-  // docs/248 — a parent is a reference like any other, so it resolves through the
-  // declarations too (`roadmap#SHI-204` and a bare `SHI-204` both work). It must
-  // land on the SAME destination as the issue being written: Linear nests only
-  // within a team, and silently reparenting across teams would be exactly the
-  // substitution requirement 17 forbids.
   const resolution = resolveIssueRef(parent, destinations);
   if (!resolution.ok) {
     fail(io, `shipit issue ${verb}: --parent ${resolution.message}`);
@@ -396,8 +263,6 @@ export async function handleIssueView(args: string[], deps: RunDeps): Promise<vo
     fail(deps.io, `Issue not found: ${identifier}`, 1);
   }
 
-  // `--comments` pulls the thread over a second brokered read (planning#139). The
-  // `view` leg already emitted the jump-to-issue card; this read adds none.
   let comments: Record<string, unknown>[] | undefined;
   if (parsed.booleans.has("comments")) {
     const cres = await deps.call("GET", `/agent-ops/issue/comments${qs}`, undefined, deps.env);
@@ -408,8 +273,6 @@ export async function handleIssueView(args: string[], deps: RunDeps): Promise<vo
   }
 
   if (parsed.booleans.has("json")) {
-    // Embed comments on the issue object when requested so the shape stays a
-    // superset of plain `--json` (existing fields untouched, `comments` added).
     const payload = comments ? { ...issue, comments } : issue;
     deps.io.stdout(`${JSON.stringify(payload)}\n`);
     deps.io.exit(0);
@@ -444,13 +307,6 @@ export async function handleIssueList(args: string[], deps: RunDeps): Promise<vo
 
   const issues = (res.body.issues as Record<string, unknown>[] | undefined) ?? [];
   if (parsed.booleans.has("json")) {
-    // Token economy (planning#201): a `--json` list is almost always a "which issue do
-    // I pick?" scan needing only identifier/title/status/priority/assignee — never
-    // every issue's full markdown body. Both adapters populate `description` on
-    // every row, so a default list could ship tens of thousands of tokens of body
-    // the agent didn't ask for. Drop it by default; `--full` opts back in. This is
-    // a shim-only projection (the UI's own `/api/issues` payload is untouched), so
-    // it can't break the browser Issues list that renders `description`.
     const rows = parsed.booleans.has("full") ? issues : issues.map(leanListRow);
     deps.io.stdout(`${JSON.stringify(rows)}\n`);
     deps.io.exit(0);
@@ -465,10 +321,6 @@ export async function handleIssueList(args: string[], deps: RunDeps): Promise<vo
     success(deps.io, `No issues for ${tracker}.`);
     return;
   }
-  // Issue titles are reporter-authored free-text too (planning#87 / docs/176), so the
-  // list is wrapped in the same untrusted-input envelope — no issue field reaches
-  // the agent as unframed prose. The leading `identifier`/`priority` columns are
-  // tracker-derived, but they ride inside the block since the row is one line.
   const lines = issues.map((i) =>
     [asString(i.identifier), priorityLabel(i), asString(i.title)].join("\t"),
   );
@@ -484,26 +336,12 @@ export async function handleIssueList(args: string[], deps: RunDeps): Promise<vo
   );
 }
 
-/**
- * Project a list row down to the lean default for `shipit issue list --json`
- * (planning#201) — strip the heavy `description` (full markdown body) that both
- * adapters populate per row. The body belongs on `view`, not on a pick-an-issue
- * scan; `--full` skips this projection. A shallow copy, so the source object is
- * untouched.
- */
 function leanListRow(issue: Record<string, unknown>): Record<string, unknown> {
   const rest = { ...issue };
   delete rest.description;
   return rest;
 }
 
-/**
- * `shipit issue labels` — list the tracker's pickable labels (planning#201). The
- * discovery surface that lets the agent see valid `--label` values for
- * create/edit without guessing and tripping the rejection error. Read-only;
- * label names are workspace/repo-configured metadata (not reporter free-text),
- * so they print plain — no untrusted-input envelope.
- */
 export async function handleIssueLabels(args: string[], deps: RunDeps): Promise<void> {
   const parsed = parseFlags(args, {
     values: { "--tracker": "tracker" },
@@ -533,18 +371,9 @@ export async function handleIssueLabels(args: string[], deps: RunDeps): Promise<
     success(deps.io, `No labels available for ${tracker}.`);
     return;
   }
-  // One name per line — directly usable as `--label <name>` on create/edit.
   success(deps.io, labels.map((l) => asString(l.name)).filter(Boolean).join("\n"));
 }
 
-/**
- * `shipit issue statuses` — list the tracker's assignable statuses (planning#201).
- * Lets the agent pick a valid `shipit issue status <pointer> <state>` target
- * without first `view`-ing an issue (which only carries `availableStatuses`
- * per-issue). Read-only; status names are tracker-config metadata, printed plain
- * (no envelope), each annotated with its normalized type so the portable type
- * (`completed`, `started`, …) is visible alongside the native name.
- */
 export async function handleIssueStatuses(args: string[], deps: RunDeps): Promise<void> {
   const parsed = parseFlags(args, {
     values: { "--tracker": "tracker" },
@@ -574,8 +403,6 @@ export async function handleIssueStatuses(args: string[], deps: RunDeps): Promis
     success(deps.io, `No statuses available for ${tracker}.`);
     return;
   }
-  // `name (type)` per line — the native name feeds `issue status`, the type is
-  // the portable target that also works.
   const lines = statuses.map((s) => {
     const name = asString(s.name);
     const type = asString(s.type);
@@ -584,34 +411,10 @@ export async function handleIssueStatuses(args: string[], deps: RunDeps): Promis
   success(deps.io, lines.filter(Boolean).join("\n"));
 }
 
-/**
- * Caps on the untrusted free-text the shim emits (planning#87 / docs/176 §4). A giant
- * issue body or comment thread would flood the agent's context (and is a cheap
- * context-stuffing vector), so we clamp the enveloped free-text and mark the
- * envelope `(truncated)`. The metadata lines (identifier/status/url) are tiny and
- * tracker-derived, so only the reporter-authored prose is bounded.
- */
 const MAX_ISSUE_FREETEXT_CHARS = 24_000;
 const MAX_ISSUE_COMMENTS_CHARS = 24_000;
 
 
-/**
- * Render a single `TrackerIssue` as a stable human-readable block.
- *
- * planning#87 (docs/176): the reporter-authored free-text — the **title and body** —
- * is attacker-influenceable on a public tracker (anyone with an account can file
- * an issue), so it is wrapped in the planning#100 untrusted-input provenance envelope
- * (`shared/untrusted-input.ts`, `source: "issue"`) and treated as DATA, not
- * instructions. This is the agent's single text-ingestion point for issue
- * content; `--json` returns the same fields structurally instead. The framing is
- * defense-in-depth, never the barrier — the load-bearing controls are the
- * environment layer (egress allowlist planning#92, scoped tokens planning#81).
- *
- * The metadata lines (identifier, status, priority, assignee, url, available
- * statuses) are ShipIt/tracker-derived structured values, not reporter prose, so
- * they stay outside the envelope as ordinary output. `provenance` carries the
- * tracker + identifier so a steered action is at least attributable.
- */
 function renderIssue(issue: Record<string, unknown>, tracker: string): string {
   const status = issue.status as Record<string, unknown> | undefined;
   const assignee = issue.assignee as Record<string, unknown> | undefined;
@@ -627,8 +430,7 @@ function renderIssue(issue: Record<string, unknown>, tracker: string): string {
   if (available && available.length > 0) {
     meta.push(`statuses:  ${available.map((s) => s.name).filter(Boolean).join(", ")}`);
   }
-  // Title is reporter-authored free-text too — keep it inside the envelope, not
-  // on a trusted metadata line.
+  // Titles are untrusted user text, so include them in the envelope.
   const title = asString(issue.title);
   const description = asString(issue.description);
   const freeText = [`title: ${title}`, ...(description.trim() ? ["", description] : [])].join("\n");
@@ -642,16 +444,6 @@ function renderIssue(issue: Record<string, unknown>, tracker: string): string {
   return [meta.join("\n"), "", envelope].join("\n");
 }
 
-/**
- * Render an issue's comment thread for `shipit issue view --comments` (planning#139).
- * Oldest-first (the order the orchestrator returns), one block per comment with
- * an author · timestamp header.
- *
- * Comment bodies are attacker-controllable data, same as the issue body — and
- * **strictly lower trust** (docs/176 §3: anyone can comment, no maintainer
- * gate), so the whole thread is wrapped in the planning#100 untrusted-input envelope
- * with a provenance note that says so. Printed verbatim, never interpreted.
- */
 function renderComments(
   comments: Record<string, unknown>[],
   tracker: string,
@@ -675,13 +467,11 @@ function renderComments(
   });
 }
 
-/** Pull the display label off an issue's priority object, defaulting gracefully. */
 function priorityLabel(issue: Record<string, unknown>): string {
   const priority = issue.priority as Record<string, unknown> | undefined;
   return priority ? asString(priority.label) || "No priority" : "No priority";
 }
 
-/** Print the write provenance result (a do-then-surface confirmation). */
 function reportWrite(res: { status: number; body: Record<string, unknown> }, deps: RunDeps, json: boolean): void {
   if (json) {
     deps.io.stdout(`${JSON.stringify(res.body)}\n`);
@@ -693,25 +483,8 @@ function reportWrite(res: { status: number; body: Record<string, unknown> }, dep
   success(deps.io, lines.join("\n"));
 }
 
-/** Accepted `--color` shapes for the label verbs — a 6-digit hex, `#` optional. */
 const LABEL_COLOR_RE = /^#?[0-9a-fA-F]{6}$/;
 
-/**
- * `shipit issue label <create|edit>` — the two writes that target a tracker's
- * label set rather than an issue.
- *
- * `create` (planning#232) mints a label so `--label` can apply it; `edit` (planning#88)
- * corrects one that already exists with the wrong color, casing or description.
- * Both are do-then-surface, with a provenance card whose Undo reverses them
- * (delete-if-unused for a create, restore-the-prior-values for an edit), and
- * both mutate a tracker's CONFIG, so docs/248-declared-issue-trackers req 13's rule applies as it does
- * to `issue create`: `--tracker <name>` is required, there is no default.
- *
- * There is deliberately no `label delete`: undo would have to re-create the
- * label, which mints a fresh one that no issue carries — an Undo button that
- * lies. A label that genuinely must go is deleted in the tracker's own UI, which
- * warns how many issues it will strip it from.
- */
 export async function handleIssueLabel(args: string[], deps: RunDeps): Promise<void> {
   const sub = args[0];
   if (sub === "delete" || sub === "rm" || sub === "remove") {
@@ -764,9 +537,6 @@ export async function handleIssueLabel(args: string[], deps: RunDeps): Promise<v
       "shipit issue label edit: pass at least one of --new-name, --color or --description — --name only says which label to edit.",
     );
   }
-  // Writing a tracker's label set mutates its CONFIG, so like `issue create` it
-  // always names its destination (req 13's reasoning applies unchanged — a
-  // forgotten flag would repaint a label in this session's own repository).
   const destinations = await loadDestinations(deps);
   const target = requireCreateTarget(deps.io, `label ${sub}`, parsed.values.tracker, destinations);
   const tracker = target.tracker;
@@ -821,11 +591,7 @@ export async function handleIssueCreate(args: string[], deps: RunDeps): Promise<
   if (target.trackerName) payload.trackerName = target.trackerName;
   if (labels.length > 0) payload.labels = labels;
   if (priority !== undefined) payload.priority = priority;
-  // A new issue has no prior parent to clear, so only forward a parent to SET
-  // (a truthy key); `none`/detach (null) is a no-op on create.
   if (parent) payload.parent = parent;
-  // Opt-in (planning#232): unknown --label names are created before being applied.
-  // Without the flag they keep failing with the label-create hint.
   if (parsed.booleans.has("createMissingLabels")) payload.createMissingLabels = true;
   const res = await deps.call("POST", "/agent-ops/issue/create", payload, deps.env);
   if (res.status < 200 || res.status >= 300) {
@@ -835,17 +601,9 @@ export async function handleIssueCreate(args: string[], deps: RunDeps): Promise<
 }
 
 export async function handleIssueComment(args: string[], deps: RunDeps): Promise<void> {
-  // `comment` is a small verb group: bare `comment <ref>` posts, `comment edit`
-  // rewrites (planning#88) — the same shape `label create` uses. No pointer form is
-  // the bare word `edit`, so the two can't be confused. (`shipit issue edit`
-  // remains the ISSUE editor; this one edits a comment on it.)
   if (args[0] === "edit") {
     return handleIssueCommentEdit(args.slice(1), deps);
   }
-  // Deliberately absent, so say so rather than letting `delete` fall through and
-  // fail as an unrecognized pointer. A comment id is backend-global and a delete
-  // has no honest undo (re-posting mints a new id, author and timestamp), so it
-  // needs its own design pass — see docs/177.
   if (args[0] === "delete") {
     fail(
       deps.io,
@@ -879,19 +637,6 @@ export async function handleIssueComment(args: string[], deps: RunDeps): Promise
   reportWrite(res, deps, parsed.booleans.has("json"));
 }
 
-/**
- * `shipit issue comment edit <ref> --comment <id> -b BODY` — rewrite a comment
- * the agent posted (planning#88).
- *
- * The issue pointer is required alongside `--comment` rather than derived from
- * the comment id: a comment id is backend-global, so the issue is what names the
- * destination (docs/248's rule that every operation names what it acts on) and
- * what scopes the id. The orchestrator re-checks the pairing, and refuses a
- * comment ShipIt did not author.
- *
- * Both ids come from one read — `shipit issue view <ref> --comments --json`
- * returns each comment's `id` — so nothing extra is needed to address one.
- */
 export async function handleIssueCommentEdit(args: string[], deps: RunDeps): Promise<void> {
   const parsed = parseFlags(args, {
     values: {
@@ -978,9 +723,7 @@ export async function handleIssueEdit(args: string[], deps: RunDeps): Promise<vo
   if (body !== undefined) payload.body = body;
   if (labels.length > 0) payload.labels = labels;
   if (priority !== undefined) payload.priority = priority;
-  // `parent` may be a key (set) or null (detach); forward both, omit undefined.
   if (parent !== undefined) payload.parent = parent;
-  // Opt-in (planning#232), mirroring create.
   if (parsed.booleans.has("createMissingLabels")) payload.createMissingLabels = true;
   const res = await deps.call("POST", "/agent-ops/issue/edit", payload, deps.env);
   if (res.status < 200 || res.status >= 300) {

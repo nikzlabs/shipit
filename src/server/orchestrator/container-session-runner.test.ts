@@ -1,9 +1,3 @@
-/**
- * Unit coverage for the #1622 dependency-change auto-reinstall: the dep-input
- * match predicate and the cooldown/trailing-edge throttle. The full
- * reinstall→gated-service restart flow is exercised by the install-gate
- * integration test (CI-run; integration tests OOM a session container).
- */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import http from "node:http";
 import fs from "node:fs";
@@ -26,8 +20,6 @@ import {
 } from "../shared/sub-agent-run.js";
 
 function makeRunner(): ContainerSessionRunner {
-  // A non-placeholder workerUrl resolves `_workerReady` immediately; we never
-  // hit the network because `runInstall` is spied out in the throttle tests.
   return new ContainerSessionRunner({
     sessionId: "s1",
     sessionDir: "/tmp/s1",
@@ -36,13 +28,10 @@ function makeRunner(): ContainerSessionRunner {
   });
 }
 
-/** Reach the private members under test without widening the public surface. */
 function priv(runner: ContainerSessionRunner): {
   isDepInputChange(paths: string[]): boolean;
   maybeReinstallForDepChange(): void;
-  /** Stands in for the worker's SSE `install_done` / `install_error`. */
   signalInstallComplete(ok?: boolean, opts?: { unverified?: boolean }): void;
-  /** True once `runInstall` has armed the completion promise. */
   _installInFlight: boolean;
 } {
   return runner as unknown as {
@@ -56,7 +45,6 @@ function priv(runner: ContainerSessionRunner): {
 describe("ContainerSessionRunner — dependency-input change detection (#1622)", () => {
   it("matches only declared dep-input files, normalizing a ./ prefix", () => {
     const runner = makeRunner();
-    // No inputs set yet → never matches.
     expect(priv(runner).isDepInputChange(["package-lock.json"])).toBe(false);
 
     runner.setDepReinstallInputs(["npm ci"], ["package.json", "package-lock.json"]);
@@ -73,18 +61,7 @@ describe("ContainerSessionRunner — dependency-input change detection (#1622)",
   });
 });
 
-/**
- * Which changed files mean "the session's configuration moved".
- *
- * The conventional filenames are a guess at the project's compose file, and a
- * repo whose `compose:` block names something else (`deploy/compose.yml`) was
- * left out of it entirely: its own compose edits reached no reconcile at all,
- * and docs/262 req 20's plugin-service re-resolution — which hangs off this same
- * signal, because the project's service names seed the plugin name domain —
- * never ran against the edited file.
- */
 describe("ContainerSessionRunner — config-file change detection", () => {
-  /** Attach a manager stand-in without wiring its whole event surface. */
   function withComposeFile(runner: ContainerSessionRunner, file: string): void {
     (runner as unknown as { _serviceManager: unknown })._serviceManager = { composeFilePath: file };
   }
@@ -94,8 +71,6 @@ describe("ContainerSessionRunner — config-file change detection", () => {
 
   it("matches the conventional names before any manager exists", () => {
     const runner = makeRunner();
-    // This half must keep answering with no manager: a repo that ADDS a
-    // `compose:` block has none yet, and that edit is what creates one.
     expect(isConfig(runner, "shipit.yaml")).toBe(true);
     expect(isConfig(runner, "./docker-compose.yml")).toBe(true);
     expect(isConfig(runner, "compose.yaml")).toBe(true);
@@ -109,7 +84,6 @@ describe("ContainerSessionRunner — config-file change detection", () => {
 
     expect(isConfig(runner, "deploy/compose.yml")).toBe(true);
     expect(isConfig(runner, "./deploy/compose.yml")).toBe(true);
-    // Still not every YAML under that directory.
     expect(isConfig(runner, "deploy/other.yml")).toBe(false);
   });
 
@@ -129,19 +103,14 @@ describe("ContainerSessionRunner — dependency-change reinstall throttle (#1622
     runner.setDepReinstallInputs(["npm ci"], ["package.json", "package-lock.json"]);
     const install = vi.spyOn(runner, "runInstall").mockResolvedValue({ ok: true });
 
-    // First change → fires immediately.
     priv(runner).maybeReinstallForDepChange();
     expect(install).toHaveBeenCalledTimes(1);
-    // Positional: the second argument is the `onWorkerDecision` hook, which
-    // these tests are not about.
     expect(install.mock.lastCall?.[0]).toEqual(["npm ci"]);
 
-    // Second change within the cooldown → suppressed, one trailing pass armed.
     vi.advanceTimersByTime(5_000);
     priv(runner).maybeReinstallForDepChange();
     expect(install).toHaveBeenCalledTimes(1);
 
-    // After the cooldown elapses, exactly one trailing reinstall fires.
     await vi.advanceTimersByTimeAsync(30_000);
     expect(install).toHaveBeenCalledTimes(2);
   });
@@ -155,16 +124,6 @@ describe("ContainerSessionRunner — dependency-change reinstall throttle (#1622
   });
 });
 
-/**
- * nikzlabs/shipit#2429 — a tree the ORCHESTRATOR rewrote (sync/rebase, rollback,
- * reset onto the base) has to re-check its dependencies without waiting for an
- * in-container inotify event that may never arrive.
- *
- * The reported failure was a rebase that brought in two new npm dependencies:
- * the container kept the pre-rebase `node_modules`, the dev server started
- * fine, and every request then failed on `Failed to resolve import` while
- * `shipit service list` still reported the service as `running`.
- */
 describe("ContainerSessionRunner — dependency re-check after an orchestrator tree rewrite (#2429)", () => {
   beforeEach(() => vi.useFakeTimers());
   afterEach(() => vi.useRealTimers());
@@ -176,20 +135,12 @@ describe("ContainerSessionRunner — dependency re-check after an orchestrator t
 
     runner.notifyWorkspaceRewritten();
 
-    // Unconditional by design: the worker's content-keyed install marker is the
-    // comparison, so an unchanged lockfile is a millisecond skip inside
-    // `runInstall` rather than a path diff reimplemented here.
     expect(install).toHaveBeenCalledTimes(1);
-    // Positional: the second argument is the `onWorkerDecision` hook, which
-    // these tests are not about.
     expect(install.mock.lastCall?.[0]).toEqual(["npm ci"]);
   });
 
   it("stays out of sessions whose install is not content-keyable — but says so", () => {
     const runner = makeRunner();
-    // A codegen/shell install resolves to no dep inputs → a null deps hash that
-    // can never match the marker, so triggering here would reinstall from
-    // scratch on every sync. #1622's documented safe default is to do nothing.
     runner.setDepReinstallInputs(["./build.sh"], []);
     const install = vi.spyOn(runner, "runInstall").mockResolvedValue({ ok: true });
     const notices: string[] = [];
@@ -198,9 +149,6 @@ describe("ContainerSessionRunner — dependency re-check after an orchestrator t
     runner.notifyWorkspaceRewritten("rebase");
 
     expect(install).not.toHaveBeenCalled();
-    // Not re-running is a defensible choice; not SAYING so is the bug the issue
-    // reported. The gap is what the service list reads, and the notice is what
-    // reaches the transcript.
     expect(runner.dependencyGap).toEqual({
       reason: "not-content-keyed",
       rewrite: "rebase",
@@ -212,8 +160,6 @@ describe("ContainerSessionRunner — dependency re-check after an orchestrator t
 
   it("says nothing when the session declares no install at all", () => {
     const runner = makeRunner();
-    // Nothing to be out of step WITH: there is no dependency step, so a warning
-    // here would be a warning about a problem this session cannot have.
     runner.setDepReinstallInputs([], []);
     const notices: string[] = [];
     runner.onDependenciesUnverified = (m) => notices.push(m);
@@ -234,9 +180,6 @@ describe("ContainerSessionRunner — dependency re-check after an orchestrator t
     runner.notifyWorkspaceRewritten("git-pull");
     await vi.runAllTimersAsync();
 
-    // The gate latches `dependsOnInstall` services to `error`, which is loud —
-    // but it covers only gated services and never names the tree movement as
-    // the cause, which is the fact the reader is missing.
     expect(runner.dependencyGap).toMatchObject({ reason: "install-failed", rewrite: "git-pull" });
     expect(notices[0]).toContain("a git pull");
   });
@@ -250,8 +193,6 @@ describe("ContainerSessionRunner — dependency re-check after an orchestrator t
     await vi.runAllTimersAsync();
     expect(runner.dependencyGap).toMatchObject({ rewrite: "rebase" });
 
-    // A later edit-driven reinstall has nothing to do with that rebase, so
-    // attributing its failure to one would be an invented cause.
     await vi.advanceTimersByTimeAsync(30_000);
     priv(runner).maybeReinstallForDepChange();
     await vi.runAllTimersAsync();
@@ -265,8 +206,6 @@ describe("ContainerSessionRunner — dependency re-check after an orchestrator t
     const notices: string[] = [];
     runner.onDependenciesUnverified = (m) => notices.push(m);
 
-    // Two steps of the same flow are one fact; repeating it trains the reader
-    // to skip the notice.
     runner.notifyWorkspaceRewritten("rebase");
     runner.notifyWorkspaceRewritten("rebase");
     expect(notices).toHaveLength(1);
@@ -276,10 +215,6 @@ describe("ContainerSessionRunner — dependency re-check after an orchestrator t
   });
 
   it("clears the gap once an install proves the tree is installed", async () => {
-    // The worker's content-keyed marker matching IS the dependency check, so a
-    // `{ skipped: true }` answer is positive evidence — not an install that
-    // failed to happen. Driven through a real worker response rather than a
-    // `runInstall` spy, because the clear lives inside that funnel.
     vi.useRealTimers();
     const server = http.createServer((req, res) => {
       res.setHeader("content-type", "application/json");
@@ -304,14 +239,9 @@ describe("ContainerSessionRunner — dependency re-check after an orchestrator t
   });
 
   it("clears the gap when the install actually ran and succeeded", async () => {
-    // The sibling of the marker-skip case, and a DIFFERENT code path: the POST
-    // returns `{ started: true }` and the outcome arrives later over SSE, so the
-    // clear hangs off the awaited completion rather than the response.
     vi.useRealTimers();
     const server = http.createServer((req, res) => {
       res.setHeader("content-type", "application/json");
-      // `running: true` on the status probe keeps the reconnect resync from
-      // synthesizing its own completion, so this test drives the real one.
       res.end(JSON.stringify(req.url === "/install" ? { started: true } : { running: true }));
     });
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -325,8 +255,6 @@ describe("ContainerSessionRunner — dependency re-check after an orchestrator t
       expect(runner.dependencyGap).not.toBeNull();
 
       const install = runner.runInstall(["./build.sh"]);
-      // Stand in for the worker's `install_done`, which the SSE stream would
-      // normally deliver.
       await vi.waitFor(() => expect(priv(runner)._installInFlight).toBe(true));
       priv(runner).signalInstallComplete(true);
 
@@ -337,15 +265,6 @@ describe("ContainerSessionRunner — dependency re-check after an orchestrator t
     }
   });
 
-  /**
-   * `signalInstallComplete` defaults to `ok = true`, and two paths call it bare
-   * having observed no install at all: the reconnect resync's "not running and
-   * no last result" branch — whose own comment says it cannot tell success from
-   * failure — and `dispose()`, which only stops awaiters leaking. Both resolved
-   * the completion as a success, so `runInstall`'s `outcome.ok` test cleared the
-   * gap from nothing. `clearDependencyGap`'s docstring had asserted the opposite
-   * since #2429; the code never did it (found 2026-08-20).
-   */
   it("keeps the gap when the completion was synthesized rather than observed", async () => {
     vi.useRealTimers();
     const server = http.createServer((req, res) => {
@@ -364,7 +283,6 @@ describe("ContainerSessionRunner — dependency re-check after an orchestrator t
 
       const install = runner.runInstall(["./build.sh"]);
       await vi.waitFor(() => expect(priv(runner)._installInFlight).toBe(true));
-      // What dispose() and the no-last-result resync do.
       priv(runner).signalInstallComplete(true, { unverified: true });
 
       expect(await install).toEqual({ ok: true, unverified: true });
@@ -375,8 +293,6 @@ describe("ContainerSessionRunner — dependency re-check after an orchestrator t
   });
 
   it("keeps a gap that a FAILED install did not answer", async () => {
-    // The mirror of the test above, and the reason the clear cannot simply hang
-    // off "an install finished": a failed one is exactly when the gap is real.
     vi.useRealTimers();
     const server = http.createServer((req, res) => {
       res.setHeader("content-type", "application/json");
@@ -402,13 +318,6 @@ describe("ContainerSessionRunner — dependency re-check after an orchestrator t
     }
   });
 
-  /**
-   * The gap the runner exposes is what the turn-prompt builders read
-   * (`agent-execution.ts`, `dispatched-turn.ts`), so these check the join
-   * between the two: a rewrite has to leave the runner in a state that produces
-   * a usable `[System]` instruction, for either reason, without any surface
-   * having to be called first.
-   */
   it("exposes a gap the turn prompt can push at the agent, for a skipped install", () => {
     const runner = makeRunner();
     runner.setDepReinstallInputs(["./build.sh"], []);
@@ -417,8 +326,6 @@ describe("ContainerSessionRunner — dependency re-check after an orchestrator t
 
     const prefix = dependencyGapAgentPrefix(runner.dependencyGap);
     expect(prefix.startsWith("[System] ")).toBe(true);
-    // The declared commands, straight off the runner — the agent is told what to
-    // run rather than left to infer it from the repo.
     expect(prefix).toContain("./build.sh");
     expect(prefix).toContain("a sync onto the latest base");
   });
@@ -444,8 +351,6 @@ describe("ContainerSessionRunner — dependency re-check after an orchestrator t
 
     runner.notifyWorkspaceRewritten("rebase");
 
-    // The healthy session is the overwhelmingly common one, and it must not pay
-    // a paragraph of prompt for a problem it does not have.
     expect(runner.dependencyGap).toBeNull();
     expect(dependencyGapAgentPrefix(runner.dependencyGap)).toBe("");
   });
@@ -456,8 +361,6 @@ describe("ContainerSessionRunner — dependency re-check after an orchestrator t
     runner.setDepReinstallInputs(["./build.sh"], []);
     runner.onDependenciesUnverified = () => { throw new Error("sqlite is unhappy"); };
 
-    // The hook reaches SQLite and the viewer transports. Losing the state to a
-    // failure there would restore exactly the silence this removes.
     expect(() => runner.notifyWorkspaceRewritten("rebase")).not.toThrow();
     expect(runner.dependencyGap).toMatchObject({ reason: "not-content-keyed" });
   });
@@ -467,7 +370,6 @@ describe("ContainerSessionRunner — dependency re-check after an orchestrator t
     runner.setDepReinstallInputs(["npm ci"], ["package.json", "package-lock.json"]);
     const install = vi.spyOn(runner, "runInstall").mockResolvedValue({ ok: true });
 
-    // A rebase fires this, and the watcher may then also report the same write.
     runner.notifyWorkspaceRewritten();
     priv(runner).maybeReinstallForDepChange();
     expect(install).toHaveBeenCalledTimes(1);
@@ -488,25 +390,7 @@ describe("ContainerSessionRunner — dependency re-check after an orchestrator t
   });
 });
 
-/**
- * planning#2503 — closing the install gate is a `docker compose stop`: SIGTERM,
- * 10s grace, SIGKILL. Paying it for an install the content-keyed marker then
- * skips in milliseconds cost the preview an ~11s outage for nothing — and for a
- * repo whose service `command:` re-runs its own package manager over the same
- * bind mount, forever: the service's `npm install` rewrites the lockfile, the
- * watcher fires, the 30s cooldown paces it, and five production sessions were
- * observed looping at exactly 30.000s with no drift.
- *
- * So the bracket is applied only once the worker's own `POST /install` answer
- * says an install is really starting.
- */
 describe("ContainerSessionRunner — the reinstall bracket skips a no-op install", () => {
-  /**
-   * A worker whose `POST /install` answers `installResponse`, or fails with a
-   * 500 when it is `"error"`. `/install/status` reports `running: true` so the
-   * reconnect resync never synthesizes its own completion and each test drives
-   * the real one.
-   */
   async function withWorker(
     installResponse: Record<string, unknown> | "error",
     body: (url: string, paths: string[]) => Promise<void>,
@@ -536,17 +420,6 @@ describe("ContainerSessionRunner — the reinstall bracket skips a no-op install
     }
   }
 
-  /**
-   * A stand-in for `ServiceManager`'s install gate that models the REAL
-   * transition rules (`service-manager.ts` `setInstallRunning`): a same-value
-   * call is ignored and reports `false`, opening clears the failure latch,
-   * closing sets it. A recorder that just appended every call could not fail on
-   * a bracket that closes a gate another caller owns, which is half of what
-   * these tests check.
-   *
-   * `alreadyOpen` stands in for that other caller — a `setupServiceManager`
-   * install holding the gate while a dependency-change reinstall joins it.
-   */
   function attachGate(
     runner: ContainerSessionRunner,
     opts: { latchedFailed?: boolean; alreadyOpen?: boolean; throwOnOpen?: boolean } = {},
@@ -591,10 +464,7 @@ describe("ContainerSessionRunner — the reinstall bracket skips a no-op install
 
       await reinstall(runner);
 
-      // The whole point: no hold, so no teardown, so no ~11s outage.
       expect(gate.calls).toEqual([]);
-      // The install still ran — its skip branch is what clears a recorded
-      // DependencyGap and reports `install_status: skipped`.
       expect(paths).toContain("/install");
     });
   });
@@ -605,9 +475,6 @@ describe("ContainerSessionRunner — the reinstall bracket skips a no-op install
       const gate = attachGate(runner);
 
       const done = reinstall(runner);
-      // The hold lands on the worker's ANSWER, not on the install's outcome:
-      // it must be in place while the install is still running, exactly as the
-      // unconditional bracket used to be.
       await vi.waitFor(() => expect(gate.calls).toEqual([{ running: true }]));
       priv(runner).signalInstallComplete(true);
       await done;
@@ -626,16 +493,12 @@ describe("ContainerSessionRunner — the reinstall bracket skips a no-op install
       priv(runner).signalInstallComplete(false);
       await done;
 
-      // nikzlabs/shipit#2429 — both halves of the report, unchanged by this fix.
       expect(gate.calls).toEqual([{ running: true }, { running: false, failed: true }]);
       expect(runner.dependencyGap).toMatchObject({ reason: "install-failed" });
     });
   });
 
   it("fails closed when the worker never answers at all", async () => {
-    // No decision was observed, so "nothing started" is not a conclusion the
-    // caller may draw: an install may be running, and the services must be
-    // latched rather than left looking healthy over a tree nobody verified.
     await withWorker("error", async (url) => {
       const runner = makeDepRunner(url);
       const gate = attachGate(runner);
@@ -647,13 +510,6 @@ describe("ContainerSessionRunner — the reinstall bracket skips a no-op install
     });
   });
 
-  /**
-   * The gate latch is cleared ONLY by a false→true transition, and the docs/286
-   * watchdog deliberately refuses to recover a gate it can see failed. So
-   * "no install ran, therefore no transition" would strand the services of a
-   * session whose earlier install failed — for the rest of the session, with
-   * nothing left that could release them.
-   */
   it("still brackets a no-op install when the gate is latched from an earlier failure", async () => {
     await withWorker({ skipped: true }, async (url) => {
       const runner = makeDepRunner(url);
@@ -662,8 +518,6 @@ describe("ContainerSessionRunner — the reinstall bracket skips a no-op install
       await reinstall(runner);
 
       expect(gate.calls).toEqual([{ running: true }, { running: false, failed: false }]);
-      // And the services come back: the marker skip is precisely the evidence
-      // that the installed tree matches the checkout.
       expect(gate.failed()).toBe(false);
     });
   });
@@ -674,19 +528,11 @@ describe("ContainerSessionRunner — the reinstall bracket skips a no-op install
       runner.setWorkerUrl(url);
       runner.setDepReinstallInputs(["npm ci"], ["package.json", "package-lock.json"]);
 
-      // No ServiceManager: nothing to bracket, and nothing may throw for the
-      // want of one.
       await expect(reinstall(runner)).resolves.toBeUndefined();
       expect(paths).toContain("/install");
     });
   });
 
-  /**
-   * The same rule #2429 applies to `clearDependencyGap`: an `unverified`
-   * completion is synthesized from having observed nothing — a dispose, or a
-   * reconnect resync that found no last result — and resolves `ok: true` by
-   * default. It is not evidence, so it may not repair a failure latch.
-   */
   it("does not repair a failure latch on a completion that observed nothing", async () => {
     await withWorker({ started: true }, async (url) => {
       const runner = makeDepRunner(url);
@@ -694,22 +540,14 @@ describe("ContainerSessionRunner — the reinstall bracket skips a no-op install
 
       const done = reinstall(runner);
       await vi.waitFor(() => expect(gate.calls).toEqual([{ running: true }]));
-      // What dispose() and the no-last-result resync do.
       priv(runner).signalInstallComplete(true, { unverified: true });
       await done;
 
-      // The install DID start, so this bracket is the install's own and closes
-      // as one. What must not happen is a second, evidence-free repair — and a
-      // `runInstall` that returned unverified before ever reaching the worker
-      // must not open a bracket at all.
       expect(gate.calls).toEqual([{ running: true }, { running: false, failed: false }]);
     });
   });
 
   it("does not open a bracket at all for an unverified completion over a latched gate", async () => {
-    // The disposed-runner branch: `runInstall` returns `{ ok: true, unverified:
-    // true }` without the worker ever being asked. Restarting gated services on
-    // that would be a repair justified by nothing.
     const runner = makeRunner();
     const gate = attachGate(runner, { latchedFailed: true });
     runner.setDepReinstallInputs(["npm ci"], ["package.json", "package-lock.json"]);
@@ -722,9 +560,6 @@ describe("ContainerSessionRunner — the reinstall bracket skips a no-op install
   });
 
   it("does not close a gate another caller owns", async () => {
-    // A `setupServiceManager` install holds the gate; this reinstall joins it
-    // and its own latch repair finds `setInstallRunning(true)` a no-op. Reading
-    // that as "we opened it" would release someone else's bracket mid-install.
     await withWorker({ started: true }, async (url) => {
       const runner = makeDepRunner(url);
       const gate = attachGate(runner, { latchedFailed: true, alreadyOpen: true });
@@ -740,10 +575,6 @@ describe("ContainerSessionRunner — the reinstall bracket skips a no-op install
   });
 
   it("keeps the install outcome intact when the gate transition throws", async () => {
-    // `setInstallRunning` emits `service_status` to every viewer while it
-    // iterates. A throwing listener must not be classified as an install
-    // failure: the worker's install is still running and nothing about the tree
-    // is known yet.
     vi.spyOn(console, "error").mockImplementation(() => {});
     await withWorker({ started: true }, async (url) => {
       const runner = makeDepRunner(url);
@@ -751,7 +582,6 @@ describe("ContainerSessionRunner — the reinstall bracket skips a no-op install
 
       const done = reinstall(runner);
       await vi.waitFor(() => expect(priv(runner)._installInFlight).toBe(true));
-      // The install is still in flight rather than resolved false by the throw.
       priv(runner).signalInstallComplete(true);
       await done;
 
@@ -760,15 +590,10 @@ describe("ContainerSessionRunner — the reinstall bracket skips a no-op install
   });
 
   it("leaves the bracket to the owner when it joins an install already in flight", async () => {
-    // A joiner never sees the worker's answer — `runInstall` returns the shared
-    // completion promise before the POST. Bracketing anyway would double the
-    // teardown of an install whose owner already holds the gate.
     await withWorker({ started: true }, async (url) => {
       const runner = makeDepRunner(url);
       const owner = runner.runInstall(["npm ci"]);
       await vi.waitFor(() => expect(priv(runner)._installInFlight).toBe(true));
-      // Attached only now, so the owner's own (unrecorded) bracket is out of
-      // frame and every call below belongs to the joining reinstall.
       const gate = attachGate(runner);
 
       const done = reinstall(runner);
@@ -780,26 +605,9 @@ describe("ContainerSessionRunner — the reinstall bracket skips a no-op install
   });
 });
 
-/**
- * planning#280 — an in-flight sub-agent spawn must not vanish with its container.
- *
- * The incident: a backgrounded Codex consult was running when the user hit
- * Restart agent. `restartAgent` kills the PRIMARY agent on the worker, then
- * force-disposes the runner and destroys the container — nothing on that path
- * noticed the spawn. Its `/agent/spawn` request was sent `{ timeoutMs: 0 }`, so
- * it either hung forever on a half-open socket or rejected minutes later
- * through a runner that no longer had viewers. Either way the 15-minute review
- * produced no card, no error, and nothing for `shipit agent result` to read.
- *
- * `dispose()` is the chokepoint every force-teardown path funnels through
- * (Restart agent, Restart container, Rescue, archive, full reset), so cancelling
- * there covers all of them without patching each caller.
- */
 describe("ContainerSessionRunner — sub-agent spawn cancellation (planning#280)", () => {
   it("aborts an in-flight spawn on dispose, rejecting the awaiting caller", async () => {
     const runner = makeRunner();
-    // A silent worker: the request is accepted and never answered, which is
-    // exactly what a container about to be SIGKILLed looks like.
     const server = http.createServer(() => { /* never respond */ });
     const sockets: Socket[] = [];
     server.on("connection", (s) => sockets.push(s));
@@ -813,10 +621,8 @@ describe("ContainerSessionRunner — sub-agent spawn cancellation (planning#280)
       prompt: "review the PR",
       spawnId: "spawn-1",
       depth: 0,
-      // docs/261 req 7 — a spawn names the model it runs; the type requires it.
       model: "gpt-5.6-sol",
     });
-    // Let the request reach the socket before tearing down.
     await new Promise((r) => setTimeout(r, 20));
 
     runner.dispose({ force: true });
@@ -829,8 +635,6 @@ describe("ContainerSessionRunner — sub-agent spawn cancellation (planning#280)
   });
 
   it("defers a lifecycle-driven dispose while a spawn is in flight", async () => {
-    // A backgrounded consult outlives its turn, so `running` is false and idle
-    // cleanup would otherwise reap a perfectly healthy 30-minute review.
     const runner = makeRunner();
     const server = http.createServer(() => { /* never respond */ });
     const sockets: Socket[] = [];
@@ -845,10 +649,9 @@ describe("ContainerSessionRunner — sub-agent spawn cancellation (planning#280)
     });
     await new Promise((r) => setTimeout(r, 20));
 
-    runner.dispose(); // no force — idle cleanup
+    runner.dispose();
     expect(runner.disposed).toBe(false);
 
-    // An explicit teardown still proceeds, and cancels the spawn.
     runner.dispose({ force: true });
     expect(runner.disposed).toBe(true);
     await expect(spawn).rejects.toBeInstanceOf(WorkerAbortedError);
@@ -858,19 +661,12 @@ describe("ContainerSessionRunner — sub-agent spawn cancellation (planning#280)
   });
 
   it("bounds the transport so a worker that never answers can't hang forever", () => {
-    // The worker's own wall-clock cap stays authoritative; this is the backstop
-    // for when the worker is gone and its timer went with it.
     expect(SUB_AGENT_TRANSPORT_TIMEOUT_MS).toBeGreaterThan(DEFAULT_SUB_AGENT_TIMEOUT_MS);
     expect(Number.isFinite(SUB_AGENT_TRANSPORT_TIMEOUT_MS)).toBe(true);
   });
 
-  // 2026-08-21 incident — a same-harness spawn's isolated per-spawn HOME must
-  // reach the worker, or the CLI falls back to the session subtree the live
-  // primary reads and the isolation silently evaporates.
   it("forwards the spawn's homeDir to the worker body", async () => {
     const runner = makeRunner();
-    // A property, not a bare `let`: TS's control flow cannot see the
-    // server-callback assignment and would narrow a local to its initializer.
     const seen: { body?: Record<string, unknown> } = {};
     const server = http.createServer((req, res) => {
       const chunks: Buffer[] = [];
@@ -898,19 +694,11 @@ describe("ContainerSessionRunner — sub-agent spawn cancellation (planning#280)
     });
     expect(result.status).toBe("success");
     expect(seen.body?.homeDir).toBe("/credentials/sub-agent-homes/spawn-2");
-    // Keep-alive would hold `server.close()` open past the test timeout.
     for (const s of sockets) s.destroy();
     await new Promise<void>((resolve) => server.close(() => resolve()));
   });
 });
 
-/**
- * planning#246 — what the sidebar dot and the chat status line report as "busy
- * outside a turn". A consult is the case the CLI's background-task list cannot
- * see: it outlives its parent turn, needs no resident streaming process, and
- * Codex reports no background tasks at all — so the union is what every marker
- * surface has to read.
- */
 describe("ContainerSessionRunner — background-work marker", () => {
   it("names an in-flight consult, and stops naming it once the run settles", async () => {
     const runner = makeRunner();
@@ -928,11 +716,7 @@ describe("ContainerSessionRunner — background-work marker", () => {
     const spawn = runner.spawnSubAgent({
       agentId: "codex", prompt: "review", spawnId: "spawn-1", depth: 0, model: "gpt-5.6-sol",
     });
-    // Read WITHOUT awaiting: `runSubAgent` announces the marker the moment
-    // `spawnSubAgent` returns its promise, so the registration has to happen
-    // synchronously, ahead of the method's first `await`. An `await` inserted
-    // before it would make the consult invisible to the announcement — this
-    // assertion is what turns that into a red build.
+    // Assert before awaiting: registration must be synchronous.
     expect(runner.backgroundWorkDescriptions).toEqual(["Codex consult"]);
     expect(runner.subAgentSpawnsInFlight).toBe(1);
 
@@ -943,20 +727,7 @@ describe("ContainerSessionRunner — background-work marker", () => {
   });
 });
 
-/**
- * docs/113 — the orchestrator-shutdown dispose must not reach into the worker.
- *
- * Keeping the container alive across an update is only half of "running turns
- * survive it". An ordinary forced dispose posts `/agent/kill`, which clears the
- * worker's `turnActive` (`agent-controller.ts` → `endTurn()`), and
- * `reattachInFlightTurns()` (docs/240) adopts a turn only while that flag is
- * true — so the CLI died inside a healthy container, its transcript tail was
- * never persisted and its post-turn commit never ran. That is the second half
- * of the 2026-08-10 incident, and it survived the first fix (containers stopped
- * being destroyed, turns kept dying).
- */
 describe("ContainerSessionRunner — dispose({ preserveAgent }) (docs/113)", () => {
-  /** A worker that records every path it is called on. */
   async function startRecordingWorker(): Promise<{
     url: string;
     paths: string[];
@@ -983,7 +754,6 @@ describe("ContainerSessionRunner — dispose({ preserveAgent }) (docs/113)", () 
     };
   }
 
-  /** Install a minimal live agent proxy in the runner's slot. */
   function installAgent(runner: ContainerSessionRunner): void {
     runner.setAgent({ runToken: "run-token-1" } as never);
   }
@@ -996,12 +766,10 @@ describe("ContainerSessionRunner — dispose({ preserveAgent }) (docs/113)", () 
 
     runner.dispose({ force: true, preserveAgent: true });
 
-    // Give a fire-and-forget post every chance to land before asserting it didn't.
     await new Promise((r) => setTimeout(r, 50));
 
     expect(worker.paths).toEqual([]);
     expect(runner.disposed).toBe(true);
-    // The local proxy is still dropped — it cannot outlive this process.
     expect(runner.getAgent()).toBeNull();
 
     await worker.close();
@@ -1045,9 +813,6 @@ describe("ContainerSessionRunner — dispose({ preserveAgent }) (docs/113)", () 
     runner.dispose({ force: true, preserveAgent: true });
     await new Promise((r) => setTimeout(r, 50));
 
-    // Not aborted: the consult keeps running in the container and stays
-    // readable via `shipit agent result`. The awaiting promise dies with this
-    // process, which is the point — nothing is left to hang.
     expect(settled).toBe(false);
 
     for (const s of sockets) s.destroy();
@@ -1055,15 +820,9 @@ describe("ContainerSessionRunner — dispose({ preserveAgent }) (docs/113)", () 
   });
 });
 
-/**
- * docs/262 req 13 — the container half of plugin prepare has to reach the
- * Plugins card. The worker knows what it could not materialize; the card is
- * rendered from the orchestrator's snapshot, so the result has to travel.
- */
 describe("ContainerSessionRunner — plugin prepare results (docs/262 req 13)", () => {
   const SESSION = "plugin-prepare-session";
 
-  /** A worker whose `/plugins/prepare` answers with whatever `body` holds. */
   async function withWorker(
     body: { current: unknown },
     run: (runner: ContainerSessionRunner, messages: WsServerMessage[]) => Promise<void>,
@@ -1104,9 +863,6 @@ describe("ContainerSessionRunner — plugin prepare results (docs/262 req 13)", 
         expect(getPluginPrepareFailures(SESSION, "tools")).toEqual([
           "Skill `reqs/probe`: has no readable SKILL.md",
         ]);
-        // The settled hook already told the browser to refetch BEFORE this
-        // request went out, so without a second push the tab would render the
-        // snapshot that predates the answer.
         expect(messages.map((m) => m.type)).toContain("plugin_repos_updated");
       },
     );
@@ -1129,9 +885,6 @@ describe("ContainerSessionRunner — plugin prepare results (docs/262 req 13)", 
       await runner.preparePlugins();
       expect(getPluginPrepareFailures(SESSION, "tools")).toHaveLength(1);
 
-      // The plugin ships the skill and prepare runs again. The record is
-      // replaced wholesale, so the card stops reporting a problem that is gone
-      // — and the browser is told, because the set moved.
       body.current = { skillsFailed: [] };
       messages.length = 0;
       await runner.preparePlugins();
@@ -1154,8 +907,6 @@ describe("ContainerSessionRunner — plugin prepare results (docs/262 req 13)", 
       expect(getPluginPrepareFailures(SESSION, "tools")).toHaveLength(1);
       expect(getPluginPrepareFailures(SESSION, "images")).toEqual(["`/plugins/images` already exists"]);
 
-      // One repository is fixed, the other is not. The container pass is always
-      // whole-declaration, so one response describes both.
       body.current = { skillsFailed: [{ repo: "tools", skill: "reqs/probe", reason: "has no readable SKILL.md" }] };
       await runner.preparePlugins();
       expect(getPluginPrepareFailures(SESSION, "tools")).toHaveLength(1);
@@ -1171,9 +922,6 @@ describe("ContainerSessionRunner — plugin prepare results (docs/262 req 13)", 
         await runner.preparePlugins();
         expect(getPluginPrepareFailures(SESSION, "tools")).toHaveLength(1);
 
-        // The worker goes away. Nothing reached the container's filesystem, so
-        // what the last successful prepare left there is still what the agent
-        // sees: clearing the record would report health nobody observed.
         runner.setWorkerUrl("http://127.0.0.1:1");
         await runner.preparePlugins();
         expect(getPluginPrepareFailures(SESSION, "tools")).toEqual([
@@ -1192,13 +940,6 @@ describe("ContainerSessionRunner — an in-flight install counts as busy", () =>
   });
   afterEach(() => fs.rmSync(dir, { recursive: true, force: true }));
 
-  /**
-   * Disposing mid-install tears the container down while the worker is part-way
-   * through `npm ci`, and `dispose()` then resolves the completion `unverified`
-   * — correct, nothing was observed, but it leaves nothing downstream able to
-   * tell a half-installed tree from a finished one. The answer to "is this
-   * runner busy?" and the answer to "may it be disposed?" must not disagree.
-   */
   it("counts an in-flight install as busy, so idle reclaim cannot dispose it", async () => {
     const server = http.createServer((req, res) => {
       res.setHeader("content-type", "application/json");
@@ -1230,11 +971,6 @@ describe("ContainerSessionRunner — an in-flight install counts as busy", () =>
   });
 });
 
-/**
- * docs/153 — the token write-back watch outlives its turn on purpose (a
- * resident CLI rotates the shared OAuth token between turns), so the runner is
- * where it has to END. Two exits, because a process can leave two ways.
- */
 describe("ContainerSessionRunner — token write-back watch release (docs/153)", () => {
   let tmpDir: string;
 
@@ -1261,9 +997,6 @@ describe("ContainerSessionRunner — token write-back watch release (docs/153)",
   it("releases the watch when a non-streaming turn's process exits", () => {
     const runner = makeRunner();
     armWatch();
-    // The real lifecycle: `finalizeSessionAgentEnvironment` ran at
-    // `agent_result` with the process still installed (so it kept the watch),
-    // and the slot is not cleared until `done`.
     runner.setAgent(null);
     expect(hasTokenWriteBackWatch("s1")).toBe(false);
   });
@@ -1272,12 +1005,9 @@ describe("ContainerSessionRunner — token write-back watch release (docs/153)",
     const runner = makeRunner();
     runner.isStreamingActive = true;
     armWatch();
-    // A WS reload recreates the proxy without the worker's CLI going anywhere.
     runner.setAgent(null);
     expect(hasTokenWriteBackWatch("s1")).toBe(true);
 
-    // Its genuine exit is the flag clearing — every caller kills or releases
-    // the resident process first.
     runner.isStreamingActive = false;
     expect(hasTokenWriteBackWatch("s1")).toBe(false);
   });

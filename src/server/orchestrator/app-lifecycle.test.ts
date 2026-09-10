@@ -36,13 +36,6 @@ import type { AgentRegistry } from "../shared/agent-registry.js";
 import type { SessionContainerManager } from "./session-container.js";
 import { TEST_CREDENTIALS_DIR } from "./credentials-test-helpers.js";
 
-/**
- * These tests pin down the contract that protects running agents from being
- * killed by lifecycle events (idle cleanup, transient WebSocket disconnects).
- * The user's complaint was: "websocket should never affect how the server is
- * behaving" — the idle enforcer is the central enforcement point.
- */
-
 interface FakeContainer { sessionId: string }
 
 describe("resolveAutoStartDeps", () => {
@@ -64,14 +57,6 @@ describe("resolveAutoStartDeps", () => {
   });
 });
 
-/**
- * docs/284 — `destroy` and `destroyAgentContainer` are NOT interchangeable, and
- * the fake must not blur them. `destroy()` runs the full session teardown,
- * which sweeps every `shipit-parent-session` container — i.e. the Compose stack
- * tier 1 exists to preserve. A fake that accepted either would let a tier-1
- * test assert "the preview survived" while production tore it down, which is
- * exactly the bug this shape now catches.
- */
 function makeContainerManager(opts: {
   containers: FakeContainer[];
   standby?: Set<string>;
@@ -83,19 +68,10 @@ function makeContainerManager(opts: {
     getAll: () => opts.containers,
     isStandby: (sid: string) => standby.has(sid),
     destroy: opts.destroy ?? (async () => {}),
-    // Default to the agent-only teardown reusing the same spy, so the many
-    // tests that only care THAT a container went away keep reading naturally.
     destroyAgentContainer: opts.destroyAgentContainer ?? opts.destroy ?? (async () => {}),
   } as unknown as SessionContainerManager;
 }
 
-/**
- * docs/284 — reclaim is driven by memory, not a container count. `overBudget`
- * puts usage past the eviction threshold with NO per-session breakdown, which
- * is the conservative shape: the enforcer cannot tell what a reclaim freed, so
- * it stops after one. `overBudgetWith` supplies the breakdown, which is what
- * lets a single pass reclaim more than one session.
- */
 function overBudget(): DockerMemoryStats {
   return { usedBytes: 95, totalBytes: 100, budgetBytes: 100 };
 }
@@ -149,9 +125,6 @@ describe("createIdleEnforcer", () => {
   });
 
   it("docs/241: does not exempt an archived session carrying a stale reservation", () => {
-    // Admission stopped counting archived rows, so protecting a surviving
-    // container here would hold the RAM for a slot the books already handed to
-    // someone else — two reservations' worth of host, one on the books.
     const containers = [{ sessionId: "stale" }];
     const destroy = vi.fn().mockResolvedValue(undefined);
     const cm = makeContainerManager({ containers, destroy });
@@ -176,8 +149,6 @@ describe("createIdleEnforcer", () => {
     const destroy = vi.fn().mockResolvedValue(undefined);
     const cm = makeContainerManager({ containers, destroy });
 
-    // Create three runners, all with agents running. They should all be safe
-    // even though we pretend the limit is 1.
     for (const c of containers) {
       const r = registry.getOrCreate(c.sessionId, `/tmp/${c.sessionId}`, "claude" as AgentId);
       r.running = true;
@@ -195,7 +166,6 @@ describe("createIdleEnforcer", () => {
       expect(registry.get(c.sessionId)?.disposed).toBe(false);
     }
 
-    // Cleanup
     for (const c of containers) {
       registry.dispose(c.sessionId, { force: true });
     }
@@ -225,10 +195,6 @@ describe("createIdleEnforcer", () => {
     }
   });
 
-  // docs/235 — the reclaim guard reads `agentBusy`, not `running`. A session
-  // whose agent woke ITSELF (a background task finished and the CLI started a
-  // fresh turn), or that is merely holding pending background work between
-  // turns, has `running === false` and would otherwise be reaped mid-work.
   it("never disposes a runner holding outstanding background tasks", () => {
     const containers = [
       { sessionId: "a" }, { sessionId: "b" }, { sessionId: "c" },
@@ -238,7 +204,6 @@ describe("createIdleEnforcer", () => {
 
     for (const c of containers) {
       const r = registry.getOrCreate(c.sessionId, `/tmp/${c.sessionId}`, "claude" as AgentId);
-      // No viewer, no running turn — idle by the old definition.
       r.isStreamingActive = true;
       r.setBackgroundTasks([{ id: `task-${c.sessionId}`, description: "npm test" }]);
       expect(r.running).toBe(false);
@@ -267,7 +232,6 @@ describe("createIdleEnforcer", () => {
       r.isStreamingActive = true;
       r.setBackgroundTasks([{ id: "t1" }]);
     }
-    // The backend reports an empty list — drained.
     for (const c of containers) registry.get(c.sessionId)!.setBackgroundTasks([]);
 
     createIdleEnforcer({
@@ -279,9 +243,6 @@ describe("createIdleEnforcer", () => {
     expect(destroy).toHaveBeenCalledTimes(2);
   });
 
-  // The count is only meaningful while a streaming process is resident: the CLI
-  // reaps background work when it exits, so a stale list must not keep the
-  // container alive after the process is gone.
   it("ignores background tasks when no streaming process is resident", () => {
     const containers = [{ sessionId: "a" }];
     const destroy = vi.fn().mockResolvedValue(undefined);
@@ -301,15 +262,6 @@ describe("createIdleEnforcer", () => {
     expect(destroy).toHaveBeenCalledWith("a");
   });
 
-  // planning#298 — the prod incident: a BACKGROUNDED `shipit agent run` consult (the
-  // shape docs/236 tells agents to prefer) ends the primary turn, so `running`
-  // is false; and with no resident streaming process `backgroundTaskCount` reads
-  // 0 too. The session looked perfectly idle and its container was destroyed 12
-  // minutes into an `xhigh` Codex review, leaving only a `cancelled` card.
-  //
-  // The assertion that matters is `destroy` — the planning#280 runner-level guard
-  // already made `dispose` decline, and it declined AFTER `container.stop` had
-  // been issued, which is exactly why it didn't save the review.
   it("never destroys the container of a runner with an in-flight sub-agent spawn", async () => {
     const containers = [{ sessionId: "consulting" }, { sessionId: "idle" }];
     const destroy = vi.fn().mockResolvedValue(undefined);
@@ -318,8 +270,6 @@ describe("createIdleEnforcer", () => {
     const consulting = registry.getOrCreate("consulting", "/tmp/consulting", "claude" as AgentId);
     registry.getOrCreate("idle", "/tmp/idle", "claude" as AgentId);
 
-    // A fake adapter that never finishes — the spawn stays in flight until we
-    // let it complete below.
     const agent = Object.assign(new EventEmitter(), { run: vi.fn(), kill: vi.fn() });
     consulting.setSystemTurnDeps({
       agentFactory: () => agent as unknown as AgentProcess,
@@ -333,14 +283,9 @@ describe("createIdleEnforcer", () => {
       timeoutMs: 10 * 60_000,
     });
 
-    // No viewer ever attached (so `lastViewerDetachAt` is 0 and the grace period
-    // never applies — the incident's exact shape), and no turn is running.
     expect(consulting.running).toBe(false);
     expect(consulting.viewerCount).toBe(0);
     expect(consulting.subAgentSpawnsInFlight).toBe(1);
-    // Eligibility half of the fix: the scan must see this as busy. (The runner's
-    // own dispose guard is the second half — either alone would have saved the
-    // consult only if the enforcer stopped firing `destroy` unconditionally.)
     expect(consulting.agentBusy).toBe(true);
 
     const enforce = createIdleEnforcer({
@@ -352,10 +297,8 @@ describe("createIdleEnforcer", () => {
 
     expect(destroy).not.toHaveBeenCalledWith("consulting");
     expect(consulting.disposed).toBe(false);
-    // The genuinely-idle sibling is still reaped — the guard is narrow.
     expect(destroy).toHaveBeenCalledWith("idle");
 
-    // Once the consult lands, the session is reclaimable like any other.
     agent.emit("done");
     await spawned;
     expect(consulting.subAgentSpawnsInFlight).toBe(0);
@@ -365,18 +308,12 @@ describe("createIdleEnforcer", () => {
     expect(destroy).toHaveBeenCalledWith("consulting");
   });
 
-  // planning#298, second half — the enforcer used to fire `destroy` and `dispose`
-  // unconditionally in sequence, so a runner that declined disposal still lost
-  // its container (and was left pointed at a dead one). A declined dispose must
-  // now mean the container is left alone.
   it("leaves the container alone when the runner declines disposal", () => {
     const containers = [{ sessionId: "stubborn" }];
     const destroy = vi.fn().mockResolvedValue(undefined);
     const cm = makeContainerManager({ containers, destroy });
 
     const runner = registry.getOrCreate("stubborn", "/tmp/stubborn", "claude" as AgentId);
-    // Pass the enforcer's own gates but refuse at the runner level — the shape
-    // any future runner-owned guard takes.
     const declining = runner as unknown as { dispose: (opts?: { force?: boolean }) => void };
     const origDispose = declining.dispose.bind(runner);
     declining.dispose = (opts?: { force?: boolean }) => {
@@ -394,9 +331,6 @@ describe("createIdleEnforcer", () => {
     expect(runner.disposed).toBe(false);
   });
 
-  // docs/284 req 5 — the protection a fixed grace window used to give is now
-  // the budget itself: inside it, an idle session is never reclaimed, however
-  // long it has been idle. A just-detached viewer is the sharpest case.
   it("reclaims nothing while ShipIt is inside its memory budget", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
@@ -410,7 +344,7 @@ describe("createIdleEnforcer", () => {
     for (const c of containers) {
       const r = registry.getOrCreate(c.sessionId, `/tmp/${c.sessionId}`, "claude" as AgentId);
       r.attachViewer();
-      r.detachViewer(); // just disconnected — within grace period
+      r.detachViewer();
     }
 
     createIdleEnforcer({
@@ -425,9 +359,6 @@ describe("createIdleEnforcer", () => {
     }
   });
 
-  // docs/284 — longest-idle first, and it stops as soon as the shortfall is
-  // covered. The just-detached session survives because the two older ones
-  // freed enough, not because a timer exempted it.
   it("reclaims longest-idle first and stops once back inside the budget", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
@@ -438,7 +369,6 @@ describe("createIdleEnforcer", () => {
     const destroy = vi.fn().mockResolvedValue(undefined);
     const cm = makeContainerManager({ containers, destroy });
 
-    // old1 + old2 detached long ago, "fresh" detached just now.
     const old1 = registry.getOrCreate("old1", "/tmp/old1", "claude" as AgentId);
     old1.attachViewer(); old1.detachViewer();
     const old2 = registry.getOrCreate("old2", "/tmp/old2", "claude" as AgentId);
@@ -449,8 +379,6 @@ describe("createIdleEnforcer", () => {
     const fresh = registry.getOrCreate("fresh", "/tmp/fresh", "claude" as AgentId);
     fresh.attachViewer(); fresh.detachViewer();
 
-    // Overage is 10 bytes; old1 and old2 give back 6 each, so the pass is done
-    // before it reaches "fresh".
     createIdleEnforcer({
       containerManager: cm,
       runnerRegistry: registry,
@@ -478,19 +406,15 @@ describe("createIdleEnforcer", () => {
 
     vi.advanceTimersByTime(600_000);
 
-    // Patch registry.get to flip "a" back to running between scan and dispose.
-    // This simulates a viewer reattaching or a turn starting in the gap.
     let flipped = false;
     const origGet = registry.get.bind(registry);
     registry.get = (sid: string) => {
       const r = origGet(sid);
       if (r && sid === "a" && !flipped) {
         flipped = true;
-        // First call (scan) sees runner as detached idle.
         return r;
       }
       if (r && sid === "a" && flipped) {
-        // Second call (dispose) — pretend a new viewer attached.
         r.attachViewer();
       }
       return r;
@@ -502,19 +426,12 @@ describe("createIdleEnforcer", () => {
       getMemoryStats: overBudget,
     })();
 
-    // "a" should NOT be destroyed because it became active between scan and dispose.
     expect(destroy).not.toHaveBeenCalledWith("a");
-    // "b" remained idle the whole time → eligible. With maxIdle=0 and 2 idle
-    // candidates from scan, excess = 2, but "a" survived the TOCTOU re-check,
-    // so only "b" is destroyed.
     expect(destroy).toHaveBeenCalledWith("b");
 
     a.detachViewer();
   });
 
-  // ---- docs/284: the two-tier reclaim ladder ----
-
-  /** A ServiceManager registry stand-in: which sessions have a live stack. */
   function makeServiceHooks(live: string[]) {
     const set = new Set(live);
     const stop = vi.fn((sid: string) => { set.delete(sid); });
@@ -532,11 +449,6 @@ describe("createIdleEnforcer", () => {
   }
 
   describe("docs/284 reclaim ladder", () => {
-    // The assertion that matters is WHICH teardown ran. `destroy()` runs
-    // `cleanupSessionDockerResources`, which sweeps every
-    // `shipit-parent-session` container — the stack this tier promises to keep.
-    // Asserting only "a container went away" passes against that bug, which is
-    // how the first version of this test missed it.
     it("tier 1 stops the agent container and leaves the preview stack running", () => {
       vi.useFakeTimers();
       vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
@@ -560,10 +472,7 @@ describe("createIdleEnforcer", () => {
 
       expect(destroyAgentContainer).toHaveBeenCalledWith("a");
       expect(destroy).not.toHaveBeenCalled();
-      // The whole point: the stack was NOT torn down with the container.
       expect(services.stop).not.toHaveBeenCalled();
-      // `preserveComposeOnDispose` is what keeps the ServiceManager in the map
-      // and the preview URL routable (`preview-proxy.ts:resolveTarget`).
       expect((runner as unknown as { preserveComposeOnDispose: boolean }).preserveComposeOnDispose).toBe(true);
       expect(sseBroadcast).toHaveBeenCalledWith("session_status", expect.objectContaining({
         sessionId: "a",
@@ -572,8 +481,6 @@ describe("createIdleEnforcer", () => {
     });
 
     it("does not set the preserve flag for a session with no stack to keep", () => {
-      // Otherwise a session that never had services would strand an empty
-      // ServiceManager entry, and the NEXT dispose would skip its teardown.
       vi.useFakeTimers();
       vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
       const destroy = vi.fn().mockResolvedValue(undefined);
@@ -606,7 +513,6 @@ describe("createIdleEnforcer", () => {
       vi.advanceTimersByTime(600_000);
       const services = makeServiceHooks(["b"]);
 
-      // Overage is 10 and b's agent gives back 12 — the preview is not needed.
       createIdleEnforcer({
         containerManager: cm,
         runnerRegistry: registry,
@@ -637,11 +543,6 @@ describe("createIdleEnforcer", () => {
       expect(services.stop).toHaveBeenCalledWith("b");
     });
 
-    // `restartAgent` (services/recovery.ts) disposes the old runner with
-    // `preserveComposeOnDispose` and creates the replacement container
-    // asynchronously. For that window the session has a manager and no runner —
-    // indistinguishable from a preview-only session by shape alone — so tier 2
-    // keys off what THIS enforcer orphaned, not off "no runner".
     it("never stops a stack it did not orphan itself (agent restart in flight)", () => {
       const destroy = vi.fn().mockResolvedValue(undefined);
       const cm = makeContainerManager({ containers: [], destroy });
@@ -695,8 +596,6 @@ describe("createIdleEnforcer", () => {
       expect(services.stop).not.toHaveBeenCalled();
     });
 
-    // req 11 — the budget decides what is stopped, never what is refused. Over
-    // budget with everything in use is a warning, not a teardown.
     it("reclaims nothing when every session is in use", () => {
       const destroy = vi.fn().mockResolvedValue(undefined);
       const cm = makeContainerManager({ containers: [{ sessionId: "a" }], destroy });
@@ -715,10 +614,6 @@ describe("createIdleEnforcer", () => {
       expect(services.stop).not.toHaveBeenCalled();
     });
 
-    // A standby is a container the warm pool created speculatively — nobody
-    // has claimed it. Spending a user's session to protect a guess is backwards,
-    // so it goes before tier 1 does. (The enforcer used to skip standbys
-    // outright, which made sense when they were exempt from the count too.)
     it("gives back speculative standby capacity before touching a session", () => {
       vi.useFakeTimers();
       vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
@@ -733,7 +628,6 @@ describe("createIdleEnforcer", () => {
       idleRunner("mine");
       vi.advanceTimersByTime(600_000);
 
-      // The standby covers the whole shortfall, so the real session is spared.
       createIdleEnforcer({
         containerManager: cm,
         runnerRegistry: registry,
@@ -745,17 +639,6 @@ describe("createIdleEnforcer", () => {
       expect(registry.get("mine")?.disposed).toBe(false);
     });
 
-    /**
-     * docs/288 req 4 — a standby now owns a pre-started Compose stack too, and
-     * it is the most speculative thing on the machine: nobody has opened the
-     * session at all. Both halves must go, and both must be credited.
-     *
-     * The two failures this catches are opposite. Not stopping the manager
-     * leaves it polling Docker for a session whose container is being destroyed
-     * underneath it. Not crediting `serviceBytes` under-counts what came back,
-     * so the same pass evicts a REAL session for memory the standby had already
-     * given up — which is the one thing req 4 says this feature may never cost.
-     */
     it("takes the warm preview with the standby, and counts both", () => {
       vi.useFakeTimers();
       vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
@@ -771,9 +654,6 @@ describe("createIdleEnforcer", () => {
       idleRunner("mine");
       vi.advanceTimersByTime(600_000);
 
-      // The standby's agent container alone (2) does NOT cover the shortfall;
-      // its preview (18) does. Crediting only `agentBytes` would carry a stale
-      // shortfall into tier 1 and cost "mine" its container.
       createIdleEnforcer({
         containerManager: cm,
         runnerRegistry: registry,
@@ -786,15 +666,12 @@ describe("createIdleEnforcer", () => {
 
       expect(services.stop).toHaveBeenCalledWith("warm");
       expect(destroy).toHaveBeenCalledWith("warm");
-      // The real session is untouched — its container and its preview both.
       expect(destroyAgentContainer).not.toHaveBeenCalled();
       expect(services.stop).not.toHaveBeenCalledWith("mine");
       expect(registry.get("mine")?.disposed).toBe(false);
     });
 
     it("leaves a standby with no pre-started stack exactly as it was", () => {
-      // The negative half, so the test above cannot pass by always stopping:
-      // a standby that never got a preview must not have `stop` called for it.
       vi.useFakeTimers();
       vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
       const destroy = vi.fn().mockResolvedValue(undefined);
@@ -816,9 +693,6 @@ describe("createIdleEnforcer", () => {
       expect(services.stop).not.toHaveBeenCalled();
     });
 
-    // Two triggers can fire between two 10s polls (the 30s timer and the
-    // pressure-crossing edge). The second must not reclaim again for memory the
-    // first pass already gave back.
     it("does not act twice on the same memory snapshot", () => {
       vi.useFakeTimers();
       vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
@@ -845,8 +719,6 @@ describe("createIdleEnforcer", () => {
     });
   });
 
-  // --- Memory-pressure-aware behavior (feature 122) ---
-
   it("under eviction pressure: bypasses grace period and disposes idle runners with no viewer", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
@@ -856,9 +728,8 @@ describe("createIdleEnforcer", () => {
 
     const r = registry.getOrCreate("a", "/tmp/a", "claude" as AgentId);
     r.attachViewer();
-    r.detachViewer(); // just disconnected — normally protected by grace period
+    r.detachViewer();
 
-    // High pressure (95% used) — grace period must be bypassed.
     createIdleEnforcer({
       containerManager: cm,
       runnerRegistry: registry,
@@ -868,8 +739,6 @@ describe("createIdleEnforcer", () => {
     expect(destroy).toHaveBeenCalledWith("a");
   });
 
-  // docs/284 — with a per-session breakdown the enforcer keeps going until the
-  // shortfall is covered, so one pass can reclaim several sessions.
   it("keeps reclaiming until usage is back under the budget", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
@@ -884,7 +753,6 @@ describe("createIdleEnforcer", () => {
     }
     vi.advanceTimersByTime(600_000);
 
-    // Overage is 10; each session gives back 4, so all three are needed.
     createIdleEnforcer({
       containerManager: cm,
       runnerRegistry: registry,
@@ -914,7 +782,6 @@ describe("createIdleEnforcer", () => {
       getMemoryStats: () => ({ usedBytes: 0.99 * 16 * 1024 ** 3, totalBytes: 16 * 1024 ** 3 }),
     })();
 
-    // Even under extreme pressure, an active agent must not be killed.
     expect(destroy).not.toHaveBeenCalled();
     expect(registry.get("a")?.disposed).toBe(false);
 
@@ -950,7 +817,6 @@ describe("createIdleEnforcer", () => {
     const r = registry.getOrCreate("a", "/tmp/a", "claude" as AgentId);
     r.attachViewer(); r.detachViewer();
 
-    // 50% used — well below the 85% eviction threshold.
     createIdleEnforcer({
       containerManager: cm,
       runnerRegistry: registry,
@@ -968,12 +834,10 @@ describe("Runner dispose protection", () => {
     const r = registry.getOrCreate("s1", "/tmp/s1", "claude" as AgentId);
     r.running = true;
 
-    // Without force, dispose is a no-op while running.
     registry.dispose("s1");
     expect(r.disposed).toBe(false);
     expect(registry.get("s1")).toBe(r);
 
-    // With force, dispose proceeds.
     registry.dispose("s1", { force: true });
     expect(r.disposed).toBe(true);
   });
@@ -985,7 +849,6 @@ describe("Runner dispose protection", () => {
     r1.running = true;
     r2.running = true;
 
-    // Shutdown / full reset must tear everything down regardless of state.
     registry.disposeAll();
     expect(r1.disposed).toBe(true);
     expect(r2.disposed).toBe(true);
@@ -994,10 +857,6 @@ describe("Runner dispose protection", () => {
 
 describe("buildRunnerFactory — runtimeMode dispatch (feature 118)", () => {
   it("local mode returns a factory that produces in-process SessionRunner", () => {
-    // The seam: when RUNTIME_MODE=local, the factory must produce
-    // SessionRunner (not ContainerSessionRunner), even if the caller passes
-    // a non-null containerManager. Local mode is the harder branch — local
-    // wins even if some Docker environment is partially present.
     const factory = buildRunnerFactory({
       deps: {},
       containerManager: null,
@@ -1013,18 +872,10 @@ describe("buildRunnerFactory — runtimeMode dispatch (feature 118)", () => {
     });
     expect(runner).toBeInstanceOf(SessionRunner);
     expect(runner).not.toBeInstanceOf(ContainerSessionRunner);
-    // No `localAgentFactory` was passed, so there is nothing to bind an
-    // account-scoped spawn to and `createAgent` stays unset — the registry's
-    // onRunnerCreated wiring falls through to the process-level agentFactory.
     expect(runner.createAgent).toBeUndefined();
     runner.dispose({ force: true });
   });
 
-  // docs/251 — the `/agent-ops` host is per session and must not outlive its
-  // runner. This also covers the wiring itself: the teardown is a `once`
-  // listener in the factory, so a missing import or a renamed export shows up
-  // here rather than as an unhandled rejection during `disposeAll()` on the
-  // shutdown path (which is exactly how it surfaced in the dogfood).
   it("local mode closes the session's /agent-ops host when the runner is disposed", async () => {
     const factory = buildRunnerFactory({
       deps: {},
@@ -1042,7 +893,6 @@ describe("buildRunnerFactory — runtimeMode dispatch (feature 118)", () => {
     expect(localAgentOpsSpawnEnv("ops-teardown")).toEqual({ SHIPIT_AGENT_OPS_URL: url });
 
     runner.dispose({ force: true });
-    // Teardown is async behind the sync `disposed` emit.
     await vi.waitFor(() => {
       expect(localAgentOpsSpawnEnv("ops-teardown")).toEqual({});
     });
@@ -1050,10 +900,6 @@ describe("buildRunnerFactory — runtimeMode dispatch (feature 118)", () => {
     await resetLocalAgentOpsForTests();
   });
 
-  // docs/260 — local mode has no per-session credentials mount, so the account
-  // the TURN selected reaches the CLI only if the spawn is told which HOME to
-  // use. Env-prep stamps the selection on the runner (`residentRoute`) before
-  // the spawn resolves; `createAgent` reads that stamp lazily.
   describe("account-scoped local spawns (docs/260)", () => {
     const claudeSession = (sessionId: string): SessionInfo => ({
       id: sessionId,
@@ -1085,15 +931,11 @@ describe("buildRunnerFactory — runtimeMode dispatch (feature 118)", () => {
 
       const r1 = factory({ sessionId: "s1", sessionDir: "/tmp/s1", defaultAgentId: "claude" as AgentId });
       const r2 = factory({ sessionId: "s2", sessionDir: "/tmp/s2", defaultAgentId: "claude" as AgentId });
-      // What env-prep does immediately before each spawn (docs/260 §5).
       r1.residentRoute = { kind: "account", id: "acct-a" };
       r2.residentRoute = { kind: "account", id: "acct-b" };
       r1.createAgent!("claude");
       r2.createAgent!("claude");
 
-      // Two sessions routed to different accounts spawn against different
-      // credential roots — the whole point, and what a single process-global
-      // HOME could not express.
       expect(calls[0].home).toBe(`${TEST_CREDENTIALS_DIR}/provider-accounts/claude/acct-a`);
       expect(calls[1].home).toBe(`${TEST_CREDENTIALS_DIR}/provider-accounts/claude/acct-b`);
       r1.dispose({ force: true });
@@ -1106,8 +948,6 @@ describe("buildRunnerFactory — runtimeMode dispatch (feature 118)", () => {
 
       runner.residentRoute = { kind: "account", id: "acct-a" };
       runner.createAgent!("claude");
-      // The next turn's selection lands elsewhere; env-prep re-stamps and the
-      // retry spawns from the same runner.
       runner.residentRoute = { kind: "account", id: "acct-b" };
       runner.createAgent!("claude");
 
@@ -1119,9 +959,6 @@ describe("buildRunnerFactory — runtimeMode dispatch (feature 118)", () => {
     });
   });
 
-  // planning#300 — the second thing a local spawn has no worker to do for it. The
-  // adapter's MCP write and the MCP env both happen at `createAgent`, next to
-  // the account-scoped HOME above.
   describe("MCP on a local spawn (planning#300)", () => {
     function localFactoryWithMcp(opts: { credentialStore?: CredentialStore } = {}) {
       const written: (AgentMcpWriteContext | null)[] = [];
@@ -1158,7 +995,6 @@ describe("buildRunnerFactory — runtimeMode dispatch (feature 118)", () => {
       agent.run({ prompt: "hi", cwd: "/tmp/s1" });
 
       expect(written).toHaveLength(1);
-      // No bridge: its tools are transports to a worker local mode doesn't have.
       expect(written[0]?.shipitBridge).toBeNull();
       runner.dispose({ force: true });
     });
@@ -1173,8 +1009,6 @@ describe("buildRunnerFactory — runtimeMode dispatch (feature 118)", () => {
   });
 
   it("local mode wins over a non-null containerManager", () => {
-    // Defensive: we should never accidentally end up in containerized mode
-    // because some test left a containerManager around.
     const fakeContainerManager = {
       get: () => undefined,
     } as unknown as SessionContainerManager;
@@ -1197,9 +1031,6 @@ describe("buildRunnerFactory — runtimeMode dispatch (feature 118)", () => {
   });
 
   it("containerized mode without containerManager returns undefined (test-mode default)", () => {
-    // Without an injected runnerFactory and without a containerManager (the
-    // shape integration tests use), the factory is undefined so the registry
-    // falls back to its own default (in-process SessionRunner).
     const factory = buildRunnerFactory({
       deps: {},
       containerManager: null,
@@ -1210,9 +1041,6 @@ describe("buildRunnerFactory — runtimeMode dispatch (feature 118)", () => {
   });
 
   it("explicit deps.runnerFactory wins over runtimeMode", () => {
-    // Preserves the test-injection escape hatch — integration tests that
-    // hand-roll a runnerFactory (e.g. to produce stub runners) shouldn't
-    // have it overridden by the local-mode branch.
     const customRunner = new SessionRunner({
       sessionId: "x", sessionDir: "/tmp/x", defaultAgentId: "claude" as AgentId,
     });
@@ -1250,29 +1078,16 @@ describe("SessionRunner forced dispose with running agent", () => {
     const disposedSpy = vi.fn();
     runner.on("disposed", disposedSpy);
 
-    // Without force: skipped (verified in session-runner.test.ts as well).
     runner.dispose();
     expect(disposedSpy).not.toHaveBeenCalled();
     expect(fakeAgent.kill).not.toHaveBeenCalled();
 
-    // With force: proceeds.
     runner.dispose({ force: true });
     expect(disposedSpy).toHaveBeenCalled();
     expect(fakeAgent.kill).toHaveBeenCalled();
   });
 });
 
-/**
- * docs/088 Phase 2 follow-up — the startup-time MCP OAuth token refresh
- * sweep. The function is fire-and-forget from `scheduleStartupTasks`, but
- * exported separately so the wiring contract is testable without spinning
- * up the full orchestrator.
- *
- * Why these tests matter: without a startup refresh, a token that expired
- * while the orchestrator was down would be carried into the first agent
- * turn after restart and the worker would emit a `needs-auth` failure on
- * the next MCP tool call. The sweep closes that race.
- */
 describe("runMcpOAuthStartupRefresh (docs/088 Phase 2)", () => {
   let tmpDir: string;
   let store: CredentialStore;
@@ -1287,7 +1102,6 @@ describe("runMcpOAuthStartupRefresh (docs/088 Phase 2)", () => {
   });
 
   it("rotates a token within the safety margin via the injected fetch", async () => {
-    // Token is 1 minute from expiry — well inside the 5-minute safety margin.
     store.setMcpOAuthTokens("notion_oauth", {
       accessToken: "stale",
       refreshToken: "rt-1",
@@ -1311,7 +1125,6 @@ describe("runMcpOAuthStartupRefresh (docs/088 Phase 2)", () => {
   });
 
   it("leaves a fresh token untouched", async () => {
-    // 1 hour from expiry — safely outside the safety margin.
     store.setMcpOAuthTokens("notion_oauth", {
       accessToken: "fresh",
       refreshToken: "rt-1",
@@ -1325,7 +1138,6 @@ describe("runMcpOAuthStartupRefresh (docs/088 Phase 2)", () => {
 
     await runMcpOAuthStartupRefresh({ credentialStore: store, fetchImpl: fakeFetch });
 
-    // Token still in place, unchanged.
     expect(store.getMcpOAuthTokens("notion_oauth")?.accessToken).toBe("fresh");
   });
 
@@ -1334,19 +1146,16 @@ describe("runMcpOAuthStartupRefresh (docs/088 Phase 2)", () => {
       accessToken: "stale",
       refreshToken: "rt-1",
       clientId: "cid",
-      expiresAt: Date.now() - 1000, // already expired
+      expiresAt: Date.now() - 1000,
     });
 
     const fakeFetch: typeof fetch = async () =>
       new Response("upstream blew up", { status: 500 });
 
-    // Must not throw — the contract is "log and continue".
     await expect(
       runMcpOAuthStartupRefresh({ credentialStore: store, fetchImpl: fakeFetch }),
     ).resolves.toBeUndefined();
 
-    // Stale token left in place so the worker can still surface a meaningful
-    // `mcp_server_status` failure when the first MCP tool call lands.
     expect(store.getMcpOAuthTokens("notion_oauth")?.accessToken).toBe("stale");
   });
 
@@ -1360,16 +1169,6 @@ describe("runMcpOAuthStartupRefresh (docs/088 Phase 2)", () => {
   });
 });
 
-/**
- * Regression: every `ready` repo gets warmed at boot, going through the
- * standard warm-pool flow — which now unconditionally creates a standby
- * container + pre-installs (docs/148). The previous bug here was that
- * startup-tasks bypassed pre-install by passing no opts to a function whose
- * `{ withStandby?: boolean }` opt-in defaulted to `false`. The opt was
- * removed (every caller wanted it `true`), so the regression class is
- * structurally impossible — this test now just pins that every ready repo
- * is in fact warmed at boot.
- */
 describe("scheduleStartupTasks — warms every ready repo at boot (docs/148)", () => {
   it("calls warmSessionForRepo for stale, migrated, and fresh repos", async () => {
     const calls: string[] = [];
@@ -1377,12 +1176,8 @@ describe("scheduleStartupTasks — warms every ready repo at boot (docs/148)", (
       calls.push(url);
     };
 
-    // Three repos covering the three startup branches:
-    //  - `stale`: warm session id present but its workspace dir is missing → re-warm
-    //  - `migrated`: in `migratedRepoUrls` → re-warm
-    //  - `fresh`: ready repo with no warm session at all → re-warm
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-startup-warm-"));
-    const staleClonePath = path.join(tmpDir, "missing"); // intentionally absent
+    const staleClonePath = path.join(tmpDir, "missing");
 
     const repos = [
       { url: "stale", status: "ready" as const, warmSessionId: "warm-stale" },
@@ -1397,8 +1192,6 @@ describe("scheduleStartupTasks — warms every ready repo at boot (docs/148)", (
     const sessionManager = {
       get: (id: string) => id === "warm-stale" ? { workspaceDir: staleClonePath } : undefined,
       allIds: () => [],
-      // The boot sweep now DELETES a rejected warm row rather than only
-      // unpointing it, so a fake without this throws before the re-warm.
       delete: () => true,
     } as unknown as Parameters<typeof scheduleStartupTasks>[0]["sessionManager"];
 
@@ -1418,7 +1211,6 @@ describe("scheduleStartupTasks — warms every ready repo at boot (docs/148)", (
       ["migrated"],
     );
 
-    // The body is in a setTimeout(0); flush by waiting one tick.
     await new Promise((r) => setTimeout(r, 0));
     clearTimeout(timer);
 
@@ -1432,7 +1224,6 @@ describe("scheduleStartupTasks — warms every ready repo at boot (docs/148)", (
 describe("wireEventHandlers — account-scoped auth SSE (docs/150)", () => {
   let tmp: string;
 
-  /** Fake auth manager exposing a settable active account id. */
   class FakeAuthManager extends EventEmitter {
     activeAccountId: string | null = null;
     readonly loginId: LoginIntegrationId = "anthropic-oauth";
@@ -1502,7 +1293,6 @@ describe("wireEventHandlers — account-scoped auth SSE (docs/150)", () => {
     expect(rig.providerAccountManager.selectRouteForTurn("anthropic")?.id).toBe(rig.account.id);
   });
 
-  /** Write what a completed Claude sign-in leaves in an account's root. */
   function writeClaudeSignIn(
     providerAccountManager: ProviderAccountManager,
     accountId: string,
@@ -1517,9 +1307,6 @@ describe("wireEventHandlers — account-scoped auth SSE (docs/150)", () => {
     );
   }
 
-  // docs/150-multiple-provider-subscriptions req 22 — the refusal has to happen on this event, not later. Once
-  // the row goes `ready` it is selectable, and a duplicate is worst exactly
-  // when it is picked as the failover target for the account it duplicates.
   it("refuses a completion that resolves to an already-connected account", () => {
     const { providerAccountManager, mgr, events, account } = setup();
     writeClaudeSignIn(providerAccountManager, account.id, "uuid-1", "dev@example.com");
@@ -1531,7 +1318,6 @@ describe("wireEventHandlers — account-scoped auth SSE (docs/150)", () => {
     mgr.activeAccountId = second.id;
     mgr.emit("complete");
 
-    // No "connected" signal for the refused flow, and no second row.
     expect(events.filter((e) => e.event === "agent_auth_complete")).toHaveLength(1);
     expect(providerAccountManager.list("anthropic").map((a) => a.id)).toEqual([account.id]);
     const failed = events.filter((e) => e.event === "agent_auth_failed").at(-1);
@@ -1592,11 +1378,6 @@ describe("wireEventHandlers — account-scoped auth SSE (docs/150)", () => {
     });
   });
 
-  // docs/150-multiple-provider-subscriptions req 19 — a scope-less completion is no longer a supported flow
-  // (`AgentAuthManager.start` requires the account), so this is the defensive
-  // case: a manager emitting `complete` without a start. It must not fabricate
-  // an account, and must not re-run the default-account migration the singleton
-  // branch used to.
   it("a completion with no account scope marks nothing and invents no accountId", () => {
     const { mgr, events, providerAccountManager } = setup();
     const before = providerAccountManager.list("anthropic").map((a) => a.id);
@@ -1607,8 +1388,6 @@ describe("wireEventHandlers — account-scoped auth SSE (docs/150)", () => {
     const complete = events.find((e) => e.event === "agent_auth_complete");
     expect(complete?.data).toMatchObject({ loginId: "anthropic-oauth" });
     expect(complete?.data.accountId).toBeUndefined();
-    // No row invented (the old `else` called migrateDefaultAccounts here) and
-    // none flipped to ready off an unattributable completion.
     expect(providerAccountManager.list("anthropic").map((a) => a.id)).toEqual(before);
     expect(providerAccountManager.list("anthropic").every((a) => a.status !== "ready")).toBe(true);
   });
@@ -1624,7 +1403,6 @@ describe("markProviderAccountUnauthenticated", () => {
       providerAccountManager.setAccountStatus("anthropic", account.id, "ready");
       let hasRunnableModels = true;
       const refreshAuth = vi.fn((_harnessId?: AgentId) => { hasRunnableModels = false; });
-      // Same fan-out mirror as `buildRegistry` below.
       const refreshAuthForLogin = vi.fn((loginId: LoginIntegrationId) => {
         for (const harnessId of harnessesForLoginIntegration(loginId)) refreshAuth(harnessId);
       });
@@ -1658,10 +1436,6 @@ describe("markProviderAccountUnauthenticated", () => {
       });
 
       expect(providerAccountManager.get("anthropic", account.id)?.status).toBe("auth_failed");
-      // The status that changed belongs to the shared account route, so the
-      // refresh must go out per LOGIN. Asserting the effect alone
-      // (`refreshAuth("claude")`) would also pass a revert to the old
-      // single-harness call, since the fan-out reaches Claude either way.
       expect(refreshAuthForLogin).toHaveBeenCalledWith("anthropic-oauth");
       expect(refreshAuth).toHaveBeenCalledWith("claude");
       expect(events.find((e) => e.event === "provider_accounts")?.data.accounts)
@@ -1678,9 +1452,6 @@ describe("markProviderAccountReauthenticated", () => {
   function buildRegistry(initialAuth: boolean): { agentRegistry: AgentRegistry; refreshAuth: ReturnType<typeof vi.fn>; refreshAuthForLogin: ReturnType<typeof vi.fn>; getAuth: () => boolean } {
     let hasRunnableModels = initialAuth;
     const refreshAuth = vi.fn((_harnessId?: AgentId) => { hasRunnableModels = true; });
-    // Mirrors the real registry: a login refresh fans out to every harness the
-    // catalogue says that login serves. Keeping the real mapping here is what
-    // makes the `refreshAuth` assertions below actually exercise the fan-out.
     const refreshAuthForLogin = vi.fn((loginId: LoginIntegrationId) => {
       for (const harnessId of harnessesForLoginIntegration(loginId)) refreshAuth(harnessId);
     });
@@ -1725,7 +1496,6 @@ describe("markProviderAccountReauthenticated", () => {
       });
 
       expect(providerAccountManager.get("anthropic", account.id)?.status).toBe("ready");
-      // See the sibling test: assert the fan-out was chosen, not just its effect.
       expect(refreshAuthForLogin).toHaveBeenCalledWith("anthropic-oauth");
       expect(refreshAuth).toHaveBeenCalledWith("claude");
       expect(events.find((e) => e.event === "provider_accounts")?.data.accounts)
@@ -1757,7 +1527,6 @@ describe("markProviderAccountReauthenticated", () => {
       });
 
       expect(refreshAuth).not.toHaveBeenCalled();
-      // Idempotent means no refresh at all — neither the fan-out nor a direct one.
       expect(refreshAuthForLogin).not.toHaveBeenCalled();
       expect(events).toEqual([]);
     } finally {
@@ -1766,26 +1535,9 @@ describe("markProviderAccountReauthenticated", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// A container that comes up after its runner was disposed (follow-up to PR #2585)
-// ---------------------------------------------------------------------------
-//
-// `createContainerForRunner` runs fire-and-forget, so a session can be archived
-// while its container is still being built. The failure path always checked
-// `runner.disposed`; the SUCCESS path did not, so a container that finished
-// after the archive was wired to a disposed runner — opening an SSE stream and
-// starting worker resources for a session nobody owns.
-
 describe("buildRunnerFactory — container ready after the runner was disposed", () => {
   const SESSION = "disposed-mid-create";
 
-  /**
-   * Drive the fresh-create path with a `create()` the test releases by hand,
-   * disposing the runner while it is in flight.
-   *
-   * Spying on the prototype rather than the instance because the factory
-   * constructs the runner itself — the call we must not make happens inside it.
-   */
   async function containerReadyAfterDispose(opts: { disposeBeforeRelease: boolean }) {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-dispose-race-"));
     fs.mkdirSync(path.join(dir, "workspace"), { recursive: true });
@@ -1805,8 +1557,6 @@ describe("buildRunnerFactory — container ready after the runner was disposed",
       prepareOverlaySpecs: async () => [],
       buildConfigForWorkspace: (c: unknown) => c,
       recordCreateError: () => {},
-      // The last call on BOTH post-create branches — the wired one and the
-      // disposed-runner one — so it settles the test either way.
       clearCreateError: () => { markSettled(); },
       destroy: async () => {},
       create: async () => {
@@ -1836,12 +1586,7 @@ describe("buildRunnerFactory — container ready after the runner was disposed",
     await atCreate;
     if (opts.disposeBeforeRelease) runner.dispose({ force: true });
     release();
-    // Settle on a signal the PRODUCTION code emits — `clearCreateError` is the
-    // last call on both post-create branches. Waiting on `runner.disposed`
-    // instead would be satisfied the instant we disposed it, and a sleep after
-    // that only hides how long the continuation really took: on a slow worker
-    // the spy would be restored before a late `setWorkerUrl` ever landed, and
-    // the test would pass without exercising the guard at all.
+    // Wait for the create continuation, not disposal, before checking the spy.
     await createSettled;
 
     const calls = setWorkerUrl.mock.calls.length;
@@ -1858,21 +1603,9 @@ describe("buildRunnerFactory — container ready after the runner was disposed",
   });
 
   it("still wires it when the runner is alive", async () => {
-    // The other half — without this the first test passes if the wiring broke
-    // outright, which would be a far worse bug than the one it guards.
     expect(await containerReadyAfterDispose({ disposeBeforeRelease: false })).toBe(1);
   });
 });
-
-// ---------------------------------------------------------------------------
-// A teardown during the create PREFLIGHT (review of PR #2587)
-// ---------------------------------------------------------------------------
-//
-// `attemptContainerCreate` validates the workspace and prepares overlay specs
-// before it calls `mgr.create()`. A teardown in there is already counted by the
-// time `createContainer` looks at the counter, so it reads as "no teardown
-// since we began" and the create runs to completion for an archived session.
-// The snapshot is therefore taken by the CALLER, before its own preflight.
 
 describe("buildRunnerFactory — teardown during the create preflight", () => {
   const SESSION = "archived-during-preflight";
@@ -1886,8 +1619,6 @@ describe("buildRunnerFactory — teardown during the create preflight", () => {
     let reachedPreflight!: () => void;
     const atPreflight = new Promise<void>((resolve) => { reachedPreflight = resolve; });
 
-    // A real counter, so the test measures the actual snapshot-vs-compare
-    // relationship rather than a value the fake made up.
     let epoch = 0;
     let seenIntentEpoch: number | undefined;
 
@@ -1896,7 +1627,6 @@ describe("buildRunnerFactory — teardown during the create preflight", () => {
       teardownEpoch: () => epoch,
       destroy: async () => { epoch += 1; },
       preparePnpmStore: () => undefined,
-      // The preflight await the teardown lands inside.
       prepareOverlaySpecs: async () => { reachedPreflight(); await paused; return []; },
       buildConfigForWorkspace: (c: unknown) => c,
       recordCreateError: () => {},
@@ -1915,8 +1645,7 @@ describe("buildRunnerFactory — teardown during the create preflight", () => {
         deps: {},
         containerManager,
         credentialsDir: TEST_CREDENTIALS_DIR,
-        // Load-bearing: the overlay preflight runs only for a session the
-        // manager knows about, so without this there is no preflight to race.
+        // Overlay preflight requires a known session.
         sessionManager: { get: () => ({ id: SESSION }) } as unknown as SessionManager,
         runtimeMode: "containerized",
       });
@@ -1927,13 +1656,10 @@ describe("buildRunnerFactory — teardown during the create preflight", () => {
       });
 
       await atPreflight;
-      await containerManager.destroy(SESSION); // the archive
+      await containerManager.destroy(SESSION);
       release();
       await vi.waitFor(() => { expect(seenIntentEpoch).toBeDefined(); });
 
-      // 0, the value from before the archive — so `createContainer`'s compare
-      // against the now-bumped counter sees the teardown and cancels. Passing
-      // the post-preflight value (1) is what let the create through.
       expect(seenIntentEpoch).toBe(0);
       expect(epoch).toBe(1);
 

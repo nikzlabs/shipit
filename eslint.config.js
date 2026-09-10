@@ -3,11 +3,7 @@ import tseslint from "typescript-eslint";
 import globals from "globals";
 import reactHooks from "eslint-plugin-react-hooks";
 
-// ── Shared `no-restricted-syntax` entries ──────────────────────────────────
-// Factored out so per-file-scope blocks (client, per-agent folders, tests)
-// can compose the right subset without copy-pasting selectors. ESLint flat
-// config replaces the array wholesale when a later block re-declares the
-// rule, so anything that wants to keep these has to spread them in.
+// Later flat-config blocks replace rule arrays; spread these to retain them.
 const RESTRICTED_SYNTAX_BASE = [
   {
     selector: "CallExpression > MemberExpression[property.name='then']",
@@ -24,23 +20,6 @@ const RESTRICTED_USEEFFECT = {
   message: "useEffect is restricted. Prefer event handlers, derived state, useMemo, or key props. If useEffect is genuinely needed (external system sync, browser API subscription, cleanup), add eslint-disable-next-line with a justification.",
 };
 
-// ── Agent abstraction leak guard (docs/155) ────────────────────────────────
-// Flags inline `agentId === "claude"` / `agentId === "codex"` (and the
-// MemberExpression form `something.agentId === "claude"`) outside the
-// per-agent folders. The whole point of the per-agent layout is that a
-// new backend is one folder to add — every leaked dispatch is a place a
-// future Cursor/Gemini contributor would have to remember to update.
-//
-// Scoped narrowly to identifiers whose name ends in `agentId`/`AgentId`
-// so it doesn't fire on unrelated literal comparisons (DB row reads
-// where the field is `agent_id`, request query strings named `agent`,
-// runtime input validators where the variable is `saved`/`provider`).
-//
-// Exemptions: per-agent folders (`agents/<id>/`) own the per-agent
-// dispatch by definition; tests are allowed to assert per-agent
-// behavior directly. Legitimate runtime exceptions (input validation,
-// marketplace v1 gate, CLI-shape recovery paths) add an inline
-// `eslint-disable-next-line` with a one-line rationale.
 const RESTRICTED_AGENT_ID_LEAK = [
   {
     selector: "BinaryExpression[operator=/^[!=]==$/][left.type='Identifier'][left.name=/[Aa]gentId$/][right.type='Literal'][right.value=/^(claude|codex|opencode|grok)$/]",
@@ -67,63 +46,47 @@ export default tseslint.config(
       },
     },
     rules: {
-      // ── TypeScript strict rules ──────────────────────────────────────────
       "@typescript-eslint/no-deprecated": "error",
       "@typescript-eslint/no-unused-vars": [
         "error",
         { argsIgnorePattern: "^_", varsIgnorePattern: "^_" },
       ],
-      // Allow void expressions in arrow shorthand (common fire-and-forget pattern)
       "@typescript-eslint/no-confusing-void-expression": [
         "error",
         { ignoreArrowShorthand: true },
       ],
-      // Allow numbers and booleans in template literals
       "@typescript-eslint/restrict-template-expressions": [
         "error",
         { allowNumber: true, allowBoolean: true },
       ],
-      // Allow non-null assertions — the codebase uses them intentionally
       "@typescript-eslint/no-non-null-assertion": "off",
-      // Async functions without await are common for interface conformance
       "@typescript-eslint/require-await": "off",
-      // Promise executor returns are common in this codebase (resolve in callbacks)
       "no-promise-executor-return": "off",
-      // Allow empty functions (common for no-op callbacks and mocking)
       "@typescript-eslint/no-empty-function": "off",
-      // Allow || for string/number defaults (nullish coalescing is safer but || is fine for these)
       "@typescript-eslint/prefer-nullish-coalescing": [
         "error",
         { ignorePrimitives: { string: true, number: true, boolean: true } },
       ],
-      // Unnecessary conditions: too noisy with defensive checks
       "@typescript-eslint/no-unnecessary-condition": "off",
-      // Promise-in-void-return: too noisy with event handlers and callbacks
       "@typescript-eslint/no-misused-promises": [
         "error",
         { checksVoidReturn: false },
       ],
-      // Prevent `any` contamination — all previously-warned cases are now fixed
       "@typescript-eslint/no-unsafe-assignment": "error",
       "@typescript-eslint/no-unsafe-member-access": "error",
       "@typescript-eslint/no-unsafe-call": "error",
       "@typescript-eslint/no-unsafe-argument": "error",
       "@typescript-eslint/no-unsafe-return": "error",
-      // Catch variables must be typed as unknown
       "@typescript-eslint/use-unknown-in-catch-callback-variable": "error",
 
-      // ── Built-in ESLint rules ────────────────────────────────────────────
-      // Error prevention
       "no-constant-binary-expression": "error",
       "no-constructor-return": "error",
-      // no-duplicate-imports is off — it conflicts with separate `import type` statements
       "no-new-native-nonconstructor": "error",
       "no-self-compare": "error",
       "no-template-curly-in-string": "error",
       "no-unmodified-loop-condition": "error",
       "no-unreachable-loop": "error",
       "no-unused-private-class-members": "error",
-      // Best practices
       "curly": ["error", "multi-line"],
       "default-case-last": "error",
       "eqeqeq": ["error", "always"],
@@ -164,7 +127,6 @@ export default tseslint.config(
       "symbol-description": "error",
       "yoda": "error",
 
-      // ── Custom restrictions ──────────────────────────────────────────────
       "no-restricted-syntax": [
         "error",
         ...RESTRICTED_SYNTAX_BASE,
@@ -172,11 +134,6 @@ export default tseslint.config(
       ],
     },
   },
-  // ── useEffect restriction (client code) ────────────────────────────────
-  // useEffect is a synchronization tool for external systems. Most state
-  // derivation, event handling, and prop-change reactions should use
-  // inline computation, event handlers, useMemo, or key props instead.
-  // Add an eslint-disable-next-line with a justification for each valid usage.
   {
     files: ["src/client/**/*.ts", "src/client/**/*.tsx"],
     rules: {
@@ -188,12 +145,6 @@ export default tseslint.config(
             importNames: ["useEffect"],
             message: "useEffect is restricted. Prefer event handlers, derived state, useMemo, or key props. If useEffect is genuinely needed (external system sync, browser API subscription, cleanup), add eslint-disable-next-line with a justification.",
           }, {
-            // The root entry point registers all 192 grammars — ~1 MB of the
-            // main chunk, and a `highlightAuto` that runs every one of them
-            // (52% of a production CPU trace). `syntax-highlight.ts` builds on
-            // `highlight.js/lib/core` with a bounded set; a second importer
-            // here would silently pull the full build back in and no test
-            // would notice, because the output is identical.
             name: "highlight.js",
             message: "Import { highlightCode, languageFromPath } from src/client/syntax-highlight.ts instead. The root highlight.js entry bundles all 192 language grammars.",
           }],
@@ -207,45 +158,15 @@ export default tseslint.config(
       ],
     },
   },
-  // ── React hooks rules (client code) ────────────────────────────────────
-  // `rules-of-hooks` catches the bug class that is invisible to review and to
-  // TypeScript: a hook behind a condition or an early return changes the hook
-  // count between renders, so React pairs up the wrong state. It has never
-  // been enforced here, and a real instance (`accountId ? useStore(…) : …` in
-  // the Services panel) reached a diff before a human caught it by eye.
-  //
-  // Both rules are `error` on purpose. `npm run lint` has no `--max-warnings`
-  // budget, so a `warn` here would never fail CI — it would read as
-  // enforcement while changing nothing, which is the state this block exists
-  // to end.
-  //
-  // Deliberately NOT the plugin's `recommended` preset: since v6 that preset
-  // also turns on the React Compiler rules (`refs`, `set-state-in-effect`,
-  // `purity`, `immutability`, …). Those enforce readiness for a compiler this
-  // project does not run — there is no `babel-plugin-react-compiler` in the
-  // Vite config — and they flag ~110 sites that are correct as written under
-  // stock React. Adopting the compiler is its own migration; enabling its
-  // rules first would only add suppressions. So the two classic rules are
-  // listed explicitly, and the preset is left alone.
+  // Avoid the recommended preset: it also enforces React Compiler rules.
   {
     files: ["src/client/**/*.ts", "src/client/**/*.tsx"],
     plugins: { "react-hooks": reactHooks },
     rules: {
       "react-hooks/rules-of-hooks": "error",
-      // The codebase already restricts `useEffect` and requires a written
-      // justification on each one, so most deliberate dep-array narrowing is
-      // documented in prose right above the effect. Where that is the case
-      // the existing disable comment names this rule too — which turns the
-      // prose into a machine-checked assertion, so a NEW effect that drops a
-      // dep by accident fails CI instead of passing silently.
       "react-hooks/exhaustive-deps": "error",
     },
   },
-  // ── Layer boundary enforcement ──────────────────────────────────────────
-  // orchestrator/ and session/ must not import from each other (even type
-  // imports). Shared types belong in shared/types/. Integration tests are
-  // excluded because they deliberately cross the boundary to test the
-  // session-worker IPC layer.
   {
     files: ["src/server/orchestrator/**/*.ts"],
     ignores: ["src/server/orchestrator/integration_tests/**"],
@@ -275,11 +196,6 @@ export default tseslint.config(
       ],
     },
   },
-  // ── Per-agent folder exemption (docs/155 hair-leak guard) ───────────────
-  // The whole point of `agents/<id>/` folders is that they own their per-CLI
-  // dispatch — `agentId === "claude"` is exactly the kind of branch we
-  // expect inside `agents/claude/`. Drop the leak guard for these paths so
-  // the rule fires only when per-agent logic leaks back out into shared code.
   {
     files: [
       "src/server/session/agents/claude/**",
@@ -301,22 +217,14 @@ export default tseslint.config(
   {
     files: ["**/*.test.ts", "**/*.test.tsx"],
     rules: {
-      // Tests often use any for mocking
       "@typescript-eslint/no-explicit-any": "off",
-      // Tests use unsafe operations extensively for mocking
       "@typescript-eslint/no-unsafe-assignment": "off",
       "@typescript-eslint/no-unsafe-member-access": "off",
       "@typescript-eslint/no-unsafe-call": "off",
       "@typescript-eslint/no-unsafe-argument": "off",
       "@typescript-eslint/no-unsafe-return": "off",
-      // Tests may have unbound methods for mocking
       "@typescript-eslint/unbound-method": "off",
-      // Test assertions on possibly-undefined are fine
       "@typescript-eslint/no-unnecessary-type-assertion": "off",
-      // Tests assert per-agent behavior directly (parameterized fixtures,
-      // SSE-event filtering by `agentId`) — that's not a leak, that's
-      // intentional. Drop the docs/155 leak guard for tests but keep the
-      // base restrictions (.then(), TSImportType) and useEffect for clients.
       "no-restricted-syntax": [
         "error",
         ...RESTRICTED_SYNTAX_BASE,
@@ -324,21 +232,7 @@ export default tseslint.config(
       ],
     },
   },
-  // ── planning#384: orchestrator-side git must not run repository hooks ─────
-  // A session workspace is bind-mounted read-write into containers whose code
-  // is untrusted by design (docs/262 req 19), so `.git/hooks/pre-commit` is a
-  // file that side can write — and the orchestrator, which is root and mounts
-  // the credential store and the Docker socket, then runs `git commit` on that
-  // very tree. `safeSimpleGit` (`shared/git-hooks-guard.ts`) is the same
-  // `simpleGit` with `-c core.hooksPath=/dev/null` on every command; a bare
-  // `import simpleGit from "simple-git"` re-opens the hole silently, so it is
-  // an error rather than a convention.
-  //
-  // Declared as its own late block (not folded into the boundary blocks above)
-  // so it can exempt the guard module and tests without those exemptions also
-  // dropping the orchestrator↔session import boundary — flat config replaces a
-  // rule wholesale per matching block, and an earlier block still applies to
-  // files a later one `ignores`.
+  // Separate blocks keep hook-guard exemptions from disabling layer boundaries.
   {
     files: ["src/server/orchestrator/**/*.ts"],
     ignores: ["src/server/orchestrator/integration_tests/**", "**/*.test.ts"],
@@ -379,10 +273,6 @@ export default tseslint.config(
     ignores: [
       "dist/",
       "node_modules/",
-      // Static PWA assets served verbatim from the client (manifest, icons, and
-      // the service worker). The service worker is plain browser JS copied as-is
-      // into dist/client — it's not part of the TS program, so the typed-lint
-      // project service can't resolve it. See docs/222-pwa-installable.
       "src/client/public/",
     ],
   },

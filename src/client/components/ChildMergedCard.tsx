@@ -1,28 +1,3 @@
-/**
- * ChildMergedCard — in-chat affordance surfaced into the PARENT's chat when a
- * child session it armed a notify-on-merge watch on had its PR reach a terminal
- * state (docs/196).
- *
- * Two variants keyed off `outcome`:
- *   - `merged` — the child shipped; the parent's queued wake-turn proceeds with
- *     the planned rebase/integration. Success-toned.
- *   - `closed-unmerged` — the child's PR closed without merging; the work did
- *     NOT ship. Warning-toned so the user (and the parent agent's wake-turn)
- *     don't proceed as if it had.
- *
- * A third variant rides on `deliveryFailure` (planning#260): the terminal state was
- * observed and the first card already said so, but the actionable wake-turn
- * could not be delivered into this session after repeated attempts. Warning-
- * toned, and it says what the other two don't — the agent did NOT start, so the
- * user has to nudge it. Without this card the watch would fail silently and the
- * only symptom would be a session that never resumed.
- *
- * Static card: every value is a baked-in prop (persisted on the message row),
- * so it renders identically live and after a reload with no client store. The
- * actionable wake-turn is a separate queued system turn — this is purely the
- * human-facing breadcrumb. "Open" switches the active session to the child.
- */
-
 import { ArrowSquareOutIcon, GitBranchIcon, GitCommitIcon, GitMergeIcon, GitPullRequestIcon, WarningIcon, XCircleIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import { Button } from "./ui/button.js";
@@ -37,12 +12,7 @@ export interface ChildMergedCardProps {
   prUrl: string;
   prTitle?: string;
   mergeSha?: string;
-  /**
-   * planning#260 — present on the follow-up card emitted when the wake-turn could not
-   * be delivered. Switches the card to its "this session was not resumed" form.
-   */
   deliveryFailure?: { attempts: number; error?: string };
-  /** Optional navigation override; falls back to the session store (test-friendly). */
   onOpen?: (childSessionId: string) => void;
 }
 

@@ -50,12 +50,10 @@ describe("Integration: File Review HTTP Endpoints", () => {
       serveStatic: false,
     });
 
-    // Create a session, since the new API is per-session and validates session dirs.
     const created = await createTestSession(sessionManager, tmpDir);
     sessionId = created.sessionId;
     sessionDir = created.sessionDir;
 
-    // Place a plan inside the session workspace (sessions are git-initialized).
     const docsDir = path.join(sessionDir, "docs", featureId);
     fs.mkdirSync(docsDir, { recursive: true });
     fs.writeFileSync(
@@ -76,7 +74,6 @@ Unit and integration tests.
 `,
     );
 
-    // Place a code file too
     fs.mkdirSync(path.join(sessionDir, "src"), { recursive: true });
     fs.writeFileSync(
       path.join(sessionDir, "src", "api.ts"),
@@ -95,10 +92,6 @@ Unit and integration tests.
 
   const planPath = `docs/${featureId}/plan.md`;
   const codePath = "src/api.ts";
-
-  // ----------------------------------------------------------------
-  // Ensure draft
-  // ----------------------------------------------------------------
 
   it("POST /file-reviews/draft creates a markdown draft", async () => {
     const res = await app.inject({
@@ -142,10 +135,6 @@ Unit and integration tests.
     expect(second.id).toBe(first.id);
   });
 
-  // ----------------------------------------------------------------
-  // Get / not-found
-  // ----------------------------------------------------------------
-
   it("GET /file-reviews/draft returns existing draft", async () => {
     await app.inject({
       method: "POST",
@@ -168,10 +157,6 @@ Unit and integration tests.
     });
     expect(res.statusCode).toBe(404);
   });
-
-  // ----------------------------------------------------------------
-  // Add selection comment (markdown)
-  // ----------------------------------------------------------------
 
   it("POST /comments adds a selection comment to a markdown draft", async () => {
     const draft = (await app.inject({
@@ -196,10 +181,6 @@ Unit and integration tests.
     expect(comment.kind).toBe("selection");
     expect(comment.text).toBe("Consider a registry pattern");
   });
-
-  // ----------------------------------------------------------------
-  // Add line comment (code)
-  // ----------------------------------------------------------------
 
   it("POST /comments adds a line comment to a code draft", async () => {
     const draft = (await app.inject({
@@ -280,10 +261,6 @@ Unit and integration tests.
     expect(res.statusCode).toBe(400);
   });
 
-  // ----------------------------------------------------------------
-  // PATCH / DELETE comment
-  // ----------------------------------------------------------------
-
   it("PATCH /comments/:id updates comment text", async () => {
     const draft = (await app.inject({
       method: "POST",
@@ -337,10 +314,6 @@ Unit and integration tests.
     expect(draftRes.comments).toHaveLength(0);
   });
 
-  // ----------------------------------------------------------------
-  // Send (markdown)
-  // ----------------------------------------------------------------
-
   it("POST /send marks markdown review as sent and returns a quoted-text prompt", async () => {
     const draft = (await app.inject({
       method: "POST",
@@ -369,17 +342,12 @@ Unit and integration tests.
     expect(body.prompt).toContain(planPath);
     expect(body.review.status).toBe("sent");
 
-    // Draft is gone
     const draftRes = await app.inject({
       method: "GET",
       url: `/api/sessions/${sessionId}/file-reviews/draft?filePath=${encodeURIComponent(planPath)}`,
     });
     expect(draftRes.statusCode).toBe(404);
   });
-
-  // ----------------------------------------------------------------
-  // Send (code)
-  // ----------------------------------------------------------------
 
   it("POST /send returns a snippet-based prompt for code reviews", async () => {
     const draft = (await app.inject({
@@ -405,7 +373,6 @@ Unit and integration tests.
     expect(body.prompt).toContain(":2");
   });
 
-  // docs/260 — the send dialog's free-text note.
   it("POST /send carries the note into the prompt and onto the sent review", async () => {
     const draft = (await app.inject({
       method: "POST",
@@ -427,8 +394,6 @@ Unit and integration tests.
     expect(res.statusCode).toBe(200);
     const body = res.json() as { prompt: string; review: FileReview };
 
-    // The note is the first piece of feedback: after the lead-in, before the
-    // first quoted comment.
     const leadIn = body.prompt.indexOf("I've reviewed");
     const note = body.prompt.indexOf("Overall this is close.");
     const firstComment = body.prompt.indexOf("> Plugin-based approach");
@@ -436,7 +401,6 @@ Unit and integration tests.
     expect(note).toBeGreaterThan(leadIn);
     expect(firstComment).toBeGreaterThan(note);
 
-    // …and it is stored, so "Past reviews" can show it again.
     expect(body.review.note).toBe("Overall this is close. Don't restructure the file.");
     const list = (await app.inject({
       method: "GET",
@@ -486,7 +450,6 @@ Unit and integration tests.
       payload: { note: "x".repeat(4001) },
     });
     expect(res.statusCode).toBe(400);
-    // The draft survives a rejected send — nothing was marked sent.
     const draftRes = await app.inject({
       method: "GET",
       url: `/api/sessions/${sessionId}/file-reviews/draft?filePath=${encodeURIComponent(planPath)}`,
@@ -494,8 +457,6 @@ Unit and integration tests.
     expect(draftRes.statusCode).toBe(200);
   });
 
-  // docs/260 — the dialog has two send affordances over an async POST; only one
-  // of two concurrent sends may reach the agent.
   it("POST /send fulfils only one of two concurrent sends of the same draft", async () => {
     const draft = (await app.inject({
       method: "POST",
@@ -534,10 +495,6 @@ Unit and integration tests.
     expect(res.statusCode).toBe(400);
   });
 
-  // ----------------------------------------------------------------
-  // List
-  // ----------------------------------------------------------------
-
   it("GET /file-reviews lists all reviews for a (session, file)", async () => {
     const first = (await app.inject({
       method: "POST",
@@ -554,7 +511,6 @@ Unit and integration tests.
       url: `/api/sessions/${sessionId}/file-reviews/${first.id}/send`,
     });
 
-    // Start a fresh draft
     await app.inject({
       method: "POST",
       url: `/api/sessions/${sessionId}/file-reviews/draft`,
@@ -569,10 +525,6 @@ Unit and integration tests.
     const body = res.json() as { reviews: FileReview[] };
     expect(body.reviews).toHaveLength(2);
   });
-
-  // ----------------------------------------------------------------
-  // Delete draft
-  // ----------------------------------------------------------------
 
   it("DELETE /file-reviews/:reviewId deletes an empty draft", async () => {
     const draft = (await app.inject({

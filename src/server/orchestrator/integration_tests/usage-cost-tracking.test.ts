@@ -22,15 +22,7 @@ import {
 } from "./test-helpers.js";
 import { DatabaseManager } from "../../shared/database.js";
 
-/**
- * docs/252 req 16 — the session's money figure, which is no longer one column.
- *
- * These sessions run without a catalogue-resolvable selection, so every row is
- * `legacy`; an attributed one would land in `meteredCostUsd` instead, and the
- * split never adds the two. Summing them here keeps each assertion about the
- * cumulative-to-delta arithmetic it exists to check rather than about which
- * bucket the row fell into.
- */
+// Test cost arithmetic independently of credential attribution.
 function spend(totals: UsageTotals): number {
   return totals.meteredCostUsd + totals.legacyCostUsd;
 }
@@ -72,17 +64,15 @@ describe("Integration: Usage & cost tracking", () => {
   afterEach(async () => {
     await app.close();
     dbManager.close();
-    // Wait for any pending async operations (git auto-commit) to complete
     await new Promise((r) => setTimeout(r, 200));
     try {
       fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
     } catch {
-      // Ignore cleanup errors — CI tmpdir will be cleared anyway
+      // Ignore cleanup errors.
     }
   });
 
   it("get_usage_stats returns empty stats initially", async () => {
-    // Create a tracked session for the HTTP endpoint
     const sid = "usage-empty-test";
     const sdir = path.join(tmpDir, "sessions", sid);
     fs.mkdirSync(sdir, { recursive: true });
@@ -101,13 +91,11 @@ describe("Integration: Usage & cost tracking", () => {
 
   it("usage_update is sent after result event with total_cost_usd", async () => {
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
-    // Start a Claude turn
     client.send({ type: "send_message", text: "hello" });
     await waitForClaude(() => lastClaude);
 
-    // Simulate system init
     lastClaude.emit("event", {
       type: "system",
       subtype: "init",
@@ -117,13 +105,11 @@ describe("Integration: Usage & cost tracking", () => {
     const sessionStarted = await client.receiveType("session_started");
     const appSessionId = (sessionStarted as any).session.id;
 
-    // Simulate assistant text
     lastClaude.emit("event", {
       type: "assistant",
       message: { content: [{ type: "text", text: "Hi there" }] },
     });
 
-    // Simulate result with cost
     lastClaude.emit("event", {
       type: "result",
       subtype: "success",
@@ -141,7 +127,6 @@ describe("Integration: Usage & cost tracking", () => {
     });
     expect(spend((usageUpdate as { totals: UsageTotals }).totals)).toBeCloseTo(0.42);
 
-    // Emit done to finish the turn
     lastClaude.emit("done", 0);
 
     client.close();
@@ -149,9 +134,8 @@ describe("Integration: Usage & cost tracking", () => {
 
   it("usage_update accumulates across multiple turns", async () => {
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
-    // --- Turn 1 ---
     client.send({ type: "send_message", text: "turn 1" });
     await waitForClaude(() => lastClaude);
     lastClaude.emit("event", { type: "system", subtype: "init", session_id: "accum-session" });
@@ -173,10 +157,8 @@ describe("Integration: Usage & cost tracking", () => {
     expect(spend((update1 as { totals: UsageTotals }).totals)).toBeCloseTo(0.10);
     lastClaude.emit("done", 0);
 
-    // Wait for done handler
     await new Promise((r) => setTimeout(r, 100));
 
-    // --- Turn 2: resume with the app session UUID ---
     const prevClaude = lastClaude;
     client.send({ type: "send_message", text: "turn 2", sessionId: appSessionId });
     await waitForClaude(() => lastClaude, prevClaude);
@@ -188,7 +170,6 @@ describe("Integration: Usage & cost tracking", () => {
       duration_ms: 2000,
     });
 
-    // Find the usage_update among possible messages
     let update2: any = null;
     for (let i = 0; i < 10; i++) {
       const msg = await client.receive();
@@ -201,10 +182,7 @@ describe("Integration: Usage & cost tracking", () => {
     expect(update2).toBeDefined();
     expect(update2.type).toBe("usage_update");
     expect(update2.turnCount).toBe(2);
-    // total_cost_usd is the CLI's CUMULATIVE running total for the resumed
-    // conversation (same session_id "accum-session"): 0.10 then 0.20. The
-    // second turn's own cost is the 0.10 delta, so the session bill is 0.20 —
-    // NOT 0.30 (summing the cumulative snapshots double-counted turn 1).
+    // The CLI reports cumulative cost; the second turn adds 0.10.
     expect(spend(update2.totals)).toBeCloseTo(0.20);
     expect(update2.totalDurationMs).toBe(3000);
 
@@ -214,9 +192,8 @@ describe("Integration: Usage & cost tracking", () => {
 
   it("get_usage_stats returns recorded data", async () => {
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
-    // Record some usage by running a turn
     client.send({ type: "send_message", text: "test" });
     await waitForClaude(() => lastClaude);
     lastClaude.emit("event", { type: "system", subtype: "init", session_id: "stats-session" });
@@ -234,7 +211,6 @@ describe("Integration: Usage & cost tracking", () => {
     lastClaude.emit("done", 0);
     await new Promise((r) => setTimeout(r, 100));
 
-    // Now request full stats via HTTP
     const statsRes = await app.inject({ method: "GET", url: `/api/sessions/${appSessionId}/usage` });
     expect(statsRes.statusCode).toBe(200);
     const statsMsg = statsRes.json();
@@ -254,13 +230,12 @@ describe("Integration: Usage & cost tracking", () => {
 
   it("no usage_update when total_cost_usd is undefined", async () => {
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
     client.send({ type: "send_message", text: "hello" });
     await waitForClaude(() => lastClaude);
     lastClaude.emit("event", { type: "system", subtype: "init", session_id: "no-cost-session" });
 
-    // Result without total_cost_usd
     lastClaude.emit("event", {
       type: "result",
       subtype: "success",
@@ -270,7 +245,6 @@ describe("Integration: Usage & cost tracking", () => {
     lastClaude.emit("done", 0);
     await new Promise((r) => setTimeout(r, 200));
 
-    // Drain all messages and check none are usage_update
     const allMessages: any[] = [];
     try {
       for (let i = 0; i < 20; i++) {
@@ -286,7 +260,7 @@ describe("Integration: Usage & cost tracking", () => {
 
   it("records token-only usage when cost is not reported", async () => {
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
     client.send({ type: "send_message", text: "hello" });
     await waitForClaude(() => lastClaude);
@@ -350,9 +324,8 @@ describe("Integration: Usage & cost tracking", () => {
 
   it("archive_session preserves usage data", async () => {
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
-    // Record some usage
     client.send({ type: "send_message", text: "test" });
     await waitForClaude(() => lastClaude);
     lastClaude.emit("event", { type: "system", subtype: "init", session_id: "arc-usage-session" });
@@ -370,11 +343,9 @@ describe("Integration: Usage & cost tracking", () => {
     lastClaude.emit("done", 0);
     await new Promise((r) => setTimeout(r, 100));
 
-    // Archive the session via HTTP
     const archiveRes = await app.inject({ method: "DELETE", url: `/api/sessions/${appSessionId}` });
     expect(archiveRes.statusCode).toBe(200);
 
-    // Verify usage is still present (archive preserves data) via HTTP
     const statsRes = await app.inject({ method: "GET", url: `/api/sessions/${appSessionId}/usage` });
     expect(statsRes.statusCode).toBe(200);
     expect(statsRes.json().stats.totalTurns).toBe(1);

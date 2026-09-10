@@ -1,73 +1,32 @@
-/**
- * HTTP utility functions and shared constants for the Docker API proxy.
- */
-
 import http from "node:http";
-
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
 
 export interface SessionInfo {
   sessionId: string;
   hostWorkspaceDir: string;
   dockerAccess: boolean;
-  /** Session-specific bridge network name for child containers. */
   sessionNetworkName?: string;
-  /** Resource limits to enforce on child containers (from session config). */
   resourceLimits?: {
     /** Memory limit in bytes. */
     memory: number;
     /** CPU quota in microseconds per 100ms period. */
     cpuQuota: number;
-    /** Maximum PIDs. */
     pidsLimit: number;
   };
 }
 
 export interface DockerProxyDeps {
-  /** Resolve source IP → session info. */
   getSessionByContainerIp: (ip: string) => SessionInfo | undefined;
   /** Docker daemon socket path. Defaults to /var/run/docker.sock. */
   socketPath?: string;
-  /**
-   * Opens a container-topology bracket, returning its closer
-   * (`SessionContainerManager.beginContainerTopologyChange`). Surfaced to route
-   * handlers as {@link RequestContext.beginTopologyChange}; the ones that can
-   * put a RUNNING container on a session network call it immediately before
-   * forwarding.
-   *
-   * `sanitizeContainerCreate` STAMPS `shipit-parent-session` on every container
-   * the agent creates here, so an agent-created container is a caller the API
-   * trust boundary must recognise (`api-container-guard.ts` denies it the whole
-   * surface). It recognises it through an index that answers from a
-   * periodically-refreshed snapshot, and a container that snapshot has not seen
-   * reads as "browser or host" — i.e. as MORE trusted than the agent that
-   * created it. A bracket, rather than a notification, because the agent chooses
-   * when its container starts: `/containers/{id}/start` returns with the process
-   * already running, so anything announced afterwards has already lost the race.
-   */
+  /** Suspend cached API trust checks across container starts; return the release callback. */
   onTopologyChange?: () => () => void;
 }
 
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
-
 export const PARENT_SESSION_LABEL = "shipit-parent-session";
-export const MAX_BODY_SIZE = 10 * 1024 * 1024; // 10 MB
+export const MAX_BODY_SIZE = 10 * 1024 * 1024;
 export const DOCKER_SOCKET = "/var/run/docker.sock";
 
-// Docker container names: [a-zA-Z0-9][a-zA-Z0-9_.-]*
-// Docker container IDs: [0-9a-f]{12,64}
-// We use a single permissive pattern that covers both. The `/` separator in URL
-// paths prevents path traversal, and `:` is excluded since it only appears in
-// image references (handled by image routes with a separate pattern).
 export const CONTAINER_NAME_RE = "[a-zA-Z0-9][a-zA-Z0-9_.-]*";
-
-// ---------------------------------------------------------------------------
-// Route matching
-// ---------------------------------------------------------------------------
 
 export interface Route {
   method: string;
@@ -80,24 +39,9 @@ export interface RequestContext {
   res: http.ServerResponse;
   session: SessionInfo;
   socketPath: string;
-  /**
-   * Open a container-topology bracket, returning its closer. Present only when
-   * the proxy was given {@link DockerProxyDeps.onTopologyChange}; a handler that
-   * does not bring a container up should not call it.
-   *
-   * Call it as late as the ordering allows — immediately before forwarding an
-   * AUTHORIZED request, never at dispatch. A bracket suspends the API guard's
-   * fast path for as long as it is open, and the proxy's own caller is the
-   * semi-trusted agent: opening one before the body has been read lets a
-   * deliberately-slow request hold the whole orchestrator's browser traffic on
-   * the Docker path.
-   */
+  /** Open only after reading and authorizing a start request, to limit caller-controlled holds. */
   beginTopologyChange?: () => () => void;
 }
-
-// ---------------------------------------------------------------------------
-// Response helpers
-// ---------------------------------------------------------------------------
 
 export function respond(res: http.ServerResponse, status: number, body: unknown): void {
   const json = JSON.stringify(body);
@@ -112,10 +56,6 @@ export function forbidden(res: http.ServerResponse, reason: string): void {
 export function badRequest(res: http.ServerResponse, reason: string): void {
   respond(res, 400, { message: `Bad request: ${reason}` });
 }
-
-// ---------------------------------------------------------------------------
-// Body reading
-// ---------------------------------------------------------------------------
 
 export async function readBody(req: http.IncomingMessage, maxSize: number): Promise<Buffer> {
   return new Promise((resolve, reject) => {
@@ -138,14 +78,6 @@ export async function readBody(req: http.IncomingMessage, maxSize: number): Prom
   });
 }
 
-// ---------------------------------------------------------------------------
-// Docker daemon forwarding
-// ---------------------------------------------------------------------------
-
-/**
- * Forward a request to the Docker daemon via Unix socket.
- * Returns the daemon's response body as a Buffer plus the status code.
- */
 export async function forwardToDocker(
   socketPath: string,
   method: string,
@@ -188,10 +120,6 @@ export async function forwardToDocker(
   });
 }
 
-/**
- * Pipe a request through to the Docker daemon (for streaming endpoints).
- * Copies the request and streams the response back to the client.
- */
 export function pipeToDocker(
   socketPath: string,
   req: http.IncomingMessage,
@@ -223,18 +151,13 @@ export function pipeToDocker(
     }
   });
 
-  // Abort upstream request if client disconnects
   res.on("close", () => {
     if (!dockerReq.destroyed) dockerReq.destroy();
   });
 
   req.pipe(dockerReq);
 
-  // Resolves when the exchange is over, whichever way it ended. Callers that
-  // only forward can ignore it (the historical `void` contract); a route that
-  // holds a topology bracket MUST await it, because that is the difference
-  // between holding the bracket across the daemon acting and closing it before
-  // the daemon has been asked.
+  // Await completion before releasing a topology hold.
   return new Promise<void>((resolve) => {
     res.on("close", resolve);
     res.on("finish", resolve);

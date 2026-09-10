@@ -3,7 +3,6 @@ import { ProxyAgentProcess, type ProxyAgentRunner } from "./proxy-agent-process.
 import { WorkerTimeoutError } from "./worker-http.js";
 import type { PermissionMode } from "../shared/types.js";
 
-/** Flush the microtask queue so fire-and-forget delegations settle. */
 const flush = () => new Promise((r) => setTimeout(r, 0));
 
 function makeRunner(overrides: Partial<ProxyAgentRunner> = {}): ProxyAgentRunner {

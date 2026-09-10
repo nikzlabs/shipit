@@ -55,7 +55,6 @@ beforeEach(async () => {
   const addr = app.server.address();
   const port = typeof addr === "object" && addr ? addr.port : 0;
   client = await TestClient.connect(port);
-  // consume initial preview_status
   await client.receive();
 });
 
@@ -66,20 +65,15 @@ afterEach(async () => {
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 
-/** Create a session and return its app session ID and workspace directory. */
 async function createSession(): Promise<{ sessionId: string; sessionDir: string }> {
   client.send({ type: "send_message", text: "hello" });
   const claude = await waitForClaude(() => latestClaude);
 
-  // Emit a system/init event so the server sends session_started
   claude.emit("event", { type: "system", subtype: "init", session_id: "test-session-1" });
   claude.finish("test-session-1");
 
-  // Drain messages from the first turn — quiet-period bounded so we don't
-  // wait the full 3 s when the burst finishes in <100 ms.
   await client.drain({ quietMs: 150 });
 
-  // Get session ID from the filesystem (directory name = session UUID)
   const sessionsDir = path.join(tmpDir, "sessions");
   const entries = fs.readdirSync(sessionsDir);
   const sessionId = entries[0];
@@ -88,19 +82,16 @@ async function createSession(): Promise<{ sessionId: string; sessionDir: string 
   return { sessionId, sessionDir };
 }
 
-/** Create a bare git repo and set it as origin on the session repo. */
 function createBareRemote(sessionDir: string): string {
   const bareDir = path.join(tmpDir, "bare-remote.git");
   fs.mkdirSync(bareDir, { recursive: true });
   execSync("git init --bare -b main", { cwd: bareDir, env: { ...process.env, HOME: tmpDir } });
 
-  // Add the bare repo as origin
   execSync(`git remote add origin ${bareDir}`, {
     cwd: sessionDir,
     env: { ...process.env, HOME: tmpDir },
   });
 
-  // Detect current branch and push initial commit
   const branch = execSync("git rev-parse --abbrev-ref HEAD", {
     cwd: sessionDir,
     env: { ...process.env, HOME: tmpDir },
@@ -122,21 +113,14 @@ describe("auto-push: success and failure", () => {
     const { sessionId, sessionDir } = await createSession();
     createBareRemote(sessionDir);
 
-    // Write a file so the next commit has changes
     fs.writeFileSync(path.join(sessionDir, "new-file.txt"), "auto-push test");
 
-    // Send a second message to the SAME session
     client.send({ type: "send_message", text: "second turn", sessionId });
     const prevClaude = latestClaude;
     const claude2 = await waitForClaude(() => latestClaude, prevClaude);
     claude2.finish("test-session-1");
 
-    // docs/264 — the positive confirmation, against REAL git. The count comes
-    // from `@{upstream}`, which a unit fake cannot show is right; here the turn
-    // produced exactly one commit on top of the branch the fixture pushed, so a
-    // measurement that reads "0" or "could not be measured" is a broken one.
-    // Waited on BEFORE `github_push_result` because the log line precedes it,
-    // and `receiveType` would consume past it.
+    // Collect the log first; waiting for github_push_result would consume it.
     const isCompleted = (m: WsServerMessage) =>
       m.type === "log_append" && m.channel === "agent"
       && m.records.some((r) => r.text.startsWith("Auto-push completed"));
@@ -146,9 +130,6 @@ describe("auto-push: success and failure", () => {
       .flatMap((m) => (m.type === "log_append" ? m.records : []))
       .map((r) => r.text)
       .find((t) => t.startsWith("Auto-push completed"));
-    // Exactly ONE: the fixture pushed the branch, then this turn wrote one file
-    // and auto-committed once. A looser `[1-9]\d*` would go green on a
-    // measurement that counted the whole branch history.
     expect(completed).toMatch(
       /^Auto-push completed in \d+ms: 1 commit\(s\) was ahead of the last known remote tip\.$/,
     );
@@ -156,12 +137,6 @@ describe("auto-push: success and failure", () => {
     expect(messages.some((m) => m.type === "github_push_result" && m.success)).toBe(true);
   });
 
-  /**
-   * The 2026-08-10 incident, end to end. The debounced push used to live on the
-   * session's runner, so a runner reclaimed between the post-turn commit and the
-   * 5s debounce took the push with it — no push, no error, no log line. Asserts
-   * the observable outcome: the commit reaches the remote regardless.
-   */
   it("pushes even when the runner is disposed before the debounce fires", { timeout: 15_000 }, async () => {
     await githubAuth.setToken("test-token");
     const { sessionId, sessionDir } = await createSession();
@@ -174,9 +149,6 @@ describe("auto-push: success and failure", () => {
     const claude2 = await waitForClaude(() => latestClaude, prevClaude);
     claude2.finish("test-session-1");
 
-    // The session is reclaimed the instant the turn ends — the shape the
-    // quota-retry path produced, where the runner left the registry ~150ms
-    // before its own post-turn commit landed.
     app.runnerRegistry.dispose(sessionId, { force: true });
 
     const remoteHas = async (): Promise<boolean> => {
@@ -217,33 +189,12 @@ describe("auto-push: success and failure", () => {
     });
   });
 
-  /**
-   * The 2026-08-15 incident, end to end. A branch whose history was rewritten
-   * (a rebase onto a fresh base after a merge — the flow ShipIt's own agent
-   * instructions prescribe) no longer fast-forwards onto its remote, so every
-   * unforced post-turn push is rejected. That refusal is correct; its INVISIBILITY
-   * is the defect. It reached only the session log ring and a transient WS
-   * message, so nine commits stayed local for ten hours and two pull requests
-   * merged behind the branch head.
-   *
-   * The load-bearing assertion is the PERSISTED row: a notice that is merely
-   * emitted survives a reconnect and then vanishes on the next reload, which is
-   * the same silence wearing a different hat.
-   */
   it("persists a transcript notice when the push is rejected as non-fast-forward", { timeout: 15_000 }, async () => {
     await githubAuth.setToken("test-token");
     const { sessionId, sessionDir } = await createSession();
     createBareRemote(sessionDir);
 
-    // A commit on top of the pushed root, THEN a rewrite of it. Both halves
-    // matter. The rewrite is what stops the remote fast-forwarding — the shape a
-    // post-merge rebase leaves behind — and the message MUST change, because an
-    // `--amend --no-edit` seconds after the original reproduces the same tree,
-    // parent, message and committer second, so git hands back the identical SHA
-    // and there is nothing to detect. Rewriting the ROOT instead would leave the
-    // two histories with no common commit at all, which is a different (and
-    // rarer) shape: the notice then correctly refuses to name any remedy, so the
-    // fixture has to keep a shared base for this to be the rewritten-branch case.
+    // Preserve a common base. Change the amended message to ensure a new SHA.
     execSync("git commit --allow-empty -m 'work on top of the pushed base'", {
       cwd: sessionDir,
       env: { ...process.env, HOME: tmpDir },
@@ -264,38 +215,21 @@ describe("auto-push: success and failure", () => {
     const isNotice = (m: WsServerMessage) => m.type === "system_notice" && m.message.includes("diverged");
     const messages = await client.collectUntil(isNotice, { quietMs: 250 });
 
-    // The live half — what an attached viewer sees immediately.
     const notice = messages.find(isNotice);
     expect(notice).toMatchObject({ type: "system_notice", level: "warn", sessionId });
     const message = (notice as { message: string }).message;
     expect(message).toContain("--force-with-lease");
-    // Measured against a real repository, not a stub: this branch carries the
-    // rewritten commit plus the turn's own auto-commit, while the remote still
-    // carries the commit the rewrite replaced. Both counts have to be right,
-    // because they are what choose the remedy — the 2026-08-30 incident was a
-    // notice that named one without measuring either.
     expect(message).toContain("2 commits only in this session");
     expect(message).toContain("1 commit only on the remote");
-    // …and the at-risk commit is NAMED, not just counted, because that is what a
-    // reader recognises before agreeing to discard it.
     expect(message).toContain("work on top of the pushed base");
 
-    // The durable half — what survives the reload. This is the assertion that
-    // fails without the fix.
     const persisted = chatHistory.load(sessionId).filter((m) => m.notice && m.text?.includes("diverged"));
     expect(persisted).toHaveLength(1);
     expect(persisted[0]?.noticeLevel).toBe("warn");
 
-    // ...and no success message was ever claimed for this push.
     expect(messages.find((m) => m.type === "github_push_result" && m.success)).toBeUndefined();
 
-    // The row must be FINALIZED, not an in-progress one. A card appended through
-    // the mid-turn path after its turn already finalized is re-inserted as a
-    // second `in_progress=1` copy of the whole turn, which the NEXT turn's
-    // `replaceInProgress` deletes wholesale — docs/236, where that silently
-    // destroyed an 18-minute consult's entire output. Running another turn is
-    // the only thing that tells the two apart, and the dedup must not suppress
-    // the record either: still exactly one, still there.
+    // A following turn would erase a notice incorrectly saved as in-progress.
     fs.writeFileSync(path.join(sessionDir, "second.txt"), "another turn");
     client.send({ type: "send_message", text: "a following turn", sessionId });
     const claude3 = await waitForClaude(() => latestClaude, claude2);
@@ -310,7 +244,6 @@ describe("auto-push: success and failure", () => {
     await githubAuth.setToken("test-token");
     const { sessionId, sessionDir } = await createSession();
 
-    // Add a non-existent remote URL (will cause push to fail)
     execSync("git remote add origin /nonexistent/path.git", {
       cwd: sessionDir,
       env: { ...process.env, HOME: tmpDir },
@@ -323,13 +256,7 @@ describe("auto-push: success and failure", () => {
     const claude2 = await waitForClaude(() => latestClaude, prevClaude);
     claude2.finish("test-session-1");
 
-    // The push runs on a debounce and then fails, emitting a log entry. Wait
-    // for that log rather than draining a fixed quiet period: a bare
-    // `drain({ quietMs: 250 })` returns as soon as the stream goes quiet for
-    // 250 ms, so on a loaded machine it hands back a buffer that predates the
-    // push attempt entirely and `failLog` is undefined. The quiet tail inside
-    // `collectUntil` still gives the "no success message" assertion below its
-    // let-time-pass window.
+    // Wait for the failure; a quiet period can end before the push starts.
     const isFailLog = (m: WsServerMessage) =>
       m.type === "log_append" &&
       m.channel === "agent" &&
@@ -339,7 +266,6 @@ describe("auto-push: success and failure", () => {
     const failLog = messages.find(isFailLog);
     expect(failLog).toBeDefined();
 
-    // Should NOT have a successful github_push_result
     const pushResult = messages.find((m) => m.type === "github_push_result");
     expect(pushResult).toBeUndefined();
   });

@@ -13,47 +13,13 @@ export interface WsSendMessage {
   files?: FileContextRef[];
   uploads?: UploadRef[];
   permissionMode?: PermissionMode;
-  /**
-   * Set when the message was started by the "Send comments" action on a file
-   * preview. The prompt text carries the comments (source of truth); this
-   * metadata is persisted onto the user row so the bubble rehydrates as a
-   * `UserReviewCard` instead of a plain text bubble after a reload.
-   */
   userReview?: { filePaths: string[]; commentCount: number };
-  /**
-   * docs/218 — per-send intent for the auto-reset-merged-branch control. `false`
-   * = the user unticked "start from the latest base" for THIS message (skip the
-   * reset). `true`/absent = follow the global setting. Non-sticky: it's a
-   * per-message choice, never persisted.
-   */
+  /** Per-send override: false skips; true/absent follows the global setting. */
   resetMergedBranch?: boolean;
-  /**
-   * docs/295 — per-send intent for the compact-context control beside it.
-   * `false` = the user unticked "compact the context" for THIS message (skip
-   * the compaction). `true`/absent = follow the same global setting.
-   * Non-sticky, exactly like its sibling — and read independently of it, so
-   * unticking either one does not change what the other does (req 6).
-   */
+  /** Independent per-send override, with the same semantics as resetMergedBranch. */
   compactContext?: boolean;
-  /**
-   * planning#322 — the tracker issue this session was started from, carried on the
-   * FIRST message only (the Issues tab's "Start session" prefills the composer
-   * rather than dispatching, so creation and the first message are two separate
-   * user actions). Acted on solely by warm graduation, which pins the branch to
-   * the reference-derived name (docs/248-declared-issue-trackers req 22) and fires the one-shot
-   * `→ started` transition. A message to an already-graduated session ignores
-   * it — the ref describes how the session was *created*, not what this message
-   * is about.
-   */
+  /** Creation origin on the first message; ignored after warm graduation. */
   issueRef?: IssueRef;
-  /**
-   * docs/144 — some or all of `text` was dictated by voice rather than typed.
-   * Set by the composer when a transcript was spliced into the draft that
-   * produced this message. Purely a hint to the agent (it adds a
-   * `<dictated_input>` context block to the prompt so mis-heard terms and
-   * missing punctuation read as transcription artifacts, not intent); it never
-   * changes the persisted bubble, which stays the user's verbatim text.
-   */
   dictated?: boolean;
 }
 
@@ -62,53 +28,18 @@ export interface WsAnswerQuestion {
   requestId?: string;
   toolUseId: string;
   answers: Record<string, string>;
-  /**
-   * Pre-formatted answer text used as the prompt to the agent and the
-   * user's chat bubble. The client builds this from `answers` plus the
-   * question text so commas inside an answer aren't ambiguous with the
-   * separator between answers (single question: bare text; multiple
-   * questions: "- {question}: {answer}" per line). Optional for back-compat
-   * with older clients — the server falls back to joining the answers map.
-   */
+  /** Formatted answer avoids ambiguous commas; older clients omit it. */
   text?: string;
-  /**
-   * The session's current permission mode, forwarded so answering a clarifying
-   * AskUserQuestion resumes in the SAME mode it was asked in. Critical for plan
-   * mode: an answer is a fresh `--resume` turn, and without re-pinning
-   * `--permission-mode plan` the resumed CLI drops to default mode and starts
-   * implementing — i.e. it silently exits plan mode even though the user only
-   * answered a clarifying question and never approved a plan (the bug this
-   * fixes). Optional for back-compat; the server falls back to the runner's
-   * last-applied mode.
-   */
+  /** Preserve plan mode when the answer resumes the CLI. */
   permissionMode?: PermissionMode;
-  /**
-   * docs/144 — an "Other" free-text answer was dictated. Same hint as
-   * `WsSendMessage.dictated`: the answer becomes the next turn's prompt, so it
-   * carries the same transcription artifacts a dictated chat message does.
-   */
   dictated?: boolean;
 }
 
-// ---- Agent selection (per-connection state, must stay on WS) ----
-
-/** Client → Server: set the active agent for this connection. */
 export interface WsSetAgentMessage {
   type: "set_agent";
   agentId: AgentId;
 }
 
-/**
- * Client → Server: set the model for the next turn.
- *
- * docs/252 — a selection is really the triple `(serviceId, billingMode,
- * modelId)`, because a bare id cannot say which service is billing you when two
- * of them offer the same id. The two new fields are OPTIONAL and the client does
- * not send them yet: the picker has no service axis until phase 3 groups it by
- * service, so the server resolves the missing pair from the catalogue (biased
- * toward the active harness's own vendor). Accepting them now means phase 3 is
- * a client change rather than a protocol change.
- */
 export interface WsSetModelMessage {
   type: "set_model";
   model: string;
@@ -116,88 +47,42 @@ export interface WsSetModelMessage {
   billingMode?: BillingMode;
 }
 
-/**
- * docs/217 — Client → Server: set the per-session reasoning effort for the
- * active agent's own turns (Control B). `effort: null` clears it (CLI default).
- */
 export interface WsSetReasoningMessage {
   type: "set_reasoning";
+  /** null restores the CLI default. */
   effort: string | null;
 }
 
-/**
- * docs/272-user-selectable-roles reqs 1, 4, 18 — Client → Server: start this session on a
- * configured role, or take the role off it.
- *
- * **`null` is "No role"** (req 18), and it took a reversal to get here. This
- * message carried no `null` on the reasoning that leaving a role is never an act
- * of its own — only a consequence of moving one of the three controls the role
- * set. That reasoning survived the rule it was built on: while the role name was
- * *derived* from the parameters, clearing it could not do anything, because the
- * parameters still matched and the name came straight back. Since req 13 made the
- * name report the user's **choice**, un-choosing has a real effect — the role's
- * standing instructions stop applying — and it is an effect no parameter can
- * express, because no parameter carries the instructions.
- *
- * Clearing changes the name and the instructions and **nothing else**: the
- * session goes on running the harness, model and level the role set, which are
- * the last values the user chose.
- *
- * Both directions are refused once the session has taken its first turn (req 4):
- * standing instructions describe what a session is *for*, a session already under
- * way is already for something, and by then the instructions have been delivered,
- * so un-naming them afterwards states nothing the transcript does not show.
- */
+/** Before the first turn only; clearing removes instructions but keeps parameters. */
 export interface WsSetRoleMessage {
   type: "set_role";
   roleName: string | null;
 }
 
-// ---- Interrupt messages ----
-
-/** Client → Server: interrupt the currently running agent process. */
 export interface WsInterruptAgent {
   type: "interrupt_agent";
 }
 
-// ---- Preview config messages ----
-
-/** Client → Server: request Claude to generate a docker-compose.yml for preview. */
 export interface WsInitPreviewConfig {
   type: "init_preview_config";
 }
 
-// ---- Service control messages ----
-
-/** Client → Server: start a manual compose service. */
 export interface WsStartService {
   type: "start_service";
   name: string;
 }
 
-/** Client → Server: stop a compose service. */
 export interface WsStopService {
   type: "stop_service";
   name: string;
 }
 
-
-// ---- Prompt queuing messages ----
-
-/** Client → Server: cancel a specific queued message or clear the entire queue. */
 export interface WsCancelQueuedMessage {
   type: "cancel_queued_message";
-  /** 0-indexed position in queue to cancel, or "all" to clear the entire queue. */
+  /** Zero-based position. */
   position: number | "all";
 }
 
-// ---- PR detail panel messages (client → server) ----
-
-/**
- * Client → Server: report whether the PR detail tab is the active right-panel
- * tab for a session (docs/133 Phase 4). Gates the poller's heavier conversation
- * fields (issue comments + review threads) so idle sessions stay cheap.
- */
 export interface WsPrTabActive {
   type: "pr_tab_active";
   sessionId: string;
@@ -210,12 +95,7 @@ export interface WsRewindAtGap {
   type: "rewind_at_gap";
   gapPosition: number;
   action: RewindAtGapAction;
-  /**
-   * Human-readable title for the forked session. Required when action is
-   * `fork`; ignored otherwise. The new branch name is derived server-side
-   * from the active session's branch (with a fresh slug) — the user does
-   * not pick branch names.
-   */
+  /** Required for fork; ignored otherwise. */
   sessionName?: string;
 }
 
@@ -230,13 +110,6 @@ export interface WsRewindRestoreRequest {
   sessionId: string;
 }
 
-/**
- * Client → Server: confirm and file a bug report (docs/164). Sent only when
- * the user clicks "Submit report" on the inline consent card. Carries the
- * final, possibly-edited `title` and `body` — what the user confirmed in the
- * card is exactly what gets filed. The server has the producer/marker context
- * stashed against `cardId`; the client only round-trips the editable fields.
- */
 export interface WsSubmitBugReport {
   type: "submit_bug_report";
   cardId: string;
@@ -244,53 +117,24 @@ export interface WsSubmitBugReport {
   body: string;
 }
 
-/**
- * Client → Server: decline a bug report (docs/164 / nikzlabs/shipit#2350). Sent when the
- * user clicks "Cancel" on the inline consent card. Nothing is filed — the
- * round-trip exists so the decision is durable (the card stays collapsed across
- * a reload instead of returning as an editable draft) and so the session's
- * agent is told the report was declined rather than left thinking it is still
- * awaiting the user.
- */
 export interface WsDismissBugReport {
   type: "dismiss_bug_report";
   cardId: string;
 }
 
-/**
- * Client → Server: undo a previously-recorded issue write (docs/177). Sent
- * when the user clicks "Undo" on the provenance card. The server recovers the
- * tracker + undo snapshot from the persisted card (keyed by `cardId`) and
- * performs the reverse brokered write — the client only names the card.
- */
 export interface WsUndoIssueWrite {
   type: "undo_issue_write";
   cardId: string;
 }
 
-/**
- * Client → Server: answer a sensitive-action permission request (docs/193 /
- * planning#114). Sent when the user clicks Approve / Deny on the inline
- * `PermissionRequestCard`. The server forwards the decision to the worker's
- * broker (keyed by `requestId`), which unblocks the held bridge/RPC call.
- * `remember` (approve only) adds the file path to the session allow-set so the
- * same file isn't re-prompted.
- */
 export interface WsResolvePermission {
   type: "resolve_permission";
   requestId: string;
   behavior: "allow" | "deny";
+  /** On approval, allow this file for the rest of the session. */
   remember?: boolean;
 }
 
-/**
- * Client → Server: resolve an egress allow-once card (docs/172 / planning#92). Sent
- * when the user clicks Allow once / Add to allowlist / Deny on the inline
- * `EgressPromptCard`. The server updates the per-session egress policy (keyed by
- * `host`) so the agent's retried connection is allowed, and patches the card to
- * its terminal phase. `allow-once` is single-session-ephemeral; `add` persists
- * for the session.
- */
 export interface WsEgressDecision {
   type: "egress_decision";
   cardId: string;

@@ -1,17 +1,3 @@
-/**
- * Guards for the Grok → transcript-vocabulary normalization (planning#437).
- *
- * These tests assert TREATMENTS against the real registries, not spellings
- * against a copy — the planning#337 lesson (two hand-kept lists can agree and
- * be jointly wrong). If a registry migrates its vocabulary out from under the
- * normalizer, the surface-treatment guards below go red naming the surface,
- * instead of the transcript silently degrading to generic rows.
- *
- * The `diffStats` guard (DIFF_INPUT_TOOLS is orchestrator-private) lives in
- * `orchestrator/integration_tests/grok-recognition-projection.test.ts` — the
- * layer boundary keeps it out of this file.
- */
-
 import { describe, it, expect } from "vitest";
 import { CLAUDE_TOOL_NAMES, GROK_TOOL_NAMES } from "../../../shared/agent-tool-names.js";
 import { isTaskListTool } from "../../../shared/task-list-tools.js";
@@ -30,8 +16,6 @@ import {
 
 describe("GROK_TRANSCRIPT_TOOL_NAMES", () => {
   it("keeps the normalized table and the interactive exclusion list disjoint", () => {
-    // A name cannot sit in both tables: normalized means renamed on the wire,
-    // excluded means deliberately left raw.
     for (const name of GROK_UNNORMALIZED_INTERACTIVE_TOOLS) {
       expect(name in GROK_TRANSCRIPT_TOOL_NAMES, `grok tool ${name} is in both tables`).toBe(false);
     }
@@ -44,9 +28,6 @@ describe("GROK_TRANSCRIPT_TOOL_NAMES", () => {
   });
 
   it("maps each tool onto the Claude tool with the same meaning", () => {
-    // The semantic oracle, spelled out: a mapping that renames a shell tool
-    // into a file tool (or onto a name Claude's registry doesn't know) passes
-    // every treatment guard below and still puts the wrong card on screen.
     expect(GROK_TRANSCRIPT_TOOL_NAMES).toEqual({
       grep: "Grep",
       list_dir: "Glob",
@@ -74,9 +55,6 @@ describe("GROK_TRANSCRIPT_TOOL_NAMES", () => {
 
 describe("normalizeGrokToolCall — surface treatments (the docs/272 recognition matrix)", () => {
   it("todo_write reaches the task panel with todos, merge and item ids intact", () => {
-    // The drop default was the data loss: the RED run showed `todos` stripped
-    // off the wire, and the panel is the one surface with no fetch path back.
-    // `merge` and the item `id`s must survive too — the fold patches by them.
     const { name, input } = normalizeGrokToolCall("todo_write", {
       todos: [{ id: "1", content: "first", status: "pending" }],
       merge: false,
@@ -129,7 +107,6 @@ describe("normalizeGrokToolCall — surface treatments (the docs/272 recognition
     });
     expect(SUBAGENT_TOOL_NAMES.has(name)).toBe(true);
     expect(SUBAGENT_REPORT_TOOL_NAMES.has(name)).toBe(true);
-    // `false` here empties the result body that IS the subagent's report.
     expect(rendersResultContentInline(name)).toBe(true);
     expect(inputKeyTreatment(name, "description", input)).toBe("keep");
     expect(inputKeyTreatment(name, "subagent_type", input)).toBe("keep");
@@ -145,8 +122,6 @@ describe("normalizeGrokToolCall — surface treatments (the docs/272 recognition
   });
 
   it("passes unknown names through untouched, divergent keys and all", () => {
-    // The media/meta tools the table leaves unmapped, and MCP tools:
-    // renaming keys on a tool we don't know would corrupt its modal display.
     const input = { task_ids: ["01a"], timeout_ms: 30000, target_file: "/x" };
     const result = normalizeGrokToolCall("get_command_or_subagent_output", input);
     expect(result.name).toBe("get_command_or_subagent_output");
@@ -154,9 +129,6 @@ describe("normalizeGrokToolCall — surface treatments (the docs/272 recognition
   });
 
   it("leaves the interactive trio raw — their card shapes are unverified", () => {
-    // AskUserQuestion / ExitPlanMode render their INPUT inline and return
-    // before the modal; mapping an unobserved shape onto them could blank the
-    // row. A raw generic row is the visible, safe degradation.
     for (const name of ["ask_user_question", "enter_plan_mode", "exit_plan_mode"]) {
       expect(normalizeGrokToolCall(name, { q: "?" }).name).toBe(name);
     }
@@ -170,9 +142,7 @@ describe("normalizeGrokToolCall — surface treatments (the docs/272 recognition
 });
 
 describe("normalizeGrokToolResult — the subagent envelope (planning#437)", () => {
-  // Verbatim result shapes from Grok CLI 1.0.1 (docs/272 captures 2026-08-18):
-  // a foreground spawn completes with `SubagentCompleted` whose `output` is the
-  // report; a background spawn acknowledges with a `Text` envelope.
+  // Captured from Grok CLI 1.0.1 on 2026-08-18.
   const COMPLETED =
     '{"type":"SubagentCompleted","output":"3","subagent_id":"01a01473-5afe-7f41-bae0-cc44fce151c8","subagent_type":"explore","tool_calls":1,"turns":1,"duration_ms":3556,"worktree_path":null,"resume_from_hint":"01a01473-5afe-7f41-bae0-cc44fce151c8"}';
   const BACKGROUND =

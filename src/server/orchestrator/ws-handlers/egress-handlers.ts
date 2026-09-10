@@ -1,18 +1,3 @@
-/**
- * WS handler for the Tier C egress allow-once card (docs/172, planning#92).
- *
- * Fires when the user clicks Allow once / Add to allowlist / Deny on the inline
- * `EgressPromptCard`. The card itself was emitted over HTTP (the SNI proxy's
- * deny → the `/api/egress/decision` endpoint). This handler records the user's
- * decision in the per-session egress policy so the agent's retried connection is
- * allowed, then patches the card to its terminal phase (persisted) and echoes a
- * `egress_prompt_resolved`.
- *
- * Per the WS-lifecycle contract, we resolve the runner via the registry and emit
- * via `runner.emitMessage` so the result lands in the turn-event buffer and
- * survives reconnects.
- */
-
 import type { ConnectionCtx, RunnerCtx, AppCtx } from "./types.js";
 import type { WsEgressDecision } from "../../shared/types/ws-client-messages.js";
 import { resolveRunner } from "./resolve-runner.js";
@@ -39,11 +24,6 @@ export function handleEgressDecision(ctx: EgressCtx, msg: WsEgressDecision): voi
     return;
   }
 
-  // allow-once and add both grant the host for THIS session's live policy so the
-  // agent's retried connection succeeds. "add" additionally persists to the
-  // durable global allowlist (so the grant outlives the session + shows in the
-  // Settings editor) and reloads the session's egress sidecars so the new host
-  // resolves + is permitted without a container restart. deny grants nothing.
   if (msg.action === "allow-once" || msg.action === "add") {
     allowEgressHost(sessionId, host);
   }
@@ -59,9 +39,7 @@ export function handleEgressDecision(ctx: EgressCtx, msg: WsEgressDecision): voi
   const phase: PersistedEgressPrompt["phase"] =
     msg.action === "deny" ? "denied" : msg.action === "add" ? "added" : "allowed-once";
 
-  // Persist the resolution clobber-free: if the agent's denied connection was
-  // resolved while its proposing turn is still in flight, a DB-only patch would
-  // be reverted when that turn finalizes from the stale `recordedCards` snapshot.
+  // Update recorded cards too, so turn finalization cannot restore the pending phase.
   persistCardTransition(
     runner,
     { chatHistoryManager: ctx.chatHistoryManager, sessionId },

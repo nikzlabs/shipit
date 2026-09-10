@@ -1,19 +1,3 @@
-/**
- * MCP server API routes (docs/088-mcp-integration).
- *
- * Account-level CRUD for user-configured MCP servers, plus a connectivity
- * test that is proxied into an active session container (the orchestrator
- * never execs user-supplied stdio binaries itself — see plan §"Test endpoint
- * isolation").
- *
- * Server config blobs hold `$secret:` placeholders only; raw secret values
- * live in `CredentialStore.agentEnv` under `mcp__<server>__*` and are never
- * echoed back. After every mutation we trigger the agent-env refresh path on
- * each active session's ServiceManager so the merged `.env.agent` — in the
- * session's state dir, outside the clone (docs/246) — is rewritten and pushed to
- * the worker (reusing 087's transport substrate).
- */
-
 import type { FastifyInstance } from "fastify";
 import type { CredentialStore } from "./credential-store.js";
 import type { ServiceManager } from "./service-manager.js";
@@ -42,26 +26,12 @@ import { getErrorMessage } from "./validation.js";
 export interface McpRoutesDeps {
   credentialStore: CredentialStore;
   runnerRegistry: SessionRunnerRegistry;
-  /** Per-session ServiceManager registry — used to push refreshed agent env. */
   serviceManagers: Map<string, ServiceManager>;
-  /**
-   * Optional override for the in-process OAuth flow state store. Tests
-   * substitute a deterministic implementation; production defaults to a
-   * fresh {@link InMemoryOAuthStateStore} per orchestrator process.
-   */
   oauthStateStore?: InMemoryOAuthStateStore;
-  /**
-   * Optional override for the redirect URI used when starting OAuth flows.
-   * When omitted, the route derives it from the inbound request's
-   * `x-forwarded-host` (or `host`) header so the same orchestrator works
-   * behind a reverse proxy without configuration.
-   */
   oauthRedirectUri?: string;
-  /** Override for `fetch` used during token exchange. Tests inject. */
   oauthFetchImpl?: typeof fetch;
 }
 
-/** A runner that can proxy an MCP test into its container. */
 interface McpTestCapableRunner {
   proxyMcpTest(config: unknown): Promise<unknown>;
 }
@@ -129,12 +99,10 @@ export async function registerMcpRoutes(
   } = deps;
   const oauthStateStore = deps.oauthStateStore ?? new InMemoryOAuthStateStore();
 
-  // GET /api/mcp-servers — list all configured servers (placeholder form).
   app.get("/api/mcp-servers", async () => {
     return { servers: listMcpServers(credentialStore) };
   });
 
-  // POST /api/mcp-servers — add a new server.
   app.post<{ Body: { config?: unknown; secrets?: unknown } }>(
     "/api/mcp-servers",
     async (request, reply) => {
@@ -153,7 +121,6 @@ export async function registerMcpRoutes(
     },
   );
 
-  // PUT /api/mcp-servers/:id — update (or rename) a server.
   app.put<{ Params: { id: string }; Body: { config?: unknown; secrets?: unknown } }>(
     "/api/mcp-servers/:id",
     async (request, reply) => {
@@ -177,7 +144,6 @@ export async function registerMcpRoutes(
     },
   );
 
-  // DELETE /api/mcp-servers/:id — remove a server and its secrets.
   app.delete<{ Params: { id: string } }>(
     "/api/mcp-servers/:id",
     async (request, reply) => {
@@ -195,8 +161,6 @@ export async function registerMcpRoutes(
     },
   );
 
-  // POST /api/mcp-servers/:id/test — connectivity test, proxied into a
-  // session container. 409 if no active container exists.
   app.post<{ Params: { id: string } }>(
     "/api/mcp-servers/:id/test",
     async (request, reply) => {
@@ -206,7 +170,7 @@ export async function registerMcpRoutes(
         return { error: `MCP server "${request.params.id}" not found` };
       }
 
-      // Find any session runner that can proxy the test into its container.
+      // User-supplied MCP commands must run inside a session container.
       let runner: McpTestCapableRunner | undefined;
       for (const id of runnerRegistry.ids()) {
         const candidate = runnerRegistry.get(id);
@@ -269,21 +233,6 @@ export async function registerMcpRoutes(
     },
   );
 
-  // -------------------------------------------------------------------------
-  // OAuth (docs/088-mcp-integration §"Phase 2")
-  //
-  // Path layout:
-  //   GET    /api/mcp-servers/oauth/providers   — provider list + connection state
-  //   POST   /api/mcp-servers/oauth/start       — { source } → { authorizeUrl }
-  //   GET    /api/mcp-servers/oauth/callback    — provider redirects here with ?code&state
-  //   DELETE /api/mcp-servers/oauth/:source     — disconnect
-  //
-  // The OAuth state store is per-orchestrator-process and short-lived
-  // (10-minute TTL); flow values never touch disk. Token storage lives in
-  // CredentialStore.mcpOAuth and is read into the agent's MCP env by
-  // `collectMcpAgentEnv()`.
-  // -------------------------------------------------------------------------
-
   app.get("/api/mcp-servers/oauth/providers", async () => {
     return {
       providers: listMcpOAuthProviders(credentialStore).map(({ provider, status }) => ({
@@ -292,8 +241,6 @@ export async function registerMcpRoutes(
         description: provider.description,
         mcpUrl: provider.mcpUrl,
         defaultServerName: provider.defaultServerName,
-        // Don't echo the env var name — operators can see it in startup logs
-        // when missing. Exposing it here just clutters the response.
         status,
       })),
     };
@@ -333,20 +280,11 @@ export async function registerMcpRoutes(
   app.get<{ Querystring: { code?: string; state?: string; error?: string; error_description?: string } }>(
     "/api/mcp-servers/oauth/callback",
     {
-      // planning#370 — the OAuth provider redirects the popup here, so this
-      // lands as a `Sec-Fetch-Site: cross-site` top-level navigation and the
-      // origin guard would otherwise refuse it. Safe to exempt because the
-      // route authenticates the landing itself: `state` is the one-time value
-      // this instance issued at `/oauth/start`, and an unknown one is rejected
-      // below. The exemption covers only a GET document navigation with no
-      // `Origin` — a cross-origin `fetch()` at this path is still refused.
+      // Permit the provider's redirect; handleOAuthCallback validates one-time state.
       config: { crossOriginNavigation: true },
     },
     async (request, reply) => {
       const { code, state, error, error_description: errorDescription } = request.query;
-      // Provider may redirect here with `?error=...` on user-cancel /
-      // misconfigured client. Render a friendly closing page rather than
-      // erroring out.
       if (error) {
         reply.type("text/html");
         return renderClosePopupHtml({
@@ -370,9 +308,6 @@ export async function registerMcpRoutes(
           credentialStore,
           fetchImpl: oauthFetchImpl,
         });
-        // Reuse the agent-env refresh path — the new MCP_PLATFORM_<…> env
-        // var is computed from CredentialStore in the loader passed to
-        // ServiceManager.syncSecrets().
         refreshAgentEnvForAllSessions(serviceManagers);
         reply.type("text/html");
         return renderClosePopupHtml({
@@ -406,14 +341,6 @@ export async function registerMcpRoutes(
   );
 }
 
-/**
- * Derive the callback URL from the inbound request's `x-forwarded-*` / `host`
- * headers. Used when the deps don't supply an explicit `oauthRedirectUri`.
- *
- * Honors `x-forwarded-proto` / `x-forwarded-host` so the URL the provider
- * redirects back to matches what the user sees in their address bar (the
- * outer proxy in production, the dev host in development).
- */
 function deriveCallbackUrl(headers: Record<string, string | string[] | undefined>): string {
   const proto = headerString(headers["x-forwarded-proto"]) ?? "http";
   const host = headerString(headers["x-forwarded-host"]) ?? headerString(headers.host) ?? "localhost:3000";
@@ -425,13 +352,6 @@ function headerString(v: string | string[] | undefined): string | undefined {
   return v;
 }
 
-/**
- * Tiny HTML page rendered into the OAuth popup after the callback. It
- * postMessages the result up to the opener (the Settings panel) and then
- * closes itself. Falls back to a static success/failure message if the
- * popup wasn't opened with `window.open()` (e.g. the user pasted the URL
- * directly into a tab).
- */
 function renderClosePopupHtml(opts: { ok: boolean; source: string; message: string }): string {
   const payload = JSON.stringify({
     type: "shipit-mcp-oauth-result",

@@ -1,41 +1,22 @@
-/**
- * docs/287-agent-merge-per-repo §4 — the durable record that an agent merge was
- * attempted, written BEFORE the REST call and deleted once its outcome has been
- * recorded.
- *
- * The call can reject AFTER GitHub accepted it, so the row turns "we do not
- * know" into a question answerable later: is `expected_sha` merged in THAT pull
- * request? The failure's shape is never consulted. `merging` means the outcome
- * is unknown; `settling` means a response came back, which stops a stale "still
- * open" read erasing the proof. One row per session, by primary key.
- */
+/** Written before the merge call: a failed response does not prove GitHub rejected it. */
 import type { DatabaseManager } from "../shared/database.js";
 
-/**
- * docs/288 — `pending` is a REQUEST, not an attempt: `gh pr merge --auto` wrote
- * it and the executor has not called GitHub yet. That is why it, alone, may be
- * replaced or cleared by anything.
- */
+/** Only pending requests can be replaced; later states may represent a completed merge. */
 export type AgentMergeClaimState = "pending" | "merging" | "settling";
 
 export type AgentMergeMethod = "merge" | "squash" | "rebase";
 
-/** The `gh pr merge --squash|--rebase` flag, narrowed. Unknown reads as `merge`. */
 export function mergeMethodFor(method: string | undefined): AgentMergeMethod {
   return method === "squash" ? "squash" : method === "rebase" ? "rebase" : "merge";
 }
 
 export interface AgentMergeClaim {
   sessionId: string;
-  /** `github:<owner>/<repo>`, case-normalised — see `git-utils.ts` `repoId`. */
   repoId: string;
   prNumber: number;
-  /** The head the merge gate observed, and the commit the merge was pinned to. */
   expectedSha: string;
   state: AgentMergeClaimState;
-  /** docs/288 — a request is performed long after the flag was passed. */
   method: AgentMergeMethod;
-  /** `direct` for `gh pr merge`, `auto` for a request the executor carries out. */
   origin: "direct" | "auto";
   createdAt: string;
 }
@@ -51,7 +32,6 @@ interface ClaimRow {
   created_at: string;
 }
 
-/** The merge's natural identity, for correlating log lines across a restart. */
 export function mergeRecordId(claim: Pick<AgentMergeClaim, "repoId" | "prNumber" | "expectedSha">): string {
   return `agent-merge:${claim.repoId}#${claim.prNumber}@${claim.expectedSha}`;
 }
@@ -62,7 +42,6 @@ function fromRow(row: ClaimRow): AgentMergeClaim {
     repoId: row.repo_id,
     prNumber: row.pr_number,
     expectedSha: row.expected_sha,
-    // Unknown reads as `merging`: the state that grants the fewest powers.
     state: row.state === "settling" ? "settling" : row.state === "pending" ? "pending" : "merging",
     method: row.method === "squash" ? "squash" : row.method === "rebase" ? "rebase" : "merge",
     origin: row.origin === "auto" ? "auto" : "direct",
@@ -72,34 +51,14 @@ function fromRow(row: ClaimRow): AgentMergeClaim {
 
 export class AgentMergeClaimStore {
   private db;
-  /**
-   * docs/288 — sessions whose merge REST call is in flight **in this process,
-   * right now**. Deliberately in memory and not a row: the question it answers
-   * is "may reconciliation touch this?", and a `merging` row left by a crash
-   * must be reconciled while one being merged this instant must not. A restart
-   * empties the set, which is exactly the crash case answering correctly.
-   *
-   * Without it, session activation fires reconciliation, which reads the pull
-   * request as still open, deletes the row as unmerged — and GitHub then accepts
-   * the outstanding request, leaving a merge with no record at all.
-   */
+  // Block reconciliation during live calls; after restart, reconcile the surviving rows.
   private readonly mergeInFlight = new Set<string>();
 
   constructor(dbManager: DatabaseManager) {
     this.db = dbManager.db;
   }
 
-  /**
-   * docs/288 req 4 — an in-flight merge whose permission was withdrawn before
-   * its PUT went out. Same lifetime and same reasoning as {@link mergeInFlight}:
-   * the window it describes is one process's, and a restart means the PUT either
-   * never happened or already did, which reconciliation resolves either way.
-   *
-   * Needed because revocation cannot touch a `merging` row — that row may be the
-   * only evidence of a merge — while a merge that has NOT been sent yet is
-   * exactly what requirement 4 says to cancel. This is the difference between
-   * the two, and a column cannot hold it.
-   */
+  // Revoke unsent calls without deleting rows that may be evidence of a merge.
   private readonly mergeCancelled = new Set<string>();
 
   markMergeInFlight(sessionId: string): void {
@@ -119,34 +78,14 @@ export class AgentMergeClaimStore {
     return this.mergeCancelled.has(sessionId);
   }
 
-  /**
-   * Record a merge about to be attempted. **Single-flight** against an attempt;
-   * it supersedes a docs/288 request, which `gh pr merge` makes redundant.
-   *
-   * A row left `merging` by a crash does block the next merge, which is the
-   * intended direction; the reconciliation triggers resolve it.
-   */
   claim(claim: Omit<AgentMergeClaim, "state" | "origin" | "createdAt">): boolean {
     return this.write(claim, "merging", "direct");
   }
 
-  /**
-   * docs/288 req 1 — record a REQUEST: `gh pr merge --auto` asking ShipIt to
-   * merge this exact commit once its checks pass. Refused over an attempt, for
-   * the same single-flight reason; a `pending` row is replaced, because an agent
-   * that pushes again and re-arms at the new commit is the ordinary case.
-   */
   arm(claim: Omit<AgentMergeClaim, "state" | "origin" | "createdAt">): boolean {
     return this.write(claim, "pending", "auto");
   }
 
-  /**
-   * The single-flight rule, in one place. An attempt whose outcome is unknown
-   * (`merging`) or still being written (`settling`) may never be written over:
-   * replacing one loses a merge still in flight — A merges but answers slowly, B
-   * replaces A's row and releases it on "already merged", A finds nothing to
-   * settle. A `pending` row is not an attempt and carries no such risk.
-   */
   private write(
     claim: Omit<AgentMergeClaim, "state" | "origin" | "createdAt">,
     state: AgentMergeClaimState,
@@ -171,8 +110,6 @@ export class AgentMergeClaimStore {
       })();
       return written;
     } catch (err) {
-      // A second orchestrator holding the write lock lands here, which is the
-      // safe answer. The route turns `false` into one message; this says why.
       console.warn(`[agent-merge] claim refused for ${claim.sessionId}:`, err);
       return false;
     }
@@ -185,12 +122,6 @@ export class AgentMergeClaimStore {
     return row ? fromRow(row) : null;
   }
 
-  /**
-   * Every outstanding ATTEMPT, for reconciliation. Deliberately excludes
-   * `pending`: reconciliation resolves a merge whose outcome is unknown, and a
-   * request has not been attempted — settlement would read it as "not merged"
-   * and delete the very row the executor is waiting to act on.
-   */
   list(): AgentMergeClaim[] {
     const rows = this.db
       .prepare("SELECT * FROM agent_merge_claims WHERE state != 'pending' ORDER BY created_at")
@@ -198,18 +129,11 @@ export class AgentMergeClaimStore {
     return rows.map(fromRow);
   }
 
-  /**
-   * The session's outstanding ATTEMPT, or null. Same exclusion as {@link list}
-   * and for the same reason: settlement asks "did this merge?" and DELETES the
-   * row when the answer is no, which would destroy a request that has not been
-   * attempted at all.
-   */
   getAttempt(sessionId: string): AgentMergeClaim | null {
     const claim = this.get(sessionId);
     return claim && claim.state !== "pending" ? claim : null;
   }
 
-  /** docs/288 — the executor's work list, oldest first. */
   listPending(): AgentMergeClaim[] {
     const rows = this.db
       .prepare("SELECT * FROM agent_merge_claims WHERE state = 'pending' ORDER BY created_at")
@@ -217,18 +141,7 @@ export class AgentMergeClaimStore {
     return rows.map(fromRow);
   }
 
-  /**
-   * docs/288 — `pending → merging`, the instant before the REST call. The
-   * `state = 'pending'` filter is what makes two executors, or an executor and a
-   * revocation, unable to both act on one request.
-   *
-   * Matched on the WHOLE identity, not session + SHA: a session can switch
-   * branches and arm a DIFFERENT pull request at the same commit while a pass is
-   * awaiting GitHub. On a narrower match that stale pass promotes the
-   * replacement row and then merges its own older `pr_number` with its own
-   * `method`, leaving the merge that happened described by a row naming another
-   * pull request entirely.
-   */
+  // Match the full identity: another PR can be armed at the same SHA during an await.
   beginMerging(claim: Pick<AgentMergeClaim, "sessionId" | "expectedSha" | "prNumber" | "repoId" | "method">): boolean {
     const res = this.db.prepare(
       `UPDATE agent_merge_claims SET state = 'merging'
@@ -238,18 +151,9 @@ export class AgentMergeClaimStore {
     return res.changes > 0;
   }
 
-  /**
-   * docs/288 req 4 — the whole of revocation. Only `pending` rows: a row past it
-   * is being settled or resolved from its tuple and can no longer merge
-   * anything, so there is nothing left to cancel. Returns the cancelled rows so
-   * the caller can tell each session why.
-   */
   cancelPendingForRepo(repoId: string, record?: (claim: AgentMergeClaim) => void): AgentMergeClaim[] {
     let cancelled: AgentMergeClaim[] = [];
     this.db.transaction(() => {
-      // Read, delete and record, all filtered the same way and all inside the
-      // transaction: the returned rows are exactly the ones that went, and the
-      // notice telling each session why cannot be lost between the two.
       const rows = this.db
         .prepare("SELECT * FROM agent_merge_claims WHERE state = 'pending' AND repo_id = ?")
         .all(repoId) as ClaimRow[];
@@ -259,12 +163,6 @@ export class AgentMergeClaimStore {
       cancelled = rows.map(fromRow);
       for (const claim of cancelled) record?.(claim);
 
-      // req 4 — and the merges that are ALREADY under way for this repository
-      // but have not sent their PUT. Their rows must survive (a `merging` row
-      // can be the only evidence of a merge), so the cancellation is recorded
-      // beside them and read by the executor immediately before it sends.
-      // Without this, revoking and re-granting during the merge call's own
-      // preparatory read leaves the original request free to merge.
       const inFlight = this.db
         .prepare("SELECT session_id FROM agent_merge_claims WHERE state = 'merging' AND repo_id = ?")
         .all(repoId) as { session_id: string }[];
@@ -275,20 +173,13 @@ export class AgentMergeClaimStore {
     return cancelled;
   }
 
-  /**
-   * docs/288 — end a request that will not be carried out, and write the notice
-   * that says why in the SAME transaction. req 3 promises the transcript says
-   * so, and "delete, then append" loses the explanation for good if anything
-   * fails in between. `record` must be synchronous and do no I/O.
-   */
+  /** Delete and record atomically; record must be synchronous and do no external I/O. */
   releasePending(
     claim: Pick<AgentMergeClaim, "sessionId" | "expectedSha" | "prNumber" | "repoId" | "method">,
     record?: () => void,
   ): boolean {
     let released = false;
     this.db.transaction(() => {
-      // Whole identity, for the same reason as `beginMerging`: a stale pass must
-      // not cancel a replacement request and explain it with the wrong reason.
       const res = this.db.prepare(
         `DELETE FROM agent_merge_claims
          WHERE session_id = ? AND expected_sha = ? AND pr_number = ? AND repo_id = ? AND method = ?
@@ -301,17 +192,13 @@ export class AgentMergeClaimStore {
     return released;
   }
 
-  /** The merge is known to have happened; its effects are now being written. */
   markSettling(sessionId: string, expectedSha: string): boolean {
     const res = this.db.prepare(
-      // `merging` only: `settling` is proof a response came back, and a docs/288
-      // request has not been attempted at all.
       "UPDATE agent_merge_claims SET state = 'settling' WHERE session_id = ? AND expected_sha = ? AND state = 'merging'",
     ).run(sessionId, expectedSha);
     return res.changes > 0;
   }
 
-  /** Drop the claim — settlement written, or GitHub definitively refused. */
   release(sessionId: string, expectedSha: string): boolean {
     const res = this.db.prepare(
       "DELETE FROM agent_merge_claims WHERE session_id = ? AND expected_sha = ?",
@@ -319,10 +206,6 @@ export class AgentMergeClaimStore {
     return res.changes > 0;
   }
 
-  /**
-   * Release a claim whose merge did NOT happen. The `state = 'merging'` filter
-   * keeps "only an unresolved attempt may be discarded" in the statement.
-   */
   releaseUnmerged(sessionId: string, expectedSha: string): boolean {
     const res = this.db.prepare(
       "DELETE FROM agent_merge_claims WHERE session_id = ? AND expected_sha = ? AND state = 'merging'",
@@ -330,16 +213,10 @@ export class AgentMergeClaimStore {
     return res.changes > 0;
   }
 
-  /**
-   * Write the transcript record and drop the claim **atomically** — "record,
-   * then delete" produces a second notice when recovery re-settles the row after
-   * a crash between the two. `record` must be synchronous and do no I/O.
-   */
+  /** Record and delete atomically; record must be synchronous and do no external I/O. */
   releaseAfterRecording(sessionId: string, expectedSha: string, record: () => void): boolean {
     let released = false;
     this.db.transaction(() => {
-      // The row is the permission to record, checked inside the transaction so
-      // two overlapping settlements cannot both write.
       const row = this.db
         .prepare("SELECT session_id FROM agent_merge_claims WHERE session_id = ? AND expected_sha = ?")
         .get(sessionId, expectedSha);

@@ -14,7 +14,6 @@ import { credentialStorageEnvNames } from "../src/server/shared/catalogue/index.
 
 const REPO_ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 
-/** A `fetch` double that records calls and answers from a route table. */
 function fakeFetch(handlers: Record<string, { status?: number; body?: unknown }>): {
   fetchImpl: FetchImpl;
   calls: { method: string; url: string; body: unknown }[];
@@ -117,9 +116,6 @@ describe("seedCredentials", () => {
   });
 
   it("does not treat a connected ACCOUNT as a reason to skip the string credential", async () => {
-    // An account and a supplied token are different credentials of the same
-    // mode — Anthropic's subscription accepts both — so an account must not
-    // suppress the seed.
     const { fetchImpl, calls } = fakeFetch({
       ...OK_BOOTSTRAP,
       "GET /api/credential-routes": {
@@ -135,8 +131,6 @@ describe("seedCredentials", () => {
   });
 
   it("seeds nothing at all when the existing-route list cannot be read", async () => {
-    // No server-side uniqueness key for a `sub` mode, so a blind POST after a
-    // lost GET duplicates the credential once per boot.
     for (const listing of [{ status: 500, body: { error: "boom" } }, { body: {} }]) {
       const { fetchImpl, calls } = fakeFetch({
         ...OK_BOOTSTRAP,
@@ -189,7 +183,6 @@ describe("seedCredentials", () => {
     const { fetchImpl, calls } = fakeFetch(OK_BOOTSTRAP);
     const result = await seedCredentials({ fetchImpl, baseUrl: "http://orch", env: {} }, opts);
     expect(result.skipped).toBe(true);
-    // Not even the health probe: a developer with no secrets pays nothing.
     expect(calls).toHaveLength(0);
   });
 
@@ -216,8 +209,6 @@ describe("seedCredentials", () => {
 
 describe("warnAboutAmbientAuth", () => {
   it("warns that ANY metered key can become what background work spends on", () => {
-    // Not just the vendor-native names: `firstEligibleNonTurnSelection` walks
-    // the catalogue over whatever credentials exist.
     const lines = warnAboutAmbientAuth(collectCandidates({ DEEPSEEK_API_KEY: "k" }));
     expect(lines).toHaveLength(1);
     expect(lines[0]).toContain("DEEPSEEK_API_KEY");
@@ -243,11 +234,6 @@ describe("warnAboutAmbientAuth", () => {
   });
 });
 
-/**
- * The guard the scope depends on: `x-shipit-secrets` is static YAML and cannot
- * enumerate the catalogue, so adding a service would silently make it
- * untestable in dogfood. This fails the build instead, naming the missing key.
- */
 describe("the dev service's x-shipit-secrets block", () => {
   const compose = parse(readFileSync(path.join(REPO_ROOT, "docker-compose.yml"), "utf8")) as {
     services: Record<string, { "x-shipit-secrets"?: { name: string }[] }>;
@@ -264,40 +250,11 @@ describe("the dev service's x-shipit-secrets block", () => {
     ).toEqual([]);
   });
 
-  // Deliberately NOT asserted: that the block contains nothing else. The dev
-  // service may legitimately need an unrelated secret (`GITHUB_TOKEN` already
-  // is one), and forbidding that would make this guard block work it has no
-  // opinion about. A stale entry left by a renamed `storageEnv` is
-  // indistinguishable from a deliberate one, so it is not worth the false
-  // positives. (Cross-agent review found the earlier assertion too strict.)
-
   it("declares no duplicate names", () => {
     expect(declared).toEqual([...new Set(declared)]);
   });
 });
 
-/**
- * The mirror image of the guard above, and the whole reason the `onboarding`
- * service exists (docs/118).
- *
- * That service is a ShipIt that has never been set up, so the first-run flow
- * can be exercised without deleting the developer's real keys. What makes it
- * uncredentialed is precisely what it does NOT declare: a name in
- * `x-shipit-secrets` is what injects the value, `adoptEnvCredentials` turns an
- * injected service variable into a stored credential at boot (docs/252 req 20),
- * and `resolveHarnessOnboarding` then stamps the install as onboarded —
- * permanently, since nothing clears that stamp.
- *
- * So a single line added here in good faith ("it needs a key to be useful")
- * silently converts the fresh instance into a second configured one, and the
- * symptom is an absence: the panel under test never appears. `GITHUB_TOKEN` is
- * allowed and deliberate — the services onboarding is the subject, and making
- * the developer re-paste a GitHub token to reach it is friction rather than
- * coverage. Every catalogue `storageEnv` is not.
- *
- * Unlike the `dev` block, exact-membership IS asserted here: this list has no
- * legitimate reason to grow, and the failure it prevents is invisible.
- */
 describe("the onboarding service's x-shipit-secrets block", () => {
   const compose = parse(readFileSync(path.join(REPO_ROOT, "docker-compose.yml"), "utf8")) as {
     services: Record<string, { "x-shipit-secrets"?: { name: string }[] }>;

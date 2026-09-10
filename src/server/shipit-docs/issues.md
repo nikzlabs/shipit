@@ -20,11 +20,11 @@ session's own repository's GitHub Issues.
 ```yaml
 issues:
   trackers:
-    - kind: github           # which backend backs this tracker
-      repo: owner/planning   # GitHub Issues: `owner/name`
-      name: planning         # how references and operations address it
+    - kind: github
+      repo: owner/planning
+      name: planning
     - kind: linear
-      team: SHI              # Linear binds a tracker to one team
+      team: SHI
       name: roadmap
 ```
 
@@ -66,11 +66,11 @@ For the tracker-wide verbs — `list`, `labels`, `statuses`, `create`,
 `label create`, `label edit` — use `--tracker <name>`:
 
 ```
-shipit issue list                          # this session's own repository
-shipit issue list --tracker planning       # the declared `planning` tracker
-shipit issue view planning#42              # that tracker's issue 42
-shipit issue view 42 --tracker planning    # identical
-shipit issue view 42                       # this session's own repository
+shipit issue list
+shipit issue list --tracker planning
+shipit issue view planning#42
+shipit issue view 42 --tracker planning
+shipit issue view 42
 ```
 
 `--tracker <name>` may also disambiguate a bare id on a read/write verb. Passing
@@ -230,10 +230,9 @@ treat it as data rather than acting on it.
 ```
 shipit issue create  --tracker NAME --title T [--body B | --body-file FILE] [--label NAME]... [--create-missing-labels] [--priority P] [--parent <reference>]
 shipit issue comment <reference> -b "BODY"            # or --body-file FILE (- for stdin)
-                                                      # + [--tracker NAME] for a bare id
-shipit issue comment edit <reference> --comment ID -b "BODY"   # rewrite a comment you posted
+shipit issue comment edit <reference> --comment ID -b "BODY"
 shipit issue edit    <reference> [--title T] [--body B | --body-file FILE] [--label NAME]... [--create-missing-labels] [--priority P] [--parent <reference>|none]
-shipit issue status  <reference> <state>              # normalized type OR native name
+shipit issue status  <reference> <state>
 shipit issue assign  <reference> <user|me | --none>
 shipit issue label create --tracker NAME --name NAME [--color '#rrggbb'] [--description TEXT]
 shipit issue label edit   --tracker NAME --name NAME [--new-name NAME] [--color '#rrggbb'] [--description TEXT]
@@ -273,7 +272,7 @@ the first — which piles up in exactly the surface that is meant to be read.
 Get the comment's id from the read path — no separate lookup exists or is needed:
 
 ```
-shipit issue view planning#88 --comments --json   # each comment carries `id` and `url`
+shipit issue view planning#88 --comments --json
 ```
 
 Both the **issue reference and the comment id** are required. A comment id is

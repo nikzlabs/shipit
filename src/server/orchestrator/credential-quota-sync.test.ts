@@ -1,21 +1,3 @@
-/**
- * planning#339 — **a string-delivered subscription's quota read-out follows the
- * credential behind it**, at every place a credential is written.
- *
- * An account-backed subscription gets this for free: signing in seeds a
- * baseline (`bootstrap-managers.ts`) and signing out clears the cache. A pasted
- * secret has neither event, so the two moments have to be named at each writer
- * — and there are two writers, which is the part that is easy to get half
- * right. `POST /api/credential-routes` is the Services surface; `POST
- * /api/agents/:id/env` is onboarding, the Codex tab and the dogfood seeder, and
- * it reaches the same store through `upsertSingleStringCredential`.
- *
- * These are guard tests rather than behaviour tests: each hook is one line at a
- * call site, and the failure when one is missing is silent — a GLM pill showing
- * a number for a key that was replaced an hour ago, or one showing a number for
- * a credential the user removed.
- */
-
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
@@ -79,8 +61,6 @@ describe("a supplied credential's quota read-out follows the credential (plannin
   }
 
   it("seeds a baseline when the credential is added", async () => {
-    // Nothing pushes GLM's numbers during a turn, so without this the pill sits
-    // empty until the user happens to press refresh.
     const routeId = await addGlmCredential();
     expect(refreshes).toEqual([{ modeKey: "zai:sub", reason: "seed", routeId }]);
   });
@@ -101,9 +81,6 @@ describe("a supplied credential's quota read-out follows the credential (plannin
       url: `/api/credential-routes/${routeId}`,
       payload: { secret: "glm-key-2" },
     });
-    // `manual`, not `seed`: a replaced secret is a DIFFERENT credential wearing
-    // the same route id, so the cached reading describes a key that is gone and
-    // a seed — which self-skips once a reading exists — would leave it there.
     expect(refreshes).toEqual([{ modeKey: "zai:sub", reason: "manual", routeId }]);
   });
 
@@ -114,9 +91,6 @@ describe("a supplied credential's quota read-out follows the credential (plannin
   });
 
   it("re-reads for the OTHER writer — the agent-env route", async () => {
-    // `POST /api/agents/:id/env` routes a catalogue `storageEnv` name into the
-    // same credential store (docs/252 phase 2). A reader seeded only from the
-    // Services surface shows nothing for a key written through onboarding.
     const res = await app.inject({
       method: "POST",
       url: "/api/agents/claude/env",
@@ -130,8 +104,6 @@ describe("a supplied credential's quota read-out follows the credential (plannin
   });
 
   it("says nothing about a key mode, which has no allowance to report", async () => {
-    // req 10 keeps that slot empty rather than filling it with a placeholder,
-    // so there is no read-out to seed and no upstream call to spend.
     await app.inject({
       method: "POST",
       url: "/api/credential-routes",

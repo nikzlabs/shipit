@@ -1,27 +1,3 @@
-/**
- * Marketplace + plugin install service (docs/149 — skill install UX).
- *
- * Pure functions over the catalog cache on disk + the `MarketplaceStore`.
- * Consumed by the marketplace HTTP routes and (in future) any WS handler
- * that wants live install progress.
- *
- * v1 scope:
- *   - Pre-seeded official Claude and Codex catalogs.
- *   - Discover lists plugins whose `marketplace.json` source is an in-repo
- *     relative path AND that contain at least one `skills/<name>/SKILL.md`.
- *     External plugins (git URL sources) are visible in the upstream CLI but
- *     not installable from ShipIt in v1 — deferred to v2.
- *   - Install writes `<agent skills dir>/skills/<plugin>__<skill>/SKILL.md` + an
- *     install marker (`.shipit-installed.json`) and auto-commits with a
- *     path-scoped `git add` so unrelated working-tree edits stay out.
- *   - Per-workspace install mutex serializes install↔install AND
- *     install↔post-turn-commit on the same workspace.
- *
- * v0 spike note (Claude): verified empirically against Claude CLI 2.1.140
- * that the flat `<plugin>__<skill>/` directory layout with frontmatter
- * `name: <plugin>:<skill>` resolves `/<plugin>:<skill>` correctly.
- */
-
 import crypto from "node:crypto";
 import fsSync from "node:fs";
 import fs from "node:fs/promises";
@@ -43,22 +19,11 @@ import type {
 import type { MarketplaceStore } from "../marketplace-store.js";
 import { ServiceError } from "./types.js";
 
-/** Sentinel file written into every ShipIt-managed skill directory. */
 export const INSTALL_MARKER_FILENAME = ".shipit-installed.json";
 
-/** Frontmatter regex used by skill-scan; mirrored here so we can parse plugin SKILL.md. */
 const FRONTMATTER_RE = /^---\s*\n([\s\S]*?)\n---/;
 
-/**
- * Per-workspace install mutex (runtime state only — NOT persisted). Serializes
- * concurrent installs on the same workspace AND coordinates with the post-turn
- * commit path. `postTurnCommit()` takes this same map to avoid a race window
- * where its `git add -A` runs simultaneously with an install's path-scoped
- * `git add`. Same shape as `_mcpInstallMutex` in `session-worker.ts:133`.
- *
- * Surviving a process restart with a lock held would be a bug, so this lives
- * in the service module and not in any SQLite store.
- */
+// Shared with post-turn commits so their staging cannot race an install commit.
 const _workspaceMutex = new Map<string, Promise<unknown>>();
 
 export function withWorkspaceLock<T>(
@@ -81,56 +46,11 @@ export function withWorkspaceLock<T>(
   return run;
 }
 
-// ---- Catalog cache directory layout ----
-
-/** Resolve a catalog id's on-disk cache dir under `<stateDir>/marketplace-cache/`. */
 export function getCatalogCacheRoot(stateDir: string): string {
   return path.join(stateDir, "marketplace-cache");
 }
 
-// ---- Catalog fetch ----
-
-/**
- * Ensure the catalog cache for `id` is present on disk, cloning it on first
- * use. Updates the store's status row. Returns the path to the catalog repo.
- *
- * v1 only handles `kind: "github"` and `kind: "git"` sources (the official
- * Claude catalog is a `github` source). Other source kinds throw a clear
- * error so adding them later (v2's add-marketplace verb) surfaces here, not
- * silently in the UI.
- *
- * ## Two failures this must not turn into a dead end (planning#418)
- *
- * The Discover tab's only recovery affordance is a Retry button that re-enters
- * here, so anything this function cannot recover from is permanent for the user
- * — the skill browser stays a red row with no catalog behind it, and §1 says
- * they do not have a shell on the orchestrator volume to go fix it by hand.
- * Both halves below exist for that reason.
- *
- *   - **The existing clone is unusable.** Observed in the wild as `error:
- *     insufficient permission for adding an object to repository database
- *     .git/objects` — a `.git` the git process cannot write, which every
- *     subsequent `git fetch` in that same directory reproduces exactly. A
- *     catalog cache is disposable, so a failed update REBUILDS it (a fresh
- *     clone into a sibling, renamed into place) rather than retrying the
- *     operation that cannot succeed. The swap needs write permission on
- *     `cacheRoot` only, never on the tree being replaced, which is what lets it
- *     recover from a clone dir this process cannot touch at all.
- *
- *     Note "the git process", not "the orchestrator": under docs/266 the two
- *     are not the same uid. `safeSimpleGit(cacheDir)` resolves a drop from the
- *     TOP-LEVEL tree, so a cache root owned by a non-root uid makes even a root
- *     orchestrator run git as that uid, against a `.git/objects` a root-era
- *     fetch left root-owned. The rebuild cures that for good: a fresh clone is
- *     uniformly owned, so the resolver and the objects dir stop disagreeing.
- *     {@link describeCacheOwnership} logs the pair so a recurrence says so.
- *   - **The remote is unreachable.** A network blip must not blank a catalog
- *     that is sitting readable on disk. When both the update and the rebuild
- *     fail but the cached manifest still parses, the row is marked
- *     `fetch-failed` (so the Retry chip and the reason stay visible) and the
- *     STALE cache is returned, so the plugin list still renders. Only a cache
- *     with nothing usable in it throws.
- */
+/** Rebuild failed updates; if both attempts fail, keep serving a readable stale cache. */
 export async function ensureCatalogCloned(
   store: MarketplaceStore,
   marketplaceId: string,
@@ -159,9 +79,7 @@ async function ensureCatalogClonedLocked(
     });
   };
 
-  // A pre-populated cache directory that isn't a git repo (test fixtures,
-  // or an admin-placed catalog) is treated as authoritative — we don't
-  // re-fetch over it. The presence of a marketplace manifest is the signal.
+  // A supplied manifest without a git repository is authoritative.
   const hasGit = await pathExists(path.join(cacheDir, ".git"));
   if (!hasGit && await findMarketplaceManifestPath(cacheDir) !== null) {
     markOk();
@@ -187,12 +105,7 @@ async function ensureCatalogClonedLocked(
       } catch (rebuildErr) {
         const msg = `${updateError} (rebuilding the cache also failed: ${(rebuildErr as Error).message})`;
         store.setFetchStatus(marketplaceId, "fetch-failed", { fetchError: msg });
-        // Serve what is on disk rather than nothing — the row already carries
-        // the reason, so the failure is reported without costing the user the
-        // catalog they could otherwise still browse. The manifest has to PARSE,
-        // not merely exist: returning a cache `listPlugins` will throw 500 on
-        // would rebuild the same dead end one layer up, and the client hides
-        // that 500 behind the fetch-failed row (`SkillsTab.tsx`).
+        // Require a parseable manifest; existence alone can defer the failure to listing.
         if (await catalogIsReadable(cacheDir)) return cacheDir;
         throw new ServiceError(502, `Failed to fetch marketplace ${marketplaceId}: ${msg}`);
       }
@@ -215,26 +128,7 @@ async function ensureCatalogClonedLocked(
   }
 }
 
-/**
- * Per-catalog serialization for {@link ensureCatalogCloned}.
- *
- * Not optional once a rebuild exists. Two callers reach the same catalog id
- * concurrently in normal operation: the boot pre-clone in `route-registry.ts`
- * fires one `void ensureCatalogCloned(...)` per marketplace in a single tick,
- * and the Discover / Retry routes call in on demand. Unserialized, a rebuild is
- * actively destructive rather than merely wasteful — `sweepRebuildLeftovers`
- * deletes `<id>.rebuild-*`, so one caller's sweep removes another's staging
- * clone mid-flight, and the window between the two renames leaves `cacheDir`
- * absent, which sends a concurrent caller down the first-clone path (a full
- * clone racing the rename) or makes it throw a spurious 502 over a cache that is
- * healthy a moment later. Last-writer-wins on `setFetchStatus` then leaves the
- * row disagreeing with the disk.
- *
- * Keyed by cache DIRECTORY, not by marketplace id, so two cache roots (the
- * tests, and a future second state dir) never serialize against each other.
- * Runtime state only — a lock surviving a process restart would be a bug — and
- * the same shape as {@link withWorkspaceLock} above.
- */
+// Serialize rebuilds so one caller cannot sweep another's staging directory.
 const _catalogMutex = new Map<string, Promise<unknown>>();
 
 function withCatalogLock<T>(cacheDir: string, fn: () => Promise<T>): Promise<T> {
@@ -252,7 +146,6 @@ function withCatalogLock<T>(cacheDir: string, fn: () => Promise<T>): Promise<T> 
   return run;
 }
 
-/** Does the cached catalog still parse? The predicate for serving a stale copy. */
 async function catalogIsReadable(cacheDir: string): Promise<boolean> {
   try {
     await readMarketplaceManifest(cacheDir);
@@ -262,7 +155,6 @@ async function catalogIsReadable(cacheDir: string): Promise<boolean> {
   }
 }
 
-/** Bring an existing catalog clone up to date, in place. */
 async function updateCatalogClone(cacheDir: string, ref: string | undefined): Promise<void> {
   const git = safeSimpleGit(cacheDir);
   await git.fetch("origin");
@@ -270,21 +162,11 @@ async function updateCatalogClone(cacheDir: string, ref: string | undefined): Pr
     await git.checkout(ref);
     await git.pull("origin", ref).catch(() => undefined);
   } else {
-    // Default branch — try main, then master.
     await git.pull("origin").catch(() => undefined);
   }
 }
 
-/**
- * Shallow-clone a catalog into `destDir`.
- *
- * The ONE bare `safeSimpleGit()` in this file (censused by
- * `git-hooks-guard-coverage.test.ts`): there is no local source tree whose uid
- * could be resolved, and the destination is ShipIt's own root-owned
- * `<stateDir>/marketplace-cache`, a sibling of `sessions/` and not under it —
- * so no ownership handoff is owed. Kept as one call site so both the first
- * clone and a rebuild share it and the census stays at one.
- */
+// No source-tree UID exists yet; the catalog destination belongs to the orchestrator.
 async function cloneCatalog(url: string, destDir: string, ref: string | undefined): Promise<void> {
   const git = safeSimpleGit();
   const cloneArgs = ["--depth", "1"];
@@ -292,14 +174,7 @@ async function cloneCatalog(url: string, destDir: string, ref: string | undefine
   await git.clone(url, destDir, cloneArgs);
 }
 
-/**
- * Replace a catalog cache that can no longer be updated with a fresh clone.
- *
- * Ordered so the working cache is never destroyed on speculation: clone FIRST
- * into a staging sibling, and only once that succeeds rename the old tree aside
- * and the new one into place. A rebuild that fails for any reason (offline,
- * bad ref, unwritable `cacheRoot`) leaves the existing cache exactly as it was.
- */
+/** Clone before moving the old cache; attempt rollback if the replacement rename fails. */
 async function rebuildCatalogClone(opts: {
   cacheRoot: string;
   marketplaceId: string;
@@ -322,15 +197,10 @@ async function rebuildCatalogClone(opts: {
     throw err;
   }
 
-  // Both renames touch directory entries in `cacheRoot` and nothing inside the
-  // trees, so this works even when the tree being replaced is one we cannot
-  // open for writing — which is the whole point of the rebuild.
+  // Renames need cacheRoot access, without write access inside the old tree.
   try {
     await fs.rename(cacheDir, staleDir);
   } catch (err) {
-    // A denial at the `cacheRoot` level lands here, with a complete fresh clone
-    // already on disk. Drop it now rather than leaving it for the next
-    // rebuild's sweep — a permanent denial means every Retry arrives here.
     await fs.rm(stagingDir, { recursive: true, force: true }).catch(() => undefined);
     throw err;
   }
@@ -342,10 +212,6 @@ async function rebuildCatalogClone(opts: {
     throw err;
   }
 
-  // Best effort by necessity: the tree we just replaced may be precisely the one
-  // whose files cannot be unlinked. Anything left behind is swept by the next
-  // rebuild — and the rebuild it followed leaves a cache that updates in place
-  // again, so this costs one directory per incident rather than one per fetch.
   await fs.rm(staleDir, { recursive: true, force: true }).catch(() => {
     console.warn(
       `[marketplace] could not remove the replaced cache at ${staleDir} — it will be swept on the next rebuild`,
@@ -353,7 +219,6 @@ async function rebuildCatalogClone(opts: {
   });
 }
 
-/** Drop staging/stale directories a previous rebuild could not clean up. */
 async function sweepRebuildLeftovers(cacheRoot: string, marketplaceId: string): Promise<void> {
   let entries: string[];
   try {
@@ -367,22 +232,7 @@ async function sweepRebuildLeftovers(cacheRoot: string, marketplaceId: string): 
   }
 }
 
-/**
- * Everything that decides whether a write into `.git/objects` is permitted —
- * the fact a permission failure does NOT carry, and one that otherwise takes
- * shell access to the orchestrator volume to reconstruct.
- *
- * It reports THREE directories, not one, because the interesting failure is a
- * disagreement between them. `resolveGitTreeUid` (docs/266) stats only the
- * top-level tree, so a cache whose checkout root is owned by a non-root uid
- * makes even a ROOT orchestrator's git drop to that uid — and it then meets a
- * `.git/objects` a later root-era fetch left root-owned. That produces exactly
- * `insufficient permission for adding an object to repository database
- * .git/objects` from a root process, which is otherwise impossible and was the
- * mechanism this bug's write-up first ruled out. Logging only the process uid
- * and the top-level dir cannot show it; logging the uid the resolver actually
- * chose, beside all three trees, names it outright.
- */
+/** Compare the effective git UID with nested owners to expose mixed-ownership failures. */
 function describeCacheOwnership(cacheDir: string): string {
   const resolved = resolveGitTreeUid(cacheDir);
   return [
@@ -427,16 +277,12 @@ async function pathExists(p: string): Promise<boolean> {
   }
 }
 
-// ---- Marketplace listing (passthrough to the store) ----
-
 export function listMarketplaces(
   store: MarketplaceStore,
   agentId?: AgentId,
 ): MarketplaceInfo[] {
   return store.list(agentId);
 }
-
-// ---- Plugin listing ----
 
 interface RawMarketplaceManifest {
   name?: string;
@@ -474,14 +320,7 @@ interface RawPluginManifest {
   };
 }
 
-/**
- * List installable plugins from a (pre-fetched) catalog cache. v1 only
- * surfaces in-repo plugins (`source` is a relative path string) that have at
- * least one `skills/<name>/SKILL.md` — those are installable as a simple file
- * copy. External plugins ("url" / "git-subdir") are filtered out for v1.
- *
- * The catalog must already be on disk; call `ensureCatalogCloned()` first.
- */
+/** Requires a fetched catalog. Only local sources with skills are installable here. */
 export async function listPlugins(
   store: MarketplaceStore,
   marketplaceId: string,
@@ -526,7 +365,6 @@ export async function listPlugins(
   return out;
 }
 
-/** Read a plugin's `SKILL.md` body — used by the install sheet's Monaco preview. */
 export async function readPluginSkillBody(
   store: MarketplaceStore,
   marketplaceId: string,
@@ -543,9 +381,7 @@ export async function readPluginSkillBody(
   const inRepoPath = inRepoSourcePath(raw.source);
   if (!inRepoPath) throw new ServiceError(400, `Plugin ${pluginName} is external — not previewable in v1`);
   const pluginRoot = path.join(cacheDir, inRepoPath);
-  // The URL parameter is the *invocable* name (frontmatter `name:`), which may
-  // differ from the source directory — look it up via the scan so we read the
-  // right SKILL.md file off disk.
+  // The invocable name can differ from the source directory name.
   const skills = await readPluginSkills(pluginRoot);
   const skill = skills.find((s) => s.name === skillName);
   if (!skill) throw new ServiceError(404, `Skill not found: ${pluginName}/${skillName}`);
@@ -572,11 +408,8 @@ async function readMarketplaceManifest(cacheDir: string): Promise<RawMarketplace
 
 async function findMarketplaceManifestPath(cacheDir: string): Promise<string | null> {
   const candidates = [
-    // Claude Code marketplace repos.
     path.join(cacheDir, ".claude-plugin", "marketplace.json"),
-    // Codex repo/personal marketplace layout.
     path.join(cacheDir, ".agents", "plugins", "marketplace.json"),
-    // Local marketplace roots may put the file at the root.
     path.join(cacheDir, "marketplace.json"),
   ];
   for (const candidate of candidates) {
@@ -601,7 +434,6 @@ async function readPluginManifest(pluginRoot: string): Promise<RawPluginManifest
   return null;
 }
 
-/** Return the in-repo relative path if the plugin source is a string like "./plugins/foo". */
 function inRepoSourcePath(source: RawMarketplacePlugin["source"]): string | null {
   const rawPath = typeof source === "string"
     ? source
@@ -625,7 +457,6 @@ async function readPluginSkills(pluginRoot: string): Promise<SkillRef[]> {
   });
 }
 
-/** Source directory name for a SkillRef inside its plugin's `skills/` folder. */
 function skillSrcDirName(skill: SkillRef): string {
   return skill.dirName ?? skill.name;
 }
@@ -640,31 +471,17 @@ async function estimatePluginContextBytes(
       const stat = await fs.stat(path.join(pluginRoot, "skills", skillSrcDirName(s), "SKILL.md"));
       total += stat.size;
     } catch {
-      // Skip skills we can't stat — the listing already gates on the file existing.
+      // Omit unreadable sizes from the estimate.
     }
   }
   return total;
 }
 
-// ---- Install / uninstall ----
-
-/**
- * Compose the destination directory name for a plugin/skill on disk. v1 uses
- * a flat layout (`<plugin>__<skill>/`) so the existing `scanSkillsDir()`
- * picks it up unchanged.
- */
+// The flat layout is discoverable by scanSkillsDir.
 export function targetSkillDirName(pluginName: string, skillName: string): string {
   return `${pluginName}__${skillName}`;
 }
 
-/**
- * Workspace skills root for an agent — `.claude/skills/` on Claude and the
- * configured project skill directory for Codex. The dotfolder name comes from
- * `AgentCapabilities.skillsDirName`; adding a backend means one entry in
- * `AGENT_DEFS`, not a new branch here. Falls back to `.claude` if the
- * registry doesn't know the agent (defensive; should not happen in normal
- * runtime). (docs/155)
- */
 export function skillsRootFor(
   workspaceDir: string,
   agentId: AgentId,
@@ -674,11 +491,6 @@ export function skillsRootFor(
   return path.join(workspaceDir, skillsDirName, "skills");
 }
 
-/**
- * Token the user types in chat to invoke an installed skill — `/foo:bar` on
- * Claude, `$foo:bar` on Codex. Prefix comes from
- * `AgentCapabilities.skillInvocationPrefix`. (docs/155)
- */
 function invocationToken(
   agentId: AgentId,
   pluginName: string,
@@ -689,28 +501,11 @@ function invocationToken(
   return `${prefix}${pluginName}:${skillName}`;
 }
 
-/** sha256 hex of a file's contents, used for the install marker's `skillMdHash`. */
 function sha256(content: string): string {
   return crypto.createHash("sha256").update(content).digest("hex");
 }
 
-/**
- * Install a plugin's skills into `<workspaceDir>/<agentSkillsDir>/`. Each skill
- * lands as `<plugin>__<skill>/SKILL.md` plus a `.shipit-installed.json` marker.
- * Rewrites the SKILL.md frontmatter `name` to `<plugin>:<skill>` so the agent
- * invokes the skill under the catalog's namespace (verified for Claude per the
- * v0 spike; the colon is honored by the CLI on a raw filesystem scan).
- *
- * Refuses if any target directory already exists WITHOUT a marker (hand-written
- * collision) or with a marker whose recorded `skillMdHash` no longer matches the
- * on-disk SKILL.md (user edited it after install — upgrade would silently lose
- * their work).
- *
- * Auto-commits via a path-scoped `git add` (NOT `git add -A`) so unrelated
- * working-tree edits stay out of the install commit.
- *
- * Caller MUST already hold `withWorkspaceLock(workspaceDir, ...)`.
- */
+/** Caller must hold withWorkspaceLock; commit only installed paths to exclude unrelated edits. */
 export async function installPlugin(opts: {
   workspaceDir: string;
   agentId: AgentId;
@@ -743,7 +538,7 @@ export async function installPlugin(opts: {
   const writtenPaths: string[] = [];
   const invocationTokens: string[] = [];
 
-  // Pre-flight: refuse on any collision so we don't half-install.
+  // Check every collision before writing the first skill.
   for (const skill of skills) {
     const targetName = targetSkillDirName(pluginName, skill.name);
     const targetDir = path.join(skillsRoot, targetName);
@@ -789,14 +584,6 @@ export async function installPlugin(opts: {
   return { installedDirs, commitHash, invocationTokens };
 }
 
-/**
- * Refuse to write into a target directory unless it doesn't exist at all.
- *
- * v1 takes the strict line: refuse on ANY existing directory (managed or not).
- * Upgrades are deferred until the install sheet supports the diff view (v3/v4).
- * Hand-written skills surface a clear collision error rather than being
- * silently overwritten.
- */
 async function assertSafeToWrite(targetDir: string): Promise<void> {
   let stat;
   try {
@@ -807,7 +594,6 @@ async function assertSafeToWrite(targetDir: string): Promise<void> {
   if (!stat.isDirectory()) {
     throw new ServiceError(409, `Cannot install over file: ${targetDir}`);
   }
-  // Distinguish managed vs hand-written for a clearer error message.
   const markerPath = path.join(targetDir, INSTALL_MARKER_FILENAME);
   try {
     await fs.access(markerPath);
@@ -825,11 +611,9 @@ async function assertSafeToWrite(targetDir: string): Promise<void> {
   }
 }
 
-/** Rewrite the `name:` field inside a SKILL.md frontmatter block. */
 export function rewriteFrontmatterName(body: string, newName: string): string {
   const match = FRONTMATTER_RE.exec(body);
   if (!match) {
-    // No frontmatter — prepend one so the agent sees a valid `name`.
     return `---\nname: ${newName}\n---\n\n${body}`;
   }
   const original = match[1];
@@ -839,17 +623,6 @@ export function rewriteFrontmatterName(body: string, newName: string): string {
     : `name: ${newName}\n${original}`;
   return body.replace(match[0], `---\n${replaced}\n---`);
 }
-
-// Uninstall is intentionally NOT a ShipIt feature (docs/149, 2026-06-09):
-// removing a marketplace skill is just "delete the `<plugin>__<skill>/`
-// directory and commit it" — a plain agent task under CLAUDE.md §5 ("chat is
-// the input surface, the agent is the actor"). The user asks the agent to
-// remove a skill rather than pressing a dedicated button, so there's no
-// uninstall service, route, or installed-scan here. Install keeps its UI
-// because it adds real value the agent can't replicate cheaply: catalog
-// discovery, preview-before-consent, and the namespaced flat-dir write.
-
-// ---- Helpers exported for tests ----
 
 export const _internals = {
   FRONTMATTER_RE,

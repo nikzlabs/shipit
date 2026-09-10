@@ -1,66 +1,4 @@
-/**
- * Steady-state disk reclaim — the disk sweeps that grow with the CLOCK, not with
- * a crashed teardown. Split out of `startup-janitor.ts` (planning#198) and run on the
- * periodic disk-tier escalation pass (`escalateDiskTiers`, fired at startup, after
- * each session activation, and on the hourly timer) rather than boot-only.
- *
- * Each sweep here accumulates as repos / worker-images / sessions come and go,
- * independent of whether any teardown failed:
- *   - **Orphan `repo-cache/<hash>` and `dep-cache/<hash>` directories** whose repo
- *     URL has no `repos` row or whose `last_used_at` is older than
- *     `DISK_JANITOR_CACHE_DAYS` (default 30). Grows as repos are added/abandoned.
- *   - **Orphan `repo-memory/<hash>` directories** (docs/155) — shared per-repo
- *     Claude memory keyed by the same repo hash. Same liveness rule as the caches;
- *     lives under `credentialsDir`, so it only runs when that dep is wired.
- *   - **Obsolete `overlay-base/<scope-hash>` dirs** (docs/183 Phase 2/3, planning#195)
- *     reclaimed by a **deterministic live-mount check, not an age cutoff**. A base
- *     scope keys on `overlayRuntimeKey` (base-image digest + arch), so a worker-image
- *     rebuild rotates every scope hash — an old-image scope goes obsolete the instant
- *     the image rolls. A scope is reclaimable the moment it has zero live mounts:
- *     the union of (a) base generations pinned by a RUNNING session-worker container
- *     right now and (b) the bases every resumable session would re-pin for the CURRENT
- *     runtime (`liveOverlayScopeHashes`). Gated on a `liveOverlayScopeHashes` source;
- *     skipped entirely until that source is wired.
- *   - **Stale `pnpm-store/<hash>` dirs** (docs/197 Part 2) — one shared store per
- *     runtime fingerprint; a worker-image rebuild rotates the hash, leaving the
- *     prior runtime's store behind. Gated on a `pnpmStoreRuntimeHash` source.
- *   - **Cache-side Git LFS objects** (docs/232) under `repo-cache/<hash>/lfs/objects`
- *     that **no session clone hardlinks** (`nlink === 1`) and that nothing has
- *     touched within `DISK_JANITOR_LFS_OBJECT_DAYS` (default 14). This one grows
- *     *inside a live cache* as LFS refs advance and superseded asset versions pile
- *     up — the whole-directory cache sweep above only helps once the repo itself
- *     goes cold, which for an actively-used asset-heavy repo is never. Safe with no
- *     live-session coordination because `nlink` is an exact, never-stale liveness
- *     signal and LFS objects are content-addressed (a wrong delete costs a
- *     re-download). Ungated: with sharing off the store is empty, so the walk
- *     no-ops.
- *
- * Why periodic (not boot-only): unlike the failure-recovery sweeps in
- * `runDiskJanitor` (orphan volumes/networks/workspaces/credentials/logs/branches —
- * which only exist if a teardown crashed and so do NOT accumulate steadily), these
- * grow with normal use. prod is deployed *manually*, so the orchestrator can run a
- * long time between restarts; a boot-only sweep would let these caches pile up
- * unreclaimed between deploys, and a wedged box (full disk → new starts fail) would
- * never reclaim at all. Riding the escalation pass — which is the one steady-state
- * disk trigger, already fired hourly + per-activation + on pressure — fixes both.
- *
- * Note the `dep-cache/<hash>/nm-store` reclaim (docs/183 Phase 1) deliberately stays
- * in `runDiskJanitor`: it's a one-time migration cleanup (the worker never writes
- * nm-store again), so it neither accumulates nor recovers from a crash — boot is the
- * natural place for a one-shot sweep.
- *
- * Behavior knobs (env vars):
- *   - DISK_JANITOR_CACHE_DAYS: age in days at which unreferenced `repo-cache/<hash>`,
- *     `dep-cache/<hash>`, `repo-memory/<hash>`, and stale `pnpm-store/<hash>` dirs are
- *     deleted. Default `30`.
- *   - DISK_JANITOR_LFS_OBJECT_DAYS: age in days at which an unreferenced cache-side
- *     LFS object is unlinked. Default `14` — tighter than the cold-artifact window
- *     because these are superseded asset versions in a *live* repo, and a wrong
- *     delete costs only a re-download.
- *   - The pace between destructive ops is wired by the caller (the escalation pass's
- *     `DISK_ESCALATION_PACE_MS`).
- */
-
+// Periodic cache reclaim; failed-teardown recovery remains in startup-janitor.ts.
 import path from "node:path";
 import fs from "node:fs/promises";
 import type { RepoStore } from "./repo-store.js";
@@ -73,93 +11,34 @@ import { PNPM_STORE_SUBDIR } from "./overlay-session.js";
 import { getMessage, sleep, defaultRunDocker } from "./disk-utils.js";
 
 const DEFAULT_CACHE_DAYS = 30;
-
-/**
- * docs/232 — retention for cache-side Git LFS objects. Tighter than the 30-day
- * cold-artifact window because these are *superseded asset versions* inside a
- * repo that is still live, not an abandoned repo's cache, and because getting it
- * wrong costs a re-download rather than anything unrecoverable.
- */
 const DEFAULT_LFS_OBJECT_DAYS = 14;
 const LFS_OBJECT_DAYS_ENV = "DISK_JANITOR_LFS_OBJECT_DAYS";
 
 export interface SteadyStateReclaimDeps {
-  /** Root that holds `repo-cache/<hash>`, `dep-cache/<hash>`, `overlay-base/<hash>`, `pnpm-store/<hash>`. */
   stateDir: string;
   repoStore: RepoStore;
-  /** Age threshold (days) for unreferenced cache / memory / pnpm-store directories. */
   cacheDays?: number;
-  /**
-   * docs/232 — age threshold (days) for cache-side LFS objects no clone links.
-   * Defaults to `DISK_JANITOR_LFS_OBJECT_DAYS`, else 14.
-   */
   lfsObjectDays?: number;
-  /**
-   * docs/138 / docs/155 — source-of-truth credentials root (e.g. `/credentials`).
-   * When provided, the `repo-memory/<hash>` sweep runs. Omitted in tests / runtimes
-   * without container credentials.
-   */
   credentialsDir?: string;
-  /**
-   * Shell-out hook for docker commands (overlay live-mount check). Overridable for
-   * tests so we never touch a real Docker daemon from unit tests.
-   */
   runDocker?: (args: string[]) => Promise<string>;
-  /**
-   * docs/183 Phase 2/3, planning#195 — overlay rolling-base GC, resumable-session half of
-   * the liveness union. Returns the set of overlay-base scope-hashes that every
-   * resumable session would re-pin for the CURRENT runtime on activation. The sweep
-   * unions this with the generations a RUNNING container pins right now (resolved
-   * internally via `docker volume inspect`) and removes every `overlay-base/<hash>/`
-   * outside that union. MUST be provided before the sweep runs; the overlay-base
-   * sweep is skipped when omitted. Returns an empty set under the `OVERLAY_DEP_STORE`
-   * kill switch so the sweep stays inert when the feature is off.
-   */
+  /** Current-runtime scopes resumable sessions would mount; omission skips overlay reclaim. */
   liveOverlayScopeHashes?: () => Set<string>;
-  /**
-   * docs/197 Part 2 — pnpm shared-store GC. Returns the hash of the store dir for the
-   * CURRENT runtime (the live store that must never be swept), or `null` when the
-   * `OVERLAY_DEP_STORE=0`/`false` kill switch disables the feature — in which case no
-   * store is live, so every `pnpm-store/<hash>` past `cacheDays` is reapable. The
-   * sweep runs only when this dep is provided.
-   */
+  /** Null permits reclaim of every cold store; omission skips the sweep. */
   pnpmStoreRuntimeHash?: () => string | null;
-  /**
-   * docs/262 req 28 — the dependency-store artifacts declared plugins still
-   * pin: base scope hashes (a live overlay lowerdir, so reclaiming one is
-   * corruption) and download-cache hashes (an accelerator, so reclaiming one is
-   * only a cold install). Both sweeps consult it; omitted, plugin artifacts are
-   * invisible to them and are reclaimed as orphans.
-   */
+  /** Plugin artifacts are not represented by repoStore or session dep-dir scopes. */
   livePluginStoreArtifacts?: () => Promise<{ scopeHashes: Set<string>; cacheHashes: Set<string> }>;
-  /**
-   * Throttle: milliseconds to pause between each destructive operation so the reclaim
-   * drips out rather than hammering the Docker daemon / fs that a concurrent agent
-   * start also needs. Defaults to `0` (no pause) so unit tests stay fast.
-   */
   paceMs?: number;
 }
 
 export interface SteadyStateReclaimResult {
-  /** `repo-cache/<hash>` + `dep-cache/<hash>` dirs removed (unreferenced or past cutoff). */
   cachesRemoved: number;
-  /** docs/155 — shared per-repo Claude memory dirs removed (unreferenced repo hash). */
   repoMemoryDirsRemoved: number;
-  /** docs/183 Phase 2/3 — stale, unreferenced `overlay-base/<hash>` dirs removed. */
   overlayBasesRemoved: number;
-  /** docs/197 Part 2 — stale `pnpm-store/<hash>` dirs removed (non-current runtime, past cutoff). */
   pnpmStoresRemoved: number;
-  /** docs/232 — cache-side LFS objects unlinked (unreferenced by any clone, past cutoff). */
   lfsObjectsRemoved: number;
-  /** docs/232 — bytes actually reclaimed by the LFS object sweep. */
   lfsBytesFreed: number;
 }
 
-/**
- * Run the steady-state disk reclaim once. Each sub-step is wrapped in try/catch so
- * one failing reclaim doesn't block the others. Always resolves — never rejects — so
- * callers can fire-and-forget from the escalation pass without needing a `.catch`.
- */
 export async function runSteadyStateReclaim(
   deps: SteadyStateReclaimDeps,
 ): Promise<SteadyStateReclaimResult> {
@@ -175,24 +54,13 @@ export async function runSteadyStateReclaim(
   const paceMs = deps.paceMs ?? 0;
   const cacheDays = deps.cacheDays ?? DEFAULT_CACHE_DAYS;
 
-  // docs/262 req 28 — plugin generations pin dependency-store artifacts that
-  // neither sweep below can recognize on its own: a base scope keyed on a plugin
-  // repository matches no session's `agent.dep-dirs` scope, and a plugin's
-  // download cache matches no repository in the repo store. Resolved once, for
-  // both. A failure here yields no protection, so it must not be silent.
   let pluginLive: { scopeHashes: Set<string>; cacheHashes: Set<string> } | null = null;
   let pluginLiveFailed = false;
   if (deps.livePluginStoreArtifacts) {
     try {
       pluginLive = await deps.livePluginStoreArtifacts();
     } catch (err) {
-      // **Fail closed** (review finding): proceeding with no plugin liveness is
-      // not "sweep a bit less carefully", it is "delete every plugin artifact",
-      // including bases that are live overlay lowerdirs. Both sweeps are
-      // accelerators and this pass fires on every session activation, so
-      // skipping one costs nothing and the next pass retries. This is the same
-      // rule the overlay-base sweep already follows for its own liveness source:
-      // without a way to confirm what is in use, do not touch the subtree.
+      // Missing liveness must not be treated as proof that no plugin uses a base.
       pluginLiveFailed = true;
       console.warn("[disk-janitor] could not resolve live plugin dependency artifacts:", getMessage(err));
     }
@@ -210,10 +78,6 @@ export async function runSteadyStateReclaim(
     }
   }
 
-  // docs/183 Phase 2/3, planning#195 — sweep obsolete overlay bases via a deterministic
-  // live-mount check (not an age cutoff). Gated on a live-scope-hash source: removing
-  // a base dir that still backs a live overlay `lowerdir` is undefined behavior, so
-  // without a way to confirm which bases are in use we don't touch the subtree at all.
   if (deps.liveOverlayScopeHashes && !pluginLiveFailed) {
     try {
       result.overlayBasesRemoved = await sweepOrphanedOverlayBases(
@@ -227,9 +91,6 @@ export async function runSteadyStateReclaim(
     }
   }
 
-  // docs/197 Part 2 — sweep stale pnpm shared stores. Gated on a runtime-hash source
-  // (mirrors the overlay-base gate): without a way to know which store is live, we
-  // don't touch the subtree at all.
   if (deps.pnpmStoreRuntimeHash) {
     try {
       result.pnpmStoresRemoved = await sweepStalePnpmStores(
@@ -253,11 +114,7 @@ export async function runSteadyStateReclaim(
     }
   }
 
-  // docs/232 — prune the cache-side LFS store. Deliberately NOT gated on
-  // `SHIPIT_GIT_LFS_SHARED_STORE`: a deployment that enabled sharing and later
-  // turned it off still has objects to reclaim, and with sharing off the store is
-  // empty so the walk is a no-op anyway. Runs after the cache sweep above, which
-  // may already have removed whole `repo-cache/<hash>` dirs (objects included).
+  // Reclaim old shared objects even if LFS sharing has since been disabled.
   try {
     const lfs = await sweepCacheLfsObjects(deps.stateDir, lfsObjectDays(deps), paceMs);
     result.lfsObjectsRemoved = lfs.removed;
@@ -266,8 +123,6 @@ export async function runSteadyStateReclaim(
     console.warn("[disk-janitor] cache LFS object sweep failed:", getMessage(err));
   }
 
-  // Log only when something was reclaimed — this pass fires per-activation, so an
-  // unconditional line would be noise (mirrors `escalateDiskTiers`).
   if (
     result.cachesRemoved || result.overlayBasesRemoved
     || result.pnpmStoresRemoved || result.repoMemoryDirsRemoved
@@ -287,40 +142,10 @@ export async function runSteadyStateReclaim(
 
 function lfsObjectDays(deps: SteadyStateReclaimDeps): number {
   if (deps.lfsObjectDays !== undefined) return deps.lfsObjectDays;
-  // Read here rather than threading it through the caller like `cacheDays`: no
-  // other sweep shares this window, so a second plumbing hop would buy nothing.
   const raw = Number(process.env[LFS_OBJECT_DAYS_ENV]);
   return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_LFS_OBJECT_DAYS;
 }
 
-/**
- * docs/232 — reclaim cache-side Git LFS objects that no session clone references
- * and that nothing has touched inside the retention window.
- *
- * ## Why this is safe without coordinating with live sessions
- *
- * Two properties do all the work, and neither needs a reachability computation:
- *
- *  - **`nlink` is a free, exact liveness signal.** `linkLfsObjectsIntoClone`
- *    seeds a session by *hardlinking* the cache's object, so an object with
- *    `nlink > 1` is one some clone still holds. Only `nlink === 1` objects are
- *    touched — meaning the unlink genuinely frees the bytes AND cannot affect a
- *    live session. This is exactly the property that made hardlinks the right
- *    design over a shared `lfs.storage`, now paying off a second time: the
- *    kernel already tracks what we would otherwise have to compute, and it can't
- *    be stale.
- *  - **LFS objects are content-addressed, so deletion is recoverable.** Dropping
- *    one the cache still wanted costs a re-download on the next session's
- *    `git lfs pull` — the pre-docs/232 behavior — not a broken checkout. That is
- *    what lets an age heuristic be good enough here.
- *
- * Note this is NOT `git lfs prune`: that needs the binary, its bare-repo support
- * is unverified, and it prunes on a reachability view this doesn't need. An
- * mtime + `nlink` sweep is testable with plain filesystem calls and can't be
- * wrong in a way that matters.
- *
- * Returns the object count and the bytes actually reclaimed.
- */
 async function sweepCacheLfsObjects(
   stateDir: string,
   days: number,
@@ -331,7 +156,7 @@ async function sweepCacheLfsObjects(
   try {
     entries = await fs.readdir(cacheRoot, { withFileTypes: true });
   } catch {
-    return { removed: 0, bytesFreed: 0 }; // no repo caches on this host yet
+    return { removed: 0, bytesFreed: 0 };
   }
   const cutoffMs = Date.now() - days * 24 * 60 * 60 * 1000;
   let removed = 0;
@@ -342,21 +167,12 @@ async function sweepCacheLfsObjects(
     const swept = await pruneLfsObjectTree(objectsDir, cutoffMs);
     removed += swept.removed;
     bytesFreed += swept.bytesFreed;
-    // Paced per repo-cache dir, not per object: unlinking an object is a cheap
-    // metadata op (unlike the `docker volume rm` / recursive rmtree the other
-    // sweeps pace), and a per-object pause would stretch a few thousand assets
-    // into minutes of sleeping.
+    // Pace per repository; a delay per object would make large stores take minutes.
     if (paceMs > 0 && swept.removed > 0) await sleep(paceMs);
   }
   return { removed, bytesFreed };
 }
 
-/**
- * Recursive half of {@link sweepCacheLfsObjects}. Unlinks eligible object files,
- * then removes fanout directories that end up empty so the two-level fanout
- * doesn't leave inode litter behind. Never throws — a file that vanishes
- * mid-sweep (a concurrent clone seeding from this store) is simply skipped.
- */
 async function pruneLfsObjectTree(
   dir: string,
   cutoffMs: number,
@@ -365,7 +181,7 @@ async function pruneLfsObjectTree(
   try {
     entries = await fs.readdir(dir, { withFileTypes: true });
   } catch {
-    return { removed: 0, bytesFreed: 0, emptied: false }; // not an LFS cache
+    return { removed: 0, bytesFreed: 0, emptied: false };
   }
   let removed = 0;
   let bytesFreed = 0;
@@ -380,7 +196,7 @@ async function pruneLfsObjectTree(
         try {
           await fs.rmdir(child);
         } catch {
-          survivors++; // raced with a concurrent write — leave it
+          survivors++;
         }
       } else {
         survivors++;
@@ -388,13 +204,12 @@ async function pruneLfsObjectTree(
       continue;
     }
     if (!entry.isFile()) {
-      survivors++; // symlink/socket — not ours to reclaim
+      survivors++;
       continue;
     }
     try {
       const stat = await fs.lstat(child);
-      // `nlink > 1` → a live clone holds this object; unlinking frees nothing and
-      // would cost that clone's next reader a re-download.
+      // Another hardlink keeps the bytes live, so removing the cache link frees nothing.
       if (stat.nlink > 1 || stat.mtimeMs >= cutoffMs) {
         survivors++;
         continue;
@@ -403,24 +218,12 @@ async function pruneLfsObjectTree(
       removed++;
       bytesFreed += stat.size;
     } catch {
-      survivors++; // vanished or unreadable — skip
+      survivors++;
     }
   }
   return { removed, bytesFreed, emptied: survivors === 0 };
 }
 
-/**
- * docs/155 — remove shared per-repo Claude memory dirs under
- * `<credentialsDir>/repo-memory/<repoHash>` whose repo hash is no longer
- * referenced by a recently-used repo. Keyed exactly like
- * {@link sweepOrphanedCaches}: a hash is "live" iff some `repos` row resolves to
- * it AND that repo's `lastUsedAt` is within `days`. An orphaned memory dir is
- * one whose repo was removed or has gone untouched past the cutoff.
- *
- * Memory is regeneratable accumulation, not the only copy of anything, so this
- * is safe to do without coordinating with live sessions — same posture as the
- * cache sweep. Returns the count of memory dirs removed.
- */
 async function sweepOrphanedRepoMemory(
   credentialsDir: string,
   repoStore: RepoStore,
@@ -441,7 +244,7 @@ async function sweepOrphanedRepoMemory(
   try {
     entries = await fs.readdir(dir);
   } catch {
-    return 0; // No repo-memory subtree yet — nothing to sweep.
+    return 0;
   }
 
   let removed = 0;
@@ -460,23 +263,11 @@ async function sweepOrphanedRepoMemory(
   return removed;
 }
 
-/**
- * Remove `repo-cache/<hash>` and `dep-cache/<hash>` directories whose hash
- * doesn't appear in the active repos table OR whose repo `lastUsedAt` is
- * older than `days`. Bare clones / dep caches can always be recreated, so
- * this is safe to do without coordinating with active sessions.
- */
 async function sweepOrphanedCaches(
   stateDir: string,
   repoStore: RepoStore,
   days: number,
   paceMs: number,
-  /**
-   * docs/262 req 28 — `dep-cache/<hash>` entries owned by a declared plugin
-   * repository rather than by a repository in the store. They can never appear
-   * in the repo-url set below, and this sweep has no age guard, so without them
-   * a plugin's download cache is deleted on the first pass after it is written.
-   */
   extraLiveCacheHashes?: ReadonlySet<string>,
 ): Promise<number> {
   const cutoffMs = Date.now() - days * 86_400_000;
@@ -514,74 +305,9 @@ async function sweepOrphanedCaches(
   return removed;
 }
 
-/**
- * Crash-orphaned `.tmp-*` materialize copies (left by a publish that died after
- * the copy but before the rename) are never overlay-mounted, so the live-mount
- * check can't speak to them. But a publish running concurrently with the sweep is
- * mid-write into one — so they get a short fixed grace window (well above any
- * publish's wall-clock, far below the obsolete 30-day cutoff) instead of an
- * immediate delete. This is the ONLY age guard left in the overlay-base sweep.
- */
-const OVERLAY_TMP_GRACE_MS = 60 * 60 * 1000; // 1 hour
+// Temporary publish copies are not mounted; allow time for an active publish to finish.
+const OVERLAY_TMP_GRACE_MS = 60 * 60 * 1000;
 
-/**
- * docs/183 Phase 2/3, planning#195 — reclaim obsolete overlay bases under
- * `<stateDir>/overlay-base/<scope-hash>/` via a **deterministic live-mount check**,
- * not an age cutoff.
- *
- * A base scope keys on `overlayRuntimeKey` (base-image digest + arch), so a
- * worker-image rebuild rotates every scope hash — an old-image scope is obsolete
- * the instant the image rolls, because no future container can mount it (new
- * containers compute the new scope hash). The 30-day age proxy this replaced
- * therefore over-retained badly (measured: 46 of 47 prod scope dirs, ~26 GB, were
- * dead old-image scopes a 30-day window kept alive) and was unsafe at the boundary
- * (a 31-day-old scope could in principle still be mounted). The live-mount check is
- * exact in both directions.
- *
- * A scope is reclaimable the moment it has ZERO live mounts. "Live" is the union of:
- *
- *   1. **Running-container mounts** — the base generations a RUNNING session-worker
- *      container pins as its overlay `lowerdir` right now, read from
- *      `docker volume inspect` (`liveMountedOverlayBaseGenerations`). This is the
- *      authoritative signal and the ONLY thing that can pin an old-runtime base —
- *      e.g. a container created under the old image still running mid-turn when a
- *      new image deploys. Its base stays pinned until it exits, then drops.
- *   2. **Resumable-session bases** — `resumableScopeHashes`, the CURRENT-runtime
- *      bases every idle (non-evicted) session would re-pin on activation. Covers
- *      sessions whose containers aren't running now, so there's no mount to observe.
- *
- * Any `overlay-base/<hash>/` whose scope-hash is in neither set is removed
- * immediately. For a scope that IS live, the scope dir is kept and only its
- * superseded generations are reaped — see `sweepStaleBaseGenerations`.
- *
- * The repo-url `liveHashes` set used by `sweepOrphanedCaches` is deliberately NOT
- * reused: an overlay-base scope-hash keys on `(repo, runtime fingerprint, dep-dir)`,
- * so it never appears in a repo-url-keyed set — a naive extension would delete every
- * live base on the first run.
- *
- * **If the live-mount reading is INCOMPLETE, the whole sweep is skipped** (planning#439).
- * It used to proceed on the empty set `liveMountedOverlayBaseGenerations` returned on
- * any docker failure, justified by "`resumableScopeHashes` still protects every
- * current-runtime base". That justification was wrong twice over, and both halves
- * corrupted running sessions on prod:
- *
- *   - The union protects a scope's *directory*, and `currentGen` protects only the
- *     *pointer's* generation. NOTHING protects a SUPERSEDED generation a running
- *     container still pins — and the session that publishes generation N+1 is by
- *     construction the session still mounted on N, so this fires by design rather
- *     than by rare race. One failed probe deleted `8769b50c…/g272` under six running
- *     containers at once, with g269–g271 equally exposed.
- *   - `resumableScopeHashes` is built from the non-warm session set, so a WARM-POOL
- *     session's scope has no second line of defence at all: the same failed probe
- *     took the whole `45dab20e664868ce` scope dir out from under a warm container
- *     that had been up 23 minutes.
- *
- * Neither failure surfaces as an error in the affected session — its dep dir just
- * loses every file that lived only in the lower layer, mid-turn. Deferring a reclaim
- * costs disk until the next pass (this runs per session activation and hourly);
- * deleting a live lowerdir costs a corrupted, un-selfrepairable session. So an
- * unreadable live set means "sweep nothing", never "nothing is mounted".
- */
 async function sweepOrphanedOverlayBases(
   stateDir: string,
   resumableScopeHashes: Set<string>,
@@ -593,29 +319,18 @@ async function sweepOrphanedOverlayBases(
   try {
     entries = await fs.readdir(dir);
   } catch {
-    return 0; // No overlay-base subtree yet — nothing to sweep.
+    return 0;
   }
 
-  // The exact `<hash>/g<N>` generations a running container pins right now, and the
-  // scope hashes derived from them — unioned with the resumable-session bases.
   const live = await liveMountedOverlayBaseGenerations(runDocker);
   if (!live.complete) {
-    // Fail CLOSED: an incomplete reading is indistinguishable from "nothing is
-    // mounted", and BOTH arms below (whole-scope removal, superseded-generation
-    // reaping) treat an absent key as a licence to delete. See the header.
+    // Resumable scopes alone cannot protect superseded generations still mounted by containers.
     console.warn(
       "[disk-janitor] overlay live-mount check incomplete — skipping the overlay-base sweep this pass",
     );
     return 0;
   }
-  // planning#440 — the third arm of the union: generations a container being
-  // CREATED right now will mount. `docker ps -q` lists running containers, and a
-  // session's overlay volume is written with its `lowerdir=…/g<N>` before its
-  // container exists, so between the spec decision and `start()` a same-scope
-  // publish can supersede a generation nothing can yet observe as mounted.
-  // Strictly additive — an empty claim set is byte-for-byte the prior behavior,
-  // so this cannot become a new way to read "nothing is claimed" as
-  // "everything is reclaimable" (`overlay-base-claims.ts`).
+  // Claims protect generations selected for containers not yet visible in docker ps.
   const liveGenKeys = live.keys;
   for (const key of liveOverlayBaseClaims()) liveGenKeys.add(key);
   const liveScopeHashes = new Set(resumableScopeHashes);
@@ -624,9 +339,6 @@ async function sweepOrphanedOverlayBases(
   let removed = 0;
   for (const entry of entries) {
     if (liveScopeHashes.has(entry)) {
-      // Live scope — never remove the scope dir, but reap its superseded
-      // generations (bases are immutable `g<N>` children: each publish creates
-      // the next generation and moves the pointer, so old ones accumulate).
       removed += await sweepStaleBaseGenerations(
         stateDir, path.join(dir, entry), entry, liveGenKeys, paceMs,
       );
@@ -634,8 +346,6 @@ async function sweepOrphanedOverlayBases(
     }
     const full = path.join(dir, entry);
     try {
-      // lstat, not stat: a symlink named like a scope-hash must never be treated
-      // as a base dir (and never have its target followed).
       const st = await fs.lstat(full);
       if (!st.isDirectory()) continue;
     } catch {
@@ -653,24 +363,6 @@ async function sweepOrphanedOverlayBases(
   return removed;
 }
 
-/**
- * Reap superseded generations inside one LIVE scope dir, via the live-mount check
- * (planning#195). A `g<N>` child is removed UNLESS it is one of:
- *   - `g0` — the empty cold-start lowerdir; cold mounts pin it and it costs nothing.
- *   - the pointer's current generation — the base a fresh/resuming session mounts.
- *   - a generation in `liveGenKeys` — pinned as a `lowerdir` by a running container
- *     right now (e.g. a container created before the last publish advanced the
- *     pointer; it keeps mounting the older generation until it exits), OR claimed
- *     by a container being created right now (planning#440). `docker ps` lists
- *     RUNNING containers, and a session's overlay volume names its generation
- *     before its container exists — so between the spec decision and `start()` a
- *     same-scope publish supersedes a generation nothing can yet observe as
- *     mounted. The caller unions the unexpired claims from
- *     `overlay-base-claims.ts` into `liveGenKeys` to cover that window.
- * Everything else has no live mount and is reclaimable immediately — no age delay.
- * Crash-orphaned `.tmp-*` copies get the short `OVERLAY_TMP_GRACE_MS` window instead
- * (they're never mounted, but an in-flight publish may be writing one).
- */
 async function sweepStaleBaseGenerations(
   stateDir: string,
   scopeDir: string,
@@ -691,19 +383,17 @@ async function sweepStaleBaseGenerations(
   for (const child of children) {
     const isTmp = child.startsWith(".tmp-");
     const genMatch = /^g(\d+)$/.exec(child);
-    if (!isTmp && !genMatch) continue; // unknown entry — never touch.
+    if (!isTmp && !genMatch) continue;
     const full = path.join(scopeDir, child);
     if (genMatch) {
       const gen = Number(genMatch[1]);
-      if (gen === 0) continue; // empty cold-start lowerdir — always kept.
-      if (currentGen !== null && gen === currentGen) continue; // current base.
-      if (liveGenKeys.has(`${scopeHash}/g${gen}`)) continue; // pinned by a running container.
+      if (gen === 0) continue;
+      if (currentGen !== null && gen === currentGen) continue;
+      if (liveGenKeys.has(`${scopeHash}/g${gen}`)) continue;
     }
     try {
       const st = await fs.lstat(full);
       if (!st.isDirectory()) continue;
-      // `.tmp-*` crash orphans: never mounted, but guard against racing an
-      // in-flight publish with a short grace window (the lone age guard left).
       if (isTmp && st.mtimeMs >= tmpCutoffMs) continue;
     } catch {
       continue;
@@ -720,43 +410,15 @@ async function sweepStaleBaseGenerations(
   return removed;
 }
 
-/**
- * The result of the live-mount probe: the `<hash>/g<N>` keys it read, AND whether
- * that reading can be trusted. The second field is not decoration — an incomplete
- * set is byte-identical to "nothing is mounted", which is a licence to delete.
- */
 interface LiveOverlayMounts {
-  /** Base generations pinned as a `lowerdir` by a RUNNING container, as `<hash>/g<N>`. */
   keys: Set<string>;
-  /**
-   * True when every running container and every overlay volume was read (a target
-   * that disappeared mid-scan counts as read — it pins nothing). False when any
-   * reading was lost, which makes `keys` a LOWER BOUND rather than the live set.
-   */
+  // False means keys is only a lower bound, never evidence for deletion.
   complete: boolean;
 }
 
-/**
- * A container/volume named in one batch that is gone by the time the next command
- * runs. Routine on a busy host — a session container exits between `docker ps` and
- * `docker container inspect` — and NOT a gap in the reading: something that no
- * longer exists pins no lowerdir.
- */
 const DOCKER_VANISHED_RE = /no such (container|volume|object)/i;
 
-/**
- * `docker <verb> inspect` over many names, tolerant of ones that vanish mid-scan.
- *
- * The batch form exits non-zero if ANY named target is gone — **even though it
- * printed valid output for every survivor** — and that output is then reachable
- * only by parsing the rejection message. This function retries one target at a
- * time instead: a vanished target fails alone and is skipped, and only a failure
- * we cannot explain clears `complete`.
- *
- * Reading the batch's partial stdout out of the error string would be the cheaper
- * fix and is deliberately not done: it couples the sweep to `defaultRunDocker`'s
- * message format, and a misparse here deletes live data.
- */
+// A vanished target fails the whole batch. Retry individually instead of parsing partial error output.
 async function inspectTolerantOfVanished(
   runDocker: (args: string[]) => Promise<string>,
   baseArgs: string[],
@@ -779,7 +441,7 @@ async function inspectTolerantOfVanished(
       lines.push(await runDocker([...baseArgs, name]));
     } catch (err) {
       const message = getMessage(err);
-      if (DOCKER_VANISHED_RE.test(message)) continue; // exited mid-scan — pins nothing.
+      if (DOCKER_VANISHED_RE.test(message)) continue;
       console.warn(`[disk-janitor] docker ${kind} inspect failed for ${name}:`, message);
       complete = false;
     }
@@ -787,43 +449,7 @@ async function inspectTolerantOfVanished(
   return { out: lines.join("\n"), complete };
 }
 
-/**
- * planning#195 — enumerate the overlay base generations currently pinned as a
- * `lowerdir` by a RUNNING session-worker container. This is the deterministic
- * "is this base live?" signal that replaces the old 30-day age proxy.
- *
- * Mechanism (exactly the issue's recipe): list running containers, read their
- * mounted overlay volume names (`shipit-<id12>_overlay…`), then
- * `docker volume inspect … {{.Options.o}}` each to recover the
- * `lowerdir=…/overlay-base/<hash>/g<N>` its driver option encodes.
- *
- * We gate on RUNNING containers, NOT "the volume exists on disk": an idle
- * (non-evicted) session keeps its overlay volume for a warm resume, but on resume
- * `createOverlayVolume` re-points it at the CURRENT-runtime base whenever its
- * driver opts disagree — so a lingering idle volume never re-pins its (possibly
- * old-runtime) lowerdir and must not keep an obsolete scope alive. Idle sessions'
- * current-runtime bases are covered by the resumable-session union in the caller.
- *
- * **The converse is the reason a stale volume must never survive a create**
- * (ops finding, 2026-08-19): this probe pins what RUNNING containers name, and
- * the caller's union contributes each resumable session's CURRENT generation — so
- * a volume left naming a SUPERSEDED generation while its session is idle pins
- * nothing, and `sweepStaleBaseGenerations` reclaims the lowerdir out from under
- * it. That is how two of the four damaged production sessions lost the base
- * itself, not just their upper. It needs no fix here because it has no producer
- * once `createOverlayVolume` verifies its own result: the volume is re-pointed at
- * the current generation before anything mounts it.
- *
- * A failed reading is reported as `complete: false`, NEVER as an empty set: this
- * probe is the only protection a superseded-but-mounted generation has, and (since
- * the union is built from non-warm sessions) the only protection a warm-pool
- * session's scope has at all. See `sweepOrphanedOverlayBases`.
- *
- * **What this probe cannot pin, by construction:** a generation whose container
- * does not exist yet. `ps` is the wrong instrument for a container being created,
- * not a hiccup in this one — which is why planning#440's fix is an in-flight claim
- * (`overlay-base-claims.ts`) the caller unions in, rather than anything here.
- */
+// Idle volumes do not pin old generations: creation must repoint them before mounting.
 async function liveMountedOverlayBaseGenerations(
   runDocker: (args: string[]) => Promise<string>,
 ): Promise<LiveOverlayMounts> {
@@ -845,9 +471,6 @@ async function liveMountedOverlayBaseGenerations(
     ids,
     "container",
   );
-  // Overlay volume names match the per-session pattern (overlay-volume.ts); only
-  // session-worker agent containers mount them, so this filter selects exactly
-  // the live overlay mounts without needing a label filter on `docker ps`.
   const OVERLAY_VOL_RE = /^shipit-[a-f0-9-]{12}_overlay/;
   const volNames = new Set(
     mounts.out.split("\n").map((s) => s.trim()).filter((n) => OVERLAY_VOL_RE.test(n)),
@@ -860,9 +483,7 @@ async function liveMountedOverlayBaseGenerations(
     [...volNames],
     "volume",
   );
-  // `o` is `lowerdir=…/overlay-base/<hash>/g<N>,upperdir=…,workdir=…`. The scope
-  // hash (16 hex) + generation appear only in the `overlay-base/` lowerdir segment;
-  // the upper/work dirs live under `sessions/<id>/overlay/`, never `overlay-base/`.
+  // Only lowerdir uses overlay-base/; upperdir and workdir live under sessions/.
   const GEN_RE = /overlay-base\/([0-9a-f]{16})\/g(\d+)/g;
   for (const line of vols.out.split("\n")) {
     GEN_RE.lastIndex = 0;
@@ -874,25 +495,6 @@ async function liveMountedOverlayBaseGenerations(
   return { keys, complete: mounts.complete && vols.complete };
 }
 
-/**
- * docs/197 Part 2 — reclaim stale pnpm shared stores under
- * `<stateDir>/pnpm-store/<runtimeKey-hash>/`.
- *
- * One store per runtime fingerprint; a worker-image rebuild rotates the hash, so
- * the previous runtime's store is left behind. A dir is removed only when BOTH:
- *
- *   1. Its hash is NOT `liveHash` (the current runtime's store, or null when the
- *      feature is off — then nothing is live and every store is a candidate). The
- *      live store is never swept; a session installing into it right now must keep
- *      its hardlink targets.
- *   2. Its mtime is older than `days` — the same age guard the other cache sweeps
- *      use, so a store still in active use by a resuming session of the prior
- *      runtime (recently touched) survives until it has genuinely gone cold.
- *
- * Unlike the overlay base, a pnpm store is a pure content-addressed cache: dropping
- * it costs only a re-fetch+relink on the next install, never user data. Lazily
- * recreated on the next pnpm session for that runtime.
- */
 async function sweepStalePnpmStores(
   stateDir: string,
   liveHash: string | null,
@@ -905,23 +507,22 @@ async function sweepStalePnpmStores(
   try {
     entries = await fs.readdir(dir);
   } catch {
-    return 0; // No pnpm-store subtree yet — nothing to sweep.
+    return 0;
   }
 
   let removed = 0;
   for (const entry of entries) {
-    if (liveHash !== null && entry === liveHash) continue; // live store — never sweep.
+    if (liveHash !== null && entry === liveHash) continue;
     const full = path.join(dir, entry);
     let mtimeMs: number;
     try {
-      // lstat, not stat: a symlink named like a store hash must never be followed.
       const st = await fs.lstat(full);
       if (!st.isDirectory()) continue;
       mtimeMs = st.mtimeMs;
     } catch {
       continue;
     }
-    if (mtimeMs >= cutoffMs) continue; // recently touched — keep (a resume may use it).
+    if (mtimeMs >= cutoffMs) continue;
     try {
       await sleep(paceMs);
       await fs.rm(full, { recursive: true, force: true });

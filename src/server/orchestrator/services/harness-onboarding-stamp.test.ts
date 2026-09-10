@@ -1,14 +1,3 @@
-/**
- * docs/257 req 9 — the historical "has this install ever been set up?" stamp.
- *
- * Req 9's condition is about the install's HISTORY, and every other signal in
- * the tree describes the present — disconnecting deletes the record, so
- * "completed and then removed everything" and "never configured" are otherwise
- * the same bytes. These tests pin the four cases where that distinction is
- * load-bearing, including the one that would look like a bug months later: a
- * stamp that never reached disk must not be reported as completed.
- */
-
 import { describe, it, expect, afterEach, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
@@ -61,14 +50,11 @@ describe("resolveHarnessOnboarding (docs/257 req 9)", () => {
     expect(first.canRunTurns).toBe(true);
     expect(first.harnessOnboardingCompletedAt).toEqual(expect.any(String));
 
-    // A fresh store over the same directory is exactly what a restart is.
     const reloaded = new CredentialStore(dir);
     expect(reloaded.getHarnessOnboardingCompletedAt()).toBe(first.harnessOnboardingCompletedAt);
   });
 
   it("does not stamp an install that cannot run anything", () => {
-    // The migration case req 9 accepts knowingly: an install upgraded with no
-    // credentials is treated as never-configured and does see the panel.
     const store = new CredentialStore(tmpDir());
     const result = resolveHarnessOnboarding(registry(false), store);
     expect(result.canRunTurns).toBe(false);
@@ -77,9 +63,6 @@ describe("resolveHarnessOnboarding (docs/257 req 9)", () => {
   });
 
   it("keeps reporting completed after every credential is removed", () => {
-    // The whole reason the field exists: a user who set ShipIt up and later
-    // removed every credential is not a new user and must not meet the panel
-    // again.
     const store = new CredentialStore(tmpDir());
     const stamped = resolveHarnessOnboarding(registry(true), store).harnessOnboardingCompletedAt;
     expect(stamped).toEqual(expect.any(String));
@@ -97,10 +80,6 @@ describe("resolveHarnessOnboarding (docs/257 req 9)", () => {
   });
 
   it("reports NOT completed when the write fails, and does not keep it in memory", () => {
-    // `save()` swallows write failures and returns normally. If the stamp took
-    // that path, this call would report "completed" from memory, hold that for
-    // the rest of the process, and lose it at the next restart — returning the
-    // panel to a user who finished onboarding, which req 9 says never happens.
     const store = new CredentialStore(tmpDir());
     const write = vi.spyOn(fs, "writeFileSync").mockImplementation(() => {
       throw new Error("ENOSPC: no space left on device");
@@ -111,11 +90,8 @@ describe("resolveHarnessOnboarding (docs/257 req 9)", () => {
     expect(write).toHaveBeenCalled();
     expect(result.canRunTurns).toBe(true);
     expect(result.harnessOnboardingCompletedAt).toBeUndefined();
-    // The in-memory value is reverted too — otherwise the NEXT read in the same
-    // process would report a completion that is not on disk.
     expect(store.getHarnessOnboardingCompletedAt()).toBeUndefined();
 
-    // And once the disk comes back, the ask is simply repeated and succeeds.
     write.mockRestore();
     expect(resolveHarnessOnboarding(registry(true), store).harnessOnboardingCompletedAt)
       .toEqual(expect.any(String));
@@ -138,17 +114,12 @@ describe("buildAgentListPayload carries the stamp (docs/257 req 9)", () => {
   });
 
   it("omits the stamp while nothing has ever been configured", () => {
-    // Absent means "no news" on the wire, which is safe precisely because the
-    // stamp is never cleared: a client can only ever be told it exists.
     const store = new CredentialStore(tmpDir());
     const payload = buildAgentListPayload(registry(false), store, undefined);
     expect(payload.harnessOnboardingCompletedAt).toBeUndefined();
   });
 
   it("keeps emitting the stamp from the sign-OUT broadcast", () => {
-    // The site that matters most: signing out of the last provider is a
-    // producer of this event, and it must not report the install as
-    // never-configured just because it can no longer run anything.
     const store = new CredentialStore(tmpDir());
     const stamped = buildAgentListPayload(registry(true), store, undefined).harnessOnboardingCompletedAt;
     expect(buildAgentListPayload(registry(false), store, undefined).harnessOnboardingCompletedAt).toBe(stamped);

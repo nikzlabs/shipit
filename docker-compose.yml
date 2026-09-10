@@ -1,107 +1,13 @@
-# ShipIt-in-ShipIt (feature 118 — dogfooding mode).
-#
-# When the ShipIt repo is opened in production ShipIt, the outer orchestrator
-# starts this Compose stack as a session-scoped service. The `dev` service
-# runs an *inner* orchestrator with RUNTIME_MODE=local, so it can serve the
-# ShipIt UI from inside the outer session container without trying to spawn
-# Docker containers of its own (which it can't — there's no nested Docker).
-#
-# The outer ShipIt picks up this service when the user starts it manually
-# (because of the `x-shipit-preview: manual` marker), and the preview panel
-# renders the inner UI on port 3000. The dogfooding inner orch is heavy
-# (npm install + vite build + a second orch process), so we don't pay that
-# cost on every session — it boots only when the user explicitly starts it.
-#
-# See docs/118-shipit-ui-local/plan.md for the full design.
 services:
   dev:
-    # Built from docker/Dockerfile.dogfood — a thin node:24 + agent-CLIs image.
-    # It no longer bakes node_modules: the `dev` service shares the agent
-    # container's bind-mounted /workspace/node_modules (populated by
-    # `agent.install`) instead of carrying its own copy. See the volumes and
-    # command notes below, and feature 137 (docs/137-depends-on-install) for
-    # the "share the install output instead of re-installing" rationale.
-    #
-    # `image:` names the build output so Compose can reuse it across stack
-    # restarts. The first session on a given outer host pays the build cost
-    # once; subsequent sessions hit the Docker layer cache and start fast.
     build:
       context: .
       dockerfile: docker/Dockerfile.dogfood
       args:
-        # NAMED here, and it has to be (docs/274, recipe step 3). The images
-        # default to the approved set (install-agent-clis' DEFAULT_HARNESSES,
-        # docs/271), and that set is deliberately NOT every shipped harness:
-        # Grok Build ships installable-but-unchecked, so an unnamed build would
-        # show it as "Not installed" in the inner UI and it could not be
-        # dogfooded at all. This was found the hard way with OpenCode.
-        #
-        # Must stay identical to the `onboarding` block below — both name the
-        # same image tag, so whichever builds last silently wins a disagreement.
+        # Match onboarding: both builds share one image tag.
         SHIPIT_HARNESSES: claude,codex,opencode,grok
     image: shipit-dogfood:local
-    # NO `user:` — ShipIt fills in this session's own identity, and that is the
-    # only arrangement in which this service actually works.
-    #
-    # docs/271 made the workspace group-writable, which was enough to let a
-    # foreign uid CREATE files, and this service ran as 1000:1000 on that basis.
-    # It is not enough for git: `safe.directory` checks the repository's OWNER,
-    # not whether the process can write it, so the inner orchestrator (uid 1000)
-    # failed on every repo in its own state dir with "detected dubious ownership
-    # in repository at /workspace/.inner-shipit/marketplace-cache/…" — owned by
-    # 2000006, mode 2775. Group-write cannot fix that, and no `safe.directory`
-    # exception should be added to paper over it (docs/272).
-    #
-    # No `npm install` here anymore. The `dev` service now shares the agent
-    # container's /workspace/node_modules (see volumes below), which
-    # `agent.install` populates at session boot — so the deps are already in
-    # place by the time the user manually starts this heavyweight service.
-    # Running our own `npm install` would be both redundant AND unsafe: it
-    # would write the *shared* tree concurrently with `agent.install`, which
-    # is the tarball-extraction corruption race the old per-service
-    # node_modules volume existed to avoid (feature 137 is the broader
-    # "depend on install instead of racing it" move).
-    #
-    # 137's declarative gate (`x-shipit-depends-on-install`) only auto-applies
-    # to `x-shipit-preview: auto` services — it does NOT cover this `manual`
-    # service (`ServiceManager.startService` starts manual services on demand
-    # without consulting the gate). So instead of the gate we use a tiny
-    # wait-for-deps guard: block until `node_modules/.bin/vite` exists before
-    # launching. In the common case agent.install finished long ago and this
-    # is an instant check; it only ever waits if the user starts `dev` during
-    # the brief boot-time install window.
-    #
-    # `mkdir -p` ensures SHIPIT_STATE_DIR exists before the inner orch
-    # tries to open its SQLite db there (DatabaseManager doesn't create
-    # parent dirs). Required because `.inner-shipit/` is in .gitignore
-    # and won't exist on a fresh checkout.
-    #
-    # The agent CLIs (claude / codex / opencode) are NOT installed here — they're baked
-    # into Dockerfile.dogfood. ServiceManager runs `docker compose up -d
-    # --build`, so a changed Dockerfile.dogfood is always rebuilt and the
-    # bake can't go stale on a host with an old cached `shipit-dogfood:local`.
-    # See "Agent CLIs must be baked into the dev image" in
-    # docs/118-shipit-ui-local/plan.md.
-    #
-    # Dev-mode wiring: Vite's dev server runs on the exposed port 3000
-    # (so the outer preview proxy reaches it directly) and the inner
-    # orchestrator runs on internal port 4000. Vite proxies `/api`,
-    # `/ws`, and `/preview` to the orchestrator using `API_PORT=4000`
-    # (see `vite.config.ts`). This gives real HMR through the outer
-    # preview proxy (which already patches dev-server WS URLs in
-    # `preview-proxy.ts`) — client edits hot-reload instead of
-    # requiring a `vite build` round-trip.
-    #
-    # The seed step (docs/131) is `scripts/seed-inner.ts`, launched in a
-    # backgrounded, detached subshell (`( … &)`) so Vite starts immediately and
-    # the inner UI is usable while it runs. It seeds credentials, then agent
-    # roles, then repos — that file owns the order and says why, so a step is
-    # added there rather than by editing this shell string. Every step waits for
-    # the orch itself, exits 0 on any failure, skips what is already present, and
-    # no-ops on DOGFOOD_SEED=0 (plus a per-step switch of its own).
-    #
-    # `npx tsx`, not `node`: the seeders import the model catalogue, which is
-    # TypeScript.
+    # Inherit the session UID for git ownership; share agent.install output.
     command: >
       sh -c "
       mkdir -p $${SHIPIT_STATE_DIR:-/workspace/.inner-shipit} $${AGENT_HOME:-/root} &&
@@ -113,159 +19,24 @@ services:
       API_PORT=4000 exec npx vite --host 0.0.0.0 --port 3000
       "
     working_dir: /workspace
-    # `init: true` enables a tini-style PID 1 so orphaned agent CLI
-    # subprocesses are reaped. In containerized mode the kernel-level
-    # cleanup handles this when the session container is destroyed; in
-    # local mode the inner orch is the parent of every agent subprocess
-    # and `init` is the safety net.
     init: true
     environment:
       RUNTIME_MODE: local
-      # docs/150 §9 — local mode hosts agent processes in-process, so agentHome()
-      # (default /home/shipit, a user this image doesn't have) has to be pinned
-      # to something the runtime user can actually write.
-      #
-      # This used to be `/root`, on the premise that local mode "keeps the
-      # orchestrator on root". That stopped being true: with
-      # SHIPIT_SESSION_WORKER_UID set on the deployment, `compose-generator`
-      # fills `user: <uid>:<gid>` in for every service without an explicit
-      # `user:` — including this one. So the inner orch runs NON-ROOT against
-      # HOME=/root and every credential write failed with
-      # `EACCES: permission denied, lstat '/root/.codex'` (planning#284).
-      # (That uid was 1000 when this note was written; since docs/272 it is this
-      # session's own identity. The number never mattered here — only that it is
-      # not root.)
-      #
-      # The state dir is the natural home: bind-mounted, owned by the same uid,
-      # already gitignored, and it survives a service restart. Kept out of
-      # Dockerfile.dogfood's ENV on purpose — the image can't know the mount
-      # path, so compose is the only place that can be right.
+      # Both homes must be writable by the inherited session UID.
       AGENT_HOME: /workspace/.inner-shipit/agent-home
-      # planning#390 — and `HOME` alongside it, at the same path, because
-      # planning#284 moved only half of the problem. Dockerfile.dogfood still
-      # sets `ENV HOME=/root` (correct for a root container, wrong for this one:
-      # it runs as the non-root identity ShipIt fills in — see the note above —
-      # and /root is `drwx------ root root`), so
-      # everything in here that keys off `$HOME` rather than `$AGENT_HOME` kept
-      # landing on an unwritable directory. Codex is the one that dies loudest —
-      # it reads `$HOME/.codex/config.toml` before doing any work — and the
-      # concrete second reader is the orchestrator's own naming shell-out
-      # (`session-namer.ts`, which falls back to `process.env.HOME`), whose
-      # dogfood Codex runs failed the same config read and returned `name: null`.
-      # (git is NOT one: `git-config.ts` pins `GIT_CONFIG_GLOBAL`.)
-      #
-      # This is the ambient half of the fix and NOT the whole of it: the Codex
-      # adapter now names its own HOME from `agentHome()` at spawn time
-      # (planning#390), so a redirected turn works even where nothing set HOME
-      # correctly. Both, deliberately — the adapter so no deployment can
-      # reintroduce the bug, this so the rest of the container is honest.
-      #
-      # Safe to point here: the `command:` above already `mkdir -p`s it, and the
-      # image bakes nothing under /root that the runtime reads (the agent CLIs
-      # live in /opt/agent-cli, the Playwright browsers in
-      # /opt/playwright-browsers, both deliberately off $HOME for this same
-      # non-root reason).
       HOME: /workspace/.inner-shipit/agent-home
-      # Note: the orchestrator's PORT (4000) and Vite's port (3000) are set
-      # inline in the `command:` above, not here, because we run two
-      # processes with different ports inside this single service.
-      #
-      # Inner-orch's notion of "the workspace the user is editing." This
-      # is the bind-mounted source tree below.
       WORKSPACE_DIR: /workspace
-      # Move the inner orch's SQLite db, repo-cache, and dep-cache OUT of
-      # the visible workspace so they don't pollute the outer agent's view
-      # of the source tree (and don't get auto-committed). `.inner-shipit/`
-      # is in .gitignore.
       SHIPIT_STATE_DIR: /workspace/.inner-shipit
-      # Force chokidar (used by both `tsx watch` for the server and
-      # `vite build --watch` for the client) to use polling instead of
-      # inotify. Without this, chokidar creates one inotify instance per
-      # watched source file (~300+ files), which blows past the kernel's
-      # `fs.inotify.max_user_instances` limit (commonly 128 on Linux
-      # hosts) and crashes the dev server with:
-      #   ENOSPC: System limit for number of file watchers reached
-      # Polling avoids inotify entirely; the 1s interval keeps CPU low
-      # while still feeling live. This also tends to be more reliable on
-      # Docker bind-mounts, where inotify events propagating from the
-      # host filesystem can be lossy depending on the host platform.
       CHOKIDAR_USEPOLLING: "1"
       CHOKIDAR_INTERVAL: "1000"
-      # Move Vite's dep-optimizer cache OFF the overlayfs `node_modules`.
-      #
-      # Committing an optimizer run renames directories inside the cache dir
-      # (`deps` → `deps_temp_<hash>`, then the processing dir → `deps`), and
-      # overlayfs refuses to rename a directory that still lives in its lower
-      # layer — `EXDEV: cross-device link not permitted`, despite both paths
-      # being on one device. `node_modules` here is exactly that: the docs/183
-      # overlay dep store, a shared read-only base plus a per-session upper.
-      # Vite has no fallback for that rename, so re-optimization failed in a
-      # loop and the inner dev server served no client at all. Any lockfile
-      # change re-triggers optimization, so a rebase was enough to hit it.
-      #
-      # The state dir is plain ext4 (it is a bind mount, not the overlay),
-      # already gitignored, and survives a service restart — so both sides of
-      # those renames land on one ordinary filesystem. `vite.config.ts` reads
-      # this and otherwise leaves Vite's default alone.
+      # Overlayfs cannot rename lower-layer optimizer cache directories.
       VITE_CACHE_DIR: /workspace/.inner-shipit/vite-cache
     volumes:
-      # Required: without this, /workspace inside the dev container is
-      # empty. Bind-mounting the outer session's workspace lets the inner
-      # orch see (and edit) the live ShipIt source — INCLUDING
-      # /workspace/node_modules, which is now shared with the agent container
-      # rather than shadowed by a per-service volume.
-      #
-      # Why the old anonymous `- /workspace/node_modules` volume is gone:
-      #   1. Concurrent-write corruption — the only thing that wrote the
-      #      shared tree from this side was the in-command `npm install`,
-      #      which we removed. With the dev service no longer installing,
-      #      `agent.install` is the sole writer and there's no race.
-      #   2. ABI mismatch — the dev image was Node 22 vs the agent's Node 24,
-      #      so a shared tree's native modules wouldn't load. The dev image is
-      #      now pinned to the SAME node:24 digest as the agent container
-      #      (docker/Dockerfile.dogfood), so the agent-built better-sqlite3 /
-      #      node-pty binaries load fine here.
-      # Sharing the tree drops ~600MB of duplicate deps and a duplicate
-      # install per session.
       - .:/workspace
     ports:
       - "3000:3000"
-    # Tells the outer orchestrator to surface this service in the preview
-    # panel, but only start it when the user explicitly requests it. The
-    # inner orch is heavyweight (npm install + vite build + a second orch
-    # process), so we don't pay that cost on every session boot. Once
-    # started, the outer's preview proxy routes
-    # `<sessionId>--3000.localhost` to this container.
     x-shipit-preview: manual
-    # The inner orch's AuthManager / GitHubAuthManager init from process.env,
-    # so the inner UI is logged in from the start. These are user-supplied
-    # secrets: the dogfooding developer sets them once in the outer ShipIt's
-    # Settings → Secrets panel, keyed by these names. Declaring a name here
-    # costs nothing — an unset secret resolves to nothing and the whole block
-    # is a silent no-op. SUPPLYING a value is the deliberate, per-key act.
-    #
-    # docs/131 req 11 — every credential name below the GITHUB_TOKEN line is a
-    # catalogue `storageEnv`, and `scripts/seed-inner-credentials.ts` turns each
-    # one that has a value into a real credential ROUTE in the inner instance
-    # (visible in inner Settings → Services, routable, quota-attachable) rather
-    # than a bare environment variable. Set once outside, present in every
-    # dogfood session.
-    #
-    # This list is static YAML and cannot enumerate the catalogue, so
-    # `scripts/seed-inner-credentials.test.ts` asserts it covers every
-    # `credentialStorageEnvNames()` entry — adding a service to the catalogue
-    # fails the build here with the missing name rather than quietly making
-    # that service untestable in dogfood. Keep it in catalogue order.
-    #
-    # ⚠ BILLING — supplying a metered key has a cost even if you never select
-    # it for a turn. ShipIt's background work (session naming, PR descriptions)
-    # resolves an unpinned model to the FIRST ELIGIBLE one in catalogue order
-    # (`firstEligibleNonTurnSelection`), so a key can become what that work
-    # spends on. Check Settings → Services → Background work. The three
-    # vendor-native names (ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN,
-    # OPENAI_API_KEY) additionally bypass a connected account on a spawn that
-    # is neither redirected nor account-scoped. See the `dogfooding-shipit`
-    # skill for the full mechanism.
+    # Supplied metered keys can also fund unpinned background work.
     x-shipit-secrets:
       - { name: GITHUB_TOKEN }
       - { name: ANTHROPIC_AUTH_TOKEN }
@@ -276,77 +47,18 @@ services:
       - { name: ZAI_API_KEY }
       - { name: OPENROUTER_API_KEY }
       - { name: VERCEL_AI_GATEWAY_API_KEY }
-      # docs/272 — OpenCode's two products ride one pasted key, stored under two
-      # names so the Zen credential and the Go credential stay separable.
       - { name: OPENCODE_ZEN_API_KEY }
       - { name: OPENCODE_GO_KEY }
-      # docs/274 — Grok Build (xAI). `agent: true` deliberately, while the
-      # integration is in flight: the session agent drives the real `grok` CLI
-      # for stream capture and Phase 10 verification, and the key reaches it
-      # only through the agent env. Revisit (drop `agent`) once the xAI
-      # ServiceDef ships and the credential store owns delivery.
       - { name: XAI_API_KEY, agent: true }
 
-  # A ShipIt that has never been set up — for testing onboarding (docs/257).
-  #
-  # The problem it solves: the `dev` service is a *configured* install and cannot
-  # be un-configured to look at the first-run experience. Every service key set
-  # in the outer Settings → Secrets is injected into it, `adoptEnvCredentials`
-  # turns each one into a stored credential at boot (docs/252 req 20), and
-  # `resolveHarnessOnboarding` then stamps `harnessOnboardingCompletedAt` on the
-  # first read — permanently, since nothing ever clears it. `DOGFOOD_SEED=0` is
-  # not enough on its own: it stops the seeder POSTing credentials, and adoption
-  # still makes rows out of the variables. The only ways to see onboarding were
-  # to delete the developer's real keys or to wipe `.inner-shipit/`, and both
-  # destroy the thing they were about to go back to.
-  #
-  # So this is a second inner orchestrator with two differences from `dev`, and
-  # nothing else:
-  #
-  #   1. **`GITHUB_TOKEN` and nothing else.** Declaring a name is what injects
-  #      the value, so this one line is the whole difference between "signed in
-  #      to GitHub" and "holds no service credential". The thing under test is
-  #      the SERVICES onboarding — connect a subscription or paste a key — and
-  #      making the developer re-paste a GitHub token before reaching it every
-  #      time is friction, not coverage. Adding a catalogue `storageEnv` name
-  #      here would defeat the whole service, so a test forbids it; see
-  #      `scripts/seed-inner-credentials.test.ts`.
-  #   2. **Its own `SHIPIT_STATE_DIR`**, holding its own SQLite db, credential
-  #      store and agent home. Nested under `.inner-shipit/` so it inherits that
-  #      .gitignore entry rather than needing one of its own.
-  #
-  # Reset it to a fresh install by deleting that directory:
-  #
-  #   shipit service stop onboarding
-  #   rm -rf .inner-shipit/onboarding
-  #   shipit service start onboarding
-  #
-  # `DOGFOOD_SEED=0` is still set: with no service secret there is nothing for
-  # the credential seeder to find, and seeding repos would hand the instance a
-  # repo it is supposed to be asking the user for. Flip it to
-  # `DOGFOOD_SEED_CREDENTIALS: "0"` if you would rather the repo were already
-  # there — that keeps the credential half off no matter what is declared above.
-  # The ROLE seeder needs no switch of its own for that: a role names a harness
-  # and a model, so an instance with no credential has nothing a role could name
-  # and it seeds nothing and says so. (`DOGFOOD_SEED_ROLES: "0"` exists for the
-  # `dev` service, where there IS something to seed.)
-  #
-  # Manual, like `dev`, and for the same reason — a whole second orchestrator.
-  # Start it with `shipit service start onboarding`; it claims port 3001 so both
-  # can run at once, which is the point: the configured instance stays up.
+  # Keep service credentials absent so first-run onboarding remains reachable.
   onboarding:
-    # The same image `dev` builds. Naming the build again rather than only
-    # `image:` keeps this service startable on a host where `dev` has never run.
     build:
       context: .
       dockerfile: docker/Dockerfile.dogfood
       args:
-        # Must match the `dev` build block above — same image tag, so a
-        # disagreement is decided by build order rather than by intent. See the
-        # note there for why the set is named at all.
         SHIPIT_HARNESSES: claude,codex,opencode,grok
     image: shipit-dogfood:local
-    # No `user:`, same reason as `dev` above — see the note there.
     command: >
       sh -c "
       mkdir -p $${SHIPIT_STATE_DIR:-/workspace/.inner-shipit/onboarding} $${AGENT_HOME:-/root} &&
@@ -361,21 +73,10 @@ services:
     environment:
       RUNTIME_MODE: local
       WORKSPACE_DIR: /workspace
-      # Everything this instance persists hangs off this one path — the SQLite
-      # db (`app-di.ts`) and, in local mode, the credential store
-      # (`resolveAutoStartDeps` → `<stateDir>/credentials`). A separate path is
-      # therefore a separate ShipIt install, which is the whole mechanism here.
       SHIPIT_STATE_DIR: /workspace/.inner-shipit/onboarding
       AGENT_HOME: /workspace/.inner-shipit/onboarding/agent-home
-      # Same pairing as `dev`, same reason (planning#390) — read the long note
-      # there. The image's `ENV HOME=/root` is unwritable for the non-root
-      # identity this service runs as, and anything keying off `$HOME` instead of
-      # `$AGENT_HOME` needs this.
       HOME: /workspace/.inner-shipit/onboarding/agent-home
-      # NOT shared with `dev`: two Vite dev servers committing an optimizer run
-      # into one cache dir race on the same directory renames.
       VITE_CACHE_DIR: /workspace/.inner-shipit/onboarding/vite-cache
-      # See the `dev` service — same inotify limit, same reason.
       CHOKIDAR_USEPOLLING: "1"
       CHOKIDAR_INTERVAL: "1000"
       DOGFOOD_SEED: "0"
@@ -384,37 +85,14 @@ services:
     ports:
       - "3001:3001"
     x-shipit-preview: manual
-    # ⚠ GITHUB_TOKEN, and never a service credential. Every name absent from
-    # this list is a name this instance does not hold, which is the entire
-    # mechanism — see the note above and the guard test that pins it.
     x-shipit-secrets:
       - { name: GITHUB_TOKEN }
 
-  # Agent Interface SDK test preview (docs/242).
-  #
-  # A ~40-line static server whose page reports the live state of `window.shipit`
-  # — installed? handshake resolved? visibility? — and can send a real message to
-  # this session's agent. It exists because the SDK's Preview path can only be
-  # exercised through an actual proxied service: the bootstrap is injected by
-  # `preview-proxy.ts` into a cross-origin iframe, which no unit test reproduces.
-  # Both bugs it caught (a `__name` reference that killed the script under the
-  # production tsx transform, and a `document.referrer`-derived parent origin that
-  # broke after any in-preview navigation) were invisible from the client bundle.
-  #
-  # Manual, like `dev` — it's cheap to run but it would otherwise claim the
-  # preview pane on every session. Start it with `shipit service start sdk-test`.
-  #
-  # The page inlines the bootstrap itself (the proxy skips a response that already
-  # carries the marker), so it exercises the bootstrap from the *checkout* rather
-  # than from the orchestrator serving the preview. That's deliberate: a bootstrap
-  # fix can be verified in production ShipIt before the orchestrator ships it.
+  # Tests the SDK bootstrap from this checkout through the real preview proxy.
   sdk-test:
     image: node:24-slim
-    # No `user:`, same reason as `dev` above — see the note there.
     working_dir: /workspace
     init: true
-    # tsx comes from the agent container's bind-mounted node_modules, populated by
-    # `agent.install`; wait for it rather than racing that install (feature 137).
     command: >
       sh -c "
       while [ ! -x node_modules/.bin/tsx ]; do
@@ -423,8 +101,6 @@ services:
       exec node --import tsx test-preview/server.ts
       "
     environment:
-      # Matches the production orchestrator's own loader, so the injected
-      # bootstrap here is transpiled exactly the way production transpiles it.
       PORT: "3002"
     volumes:
       - .:/workspace
@@ -432,85 +108,23 @@ services:
       - "3002:3002"
     x-shipit-preview: manual
 
-  # Android emulator preview — dogfoods docs/213's interactive-preview tier on
-  # the in-repo native test app (`android-snapshot-test/`). The old `android/`
-  # WebView wrapper was removed (superseded by the PWA, docs/222); the test app
-  # is now the canonical Android target for build, snapshot, and preview.
-  # Marked `manual` like `dev`: it's heavy (~2–4 GiB + a booting Android OS) and
-  # needs host KVM, so it boots only when the user explicitly starts it, never on
-  # every session.
-  #
-  # Once started, the outer preview proxy routes `<sessionId>--6080.localhost` to
-  # the container's noVNC web UI and renders it in the preview pane. The agent
-  # reaches adb on the Compose network by service DNS: `adb connect emulator:5555`.
-  #
-  # The emulator boots a BLANK device — it doesn't know about our app. The
-  # `android` service below builds the APK, installs it, and hot-reloads it on
-  # change. `depends_on: [android]` makes starting this preview bring that builder
-  # up too (compose `up emulator` starts its dependencies), so the user clicks one
-  # thing and the app appears — like the web `dev` service. (The reverse edge —
-  # `android` needing the device — is handled by polling adb in the build script,
-  # not a depends_on, to avoid a dependency cycle.)
-  #
-  # Requires `/dev/kvm` on the outer host (verify with `kvm-ok`) and that the
-  # deployment hasn't disabled the device passthrough (`SESSION_ALLOW_DEV_KVM=0`).
-  # `/dev/kvm:/dev/kvm` is the only `devices:` mapping ShipIt's compose generator
-  # permits. No KVM → use a cloud device farm instead (the emulator is too slow).
   emulator:
     image: budtmo/docker-android:emulator_14.0
-    # REQUIRED. ShipIt otherwise runs every compose service as the session-worker
-    # UID (docs/150 §7) so dev-server writes into the shared workspace stay
-    # agent-owned. This image ships its own unprivileged user and keeps its
-    # startup scripts under /home/androidusr, which that UID cannot execute:
-    #   sh: /home/androidusr/docker-android/mixins/scripts/run.sh: Permission denied
-    # Declaring `user:` explicitly is honored verbatim by the compose generator
-    # (it never overrides a deliberate choice), so the image starts as intended.
-    # Nothing here writes to the shared workspace, so the UID-matching rationale
-    # doesn't apply.
-    #
-    # NUMERIC, not the name `androidusr`: a Contained session (docs/263) rejects
-    # a non-numeric `user:`, and the rejection fails the WHOLE compose file, so
-    # a named user here also stopped `dev` from starting. 1300:1301 IS
-    # androidusr — the image inherits the user from `appium/appium-docker-android`
-    # (`ARG USERID=1300` / `ARG GROUPID=1301`), and budtmo's own Dockerfile
-    # hardcoded `USER 1300:1301` before it moved to those inherited args. So this
-    # is the same identity, written the way containment can check.
-    #
-    # This makes the file valid; it does not promise the emulator RUNS in a
-    # contained session. The image starts several processes through supervisord
-    # and loses SETUID/SETGID under containment. Use an Open session for the
-    # Android preview until that is verified.
+    # Use the image's own numeric UID; its startup files reject the session UID.
     user: "1300:1301"
     environment:
-      # REQUIRED — without WEB_VNC the image boots the emulator (adb works) but
-      # never starts the noVNC web server, so the preview pane stays blank.
       - WEB_VNC=true
       - EMULATOR_DEVICE=Samsung Galaxy S10
     devices:
       - "/dev/kvm:/dev/kvm"
     ports:
-      # ports[0] is preview metadata — the container port x-shipit-preview renders
-      # (the noVNC web UI). Host bindings are stripped; routing is via the proxy.
       - "6080:6080"
     expose:
-      # adb, reachable on the Compose network by service name (not host-published).
       - "5555"
     depends_on:
       - android
     x-shipit-preview: manual
 
-  # Android build + hot-reload service — the Android analog of the web `dev`
-  # service. Holds the SDK + Gradle (docker/Dockerfile.android-dev); it builds the
-  # `android-snapshot-test/` debug APK, installs it onto `emulator` over adb, and
-  # then watches the source tree and rebuilds + reinstalls + relaunches on every
-  # change. That's the "hot reload" loop — coarser than web HMR (a full rebuild +
-  # reinstall, not a code hot-swap, because native Android has no headless
-  # hot-swap), but it keeps the preview reflecting the current code with no agent.
-  #
-  # No `x-shipit-preview` marker: this is a worker, not a previewable surface. It
-  # starts because `emulator` depends_on it (see above). The build runs only when
-  # the user opens the emulator preview — it does NOT tax normal web sessions
-  # (which is why the APK build lives here and not in `agent.install`).
   android:
     build:
       context: .
@@ -518,19 +132,9 @@ services:
     image: shipit-android-dev:local
     working_dir: /workspace/android-snapshot-test
     init: true
-    # Unlike `emulator` above, this service deliberately KEEPS ShipIt's
-    # session-worker UID: it writes Gradle build output into the shared workspace,
-    # so matching the agent's UID is exactly what we want (docs/150 §7). It gets
-    # that UID from ShipIt's identity fill-in, which is what having no `user:`
-    # here buys — see the `dev` note above for why declaring 1000 was wrong.
-    # That UID has no home directory inside this image, and both Gradle and adb need a
-    # writable HOME for their caches/keys — so point them at the (UID-owned)
-    # workspace instead of a root-owned `/`. Both dirs are gitignored.
     environment:
       HOME: /workspace/.android-home
       GRADLE_USER_HOME: /workspace/.gradle-android
     volumes:
-      # Live source (the build reads it; the watch loop reacts to edits) + the
-      # APK output the install step reads. Shared with the outer workspace.
       - .:/workspace
     command: ["bash", "/workspace/docker/android-hot-reload.sh"]

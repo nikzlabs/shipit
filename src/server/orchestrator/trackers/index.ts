@@ -1,7 +1,3 @@
-/**
- * Tracker abstraction barrel (docs/170 — inline tracker Issues tab).
- */
-
 export {
   TrackerPermissionError,
   TrackerResolutionError,

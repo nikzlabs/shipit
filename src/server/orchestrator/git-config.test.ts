@@ -38,21 +38,6 @@ describe("git-config: initGlobalGitConfig", () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  /**
-   * docs/266 / planning#407 — `shared/git.ts` classifies the two
-   * unreadable-workspace states by matching git's ENGLISH stderr, because
-   * simple-git's `GitError` carries no exit code. Under a translated locale
-   * those matches stop firing and a turn commits short in silence again.
-   *
-   * The process environment is the only place that reaches every
-   * orchestrator-side git: simple-git's `env()` ASSIGNS (so a caller chaining
-   * it discards an override) and forwarding `process.env` to make it stick trips
-   * `blockUnsafeOperationsPlugin` on the `GIT_CONFIG_GLOBAL` set here.
-   *
-   * What this test canNOT fail on: whether git's translations are installed in
-   * this image at all. It pins the intent — the language is chosen, not
-   * inherited — not a reproduction of a translated failure.
-   */
   it("pins LC_ALL=C so git's messages stay matchable", () => {
     process.env.LC_ALL = "fr_FR.UTF-8";
     initGlobalGitConfig(tmpDir);
@@ -60,36 +45,17 @@ describe("git-config: initGlobalGitConfig", () => {
   });
 
   it("reaches a child spawned with no explicit env — the way git is spawned", () => {
-    // The mechanism, not the translation: simple-git's default executor passes
-    // `env: null`, so the child inherits this process's environment. A test that
-    // asserted English output would pass on an image with no translations
-    // installed whether or not anything was pinned.
+    // English output alone would pass on images without translations.
     process.env.LC_ALL = "fr_FR.UTF-8";
     initGlobalGitConfig(tmpDir);
     expect(execSync("printenv LC_ALL", { encoding: "utf-8" }).trim()).toBe("C");
   });
 
-  /**
-   * planning#420 — with no `core.excludesFile`, git probes
-   * `$HOME/.config/git/ignore`. Since docs/266 orchestrator-side git runs as the
-   * uid that owns the tree, and the orchestrator's `HOME` is a `0700` `/root`,
-   * so that probe returns EACCES — which git WARNS about, on every command,
-   * where an ENOENT would have been silent. It is harmless to git and expensive
-   * to a reader: it is the first line of the captured stderr, so it became the
-   * headline of a production rebase failure whose real cause ("untracked working
-   * tree files would be overwritten") sat six lines below it.
-   *
-   * Reproduced by the only means available to an unprivileged test: a `HOME`
-   * whose `.config` this very process cannot read.
-   */
   describe("the global excludes file (planning#420)", () => {
     const prevUid = process.env.SHIPIT_SESSION_WORKER_UID;
     const opened: string[] = [];
 
     afterEach(() => {
-      // Re-opened before removal: a 0000 directory cannot be walked, so
-      // `rm -rf` on its parent fails and the fixture would leak a `vibe-home-*`
-      // tree per run into the machine's temp dir.
       for (const d of opened.splice(0)) {
         fs.chmodSync(d, 0o755);
         fs.rmSync(path.dirname(d), { recursive: true, force: true });
@@ -98,7 +64,6 @@ describe("git-config: initGlobalGitConfig", () => {
       else process.env.SHIPIT_SESSION_WORKER_UID = prevUid;
     });
 
-    /** `git status` in a throwaway repo under an unreadable HOME. Returns stderr. */
     function gitStderrUnderSealedHome(): string {
       const home = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-home-"));
       fs.mkdirSync(path.join(home, ".config", "git"), { recursive: true });
@@ -112,8 +77,6 @@ describe("git-config: initGlobalGitConfig", () => {
         env: {
           PATH: process.env.PATH ?? "",
           HOME: home,
-          // Or git would resolve the excludes path from XDG instead of HOME and
-          // the fixture would test nothing on a machine that sets it.
           XDG_CONFIG_HOME: path.join(home, ".config"),
           GIT_CONFIG_GLOBAL: process.env.GIT_CONFIG_GLOBAL ?? "",
         },
@@ -123,11 +86,9 @@ describe("git-config: initGlobalGitConfig", () => {
     }
 
     it("silences the /root/.config/git/ignore warning that buried the real error", () => {
-      if (process.getuid?.() === 0) return; // root reads a 0000 dir — no fixture
+      if (process.getuid?.() === 0) return; // Root can read mode 0000.
       process.env.SHIPIT_SESSION_WORKER_UID = "1000";
 
-      // Without the key, the warning is there — the state this fixes. Asserted
-      // first so the test cannot pass by failing to reproduce the problem.
       process.env.GIT_CONFIG_GLOBAL = path.join(tmpDir, "empty.gitconfig");
       fs.writeFileSync(process.env.GIT_CONFIG_GLOBAL, "");
       expect(gitStderrUnderSealedHome()).toMatch(/unable to access .*git\/ignore/);
@@ -143,12 +104,8 @@ describe("git-config: initGlobalGitConfig", () => {
 
       const target = execSync("git config --global core.excludesFile", { encoding: "utf-8" }).trim();
       expect(target).toBe(path.join(tmpDir, "gitignore-global"));
-      // World-readable inside the credentials dir, which is 0711: a dropped uid
-      // that knows the name can open it, and nothing can list the directory.
       expect(fs.statSync(target).mode & 0o777).toBe(0o644);
 
-      // A re-init must not truncate it — this is persistent state on a volume
-      // that survives every deploy, exactly like the `.gitconfig` beside it.
       fs.writeFileSync(target, "*.local\n");
       initGlobalGitConfig(tmpDir);
       expect(fs.readFileSync(target, "utf-8")).toBe("*.local\n");
@@ -156,10 +113,6 @@ describe("git-config: initGlobalGitConfig", () => {
 
     it("leaves an operator's own core.excludesFile exactly where it points", () => {
       process.env.SHIPIT_SESSION_WORKER_UID = "1000";
-      // The same persistence argument as the file's contents, one level up: the
-      // gitconfig survives every deploy, so overwriting a key ShipIt did not set
-      // is a silent one-way loss — and the loss is ignored build output becoming
-      // auto-committed output.
       const theirs = path.join(tmpDir, "operator-excludes");
       fs.writeFileSync(theirs, "dist/\n");
       process.env.GIT_CONFIG_GLOBAL = path.join(tmpDir, ".gitconfig");
@@ -173,9 +126,6 @@ describe("git-config: initGlobalGitConfig", () => {
     });
 
     it("leaves a deployment with no worker uid to its own global excludes", () => {
-      // No uid to drop to means git runs as root, reads its own HOME without
-      // complaint, and there is nothing here to repair — so a local-mode or
-      // single-uid install keeps whatever excludes its user configured.
       delete process.env.SHIPIT_SESSION_WORKER_UID;
       initGlobalGitConfig(tmpDir);
 
@@ -198,20 +148,13 @@ describe("git-config: initGlobalGitConfig", () => {
   });
 
   it("regression: a real rebase --continue succeeds after init (no editor in env)", () => {
-    // Reproduces the production bug: in the orchestrator container there is
-    // no editor binary on PATH, so `git rebase --continue` would fail with
-    // "cannot run editor". Verify that initGlobalGitConfig fixes this.
     initGlobalGitConfig(tmpDir);
-    // initGlobalGitConfig sets GIT_EDITOR=true; explicitly clear PATH-based
-    // editors to simulate the production container environment.
     delete process.env.EDITOR;
 
     const repoDir = path.join(tmpDir, "repo");
     fs.mkdirSync(repoDir);
     const env = {
       ...process.env,
-      // Simulate the worst case: even if simple-git inherited a missing editor,
-      // GIT_EDITOR=true (set by initGlobalGitConfig) wins over core.editor.
     };
     execSync("git init -q -b main", { cwd: repoDir, env });
     execSync("git config user.email t@t.com", { cwd: repoDir, env });
@@ -227,7 +170,6 @@ describe("git-config: initGlobalGitConfig", () => {
     execSync("git add -A && git commit -q -m Upstream", { cwd: repoDir, env });
     execSync("git checkout -q feature", { cwd: repoDir, env });
 
-    // Trigger the conflict.
     let rebaseFailed = false;
     try {
       execSync("git rebase main", { cwd: repoDir, env, stdio: "pipe" });
@@ -236,20 +178,16 @@ describe("git-config: initGlobalGitConfig", () => {
     }
     expect(rebaseFailed).toBe(true);
 
-    // Resolve and continue — this is the step that fails in production
-    // without the GIT_EDITOR=true fix.
     fs.writeFileSync(path.join(repoDir, "f.txt"), "merged\n");
     execSync("git add -A", { cwd: repoDir, env });
     execSync("git rebase --continue", { cwd: repoDir, env, stdio: "pipe" });
 
-    // Verify rebase actually completed.
     const status = execSync("git status --porcelain=v2 --branch", {
       cwd: repoDir,
       env,
       encoding: "utf-8",
     });
     expect(status).toContain("# branch.head feature");
-    // No rebase state directories should remain.
     expect(fs.existsSync(path.join(repoDir, ".git", "rebase-merge"))).toBe(false);
     expect(fs.existsSync(path.join(repoDir, ".git", "rebase-apply"))).toBe(false);
   });
@@ -274,9 +212,6 @@ describe("git-config: setGlobalCredentialHelper / clearGlobalCredentialHelper", 
   it("keeps the token OUT of the gitconfig and in a 0600 file beside it (docs/266-orchestrator-git-trust-boundary E3)", () => {
     setGlobalCredentialHelper("ghp_some_token_value");
 
-    // The config is shared with the session-worker uid so a dropped-uid git can
-    // read identity and `url.insteadOf` from it (E1). That sharing is only safe
-    // while the config holds no secret — this is the assertion that keeps it so.
     const configPath = process.env.GIT_CONFIG_GLOBAL!;
     expect(fs.readFileSync(configPath, "utf-8")).not.toContain("ghp_some_token_value");
 
@@ -288,23 +223,10 @@ describe("git-config: setGlobalCredentialHelper / clearGlobalCredentialHelper", 
     const contents = fs.readFileSync(credPath, "utf-8");
     expect(contents).toContain("password=ghp_some_token_value");
     expect(contents).toContain("username=x-access-token");
-    // Root-only. The whole point is that the worker uid cannot read it; the
-    // mode is the part of that a test running as one uid can check.
     expect(fs.statSync(credPath).mode & 0o777).toBe(0o600);
   });
 
   it("repairs the shared config to 0644 — readable by the worker, writable by root alone", () => {
-    // The config is READ by the dropped-uid git (identity, `url.insteadOf`) and
-    // by root-side git on the bare cache and `/opt/shipit`. E1 handed it to the
-    // worker uid at 0600 because it carried the PAT; with the secret gone that
-    // ownership is the sharper problem — owning a file is permission to WRITE
-    // it, and a `credential.helper = !<attacker>` written here executes as ROOT
-    // on the next bare-cache fetch. (Review finding on PR #2341.)
-    //
-    // The sharing path is gated on `SHIPIT_SESSION_WORKER_UID`, so the variable
-    // has to be set or this test proves nothing but the runner's umask — and
-    // the file is put into E1's 0600 shape first, so the assertion is on the
-    // REPAIR rather than on a mode that happened to be right already.
     const prevUid = process.env.SHIPIT_SESSION_WORKER_UID;
     process.env.SHIPIT_SESSION_WORKER_UID = "1000";
     try {
@@ -320,9 +242,6 @@ describe("git-config: setGlobalCredentialHelper / clearGlobalCredentialHelper", 
   });
 
   it("says so, loudly, when the credential file is missing rather than degrading silently", () => {
-    // Unreadable is the DESIGNED state for a dropped-uid git and stays silent.
-    // Missing is a real fault on the root path — a wiped volume, a failed first
-    // write — and would otherwise surface only as "could not read Username".
     setGlobalCredentialHelper("some-token");
     fs.rmSync(path.join(tmpDir, GLOBAL_CREDENTIAL_FILENAME));
     const out = execSync(
@@ -333,10 +252,6 @@ describe("git-config: setGlobalCredentialHelper / clearGlobalCredentialHelper", 
   });
 
   it("a helper whose credential file is unreadable answers nothing rather than failing git", () => {
-    // The dropped-uid case, approximated with a mode the current uid cannot
-    // read either: the helper must go quiet, not break the git invocation. An
-    // unreadable `include.path` is a hard `fatal:` on every git command, which
-    // is exactly why the token is NOT pulled in that way.
     setGlobalCredentialHelper("unreachable-token");
     const credPath = path.join(tmpDir, GLOBAL_CREDENTIAL_FILENAME);
     fs.chmodSync(credPath, 0o000);
@@ -354,16 +269,10 @@ describe("git-config: setGlobalCredentialHelper / clearGlobalCredentialHelper", 
   });
 
   it("a fresh workspace (no local helper) authenticates against a private remote via the global helper", () => {
-    // Build a remote that requires the global helper's username/password.
-    // Smudge factory: a custom `credential.helper` writes whatever the global
-    // helper echoes into a file we then inspect — proves git ran the helper.
     const captureDir = path.join(tmpDir, "capture");
     fs.mkdirSync(captureDir);
     setGlobalCredentialHelper("the-test-token");
 
-    // The fastest way to prove git resolved the global helper without
-    // reaching out over the network: run `git credential fill` on stdin.
-    // It asks the configured helpers and prints the resolved credential.
     const out = execSync("printf 'protocol=https\\nhost=github.com\\n\\n' | git credential fill", {
       encoding: "utf-8",
       shell: "/bin/sh",
@@ -375,7 +284,6 @@ describe("git-config: setGlobalCredentialHelper / clearGlobalCredentialHelper", 
   it("clearGlobalCredentialHelper removes the helper and is a no-op when nothing is set", () => {
     setGlobalCredentialHelper("t1");
     clearGlobalCredentialHelper();
-    // After clearing, `git config --get` exits non-zero — wrap to detect.
     let cleared = false;
     try {
       execSync("git config --global credential.helper", { stdio: "pipe" });
@@ -383,10 +291,7 @@ describe("git-config: setGlobalCredentialHelper / clearGlobalCredentialHelper", 
       cleared = true;
     }
     expect(cleared).toBe(true);
-    // docs/266-orchestrator-git-trust-boundary E3 — clearing must remove the token FILE too. Unsetting the key
-    // alone would leave a revoked PAT on disk until the next one overwrote it.
     expect(fs.existsSync(path.join(tmpDir, GLOBAL_CREDENTIAL_FILENAME))).toBe(false);
-    // Second call must not throw even though the helper is already gone.
     expect(() => { clearGlobalCredentialHelper(); }).not.toThrow();
   });
 
@@ -402,13 +307,6 @@ describe("git-config: setGlobalCredentialHelper / clearGlobalCredentialHelper", 
     expect(config).not.toContain("new-token");
   });
 
-  /**
-   * #2432 — a credential that cannot authenticate must say so here, not two
-   * pushes later as "remote: Invalid username or token" with nothing local to
-   * explain it. Empty throws (no caller can reach it with a bug-free path);
-   * short only warns, because a length guess must never be able to lock a real
-   * token out.
-   */
   it("refuses an empty credential rather than writing an unusable one", () => {
     expect(() => { setGlobalCredentialHelper("   "); }).toThrow(/empty GitHub credential/);
     expect(fs.existsSync(path.join(tmpDir, GLOBAL_CREDENTIAL_FILENAME))).toBe(false);
@@ -420,7 +318,6 @@ describe("git-config: setGlobalCredentialHelper / clearGlobalCredentialHelper", 
       setGlobalCredentialHelper("ghp_x");
       const message = warn.mock.calls.map((c) => String(c[0])).join("\n");
       expect(message).toContain("5 characters");
-      // Never the value itself — this line goes to the orchestrator log.
       expect(message).not.toContain("ghp_x");
     } finally {
       warn.mockRestore();
@@ -430,20 +327,6 @@ describe("git-config: setGlobalCredentialHelper / clearGlobalCredentialHelper", 
   });
 });
 
-// planning#387 — "The orchestrator's global .gitconfig holds a raw PAT and is
-// created world-readable", filed 2026-08-15 against the pre-E3 code: inline PAT
-// in the config, `mkdirSync` with no mode (0755), `.gitconfig` at 0644. The
-// substantive fix landed the NEXT DAY in PR #2341 (docs/266
-// E3): the token moved out of the config into a root-only 0600 file beside it,
-// and the directory became 0711 with a repair on every boot.
-//
-// What that PR's tests never pinned is the permission state itself, below the
-// one assertion on the credential file's creation: the directory mode, and the
-// REPAIR of a directory or file an older build left loose. `/credentials` is a
-// named docker volume that survives every upgrade, so "creation is correct"
-// covers only fresh installs — the existing-deployment case is entirely in the
-// repair, and a regression there is silent until an unprivileged uid exists in
-// the orchestrator container to read it (planning#384).
 describe("git-config: credential permission state (planning#387)", () => {
   let tmpDir: string;
   let origGitConfigGlobal: string | undefined;
@@ -462,17 +345,10 @@ describe("git-config: credential permission state (planning#387)", () => {
   it("creates the credentials directory 0711 — traversable, never listable", () => {
     const dir = path.join(tmpDir, "creds");
     initGlobalGitConfig(dir);
-    // Exact, not "at most": 0755 is the world-listable state planning#387 was
-    // filed against, and 0700 — the first attempt, see initGlobalGitConfig —
-    // denies traversal to the dropped-uid git that must reach `.gitconfig`.
-    // The explicit chmod inside init makes this umask-independent; this test
-    // is what keeps that chmod from being deleted as redundant.
     expect(fs.statSync(dir).mode & 0o777).toBe(0o711);
   });
 
   it("repairs a credentials directory an older build left at 0755", () => {
-    // The on-disk state of every deployment that ran a pre-E3 build. chmod pins
-    // the fixture exactly rather than trusting the runner's umask.
     const dir = path.join(tmpDir, "creds");
     fs.mkdirSync(dir, { recursive: true });
     fs.chmodSync(dir, 0o755);
@@ -481,10 +357,6 @@ describe("git-config: credential permission state (planning#387)", () => {
   });
 
   it("repairs a credential file left at 0644 back to 0600 on the next write", () => {
-    // `writeFileSync`'s `mode` option is creation-only, so it is the explicit
-    // chmod in `writeRootOnlyCredentialFile` that has to close this — without
-    // it, a file once loosened (a hand edit, a restored volume, a future write
-    // path that forgets the repair) stays readable by every uid forever.
     initGlobalGitConfig(tmpDir);
     setGlobalCredentialHelper("ghp_mode_repair_token");
     const credPath = path.join(tmpDir, GLOBAL_CREDENTIAL_FILENAME);
@@ -513,7 +385,6 @@ describe("git-config: writeContainerGitConfig (docs/088 finding #5)", () => {
   });
 
   it("writes a token-free gitconfig pointing at the brokering helper", () => {
-    // Orchestrator's own global config has the inline token...
     setGlobalCredentialHelper("ghp_super_secret_token");
     setGitIdentity("Ada Lovelace", "ada@example.com");
 
@@ -521,13 +392,10 @@ describe("git-config: writeContainerGitConfig (docs/088 finding #5)", () => {
     writeContainerGitConfig(dest);
 
     const contents = fs.readFileSync(dest, "utf-8");
-    // The PAT must NEVER appear in the container's gitconfig.
     expect(contents).not.toContain("ghp_super_secret_token");
-    // Identity is preserved.
     expect(contents).toContain("Ada Lovelace");
     expect(contents).toContain("ada@example.com");
 
-    // credential.helper points at the brokering binary, not an inline token.
     const helper = execSync(`git config --file ${dest} credential.helper`, {
       encoding: "utf-8",
     }).trim();
@@ -542,11 +410,6 @@ describe("git-config: writeContainerGitConfig (docs/088 finding #5)", () => {
     expect(sign).toBe("false");
   });
 
-  // An `ops` / `sandbox` agent's own commits are the only commits those
-  // sessions get — ShipIt does not auto-commit them (`auto-commit-gate.ts`) —
-  // and `git commit` HARD-FAILS with no identity. A sandbox is the worst case:
-  // repo-less by design and creatable with `capabilities.git` off, so connecting
-  // GitHub (the usual way an identity appears) is not part of its flow.
   describe("identity floor — the container can always commit", () => {
     it("falls back to a placeholder identity when the user has configured none", () => {
       const dest = path.join(tmpDir, "container", ".gitconfig");
@@ -556,20 +419,16 @@ describe("git-config: writeContainerGitConfig (docs/088 finding #5)", () => {
         execSync(`git config --file ${dest} ${key}`, { encoding: "utf-8" }).trim();
       expect(read("user.name")).toBe(FALLBACK_CONTAINER_GIT_IDENTITY.name);
       expect(read("user.email")).toBe(FALLBACK_CONTAINER_GIT_IDENTITY.email);
-      // RFC 2606 reserved TLD — can never reach a real mailbox.
       expect(FALLBACK_CONTAINER_GIT_IDENTITY.email).toMatch(/\.invalid$/);
     });
 
     it("a real identity always wins, and overrides the fallback retroactively", () => {
       const dest = path.join(tmpDir, "container", ".gitconfig");
-      // Container provisioned before the user connected GitHub…
       writeContainerGitConfig(dest);
       expect(
         execSync(`git config --file ${dest} user.name`, { encoding: "utf-8" }).trim(),
       ).toBe(FALLBACK_CONTAINER_GIT_IDENTITY.name);
 
-      // …then the identity is set and the file is regenerated (which is what
-      // `provisionAgentCredentialsFromRoot` does on the next provision).
       setGitIdentity("Ada Lovelace", "ada@example.com");
       writeContainerGitConfig(dest);
 
@@ -580,17 +439,12 @@ describe("git-config: writeContainerGitConfig (docs/088 finding #5)", () => {
     });
 
     it("end-to-end: a commit succeeds in a repo using only this gitconfig", () => {
-      // The actual failure being prevented — without an identity this is
-      // "Author identity unknown ... fatal: unable to auto-detect email address".
       const dest = path.join(tmpDir, "container", ".gitconfig");
       writeContainerGitConfig(dest);
 
       const repo = path.join(tmpDir, "sandbox-clone");
       fs.mkdirSync(repo, { recursive: true });
-      // Scrub the ambient identity so the config under test is the only source.
-      // The vars must be DELETED, not set to "" — an empty `GIT_AUTHOR_NAME`
-      // overrides the config and fails with "empty ident name" instead of
-      // falling through to it.
+      // Empty identity variables override the config; remove them instead.
       const SCRUBBED = new Set([
         "GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL",
         "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL", "EMAIL",
@@ -612,7 +466,6 @@ describe("git-config: writeContainerGitConfig (docs/088 finding #5)", () => {
 
   it("rewrites fresh each call — no stale token survives a regeneration", () => {
     const dest = path.join(tmpDir, "container", ".gitconfig");
-    // Simulate a stale token-bearing file lingering at the destination.
     fs.mkdirSync(path.dirname(dest), { recursive: true });
     fs.writeFileSync(dest, "[credential]\n\thelper = !echo password=leaked_token\n");
 
@@ -627,23 +480,6 @@ describe("git-config: writeContainerGitConfig (docs/088 finding #5)", () => {
   });
 });
 
-// docs/266-orchestrator-git-trust-boundary E2 (planning#403, closed by
-// planning#410) — ShipIt grants no `safe.directory`, ever.
-//
-// History, because the shape of these tests is a reaction to it. docs/150 §7
-// (planning#33) added `safe.directory=*` to the orchestrator's global config
-// because root git over a worker-owned worktree was refused with "detected
-// dubious ownership". docs/266 E1 removed the cause: a correct call site now
-// drops to the uid that owns the tree and never meets that refusal. What the
-// `*` still suppressed was the refusal on an INCORRECT site — one that failed
-// to drop and so is still root against a tree untrusted code can write — which
-// is precisely the signal req 7 wants. It shipped as a switch, soaked armed in
-// production, and both halves are now deleted.
-//
-// So there is no gating left to pin. What is left to pin is the REPAIR, and it
-// is the half a plain "stop writing it" would silently get wrong: the gitconfig
-// lives in a persistent volume and is never truncated, so an upgrade from any
-// pre-planning#410 build still has the grant on disk.
 describe("git-config: no safe.directory is granted (docs/266 E2, planning#410)", () => {
   let tmpDir: string;
   let origGitConfigGlobal: string | undefined;
@@ -663,8 +499,6 @@ describe("git-config: no safe.directory is granted (docs/266 E2, planning#410)",
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  // initGlobalGitConfig points GIT_CONFIG_GLOBAL at tmpDir/.gitconfig, so a
-  // plain `git config --global` reads back the file it just wrote.
   const readSafeDirs = (): string[] => {
     try {
       return execSync("git config --global --get-all safe.directory", { encoding: "utf-8" })
@@ -672,12 +506,10 @@ describe("git-config: no safe.directory is granted (docs/266 E2, planning#410)",
         .map((l) => l.trim())
         .filter(Boolean);
     } catch {
-      return []; // key absent → git exits non-zero
+      return [];
     }
   };
 
-  // The worker uid is what USED to gate the write, so it is the case that would
-  // regress if anyone reintroduced the grant.
   it("writes none when SHIPIT_SESSION_WORKER_UID is set", () => {
     process.env.SHIPIT_SESSION_WORKER_UID = "1000";
     initGlobalGitConfig(tmpDir);
@@ -690,13 +522,6 @@ describe("git-config: no safe.directory is granted (docs/266 E2, planning#410)",
     expect(readSafeDirs()).toEqual([]);
   });
 
-  // The upgrade path, and the only case that has ever mattered in production.
-  // `initGlobalGitConfig` never truncates the file and `/credentials` is a named
-  // docker volume, so a deployment that ran any pre-planning#410 build with a
-  // worker uid set has `safe.directory=*` persisted — and it stays there, and
-  // stays fail-OPEN, unless boot actively removes it. Written with a raw `git
-  // config` rather than by running an old build, so the fixture is the on-disk
-  // state itself and cannot drift with the code.
   it("removes a grant an older build persisted", () => {
     const configPath = path.join(tmpDir, ".gitconfig");
     process.env.GIT_CONFIG_GLOBAL = configPath;
@@ -708,8 +533,6 @@ describe("git-config: no safe.directory is granted (docs/266 E2, planning#410)",
     expect(readSafeDirs()).toEqual([]);
   });
 
-  // A `--unset-all` on a key with several values must clear all of them; and a
-  // named path is as much a grant as `*` is.
   it("removes every entry, not just the first, and not just `*`", () => {
     const configPath = path.join(tmpDir, ".gitconfig");
     process.env.GIT_CONFIG_GLOBAL = configPath;
@@ -729,12 +552,6 @@ describe("git-config: no safe.directory is granted (docs/266 E2, planning#410)",
   });
 });
 
-// docs/200 — the orchestrator container has no SSH key / known_hosts, so a git op
-// over an SSH github.com remote dies with "Host key verification failed" before
-// auth. initGlobalGitConfig installs a global url.insteadOf so every orchestrator
-// git op transparently uses HTTPS (and thus the credential-helper token) even
-// when the remote is written as SSH. This is what keeps the self-update fetch
-// working after /opt/shipit's origin is re-pointed at an SSH URL.
 describe("git-config: GitHub SSH→HTTPS rewrite (docs/200)", () => {
   let tmpDir: string;
   let origGitConfigGlobal: string | undefined;
@@ -759,7 +576,7 @@ describe("git-config: GitHub SSH→HTTPS rewrite (docs/200)", () => {
         .map((l) => l.trim())
         .filter(Boolean);
     } catch {
-      return []; // key absent → git exits non-zero
+      return [];
     }
   };
 
@@ -786,10 +603,6 @@ describe("git-config: GitHub SSH→HTTPS rewrite (docs/200)", () => {
 
   it("functionally rewrites an SSH remote to HTTPS at git-resolution time", () => {
     initGlobalGitConfig(tmpDir);
-    // Prove git actually applies the rewrite: with the global insteadOf in place,
-    // git resolves an SCP-style remote to its HTTPS form. `ls-remote --get-url`
-    // reports the URL git WOULD use for transport (post-insteadOf) without any
-    // network access.
     const repo = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-insteadof-repo-"));
     try {
       execSync("git init -q", { cwd: repo });

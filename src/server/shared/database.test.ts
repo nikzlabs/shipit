@@ -11,21 +11,6 @@ import {
 } from "./database.js";
 import { REPO_COLOR_ASSIGNMENT_ORDER } from "./repo-colors.js";
 
-/**
- * Migration 21 (docs/151) — the agent-reviews tables ship alongside a
- * one-shot sweep that deletes `source = "ai"` rows from draft `file_reviews`
- * and removes any draft that's left empty after the sweep. Sent reviews are
- * untouched (the user explicitly clicked Send on them, so the history is
- * still meaningful). The sweep is idempotent — running it again after the
- * tables are in place is a no-op because new AI submissions land in
- * `agent_reviews`, not `file_review_comments`.
- *
- * The DatabaseManager constructor runs migrations in order, so we exercise
- * the sweep by re-running its DELETE statements after seeding the kind of
- * mixed-source draft rows the bug accumulated in production. That mirrors
- * what happens on first boot after the migration lands.
- */
-
 const MIGRATION_21_SWEEP = `
   DELETE FROM file_review_comments
    WHERE source = 'ai'
@@ -58,7 +43,6 @@ describe("Migration 21 — agent review tables + AI-draft sweep", () => {
 
   it("deletes source='ai' rows from draft file_reviews and drops drafts left empty", () => {
     const db = dbManager.db;
-    // Seed two drafts and one sent review with mixed sources.
     db.prepare(`
       INSERT INTO file_reviews (id, session_id, file_path, file_type, status, doc_snapshot_hash, section_headings, created_at, updated_at)
       VALUES
@@ -76,13 +60,9 @@ describe("Migration 21 — agent review tables + AI-draft sweep", () => {
         ('c5', 'sent-1',  'selection', 'q', '', '', 'kept sent hum', 'human', '2026-01-01')
     `).run();
 
-    // Run the sweep as it would on first boot after the migration lands.
     db.exec(MIGRATION_21_SWEEP);
 
     const remainingComments = db.prepare("SELECT id, source, review_id FROM file_review_comments ORDER BY id").all() as { id: string; source: string; review_id: string }[];
-    // draft-1's AI comment is gone but its human comment stays. draft-2's
-    // only comment was AI so the whole draft+comment pair is gone. Sent
-    // review keeps both its rows.
     expect(remainingComments.map((c) => c.id)).toEqual(["c2", "c4", "c5"]);
 
     const remainingReviews = db.prepare("SELECT id, status FROM file_reviews ORDER BY id").all() as { id: string; status: string }[];
@@ -110,13 +90,6 @@ describe("Migration 21 — agent review tables + AI-draft sweep", () => {
   });
 });
 
-/**
- * docs/201 — the root_session_id migration backfills existing spawned rows by
- * walking each `parent_session_id` chain to its top. The migration's walk is
- * inline JS (not a single SQL string), so — mirroring the MIGRATION_21_SWEEP
- * pattern above — we replicate that exact walk here and assert it against
- * seeded pre-migration shapes (rows with a parent link but a NULL root).
- */
 function runRootBackfill(db: DatabaseManager["db"]): void {
   const spawned = db
     .prepare("SELECT id, parent_session_id FROM sessions WHERE parent_session_id IS NOT NULL")
@@ -160,8 +133,6 @@ describe("docs/201 — root_session_id backfill walk", () => {
       .root_session_id;
 
   it("stamps every descendant in a chain with the top-level ancestor", () => {
-    // root → child → grand → great, plus a second direct child (sibling) and an
-    // unrelated top-level session.
     seed("root", null);
     seed("child", "root");
     seed("grand", "child");
@@ -171,13 +142,10 @@ describe("docs/201 — root_session_id backfill walk", () => {
 
     runRootBackfill(dbManager.db);
 
-    // Every spawned descendant resolves to the SAME top-level root, regardless
-    // of depth — this is what lets the sidebar group the whole brood.
     expect(rootOf("child")).toBe("root");
     expect(rootOf("grand")).toBe("root");
     expect(rootOf("great")).toBe("root");
     expect(rootOf("sibling")).toBe("root");
-    // Top-level sessions keep a NULL root (they ARE their own root).
     expect(rootOf("root")).toBeNull();
     expect(rootOf("other")).toBeNull();
   });
@@ -195,31 +163,15 @@ describe("docs/201 — root_session_id backfill walk", () => {
   });
 
   it("terminates on a legacy parent-link cycle instead of looping forever", () => {
-    // a → b → a. Such a cycle shouldn't exist (the spawn-self-parent bug is
-    // fixed), but the visited-set guard must keep the walk bounded if one does.
     seed("a", "b");
     seed("b", "a");
 
     expect(() => runRootBackfill(dbManager.db)).not.toThrow();
-    // Both rows get a (bounded) root within the cycle — the point is the walk
-    // returns at all rather than spinning.
     expect(rootOf("a")).not.toBeNull();
     expect(rootOf("b")).not.toBeNull();
   });
 });
 
-/**
- * docs/254 — the color_index migration backfills existing repos so a workspace
- * that upgrades into the sidebar's per-repo edge doesn't come up with every
- * group uncolored.
- *
- * Unlike the two suites above, this one runs the REAL migration rather than a
- * copy of its logic: it opens a database, rewinds `user_version` past the
- * color_index step, drops the column, seeds pre-migration rows, and re-opens.
- * A copied helper would stay green if the shipped migration were changed to
- * assign every row 0 or to skip the update entirely — which is exactly the
- * class of mistake a migration test exists to catch.
- */
 describe("docs/254 — repo color_index backfill (real migration)", () => {
   let file: string;
   let dir: string;
@@ -233,31 +185,16 @@ describe("docs/254 — repo color_index backfill (real migration)", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  /**
-   * Open the db, undo BOTH color_index migrations (the backfill and the
-   * re-spread that follows it), seed rows as they would have existed before
-   * them, and hand back the version to re-run from.
-   *
-   * Both, because they are one upgrade from the user's side: a workspace that
-   * has never seen either arrives at the colors a fresh one would have.
-   */
   function rewindPastColorMigration(seed: (db: DatabaseManager["db"]) => void): number {
     const m = new DatabaseManager(file);
     const version = m.db.pragma("user_version", { simple: true }) as number;
     m.db.exec("ALTER TABLE repos DROP COLUMN color_index");
     seed(m.db);
-    // Rewind to the backfill's own index, NOT `version - 2`. Counting back from
-    // the tip silently re-targets the wrong migrations the moment one is
-    // appended — which is what happened when docs/252 added its columns and this
-    // suite started re-running the re-spread against a dropped column.
-    // Everything after the backfill re-runs too, so a migration appended later
-    // must tolerate that (the docs/252 one guards its ADD COLUMNs for exactly
-    // this reason).
+    // Replays all later migrations too; use a fixed index, never an offset from the tip.
     m.db.pragma(`user_version = ${COLOR_BACKFILL_MIGRATION}`);
     m.close();
     return version;
   }
-  /** What the pair produces for the first N repos in display order. */
   const spread = (n: number) => REPO_COLOR_ASSIGNMENT_ORDER.slice(0, n);
 
   const seedRepo = (db: DatabaseManager["db"], url: string, displayOrder: number | null, lastUsedAt = "2026-01-01") =>
@@ -283,8 +220,6 @@ describe("docs/254 — repo color_index backfill (real migration)", () => {
     expect(colorsAfterMigration(["a", "b", "c"])).toEqual(spread(3));
   });
 
-  // Walks the sidebar's own display order, so the colors a user sees top-to-bottom
-  // are the ones a fresh workspace would have been assigned.
   it("assigns in sidebar display order, not insertion order", () => {
     rewindPastColorMigration((db) => {
       seedRepo(db, "last", 2);
@@ -302,9 +237,6 @@ describe("docs/254 — repo color_index backfill (real migration)", () => {
     expect(colorsAfterMigration(["newer", "older"])).toEqual(spread(2));
   });
 
-  // 18 repos can't all hold a distinct color. The re-spread is a straight
-  // permutation, so the backfill's wrap survives it: r16 repeats r0's color
-  // before and after, just a different one.
   it("wraps past the palette size rather than writing an unrenderable index", () => {
     rewindPastColorMigration((db) => {
       for (let i = 0; i < 18; i++) seedRepo(db, `r${i}`, i);
@@ -322,8 +254,6 @@ describe("docs/254 — repo color_index backfill (real migration)", () => {
     m.close();
   });
 
-  // Migrations run exactly once, but a crash mid-upgrade can leave the process
-  // re-opening the same file — the result must not drift.
   it("leaves colors untouched when the database is re-opened", () => {
     rewindPastColorMigration((db) => {
       seedRepo(db, "a", 0);
@@ -333,27 +263,7 @@ describe("docs/254 — repo color_index backfill (real migration)", () => {
     expect(colorsAfterMigration(["a", "b"])).toEqual(spread(2));
   });
 
-  /**
-   * The re-spread's gate.
-   *
-   * It rewrites colors, and a color is also something a user picks in Project
-   * Settings — so the only question that matters is whether the values it finds
-   * were machine-assigned or chosen. No property of the stored data answers
-   * that: a user who swaps two repos' colors leaves exactly the contiguous
-   * {0..N-1} set the backfill does, so a shape check would bless the swap and
-   * overwrite it. The migration therefore doesn't infer — it gates on
-   * `fromVersion`, rewriting only when the backfill ran in the SAME pass,
-   * microseconds earlier, with no window for anyone to have picked anything.
-   *
-   * The deliberate cost: a workspace already on a build that had the backfill
-   * keeps its adjacent hues. That case is the second test.
-   *
-   * These two also pin `COLOR_BACKFILL_MIGRATION` from both sides — set it too
-   * high and the already-migrated case would re-spread; too low and every
-   * upgrading case above would stop.
-   */
   describe("re-spread gate", () => {
-    /** Rewind ONLY the re-spread, leaving color_index populated as seeded. */
     function rewindPastRespread(colors: number[]): (number | null)[] {
       const urls = colors.map((_, i) => `r${i}`);
       const m = new DatabaseManager(file);
@@ -362,18 +272,12 @@ describe("docs/254 — repo color_index backfill (real migration)", () => {
         seedRepo(m.db, urls[i], i);
         m.db.prepare("UPDATE repos SET color_index = ? WHERE url = ?").run(c, urls[i]);
       });
-      // The step AFTER the backfill, addressed by index rather than by counting
-      // back from the tip — see `rewindPastColorMigration`. `fromVersion` then
-      // lands strictly above `COLOR_BACKFILL_MIGRATION`, which is the gate this
-      // suite exists to pin.
       void version;
       m.db.pragma(`user_version = ${COLOR_BACKFILL_MIGRATION + 1}`);
       m.close();
       return colorsAfterMigration(urls);
     }
 
-    // The whole point of the migration, restated at the gate: a database that
-    // has never had the column gets both migrations, so it lands spread.
     it("re-spreads a workspace upgrading into the feature", () => {
       rewindPastColorMigration((db) => {
         seedRepo(db, "a", 0);
@@ -382,10 +286,6 @@ describe("docs/254 — repo color_index backfill (real migration)", () => {
       expect(colorsAfterMigration(["a", "b"])).toEqual(spread(2));
     });
 
-    // …and a database that already ran the backfill on some earlier boot is
-    // left exactly as it is, because by now any of those values could be a
-    // deliberate pick. Sequential colors here are the SAME state the test above
-    // re-spreads — only the version the pass started from differs.
     it("leaves a workspace that already had colors alone", () => {
       expect(rewindPastRespread([0, 1, 2])).toEqual([0, 1, 2]);
     });
@@ -394,24 +294,12 @@ describe("docs/254 — repo color_index backfill (real migration)", () => {
       expect(rewindPastRespread([0, 1, 11])).toEqual([0, 1, 11]);
     });
 
-    // The case a shape check could not have distinguished: swapping two repos'
-    // colors leaves the contiguous set intact, and is now safe purely because
-    // the gate never looks at the values.
     it("leaves a swapped pair alone", () => {
       expect(rewindPastRespread([1, 0, 2])).toEqual([1, 0, 2]);
     });
   });
 });
 
-/**
- * docs/252 phase 1 — the selection-triple backfill.
- *
- * Runs the REAL migration, like the color suite above: it rewinds `user_version`
- * past this step, drops the four columns, seeds rows as they existed before it,
- * and re-opens. The billing mode decides what a user is billed, so a copied
- * helper that stayed green while the shipped rule changed would be worse than no
- * test at all.
- */
 describe("docs/252 — model-selection backfill (real migration)", () => {
   let file: string;
   let dir: string;
@@ -452,9 +340,6 @@ describe("docs/252 — model-selection backfill (real migration)", () => {
         )
         .run(seed.id, seed.id, seed.agentId, seed.model, seed.routeKind, seed.routeId);
     }
-    // This step's own index, NOT `version - 1`. Counting back from the tip
-    // re-targets a different migration the moment one is appended — which is
-    // what appending the usage-attribution step would have done here.
     m.db.pragma(`user_version = ${MODEL_SELECTION_MIGRATION}`);
     m.close();
   }
@@ -503,12 +388,6 @@ describe("docs/252 — model-selection backfill (real migration)", () => {
   });
 
   it("refuses to place a model the catalogue does not offer", () => {
-    // The invariant: a stored triple either names a real catalogue row or has no
-    // service and mode at all. `sonnet` and `opus` are CLI aliases, and
-    // `claude-opus-4-8` is retired — none is a catalogue model, so a
-    // `(anthropic, sub, sonnet)` triple would name nothing and later phases
-    // could resolve no endpoint from it. The `model` column is untouched, and
-    // req 13's retirement map (phase 8) is what carries these forward.
     rewindAndSeed([
       seed({ id: "alias", agentId: "claude", model: "sonnet" }),
       seed({ id: "retired", agentId: "claude", model: "claude-opus-4-8" }),
@@ -521,16 +400,11 @@ describe("docs/252 — model-selection backfill (real migration)", () => {
   });
 
   it("places the retired unsuffixed GPT-5.6 slug, which the catalogue does carry", () => {
-    // Old rows still hold it and the catalogue names a successor for it, so it
-    // is placeable — unlike the aliases above.
     rewindAndSeed([seed({ id: "a", agentId: "codex", model: "gpt-5.6" })]);
     expect(readBack("a").service_id).toBe("openai");
   });
 
   it("classifies by route ID, not by route KIND — an env OAuth token is a SUBSCRIPTION", () => {
-    // The bug the plan calls out explicitly: `claude-env-oauth` is a `reserved`
-    // route carrying a quota-bearing subscription token. Reading `kind` would
-    // bill those subscribers as metered and hide their quota.
     rewindAndSeed([
       seed({
         id: "envoauth",
@@ -573,8 +447,6 @@ describe("docs/252 — model-selection backfill (real migration)", () => {
   });
 
   it("defaults an evidence-free row to `sub`, which fails in the safe direction", () => {
-    // A session wrongly on `sub` stops and says so; one wrongly on `key`
-    // silently spends money.
     rewindAndSeed([seed({ id: "a", agentId: "claude", model: "claude-opus-5" })]);
     expect(readBack("a").billing_mode).toBe("sub");
   });
@@ -596,8 +468,6 @@ describe("docs/252 — model-selection backfill (real migration)", () => {
   });
 
   it("leaves a row with no model at all entirely alone", () => {
-    // No evidence at all — inventing a service here would decide what the user
-    // is billed from nothing. The next selection writes the triple instead.
     rewindAndSeed([seed({ id: "a", agentId: "claude" })]);
     const row = readBack("a");
     expect(row.service_id).toBeNull();
@@ -605,13 +475,6 @@ describe("docs/252 — model-selection backfill (real migration)", () => {
   });
 });
 
-/**
- * docs/252 phase 3 (usage-record half) — `usage_turns` gains its attribution
- * columns, which SQLite can only give a table-level CHECK by rebuilding the
- * table. A rebuild is the one migration shape that can silently lose data, so
- * this runs the REAL migration against a seeded pre-migration table rather than
- * a copy of its logic.
- */
 describe("docs/252 — usage attribution columns (real migration)", () => {
   let file: string;
   let dir: string;
@@ -625,13 +488,6 @@ describe("docs/252 — usage attribution columns (real migration)", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  /**
-   * Every column `usage_turns` has BEFORE this migration, in the order it had
-   * them. Listed once and used to build both the seed INSERT and the read-back
-   * assertion, so a column the rebuild silently drops has nowhere to hide: a
-   * seed row supplies a distinct non-null value for all thirteen, `id`
-   * included.
-   */
   const PRE_MIGRATION_COLUMNS = [
     "id",
     "session_id",
@@ -650,11 +506,7 @@ describe("docs/252 — usage attribution columns (real migration)", () => {
 
   type TurnSeed = Record<(typeof PRE_MIGRATION_COLUMNS)[number], string | number>;
 
-  /**
-   * A row with a distinct, non-null value in every pre-migration column. Ids are
-   * explicit and non-contiguous, so a rebuild that let SQLite regenerate them
-   * (1, 2, 3 …) fails instead of coincidentally matching.
-   */
+  /** Distinct values and non-contiguous IDs expose data lost or regenerated by a rebuild. */
   const turnSeed = (id: number): TurnSeed => ({
     id,
     session_id: `sess-${id}`,
@@ -671,12 +523,6 @@ describe("docs/252 — usage attribution columns (real migration)", () => {
     cumulative_cost_usd: id + 0.5,
   });
 
-  /**
-   * Rebuild `usage_turns` in its pre-migration shape, seed rows into it, and
-   * rewind to this step so re-opening runs the real thing. Dropping the six
-   * columns would not be enough — the CHECK constraint is a property of the
-   * table, not of a column — so the table is recreated outright.
-   */
   function rewindAndSeed(turns: TurnSeed[]): void {
     const m = new DatabaseManager(file);
     m.db.exec(`
@@ -708,10 +554,6 @@ describe("docs/252 — usage attribution columns (real migration)", () => {
   }
 
   it("carries every existing row and column across the rebuild, ids included", () => {
-    // The rebuild's failure mode is silent: a dropped column or a lost row looks
-    // like a clean upgrade. Every pre-migration column is seeded with a distinct
-    // non-null value and read straight back, so dropping any one of them — or
-    // letting SQLite regenerate the ids — fails here.
     const seeds = [turnSeed(3), turnSeed(7)];
     rewindAndSeed(seeds);
 
@@ -730,9 +572,6 @@ describe("docs/252 — usage attribution columns (real migration)", () => {
   });
 
   it("gives every pre-existing row the all-null legacy attribution", () => {
-    // Not backfilled and not guessed: a historical row's true attribution is not
-    // in the data, and inventing one would produce a confidently wrong split of
-    // real money. All-null IS the legacy bucket — no extra discriminator.
     rewindAndSeed([turnSeed(1)]);
 
     const m = new DatabaseManager(file);
@@ -756,9 +595,6 @@ describe("docs/252 — usage attribution columns (real migration)", () => {
   });
 
   it("is a no-op when re-run, so an earlier migration's test rewind cannot drop attribution", () => {
-    // Migration tests rewind `user_version` to re-run a specific step, which
-    // re-runs every step after it too. Without the guard, this one would rebuild
-    // the table and copy only the pre-migration columns.
     rewindAndSeed([turnSeed(1)]);
     const m = new DatabaseManager(file);
     m.db
@@ -767,8 +603,6 @@ describe("docs/252 — usage attribution columns (real migration)", () => {
            rate_input = 1, rate_output = 2, rate_cache_read = 0.5, rate_cache_write = 1`,
       )
       .run();
-    // Rewind to the migration before this one, as that suite does — everything
-    // after it re-runs, including this migration.
     m.db.pragma(`user_version = ${MODEL_SELECTION_MIGRATION}`);
     m.close();
 
@@ -782,20 +616,12 @@ describe("docs/252 — usage attribution columns (real migration)", () => {
   });
 
   it("rejects EVERY partially-attributed row at the write", () => {
-    // The constraint is the point of the rebuild: a row that knows its service
-    // but not what it was charged is unrecoverable, because the missing half
-    // cannot be reconstructed later. Enumerated over all 62 partial shapes
-    // rather than spot-checked — a single example would leave a dropped term in
-    // the constraint unguarded, and there is no second line of defence in SQL.
     const ATTRIBUTION = [
       ["service_id", "'deepseek'"],
       ["billing_mode", "'key'"],
       ["rate_input", "0.28"],
       ["rate_output", "0.42"],
       ["rate_cache_read", "0.028"],
-      // Zero is a REAL rate (a service that charges nothing to write the cache),
-      // so it has to satisfy the "present" side of the constraint rather than
-      // read as a missing value.
       ["rate_cache_write", "0"],
     ] as const;
 
@@ -813,24 +639,12 @@ describe("docs/252 — usage attribution columns (real migration)", () => {
       expect(() => insert(present), present.map(([c]) => c).join("+")).toThrow(/CHECK constraint/i);
     }
 
-    // The two complete shapes are accepted: none of them (a legacy row) and all
-    // of them, zero rate included.
     expect(() => insert([])).not.toThrow();
     expect(() => insert(ATTRIBUTION)).not.toThrow();
     m.close();
   });
 });
 
-/**
- * planning#367 — the repair of Codex turns recorded as the app-server's
- * cumulative thread rollup.
- *
- * A data migration's failure modes are both silent and both expensive: leaving a
- * Codex chain inflated keeps a session showing many times its real usage, and
- * diffing a chain that was already per-turn destroys real billing history. So
- * the real migration runs against seeded rows here — the eligible shape and, at
- * least as importantly, every shape it must refuse.
- */
 describe("planning#367 — Codex cumulative rollup repair (real migration)", () => {
   let file: string;
   let dir: string;
@@ -851,20 +665,13 @@ describe("planning#367 — Codex cumulative rollup repair (real migration)", () 
     output: number | null;
     cacheRead?: number | null;
     cacheWrite?: number | null;
-    /** `last.totalTokens` — real context occupancy, the thread-seam detector. */
     context?: number | null;
     cost?: number;
     cumulativeCost?: number | null;
     subAgentId?: string | null;
-    /** Set together with the four rates, per the table's all-or-none CHECK. */
     billingMode?: "sub" | "key";
   }
 
-  /**
-   * Seed sessions and usage rows, then rewind to this step so re-opening runs
-   * the real migration. The column is dropped as well as the version rewound:
-   * its presence is the migration's own re-run guard.
-   */
   function rewindAndSeed(sessions: { id: string; agentId: string }[], turns: TurnSeed[]): void {
     const m = new DatabaseManager(file);
     m.db.exec("ALTER TABLE usage_turns DROP COLUMN cumulative_tokens_repaired");
@@ -893,7 +700,6 @@ describe("planning#367 — Codex cumulative rollup repair (real migration)", () 
           t.context ?? null, t.cumulativeCost ?? null, t.subAgentId ?? null,
           attributed ? "openai" : null,
           attributed ? t.billingMode! : null,
-          // 1 USD per million input, 2 output, 0.5 cache read, 0 cache write.
           attributed ? 1 : null, attributed ? 2 : null, attributed ? 0.5 : null, attributed ? 0 : null,
         );
     }
@@ -914,8 +720,6 @@ describe("planning#367 — Codex cumulative rollup repair (real migration)", () 
     return rows;
   }
 
-  // The measured shape: identical consumption every turn, reported as a rollup
-  // that grows 1× 2× 3× because `thread/resume` restores the accumulator.
   const RESUMED_CHAIN: TurnSeed[] = [
     { id: 1, session: "codex-1", input: 200, output: 10, cacheRead: 800 },
     { id: 2, session: "codex-1", input: 400, output: 20, cacheRead: 1600 },
@@ -925,8 +729,6 @@ describe("planning#367 — Codex cumulative rollup repair (real migration)", () 
   it("rebuilds the per-turn tokens of a resumed Codex chain", () => {
     rewindAndSeed([{ id: "codex-1", agentId: "codex" }], RESUMED_CHAIN);
 
-    // Each row now holds what its own turn consumed, so the session's SUM is the
-    // LAST rollup (600/30/2400) instead of three running totals summed (1200 …).
     expect(readBack()).toEqual([
       { id: 1, input_tokens: 200, output_tokens: 10, cache_read_tokens: 800, cache_create_tokens: null, cost_usd: 0, cumulative_tokens_repaired: 1 },
       { id: 2, input_tokens: 200, output_tokens: 10, cache_read_tokens: 800, cache_create_tokens: null, cost_usd: 0, cumulative_tokens_repaired: 1 },
@@ -934,20 +736,16 @@ describe("planning#367 — Codex cumulative rollup repair (real migration)", () 
     ]);
   });
 
-  // The half that was real money: on a metered key `cost_usd` is derived from
-  // these very columns, so an inflated token count was an inflated bill.
   it("recomputes a metered row's cost from the corrected tokens", () => {
     rewindAndSeed(
       [{ id: "codex-1", agentId: "codex" }],
       RESUMED_CHAIN.map((t, i) => ({
         ...t,
         billingMode: "key" as const,
-        // What `costFromRates` charged for the inflated rollup.
         cost: ((i + 1) * 200 * 1 + (i + 1) * 10 * 2 + (i + 1) * 800 * 0.5) / 1_000_000,
       })),
     );
 
-    // 200 × 1 + 10 × 2 + 800 × 0.5 per million, for each turn alike.
     const perTurn = (200 * 1 + 10 * 2 + 800 * 0.5) / 1_000_000;
     expect(readBack().map((r) => r.cost_usd)).toEqual([perTurn, perTurn, perTurn]);
   });
@@ -960,8 +758,6 @@ describe("planning#367 — Codex cumulative rollup repair (real migration)", () 
     expect(readBack().map((r) => r.cost_usd)).toEqual([0, 0, 0]);
   });
 
-  // Everything below is a chain the migration must NOT touch. Each is a shape
-  // whose rows are already per-turn, where diffing would delete real usage.
   it("refuses a Claude session, whose rows were never cumulative", () => {
     rewindAndSeed([{ id: "claude-1", agentId: "claude" }],
       RESUMED_CHAIN.map((t) => ({ ...t, session: "claude-1" })));
@@ -970,8 +766,6 @@ describe("planning#367 — Codex cumulative rollup repair (real migration)", () 
   });
 
   it("refuses a chain whose cost came from a harness running total", () => {
-    // `cumulative_cost_usd` is the mark of a harness that bills its own vendor
-    // and reports per-turn tokens — the exact case this repair must not touch.
     rewindAndSeed([{ id: "codex-1", agentId: "codex" }],
       RESUMED_CHAIN.map((t, i) => ({ ...t, cumulativeCost: i + 1 })));
     expect(readBack().map((r) => r.input_tokens)).toEqual([200, 400, 600]);
@@ -990,17 +784,12 @@ describe("planning#367 — Codex cumulative rollup repair (real migration)", () 
     expect(readBack()).toMatchObject([{ input_tokens: 200, cumulative_tokens_repaired: null }]);
   });
 
-  // A consult is spawned with no thread to resume, so its rollup already is that
-  // run's own. Two consults in one session are two conversations, not a chain.
   it("refuses sub-agent consults", () => {
     rewindAndSeed([{ id: "codex-1", agentId: "codex" }],
       RESUMED_CHAIN.map((t) => ({ ...t, subAgentId: "codex" })));
     expect(readBack().map((r) => r.input_tokens)).toEqual([200, 400, 600]);
   });
 
-  // A turn that reported no telemetry carries no rollup, so it takes no part in
-  // the sequence — and must not disqualify the session around it by reading as
-  // a drop to zero.
   it("steps over a turn with no telemetry instead of breaking the chain", () => {
     rewindAndSeed([{ id: "codex-1", agentId: "codex" }], [
       RESUMED_CHAIN[0],
@@ -1010,31 +799,17 @@ describe("planning#367 — Codex cumulative rollup repair (real migration)", () 
     expect(readBack().map((r) => r.input_tokens)).toEqual([200, null, 200]);
   });
 
-  // A rewind clears `agent_session_id`, so the next turn starts a FRESH Codex
-  // thread inside the same ShipIt session and its accumulator restarts. Nothing
-  // in `usage_turns` names the thread, so without the occupancy seam the run
-  // still reads as one non-decreasing chain and the new thread's first turn is
-  // diffed against the old thread's final rollup — subtracting a total it never
-  // accumulated. Occupancy is what falls at the seam.
   it("does not subtract across a fresh thread started mid-session", () => {
     rewindAndSeed([{ id: "codex-1", agentId: "codex" }], [
-      // Thread A, two turns of a growing conversation.
       { id: 1, session: "codex-1", input: 100, output: 10, context: 5_000 },
       { id: 2, session: "codex-1", input: 200, output: 20, context: 9_000 },
-      // Thread B after a rewind: occupancy restarts, the rollup does not
-      // happen to fall — so all four token columns still read as increasing.
       { id: 3, session: "codex-1", input: 300, output: 30, context: 2_000 },
       { id: 4, session: "codex-1", input: 500, output: 40, context: 6_000 },
     ]);
 
-    // Thread B's first turn keeps its own rollup (a fresh accumulator makes it
-    // that turn's own figure); everything else is diffed within its thread.
     expect(readBack().map((r) => r.input_tokens)).toEqual([100, 100, 300, 200]);
   });
 
-  // A compaction drops occupancy WITHOUT resetting the rollup, so it cuts the
-  // chain too. That leaves one row still holding a running total — the safe
-  // direction: an inflated row a later pass can fix, not a real row diffed away.
   it("errs toward leaving a row inflated at an occupancy drop it cannot explain", () => {
     rewindAndSeed([{ id: "codex-1", agentId: "codex" }], [
       { id: 1, session: "codex-1", input: 100, output: 10, context: 5_000 },
@@ -1044,17 +819,11 @@ describe("planning#367 — Codex cumulative rollup repair (real migration)", () 
     expect(readBack().map((r) => r.input_tokens)).toEqual([100, 200, 100]);
   });
 
-  // `agent_id` is CURRENT session metadata and `cumulative_cost_usd` was added
-  // without a backfill, so on a row older than the first one that carries a
-  // running total, neither test can tell which harness wrote it. A long-lived
-  // session whose early turns ran Claude and is labelled Codex today would
-  // otherwise have that real per-turn history diffed away.
   it("refuses a chain reaching back before any row carried a running total", () => {
     rewindAndSeed(
       [{ id: "codex-1", agentId: "codex" }, { id: "other", agentId: "claude" }],
       [
         ...RESUMED_CHAIN,
-        // A later Claude row, which is what dates the cumulative column.
         { id: 9, session: "other", input: 50, output: 5, cumulativeCost: 1.5 },
       ],
     );
@@ -1062,8 +831,6 @@ describe("planning#367 — Codex cumulative rollup repair (real migration)", () 
   });
 
   it("repairs a chain that begins after the cumulative column was in use", () => {
-    // The same shape with the ordering reversed: every Codex row is newer than
-    // the first cumulative row, so the ambiguity does not apply.
     rewindAndSeed(
       [{ id: "codex-1", agentId: "codex" }, { id: "other", agentId: "claude" }],
       [
@@ -1078,10 +845,6 @@ describe("planning#367 — Codex cumulative rollup repair (real migration)", () 
     rewindAndSeed([{ id: "codex-1", agentId: "codex" }], RESUMED_CHAIN);
     expect(readBack().map((r) => r.input_tokens)).toEqual([200, 200, 200]);
 
-    // Migration tests rewind `user_version` to re-run a specific step, which
-    // re-runs every step after it too. Without the guard the repaired chain —
-    // still non-decreasing, since every turn cost the same — would be diffed a
-    // second time into 200, 0, 0.
     const m = new DatabaseManager(file);
     m.db.pragma(`user_version = ${CODEX_ROLLUP_REPAIR_MIGRATION}`);
     m.close();
@@ -1090,17 +853,6 @@ describe("planning#367 — Codex cumulative rollup repair (real migration)", () 
   });
 });
 
-/**
- * planning#324 — the transcript-revision triggers live in the schema rather than
- * in `ChatHistoryManager`, so the two things that can only go wrong at this
- * layer are pinned here: a write nobody routed through the manager still moves
- * the counter, and `clearAll` really does clear it.
- *
- * The `clearAll` case is an ordering trap. Deleting a session's messages FIRES
- * the delete trigger, so a `DELETE FROM transcript_revisions` placed before the
- * messages delete is silently undone — the table comes back one row per session,
- * on a "delete all rows from all tables" method.
- */
 describe("planning#324 — transcript revision triggers", () => {
   let dir: string;
   let file: string;
@@ -1140,12 +892,6 @@ describe("planning#324 — transcript revision triggers", () => {
     expect(revision("s1")).toBeGreaterThan(afterUpdate);
   });
 
-  /**
-   * A row that changes owner leaves one session as much as it joins another.
-   * The plain `AFTER UPDATE` trigger speaks only for the session the row arrives
-   * in, so without the reassignment trigger the OLD owner keeps a validator that
-   * is still "valid" for a transcript that has lost a row.
-   */
   it("moves BOTH counters when a row is reassigned to another session", () => {
     insert("s1", "originally s1's");
     insert("s2", "already s2's");
@@ -1166,9 +912,6 @@ describe("planning#324 — transcript revision triggers", () => {
     manager.close();
     manager = new DatabaseManager(file);
 
-    // An ordinary table, not a TEMP one: a counter that reset on restart could
-    // re-mint a revision a client already holds and answer 304 over different
-    // content.
     expect(revision("s1")).toBe(before);
     insert("s1", "after the restart");
     expect(revision("s1")).toBeGreaterThan(before);

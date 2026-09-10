@@ -1,168 +1,65 @@
-/**
- * docs/262 — plugin repositories: the consumer `plugins:` block and the
- * plugin-side `exports.plugins:` manifest (plan §1a/§1b), plus the browser
- * snapshot types behind `GET /api/plugin-repos`.
- *
- * Filesystem-free on purpose (the `declared-tracker.ts` precedent): the client
- * imports the types, so nothing here may pull in `node:fs`. The parser is pure
- * — `shipit-config.ts` feeds it the raw YAML value and the declared trackers.
- *
- * Parsing is **phase 1** of the three validation phases (plan §1a): grammar,
- * the repo-name/tracker-name reservation pass, alias uniqueness, and reference
- * shape — everything knowable without a network. Selector validation against a
- * *fetched* manifest is phase 2; service/command collisions are phase 3. Like
- * the trackers block, **nothing here is fatal** (req 13): every malformed
- * entry warns and is dropped, and the session still opens.
- */
-
+/** Shared with the browser; keep filesystem imports out. */
 import { parseOwnerRepo } from "./tracker-id.js";
 import type { DeclaredTracker } from "./declared-tracker.js";
 import { PLUGIN_CONTRACT_ENV_NAMES } from "./plugin-contract.js";
 import type { PluginCredentialGroup, PluginCredentialNeed } from "./plugin-credentials.js";
 import type { PluginHostGroup, PluginHostNeed } from "./plugin-hosts.js";
 
-// ---------------------------------------------------------------------------
-// Config types (what shipit.yaml declares)
-// ---------------------------------------------------------------------------
-
-/** Where a declared plugin repo's content comes from. */
 export type PluginRepoSource =
   | { kind: "github"; owner: string; repo: string }
   | { kind: "self" };
 
-/** One `plugins.repos` entry (plan §1a): one checkout, one card, one refresh unit. */
 export interface DeclaredPluginRepo {
-  /** The reservation-domain name: checkout path, card, refresh target, feedback destination. */
   name: string;
   source: PluginRepoSource;
-  /** Tracked branch; mutually exclusive with `pin`; never present for `self`. */
   branch?: string;
-  /** Tag or SHA; mutually exclusive with `branch`; never present for `self`. */
   pin?: string;
 }
 
-/** Per-service consumer override (req 16, req 20). */
 export interface PluginServiceOverride {
   autostart?: boolean;
-  /** Service alias on collision. */
   as?: string;
-  /**
-   * The port this plugin service serves on — the consuming project's to write,
-   * always explicitly (docs/266-plugin-service-ports req 2). It is the container port AND the
-   * preview origin at once, exactly as a project service's port is, and naming
-   * it is what makes the service previewable (docs/266-plugin-service-ports req 9).
-   *
-   * A plugin author cannot know what a consuming project already runs, so the
-   * exported fragment no longer declares one at all (docs/266-plugin-service-ports req 1). Absent
-   * here means the service is not previewable, not "pick something".
-   */
+  /** Consumer-selected container and preview port; absent means no preview. */
   port?: number;
 }
 
-/** Consumer overrides on one `use` entry — flat: the entry IS one plugin. */
 export interface PluginUseOverrides {
   services: Record<string, PluginServiceOverride>;
   commands: Record<string, { as?: string }>;
-  /** req 26 — values for plugin-declared settings. Scalars only. */
   settings: Record<string, string | number | boolean>;
 }
 
-/** One `plugins.use` entry: activates one exported plugin from a declared repo. */
 export interface PluginUse {
-  /** Selector: the exported plugin to activate (validated against the manifest in phase 2). */
   plugin: string;
-  /** References a declared repo by name. */
   from: string;
-  /** Local name; defaults to `plugin`. Keys overrides/settings/skills namespacing and UI. */
   alias: string;
   overrides: PluginUseOverrides;
 }
 
-/** The parsed consumer block. `declared` is plugin INTENT — the key existing at
- * all — which is what gates the Plugins tab (req 13: an invalid declaration
- * must not erase its own warning surface). */
 export interface PluginReposConfig {
+  /** Key presence, even if invalid, keeps the tab available to show warnings. */
   declared: boolean;
   repos: DeclaredPluginRepo[];
   uses: PluginUse[];
 }
 
-/**
- * One name a plugin declares it uses — a credential (req 23) or an external
- * host (req 24) — and whether the plugin can do its job without it.
- *
- * **The manifest grammar, and why it is this one.** A bare string is
- * REQUIRED; a mapping with `optional: true` is not:
- *
- * ```yaml
- * credentials: [FAL_KEY, { name: PIXELLAB_KEY, optional: true }]
- * hosts:       [fal.run, { name: pixellab.ai,  optional: true }]
- * ```
- *
- * Three properties decided it. It is a **widening**: every manifest written
- * before optionality existed keeps its exact meaning, since a plain list of
- * strings is still a plain list of required names — the regression that
- * matters most, because a plugin author who never asked for this must not have
- * their declaration re-read. It is **one grammar for both lists**, parsed by
- * one function: req 24 asks for "the same visibility req 23 gives
- * credentials", so a host expressed one way and a credential another would
- * make that sentence false the day it shipped. And it is **legible without a
- * legend** — `optional: true` says what it means, where a sigil (`FAL_KEY?`)
- * would be terser, unsearchable, and invisible in a review diff.
- *
- * The key is `name:` for hosts too, rather than `host:`, for the same reason:
- * one shape, one parser, nothing to keep in step.
- */
 export interface PluginRequirement {
   name: string;
-  /**
-   * `optional: true` in the manifest — the plugin works without it.
-   *
-   * This changes only how an UNSATISFIED name is REPORTED. It grants nothing
-   * (req 24's second sentence is absolute: "a plugin declaration never widens
-   * a session's network reach by itself"), and an optional name that IS
-   * satisfied behaves exactly like a required one that is: the credential is
-   * delivered, the host is reachable.
-   */
+  /** Changes reporting only; grants no access and does not suppress available credentials. */
   optional: boolean;
 }
 
-/** One exported plugin from the manifest (plan §1b). All fields optional —
- * a CLI-only or files-only export is valid. */
 export interface PluginExport {
   name: string;
-  /** Compose fragment path, relative to the repo root. */
   compose?: string;
-  /** Command name → entrypoint path (repo-root-relative). */
   cli: Record<string, string>;
-  /** Skills directory, relative to the repo root. */
   skills?: string;
   install?: string;
-  /** Files whose content re-triggers install (same convention as agent.install-inputs). */
   installInputs: string[];
-  /**
-   * Directories `install` populates, relative to the repository root — the
-   * plugin half of `agent.dep-dirs` (docs/183), and what req 28 means by "a
-   * plugin's declared dependency directories". Each one is eligible for the
-   * shared dependency store: ShipIt promotes it out of the generation's
-   * writable layer into a base keyed by this repository, the runtime, and the
-   * content of the install's inputs, so the next commit — and every other
-   * session — mounts it instead of installing again.
-   *
-   * Defaults to `[node_modules]` for the same reason `agent.dep-dirs` does: the
-   * common npm plugin is then zero-config. A declared directory that does not
-   * exist after install simply contributes nothing.
-   */
   depDirs: string[];
-  /**
-   * Credential NAMES only — values live with each consuming project (req 23).
-   * Each carries whether the plugin needs it or merely uses it when given
-   * ({@link PluginRequirement}).
-   */
   credentials: PluginRequirement[];
-  /** Informational; grants nothing (req 24). Required unless marked optional. */
+  /** Informational; grants no network access. */
   hosts: PluginRequirement[];
-  /** Declared settings + defaults (req 26). */
   settings: Record<string, { description?: string; default?: string | number | boolean }>;
 }
 
@@ -172,195 +69,57 @@ export const EMPTY_PLUGIN_REPOS: Readonly<PluginReposConfig> = Object.freeze({
   uses: [],
 });
 
-// ---------------------------------------------------------------------------
-// Snapshot types (what GET /api/plugin-repos returns)
-// ---------------------------------------------------------------------------
-
-/** One `use` entry as the card shows it. `found` is three-valued: resolved
- * against a manifest (self repos — theirs is in the same file), missing from
- * that manifest, or `null` = not knowable until the repo is fetched. */
 export interface PluginRepoUseView {
   plugin: string;
   alias: string;
+  /** null until a manifest is available. */
   found: boolean | null;
-  /**
-   * req 23 — the credential names this plugin declares, each resolved against
-   * the CONSUMING project's own secret store. Grouped under the plugin that
-   * declares them (not flattened onto the card) so an unsatisfied name reads
-   * as "`artk` needs `FAL_KEY`" rather than as an anonymous missing key.
-   * Empty when the plugin declares none, and when the repository has no live
-   * manifest to read — "not knowable" is never reported as "needs nothing".
-   */
   credentials: PluginCredentialNeed[];
-  /**
-   * req 24 — the external hosts this plugin declares, each resolved against
-   * the session's own egress allowlist. Grouped under the declaring plugin for
-   * the reason `credentials` is: req 24 asks for "the same visibility req 23
-   * gives credentials", and a flat list cannot name the claimant.
-   *
-   * An unallowed host here is a gap the user may close deliberately, never one
-   * the declaration closed by itself — the declaration grants nothing. Each
-   * need carries the plugin's own `optional`, which decides whether the card
-   * reads it as a need or as an offer.
-   */
   hosts: PluginHostNeed[];
 }
 
-/**
- * One card in the Plugins tab:
- * - `"self"` — the live working tree (req 27); no ref/commit by design.
- * - `"active"` — a generation is live; `commit` is its exact SHA (req 15).
- * - `"activating"` — staging/installing right now.
- * - `"degraded"` — the latest attempt failed but a prior generation is still
- *   live and whole; `commit` is that prior one (req 15).
- * - `"unavailable"` — nothing was ever activated for this repository (req 13).
- */
+/** degraded keeps the previous generation live; unavailable has none. */
 export type PluginRepoStatus = "self" | "active" | "activating" | "degraded" | "unavailable";
 
 export interface PluginRepoCardView {
   name: string;
-  /** `"self"` or `"owner/repo"` — always visible on the card (req 19). */
   source: string;
-  /**
-   * The ref of what is **being executed**, paired with {@link commit} from the
-   * same generation record; the declared ref only when nothing is live, where
-   * there is nothing else to name. Null for self.
-   *
-   * req 19 says ShipIt visibly identifies "the repository, ref, and exact
-   * commit **being executed**", and `ref` used to come from the declaration
-   * while `commit` came from the live generation — so a declaration edited
-   * since the last successful round rendered as `active` at the NEW ref and
-   * the OLD commit, a pair no round ever produced (seen in the dogfood
-   * instance, where a round needs an attached runner and an edit made with
-   * none never settles). A ref that has produced no generation is not being
-   * executed; the gap between what is declared and what runs belongs in the
-   * `activating` / `degraded` framing that exists for it, and — when neither
-   * applies — in an issue row saying so.
-   */
+  /** Live generation's ref, paired with commit; declaration only when nothing is live. */
   ref: string | null;
-  /** The live generation's exact commit; null for self and when nothing is live. */
   commit: string | null;
   status: PluginRepoStatus;
-  /**
-   * req 8 — the declaration names a tag or SHA rather than tracking a branch.
-   *
-   * The card's refresh action is absent here, and that is the requirement
-   * rather than a simplification: a pinned project "stays at that exact
-   * revision until its declaration changes", so the only honest way to move it
-   * is to edit `shipit.yaml`. Always `false` for `repo: self`, which has no
-   * tracked version at all (req 27) and is excluded by its own `status`.
-   */
   pinned: boolean;
   uses: PluginRepoUseView[];
-  /** Problems attached to this repo (a failed activation, a missing selector). */
   issues: string[];
-  /**
-   * planning#511 — the live version's dependencies are not shared through
-   * ShipIt's dependency store, so every session pays the whole install.
-   *
-   * **Its own field, and NOT an `issues` row** (review finding). The version is
-   * live and whole: nothing is withheld and nothing failed, so the card's
-   * problem count and the tab's attention dot — both of which read `issues`
-   * (`pluginsAttention`) — must not move for it. A dot that never clears is a
-   * dot the user stops reading, which is the same reasoning that keeps an
-   * OPTIONAL credential out of them.
-   */
+  /** Advisory only; must not affect issue counts or the attention dot. */
   depStoreNotice?: string;
 }
 
-/**
- * What the orchestrator knows about a tracked repository beyond its
- * declaration. Passed into {@link buildPluginReposSnapshot} so the projection
- * stays pure and testable — the route reads the live generation off disk.
- */
 export interface PluginRepoRuntime {
   activating?: boolean;
   commit?: string;
-  /**
-   * The ref the live generation RECORDED when it was built ({@link
-   * declaredRefLabel}'s spelling) — what is being executed, as opposed to what
-   * the declaration says now. Present exactly when {@link commit} is.
-   */
   ref?: string;
-  /** Exported plugin names in the live generation's manifest (phase-2 input). */
   exports?: string[];
   error?: string;
-  /** Advisory — a moved tag the durable pin overrode (req 8). */
   warning?: string;
-  /** Warnings from parsing the live generation's manifest (req 13 — degrade *visibly*). */
   manifestWarnings?: string[];
-  /**
-   * Selected exports the failed attempt's version does not have — `error`
-   * already names them. Present only when a phase-2 selector check is what
-   * failed, so the card can state that fact once (see the issue projection).
-   */
   missingSelectors?: string[];
-  /**
-   * Settings this repository's imports declare that cannot be resolved against
-   * the live manifest (req 26 — an undeclared name, a type that disagrees with
-   * the plugin's default). Each names its `alias`, because the card's unit is
-   * the repository while a settings problem belongs to one import.
-   */
   settingsIssues?: string[];
-  /**
-   * Companion-CLI commands this repository's imports could not surface (req 20
-   * — a name claimed twice, a reserved name, a name already on the agent's
-   * PATH). Each names its `alias` and the `overrides.commands.<x>.as` that
-   * resolves it, because the card's unit is the repository while a command
-   * belongs to one import.
-   */
   commandIssues?: string[];
-  /**
-   * Problems with this repository's plugin SERVICES (reqs 3, 20): a compose
-   * fragment that cannot be used, a surfaced service name that collides with
-   * the project's or another plugin's, a plugin whose runtime layer could not
-   * be prepared. Each names its `alias`, for the same reason `settingsIssues`
-   * does — the card's unit is the repository while the problem belongs to one
-   * import.
-   */
   serviceIssues?: string[];
-  /**
-   * planning#511 — why the live version's install is not shared through
-   * ShipIt's dependency store, so it is paid in full in every session, for
-   * ever. Remembered rather than recomputed, for the one reason `plugin-state.ts`
-   * gives for its own `failure` field: nothing here can recompute it. The staged
-   * checkout it was decided against is gone, and half the reasons (a dep dir the
-   * install did not populate, a publish the store declined) are facts about an
-   * install that has already run.
-   */
   depStoreNotice?: string;
 }
 
 export interface PluginReposSnapshot {
-  /** Plugin intent — gates the tab. */
   declared: boolean;
-  /**
-   * At least one repository is mid-activation. Activation is fire-and-forget
-   * server-side, so nothing pushes its completion; the client re-fetches while
-   * this is true rather than leaving the card stuck on "activating" until the
-   * next shipit.yaml event (review finding).
-   */
   activating: boolean;
-  /**
-   * The answer is *not yet knowable*: the session's checkout is evicted or
-   * mid-restore, so "declares nothing" must not be cached — the client
-   * retries instead (the `declarationsPending` precedent, plan §3).
-   */
+  /** Checkout unavailable; retry instead of caching an empty declaration. */
   pending: boolean;
-  /** The consuming project's remote — the secret store "Add key…" must write to (plan §3). */
   consumerRepoUrl: string | null;
   repos: PluginRepoCardView[];
-  /** Parse-level warnings (dropped entries, unknown keys). Count toward the warn dot. */
   warnings: string[];
 }
 
-// ---------------------------------------------------------------------------
-// Parsing — consumer side
-// ---------------------------------------------------------------------------
-
-/** Same charset as tracker names: the shared reservation domain (plan §1a
- * phase 1) needs one rule, and aliases feed the `plugins--<alias>--<skill>`
- * namespace, so whitespace/`#`/`/` are out for both. */
 const PLUGIN_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
 const KNOWN_REPO_KEYS = new Set(["repo", "name", "branch", "pin"]);
@@ -377,19 +136,7 @@ function isScalar(v: unknown): v is string | number | boolean {
   return typeof v === "string" || typeof v === "number" || typeof v === "boolean";
 }
 
-/**
- * Parse the consumer `plugins:` block. **Call only when the `plugins` key
- * exists in the document** (shipit-config gates on `"plugins" in raw`): an
- * empty or null value — bare `plugins:` in YAML parses to null — is still
- * plugin INTENT and must keep its tab (req 13, review finding), so presence
- * is the caller's signal and every value, including null, declares.
- *
- * `trackers` feeds the cross-block name reservation: tracker names are
- * reserved first (they parse first), and a repo name colliding with one is
- * dropped — UNLESS the repo's GitHub destination is the same repository the
- * tracker already points at, which is the sanctioned alias case (plan §1a:
- * one destination, two names, one adapter).
- */
+/** Call only when the plugins key exists; even null declares intent. */
 export function parsePluginRepos(
   raw: unknown,
   trackers: readonly DeclaredTracker[],
@@ -399,7 +146,6 @@ export function parsePluginRepos(
 
   if (!isMapping(raw)) {
     warnings.push("`plugins` must be a mapping (object); ignoring it.");
-    // The key exists, so intent is declared — the tab must show the warning.
     return { declared: true, repos: [], uses: [] };
   }
 
@@ -437,10 +183,7 @@ function parseRepoList(
     if (!repo) continue;
 
     const nameKey = repo.name.toLowerCase();
-    // Reservation pass, cross-block half: trackers parse first, so on a name
-    // collision the tracker wins — except when the plugin repo IS the
-    // tracker's repository, where one destination legitimately carries both
-    // roles under one name.
+    // Tracker names take precedence, unless both point to the same repository.
     const tracker = trackerNames.get(nameKey);
     if (tracker && !sameDestination(repo.source, tracker)) {
       warnings.push(
@@ -469,48 +212,17 @@ function parseRepoList(
   return repos;
 }
 
-/**
- * The canonical identity of what a declaration POINTS AT — `owner/repo`
- * lowercased, or `self`. Distinct from the declaration's `name`, which is only
- * what the consumer calls it and can be re-pointed at a different repository.
- *
- * Exported because a generation records it (`plugin-generations.ts`): a
- * generation keyed by name alone would let a re-pointed declaration pair a new
- * repository with the previous one's commit. The session container compares
- * against it too, before exposing a checkout it did not publish
- * (`session/plugin-runtime.ts`) — which is why this lives in `shared/` and not
- * beside the generation engine.
- */
+/** Repository identity, independent of the declaration's mutable name. */
 export function destinationKey(source: PluginRepoSource): string {
   return source.kind === "self" ? "self" : `${source.owner}/${source.repo}`.toLowerCase();
 }
 
-/**
- * The URL a declared plugin repository is cloned from. Case-preserving, because
- * every cache keyed on it (`repo-cache/<hash>`, docs/075's `dep-cache/<hash>`)
- * hashes the URL byte-for-byte — the lowercased {@link destinationKey} is the
- * IDENTITY of a repository and not a substitute for it here.
- *
- * Lives beside `destinationKey` so the activation path and the disk janitor
- * cannot derive two different answers: the janitor's whole job is to recognize
- * the very directories activation created (req 28).
- */
+/** Preserve case: cache paths hash the URL byte-for-byte. */
 export function pluginCloneUrl(source: PluginRepoSource): string {
   if (source.kind === "self") throw new Error("self repos have no clone URL");
   return `https://github.com/${source.owner}/${source.repo}.git`;
 }
 
-/**
- * How a declared version is written wherever a human reads it: the generation
- * record (`plugin-generations.ts`), the refresh rows the agent's `shipit plugin
- * refresh` prints, the preflight verdict, and the Plugins card.
- *
- * One formatter because the card **compares** two of those (plan §3): the ref a
- * generation recorded when it was built against the ref the declaration names
- * now. Two spellings of "the default branch" would make every default-branch
- * repository look re-pointed. Never called for a `repo: self` declaration —
- * a live working tree has no version to state (req 27).
- */
 export function declaredRefLabel(repo: Pick<DeclaredPluginRepo, "branch" | "pin">): string {
   return repo.pin ? `pin ${repo.pin}` : `branch ${repo.branch ?? "(default)"}`;
 }
@@ -559,7 +271,6 @@ function parseRepoEntry(entry: unknown, index: number, warnings: string[]): Decl
   if (branch && pin) return drop("`branch` and `pin` are mutually exclusive (req 8)");
 
   if (repoStr.toLowerCase() === "self") {
-    // req 27 — the session's own working tree: live, no version to track.
     if (branch || pin) return drop("`repo: self` takes no `branch`/`pin` — the live working tree has no tracked version");
     return { name, source: { kind: "self" } };
   }
@@ -576,9 +287,7 @@ function parseRepoEntry(entry: unknown, index: number, warnings: string[]): Decl
   };
 }
 
-/** A tri-state string field: undefined (absent), the trimmed value, or `false`
- * meaning "present but unusable" — the entry is dropped so a typo'd pin can't
- * silently become "track the default branch". */
+/** false drops an invalid entry so a bad pin cannot become default-branch tracking. */
 function optionalTrimmedString(
   raw: unknown,
   label: string,
@@ -619,12 +328,6 @@ function parseUseList(
     }
     for (const key of Object.keys(entry)) {
       if (!KNOWN_USE_KEYS.has(key)) {
-        // An override key written one level too high is the mistake a user
-        // actually made in the field (nikzlabs/shipit#2298 finding 2): they set
-        // `settings:` directly on the `use` entry, got the plugin's default,
-        // and concluded a consuming project could not set a setting at all. The
-        // key IS known — just not here — so say where it belongs rather than
-        // only that this is not it.
         warnings.push(
           KNOWN_OVERRIDE_KEYS.has(key)
             ? `Unknown key \`plugins.use[${i}].${key}\` in shipit.yaml — its value is ignored. A `
@@ -658,8 +361,6 @@ function parseUseList(
       }
       alias = entry.alias.trim();
     }
-    // Domain 2 of the naming phases: aliases are unique across ALL use
-    // entries — the alias keys settings, skills namespacing, and the UI.
     const aliasKey = alias.toLowerCase();
     if (seenAliases.has(aliasKey)) {
       drop(`duplicate plugin alias \`${alias}\``);
@@ -675,13 +376,7 @@ function parseUseList(
   return uses;
 }
 
-/**
- * Overrides are **fail-closed at the use-entry level** (review finding): a
- * malformed override field must drop the whole `use` entry, never degrade
- * into different executable semantics — `autostart: "false"` silently
- * becoming "no override" would START a service the declaration asked to keep
- * off. Returns null (with one warning naming the field) on any invalid piece.
- */
+/** Drop the entire use entry on invalid overrides; defaults could start unwanted services. */
 function parseOverrides(
   raw: unknown,
   useIndex: number,
@@ -725,9 +420,6 @@ function parseOverrides(
         out.as = as;
       }
       if (val.port !== undefined && val.port !== null) {
-        // A quoted port is a different type with the same spelling — the same
-        // reason `autostart` refuses the string "false" rather than coercing
-        // it. Refusing here beats a service that silently never previews.
         if (typeof val.port !== "number" || !Number.isInteger(val.port) || val.port < 1 || val.port > 65_535) {
           return fail(`${field}.port`, "must be a whole number between 1 and 65535");
         }
@@ -762,8 +454,6 @@ function parseOverrides(
   if (raw.settings !== undefined && raw.settings !== null) {
     if (!isMapping(raw.settings)) return fail("overrides.settings", "must be a mapping");
     for (const [name, val] of Object.entries(raw.settings)) {
-      // Fail-closed grammar (plan §1a): setting values are scalars, and a
-      // malformed value must not silently fall back to the plugin's default.
       if (!isScalar(val)) return fail(`overrides.settings.${name}`, "must be a scalar");
       settings[name] = val;
     }
@@ -777,10 +467,6 @@ function parseAlias(raw: unknown): string | undefined {
   return raw.trim();
 }
 
-// ---------------------------------------------------------------------------
-// Parsing — plugin side (the exports manifest)
-// ---------------------------------------------------------------------------
-
 const KNOWN_EXPORT_KEYS = new Set([
   "compose",
   "cli",
@@ -793,34 +479,13 @@ const KNOWN_EXPORT_KEYS = new Set([
   "settings",
 ]);
 
-/**
- * What `dep-dirs` means when an export does not say (req 28). The same literal
- * `agent.dep-dirs` defaults to (docs/183), duplicated rather than imported
- * because `shipit-config.ts` imports THIS module — and it is the module that is
- * allowed to touch `node:fs`, which this one deliberately is not.
- */
+/** Duplicate the config default to avoid its filesystem imports. */
 export const DEFAULT_PLUGIN_DEP_DIRS: readonly string[] = ["node_modules"];
 
-/** Credential names are environment variable names (req 23). */
 const CREDENTIAL_NAME_RE = /^[A-Z][A-Z0-9_]*$/;
-
-/** A hostname, no scheme, no path — `fal.run`, not `https://fal.run/x` (req 24). */
 const HOST_RE = /^[A-Za-z0-9][A-Za-z0-9.-]*$/;
-
 const KNOWN_REQUIREMENT_KEYS = new Set(["name", "optional"]);
 
-/**
- * Parse one `credentials:` or `hosts:` list into {@link PluginRequirement}s —
- * ONE function for both lists, which is the point rather than a saving.
- *
- * Req 24 asks for "the same visibility req 23 gives credentials", and both
- * lists are collected by one walk (`plugin-needs.ts`) and rendered by one card
- * in one shape. A second copy of this parser is how the two grammars start
- * disagreeing about what `optional` means.
- *
- * Returns the parsed list, or `{error}` — the caller drops the whole plugin
- * (fail-closed per plugin, plan §1b).
- */
 function parseRequirementList(
   raw: unknown,
   field: "credentials" | "hosts",
@@ -838,8 +503,6 @@ function parseRequirementList(
 
   const out: PluginRequirement[] = [];
   for (const entry of raw) {
-    // The widening (reqs 23, 24): a bare string is REQUIRED — exactly what
-    // every manifest written before optionality existed already meant.
     let value: unknown = entry;
     let optional = false;
     if (isMapping(entry)) {
@@ -855,10 +518,6 @@ function parseRequirementList(
       }
       value = entry.name;
       if (entry.optional !== undefined && entry.optional !== null) {
-        // Fail-closed, the `overrides.services.<x>.autostart` rule: `optional:
-        // "true"` is a string, and reading it as either answer would be a guess
-        // about what the plugin author meant. Guessing "required" would report
-        // a gap the author said was fine; guessing "optional" would hide one.
         if (typeof entry.optional !== "boolean") {
           return { error: `\`${field}\` entries take \`optional: true\` or \`optional: false\`` };
         }
@@ -873,7 +532,6 @@ function parseRequirementList(
   return out;
 }
 
-/** Why a declared name is unusable, or null when it is fine. */
 function requirementNameError(field: "credentials" | "hosts", value: unknown): string | null {
   if (field === "hosts") {
     return typeof value === "string" && HOST_RE.test(value)
@@ -883,24 +541,12 @@ function requirementNameError(field: "credentials" | "hosts", value: unknown): s
   if (typeof value !== "string" || !CREDENTIAL_NAME_RE.test(value)) {
     return `credential names must look like environment variables (got \`${String(value)}\`)`;
   }
-  // The check belongs HERE rather than on either delivery surface, so both
-  // inherit one answer and the plugin author is told at declaration time (see
-  // `PLUGIN_CONTRACT_ENV_NAMES`): the compose surface silently drops such a
-  // name while the CLI surface appends a duplicate `Env` entry whose resolution
-  // nothing specifies. Refused rather than ignored, because a plugin that names
-  // one of these has confused ShipIt's contract for its own configuration, and
-  // telling it so is cheaper than either surface's undefined behaviour.
   return PLUGIN_CONTRACT_ENV_NAMES.has(value)
     ? `\`${value}\` is set by ShipIt in every plugin container, so a plugin cannot declare it as a credential`
     : null;
 }
 
-/**
- * Parse the `exports:` block. Fail-closed **per plugin** (plan §1b): a plugin
- * entry with any invalid field is dropped whole, with a warning naming the
- * field — degraded beats partial (reqs 13, 14). Phase 2 turns that same rule
- * into "a failing selected export invalidates the repository's generation".
- */
+/** Invalid fields drop the whole plugin, never a partial executable export. */
 export function parsePluginExports(raw: unknown, warnings: string[]): PluginExport[] {
   if (raw === undefined || raw === null) return [];
   if (!isMapping(raw)) {
@@ -928,11 +574,7 @@ export function parsePluginExports(raw: unknown, warnings: string[]): PluginExpo
 }
 
 function parseExportEntry(name: string, entry: unknown, warnings: string[]): PluginExport | null {
-  // The message quotes the full `exports.plugins.<name>` key: the snapshot
-  // projection keeps warnings by their quoted key prefix, and the drop reason
-  // must reach the tab — a self-declared consumer of this export otherwise
-  // sees only "not in manifest" with the real cause filtered away (review
-  // finding).
+  // Snapshot warning filters require the full quoted config key.
   const drop = (reason: string): null => {
     warnings.push(`Ignoring \`exports.plugins.${name}\`: ${reason}.`);
     return null;
@@ -988,9 +630,6 @@ function parseExportEntry(name: string, entry: unknown, warnings: string[]): Plu
     }
   }
 
-  // req 28 — the directories install populates, each eligible for the shared
-  // dependency store. Absent means the npm default, exactly as `agent.dep-dirs`
-  // behaves; an explicit empty list opts out.
   let depDirs: string[] = [...DEFAULT_PLUGIN_DEP_DIRS];
   if (entry["dep-dirs"] !== undefined && entry["dep-dirs"] !== null) {
     const rawDirs = entry["dep-dirs"];
@@ -1023,9 +662,6 @@ function parseExportEntry(name: string, entry: unknown, warnings: string[]): Plu
         continue;
       }
       if (!isMapping(sVal)) return drop(`\`settings.${sName}\` must be a mapping (description/default)`);
-      // A misspelled descriptor key (`defualt`) silently loses the default it
-      // meant to set — say so (review finding). Warn-not-drop, the same
-      // forward-compatibility rule as every other unknown key.
       for (const key of Object.keys(sVal)) {
         if (key !== "description" && key !== "default") {
           warnings.push(`Unknown key \`exports.plugins.${name}.settings.${sName}.${key}\` in shipit.yaml.`);
@@ -1058,11 +694,7 @@ function parseExportEntry(name: string, entry: unknown, warnings: string[]): Plu
   };
 }
 
-/** Literal relative path, workspace-confined — the same structural rules as
- * `agent.dep-dirs`, re-implemented here because this module must stay
- * filesystem-free (the shipit-config helper lives beside `node:fs` imports).
- * Returns the normalized path, `undefined` for absent, or `{error}` — the
- * caller drops the whole plugin (fail-closed per plugin). */
+/** Duplicate structural path validation to keep filesystem imports out. */
 function optionalRelPath(
   raw: unknown,
   label: string,
@@ -1078,36 +710,13 @@ function optionalRelPath(
   return segments.join("/");
 }
 
-// ---------------------------------------------------------------------------
-// Snapshot assembly (used by the /api/plugin-repos route)
-// ---------------------------------------------------------------------------
-
-/**
- * Project the parsed config into the browser snapshot. Pure — the route feeds
- * it the config and the session's remote. Self repos resolve their `use`
- * selectors against the same file's own manifest (their phase 2 needs no
- * fetch); tracked repos stay `found: null` until checkout mechanics exist.
- */
 export function buildPluginReposSnapshot(
   plugins: PluginReposConfig,
   pluginExports: readonly PluginExport[],
   consumerRepoUrl: string | null,
   warnings: readonly string[],
   runtime: Readonly<Record<string, PluginRepoRuntime>> = {},
-  /**
-   * req 23 — per-plugin credential needs, already resolved against the
-   * consuming project's store by the caller (`plugin-credentials.ts`). Passed
-   * in rather than computed here for the reason the whole module is
-   * filesystem-free: satisfaction is a store read, and this projection stays
-   * pure. Keyed onto `use` entries by alias, which is unique per project.
-   */
   credentialGroups: readonly PluginCredentialGroup[] = [],
-  /**
-   * req 24 — per-plugin host needs, already resolved against the session's own
-   * egress allowlist by the caller (`orchestrator/plugin-hosts.ts`). Passed in
-   * for the reason `credentialGroups` is: allowance is a store read, and this
-   * projection stays pure. A declaration NEVER decides its own allowance.
-   */
   hostGroups: readonly PluginHostGroup[] = [],
 ): PluginReposSnapshot {
   const selfExports = new Set(pluginExports.map((e) => e.name.toLowerCase()));
@@ -1117,9 +726,6 @@ export function buildPluginReposSnapshot(
   const repos: PluginRepoCardView[] = plugins.repos.map((repo) => {
     const isSelf = repo.source.kind === "self";
     const live = runtime[repo.name] ?? {};
-    // Selector resolution (phase 2): a self repo's manifest is this same file;
-    // a tracked repo's is the live generation's. Both are `null` — "not yet
-    // knowable" — until there is a manifest to check against.
     const manifest = isSelf ? selfExports : live.exports ? new Set(live.exports.map((n) => n.toLowerCase())) : null;
 
     const uses = plugins.uses
@@ -1132,61 +738,22 @@ export function buildPluginReposSnapshot(
         hosts: hostsByAlias.get(u.alias.toLowerCase()) ?? [],
       }));
 
-    // The declared ref is what the card names only when nothing is running —
-    // there is nothing else to name then. Whenever a generation IS live, both
-    // the ref and the commit come from its record, so the pair on the card is
-    // one a round actually produced (req 19).
-    //
-    // **No "your declaration has moved" row.** An earlier revision added one
-    // and it was wrong in a way that could not be cleared: activation
-    // short-circuits to `unchanged` when the declared ref resolves to the SHA
-    // already live (`plugin-generations.ts`), deliberately leaving the record's
-    // `ref` as it was — so `branch main` → `pin <that same sha>`, or a branch
-    // re-pointed to the same commit, would flag a mismatch forever and the
-    // refresh the row told you to run would repeat the same short-circuit.
-    // Telling the two apart needs the declared ref RESOLVED, which is a network
-    // round-trip plan §3 rules out ("no commits-behind badge"). The gap the row
-    // was for is the one the `activating` / `degraded` framing already covers.
     const declaredRef = isSelf ? null : declaredRefLabel(repo);
     const issues: string[] = [];
 
-    // A phase-2 failure already says which selectors the declared version
-    // lacks, so repeating it here would state one fact twice on the card
-    // (found live in the dogfood instance). The generic message still fires for
-    // a selector the LIVE generation lacks when the attempt failed for some
-    // other reason — a fetch failure plus a newly added selector, say.
+    // Activation errors already name these missing selectors.
     const named = new Set((live.missingSelectors ?? []).map((n) => n.toLowerCase()));
     issues.push(
       ...uses
         .filter((u) => u.found === false && !named.has(u.plugin.toLowerCase()))
         .map((u) => `\`${u.plugin}\` is not in this repository's \`exports.plugins\` manifest.`),
     );
-    // req 26 — a settings value that cannot take effect. Below the selector
-    // problems: a plugin that is not there at all outranks one whose settings
-    // are wrong.
     issues.push(...(live.settingsIssues ?? []));
-    // req 20 — a command that is not on PATH. Same class as a settings value
-    // that cannot take effect: the declaration asked for something the session
-    // is not doing, and nothing inside the plugin can tell.
     issues.push(...(live.commandIssues ?? []));
-    // Services below both: a plugin whose services cannot be surfaced still
-    // gives the session its files, CLIs and skills, so it outranks neither the
-    // plugin being absent nor a declaration that silently takes no effect.
     issues.push(...(live.serviceIssues ?? []));
-    // Order: the failure first, then advisories, then selector problems.
     if (live.warning) issues.unshift(live.warning);
     for (const w of live.manifestWarnings ?? []) issues.unshift(w);
     if (live.error) issues.unshift(live.error);
-    // The card is the whole report a user gets (req 13), and the SAME sentence
-    // twice is never part of it. Two channels feed this list — `manifestWarnings`
-    // is durable on the generation record, `warning` is transient from the
-    // activation attempt — and `activateGeneration` once wrote the uninstalled
-    // notice to both, which the dogfood rendered as two identical rows.
-    //
-    // That source is fixed; this makes the property structural rather than
-    // something every future caller has to remember. It collapses only EXACT
-    // repeats and keeps the first, so ordering above is preserved and two
-    // channels carrying different facts still both show.
     const deduped = [...new Set(issues)];
     issues.length = 0;
     issues.push(...deduped);
@@ -1194,38 +761,17 @@ export function buildPluginReposSnapshot(
     return {
       name: repo.name,
       source: isSelf ? "self" : `${(repo.source as { owner: string }).owner}/${(repo.source as { repo: string }).repo}`,
-      // The running generation's own ref, so the pair on the card comes from
-      // one record; the declared ref only when nothing is running.
-      //
-      // A live generation whose record carries NO ref reports none — the
-      // commit stands alone. Falling back to the declared ref there would
-      // recreate exactly the pair this change removes (a declared ref beside a
-      // commit it never produced), silently and for the one record shape
-      // nobody can vouch for, since `readGenerationRecordAt` parses with an
-      // unchecked cast (review finding).
+      // Never pair a live commit with a declaration it may not have come from.
       ref: isSelf ? null : live.commit ? live.ref ?? null : declaredRef,
       commit: live.commit ?? null,
       status: cardStatus(isSelf, live),
-      // Read off the DECLARATION, not off the live generation's ref: what may
-      // be refreshed is decided by what the project asks for now, and a
-      // generation built before the declaration was pinned would otherwise keep
-      // offering an action that cannot move it (req 8).
       pinned: !isSelf && Boolean(repo.pin),
       uses,
       issues,
-      // planning#511 — beside the issue rows, never among them.
       ...(live.depStoreNotice ? { depStoreNotice: live.depStoreNotice } : {}),
     };
   });
 
-  // Warning projection (review finding): consumer-block warnings always ride
-  // the snapshot — they are what the tab's intent gating protects. Exports
-  // warnings ride it only when the project consumes plugins: a repo that only
-  // EXPORTS must not grow a Plugins tab from a manifest warning (plan §3 —
-  // the tab renders only when the project declares plugins; the config
-  // banner already surfaces those warnings to the plugin's author). Every
-  // message from this module quotes its config key, which is what the
-  // prefixes match.
   const consumerWarnings = warnings.filter((w) => w.includes("`plugins"));
   const exportWarnings = plugins.declared ? warnings.filter((w) => w.includes("`exports")) : [];
 
@@ -1239,16 +785,8 @@ export function buildPluginReposSnapshot(
   };
 }
 
-/**
- * `degraded` is the distinction req 15 asks for: a failed refresh that left a
- * prior generation live is NOT the same as never having fetched at all, and
- * the two read differently on the card.
- */
 function cardStatus(isSelf: boolean, live: PluginRepoRuntime): PluginRepoStatus {
   if (isSelf) return "self";
-  // `activating` is checked FIRST (review finding): a refresh running over a
-  // live prior generation is in progress, and reporting it as `active` hid
-  // every refresh that had something to replace.
   if (live.activating) return "activating";
   if (live.commit) return live.error ? "degraded" : "active";
   return "unavailable";

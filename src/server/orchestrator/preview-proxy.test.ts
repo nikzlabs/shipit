@@ -1,13 +1,3 @@
-/**
- * Unit tests for `buildUpstreamHeaders` — the forwarded-header logic that lets
- * the preview proxy hand the upstream a loopback `Host` while still telling
- * frameworks (Gradio, etc.) the browser-facing host so they compute a public
- * root URL the browser can actually reach.
- *
- * Regression guard for the "Gradio preview calls localhost:7860 and fails with
- * ERR_CONNECTION_REFUSED" bug.
- */
-
 import { describe, it, expect } from "vitest";
 import vm from "node:vm";
 import { AGENT_INTERFACE_SDK_MARKER } from "../shared/agent-interface-sdk/bootstrap.js";
@@ -27,8 +17,6 @@ describe("buildUpstreamHeaders", () => {
       { host: "abc--7860.localhost:3001" },
       7860,
     );
-    // Gradio derives its public root URL from this; without it the frontend
-    // would call localhost:7860 (the user's machine in a browser session).
     expect(out["x-forwarded-host"]).toBe("abc--7860.localhost:3001");
   });
 
@@ -46,8 +34,6 @@ describe("buildUpstreamHeaders", () => {
       },
       7860,
     );
-    // An ingress that terminated TLS already set these — they must win so
-    // Gradio emits https:// URLs and the browser doesn't hit mixed content.
     expect(out["x-forwarded-proto"]).toBe("https");
     expect(out["x-forwarded-host"]).toBe("preview.shipit.example.com");
     expect(out.host).toBe("localhost:7860");
@@ -78,22 +64,12 @@ describe("withOriginIsolation", () => {
   });
 
   it("does not mutate the headers it was handed", () => {
-    // The pass-through path writes `proxyRes.headers` straight out; a mutating
-    // helper would be editing the upstream response object in place.
     const upstream = { "content-type": "text/css" };
     withOriginIsolation(upstream);
     expect(upstream).toEqual({ "content-type": "text/css" });
   });
 
   it("replaces an upstream opt-out, whatever case it was written in", () => {
-    // Renderer allocation across sessions is the platform's decision. One `?0`
-    // from an arbitrary dev server would put every open session back in a
-    // single renderer, and the blank canvas would then appear in a *different*
-    // session from the app that caused it.
-    //
-    // Ours is written in the mixed case the literal call sites use; node
-    // lowercases the ones it parses off an upstream response. A case-sensitive
-    // replace would leave the upstream field in place beside ours.
     expect(withOriginIsolation({ "Origin-Agent-Cluster": "?0" })).toEqual({
       "origin-agent-cluster": "?1",
     });
@@ -103,10 +79,6 @@ describe("withOriginIsolation", () => {
   });
 
   it("leaves exactly one field for a value that arrived duplicated or malformed", () => {
-    // Node represents a repeated header as an array. Emitting two fields — or
-    // passing a list value through — is a structured-header parse failure, and
-    // a browser reads that as no request for isolation at all: precisely the
-    // outcome this exists to prevent.
     const out = withOriginIsolation({ "origin-agent-cluster": ["?0", "?1"], "Content-Type": "text/html" });
 
     expect(out).toEqual({ "origin-agent-cluster": "?1", "Content-Type": "text/html" });
@@ -133,14 +105,7 @@ describe("injectPreviewBootstrap", () => {
   });
 
   it("keeps the hand-written script ASCII, since we don't control the charset", () => {
-    // We splice bytes into whatever the app serves, and a page with no declared
-    // charset renders our UTF-8 characters as mojibake (seen in Chromium, with
-    // an em dash in a console message).
-    //
-    // Scoped to the first injected script — ours. The SDK script beside it is
-    // `installShipItPageSdk.toString()`, whose exact bytes depend on the
-    // transform (vitest keeps the function's comments, production's esbuild
-    // strips them), so asserting over it would test the transform, not us.
+    // Exclude SDK.toString(): its comment bytes differ between test and build transforms.
     const injected = injectPreviewBootstrap("<html><head></head></html>");
     const ourScript = injected.slice(0, injected.indexOf("</script>"));
     const nonAscii = Array.from(ourScript).filter((c) => c.charCodeAt(0) > 127);
@@ -148,20 +113,11 @@ describe("injectPreviewBootstrap", () => {
   });
 });
 
-/**
- * The injected HMR/toolbar script is a hand-written string, so we execute the
- * real one in a sandbox rather than pattern-matching its source. Path reporting
- * is the part worth proving: a load-time read alone goes stale the moment a
- * client-side router moves, and the History wrapper that fixes that sits on the
- * hot path of every SPA navigation in every preview.
- */
 interface PostedMessage { source?: string; type?: string; path?: string; canGoBack?: boolean }
 
-/** Minimal stand-in for the Navigation API's back()/forward() result. */
 function navResult(rejection?: string) {
   const p = rejection ? Promise.reject(new Error(rejection)) : Promise.resolve();
-  // Attach a no-op catch to the source promise so an *unhandled* rejection in
-  // the test itself can't be confused with the script failing to swallow one.
+  // Handle the source promise; only returned promises should expose unhandled rejections.
   return { committed: p.catch(() => { throw new Error(rejection); }), finished: p.catch(() => { throw new Error(rejection); }) };
 }
 
@@ -184,12 +140,7 @@ function runInjectedScript(
   const pushed: unknown[][] = [];
   const traversed: string[] = [];
   const warnings: string[] = [];
-  // Modelled the way a browser has it — the traversing methods and `length`
-  // live on `History.prototype`, not on the instance — because the script
-  // patches the prototype, and an instance-only fake would let a patch that
-  // misses `History.prototype.back.call(history)` look like it works.
-  // `length` starts at the JOINT length a frame really sees (Chromium: one own
-  // entry, `length` 9), which is what makes it useless as a guard unpatched.
+  // Model prototype methods and joint history length to expose incomplete patches.
   const historyProto = {
     pushState: (...args: unknown[]) => { pushed.push(args); return "original-return"; },
     replaceState: (...args: unknown[]) => { pushed.push(args); },
@@ -222,7 +173,6 @@ function runInjectedScript(
     },
     dispatchEvent: (e: unknown) => { dispatched.push(e); return true; },
   };
-  /** Stand-ins for the constructors the script uses to announce a rewrite. */
   class FakeHashChangeEvent {
     type: string;
     oldURL: unknown;
@@ -248,7 +198,6 @@ function runInjectedScript(
     HashChangeEvent: FakeHashChangeEvent, PopStateEvent: FakePopStateEvent,
     console: { warn: (...args: unknown[]) => { warnings.push(args.join(" ")); } },
   }));
-  // Commands arrive from the embedding window, which is what the script checks.
   const toolbar = (type: string, extra: Record<string, unknown> = {}, source: unknown = parent) => {
     for (const fn of listeners.get("message") ?? []) {
       fn({ data: { source: "shipit-toolbar", type, ...extra }, source });
@@ -257,13 +206,6 @@ function runInjectedScript(
   return { posted, listeners, history, historyProto, location, pushed, traversed, toolbar, assigned, dispatched, warnings };
 }
 
-/**
- * A Navigation API stub that records which traversals were attempted.
- *
- * `entries` / `currentIndex` opt into the frame-scoped entry list that a
- * multi-step `history.go(delta)` traverses through; omitting them models an
- * engine that has back()/forward() but no traverseTo, which must refuse.
- */
 function fakeNavigation(
   opts: {
     canGoBack?: boolean;
@@ -340,8 +282,6 @@ describe("injected preview script — path reporting", () => {
   });
 
   it("calls through to the original History methods and preserves their return", () => {
-    // The wrapper sits on every SPA navigation — swallowing the call or its
-    // return value would break routing in every preview.
     const { history, pushed } = runInjectedScript();
     const returned = history.pushState({ a: 1 }, "", "/x");
     expect(pushed).toEqual([[{ a: 1 }, "", "/x"]]);
@@ -350,10 +290,6 @@ describe("injected preview script — path reporting", () => {
 });
 
 describe("injected preview script — toolbar history navigation", () => {
-  // `history.back()` in a frame traverses the JOINT session history, so a
-  // preview with no entry of its own walks the ShipIt tab back instead — the
-  // user gets kicked out of their session by the preview's Back button.
-  // Everything here exists to keep the traversal inside the frame.
   it("does not traverse at all when the preview has no history of its own", () => {
     const { calls, nav } = fakeNavigation({ canGoBack: false });
     const { toolbar, traversed } = runInjectedScript(undefined, nav);
@@ -361,7 +297,6 @@ describe("injected preview script — toolbar history navigation", () => {
     toolbar("back");
 
     expect(calls).toEqual([]);
-    // Crucially not a fallback to `history.back()` — that is the leak.
     expect(traversed).toEqual([]);
   });
 
@@ -396,14 +331,10 @@ describe("injected preview script — toolbar history navigation", () => {
     } finally {
       process.off("unhandledRejection", onRejection);
     }
-    // An unhandled rejection here would surface in the previewed app's console.
     expect(rejections).toEqual([]);
   });
 
   it("refuses to traverse at all where the Navigation API is missing", () => {
-    // There is no legacy way to ask whether *this frame* can go back, so
-    // `history.back()` here would be the original bug: it would walk the
-    // top-level ShipIt page back.
     const { toolbar, traversed } = runInjectedScript(undefined, undefined);
     toolbar("back");
     toolbar("forward");
@@ -411,7 +342,6 @@ describe("injected preview script — toolbar history navigation", () => {
   });
 
   it("reports canGoBack false without the Navigation API, so the button is disabled", () => {
-    // Refusing to traverse silently would leave a live-looking, inert button.
     const { posted } = runInjectedScript(undefined, undefined);
     expect(posted.find((m) => m.type === "path")?.canGoBack).toBe(false);
   });
@@ -438,9 +368,6 @@ describe("injected preview script — toolbar history navigation", () => {
   });
 
   it("re-reports when the app drives the Navigation API instead of History", () => {
-    // A router in navigation-API mode calls `navigation.navigate()`, which
-    // never touches the History methods we wrapped — without this listener
-    // both the path display and canGoBack would silently freeze.
     const { nav, navListeners } = fakeNavigation({ canGoBack: false });
     const { posted, location } = runInjectedScript(undefined, nav);
 
@@ -456,11 +383,6 @@ describe("injected preview script — toolbar history navigation", () => {
 });
 
 describe("injected preview script — the previewed page's own traversal", () => {
-  // The reported bug: a Back control *inside* the previewed app called
-  // `history.back()`, which traverses the JOINT session history — so with no
-  // entry of its own the frame walked the ShipIt tab back and switched the
-  // user's active session. The toolbar guard does nothing here: this call
-  // comes from the app, not from a `shipit-toolbar` message.
   it("keeps the page's own history.back() inside the frame", () => {
     const { calls, nav } = fakeNavigation({ canGoBack: true });
     const { history, traversed } = runInjectedScript(undefined, nav);
@@ -468,7 +390,6 @@ describe("injected preview script — the previewed page's own traversal", () =>
     history.back();
 
     expect(calls).toEqual(["back"]);
-    // The native method — the one that walks the top-level page — never runs.
     expect(traversed).toEqual([]);
   });
 
@@ -519,8 +440,6 @@ describe("injected preview script — the previewed page's own traversal", () =>
   });
 
   it("refuses a go(delta) that would step outside the frame's entry list", () => {
-    // Exactly the leak, in its multi-step form: the entries the delta would
-    // reach past belong to the ShipIt tab, not to this frame.
     const { calls, nav } = fakeNavigation({ entries: ["a", "b"], currentIndex: 1 });
     const { history, traversed } = runInjectedScript(undefined, nav);
 
@@ -542,8 +461,6 @@ describe("injected preview script — the previewed page's own traversal", () =>
   });
 
   it("treats go(0) and a missing delta as the reload the platform performs", () => {
-    // A reload never leaves the frame, so it is not guarded — and swallowing it
-    // would break an app that reloads itself this way.
     const { nav } = fakeNavigation({ canGoBack: false });
     const { history, traversed } = runInjectedScript(undefined, nav);
 
@@ -554,8 +471,6 @@ describe("injected preview script — the previewed page's own traversal", () =>
   });
 
   it("refuses the page's traversal entirely without the Navigation API", () => {
-    // Same no-fallback policy as the toolbar: there is no legacy way to ask
-    // whether *this frame* can go back, so the native call stays unreachable.
     const { history, traversed } = runInjectedScript(undefined, undefined);
 
     history.back();
@@ -567,8 +482,6 @@ describe("injected preview script — the previewed page's own traversal", () =>
   });
 
   it("patches the prototype, so a prototype-level call cannot reach the native one", () => {
-    // An own property on `history` would leave this as a live route back to
-    // the joint traversal — the very call the leak needs.
     const { calls, nav } = fakeNavigation({ canGoBack: true });
     const { historyProto, history, traversed } = runInjectedScript(undefined, nav);
 
@@ -579,8 +492,6 @@ describe("injected preview script — the previewed page's own traversal", () =>
   });
 
   it("converts the delta the way the native long conversion does", () => {
-    // `go(4294967295)` is `go(-1)` natively (Web IDL `long` wraps at 2^32);
-    // treating it as a huge positive delta would silently do nothing.
     const { calls, nav } = fakeNavigation({ canGoBack: true, canGoForward: true });
     const { history } = runInjectedScript(undefined, nav);
 
@@ -592,9 +503,6 @@ describe("injected preview script — the previewed page's own traversal", () =>
   });
 
   it("reports the frame's own entry count as history.length", () => {
-    // Unpatched this is the JOINT length (9 in the fake), so the
-    // `history.length > 1` guard an app puts in front of its back button says
-    // "yes" at the preview's first page and walks into a refusal.
     const bare = runInjectedScript(undefined, undefined);
     expect(bare.history.length).toBe(9);
 
@@ -607,8 +515,6 @@ describe("injected preview script — the previewed page's own traversal", () =>
   });
 
   it("says once in the console why a refused traversal did nothing", () => {
-    // A refusal is otherwise invisible: History returns undefined and no event
-    // fires, so the app's Back button just looks broken.
     const { nav } = fakeNavigation({ canGoBack: false });
     const { history, warnings } = runInjectedScript(undefined, nav);
 
@@ -638,10 +544,6 @@ describe("injected preview script — the previewed page's own traversal", () =>
 });
 
 describe("injected preview script — pointer navigation", () => {
-  // The bug this exists for: an agent-authored pointer used to arrive as a
-  // `src` assignment on the parent's side, which is always a document load. A
-  // pointer at a place inside the page the user was already on therefore tore
-  // the app down and rebuilt it — a visible blink, and in-page state lost.
   const AT = { pathname: "/requirements", search: "?focus=3", hash: "#req-3" };
 
   it("changes only the fragment in place when the rest of the URL matches", () => {
@@ -650,8 +552,6 @@ describe("injected preview script — pointer navigation", () => {
 
     toolbar("navigate", { url: "https://preview.localhost:3001/requirements?focus=3#req-7" });
 
-    // A same-document navigation: no request, no reload, and `hashchange`
-    // fires — the reaction channel the feature promises the page.
     expect(location.hash).toBe("#req-7");
     expect(assigned).toEqual([]);
     expect(calls).toEqual([]);
@@ -669,10 +569,6 @@ describe("injected preview script — pointer navigation", () => {
   });
 
   it("removes the fragment in place rather than reloading to drop it", () => {
-    // The browser's own fragment path does not cover removal (the navigation
-    // algorithm takes it only for a non-null destination fragment), so this
-    // would otherwise reload the app to get rid of a "#" — the exact blink the
-    // fix exists to remove. A pointer at the app as a whole is this shape.
     const { nav, calls } = fakeNavigation();
     const { toolbar, assigned, pushed, dispatched } = runInjectedScript({ ...AT }, nav);
 
@@ -681,7 +577,6 @@ describe("injected preview script — pointer navigation", () => {
     expect(assigned).toEqual([]);
     expect(calls).toEqual([]);
     expect(pushed).toEqual([[null, "", "https://preview.localhost:3001/requirements?focus=3"]]);
-    // And the page is told, since the browser fires no event for a rewrite.
     expect(dispatched).toEqual([{
       type: "hashchange",
       oldURL: "https://preview.localhost:3001/requirements?focus=3#req-3",
@@ -690,11 +585,9 @@ describe("injected preview script — pointer navigation", () => {
   });
 
   it("reports the new path after removing the fragment", () => {
-    // The rewrite goes through the wrapped `pushState`, so the toolbar's path
-    // display follows it — a bare `history.pushState` would freeze it.
     const { nav } = fakeNavigation();
     const { toolbar, posted, location } = runInjectedScript({ ...AT }, nav);
-    // The stub does not update `location` for us; the script's report reads it.
+    // The history stub does not update location.
     const advance = () => { location.hash = ""; };
 
     advance();
@@ -705,9 +598,6 @@ describe("injected preview script — pointer navigation", () => {
   });
 
   it("changes the query on the same page in place, and tells the router", () => {
-    // Cross-document by default, so this used to reload. These previews are
-    // dev tools the agent itself built and route with the History API, so the
-    // rewrite plus a `popstate` re-renders them in place instead.
     const { nav, calls } = fakeNavigation();
     const { toolbar, assigned, pushed, dispatched } = runInjectedScript({ ...AT }, nav);
 
@@ -716,8 +606,6 @@ describe("injected preview script — pointer navigation", () => {
     expect(assigned).toEqual([]);
     expect(calls).toEqual([]);
     expect(pushed).toEqual([[null, "", "https://preview.localhost:3001/requirements?focus=7#req-7"]]);
-    // popstate is what the router listens on; hashchange is fired too because
-    // the fragment moved as well, and a page may key off either (req 11).
     expect(dispatched).toEqual([
       { type: "popstate", state: null },
       {
@@ -738,8 +626,6 @@ describe("injected preview script — pointer navigation", () => {
   });
 
   it("still performs a real navigation to a different path", () => {
-    // The line sits at the path: a different one is plausibly a different
-    // document, where a rewrite would leave stale content under a new URL.
     const { nav, calls } = fakeNavigation();
     const { toolbar, assigned, pushed } = runInjectedScript({ ...AT }, nav);
 
@@ -794,8 +680,6 @@ describe("injected preview script — pointer navigation", () => {
   });
 
   it("ignores toolbar commands that did not come from the embedding window", () => {
-    // The commands drive this frame's history and location; only the window
-    // ShipIt renders us in gets to send them.
     const { nav, calls } = fakeNavigation();
     const { toolbar, assigned, traversed } = runInjectedScript({ ...AT }, nav);
 
@@ -811,9 +695,6 @@ describe("injected preview script — pointer navigation", () => {
 });
 
 describe("injected preview script — home navigation", () => {
-  // The toolbar's Home button sends the ordinary `navigate` command with the
-  // preview's root URL, so what it does is entirely decided in here. These pin
-  // the four shapes the button relies on.
   const ROOT = "https://preview.localhost:3001/";
 
   it("performs a real navigation to root from a different path", () => {
@@ -830,8 +711,6 @@ describe("injected preview script — home navigation", () => {
   });
 
   it("does nothing when the preview is already at root", () => {
-    // Home must not reload the front page for its own sake — the destination
-    // is where the page already is, so the script drops it.
     const { nav, calls } = fakeNavigation();
     const { toolbar, assigned, pushed, dispatched } = runInjectedScript(
       { pathname: "/", search: "", hash: "" }, nav,
@@ -846,8 +725,6 @@ describe("injected preview script — home navigation", () => {
   });
 
   it("drops a query on the root path in place, and tells the router", () => {
-    // Same path, so this is the page the user is already on: a rewrite plus a
-    // popstate re-renders it rather than tearing the app down.
     const { nav, calls } = fakeNavigation();
     const { toolbar, assigned, pushed, dispatched } = runInjectedScript(
       { pathname: "/", search: "?tab=open", hash: "" }, nav,
@@ -862,8 +739,6 @@ describe("injected preview script — home navigation", () => {
   });
 
   it("returns a hash router to its root in place", () => {
-    // A hash router's route lives in the fragment, so going home is a fragment
-    // REMOVAL — the one same-document case the browser provides no path for.
     const { nav, calls } = fakeNavigation();
     const { toolbar, assigned, pushed, dispatched } = runInjectedScript(
       { pathname: "/", search: "", hash: "#/orders" }, nav,

@@ -1,20 +1,3 @@
-/**
- * Integration tests for warm-pool / claim-time staleness (W2 + W3).
- *
- * Root cause being covered (session 90afd431): the bare cache could be
- * hundreds of commits behind the real remote, so the warm pool provisioned
- * the session container's memory limit off a frozen `shipit.yaml`. Two
- * fixes:
- *
- *   W2 — the warm pool and claim slow-path now fetch the *real remote* in
- *        the workspace clone (`fetchAndResolveDefaultBranch`) before cutting
- *        the branch, so the session lands on the actual latest commit even
- *        when the bare cache is stale.
- *   W3 — the claim-time `refreshCloneToLatestMain` re-provisions the standby
- *        container when the HEAD jump changed the declared `agent.memory`
- *        (container memory is immutable at runtime, so the only fix is to
- *        destroy + rebuild).
- */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
@@ -41,10 +24,6 @@ import { DatabaseManager } from "../../shared/database.js";
 import type { AuthManager } from "../agents/claude/auth-manager.js";
 import type { GitHubAuthManager } from "../github-auth.js";
 
-// ---------------------------------------------------------------------------
-// Fake Docker — same shape as standby-container.test.ts
-// ---------------------------------------------------------------------------
-
 function createFakeDocker() {
   let containerCounter = 0;
   const containers = new Map<string, {
@@ -62,9 +41,6 @@ function createFakeDocker() {
     createContainer: async (opts: any) => {
       containerCounter++;
       const id = `fake-container-${containerCounter}`;
-      // Distinct loopback IPs + a dead ephemeral workerPort: refuses
-      // instantly, can never be a real worker (see allocateDeadLoopbackPort
-      // in container-test-helpers.ts).
       const ip = `127.0.0.${containerCounter + 2}`;
       containers.set(id, {
         id, started: false, labels: opts.Labels ?? {}, ip,
@@ -98,17 +74,12 @@ function createFakeDocker() {
   };
 }
 
-// ---------------------------------------------------------------------------
-// Git helpers
-// ---------------------------------------------------------------------------
-
 function git(cwd: string, args: string): string {
   return execSync(`git ${args}`, { cwd, stdio: ["ignore", "pipe", "ignore"] })
     .toString()
     .trim();
 }
 
-/** Create a "real remote" repo with one commit on `main`. Returns its path. */
 function createRealRemote(dir: string, files: Record<string, string>): string {
   fs.mkdirSync(dir, { recursive: true });
   git(dir, "init");
@@ -123,7 +94,6 @@ function createRealRemote(dir: string, files: Record<string, string>): string {
   return dir;
 }
 
-/** Commit another revision into the real remote's `main`. */
 function advanceRemote(remoteDir: string, files: Record<string, string>): void {
   for (const [name, content] of Object.entries(files)) {
     fs.writeFileSync(path.join(remoteDir, name), content);
@@ -139,10 +109,6 @@ async function waitFor(predicate: () => boolean, timeoutMs = 10000, label = "con
     await new Promise((r) => setTimeout(r, 20));
   }
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 describe("Integration: warm-pool / claim staleness (W2 + W3)", () => {
   let tmpDir: string;
@@ -184,23 +150,14 @@ describe("Integration: warm-pool / claim staleness (W2 + W3)", () => {
     } catch { /* ignore */ }
   });
 
-  /**
-   * Build the app against a "real remote" + a bare cache pinned at the
-   * remote's first commit. `repoUrl` IS the real-remote path, so the
-   * workspace clone's `origin` (set by `cloneFromCache`) is fetchable —
-   * which is exactly what W2's `fetchAndResolveDefaultBranch` relies on.
-   */
   async function setup(remoteFiles: Record<string, string>): Promise<{ remoteDir: string }> {
     const remoteDir = createRealRemote(path.join(tmpDir, "real-remote"), remoteFiles);
-    repoUrl = remoteDir; // a local path acts as the repo URL
+    repoUrl = remoteDir;
 
-    // Bare cache = a clone of the real remote, pinned at its current HEAD.
     const cacheDir = path.join(tmpDir, "repo-cache", repoUrlToHash(repoUrl));
     fs.mkdirSync(path.dirname(cacheDir), { recursive: true });
     git(tmpDir, `clone "${remoteDir}" "${cacheDir}"`);
-    // Freeze the cache: a fresh `.shipit-last-fetch` marker makes
-    // `fetchCache()` a TTL no-op, so the cache stays at this commit even as
-    // the real remote advances — isolating W2's workspace-clone fetch.
+    // Suppress cache refresh to test the workspace clone's fetch.
     fs.writeFileSync(path.join(cacheDir, ".shipit-last-fetch"), String(Date.now()));
 
     repoStore.add(repoUrl);
@@ -224,18 +181,12 @@ describe("Integration: warm-pool / claim staleness (W2 + W3)", () => {
   }
 
   it("W2: warm standby boots auto-sized and records its booted limits", async () => {
-    // Memory is host-derived (docs/229), so a standby is auto-sized regardless
-    // of what any commit's shipit.yaml says. c2 still sets the removed fields —
-    // they're warned-and-ignored. This asserts the standby boots at the live
-    // auto-derived sizing and records those limits (the W3 plumbing).
     const { remoteDir } = await setup({ "README.md": "# test\n" });
     advanceRemote(remoteDir, { "shipit.yaml": "agent:\n  memory: 3072\n  cpu: 2.0\n  pids: 2048\n" });
 
-    // Startup warming creates warm #1 (no standby).
     await waitFor(() => !!repoStore.get(repoUrl)?.warmSessionId, 10000, "warm #1");
     const firstWarmId = repoStore.get(repoUrl)!.warmSessionId!;
 
-    // Claim → re-warm → standby container.
     const res = await app.inject({
       method: "POST",
       url: `/api/repos/${encodeURIComponent(repoUrl)}/claim-session`,
@@ -258,7 +209,6 @@ describe("Integration: warm-pool / claim staleness (W2 + W3)", () => {
     expect(standbyDocker!.hostConfig.Memory).toBe(expectedMem);
     expect(standbyDocker!.hostConfig.PidsLimit).toBe(8192);
 
-    // And the booted limits are recorded on the tracked container (W3 plumbing).
     expect(containerManager.get(standbyId)?.bootedLimits).toEqual({
       memoryLimit: expectedMem,
       cpuQuota: expectedCpu,
@@ -267,10 +217,6 @@ describe("Integration: warm-pool / claim staleness (W2 + W3)", () => {
   }, 30000);
 
   it("W3: a HEAD change does not destroy a standby (limits are host-stable under auto-sizing)", async () => {
-    // Memory is host-derived (docs/229), so the booted limit no longer depends
-    // on shipit.yaml. A HEAD jump that changes a (now-ignored) `agent.memory`
-    // can't make a standby's limits stale, so claim leaves the standby in place.
-    // (The old stale-limit reprovision path was removed once it became dead.)
     const { remoteDir } = await setup({ "README.md": "# test\n" });
 
     await waitFor(() => !!repoStore.get(repoUrl)?.warmSessionId, 10000, "warm #1");
@@ -281,13 +227,10 @@ describe("Integration: warm-pool / claim staleness (W2 + W3)", () => {
     const expectedMem = deriveSessionMemorySizing().effectiveMb * 1024 * 1024;
     expect(containerManager.get(warmId)?.bootedLimits?.memoryLimit).toBe(expectedMem);
 
-    // The remote advances with a (removed, ignored) agent.memory change.
     advanceRemote(remoteDir, { "shipit.yaml": "agent:\n  memory: 3072\n" });
 
     const destroySpy = vi.spyOn(containerManager, "destroy");
 
-    // Claim → warm path → refreshCloneToLatestMain fetches c2 → headChanged,
-    // but nothing reprovisions on limits anymore → the standby is NOT destroyed.
     const res = await app.inject({
       method: "POST",
       url: `/api/repos/${encodeURIComponent(repoUrl)}/claim-session`,

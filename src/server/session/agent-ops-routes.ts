@@ -1,37 +1,13 @@
-/**
- * `/agent-ops/*` — narrow allowlist of GitHub PR operations the agent (via the
- * `gh` shim at /usr/local/bin/gh) is permitted to invoke. The shim POSTs to
- * these endpoints over the worker's localhost interface; the worker then
- * brokers the request to the orchestrator's session-scoped routes.
- *
- * Why a broker rather than letting the shim hit the orchestrator directly?
- *
- * 1. **Allowlist gate at a single chokepoint.** The shim cannot reach
- *    arbitrary orchestrator endpoints — only what's mounted here.
- * 2. **Session-scoping is automatic.** The worker knows its session ID
- *    (`SESSION_ID` env var) and injects it into every request. The shim
- *    cannot ask for operations against a different session.
- *
- * Everything here is a thin pass-through to the orchestrator. The real
- * security gate lives on the orchestrator's API surface — this router just
- * narrows what the agent can request.
- */
+// The client injects session identity; the orchestrator owns authorization and validation.
 
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { OrchestratorClient } from "./orchestrator-client.js";
 import { getErrorMessage } from "../shared/utils.js";
 
 export interface AgentOpsDeps {
-  /** Factory for the orchestrator client. Defaults to env-resolved client. */
   createOrchestratorClient?: () => OrchestratorClient;
 }
 
-/**
- * docs/211 — build a querystring carrying the repo-aware PR target (`cwd` +
- * `--repo`) for GET PR ops, merged with any op-specific params (`number`,
- * `state`). Only defined values are included, so a repo-bound session sends an
- * empty string and the orchestrator falls back to its session repo.
- */
 function prTargetQs(
   target: { cwd?: string; repo?: string },
   extra: Record<string, string> = {},
@@ -46,11 +22,7 @@ function prTargetQs(
   return qs ? `?${qs}` : "";
 }
 
-/**
- * Get an OrchestratorClient lazily so missing env (e.g. in tests run outside
- * a container) doesn't crash worker startup — the error surfaces only when
- * the agent actually invokes the shim.
- */
+// Defer missing-environment errors until a shim call, rather than failing worker startup.
 function lazyClient(deps: AgentOpsDeps): () => OrchestratorClient | { error: string } {
   let cached: OrchestratorClient | { error: string } | null = null;
   return () => {
@@ -67,16 +39,12 @@ function lazyClient(deps: AgentOpsDeps): () => OrchestratorClient | { error: str
   };
 }
 
-/**
- * Register the `/agent-ops/*` routes on the worker's Fastify app.
- */
 export function registerAgentOpsRoutes(
   app: FastifyInstance,
   deps: AgentOpsDeps = {},
 ): void {
   const getClient = lazyClient(deps);
 
-  /** Helper that pipes the orchestrator's response back to the shim 1:1. */
   async function relay(
     method: "GET" | "POST" | "PATCH" | "PUT" | "DELETE",
     suffix: string,
@@ -94,41 +62,21 @@ export function registerAgentOpsRoutes(
     return res.body ?? {};
   }
 
-  // POST /agent-ops/voice/note — built-in voice_note tool write-back (docs/163).
-  // The consolidated `shipit` bridge forwards `voice_note` here; the worker
-  // relays to the orchestrator with the trusted SESSION_ID injected. The
-  // orchestrator's router decides delivery (native / external / both).
   app.post<{ Body: { summary?: string; context?: unknown } }>(
     "/agent-ops/voice/note",
     async (request, reply) => relay("POST", "/voice-note", request.body ?? {}, reply),
   );
 
-  // POST /agent-ops/bug/report — user bug filing against ShipIt (docs/164).
-  // The consolidated `shipit` bridge forwards `report_shipit_bug` here; the
-  // worker relays to the orchestrator with the trusted SESSION_ID injected.
-  // The orchestrator redacts the draft and posts a consent card — nothing is
-  // filed until the user confirms.
   app.post<{ Body: { title?: string; body?: string } }>(
     "/agent-ops/bug/report",
     async (request, reply) => relay("POST", "/bug-report", request.body ?? {}, reply),
   );
 
-  // POST /agent-ops/propose-actions — action checklist card (docs/207 / planning#155).
-  // The consolidated `shipit` bridge forwards `propose_actions` here; the worker
-  // relays to the orchestrator with the trusted SESSION_ID injected. The
-  // orchestrator validates, stamps provenance, and posts a reusable
-  // batch-resolve card — nothing acts until the user submits a normal turn.
   app.post<{ Body: { title?: string; actions?: unknown } }>(
     "/agent-ops/propose-actions",
     async (request, reply) => relay("POST", "/propose-actions", request.body ?? {}, reply),
   );
 
-  // docs/211 — repo-aware PR brokering. Every PR op forwards the cwd `gh` ran
-  // in and an optional `--repo` override so the orchestrator can resolve the
-  // target clone (sandbox sessions clone into `/workspace/<name>` subdirs).
-  // POST/PATCH carry them in the body; GET carries them as query params.
-
-  // POST /agent-ops/pr/create — agent-driven PR create
   app.post<{ Body: {
     title?: string; body?: string; base?: string; draft?: boolean; fill?: boolean;
     labels?: string[]; cwd?: string; repo?: string;
@@ -137,15 +85,11 @@ export function registerAgentOpsRoutes(
     async (request, reply) => relay("POST", "/pr/agent-create", request.body ?? {}, reply),
   );
 
-  // GET /agent-ops/pr/status — current branch's PR status (read-only)
   app.get<{ Querystring: { cwd?: string; repo?: string } }>(
     "/agent-ops/pr/status",
     async (request, reply) => relay("GET", `/pr/status${prTargetQs(request.query)}`, undefined, reply),
   );
 
-  // GET /agent-ops/pr/view?number=N[&comments=true] — view a PR's details,
-  // optionally with its conversation (docs/255). `comments` is forwarded so the
-  // orchestrator only pays for the second round-trip when the shim asked.
   app.get<{ Querystring: { number?: string; cwd?: string; repo?: string; comments?: string } }>(
     "/agent-ops/pr/view",
     async (request, reply) => {
@@ -157,12 +101,6 @@ export function registerAgentOpsRoutes(
     },
   );
 
-  // GET /agent-ops/pr/list?state=open&limit=30 — list PRs for the session's repo
-  //
-  // Every parameter the shim can send must be named here. This relay is the
-  // middle hop of shim → worker → orchestrator, so a parameter it forgets is
-  // dropped silently with both ends' own tests still green — which is exactly
-  // how `limit` stayed capped at 30 after both ends had been taught to handle it.
   app.get<{ Querystring: { state?: string; limit?: string; cwd?: string; repo?: string } }>(
     "/agent-ops/pr/list",
     async (request, reply) => {
@@ -174,61 +112,42 @@ export function registerAgentOpsRoutes(
     },
   );
 
-  // PATCH /agent-ops/pr/:number — edit an existing PR (title/body and/or
-  // add/remove labels). The body is forwarded verbatim to the orchestrator.
   app.patch<{ Params: { number: string }; Body: { title?: string; body?: string; addLabels?: string[]; removeLabels?: string[]; cwd?: string; repo?: string } }>(
     "/agent-ops/pr/:number",
     async (request, reply) =>
       relay("PATCH", `/pr/${encodeURIComponent(request.params.number)}`, request.body ?? {}, reply),
   );
 
-  // POST /agent-ops/pr/:number/comment — add an issue-style comment
   app.post<{ Params: { number: string }; Body: { body: string; cwd?: string; repo?: string } }>(
     "/agent-ops/pr/:number/comment",
     async (request, reply) =>
       relay("POST", `/pr/${encodeURIComponent(request.params.number)}/comment`, request.body ?? {}, reply),
   );
 
-  // POST /agent-ops/pr/:number/ready — mark draft PR as ready for review
   app.post<{ Params: { number: string }; Body: { cwd?: string; repo?: string } }>(
     "/agent-ops/pr/:number/ready",
     async (request, reply) =>
       relay("POST", `/pr/${encodeURIComponent(request.params.number)}/ready`, request.body ?? {}, reply),
   );
 
-  // POST /agent-ops/pr/:number/close — close a PR
   app.post<{ Params: { number: string }; Body: { cwd?: string; repo?: string } }>(
     "/agent-ops/pr/:number/close",
     async (request, reply) =>
       relay("POST", `/pr/${encodeURIComponent(request.params.number)}/close`, request.body ?? {}, reply),
   );
 
-  // POST /agent-ops/pr/:number/reopen — reopen a closed PR
   app.post<{ Params: { number: string }; Body: { cwd?: string; repo?: string } }>(
     "/agent-ops/pr/:number/reopen",
     async (request, reply) =>
       relay("POST", `/pr/${encodeURIComponent(request.params.number)}/reopen`, request.body ?? {}, reply),
   );
 
-  // POST /agent-ops/pr/:number/merge — merge a PR (docs/224). The orchestrator
-  // gates this behind the sandbox `dangerousGitHubOps` grant and enforces the
-  // green-checks / no-force guardrails; this router just narrows the surface.
   app.post<{ Params: { number: string }; Body: { method?: string; auto?: boolean; cwd?: string; repo?: string } }>(
     "/agent-ops/pr/:number/merge",
     async (request, reply) =>
       relay("POST", `/pr/${encodeURIComponent(request.params.number)}/merge`, request.body ?? {}, reply),
   );
 
-  // ---------------------------------------------------------------------------
-  // GitHub Actions — back `gh run list|view|rerun` and `gh workflow list|view`.
-  // Repo-aware (cwd/repo) like the PR ops. The worker injects the trusted
-  // SESSION_ID; the orchestrator resolves the target repo. `rerun` is the only
-  // write: it re-executes already-committed workflow content on the session's
-  // own branch. There is intentionally NO dispatch/cancel/delete route — those
-  // choose new code or destroy state, and stay human/CI actions.
-  // ---------------------------------------------------------------------------
-
-  // GET /agent-ops/run/list — list workflow runs
   app.get<{ Querystring: { workflow?: string; branch?: string; status?: string; limit?: string; cwd?: string; repo?: string } }>(
     "/agent-ops/run/list",
     async (request, reply) => {
@@ -242,7 +161,6 @@ export function registerAgentOpsRoutes(
     },
   );
 
-  // GET /agent-ops/run/view — view one run (id optional → latest)
   app.get<{ Querystring: { id?: string; log?: string; logFailed?: string; cwd?: string; repo?: string } }>(
     "/agent-ops/run/view",
     async (request, reply) => {
@@ -255,22 +173,17 @@ export function registerAgentOpsRoutes(
     },
   );
 
-  // POST /agent-ops/run/rerun — re-run an existing run (the group's one write).
-  // The orchestrator enforces the own-branch guardrail; this router just narrows
-  // the surface, exactly as it does for `pr/:number/merge`.
   app.post<{ Body: { id?: string | number; failed?: boolean; cwd?: string; repo?: string } }>(
     "/agent-ops/run/rerun",
     async (request, reply) => relay("POST", "/actions/runs/rerun", request.body ?? {}, reply),
   );
 
-  // GET /agent-ops/workflow/list — list workflow definitions
   app.get<{ Querystring: { cwd?: string; repo?: string } }>(
     "/agent-ops/workflow/list",
     async (request, reply) =>
       relay("GET", `/actions/workflows${prTargetQs(request.query)}`, undefined, reply),
   );
 
-  // GET /agent-ops/workflow/view — view one workflow + recent runs
   app.get<{ Querystring: { workflow?: string; cwd?: string; repo?: string } }>(
     "/agent-ops/workflow/view",
     async (request, reply) => {
@@ -280,16 +193,11 @@ export function registerAgentOpsRoutes(
     },
   );
 
-  // POST /agent-ops/release/plan — read-only release plan (docs/214). Backs
-  // `shipit release plan`. The worker injects the trusted SESSION_ID; the
-  // orchestrator detects the version source + computes the next version.
   app.post<{ Body: { bump?: string; prerelease?: boolean; versionSourcePath?: string; cwd?: string; repo?: string } }>(
     "/agent-ops/release/plan",
     async (request, reply) => relay("POST", "/release/plan", request.body ?? {}, reply),
   );
 
-  // POST /agent-ops/release/prepare — open the bump PR (final release) or cut the
-  // rc tag (prerelease, confirmation-gated). Backs `shipit release prepare`.
   app.post<{
     Body: {
       bump?: string; prerelease?: boolean; pick?: string[]; from?: string;
@@ -301,39 +209,20 @@ export function registerAgentOpsRoutes(
     async (request, reply) => relay("POST", "/release/prepare", request.body ?? {}, reply),
   );
 
-  // POST /agent-ops/git/credential — broker a git credential for the
-  // in-container `shipit-git-credential` helper (docs/088 finding #5). The
-  // helper POSTs the requested host here; the orchestrator returns the GitHub
-  // token (for github.com only) over this localhost channel so the PAT never
-  // lands in the container's gitconfig, disk, or env.
   app.post<{ Body: { host?: string; protocol?: string } }>(
     "/agent-ops/git/credential",
     async (request, reply) => relay("POST", "/git/credential", request.body ?? {}, reply),
   );
 
-  // ---------------------------------------------------------------------------
-  // POST /agent-ops/plugin/refresh — docs/262 req 12. `shipit plugin refresh
-  // [name]` re-activates a declared plugin repository and waits for the answer.
-  // Unbounded: the round can fetch, check out, and run the plugin's install, so
-  // a default deadline would abort a refresh that is still working.
+  // Plugin installs can take minutes; keep the relay unbounded.
   app.post<{ Body: { repo?: string; force?: boolean } }>(
     "/agent-ops/plugin/refresh",
     async (request, reply) =>
       relay("POST", "/plugin/refresh", {
         repo: request.body?.repo,
-        // docs/266-plugin-install-diagnosability reqs 5, 6 — forwarded as a strict boolean; the orchestrator
-        // re-checks it the same way. Discarding a live version's writable layer
-        // is not something a truthy string should be able to ask for.
         force: request.body?.force === true,
       }, reply, { timeoutMs: 0 }));
 
-  // GET /agent-ops/plugin/status — docs/266-plugin-install-diagnosability reqs 1–4. `shipit plugin status
-  // [name]`: why the live version of a declared repository is (or is not)
-  // usable, including the last install's outcome.
-  //
-  // Bounded, unlike refresh, and that is the point: it reads state that is
-  // already on disk and in memory, and activates nothing (req 9). A diagnostic
-  // that could hang is one an agent stops running when it most needs it.
   app.get<{ Querystring: { repo?: string } }>(
     "/agent-ops/plugin/status",
     async (request, reply) => {
@@ -342,10 +231,6 @@ export function registerAgentOpsRoutes(
       return relay("GET", `/plugin/status${qs}`, undefined, reply);
     });
 
-  // POST /agent-ops/plugin/exec — docs/262 req 17. The other end of a generated
-  // companion-CLI wrapper: the command runs in an invocation container the
-  // orchestrator builds, never here. Unbounded for the same reason refresh is —
-  // a plugin's CLI is a real program and may run for minutes.
   app.post<{
     Body: { alias?: string; command?: string; args?: string[]; cwd?: string; stdin?: string };
   }>("/agent-ops/plugin/exec", async (request, reply) =>
@@ -357,22 +242,8 @@ export function registerAgentOpsRoutes(
       stdin: request.body?.stdin,
     }, reply, { timeoutMs: 0 }));
 
-  // Tracker-neutral issue access (docs/175 read + docs/177 write)
-  //
-  // These back the `shipit issue view|list|create|comment|edit|status|assign`
-  // shim subcommands. The worker injects the trusted SESSION_ID; the orchestrator
-  // resolves GitHub to the session's own repo (Linear is workspace-wide). Issue
-  // creation is do-then-surface (docs/187), like the other writes — undo cancels
-  // the created issue. (ShipIt *bug* filing stays human-gated; that's docs/164.)
-  // ---------------------------------------------------------------------------
-
-  // GET /agent-ops/issue/trackers — the destinations this session can reach plus
-  // its shipit.yaml declaration warnings (docs/248-declared-issue-trackers reqs 8, 10). The shim calls
-  // this before resolving a reference, so names resolve against exactly the set
-  // the orchestrator holds.
   app.get("/agent-ops/issue/trackers", async (_request, reply) => relay("GET", "/issue/trackers", undefined, reply));
 
-  // GET /agent-ops/issue/view?tracker=&id= — single issue (read)
   app.get<{ Querystring: { tracker?: string; id?: string } }>(
     "/agent-ops/issue/view",
     async (request, reply) => {
@@ -384,7 +255,6 @@ export function registerAgentOpsRoutes(
     },
   );
 
-  // GET /agent-ops/issue/list?tracker=&state= — issue list (read)
   app.get<{ Querystring: { tracker?: string; state?: string } }>(
     "/agent-ops/issue/list",
     async (request, reply) => {
@@ -396,7 +266,6 @@ export function registerAgentOpsRoutes(
     },
   );
 
-  // GET /agent-ops/issue/labels?tracker= — the tracker's pickable label set (read, planning#201)
   app.get<{ Querystring: { tracker?: string } }>(
     "/agent-ops/issue/labels",
     async (request, reply) => {
@@ -405,7 +274,6 @@ export function registerAgentOpsRoutes(
     },
   );
 
-  // GET /agent-ops/issue/statuses?tracker= — the tracker's assignable statuses (read, planning#201)
   app.get<{ Querystring: { tracker?: string } }>(
     "/agent-ops/issue/statuses",
     async (request, reply) => {
@@ -414,7 +282,6 @@ export function registerAgentOpsRoutes(
     },
   );
 
-  // GET /agent-ops/issue/comments?tracker=&id= — issue comment thread (read, planning#139)
   app.get<{ Querystring: { tracker?: string; id?: string } }>(
     "/agent-ops/issue/comments",
     async (request, reply) => {
@@ -426,70 +293,51 @@ export function registerAgentOpsRoutes(
     },
   );
 
-  // POST /agent-ops/issue/create { tracker, title, body, labels?, priority?, parent?, createMissingLabels? } (docs/187, planning#94, planning#208, planning#232)
   app.post<{ Body: { tracker?: string; trackerName?: string; title?: string; body?: string; labels?: string[]; priority?: string; parent?: string | null; createMissingLabels?: boolean } }>(
     "/agent-ops/issue/create",
     async (request, reply) => relay("POST", "/issue/create", request.body ?? {}, reply),
   );
 
-  // POST /agent-ops/issue/label/create { tracker, name, color?, description? } (planning#232)
   app.post<{ Body: { tracker?: string; trackerName?: string; name?: string; color?: string; description?: string } }>(
     "/agent-ops/issue/label/create",
     async (request, reply) => relay("POST", "/issue/label/create", request.body ?? {}, reply),
   );
 
-  // POST /agent-ops/issue/label/edit { tracker, name, newName?, color?, description? } (planning#88)
   app.post<{ Body: { tracker?: string; trackerName?: string; name?: string; newName?: string; color?: string; description?: string } }>(
     "/agent-ops/issue/label/edit",
     async (request, reply) => relay("POST", "/issue/label/edit", request.body ?? {}, reply),
   );
 
-  // POST /agent-ops/issue/comment { tracker, id, body }
   app.post<{ Body: { tracker?: string; trackerName?: string; id?: string; body?: string } }>(
     "/agent-ops/issue/comment",
     async (request, reply) => relay("POST", "/issue/comment", request.body ?? {}, reply),
   );
 
-  // POST /agent-ops/issue/comment/edit { tracker, id, commentId, body } (planning#88)
   app.post<{ Body: { tracker?: string; trackerName?: string; id?: string; commentId?: string; body?: string } }>(
     "/agent-ops/issue/comment/edit",
     async (request, reply) => relay("POST", "/issue/comment/edit", request.body ?? {}, reply),
   );
 
-  // POST /agent-ops/issue/edit { tracker, id, title?, body?, labels?, priority?, parent?, createMissingLabels? } (planning#94, planning#208, planning#232)
   app.post<{ Body: { tracker?: string; trackerName?: string; id?: string; title?: string; body?: string; labels?: string[]; priority?: string; parent?: string | null; createMissingLabels?: boolean } }>(
     "/agent-ops/issue/edit",
     async (request, reply) => relay("POST", "/issue/edit", request.body ?? {}, reply),
   );
 
-  // POST /agent-ops/issue/status { tracker, id, status }
   app.post<{ Body: { tracker?: string; trackerName?: string; id?: string; status?: string } }>(
     "/agent-ops/issue/status",
     async (request, reply) => relay("POST", "/issue/status", request.body ?? {}, reply),
   );
 
-  // POST /agent-ops/issue/assign { tracker, id, assignee | null }
   app.post<{ Body: { tracker?: string; trackerName?: string; id?: string; assignee?: string | null } }>(
     "/agent-ops/issue/assign",
     async (request, reply) => relay("POST", "/issue/assign", request.body ?? {}, reply),
   );
 
-  // ---------------------------------------------------------------------------
-  // Read-only ShipIt source surface (docs/162)
-  //
-  // These back the `shipit source status|tree|search|cat` shim subcommands.
-  // The worker injects the trusted SESSION_ID; the orchestrator gates every
-  // route on `session.kind === "ops"`. Read-only by construction — there are
-  // no source write routes.
-  // ---------------------------------------------------------------------------
-
-  // GET /agent-ops/source/status — running source ref + exactness
   app.get(
     "/agent-ops/source/status",
     async (_request, reply) => relay("GET", "/source/status", undefined, reply),
   );
 
-  // GET /agent-ops/source/tree[?path=...] — list a directory at the source ref
   app.get<{ Querystring: { path?: string } }>(
     "/agent-ops/source/tree",
     async (request, reply) => {
@@ -499,7 +347,6 @@ export function registerAgentOpsRoutes(
     },
   );
 
-  // GET /agent-ops/source/search?q=...[&path=...] — git grep at the source ref
   app.get<{ Querystring: { q?: string; path?: string } }>(
     "/agent-ops/source/search",
     async (request, reply) => {
@@ -511,7 +358,6 @@ export function registerAgentOpsRoutes(
     },
   );
 
-  // GET /agent-ops/source/cat?path=... — read a file at the source ref
   app.get<{ Querystring: { path?: string } }>(
     "/agent-ops/source/cat",
     async (request, reply) => {
@@ -521,7 +367,6 @@ export function registerAgentOpsRoutes(
     },
   );
 
-  // GET /agent-ops/source/log[?path=...&limit=N] — commit history at the source ref
   app.get<{ Querystring: { path?: string; limit?: string } }>(
     "/agent-ops/source/log",
     async (request, reply) => {
@@ -533,7 +378,6 @@ export function registerAgentOpsRoutes(
     },
   );
 
-  // GET /agent-ops/source/blame?path=... — line attribution at the source ref
   app.get<{ Querystring: { path?: string } }>(
     "/agent-ops/source/blame",
     async (request, reply) => {
@@ -543,7 +387,6 @@ export function registerAgentOpsRoutes(
     },
   );
 
-  // GET /agent-ops/source/show?commit=...[&path=...] — a commit's metadata + diff
   app.get<{ Querystring: { commit?: string; path?: string } }>(
     "/agent-ops/source/show",
     async (request, reply) => {
@@ -555,27 +398,6 @@ export function registerAgentOpsRoutes(
     },
   );
 
-  // ---------------------------------------------------------------------------
-  // Sub-agent spawning (docs/144)
-  //
-  // Backs the `shipit agent run` shim subcommand. The worker injects the trusted
-  // SESSION_ID and relays to the orchestrator's session-scoped route, which owns
-  // the setting gate, auth/pin/recursion/per-turn-cap guards, credential
-  // provisioning, and the synchronous run. `depth` rides the body (the shim
-  // forwards its inherited SHIPIT_AGENT_DEPTH) — the orchestrator's recursion
-  // guard reads it. Unbounded timeout: a sub-agent run routinely takes many
-  // minutes (up to the worker's wall-clock cap), and the orchestrator holds the
-  // request open until the subprocess exits.
-  // ---------------------------------------------------------------------------
-
-  // POST /agent-ops/agent/spawn { prompt, depth, and the spawn target }
-  //
-  // docs/261 reqs 6 + 7 — the target is EITHER `role` (ShipIt resolves the
-  // reviewer from its own settings) or the five explicit fields, which the
-  // orchestrator refuses unless all five are present. They are declared here
-  // rather than left to the `relay` pass-through so this hop states what it
-  // carries: `--model` was parsed by the shim for three releases and named by
-  // nothing between it and the spawn, which is exactly how it went missing.
   app.post<{
     Body: {
       prompt?: string;
@@ -592,26 +414,10 @@ export function registerAgentOpsRoutes(
     async (request, reply) => relay("POST", "/agent/spawn", request.body ?? {}, reply, { timeoutMs: 0 }),
   );
 
-  // GET /agent-ops/agent/roles — docs/264-agent-roles req 12. The roles this install has
-  // (name, description, what each resolves to), so `--role NAME` can name one
-  // the agent knows exists. Cheap read; the default timeout applies.
   app.get("/agent-ops/agent/roles", async (_request, reply) => relay("GET", "/agent/roles", undefined, reply));
 
-  // GET /agent-ops/agent/params — docs/264-agent-roles req 12's other half: the harnesses,
-  // reasoning levels and credentialed models an override (req 10) may name on
-  // this install. Ships with the roles read, never without it — an agent that may
-  // name a model and cannot see which models exist names one from memory.
   app.get("/agent-ops/agent/params", async (_request, reply) => relay("GET", "/agent/params", undefined, reply));
 
-  // GET /agent-ops/agent/result[?spawnId=…&wait=true&timeout=N&segment=S] —
-  // planning#247. Re-read a completed spawn's persisted consult card: the same
-  // artifact the UI renders, so the agent can verify its copy or recover one
-  // whose `shipit agent run` died before the text reached it. Cheap read; the
-  // default timeout applies.
-  //
-  // docs/248 — `wait`/`timeout`/`segment` are forwarded verbatim for
-  // `shipit agent result --wait`, which drives a resumable segment loop over
-  // this route. Same shape as the child-session wait broker below.
   app.get<{ Querystring: { spawnId?: string; wait?: string; timeout?: string; segment?: string } }>(
     "/agent-ops/agent/result",
     async (request, reply) => {
@@ -622,10 +428,7 @@ export function registerAgentOpsRoutes(
       if (timeout) params.set("timeout", timeout);
       if (segment) params.set("segment", segment);
       const qs = params.toString();
-      // Bound the worker→orchestrator leg of a segmented wait so a half-open
-      // socket fails fast (→ status 0, which the shim retries) instead of
-      // hanging. Budget = segment (or overall timeout) + margin for the
-      // server's own resolve. Unbounded reads keep the default timeout.
+      // Bound half-open sockets while allowing the server's segment timer to finish first.
       const boundSecs = wait === "true" ? Number(segment) || Number(timeout) : NaN;
       const timeoutMs = Number.isFinite(boundSecs) && boundSecs > 0
         ? boundSecs * 1000 + 10_000
@@ -640,26 +443,6 @@ export function registerAgentOpsRoutes(
     },
   );
 
-  // ---------------------------------------------------------------------------
-  // Agent-spawned sibling sessions (docs/117)
-  //
-  // These routes back the `shipit session create|list|view` shim subcommands.
-  // The worker's `OrchestratorClient` injects this container's session id as
-  // the parent — the agent cannot ask for spawns under a different parent.
-  // The orchestrator additionally enforces "child must be a direct descendant
-  // of parent" on every read; the worker just narrows the surface.
-  // ---------------------------------------------------------------------------
-
-  // POST /agent-ops/session/create — create a new spawned child session
-  //
-  // docs/264-agent-roles req 16 — the target half is the SAME vocabulary `agent/spawn`
-  // carries: a role with any subset of its parameters overridden, or all five
-  // named. `agentId` / `reasoningEffort` are the wire names both commands use, so
-  // one parser reads both bodies; the legacy `agent` / `model` keys stay accepted
-  // because the shim has sent them since docs/117. Declared here rather than left
-  // to the `relay` pass-through so this hop states what it carries — a field
-  // named by nothing between the shim and the spawn is exactly how `--model` went
-  // missing for three releases.
   app.post<{
     Body: {
       prompt?: string;
@@ -672,12 +455,7 @@ export function registerAgentOpsRoutes(
       billingMode?: string;
       modelId?: string;
       reasoningEffort?: string;
-      // docs/264-agent-roles req 20 — `--no-role`: inherit the parent's
-      // parameters without the role it is running. Named here for the same
-      // reason every field above is, and it is the newest one, so it is the one
-      // a rename would drop first.
       noRole?: boolean;
-      // docs/205 — completely separate (parentless) spawn; forwarded verbatim.
       detached?: boolean;
     };
   }>(
@@ -685,7 +463,6 @@ export function registerAgentOpsRoutes(
     async (request, reply) => relay("POST", "/spawn", request.body ?? {}, reply),
   );
 
-  // GET /agent-ops/session/list — list children spawned by this parent
   app.get<{ Querystring: { turn?: string } }>(
     "/agent-ops/session/list",
     async (request, reply) => {
@@ -695,14 +472,6 @@ export function registerAgentOpsRoutes(
     },
   );
 
-  // GET /agent-ops/session/host-sessions[?branch=&pr=&container=&id=
-  //                                       &includeArchived=&limit=]
-  //
-  // docs/255 — host session inventory, Ops sessions only. Backs
-  // `shipit session find` and `shipit session list --all`. The worker injects
-  // the trusted SESSION_ID; the orchestrator gates the route on
-  // `session.kind === "ops"` and returns metadata only (never another session's
-  // conversation, prompts, secrets, or workspace contents).
   app.get<{
     Querystring: {
       branch?: string;
@@ -729,13 +498,6 @@ export function registerAgentOpsRoutes(
     },
   );
 
-  // GET /agent-ops/session/host-session-logs?target=&since=&until=&lines=
-  //
-  // docs/264 — another session's SERVER-SOURCE log entries, Ops sessions only.
-  // Backs `shipit session logs`. The worker injects the trusted SESSION_ID as
-  // the CALLER; the session being read is `target`. The orchestrator gates on
-  // `session.kind === "ops"` and returns orchestrator-generated lines only —
-  // never agent output, prompts, assistant text, or workspace contents.
   app.get<{
     Querystring: { target?: string; since?: string; until?: string; lines?: string };
   }>(
@@ -751,14 +513,12 @@ export function registerAgentOpsRoutes(
     },
   );
 
-  // GET /agent-ops/session/view/:childId — view a single child session
   app.get<{ Params: { childId: string } }>(
     "/agent-ops/session/view/:childId",
     async (request, reply) =>
       relay("GET", `/children/${encodeURIComponent(request.params.childId)}`, undefined, reply),
   );
 
-  // POST /agent-ops/session/message/:childId — Phase 3 follow-up prompt
   app.post<{
     Params: { childId: string };
     Body: { text?: string };
@@ -773,11 +533,6 @@ export function registerAgentOpsRoutes(
       ),
   );
 
-  // GET /agent-ops/session/wait/:childId[?timeout=N&segment=S] — Phase 3
-  // long-poll, made resilient in docs/182. `segment` (seconds) bounds a single
-  // server poll so the shim can run a resumable segment loop; it is forwarded
-  // verbatim. Absent a segment, the orchestrator behaves as the legacy single
-  // long-poll.
   app.get<{
     Params: { childId: string };
     Querystring: { timeout?: string; segment?: string };
@@ -788,10 +543,6 @@ export function registerAgentOpsRoutes(
       const params = new URLSearchParams({ wait: "true" });
       if (timeout) params.set("timeout", timeout);
       if (segment) params.set("segment", segment);
-      // docs/182 — bound the worker→orchestrator leg of a segmented poll so a
-      // half-open socket fails fast (→ status 0, which the shim retries) instead
-      // of hanging. Budget = segment (or overall timeout) + a margin for the
-      // server's own resolve. Unbounded when neither is supplied (legacy).
       const boundSecs = Number(segment) || Number(timeout);
       const timeoutMs = Number.isFinite(boundSecs) && boundSecs > 0
         ? boundSecs * 1000 + 10_000
@@ -806,7 +557,6 @@ export function registerAgentOpsRoutes(
     },
   );
 
-  // POST /agent-ops/session/archive/:childId — Phase 3 archive
   app.post<{ Params: { childId: string } }>(
     "/agent-ops/session/archive/:childId",
     async (request, reply) =>
@@ -818,8 +568,6 @@ export function registerAgentOpsRoutes(
       ),
   );
 
-  // POST /agent-ops/session/notify-on-merge/:childId — docs/196. Arm an async
-  // watch that wakes this parent when the child's PR merges (or closes).
   app.post<{ Params: { childId: string } }>(
     "/agent-ops/session/notify-on-merge/:childId",
     async (request, reply) =>
@@ -831,54 +579,26 @@ export function registerAgentOpsRoutes(
       ),
   );
 
-  // POST /agent-ops/session/notify-on-merge-self — docs/239. Arm a watch that
-  // wakes THIS session when its OWN PR merges. No childId and no payload: the
-  // worker injects the caller's session id, and the follow-up work is already in
-  // this session's transcript.
   app.post(
     "/agent-ops/session/notify-on-merge-self",
     async (_request, reply) => relay("POST", "/notify-on-merge-self", {}, reply),
   );
 
-  // POST /agent-ops/session/rename — docs/250. Retitle THIS session so the
-  // sidebar keeps describing what it is about past its first PR. No session id
-  // in the path: the worker injects the caller's own id, so an agent can only
-  // ever rename itself. The orchestrator owns validation and the "the user
-  // renamed this by hand" refusal; this relay just moves the body across.
   app.post<{ Body: { title?: string } }>(
     "/agent-ops/session/rename",
     async (request, reply) => relay("POST", "/rename", request.body ?? {}, reply),
   );
 
-  // POST /agent-ops/branch/reset-to-base — docs/239. The explicit branch reset
-  // the self-merge wake turn runs first. Destructive-looking but gated: the
-  // orchestrator refuses unless the branch provably carries nothing unmerged.
-  //
-  // planning#279 — `{ force, reason }` carries the break-glass through. Forwarded
-  // verbatim and validated ORCHESTRATOR-side: this relay is not a checkpoint,
-  // it just moves the body across the container boundary.
   app.post<{ Body: { force?: boolean; reason?: string } }>(
     "/agent-ops/branch/reset-to-base",
     async (request, reply) => relay("POST", "/branch/reset-to-base", request.body ?? {}, reply),
   );
 
-  // ---------------------------------------------------------------------------
-  // Upward session reports (docs/233, planning#243)
-  //
-  // Every route above is parent→child. These two are the reverse: they're called
-  // with THIS container's own session id (injected by `OrchestratorClient`, as
-  // always), so a child can resolve its own topology and push a report to its
-  // parent. The recipient is derived orchestrator-side from the caller's
-  // `parentSessionId`; the shim never names a target session.
-  // ---------------------------------------------------------------------------
-
-  // GET /agent-ops/session/cohort — this session + parent + siblings + children
   app.get(
     "/agent-ops/session/cohort",
     async (_request, reply) => relay("GET", "/cohort", undefined, reply),
   );
 
-  // POST /agent-ops/session/report — push a report to the parent
   app.post<{ Body: { body?: string; subject?: string; severity?: string; to?: string } }>(
     "/agent-ops/session/report",
     async (request, reply) => relay("POST", "/report", request.body ?? {}, reply),

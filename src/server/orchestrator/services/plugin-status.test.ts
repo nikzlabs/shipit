@@ -1,12 +1,3 @@
-/**
- * docs/266-plugin-install-diagnosability reqs 1–4, 10 — the projection behind `shipit plugin status`.
- *
- * The case that matters most is the one nikzlabs/shipit#2323 reported and the
- * platform could not express: a repository the card calls **active** whose
- * install left nothing behind. "Active" and "usable" had been the same word,
- * and a session was told the healthy one.
- */
-
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
@@ -52,8 +43,6 @@ const ACTIVE: PluginStatusSnapshot = {
 
 describe("buildPluginStatus", () => {
   it("calls an active repository whose install NEVER RAN unusable", async () => {
-    // The reported failure: the card said active, refresh exited 0, and every
-    // surface failed because nothing had been installed.
     recordFor("tools", "not-run", "`web` declares an install command, which this runtime cannot run.");
     const result = buildPluginStatus(workspaceDir, ACTIVE);
 
@@ -70,11 +59,6 @@ describe("buildPluginStatus", () => {
   });
 
   it("does not condemn the live version for a FAILED attempt on another commit", async () => {
-    // The routine case, and the one that would fabricate a diagnosis (review
-    // finding): A is live and fine, a refresh to B fails, B never publishes, and
-    // the record now describes B. Reading it as a verdict on A produces
-    // "running A / install FAILED for B" — the class of error this whole
-    // feature exists to stop.
     writeInstallRecord(pluginsRoot(sessionStateDirForWorkspace(workspaceDir)), "tools", {
       commit: "b".repeat(40),
       at: "2026-08-16T11:00:00.000Z",
@@ -84,15 +68,10 @@ describe("buildPluginStatus", () => {
     const result = buildPluginStatus(workspaceDir, ACTIVE);
 
     expect(result.repos[0]!.usable).toBe(true);
-    // Still printed — a consumer chasing the failed refresh wants it — but
-    // labelled as being about something other than what is running.
     expect(result.repos[0]!.installSummary).toContain("different version");
   });
 
   it("carries a successful install's OUTPUT through to the caller", async () => {
-    // planning#416. `--json` on this verb is a pass-through of the object this
-    // projection returns, so a future field filter here would silently take the
-    // output away from every reader with nothing failing (review finding).
     writeInstallRecord(pluginsRoot(sessionStateDirForWorkspace(workspaceDir)), "tools", {
       commit: "a".repeat(40),
       at: "2026-08-16T10:00:00.000Z",
@@ -102,30 +81,20 @@ describe("buildPluginStatus", () => {
     const repo = buildPluginStatus(workspaceDir, ACTIVE).repos[0]!;
 
     expect(repo.install?.output).toContain("built dist/index.js");
-    // And the human line says the output exists, or a reader of the text form
-    // never learns there is anything to ask for.
     expect(repo.installSummary).toContain("--json");
   });
 
   it("says an absent record has two causes rather than reading as fine", async () => {
-    // The projection has no manifest, so it cannot tell "declares no install"
-    // from "the record was lost or predates this feature". `usable` stays true
-    // because nothing proves otherwise; the text must not reassure.
     const summary = buildPluginStatus(workspaceDir, ACTIVE).repos[0]!.installSummary;
     expect(summary).toContain("either this repository declares no install");
   });
 
   it("does NOT call a skipped install a failure", async () => {
-    // Skipping is the normal, correct outcome when the layer or the shared
-    // store already holds the tree; reporting it as broken would train a reader
-    // to ignore this field.
     recordFor("tools", "skipped-store");
     expect(buildPluginStatus(workspaceDir, ACTIVE).repos[0]!.usable).toBe(true);
   });
 
   it("treats an active repository that has never installed anything as usable", async () => {
-    // Nothing proves otherwise, so the verdict stays true; the wording that goes
-    // with it is asserted above, and is deliberately not reassuring.
     expect(buildPluginStatus(workspaceDir, ACTIVE).repos[0]!.usable).toBe(true);
     expect(buildPluginStatus(workspaceDir, ACTIVE).repos[0]!.install).toBeNull();
   });
@@ -147,8 +116,6 @@ describe("buildPluginStatus", () => {
   });
 
   it("reports `repo: self` as usable and says no install runs there", async () => {
-    // req 27 — there is no generation and no install; a record read under that
-    // name could only be a stale answer about something else.
     recordFor("dev", "failed", "this should not be read");
     const result = buildPluginStatus(workspaceDir, {
       warnings: [],
@@ -174,7 +141,6 @@ describe("buildPluginStatus", () => {
   });
 
   it("still describes the declaration when there is no resolvable state dir", async () => {
-    // planning#288 — an evicted checkout must not cost the answer entirely.
     const result = buildPluginStatus(path.join(sessionDir, "gone", "workspace"), ACTIVE);
     expect(result.repos[0]!.repo).toBe("tools");
     expect(result.repos[0]!.install).toBeNull();

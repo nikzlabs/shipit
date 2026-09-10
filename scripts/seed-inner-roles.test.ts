@@ -12,7 +12,6 @@ import {
 } from "./seed-inner-roles.js";
 import { catalogueEntriesForHarness } from "../src/server/shared/catalogue/index.js";
 
-/** A `fetch` double that records calls and answers from a route table. */
 function fakeFetch(handlers: Record<string, { status?: number; body?: unknown }>): {
   fetchImpl: FetchImpl;
   calls: { method: string; url: string; body: unknown }[];
@@ -34,7 +33,6 @@ function fakeFetch(handlers: Record<string, { status?: number; body?: unknown }>
   return { fetchImpl, calls };
 }
 
-/** A harness as bootstrap reports it, with only the fields under test spelled out. */
 function agent(over: Partial<BootstrapAgent> & { id: string }): BootstrapAgent {
   return {
     name: over.id,
@@ -72,9 +70,6 @@ describe("resolveRecipe", () => {
   const recipe = RECIPES.find((r) => r.name === "deep-dive")!;
 
   it("takes its tuple from the install rather than a hardcoded one", () => {
-    // The same recipe against two different installs must produce two different
-    // tuples — that is the whole contract, and a hardcoded tuple would pass a
-    // test that only ever looked at one install.
     expect(resolveRecipe(recipe, [CLAUDE])!.params).toEqual({
       kind: "pinned",
       harnessId: "claude",
@@ -100,8 +95,6 @@ describe("resolveRecipe", () => {
   });
 
   it("omits the level entirely for Default, rather than sending an empty string", () => {
-    // docs/264-agent-roles req 1 — Default is the ABSENCE of the key, and
-    // `roles["…"].params.reasoningEffort` is refused when present and blank.
     const second = RECIPES.find((r) => r.name === "second-opinion")!;
     const params = resolveRecipe(second, [CLAUDE, CODEX])!.params;
     expect(params).not.toHaveProperty("reasoningEffort");
@@ -132,11 +125,8 @@ describe("the recipe set itself", () => {
   it("covers what the role surfaces need to be worth looking at", () => {
     const planned = RECIPES.map((r) => resolveRecipe(r, [CLAUDE, CODEX])!);
     expect(planned.filter(Boolean).length).toBeGreaterThanOrEqual(2);
-    // Different reasoning levels — a set where every role ran at the same level
-    // would leave the level control untestable by eye.
     const levels = new Set(planned.map((p) => p.params.reasoningEffort));
     expect(levels.size).toBeGreaterThanOrEqual(2);
-    // At least one with BOTH a description and standing instructions (reqs 8, 9).
     expect(planned.some((p) => p.description && p.prompt)).toBe(true);
   });
 
@@ -150,8 +140,6 @@ describe("planUnavailableRole", () => {
     const role = planUnavailableRole([CLAUDE])!;
     expect(role.name).toBe(UNAVAILABLE_ROLE_NAME);
     expect(role.params.harnessId).toBe("claude");
-    // Catalogue-valid — otherwise the save is refused outright (req 6) and the
-    // role never exists to be shown as disabled.
     const entries = catalogueEntriesForHarness("claude");
     expect(
       entries.some(
@@ -161,7 +149,6 @@ describe("planUnavailableRole", () => {
           && e.selection.modelId === role.params.modelId,
       ),
     ).toBe(true);
-    // …and NOT one the install can run, or it would resolve happily.
     expect(role.params.modelId).not.toBe("claude-opus-5");
     expect(role.description).toContain("deliberately unavailable");
   });
@@ -195,8 +182,6 @@ describe("planRoles", () => {
   });
 
   it("never plans the reserved reviewer, even if the settings read omitted it", () => {
-    // Its params are ShipIt's to resolve (docs/264-agent-roles req 2), so naming
-    // it here could only ever produce a 400.
     const withReviewerRecipe = planRoles({ agents: [CLAUDE], roles: [] });
     expect(withReviewerRecipe.map((r) => r.name)).not.toContain("reviewer");
   });
@@ -213,14 +198,10 @@ describe("seedRoles", () => {
     const result = await seedRoles({ fetchImpl, baseUrl: "http://orch", env: {} }, opts);
     expect(result.results.map((r) => r.outcome)).toEqual(["seeded", "seeded", "seeded", "seeded"]);
     const puts = calls.filter((c) => c.method === "PUT");
-    // One PUT each (req 5): `applyRoleWrites` validates a batch before writing
-    // any of it, so one refused role in a batch would take the others with it.
     expect(puts).toHaveLength(4);
     for (const put of puts) {
       const body = put.body as { roles: Record<string, { previousName?: string; params: unknown }> };
       expect(Object.keys(body.roles)).toHaveLength(1);
-      // No `previousName` — every seeded role is a create, and claiming to edit
-      // one that does not exist is refused.
       expect(Object.values(body.roles)[0]).not.toHaveProperty("previousName");
       expect(Object.values(body.roles)[0]!.params).toMatchObject({ kind: "pinned" });
     }
@@ -289,8 +270,3 @@ describe("seedRoles", () => {
     expect(result).toEqual({ skipped: true, results: [] });
   });
 });
-
-// The guard that this seeder is actually RUN at boot — the failure mode a unit
-// test cannot otherwise see, since every seeder exits 0 on failure and so
-// "seeded nothing" and "was never launched" look identical in the logs — lives
-// in `seed-inner.test.ts`, next to the entry point that owns the step order.

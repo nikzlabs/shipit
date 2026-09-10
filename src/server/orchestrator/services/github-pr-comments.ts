@@ -1,17 +1,3 @@
-/**
- * PR review-thread comment-sync services (docs/102).
- *
- * Four pure functions composed by the HTTP routes layer:
- *   - replyToReviewThread(threadId, body)
- *   - resolveReviewThread(threadId)
- *   - unresolveReviewThread(threadId)
- *   - submitReviewComments(...) — batches local line comments into one review
- *
- * Each enforces GitHub auth. The read side (the poller fetching
- * `reviewThreads` on the GraphQL query) ships unconditionally with docs/133
- * Phase 4.
- */
-
 import type { GitHubAuthManager } from "../github-auth.js";
 import type { GitManager } from "../../shared/git.js";
 import { parseGitHubRemote } from "../git-utils.js";
@@ -76,13 +62,6 @@ async function resolveGitHubRemote(
   return parsed;
 }
 
-/**
- * Reply to an existing PR review thread.
- *
- * `threadId` is the GraphQL node id surfaced as `PrReviewThread.id` on the
- * client. The new comment is attributed to the orchestrator's GitHub token
- * owner.
- */
 export async function replyToReviewThread(
   githubAuthManager: GitHubAuthManager,
   threadId: string,
@@ -100,7 +79,6 @@ export async function replyToReviewThread(
   return result;
 }
 
-/** Mark a PR review thread as resolved. */
 export async function resolveReviewThread(
   githubAuthManager: GitHubAuthManager,
   threadId: string,
@@ -115,7 +93,6 @@ export async function resolveReviewThread(
   return result;
 }
 
-/** Reopen (unresolve) a previously-resolved review thread. */
 export async function unresolveReviewThread(
   githubAuthManager: GitHubAuthManager,
   threadId: string,
@@ -130,7 +107,6 @@ export async function unresolveReviewThread(
   return result;
 }
 
-/** Submit local diff comments to the current branch's PR as one GitHub review. */
 export async function submitReviewComments(
   githubAuthManager: GitHubAuthManager,
   git: GitManager,

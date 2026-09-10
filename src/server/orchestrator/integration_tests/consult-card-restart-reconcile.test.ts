@@ -1,14 +1,3 @@
-/**
- * Integration test for planning#309 / docs/249 — a consult card stranded `pending`
- * by an orchestrator restart is finished at the next boot.
- *
- * The unit tests in `consult-card-reconcile.test.ts` cover the sweep's policy.
- * The seam THEY cannot cover is the one that actually broke: whether the sweep
- * is wired into boot at all. So this test seeds the database exactly as a killed
- * orchestrator would leave it, boots a real `buildApp`, and asks the same
- * question `shipit agent result` asks.
- */
-
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
@@ -75,15 +64,11 @@ describe("Integration: consult cards stranded by an orchestrator restart (planni
   });
 
   it("boot finishes a card the previous process left pending, and `agent result` reports it terminal", async () => {
-    // What a killed orchestrator leaves behind: a card created at spawn time
-    // whose only writer — the in-memory `runSubAgent` promise — is gone.
     chatHistoryManager.append("sess-1", { role: "user", text: "review this with codex" });
     chatHistoryManager.append("sess-1", pendingCard("spawn-a"));
 
     await boot();
 
-    // The read `shipit agent result` performs. Before this fix it answered
-    // `pending` forever (exit 4, and `--wait` burning its whole timeout).
     const card = getSubAgentResult({ chatHistoryManager }, "sess-1");
     expect(card.status).toBe("cancelled");
     expect(card.statusDetail).toContain("ShipIt restarted");
@@ -91,17 +76,7 @@ describe("Integration: consult cards stranded by an orchestrator restart (planni
   });
 
   it("boot leaves the card able to survive an adopted turn's row rebuild", async () => {
-    // The foreground-consult shape: a blocking `shipit agent run` means the card
-    // is still an `in_progress=1` row when the orchestrator dies. docs/240 then
-    // adopts that turn, and its eventual `agent_result` calls `replaceInProgress`,
-    // which deletes EVERY in-progress row in the session and rebuilds from the
-    // fresh runner's empty `recordedCards`.
-    //
-    // So terminalizing the card is not sufficient on its own — a card that boot
-    // marked `cancelled` but left in-progress is deleted outright a moment later,
-    // and `shipit agent result` answers "No sub-agent runs in this session yet".
-    // This asserts the property that actually protects it end-to-end: after a
-    // REAL boot, the row no longer participates in the rebuild.
+    // An adopted turn replaces in-progress rows, so the cancelled card must be finalized.
     chatHistoryManager.replaceInProgress("sess-1", [
       { role: "assistant", text: "asking codex", inProgress: true },
       { ...pendingCard("spawn-a"), inProgress: true },
@@ -109,7 +84,6 @@ describe("Integration: consult cards stranded by an orchestrator restart (planni
 
     await boot();
 
-    // …now the adopted turn finalizes and rebuilds its own rows.
     chatHistoryManager.replaceInProgress("sess-1", [
       { role: "assistant", text: "the adopted turn", inProgress: true },
     ]);

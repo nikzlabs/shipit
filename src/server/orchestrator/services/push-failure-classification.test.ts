@@ -11,23 +11,8 @@ import {
   isRewriteWindowPushFailure,
 } from "./git.js";
 
-/**
- * Regression for the 2026-08-18 incident (session b77e02fe,
- * `nicolasalt/reward-tag`): a push rejected with `GH008: unknown Git LFS
- * object` was reported to the user as *"branch has diverged from remote. Rebase
- * needed to update."* — advice that could not possibly fix it. There was no
- * divergence: `git ls-remote` showed the remote tip still at ShipIt's own last
- * successful push, and `git merge-base --is-ancestor <remote> HEAD` exited 0.
- *
- * The defect was one substring. `isNonFastForwardError` matched
- * `failed to push some refs`, which git prints as the SUMMARY of essentially
- * every push failure, so every failure read as a divergence.
- *
- * These pin the property that closes it: a class is assigned on a marker that
- * names the failure, never on the summary line.
- */
 describe("classifyPushFailure", () => {
-  /** Verbatim shape of the GH008 rejection, from the incident. */
+  // GH008 sample from the 2026-08-18 incident.
   const GH008 = [
     "remote: error: GH008: Your push referenced at least 8 unknown Git LFS objects:",
     "remote: error:     3b1f0c…",
@@ -36,7 +21,6 @@ describe("classifyPushFailure", () => {
     "error: failed to push some refs to 'https://github.com/nicolasalt/reward-tag.git'",
   ].join("\n");
 
-  /** Verbatim shape of a real non-fast-forward rejection. */
   const NON_FAST_FORWARD = [
     "To https://github.com/o/r.git",
     " ! [rejected]        feature -> feature (fetch first)",
@@ -45,15 +29,11 @@ describe("classifyPushFailure", () => {
   ].join("\n");
 
   it("does not call a GH008 LFS rejection a divergence", () => {
-    // The incident, exactly: this used to be `true`, and the user was told to
-    // rebase a branch that was a strict fast-forward of the remote.
     expect(isNonFastForwardError(new Error(GH008))).toBe(false);
     expect(classifyPushFailure(new Error(GH008))).toBe("lfs");
   });
 
   it("does not classify git's bare summary line at all", () => {
-    // `error: failed to push some refs` accompanies every failure above and
-    // names none of them. On its own it must stay uninterpreted.
     const err = new Error("error: failed to push some refs to 'https://github.com/o/r.git'");
     expect(classifyPushFailure(err)).toBe("unknown");
     expect(isNonFastForwardError(err)).toBe(false);
@@ -70,9 +50,6 @@ describe("classifyPushFailure", () => {
   });
 
   it("classifies the mid-rebase detached-HEAD refusal as an invalid refspec", () => {
-    // The 2026-08-17 incident (session 590c19aa): mid-rebase `getCurrentBranch()`
-    // returns the literal "HEAD", so the push is refused before it reaches the
-    // remote — and used to be reported as a divergence too.
     const err = new Error(
       "error: The destination you provided is not a full refname (i.e.,\n"
       + "starting with \"refs/\"). We tried to guess what you meant by:\n"
@@ -95,11 +72,6 @@ describe("classifyPushFailure", () => {
   });
 
   it("does not read git's own progress counters as an HTTP status", () => {
-    // A large push prints delta/object counts on its way to an ordinary
-    // rejection, and `(403/403)` has word boundaries on both sides of the 403.
-    // A bare `\b40[13]\b` in the auth pattern turned that into a credential
-    // failure — and auth is checked BEFORE non-fast-forward, so the divergence
-    // never got a look in.
     const err = new Error(
       "remote: Resolving deltas: 100% (403/403), done.\n"
       + "remote: Counting objects: 401, done.\n"
@@ -134,12 +106,6 @@ describe("classifyPushFailure", () => {
   });
 });
 
-/**
- * The deferral budget exists for pushes that failed *because ShipIt was
- * mid-rewrite*. Widening it to every failure would delay a real credential or
- * LFS failure by the whole retry budget (~15 minutes) — which is the same
- * "swallowed in the logs" shape both incidents are about.
- */
 describe("isRewriteWindowPushFailure", () => {
   it("covers exactly the two shapes an in-flight rewrite produces", () => {
     expect(isRewriteWindowPushFailure(new Error(" ! [rejected] f -> f (fetch first)"))).toBe(true);
@@ -153,18 +119,7 @@ describe("isRewriteWindowPushFailure", () => {
   });
 });
 
-/**
- * The samples above are written down from git's documented output, which is a
- * claim, not a contract — and the shape that actually reaches this code is
- * simple-git's, not a terminal's. Real git prints
- * `! [rejected]        main -> main (fetch first)`; the porcelain output
- * simple-git receives prints
- * `!\trefs/heads/main:refs/heads/main\t[rejected] (fetch first)` instead. A
- * pattern anchored on the first form silently stops matching the second.
- *
- * So one case drives a genuine divergence through a real `GitManager.push` and
- * classifies whatever it actually throws.
- */
+// simple-git receives porcelain output, which differs from the terminal samples above.
 describe("classifyPushFailure against a real diverged push", () => {
   let root: string;
   let bareDir: string;
@@ -192,8 +147,6 @@ describe("classifyPushFailure against a real diverged push", () => {
     run("git add -A && git commit -m one", aheadDir);
     run("git push origin main", aheadDir);
 
-    // The second clone snapshots the remote, then the first advances it — so
-    // the second's own commit is a true non-fast-forward.
     run(`git clone ${bareDir} .`, behindDir);
     fs.writeFileSync(path.join(aheadDir, "f"), "2\n");
     run("git commit -am two", aheadDir);
@@ -216,8 +169,6 @@ describe("classifyPushFailure against a real diverged push", () => {
       thrown = err;
     }
     expect(thrown, "the push should have been rejected").toBeDefined();
-    // The message has to carry git's stderr at all — the whole classification
-    // rests on that, and it is not something simple-git promises in its types.
     expect((thrown as Error).message).toContain("rejected");
     expect(classifyPushFailure(thrown)).toBe("non-fast-forward");
     expect(isNonFastForwardError(thrown)).toBe(true);

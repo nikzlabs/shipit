@@ -1,18 +1,3 @@
-/**
- * planning#370 — the browser-origin boundary, exercised against a real listening
- * orchestrator rather than through `app.inject()`.
- *
- * `inject()` cannot prove the part that matters most: the WebSocket handshake
- * never goes through Fastify's HTTP injection path, and CORS does not protect
- * WebSockets at all. So this file dials real sockets.
- *
- * The four callers the boundary has to tell apart:
- *   1. the ShipIt UI itself           — same origin, allowed
- *   2. a preview page / any other site — cross origin, refused (read AND write)
- *   3. a session container's CLI       — no browser headers at all, allowed
- *   4. a WebSocket upgrade             — checked explicitly, both ways
- */
-
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
@@ -58,12 +43,10 @@ function request(
   });
 }
 
-/** Resolves to the close code (or `"open"` when the handshake succeeded). */
 function dialWs(
   port: number,
   sessionId: string,
   origin?: string,
-  /** Overrides the `Host` header — how a rebound handshake reaches us. */
   host?: string,
 ): Promise<number | "open"> {
   return new Promise((resolve, reject) => {
@@ -78,8 +61,7 @@ function dialWs(
       resolve("open");
     });
     ws.on("close", (code) => { clearTimeout(timer); resolve(code); });
-    // A refused UPGRADE surfaces as an error, not a close — resolve on the
-    // HTTP status so the assertion reads the same either way.
+    // A refused upgrade returns an HTTP status before the WebSocket opens.
     ws.on("unexpected-response", (_req, res) => {
       clearTimeout(timer);
       ws.terminate();
@@ -87,7 +69,6 @@ function dialWs(
     });
     ws.on("error", (err) => {
       clearTimeout(timer);
-      // `close` / `unexpected-response` already resolved in the cases we assert.
       reject(err);
     });
   });
@@ -99,7 +80,6 @@ describe("Integration: browser-origin boundary on the orchestrator API", () => {
   let tmpDir: string;
   let dbManager: DatabaseManager;
   let sessionId: string;
-  /** The origin the browser would report for this very server. */
   let selfOrigin: string;
 
   beforeEach(async () => {
@@ -175,9 +155,6 @@ describe("Integration: browser-origin boundary on the orchestrator API", () => {
   });
 
   it("refuses a percent-encoded spelling of an API path", async () => {
-    // The route resolves (find-my-way decodes static segments) but the raw URL
-    // does not start with `/api/` — so this is a real bypass of a naive prefix
-    // test, and it must 403 rather than answer.
     const res = await request(port, "/%61pi/bootstrap", {
       headers: { Origin: "https://evil.example", "Sec-Fetch-Site": "cross-site" },
     });
@@ -186,9 +163,6 @@ describe("Integration: browser-origin boundary on the orchestrator API", () => {
   });
 
   it("still lets an OAuth provider redirect the browser onto the MCP callback", async () => {
-    // The real route, reached the way it is actually reached: a cross-site
-    // top-level navigation with no `Origin`. A guard that refuses every
-    // cross-site request breaks MCP OAuth outright (found in review).
     const res = await request(port, "/api/mcp-servers/oauth/callback?code=C&state=nope", {
       headers: {
         "Sec-Fetch-Site": "cross-site",
@@ -196,8 +170,6 @@ describe("Integration: browser-origin boundary on the orchestrator API", () => {
         "Sec-Fetch-Dest": "document",
       },
     });
-    // The route rejects the unknown `state` on its own terms — what matters
-    // here is that it RAN, rather than being 403'd by the origin guard.
     expect(res.status).not.toBe(403);
     expect(res.headers["content-type"]).toContain("text/html");
   });
@@ -225,7 +197,6 @@ describe("Integration: browser-origin boundary on the orchestrator API", () => {
     });
     expect(foreign.status).toBe(403);
 
-    // Same-origin: the stream opens, so read the headers and drop it.
     const opened = await new Promise<http.IncomingMessage>((resolve, reject) => {
       const req = http.request(
         `http://127.0.0.1:${port}/api/events`,
@@ -249,10 +220,6 @@ describe("Integration: browser-origin boundary on the orchestrator API", () => {
   });
 
   it("refuses a WebSocket upgrade from a preview page", async () => {
-    // 403 rather than a close code: `onRequest` hooks run for the upgrade
-    // request too, so the guard refuses the handshake before the route is
-    // reached. The route's own check (`isWebSocketOriginAllowed`) stays as the
-    // backstop for a future in which that stops being true.
     await expect(dialWs(port, sessionId, `http://${sessionId}--5173.127.0.0.1.nip.io:${port}`))
       .resolves.toBe(403);
   });
@@ -260,15 +227,6 @@ describe("Integration: browser-origin boundary on the orchestrator API", () => {
   it("refuses a WebSocket upgrade from an unrelated site", async () => {
     await expect(dialWs(port, sessionId, "https://evil.example")).resolves.toBe(403);
   });
-
-  // -------------------------------------------------------------------------
-  // DNS rebinding (planning#378)
-  //
-  // The attacker's page is served from a name they control which has since
-  // re-resolved to this instance. Every request below is genuinely SAME ORIGIN
-  // — that is the point — so the whole boundary above passes it. The socket is
-  // the same one the real browser would dial; only the `Host` differs.
-  // -------------------------------------------------------------------------
 
   const REBOUND = "rebind.evil.example";
 
@@ -304,13 +262,7 @@ describe("Integration: browser-origin boundary on the orchestrator API", () => {
   });
 
   it("refuses a rebound GET that sends no browser headers AT ALL", async () => {
-    // The one that matters, and the one an earlier draft let through (found in
-    // review). A same-origin `GET` omits `Origin`, and Fetch Metadata is
-    // appended only for a *potentially trustworthy* URL — which
-    // `http://rebind.evil.example` is not, because trustworthiness is judged on
-    // the URL's own host string rather than on what it resolves to. So the real
-    // browser request has neither marker and looks exactly like the session
-    // container's CLI below. The `Host` is the only thing telling them apart.
+    // An untrusted HTTP origin can omit both Origin and Fetch Metadata headers.
     const res = await request(port, "/api/bootstrap", {
       headers: { Host: `${REBOUND}:${port}` },
     });
@@ -335,16 +287,13 @@ describe("Integration: browser-origin boundary on the orchestrator API", () => {
   });
 
   it("keeps a loopback instance reachable at every spelling docs/254 supports", async () => {
-    // The regression that would matter most: the fix must not cost the user
-    // their own instance. Each of these is a name this very server is
-    // legitimately reached at, and none of them is configured anywhere.
     for (const host of [
       `127.0.0.1:${port}`,
       `localhost:${port}`,
       `[::1]:${port}`,
-      `100.83.12.47:${port}`,          // a tailnet address
-      `100-83-12-47.sslip.io:${port}`, // the sslip.io preview host
-      `shipit.tail1a2b3c.ts.net:${port}`, // MagicDNS
+      `100.83.12.47:${port}`,
+      `100-83-12-47.sslip.io:${port}`,
+      `shipit.tail1a2b3c.ts.net:${port}`,
     ]) {
       const res = await request(port, "/api/bootstrap", {
         headers: { Host: host, Origin: `http://${host}`, "Sec-Fetch-Site": "same-origin" },

@@ -1,17 +1,3 @@
-/**
- * Integration tests for live steering (docs/140).
- *
- * Live steering lets the user inject a message while the agent is mid-turn,
- * routed through `AgentProcess.sendUserMessage()` rather than the per-turn
- * queue. Only active when:
- *   1. The active agent's `capabilities.supportsSteering` is true (claude/codex), AND
- *   2. The user has flipped `liveSteering` on in settings.
- *
- * The streaming path also changes the post-turn lifecycle: the agent process
- * is persistent across turns, so `done` only fires on dispose/crash —
- * post-turn work (queue drain, `session_agent_finished`, auto-commit) must
- * hang off `agent_result` instead. These tests pin both contracts.
- */
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
@@ -52,9 +38,6 @@ describe("Integration: live steering (docs/140)", () => {
     lastClaude = null as any;
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-steering-"));
     credentialStore = createTestCredentialStore(tmpDir);
-    // Flip live steering on for every test in this suite. The agent registry's
-    // default `supportsSteering: true` for claude takes care of the capability
-    // side, so this is the only switch the user touches.
     credentialStore.setLiveSteering(true);
 
     const sessionManager = new SessionManager(dbManager);
@@ -90,7 +73,6 @@ describe("Integration: live steering (docs/140)", () => {
     }
   });
 
-  /** Drain messages until predicate returns truthy, up to maxMsgs attempts. */
   async function drainUntil(client: TestClient, predicate: (m: AnyMsg) => boolean, maxMsgs = 30, timeoutMs = 2000): Promise<AnyMsg> {
     for (let i = 0; i < maxMsgs; i++) {
       const msg: AnyMsg = await client.receive(timeoutMs);
@@ -101,12 +83,10 @@ describe("Integration: live steering (docs/140)", () => {
 
   it("starts the agent with useStreaming=true when liveSteering is on and agent supports it", async () => {
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
     client.send({ type: "send_message", text: "Hello" });
     const claude = await waitForClaude(() => lastClaude);
-    // The orchestrator computes useStreaming from registry.supportsSteering
-    // AND credentialStore.liveSteering — both true here.
     expect((claude as any).lastUseStreaming).toBe(true);
 
     client.close();
@@ -114,44 +94,27 @@ describe("Integration: live steering (docs/140)", () => {
 
   it("steers a mid-turn message via sendUserMessage and emits message_steered (not message_queued)", async () => {
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
-    // First turn — kick off the (faked) streaming agent.
     client.send({ type: "send_message", text: "First message" });
     const claude = await waitForClaude(() => lastClaude);
     claude.initSession("steer-session-1");
 
-    // The orchestrator marks the runner as running once the agent factory has
-    // returned; the next send arrives mid-turn.
     client.send({ type: "send_message", text: "Steer me" });
 
-    // The steered message should NOT be queued — it should arrive as
-    // `message_steered` on the WS and as a `sendUserMessage()` call on the
-    // agent.
     const steered = await drainUntil(client, (m) => m.type === "message_steered");
     expect(steered).toMatchObject({ type: "message_steered", text: "Steer me" });
 
-    // The fake adapter records sendUserMessage calls under `stdinData`
-    // (its default `sendUserMessage` proxies to `writeStdin` for parity with
-    // production adapters).
     expect(claude.stdinData).toContain("Steer me");
 
     client.close();
   });
 
   it("echoes a steered image as a content-addressed URL, not base64 (docs/244, planning#299)", async () => {
-    // The `message_steered` echo is a browser-facing transcript path of its own:
-    // it bypasses `projectMessagesForWire` entirely, so a pasted screenshot went
-    // out in full even though every other delivery of the same row had been
-    // stripped to a URL since docs/244.
-    //
-    // Safe to fix here specifically because the ordering already holds — the row
-    // is recorded and persisted BEFORE the echo is emitted — which is the
-    // invariant every strip in this feature turns on.
     const png = Buffer.from("steered-png-bytes").toString("base64");
 
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
     client.send({ type: "send_message", text: "First message" });
     const claude = await waitForClaude(() => lastClaude);
@@ -169,7 +132,6 @@ describe("Integration: live steering (docs/140)", () => {
     expect(steered.images[0].src).toBe(`/api/sessions/${client.sessionId}/images/${imageHash(png)}`);
     expect(steered.images[0].mediaType).toBe("image/png");
 
-    // The URL resolves the moment it is on the wire, and storage keeps the bytes.
     const res = await app.inject({
       method: "GET",
       url: `/api/sessions/${client.sessionId}/images/${imageHash(png)}`,
@@ -184,33 +146,24 @@ describe("Integration: live steering (docs/140)", () => {
   });
 
   it("re-queues a rejected steer instead of dropping it (Codex turn/steer rejection, docs/140)", async () => {
-    // When the backend refuses a mid-turn steer (Codex rejects `turn/steer`
-    // during review / manual-compaction turns with `ActiveTurnNotSteerable`),
-    // the adapter emits `agent_steer_rejected`. The orchestrator must fall back
-    // to the queue so the message runs as the next turn instead of vanishing.
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
     client.send({ type: "send_message", text: "First message", sessionId: client.sessionId });
     const claude = await waitForClaude(() => lastClaude);
     claude.initSession("steer-reject-session");
 
-    // Steer mid-turn — optimistically rendered + recorded on the runner.
     client.send({ type: "send_message", text: "Steer me", sessionId: client.sessionId });
     await drainUntil(client, (m) => m.type === "message_steered");
 
     const runner = (app as any).runnerRegistry.get(client.sessionId);
     expect(runner.steeredMessages.length).toBe(1);
 
-    // Backend refuses the steer.
     claude.emit("event", { type: "agent_steer_rejected", text: "Steer me" });
 
-    // The rejected steer comes back as a queued message.
     const queued = await drainUntil(client, (m) => m.type === "message_queued");
     expect(queued).toMatchObject({ type: "message_queued", text: "Steer me" });
 
-    // The optimistic steered record is dropped (so it won't double-persist when
-    // the queued turn runs) and the text now lives in the runner's queue.
     expect(runner.steeredMessages.length).toBe(0);
     expect(runner.messageQueue.map((m: { text: string }) => m.text)).toContain("Steer me");
 
@@ -218,19 +171,13 @@ describe("Integration: live steering (docs/140)", () => {
   });
 
   it("re-queues a steer the CLI never acknowledged so it runs as the next turn (turn-end gap, docs/140)", async () => {
-    // The bug: a message steered in just as the agent is finishing has no
-    // decision point left to land at, so the CLI ends the turn (`result`)
-    // without acting on it AND without echoing it back (--replay-user-messages).
-    // The orchestrator must detect the un-acked steer at turn end and re-queue
-    // it — an automatic resend instead of a silently-lost message.
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
     client.send({ type: "send_message", text: "Build the thing", sessionId: client.sessionId });
     const claude = await waitForClaude(() => lastClaude);
     claude.initSession("steer-gap-session");
 
-    // Steer mid-turn — optimistically rendered + recorded with its assembledPrompt.
     client.send({ type: "send_message", text: "fix the typo too", sessionId: client.sessionId });
     await drainUntil(client, (m) => m.type === "message_steered");
 
@@ -238,33 +185,24 @@ describe("Integration: live steering (docs/140)", () => {
     expect(runner.steeredMessages.length).toBe(1);
     expect(runner.steeredMessages[0].assembledPrompt).toBe("fix the typo too");
 
-    // Turn ends with NO replay echo for the steer — it fell into the gap.
     claude.emit("event", { type: "result", subtype: "success", session_id: "steer-gap-session" });
 
-    // The un-acked steer comes back as a queued message and runs as the next turn.
     const queued = await drainUntil(client, (m) => m.type === "message_queued");
     expect(queued).toMatchObject({ type: "message_queued", text: "fix the typo too" });
 
-    // It's removed from the steered set (so it won't double-render against the
-    // re-queued turn's own user row) and re-sent to the resident agent. The
-    // resend runs on the executor's post-turn drain (after the synchronous
-    // message_queued emit), so poll until the second sendUserMessage lands.
     expect(runner.steeredMessages.length).toBe(0);
     for (let i = 0; i < 50 && claude.stdinData.filter((d: string) => d.includes("fix the typo too")).length < 2; i++) {
       await new Promise((r) => setTimeout(r, 20));
     }
     const resends = claude.stdinData.filter((d: string) => d.includes("fix the typo too"));
-    expect(resends.length).toBeGreaterThanOrEqual(2); // once for the lost steer, once for the resend
+    expect(resends.length).toBeGreaterThanOrEqual(2);
 
     client.close();
   });
 
   it("does NOT re-queue a steer the CLI acknowledged via replay echo (docs/140)", async () => {
-    // The complement of the gap case: when the CLI echoes the steer
-    // (--replay-user-messages), the agent accepted it into the turn, so it must
-    // NOT be re-queued — that would double-process the user's message.
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
     client.send({ type: "send_message", text: "Build the thing", sessionId: client.sessionId });
     const claude = await waitForClaude(() => lastClaude);
@@ -276,24 +214,19 @@ describe("Integration: live steering (docs/140)", () => {
     const runner = (app as any).runnerRegistry.get(client.sessionId);
     const echoText = runner.steeredMessages[0].assembledPrompt as string;
 
-    // The CLI echoes the accepted steer — the delivery ACK.
     claude.emit("event", {
       type: "user",
       isReplay: true,
       message: { content: [{ type: "text", text: echoText }] },
     });
-    // Ack is processed synchronously: the steer is now marked delivered.
     expect(runner.steeredMessages[0].delivered).toBe(true);
 
     claude.emit("event", { type: "result", subtype: "success", session_id: "steer-ack-session" });
 
-    // Collect the whole post-turn burst — there must be NO message_queued for
-    // the acked steer (it was accepted into the turn, not lost).
     const after = await client.drain();
     expect(after.some((m) => m.type === "message_queued")).toBe(false);
     expect(after.some((m) => m.type === "session_status" && (m as AnyMsg).running === false)).toBe(true);
 
-    // The acked steer stays in history as a single steered user bubble.
     const history = chatHistoryManager.load(client.sessionId);
     const userTexts = history.filter((m) => m.role === "user").map((m) => m.text);
     expect(userTexts.filter((t) => t === "acknowledged steer").length).toBe(1);
@@ -303,18 +236,12 @@ describe("Integration: live steering (docs/140)", () => {
 
   it("runs the post-turn flow (session_agent_finished, queue drain) on agent_result without waiting for done — streaming path", async () => {
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
-    // Turn 1: start the streaming agent.
     client.send({ type: "send_message", text: "Turn one" });
     const claude = await waitForClaude(() => lastClaude);
     claude.initSession("steer-session-2");
 
-    // Emit `agent_result` WITHOUT a follow-up `done`. In streaming mode the
-    // process is persistent — the turn ends on `result`, the process stays
-    // alive. The orchestrator's streaming path must trigger post-turn work
-    // (session_status running=false) here, not wait for a process exit that
-    // never comes.
     claude.emit("event", {
       type: "result",
       subtype: "success",
@@ -322,12 +249,9 @@ describe("Integration: live steering (docs/140)", () => {
       duration_ms: 100,
     });
 
-    // session_status flips to running:false on the result event.
     const status = await drainUntil(client, (m) => m.type === "session_status" && (m as AnyMsg).running === false);
     expect(status).toMatchObject({ type: "session_status", running: false });
 
-    // The agent process was NOT killed — for a streaming agent, `done`
-    // belongs to dispose, not to the per-turn lifecycle.
     expect(claude.killed).toBe(false);
 
     client.close();
@@ -335,16 +259,12 @@ describe("Integration: live steering (docs/140)", () => {
 
   it("persists a steered message at its true transcript position, not collapsed up next to the turn's first user message (docs/140)", async () => {
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
-    // Turn opens with the user's first message.
     client.send({ type: "send_message", text: "Implement monsters", sessionId: client.sessionId });
     const claude = await waitForClaude(() => lastClaude);
     claude.initSession("steer-order-session");
 
-    // First assistant group: text + a tool call, then its tool result. The
-    // tool result closes the group (needsNewMessageGroup) and persists it as
-    // in-progress.
     claude.emit("event", {
       type: "assistant",
       message: { content: [
@@ -357,21 +277,16 @@ describe("Integration: live steering (docs/140)", () => {
       message: { content: [{ type: "tool_result", tool_use_id: "tu-1", content: "ok" }] },
     });
 
-    // Steer mid-turn — exactly one assistant group exists at this point, so the
-    // steer must land AFTER it (index 2 overall), not next to the first user
-    // message (index 1).
     client.send({ type: "send_message", text: "no, bullet pierce", sessionId: client.sessionId });
     const steered = await drainUntil(client, (m) => m.type === "message_steered");
     expect(steered).toMatchObject({ type: "message_steered", text: "no, bullet pierce" });
 
-    // Second assistant group responds to the steer, then the turn ends.
     claude.emit("event", {
       type: "assistant",
       message: { content: [{ type: "text", text: "Adding bullet pierce" }] },
     });
     claude.emit("event", { type: "result", subtype: "success", session_id: "steer-order-session" });
 
-    // Wait for the turn to finalize before reading persisted history.
     await drainUntil(client, (m) => m.type === "session_status" && (m as AnyMsg).running === false);
 
     const history = chatHistoryManager.load(client.sessionId);
@@ -387,18 +302,8 @@ describe("Integration: live steering (docs/140)", () => {
   });
 
   it("adopts the turn the CLI runs for a steer it acked too late to apply (docs/140)", async () => {
-    // Production, 2026-08-13: a steer landed as the turn was wrapping up. The
-    // CLI acked it — so it was correctly NOT re-queued — but had no decision
-    // point left to apply it at, and ran it as its OWN turn after the
-    // orchestrator had already finalized the current one. NOTHING announces
-    // that turn — there is no `task_notification`, and the CLI's `init` is not
-    // proof of one (it emits one for `set_permission_mode` too) — so the model
-    // producing top-level output is the first evidence it exists. Without
-    // adopting it the session read as idle for the whole response and a later
-    // `agent_self_wake` could reset the accumulator mid-response, losing the
-    // answer's opening from history.
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
     client.send({ type: "send_message", text: "Do the first thing", sessionId: client.sessionId });
     const claude = await waitForClaude(() => lastClaude);
@@ -409,7 +314,6 @@ describe("Integration: live steering (docs/140)", () => {
       message: { content: [{ type: "text", text: "First thing done" }] },
     });
 
-    // The user steers as the turn wraps up; the CLI echoes it (the ack).
     client.send({ type: "send_message", text: "now rename the folder", sessionId: client.sessionId });
     await drainUntil(client, (m) => m.type === "message_steered");
     const runner = (app as any).runnerRegistry.get(client.sessionId);
@@ -421,15 +325,11 @@ describe("Integration: live steering (docs/140)", () => {
     });
     expect(runner.steeredMessages[0].delivered).toBe(true);
 
-    // The turn ends without having acted on the steer.
     claude.emit("event", { type: "result", subtype: "success", session_id: "late-steer-session" });
     await drainUntil(client, (m) => m.type === "session_status" && (m as AnyMsg).running === false);
     expect(runner.running).toBe(false);
 
-    // The CLI starts the steer's turn on its own: no `task_notification`, no
-    // `send_message` from the orchestrator. Its `init` is not the edge — the CLI
-    // emits one for `set_permission_mode` too, with no turn behind it — so the
-    // session stays idle until the model actually talks.
+    // init also follows mode changes, so only model output establishes a new turn.
     claude.initSession("late-steer-session");
     await new Promise((r) => setTimeout(r, 100));
     expect(runner.running).toBe(false);
@@ -441,15 +341,11 @@ describe("Integration: live steering (docs/140)", () => {
     const busy = await drainUntil(client, (m) => m.type === "session_status" && (m as AnyMsg).running === true);
     expect(busy).toMatchObject({ type: "session_status", running: true });
     expect(runner.running).toBe(true);
-    // A clean accumulator: turn 1's group is gone, so the adopted turn's result
-    // cannot re-persist it.
     expect(runner.chatMessageGroups.map((g: AnyMsg) => g.text)).toEqual(["Renamed the folder"]);
 
     claude.emit("event", { type: "result", subtype: "success", session_id: "late-steer-session" });
     await drainUntil(client, (m) => m.type === "session_status" && (m as AnyMsg).running === false);
 
-    // Each turn persisted once — the steered bubble sits at its true position at
-    // the end of turn 1, and the adopted turn's answer follows it.
     const shape = chatHistoryManager.load(client.sessionId).map((m) => ({ role: m.role, text: m.text }));
     expect(shape).toEqual([
       { role: "user", text: "Do the first thing" },
@@ -462,27 +358,15 @@ describe("Integration: live steering (docs/140)", () => {
   });
 
   it("reuses the persistent streaming agent for the next top-level turn (no new process, no SIGTERM)", async () => {
-    // Regression: under live steering the orchestrator USED TO clear the
-    // runner's agent reference on `agent_result`, so the next top-level
-    // send_message spawned a brand-new agent process. For container sessions
-    // the worker still held the previous streaming process, so the new
-    // `/agent/start` 409'd, the orchestrator fell back to `/agent/kill`
-    // (SIGTERM → exit 143) + `/agent/start`, and the user saw multiple
-    // "Agent process started" entries plus mid-turn-looking exit-143 errors.
-    //
-    // The fix keeps the agent reference across turns and feeds the next
-    // top-level message in via `sendUserMessage` instead of `run()`.
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
-    // Turn 1: spawn the streaming agent via run().
     client.send({ type: "send_message", text: "Turn one" });
     const claude1 = await waitForClaude(() => lastClaude);
     claude1.initSession("reuse-session");
     expect(claude1.runCalled).toBe(true);
     expect(claude1.lastUseStreaming).toBe(true);
 
-    // End turn 1 — process stays alive (streaming).
     claude1.emit("event", {
       type: "result",
       subtype: "success",
@@ -491,17 +375,10 @@ describe("Integration: live steering (docs/140)", () => {
     });
     await drainUntil(client, (m) => m.type === "session_status" && (m as AnyMsg).running === false);
 
-    // Crucial invariants before turn 2:
-    //  - agent ref is preserved on the runner (basis for reuse),
-    //  - the process was NOT killed by the agent_result handler.
     expect(claude1.killed).toBe(false);
 
-    // Turn 2: another top-level send_message. With the fix, this must reuse
-    // claude1 (no new factory call) and deliver "Turn two" via sendUserMessage.
     client.send({ type: "send_message", text: "Turn two" });
 
-    // Wait for sendUserMessage to land — the fake's default sendUserMessage
-    // proxies to writeStdin, so stdinData picks up the turn-2 prompt.
     await new Promise<void>((resolve, reject) => {
       const start = Date.now();
       const check = (): void => {
@@ -518,37 +395,25 @@ describe("Integration: live steering (docs/140)", () => {
       check();
     });
 
-    // Same process, no kill, no fresh factory spawn.
     expect(lastClaude).toBe(claude1);
     expect(claude1.killed).toBe(false);
-    // run() must NOT have been called a second time — the fake's `runCalled`
-    // is a one-way latch, so we assert the lastPrompt didn't get clobbered
-    // by a second run({prompt: "Turn two"}) call. Turn 1's prompt should
-    // still be sitting there.
+    // runCalled is a latch; lastPrompt detects a second run with the new prompt.
     expect(claude1.lastPrompt).toBe("Turn one");
 
     client.close();
   });
 
   it("pushes setPermissionMode on the persistent agent when the user toggles modes between turns (docs/138)", async () => {
-    // Regression: the streaming CLI keeps its spawn-time `--permission-mode`
-    // for life. Toggling the chip used to update the UI / settings store but
-    // never reach the CLI, so plan → auto (or back) silently didn't take
-    // effect. The fix pushes a `set_permission_mode` control_request on the
-    // existingAgent before the next sendUserMessage.
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
-    // Turn 1: open in plan mode → spawn with permissionMode "plan".
     client.send({ type: "send_message", text: "Plan it", permissionMode: "plan" });
     const claude = await waitForClaude(() => lastClaude);
     claude.initSession("mode-toggle-session");
     expect(claude.runCalled).toBe(true);
     expect(claude.lastPermissionMode).toBe("plan");
-    // No mid-stream mode change yet — the spawn flag carries the initial mode.
     expect(claude.permissionModeCalls).toEqual([]);
 
-    // End turn 1 — process stays alive (streaming).
     claude.emit("event", {
       type: "result",
       subtype: "success",
@@ -557,9 +422,6 @@ describe("Integration: live steering (docs/140)", () => {
     });
     await drainUntil(client, (m) => m.type === "session_status" && (m as AnyMsg).running === false);
 
-    // Turn 2: user toggled back to auto (the WS message omits permissionMode).
-    // The orchestrator MUST push a setPermissionMode(undefined) before
-    // sendUserMessage so the persistent CLI actually leaves plan mode.
     client.send({ type: "send_message", text: "Now do it" });
 
     await new Promise<void>((resolve, reject) => {
@@ -578,10 +440,7 @@ describe("Integration: live steering (docs/140)", () => {
       check();
     });
 
-    // setPermissionMode(undefined) — exactly one call, mapping ShipIt "auto"
-    // back to the CLI's no-flag default.
     expect(claude.permissionModeCalls).toEqual([undefined]);
-    // Same process — no respawn, no kill.
     expect(claude.killed).toBe(false);
     expect(claude.lastPrompt).toBe("Plan it");
 
@@ -589,16 +448,8 @@ describe("Integration: live steering (docs/140)", () => {
   });
 
   it("respawns the persistent agent on the newly picked model instead of steering into the old one", async () => {
-    // Regression: unlike the permission mode there is no mid-stream switch for
-    // the model — the streaming CLI keeps its spawn-time `--model` for life. So
-    // picking a new model mid-session moved the picker's checkmark (set_model
-    // persists onto the session) while every following turn still ran on the
-    // OLD process, and the CLI's agent_init reported that old model back into
-    // the trigger label: "I switched Fable → Opus, the dropdown says Opus, the
-    // button says Fable." The resident process is now released on model drift
-    // so the next turn spawns with the model the user actually picked.
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
     client.send({ type: "set_model", model: "claude-fable-5-1" });
     client.send({ type: "send_message", text: "Turn one" });
@@ -606,7 +457,6 @@ describe("Integration: live steering (docs/140)", () => {
     claude1.initSession("model-switch-session");
     expect(claude1.lastModel).toBe("claude-fable-5-1");
 
-    // End turn 1 — process stays alive (streaming).
     claude1.emit("event", {
       type: "result",
       subtype: "success",
@@ -616,16 +466,12 @@ describe("Integration: live steering (docs/140)", () => {
     await drainUntil(client, (m) => m.type === "session_status" && (m as AnyMsg).running === false);
     expect(claude1.killed).toBe(false);
 
-    // User picks a different model, then sends the next turn.
     client.send({ type: "set_model", model: "claude-opus-5" });
     client.send({ type: "send_message", text: "Turn two" });
 
     const claude2 = await waitForClaude(() => lastClaude, claude1);
-    // A fresh process, spawned with the new model and carrying turn 2's prompt.
     expect(claude2.lastModel).toBe("claude-opus-5");
     expect(claude2.lastPrompt).toContain("Turn two");
-    // The old one is gone — not left resident running the model the user moved
-    // away from, and turn 2 was NOT steered into it.
     expect(claude1.killed).toBe(true);
     expect(claude1.stdinData.some((d) => d.includes("Turn two"))).toBe(false);
 
@@ -633,11 +479,8 @@ describe("Integration: live steering (docs/140)", () => {
   });
 
   it("keeps reusing the persistent agent when the model has NOT changed", async () => {
-    // The complement: the release is drift-only. Re-sending the same model (the
-    // picker fires set_model on every pick, including a no-op re-pick) must not
-    // cost a respawn.
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
     client.send({ type: "set_model", model: "claude-fable-5-1" });
     client.send({ type: "send_message", text: "Turn one" });
@@ -671,10 +514,8 @@ describe("Integration: live steering (docs/140)", () => {
   });
 
   it("does NOT push setPermissionMode when the requested mode matches what's already applied (docs/138)", async () => {
-    // The mismatch check exists so we don't spam the CLI with redundant
-    // control_requests when the user just clicks Send twice in the same mode.
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
     client.send({ type: "send_message", text: "Turn one", permissionMode: "plan" });
     const claude = await waitForClaude(() => lastClaude);
@@ -689,7 +530,6 @@ describe("Integration: live steering (docs/140)", () => {
     });
     await drainUntil(client, (m) => m.type === "session_status" && (m as AnyMsg).running === false);
 
-    // Turn 2: same plan mode — no control_request needed.
     client.send({ type: "send_message", text: "Turn two", permissionMode: "plan" });
 
     await new Promise<void>((resolve, reject) => {
@@ -714,21 +554,9 @@ describe("Integration: live steering (docs/140)", () => {
   });
 
   it("resyncs appliedPermissionMode from init.permissionMode so a drifted streaming session can still leave plan mode (plan-desync fix)", async () => {
-    // Regression: a persistent streaming CLI keeps its spawn-time
-    // `--permission-mode plan` for life, but the orchestrator's
-    // `appliedPermissionMode` bookkeeping can drift to `undefined` (it's cleared
-    // on proxy recreation across a reload, and the client chip falls back to the
-    // "auto" default). With applied=undefined AND the user requesting auto
-    // (omitted on the wire), the mode-change gate compares "auto === auto" and
-    // skips the freeing `set_permission_mode` push — the CLI stays pinned to
-    // plan and every "Accept & Execute" lands on a still-plan CLI ("can't exit
-    // plan mode"). The init event is the CLI's authoritative report of its real
-    // mode, so the orchestrator resyncs `appliedPermissionMode` from it; the
-    // next auto request then correctly pushes set_permission_mode and leaves plan.
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
-    // Turn 1: open in plan mode → streaming spawn pinned to "plan".
     client.send({ type: "send_message", text: "Plan it", permissionMode: "plan" });
     const claude = await waitForClaude(() => lastClaude);
     claude.initSession("plan-desync-session");
@@ -736,10 +564,8 @@ describe("Integration: live steering (docs/140)", () => {
 
     const runner = (app as any).runnerRegistry.get(client.sessionId);
     expect(runner).toBeTruthy();
-    // applied tracks the spawn mode.
     expect(runner.appliedPermissionMode).toBe("plan");
 
-    // End turn 1 — the streaming process stays alive.
     claude.emit("event", {
       type: "result",
       subtype: "success",
@@ -748,13 +574,8 @@ describe("Integration: live steering (docs/140)", () => {
     });
     await drainUntil(client, (m) => m.type === "session_status" && (m as AnyMsg).running === false);
 
-    // Simulate the drift: appliedPermissionMode cleared to undefined while the
-    // worker's streaming CLI is still pinned to plan (proxy recreation on reload).
     runner.appliedPermissionMode = undefined;
 
-    // The CLI re-announces its real mode via a fresh init (e.g. after a
-    // compaction or a reattach). The orchestrator must resync the bookkeeping
-    // from this authoritative signal, not trust the drifted local value.
     claude.emit("event", {
       type: "system",
       subtype: "init",
@@ -764,9 +585,6 @@ describe("Integration: live steering (docs/140)", () => {
     await new Promise((r) => setTimeout(r, 20));
     expect(runner.appliedPermissionMode).toBe("plan");
 
-    // Turn 2: user requests auto (chip back to "auto" → permissionMode omitted).
-    // With applied resynced to "plan", the gate fires and pushes the freeing
-    // set_permission_mode(undefined) before the next sendUserMessage.
     client.send({ type: "send_message", text: "Now execute it" });
 
     await new Promise<void>((resolve, reject) => {
@@ -779,57 +597,36 @@ describe("Integration: live steering (docs/140)", () => {
       check();
     });
 
-    // Exactly one push — plan → undefined (auto) — freeing the plan-pinned CLI.
     expect(claude.permissionModeCalls).toEqual([undefined]);
-    // Same process — no respawn, no kill.
     expect(claude.killed).toBe(false);
 
     client.close();
   });
 
   it("pushes setPermissionMode before a steered message that changes the mode (plan → auto, plan-approval fix)", async () => {
-    // Regression: approving a plan ("Accept & Execute") sets permissionMode→auto
-    // and sends "Execute the plan you just described." While live steering is on
-    // that message is steered into the still-running plan turn — a path that
-    // bypasses turn-executor's reuseExistingAgent setPermissionMode push. So the
-    // CLI stayed pinned to its spawn-time `--permission-mode plan` and the
-    // agent's Write/Edit/Bash were blocked. The steer branch must push exactly
-    // one setPermissionMode(undefined) before the steered sendUserMessage.
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
-    // Turn 1: open in plan mode → spawn streaming agent pinned to "plan".
     client.send({ type: "send_message", text: "Plan it", permissionMode: "plan" });
     const claude = await waitForClaude(() => lastClaude);
     claude.initSession("steer-mode-change-session");
     expect(claude.lastPermissionMode).toBe("plan");
     expect(claude.permissionModeCalls).toEqual([]);
 
-    // Mid-turn: the plan-approval message is steered in with permissionMode
-    // omitted (the client's "auto" convention). The orchestrator must push
-    // setPermissionMode(undefined) before injecting the text.
     client.send({ type: "send_message", text: "Execute the plan you just described." });
     const steered = await drainUntil(client, (m) => m.type === "message_steered");
     expect(steered).toMatchObject({ type: "message_steered", text: "Execute the plan you just described." });
 
     expect(claude.stdinData).toContain("Execute the plan you just described.");
-    // Exactly one push — plan → undefined (auto) — before the steered send.
     expect(claude.permissionModeCalls).toEqual([undefined]);
-    // No respawn: the steer reuses the resident streaming process.
     expect(claude.killed).toBe(false);
 
     client.close();
   });
 
   it("tracks autonomous EnterPlanMode so accepting the plan can release the streaming process", async () => {
-    // Regression: when the model called EnterPlanMode during an auto/default
-    // streaming turn, the CLI process became plan-pinned but
-    // runner.appliedPermissionMode stayed undefined. Clicking PlanApproval sent
-    // the usual auto-mode follow-up (permissionMode omitted), which looked like
-    // no mode change to the orchestrator, so it skipped the
-    // setPermissionMode(undefined) request and the process stayed in plan mode.
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
     client.send({ type: "send_message", text: "Plan if needed" });
     const claude = await waitForClaude(() => lastClaude);
@@ -863,41 +660,27 @@ describe("Integration: live steering (docs/140)", () => {
   });
 
   it("does NOT push setPermissionMode for a steered message when the mode is unchanged", async () => {
-    // Sending another message mid-turn in the same mode must not spam the CLI
-    // with a redundant set_permission_mode control_request (mirrors the
-    // docs/138 no-redundant-push guard on the between-turns path).
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
-    // Turn 1 opens in the CLI's default "auto" (no permissionMode), so
-    // appliedPermissionMode is undefined.
     client.send({ type: "send_message", text: "First message" });
     const claude = await waitForClaude(() => lastClaude);
     claude.initSession("steer-mode-stable-session");
     expect(claude.permissionModeCalls).toEqual([]);
 
-    // Mid-turn steer, also with no permissionMode — mode is unchanged.
     client.send({ type: "send_message", text: "Steer me" });
     const steered = await drainUntil(client, (m) => m.type === "message_steered");
     expect(steered).toMatchObject({ type: "message_steered", text: "Steer me" });
 
     expect(claude.stdinData).toContain("Steer me");
-    // No control_request — the requested mode already matches what's applied.
     expect(claude.permissionModeCalls).toEqual([]);
 
     client.close();
   });
 
   it("interrupts the agent when it emits an ExitPlanMode tool_use under live steering", async () => {
-    // Regression (this fix): in live-steering (streaming) mode the persistent
-    // CLI auto-resolves ExitPlanMode — there's no human to approve the plan
-    // exit — and the model continues in the SAME turn while still in plan mode,
-    // so its edits are blocked and it complains it "can't exit plan mode."
-    // The orchestrator must interrupt on the ExitPlanMode tool_use (the
-    // PlanApproval card is already emitted) so the model stops at the plan
-    // boundary and the user can click "Accept & Execute" to leave plan mode.
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
     client.send({ type: "send_message", text: "Plan it", permissionMode: "plan" });
     const claude = await waitForClaude(() => lastClaude);
@@ -924,15 +707,8 @@ describe("Integration: live steering (docs/140)", () => {
   });
 
   it("suppresses the CLI's auto-resolved tool_result for an interrupted ExitPlanMode", async () => {
-    // The streaming CLI auto-resolves ExitPlanMode before the orchestrator's
-    // `control_request` interrupt lands, so the synthetic tool_result reaches
-    // the orchestrator. If forwarded, the client sets `questionDisabled =
-    // !!result` and PlanApproval renders "Plan resolved" with its buttons
-    // disabled — the user can never click "Accept & Execute" to leave plan
-    // mode. The orchestrator tracks the interrupted ExitPlanMode id and drops
-    // the matching tool_result before broadcasting (mirrors AskUserQuestion).
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
     client.send({ type: "send_message", text: "Plan it", permissionMode: "plan" });
     const claude = await waitForClaude(() => lastClaude);
@@ -952,7 +728,6 @@ describe("Integration: live steering (docs/140)", () => {
     await new Promise((r) => setTimeout(r, 30));
     expect(claude.interrupted).toBe(true);
 
-    // The CLI's auto-resolved tool_result arrives as a `user` event.
     claude.emit("event", {
       type: "user",
       message: {
@@ -991,15 +766,10 @@ describe("Integration: live steering (docs/140)", () => {
   });
 
   it("does NOT interrupt on ExitPlanMode when liveSteering is off (one-shot path renders the card naturally)", async () => {
-    // In the one-shot `-p --permission-mode plan` path the CLI ends the turn at
-    // ExitPlanMode on its own, so the PlanApproval card renders with working
-    // buttons and no auto-resolved tool_result. Interrupting there would set
-    // `wasInterrupted` and drop legitimately queued messages. Gate the
-    // ExitPlanMode interrupt strictly to streaming.
     credentialStore.setLiveSteering(false);
 
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
     client.send({ type: "send_message", text: "Plan it", permissionMode: "plan" });
     const claude = await waitForClaude(() => lastClaude);
@@ -1024,24 +794,14 @@ describe("Integration: live steering (docs/140)", () => {
   });
 
   it("steers a programmatic dispatch (shipit session message / child message) mid-turn instead of queuing it (docs/163)", async () => {
-    // Regression: the agent-driven path (`shipit session message` → child-message
-    // → `runner.dispatch`) used to ALWAYS queue a message that arrived during an
-    // active turn, even with live steering on — only the WS handler honored
-    // steering. The dispatch path now shares the WS handler's `shouldSteerMessage`
-    // decision, so a programmatic message lands in the running turn via
-    // `sendUserMessage` and broadcasts `message_steered`, not `message_queued`.
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
-    // WS turn opens a streaming agent (liveSteering on + claude supports steering).
     client.send({ type: "send_message", text: "First message", sessionId: client.sessionId });
     const claude = await waitForClaude(() => lastClaude);
     claude.initSession("dispatch-steer-session");
     expect(claude.lastUseStreaming).toBe(true);
 
-    // Simulate the programmatic entry point: resolve the registry runner and
-    // dispatch a message exactly as `sendChildMessage` does. Poll until the WS
-    // turn has marked the runner running + streaming so the steer gate is live.
     const runner = (app as any).runnerRegistry.get(client.sessionId);
     expect(runner).toBeTruthy();
     await new Promise<void>((resolve, reject) => {
@@ -1061,28 +821,17 @@ describe("Integration: live steering (docs/140)", () => {
 
     const steered = await drainUntil(client, (m) => m.type === "message_steered");
     expect(steered).toMatchObject({ type: "message_steered", text: "Programmatic steer" });
-    // Injected into the running agent — the fake records sendUserMessage under stdinData.
     expect(claude.stdinData.some((input) => input.includes("Programmatic steer"))).toBe(true);
     expect(claude.stdinData.some((input) => input.includes('Agent message from PARENT session "Parent" (parent)'))).toBe(true);
-    // And it was NOT queued.
     expect(runner.queueLength).toBe(0);
 
     client.close();
   });
 
   it("starts a DISPATCHED first turn (spawned child / quick session) as a streaming process so a follow-up dispatch steers instead of queuing (docs/163)", async () => {
-    // The actual "spawn a session, then message it" bug: a child/quick session's
-    // FIRST turn is started via `runner.dispatch` (spawnChildSession), NOT the WS
-    // path. It used to spawn NON-streaming, so `runner.isStreamingActive` stayed
-    // false and a follow-up `shipit session message` arriving mid-turn failed the
-    // steer gate and was QUEUED — never injected. The dispatched first turn now
-    // streams (same gate as WS), so the follow-up is steered in via
-    // `sendUserMessage`, exactly as if the user had typed it.
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status — emitted after the runner is created
+    await client.receive();
 
-    // Resolve the registry runner created on connect, then start the FIRST turn
-    // via dispatch (exactly as spawnChildSession does — no WS send_message).
     const runner = await new Promise<AnyMsg>((resolve, reject) => {
       const start = Date.now();
       const check = (): void => {
@@ -1096,12 +845,9 @@ describe("Integration: live steering (docs/140)", () => {
 
     runner.dispatch(testDispatch({ text: "Build the initial thing" }));
     const claude = await waitForClaude(() => lastClaude);
-    // The FIX: a dispatched first turn streams when steering is on + supported.
-    // Before this change `lastUseStreaming` was falsy and the steer below queued.
     expect(claude.lastUseStreaming).toBe(true);
     claude.initSession("dispatched-first-turn-session");
 
-    // Wait until the dispatched turn has marked the runner running + streaming.
     await new Promise<void>((resolve, reject) => {
       const start = Date.now();
       const check = (): void => {
@@ -1112,13 +858,10 @@ describe("Integration: live steering (docs/140)", () => {
       check();
     });
 
-    // Follow-up programmatic message arrives mid-turn — must STEER, not queue.
     runner.dispatch(testDispatch({ text: "Also handle the edge case" }));
 
     const steered = await drainUntil(client, (m) => m.type === "message_steered");
     expect(steered).toMatchObject({ type: "message_steered", text: "Also handle the edge case" });
-    // Injected into the running streaming agent — the fake records sendUserMessage
-    // under stdinData — and NOT queued.
     expect(claude.stdinData).toContain("Also handle the edge case");
     expect(runner.queueLength).toBe(0);
 
@@ -1126,22 +869,9 @@ describe("Integration: live steering (docs/140)", () => {
   });
 
   it("reuses a RESIDENT streaming process for a follow-up dispatch even when useStreaming recomputes false — never spawns a competing one-shot (docs/146 prod race)", async () => {
-    // Prod dispatched-turn race: a child session's first turn opened a streaming
-    // process (resident across turns). A follow-up dispatch then recomputed
-    // `useStreaming === false` (live-steering toggled off, or steerInputs
-    // momentarily not-capable) and the old code spawned a FRESH one-shot
-    // `claude -p <prompt>` via createAgent. That fresh agent DISPLACED the live
-    // streaming proxy in the runner's single `_agent` slot; when it later exited
-    // with no result it nulled the slot, and the still-running streaming
-    // process's events were sse-dropped `(no _agent)` — the whole turn vanished.
-    //
-    // The fix: a live resident streaming process is ALWAYS reused via
-    // sendUserMessage, independent of the per-turn `useStreaming` recompute. No
-    // second process is ever spawned to compete for the slot.
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
-    // Streaming turn 1 — opens the resident process.
     client.send({ type: "send_message", text: "First message" });
     const claude1 = await waitForClaude(() => lastClaude);
     claude1.initSession("resident-reuse-session");
@@ -1158,8 +888,6 @@ describe("Integration: live steering (docs/140)", () => {
       check();
     });
 
-    // End turn 1 via a result-only event (NO done) so the streaming process
-    // stays resident: running flips false, isStreamingActive stays true.
     claude1.emit("event", { type: "result", subtype: "success", session_id: "resident-reuse-session" });
     await new Promise<void>((resolve, reject) => {
       const start = Date.now();
@@ -1171,16 +899,10 @@ describe("Integration: live steering (docs/140)", () => {
       check();
     });
 
-    // Toggle live steering OFF so the next dispatch recomputes useStreaming=false
-    // — the exact precondition that made the old code spawn a one-shot.
     credentialStore.setLiveSteering(false);
 
-    // Dispatch a fresh turn (e.g. `shipit session message`). It must REUSE the
-    // resident process via sendUserMessage, NOT spawn a second FakeClaudeProcess.
     runner.dispatch(testDispatch({ text: "Second turn instruction" }));
 
-    // Give the dispatch path time to run. The reused process records the prompt
-    // under stdinData (sendUserMessage); no new agent is created.
     await new Promise<void>((resolve, reject) => {
       const start = Date.now();
       const check = (): void => {
@@ -1190,8 +912,6 @@ describe("Integration: live steering (docs/140)", () => {
       };
       check();
     });
-    // The resident process IS still the active agent — no competing one-shot
-    // displaced it.
     expect(lastClaude).toBe(claude1);
     expect(runner.getAgent()).toBe(claude1);
     expect(runner.queueLength).toBe(0);
@@ -1200,17 +920,9 @@ describe("Integration: live steering (docs/140)", () => {
   });
 
   it("delivers a dispatch-queued message at turn end even when the streaming process exits WITHOUT an agent_result (never-delivered fix, docs/162)", async () => {
-    // Regression: in streaming mode the post-turn queue drain hung off
-    // `agent_result` only — the `done` handler returned early without draining.
-    // If a streaming turn ended abnormally (crash / failed-PR / hook-retry exit)
-    // it emitted `done` with no preceding `result`, so a message queued via the
-    // dispatch path was stranded forever ("queued, then never delivered"). The
-    // streaming `done` path now drains the queue (guarded so a clean
-    // agent_result drain isn't doubled).
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
-    // Streaming turn 1.
     client.send({ type: "send_message", text: "First message", sessionId: client.sessionId });
     const claude1 = await waitForClaude(() => lastClaude);
     claude1.initSession("drain-on-done-session");
@@ -1227,20 +939,13 @@ describe("Integration: live steering (docs/140)", () => {
       check();
     });
 
-    // Turn steering OFF so the dispatched message is QUEUED (not steered),
-    // reproducing the "message sits in the queue" precondition.
     credentialStore.setLiveSteering(false);
     runner.dispatch(testDispatch({ text: "Queued during turn" }));
     const queued = await drainUntil(client, (m) => m.type === "message_queued");
     expect(queued).toMatchObject({ type: "message_queued", text: "Queued during turn" });
 
-    // The streaming process dies WITHOUT emitting a result event — the abnormal
-    // exit that used to strand the queue. (claude.finish() emits result+done; we
-    // deliberately emit only done here.)
     claude1.emit("done", 1);
 
-    // With the fix, the queue drains at done. Steering is now off, so the drained
-    // turn spawns a FRESH non-streaming agent whose prompt carries the queued text.
     const claude2 = await waitForClaude(() => lastClaude, claude1);
     expect(claude2).not.toBe(claude1);
     expect(claude2.runCalled).toBe(true);
@@ -1250,11 +955,10 @@ describe("Integration: live steering (docs/140)", () => {
   });
 
   it("falls back to the queue path when liveSteering is off, even if the agent supports steering", async () => {
-    // Flip the setting off for this test only.
     credentialStore.setLiveSteering(false);
 
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
     client.send({ type: "send_message", text: "First" });
     const claude = await waitForClaude(() => lastClaude);
@@ -1262,17 +966,11 @@ describe("Integration: live steering (docs/140)", () => {
 
     client.send({ type: "send_message", text: "Second" });
 
-    // With steering off, the second message must be queued — not steered.
     const queued = await drainUntil(client, (m) => m.type === "message_queued");
     expect(queued).toMatchObject({ type: "message_queued", text: "Second" });
 
-    // And sendUserMessage was NOT called for the queued text (only writeStdin
-    // would record it; the fake's writeStdin captures both writeStdin and
-    // sendUserMessage calls, so just verify the queued message wasn't
-    // delivered to the running agent).
     expect(claude.stdinData).not.toContain("Second");
 
-    // The agent's useStreaming flag should be false here too.
     expect((claude as any).lastUseStreaming).toBeFalsy();
 
     client.close();

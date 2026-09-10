@@ -1,14 +1,9 @@
-/**
- * HTTP routes for self-update — check for updates and trigger host-side update.
- */
-
 import type { FastifyInstance } from "fastify";
 import { checkForUpdates, requestRestart, requestUpdate, setChannel } from "./services/updates.js";
 import { ServiceError } from "./services/types.js";
 import { getErrorMessage } from "./validation.js";
 
 export async function registerUpdateRoutes(app: FastifyInstance): Promise<void> {
-  // POST /api/updates/check — fetch from upstream and compare
   app.post("/api/updates/check", async (_request, reply) => {
     try {
       return await checkForUpdates();
@@ -21,7 +16,6 @@ export async function registerUpdateRoutes(app: FastifyInstance): Promise<void> 
     }
   });
 
-  // POST /api/updates/channel — switch release channel, returns a fresh check
   app.post<{ Body: { channel?: unknown } }>("/api/updates/channel", async (request, reply) => {
     const channel = request.body?.channel;
     if (channel !== "stable" && channel !== "edge") {
@@ -39,7 +33,6 @@ export async function registerUpdateRoutes(app: FastifyInstance): Promise<void> 
     }
   });
 
-  // POST /api/updates/apply — write trigger file for host-side updater
   app.post("/api/updates/apply", async (_request, reply) => {
     try {
       await requestUpdate();
@@ -53,7 +46,6 @@ export async function registerUpdateRoutes(app: FastifyInstance): Promise<void> 
     }
   });
 
-  // POST /api/updates/restart — restart without pulling updates
   app.post("/api/updates/restart", async (_request, reply) => {
     try {
       await requestRestart();

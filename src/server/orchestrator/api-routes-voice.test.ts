@@ -1,11 +1,3 @@
-/**
- * Tests for the Voice API routes (docs/144).
- *
- * Builds a real Fastify instance and registers ONLY the voice routes with fake
- * deps (credentialStore, authManager) and a stubbed global fetch so no real
- * OpenAI/Anthropic calls happen. Uses app.inject() — no network port.
- */
-
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import os from "node:os";
 import fs from "node:fs";
@@ -16,7 +8,6 @@ import fastifyMultipart from "@fastify/multipart";
 import { registerVoiceRoutes } from "./api-routes-voice.js";
 import type { ApiDeps } from "./api-routes.js";
 
-/** Minimal in-memory credential store covering just the voice methods. */
 function makeCredentialStore() {
   const keys = new Map<string, string>();
   let deliveryMode: "native" | "external" | "both" = "native";
@@ -32,7 +23,6 @@ function makeCredentialStore() {
     getConfiguredVoiceProviders: vi.fn((): string[] =>
       [...keys.entries()].filter(([, v]) => v.trim()).map(([id]) => id),
     ),
-    // docs/163
     getVoiceDeliveryMode: vi.fn(() => deliveryMode),
     setVoiceDeliveryMode: vi.fn((m: "native" | "external" | "both") => {
       deliveryMode = m;
@@ -47,15 +37,10 @@ function makeCredentialStore() {
   };
 }
 
-/** Fake runner registry capturing emitted WS messages for one session. */
 function makeRunnerRegistry(sessionId: string) {
   const emitted: { type: string; [k: string]: unknown }[] = [];
-  // The native sink records the card on the runner (docs/163): `emitChatCard`
-  // reads chatMessageGroups for the anchor and pushes onto recordedCards.
   const runner = {
     emitMessage: (m: { type: string }) => emitted.push(m),
-    // The `voice_note` tool fires from inside the agent's turn, so the card
-    // rides the in-progress turn rather than `emitChatCard`'s post-turn append.
     running: true,
     chatMessageGroups: [] as { text: string; toolUse: unknown[] }[],
     steeredMessages: [] as unknown[],
@@ -68,7 +53,6 @@ function makeRunnerRegistry(sessionId: string) {
   };
 }
 
-/** Auth manager whose getAccessToken returns no bearer by default. */
 function makeAuthManager(token: string | null = null) {
   return {
     getAccessToken: vi.fn(async () => ({ token })),
@@ -131,9 +115,6 @@ async function buildApp(overrides?: {
     stateDir: tmpDir,
     runnerRegistry: overrides?.runnerRegistry ?? { get: () => undefined },
     chatHistoryManager: overrides?.chatHistoryManager ?? { replaceInProgress: vi.fn(), append: vi.fn() },
-    // docs/150-multiple-provider-subscriptions req 19 — cleanup resolves the account whose credentials it reads.
-    // Defaults to a reserved route (no account root), which is the pre-account
-    // shape the rest of these tests assume.
     providerAccountManager: overrides?.providerAccountManager ?? {
       selectRouteForTurn: () => ({ kind: "api-key", id: "claude-api-key" }),
     },
@@ -174,7 +155,6 @@ describe("GET /api/voice/credentials/status", () => {
     expect(res.statusCode).toBe(200);
     const body = res.json();
     expect(body.configured).toEqual(["openai"]);
-    // Security: status must NEVER carry the raw key under any field name.
     expect(JSON.stringify(body)).not.toContain("sk-super-secret-123");
     expect(body.apiKey).toBeUndefined();
     expect(body.key).toBeUndefined();
@@ -254,7 +234,6 @@ describe("POST/DELETE /api/voice/credentials", () => {
 
 describe("GET /api/voice/cleanup/status", () => {
   it("returns null provider when no OAuth bearer and no key", async () => {
-    // authManager returns no token and key is null → no provider available.
     const { app } = await buildApp({ authManager: makeAuthManager(null) });
     const res = await app.inject({ method: "GET", url: "/api/voice/cleanup/status" });
     expect(res.statusCode).toBe(200);
@@ -271,8 +250,6 @@ describe("GET /api/voice/cleanup/status", () => {
     await app.close();
   });
 
-  // docs/150-multiple-provider-subscriptions req 19 — the singleton config root holds nothing once the legacy
-  // aliases are retired, so cleanup has to read the account the router picks.
   it("reads the bearer from the credential root of the account the router picks", async () => {
     const authManager = makeAuthManager("oauth-bearer-token");
     const { app } = await buildApp({
@@ -293,9 +270,6 @@ describe("GET /api/voice/cleanup/status", () => {
     await app.close();
   });
 
-  // Cleanup is best-effort: `pickCleanupProvider` already treats a broken
-  // Claude path as "fall through to OpenAI". Account resolution must not be
-  // the one step that escapes that and 500s the request.
   it("degrades to an unscoped read when account resolution throws", async () => {
     const authManager = makeAuthManager("oauth-bearer-token");
     const { app } = await buildApp({
@@ -354,7 +328,6 @@ describe("POST /api/voice/speak", () => {
     const res = await app.inject({
       method: "POST",
       url: "/api/voice/speak",
-      // "21m00..." is an ElevenLabs voice id, invalid for OpenAI.
       payload: { text: "Hello", voice: "21m00Tcm4TlvDq8ikWAM", speed: 1, provider: "openai" },
     });
     expect(res.statusCode).toBe(400);
@@ -366,7 +339,6 @@ describe("POST /api/voice/speak", () => {
     const credentialStore = makeCredentialStore();
     credentialStore.setVoiceProviderKey("openai", "sk-abc");
 
-    // Stub global fetch so the OpenAI TTS provider returns a streamed body.
     const audioBytes = new Uint8Array([1, 2, 3, 4, 5]);
     vi.stubGlobal(
       "fetch",
@@ -525,7 +497,6 @@ describe("Voice-note webhook config (docs/163)", () => {
     const body = status.json();
     expect(body.configured).toBe(true);
     expect(body.url).toBe("https://hook.example/notes");
-    // The token must never be returned.
     expect(JSON.stringify(body)).not.toContain("super-secret");
     await app.close();
   });
@@ -630,7 +601,6 @@ describe("SECURITY: no GET route returns the raw key", () => {
     const { app } = await buildApp({ credentialStore });
     const res = await app.inject({ method: "GET", url: "/api/voice/credentials" });
     expect(res.statusCode).toBe(404);
-    // And even the 404 body must not echo the secret.
     expect(res.payload).not.toContain("sk-super-secret-123");
     await app.close();
   });

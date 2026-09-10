@@ -1,77 +1,26 @@
-/**
- * Egress firewall — Tier A allow-set construction (docs/172 Gap 1, planning#92).
- *
- * Tier A is the un-bypassable floor: a default-deny `iptables OUTPUT` policy plus
- * an `ipset` of permitted destination IPs/CIDRs, installed **inside the agent
- * container's network namespace** by a short-lived privileged sidecar
- * (`--network container:<agent> --cap-add NET_ADMIN`) — see
- * `docs/172-agent-containment/egress-control.md`. The agent itself has no
- * `NET_ADMIN` (and, since planning#33, runs non-root), so it can neither install nor
- * flush these rules.
- *
- * This module owns the **data** half — what goes in the ipset — which is pure,
- * host-independent, and unit-testable. The *application* (running iptables/ipset
- * in the netns) is orchestration that requires a live Docker host and is covered
- * by integration/manual verification, not these unit tests.
- *
- * Two sources feed the ipset, mirroring Anthropic's reference
- * `.devcontainer/init-firewall.sh`:
- *   1. **Concrete FQDNs resolved to IPs** ({@link EGRESS_TIER_A_RESOLVE_HOSTS}).
- *      Tier A is IP-based, so it needs concrete hostnames — the *suffix* allowlist
- *      used by the Tier C proxy (`egress-allowlist.ts`) does not map to IPs.
- *   2. **Published CIDR ranges** — GitHub via `gh api meta` (`.web`/`.api`/`.git`),
- *      which is more robust than resolving `github.com` to a single rotating IP.
- *
- * Ordering note (enforced by the installer, not here): resolution + the
- * `gh api meta` fetch happen **before** the `OUTPUT DROP` policy is set —
- * once default-deny is up, the installer itself could no longer reach
- * `api.github.com`. The GitHub fetch is done orchestrator-side (it holds the
- * brokered token) and the CIDRs passed to the installer.
- */
-
-/**
- * Concrete FQDNs the Tier A ipset resolves to IPs. This is the IP-floor's own
- * list, distinct from (though overlapping with) the Tier C suffix allowlist in
- * `egress-allowlist.ts`: a packet filter matches addresses, so suffix wildcards
- * like `.anthropic.com` can't be expressed here — the concrete endpoints are.
- * GitHub is intentionally absent: it is covered by `gh api meta` CIDR ranges.
- */
+// Resolve concrete hosts for the IP filter; GitHub uses its published CIDRs.
 export const EGRESS_TIER_A_RESOLVE_HOSTS: readonly string[] = [
-  // Agent APIs — Claude / Anthropic
   "api.anthropic.com",
   "console.anthropic.com",
   "statsig.anthropic.com",
-  "platform.claude.com", // Claude Code subscription authentication
-  // Agent APIs — Codex / OpenAI
+  "platform.claude.com",
   "api.openai.com",
   "auth.openai.com",
   "chatgpt.com",
-  // Catalogue provider APIs — exact endpoints, not vendor-wide suffixes
   "api.deepseek.com",
   "api.z.ai",
   "openrouter.ai",
   "ai-gateway.vercel.sh",
   "opencode.ai",
-  // docs/274 — xAI inference, the `grok` harness's key-billed mode.
   "api.x.ai",
-  // planning#435 — Grok's subscription mode: the OIDC device-code/refresh host
-  // and the chat proxy subscription turns actually POST to.
   "auth.x.ai",
   "cli-chat-proxy.grok.com",
-  // Package registries
   "registry.npmjs.org",
   "registry.yarnpkg.com",
   "pypi.org",
   "files.pythonhosted.org",
 ];
 
-/**
- * Baked-in GitHub egress CIDR ranges, used as a fallback when the live
- * `https://api.github.com/meta` fetch fails or returns nothing (so `git` and
- * release/raw downloads stay reachable even if the meta endpoint is briefly
- * unavailable at container-create time). These change rarely; the live fetch is
- * authoritative when it succeeds. Source: GitHub `meta` `web`/`api`/`git`.
- */
 export const EGRESS_GITHUB_CIDRS_FALLBACK: readonly string[] = [
   "140.82.112.0/20",
   "143.55.64.0/20",
@@ -82,34 +31,27 @@ export const EGRESS_GITHUB_CIDRS_FALLBACK: readonly string[] = [
   "2606:50c0::/32",
 ];
 
-// ---------------------------------------------------------------------------
-// IP / CIDR validation
-// ---------------------------------------------------------------------------
-
 function isValidIpv4(s: string): boolean {
   const parts = s.split(".");
   if (parts.length !== 4) return false;
   return parts.every((p) => {
     if (!/^\d{1,3}$/.test(p)) return false;
     const n = Number(p);
-    return n >= 0 && n <= 255 && String(n) === p; // reject "01", "255" ok
+    return n >= 0 && n <= 255 && String(n) === p;
   });
 }
 
 function isValidIpv6(s: string): boolean {
-  // Permissive but safe: hex groups separated by ':', optional "::" once.
   if (!s.includes(":")) return false;
   if (!/^[0-9a-fA-F:]+$/.test(s)) return false;
   if ((s.match(/::/g) ?? []).length > 1) return false;
   return true;
 }
 
-/** True if `s` is a bare IPv4 or IPv6 address. */
 export function isValidIp(s: string): boolean {
   return isValidIpv4(s) || isValidIpv6(s);
 }
 
-/** True if `s` is an `addr/prefix` CIDR with an in-range prefix length. */
 export function isValidCidr(s: string): boolean {
   const slash = s.indexOf("/");
   if (slash === -1) return false;
@@ -122,17 +64,6 @@ export function isValidCidr(s: string): boolean {
   return false;
 }
 
-// ---------------------------------------------------------------------------
-// GitHub meta CIDR parsing
-// ---------------------------------------------------------------------------
-
-/**
- * Extract the GitHub egress CIDR ranges from a parsed `gh api meta` response.
- * Pulls the `web`, `api`, and `git` arrays (the surfaces git/clone/release/API
- * traffic uses), keeps only valid CIDRs, and de-duplicates while preserving
- * first-seen order. Tolerant of missing keys and non-array/garbage values so a
- * malformed or partial response degrades to "fewer ranges", never a throw.
- */
 export function parseGitHubMetaCidrs(meta: unknown): string[] {
   if (!meta || typeof meta !== "object") return [];
   const obj = meta as Record<string, unknown>;
@@ -152,26 +83,6 @@ export function parseGitHubMetaCidrs(meta: unknown): string[] {
   return out;
 }
 
-// ---------------------------------------------------------------------------
-// ipset member composition
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
-// Intra-session subnet extraction (planning#92 — preview reachability)
-// ---------------------------------------------------------------------------
-
-/**
- * Extract the validated, de-duplicated CIDR subnet list from a Docker network
- * inspect result (the `IPAM.Config[].Subnet` entries). Used to re-open the
- * agent's default-deny egress to its OWN session/compose network subnet so the
- * agent (and its in-netns Playwright browser) can reach preview service
- * containers by IP — the multi-homed agent's non-default subnet is otherwise
- * dropped by the Tier A `OUTPUT DROP` policy (see `allow-subnet.sh`).
- *
- * Pure + defensive: tolerates a missing/garbage `IPAM`/`Config` shape (returns
- * `[]`) and drops any entry that isn't a valid CIDR, so a malformed inspect can
- * never poison the rule set or throw.
- */
 export function extractNetworkSubnets(networkInfo: unknown): string[] {
   if (!networkInfo || typeof networkInfo !== "object") return [];
   const ipam = (networkInfo as Record<string, unknown>).IPAM;
@@ -192,13 +103,6 @@ export function extractNetworkSubnets(networkInfo: unknown): string[] {
   return out;
 }
 
-/**
- * Compose the deduplicated, validated member set for the Tier A `allowed-egress`
- * ipset (`hash:net`, which accepts both bare IPs and CIDRs) from resolved host
- * IPs and published CIDR ranges. Invalid entries are dropped (defensive — a bad
- * `dig` line or a malformed range must not poison the set). Output is sorted for
- * a deterministic ipset (stable restore files, diffable logs).
- */
 export function buildIpsetMembers(opts: { ips?: readonly string[]; cidrs?: readonly string[] }): string[] {
   const members = new Set<string>();
   for (const ip of opts.ips ?? []) {

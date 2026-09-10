@@ -1,16 +1,3 @@
-/**
- * Integration tests for worker service control endpoints and the
- * SSE request/callback bridge to the orchestrator.
- *
- * Tests cover:
- * 1. Worker service HTTP endpoints (list, start, stop, restart)
- * 2. SSE service_request events emitted by the worker
- * 3. Callback endpoint (/services/_callback) resolving pending requests
- * 4. Error handling (timeout, unknown request, missing name)
- *
- * Uses in-process Fastify with stubs — no Docker or real processes.
- */
-
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { SessionWorker } from "../../session/session-worker.js";
 import {
@@ -18,10 +5,6 @@ import {
   collectSSE,
   waitFor,
 } from "./container-test-helpers.js";
-
-// ---------------------------------------------------------------------------
-// Worker Service Endpoints
-// ---------------------------------------------------------------------------
 
 describe("Worker Service Endpoints", () => {
   let worker: SessionWorker;
@@ -94,16 +77,14 @@ describe("Worker Service Endpoints", () => {
       events.push({ type, data });
     });
 
-    // Give SSE time to connect
     await new Promise(r => setTimeout(r, 100));
 
-    // Fire off the list request (don't await — it blocks until callback)
+    // Await this only after sending its callback.
     const listPromise = worker.getApp().inject({
       method: "GET",
       url: "/services/list",
     });
 
-    // Wait for the SSE event to arrive
     await waitFor(() => events.some(e => e.type === "service_request"), 3000, "service_request SSE event");
 
     const svcEvent = events.find(e => e.type === "service_request");
@@ -112,7 +93,6 @@ describe("Worker Service Endpoints", () => {
     expect(eventData.action).toBe("list");
     expect(eventData.requestId).toBeDefined();
 
-    // Now simulate the orchestrator callback
     const callbackRes = await worker.getApp().inject({
       method: "POST",
       url: "/services/_callback",
@@ -123,7 +103,6 @@ describe("Worker Service Endpoints", () => {
     });
     expect(callbackRes.statusCode).toBe(200);
 
-    // The list request should now resolve
     const listRes = await listPromise;
     expect(listRes.statusCode).toBe(200);
     expect(listRes.json()).toMatchObject({
@@ -157,7 +136,6 @@ describe("Worker Service Endpoints", () => {
     expect(eventData.action).toBe("start");
     expect(eventData.name).toBe("db");
 
-    // Simulate callback
     await worker.getApp().inject({
       method: "POST",
       url: "/services/_callback",
@@ -171,9 +149,6 @@ describe("Worker Service Endpoints", () => {
     sse.close();
   });
 
-  // docs/238 — `logs` joined the bridge so the whole service verb set lives
-  // behind one interface (previously logs were only on the orchestrator route,
-  // a different host and port from every other service call).
   it("returns 400 for /services/logs without name", async () => {
     const res = await worker.getApp().inject({ method: "GET", url: "/services/logs" });
     expect(res.statusCode).toBe(400);
@@ -217,9 +192,6 @@ describe("Worker Service Endpoints", () => {
     sse.close();
   });
 
-  // A caller-supplied `timeoutMs` must not leak into the SSE payload — it
-  // configures the worker's own callback deadline, not anything the
-  // orchestrator acts on.
   it("consumes timeoutMs locally rather than forwarding it to the orchestrator", async () => {
     const events: { type: string; data: unknown }[] = [];
     const address = worker.getApp().addresses()[0];
@@ -276,7 +248,6 @@ describe("Worker Service Endpoints", () => {
     const svcEvent = events.find(e => e.type === "service_request");
     const eventData = svcEvent!.data as { requestId: string };
 
-    // Simulate error callback
     await worker.getApp().inject({
       method: "POST",
       url: "/services/_callback",
@@ -284,7 +255,6 @@ describe("Worker Service Endpoints", () => {
     });
 
     const res = await stopPromise;
-    // The promise rejects with an error, which Fastify converts to a 500
     expect(res.statusCode).toBe(500);
 
     sse.close();

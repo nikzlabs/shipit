@@ -15,10 +15,6 @@ describe("FileReviewStore", () => {
     dbManager.close();
   });
 
-  // ------------------------------------------------------------------
-  // Create draft
-  // ------------------------------------------------------------------
-
   it("creates a markdown draft with snapshot fields populated", () => {
     const draft = store.createDraft(
       "session-1",
@@ -48,10 +44,6 @@ describe("FileReviewStore", () => {
     expect(draft.fileType).toBe("code");
   });
 
-  // ------------------------------------------------------------------
-  // One draft per (session, file)
-  // ------------------------------------------------------------------
-
   it("returns the existing draft when called twice for the same (session, file)", () => {
     const first = store.createDraft("s1", "plan.md", "markdown", "h1");
     const second = store.createDraft("s1", "plan.md", "markdown", "h2");
@@ -65,10 +57,6 @@ describe("FileReviewStore", () => {
     const b = store.createDraft("s2", "plan.md", "markdown", "h");
     expect(a.id).not.toBe(b.id);
   });
-
-  // ------------------------------------------------------------------
-  // Add comments (line + selection)
-  // ------------------------------------------------------------------
 
   it("adds a selection-anchored comment with the right kind and quoted text", () => {
     const draft = store.createDraft("s1", "plan.md", "markdown", "h");
@@ -115,10 +103,6 @@ describe("FileReviewStore", () => {
     expect(kinds).toEqual(["line", "selection"]);
   });
 
-  // ------------------------------------------------------------------
-  // Update comment
-  // ------------------------------------------------------------------
-
   it("updates comment text and preserves anchor fields", () => {
     const draft = store.createDraft("s1", "plan.md", "markdown", "h");
     const comment = store.addSelectionComment(draft.id, "anchored phrase", "", "", "Original");
@@ -129,10 +113,6 @@ describe("FileReviewStore", () => {
     if (review!.comments[0].kind !== "selection") throw new Error("expected selection");
     expect(review!.comments[0].quotedText).toBe("anchored phrase");
   });
-
-  // ------------------------------------------------------------------
-  // Delete comment
-  // ------------------------------------------------------------------
 
   it("deletes a comment without affecting siblings", () => {
     const draft = store.createDraft("s1", "plan.md", "markdown", "h");
@@ -146,10 +126,6 @@ describe("FileReviewStore", () => {
     expect(review!.comments[0].id).toBe(c2.id);
   });
 
-  // ------------------------------------------------------------------
-  // Mark sent
-  // ------------------------------------------------------------------
-
   it("marks a review as sent with sentAt populated", () => {
     const draft = store.createDraft("s1", "plan.md", "markdown", "h");
     store.addSelectionComment(draft.id, "anchor", "", "", "feedback");
@@ -161,8 +137,6 @@ describe("FileReviewStore", () => {
     expect(review!.sentAt).toBeTruthy();
   });
 
-  // docs/260 — the send dialog's note rides along with markSent and comes back
-  // on the sent review, which is what "Past reviews" reads.
   it("stores the send note on the sent review", () => {
     const draft = store.createDraft("s1", "plan.md", "markdown", "h");
     store.addSelectionComment(draft.id, "anchor", "", "", "feedback");
@@ -182,16 +156,12 @@ describe("FileReviewStore", () => {
     expect(store.getReview(b.id)!.note).toBeUndefined();
   });
 
-  // The atomic half of the double-send guard: sendReview's status check happens
-  // before an awaited file read, so only this UPDATE can separate two
-  // concurrent sends of the same draft.
   it("refuses to mark an already-sent review sent again", () => {
     const draft = store.createDraft("s1", "plan.md", "markdown", "h");
     store.addSelectionComment(draft.id, "anchor", "", "", "feedback");
 
     expect(store.markSent(draft.id, "first")).toBe(true);
     expect(store.markSent(draft.id, "second")).toBe(false);
-    // …and the loser did not overwrite the winner's note.
     expect(store.getReview(draft.id)!.note).toBe("first");
   });
 
@@ -204,10 +174,6 @@ describe("FileReviewStore", () => {
     expect(next.status).toBe("draft");
     expect(store.getDraft("s1", "plan.md")?.id).toBe(next.id);
   });
-
-  // ------------------------------------------------------------------
-  // Delete draft
-  // ------------------------------------------------------------------
 
   it("deletes a draft and its comments", () => {
     const draft = store.createDraft("s1", "plan.md", "markdown", "h");
@@ -227,10 +193,6 @@ describe("FileReviewStore", () => {
     expect(store.getReview(draft.id)).not.toBeNull();
   });
 
-  // ------------------------------------------------------------------
-  // List reviews: newest first
-  // ------------------------------------------------------------------
-
   it("lists reviews for a (session, file) pair newest-first", () => {
     const oldId = "old-review-id";
     const oldTime = "2025-01-01T00:00:00.000Z";
@@ -247,10 +209,6 @@ describe("FileReviewStore", () => {
     expect(reviews[1].id).toBe(oldId);
   });
 
-  // ------------------------------------------------------------------
-  // Persistence across store instances
-  // ------------------------------------------------------------------
-
   it("persists data across store instances sharing the same database", () => {
     const draft = store.createDraft("s1", "plan.md", "markdown", "h");
     store.addSelectionComment(draft.id, "anchor", "", "", "Persisted");
@@ -262,10 +220,6 @@ describe("FileReviewStore", () => {
     expect(review!.sessionId).toBe("s1");
     expect(review!.comments[0].text).toBe("Persisted");
   });
-
-  // ------------------------------------------------------------------
-  // Session isolation
-  // ------------------------------------------------------------------
 
   it("isolates reviews between sessions", () => {
     const a = store.createDraft("s1", "plan.md", "markdown", "h");
@@ -281,14 +235,7 @@ describe("FileReviewStore", () => {
     expect(store.getDraft("s2", "plan.md")).not.toBeNull();
   });
 
-  // ------------------------------------------------------------------
-  // Migration: legacy kind='section' rows surface as kind='selection'
-  // ------------------------------------------------------------------
-
   it("surfaces legacy section rows as selection comments via the migration", () => {
-    // Insert a row in the legacy shape (kind='section') directly. The migration
-    // running on store construction would have already converted any such rows
-    // — this exercises the same code path for a row inserted post-migration.
     const draft = store.createDraft("s1", "plan.md", "markdown", "h");
     const now = new Date().toISOString();
     dbManager.db.prepare(`
@@ -306,15 +253,7 @@ describe("FileReviewStore", () => {
     expect(c.text).toBe("legacy feedback");
   });
 
-  // ------------------------------------------------------------------
-  // Vestigial `source` column (docs/203, docs/220)
-  // ------------------------------------------------------------------
-
   it("leaves the retained source column at its 'human' default on insert", () => {
-    // The inserts omit `source`, which is still `NOT NULL` in SQLite. The
-    // column default is what makes that legal — and what keeps a downgrade to
-    // an older ShipIt (which reads the column) working. If a future schema
-    // change drops the default, this test is the one that fails.
     const draft = store.createDraft("s1", "plan.md", "markdown", "h");
     const selection = store.addSelectionComment(draft.id, "anchor", "", "", "note");
     const codeDraft = store.createDraft("s1", "src/foo.ts", "code", "h");
@@ -329,9 +268,6 @@ describe("FileReviewStore", () => {
   });
 
   it("reads a historical source='ai' row back as an ordinary comment", () => {
-    // Sent reviews written before the AI write path was removed can still hold
-    // `source = 'ai'` rows (migration 21 swept only drafts). They carry no
-    // author discriminator any more — they read back like any other comment.
     const draft = store.createDraft("s1", "plan.md", "markdown", "h");
     dbManager.db.prepare(`
       INSERT INTO file_review_comments

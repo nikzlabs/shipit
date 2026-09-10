@@ -4,23 +4,6 @@ import type { GitManager } from "../../shared/git.js";
 import type { GitHubAuthManager } from "../github-auth.js";
 import type { WorkflowRunSummary } from "../github-auth-actions.js";
 
-/**
- * `rerunWorkflowRun` backs `gh run rerun` — the only Actions *write* the agent
- * gets. The route owns nothing but id parsing; this service owns the three
- * guardrails the whole capability rests on, each closing a way the run could be
- * something OTHER than "CI the agent's own push already caused":
- *
- *   1. same branch  — else an explicit id re-executes a merged deploy/release
- *      workflow on main/stable;
- *   2. same commit  — GitHub re-runs against the run's ORIGINAL commit, so
- *      without this the agent replays an arbitrary historical tree;
- *   3. push/PR only — a `workflow_dispatch` run was started by a human, and
- *      replaying it is dispatching by proxy (which the shim cannot do directly).
- *
- * (1) and (2) are both load-bearing: a fresh session branch shares a SHA with
- * its base branch's tip, so SHA alone would authorize main's run.
- */
-
 const REMOTE = "https://github.com/o/r.git";
 const BRANCH = "shipit/my-session";
 const HEAD = "0123456789abcdef0123456789abcdef01234567";
@@ -31,8 +14,7 @@ function makeGit(branch: string | null = BRANCH, head: string | null = HEAD): Gi
     addRemote: vi.fn(async () => {}),
     currentBranchOrNull: vi.fn(async () => branch),
     getHeadHash: vi.fn(async () => head),
-    // Present but must NOT be what the guard reads — it masks a detached HEAD
-    // as "main", which would authorize re-running main's runs.
+    // Model the legacy fallback to expose callers that mistake detached HEAD for main.
     getCurrentBranch: vi.fn(async () => branch ?? "main"),
   } as unknown as GitManager;
 }
@@ -65,8 +47,6 @@ describe("rerunWorkflowRun", () => {
 
     expect(res.run.databaseId).toBe(42);
     expect(res.onlyFailed).toBe(false);
-    // Scoped to the session's branch, not "latest run overall" — `viewWorkflowRun`
-    // falls back to the latter, which for a write would escape the branch scope.
     expect(github.listWorkflowRuns).toHaveBeenCalledWith("o", "r", { branch: BRANCH, limit: 1 });
     expect(github.rerunWorkflowRun).toHaveBeenCalledWith("o", "r", 42, { onlyFailed: false });
   });
@@ -90,8 +70,6 @@ describe("rerunWorkflowRun", () => {
   });
 
   it("refuses a run on another branch and never calls GitHub's rerun", async () => {
-    // The guardrail: re-running `stable`'s merge run would re-execute the release
-    // workflow, which is exactly the human/CI act this capability does NOT cover.
     const github = makeGitHub({ getWorkflowRun: vi.fn(async () => run({ headBranch: "stable" })) });
     await expect(rerunWorkflowRun(makeGit(), github, { runId: 42, remoteUrl: REMOTE }))
       .rejects.toMatchObject({ statusCode: 403 });
@@ -107,8 +85,6 @@ describe("rerunWorkflowRun", () => {
   });
 
   it("refuses a run for an older commit on the same branch", async () => {
-    // GitHub re-runs against the run's ORIGINAL GITHUB_SHA, so this would replay
-    // a tree the agent could not reach by pushing.
     const github = makeGitHub({ getWorkflowRun: vi.fn(async () => run({ headSha: "f".repeat(40) })) });
     await expect(rerunWorkflowRun(makeGit(), github, { runId: 42, remoteUrl: REMOTE }))
       .rejects.toMatchObject({ statusCode: 403, message: expect.stringContaining("Push the current branch") as unknown as string });
@@ -129,7 +105,6 @@ describe("rerunWorkflowRun", () => {
   });
 
   it("applies every guardrail to the no-id path too, not just an explicit id", async () => {
-    // The latest run on the branch can still be a human's dispatch at an old SHA.
     const github = makeGitHub({
       listWorkflowRuns: vi.fn(async () => [run({ event: "workflow_dispatch", headSha: "e".repeat(40) })]),
     });
@@ -146,8 +121,6 @@ describe("rerunWorkflowRun", () => {
   });
 
   it("refuses on a detached HEAD instead of falling back to \"main\"", async () => {
-    // `getCurrentBranch()` answers "main" for a detached HEAD, which would make
-    // the branch comparison authorize exactly the runs it exists to refuse.
     const github = makeGitHub({ getWorkflowRun: vi.fn(async () => run({ headBranch: "main" })) });
     await expect(rerunWorkflowRun(makeGit(null), github, { runId: 42, remoteUrl: REMOTE }))
       .rejects.toMatchObject({ statusCode: 409 });
@@ -173,10 +146,8 @@ describe("rerunWorkflowRun", () => {
     });
     await expect(rerunWorkflowRun(makeGit(), github, { remoteUrl: REMOTE })).rejects.toMatchObject({
       statusCode: 403,
-      // Token scope (fine-grained PATs need Actions: Read and write) …
       message: expect.stringContaining("Actions") as unknown as string,
     });
-    // … and GitHub refusing this particular run, so the agent knows which to check.
     await expect(rerunWorkflowRun(makeGit(), github, { remoteUrl: REMOTE })).rejects.toMatchObject({
       message: expect.stringContaining("gh run view 42") as unknown as string,
     });

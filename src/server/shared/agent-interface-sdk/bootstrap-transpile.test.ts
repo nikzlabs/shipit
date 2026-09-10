@@ -1,16 +1,4 @@
-/**
- * The serialized bootstrap must run in a browser as-is — under the transform that
- * *production* uses, not the one vitest uses.
- *
- * `AGENT_INTERFACE_SDK_SOURCE` is built with `Function.prototype.toString()`, so it
- * captures whatever the running transpiler emitted inside the function but never the
- * module-scope helpers that emission may reference. Production serves previews from
- * `node --import tsx` (docker/Dockerfile.prod), and esbuild's `keepNames` wraps inner
- * functions in `__name(fn, "fn")` — leaving the injected script to die on
- * `ReferenceError: __name is not defined` before it could define `window.shipit`.
- * Importing the module normally here cannot catch that: vitest's transform emits no
- * wrappers. So this spawns the real production loader and runs what it produces.
- */
+// Vitest omits the keepNames wrappers that production tsx adds to the serialized function.
 
 import { describe, expect, it } from "vitest";
 import { execFileSync } from "node:child_process";
@@ -38,7 +26,6 @@ function sourceUnderProductionLoader(): string {
   }
 }
 
-/** Enough of a browser for the install path; the handshake itself is covered in the DOM test. */
 function browserStub(): Record<string, unknown> {
   const listeners: unknown[] = [];
   const win: Record<string, unknown> = {
@@ -47,7 +34,7 @@ function browserStub(): Record<string, unknown> {
     clearTimeout: () => undefined,
     postMessage: () => undefined,
   };
-  win.parent = win; // top-level: installs the SDK, then fails the handshake without posting
+  win.parent = win;
   return { window: win, document: { referrer: "" }, crypto: { randomUUID: () => "id" } };
 }
 
@@ -60,7 +47,6 @@ describe("agent interface SDK bootstrap serialization", () => {
 
     const installed = (context.window as { shipit?: unknown }).shipit;
     expect(installed).toBeTypeOf("object");
-    // A rejected handshake is expected for a top-level page; don't leave it unhandled.
     void (installed as { ready: Promise<void> }).ready.catch(() => undefined);
   });
 });

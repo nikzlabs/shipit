@@ -1,16 +1,3 @@
-/**
- * docs/211 — integration coverage for the Sandbox session creation route, end to
- * end through `buildApp`:
- *
- *   POST /api/sessions/sandbox
- *
- * Verifies the route stamps the server-authoritative `kind = "sandbox"` and the
- * (normalized) capability set, leaves the session repo-less, and surfaces it in
- * the sidebar list. The branch-op / auto-commit invariant is unit-tested in
- * `ws-handlers/post-turn.test.ts`; here we assert the durable creation contract a
- * parallel effort builds the capability wiring on top of.
- */
-
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
@@ -78,12 +65,10 @@ describe("Integration: sandbox session creation (docs/211)", () => {
     expect(body.capabilities).toEqual({ git: true, docker: true, network: false, dangerousGitHubOps: false });
     expect(body.session.remoteUrl).toBe("");
 
-    // Server-authoritative + durable: read straight off the session row.
     const persisted = sessionManager.get(body.session.id);
     expect(persisted?.kind).toBe("sandbox");
     expect(persisted?.capabilities).toEqual({ git: true, docker: true, network: false, dangerousGitHubOps: false });
 
-    // It shows up in the sidebar list (its own sandbox grouping is client-side).
     expect(sessionManager.list().some((s) => s.id === body.session.id && s.kind === "sandbox")).toBe(true);
   });
 
@@ -98,7 +83,6 @@ describe("Integration: sandbox session creation (docs/211)", () => {
     const res = await app.inject({
       method: "POST",
       url: "/api/sessions/sandbox",
-      // Only docker supplied (+ a junk key) — git/network fall back to defaults.
       payload: { capabilities: { docker: true, bogus: "x" } },
     });
     expect(res.statusCode).toBe(200);

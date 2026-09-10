@@ -3,18 +3,7 @@ import { CodexEventHandler, formatCodexConfigWarning } from "./codex-event-handl
 import { CodexRateLimits } from "./codex-rate-limits.js";
 import type { CodexTransport } from "./codex-event-handler.js";
 
-/**
- * `configWarning` is the app-server's verdict on `$CODEX_HOME/config.toml`,
- * sent right after `initialize`. ShipIt used to drop it into the catch-all
- * "unhandled notification" log, where it was one truncated `codex-rpc` line
- * among many — and the consequence it reports is invisible: an invalid config
- * makes Codex fall back to its defaults, which drops ShipIt's whole
- * `[mcp_servers.*]` block (Playwright, the shipit bridge) with no error on the
- * turn.
- *
- * Both notification shapes below were captured off the real app-server
- * (codex-cli 0.153.2), not invented.
- */
+// Notification fixtures come from codex-cli 0.153.2.
 describe("configWarning", () => {
   function makeHandler(): { handler: CodexEventHandler; logs: { source: string; text: string }[] } {
     const logs: { source: string; text: string }[] = [];
@@ -42,8 +31,6 @@ describe("configWarning", () => {
       },
     });
 
-    // `server`, not `codex-rpc`: the catch-all branch uses the latter, so this
-    // cannot pass on an unhandled notification.
     expect(logs).toHaveLength(1);
     expect(logs[0].source).toBe("server");
     expect(logs[0].text).toContain("Invalid configuration; using defaults.");
@@ -64,9 +51,6 @@ describe("configWarning", () => {
     });
 
     expect(logs).toHaveLength(1);
-    // Source and prefix, not just the folder: the old catch-all branch logged
-    // `JSON.stringify(params)` under `codex-rpc`, whose escaped "\n" would sail
-    // past a newline assertion and still contain the folder name.
     expect(logs[0].source).toBe("server");
     expect(logs[0].text.startsWith("Codex configuration: ")).toBe(true);
     expect(logs[0].text).not.toContain("\n");
@@ -101,9 +85,6 @@ describe("configWarning", () => {
     });
 
     it("keeps the details when the summary is the long part", () => {
-      // The budgets are per field on purpose: `details` names the file, line
-      // and column, so a rambling summary must not be able to truncate the one
-      // part that says what to fix.
       const text = formatCodexConfigWarning({
         summary: "y".repeat(2000),
         details: "/credentials/.codex/config.toml:4:11: duplicate key",

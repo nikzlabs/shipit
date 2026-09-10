@@ -21,7 +21,6 @@ describe("agent-home (docs/150)", () => {
   it("honors AGENT_HOME at call time (local mode keeps /root)", () => {
     process.env.AGENT_HOME = "/root";
     expect(agentHome()).toBe("/root");
-    // Resolved per-call, not cached at module load.
     process.env.AGENT_HOME = "/home/shipit";
     expect(agentHome()).toBe("/home/shipit");
   });
@@ -39,15 +38,11 @@ describe("agent-home (docs/150)", () => {
     expect(codexHome()).toBe("/custom/codex");
   });
 
-  // The per-spawn override local mode uses to carry provider-account selection
-  // into a CLI that has no per-session credentials mount to read it from.
   describe("resolveAgentHome", () => {
     it("falls back to agentHome() when no account root applies", () => {
       process.env.AGENT_HOME = "/root";
       expect(resolveAgentHome()).toBe("/root");
       expect(resolveAgentHome(undefined)).toBe("/root");
-      // An empty string is not a usable home either — a spawn with HOME="" is
-      // worse than the process-global one.
       expect(resolveAgentHome("")).toBe("/root");
     });
 

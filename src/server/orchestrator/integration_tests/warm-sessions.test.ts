@@ -1,19 +1,6 @@
-/**
- * Integration tests for warm session lifecycle:
- *   warm session creation → claim → graduation on first message.
- *
- * Tests warmSessionForRepo() background warming, claim-session endpoint
- * with a real warm session, and graduation logic in handleSendMessage.
- */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 
-// docs/156 — `graduateSession` fires `generateSessionName` (real CLI, 15s
-// timeout) on warm-graduation when the user's first message has no explicit
-// title/branch. Mock to null so the placeholder slice sticks; the cross-
-// flow AI naming logic is covered by `graduate-session.test.ts` with the
-// CLI fully mocked.
-// docs/252 phase 7 — `generateSessionName` returns `{ name, usage?, failure? }`.
-// `{ name: null }` is "naming produced no title", which is what these tests want.
+// Prevent session naming from starting a provider CLI.
 vi.mock("../session-namer.js", () => ({
   generateSessionName: vi.fn().mockResolvedValue({ name: null }),
 }));
@@ -50,12 +37,6 @@ import {
 
 const REPO_URL = "https://github.com/owner/test-repo.git";
 
-/**
- * Where the install marker lives for a session clone — docs/246 moved it out of
- * `<clone>/.shipit/` into the container-visible slice of the session state dir.
- * Resolved through the same contract `claim-session` uses, so the test can't
- * drift from the code.
- */
 function installMarkerPath(workspaceDir: string): string {
   return path.join(
     sessionSharedStateDir(sessionStateDirForWorkspace(workspaceDir)),
@@ -63,7 +44,6 @@ function installMarkerPath(workspaceDir: string): string {
   );
 }
 
-/** Poll until a condition becomes true. */
 async function waitFor(
   predicate: () => boolean,
   timeoutMs = 10000,
@@ -75,8 +55,6 @@ async function waitFor(
     await new Promise((r) => setTimeout(r, 20));
   }
 }
-
-// ---- warmSessionForRepo + claim lifecycle ----
 
 describe("Integration: warm session lifecycle", () => {
   let tmpDir: string;
@@ -95,24 +73,16 @@ describe("Integration: warm session lifecycle", () => {
     sessionManager = new SessionManager(dbManager);
     repoStore = new RepoStore(dbManager);
 
-    // Prevent git from prompting for credentials (hangs in CI/test)
     origGitTerminalPrompt = process.env.GIT_TERMINAL_PROMPT;
     process.env.GIT_TERMINAL_PROMPT = "0";
 
     const credentialStore = createTestCredentialStore(tmpDir);
 
-    // Seed the bare cache + matching local bare repo BEFORE buildApp.
-    // warmSessionForRepo needs the cache dir to exist, and the helper's
-    // `insteadOf` redirect keeps subsequent fetches off the network.
+    // Seed before startup warming; the helper redirects fetches to a local repo.
     seedRepoCacheWithLocalBare({ tmpDir, repoUrl: REPO_URL });
 
-    // Add the repo to the store BEFORE buildApp so the startup re-warming
-    // (setTimeout(0)) picks it up and calls warmSessionForRepo.
     repoStore.add(REPO_URL);
     repoStore.setReady(REPO_URL);
-    // docs/243 — graduation runs the first agent turn, which now passes
-    // runner-owned trust admission. This suite exercises the warm-pool
-    // lifecycle after repository consent, not the trust gate itself.
     repoStore.setTrusted(REPO_URL, true);
 
     app = await buildApp({
@@ -136,13 +106,7 @@ describe("Integration: warm session lifecycle", () => {
   });
 
   afterEach(async () => {
-    // Close the app BEFORE the DB. `buildApp` schedules a setTimeout(0) for
-    // startup re-warming (`scheduleStartupTasks`), which fires
-    // `void warmSessionForRepo(url)` against `repoStore` / `sessionManager`.
-    // `app.close()`'s onClose hook clears that timer; if the DB is dropped
-    // first, any already-queued warm task hits the closed `better-sqlite3`
-    // handle synchronously and surfaces as an unhandled rejection
-    // (`The database connection is not open`).
+    // Close the app before the DB to cancel startup warming that uses the DB.
     if (origGitTerminalPrompt === undefined) {
       delete process.env.GIT_TERMINAL_PROMPT;
     } else {
@@ -160,7 +124,6 @@ describe("Integration: warm session lifecycle", () => {
 
   describe("warmSessionForRepo", () => {
     it("creates a warm session on startup for a ready repo", async () => {
-      // warmSessionForRepo runs via setTimeout(0) after buildApp returns.
       await waitFor(
         () => !!repoStore.get(REPO_URL)?.warmSessionId,
         10000,
@@ -170,13 +133,11 @@ describe("Integration: warm session lifecycle", () => {
       const repo = repoStore.get(REPO_URL)!;
       expect(repo.warmSessionId).toBeDefined();
 
-      // The warm session should exist with warm=true and remoteUrl
       const session = sessionManager.get(repo.warmSessionId!);
       expect(session).toBeDefined();
       expect(session!.warm).toBe(true);
       expect(session!.remoteUrl).toBe(REPO_URL);
 
-      // Warm sessions are invisible in the normal session list
       const visibleSessions = sessionManager.list();
       expect(visibleSessions.find((s) => s.id === repo.warmSessionId)).toBeUndefined();
     }, 15000);
@@ -194,7 +155,6 @@ describe("Integration: warm session lifecycle", () => {
       const stat = await fsp.stat(session.workspaceDir!);
       expect(stat.isDirectory()).toBe(true);
 
-      // Should contain the README.md from the cached repo
       const readme = path.join(session.workspaceDir!, "README.md");
       const content = await fsp.readFile(readme, "utf-8");
       expect(content).toBe("# test\n");
@@ -221,18 +181,10 @@ describe("Integration: warm session lifecycle", () => {
       expect(body.sessionId).toBe(warmSessionId);
       expect(body.sessionDir).toBeDefined();
 
-      // The claimed session should no longer be the warm session
-      // (claim-session clears the old one and immediately re-warms a new one)
       expect(repoStore.get(REPO_URL)!.warmSessionId).not.toBe(warmSessionId);
     }, 15000);
 
     it("resets createdAt so workspace files don't appear modified-in-session", async () => {
-      // Regression: warm sessions are inserted into the DB before the workspace
-      // is cloned, so cloned files have mtime > original createdAt. Without a
-      // reset on claim, the docs viewer's "Modified in this session" group
-      // would list every file in the repo immediately after the user creates
-      // a new session. claim-session must update createdAt so that all
-      // workspace files have mtime <= createdAt.
       await waitFor(
         () => !!repoStore.get(REPO_URL)?.warmSessionId,
         10000,
@@ -241,8 +193,7 @@ describe("Integration: warm session lifecycle", () => {
       const warmSessionId = repoStore.get(REPO_URL)!.warmSessionId!;
       const warmCreatedAt = sessionManager.get(warmSessionId)!.createdAt;
 
-      // Wait long enough that the post-claim ISO timestamp will differ from
-      // the warming-time one, regardless of millisecond clock granularity.
+      // Separate timestamps across millisecond clock ticks.
       await new Promise((r) => setTimeout(r, 5));
 
       const encodedUrl = encodeURIComponent(REPO_URL);
@@ -255,27 +206,12 @@ describe("Integration: warm session lifecycle", () => {
       const claimedCreatedAt = sessionManager.get(warmSessionId)!.createdAt;
       expect(claimedCreatedAt > warmCreatedAt).toBe(true);
 
-      // Files cloned during warming must have mtime <= the new createdAt;
-      // otherwise the docs viewer would still flag them as modified.
       const workspaceDir = sessionManager.get(warmSessionId)!.workspaceDir!;
       const readmeMtime = fs.statSync(path.join(workspaceDir, "README.md")).mtime.toISOString();
       expect(readmeMtime <= claimedCreatedAt).toBe(true);
     }, 15000);
 
-    // End-to-end cover for the state a reclaimed cache leaves behind: the janitor
-    // can delete `repo-cache/<hash>` at any time and the claim must still hand
-    // back a usable workspace.
-    //
-    // Scope, stated honestly: this does NOT reproduce the 500 that made a repo
-    // permanently un-startable. That one came from `refreshClaimedSession`
-    // consulting the prefetcher's `coveredRecently`, which built a `RepoGit` on
-    // the cache dir — and `simpleGit(dir)` throws SYNCHRONOUSLY on a missing
-    // dir, escaping `claim()` in ~2ms before the slow path's `ensureBareCache`
-    // could self-heal. `bootstrap-managers.ts` hard-nulls `repoPrefetcher` under
-    // `isTestMode`, so `shouldSkipClaimFetch` is never wired here and no
-    // integration test can reach that branch; the guard for it is
-    // `repo-prefetch.test.ts`'s "coveredRecently returns false instead of
-    // throwing when the bare cache is missing", which does fail without the fix.
+    // Test mode disables the prefetcher; its missing-cache path is tested separately.
     it("still claims when the bare cache was reclaimed underneath it", async () => {
       await waitFor(
         () => !!repoStore.get(REPO_URL)?.warmSessionId,
@@ -283,7 +219,6 @@ describe("Integration: warm session lifecycle", () => {
         "warm session",
       );
 
-      // Exactly what the steady-state janitor's cold-cache sweep does.
       const cacheDir = getRepoCacheDir(tmpDir, REPO_URL);
       fs.rmSync(cacheDir, { recursive: true, force: true });
       expect(fs.existsSync(cacheDir)).toBe(false);
@@ -299,11 +234,6 @@ describe("Integration: warm session lifecycle", () => {
       expect(fs.existsSync(path.join(body.workspaceDir, ".git"))).toBe(true);
     }, 20000);
 
-    // The other half of the same failure: `lastUsedAt` was stamped only at
-    // graduation, so a repo the user opened over and over but never sent a first
-    // message in kept `lastUsedAt == addedAt`, aged past the janitor's cold
-    // cutoff, and had its cache deleted out from under the very claims that kept
-    // recreating it. Claiming a workspace IS using the repo.
     it("stamps the repo's lastUsedAt on claim, not only on graduation", async () => {
       await waitFor(
         () => !!repoStore.get(REPO_URL)?.warmSessionId,
@@ -330,11 +260,9 @@ describe("Integration: warm session lifecycle", () => {
       );
       const firstWarmId = repoStore.get(REPO_URL)!.warmSessionId!;
 
-      // Claim the warm session
       const encodedUrl = encodeURIComponent(REPO_URL);
       await app.inject({ method: "POST", url: `/api/repos/${encodedUrl}/claim-session` });
 
-      // A new warm session should eventually be created
       await waitFor(
         () => {
           const repo = repoStore.get(REPO_URL);
@@ -353,18 +281,7 @@ describe("Integration: warm session lifecycle", () => {
     }, 25000);
 
     it("rapid back-to-back claims each yield a usable session (docs/144 fix #1)", async () => {
-      // Invariant: creating sessions in immediate succession — a user clicking
-      // "New Session" repeatedly — must ALWAYS produce a usable session, even
-      // though the next-session re-warm is now fire-and-forget (not awaited). It
-      // may be slower under load (follow-ups take the waiting / slow-clone
-      // path), but never fails or returns a half-built session.
-      //
-      // Note on distinctness: claims that are never graduated (no message sent)
-      // intentionally COLLAPSE onto the same session via the reuse path —
-      // that's how abandoned "New Session" navigations avoid leaking warm
-      // sessions. So the invariant here is "every claim is usable", not "every
-      // claim is unique"; replenishment-into-a-new-session is covered by the
-      // "triggers re-warming after claim" test above and the graduate case below.
+      // Claims can reuse an ungraduated draft, so IDs need not be unique here.
       await waitFor(
         () => !!repoStore.get(REPO_URL)?.warmSessionId,
         10000,
@@ -373,8 +290,6 @@ describe("Integration: warm session lifecycle", () => {
 
       const encodedUrl = encodeURIComponent(REPO_URL);
       const N = 5;
-      // Fire all claims concurrently — the per-repo serializeClaim chain plus
-      // each claim's leading `await waitForWarmSession` must keep them correct.
       const responses = await Promise.all(
         Array.from({ length: N }, () =>
           app.inject({ method: "POST", url: `/api/repos/${encodedUrl}/claim-session` }),
@@ -384,12 +299,9 @@ describe("Integration: warm session lifecycle", () => {
       for (const res of responses) {
         expect(res.statusCode).toBe(200);
         const body = res.json();
-        // Every claim returns a session id + dir...
         expect(body.sessionId).toBeTruthy();
         expect(body.sessionDir).toBeTruthy();
 
-        // ...and that session is actually usable: the workspace exists on disk
-        // with the repo's files (a real clone, not a half-built stub).
         const session = sessionManager.get(body.sessionId);
         expect(session?.workspaceDir).toBeTruthy();
         expect(fs.existsSync(session!.workspaceDir!)).toBe(true);
@@ -398,16 +310,6 @@ describe("Integration: warm session lifecycle", () => {
     }, 30000);
 
     it("does not recycle an abandoned draft that carries a network mode (docs/285 req 8)", async () => {
-      // req 8 — every new session starts at "Inherit workspace". The REUSE path
-      // is the one place that would quietly break it, through machinery with
-      // nothing to do with the composer: pick Open on `/new`, walk away without
-      // sending, start another new session in that repo.
-      //
-      // Clearing the override and handing the session over is the cheaper fix
-      // and it is wrong: the mode is a container TOPOLOGY, and the recycled
-      // container is still running the abandoned draft's one. The next user
-      // would read "Inherit workspace — currently Contained" over an Open
-      // container. So the draft is not recycled at all.
       await waitFor(
         () => !!repoStore.get(REPO_URL)?.warmSessionId,
         10000,
@@ -419,7 +321,6 @@ describe("Integration: warm session lifecycle", () => {
         method: "POST",
         url: `/api/repos/${encodedUrl}/claim-session`,
       })).json();
-      // The user picks Open, then abandons the draft without sending.
       await app.inject({
         method: "PUT",
         url: `/api/egress/session/${first.sessionId}`,
@@ -432,14 +333,11 @@ describe("Integration: warm session lifecycle", () => {
       })).json();
       expect(second.sessionId).not.toBe(first.sessionId);
 
-      // The new session starts at Inherit…
       const fresh = (await app.inject({
         method: "GET",
         url: `/api/egress/session/${second.sessionId}`,
       })).json();
       expect(fresh.override).toBeNull();
-      // …and the abandoned draft keeps its own mode, rather than being handed
-      // out with the setting silently rewritten underneath it.
       const abandoned = (await app.inject({
         method: "GET",
         url: `/api/egress/session/${first.sessionId}`,
@@ -448,10 +346,6 @@ describe("Integration: warm session lifecycle", () => {
     }, 30000);
 
     it("claim → graduate → claim yields a fresh, distinct usable session (docs/144 fix #1)", async () => {
-      // The complement to the collapse case: once a claimed session graduates
-      // (the user sends a message), the next claim must NOT reuse it — it gets a
-      // freshly replenished warm session. This confirms the fire-and-forget
-      // re-warm actually repopulates the pool.
       await waitFor(
         () => !!repoStore.get(REPO_URL)?.warmSessionId,
         10000,
@@ -463,16 +357,14 @@ describe("Integration: warm session lifecycle", () => {
       expect(claim1.statusCode).toBe(200);
       const first = claim1.json().sessionId as string;
 
-      // Graduate it (drop the warm flag) so the reuse path can't hand it back.
       const client = await TestClient.connect(port, first);
-      await client.receive(); // preview_status
+      await client.receive();
       client.send({ type: "send_message", text: "Build something", sessionId: first });
       await waitForClaude(() => lastClaude);
       expect(sessionManager.get(first)!.warm).not.toBe(true);
       lastClaude.finish("test-session");
       client.close();
 
-      // Wait for the pool to replenish, then claim again.
       await waitFor(
         () => {
           const w = repoStore.get(REPO_URL)?.warmSessionId;
@@ -502,13 +394,11 @@ describe("Integration: warm session lifecycle", () => {
       const warmSession = sessionManager.get(warmSessionId)!;
       const workspaceDir = warmSession.workspaceDir!;
 
-      // Simulate a completed install (marker present)
       const marker = installMarkerPath(workspaceDir);
       fs.mkdirSync(path.dirname(marker), { recursive: true });
       fs.writeFileSync(marker, new Date().toISOString());
       expect(fs.existsSync(marker)).toBe(true);
 
-      // Claim the session — refreshCloneToLatestMain fetches but HEAD hasn't changed
       const encodedUrl = encodeURIComponent(REPO_URL);
       const res = await app.inject({
         method: "POST",
@@ -516,7 +406,6 @@ describe("Integration: warm session lifecycle", () => {
       });
 
       expect(res.statusCode).toBe(200);
-      // Install marker should still be present (no reinstall needed)
       expect(fs.existsSync(marker)).toBe(true);
     }, 15000);
 
@@ -530,27 +419,23 @@ describe("Integration: warm session lifecycle", () => {
       const warmSession = sessionManager.get(warmSessionId)!;
       const workspaceDir = warmSession.workspaceDir!;
 
-      // Simulate a completed install
       const marker = installMarkerPath(workspaceDir);
       fs.mkdirSync(path.dirname(marker), { recursive: true });
       fs.writeFileSync(marker, new Date().toISOString());
       expect(fs.existsSync(marker)).toBe(true);
 
-      // Point the clone's origin to the local shared repo so fetch works
       const repoDir = getRepoCacheDir(tmpDir, REPO_URL);
       execSync(`git remote set-url origin ${repoDir}`, {
         cwd: workspaceDir,
         stdio: "ignore",
       });
 
-      // Add a new commit to the shared repo (simulating upstream changes)
       fs.writeFileSync(path.join(repoDir, "new-file.txt"), "new content\n");
       execSync("git add . && git commit -m 'new commit' --no-gpg-sign", {
         cwd: repoDir,
         stdio: "ignore",
       });
 
-      // Claim the session — refreshCloneToLatestMain detects HEAD changed
       const encodedUrl = encodeURIComponent(REPO_URL);
       const res = await app.inject({
         method: "POST",
@@ -558,7 +443,6 @@ describe("Integration: warm session lifecycle", () => {
       });
 
       expect(res.statusCode).toBe(200);
-      // Install marker should be cleared (reinstall needed)
       expect(fs.existsSync(marker)).toBe(false);
     }, 15000);
   });
@@ -572,7 +456,6 @@ describe("Integration: warm session lifecycle", () => {
       );
       const warmSessionId = repoStore.get(REPO_URL)!.warmSessionId!;
 
-      // Claim the session
       const encodedUrl = encodeURIComponent(REPO_URL);
       const claimRes = await app.inject({
         method: "POST",
@@ -580,27 +463,21 @@ describe("Integration: warm session lifecycle", () => {
       });
       expect(claimRes.statusCode).toBe(200);
 
-      // Connect directly to the claimed session (auto-activates)
       const client = await TestClient.connect(port, warmSessionId);
-      await client.receive(); // preview_status
+      await client.receive();
       await new Promise((r) => setTimeout(r, 200));
 
-      // Session should still be warm before sending a message
       expect(sessionManager.get(warmSessionId)!.warm).toBe(true);
 
-      // Send the first message — triggers graduation
       client.send({ type: "send_message", text: "Build a landing page", sessionId: warmSessionId });
       await waitForClaude(() => lastClaude);
 
-      // Graduation should have removed the warm flag
       const graduated = sessionManager.get(warmSessionId)!;
       expect(graduated.warm).not.toBe(true);
 
-      // Session should now be visible in the session list
       const visibleSessions = sessionManager.list();
       expect(visibleSessions.find((s) => s.id === warmSessionId)).toBeDefined();
 
-      // Session should be visible via HTTP bootstrap (session_list is SSE-only)
       const bootstrapRes = await app.inject({ method: "GET", url: "/api/bootstrap" });
       const listed = bootstrapRes.json().sessions as any[];
       expect(listed.find((s: any) => s.id === warmSessionId)).toBeDefined();
@@ -610,7 +487,6 @@ describe("Integration: warm session lifecycle", () => {
     }, 15000);
 
     it("does not trigger graduation for non-warm sessions", async () => {
-      // Create a normal (non-warm) session
       const sessionDir = path.join(tmpDir, "sessions", "normal-session");
       fs.mkdirSync(sessionDir, { recursive: true });
       const git = new GitManager(sessionDir);
@@ -618,13 +494,12 @@ describe("Integration: warm session lifecycle", () => {
       sessionManager.track("normal-session", "Normal session", sessionDir);
 
       const client = await TestClient.connect(port, "normal-session");
-      await client.receive(); // preview_status
+      await client.receive();
       await new Promise((r) => setTimeout(r, 200));
 
       client.send({ type: "send_message", text: "Hello", sessionId: "normal-session" });
       await waitForClaude(() => lastClaude);
 
-      // Session should remain non-warm (no graduation side effects)
       const session = sessionManager.get("normal-session");
       expect(session!.warm).toBeUndefined();
 

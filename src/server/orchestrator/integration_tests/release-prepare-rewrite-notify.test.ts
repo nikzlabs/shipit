@@ -1,21 +1,3 @@
-/**
- * `shipit release prepare` re-materializes the session's worktree from the
- * orchestrator (`checkout -B` onto the release branch, plus the cherry-picks or
- * the `--from` merge-override), so the route owes the live container an
- * `onWorkspaceRewritten` call — otherwise it keeps running on the pre-prepare
- * `shipit.yaml`, compose file and `node_modules` (nikzlabs/shipit#2429).
- *
- * That call used to sit AFTER `prepareRelease` returned, so it ran only when the
- * release succeeded. But `prepareRelease` rewrites the tree BEFORE most of the
- * ways it can fail — the content-free guard, the no-op-bump 500, the force-push,
- * `agentCreatePr`'s errors, and both release-PR guards all throw once
- * `createBranchFrom` has already checked the release branch out. Those failures
- * left the container stale with nothing anywhere saying so.
- *
- * This drives the real route over HTTP against a real git remote and takes the
- * content-free guard — a routinely-hit, post-rewrite failure — as the witness.
- */
-
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
@@ -51,8 +33,6 @@ beforeEach(async () => {
   latestClaude = null;
   credentialStore = createTestCredentialStore(tmpDir);
   githubAuth = new StubGitHubAuthManager();
-  // `prepareRelease` refuses unauthenticated up front — which is a PRE-rewrite
-  // bail and would make this test pass for the wrong reason.
   await githubAuth.setToken("test-token");
 
   app = await buildApp({
@@ -86,7 +66,6 @@ afterEach(async () => {
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 
-/** Run one agent turn so the session (and its runner) exist. */
 async function createSession(): Promise<{ sessionId: string; sessionDir: string }> {
   client.send({ type: "send_message", text: "hello" });
   const claude = await waitForClaude(() => latestClaude);
@@ -107,11 +86,6 @@ async function createSession(): Promise<{ sessionId: string; sessionDir: string 
   return { sessionId, sessionDir: path.join(sessionsDir, sessionId, "workspace") };
 }
 
-/**
- * Give the session a bare remote carrying `main` and a `stable` maintenance
- * branch, plus a package.json for the version source. `stable` is left equal to
- * `main`, which is what makes a bare `prepare patch` content-free.
- */
 function setupRemoteWithStable(sessionDir: string): void {
   const env = { ...process.env, HOME: tmpDir };
   const bareDir = path.join(tmpDir, "bare-remote.git");
@@ -160,8 +134,6 @@ describe("Integration: release prepare tells the container its tree was rewritte
     const { sessionId, sessionDir } = await createSession();
     setupRemoteWithStable(sessionDir);
 
-    // The runner is the thing `onWorkspaceRewritten` talks to. Both members it
-    // touches are optional on the interface, so we attach our own.
     const runner = app.runnerRegistry.get(sessionId);
     expect(runner).toBeDefined();
     const rewrites: string[] = [];
@@ -169,17 +141,12 @@ describe("Integration: release prepare tells the container its tree was rewritte
       rewrites.push(label);
     };
 
-    // A bare `prepare patch` resets `release/0.2.1` onto `origin/stable` and
-    // then refuses as content-free — a failure on the far side of the rewrite.
     const res = await postPrepare(sessionId);
     expect(res.status).toBe(400);
     expect(res.body.error).toMatch(/no changes/i);
 
-    // The tree was rewritten regardless of the refusal, so the container must
-    // have been told. Before the fix this array was empty.
     expect(rewrites).toEqual(["release-prepare"]);
 
-    // And the rewrite really happened — the refusal is not a pre-rewrite bail.
     const head = execSync("git rev-parse --abbrev-ref HEAD", {
       cwd: sessionDir,
       env: { ...process.env, HOME: tmpDir },
@@ -187,14 +154,6 @@ describe("Integration: release prepare tells the container its tree was rewritte
     expect(head).toBe("release/0.2.1");
   });
 
-  /**
-   * The other half of the contract, and the reason this isn't an unconditional
-   * `finally`. The notification is not free — `reevaluateWorkspaceConfig` can
-   * queue a Compose reconcile that clears the service map, poller and log
-   * followers, and `notifyWorkspaceRewritten` opens the install gate, tearing
-   * down install-gated preview services. Firing it after a failure that never
-   * touched the worktree would disrupt a live session for nothing.
-   */
   it("does NOT notify when prepare fails before touching the worktree", async () => {
     const { sessionId, sessionDir } = await createSession();
     setupRemoteWithStable(sessionDir);
@@ -205,8 +164,6 @@ describe("Integration: release prepare tells the container its tree was rewritte
       rewrites.push(label);
     };
 
-    // `stable` exists, but this run asks for a maintenance branch that doesn't —
-    // refused up front, before any `checkout -B`.
     const res = await postPrepare(sessionId, { releaseBranch: "nonexistent" });
     expect(res.status).toBe(400);
     expect(res.body.error).toMatch(/doesn't exist on the remote/);

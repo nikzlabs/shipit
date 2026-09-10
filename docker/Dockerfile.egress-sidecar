@@ -1,52 +1,16 @@
-# Egress firewall sidecar — docs/172-agent-containment Gap 1 (planning#92).
-#
-# A tiny privileged image the orchestrator runs in the agent container's network
-# namespace (`--network container:<agent> --cap-add NET_ADMIN`). One image, three
-# roles selected by entrypoint:
-#   • Tier A installer (default ENTRYPOINT, short-lived): init-firewall.sh
-#   • Tier B controlled resolver (long-lived): --entrypoint run-resolver.sh
-#   • Tier C SNI proxy (long-lived): --entrypoint /usr/local/bin/sni-proxy
-#   • Intra-session subnet allow (short-lived): --entrypoint allow-subnet.sh
-# See `egress-sidecar/*` and `docs/172-agent-containment/egress-control.md`.
-#
-# Build/publish this and point `SESSION_EGRESS_SIDECAR_IMAGE` at it; enforcement
-# is gated on `SESSION_EGRESS_ENFORCE=1` (default off), so a deployment without
-# this image/flag is unaffected. Build context is `docker/`:
-#   docker build -f docker/Dockerfile.egress-sidecar -t shipit-egress-sidecar:dev docker/
-
-# --- Tier C proxy build stage (static, dependency-free Go binary) ------------
-# Digest-pinned. The version in the tag is not a pin on its own: Docker rebuilds
-# these tags in place for base-image security updates, and deploy.sh builds this
-# image with `--pull` on EVERY deploy, so an in-place rebuild upstream silently
-# re-runs the Go build. Guarded by src/server/orchestrator/docker-build-cache.test.ts.
 FROM golang:1.24.3-alpine3.20@sha256:9f98e9893fbc798c710f3432baa1e0ac6127799127c3101d2c263c3a954f0abe AS proxy-build
 WORKDIR /src
 COPY egress-sidecar/sni-proxy/ ./
 RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/sni-proxy .
 
-# --- Runtime image -----------------------------------------------------------
-# Digest-pinned. The version in the tag is a MINOR series, not a pin on its own:
-# it moves to .1, .2, … as Alpine ships patch releases, so the tag alone is
-# mutable in the same way `:latest` is, only slower. Only the digest pins it.
-# Everything below (the apk layer) re-runs when the pin advances. Deliberately
-# phrased without naming the version: a Renovate minor bump rewrites the FROM
-# line below but not this comment (it left `3.20` here when it moved to 3.24).
 FROM alpine:3.24@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b
 
-# iptables + ip6tables + ipset for the rules; bind-tools for `dig`; curl for the
-# self-test; bash for the scripts; dnsmasq for the Tier B controlled resolver.
 RUN apk add --no-cache iptables ip6tables ipset bind-tools curl bash dnsmasq
 
-# Dedicated low-privilege user the Tier B resolver (dnsmasq) drops to. The Tier A
-# firewall's owner-match allows port-53 egress ONLY for this uid (the resolver's
-# upstream queries); the agent (uid 1000) cannot reach any other resolver. Keep
-# this uid in sync with EGRESS_RESOLVER_UID in src/server/orchestrator/egress-dns.ts.
+# Match EGRESS_RESOLVER_UID in egress-dns.ts.
 RUN addgroup -g 911 egressdns && adduser -D -H -u 911 -G egressdns egressdns
 
-# Dedicated uid the Tier C SNI proxy runs as. The firewall REDIRECTs the agent's
-# :443 to the proxy EXCEPT traffic owned by this uid (so the proxy's own upstream
-# dials aren't re-redirected). Keep in sync with EGRESS_PROXY_UID in
-# src/server/orchestrator/egress-proxy-install.ts.
+# Match EGRESS_PROXY_UID in egress-proxy-install.ts; this UID bypasses its own redirect.
 RUN addgroup -g 912 egressproxy && adduser -D -H -u 912 -G egressproxy egressproxy
 
 COPY egress-sidecar/init-firewall.sh /usr/local/bin/init-firewall.sh
@@ -55,6 +19,4 @@ COPY egress-sidecar/allow-subnet.sh /usr/local/bin/allow-subnet.sh
 COPY --from=proxy-build /out/sni-proxy /usr/local/bin/sni-proxy
 RUN chmod +x /usr/local/bin/init-firewall.sh /usr/local/bin/run-resolver.sh /usr/local/bin/allow-subnet.sh /usr/local/bin/sni-proxy
 
-# Default entrypoint is the Tier A installer; the Tier B resolver and Tier C proxy
-# override it with --entrypoint.
 ENTRYPOINT ["/usr/local/bin/init-firewall.sh"]

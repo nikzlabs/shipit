@@ -1,13 +1,3 @@
-/**
- * Unit tests for upward session reports (docs/233, planning#243).
- *
- * Covers the two halves of delivery — the persisted card in each recipient's
- * history and the queued system turn on its runner — plus the guards that make
- * a report safe to expose to an agent: recipients derived from the reporter's
- * own parent linkage (never agent input), sibling delivery refusal, validation,
- * and the runaway rate limit.
- */
-
 import { describe, it, expect, beforeEach } from "vitest";
 import { DatabaseManager } from "../../shared/database.js";
 import { SessionManager } from "../sessions.js";
@@ -27,10 +17,6 @@ import {
 } from "./session-report.js";
 import { ServiceError } from "./types.js";
 
-/**
- * Fake runner recording dispatches + emitted WS messages. Deliberately NOT a
- * `ContainerSessionRunner`, so the wake path skips the worker-ready wait.
- */
 class FakeRunner {
   running = false;
   disposed = false;
@@ -66,7 +52,6 @@ function makeFakeRegistry(): { registry: SessionRunnerRegistry; runners: Map<str
   return { registry, runners };
 }
 
-/** Parent with three children (the cohort from the planning#243 report). */
 function makeCohort() {
   const db = new DatabaseManager(":memory:");
   const sessionManager = new SessionManager(db);
@@ -102,9 +87,6 @@ describe("deliverSessionReport (docs/233)", () => {
   });
 
   it("delivers to the parent by default: persisted card + queued system turn", async () => {
-    // A runner already in the registry models an attached viewer — that's what
-    // the live card broadcast below targets (a recipient with no runner gets the
-    // persisted card only, and rehydrates it on switch).
     ctx.registry.getOrCreate("parent", "/ws/parent", "claude");
     const result = await deliverSessionReport(ctx.deps, "elementalist", {
       body: "The shared regen command deletes every catalog.",
@@ -117,7 +99,6 @@ describe("deliverSessionReport (docs/233)", () => {
       { sessionId: "parent", title: "Spell catalogs", relation: "child", woken: true },
     ]);
 
-    // Card persisted in the PARENT's transcript (survives a switch/reload).
     const card = ctx.chatHistoryManager.load("parent").find((m) => m.sessionReport)?.sessionReport;
     expect(card).toMatchObject({
       fromSessionId: "elementalist",
@@ -129,7 +110,6 @@ describe("deliverSessionReport (docs/233)", () => {
       body: "The shared regen command deletes every catalog.",
     });
 
-    // Wake-turn queued on the parent's runner, carrying the report verbatim.
     const parent = ctx.runners.get("parent");
     expect(parent?.dispatched).toHaveLength(1);
     expect(parent?.dispatched[0].systemTurn).toBe(true);
@@ -143,7 +123,6 @@ describe("deliverSessionReport (docs/233)", () => {
       relation: "child",
     });
 
-    // Live card broadcast to any attached viewer.
     expect(parent?.emitted).toContainEqual(
       expect.objectContaining({ type: "session_report_card", sessionId: "parent" }),
     );
@@ -211,15 +190,12 @@ describe("deliverSessionReport (docs/233)", () => {
   });
 
   it("rate-limits a runaway reporter, and a rejected call doesn't burn budget", async () => {
-    // An old shim can retry the removed target without consuming the reporter's
-    // allowance for later valid parent reports.
     for (let i = 0; i < MAX_REPORTS_PER_WINDOW + 1; i++) {
       await expect(deliverSessionReport(ctx.deps, "elementalist", {
         body: "legacy retry",
         to: "cohort",
       })).rejects.toMatchObject({ statusCode: 400 });
     }
-    // Other rejected validation calls also do not consume the allowance.
     await expect(deliverSessionReport(ctx.deps, "elementalist", { body: "" })).rejects.toThrow();
 
     for (let i = 0; i < MAX_REPORTS_PER_WINDOW; i++) {
@@ -229,12 +205,10 @@ describe("deliverSessionReport (docs/233)", () => {
       deliverSessionReport(ctx.deps, "elementalist", { body: "one too many" }),
     ).rejects.toMatchObject({ statusCode: 429 });
 
-    // The limit is per reporter — a sibling is unaffected.
     await expect(deliverSessionReport(ctx.deps, "druid", { body: "mine" })).resolves.toBeTruthy();
   });
 
   it("reports a parent whose wake failed while keeping the persisted card", async () => {
-    // A parent with no workspace can't be woken — `wakeSessionWithTurn` throws.
     ctx.db.db.prepare("UPDATE sessions SET workspace_dir = NULL WHERE id = ?").run("parent");
 
     const result = await deliverSessionReport(ctx.deps, "elementalist", {

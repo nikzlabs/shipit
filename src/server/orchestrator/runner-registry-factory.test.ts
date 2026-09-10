@@ -29,23 +29,6 @@ describe("assertSessionCanDispatch", () => {
   });
 });
 
-/**
- * planning#246 — the sidebar's "busy outside a turn" marker reaches other sessions
- * over the global SSE, and this factory holds the ONE subscriber that puts it
- * there. The runner announces its own changes (`background_work`) precisely so
- * no clear can be silent; that only pays off if the announcement is actually
- * wired, so this pins the wiring rather than the runner's own bookkeeping.
- */
-/**
- * docs/288 req 6 — a merge and a turn are mutually exclusive, and `mergeHold`
- * lives on the runner. A session with no container has no runner to hold, so the
- * executor marks the merge on the claim store instead and THIS hook is what a
- * runner created mid-merge learns it from. Without it the first message on a
- * freshly opened session starts a turn that pushes behind a merge in flight.
- *
- * Tested against the real factory on purpose: the executor's own tests supply a
- * fake runner, which cannot show that the production hook exists at all.
- */
 describe("createRunnerRegistry — docs/288 merge-hold seeding", () => {
   function makeRegistry(isAgentMergeInFlight?: (sessionId: string) => boolean) {
     return createRunnerRegistry({
@@ -83,10 +66,6 @@ describe("createRunnerRegistry — docs/288 merge-hold seeding", () => {
   });
 
   it("also leases the seeded runner against reclamation", () => {
-    // `mergeHold` only stops a turn STARTING. The idle enforcer reads
-    // `agentBusy` and disposal CLEARS the queue, so without the lease a viewer
-    // who opens the session mid-merge, queues a message and disconnects can
-    // have that message reclaimed away before the merge finishes.
     const registry = makeRegistry(() => true);
     const runner = registry.getOrCreate("merging-session", "/tmp/s1", "claude");
     expect(runner.postTurnWorkInFlight).toBe(true);
@@ -95,8 +74,6 @@ describe("createRunnerRegistry — docs/288 merge-hold seeding", () => {
   });
 
   it("creates an ordinary runner unheld", () => {
-    // The control: without it, a hook that returned true for everything would
-    // look identical, and every new session would be unable to start a turn.
     const registry = makeRegistry((sessionId) => sessionId === "merging-session");
     const runner = registry.getOrCreate("other-session", "/tmp/s2", "claude");
     expect(runner.mergeHold).toBe(false);
@@ -134,8 +111,6 @@ describe("createRunnerRegistry — background-work marker wiring", () => {
       composeNotConfigured: new Set(),
       containerManager: null,
       serviceEnvDir: "/tmp/service-env",
-      // Skips the ServiceManager wiring entirely — irrelevant here and the
-      // heaviest part of `onRunnerCreated`.
       runtimeMode: "local",
       broadcastLog: () => {},
       usageManager: {} as never,
@@ -161,9 +136,6 @@ describe("createRunnerRegistry — background-work marker wiring", () => {
     runner.dispose({ force: true });
   });
 
-  // The clears that had no announcement of their own before planning#246: a
-  // spawn-identity change, a credential rotation, the stuck-running reconciler,
-  // and dispose. Each left a green dot on a session with nothing running.
   it("broadcasts the drain on a bare clearBackgroundTasks", () => {
     const { runner, attention } = makeRegistry();
     runner.isStreamingActive = true;

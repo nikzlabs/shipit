@@ -19,7 +19,6 @@ import { GitHubAuthManager } from "../github-auth.js";
 import { CredentialStore } from "../credential-store.js";
 import { initGlobalGitConfig } from "../git-config.js";
 
-// Minimal SSE reader: connects to /api/events and buffers parsed frames.
 interface SseFrame {
   event: string;
   data: Record<string, unknown>;
@@ -92,10 +91,6 @@ class SseTestClient {
   }
 }
 
-// The mobile-foreground reconnect (useServerEvents forces a fresh EventSource
-// when the tab returns) relies on the /api/events initial snapshot being
-// AUTHORITATIVE: it must always send active_runners and pr_status so the
-// client can clear stale state that accumulated while the socket was dead.
 describe("Integration: /api/events initial snapshot is authoritative", () => {
   let app: FastifyInstance;
   let tmpDir: string;
@@ -138,8 +133,6 @@ describe("Integration: /api/events initial snapshot is authoritative", () => {
 
   it("always sends active_runners on connect, even with no active runners", async () => {
     sse = await SseTestClient.connect(port);
-    // Without the unconditional send, this event would be suppressed (empty)
-    // and a reconnecting client could never clear a stale "running" flag.
     const data = await sse.waitFor("active_runners");
     expect(data.sessionIds).toEqual([]);
   });

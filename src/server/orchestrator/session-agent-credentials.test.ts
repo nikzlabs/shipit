@@ -14,12 +14,6 @@ import {
 import { AGENT_CREDENTIAL_PATHS, agentCredentialDirs } from "./session-credentials-scaffold.js";
 import type { AgentId } from "../shared/types/agent-types.js";
 
-/**
- * docs/260-turn-level-account-routing req 4 — the per-turn credential identity check. The session's
- * subtree must belong to the CHOSEN account before the turn spawns, whatever
- * it held before; the recorded marker (not token bytes, not a session row) is
- * what says whose credentials the subtree holds.
- */
 describe("ensureSessionAccountCredentials (docs/260-turn-level-account-routing req 4)", () => {
   let root: string;
   const SESSION = "s1";
@@ -65,8 +59,6 @@ describe("ensureSessionAccountCredentials (docs/260-turn-level-account-routing r
   it("is a no-op when the marker already names the chosen account", () => {
     seedAccount("acct_a", "tok-a");
     ensureSessionAccountCredentials(root, SESSION, "claude", "acct_a");
-    // The session's CLI has since rotated its token — a same-account
-    // difference the per-turn freshness sync owns, not this check.
     fs.writeFileSync(
       path.join(sessionDir(), ".claude", ".credentials.json"),
       JSON.stringify({ claudeAiOauth: { accessToken: "tok-a-rotated" } }),
@@ -100,14 +92,12 @@ describe("ensureSessionAccountCredentials (docs/260-turn-level-account-routing r
 
     ensureSessionAccountCredentials(root, SESSION, "claude", "acct_b");
 
-    // `--resume` still finds the conversation; only the credentials moved.
     expect(fs.readFileSync(path.join(conv, "conv-1.jsonl"), "utf8")).toBe("turn1\n");
     expect(sessionToken()).toContain("tok-b");
   });
 
   it("ADOPTS a pre-260 subtree whose token byte-matches the chosen account", () => {
     seedAccount("acct_a", "tok-a");
-    // A legacy session: credentials on disk, no marker.
     fs.mkdirSync(path.join(sessionDir(), ".claude"), { recursive: true });
     fs.copyFileSync(
       path.join(accountRoot("acct_a"), ".claude", ".credentials.json"),
@@ -157,7 +147,6 @@ describe("ensureSessionAccountCredentials (docs/260-turn-level-account-routing r
 
     expect(readSessionAccountMarker(root, SESSION).claude).toBeUndefined();
     expect(sessionToken()).toBeNull();
-    // And the next turn starts clean.
     expect(ensureSessionAccountCredentials(root, SESSION, "claude", "acct_a")).toBe("provisioned");
   });
 
@@ -172,10 +161,6 @@ describe("ensureSessionAccountCredentials (docs/260-turn-level-account-routing r
   });
 
   it("a marker written for ANY supported agent reads back unchanged (planning#443)", () => {
-    // The list is derived from the same compile-forced Record the reader now
-    // filters through, so an AgentId added tomorrow is covered here without an
-    // edit — the hand-listed filter this guards against dropped "grok" with no
-    // test ever noticing.
     const allAgentIds = Object.keys(AGENT_CREDENTIAL_PATHS) as AgentId[];
 
     for (const agentId of allAgentIds) {
@@ -183,8 +168,6 @@ describe("ensureSessionAccountCredentials (docs/260-turn-level-account-routing r
       expect(readSessionAccountMarker(root, SESSION)[agentId]).toBe(`acct_${agentId}`);
     }
 
-    // The full map survives too — each write's read-modify-write must not drop
-    // the entries earlier writes left for the other agents.
     expect(readSessionAccountMarker(root, SESSION)).toEqual(
       Object.fromEntries(allAgentIds.map((id) => [id, `acct_${id}`])),
     );
@@ -196,11 +179,6 @@ describe("ensureSessionAccountCredentials (docs/260-turn-level-account-routing r
     expect(readSessionAccountMarker(root, SESSION).claude).toBe("acct_a");
   });
 
-  // docs/260 §5 — the resident-route record is the identity a STRING-delivered
-  // credential leaves behind for post-restart adoption (reqs 11/13). The
-  // account marker cannot carry it: the marker records which account's subtree
-  // COPY is on disk, and a string credential authenticates from spawn env
-  // without touching the subtree.
   describe("session resident-route record", () => {
     it("round-trips per agent and overwrites on a new spawn", () => {
       writeSessionResidentRoute(root, SESSION, "claude", { kind: "reserved", id: "cred_glm" });
@@ -220,15 +198,6 @@ describe("ensureSessionAccountCredentials (docs/260-turn-level-account-routing r
     });
   });
 
-  /**
-   * planning#444 — a key-billed harness has nothing to copy, and the image's
-   * `~/.<agent>` symlink is created unconditionally. So a provisioning pass that
-   * only ever COPIES leaves the link dangling, and a dangling symlink is not a
-   * harmless absence: it is an existing directory entry, so the CLI's own
-   * `mkdir` fails and the harness dies at startup. Grok hit this after OpenCode
-   * hit the same shape (docs/270), which is why the guard is written against
-   * the whole `AgentId` union rather than against grok.
-   */
   describe("credential directories exist even with nothing to copy", () => {
     it("materializes every declared credential DIR for every agent", () => {
       const allAgentIds = Object.keys(AGENT_CREDENTIAL_PATHS) as AgentId[];
@@ -250,16 +219,6 @@ describe("ensureSessionAccountCredentials (docs/260-turn-level-account-routing r
     });
 
     it("never treats a FILE-shaped declared path as a directory, for any agent", () => {
-      // An empty directory where the CLI expects a file is worse than the
-      // dangling link this fixes: the CLI would parse a directory as its user
-      // config and fail every turn. `.claude.json` is the only such path today,
-      // and asserting that one name would pin nothing for the NEXT one — the
-      // deny-list is exactly the kind of table a later edit forgets.
-      //
-      // So the check is mechanical: a declared path whose final segment carries
-      // an extension (a dot after the leading dot that makes it hidden) is
-      // file-shaped, and must have been excluded. `.claude` and `.grok` are
-      // hidden directories, not extensions; `.local/share/opencode` has neither.
       const looksLikeAFile = (rel: string): boolean => {
         const leaf = rel.split("/").pop() ?? rel;
         return leaf.replace(/^\./, "").includes(".");
@@ -273,7 +232,6 @@ describe("ensureSessionAccountCredentials (docs/260-turn-level-account-routing r
           ).not.toContain(rel);
         }
       }
-      // And the known one, named, so the assertion above cannot go vacuous.
       expect(AGENT_CREDENTIAL_PATHS.claude).toContain(".claude.json");
       expect(agentCredentialDirs("claude")).not.toContain(".claude.json");
       provisionProviderAccountCredentials(root, SESSION, "claude", "acct_a");

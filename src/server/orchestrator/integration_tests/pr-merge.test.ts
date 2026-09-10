@@ -1,11 +1,3 @@
-/**
- * Integration tests for merge + auto-merge flow (Phase 3):
- * - POST /api/sessions/:id/pr/auto-merge
- * - POST /api/sessions/:id/pr/merge-method
- * - PrStatusPoller auto-merge state management
- * - Post-merge archive via onMergeDetected callback
- */
-
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
@@ -44,7 +36,6 @@ beforeEach(async () => {
 
   githubAuth = new StubGitHubAuthManager();
 
-  // Create a session with a git repo + initial commit
   sessionId = crypto.randomUUID();
   sessionDir = path.join(tmpDir, "sessions", sessionId);
   fs.mkdirSync(sessionDir, { recursive: true });
@@ -59,7 +50,6 @@ beforeEach(async () => {
     env: { ...process.env, HOME: tmpDir },
   });
 
-  // Set origin + feature branch
   await git.addRemote("origin", "https://github.com/test-user/test-repo.git");
   execSync("git checkout -b shipit/test-feature", {
     cwd: sessionDir,
@@ -69,7 +59,6 @@ beforeEach(async () => {
   sessionManager = new SessionManager(dbManager);
   sessionManager.track(sessionId, "Test session", sessionDir);
 
-  // Create poller with sseBroadcast spy
   prStatusPoller = new PrStatusPoller({
     githubAuth: githubAuth as any,
     sessionManager,
@@ -100,8 +89,6 @@ afterEach(async () => {
   vi.restoreAllMocks();
 });
 
-// ---- POST /api/sessions/:id/pr/auto-merge ----
-
 describe("POST /api/sessions/:id/pr/auto-merge", () => {
   it("returns 400 when body missing 'enabled' field", async () => {
     const res = await app.inject({
@@ -115,7 +102,6 @@ describe("POST /api/sessions/:id/pr/auto-merge", () => {
   });
 
   it("returns 401 when not authenticated", async () => {
-    // Seed poller with a fake PR status so the service proceeds past the 404 check
     prStatusPoller.trackSession(sessionId, "https://github.com/test-user/test-repo.git");
 
     const res = await app.inject({
@@ -145,8 +131,6 @@ describe("POST /api/sessions/:id/pr/auto-merge", () => {
   });
 });
 
-// ---- POST /api/sessions/:id/pr/merge ----
-
 describe("POST /api/sessions/:id/pr/merge — agent-running guard", () => {
   beforeEach(async () => {
     sessionManager.setBranch(sessionId, "shipit/test-feature");
@@ -155,8 +139,6 @@ describe("POST /api/sessions/:id/pr/merge — agent-running guard", () => {
   });
 
   it("returns 409 when the session's runner is mid-turn", async () => {
-    // Seed PR status so the request would otherwise sail past the CI-not-ready
-    // guard — we want to assert that the running-runner gate fires first.
     githubAuth.setGraphqlResult({
       data: {
         repository: {
@@ -188,7 +170,6 @@ describe("POST /api/sessions/:id/pr/merge — agent-running guard", () => {
     prStatusPoller.trackSession(sessionId, "https://github.com/test-user/test-repo.git");
     await new Promise((r) => setTimeout(r, 100));
 
-    // Flip the runner into the running state via the test-only endpoint.
     const setRunning = await app.inject({
       method: "POST",
       url: `/api/_test/runner/${sessionId}/running`,
@@ -211,10 +192,6 @@ describe("POST /api/sessions/:id/pr/merge — agent-running guard", () => {
     });
   });
 
-  // docs/266 — the guard covers `agentBusy`, not bare `running`. The turn's
-  // commit and the debounced auto-push it arms both run once `running` is
-  // false, so a merge accepted in that window still orphans work on a branch
-  // whose PR just closed.
   it("returns 409 while post-turn work (commit + debounced push) is in flight", async () => {
     githubAuth.setGraphqlResult({
       data: {
@@ -247,7 +224,6 @@ describe("POST /api/sessions/:id/pr/merge — agent-running guard", () => {
     prStatusPoller.trackSession(sessionId, "https://github.com/test-user/test-repo.git");
     await new Promise((r) => setTimeout(r, 100));
 
-    // The turn has ENDED (`running: false`) but its terminal sequence has not.
     const setBusy = await app.inject({
       method: "POST",
       url: `/api/_test/runner/${sessionId}/running`,
@@ -268,7 +244,6 @@ describe("POST /api/sessions/:id/pr/merge — agent-running guard", () => {
       error: expect.stringContaining("Agent still working"),
     });
 
-    // Release the hold so it can't leak into the next test's runner.
     await app.inject({
       method: "POST",
       url: `/api/_test/runner/${sessionId}/running`,
@@ -278,7 +253,6 @@ describe("POST /api/sessions/:id/pr/merge — agent-running guard", () => {
   });
 
   it("allows merge after the runner finishes the turn", async () => {
-    // Seed a successful-CI PR like above.
     githubAuth.setGraphqlResult({
       data: {
         repository: {
@@ -310,7 +284,6 @@ describe("POST /api/sessions/:id/pr/merge — agent-running guard", () => {
     prStatusPoller.trackSession(sessionId, "https://github.com/test-user/test-repo.git");
     await new Promise((r) => setTimeout(r, 100));
 
-    // Briefly running, then idle — the gate should release.
     await app.inject({
       method: "POST",
       url: `/api/_test/runner/${sessionId}/running`,
@@ -331,9 +304,6 @@ describe("POST /api/sessions/:id/pr/merge — agent-running guard", () => {
       payload: JSON.stringify({ method: "squash" }),
     });
 
-    // Should NOT be 409 — the running-flag guard is clear. The actual merge
-    // call may still fail in the stub (no real GitHub), but the status code
-    // proves the running-runner gate didn't fire.
     expect(res.statusCode).not.toBe(409);
   });
 
@@ -411,10 +381,6 @@ describe("POST /api/sessions/:id/pr/merge — CI-not-ready guard", () => {
   });
 
   it("blocks merge when poller is tracking the session but has no status yet", async () => {
-    // Tracking starts the poller. Default _graphqlResult is null, so pollRepo
-    // exits early before populating any status — exactly the race window
-    // where a user clicks Merge after creating a PR but before the first
-    // successful poll.
     prStatusPoller.trackSession(sessionId, "https://github.com/test-user/test-repo.git");
 
     expect(prStatusPoller.getStatus(sessionId)).toBeUndefined();
@@ -465,13 +431,9 @@ describe("POST /api/sessions/:id/pr/merge — CI-not-ready guard", () => {
 
     prStatusPoller.trackSession(sessionId, "https://github.com/test-user/test-repo.git");
 
-    // Wait for the immediate poll to populate state
     await new Promise((r) => setTimeout(r, 100));
 
-    // Force-mutate the cached status to simulate "workflows exist but no checks reported".
-    // (The poller's workflow-loader path requires a real bare repo with `.github/workflows`
-    // entries reachable via `git ls-tree`; bypass that here by asserting on the merge
-    // endpoint's "pending && total === 0" branch directly.)
+    // Inject pending state without building the workflow-loader's bare repo fixture.
     const status = prStatusPoller.getStatus(sessionId);
     if (status) {
       status.checks.state = "pending";
@@ -493,20 +455,7 @@ describe("POST /api/sessions/:id/pr/merge — CI-not-ready guard", () => {
   });
 });
 
-/**
- * The obsolete-merge guard. Every other gate on this route asks GitHub a
- * question about the remote branch; none of them can see that the remote branch
- * is simply OLD. ShipIt pushes on a debounce and never force-pushes, so a
- * rejected push leaves the session holding commits GitHub has never seen behind
- * a pull request that looks perfectly mergeable — which is how two pull requests
- * once merged seven and two commits behind (`services/auto-push-scheduler.ts`).
- *
- * The client disables the button off the poller's reading; this is the half that
- * holds against a stale tab, so it re-resolves the state against the real
- * remote. The remote here is a local bare repo — `sessionManager`'s remote URL
- * stays the GitHub one (it is what names owner/repo for the merge API), while
- * git's `origin` is the bare repo the push can actually reach.
- */
+// Keep the session's GitHub identity while routing git operations to a local bare repo.
 describe("POST /api/sessions/:id/pr/merge — obsolete-state guard", () => {
   let bareDir: string;
 
@@ -525,8 +474,6 @@ describe("POST /api/sessions/:id/pr/merge — obsolete-state guard", () => {
     runGit(`git remote set-url origin ${bareDir}`, sessionDir);
     runGit("git push origin shipit/test-feature", sessionDir);
 
-    // A green, mergeable PR — so the CI and review gates are satisfied and the
-    // only thing that can hold the merge is the branch's sync state.
     githubAuth.setGraphqlResult({
       data: {
         repository: {
@@ -569,9 +516,6 @@ describe("POST /api/sessions/:id/pr/merge — obsolete-state guard", () => {
   it("does not hold a branch that carries everything the session has", async () => {
     const res = await postMerge();
 
-    // The merge itself goes on to fail in this fixture (the stub resolves no PR
-    // for the branch), which is exactly the point: an in-sync branch reaches
-    // the merge, rather than being turned back by this guard.
     expect(res.statusCode).toBe(200);
     expect(res.json().message).not.toMatch(/diverged|Pushed|reached GitHub/);
   });
@@ -587,16 +531,12 @@ describe("POST /api/sessions/:id/pr/merge — obsolete-state guard", () => {
     expect(res.statusCode).toBe(200);
     expect(res.json()).toMatchObject({ success: false });
     expect(res.json().message).toContain("Pushed 1 commit");
-    // Nothing was merged…
     expect(merge).not.toHaveBeenCalled();
-    // …and the click was not wasted: the work is on the remote, so the next one
-    // merges what the session actually produced.
     expect(runGit("git rev-parse refs/heads/shipit/test-feature", bareDir).trim()).toBe(localHead);
   });
 
   it("refuses outright when the branch has diverged, and repairs nothing", async () => {
     const merge = vi.spyOn(githubAuth, "mergePullRequest");
-    // The remote branch gains a commit from elsewhere…
     const otherDir = path.join(tmpDir, "other");
     fs.mkdirSync(otherDir);
     runGit(`git clone ${bareDir} .`, otherDir);
@@ -605,7 +545,6 @@ describe("POST /api/sessions/:id/pr/merge — obsolete-state guard", () => {
     runGit("git add -A && git commit -m theirs", otherDir);
     runGit("git push origin shipit/test-feature", otherDir);
     const remoteTip = runGit("git rev-parse refs/heads/shipit/test-feature", bareDir).trim();
-    // …while this session commits its own work on the old tip.
     fs.writeFileSync(path.join(sessionDir, "ours.md"), "1\n");
     runGit("git add -A && git commit -m ours", sessionDir);
 
@@ -614,13 +553,9 @@ describe("POST /api/sessions/:id/pr/merge — obsolete-state guard", () => {
     expect(res.json()).toMatchObject({ success: false });
     expect(res.json().message).toContain("diverged");
     expect(merge).not.toHaveBeenCalled();
-    // The two remedies (pull, force-push) each destroy one side's commits, and
-    // git cannot say which is right — so neither is attempted.
     expect(runGit("git rev-parse refs/heads/shipit/test-feature", bareDir).trim()).toBe(remoteTip);
   });
 });
-
-// ---- POST /api/sessions/:id/pr/merge-method ----
 
 describe("POST /api/sessions/:id/pr/merge-method", () => {
   it("returns 400 for invalid method", async () => {
@@ -644,8 +579,6 @@ describe("POST /api/sessions/:id/pr/merge-method", () => {
     expect(res.statusCode).toBe(400);
   });
 });
-
-// ---- PrStatusPoller auto-merge state ----
 
 describe("PrStatusPoller auto-merge state", () => {
   it("getAutoMergeState returns undefined when not set", () => {
@@ -707,8 +640,6 @@ describe("PrStatusPoller auto-merge state", () => {
   });
 });
 
-// ---- Post-merge archive callback ----
-
 describe("PrStatusPoller onMergeDetected callback", () => {
   it("calls callback when PR disappears from OPEN results", { timeout: 15_000 }, async () => {
     const onMergeDetected = vi.fn().mockResolvedValue(undefined);
@@ -720,13 +651,11 @@ describe("PrStatusPoller onMergeDetected callback", () => {
       onMergeDetectedCb: onMergeDetected,
     });
 
-    // Seed the session in the poller + authenticate
     await githubAuth.setToken("test-token");
     sessionManager.track(sessionId, "Test session", sessionDir);
     sessionManager.setBranch(sessionId, "shipit/test-feature");
     sessionManager.setRemoteUrl(sessionId, "https://github.com/test-user/test-repo.git");
 
-    // Set GraphQL result BEFORE tracking so the initial poll picks it up
     githubAuth.setGraphqlResult({
       data: {
         repository: {
@@ -758,15 +687,10 @@ describe("PrStatusPoller onMergeDetected callback", () => {
 
     poller.trackSession(sessionId, "https://github.com/test-user/test-repo.git");
 
-    // Wait for initial poll (fires immediately on trackSession)
     await new Promise((r) => setTimeout(r, 100));
 
-    // Verify PR was picked up
     expect(poller.getStatus(sessionId)).toBeDefined();
 
-    // Second poll: PR gone from the bulk view, REST verify confirms merged.
-    // Promotion is now async (REST verify before mergedSessions is set) so
-    // the test waits past one poll interval + REST round-trip.
     githubAuth.setGraphqlResult({
       data: {
         repository: {
@@ -788,8 +712,7 @@ describe("PrStatusPoller onMergeDetected callback", () => {
       deletions: 5,
     });
 
-    // Trigger an immediate poll rather than sleeping for the production
-    // interval; this exercises the same missing-PR verification path.
+    // Trigger a poll without waiting for the production interval.
     poller.setPrTabActive(sessionId, true);
     await new Promise((r) => setTimeout(r, 100));
 

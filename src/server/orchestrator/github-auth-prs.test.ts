@@ -1,11 +1,3 @@
-/**
- * docs/255 — `viewPullRequestConversation` is the read path behind
- * `gh pr view --comments`. The behaviour that matters: a failed read reports an
- * error rather than empty arrays (an empty conversation and an unreadable one
- * must never look alike — that confusion is the bug this feature fixes), and
- * unsubmitted PENDING reviews are not feedback yet.
- */
-
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { viewPullRequestConversation, viewPullRequest, viewPullRequestResult, listPullRequests } from "./github-auth-prs.js";
 
@@ -15,7 +7,6 @@ function mockFetch(payload: unknown, status = 200): void {
   );
 }
 
-/** Like `mockFetch`, but keeps each request's URL and body for assertions. */
 function mockFetchRecording(payload: unknown): { urls: string[]; bodies: string[] } {
   const urls: string[] = [];
   const bodies: string[] = [];
@@ -78,8 +69,6 @@ describe("viewPullRequestConversation", () => {
       { id: "c1", author: { login: "alice" }, body: "looks good", createdAt: "2026-08-01T00:00:00Z", url: "u1" },
     ]);
     expect(res.conversation.reviews[0]).toMatchObject({ state: "CHANGES_REQUESTED", body: "needs work", submittedAt: "2026-08-02T00:00:00Z" });
-    // The inline thread keeps where it points and the diff it points at — a
-    // finding is only actionable with its file, line, and hunk (req 2).
     expect(res.conversation.reviewThreads[0]).toMatchObject({
       path: "src/foo.ts", line: 42, isResolved: false, diffHunk: "@@ -1 +1 @@\n+leak()",
     });
@@ -122,8 +111,6 @@ describe("viewPullRequestConversation", () => {
   });
 
   it("reports GitHub's totals, so a windowed fetch cannot look complete", async () => {
-    // 62 comments exist; the query returns the most recent 50. Reporting 50 as
-    // the total would tell the agent it had read everything.
     mockFetch(graphqlPr({
       comments: {
         totalCount: 62,
@@ -170,7 +157,6 @@ describe("viewPullRequestConversation", () => {
     const res = await viewPullRequestConversation("tok", "o", "r", 7);
     expect(res.ok).toBe(true);
     if (!res.ok) return;
-    // 4 total minus the 1 PENDING we dropped.
     expect(res.conversation.reviewsTotal).toBe(3);
     expect(res.conversation.reviews).toHaveLength(1);
   });
@@ -209,8 +195,6 @@ describe("viewPullRequestResult", () => {
   });
 
   it("treats any other failure as an error, not as absence", async () => {
-    // The distinction that matters on a private repo: 403 must not render as
-    // "No pull request found for this branch".
     mockFetch({ message: "Resource not accessible by integration" }, 403);
     const res = await viewPullRequestResult("tok", "o", "r", 3);
     expect(res.ok).toBe(false);
@@ -244,17 +228,6 @@ describe("viewPullRequest", () => {
   });
 });
 
-/**
- * `--state merged` used to reach here as `open` (the route's silent fallback),
- * so a repository full of merged PRs answered with its OPEN ones — a wrong
- * answer that read like a valid one.
- *
- * The replacement must not reintroduce that answer by another route, which is
- * why `merged` goes to GraphQL: REST has no merged state, so it could only
- * fetch closed PRs and filter, and a filter over one page returns "none" for a
- * repository whose recent closes happen to be unmerged. These tests pin the
- * server-side selection, not a client-side window.
- */
 describe("listPullRequests", () => {
   afterEach(() => vi.restoreAllMocks());
 
@@ -274,7 +247,6 @@ describe("listPullRequests", () => {
     mergedAt: "2026-08-02T00:00:00Z", baseRefName: "main", headRefName: "feat",
   };
 
-  /** Unwrap a successful read, failing the test rather than the type checker. */
   async function prsOf(state: Parameters<typeof listPullRequests>[3]) {
     const res = await listPullRequests("tok", "o", "r", state);
     expect(res.ok).toBe(true);
@@ -287,13 +259,10 @@ describe("listPullRequests", () => {
     await listPullRequests("tok", "o", "r", "merged");
     expect(urls).toEqual(["https://api.github.com/graphql"]);
     expect(bodies[0]).toContain("states: MERGED");
-    // No REST page to fall out of: nothing asks /pulls?state=closed.
     expect(urls.some((u) => u.includes("/pulls?"))).toBe(false);
   });
 
   it("returns a merge GitHub selected even when it is far from the recent closes", async () => {
-    // The page-boundary case that sank the filter-a-page approach: this PR
-    // merged long ago and would sit past any bounded scan of recent closes.
     const { bodies } = mockFetchRecording(
       graphqlNodes([{ ...NODE, number: 4, mergedAt: "2024-01-01T00:00:00Z" }]),
     );
@@ -303,8 +272,6 @@ describe("listPullRequests", () => {
 
   it("normalises a merged row onto the same shape REST states return", async () => {
     mockFetchRecording(graphqlNodes([NODE]));
-    // `state` stays "closed" because that is how GitHub models a merged PR;
-    // `mergedAt` is the field that distinguishes it.
     expect(await prsOf("merged")).toEqual([
       { url: "u", number: 8, base: "main", head: "feat", title: "T", state: "closed", isDraft: false, mergedAt: "2026-08-02T00:00:00Z" },
     ]);
@@ -321,17 +288,10 @@ describe("listPullRequests", () => {
   });
 
   it("reports a merged PR reached via 'all' the same way", async () => {
-    // `all` stays on REST, so mergedAt has to survive that mapping too —
-    // otherwise the two paths disagree about the same pull request.
     mockFetchRecording([restPr({ number: 8, state: "closed", merged_at: "2026-08-02T00:00:00Z" })]);
     expect((await prsOf("all"))[0]).toMatchObject({ state: "closed", mergedAt: "2026-08-02T00:00:00Z" });
   });
 
-  /**
-   * `-L/--limit` reaches the API as the page size rather than trimming the
-   * response, so asking for more than the default actually fetches more — the
-   * shim used to parse the flag and drop it, capping every answer at 30.
-   */
   describe("limit", () => {
     it("becomes the REST page size", async () => {
       const { urls } = mockFetchRecording([]);
@@ -355,8 +315,6 @@ describe("listPullRequests", () => {
     });
 
     it("clamps an out-of-range value rather than sending it to GitHub", async () => {
-      // The shim refuses these first; this is the belt to that braces, so a
-      // future caller cannot ask GitHub for per_page=0 or per_page=5000.
       const low = mockFetchRecording([]);
       await listPullRequests("tok", "o", "r", "open", 0);
       expect(low.urls[0]).toContain("per_page=1");
@@ -366,12 +324,6 @@ describe("listPullRequests", () => {
     });
   });
 
-  /**
-   * A read that failed and a repository with no pull requests must never look
-   * alike. `if (!res.ok) return []` made every one of these render as `gh pr
-   * list`'s "No pull requests found." — so an ops investigation could conclude
-   * a repository was empty when it merely lacked permission to read it.
-   */
   describe("a failed read is not an empty one", () => {
     it("reports a 403 on a private repo, carrying GitHub's own message", async () => {
       mockFetch({ message: "Resource not accessible by integration" }, 403);
@@ -399,8 +351,6 @@ describe("listPullRequests", () => {
     });
 
     it("reports a GraphQL error on the merged path, which answers 200", async () => {
-      // GraphQL signals a permission failure in the body, not the status, so
-      // the merged path needs its own guard — `res.ok` is true here.
       mockFetch({ errors: [{ message: "Resource not accessible" }] });
       expect(await listPullRequests("tok", "o", "r", "merged")).toEqual({
         ok: false, error: "Resource not accessible",
@@ -419,16 +369,11 @@ describe("listPullRequests", () => {
       ["a null data", { data: null }],
       ["a null repository", { data: { repository: null } }],
     ])("reports a malformed GraphQL 200 (%s) rather than 'none'", async (_label, payload) => {
-      // GitHub can answer 200 with no `errors` and no node list. Defaulting the
-      // missing path to [] would smuggle the original bug back in through the
-      // last gap: "did not answer" is not "there are none".
       mockFetch(payload);
       expect((await listPullRequests("tok", "o", "r", "merged")).ok).toBe(false);
     });
 
     it("still says 'none' with ok:true, so absence keeps its own answer", async () => {
-      // The other half of the contract, on both paths: an empty repository
-      // must not start reading as an error either.
       mockFetchRecording([]);
       expect(await listPullRequests("tok", "o", "r", "open")).toEqual({ ok: true, prs: [] });
       mockFetch(graphqlNodes([]));

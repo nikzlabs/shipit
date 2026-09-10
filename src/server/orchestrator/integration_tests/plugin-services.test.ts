@@ -1,29 +1,4 @@
-/**
- * docs/262 reqs 3, 5, 13, 16, 18, 20 — the plugin SERVICE path, exercised
- * through the code a session actually runs (plan §5).
- *
- * The declaration is a real `shipit.yaml`, the fragment is a real file, and the
- * chain under test is the production one:
- *
- *   shipit.yaml → `resolveSessionPluginServices` (what `bootstrap-managers.ts`
- *   wires as `resolvePluginServices`) → `ServiceManager` → the generated compose
- *   override, and → `ContainerSessionRunner.setServiceManager` → the WS messages
- *   a browser receives.
- *
- * Two things are injected, and the level is deliberate. **Docker and the compose
- * CLI** are faked, because there is neither in the test environment — so nothing
- * here proves a container starts; that is the "one real-instance end-to-end"
- * item on the checklist, and it is not this. **The glue between the resolver and
- * the manager** — that `setupServiceManager` calls the resolver at all, under
- * the docs/178 trust gate — is `service-manager-setup.test.ts`'s subject and is
- * not re-proved here; this file starts where its fake manager ends, with a real
- * one.
- *
- * A `repo: self` declaration (req 27) is the fixture shape wherever a generation
- * is not the point: its "checkout" is the session's own workspace, so the whole
- * path runs with no fetch and no overlay volume, and the surface it exercises is
- * the same one a consumer's tracked import takes.
- */
+// Compose is faked; these tests check generated config and runner events.
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
@@ -71,9 +46,6 @@ beforeEach(() => {
   stateDir = path.join(sessionDir, SESSION_STATE_SUBDIR);
   fs.mkdirSync(workspaceDir, { recursive: true });
   fs.mkdirSync(stateDir, { recursive: true });
-  // What a round could not recompute is remembered per session, in a map that
-  // outlives one test (it is process-wide by design — a session's entries go
-  // when the session is disposed). Each test here IS a fresh session.
   clearActivationState(SESSION_ID);
 });
 
@@ -81,11 +53,6 @@ afterEach(() => {
   fs.rmSync(stateRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
 });
 
-// ---------------------------------------------------------------------------
-// Fixture
-// ---------------------------------------------------------------------------
-
-/** Two services, so "a repository's services are all-or-nothing" is observable. */
 const FRAGMENT = `
 services:
   probe:
@@ -121,8 +88,6 @@ ${uses}
 `;
 }
 
-// docs/266-plugin-service-ports req 2 — the consuming project names the port. Without one the
-// service runs but is not previewable, which most of these cases need it to be.
 const PLAIN_USE = "    - plugin: probe\n      from: mine\n"
   + "      overrides:\n        services:\n          probe:\n            port: 4820\n";
 
@@ -139,13 +104,8 @@ function writeFixture(opts: { uses?: string; fragment?: string; projectCompose?:
   );
 }
 
-// ---------------------------------------------------------------------------
-// Harness — a real ServiceManager over a fake compose CLI
-// ---------------------------------------------------------------------------
-
 interface Stack {
   mgr: ServiceManager;
-  /** Every compose command the manager issued, in order. */
   commands: string[][];
 }
 
@@ -163,7 +123,6 @@ function makeStack(): Stack {
   return { mgr, commands };
 }
 
-/** Resolve the session's plugin services and bring the stack up over them. */
 async function startStack(stack: Stack): Promise<void> {
   const services = await resolveSessionPluginServices(SESSION_ID, workspaceDir, {
     containEgress: false,
@@ -178,14 +137,11 @@ function readOverride(): Record<string, Record<string, unknown>> {
   }).services;
 }
 
-/** The service names a `compose up` was asked to start (flags dropped). */
 function startedNames(commands: string[][]): string[] {
   return commands
     .filter((args) => args.includes("up"))
     .flatMap((args) => args.slice(args.indexOf("up") + 1).filter((a) => !a.startsWith("-")));
 }
-
-// ---------------------------------------------------------------------------
 
 describe("plugin services in a session's stack (docs/262)", () => {
   it("merges a plugin's fragment into the session's own stack (reqs 3, 5)", async () => {
@@ -194,32 +150,23 @@ describe("plugin services in a session's stack (docs/262)", () => {
 
     await startStack(stack);
 
-    // One stack, one name domain: the plugin's services sit beside the
-    // project's and are addressed the same way.
     expect(stack.mgr.getServices().map((s) => s.name).sort())
       .toEqual(["probe", "probe-worker", "web"]);
     const override = readOverride();
 
-    // The fragment's own lines survive verbatim…
     expect(override.probe).toMatchObject({
       image: "node:22-alpine",
       command: "node /app/service/server.mjs",
     });
-    // …and a fragment declares no `ports:` at all (docs/266-plugin-service-ports req 1), so the
-    // generated service publishes none either.
     expect(override.probe.ports).toBeUndefined();
-    // …and ShipIt's half of the in-session contract is added (plan §2), which
-    // the fragment deliberately never declares.
     expect(override.probe.environment).toMatchObject({
       PROBE_PORT: "4820",
       SHIPIT_PROJECT_DIR: "/project",
       SHIPIT_PLUGIN_STATE: "/plugin-state",
-      // The consuming project's number, told to the process that binds it.
       SHIPIT_PLUGIN_PORT: "4820",
     });
     const targets = (override.probe.volumes as { target: string }[]).map((m) => m.target).sort();
     expect(targets).toEqual(["/app", "/plugin", "/plugin-state", "/project"]);
-    // The project's own service is untouched by any of it.
     expect(override.web.environment).toBeUndefined();
     await stack.mgr.stop();
   });
@@ -230,8 +177,6 @@ describe("plugin services in a session's stack (docs/262)", () => {
 
     await startStack(stack);
 
-    // `x-shipit-preview: auto` on the fragment's `probe`; `probe-worker`
-    // declares no port and no preview, so it is manual.
     const started = startedNames(stack.commands);
     expect(started).toContain("probe");
     expect(started).not.toContain("probe-worker");
@@ -251,18 +196,11 @@ describe("plugin services in a session's stack (docs/262)", () => {
 
     await startStack(stack);
 
-    // The rename is what the session addresses it by, everywhere.
     expect(stack.mgr.getServices().map((s) => s.name).sort())
       .toEqual(["probe-worker", "reqs-probe", "web"]);
     expect(readOverride()["reqs-probe"]).toBeDefined();
-    // `probe-worker` is manual in the fragment (no port, no `x-shipit-preview`)
-    // and the consuming project asked for it automatically — so ShipIt names it.
     expect(startedNames(stack.commands)).toContain("probe-worker");
-    // The rename follows the plugin's own `depends_on` — a plugin's internal
-    // ordering must not break because a consumer renamed a service.
     expect(readOverride()["probe-worker"].depends_on).toEqual(["reqs-probe"]);
-    // …and the plugin's own name for it is kept, so the card and the collision
-    // message can name the override that produced it.
     expect(stack.mgr.getService("reqs-probe")?.origin).toMatchObject({ sourceName: "probe" });
     await stack.mgr.stop();
   });
@@ -278,13 +216,7 @@ describe("plugin services in a session's stack (docs/262)", () => {
     await startStack(stack);
 
     expect(stack.mgr.getService("probe")?.preview).toBe("manual");
-    // Neither plugin service is named to `compose up`, and — the reason this
-    // case is written with nothing auto depending on `probe` — nothing brings it
-    // up behind ShipIt's back either: `compose up <name>` starts the named
-    // service's DEPENDENCIES unless `--no-deps` is passed, and ShipIt passes
-    // none (`compose-cli.ts`). So an override that holds a service the plugin
-    // marked automatic is only honoured while nothing automatic depends on it —
-    // a real property of Compose, not of this test (review finding).
+    // No automatic service depends on probe; Compose would start dependencies too.
     const started = startedNames(stack.commands);
     expect(started).not.toContain("probe");
     expect(started).not.toContain("probe-worker");
@@ -293,17 +225,13 @@ describe("plugin services in a session's stack (docs/262)", () => {
   });
 
   it("carries the plugin origin on the service messages the runner broadcasts (req 3)", async () => {
-    // The runner's emitted messages, not a browser: this asserts what
-    // `setServiceManager` puts on the wire, and stops there. Nothing about WS
-    // transport or the client's rendering of the badge is proved here.
     writeFixture();
     const stack = makeStack();
     const runner = new ContainerSessionRunner({
       sessionId: SESSION_ID,
       sessionDir,
       defaultAgentId: "claude",
-      // A placeholder worker URL defers `whenWorkerReady()`; nothing here talks
-      // to a worker. Same shape as `service-manager-adoption.test.ts`.
+      // Defer worker readiness without connecting to a worker.
       workerUrl: "http://0.0.0.0:0",
     });
     const emitted: WsServerMessage[] = [];
@@ -317,20 +245,13 @@ describe("plugin services in a session's stack (docs/262)", () => {
     const listed = (list as { services: { name: string; origin?: unknown }[] }).services;
     expect(listed.find((s) => s.name === "probe")?.origin)
       .toEqual({ kind: "plugin", repo: "mine", alias: "probe", plugin: "probe" });
-    // A project service has no origin at all — the field is what marks a
-    // service as a plugin's, so an empty object would be a different claim.
     expect(listed.find((s) => s.name === "web")).not.toHaveProperty("origin");
 
-    // …and the per-service channel carries it too. `service_status` is what a
-    // running browser updates from; a `service_list` that carried the origin
-    // while status updates dropped it would lose the badge on the first change.
     const statuses = emitted.filter((m) => m.type === "service_status") as {
       name: string; origin?: unknown; port?: number;
     }[];
     expect(statuses.find((s) => s.name === "probe")?.origin)
       .toEqual({ kind: "plugin", repo: "mine", alias: "probe", plugin: "probe" });
-    // The port on the wire is the routing key the preview origin is built
-    // from — which is the service's one and only port now (docs/266-plugin-service-ports req 10).
     expect(statuses.find((s) => s.name === "probe")?.port)
       .toBe(stack.mgr.getService("probe")?.port);
 
@@ -339,8 +260,6 @@ describe("plugin services in a session's stack (docs/262)", () => {
   });
 
   it("withholds a whole repository's services when one name collides (req 20)", async () => {
-    // The project's own `probe` wins: it is the thing the consumer did not
-    // import and cannot be asked to rename.
     writeFixture({
       projectCompose: "services:\n  probe:\n    image: node:20\n    ports: ['3000:3000']\n",
     });
@@ -348,28 +267,14 @@ describe("plugin services in a session's stack (docs/262)", () => {
 
     await startStack(stack);
 
-    // Not just the colliding service — a compose stack is not a set of
-    // independent services, so half a plugin is the partial state req 15
-    // forbids.
-    //
-    // The check runs when services are RESOLVED. A plugin that is already
-    // running has `/project` read-write, and a later `compose up` re-reads the
-    // project file without re-checking collisions — planning#371.
     expect(stack.mgr.getServices().map((s) => s.name)).toEqual(["probe"]);
     expect(stack.mgr.getService("probe")?.origin).toBeUndefined();
     expect(readOverride()["probe-worker"]).toBeUndefined();
-    // The project's own stack comes up regardless (reqs 13, 14).
     expect(startedNames(stack.commands)).toContain("probe");
     await stack.mgr.stop();
   });
 
   it("still sends the service list when the stack fails to start (#2325)", async () => {
-    // A failed start rebuilt the map exactly as much as a successful one did —
-    // `reconcile()` cleared it and `start()` filled it in again. Without this,
-    // `stack_ready` never fires, so the browser keeps the PREVIOUS list: a
-    // service whose port has since moved is then selected at a number this
-    // manager now resolves to a different service. Same wrong-app-in-the-pane
-    // symptom, no port collision anywhere in it.
     writeFixture();
     const commands: string[][] = [];
     const mgr = new ServiceManager({
@@ -403,17 +308,12 @@ describe("plugin services in a session's stack (docs/262)", () => {
     const list = emitted.find((m) => m.type === "service_list") as
       { services: { name: string; port?: number }[] } | undefined;
     expect(list).toBeDefined();
-    // The map as it now IS — the plugin's service included, at the port this
-    // manager would route it on.
     expect((list?.services ?? []).map((s) => s.name).sort())
       .toEqual(["probe", "probe-worker", "web"]);
     expect(list?.services.find((s) => s.name === "probe")?.port)
       .toBe(mgr.getService("probe")?.port);
 
-    // …and the failure is still on screen after it. The client's `setServices`
-    // clears the compose-error banner (a fresh list means the stack is talking
-    // again), so a list sent on a failure has to carry the failure with it or it
-    // silently wipes the one thing explaining what went wrong.
+    // The client clears errors on service_list, so the error must follow it.
     const order = emitted.map((m) => m.type);
     expect(order.indexOf("compose_error")).toBeGreaterThan(order.indexOf("service_list"));
     expect((emitted.find((m) => m.type === "compose_error") as { message: string }).message)
@@ -424,10 +324,6 @@ describe("plugin services in a session's stack (docs/262)", () => {
   });
 
   it("keeps the project's stack running when a plugin cannot be mounted (req 13)", async () => {
-    // The Docker-dependent half: a workspace volume whose root does not contain
-    // this session has no correct mount, and a bind of the orchestrator's path
-    // would silently give the container an empty `/project` in production. Every
-    // service of the repository is dropped instead.
     writeFixture();
     const stack = makeStack();
     const services = await resolveSessionPluginServices(SESSION_ID, workspaceDir, {
@@ -444,15 +340,6 @@ describe("plugin services in a session's stack (docs/262)", () => {
   });
 });
 
-/**
- * The other end of that failure: it has to be VISIBLE (req 13). A mount problem
- * is the one class the snapshot route cannot recompute — it depends on Docker
- * and on the session's layout, not on the declaration — so the resolver records
- * it and the route merges it into the repository's card.
- *
- * Driven through `buildApp` because the route is the surface the Plugins tab
- * actually fetches, and the record travels between two modules to get there.
- */
 describe("a plugin service failure reaches the Plugins card (docs/262 req 13)", () => {
   let app: FastifyInstance;
   let dbManager: DatabaseManager;
@@ -498,18 +385,12 @@ describe("a plugin service failure reaches the Plugins card (docs/262 req 13)", 
     });
 
     const issues = (await snapshot()).repos[0].issues;
-    // One import, one fact: the message is per import even though the round
-    // walks every service of it.
     expect(issues).toHaveLength(1);
     expect(issues[0]).toContain("`probe`");
     expect(issues[0]).toContain("could not locate this session inside the workspace volume");
   });
 
   it("clears the failure once the next round succeeds", async () => {
-    // Nothing else can reconstruct "the mount could not be built", so it is
-    // remembered — which makes clearing it the other half of the contract: a
-    // card that keeps reporting a fixed failure is the same lie as one that
-    // never reported it.
     writeFixture();
     await resolveSessionPluginServices(SESSION_ID, workspaceDir, {
       containEgress: false,

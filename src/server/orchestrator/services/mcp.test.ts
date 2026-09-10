@@ -85,7 +85,6 @@ describe("services/mcp (docs/088)", () => {
 
       const saved = cs.getMcpServer("linear");
       expect(saved?.type).toBe("stdio");
-      // Blob keeps the placeholder, not the raw value.
       expect((saved as { env?: Record<string, string> }).env?.LINEAR_API_KEY).toBe(
         "$secret:mcp__linear__LINEAR_API_KEY",
       );
@@ -162,7 +161,6 @@ describe("services/mcp (docs/088)", () => {
         addMcpServer(cs, { ...stdioConfig, name: "onetoomany" }, {}),
       ).toThrow(/more than/);
 
-      // Disabled servers don't count against the cap.
       expect(() =>
         addMcpServer(cs, { ...stdioConfig, name: "disabledok", enabled: false }, {}),
       ).not.toThrow();

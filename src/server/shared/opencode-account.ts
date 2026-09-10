@@ -1,4 +1,3 @@
-/** ChatGPT access-only credentials consumed by OpenCode (docs/295). */
 import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
@@ -16,7 +15,6 @@ export interface OpenCodeAccountToken {
   accountId: string;
 }
 
-/** Only accept real expiry and identity; never copy a refresh token. */
 export function openCodeAccessToken(
   auth: unknown,
   now = Date.now(),

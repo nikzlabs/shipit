@@ -1,8 +1,3 @@
-// docs/262 req 24 — declared hosts, collected and resolved. The property under
-// test throughout: the declaration is an INPUT to the report and never to the
-// answer — "a plugin declaration never widens a session's network reach by
-// itself".
-
 import { describe, expect, it } from "vitest";
 import { declaredPluginHosts, resolvePluginHosts } from "./plugin-hosts.js";
 import { parsePluginExports, parsePluginRepos } from "./plugin-repos.js";
@@ -19,7 +14,6 @@ function manifest(raw: unknown): PluginExport[] {
   return parsePluginExports(raw, []);
 }
 
-/** A declared name, required unless said otherwise (reqs 23, 24). */
 function req(name: string, optional = false) {
   return { name, optional };
 }
@@ -54,9 +48,6 @@ describe("declaredPluginHosts", () => {
   });
 
   it("a repository with no readable manifest reports nothing, never 'needs no network'", () => {
-    // req 13 — "not knowable" must not render as an answer. A repository that
-    // never activated has not told us what it calls, and a card saying it needs
-    // nothing would be a fetch failure disguised as a clean bill of health.
     expect(declaredPluginHosts(config(DECLARATION), () => null)).toEqual([]);
   });
 
@@ -99,17 +90,11 @@ describe("resolvePluginHosts", () => {
   });
 
   it("a predicate that allows nothing marks every declared host as a gap", () => {
-    // The shape of the guarantee: nothing in this module can turn a declaration
-    // into an allowance, so a session that permits nothing shows every host as
-    // "not yet allowed" no matter what the manifest says.
     const groups = resolvePluginHosts(declarations, () => "grantable");
     expect(groups[0].hosts.every((h) => h.reach !== "allowed")).toBe(true);
   });
 
   it("asks the predicate about an OPTIONAL host too, and carries the flag through", () => {
-    // Optionality bounds how a gap is REPORTED. It must not suppress the
-    // reachability answer itself — a surface that asks directly still gets the
-    // truth (req 24 grants nothing, and hides nothing).
     const asked: string[] = [];
     const groups = resolvePluginHosts(
       [{ repo: "tools", plugin: "assetgen", alias: "assetgen", hosts: [req("fal.run"), req("pixellab.ai", true)] }],
@@ -142,9 +127,6 @@ describe("resolvePluginHosts", () => {
   });
 
   it("passes a verdict no grant can close through unchanged", () => {
-    // The projection must not flatten `blocked-*` back into "not allowed":
-    // that distinction is the whole of planning#383, and the card decides
-    // whether to render a button from it.
     const groups = resolvePluginHosts(declarations, () => "blocked-by-deployment");
     expect(groups[0].hosts.map((h) => h.reach)).toEqual(["blocked-by-deployment", "blocked-by-deployment"]);
   });

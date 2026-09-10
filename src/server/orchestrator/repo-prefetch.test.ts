@@ -13,7 +13,6 @@ let tmpDir: string;
 let remoteDir: string;
 let remoteUrl: string;
 
-/** Make a real on-disk bare repo so fetches work without the network. */
 function seedRemote(): { remoteDir: string; remoteUrl: string } {
   const seedDir = path.join(tmpDir, "seed");
   fs.mkdirSync(seedDir, { recursive: true });
@@ -40,7 +39,6 @@ function createRepoGit(dir: string): RepoGit {
   return new RepoGit(dir);
 }
 
-/** Minimal RepoStore stub backed by an in-memory array. */
 function fakeRepoStore(repos: RepoInfo[]): RepoStore {
   return {
     list: () => repos,
@@ -48,10 +46,8 @@ function fakeRepoStore(repos: RepoInfo[]): RepoStore {
   } as unknown as RepoStore;
 }
 
-/** Auth stub — `authenticated: false` keeps the file:// remote untouched. */
 const fakeAuth = { authenticated: false } as unknown as GitHubAuthManager;
 
-/** Poll a sync predicate until true or the deadline expires. */
 async function waitUntil(pred: () => boolean, timeoutMs = 2000): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -73,13 +69,11 @@ describe("createRepoPrefetcher", () => {
       githubAuthManager: fakeAuth,
     });
 
-    // Never fetched → not covered.
     expect(pf.coveredRecently(remoteUrl)).toBe(false);
 
     pf.prefetchRepo(remoteUrl);
     const covered = await waitUntil(() => pf.coveredRecently(remoteUrl));
     expect(covered).toBe(true);
-    // The fetch wrote the marker file the freshness check reads.
     expect(fs.existsSync(path.join(cacheDir, ".shipit-last-fetch"))).toBe(true);
   });
 
@@ -88,7 +82,6 @@ describe("createRepoPrefetcher", () => {
     execSync(`git clone --bare ${remoteDir} ${cacheDir}`, { stdio: "ignore" });
     const markerPath = path.join(cacheDir, ".shipit-last-fetch");
     fs.writeFileSync(markerPath, "old");
-    // Backdate the marker just past the skip window.
     const oldTime = new Date(Date.now() - CLAIM_SKIP_WINDOW_MS - 60_000);
     fs.utimesSync(markerPath, oldTime, oldTime);
 
@@ -106,7 +99,6 @@ describe("createRepoPrefetcher", () => {
   it("coveredRecently is false for a repo that is not ready", async () => {
     const cacheDir = path.join(tmpDir, "cache-cloning");
     execSync(`git clone --bare ${remoteDir} ${cacheDir}`, { stdio: "ignore" });
-    // Fresh marker, but the repo is still cloning.
     fs.writeFileSync(path.join(cacheDir, ".shipit-last-fetch"), String(Date.now()));
     const repos: RepoInfo[] = [{ url: remoteUrl, status: "cloning" } as RepoInfo];
     const pf = createRepoPrefetcher({
@@ -131,16 +123,12 @@ describe("createRepoPrefetcher", () => {
     });
 
     pf.prefetchRepo(remoteUrl);
-    // Give the fire-and-forget a moment; the marker must NOT appear.
     await new Promise((r) => setTimeout(r, 200));
     expect(fs.existsSync(path.join(cacheDir, ".shipit-last-fetch"))).toBe(false);
   });
 
-  // The bare cache is reclaimable by design — the steady-state janitor deletes
-  // cold ones and `ensureBareCache` re-clones lazily. So a missing cache dir is
-  // an ordinary state, not an error, and neither entry point may blow up on it.
   it("coveredRecently returns false instead of throwing when the bare cache is missing", () => {
-    const cacheDir = path.join(tmpDir, "cache-deleted"); // never created
+    const cacheDir = path.join(tmpDir, "cache-deleted");
     const repos: RepoInfo[] = [{ url: remoteUrl, status: "ready" } as RepoInfo];
     const pf = createRepoPrefetcher({
       repoStore: fakeRepoStore(repos),
@@ -149,9 +137,6 @@ describe("createRepoPrefetcher", () => {
       githubAuthManager: fakeAuth,
     });
 
-    // `RepoGit`'s constructor throws synchronously on a missing dir. Letting
-    // that escape turned POST /claim-session into a 500, which left the
-    // composer's send button permanently disabled on /repo/{slug}/new.
     expect(() => pf.coveredRecently(remoteUrl)).not.toThrow();
     expect(pf.coveredRecently(remoteUrl)).toBe(false);
   });
@@ -182,7 +167,6 @@ describe("createRepoPrefetcher", () => {
       createRepoGit,
       githubAuthManager: fakeAuth,
     });
-    // Should not throw, and double start/stop must be safe.
     pf.start();
     pf.start();
     pf.stop();

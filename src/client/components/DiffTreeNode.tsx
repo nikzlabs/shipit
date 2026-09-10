@@ -11,7 +11,6 @@ export interface DiffTreeNodeProps {
   onToggleDir: (path: string) => void;
 }
 
-/** Renders a single node in the diff file tree. */
 export function DiffTreeNode({
   node,
   depth,
@@ -23,7 +22,6 @@ export function DiffTreeNode({
   const isDir = !!node.children;
 
   if (isDir) {
-    // Build a stable key from the dir name path
     const fullDirKey = `dir:${depth}:${node.name}`;
     const expanded = expandedDirs.has(fullDirKey);
 
@@ -63,7 +61,6 @@ export function DiffTreeNode({
     );
   }
 
-  // File leaf
   const isSelected = node.fileIndex === selectedFileIndex;
   return (
     <div

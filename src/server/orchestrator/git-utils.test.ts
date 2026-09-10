@@ -1,11 +1,3 @@
-/**
- * Unit tests for `fetchAndResolveDefaultBranch` (W2).
- *
- * The warm pool and the claim slow-path build session clones with
- * `git clone --local` from the bare cache — a snapshot that can be far
- * behind the real remote. This helper fetches the *real* remote in the
- * workspace clone so the branch is cut from the genuine latest commit.
- */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
@@ -39,21 +31,13 @@ function commitFile(repoDir: string, name: string, content: string, message: str
   return git(repoDir, "rev-parse HEAD");
 }
 
-// docs/262 req 19 — the strip used when a remote URL is PERSISTED. Strictly
-// stronger than `stripUrlCredentials`, which stays as it is for display,
-// redaction and the identity key.
 describe("stripRemoteUrlCredentials", () => {
   it("removes every shape a credential reaches a stored remote URL in", () => {
     for (const [typed, stored] of [
-      // http(s) userinfo — the reported violation.
       ["https://x-access-token:pw@github.com/o/r.git", "https://github.com/o/r.git"],
       ["https://u:pw@github.com/o/r.git", "https://github.com/o/r.git"],
-      // A token in the query or fragment. A git remote has no meaningful
-      // query or fragment, and both are places a token demonstrably shows up.
       ["https://github.com/o/r.git?access_token=pw", "https://github.com/o/r.git"],
       ["https://github.com/o/r.git#tok=pw", "https://github.com/o/r.git"],
-      // Non-http: the PASSWORD goes, the ssh user stays — `git@` is the login
-      // identity, and dropping it breaks the remote.
       ["ssh://git:pw@example.com/o/r.git", "ssh://git@example.com/o/r.git"],
       ["ssh://git@github.com/o/r.git", "ssh://git@github.com/o/r.git"],
     ] as const) {
@@ -62,13 +46,9 @@ describe("stripRemoteUrlCredentials", () => {
   });
 
   it("returns a clean or unparseable URL byte-for-byte", () => {
-    // `new URL` normalizes (a bare host gains a trailing slash), and a stored
-    // URL that silently changes shape is a row key that stops matching itself.
     for (const url of [
       "https://github.com/o/r.git",
       "https://github.com",
-      // scp-style does not parse; its `git@` is an ssh login and a token pasted
-      // in that position cannot be told apart from one.
       "git@github.com:acme/shipit.git",
       "  https://github.com/o/r.git  ",
     ]) {
@@ -86,10 +66,6 @@ describe("stripRemoteUrlCredentials", () => {
 });
 
 describe("repoUrlToHash", () => {
-  // docs/262 req 19 — the stores key rows by the stripped URL, so the directory
-  // hash must agree with them: the claim route takes a URL straight off the
-  // request path, and a credentialed spelling must not address a second bare
-  // cache, dep cache and per-repo memory directory for the same repository.
   it("hashes the two spellings of one repository to the same directory", () => {
     expect(repoUrlToHash("https://x-access-token:pw@github.com/acme/shipit.git"))
       .toBe(repoUrlToHash("https://github.com/acme/shipit.git"));
@@ -130,11 +106,6 @@ describe("repoId", () => {
     expect(repoId("https://github.com/acme/shipit/")).toBe(id);
     expect(repoId("git@github.com:acme/shipit.git")).toBe(id);
     expect(repoId("ssh://git@github.com/acme/shipit.git")).toBe(id);
-    // A credentialed remote resolves to the same id too, because `repoId`
-    // delegates to `stripRemoteUrlCredentials` first — asserted in that
-    // function's own tests rather than here, since a literal credentialed URL
-    // is rejected by the secret scanner on shape alone, whatever its value.
-    // The three spellings the permission would otherwise split across.
     expect(new Set([
       canonicalRepoKey("https://github.com/Acme/ShipIt"),
       canonicalRepoKey("https://github.com/acme/shipit"),
@@ -148,7 +119,6 @@ describe("repoId", () => {
   });
 
   it("refuses anything it cannot parse with certainty", () => {
-    // Unanchored matching would accept these; an authorization key must not.
     expect(repoId("https://evil.example.com/github.com/acme/shipit")).toBeNull();
     expect(repoId("https://github.com.evil.example/acme/shipit")).toBeNull();
     expect(repoId("https://gitlab.com/acme/shipit")).toBeNull();
@@ -159,22 +129,15 @@ describe("repoId", () => {
   });
 
   it("accepts a host spelled in any case — DNS is case-insensitive", () => {
-    // A case-sensitive host match refused these outright, so the user flipped
-    // the grant on their own repository and was told it was not a recognised
-    // GitHub remote (cross-agent review finding).
     const id = "github:acme/shipit";
     expect(repoId("https://GitHub.com/acme/shipit.git")).toBe(id);
     expect(repoId("https://GITHUB.COM/Acme/ShipIt")).toBe(id);
     expect(repoId("git@GitHub.com:acme/shipit.git")).toBe(id);
     expect(repoId("https://github.com/acme/shipit.GIT")).toBe(id);
-    // Still only THIS host: case-insensitivity must not reach the label check.
     expect(repoId("https://GitHub.com.evil.example/acme/shipit")).toBeNull();
   });
 
   it("reads http, userinfo and a query as the same repository — deliberately", () => {
-    // Each of these is a spelling of one repository. Splitting them would mean
-    // a grant that silently does not apply; none of them can name a DIFFERENT
-    // repository, which is the property that actually has to hold.
     const id = "github:acme/shipit";
     expect(repoId("http://github.com/acme/shipit")).toBe(id);
     expect(repoId("https://github.com/acme/shipit?x=1")).toBe(id);
@@ -216,7 +179,6 @@ describe("fetchAndResolveDefaultBranch", () => {
     remoteDir = path.join(tmpDir, "remote");
     cloneDir = path.join(tmpDir, "clone");
 
-    // "Real remote" repo with one commit on `main`.
     fs.mkdirSync(remoteDir, { recursive: true });
     git(remoteDir, "init");
     git(remoteDir, "checkout -b main");
@@ -233,16 +195,12 @@ describe("fetchAndResolveDefaultBranch", () => {
   it("resolves to the remote's latest commit after fetching — not the stale clone's HEAD", async () => {
     const c1 = commitFile(remoteDir, "shipit.yaml", "agent:\n  memory: 1024\n", "c1");
 
-    // Stale clone — snapshot of the remote at c1.
     git(tmpDir, `clone "${remoteDir}" "${cloneDir}"`);
     expect(git(cloneDir, "rev-parse HEAD")).toBe(c1);
 
-    // Remote advances — the clone has NOT seen this commit.
     const c2 = commitFile(remoteDir, "shipit.yaml", "agent:\n  memory: 3072\n", "c2");
     expect(c2).not.toBe(c1);
 
-    // Session containers set both variables. simple-git treats them as unsafe
-    // and refuses to spawn unless this fetch drops them from its child env.
     vi.stubEnv("PAGER", "cat");
     vi.stubEnv("GIT_PAGER", "cat");
     let result: Awaited<ReturnType<typeof fetchAndResolveDefaultBranch>>;
@@ -254,7 +212,6 @@ describe("fetchAndResolveDefaultBranch", () => {
     const { resetTarget, fetched } = result;
 
     expect(fetched).toBe(true);
-    // resetTarget is `rev-parse origin/HEAD` — must be the NEW commit.
     expect(resetTarget).toBe(c2);
     expect(git(cloneDir, `rev-parse ${resetTarget}`)).toBe(c2);
   });
@@ -264,8 +221,6 @@ describe("fetchAndResolveDefaultBranch", () => {
     git(tmpDir, `clone "${remoteDir}" "${cloneDir}"`);
     expect(git(cloneDir, "rev-parse HEAD")).toBe(c1);
 
-    // Remote advances, but with skipFetch the clone must NOT learn about it —
-    // it resolves to its local snapshot (the freshly-pre-fetched cache state).
     const c2 = commitFile(remoteDir, "shipit.yaml", "agent:\n  memory: 3072\n", "c2");
     expect(c2).not.toBe(c1);
 
@@ -275,8 +230,6 @@ describe("fetchAndResolveDefaultBranch", () => {
       { skipFetch: true },
     );
 
-    // No network happened: fetched is false but this is a deliberate skip,
-    // not a failure (authError stays false). Resolves to the local snapshot.
     expect(fetched).toBe(false);
     expect(authError).toBe(false);
     expect(resetTarget).toBeDefined();
@@ -287,16 +240,12 @@ describe("fetchAndResolveDefaultBranch", () => {
     const c1 = commitFile(remoteDir, "shipit.yaml", "agent:\n  memory: 1024\n", "c1");
     git(tmpDir, `clone "${remoteDir}" "${cloneDir}"`);
 
-    // Break origin so the fetch fails — the helper must degrade to
-    // resolving from whatever `origin/*` refs the clone already has,
-    // never throw.
     git(cloneDir, `remote set-url origin "${path.join(tmpDir, "does-not-exist")}"`);
 
     const { resetTarget, fetched, authError } = await fetchAndResolveDefaultBranch(cloneDir);
 
     expect(fetched).toBe(false);
-    expect(authError).toBe(false); // unreachable != auth error
-    // Still resolves — to the snapshot's commit (c1), the pre-W2 behavior.
+    expect(authError).toBe(false);
     expect(resetTarget).toBeDefined();
     expect(git(cloneDir, `rev-parse ${resetTarget}`)).toBe(c1);
   });
@@ -330,8 +279,6 @@ describe("isWorkspaceCloneInSyncWithCache", () => {
   it("returns true when the clone was just cut from the bare cache (HEADs agree)", async () => {
     commitFile(remoteDir, "README.md", "# c1\n", "c1");
 
-    // Bare cache cloned from the remote at c1, then workspace cloned from the
-    // cache — mirrors the warm-pool flow at warm time.
     git(tmpDir, `clone --bare "${remoteDir}" "${cacheDir}"`);
     git(tmpDir, `clone --local "${cacheDir}" "${workspaceDir}"`);
 
@@ -341,24 +288,17 @@ describe("isWorkspaceCloneInSyncWithCache", () => {
   it("returns false after the cache advances past the warm clone (the long-idle-pool regression)", async () => {
     commitFile(remoteDir, "README.md", "# c1\n", "c1");
     git(tmpDir, `clone --bare "${remoteDir}" "${cacheDir}"`);
-    // Warm session cut here — workspace's `origin/HEAD` is frozen at c1.
     git(tmpDir, `clone --local "${cacheDir}" "${workspaceDir}"`);
 
-    // Prefetcher advances the bare cache by fetching the remote's new commits.
     commitFile(remoteDir, "README.md", "# c2\n", "c2");
     git(cacheDir, "fetch --force origin main:main");
 
-    // The workspace clone's `origin/HEAD` still points at c1, but the cache
-    // is now at c2 — the agreement check must catch this so the claim path
-    // falls back to a real refresh instead of branching from c1.
     expect(await isWorkspaceCloneInSyncWithCache(workspaceDir, cacheDir)).toBe(false);
   });
 
   it("returns false when the cache directory is missing", async () => {
     commitFile(remoteDir, "README.md", "# c1\n", "c1");
     git(tmpDir, `clone "${remoteDir}" "${workspaceDir}"`);
-    // No cache dir at all — a half-set-up state must degrade to the refresh
-    // path, never to a silent skip.
     expect(await isWorkspaceCloneInSyncWithCache(workspaceDir, path.join(tmpDir, "missing-cache"))).toBe(false);
   });
 
@@ -367,8 +307,6 @@ describe("isWorkspaceCloneInSyncWithCache", () => {
     git(tmpDir, `clone --bare "${remoteDir}" "${cacheDir}"`);
     git(tmpDir, `clone --local "${cacheDir}" "${workspaceDir}"`);
 
-    // Older / hand-crafted clones may lack the `origin/HEAD` symbolic ref —
-    // the helper must still resolve via `origin/main` / `origin/master`.
     try { git(workspaceDir, "symbolic-ref -d refs/remotes/origin/HEAD"); } catch { /* ok */ }
 
     expect(await isWorkspaceCloneInSyncWithCache(workspaceDir, cacheDir)).toBe(true);
@@ -401,27 +339,20 @@ describe("syncLocalDefaultBranchToOrigin", () => {
   });
 
   it("moves local `main` up to origin/main after the branch was cut from a stale snapshot", async () => {
-    // Mirror the real flow: remote@c1 → bare cache → `--local` workspace clone,
-    // then the remote advances to c2 and the workspace fetches the real remote.
     const c1 = commitFile(remoteDir, "README.md", "# c1\n", "c1");
     git(tmpDir, `clone --bare "${remoteDir}" "${cacheDir}"`);
     git(tmpDir, `clone --local "${cacheDir}" "${workspaceDir}"`);
-    // `cloneFromCache` resets origin to the real remote.
     git(workspaceDir, `remote set-url origin "${remoteDir}"`);
     expect(git(workspaceDir, "rev-parse main")).toBe(c1);
 
     const c2 = commitFile(remoteDir, "README.md", "# c2\n", "c2");
     git(workspaceDir, "fetch origin");
-    // Session branch is cut from the freshly-fetched origin/HEAD (= c2)…
     git(workspaceDir, "checkout -b shipit/test origin/main");
     expect(git(workspaceDir, "rev-parse HEAD")).toBe(c2);
-    // …but local `main` is still frozen at the stale snapshot (c1) — this is
-    // the gap that makes `main..HEAD` show already-merged commits (docs/194).
     expect(git(workspaceDir, "rev-parse main")).toBe(c1);
 
     await syncLocalDefaultBranchToOrigin(workspaceDir);
 
-    // Local `main` now tracks origin/main, so the PR-review comparison is clean.
     expect(git(workspaceDir, "rev-parse main")).toBe(c2);
     expect(git(workspaceDir, "log main..HEAD --oneline")).toBe("");
   });
@@ -429,8 +360,6 @@ describe("syncLocalDefaultBranchToOrigin", () => {
   it("refuses to move the checked-out default branch (no working-tree disturbance)", async () => {
     const c1 = commitFile(remoteDir, "README.md", "# c1\n", "c1");
     git(tmpDir, `clone "${remoteDir}" "${workspaceDir}"`);
-    // Sitting ON main with the remote advanced — the helper must not touch the
-    // current branch (git would reject it; we skip to avoid the noise).
     const c2 = commitFile(remoteDir, "README.md", "# c2\n", "c2");
     git(workspaceDir, "fetch origin");
     expect(git(workspaceDir, "rev-parse main")).toBe(c1);
@@ -438,13 +367,11 @@ describe("syncLocalDefaultBranchToOrigin", () => {
 
     await syncLocalDefaultBranchToOrigin(workspaceDir);
 
-    // Unchanged — the checked-out branch is left alone.
     expect(git(workspaceDir, "rev-parse main")).toBe(c1);
   });
 
   it("is a no-op when there is no origin default branch to resolve", async () => {
     commitFile(remoteDir, "README.md", "# c1\n", "c1");
-    // A standalone repo with no origin at all — must not throw.
     git(tmpDir, `init "${workspaceDir}"`);
     git(workspaceDir, "checkout -b shipit/test");
     git(workspaceDir, "config user.email test@test");
@@ -457,10 +384,6 @@ describe("syncLocalDefaultBranchToOrigin", () => {
 
 describe("isGitAuthError", () => {
   it("recognizes the standard GitHub credential-failure strings (remote rejection only)", () => {
-    // The exact stderr from a `git push`/`git fetch` whose credential was
-    // rejected by the remote — these are the only signals that prove the
-    // server actually rejected what we sent, vs the local repo never sending
-    // anything in the first place.
     expect(isGitAuthError(new Error(
       "remote: Invalid username or token. Password authentication is not supported for Git operations.\n" +
       "fatal: Authentication failed for 'https://github.com/foo/bar.git/'",
@@ -470,10 +393,6 @@ describe("isGitAuthError", () => {
   });
 
   it("does NOT match 'no credentials sent' errors — those are client-side config problems, not remote rejection", () => {
-    // These mean the local repo had no credential helper (or one that
-    // returned nothing) — git never got a credential to send. A valid
-    // stored token must not be cleared on these; the fix is to (re-)wire
-    // up the credential helper, not to drop the token.
     expect(isGitAuthError(new Error("could not read Username for 'https://github.com'"))).toBe(false);
     expect(isGitAuthError(new Error("fatal: could not read Username for 'https://github.com': terminal prompts disabled"))).toBe(false);
   });
@@ -486,13 +405,6 @@ describe("isGitAuthError", () => {
   });
 });
 
-/**
- * docs/287-agent-merge-per-repo — the ACTION resolver and the AUTHORIZATION
- * identity must agree on which repository a URL names. They did not: `repoId`
- * accepts a dotted repository name and `parseGitHubRemote` truncated at the
- * first dot, so a grant on `acme/foo.bar` authorised operations that all
- * targeted `acme/foo` (cross-agent review finding).
- */
 describe("parseGitHubRemote", () => {
   it("keeps a dotted repository name whole, and agrees with repoId", () => {
     expect(parseGitHubRemote("https://github.com/acme/foo.bar.git"))

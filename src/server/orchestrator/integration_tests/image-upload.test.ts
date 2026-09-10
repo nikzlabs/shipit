@@ -68,12 +68,11 @@ describe("Integration: Image upload", () => {
     }
   });
 
-  // A minimal 1x1 red PNG (valid base64)
   const TINY_PNG_BASE64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwADhQGAWjR9awAAAABJRU5ErkJggg==";
 
   it("send_message with valid images saves them to uploads and references in prompt", async () => {
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
     client.send({
       type: "send_message",
@@ -85,17 +84,13 @@ describe("Integration: Image upload", () => {
 
     await waitForClaude(() => lastClaude);
 
-    // Images are saved to disk by the orchestrator and referenced in the prompt.
-    // The agent receives the modified prompt, not inline base64 images.
     expect(lastClaude.runCalled).toBe(true);
     expect(lastClaude.lastPrompt).toContain("Make it look like this");
     expect(lastClaude.lastPrompt).toContain("<attached_images>");
     expect(lastClaude.lastPrompt).toContain("/uploads/");
     expect(lastClaude.lastPrompt).toContain(".png");
-    // Images are NOT passed inline — they're saved to disk instead
     expect(lastClaude.lastImages).toBeUndefined();
 
-    // Simulate Claude finishing
     lastClaude.emit("event", { type: "system", subtype: "init", session_id: "img-session-1" });
     lastClaude.finish("img-session-1");
 
@@ -103,14 +98,8 @@ describe("Integration: Image upload", () => {
   });
 
   it("refuses an image when the session is pinned to a text-only model (planning#460)", async () => {
-    // The user-facing half of planning#460. Before it, this turn was SPAWNED and
-    // the image was handed to a model that cannot take one — either malforming
-    // the request (OpenCode declares the modality, so the service rejects it) or
-    // spending the turn on a model that answers it cannot see the picture. The
-    // catalogue can now say which models see, so ShipIt refuses first and names
-    // the model, which is the thing the user can act on.
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
     sessions.setModelSelection(client.sessionId, {
       serviceId: "deepseek",
       billingMode: "key",
@@ -128,19 +117,15 @@ describe("Integration: Image upload", () => {
     const msg = await client.receiveType("error");
     expect((msg as any).message).toContain("V4 Pro");
     expect((msg as any).message).toContain("cannot read images");
-    // And no turn was started — the whole point is not to spend one going blind.
     expect(lastClaude).toBeFalsy();
 
     client.close();
   });
 
   it("refuses the composer's shape too — an image arrives as an upload ref (planning#460)", async () => {
-    // The browser sends `uploads: [{path}]`, never inline `images`. A gate that
-    // read `msg.images` alone would pass every test above and refuse nothing a
-    // human ever sends. The check is extension-based and runs before any disk
-    // read, which is why no file has to exist for this.
+    // Extension-based rejection must work before the upload is read from disk.
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
     sessions.setModelSelection(client.sessionId, {
       serviceId: "zai",
       billingMode: "sub",
@@ -161,11 +146,8 @@ describe("Integration: Image upload", () => {
   });
 
   it("still sends the image when the pinned model can see (planning#460)", async () => {
-    // The control for the test above: the refusal must be scoped to a catalogue
-    // `"no"`. A gate that also caught vision models would read as "attachments
-    // stopped working" and would be far worse than the bug it replaced.
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
     sessions.setModelSelection(client.sessionId, {
       serviceId: "anthropic",
       billingMode: "sub",
@@ -190,7 +172,7 @@ describe("Integration: Image upload", () => {
 
   it("send_message with invalid MIME type returns error", async () => {
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
     client.send({
       type: "send_message",
@@ -209,7 +191,7 @@ describe("Integration: Image upload", () => {
 
   it("send_message with too many images returns error", async () => {
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
     const images = Array.from({ length: 6 }, (_, i) => ({
       data: TINY_PNG_BASE64,
@@ -232,11 +214,8 @@ describe("Integration: Image upload", () => {
 
   it("send_message with oversized image returns error", async () => {
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
-    // Create a base64 string that decodes to > 5MB
-    // Each base64 char = 6 bits, so 4 chars = 3 bytes
-    // 5MB = 5242880 bytes -> need ~7000000 base64 chars
     const bigData = Buffer.alloc(5 * 1024 * 1024 + 1, 0x41).toString("base64");
 
     client.send({
@@ -256,7 +235,7 @@ describe("Integration: Image upload", () => {
 
   it("send_message with images persists them in chat history", async () => {
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
     client.send({
       type: "send_message",
@@ -270,7 +249,6 @@ describe("Integration: Image upload", () => {
 
     lastClaude.emit("event", { type: "system", subtype: "init", session_id: "img-persist-test" });
 
-    // Capture the app session UUID from session_started
     let appSessionId: string | undefined;
     for (let i = 0; i < 10; i++) {
       const m = await client.receive();
@@ -288,14 +266,11 @@ describe("Integration: Image upload", () => {
     lastClaude.emit("event", { type: "result", subtype: "success", session_id: "img-persist-test" });
     lastClaude.emit("done", 0);
 
-    // Now load the chat history via HTTP using the app session UUID
-    // (chat persistence is synchronous so it's already on disk)
     const historyRes = await app.inject({ method: "GET", url: `/api/sessions/${appSessionId}/history` });
     expect(historyRes.statusCode).toBe(200);
     const chatHistory = historyRes.json();
 
     expect(chatHistory.messages.length).toBeGreaterThanOrEqual(2);
-    // Find the first user message with images
     const userMsg = chatHistory.messages.find((m: any) => m.role === "user" && m.images?.length > 0);
     expect(userMsg).toBeDefined();
     expect(userMsg.text).toBe("Check this");
@@ -306,18 +281,10 @@ describe("Integration: Image upload", () => {
   });
 
   it("uploaded image stays at original /uploads/ path so hydration recognizes it as sent", async () => {
-    // Regression test for: "Attached image in one turn often reappears as
-    // attached in subsequent turn." The previous behavior unlinked the
-    // uploaded file from /uploads/ and re-saved it under a randomized name,
-    // which broke the round-trip between chat history's `uploadPaths`
-    // (original name) and the GET /files/uploads listing (renamed file) —
-    // so hydrateUploads couldn't match them and re-marked the image as
-    // pending.
     const client = await TestClient.connect(port);
     const sessionId = client.sessionId;
-    await client.receive(); // preview_status
+    await client.receive();
 
-    // 1) Upload an image via the upload endpoint (same path the browser uses).
     const crypto = await import("node:crypto");
     const boundary = `----FormBoundary${crypto.randomUUID().replace(/-/g, "")}`;
     const fileBuf = Buffer.from(TINY_PNG_BASE64, "base64");
@@ -339,10 +306,9 @@ describe("Integration: Image upload", () => {
     expect(uploadRes.statusCode).toBe(200);
     const { files: uploaded } = uploadRes.json() as { files: { path: string; name: string }[] };
     expect(uploaded).toHaveLength(1);
-    const uploadedPath = uploaded[0].path; // e.g. "/uploads/screenshot.png"
+    const uploadedPath = uploaded[0].path;
     expect(uploadedPath).toMatch(/^\/uploads\//);
 
-    // 2) Send a message referencing the upload (this is what browser does).
     client.send({
       type: "send_message",
       text: "What's in this image?",
@@ -350,9 +316,6 @@ describe("Integration: Image upload", () => {
     });
     await waitForClaude(() => lastClaude);
 
-    // The agent prompt should reference the ORIGINAL upload path (not a
-    // renamed copy). This is what makes uploadPaths in chat history
-    // match the actual file on disk.
     expect(lastClaude.lastPrompt).toContain("<attached_images>");
     expect(lastClaude.lastPrompt).toContain(uploadedPath);
 
@@ -360,7 +323,6 @@ describe("Integration: Image upload", () => {
     lastClaude.emit("event", { type: "result", subtype: "success", session_id: "img-hydrate-test" });
     lastClaude.emit("done", 0);
 
-    // 3) The original uploaded file MUST still exist on disk (we used to unlink it).
     const listRes = await app.inject({
       method: "GET",
       url: `/api/sessions/${sessionId}/files/uploads`,
@@ -369,11 +331,8 @@ describe("Integration: Image upload", () => {
     const { files: onDisk } = listRes.json() as { files: { path: string }[] };
     const onDiskPaths = onDisk.map((f) => f.path);
     expect(onDiskPaths).toContain(uploadedPath);
-    // No phantom renamed duplicate should have been created.
     expect(onDiskPaths).toHaveLength(1);
 
-    // 4) Chat history must record the same path under uploadPaths so the
-    //    client-side hydrateUploads can match them.
     const historyRes = await app.inject({
       method: "GET",
       url: `/api/sessions/${sessionId}/history`,
@@ -389,7 +348,7 @@ describe("Integration: Image upload", () => {
 
   it("send_message with 0 images works normally (no validation error)", async () => {
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
     client.send({
       type: "send_message",
@@ -397,7 +356,6 @@ describe("Integration: Image upload", () => {
       images: [],
     });
 
-    // Should start Claude normally without error
     await waitForClaude(() => lastClaude);
     expect(lastClaude.lastPrompt).toBe("No images");
     expect(lastClaude.lastImages).toBeUndefined();

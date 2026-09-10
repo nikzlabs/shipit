@@ -1,28 +1,10 @@
-/**
- * Shared fakes/factories for the PR-poller test suites.
- *
- * Extracted from `pr-status-poller.test.ts` (docs/201 Phase P9) so the poller,
- * supervisor (cadence), and global-gate (viewer-gating) test files can each
- * drive the same minimal stubs without duplicating them.
- */
-
 import { vi } from "vitest";
 import type { ParsedWorkflow } from "./workflow-loader.js";
 import type { SessionManager } from "./sessions.js";
 import type { GitHubAuthManager } from "./github-auth.js";
 import type { SessionRunnerInterface, SessionRunnerRegistry } from "./session-runner.js";
 
-/**
- * Minimal SessionRunnerRegistry fake for tests that need to drive the
- * viewer-gated supervisor. Lets a test attach/detach viewers and toggle a
- * session's `running` / `agentBusy` flags without spinning up real runners.
- *
- * `agentBusy` follows `running` unless `setBusy` overrides it — the real
- * runner's getter is strictly wider (background tasks, a backgrounded sub-agent
- * consult, the post-turn hold), and a fake that answered only `running` would
- * make every gate built on `agentBusy` untestable: it could never read busy in
- * the exact window — turn over, work not yet pushed — those gates exist for.
- */
+// setBusy models work that continues after the agent's running flag clears.
 export function makeFakeRegistry(): SessionRunnerRegistry & {
   setViewers(sessionId: string, count: number): void;
   setRunning(sessionId: string, running: boolean): void;
@@ -55,7 +37,6 @@ export function makeFakeRegistry(): SessionRunnerRegistry & {
   };
 }
 
-/** Convenience: a parsed-workflow stub representing "any workflow, no filter." */
 export const ALWAYS_APPLIES: ParsedWorkflow = {
   unparseable: false,
   events: [
@@ -106,7 +87,6 @@ export function makeGraphQLPrNode(overrides: Record<string, unknown> = {}) {
   };
 }
 
-/** Conversation selections as GitHub returns them (docs/133 Phase 4). */
 export const CONVERSATION_OVERRIDES = {
   comments: {
     nodes: [
@@ -137,12 +117,6 @@ export const CONVERSATION_OVERRIDES = {
   },
 };
 
-/**
- * `archived: true` models `SessionManager.list()`'s `userArchived` filter: the
- * session disappears from `list()` but `get()` still returns it. Anything that
- * iterates `list()` (the poller's per-session loop) stops seeing it, which is
- * how an armed managed auto-merge could be left with nothing to merge it.
- */
 export function makeSessionManager(
   sessions: { id: string; branch?: string; remoteUrl?: string; workspaceDir?: string; archived?: boolean }[],
   opts: { pendingMergeWatches?: string[] } = {},
@@ -160,20 +134,14 @@ export function makeSessionManager(
     get: (id: string) => sessions.find((s) => s.id === id) as never,
     setPrStatus: vi.fn(),
     markClosed: vi.fn(),
-    // docs/218 — capture the merged PR's head tip as the auto-reset safety anchor.
     setMergedHeadSha: vi.fn(),
     getAllPrStatuses: vi.fn().mockReturnValue([]),
-    // docs/196 — the polling gate calls this to keep the supervisor alive while
-    // a child session carries a non-terminal notify-on-merge watch. Default
-    // empty; tests opt in via `opts.pendingMergeWatches`.
     listPendingMergeWatches: vi.fn(() =>
       (opts.pendingMergeWatches ?? []).map((childSessionId) => ({
         childSessionId,
         watch: { parentSessionId: "parent", state: "armed", registeredAt: new Date().toISOString() },
       })),
     ),
-    // Mutate the backing array so a later get() reflects the corrected URL,
-    // mirroring the real manager's persist-then-read behavior.
     setRemoteUrl: vi.fn((id: string, remoteUrl: string | undefined) => {
       const s = sessions.find((x) => x.id === id);
       if (s) s.remoteUrl = remoteUrl;
@@ -186,11 +154,7 @@ export function makeGitHubAuth(graphqlResult: unknown = null, restProbeResult: u
     authenticated: true,
     graphqlQuery: vi.fn().mockResolvedValue(graphqlResult),
     findPullRequestAnyState: vi.fn().mockResolvedValue(restProbeResult),
-    // Poller reads this on every tick; default to "not limited" so existing
-    // tests don't need to know about the rate-limit gate.
     getRateLimitState: vi.fn().mockReturnValue({ limited: false, resetAt: null, remaining: null }),
-    // The managed auto-merge loop's REST merge. Succeeds by default so a test
-    // only has to assert whether it was reached.
     mergePullRequest: vi.fn().mockResolvedValue({ success: true, message: "merged" }),
   } as unknown as GitHubAuthManager;
 }

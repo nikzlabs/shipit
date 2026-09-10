@@ -2,16 +2,6 @@ import { describe, it, expect, afterEach, vi } from "vitest";
 import { mergePullRequestAttempt } from "./github-auth-prs.js";
 import { GitHubAuthManager } from "./github-auth.js";
 
-/**
- * docs/287-agent-merge-per-repo req 9 — the three-way classification.
- *
- * The asymmetry is the whole point. Classifying an indeterminate result as a
- * refusal loses the record of a merge that may have happened; classifying an
- * unreadable answer as a merge claims one that may not have. So the rule is:
- * GitHub answering ABOUT this merge is a refusal, and everything else is
- * indeterminate.
- */
-
 const realFetch = globalThis.fetch;
 
 afterEach(() => {
@@ -53,9 +43,6 @@ describe("mergePullRequestAttempt", () => {
     ["a stringly merged flag", { merged: "false" }],
     ["a number", 1],
   ])("treats %s as indeterminate, never as a merge", async (_label, body) => {
-    // GitHub documents a 200 here only for a performed merge carrying a boolean
-    // `merged`. Anything else readable is an answer ShipIt does not understand,
-    // and reading it as a merge would record one that may not have happened.
     respond(200, body);
     await expect(attempt()).resolves.toMatchObject({ outcome: "indeterminate" });
   });
@@ -66,9 +53,6 @@ describe("mergePullRequestAttempt", () => {
   });
 
   it("carries GitHub's own reason on an explicit merged:false (req 7)", async () => {
-    // Req 7 says GitHub's refusal is shown word for word. The generic sentence
-    // used to replace it unconditionally, throwing away the only part of the
-    // answer the agent could act on (cross-agent review finding).
     respond(200, { merged: false, message: "Base branch was modified" });
     const res = await attempt();
     expect(res.message).toContain("Base branch was modified");
@@ -106,8 +90,6 @@ describe("mergePullRequestAttempt", () => {
   });
 
   it("treats a rejected request as indeterminate", async () => {
-    // The request may have reached GitHub and been executed. "It threw" does
-    // not mean "it did not merge".
     globalThis.fetch = vi.fn(async () => { throw new Error("socket hang up"); }) as unknown as typeof globalThis.fetch;
     await expect(attempt()).resolves.toMatchObject({ outcome: "indeterminate" });
   });
@@ -122,17 +104,7 @@ describe("mergePullRequestAttempt", () => {
   });
 });
 
-/**
- * docs/288 req 4 — the manager's wrapper, not the impl above.
- *
- * The wrapper fetches the pull request's title and body BEFORE it sends the
- * merge, and that fetch is a full network round trip. A caller whose last
- * authorisation check sits before the whole method therefore leaves a
- * cancellable read inside the window it cannot cancel; `beforeSend` is asked
- * between the two, which closes the window to the PUT alone.
- */
 describe("GitHubAuthManager.mergePullRequestAttempt — beforeSend", () => {
-  /** Records every request so the ORDER of the two calls is observable. */
   function trackFetch(): string[] {
     const methods: string[] = [];
     globalThis.fetch = vi.fn(async (_url: unknown, init?: { method?: string }) => {
@@ -142,8 +114,6 @@ describe("GitHubAuthManager.mergePullRequestAttempt — beforeSend", () => {
         status: 200,
         statusText: "",
         headers: new Headers(),
-        // Enough of a pull request for `viewPullRequest` to parse, plus the
-        // merge response's own fields — one shape serves both calls.
         json: async () => ({
           merged: true, sha: "merge-sha",
           html_url: "https://github.com/o/r/pull/7", number: 7, title: "t", body: "b",
@@ -157,8 +127,6 @@ describe("GitHubAuthManager.mergePullRequestAttempt — beforeSend", () => {
   }
 
   function manager(): GitHubAuthManager {
-    // Neither dependency is reached: `mergePullRequestAttempt` uses the token
-    // field directly and every request is the stub above.
     const m = new GitHubAuthManager("/tmp/does-not-exist-288", {} as never);
     (m as unknown as { _token: string })._token = "token";
     return m;
@@ -171,14 +139,11 @@ describe("GitHubAuthManager.mergePullRequestAttempt — beforeSend", () => {
     );
 
     expect(out).toEqual({ outcome: "refused", message: "the permission was withdrawn" });
-    // The preparatory read happened — the hook is asked AFTER it, which is the
-    // whole reason it exists — and no PUT followed.
     expect(methods).not.toContain("PUT");
     expect(methods.length).toBeGreaterThan(0);
   });
 
   it("sends the merge when the hook allows it", async () => {
-    // The control: a hook that always refused would satisfy the test above.
     const methods = trackFetch();
     const out = await manager().mergePullRequestAttempt(
       "o", "r", 7, "squash", "sha-head", () => null,

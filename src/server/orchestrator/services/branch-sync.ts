@@ -1,61 +1,6 @@
-/**
- * Is the session's branch on GitHub the same branch the session actually has?
- *
- * The merge button merges what is on the REMOTE. Every other merge gate answers
- * a question about that remote state — is CI green, is it mergeable, has review
- * approved — and none of them can see the case where the remote state is simply
- * OLD. ShipIt commits after every turn and pushes on a 5s debounce, so a push
- * that never landed leaves the session holding commits GitHub has never seen,
- * with a pull request that looks perfectly mergeable.
- *
- * That is not a hypothetical. `services/auto-push-scheduler.ts` records the
- * 2026-08-14/15 incident in full: a rebased branch had every unforced push
- * rejected for ten hours, and two pull requests then merged at the state of the
- * last successful push — seven and two commits behind. Both merges passed every
- * gate that existed.
- *
- * ## What this module answers, and what it deliberately does not
- *
- * It compares local HEAD with the remote-tracking ref for the SAME branch and
- * classifies the result ({@link BranchSyncState}). Two readings block a merge —
- * `ahead` (the remote is missing the session's commits) and `diverged` (the two
- * histories disagree, and ShipIt never force-pushes on its own). `behind` does
- * not: the remote's history already contains every commit the session made, and
- * the extra ones are a deliberate act on the branch rather than a stale
- * snapshot. (Ancestry, not content: a later remote commit may revert an earlier
- * one. Ruling that out would mean demanding exact head equality, which blocks
- * every benign case — a suggestion applied on GitHub, a push from a laptop — to
- * catch a decision somebody made on purpose.)
- *
- * **Absence is not a verdict.** Every path that cannot answer — no workspace, a
- * clone with no tracking ref, HEAD on a different branch than the pull request's
- * head, an unreachable remote — returns `undefined`, and callers merge. A guard
- * that blocked on "cannot tell" would take the merge button away from any
- * session whose workspace had been reclaimed, which is both common and harmless.
- * The rule is narrow on purpose: block only on a POSITIVE reading that the
- * remote is behind.
- *
- * ## Two readings, one classifier
- *
- * {@link readBranchSync} is local-only (no network) and runs on every poll tick,
- * so the client can disable the button before it is clicked. Its input is the
- * remote-tracking ref, which this clone's own pushes keep current — which is
- * exactly the state a failed push leaves stale in the blocking direction.
- *
- * {@link resolveMergeSync} is the authoritative one, and runs inside the merge
- * request itself. It fetches the single branch first, so a stale tracking ref
- * cannot pass a merge through, and it is what makes the guard hold against a
- * stale browser tab that never received the poll update.
- */
-
 import type { BranchSyncStatus } from "../../shared/types/github-types.js";
 import { getErrorMessage } from "../validation.js";
 
-/**
- * The slice of `GitManager` this module needs. Structural so tests can drive the
- * classifier without a repo, and so the two callers (the poller, the merge
- * route) can pass the manager they already hold.
- */
 export interface BranchSyncGit {
   currentBranchOrNull(): Promise<string | null>;
   aheadBehind(ref: string): Promise<{ ahead: number; behind: number } | null>;
@@ -63,7 +8,6 @@ export interface BranchSyncGit {
   push(remote?: string, branch?: string): Promise<string>;
 }
 
-/** Classify a pair of commit counts. Total order: both zero ⇒ in sync. */
 export function classifyBranchSync(counts: { ahead: number; behind: number }): BranchSyncStatus {
   const { ahead, behind } = counts;
   if (ahead > 0 && behind > 0) return { state: "diverged", ahead, behind };
@@ -72,15 +16,7 @@ export function classifyBranchSync(counts: { ahead: number; behind: number }): B
   return { state: "in-sync", ahead, behind };
 }
 
-/**
- * Read the sync state from local refs only — no network, cheap enough for every
- * poll tick.
- *
- * `branch` is the pull request's HEAD branch, and the check is skipped outright
- * when the workspace is not on it. A session sitting on some other branch tells
- * us nothing about whether the PR's branch is current, and answering anyway
- * would compare two unrelated histories and report a confident `diverged`.
- */
+// Poll from local refs. An unknown result does not block merging.
 export async function readBranchSync(
   git: BranchSyncGit,
   branch: string,
@@ -93,21 +29,10 @@ export async function readBranchSync(
     const counts = await git.aheadBehind(`refs/remotes/${remote}/${branch}`);
     return counts ? classifyBranchSync(counts) : undefined;
   } catch {
-    // "Cannot tell" — never a verdict. See the module docstring.
     return undefined;
   }
 }
 
-/**
- * Read the sync state against the remote's LIVE tip, by fetching the one branch
- * first.
- *
- * A failed fetch falls back to the local reading rather than giving up, and that
- * is safe in the only direction that matters: a stale tracking ref can hide
- * movement on the REMOTE side (which produces `behind`, which never blocks), but
- * it cannot hide this clone's own unpushed commits — those are stale in the
- * `ahead` direction, which is precisely what the fallback still catches.
- */
 export async function resolveMergeSync(
   git: BranchSyncGit,
   branch: string,
@@ -116,59 +41,21 @@ export async function resolveMergeSync(
   try {
     await git.fetchBranch(remote, branch);
   } catch {
-    // Unreachable remote, deleted branch, no credentials. Fall through to the
-    // local refs — worse information, never wrong in the blocking direction.
+    // Fall back to local refs when the remote cannot be read.
   }
   return readBranchSync(git, branch, remote);
 }
 
-/**
- * What the merge route should do about the branch's sync state.
- *
- * `pushed` says whether a synchronous push landed here, because the debounced
- * auto-push may be cancelled ONLY then — cancelling one that nothing replaced
- * strands the commit with no retry and no error (docs/287 req 17).
- */
+// Cancel a pending auto-push only when `pushed` confirms its replacement landed.
 export type MergeSyncVerdict =
   | { action: "proceed" }
   | { action: "hold"; pushed: boolean; message: string };
 
-/**
- * The merge route's guard: resolve the sync state and decide.
- *
- * **The branch is resolved here, from the workspace, and is not a parameter.**
- * `services/github.ts` `mergePullRequest` finds the pull request to merge from
- * `git.getCurrentBranch()` — so the branch this guard has to reason about is the
- * CURRENT one, whatever the card says. Passing the card's head branch instead
- * looked equivalent and was not: when the workspace sits on a different branch
- * than the card, the comparison is meaningless, the guard returns "cannot tell",
- * and the merge proceeds — against the current branch's pull request, whose sync
- * state was never examined at all. Reading the same branch the merge reads
- * removes that hole rather than papering over it.
- *
- * `ahead` is handled by PUSHING rather than by refusing outright — the commits
- * belong on that branch, ShipIt would have pushed them itself, and a plain
- * (never forced) push is the whole remedy. But the merge still does not go ahead
- * on the same click: the push moves the head, so every check the other gates
- * just cleared now refers to the previous commit. Merging on the strength of
- * them would trade "merges too little" for "merges unverified", which is not an
- * improvement. So the push lands and the answer is "not yet" — the poller
- * re-reads the new head, and the next click (or an armed auto-merge) merges the
- * work the session actually produced.
- *
- * `diverged` is refused with no attempt to repair it. The two remedies — pull,
- * or force-push — destroy the other side's commits when chosen wrongly, and
- * which one is right is not derivable from git. The same reasoning already
- * governs the auto-push scheduler, whose transcript notice spells the choice out
- * for the user.
- */
 export async function guardMergeSync(
   git: BranchSyncGit,
   remote = "origin",
 ): Promise<MergeSyncVerdict> {
-  // Detached HEAD, an unborn branch, an unreadable workspace: nothing to
-  // compare, and the merge itself resolves no pull request from such a state
-  // either.
+  // Match the merge route's current branch, which may differ from the PR card.
   const branch = await git.currentBranchOrNull().catch(() => null);
   if (!branch) return { action: "proceed" };
 
@@ -204,6 +91,7 @@ export async function guardMergeSync(
         + " last successful push, without that work.",
     };
   }
+  // The push changed HEAD; wait for checks on that commit before merging.
   return {
     action: "hold",
     pushed: true,

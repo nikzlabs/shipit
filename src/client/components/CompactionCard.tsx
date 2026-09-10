@@ -3,16 +3,6 @@ import { ICON_SIZE } from "../design-tokens.js";
 import { formatTokenCount } from "../utils/model-info.js";
 import type { CompactionCard as CompactionCardData } from "../../server/shared/types.js";
 
-/**
- * docs/178 — inline "Context compacted" transcript card. Rendered when a chat
- * message carries a `compaction` payload (live from a `compaction_card` WS event
- * or rehydrated from persisted history).
- *
- * Both CLIs may compact unsolicited, and Codex supplies no token/duration
- * figures, so every detail is optional: the card always shows the headline and
- * fills in the before→after token delta and trigger ("/compact" vs automatic)
- * only when the backend reported them.
- */
 export function CompactionCard({ card }: { card: CompactionCardData }) {
   const hasTokens =
     typeof card.preTokens === "number" && typeof card.postTokens === "number";

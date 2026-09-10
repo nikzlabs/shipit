@@ -1,15 +1,3 @@
-/**
- * docs/214 — unit tests for the release-prepare service, focused on the
- * content-free guard: a bare `shipit release prepare <bump>` (no --pick/--from)
- * resets the head branch to `origin/<release-branch>` and adds only a version
- * bump, so it would ship a release identical to the previous one. This was a real
- * footgun — a `prepare patch` cut a content-free 0.2.1.
- *
- * The git side is a hand-rolled fake (only the methods prepareRelease calls), and
- * `agentCreatePr` is mocked so no GitHub call is made. The version source is a
- * real temp `package.json` so `resolveSource`/`writeVersionToSource` work.
- */
-
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
@@ -32,14 +20,8 @@ vi.mock("./github.js", () => ({
 interface GitOverrides {
   remoteBranches?: string[];
   commitsAhead?: number;
-  /** Two-dot diff file count `origin/<release-branch>..HEAD` — drives the `--from` content-free guard. */
   diffFiles?: number;
   isClean?: boolean;
-  /**
-   * Version on `origin/<release-branch>`'s package.json — what `showFileAtRef`
-   * returns. `null`/omitted means the branch/file is absent (the anchor falls
-   * back to the working tree). Drives the release-branch version anchor tests.
-   */
   stableVersion?: string | null;
 }
 
@@ -75,8 +57,6 @@ let dir: string;
 
 beforeEach(() => {
   agentCreatePrMock.mockReset();
-  // No pre-existing PR for the head branch — the ordinary case. Tests that need
-  // one override this.
   findBranchPullRequestMock.mockReset();
   findBranchPullRequestMock.mockResolvedValue(null);
   agentCreatePrMock.mockResolvedValue({
@@ -106,7 +86,6 @@ describe("prepareRelease — content-free guard (docs/214)", () => {
     await expect(
       prepareRelease(git, githubAuth, { dir, bump: "patch", releaseBranch: "stable" }),
     ).rejects.toThrow(/no changes/i);
-    // We bail BEFORE bumping/committing/pushing/opening a PR.
     expect(calls.commitPaths).not.toHaveBeenCalled();
     expect(calls.forcePush).not.toHaveBeenCalled();
     expect(agentCreatePrMock).not.toHaveBeenCalled();
@@ -128,10 +107,8 @@ describe("prepareRelease — content-free guard (docs/214)", () => {
       from: "main",
     });
     expect(res.kind).toBe("pr-opened");
-    // It takes the override path, NOT a three-way merge (which could conflict).
     expect(calls.mergeOverride).toHaveBeenCalledWith("origin/main");
     expect(calls.merge).not.toHaveBeenCalled();
-    // The content-free guard for `--from` measures the tree diff, not commit count.
     expect(calls.diffStatTwoDot).toHaveBeenCalledWith("origin/stable");
     expect(calls.countCommitsAhead).not.toHaveBeenCalled();
     expect(agentCreatePrMock).toHaveBeenCalledOnce();
@@ -142,7 +119,6 @@ describe("prepareRelease — content-free guard (docs/214)", () => {
     await expect(
       prepareRelease(git, githubAuth, { dir, bump: "patch", releaseBranch: "stable", from: "main" }),
     ).rejects.toThrow(/no changes/i);
-    // We bail before committing/pushing/opening a PR.
     expect(calls.commitPaths).not.toHaveBeenCalled();
     expect(agentCreatePrMock).not.toHaveBeenCalled();
   });
@@ -174,7 +150,6 @@ describe("prepareRelease — content-free guard (docs/214)", () => {
   });
 
   it("--bootstrap is exempt from the guard (first release ships the new branch)", async () => {
-    // stable absent → bootstrap path; commitsAhead 0 must NOT be refused.
     const { git, calls } = makeGit({ commitsAhead: 0, remoteBranches: ["main"] });
     const res = await prepareRelease(git, githubAuth, {
       dir,
@@ -183,18 +158,11 @@ describe("prepareRelease — content-free guard (docs/214)", () => {
       bootstrap: true,
     });
     expect(res.kind).toBe("pr-opened");
-    // The guard is skipped entirely on bootstrap.
     expect(calls.countCommitsAhead).not.toHaveBeenCalled();
     expect(agentCreatePrMock).toHaveBeenCalledOnce();
   });
 });
 
-/**
- * `alreadyExisted` is rendered by the shim as "updated release PR #N", so it may
- * only ever describe an OPEN pull request. `agentCreatePr` hands back MERGED and
- * CLOSED ones under the same flag from its not-progressed short-circuit
- * (docs/202), and forwarding one would announce a release that was never opened.
- */
 describe("prepareRelease — only an OPEN release PR may be reported", () => {
   type DeadReason = "merged-not-progressed" | "closed-not-progressed";
   type NotProgressed = "base-not-contained" | "no-new-work" | "base-unknown" | "fetch-failed";
@@ -212,7 +180,6 @@ describe("prepareRelease — only an OPEN release PR may be reported", () => {
     ...(notProgressedBecause ? { notProgressedBecause } : {}),
   });
 
-  /** Prepare against `stable-2` while the dead PR targeted `stable`. */
   const prepareAgainstOtherBase = () =>
     prepareRelease(makeGit({ diffFiles: 4, remoteBranches: ["main", "stable", "stable-2"] }).git, githubAuth, {
       dir,
@@ -221,7 +188,6 @@ describe("prepareRelease — only an OPEN release PR may be reported", () => {
       from: "main",
     });
 
-  /** The refusal message, for the assertions that must also check what is ABSENT. */
   async function refusalMessage(): Promise<string> {
     try {
       await prepareAgainstOtherBase();
@@ -265,8 +231,6 @@ describe("prepareRelease — only an OPEN release PR may be reported", () => {
     );
   });
 
-  // A closed PR *can* be reopened through GitHub's API — ShipIt declines to
-  // reuse it. Claiming otherwise (as an earlier draft did) misinforms the user.
   it("says a CLOSED PR is one ShipIt won't reuse, not one GitHub can't reopen", async () => {
     agentCreatePrMock.mockResolvedValue(deadPr("closed-not-progressed", "base-not-contained"));
     const message = await refusalMessage();
@@ -274,8 +238,6 @@ describe("prepareRelease — only an OPEN release PR may be reported", () => {
     expect(message).not.toMatch(/GitHub cannot reopen/);
   });
 
-  // The three refusals have three different remedies, and the generic advice
-  // ("re-run against the old base") is actively wrong for two of them.
   it("base-not-contained points at the release branch the dead PR targeted", async () => {
     agentCreatePrMock.mockResolvedValue(deadPr("merged-not-progressed", "base-not-contained"));
     await expect(prepareAgainstOtherBase()).rejects.toThrow(/--release-branch stable/);
@@ -296,10 +258,6 @@ describe("prepareRelease — only an OPEN release PR may be reported", () => {
   });
 
   it("fetch-failed blames the connection, not the release, and asks for a re-run", async () => {
-    // The one arm where nothing about the release is wrong: ShipIt could not
-    // reach the remote to check. Cutting a different version repeats the same
-    // failure, so this must NOT give the "release a different version" advice
-    // the other refusals give.
     agentCreatePrMock.mockResolvedValue(deadPr("merged-not-progressed", "fetch-failed"));
     const message = await refusalMessage();
     expect(message).toMatch(/could not refresh "stable"/);
@@ -308,9 +266,6 @@ describe("prepareRelease — only an OPEN release PR may be reported", () => {
     expect(message).not.toMatch(/--release-branch/);
   });
 
-  // `alreadyExistedReason` is optional on `agentCreatePr`'s return, so a reason
-  // we cannot read must fail closed — an unreadable reason is a PR we cannot
-  // prove is live.
   it("refuses an existing PR whose reason is absent", async () => {
     agentCreatePrMock.mockResolvedValue(deadPr());
     await expect(prepareAgainstOtherBase()).rejects.toMatchObject({ statusCode: 409 });
@@ -324,14 +279,6 @@ describe("prepareRelease — only an OPEN release PR may be reported", () => {
   });
 });
 
-/**
- * `agentCreatePr` resolves an existing PR by HEAD BRANCH alone (`findPullRequest`
- * takes no base) and its open-PR short-circuit accepts whatever it finds. So an
- * open `release/<version>` → `stable` PR is handed to a run targeting
- * `stable-2`, and the result would pair that PR's number with the requested
- * branch — the shim and the lifecycle poller then both name a maintenance branch
- * the PR does not target, and merging publishes through the wrong one.
- */
 describe("prepareRelease — the release PR must target the requested release branch", () => {
   const openPrInto = (baseBranch: string) => ({
     number: 7,
@@ -345,7 +292,6 @@ describe("prepareRelease — the release PR must target the requested release br
     alreadyExistedReason: "open",
   });
 
-  /** Returns the git fake too, so a test can assert nothing destructive ran. */
   const prepareInto = (releaseBranch: string) => {
     const { git, calls } = makeGit({ diffFiles: 4, remoteBranches: ["main", "stable", "stable-2"] });
     const promise = prepareRelease(git, githubAuth, { dir, bump: "patch", releaseBranch, from: "main" });
@@ -361,10 +307,6 @@ describe("prepareRelease — the release PR must target the requested release br
     throw new Error("expected prepareRelease to refuse, but it resolved");
   }
 
-  // The PREFLIGHT. Refusing only on `agentCreatePr`'s result is too late: the
-  // head branch has been reset and force-pushed by then, so a typo'd
-  // `--release-branch` costs the open PR its diff, checks and reviews before we
-  // object. Nothing destructive may run.
   it("refuses before touching the branch when the open PR targets another base", async () => {
     findBranchPullRequestMock.mockResolvedValue({ number: 7, base: "stable", state: "open", merged: false });
     const { promise, calls } = prepareInto("stable-2");
@@ -384,23 +326,15 @@ describe("prepareRelease — the release PR must target the requested release br
     expect(message).not.toMatch(/already pushed/);
   });
 
-  // A preflight can't be authoritative — the PR may be retargeted between it and
-  // the create. The check on the returned value is what actually guarantees
-  // `releaseBranch` and `prNumber` describe the same PR.
   it("still refuses when the base changes after the preflight, and says the bump landed", async () => {
     findBranchPullRequestMock.mockResolvedValue(null);
     agentCreatePrMock.mockResolvedValue(openPrInto("stable"));
-    // One run only: `writeVersionToSource` mutates the temp package.json, so a
-    // second prepare in the same test would compute 0.2.2 and assert nothing.
     const { promise, calls } = prepareInto("stable-2");
     const message = await messageFrom(promise);
     expect(calls.forcePush).toHaveBeenCalled();
     expect(message).toMatch(/already pushed to "release\/0\.2\.1".*checks are stale/s);
   });
 
-  // The branch name comes from the GitHub API and is rendered into a command the
-  // user is invited to run. Git refs may legally contain `;`, `$`, `(`, `)` and
-  // quotes, so a hostile ref must not become shell syntax we composed.
   it("does not paste a shell-unsafe branch name into the suggested command", async () => {
     findBranchPullRequestMock.mockResolvedValue({
       number: 7,
@@ -411,7 +345,6 @@ describe("prepareRelease — the release PR must target the requested release br
     const message = await messageFrom(prepareInto("stable-2").promise);
     expect(message).toMatch(/--release-branch <branch>/);
     expect(message).not.toMatch(/--release-branch stable;/);
-    // The raw name still appears as quoted prose, so the user can identify it.
     expect(message).toContain('into "stable;$(touch /tmp/pwned)"');
   });
 
@@ -426,9 +359,6 @@ describe("prepareRelease — the release PR must target the requested release br
     });
   });
 
-  // The create path echoes back the `base` it was given, so a freshly opened PR
-  // can never trip the guard. Pinning it keeps the guard from turning an
-  // ordinary first release into a 409.
   it("lets a newly opened PR through", async () => {
     agentCreatePrMock.mockResolvedValue({
       number: 9,
@@ -477,18 +407,8 @@ describe("prepareRelease — prerelease path is unaffected by the guard (docs/21
   });
 });
 
-/**
- * docs/214 bugfix — the release-branch version anchor. The version bump PR lands
- * only on `stable` and is never merged back to `main`, so the session working
- * tree (branched off `main`) lags every release. Computing the next version from
- * the working tree therefore proposed a version AT OR BELOW what's published
- * (e.g. working tree 0.2.0 + an already-released v0.2.2 → a regressed v0.2.1).
- * The fix anchors the current version to `origin/<release-branch>` — what's
- * released and exactly what CI reads off the merged commit.
- */
 describe("release-branch version anchor (docs/214 bugfix)", () => {
   it("planRelease bumps from the release branch version, not the lagging working tree", async () => {
-    // Working tree (off main) is 0.2.0 from the fixture; stable carries 0.2.2.
     const { git, calls } = makeGit({ stableVersion: "0.2.2" });
     const plan = await planRelease(git, {
       dir,
@@ -499,7 +419,6 @@ describe("release-branch version anchor (docs/214 bugfix)", () => {
     expect(plan.currentVersion).toBe("0.2.2");
     expect(plan.version).toBe("0.2.3");
     expect(plan.tag).toBe("v0.2.3");
-    // It anchored by reading origin/stable's version source (after a fetch).
     expect(calls.fetch).toHaveBeenCalled();
     expect(calls.showFileAtRef).toHaveBeenCalledWith("origin/stable", "package.json");
   });
@@ -517,13 +436,11 @@ describe("release-branch version anchor (docs/214 bugfix)", () => {
     if (res.kind !== "pr-opened") return;
     expect(res.version).toBe("0.2.3");
     expect(res.tag).toBe("v0.2.3");
-    // The version actually written to the source file is the anchored one.
     const written = JSON.parse(fs.readFileSync(path.join(dir, "package.json"), "utf8")) as { version: string };
     expect(written.version).toBe("0.2.3");
   });
 
   it("falls back to the working tree when the release branch has no version file yet (bootstrap)", async () => {
-    // stableVersion omitted → showFileAtRef returns null → anchor falls back.
     const { git } = makeGit({ diffFiles: 4 });
     const plan = await planRelease(git, {
       dir,
@@ -543,7 +460,6 @@ describe("release-branch version anchor (docs/214 bugfix)", () => {
       mechanism: "tag-triggered",
       releaseBranch: "stable",
     });
-    // Reads the working tree (0.2.0), never consults origin/stable.
     expect(plan.currentVersion).toBe("0.2.0");
     expect(plan.version).toBe("0.2.1");
     expect(calls.showFileAtRef).not.toHaveBeenCalled();
@@ -560,18 +476,11 @@ describe("release-branch version anchor (docs/214 bugfix)", () => {
     });
     expect(res.kind).toBe("prerelease-proposed");
     if (res.kind !== "prerelease-proposed") return;
-    // rc targets the patch above the released 0.2.2, not the working tree's 0.2.0.
     expect(res.version).toBe("0.2.3-rc.1");
     expect(res.tag).toBe("v0.2.3-rc.1");
   });
 });
 
-/**
- * docs/214 — the `POST /release/plan` route reflects the plan onto the
- * `proposed` card via this pure builder. The bug it fixes: the route dropped the
- * `mechanism`, so a `release-branch` repo's "Confirm & publish" message used the
- * tag-triggered wording. The builder must carry the mechanism through.
- */
 describe("buildPlanProposeInput (docs/214 — plan-route propose options)", () => {
   const basePlan: ReleasePlan = {
     currentVersion: "0.2.2",

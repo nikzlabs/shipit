@@ -1,33 +1,14 @@
-/**
- * docs/276 — OpenCode compaction over the transient server.
- *
- * The behaviour worth guarding is not "it makes an HTTP call", it is the two
- * ways this can lie:
- *
- *  - The server announces a port that is NOT the one we asked for (`--port 0`
- *    resolves to OpenCode's fixed 4096, and to a random port when 4096 is
- *    taken), so a hard-coded port would work on a clean box and fail exactly
- *    when a user already has OpenCode running.
- *  - `summarize` can answer 200 with a body that is not `true`, which is the
- *    server accepting the request and declining the work. Reporting that as a
- *    compaction would put a "Context compacted" card over a silent no-op —
- *    the failure mode docs/276 set out to rule out for the CATALOGUE, and the
- *    same one applies to the implementation.
- */
-
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { EventEmitter } from "node:events";
 import type { ChildProcess } from "node:child_process";
 import { compactOpencodeSession } from "./compaction.js";
 
-/** A scriptable stand-in for the spawned `opencode serve`. */
 class FakeServer extends EventEmitter {
   stdout = new EventEmitter();
   stderr = new EventEmitter();
   pid = 5150;
   kill = vi.fn(() => true);
 
-  /** Reproduce the CLI's real readiness line. */
   announce(port: number): void {
     this.stdout.emit("data", Buffer.from("Warning: OPENCODE_SERVER_PASSWORD is not set; server is unsecured.\n"));
     this.stdout.emit("data", Buffer.from(`opencode server listening on http://127.0.0.1:${String(port)}\n`));
@@ -84,8 +65,6 @@ describe("compactOpencodeSession", () => {
     const h = makeHarness();
     fetchMock.mockResolvedValue(jsonResponse("true"));
     const done = h.run();
-    // We ask for `--port 0`; OpenCode answers with a concrete port that may be
-    // 4096 or, when that is taken, an arbitrary ephemeral one.
     expect(h.spawnArgs).toEqual(["serve", "--port", "0", "--hostname", "127.0.0.1"]);
     h.server.announce(34439);
     await done;
@@ -94,8 +73,6 @@ describe("compactOpencodeSession", () => {
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(url).toBe("http://127.0.0.1:34439/session/ses_fe0ab426dffe3pXp0bV6EZNNfo/summarize");
     expect(init.method).toBe("POST");
-    // The route rejects a body without these with HTTP 400 `Missing key
-    // ["providerID"]`; the provider is always ShipIt's own block.
     expect(JSON.parse(init.body as string)).toEqual({
       providerID: "shipit",
       modelID: "anthropic/claude-sonnet-4",
@@ -109,8 +86,6 @@ describe("compactOpencodeSession", () => {
     const done = h.run();
     h.server.announce(4096);
     await done;
-    // The provider block lives in OPENCODE_CONFIG and the credential is the
-    // only thing that lets the summarization model run.
     expect(h.spawnEnv).toMatchObject(env);
   });
 
@@ -129,7 +104,6 @@ describe("compactOpencodeSession", () => {
     const done = h.run();
     h.server.announce(4096);
     await expect(done).rejects.toThrow(/did not confirm compaction/);
-    // Still cleaned up — a failure must not leak a server.
     expect(h.server.kill).toHaveBeenCalled();
   });
 
@@ -149,7 +123,6 @@ describe("compactOpencodeSession", () => {
     h.server.stderr.emit("data", Buffer.from("EADDRINUSE: port unavailable\n"));
     h.server.emit("exit", 1);
     await expect(done).rejects.toThrow(/exited \(code 1\) before it was ready.*EADDRINUSE/s);
-    // fetch is never reached, so a dead server cannot look like a no-op success.
     expect(fetchMock).not.toHaveBeenCalled();
   });
 

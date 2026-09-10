@@ -1,13 +1,3 @@
-/**
- * Tests for the warm-tier repair sweep (planning#501, docs/288 req 10).
- *
- * The failure it exists for is invisible by construction: a standby has no
- * runner and no event stream, so the sweep's own liveness question — asked of
- * DOCKER, not of the tracking map — is the load-bearing part. A sweep that
- * trusted `containerManager.get(id).status` would be as blind as everything
- * else and would pass a test that never notices.
- */
-
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { createWarmTierSweep, startWarmTierSweep, WARM_REPAIR_GRACE_MS } from "./warm-tier-sweep.js";
 import type { RepoStore } from "./repo-store.js";
@@ -18,15 +8,12 @@ import type { DockerMemoryStats } from "../shared/types.js";
 const URL = "https://github.com/acme/app";
 const WARM_ID = "warm-1";
 
-/** Older than the grace window, so the sweep is willing to judge it. */
 const OLD = new Date(Date.now() - WARM_REPAIR_GRACE_MS - 60_000).toISOString();
 
 interface World {
   warmSessionId?: string | undefined;
   status?: string;
-  /** What the tracking map holds: `null` = no entry at all. */
   tracked: { status: string } | null;
-  /** What DOCKER says. `undefined` = it could not answer. */
   dockerRunning: boolean | undefined;
   createdAt: string;
   sessionExists: boolean;
@@ -53,7 +40,6 @@ function makeSweep(world: Partial<World> = {}) {
 
   const repoStore = {
     list: () => [{ url: URL, status: w.status, warmSessionId: w.warmSessionId }],
-    // Re-read after the Docker probe — a claim may have taken the session.
     get: () => ({ url: URL, status: w.status, warmSessionId: w.warmSessionId }),
     setWarmSessionId,
   } as unknown as RepoStore;
@@ -91,12 +77,10 @@ function makeSweep(world: Partial<World> = {}) {
     destroy,
     setWarmSessionId,
     setMemory: (m: DockerMemoryStats | null) => { memory = m; },
-    /** Simulate a claim taking the session: the repo pointer is cleared. */
     claim: () => { w.warmSessionId = undefined; },
   };
 }
 
-/** A reading at the eviction line. */
 function atBudget(): DockerMemoryStats {
   return {
     totalBytes: 100, usedBytes: 100, budgetBytes: 100,
@@ -126,22 +110,10 @@ describe("warm tier sweep", () => {
         repoUrl: URL,
       }),
     );
-    // The row and the clone are fine — only the container died.
     expect(world.warmSessionForRepo).not.toHaveBeenCalled();
     expect(world.setWarmSessionId).not.toHaveBeenCalled();
   });
 
-  /**
-   * docs/288 — the repair must drop the pre-started stack's MANAGER, not only
-   * its containers. `destroy()` sweeps the compose siblings, but the manager
-   * stays in the registry — and `preStartWarmPreview` declines whenever it finds
-   * one there (a claim may have built it). So without this the rebuilt standby
-   * comes back with a manager that owns nothing and no preview at all: the
-   * repair would restore half the warm tier and report success.
-   *
-   * Ordering matters as much as the call: the manager must be out of the
-   * registry before the container it was built for is torn down underneath it.
-   */
   it("drops the pre-started preview before rebuilding the standby", async () => {
     world = makeSweep({ tracked: { status: "running" }, dockerRunning: false });
 
@@ -160,39 +132,21 @@ describe("warm tier sweep", () => {
     expect(world.stopPreview).not.toHaveBeenCalled();
   });
 
-  /**
-   * docs/288 req 10 — "is the standby container running?" stopped being the
-   * whole question once a warm session could also own a pre-started stack. A
-   * `compose up` that failed, or a preview tier 0 reclaimed under memory
-   * pressure, leaves a perfectly healthy worker with no preview — and every
-   * later claim then pays the full cold cost while still reporting a warm hit,
-   * which is the absorbing state this sweep exists to break, one level down.
-   *
-   * The design leans on this directly: tier 0 may drop warm previews first
-   * PRECISELY because they come back on their own. Nothing else brings them
-   * back.
-   */
   it("re-runs the preview pre-start for a healthy standby", async () => {
     world = makeSweep({ tracked: { status: "running" }, dockerRunning: true });
 
     await world.sweep();
 
-    // Unconditional by design — the pre-start declines on its own when a
-    // manager is already registered, when the repo is outside the recency
-    // window, or when the project declares no stack.
     expect(world.repairPreview).toHaveBeenCalledWith({
       sessionId: WARM_ID,
       workspaceDir: "/sessions/warm-1/workspace",
       repoUrl: URL,
     });
-    // The container is fine, so nothing is rebuilt.
     expect(world.ensureStandbyForWarmSession).not.toHaveBeenCalled();
     expect(world.destroy).not.toHaveBeenCalled();
   });
 
   it("does not repair the preview of a session a claim has just taken", async () => {
-    // The pointer is re-read after the Docker probe, like the rebuild path:
-    // once a claim owns the session, its own activation owns the stack.
     world = makeSweep({ tracked: { status: "running" }, dockerRunning: true });
     world.claim();
 
@@ -202,7 +156,6 @@ describe("warm tier sweep", () => {
   });
 
   it("does not repair a preview when Docker could not answer", async () => {
-    // `undefined` is not evidence of health any more than of death.
     world = makeSweep({ tracked: { status: "running" }, dockerRunning: undefined });
 
     await world.sweep();
@@ -211,10 +164,6 @@ describe("warm tier sweep", () => {
   });
 
   it("hands the rebuild a live ownership check, not a snapshot", async () => {
-    // The epoch covers a DESTROY landing mid-build. This covers the other
-    // order: a claim takes the session and activates it, so a container already
-    // exists — building a second one would label a live session's container
-    // `standby`, which is what the idle enforcer deletes first.
     world = makeSweep({ dockerRunning: false });
 
     await world.sweep();
@@ -243,8 +192,6 @@ describe("warm tier sweep", () => {
   });
 
   it("does not act on a container that is still being created", async () => {
-    // `starting` is a real state the runner factory already knows how to wait
-    // out; Docker would report it as not running.
     world = makeSweep({ tracked: { status: "starting" }, dockerRunning: false });
 
     await world.sweep();
@@ -253,8 +200,6 @@ describe("warm tier sweep", () => {
   });
 
   it("does not act when Docker could not answer", async () => {
-    // During a daemon blip every session looks dead at once. Rebuilding them
-    // all is worse than waiting for the next pass.
     world = makeSweep({ dockerRunning: undefined });
 
     await world.sweep();
@@ -308,7 +253,6 @@ describe("warm tier sweep", () => {
 });
 
 describe("startWarmTierSweep — the timer", () => {
-  /** Deps that record each pass and can hold one open. */
   function makeDeps(hold?: Promise<void>) {
     const passes: string[] = [];
     const warmSessionForRepo = vi.fn(async (url: string) => {
@@ -357,8 +301,6 @@ describe("startWarmTierSweep — the timer", () => {
   });
 
   it("skips a tick while the previous pass is still running", async () => {
-    // A pass can legitimately run for minutes (a `docker create` plus a
-    // pre-install); a second one on top would probe and rebuild the same repo.
     let release!: () => void;
     const hold = new Promise<void>((r) => { release = r; });
     const { passes, deps } = makeDeps(hold);
@@ -408,8 +350,6 @@ describe("warm tier sweep — concurrency and failure", () => {
       } as unknown as SessionContainerManager,
       warmSessionForRepo: vi.fn(async () => undefined),
       ensureStandbyForWarmSession,
-      // Warming sets `warmSessionId` before it builds the standby, so a
-      // mid-warm session legitimately has no container yet.
       waitForWarmSession: () => Promise.resolve(),
     });
 
@@ -419,9 +359,6 @@ describe("warm tier sweep — concurrency and failure", () => {
   });
 
   it("abandons the repair when a claim takes the session mid-probe", async () => {
-    // The Docker probe is long enough for a claim to land: it clears
-    // `warmSessionId` and hands the session to a user who is opening it now.
-    // Destroying that container would turn their warm claim cold.
     let claimed = false;
     const ensureStandbyForWarmSession = vi.fn(async () => undefined);
     const destroy = vi.fn(async () => undefined);
@@ -476,7 +413,6 @@ describe("warm tier sweep — concurrency and failure", () => {
 
     await sweep();
 
-    // The second repo may be the one the user is about to open.
     expect(ensureStandbyForWarmSession).toHaveBeenCalledTimes(2);
   });
 });

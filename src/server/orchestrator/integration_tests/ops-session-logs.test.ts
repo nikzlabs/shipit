@@ -1,20 +1,3 @@
-/**
- * Integration tests for the Ops server-log read (docs/264).
- *
- *   GET /api/sessions/:id/host-session-logs?target=<session>[&since=&until=&lines=]
- *
- * Covers the three contracts the incident packet named:
- *
- *  - the Ops GATE — 200 for an ops session, 403 for an ordinary one, 404 for a
- *    caller session that doesn't exist;
- *  - the CONTENT filter — neither a non-server entry NOR a server entry quoting
- *    workspace text can appear in the response, exercised end-to-end through the
- *    real `LogStore` file layout rather than a fake, so it is proven against the
- *    bytes the orchestrator actually writes;
- *  - CONTAINER-IS-GONE — the subject session has no runner and no container in
- *    this test at all. Everything answered comes off `sessions/<id>/logs/`.
- */
-
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
@@ -79,12 +62,6 @@ describe("Integration: Ops session logs (docs/264)", () => {
     return sessionId;
   }
 
-  /**
-   * Write the durable agent channel exactly where `LogStore` keeps it
-   * (`{workspaceDir}/sessions/<id>/logs/agent.jsonl`, per `app-di.ts`). Writing
-   * the file rather than driving a live session is the point: it is precisely
-   * the state a destroyed container leaves behind.
-   */
   function seedLogs(sessionId: string, entries: { ts: string; source: string; text: string }[]): void {
     const dir = path.join(tmpDir, "sessions", sessionId, "logs");
     fs.mkdirSync(dir, { recursive: true });
@@ -102,9 +79,7 @@ describe("Integration: Ops session logs (docs/264)", () => {
       { ts: "2026-08-14T10:00:01.000Z", source: "stderr", text: "AGENT-STDERR-MARKER" },
       { ts: "2026-08-14T10:00:02.000Z", source: "preview", text: "PREVIEW-ERROR-MARKER" },
       { ts: "2026-08-14T10:00:03.000Z", source: "install", text: "INSTALL-OUTPUT-MARKER" },
-      // A server line that quotes the project's own docker-compose.yml. This is
-      // the path an independent review found against the first design, which
-      // filtered on the source alone and returned it.
+      // Server output can include private workspace content.
       {
         ts: "2026-08-14T10:00:04.000Z",
         source: "server",
@@ -155,14 +130,10 @@ describe("Integration: Ops session logs (docs/264)", () => {
       "AGENT-STDERR-MARKER",
       "PREVIEW-ERROR-MARKER",
       "INSTALL-OUTPUT-MARKER",
-      // The source label said "server"; the CONTENT is the project's compose file.
       "WORKSPACE-CONTENT-MARKER",
     ]) {
       expect(res.body).not.toContain(marker);
     }
-    // Withheld, and reported — never silently dropped. The breakdown names the
-    // PRODUCER from ShipIt's own table; the line's own bytes (the marker above)
-    // are already asserted absent from the whole payload.
     const withheld = res.json() as {
       withheldTotal: number;
       withheldUnclassified: number;
@@ -176,9 +147,6 @@ describe("Integration: Ops session logs (docs/264)", () => {
   it("answers for a session with no runner and no container", async () => {
     const ops = await createSession("ops");
     seedSubject();
-    // Nothing in this test ever created a container or a runner for SUBJECT —
-    // it exists only as a DB row plus a logs dir, which is what an evicted /
-    // destroyed session looks like on the host.
     sessionManager.setDiskTier(SUBJECT, "evicted");
 
     const res = await app.inject({

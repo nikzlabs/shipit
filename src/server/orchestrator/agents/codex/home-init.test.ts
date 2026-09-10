@@ -15,11 +15,6 @@ const {
   resetCodexHomeInitForTests,
 } = await import("./home-init.js");
 
-/**
- * A stand-in for `codex app-server` that performs the real side effect we care
- * about — creating the `state_<N>.sqlite` whose first-run creation is the thing
- * two concurrent CLIs race on — and then answers the `initialize` request.
- */
 function fakeCodex(codexHome: string, opts: { writesState?: boolean; delayMs?: number } = {}) {
   const stdoutHandlers: ((chunk: Buffer) => void)[] = [];
   const closeHandlers: ((code: number) => void)[] = [];
@@ -78,9 +73,6 @@ describe("codex home-init", () => {
     });
 
     it("re-arms when a CLI upgrade bumps the state-db suffix", () => {
-      // Matched by pattern, not by the literal `state_5` of Codex 0.146: a bump
-      // re-runs first-run init, and hardcoding the name would report "warm"
-      // through exactly the window that is not.
       fs.writeFileSync(path.join(codexHome, "state_9.sqlite"), "");
       expect(isCodexHomeInitialized(codexHome)).toBe(true);
     });
@@ -95,7 +87,6 @@ describe("codex home-init", () => {
       const [bin, args, opts] = spawnMock.mock.calls[0] as [string, string[], { env: Record<string, string> }];
       expect(bin).toBe("codex");
       expect(args).toEqual(["app-server"]);
-      // The child must agree with the caller about which root it is initializing.
       expect(opts.env.CODEX_HOME).toBe(codexHome);
       expect(opts.env.HOME).toBe(dir);
       expect(isCodexHomeInitialized(codexHome)).toBe(true);
@@ -108,11 +99,6 @@ describe("codex home-init", () => {
     });
 
     it("single-flights concurrent callers so only one process initializes", async () => {
-      // The regression: naming (`codex exec`) and the turn (`codex app-server`)
-      // both start against the same cold root on a session's first message, and
-      // Codex's first-run init is not concurrency-safe — the loser exits 1 with
-      // `failed to initialize sqlite state runtime`. Both now await this gate,
-      // so exactly one process may be in the root while it is cold.
       spawnMock.mockImplementation(() => fakeCodex(codexHome, { delayMs: 10 }));
 
       await Promise.all([
@@ -166,15 +152,11 @@ describe("codex home-init", () => {
         return child;
       });
 
-      // Resolves rather than throwing — a warm-up we cannot perform must never
-      // block a turn, exactly like env-prep's other fail-open steps.
       await expect(ensureCodexHomeInitialized(codexHome)).resolves.toBeUndefined();
       expect(isCodexHomeInitialized(codexHome)).toBe(false);
     });
 
     it("retries on a later call when the warm-up did not take", async () => {
-      // A failed warm-up must not be memoized as done — the root is still cold,
-      // so the next caller should try again rather than walk into the race.
       spawnMock.mockImplementationOnce(() => fakeCodex(codexHome, { writesState: false }));
       await ensureCodexHomeInitialized(codexHome);
       expect(spawnMock).toHaveBeenCalledTimes(1);

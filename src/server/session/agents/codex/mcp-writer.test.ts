@@ -5,22 +5,6 @@ import path from "node:path";
 import { CodexAdapter } from "./adapter.js";
 import type { AgentMcpBridge, McpServerConfig } from "../agent-process.js";
 
-/**
- * docs/125 / docs/155 hair 10 / planning#130 — Codex registers its MCP servers via a
- * `[mcp_servers.*]` block in `~/.codex/config.toml`, not a per-run path like
- * Claude. These tests cover CodexAdapter.writeMcpConfig() in isolation:
- *  - it appends the ShipIt-managed block (one consolidated `shipit` bridge +
- *    user servers),
- *  - the `shipit` server selects Codex's tool subset via `SHIPIT_MCP_TOOLS`,
- *    passed through runtimeEnv and allowlisted with `env_vars`,
- *  - it's idempotent across repeat calls,
- *  - it never clobbers a user's own config outside the managed block,
- *  - secrets in stdio `env` / HTTP `headers` arrive via runtimeEnv (env
- *    indirection) so the .toml never persists raw secret values.
- *
- * The test stubs `hasFileAuth` so the adapter constructor stays cheap (no
- * filesystem checks); writeMcpConfig() doesn't depend on the spawn path.
- */
 describe("CodexAdapter.writeMcpConfig (docs/125, docs/155 hair 10, planning#130)", () => {
   let codexHome: string;
   let adapter: CodexAdapter;
@@ -58,19 +42,12 @@ describe("CodexAdapter.writeMcpConfig (docs/125, docs/155 hair 10, planning#130)
   const configText = (): string => fs.readFileSync(path.join(codexHome, "config.toml"), "utf-8");
 
   it("always emits the built-in playwright browser server (docs/079)", () => {
-    // Codex previously shipped without Playwright even though the shared system
-    // prompt advertises a browser; this guards against that regression.
     write([], null);
     const cfg = configText();
     expect(cfg).toContain("[mcp_servers.playwright]");
     expect(cfg).toContain("--browser chromium");
   });
 
-  // SHI-#1558 — Codex spawns MCP servers with a controlled env, so the
-  // pre-installed browser path (PLAYWRIGHT_BROWSERS_PATH) must be forwarded via
-  // env_vars + runtimeEnv or every browser_* tool fails with
-  // `Browser "chrome-for-testing" is not installed`. Claude's children inherit
-  // the worker env so it never needed this; Codex does.
   it("forwards PLAYWRIGHT_BROWSERS_PATH to the playwright MCP server (SHI-#1558)", () => {
     const prev = process.env.PLAYWRIGHT_BROWSERS_PATH;
     process.env.PLAYWRIGHT_BROWSERS_PATH = "/opt/playwright-browsers";
@@ -93,7 +70,6 @@ describe("CodexAdapter.writeMcpConfig (docs/125, docs/155 hair 10, planning#130)
     try {
       const runtimeEnv = write([], null);
       const cfg = configText();
-      // The playwright block is still written; only the env_vars line is gated.
       expect(cfg).toContain("[mcp_servers.playwright]");
       expect(cfg).not.toContain('env_vars = ["PLAYWRIGHT_BROWSERS_PATH"]');
       expect(runtimeEnv?.PLAYWRIGHT_BROWSERS_PATH).toBeUndefined();
@@ -109,10 +85,8 @@ describe("CodexAdapter.writeMcpConfig (docs/125, docs/155 hair 10, planning#130)
     expect(cfg).toContain("[mcp_servers.shipit]");
     expect(cfg).toContain("mcp-shipit-bridge.js");
     expect(cfg).toMatch(/command = ".+node"/);
-    // Tool subset is passed via the child env, allowlisted with env_vars.
     expect(cfg).toContain('env_vars = ["SHIPIT_MCP_TOOLS"]');
     expect(runtimeEnv).toMatchObject({ SHIPIT_MCP_TOOLS: "present,voice,ask,bug,propose_actions" });
-    // No per-tool servers remain.
     expect(cfg).not.toContain("[mcp_servers.shipit-review]");
     expect(cfg).not.toContain("[mcp_servers.shipit-ask]");
   });
@@ -129,10 +103,6 @@ describe("CodexAdapter.writeMcpConfig (docs/125, docs/155 hair 10, planning#130)
     expect(runtimeEnv?.SHIPIT_MCP_TOOLS).not.toContain("permission");
   });
 
-  // docs/207 / planning#155: propose_actions (action-checklist cards) must be in the
-  // Codex tool subset. Codex runs approvalPolicy:"never" so it auto-approves with
-  // no allowlist plumbing — this assertion guards against a silent regression
-  // mirroring the Claude allowlist omission that broke the tool there.
   it("includes propose_actions (docs/207) in the Codex tool subset", () => {
     const runtimeEnv = write();
     expect(runtimeEnv?.SHIPIT_MCP_TOOLS).toContain("propose_actions");

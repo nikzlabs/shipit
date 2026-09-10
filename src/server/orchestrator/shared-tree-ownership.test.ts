@@ -1,15 +1,3 @@
-/**
- * docs/272-shared-cache-ownership — the repair that makes the shared caches
- * ShipIt's own.
- *
- * These states cannot be produced for real here: a session container has no root
- * and `unshare -r` is refused, so a genuinely foreign-owned directory is not
- * creatable. That is why the module takes `getuid`/`getgid`/`lstat`/`readdir`/
- * `lchown` as injected dependencies — the same seam, and the same reason, as
- * `shared/git-tree-uid.ts`. The walk itself runs over a real temp tree; only the
- * ownership answers are faked.
- */
-
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
@@ -34,10 +22,6 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-/**
- * A bare cache shaped like the production one: refs the prefetch locks, and an
- * object store whose data files are what `clone --local` hardlinks.
- */
 function makeCache(dir: string): void {
   fs.mkdirSync(path.join(dir, "refs", "heads", "shipit"), { recursive: true });
   fs.mkdirSync(path.join(dir, "objects", "ab"), { recursive: true });
@@ -48,11 +32,7 @@ function makeCache(dir: string): void {
   fs.writeFileSync(path.join(dir, "objects", "ab", "cdef"), "object data");
 }
 
-/**
- * Deps for "we are root, and every node reports `owners[path]` (default: uid
- * 1000)". `lchown` is recorded rather than performed — the test cannot really
- * chown, and what matters is which paths it was asked to.
- */
+// Walk real files, but simulate ownership without requiring root.
 function asRoot(over: {
   owners?: (p: string) => { uid: number; gid: number };
   failOn?: (p: string) => boolean;
@@ -86,7 +66,6 @@ function asRoot(over: {
   return { deps, chowned };
 }
 
-/** Not root: the session worker, local mode, the dogfood instance, every test. */
 const NOT_ROOT: SharedTreeOwnershipDeps = {
   getuid: () => 1000,
   getgid: () => 1000,
@@ -107,13 +86,7 @@ describe("reclaimSharedTree", () => {
 
     expect(result.inert).toBe(false);
     expect(result.failed).toBe(0);
-    // The object DATA file matters most: it is the hardlink drift planning#417
-    // creates, the one thing a top-level stat cannot see, and the reason every
-    // OTHER walk in this codebase deliberately skips it. Here the direction is
-    // reversed — this IS the shared tree, so restoring it is the repair.
     expect(chowned).toContain(path.join(cache, "objects", "ab", "cdef"));
-    // And the ref subdirectory whose root-owned intrusion is what stopped
-    // `refs/heads/shipit/<branch>.lock` being created (planning#425).
     expect(chowned).toContain(path.join(cache, "refs", "heads", "shipit"));
     expect(result.chowned).toBe(result.visited);
   });
@@ -127,17 +100,10 @@ describe("reclaimSharedTree", () => {
 
     expect(chowned).toEqual([]);
     expect(result.chowned).toBe(0);
-    // Idempotence is what makes running this on every boot safe, so the cost of
-    // the steady state is asserted rather than assumed: one lstat per node.
     expect(result.visited).toBeGreaterThan(5);
   });
 
   it("repairs the MIXED tree that produced the production failure", () => {
-    // The exact shape the operator found: a uid-1000 tree root with a root-owned
-    // 0755 subdirectory inside it, left by this orchestrator's own prefetch
-    // running as root before the docs/266 drop deployed. Neither identity can
-    // write all of it, which is why there is no uid to resolve and the tree has
-    // to be made uniform instead.
     const cache = path.join(tmpDir, "mixed");
     makeCache(cache);
     const intruded = path.join(cache, "refs", "heads", "shipit");
@@ -149,14 +115,10 @@ describe("reclaimSharedTree", () => {
 
     expect(chowned).toContain(cache);
     expect(chowned).toContain(path.join(cache, "refs", "heads", "main"));
-    // Already ours — not touched, so a mixed tree costs only the drift.
     expect(chowned).not.toContain(intruded);
   });
 
   it("counts a failed chown and keeps going", () => {
-    // Fail-safe is the whole reason this needs no arming flag: the worst outcome
-    // of a failed repair is exactly today's behaviour, so a single unreclaimable
-    // node must not abandon the rest of the tree.
     const cache = path.join(tmpDir, "partly-stuck");
     makeCache(cache);
     const stuck = path.join(cache, "HEAD");
@@ -170,8 +132,6 @@ describe("reclaimSharedTree", () => {
   });
 
   it("does nothing at all when the process is not root", () => {
-    // docs/272 req 11 — local mode, the dogfood inner instance and every test are
-    // byte-for-byte unchanged. `NOT_ROOT.lchown` throws if it is ever reached.
     const result = reclaimSharedTree(path.join(tmpDir, "anything"), NOT_ROOT);
     expect(result.inert).toBe(true);
     expect(result.visited).toBe(0);
@@ -201,17 +161,11 @@ describe("ensureSharedTreeOwnedByShipIt", () => {
 
     const result = ensureSharedTreeOwnedByShipIt(cache, "test", deps);
 
-    // The hot path: prefetch, claim, warm-pool and plugin fetch all reach this,
-    // so the steady-state cost has to be one stat and not a walk.
     expect(result.visited).toBe(1);
     expect(chowned).toEqual([]);
   });
 
   it("escalates to a full repair when the TOP LEVEL is foreign", () => {
-    // One stat is a complete gate for both production failures because both need
-    // a foreign top level: the ref-lock EACCES needs `resolveGitTreeUid` to drop
-    // (it stats the top level), and `fatal: detected dubious ownership` is git
-    // checking the repository ROOT.
     const cache = path.join(tmpDir, "foreign");
     makeCache(cache);
     const { deps, chowned } = asRoot();
@@ -229,16 +183,12 @@ describe("ensureSharedTreeOwnedByShipIt", () => {
 
     ensureSharedTreeOwnedByShipIt(cache, "bare-cache fetch", deps);
 
-    // planning#425's complaint was silence, not the failure. Assert the log names
-    // the operation and the identities — not its wording.
     const said = vi.mocked(console.warn).mock.calls.map((c) => c.join(" ")).join("\n");
     expect(said).toContain("bare-cache fetch");
     expect(said).toContain("1000:1000");
   });
 
   it("leaves a missing tree alone", () => {
-    // `ensureBareCache` re-clones a vanished cache; a gate that threw here would
-    // break that recovery for a directory there is nothing to reason about.
     const { deps, chowned } = asRoot();
     const result = ensureSharedTreeOwnedByShipIt(path.join(tmpDir, "gone"), "test", deps);
     expect(result.chowned).toBe(0);
@@ -268,8 +218,6 @@ describe("reclaimSharedTreesUnder", () => {
   });
 
   it("is a no-op for a root that does not exist yet", () => {
-    // A deployment that has never cached a repository has nothing to repair, and
-    // the boot pass must not treat that as a failure.
     const { deps } = asRoot();
     expect(reclaimSharedTreesUnder(path.join(tmpDir, "never"), "boot", deps).chowned).toBe(0);
   });

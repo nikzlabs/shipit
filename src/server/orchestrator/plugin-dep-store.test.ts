@@ -1,19 +1,3 @@
-/**
- * docs/262 req 28 — the plugin half of the shared dependency store.
- *
- * The three properties these tests exist to hold, in the order they matter:
- *
- *  - **req 15** — a base is keyed by the REPOSITORY a generation came from, so a
- *    re-pointed declaration can never be handed the previous repository's
- *    installed tree, and by the CONTENT of the install's inputs, so a base can
- *    never be a stale answer to a newer question.
- *  - **req 19** — nothing here is reachable from plugin code. The promotion is
- *    a rename the orchestrator performs, and the assertions below are about
- *    where the tree ends up, not about a container being told anything.
- *  - **the sweep** — a base a live generation pins must be reported live, or the
- *    disk janitor removes an overlay lowerdir out from under a mount.
- */
-
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
@@ -57,19 +41,11 @@ let root: string;
 let checkoutDir: string;
 let upperDir: string;
 
-/** A checkout whose lockfile content decides the store scope. */
 function seedCheckout(lock: string): void {
   fs.writeFileSync(path.join(checkoutDir, "package.json"), `{"name":"probe"}`);
   fs.writeFileSync(path.join(checkoutDir, "package-lock.json"), lock);
 }
 
-/**
- * What an install leaves behind in the generation's writable layer — including
- * the ShipIt-owned toolchain tree, which the install container creates
- * unconditionally (`plugin-container-env.ts`, `PLUGIN_TOOLCHAIN_DIRS`). Seeded
- * here because its promotion is part of the same lifecycle: a fixture that
- * omitted it could not fail on the store hit losing a downloaded browser.
- */
 function seedInstalled(contents = "module.exports = 1;\n"): void {
   fs.mkdirSync(path.join(upperDir, "node_modules", "left-pad"), { recursive: true });
   fs.writeFileSync(path.join(upperDir, "node_modules", "left-pad", "index.js"), contents);
@@ -90,24 +66,14 @@ beforeEach(() => {
 
 afterEach(() => {
   fs.rmSync(root, { recursive: true, force: true });
-  // The in-flight claim map is module state, shared across cases here the way
-  // it is shared across sessions in the process.
   clearPluginBaseClaims();
   vi.unstubAllEnvs();
 });
-
-// ---------------------------------------------------------------------------
-// planPluginDepStore
-// ---------------------------------------------------------------------------
 
 describe("planPluginDepStore", () => {
   it("plans a scope per declared dep dir when the install is content-keyable", () => {
     seedCheckout("{}");
     const plan = planPluginDepStore({ source: "acme/tools", exports: [exportWith()], checkoutDir }).plan;
-    // The declared dir, plus ShipIt's own toolchain tree — see
-    // `planPluginDepStore`. Without the second one a store hit would clear the
-    // writable layer and skip the install, leaving a plugin that downloaded a
-    // browser at install time with no browser and nothing naming the cause.
     expect(plan?.dirs.map((d) => d.depDir)).toEqual(["node_modules", PLUGIN_TOOLCHAIN_DIR_NAME]);
     expect(plan?.installCommands).toEqual(["npm ci"]);
   });
@@ -116,8 +82,6 @@ describe("planPluginDepStore", () => {
     seedCheckout("{}");
     const one = planPluginDepStore({ source: "acme/tools", exports: [exportWith()], checkoutDir }).plan;
     const other = planPluginDepStore({ source: "acme/other", exports: [exportWith()], checkoutDir }).plan;
-    // Same declaration name, same dep dir, same runtime, same lockfile — and
-    // still nothing in common, because the repository differs.
     expect(one?.dirs[0]!.scopeHash).not.toBe(other?.dirs[0]!.scopeHash);
   });
 
@@ -141,8 +105,6 @@ describe("planPluginDepStore", () => {
       exports: [exportWith(), exportWith({ name: "other", install: "npm ci --omit=dev" })],
       checkoutDir,
     }).plan;
-    // Two consumers of one repository that select different plugins run
-    // different installs, so they must not share one tree.
     expect(two?.dirs[0]!.scopeHash).not.toBe(one?.dirs[0]!.scopeHash);
   });
 
@@ -157,12 +119,6 @@ describe("planPluginDepStore", () => {
 
   it("declines when the install command is not a recognized pure dependency install", () => {
     seedCheckout("{}");
-    // docs/198's codegen-safety rule: such a command can change its output
-    // without the hashed inputs moving, so a hit would be a wrong tree in every
-    // consumer, not just this one.
-    // planning#511 — and it names the command, because the author's next move
-    // depends on which of their commands ShipIt could not read. This is the
-    // branch `pip install --target vendor/py -r requirements.txt` lands on.
     expect(planPluginDepStore({
       source: "acme/tools",
       exports: [exportWith({ install: "./build.sh && npm ci" })],
@@ -174,9 +130,6 @@ describe("planPluginDepStore", () => {
   });
 
   it("declines when there are no dependency input files to hash", () => {
-    // A DIFFERENT reason from the one above, and deliberately so: the command
-    // was recognized, and what is missing is the lockfile it keys on. The
-    // author's fix is to commit it, not to declare `install-inputs`.
     expect(planPluginDepStore({ source: "acme/tools", exports: [exportWith()], checkoutDir })).toEqual({
       plan: null,
       reason: { kind: "no-input-files", subject: "probe" },
@@ -186,8 +139,6 @@ describe("planPluginDepStore", () => {
   it("declines when a declared dep dir is tracked source rather than an artifact", () => {
     seedCheckout("{}");
     fs.mkdirSync(path.join(checkoutDir, "node_modules"), { recursive: true });
-    // The reason names WHICH directory: a repository declaring several has no
-    // way to act on "one of them is committed".
     expect(planPluginDepStore({ source: "acme/tools", exports: [exportWith()], checkoutDir })).toEqual({
       plan: null,
       reason: { kind: "tracked-dep-dir", subject: "node_modules" },
@@ -206,9 +157,6 @@ describe("planPluginDepStore", () => {
 
   it("declines when the repository's own package.json has an install lifecycle script", () => {
     seedCheckout("{}");
-    // `npm ci` runs `postinstall`, so a commit that changes only
-    // `scripts/build.js` produces a DIFFERENT tree under an identical key — and
-    // a hit would skip the build and serve the previous commit's output.
     fs.writeFileSync(
       path.join(checkoutDir, "package.json"),
       JSON.stringify({ name: "probe", scripts: { postinstall: "node scripts/build.js" } }),
@@ -218,9 +166,6 @@ describe("planPluginDepStore", () => {
       reason: { kind: "install-lifecycle-script", subject: "probe" },
     });
 
-    // Declaring install-inputs is the author saying what the install consumes,
-    // and it REPLACES the default set — so the store is available again. That is
-    // also the fix the reason above tells the author about.
     expect(planPluginDepStore({
       source: "acme/tools",
       exports: [exportWith({ installInputs: ["package.json", "package-lock.json", "scripts/build.js"] })],
@@ -232,8 +177,6 @@ describe("planPluginDepStore", () => {
     seedCheckout("{}");
     const a = exportWith({ name: "a", install: "npm ci" });
     const b = exportWith({ name: "b", install: "npm ci --omit=dev" });
-    // The installs run in manifest order and their result depends on it, so the
-    // two orderings are two dep states and must not share a base.
     const forward = planPluginDepStore({ source: "acme/tools", exports: [a, b], checkoutDir }).plan;
     const reversed = planPluginDepStore({ source: "acme/tools", exports: [b, a], checkoutDir }).plan;
     expect(reversed?.dirs[0]!.scopeHash).not.toBe(forward?.dirs[0]!.scopeHash);
@@ -249,10 +192,6 @@ describe("planPluginDepStore", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// promote + adopt
-// ---------------------------------------------------------------------------
-
 describe("promotePluginDepDirs", () => {
   it("moves the installed tree into the store and leaves the upper layer without it", async () => {
     seedCheckout("{}");
@@ -264,22 +203,15 @@ describe("promotePluginDepDirs", () => {
     });
     const pins = promoted.map((p) => p.pin);
 
-    // A pinned directory carries no reason — there is nothing to explain.
     expect(promoted).toEqual([
       { depDir: "node_modules", pin: pluginBasePin(plan.dirs[0]!.scopeHash, 1), lost: false },
       { depDir: PLUGIN_TOOLCHAIN_DIR_NAME, pin: pluginBasePin(plan.dirs[1]!.scopeHash, 1), lost: false },
     ]);
-    // The toolchain tree reaches the store on the same terms as a declared dir,
-    // which is what makes it survive a later generation's store hit.
     expect(fs.existsSync(path.join(
       pluginBasePinDir(root, pins[1]!)!, PLUGIN_TOOLCHAIN_DIR_NAME, "playwright-browsers", "chromium-1194",
     ))).toBe(true);
-    // The base tree is rooted at the dep dir's own relative path, because it is
-    // stacked as a lowerdir of the plugin ROOT — not mounted at the dep dir.
     const genDir = pluginBasePinDir(root, pins[0]!)!;
     expect(fs.existsSync(path.join(genDir, "node_modules", "left-pad", "index.js"))).toBe(true);
-    // And it is a move: two copies of a `node_modules` would be exactly the
-    // disk cost the shared store exists to remove.
     expect(fs.existsSync(path.join(upperDir, "node_modules"))).toBe(false);
   });
 
@@ -303,17 +235,13 @@ describe("promotePluginDepDirs", () => {
       depStoreDir: root, plan, commit: COMMIT, upperDir, repoName: "tools",
     })).map((p) => p.pin);
 
-    // A second session installs the same dep state and offers its own tree.
     seedInstalled("module.exports = 2;\n");
     const second = (await promotePluginDepDirs({
       depStoreDir: root, plan, commit: "d".repeat(40), upperDir, repoName: "tools",
     })).map((p) => p.pin);
 
     expect(second).toEqual(first);
-    // One generation per content scope — which is also what keeps the janitor's
-    // "keep the pointer's current generation" rule sufficient.
     expect(fs.readdirSync(path.join(root, "overlay-base", plan.dirs[0]!.scopeHash))).toEqual(["g1"]);
-    // The loser drops its own copy rather than keeping a second one.
     expect(fs.existsSync(path.join(upperDir, "node_modules"))).toBe(false);
     expect(
       fs.readFileSync(path.join(pluginBasePinDir(root, first[0]!)!, "node_modules/left-pad/index.js"), "utf-8"),
@@ -323,11 +251,6 @@ describe("promotePluginDepDirs", () => {
   it("leaves a dep dir the install did not produce exactly where it is", async () => {
     seedCheckout("{}");
     const plan = planPluginDepStore({ source: "acme/tools", exports: [exportWith()], checkoutDir }).plan!;
-    // Not a loss — a declared dep dir this install does not populate is an
-    // ordinary, complete outcome.
-    // planning#511 — and it says so. `adoptPluginDepBases` is all-or-nothing, so
-    // one unpinned directory is what keeps this repository installing cold for
-    // ever: the outcome no plan can predict, and the one the card must carry.
     expect(await promotePluginDepDirs({
       depStoreDir: root, plan, commit: COMMIT, upperDir, repoName: "tools",
     })).toEqual([
@@ -377,18 +300,13 @@ describe("promotePluginDepDirs", () => {
     seedCheckout("{}");
     seedInstalled();
     const plan = planPluginDepStore({ source: "acme/tools", exports: [exportWith()], checkoutDir }).plan!;
-    // The pointer directory is a file, so the write inside `publishBase` fails
-    // AFTER the materialize rename has already emptied the upper layer — the one
-    // shape that leaves install output in neither place.
+    // Fail the pointer write after the tree has already left the upper layer.
     fs.writeFileSync(path.join(root, "overlay-base-meta"), "not a directory");
 
     const promoted = await promotePluginDepDirs({
       depStoreDir: root, plan, commit: COMMIT, upperDir, repoName: "tools",
     });
 
-    // No advisory reason on this path: a tree in neither place is a FAILED
-    // install, which the caller reports in its own words (planning#511 —
-    // "not shared" and "lost" must never read as the same thing).
     expect(promoted).toEqual([
       { depDir: "node_modules", pin: null, lost: true },
       { depDir: PLUGIN_TOOLCHAIN_DIR_NAME, pin: null, lost: true },
@@ -400,9 +318,6 @@ describe("promotePluginDepDirs", () => {
     seedCheckout("{}");
     seedInstalled();
     const plan = planPluginDepStore({ source: "acme/tools", exports: [exportWith()], checkoutDir }).plan!;
-    // The base subtree is a file, so publishing fails BEFORE the materialize
-    // rename — the tree never leaves the upper layer. A complete generation with
-    // no shared tree, which is exactly the case planning#511 exists to name.
     fs.writeFileSync(path.join(root, "overlay-base"), "not a directory");
 
     const promoted = await promotePluginDepDirs({
@@ -416,15 +331,7 @@ describe("promotePluginDepDirs", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// planning#511 — how a reason reads
-// ---------------------------------------------------------------------------
-
 describe("describePluginDepStoreReason", () => {
-  /**
-   * Every kind, because the renderer is a `switch` over a union and an
-   * unrendered kind reaches a plugin author as an empty card row.
-   */
   const KINDS: PluginDepStoreReasonKind[] = [
     "store-disabled", "no-store", "no-install", "install-lifecycle-script",
     "unrecognized-install", "no-input-files", "no-dep-dirs", "tracked-dep-dir",
@@ -436,30 +343,19 @@ describe("describePluginDepStoreReason", () => {
       const text = describePluginDepStoreReason({ kind, subject: "probe", detail: "npm ci" });
       expect(text.length).toBeGreaterThan(20);
       expect(text.endsWith(".")).toBe(true);
-      // The consequence first: a cause alone reads as a fact about ShipIt's
-      // internals rather than as something worth acting on.
       expect(text).toMatch(/installed from scratch in every session|stayed private to this install/);
     }
   });
 
   it("does not call a failed publish permanent", () => {
-    // Review finding. A publish that failed is a fact about THIS install — a
-    // full disk, a store directory that was not there — and the next install of
-    // the same dependencies publishes them normally. "Never shared" would send
-    // an author to a manifest that has nothing wrong with it.
     const text = describePluginDepStoreReason({ kind: "publish-failed", subject: "node_modules" });
     expect(text).not.toContain("never shared");
     expect(text).toContain("will try again");
-    // While a dep dir the install does not create IS permanent for these
-    // inputs: every session runs the same install and gets the same nothing.
     expect(describePluginDepStoreReason({ kind: "nothing-installed", subject: "node_modules" }))
       .toContain("never shared");
   });
 
   it("tells an author what to declare when the install can be re-qualified", () => {
-    // The two kinds an author closes themselves, and the only ones that carry
-    // advice — offering `install-inputs` for a switched-off store would send
-    // someone to edit a manifest that cannot help them.
     for (const kind of ["unrecognized-install", "install-lifecycle-script"] as const) {
       expect(describePluginDepStoreReason({ kind, subject: "probe" })).toContain("`install-inputs:`");
     }
@@ -467,24 +363,18 @@ describe("describePluginDepStoreReason", () => {
   });
 
   it("bounds what the manifest interpolates into it", () => {
-    // Both values are repo-authored and the sentence lands in a durable record
-    // and on a card in a CONSUMING project — a manifest's `install` string has
-    // no length ShipIt controls, so an unbounded one here would let a plugin
-    // author decide how much of someone else's card it takes.
     const text = describePluginDepStoreReason({
       kind: "unrecognized-install",
       subject: "p".repeat(500),
       detail: `npm ci ${"x".repeat(5000)}`,
     });
     expect(text.length).toBeLessThan(600);
-    // Clipped at the head: the start of a command is what identifies it.
     expect(text).toContain("npm ci xxx");
   });
 
   it("names the subject it has, and says something usable without one", () => {
     expect(describePluginDepStoreReason({ kind: "tracked-dep-dir", subject: "vendor/py" }))
       .toContain("`vendor/py`");
-    // A subject-less kind must not render an empty pair of backticks.
     expect(describePluginDepStoreReason({ kind: "no-dep-dirs" })).not.toContain("``");
   });
 });
@@ -506,9 +396,6 @@ describe("adoptPluginDepBases", () => {
     const plan = planPluginDepStore({ source: "acme/tools", exports: [exportWith()], checkoutDir }).plan!;
     await promotePluginDepDirs({ depStoreDir: root, plan, commit: COMMIT, upperDir, repoName: "tools" });
 
-    // A sweep took the tree but left the pointer. Reusing it would build an
-    // overlay whose lowerdir does not exist — a failure at container start,
-    // far from its cause.
     fs.rmSync(overlayBaseGenDir(root, plan.dirs[0]!.scopeHash, 1), { recursive: true, force: true });
     expect(adoptPluginDepBases(root, plan)).toBeNull();
   });
@@ -521,19 +408,12 @@ describe("adoptPluginDepBases", () => {
     const plan = planPluginDepStore({ source: "acme/tools", exports: [exp], checkoutDir }).plan!;
     await promotePluginDepDirs({ depStoreDir: root, plan, commit: COMMIT, upperDir, repoName: "tools" });
 
-    // Skipping the install with only half the tree available would leave the
-    // plugin with dependencies nothing will ever complete.
     expect(adoptPluginDepBases(root, plan)).toBeNull();
   });
 });
 
-// ---------------------------------------------------------------------------
-// pins
-// ---------------------------------------------------------------------------
-
 describe("parsePluginBasePin", () => {
   it("fails closed on anything that is not a pin", () => {
-    // These come off disk, out of a record a previous ShipIt wrote.
     for (const bad of [null, 42, "", "..", "../../etc", "abc/g1", `${"a".repeat(16)}/g0`, { }]) {
       expect(parsePluginBasePin(bad)).toBeNull();
     }
@@ -541,16 +421,11 @@ describe("parsePluginBasePin", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// the sweep's liveness source
-// ---------------------------------------------------------------------------
-
 describe("livePluginStoreArtifacts", () => {
   function session(workspaceDir: string, over: Partial<SessionInfo> = {}): SessionInfo {
     return { id: "s1", workspaceDir, ...over } as SessionInfo;
   }
 
-  /** A session tree with one plugin generation pinning `pins`. */
   function seedSession(name: string, pins: string[], source = "acme/tools"): string {
     const sessionDir = path.join(root, name);
     const workspaceDir = path.join(sessionDir, "workspace");
@@ -576,10 +451,7 @@ describe("livePluginStoreArtifacts", () => {
 
   it("reports the download cache AND the bare cache of every declared repository", async () => {
     const live = await livePluginStoreArtifacts([session(seedSession("one", []))]);
-    // The download cache, keyed by the repository the generation came from…
     expect(live.cacheHashes.has(path.basename(pluginDepCacheDir("", "acme/tools")))).toBe(true);
-    // …and the bare git cache, keyed on the clone URL byte-for-byte — which is
-    // why it is read from the declaration, whose case `destinationKey` has lost.
     const { repoUrlToHash } = await import("./git-utils.js");
     expect(live.cacheHashes.has(repoUrlToHash("https://github.com/Acme/Tools.git"))).toBe(true);
   });
@@ -590,9 +462,6 @@ describe("livePluginStoreArtifacts", () => {
     const plan = planPluginDepStore({ source: "acme/tools", exports: [exportWith()], checkoutDir }).plan!;
     await promotePluginDepDirs({ depStoreDir: root, plan, commit: COMMIT, upperDir, repoName: "tools" });
 
-    // No session has published a generation naming this base yet — the record is
-    // written after the install returns, behind the phase-3 gate and the publish
-    // window. A sweep in that gap must not read it as an orphan.
     const live = await livePluginStoreArtifacts([]);
     expect(live.scopeHashes.has(plan.dirs[0]!.scopeHash)).toBe(true);
   });
@@ -604,8 +473,6 @@ describe("livePluginStoreArtifacts", () => {
     );
     fs.chmodSync(generations, 0o000);
     try {
-      // Silently reading an unreadable tree as "no generations" would report
-      // that nothing pins these bases — to a sweep that then deletes them.
       await expect(livePluginStoreArtifacts([session(workspaceDir)])).rejects.toThrow();
     } finally {
       fs.chmodSync(generations, 0o755);
@@ -613,8 +480,6 @@ describe("livePluginStoreArtifacts", () => {
   });
 
   it("protects the download cache from the DECLARATION, before any generation exists", async () => {
-    // The install creates and mounts `/dep-cache` on a repository's very first
-    // activation, long before a record could name it.
     const workspaceDir = seedSession("fresh", []);
     fs.rmSync(path.join(path.dirname(workspaceDir), "state"), { recursive: true, force: true });
     const live = await livePluginStoreArtifacts([session(workspaceDir)]);

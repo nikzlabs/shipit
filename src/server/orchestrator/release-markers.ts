@@ -1,33 +1,3 @@
-/**
- * Release markers (docs/171 Phase 1) — the agent communicates a release
- * proposal and its outcome by emitting a small structured comment marker in
- * its turn text ("computed by the agent during the turn and emitted as part of
- * the turn, then mirrored into the card"). This module parses those markers
- * out of the accumulated assistant text after a turn.
- *
- * Why a marker rather than a new agent tool / `gh` shim change: the MVP needs
- * **no** new container-side capability (docs/171 "Agent backends"). The marker
- * is an HTML comment so it stays invisible in the rendered chat, is agent-
- * agnostic (Claude + Codex both emit plain text), and carries a JSON payload
- * that's robust to quoting/newlines in the notes.
- *
- * Marker shape (one per line, JSON payload):
- *
- *   <!--shipit:release {"action":"propose","version":"0.3.0","bumpType":"minor",
- *     "tag":"v0.3.0","prerelease":false,"notes":"..."}-->
- *   <!--shipit:release {"action":"pr-opened","version":"0.3.0","tag":"v0.3.0",
- *     "prNumber":42,"prUrl":"https://github.com/o/r/pull/42","releaseBranch":"stable"}-->
- *   <!--shipit:release {"action":"tagged","tag":"v0.3.0","version":"0.3.0","sha":"abc123"}-->
- *   <!--shipit:release {"action":"already-released","tag":"v0.3.0","version":"0.3.0"}-->
- *   <!--shipit:release {"action":"cancelled"}-->
- *
- * Note: in the docs/214 release-branch flow the orchestrator drives the poller
- * DIRECTLY from the `shipit release prepare` route (`markPrOpened`), so the
- * `pr-opened` marker isn't normally emitted by the agent. It is parsed here for
- * completeness / parity with the other actions and so a marker-driven path
- * (Codex, or a manual emit) stays supported.
- */
-
 import type { ReleaseBumpType, ReleaseMechanism } from "../shared/types/release-types.js";
 
 export interface ReleaseProposeMarker {
@@ -37,11 +7,6 @@ export interface ReleaseProposeMarker {
   prerelease: boolean;
   bumpType?: ReleaseBumpType;
   versionSource?: string;
-  /**
-   * Release mechanism, if the agent stated it. Usually omitted — the orchestrator
-   * authoritatively resolves it from `shipit.yaml` (`reactToReleaseMarkers`),
-   * defaulting to `tag-triggered`. Accepted here for parity / marker-driven paths.
-   */
   mechanism?: ReleaseMechanism;
   notes?: string;
 }
@@ -94,12 +59,6 @@ function asString(v: unknown): string | undefined {
 const BUMP_TYPES: ReadonlySet<string> = new Set(["major", "minor", "patch", "prerelease"]);
 const MECHANISMS: ReadonlySet<string> = new Set(["tag-triggered", "brokered", "release-branch"]);
 
-/**
- * Parse all release markers from a block of turn text, in document order.
- * Malformed markers (bad JSON, unknown/absent `action`, missing required
- * fields) are skipped silently — a half-typed marker must never half-drive the
- * card. Callers typically act on the LAST marker of each action.
- */
 export function parseReleaseMarkers(text: string): ReleaseMarker[] {
   if (!text?.includes("shipit:release")) return [];
   const out: ReleaseMarker[] = [];

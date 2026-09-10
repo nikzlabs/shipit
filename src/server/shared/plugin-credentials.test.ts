@@ -11,7 +11,6 @@ import {
 
 const NO_TRACKERS: never[] = [];
 
-/** Parse a `plugins:` block the way `shipit-config` does. */
 function declare(raw: unknown) {
   const warnings: string[] = [];
   return parsePluginRepos(raw, NO_TRACKERS, warnings);
@@ -21,7 +20,6 @@ function manifest(raw: unknown): PluginExport[] {
   return parsePluginExports(raw, []);
 }
 
-/** A declared name, required unless said otherwise (reqs 23, 24). */
 function req(name: string, optional = false) {
   return { name, optional };
 }
@@ -70,8 +68,6 @@ describe("declaredPluginCredentials (docs/262 req 23)", () => {
   });
 
   it("resolves a name declared both ways to REQUIRED, whichever order", () => {
-    // Only a malformed manifest produces the conflict, and over-reporting a gap
-    // beats hiding one the plugin cannot work without.
     const collect = (credentials: unknown) =>
       declaredPluginCredentials(
         declare({ repos: [{ repo: "self", name: "dev" }], use: [{ plugin: "probe", from: "dev" }] }),
@@ -83,8 +79,6 @@ describe("declaredPluginCredentials (docs/262 req 23)", () => {
   });
 
   it("reports nothing for a repository with no live manifest — not 'needs nothing'", () => {
-    // req 13: a repository that never activated is unavailable, and an empty
-    // needs list there would read as "this plugin requires no keys".
     const groups = declaredPluginCredentials(plugins, (repo) =>
       repo === "dev" ? manifest({ plugins: { probe: { credentials: ["PROBE_KEY"] } } }) : null,
     );
@@ -152,8 +146,6 @@ describe("resolvePluginCredentials", () => {
   });
 
   it("carries optionality onto the resolved need, and resolves it the same way", () => {
-    // Optionality bounds how an unsatisfied name is REPORTED; satisfaction
-    // itself is the same store read either way (reqs 23, 24).
     const [group] = resolvePluginCredentials(
       [{ repo: "r", plugin: "p", alias: "a", credentials: [req("SET_KEY", true), req("UNSET_KEY", true)] }],
       new Set(["SET_KEY"]),
@@ -182,8 +174,6 @@ describe("claimant projection (plan §3 — one stored secret, many claimants)",
   });
 
   it("counts an OPTIONAL name too — the settings row is where a key is set", () => {
-    // A plugin that can use a key is exactly a plugin whose key someone may
-    // want to provide; a row that never appears cannot be filled in.
     const withOptional = [
       { repo: "dev", plugin: "probe", alias: "probe", credentials: [req("EXTRA_KEY", true)] },
     ];
@@ -192,11 +182,6 @@ describe("claimant projection (plan §3 — one stored secret, many claimants)",
   });
 });
 
-/**
- * docs/262 req 23 — the ONE rule that decides whether a stored value satisfies a
- * declared credential. Both the card's verdict and what a plugin container is
- * given are computed from it, which is what makes them the same answer.
- */
 describe("the satisfaction rule (req 23)", () => {
   it("a non-empty single-line value satisfies its name", () => {
     expect([...satisfiedCredentialNames({ FAL_KEY: "sk-live" })]).toEqual(["FAL_KEY"]);
@@ -207,10 +192,6 @@ describe("the satisfaction rule (req 23)", () => {
   });
 
   it("an arbitrary string value satisfies its name", () => {
-    // No narrower rule: every delivery surface carries an arbitrary string —
-    // the override's `environment` for a plugin service, the invocation
-    // container's `Env` for a companion CLI — so excluding a shape here would
-    // report a working credential as missing.
     const awkward = {
       PEM: "-----BEGIN-----\nx\n-----END-----",
       DOLLARS: `a$b$\{HOME}`,

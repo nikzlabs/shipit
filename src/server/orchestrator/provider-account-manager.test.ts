@@ -9,11 +9,6 @@ import { CredentialStore } from "./credential-store.js";
 import { accountServiceForHarness, ProviderAccountManager } from "./provider-account-manager.js";
 import type { AgentAuthManager, AgentAuthManagerEvents, AgentAuthStartOptions, AgentAuthScopeOptions } from "./agent-auth-manager.js";
 
-/**
- * Minimal fake {@link AgentAuthManager} that records the scoped options it was
- * driven with, so the orchestration tests can assert routing without spawning
- * a real CLI. `configured` simulates whether the account dir has credentials.
- */
 class FakeAuthManager extends EventEmitter<AgentAuthManagerEvents> implements AgentAuthManager {
   startCalls: AgentAuthStartOptions[] = [];
   cancelCalls = 0;
@@ -22,13 +17,7 @@ class FakeAuthManager extends EventEmitter<AgentAuthManagerEvents> implements Ag
   configured = false;
   hasSubmitCode = true;
   constructor(readonly loginId: LoginIntegrationId) { super(); }
-  /**
-   * Mirrors the real managers: one process per provider, so `start` claims the
-   * scope and `cancel` releases it. Tests that never start a flow see `null`,
-   * exactly as before.
-   */
   activeAccountId: string | null = null;
-  /** Set to make `start()` throw, standing in for a failed CLI spawn. */
   startShouldThrow: Error | null = null;
   start(opts: AgentAuthStartOptions): void {
     this.startCalls.push(opts);
@@ -47,13 +36,7 @@ class FakeAuthManager extends EventEmitter<AgentAuthManagerEvents> implements Ag
 describe("ProviderAccountManager", () => {
   let root: string;
   let store: CredentialStore;
-  /**
-   * The migration guard reads `SHIPIT_SESSION_ID` to detect "I am inside a
-   * session container, so `credentialsDir` is a live agent home". That env var
-   * is genuinely set whenever this suite runs inside ShipIt (dogfooding), which
-   * would otherwise flip every migration test to the refusal path depending on
-   * where it ran. Pin it off here and let the tests that care set it.
-   */
+  // Clear the real session ID so migration fixtures behave the same inside ShipIt.
   let savedSessionId: string | undefined;
 
   beforeEach(() => {
@@ -127,17 +110,12 @@ describe("ProviderAccountManager", () => {
       status: "ready",
     });
     expect(fs.existsSync(path.join(root, "provider-accounts", "claude", "claude-default", ".claude", ".credentials.json"))).toBe(true);
-    // req 19 — migration no longer leaves an alias behind, so the credentials
-    // exist at exactly one place. What remains at the flat root is an empty
-    // real directory, because `/root/.claude` is an image symlink to it.
     expect(fs.existsSync(path.join(root, ".claude", ".credentials.json"))).toBe(false);
     expect(fs.lstatSync(path.join(root, ".claude")).isSymbolicLink()).toBe(false);
     expect(fs.readdirSync(path.join(root, ".claude"))).toEqual([]);
     expect(fs.existsSync(path.join(root, ".claude.json"))).toBe(false);
   });
 
-  // req 19 — the alias symlinks are the thing being removed, and installs that
-  // already have them must converge on the same shape as a fresh migration.
   it("retires an existing legacy alias symlink, leaving a real empty config dir", () => {
     const accountRoot = path.join(root, "provider-accounts", "claude", "claude-default");
     fs.mkdirSync(path.join(accountRoot, ".claude"), { recursive: true });
@@ -155,22 +133,15 @@ describe("ProviderAccountManager", () => {
 
     expect(fs.lstatSync(path.join(root, ".claude")).isSymbolicLink()).toBe(false);
     expect(fs.readdirSync(path.join(root, ".claude"))).toEqual([]);
-    // A file-shaped alias needs no placeholder — a write through the dangling
-    // image symlink creates it.
     expect(fs.existsSync(path.join(root, ".claude.json"))).toBe(false);
-    // The account's own credentials are untouched.
     expect(fs.existsSync(path.join(accountRoot, ".claude", ".credentials.json"))).toBe(true);
     expect(fs.existsSync(path.join(accountRoot, ".claude.json"))).toBe(true);
   });
 
-  // The sweep must never mistake un-migrated credentials for an alias: they are
-  // the only copy, and the migration that would move them has not run.
   it("leaves a real (un-aliased) legacy directory alone", () => {
     fs.mkdirSync(path.join(root, ".codex"), { recursive: true });
     fs.writeFileSync(path.join(root, ".codex", "auth.json"), "{}");
     const now = Date.now();
-    // A pre-existing row makes `migrateProviderDefault` bail, so only the alias
-    // sweep runs over this directory.
     store.upsertCredentialRoute({
       id: "acct_other", serviceId: "openai", billingMode: "sub", via: "account", label: "Work",
       isPrimary: true, status: "ready", createdAt: now, updatedAt: now,
@@ -181,8 +152,6 @@ describe("ProviderAccountManager", () => {
     expect(fs.readFileSync(path.join(root, ".codex", "auth.json"), "utf8")).toBe("{}");
   });
 
-  // A symlink the sweep did not create (an operator's mount indirection) points
-  // outside `provider-accounts/` and is not ours to remove.
   it("leaves a symlink pointing outside provider-accounts alone", () => {
     const elsewhere = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-elsewhere-"));
     try {
@@ -202,22 +171,7 @@ describe("ProviderAccountManager", () => {
     }
   });
 
-  /**
-   * The migration is a one-shot for the ORCHESTRATOR's credentials volume, but
-   * `app-di` hands it whatever `credentialsDir` resolved to — and inside a
-   * session container that is the session's own live agent home (the container
-   * mounts `<root>/sessions/<id>` at `/credentials`). Running the test suite
-   * in-container therefore moved the running CLI's `.claude/` — credential and
-   * conversation jsonl both — into `provider-accounts/claude/claude-default/`,
-   * and every turn afterwards failed with "Not logged in · Please run /login".
-   *
-   * Two independent guards, tested separately below, because either alone
-   * leaves a live home reachable: refuse to migrate in a session container at
-   * all, and never destroy the source before the copy is confirmed.
-   */
   describe("live-home safety", () => {
-    // `SHIPIT_SESSION_ID` is cleared by the outer `beforeEach` and restored by
-    // the outer `afterEach`, so setting it here needs no local teardown.
     it("refuses to migrate when running inside a session container", () => {
       process.env.SHIPIT_SESSION_ID = "sess-live-123";
       fs.mkdirSync(path.join(root, ".claude"), { recursive: true });
@@ -227,12 +181,10 @@ describe("ProviderAccountManager", () => {
       const mgr = new ProviderAccountManager({ credentialsDir: root, credentialStore: store });
       mgr.migrateDefaultAccounts();
 
-      // The home is untouched — this is the assertion that the session lives.
       expect(fs.readFileSync(path.join(root, ".claude", ".credentials.json"), "utf8"))
         .toBe('{"token":"live"}');
       expect(fs.readFileSync(path.join(root, ".claude.json"), "utf8"))
         .toBe('{"conversation":"live"}');
-      // And no phantom account was registered against the untouched dir.
       expect(mgr.getPrimary("anthropic")).toBeUndefined();
       expect(fs.existsSync(path.join(root, "provider-accounts", "claude", "claude-default")))
         .toBe(false);
@@ -252,11 +204,6 @@ describe("ProviderAccountManager", () => {
       expect(fs.readFileSync(moved, "utf8")).toBe('{"token":"orch"}');
     });
 
-    /**
-     * Copy-then-verify, not rename: the credential must exist at the
-     * destination before the source is removed, so an interrupted migration
-     * can only ever cost disk — never the only copy of a live credential.
-     */
     it("never leaves the credential absent from both paths", () => {
       fs.mkdirSync(path.join(root, ".claude"), { recursive: true });
       fs.writeFileSync(path.join(root, ".claude", ".credentials.json"), '{"token":"t"}');
@@ -273,18 +220,6 @@ describe("ProviderAccountManager", () => {
     });
   });
 
-  /**
-   * The sweep and the migration run in the same call, so whatever the sweep
-   * leaves on disk is an input to the NEXT boot's migration. Boot-to-boot
-   * idempotence is therefore the property that matters, and asserting a single
-   * boot cannot see a violation of it: the placeholder the sweep used to write
-   * unconditionally was read back on boot 2 as pre-account credentials, and a
-   * `ready` account with an empty credential root was registered for a user who
-   * had never signed in. That row makes `hasAnyAuthForProvider` true (so the UI
-   * reports a connected account) and `selectAccountForTurn` prefers it over the
-   * reserved API-key route, sending turns to a credential root with nothing in
-   * it.
-   */
   describe("boot-to-boot idempotence", () => {
     const boot = (): ProviderAccountManager => {
       const mgr = new ProviderAccountManager({
@@ -312,16 +247,12 @@ describe("ProviderAccountManager", () => {
       expect(fs.existsSync(path.join(root, ".codex"))).toBe(false);
     });
 
-    // The placeholder is still owed to a migrated install, and re-booting over
-    // it must not re-migrate it once the accounts are gone.
     it("does not re-migrate the placeholder left behind after every account is deleted", () => {
       fs.mkdirSync(path.join(root, ".claude"), { recursive: true });
       fs.writeFileSync(path.join(root, ".claude", ".credentials.json"), '{"accessToken":"live"}');
 
       const first = boot();
       expect(first.list("anthropic").map((a) => a.id)).toEqual(["claude-default"]);
-      // The migrated install keeps its placeholder: `/root/.claude` is an
-      // image-level symlink to this path.
       expect(fs.readdirSync(path.join(root, ".claude"))).toEqual([]);
 
       first.delete("anthropic", "claude-default");
@@ -330,13 +261,10 @@ describe("ProviderAccountManager", () => {
       expect(second.list("anthropic")).toEqual([]);
     });
 
-    // CLI config written through the image-level `/root/.claude.json` symlink is
-    // not a credential, and a reserved-route run legitimately produces one.
     it("does not migrate CLI config with no credentials beside it", () => {
       fs.writeFileSync(path.join(root, ".claude.json"), '{"theme":"dark"}');
 
       expect(boot().list("anthropic")).toEqual([]);
-      // Untouched: it is the CLI's config, and nothing has claimed it.
       expect(fs.existsSync(path.join(root, ".claude.json"))).toBe(true);
     });
 
@@ -348,15 +276,6 @@ describe("ProviderAccountManager", () => {
     });
   });
 
-  /**
-   * planning#342 — the manager's row verbs are keyed by **catalogue service**,
-   * and a harness id is a bare string too, so `list("claude")` compiles.
-   *
-   * Pinned because it is the one transposition the compiler cannot catch, and
-   * because its symptom is silence: an empty list reads as "no accounts
-   * connected", which is a perfectly ordinary state. `accountServiceForHarness`
-   * is the conversion every caller holding an `AgentId` must go through.
-   */
   it("answers a harness id with nothing — the axis is the service", () => {
     const now = Date.now();
     store.upsertCredentialRoute({
@@ -418,8 +337,6 @@ describe("ProviderAccountManager", () => {
   });
 
   it("prefers a healthy secondary account over the API-key fallback (docs/150-multiple-provider-subscriptions req 12)", () => {
-    // A connected subscription must never lose a turn to metered Platform API
-    // billing just because the *primary* row is broken.
     process.env.ANTHROPIC_API_KEY = "sk-test";
     const now = Date.now();
     store.upsertCredentialRoute({
@@ -481,7 +398,6 @@ describe("ProviderAccountManager", () => {
       expect(mgr.create("anthropic").label).toBe("Claude");
       expect(mgr.create("anthropic").label).toBe("Claude2");
       expect(mgr.create("anthropic").label).toBe("Claude3");
-      // Numbering is per provider — Codex starts over at its own name.
       expect(mgr.create("openai").label).toBe("Codex");
       expect(mgr.create("openai").label).toBe("Codex2");
     });
@@ -538,15 +454,11 @@ describe("ProviderAccountManager", () => {
 
     it("submitAccountCode delegates to the manager's submitCode", () => {
       const { mgr, claude, account } = setup();
-      // The code only means anything against a live challenge, so the flow has
-      // to be running — submitting into nothing is its own case below.
       mgr.startAccountAuth("anthropic", account.id);
       mgr.submitAccountCode("anthropic", account.id, "abc-123");
       expect(claude.codeCalls).toEqual(["abc-123"]);
     });
 
-    // docs/150 — there is one login process per provider, so an auth operation
-    // aimed at account A must never act on account B's in-flight flow.
     describe("two accounts of the same provider signing in at once", () => {
       it("refuses a second sign-in while another account owns the flow", () => {
         const { mgr, claude, account } = setup();
@@ -554,8 +466,6 @@ describe("ProviderAccountManager", () => {
         mgr.startAccountAuth("anthropic", account.id);
 
         expect(() => mgr.startAccountAuth("anthropic", second.id)).toThrow(/already signing in/i);
-        // The refusal must leave BOTH rows honest: the first still owns the
-        // live flow, and the second was never moved to `authenticating`.
         expect(claude.getActiveAccountId()).toBe(account.id);
         expect(mgr.get("anthropic", second.id)?.status).not.toBe("authenticating");
         expect(claude.startCalls).toHaveLength(1);
@@ -575,8 +485,6 @@ describe("ProviderAccountManager", () => {
 
         mgr.cancelAccountAuth("anthropic", second.id);
 
-        // The live flow survives — previously this cancelled it while only
-        // resetting `second`, stranding the first row on `authenticating`.
         expect(claude.cancelCalls).toBe(0);
         expect(claude.getActiveAccountId()).toBe(account.id);
         expect(mgr.get("anthropic", account.id)?.status).toBe("authenticating");
@@ -590,10 +498,6 @@ describe("ProviderAccountManager", () => {
         expect(claude.getActiveAccountId()).toBeNull();
       });
 
-      // The nastiest shape of this bug: the row that owns the flow is deleted,
-      // so the scope it holds can never be released from the UI — there is no
-      // row left to press Cancel on — and the guard then refuses every future
-      // sign-in for the provider.
       it("deleting the row that owns the flow releases the provider", () => {
         const { mgr, claude, account } = setup();
         mgr.startAccountAuth("anthropic", account.id);
@@ -603,7 +507,6 @@ describe("ProviderAccountManager", () => {
 
         expect(claude.cancelCalls).toBe(1);
         expect(claude.getActiveAccountId()).toBeNull();
-        // And a fresh account can sign in rather than hitting a phantom owner.
         const replacement = mgr.create("anthropic", "Replacement");
         expect(() => mgr.startAccountAuth("anthropic", replacement.id)).not.toThrow();
       });
@@ -619,8 +522,6 @@ describe("ProviderAccountManager", () => {
         expect(claude.getActiveAccountId()).toBe(account.id);
       });
 
-      // A row stuck on `authenticating` blocks every other account, so a
-      // sign-in that never started must not leave one behind.
       it("puts the row back when the login process fails to start", () => {
         const { mgr, claude, account } = setup();
         claude.startShouldThrow = new Error("spawn ENOENT");
@@ -628,7 +529,6 @@ describe("ProviderAccountManager", () => {
         expect(() => mgr.startAccountAuth("anthropic", account.id)).toThrow(/spawn ENOENT/);
 
         expect(mgr.get("anthropic", account.id)?.status).toBe("unavailable");
-        // ...and the provider is still usable by anyone else.
         const second = mgr.create("anthropic", "Work");
         claude.startShouldThrow = null;
         expect(() => mgr.startAccountAuth("anthropic", second.id)).not.toThrow();
@@ -636,8 +536,6 @@ describe("ProviderAccountManager", () => {
 
       it("refuses a pasted code when no sign-in is running at all", () => {
         const { mgr, claude, account } = setup();
-        // Timed out, cancelled, or lost to a restart. Previously the manager
-        // logged and dropped it while the endpoint answered 200.
         expect(() => mgr.submitAccountCode("anthropic", account.id, "abc-123")).toThrow(/no longer running/i);
         expect(claude.codeCalls).toEqual([]);
       });
@@ -647,8 +545,6 @@ describe("ProviderAccountManager", () => {
         const second = mgr.create("anthropic", "Work");
         mgr.startAccountAuth("anthropic", account.id);
 
-        // The code belongs to the challenge that issued it; submitting it here
-        // would authenticate the wrong account.
         expect(() => mgr.submitAccountCode("anthropic", second.id, "abc-123")).toThrow(/already signing in/i);
         expect(claude.codeCalls).toEqual([]);
       });
@@ -672,13 +568,6 @@ describe("ProviderAccountManager", () => {
       });
     });
 
-    /**
-     * req 19 — provider-wide sign-out used to delete the account *rows* and
-     * clear only the singleton path. On a migrated install that path aliased
-     * `<provider>-default`, so one account's credentials were erased and every
-     * account connected afterwards kept live OAuth tokens on disk with no row
-     * left to reach them from: "Sign out of Claude" left the tokens behind.
-     */
     it("signOutProvider erases every account's credentials, not just the migrated default", () => {
       const { mgr, claude, account } = setup();
       const second = mgr.create("anthropic", "Work");
@@ -694,7 +583,6 @@ describe("ProviderAccountManager", () => {
       for (const id of [account.id, second.id]) {
         expect(fs.existsSync(mgr.resolveCredentialRoot("claude", id))).toBe(false);
       }
-      // The unscoped sign-out still runs, for installs that never migrated.
       expect(claude.signOutCalls).toContainEqual({});
     });
 
@@ -715,12 +603,6 @@ describe("ProviderAccountManager", () => {
     });
   });
 
-  /**
-   * docs/150-multiple-provider-subscriptions req 7 — hard exhaustion has to be *persisted*, not inferred from
-   * the live quota snapshot: that snapshot is telemetry, and it can lag the
-   * failure, report a null percentage below a warning threshold, or not exist
-   * at all for a freshly connected account.
-   */
   describe("markAccountExhausted (docs/150-multiple-provider-subscriptions req 7)", () => {
     it("benches the account so the router stops choosing it", () => {
       const mgr = new ProviderAccountManager({ credentialsDir: root, credentialStore: store });
@@ -728,7 +610,6 @@ describe("ProviderAccountManager", () => {
       const b = mgr.create("anthropic", "B");
       mgr.setAccountStatus("anthropic", a.id, "ready");
       mgr.setAccountStatus("anthropic", b.id, "ready");
-      // No quota snapshot at all — the stamp is the only signal there is.
       expect(mgr.selectAccountForTurn("anthropic")).toEqual({ ok: true, route: { kind: "account", id: a.id } });
 
       const until = Date.now() + 3_600_000;
@@ -761,9 +642,6 @@ describe("ProviderAccountManager", () => {
       expect(refusalBlockedUntil(mgr.get("anthropic", a.id)!, Date.now())).toBeNull();
     });
 
-    // docs/260-turn-level-account-routing req 9 — the newest refusal's stated reset supersedes an older,
-    // longer estimate. A re-probe answered with "resets in a minute" must not
-    // leave the account benched on a stale two-hour deadline.
     it("the newest refusal's stated reset wins, even when it is earlier", () => {
       const mgr = new ProviderAccountManager({ credentialsDir: root, credentialStore: store });
       const a = mgr.create("anthropic", "A");
@@ -783,11 +661,6 @@ describe("ProviderAccountManager", () => {
     });
   });
 
-  /**
-   * docs/150-multiple-provider-subscriptions req 2 — the user-controlled fallback order. Reqs 4-6 and 3 all say
-   * failover advances "to the next eligible account in the user's priority
-   * order", so this is what those mean by order.
-   */
   describe("priority order (docs/150-multiple-provider-subscriptions req 2)", () => {
     function threeReady(): { mgr: ProviderAccountManager; ids: string[] } {
       const mgr = new ProviderAccountManager({ credentialsDir: root, credentialStore: store });
@@ -807,20 +680,11 @@ describe("ProviderAccountManager", () => {
       expect(mgr.selectAccountForTurn("anthropic")).toEqual({ ok: true, route: { kind: "account", id: ids[2] } });
     });
 
-    // The bug the reorder buttons actually had: `reorder` wrote `priority`
-    // correctly and the ROUTER honoured it, but everything the client sees —
-    // the PUT response, the `provider_accounts` broadcast, bootstrap — reads
-    // `list()`, which returned raw storage order. `upsertProviderAccount`
-    // replaces in place, so storage order never moves: the rows stayed put and
-    // the control read as broken while routing silently changed underneath.
-    // Asserting `accountsInSelectionOrder` alone never caught it, because that
-    // was the one accessor that was always right.
     it("exposes the user's order through list(), which is what the client renders", () => {
       const { mgr, ids } = threeReady();
       mgr.reorder("anthropic", [ids[2]!, ids[0]!, ids[1]!]);
 
       expect(mgr.list("anthropic").map((a) => a.id)).toEqual([ids[2], ids[0], ids[1]]);
-      // And through the all-providers form the SSE broadcast uses.
       expect(mgr.list().filter((a) => a.serviceId === "anthropic").map((a) => a.id))
         .toEqual([ids[2], ids[0], ids[1]]);
     });
@@ -836,8 +700,6 @@ describe("ProviderAccountManager", () => {
       expect(reloaded.accountsInSelectionOrder("anthropic").map((a) => a.id)).toEqual([ids[1], ids[2], ids[0]]);
     });
 
-    // Otherwise connecting an account would silently change which subscription
-    // existing work runs on.
     it("appends a newly connected account rather than inserting it", () => {
       const { mgr, ids } = threeReady();
       mgr.reorder("anthropic", [ids[2]!, ids[0]!, ids[1]!]);
@@ -857,11 +719,6 @@ describe("ProviderAccountManager", () => {
       expect(mgr.getPrimary("anthropic")?.id).toBe(ids[1]);
     });
 
-    // docs/252 req 21 deleted `makePrimary`: it was `reorder([this, …rest])`
-    // behind a button sitting beside the reorder controls, so dragging a row to
-    // the top is now the only way to say it. The property it asserted is still
-    // the one that matters — promoting one row leaves the others' relative
-    // order alone — so it is asserted through the verb that survived.
     it("promotes to the front without disturbing the rest", () => {
       const { mgr, ids } = threeReady();
       mgr.reorder("anthropic", [ids[0]!, ids[1]!, ids[2]!]);
@@ -870,21 +727,14 @@ describe("ProviderAccountManager", () => {
       expect(mgr.accountsInSelectionOrder("anthropic").map((a) => a.id)).toEqual([ids[2], ids[0], ids[1]]);
     });
 
-    // A stale client — one whose list predates an account added in another tab
-    // — must fail loudly rather than quietly demoting the account it never saw.
     it("rejects a partial, duplicated, or foreign order", () => {
       const { mgr, ids } = threeReady();
       expect(() => mgr.reorder("anthropic", [ids[0]!, ids[1]!])).toThrow(/exactly once/);
       expect(() => mgr.reorder("anthropic", [ids[0]!, ids[0]!, ids[1]!])).toThrow(/duplicates/);
       expect(() => mgr.reorder("anthropic", [ids[0]!, ids[1]!, "acct_nope"])).toThrow(/exactly once/);
-      // Nothing was written on any of the rejected calls.
       expect(mgr.accountsInSelectionOrder("anthropic").map((a) => a.id)).toEqual(ids);
     });
 
-    // Rows written before `priority` existed must keep behaving exactly as they
-    // did, or an upgrade would silently move which account turns run on. That
-    // used to be a read-time fallback; docs/150-multiple-provider-subscriptions req 19 replaces it with a
-    // one-time backfill, so the guarantee is asserted against the backfill.
     const stripPriority = (mgr: ProviderAccountManager, ids: string[], primaryId: string): void => {
       for (const id of ids) {
         const account = mgr.get("anthropic", id)!;
@@ -899,10 +749,8 @@ describe("ProviderAccountManager", () => {
 
       mgr.backfillPriority();
 
-      // Same order the old primary-then-stored-order rule produced.
       expect(mgr.list("anthropic").map((a) => a.id)).toEqual([ids[1], ids[0], ids[2]]);
       expect(mgr.list("anthropic").map((a) => a.priority)).toEqual([0, 1, 2]);
-      // And it is now recorded, so the legacy rule is never needed again.
       expect(
         store.listCredentialRoutes("anthropic", "sub").every((a) => typeof a.priority === "number"),
       ).toBe(true);
@@ -918,18 +766,14 @@ describe("ProviderAccountManager", () => {
       expect(mgr.list("anthropic").map((a) => a.id)).toEqual([ids[2], ids[0], ids[1]]);
     });
 
-    // req 19 — one fact, one field. `isPrimary` is position 0, always.
     it("derives isPrimary from position rather than the stored flag", () => {
       const { mgr, ids } = threeReady();
-      // Poison the stored flag: claim the LAST row is primary.
       const last = mgr.get("anthropic", ids[2]!)!;
       store.upsertCredentialRoute({ ...last, isPrimary: true });
 
       const rows = mgr.list("anthropic");
       expect(rows.map((a) => a.isPrimary)).toEqual([true, false, false]);
       expect(rows[0]!.id).toBe(ids[0]);
-      // Every accessor agrees — a caller must not get a different answer
-      // depending on which one it reached for.
       expect(mgr.get("anthropic", ids[0]!)?.isPrimary).toBe(true);
       expect(mgr.get("anthropic", ids[2]!)?.isPrimary).toBe(false);
       expect(mgr.getPrimary("anthropic")?.id).toBe(ids[0]);
@@ -946,12 +790,6 @@ describe("ProviderAccountManager", () => {
     });
   });
 
-  /**
-   * docs/150-multiple-provider-subscriptions reqs 4-6 — the proactive cutoff. The load-bearing property is that
-   * a cutoff is a PREFERENCE, not a wall: crossing it demotes an account, it
-   * does not make it unusable. Collapsing the two would make a 90% setting
-   * strictly worse than no failover at all.
-   */
   describe("proactive failover cutoffs (docs/150-multiple-provider-subscriptions reqs 4-6)", () => {
     const win = (usedPct: number | null) => ({
       usedPct,
@@ -993,8 +831,6 @@ describe("ProviderAccountManager", () => {
       expect(mgr.selectAccountForTurn("anthropic")).toEqual({ ok: true, route: { kind: "account", id: b } });
     });
 
-    // The whole point of the three-tier split. At 92% an account still has 8%
-    // of its window left; failing the turn would waste it.
     it("still uses an over-cutoff account when every account is over its cutoff", () => {
       const { a, b } = twoReadyAccounts();
       const mgr = mgrWith({ [a]: { session: win(92) }, [b]: { session: win(97) } });
@@ -1002,9 +838,6 @@ describe("ProviderAccountManager", () => {
       expect(mgr.selectAccountForTurn("anthropic")).toEqual({ ok: true, route: { kind: "account", id: a } });
     });
 
-    // docs/260-turn-level-account-routing reqs 5, 9 — telemetry claiming 100% ORDERS an account to the
-    // back but cannot block it: the account is still tried, once, to confirm.
-    // Only a refusal the harness itself reported may skip an account.
     it("still tries a telemetry-spent account rather than refusing untried (reqs 5, 9)", () => {
       const { a, b } = twoReadyAccounts();
       const mgr = mgrWith({ [a]: { session: win(100) }, [b]: { session: win(100) } });
@@ -1020,8 +853,6 @@ describe("ProviderAccountManager", () => {
       expect(mgr.selectAccountForTurn("anthropic")).toEqual({ ok: true, route: { kind: "account", id: b } });
     });
 
-    // Claude reports usedPct only above a warning threshold, so silence must
-    // not read as "past 90%" — that would demote every healthy account.
     it("treats an unreported percentage as under the cutoff", () => {
       const { a } = twoReadyAccounts();
       const mgr = mgrWith({ [a]: { session: win(null) } });
@@ -1029,12 +860,6 @@ describe("ProviderAccountManager", () => {
       expect(mgr.selectAccountForTurn("anthropic")).toEqual({ ok: true, route: { kind: "account", id: a } });
     });
 
-    /**
-     * docs/260-turn-level-account-routing req 8 — the move BACK. Snapshots are event-fed only, so an
-     * account nothing routes to never reports again; if its last reading kept
-     * demoting it, the demotion became permanent and strict priority could
-     * never return to the primary. An expired window is not evidence.
-     */
     describe("an expired window stops counting (docs/260-turn-level-account-routing req 8)", () => {
       const expired = (usedPct: number | null) => ({
         usedPct,
@@ -1043,8 +868,6 @@ describe("ProviderAccountManager", () => {
 
       it("routes back to the primary once its short window has reset", () => {
         const { a, b } = twoReadyAccounts();
-        // A hit its 5h limit and everything moved to B. The window has since
-        // reset; A's snapshot still reads 100 because no turn ran on it.
         const mgr = mgrWith({ [a]: { session: expired(100) }, [b]: { session: win(10) } });
 
         expect(mgr.selectAccountForTurn("anthropic")).toEqual({ ok: true, route: { kind: "account", id: a } });
@@ -1057,8 +880,6 @@ describe("ProviderAccountManager", () => {
         expect(mgr.selectAccountForTurn("anthropic")).toEqual({ ok: true, route: { kind: "account", id: b } });
       });
 
-      // The 5h window resets many times inside one weekly window, so an
-      // expired session window must not excuse a live weekly one.
       it("still demotes on a live weekly window when the short one has reset", () => {
         const { a, b } = twoReadyAccounts();
         const mgr = mgrWith({
@@ -1069,11 +890,6 @@ describe("ProviderAccountManager", () => {
         expect(mgr.selectAccountForTurn("anthropic")).toEqual({ ok: true, route: { kind: "account", id: b } });
       });
 
-      // A demotion is not "tried last": `clear[0]` wins outright, so a demoted
-      // account is never reached at all while any account is clear. A reading
-      // with no usable reset time therefore demotes FOREVER — the same trap in
-      // a rarer form, which is why an unusable timestamp is not evidence
-      // either. Being wrong costs one refused attempt (req 5).
       it("treats an unusable reset time as no evidence, for the cutoff tier", () => {
         const { a, b } = twoReadyAccounts();
         const mgr = mgrWith({
@@ -1095,16 +911,11 @@ describe("ProviderAccountManager", () => {
       });
     });
 
-    // docs/260 — the pinned-route probes (`isRouteUsableForTurn`,
-    // `classifyRouteForTurn`) are gone with pinning itself: selection answers
-    // every routing question, and cutoffs are ordering, never displacement.
     describe("per-turn ordering (docs/260-turn-level-account-routing reqs 5, 8)", () => {
       it("orders an over-cutoff account behind a clear one, and a telemetry-spent one last", () => {
         const { a, b } = twoReadyAccounts();
         const mgr = mgrWith({ [a]: { session: win(92) }, [b]: { session: win(100) } });
 
-        // a is over its cutoff (has quota left), b LOOKS spent — a wins, and b
-        // would still be tried if a were excluded (req 5: never block untried).
         expect(mgr.selectAccountForTurn("anthropic")).toEqual({ ok: true, route: { kind: "account", id: a } });
         expect(mgr.selectAccountForTurn("anthropic", { exclude: [a] })).toEqual({
           ok: true,
@@ -1116,7 +927,6 @@ describe("ProviderAccountManager", () => {
         const { a, b } = twoReadyAccounts();
         store.setSelectionMode("anthropic", "sub", "balanced");
         const mgr = mgrWith({ [a]: { session: win(10) }, [b]: { session: win(10) } });
-        // Make b the least-recently-used, which plain balanced would pick.
         mgr.markAccountUsed("anthropic", a);
 
         expect(mgr.selectAccountForTurn("anthropic", { residentRouteId: a })).toEqual({
@@ -1187,10 +997,6 @@ describe("ProviderAccountManager", () => {
       });
     });
 
-    // docs/260-turn-level-account-routing req 9 — telemetry alone cannot produce all_exhausted: an
-    // account whose DATA says spent is tried once to confirm. Only remembered
-    // refusals (below) can make selection fail — and even those yield to an
-    // optimistic caller (req 12).
     it("tries the first telemetry-spent account instead of failing untried (reqs 5, 9)", () => {
       const mgr = new ProviderAccountManager({ credentialsDir: root, credentialStore: store });
       const a = mgr.create("anthropic", "A");
@@ -1222,8 +1028,6 @@ describe("ProviderAccountManager", () => {
 
       const selection = mgr.selectAccountForTurn("anthropic");
       expect(selection).toMatchObject({ ok: false, reason: "all_exhausted" });
-      // req 12 — a caller that will ATTEMPT the result gets the best blocked
-      // account instead of the failure, so a resend re-tries every account.
       expect(mgr.selectAccountForTurn("anthropic", { optimistic: true })).toEqual({
         ok: true,
         route: { kind: "account", id: a.id },
@@ -1239,10 +1043,6 @@ describe("ProviderAccountManager", () => {
         [a.id]: { session: { usedPct: 100, resetAt: new Date(Date.now() + 3_600_000).toISOString() } },
       });
 
-      // The reserved API-key route exists, but a spent-looking *subscription*
-      // must be tried (req 5) — and never silently replaced by pay-as-you-go
-      // money (req 7). Bench it with a real refusal and the answer is a
-      // failure, still not the metered key.
       expect(quota.selectAccountForTurn("anthropic")).toEqual({
         ok: true,
         route: { kind: "account", id: a.id },
@@ -1255,8 +1055,6 @@ describe("ProviderAccountManager", () => {
       const mgr = new ProviderAccountManager({ credentialsDir: root, credentialStore: store });
       const a = mgr.create("anthropic", "A");
       mgr.setAccountStatus("anthropic", a.id, READY);
-      // Claude reports no usedPct below its warning threshold; Codex reports
-      // nothing until a turn has run.
       const quota = withLimits(root, store, { [a.id]: { session: { usedPct: null, resetAt: "x" } } });
 
       expect(quota.selectAccountForTurn("anthropic")).toEqual({
@@ -1302,7 +1100,6 @@ describe("ProviderAccountManager", () => {
       const b = mgr.create("anthropic", "B");
       mgr.setAccountStatus("anthropic", a.id, READY);
       mgr.setAccountStatus("anthropic", b.id, READY);
-      // Hard refusal reported mid-turn, before any new snapshot arrives.
       mgr.markAccountExhausted("anthropic", a.id, Date.now() + 3_600_000);
 
       expect(mgr.selectAccountForTurn("anthropic")).toEqual({
@@ -1315,9 +1112,6 @@ describe("ProviderAccountManager", () => {
       const mgr = new ProviderAccountManager({ credentialsDir: root, credentialStore: store });
       const a = mgr.create("anthropic", "A");
       mgr.setAccountStatus("anthropic", a.id, READY);
-      // A pre-260 bench: exhaustedUntil far in the future, no exhaustedAt.
-      // These are exactly the rows the 2026-08-10 incident showed can go
-      // permanently stale; the read rule bounds them to nothing at all.
       store.upsertCredentialRoute({
         ...mgr.get("anthropic", a.id)!,
         exhaustedUntil: Date.now() + 7 * 24 * 3_600_000,
@@ -1335,9 +1129,6 @@ describe("ProviderAccountManager", () => {
       const a = mgr.create("anthropic", "A");
       mgr.setAccountStatus("anthropic", a.id, READY);
       const weekly = Date.now() + 7 * 24 * 3_600_000;
-      // A refusal observed 31 minutes ago with a week-long stated reset: the
-      // cap (REFUSAL_REPROBE_MS) makes it eligible again — one probe attempt,
-      // not a week of silence.
       store.upsertCredentialRoute({
         ...mgr.get("anthropic", a.id)!,
         exhaustedUntil: weekly,
@@ -1350,8 +1141,6 @@ describe("ProviderAccountManager", () => {
       });
     });
 
-    // docs/260-turn-level-account-routing req 9 — refusal memory clears on a HEALTHY reading newer than
-    // the refusal (lazily, at the selection read), and never on anything less.
     describe("refusal memory clearing (req 9)", () => {
       function setupBenchedPair() {
         const mgr = new ProviderAccountManager({ credentialsDir: root, credentialStore: store });
@@ -1391,15 +1180,9 @@ describe("ProviderAccountManager", () => {
           route: { kind: "account", id: healthy.id },
         });
         expect(store.getCredentialRoute(healthy.id)?.exhaustedUntil).toBeNull();
-        // A still-100% reading clears nothing; that account stays blocked.
         expect(store.getCredentialRoute(spent.id)?.exhaustedUntil).not.toBeNull();
       });
 
-      // A refresh merges per-window: a newer snapshot can advance `fetchedAt`
-      // and still carry one window the provider did not re-report. If that
-      // window has since rolled over, its 100% is about a period that ended and
-      // must not hold the refusal open against the reading the user just asked
-      // for (req 9's "user upgrades their plan and presses refresh").
       it("a rolled-over 100% window does not hold the refusal open", () => {
         const { healthy, exhaustedAt } = setupBenchedPair();
         const quota = withLimits(root, store, {
@@ -1417,10 +1200,6 @@ describe("ProviderAccountManager", () => {
       });
 
       it("a null usedPct counts as HEALTHY — below the warning threshold, not unknown-bad", () => {
-        // The old machinery demanded numeric proof and could never clear a
-        // bench for a lightly-used account (the provider reports numbers only
-        // above a warning threshold). A wrong clear now costs one refused
-        // attempt (req 5), so silence is read as health.
         const { healthy, exhaustedAt } = setupBenchedPair();
         const quota = withLimits(root, store, { [healthy.id]: windows(exhaustedAt + 1, null) });
 
@@ -1434,8 +1213,6 @@ describe("ProviderAccountManager", () => {
       it("keeps the memory when quota is absent — but the cap still bounds it", () => {
         const { healthy, spent } = setupBenchedPair();
         const quota = withLimits(root, store, {});
-        // No snapshot to clear with: both stay blocked and selection fails
-        // (non-optimistic); the ~30-minute cap is what bounds this state.
         expect(quota.selectAccountForTurn("anthropic")).toMatchObject({ ok: false, reason: "all_exhausted" });
         expect(store.getCredentialRoute(healthy.id)?.exhaustedUntil).not.toBeNull();
         expect(store.getCredentialRoute(spent.id)?.exhaustedUntil).not.toBeNull();
@@ -1488,9 +1265,6 @@ describe("ProviderAccountManager", () => {
         quota.markAccountExhausted("anthropic", account.id, near);
 
         expect(quota.selectAccountForTurn("anthropic")).toMatchObject({ ok: false, reason: "all_exhausted" });
-        // docs/260-turn-level-account-routing req 9 — the newest refusal's stated reset replaces the
-        // older, longer estimate; the refreshed `exhaustedAt` clock is what
-        // keeps the memory alive past any pre-failure snapshot.
         expect(store.getCredentialRoute(account.id)?.exhaustedUntil).toBe(near);
       });
     });

@@ -48,17 +48,12 @@ function store(
     getCredentialSecret: (id: string) => secrets[id],
     getSelectionMode: () => selectionMode,
     getCredentialRoute: (id: string) => routes.find((r) => r.id === id),
-    // The string-delivered walk applies the same cutoffs the account walk does.
     getFailoverCutoffs: () => cutoffs,
   };
 }
 
 describe("listConfiguredCredentials", () => {
   it("reads the store AND the deployment's own environment", () => {
-    // A deployment-supplied key has no row in the store — phase 2 is explicit
-    // that ShipIt only ever touches a value it put there — so a rule reading the
-    // store alone would report that install as having no credential at all and
-    // empty its picker.
     const credentials = listConfiguredCredentials(
       store([route({ id: "cred_1", serviceId: "deepseek" })], { cred_1: "sk-ds" }),
       { ANTHROPIC_API_KEY: "sk-ant" } as NodeJS.ProcessEnv,
@@ -68,8 +63,6 @@ describe("listConfiguredCredentials", () => {
   });
 
   it("ignores a string route with no secret behind it", () => {
-    // A route that reports configured and delivers nothing is worse than absent:
-    // the model is offered and the turn cannot authenticate.
     const credentials = listConfiguredCredentials(
       store([route({ id: "cred_1", serviceId: "deepseek" })]),
       {} as NodeJS.ProcessEnv,
@@ -86,10 +79,6 @@ describe("listConfiguredCredentials", () => {
   });
 
   it("ignores an account whose login never finished", () => {
-    // An account row exists from the moment the login starts and a cancelled one
-    // stays `unavailable` forever, while turn routing accepts only `ready` or
-    // `authenticating`. Counting the rest offers a subscription whose every turn
-    // is refused — eligibility has to ask the same question routing does.
     const credentials = listConfiguredCredentials(
       store([
         route({
@@ -106,14 +95,6 @@ describe("listConfiguredCredentials", () => {
   });
 });
 
-/**
- * planning#353 — the default for a session that has never had a model picked.
- *
- * The bug these pin: turn routing asked the harness's OWN vendor, so an install
- * whose only credential is a DeepSeek key sent every selection-less turn to
- * Anthropic and failed `auth_required` while the composer displayed a runnable
- * model.
- */
 describe("firstEligibleSelectionForHarness", () => {
   it("picks a credentialed service over the harness's own vendor", () => {
     const selection = firstEligibleSelectionForHarness("claude", {
@@ -128,8 +109,6 @@ describe("firstEligibleSelectionForHarness", () => {
   });
 
   it("still prefers the harness's own vendor when the install has a credential for it", () => {
-    // The first-party path must not move: Anthropic leads the catalogue, so a
-    // connected account is what a Claude session with no selection still gets.
     const selection = firstEligibleSelectionForHarness("claude", {
       credentialStore: store([
         route({ id: "acct_1", serviceId: "anthropic", billingMode: "sub", via: "account" }),
@@ -154,11 +133,6 @@ describe("firstEligibleSelectionForHarness", () => {
   });
 
   it("walks past a mode with no credential to the next one that has one", () => {
-    // Anthropic's `sub` leads the catalogue but holds nothing here, so the
-    // answer is its `key` mode rather than the first row in catalogue order.
-    // (Named accurately after a cross-agent review pointed out an earlier
-    // comment here described an account-only install, which this is not — that
-    // case is the `sub` assertion above.)
     const selection = firstEligibleSelectionForHarness("claude", {
       credentialStore: store([route({ id: "cred_1", serviceId: "anthropic", billingMode: "key" })], {
         cred_1: "sk-ant",
@@ -182,12 +156,6 @@ describe("firstEligibleSelectionForHarness", () => {
   });
 
   it("is undefined when nothing eligible speaks a style this harness has", () => {
-    // Codex speaks only `openai-responses`; GLM's key mode declares
-    // `openai-chat-completions` and `anthropic-messages`. So a Codex session on
-    // a GLM-only install genuinely has nothing to run, and `auth_required` is the
-    // honest answer rather than a reroute to a model it cannot drive. (DeepSeek
-    // was the original example; it now serves the Responses API, so it reaches
-    // Codex — see catalogue.test.ts.)
     expect(
       firstEligibleSelectionForHarness("codex", {
         credentialStore: store([route({ id: "cred_1", serviceId: "zai" })], { cred_1: "sk-zai" }),
@@ -213,26 +181,6 @@ describe("selectRouteForSelection — scoped to the SELECTED billing mode", () =
     expect(selected).toEqual(anthropicAccount);
   });
 
-  /**
-   * planning#342 — the walk is asked about the **selected service**, not about
-   * the harness's own vendor.
-   *
-   * The pair here is deliberately the one where the two answers differ:
-   * `(anthropic, sub)` selected while pinned to the **Codex** harness. Asking
-   * about the harness would walk OpenAI's accounts for a turn that named
-   * Anthropic's subscription — the conflation this feature exists to remove.
-   * A same-vendor pair cannot pin this, because there both answers are
-   * `"anthropic"` and reverting the axis stays green.
-   *
-   * The picker does not offer this state (Anthropic's subscription models are
-   * `anthropic-messages`, which Codex does not speak), so it is reachable only
-   * from a stale session row — but `acceptsAccount` does **not** rule it out:
-   * that predicate asks whether the harness can carry an account-delivered
-   * credential at all, and Codex can. So the equality this feature relies on is
-   * a property of the current catalogue, not of the code, and this is the
-   * assertion that says so out loud. A future service with an account-delivered
-   * subscription a second harness can carry breaks the equality, not this test.
-   */
   it("refuses a stale account selection whose model style the harness cannot carry", () => {
     const asked: string[] = [];
     selectRouteForSelection(
@@ -252,15 +200,6 @@ describe("selectRouteForSelection — scoped to the SELECTED billing mode", () =
     expect(asked).toEqual([]);
   });
 
-  /**
-   * The no-selection path asks the harness's own vendor. Separate from the case
-   * above so putting the two paths on one axis fails one of them.
-   *
-   * planning#353 — this is no longer the *session* default. A selection-less
-   * turn is settled onto `firstEligibleSelectionForHarness` by
-   * `prepareSessionAgentEnvironment` before it reaches here, so what this pins
-   * is the residual answer for a caller with genuinely no other information.
-   */
   it("falls back to the harness's own vendor when there is no selection", () => {
     const asked: string[] = [];
     selectRouteForSelection("codex", undefined, {
@@ -277,11 +216,6 @@ describe("selectRouteForSelection — scoped to the SELECTED billing mode", () =
   });
 
   it("never hands an `anthropic:sub` selection the metered key route", () => {
-    // This is the leak phase 3 closes. `selectAccountForTurn` ends with a
-    // mode-blind reserved fallback, so with no account connected an INCLUDED
-    // selection used to land on `claude-api-key` and quietly become a metered
-    // turn — the silent shift onto metered billing req 12 refuses, arriving
-    // through routing rather than through failover.
     const selected = selectRouteForSelection(
       "claude",
       { serviceId: "anthropic", billingMode: "sub", modelId: "claude-opus-5" },
@@ -298,9 +232,6 @@ describe("selectRouteForSelection — scoped to the SELECTED billing mode", () =
   });
 
   it("still reaches `anthropic:sub`'s OWN env-delivered token", () => {
-    // `claude-env-oauth` is a subscription delivered as an environment token —
-    // the counter-example the `via` vs `kind` split exists for — so it belongs
-    // to the `sub` mode and is reachable from it.
     const selected = selectRouteForSelection(
       "claude",
       { serviceId: "anthropic", billingMode: "sub", modelId: "claude-opus-5" },
@@ -352,9 +283,6 @@ describe("selectRouteForSelection — scoped to the SELECTED billing mode", () =
   });
 });
 
-// docs/252 phase 5, req 12 — the gap phase 2 left open: a subscription can hold
-// several string credentials and nothing could choose between them, so the
-// second was stored and unreachable.
 describe("string-delivered subscription failover", () => {
   const NOW = 1_000_000;
   const glm = { serviceId: "zai", billingMode: "sub", modelId: "glm-5.2[1m]" } as const;
@@ -372,21 +300,6 @@ describe("string-delivered subscription failover", () => {
       now: () => NOW,
     });
 
-  /**
-   * **The account walk's quota tiers, on the string-delivered twin.**
-   *
-   * This walk had refusal memory and nothing else, which was invisible while a
-   * supplied subscription credential was itself invisible. docs/252 req 20 put
-   * them on screen as ordinary rows beside accounts, so a threshold honoured
-   * for one delivery shape and silently not the other became a carve-out no
-   * user could predict — two credentials, an order, a strategy, and no numbers.
-   *
-   * Anthropic here rather than GLM: quota is recorded per ROUTE and gated only
-   * on the mode being a subscription, so a plan token supplied as a string
-   * reports its 5h and 7d windows exactly as an account does. GLM declares
-   * `zai-plan-usage`, which has no reader (planning#339), so its snapshots stay
-   * empty and every case above behaves exactly as it did.
-   */
   describe("quota tiers, the same three the account walk has", () => {
     const anthropic = { serviceId: "anthropic", billingMode: "sub", modelId: "claude-opus-5" } as const;
     const tok = (id: string, over: Partial<CredentialRoute> = {}): CredentialRoute =>
@@ -420,7 +333,6 @@ describe("string-delivered subscription failover", () => {
     });
 
     it("respects the user's own cutoff, not a fixed one", () => {
-      // 60% is under the default 90 and over a cutoff the user set to 50.
       const routes = [tok("tok_a", { priority: 0 }), tok("tok_b", { priority: 1 })];
       const limits = { tok_a: { session: window(60), weekly: window(10) } };
       expect(pickAnthropic(routes, limits))
@@ -429,11 +341,6 @@ describe("string-delivered subscription failover", () => {
         .toEqual({ ok: true, route: { kind: "reserved", id: "tok_b" } });
     });
 
-    /**
-     * docs/260-turn-level-account-routing req 9 — telemetry ORDERS, it never skips. A credential whose
-     * data says it is spent is still the one to try when nothing else is left:
-     * that turn is how a fresher reading is obtained at all.
-     */
     it("still uses a credential over its cutoff when it is the only one left", () => {
       const selected = pickAnthropic(
         [tok("tok_a", { priority: 0 })],
@@ -474,8 +381,6 @@ describe("string-delivered subscription failover", () => {
   });
 
   it("stops with `all_exhausted` and the earliest reset when every one is benched", () => {
-    // req 12 — "when no subscription is left to fail over to, ShipIt stops and
-    // says so, exactly as it does for a key".
     const selected = pick(
       [
         sub("cred_a", { priority: 0, exhaustedUntil: NOW + 90_000, exhaustedAt: NOW - 1_000 }),
@@ -491,9 +396,6 @@ describe("string-delivered subscription failover", () => {
   });
 
   it("does not roll onto the deployment's env credential when the stored ones are spent", () => {
-    // The env credential carries no row, so ShipIt tracks no quota for it and
-    // could neither bench it after it failed nor name it in the transcript.
-    // Rolling onto it would replace req 13's reset time with a second failure.
     const selected = selectRouteForSelection("claude", glm, {
       credentialStore: store([sub("cred_a", { exhaustedUntil: NOW + 60_000, exhaustedAt: NOW - 1_000 })], { cred_a: "k1" }),
       env: { ZAI_CODING_PLAN_KEY: "from-env" } as NodeJS.ProcessEnv,
@@ -515,9 +417,6 @@ describe("string-delivered subscription failover", () => {
   });
 
   it("`balanced` keeps a session on its resident string credential (req 8)", () => {
-    // Balanced spreads SESSIONS, not turns: without the resident preference,
-    // least-recently-used ordering would alternate a two-credential install
-    // every turn and restart the resident process each time.
     const routes = [
       sub("cred_a", { priority: 0, lastUsedAt: 900 }),
       sub("cred_b", { priority: 1, lastUsedAt: 100 }),
@@ -531,8 +430,6 @@ describe("string-delivered subscription failover", () => {
   });
 
   it("`balanced` abandons a refusal-blocked resident string credential", () => {
-    // The stickiness only holds while the resident credential is unblocked —
-    // a benched one hands the session to the normal walk.
     const routes = [
       sub("cred_a", { priority: 0, lastUsedAt: 900, exhaustedUntil: NOW + 60_000, exhaustedAt: NOW - 1_000 }),
       sub("cred_b", { priority: 1, lastUsedAt: 100 }),
@@ -567,10 +464,6 @@ describe("string-delivered subscription failover", () => {
   });
 
   it("never skips a benched API KEY — a key has no window and does not fail over", () => {
-    // Nothing benches a `key` route today (`markCredentialRouteExhausted`
-    // refuses), but the selection walk must not depend on that: req 12 says a
-    // key is used until the user replaces it, and moving off one would be the
-    // silent hop onto a second metered credential the requirement refuses.
     const selected = selectRouteForSelection(
       "claude",
       { serviceId: "deepseek", billingMode: "key", modelId: "deepseek-flash" },
@@ -599,14 +492,6 @@ describe("envRouteIdFor", () => {
   });
 });
 
-/**
- * Which route ids the store holds a row for, for `serviceRoutingForSelection`.
- *
- * docs/252 req 20 — the question moved from the id's SHAPE to the store,
- * because adoption gives a stored row one of the legacy reserved ids on purpose
- * so pinned sessions keep resolving. `cred_ds` is a stored row here; anything
- * else is a credential that exists only as a deployment variable.
- */
 const storeHolding = (...ids: string[]) => ({
   getCredentialRoute: (id: string) =>
     (ids.includes(id) ? ({ id } as unknown as CredentialRoute) : undefined),
@@ -626,46 +511,23 @@ describe("serviceRoutingForSelection", () => {
       billingMode: "key",
       style: "anthropic-messages",
       baseUrl: "https://api.deepseek.com/anthropic",
-      // docs/252 phase 5 — a STORED credential is sourced from its own variable,
-      // not from the mode's group name. The group name carries the group's first
-      // credential, so once failover can move a session onto the second, sourcing
-      // from the group would authenticate with the one ShipIt had just benched.
       credentialSourceEnv: "SHIPIT_CREDENTIAL_CRED_DS",
       credentialTarget: { kind: "env", name: "ANTHROPIC_API_KEY" },
     });
   });
 
-  /**
-   * docs/252 req 20's sharpest edge, and a regression this branch introduced
-   * before it was caught.
-   *
-   * Adoption gives a stored row one of the LEGACY reserved ids on purpose —
-   * `claude-env-oauth`, so sessions pinned to it keep resolving. The old test
-   * for "is this a stored route" was `startsWith("cred_")`, a faithful proxy
-   * only while every stored row had a minted id. Under it, an adopted
-   * credential answered "not stored" and was handed the mode's GROUP variable,
-   * which always carries the group's FIRST credential — so once ordering or
-   * failover moved a session onto the adopted row, the turn authenticated with
-   * a different credential than the one it was attributed to, and possibly with
-   * the very one ShipIt had just benched.
-   */
   it("sources an ADOPTED credential from its own variable, legacy id and all", () => {
     expect(
       serviceRoutingForSelection(
         "claude",
         { serviceId: "deepseek", billingMode: "key", modelId: "deepseek-flash" },
         { kind: "reserved", id: "claude-api-key" },
-        // The store holds a row for it: that, not the id's shape, is what makes
-        // it stored — `collectServiceCredentialEnv` writes a per-route variable
-        // for every stored `via: "string"` row whatever its id.
         storeHolding("claude-api-key"),
       ),
     ).toMatchObject({ credentialSourceEnv: "SHIPIT_CREDENTIAL_CLAUDE_API_KEY" });
   });
 
   it("keeps the mode's group variable for an ENV-delivered credential", () => {
-    // It has no row and no id of its own, so the catalogue's `storageEnv` is the
-    // only name it has ever had.
     expect(
       serviceRoutingForSelection(
         "claude",
@@ -677,10 +539,6 @@ describe("serviceRoutingForSelection", () => {
   });
 
   it("leaves an account-delivered credential alone", () => {
-    // A `scoped-home` credential IS the vendor's login, and its token exchange
-    // is bound to that vendor's endpoint — shaping it would break it outright
-    // rather than redirect it. This is what keeps today's first-party spawn
-    // byte-identical.
     expect(
       serviceRoutingForSelection(
         "claude",
@@ -692,12 +550,6 @@ describe("serviceRoutingForSelection", () => {
   });
 
   it("delivers an env-supplied subscription token as a bearer token, not an x-api-key (planning#354)", () => {
-    // An install authenticating Anthropic's subscription with a supplied
-    // `ANTHROPIC_AUTH_TOKEN` resolves the `claude-env-oauth` reserved route,
-    // which DOES shape `anthropic:sub` — and the catalogue's `targetOverride`
-    // (same shape as GLM's) must keep the token under `ANTHROPIC_AUTH_TOKEN`.
-    // Before the override, the target was the harness default
-    // `ANTHROPIC_API_KEY`, which the CLI sends as an `x-api-key` header.
     expect(
       serviceRoutingForSelection(
         "claude",
@@ -718,9 +570,6 @@ describe("serviceRoutingForSelection", () => {
   });
 
   it("does not shape an account-capable mode on a guess when no route is resolved", () => {
-    // The pinned route is the evidence that the credential is string-delivered,
-    // and env prep pins it before the run params are built. An absent one means
-    // the router is not wired at all, where the pre-feature spawn is right.
     expect(
       serviceRoutingForSelection(
         "claude",
@@ -732,9 +581,6 @@ describe("serviceRoutingForSelection", () => {
   });
 
   it("still shapes a string-only mode with no route resolved", () => {
-    // DeepSeek accepts nothing but a key, so there is no ambiguity to resolve —
-    // which is what makes a custom service work on a session that has never
-    // pinned a route.
     expect(
       serviceRoutingForSelection(
         "claude",
@@ -758,9 +604,6 @@ describe("sessionSpawnIdentity — the resident-process boundary", () => {
   }
 
   it("distinguishes the SAME model id offered by two services", () => {
-    // The defect the widening exists to close: under a model-string comparison
-    // these two are equal, no kill fires, and the next turn runs on the previous
-    // service's endpoint and credential — billing the wrong account (req 11).
     const direct = session({
       model: "deepseek-flash",
       serviceId: "deepseek",
@@ -777,17 +620,12 @@ describe("sessionSpawnIdentity — the resident-process boundary", () => {
   });
 
   it("distinguishes the two billing modes of one service", () => {
-    // Without the mode, "charge me, keep working" would reuse the spent
-    // subscription's process.
     const sub = session({ model: "claude-opus-5", serviceId: "anthropic", billingMode: "sub" });
     const key = session({ model: "claude-opus-5", serviceId: "anthropic", billingMode: "key" });
     expect(sessionSpawnIdentity(sub, "claude")).not.toBe(sessionSpawnIdentity(key, "claude"));
   });
 
   it("does NOT include the credential route — accounts are decided per turn (docs/260)", () => {
-    // The route left this tuple with the pin: the resident process's account
-    // is compared separately via `runner.residentRoute`, so two sessions on
-    // different accounts with the same shaping share one identity.
     const base = { model: "claude-opus-5", serviceId: "anthropic", billingMode: "sub" as const };
     expect(sessionSpawnIdentity(session(base), "claude")).toBe(
       sessionSpawnIdentity(session(base), "claude"),
@@ -795,8 +633,6 @@ describe("sessionSpawnIdentity — the resident-process boundary", () => {
   });
 
   it("is stable across two reads of an unchanged session", () => {
-    // Symmetry is what stops a spurious respawn on every turn: the guard's
-    // question and the spawn-time stamp are the same function of the same row.
     const s = session({
       model: "claude-opus-5",
       serviceId: "anthropic",
@@ -813,16 +649,6 @@ describe("sessionSpawnIdentity — the resident-process boundary", () => {
   });
 });
 
-/**
- * docs/260-turn-level-account-routing req 8 — the move BACK, at the decision that actually performs it.
- *
- * `selectAccountForTurn` choosing the primary again is only half the story:
- * a session with a resident streaming CLI keeps running on the process's
- * spawn-time credential until this check retires it. Wired against a real
- * `ProviderAccountManager` so the whole chain is exercised — snapshot tier,
- * strict order, release decision — rather than a fake that answers whatever
- * the test wants to hear.
- */
 describe("residentRouteNeedsRelease — moving a live session back (docs/260-turn-level-account-routing req 8)", () => {
   const future = () => new Date(Date.now() + 3_600_000).toISOString();
   const past = () => new Date(Date.now() - 60_000).toISOString();
@@ -862,9 +688,6 @@ describe("residentRouteNeedsRelease — moving a live session back (docs/260-tur
   });
 
   it("retires the secondary's process once the primary's window has reset", () => {
-    // The reported failure: the primary ran out, every session moved to the
-    // secondary, the primary's 5h window reset — and the snapshot still read
-    // 100% because no turn had run on it since.
     const { ids, deps } = accountsWithLimits(({ primary, secondary }) => ({
       [primary]: { session: { usedPct: 100, resetAt: past() } },
       [secondary]: { session: { usedPct: 20, resetAt: future() } },
@@ -882,8 +705,6 @@ describe("residentRouteNeedsRelease — moving a live session back (docs/260-tur
     expect(residentRouteNeedsRelease(liveSession, "claude", residentOn(ids.secondary), deps)).toBe(false);
   });
 
-  // req 13 — the tokens already spent on that work cost more than one turn on
-  // a less-preferred account, so the move waits for the first clean turn.
   it("does not retire a process holding background work, even when the primary is back", () => {
     const { ids, deps } = accountsWithLimits(({ primary, secondary }) => ({
       [primary]: { session: { usedPct: 100, resetAt: past() } },

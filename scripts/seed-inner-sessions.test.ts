@@ -3,27 +3,11 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-// @ts-expect-error — plain-Node script (no build step, so it stays .js); this
-// test drives its exported functions with a fake fetch.
+// @ts-expect-error — plain JavaScript has no declarations.
 import { seed, readFixture, canonicalRepoKey, FIXTURE_PATH } from "./seed-inner-sessions.js";
-
-/**
- * Unit coverage for the dogfood seed (docs/131 reqs 2–5).
- *
- * The script's whole job is a sequence of HTTP calls against the inner
- * orchestrator, so these drive it with a fake `fetch` and assert on the calls it
- * makes. What matters is not "did it call an endpoint" but the properties the
- * requirements name: don't redo work (req 4), don't let one bad entry stop the
- * rest (req 5), and stay off entirely when told to (req 3).
- */
 
 interface Call { method: string; route: string; body?: unknown }
 
-/**
- * Fake orchestrator. `repos` is the mutable registered-repo list; adding a repo
- * flips it to `ready` immediately unless `cloneFails` names it, which models the
- * background clone the real `POST /api/repos` kicks off.
- */
 function fakeOrch(opts: {
   repos?: { url: string; status: string }[];
   failAdd?: string[];
@@ -54,8 +38,6 @@ function fakeOrch(opts: {
     if (route === "/api/repos" && init.method === "POST") {
       const target = (body as { url: string }).url;
       if (opts.failAdd?.includes(target)) return json(400, { error: "Invalid repository URL" });
-      // Upsert, like the real `addRepo` — re-adding a known repo updates the
-      // existing row rather than creating a second one.
       const status = opts.neverReady?.includes(target) ? "cloning" : "ready";
       const existing = repos.find((r) => r.url === target);
       if (existing) existing.status = status;
@@ -73,7 +55,6 @@ function fakeOrch(opts: {
   return { fetchImpl, calls, repos };
 }
 
-/** Write a throwaway fixture and return its path. */
 function fixture(repos: unknown): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "seed-fixture-"));
   const file = path.join(dir, "dogfood-seed.json");
@@ -81,8 +62,6 @@ function fixture(repos: unknown): string {
   return file;
 }
 
-// No real sleeping: the script polls on a 1s interval, and every poll in these
-// tests is satisfied on the first attempt.
 const FAST = { pollIntervalMs: 0 };
 
 const A = "https://github.com/acme/repo-a";
@@ -97,9 +76,6 @@ describe("dogfood seed script", () => {
     );
 
     expect(result.results).toEqual([{ url: A, outcome: "seeded" }]);
-    // Trust must come after the add: an untrusted repo fails every agent
-    // dispatch with 403 `repository_untrusted` (docs/178), which is what makes
-    // it part of seeding rather than a separate concern.
     const mutations = orch.calls.filter((c) => c.method === "POST").map((c) => c.route);
     expect(mutations).toEqual(["/api/repos", "/api/repos/trust"]);
   });
@@ -112,16 +88,10 @@ describe("dogfood seed script", () => {
     );
 
     expect(result.results).toEqual([{ url: A, outcome: "skipped" }]);
-    // Nothing was added, re-cloned or re-trusted — a dev-service restart is a
-    // no-op. Note the fixture omits the `.git` suffix the store canonicalizes
-    // to; matching has to survive that.
     expect(orch.calls.filter((c) => c.method === "POST")).toEqual([]);
   });
 
   it("a repo still cloning is not treated as present (req 4)", async () => {
-    // `status: "cloning"` means an earlier boot registered it but the clone
-    // never finished. Skipping it there would leave the inner ShipIt with a
-    // permanently half-added repo, so it gets seeded again.
     const orch = fakeOrch({ repos: [{ url: A, status: "cloning" }] });
     await seed(
       { fetchImpl: orch.fetchImpl, baseUrl: "http://orch", env: {} },
@@ -171,7 +141,6 @@ describe("dogfood seed script", () => {
     );
 
     expect(result.skipped).toBe(true);
-    // Not even a health probe — "off" means it never touches the orch.
     expect(orch.calls).toEqual([]);
   });
 
@@ -222,8 +191,6 @@ describe("dogfood seed script", () => {
         { fetchImpl: orch.fetchImpl, baseUrl: "http://orch", env: {} },
         { ...FAST, fixturePath: fixture([{ url: A }]) },
       );
-      // The warning names the fix. Public repos still clone anonymously, so an
-      // absent token degrades seeding rather than stopping it.
       expect(lines.some((l) => /GITHUB_TOKEN/.test(l))).toBe(true);
       expect(result.results).toEqual([{ url: A, outcome: "seeded" }]);
     } finally {
@@ -232,8 +199,6 @@ describe("dogfood seed script", () => {
   });
 
   it("matches stored repo URLs the way the orchestrator canonicalizes them", () => {
-    // Mirrors `canonicalRepoKey` in git-utils.ts — the store appends `.git`, so
-    // a fixture written without it must still match on restart (req 4).
     expect(canonicalRepoKey("https://github.com/Acme/Repo.git"))
       .toBe(canonicalRepoKey("https://github.com/Acme/Repo/"));
   });
@@ -244,8 +209,6 @@ describe("dogfood seed script", () => {
   });
 
   it("the committed fixture is valid and non-empty (req 2)", async () => {
-    // Guards the actual file the dev service reads: a typo here means the inner
-    // ShipIt silently comes up empty.
     const urls = await readFixture(FIXTURE_PATH);
     expect(urls.length).toBeGreaterThan(0);
     for (const url of urls) expect(() => new URL(url)).not.toThrow();

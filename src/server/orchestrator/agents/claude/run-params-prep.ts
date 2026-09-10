@@ -1,26 +1,9 @@
-/**
- * Claude's run-params prep hook (docs/155 Phase 3, Phase 5 consolidation).
- *
- * Injects the managed-settings file (drives the PreToolUse branch-block hook +
- * Stop-hook PR enforcement — see docs/129, docs/130) and forwards the resolved
- * `autoCreatePr` boolean so the Stop hook self-gates on the matching env var.
- * Both fields are documented on `AgentRunParams` as "Claude-only; other
- * adapters ignore it" — keeping them off non-Claude spawns is functionally
- * equivalent (the Codex adapter ignored them anyway) but removes the
- * type-shape lie at the call site.
- */
-
 import type { PrepareRunParamsFn } from "../../agent-run-params-prep.js";
 
 export const prepareClaudeRunParams: PrepareRunParamsFn = (params, input) => ({
   ...params,
   settingsPath: "/etc/shipit/managed-settings.json",
   autoCreatePr: input.autoCreatePrActive,
-  // docs/211 — forward the sandbox flag so the adapter sets SHIPIT_SANDBOX=1 and
-  // the PreToolUse branch-block hook self-gates off for a repo-less session.
   sandbox: input.sandboxActive ?? false,
-  // planning#267 — forward the merged-branch flag so the adapter sets
-  // SHIPIT_GUARD_DESTRUCTIVE_GIT=1 and the same hook blocks hand-rolled
-  // destructive git in the state `shipit branch reset-to-base` guards.
   guardDestructiveGit: input.guardDestructiveGitActive ?? false,
 });

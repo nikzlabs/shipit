@@ -1,27 +1,9 @@
-/**
- * TEST-ONLY helpers for building a `PreparedDispatch` (docs/240).
- *
- * Production code must call `prepareDispatch` with a COMPLETE
- * `AgentDispatchInit` — that completeness is the whole point of Fix A, because a
- * producer that fills in defaults for the fields you didn't mention re-opens the
- * exact hole planning#257 / planning#261 fell through (a drain site quietly narrowing a
- * queued entry). Tests, though, dispatch a bare `{ text }` dozens of times, and
- * spelling out nine `undefined`s at each call site buys nothing: a test isn't
- * *deriving* options from a queued entry, so there is nothing for it to drop.
- *
- * So this shim lives here — under `integration_tests/`, never imported by
- * production code — and is deliberately NOT exported from `prepared-dispatch.ts`.
- * If you find yourself wanting it in `src/server/orchestrator/*.ts`, that is the
- * signal you are writing a drain site by hand; use `queuedMessageToDispatchOptions`
- * instead.
- */
-
 import { vi } from "vitest";
 import { EventEmitter } from "node:events";
 import { prepareDispatch, type PreparedDispatch } from "../prepared-dispatch.js";
 import type { AgentDispatchOptions, SystemTurnDeps } from "../session-runner.js";
 
-/** Build a `PreparedDispatch` from a partial literal. Tests only. */
+// Test literals may omit fields; production queue conversions must preserve every field.
 export function testDispatch(
   opts: Partial<AgentDispatchOptions> & { text: string },
 ): PreparedDispatch {
@@ -46,20 +28,11 @@ export function testDispatch(
   });
 }
 
-// ---------------------------------------------------------------------------
-// In-process dispatched-turn harness
-// ---------------------------------------------------------------------------
-//
-// Drives the REAL `SessionRunner.dispatch` → `runDispatchedTurn` →
-// `executeAgentTurn` path with a fake agent, so the turn lifecycle (retries,
-// settlement, post-turn teardown) is exercised end-to-end without Docker.
-
 export interface FakeAgent extends EventEmitter {
   run: ReturnType<typeof vi.fn>;
   kill: ReturnType<typeof vi.fn>;
   removeAllListeners: () => this;
   setPermissionMode: ReturnType<typeof vi.fn>;
-  /** How a turn is carried into a RESIDENT streaming process (docs/140). */
   sendUserMessage: ReturnType<typeof vi.fn>;
 }
 
@@ -72,7 +45,6 @@ export function makeFakeAgent(): FakeAgent {
   return agent;
 }
 
-/** A minimal listenerDeps + turn deps wiring usable by `executeAgentTurn`. */
 export function makeDispatchTurnDeps(agents: FakeAgent[], appended: unknown[]): {
   deps: SystemTurnDeps;
   sseBroadcast: ReturnType<typeof vi.fn>;

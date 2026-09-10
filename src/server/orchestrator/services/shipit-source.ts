@@ -1,23 +1,3 @@
-/**
- * docs/162 — read-only ShipIt source surface for Ops remediation sessions.
- *
- * An Ops session can read the ShipIt source tree that corresponds to the
- * running host so the agent can connect production logs to code paths and
- * identify candidate fixes. This service owns:
- *
- *  - Resolving the running source *ref* (the deployed commit when known, the
- *    on-disk checkout HEAD otherwise) and whether that ref is exact.
- *  - Read-only access to that snapshot: `status`, `tree`, `search`, `cat`.
- *  - Redaction so credentials, `.env` files, and `.git` internals are never
- *    served through the CLI surface.
- *
- * Everything reads through `git` plumbing against a concrete ref (never the
- * working tree), so a tree/search/cat result always reflects the exact
- * snapshot reported by `status` — not whatever happens to be checked out or
- * dirty on disk. There are no write operations here by design (see the
- * "Rejected" list in docs/162): no edit, commit, push, checkout, or raw git.
- */
-
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { ServiceError } from "./types.js";
@@ -28,63 +8,35 @@ import { gitSpawnOverridesForTree } from "../../shared/git-tree-uid.js";
 
 const execFileAsync = promisify(execFile);
 
-/** Timeout for the git plumbing calls this service makes (10s). */
 const GIT_TIMEOUT_MS = 10_000;
 
-/** Default host checkout, bind-mounted into the orchestrator (see deployment/vps). */
 const DEFAULT_SOURCE_DIR = "/opt/shipit";
 
-/** Hard caps so a single source read can't flood the agent's context. */
 const MAX_TREE_ENTRIES = 1000;
 const MAX_SEARCH_MATCHES = 200;
-const MAX_CAT_BYTES = 1_000_000; // 1 MB
+const MAX_CAT_BYTES = 1_000_000;
 const MAX_LOG_COMMITS = 100;
 const DEFAULT_LOG_COMMITS = 20;
 const MAX_BLAME_LINES = 5000;
-const MAX_SHOW_BYTES = 1_000_000; // 1 MB
+const MAX_SHOW_BYTES = 1_000_000;
 
-/**
- * Where the running ShipIt source ref came from.
- *  - `build-id`: the commit the running process was *built* from
- *    (`SHIPIT_BUILD_ID`), and that commit exists in the source checkout. This
- *    is the exact deployed commit.
- *  - `checkout-head`: a best-effort fallback to the source checkout's current
- *    HEAD. The running process may have been built from a different commit
- *    (e.g. the host repo was pulled after boot), so this ref is *approximate*.
- */
 export type SourceRefSource = "build-id" | "checkout-head";
 
 export interface ShipitSourceStatus {
-  /** True when a usable source snapshot is available. */
   available: boolean;
-  /** Resolved commit SHA the reads run against. Undefined when unavailable. */
   ref?: string;
-  /** First 12 chars of `ref`, for display. */
   shortRef?: string;
-  /** True only for an exact deployed commit (`build-id`). */
   exact: boolean;
-  /** Where `ref` came from. Undefined when unavailable. */
   refSource?: SourceRefSource;
-  /** The source repo's `origin` remote URL, when resolvable. */
   remoteUrl?: string;
-  /** Human-readable reason when `available` is false. */
   reason?: string;
 }
 
 export interface ShipitSourceDeps {
-  /** Process env. Defaults to `process.env`. Injected for tests. */
   env?: NodeJS.ProcessEnv;
-  /**
-   * Run a git command in `dir` and return stdout. Injected so tests can stub
-   * the source tree without a real checkout. Defaults to a real `execFile`.
-   */
   runGit?: (dir: string, args: string[]) => Promise<string>;
 }
 
-// docs/266 — this site carries its working directory as `-C <dir>`, not as a
-// `cwd` option, which is the shape a `cwd`-only reading of the guard would miss.
-// `dir` is `/opt/shipit` (or `SHIPIT_SOURCE_DIR`), root-owned, so the drop
-// resolves to no-op — but it is resolved, not assumed.
 async function defaultRunGit(dir: string, args: string[]): Promise<string> {
   const { stdout } = await execFileAsync("git", gitArgsWithHooksDisabled(["-C", dir, ...args]), {
     timeout: GIT_TIMEOUT_MS,
@@ -100,13 +52,6 @@ function sourceDir(env: NodeJS.ProcessEnv): string {
   return override || DEFAULT_SOURCE_DIR;
 }
 
-/**
- * Paths that must never be served through the source surface — credentials,
- * env files, key material, and `.git` internals. Matched against the
- * forward-slash path relative to the repo root. Deliberately narrow: it
- * targets secret *artifacts*, not source files that merely mention
- * "credential" in their name (e.g. `credential-store.ts` is fine to read).
- */
 const REDACTED_PATTERNS: RegExp[] = [
   /(^|\/)\.git(\/|$)/,
   /(^|\/)\.env(\.[^/]*)?$/,
@@ -115,16 +60,10 @@ const REDACTED_PATTERNS: RegExp[] = [
   /(^|\/)\.(netrc|npmrc|pgpass)$/,
 ];
 
-/** True when `path` (repo-relative, forward slashes) must be redacted. */
 export function isRedactedSourcePath(path: string): boolean {
   return REDACTED_PATTERNS.some((re) => re.test(path));
 }
 
-/**
- * Normalize an agent-supplied path: trim, strip leading `./` and `/`, collapse
- * `..` rejection. Returns the cleaned repo-relative path. Throws 400 on a path
- * that tries to escape the repo root.
- */
 function normalizeRepoPath(raw: string): string {
   const p = (raw ?? "").trim().replace(/^\.?\/+/, "").replace(/\/+$/, "");
   if (p === "" || p === ".") return "";
@@ -134,11 +73,6 @@ function normalizeRepoPath(raw: string): string {
   return p;
 }
 
-/**
- * Resolve the running source ref + remote. Never throws — returns
- * `{ available: false, reason }` when no usable snapshot exists so `status`
- * can report it and `tree`/`search`/`cat` can fail with the same reason.
- */
 export async function getShipitSourceStatus(
   deps: ShipitSourceDeps = {},
 ): Promise<ShipitSourceStatus> {
@@ -146,7 +80,6 @@ export async function getShipitSourceStatus(
   const runGit = deps.runGit ?? defaultRunGit;
   const dir = sourceDir(env);
 
-  // Confirm the directory is a git work tree before anything else.
   try {
     await runGit(dir, ["rev-parse", "--is-inside-work-tree"]);
   } catch {
@@ -157,9 +90,7 @@ export async function getShipitSourceStatus(
     };
   }
 
-  // Prefer the exact build commit. resolveBuildId reads SHIPIT_BUILD_ID (set at
-  // image build time from `git rev-parse HEAD`); we only trust it as "exact"
-  // when that commit actually exists in the source checkout.
+  // Checkout HEAD may have moved since deployment; prefer an available build commit.
   let ref: string | undefined;
   let refSource: SourceRefSource | undefined;
   let exact = false;
@@ -201,11 +132,6 @@ export async function getShipitSourceStatus(
       remoteUrl = undefined;
     }
   }
-  // The host checkout's `origin` typically carries an embedded GitHub PAT
-  // (`https://x:<pat>@github.com/o/r.git`). Strip it before the URL is ever
-  // returned, displayed by `shipit source status`, used as a repo-store key,
-  // or persisted into a child session's config. Auth is injected at
-  // git-operation time via the credential helper, never via the URL.
   if (remoteUrl) remoteUrl = stripUrlCredentials(remoteUrl);
 
   const status: ShipitSourceStatus = {
@@ -219,7 +145,6 @@ export async function getShipitSourceStatus(
   return status;
 }
 
-/** Resolve the snapshot, throwing a 503 ServiceError when unavailable. */
 async function requireSnapshot(deps: ShipitSourceDeps): Promise<{
   dir: string;
   ref: string;
@@ -245,7 +170,6 @@ export interface SourceTreeResult {
   truncated: boolean;
 }
 
-/** List the entries directly under `path` (repo root when empty) at the snapshot ref. */
 export async function listShipitSourceTree(
   rawPath: string,
   deps: ShipitSourceDeps = {},
@@ -300,7 +224,6 @@ export interface SourceSearchResult {
   truncated: boolean;
 }
 
-/** Search file contents at the snapshot ref via `git grep`. Redacted paths are filtered out. */
 export async function searchShipitSource(
   query: string,
   rawPath: string | undefined,
@@ -311,8 +234,7 @@ export async function searchShipitSource(
   const { dir, ref, runGit } = await requireSnapshot(deps);
   const path = rawPath ? normalizeRepoPath(rawPath) : "";
 
-  // -n line numbers, -I skip binary, -e <pattern> so a pattern starting with
-  // '-' isn't parsed as a flag. Search the tree at `ref`, not the work tree.
+  // -e prevents a query starting with '-' from becoming a git option.
   const args = ["grep", "-n", "-I", "-e", trimmed, ref];
   if (path) args.push("--", path);
 
@@ -320,8 +242,7 @@ export async function searchShipitSource(
   try {
     stdout = await runGit(dir, args);
   } catch (err) {
-    // `git grep` exits 1 with no matches — surface that as an empty result,
-    // not an error. Any other failure is a real error.
+    // git grep exits 1 without stderr when there are no matches.
     const message = (err as { stderr?: string; message?: string }).stderr
       ?? (err as Error).message ?? "";
     const code = (err as { code?: number }).code;
@@ -363,7 +284,6 @@ export interface SourceCatResult {
   truncated: boolean;
 }
 
-/** Read a single file at the snapshot ref. Rejects redacted paths and oversized files. */
 export async function catShipitSource(
   rawPath: string,
   deps: ShipitSourceDeps = {},
@@ -392,13 +312,6 @@ export async function catShipitSource(
   return { ref, path, content, truncated };
 }
 
-/**
- * Validate an agent-supplied commit-ish (SHA, short SHA, tag, or ref name)
- * before it's handed to `git show`. Rejects anything that could be parsed as a
- * flag or contains shell/path-escape characters. We don't use a shell — args
- * go straight to execFile — but a leading `-` would still be read by git as an
- * option, so reject it explicitly.
- */
 function normalizeCommitish(raw: string): string {
   const c = (raw ?? "").trim();
   if (!c) throw new ServiceError(400, "A commit is required.");
@@ -423,12 +336,6 @@ export interface SourceLogResult {
   truncated: boolean;
 }
 
-/**
- * Commit history at the snapshot ref, optionally scoped to a path. This is the
- * primary "what recently changed near this code path?" tool for connecting a
- * production symptom to the change that introduced it. Read-only: it never
- * touches the working tree and serves the same ref as `status`.
- */
 export async function logShipitSource(
   rawPath: string | undefined,
   opts: { limit?: number } = {},
@@ -441,8 +348,7 @@ export async function logShipitSource(
   }
   const limit = Math.min(Math.max(1, Math.floor(opts.limit ?? DEFAULT_LOG_COMMITS)), MAX_LOG_COMMITS);
 
-  // NUL-delimit fields and newline-delimit records so subjects with spaces /
-  // colons parse unambiguously. %x00 = NUL, %x1e = record separator.
+  // NUL separates fields; ASCII RS separates records.
   const fmt = "%H%x00%an%x00%aI%x00%s%x1e";
   const args = ["log", `--max-count=${limit + 1}`, `--format=${fmt}`, ref];
   if (path) args.push("--", path);
@@ -486,11 +392,6 @@ export interface SourceBlameResult {
   truncated: boolean;
 }
 
-/**
- * Line-by-line attribution for a single file at the snapshot ref — answers
- * "which commit last touched this line?" for pinning a regression. Rejects
- * redacted paths (blame exposes file contents) and caps the line count.
- */
 export async function blameShipitSource(
   rawPath: string,
   deps: ShipitSourceDeps = {},
@@ -510,9 +411,7 @@ export async function blameShipitSource(
     throw new ServiceError(404, `Could not blame '${path}': ${message?.trim() || "not found at this ref"}`);
   }
 
-  // --line-porcelain repeats a full header per line: a "<40-hex> <orig> <final>"
-  // line, key/value lines (author, author-time, …), then the content line
-  // prefixed with a TAB. Walk the stream and emit one entry per content line.
+  // Porcelain repeats metadata for each line; a TAB starts its content.
   const lines: SourceBlameLine[] = [];
   let truncated = false;
   let curHash = "";
@@ -543,19 +442,12 @@ export async function blameShipitSource(
 }
 
 export interface SourceShowResult {
-  /** The commit-ish that was shown (as requested, not necessarily a full SHA). */
   ref: string;
   path: string;
   content: string;
   truncated: boolean;
 }
 
-/**
- * The metadata + diff for a single commit — the natural follow-up to `log`
- * ("show me what that commit changed"). Diffs are post-filtered so a commit
- * that also touched a redacted file (`.env`, key material) never leaks that
- * file's contents through the diff. Optionally scoped to one path.
- */
 export async function showShipitSource(
   rawCommit: string,
   rawPath: string | undefined,
@@ -588,14 +480,9 @@ export async function showShipitSource(
   return { ref: commit, path, content, truncated };
 }
 
-/**
- * Strip per-file diff sections for redacted paths out of `git show` output,
- * leaving the commit header and non-redacted file diffs intact. A note records
- * how many files were hidden so the omission is visible, not silent.
- */
 export function filterRedactedDiff(showOut: string): string {
   const firstDiff = showOut.indexOf("diff --git ");
-  if (firstDiff === -1) return showOut; // no diff body (e.g. empty/merge commit)
+  if (firstDiff === -1) return showOut;
   const header = showOut.slice(0, firstDiff);
   const body = showOut.slice(firstDiff);
   const chunks = body.split(/(?=^diff --git )/m);
@@ -619,28 +506,13 @@ export function filterRedactedDiff(showOut: string): string {
   return out;
 }
 
-// ---------------------------------------------------------------------------
-// Write path: spawning a repo-backed ShipIt fix session (docs/162)
-// ---------------------------------------------------------------------------
-
 export interface ShipitFixTarget {
-  /** Exact commit the fix child must branch from (the inspected source ref). */
   ref: string;
-  /** True only when `ref` is the exact deployed build commit. */
   exact: boolean;
-  /** ShipIt source repository URL the child will be claimed against. */
   repoUrl: string;
   refSource?: SourceRefSource;
 }
 
-/**
- * Validate that a ShipIt fix session can be spawned against the running
- * source, and resolve the exact ref + repo URL it must target. Throws a 400
- * ServiceError (with an actionable message) when the source is unavailable,
- * only approximately known without explicit opt-in, or has no resolvable
- * remote. Does NOT check GitHub write permission — that's the caller's job
- * (it needs the auth manager) and happens after this.
- */
 export async function resolveShipitFixTarget(
   approximate: boolean,
   deps: ShipitSourceDeps = {},
@@ -675,31 +547,12 @@ export interface EnsureRepoReadyDeps {
     get(url: string): { status: string } | undefined;
     add(url: string): unknown;
     setReady(url: string): void;
-    /** Registered repos — scanned to reuse an existing entry by canonical identity. */
     list(): { url: string }[];
   };
   getSharedRepoDir: (url: string) => string;
-  /** Pre-bound `ensureBareCache(cacheDir, url, createRepoGit)`. */
   ensureBareCache: (cacheDir: string, url: string) => Promise<unknown>;
 }
 
-/**
- * Make the ShipIt source repo claimable and return the credential-free URL the
- * caller must use as the child's `repoUrlOverride`.
- *
- * Resolves repo identity canonically: if the user already added this repo
- * through the home screen (the common case — ShipIt-in-ShipIt), we reuse that
- * exact store entry rather than registering a second, near-duplicate row. The
- * host checkout's `origin` differs from the user's clean URL only by an
- * embedded PAT (and possibly host casing / `.git` suffix), so a raw
- * `repoStore.get(url)` would miss it and `add` a duplicate (the BUG 1 sidebar
- * double-listing). {@link canonicalRepoKey} collapses both forms to one key.
- *
- * When no entry matches, we register the credential-free URL (never the
- * credentialed origin — see {@link stripUrlCredentials}), ensure its bare cache
- * exists, and flip it to `ready`. Idempotent: a no-op when the resolved entry
- * is already ready.
- */
 export async function ensureShipitSourceRepoReady(
   url: string,
   deps: EnsureRepoReadyDeps,
@@ -707,8 +560,7 @@ export async function ensureShipitSourceRepoReady(
   const clean = stripUrlCredentials(url);
   const wanted = canonicalRepoKey(url);
   const existing = deps.repoStore.list().find((r) => canonicalRepoKey(r.url) === wanted);
-  // Reuse the user's existing entry verbatim (so the claim/override URL matches
-  // a real store key); otherwise key by the credential-free URL.
+  // Claims need the existing store key even when an equivalent URL has another spelling.
   const key = existing?.url ?? clean;
   if (deps.repoStore.get(key)?.status === "ready") return key;
   deps.repoStore.add(key);
@@ -717,14 +569,6 @@ export async function ensureShipitSourceRepoReady(
   return key;
 }
 
-/**
- * Build the incident-packet prompt seeded into the fix child. The agent's
- * diagnosis (`diagnosis`) is wrapped in a structured header that records the
- * exact source ref, whether it was exact, and the linkage back to the Ops
- * parent — so the child knows precisely what commit it started from and that a
- * human can trace it. Constraints are stated explicitly to keep the child
- * scoped to the fix.
- */
 export function buildShipitFixPrompt(opts: {
   ref: string;
   exact: boolean;

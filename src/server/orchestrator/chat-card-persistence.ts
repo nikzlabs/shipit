@@ -1,49 +1,4 @@
-/**
- * Chat-card persistence — the single, correct way to put a card into the chat
- * transcript so it survives a session switch AND a full reload (docs/164, docs/191).
- *
- * Background: `runner.emitMessage()` is *transport only*. It broadcasts to
- * attached viewers and buffers into the per-turn turn-event log (replayed on a
- * WS **reconnect**), but it does NOT write to persisted chat history. A session
- * switch and a full page reload rehydrate the transcript from `ChatHistoryManager`
- * (`GET /history`), so an emit-only card renders live, survives a reconnect, then
- * vanishes on switch/reload. This footgun has recurred — voice notes (docs/163)
- * and bug-report cards (docs/164) each shipped emit-only first and had to be
- * retrofitted.
- *
- * `emitChatCard` removes the footgun. A single call does three things atomically:
- *   1. emits the WS message (live render),
- *   2. records the card on the runner anchored by `afterGroupIndex` (so
- *      `buildTurnMessages` re-interleaves it at its true transcript position on
- *      every rebuild, instead of an out-of-band `append` floating it above the
- *      whole turn), and
- *   3. **persists the in-progress turn immediately** via `persistTurnInProgress`.
- *
- * Step 3 is what makes the invariant "a card appears ⇔ it is in session history"
- * hold the instant the card fires — not at the next tool-result boundary. The
- * old design only *recorded* the card and relied on a later `buildTurnMessages`
- * rebuild to flush it; between firing and that boundary the card lived only in
- * the live client array + `recordedCards`, so a mid-turn `loadSessionHistory`
- * (any WS reconnect) replaced the transcript with a DB snapshot lacking the card
- * and it flickered out, reappearing only once the turn finalized (docs/191 — the
- * "commented on issue card disappears then reappears" bug). Persisting inside the
- * primitive means no call site can defer or forget it.
- *
- * Because `emitChatCard` requires a persist context (`chatHistoryManager` +
- * `sessionId`), a card simply cannot be emitted without also being persisted —
- * the type system enforces it.
- *
- * Transient signals (spinners, `preview_status`, queue counts) stay on plain
- * `emitMessage` — only persist what belongs in the scrollback.
- *
- * Lives in its own module (not `session-runner` / `agent-listeners`) so the
- * voice-note router can import it as a value without recreating the import cycle
- * those modules have with each other. The turn-rebuild helpers
- * (`buildTurnMessages` / `persistTurnInProgress`) live here too — co-located with
- * `recordChatCard` because they share the `recordedCards` interleaving contract —
- * and are re-exported from `agent-listeners.ts` for its existing importers.
- */
-
+// emitMessage alone survives reconnects, but does not persist transcript history.
 import { randomUUID } from "node:crypto";
 import type { WsServerMessage, WsSystemNotice } from "../shared/types.js";
 import type {
@@ -55,61 +10,18 @@ import type {
 import type { PersistedMessage } from "./chat-history.js";
 import { markMessagesCommitted, type CommittedBodyIds } from "./transcript-projection.js";
 
-/**
- * Minimal chat-history surface the card/turn persistence needs. Kept structural
- * so non-WS callers and tests can pass a stub without the full
- * `ChatHistoryManager`.
- *
- * Both writes are required because `emitChatCard` picks between them by whether
- * a turn is in flight: `replaceInProgress` for a mid-turn card (rebuilt at its
- * anchor on every boundary), `append` for one that lands after the turn already
- * finalized — see `emitChatCard` for why the in-progress path is actively wrong
- * there.
- */
 export interface InProgressPersister {
   replaceInProgress(sessionId: string, messages: PersistedMessage[]): void;
   append(sessionId: string, message: PersistedMessage): unknown;
-  /**
-   * nikzlabs/shipit#2350 — whether a turn's rows are still open for this session.
-   * `persistCardTransition` needs the real answer, not `runner.running`'s
-   * approximation of it; see that function. Optional so partial test stubs and
-   * `emitChatCard`-only callers need not implement it — omitting it keeps the
-   * previous `running`-only behaviour rather than changing it.
-   */
   hasInProgress?(sessionId: string): boolean;
 }
 
-/**
- * The durable-write context every transcript card carries: where to write
- * (`chatHistoryManager`) and which session (`sessionId`, captured at turn
- * start). Required by `emitChatCard` so a card can't be emitted without being
- * persisted in the same call.
- */
 export interface CardPersistCtx {
   chatHistoryManager: InProgressPersister;
   sessionId: string;
 }
 
-/**
- * Build the ordered list of in-progress messages for a turn, interleaving any
- * live-steered user messages (docs/140) and recorded chat cards (voice notes
- * docs/163, bug-report cards docs/164, issue cards docs/177/188, …) at their
- * true position among the assistant message groups.
- *
- * `replaceInProgress` deletes every `in_progress=1` row and re-inserts this
- * list, so the assistant rows are reborn with fresh (higher) ids on every
- * call. A steered user message — or a recorded card — persisted out-of-band
- * (via `append`) keeps its original early id and therefore collapses up next
- * to the turn's first user message on reload. Folding both into the same
- * rebuilt batch — anchored by `afterGroupIndex` (the count of persistable
- * groups when the steer / card arrived) — keeps them at the exact spot they
- * occurred. An end-of-turn card lands where the tool was issued instead of
- * floating above the whole turn.
- *
- * When `inProgress` is true the rows participate in the next delete/reinsert
- * cycle; the final (agent_result) call passes false so the rows are written
- * permanently before `finalizeInProgress`.
- */
+// Rebuild cards and steers with assistant groups so replacement row IDs preserve their order.
 export function buildTurnMessages(
   groups: ChatMessageGroup[],
   steered: SteeredMessage[],
@@ -136,8 +48,6 @@ export function buildTurnMessages(
     ...flag,
   });
 
-  // At a given anchor, emit steered user messages first, then chat cards — so a
-  // card recorded after the user's last steer renders below it.
   const emitAnchoredAt = (index: number) => {
     for (const s of steered) {
       if (s.afterGroupIndex === index) out.push(persistedSteer(s));
@@ -159,10 +69,6 @@ export function buildTurnMessages(
       ...flag,
     });
   }
-  // Steers / cards anchored at or beyond the final group count land after
-  // everything. The `>=` clamp guards against an anchor that outran the
-  // persistable groups (e.g. the anchoring group never produced persistable
-  // content). This is the common case for an end-of-turn card.
   for (const s of steered) {
     if (s.afterGroupIndex >= persistable.length) out.push(persistedSteer(s));
   }
@@ -172,19 +78,12 @@ export function buildTurnMessages(
   return out;
 }
 
-/**
- * Persist the current turn's groups + steered messages + recorded cards as the
- * in-progress set. Shared by the steer handler (so a mid-turn injection is saved
- * immediately), the tool-result boundary in `wireAgentListeners`, and
- * `emitChatCard` (so a side-channel card is durable the instant it fires).
- */
 export function persistTurnInProgress(
   chatHistoryManager: Pick<InProgressPersister, "replaceInProgress">,
   runner: {
     chatMessageGroups: ChatMessageGroup[];
     steeredMessages: SteeredMessage[];
     recordedCards: RecordedChatCard[];
-    /** Optional so partial test stubs still work; absent ⇒ nothing is marked. */
     committedBodyIds?: CommittedBodyIds;
   },
   sessionId: string,
@@ -196,23 +95,10 @@ export function persistTurnInProgress(
     { inProgress: true },
   );
   chatHistoryManager.replaceInProgress(sessionId, messages);
-  // docs/244 / planning#299 — these bodies are now on disk, so the reconnect snapshot
-  // may strip them. Recorded from the list actually written, never from the live
-  // groups: a group keeps accumulating after it is persisted, so "what we just
-  // wrote" and "what the group holds now" diverge within the same turn.
+  // Mark the written snapshot, not live groups that can keep accumulating content.
   if (runner.committedBodyIds) markMessagesCommitted(runner.committedBodyIds, messages);
 }
 
-/**
- * Record a chat card on the runner, anchored after the assistant groups that
- * have produced persistable content so far. `buildTurnMessages` reads
- * `runner.recordedCards` and re-interleaves each at `afterGroupIndex` on every
- * in-progress rebuild. Same mechanism as `recordSteeredMessage`.
- *
- * Prefer `emitChatCard` — it pairs this with the WS emit AND the durable persist
- * so the three can't drift. Use `recordChatCard` directly only when the WS emit
- * and persist are genuinely handled separately by the caller.
- */
 export function recordChatCard(
   runner: Pick<SessionRunnerInterface, "chatMessageGroups" | "recordedCards">,
   message: PersistedMessage,
@@ -221,50 +107,6 @@ export function recordChatCard(
   runner.recordedCards = [...runner.recordedCards, { afterGroupIndex, message }];
 }
 
-/**
- * Emit a transcript card, record it for interleaving, AND persist the
- * in-progress turn — all in one call. `wsMessage` is the live WS payload
- * (carries its own `type` + `sessionId`); `persisted` is the `PersistedMessage`
- * row to interleave into chat history (typically
- * `{ role: "assistant", text: "", <cardField>: ... }`); `persist` is the durable
- * write context (`chatHistoryManager` + `sessionId`).
- *
- * Persisting here (step 3 — see the module docstring) is what guarantees the
- * card is in session history the instant it appears, closing the reconnect
- * window that made cards flicker out and back (docs/191). Lifecycle transitions
- * on an already-persisted card (e.g. filed/failed, undone) patch the DB row in
- * place via the relevant `ChatHistoryManager` method — they are not re-recorded
- * here.
- *
- * ## A card that lands AFTER its turn ended takes the append path
- *
- * The record-and-rebuild machinery above is a *mid-turn* mechanism: it works by
- * rewriting the in-progress row set, which only exists while a turn is in
- * flight. Some side-channel cards routinely arrive later — the canonical case is
- * `shipit agent run` launched in the background (which `shipit-docs/agent.md`
- * actively tells the agent to do for long consults), whose HTTP call outlives
- * the turn that started it and emits its consult card minutes after that turn
- * finalized.
- *
- * Run through the in-progress path, such a card is not merely misplaced — it is
- * DESTROYED. `finalizeInProgress` has already cleared the turn's rows, so
- * `persistTurnInProgress` re-inserts the whole finished turn as a *second*,
- * `in_progress=1` copy with the card inside it; the next turn's first
- * `replaceInProgress` deletes every `in_progress=1` row for the session and the
- * card goes with it. Observed in production as `shipit agent result <id>`
- * answering "No sub-agent runs in this session yet" for a run that had just
- * printed its own id — the long consult's entire output, unrecoverable.
- *
- * So when no turn is running, append the card as a finalized row at the current
- * end of history. That is also its correct transcript position (it happened
- * after the turn), and it is the same choice `emitNoticePostTurn` makes for
- * notices. `runner.running` is a safe discriminator because
- * `finalizeInProgress` always precedes `running = false` (`agent-listeners`),
- * so `running === false` guarantees there is no in-progress set to join.
- * `recordedCards` is deliberately NOT touched on this path: the next turn start
- * clears it anyway, and recording would re-insert the card into that turn's
- * rebuilt rows as a duplicate.
- */
 export function emitChatCard(
   runner: Pick<
     SessionRunnerInterface,
@@ -282,6 +124,7 @@ export function emitChatCard(
 ): void {
   runner.emitMessage(wsMessage);
 
+  // Rebuilding a finished turn would make the next turn delete this card.
   if (!runner.running) {
     persist.chatHistoryManager.append(persist.sessionId, persisted);
     return;
@@ -290,43 +133,12 @@ export function emitChatCard(
   recordChatCard(runner, persisted);
   persistTurnInProgress(persist.chatHistoryManager, runner, persist.sessionId);
 
-  // Advance the turn-event replay cursor past everything buffered so far — the
-  // SAME thing the tool-result / agent_result boundaries do after they persist
-  // (agent-listeners.ts). `persistTurnInProgress` just wrote a complete snapshot
-  // of the turn (every accumulated assistant group + this card), so the buffered
-  // events up to now are redundant with chat history. Without this advance the
-  // snapshot sits AHEAD of `lastPersistedBufferIndex`, so a later session switch
-  // / WS reconnect replays those buffered events ON TOP of the snapshot. The
-  // pre-card `agent_assistant` then merges into this card's carrier message and
-  // the client drops the card field (`agent-event.ts`) — the card vanishing on
-  // switch and reappearing only once the agent stops (which clears the buffer).
-  // Guarded for partial test stubs that don't model the buffer.
+  // Replaying events already in the snapshot can overwrite the card's carrier message.
   if (typeof runner.getTurnEventBuffer === "function") {
     runner.lastPersistedBufferIndex = runner.getTurnEventBuffer().length;
   }
 }
 
-/**
- * Patch an already-recorded card's persisted message IN PLACE, keyed by
- * `matches`, WITHOUT re-broadcasting the card. Returns true if a card matched.
- *
- * For a lifecycle transition that lands WITHIN the same turn that created the
- * card. The canonical case is a permission request resolved while the agent is
- * still BLOCKED mid-turn (docs/193): the proposing-turn row is still
- * `in_progress=1`, so the next `replaceInProgress` rebuild reads `recordedCards`
- * and a DB-only `updateXCard` patch would be clobbered back to the recorded
- * (pending) snapshot — the card reverts to its Approve/Deny variant on the next
- * switch/reload. Updating the recorded card here makes every rebuild — and the
- * final end-of-turn persist — carry the patched (terminal) state.
- *
- * Unlike `emitChatCard`, this does NOT re-emit the card (the transition is
- * communicated by a separate terminal WS message — e.g. `permission_resolved` —
- * that the client applies to its card store), and it
- * never records a fresh card when none matches (a transition for a card not in
- * this turn's recorded set means the proposing turn already finalized, so the
- * caller should fall back to the DB-row `updateXCard` patch, which is safe then).
- * Pair a successful patch with `persistTurnInProgress` to flush it to history.
- */
 export function updateRecordedCard(
   runner: Pick<SessionRunnerInterface, "recordedCards">,
   matches: (m: PersistedMessage) => boolean,
@@ -340,39 +152,7 @@ export function updateRecordedCard(
   return true;
 }
 
-/**
- * Persist a side-channel card's lifecycle transition (filed / resolved / undone
- * / …) so it survives a session switch and a full reload — WITHOUT being
- * clobbered when the user confirms the card while its proposing turn is still in
- * flight. The recurring footgun behind docs/164 (bug report), docs/172 (egress),
- * docs/177 (issue-write undo), and docs/193 (permission); this is their shared
- * implementation.
- *
- * The clobber: a card is recorded on the runner at propose time (`emitChatCard`
- * → `recordedCards`), and `recordedCards` is cleared only at the NEXT turn start,
- * never at turn end (`resetRunnerTurnState`). So a DB-only `patchDb()` applied
- * while the proposing turn is still running is reverted when that turn finalizes
- * and rebuilds its rows from the stale (still-pending) `recordedCards` snapshot —
- * the card reverts to its pre-transition form on the next switch/reload.
- *
- * While the turn is running and the card is in this turn's recorded set, patch
- * the recorded card in place (`updateRecordedCard`) so every rebuild — and the
- * end-of-turn persist — carries the terminal state, then flush with
- * `persistTurnInProgress`. Otherwise (`running` is false, or the card was
- * recorded by an already-finalized turn whose `recordedCards` are now inert) the
- * direct DB-row `patchDb()` is safe — and is the default, since most cards are
- * confirmed after their proposing turn ends. The `running` guard matters because
- * — unlike a permission card, which always resolves mid-turn while the agent is
- * blocked — these cards are usually confirmed post-turn, and a post-finalize
- * `persistTurnInProgress` would revive the finalized turn as a duplicate
- * in-progress row.
- *
- * `matches` selects the recorded card by its stable id; `patchRecorded` returns
- * the patched `PersistedMessage`; `patchDb` performs the finalized-row
- * `ChatHistoryManager.update*Card` fallback.
- *
- * Returns true when the in-flight (recorded-card) branch was taken.
- */
+// Patch recorded state too, or the next turn rebuild will undo a database-only update.
 export function persistCardTransition(
   runner: Pick<
     SessionRunnerInterface,
@@ -388,49 +168,13 @@ export function persistCardTransition(
   patchRecorded: (m: PersistedMessage) => PersistedMessage,
   patchDb: () => void,
 ): boolean {
-  // `running` alone is NOT the right test, and this is the correction
-  // (nikzlabs/shipit#2350 review). Both send handlers set `running = true` BEFORE
-  // `runAgentWithMessage`, while `resetRunnerTurnState` — which clears
-  // `recordedCards` — runs later, inside `executeAgentTurn`, behind a real await
-  // (`applyPreTurnReset` does git work on the merged-session path). In that
-  // window `running` is true but `recordedCards` still holds the PREVIOUS,
-  // already-finalized turn's snapshot. Patching it there and calling
-  // `persistTurnInProgress` revives that finished turn as `in_progress=1` rows,
-  // which the new turn's first `replaceInProgress` then deletes wholesale — so
-  // the user's decision is silently lost: they saw the card resolve (optimistic
-  // collapse + WS echo), a reload shows an editable draft again, and nothing
-  // downstream is ever told.
-  //
-  // The honest test is whether a turn actually OWNS the in-progress set. A turn
-  // that recorded this card has already flushed `in_progress=1` rows containing
-  // it (`emitChatCard` records AND persists in one call), so rows-exist is
-  // exactly the condition — and in the startup window the previous turn was
-  // finalized, so there are none and we correctly take the DB branch.
-  // Defaults to TRUE when the persister cannot answer, which is deliberate and
-  // the safe direction: a caller without the probe keeps the previous
-  // `running`-only behaviour, so it is never made WORSE than before. Defaulting
-  // to false would send every such caller down the DB branch and throw away the
-  // in-flight clobber protection docs/164/172/177/193 all depend on — trading a
-  // narrow window for a wide one. The probe only ever NARROWS the in-flight
-  // branch, never widens it.
-  //
-  // In PRODUCTION the default never fires: optional-chaining tests the runtime
-  // value, not the declared type, and every real caller passes a
-  // `ChatHistoryManager`, which implements it — including the two that declare a
-  // narrowed persister interface (`NonTurnFailurePersister`,
-  // `ConsultCardPersister`). The optionality exists for partial test stubs.
+  // running becomes true before old recordedCards clear; check actual in-progress rows.
   const turnOwnsInProgressRows =
     runner.running && (persist.chatHistoryManager.hasInProgress?.(persist.sessionId) ?? true);
   const patchedInFlight =
     turnOwnsInProgressRows && updateRecordedCard(runner, matches, patchRecorded);
   if (patchedInFlight) {
     persistTurnInProgress(persist.chatHistoryManager, runner, persist.sessionId);
-    // Same replay-cursor advance `emitChatCard` performs, and for the same
-    // reason: `persistTurnInProgress` just wrote a complete snapshot of the
-    // turn, so leaving the cursor behind it lets a later reconnect replay the
-    // buffered pre-card events ON TOP of that snapshot — which merges the
-    // preceding `agent_assistant` into the card's carrier message and drops the
-    // card field. Guarded for partial test stubs that don't model the buffer.
     if (typeof runner.getTurnEventBuffer === "function") {
       runner.lastPersistedBufferIndex = runner.getTurnEventBuffer().length;
     }
@@ -440,22 +184,7 @@ export function persistCardTransition(
   return patchedInFlight;
 }
 
-/**
- * docs/138 — build a `system_notice` WS message and its persisted chat row,
- * sharing one stable id. The id lets the client dedupe a notice re-delivered by
- * the turn-event buffer replay on reconnect against the copy already loaded from
- * history. Use the helpers below rather than constructing notices ad-hoc, so a
- * notice can never ship emit-only (the historical bug — notices survived a
- * reconnect via the buffer but vanished on a full reload).
- */
-/**
- * The two halves of one notice, sharing a `noticeId`.
- *
- * Exported for docs/288, whose cancellation notice is persisted INSIDE the
- * transaction that deletes the request (so a failure cannot lose the
- * explanation) and broadcast only once that has committed. Both halves must
- * carry the same id, or the reloaded row and the live card are two notices.
- */
+// A shared ID deduplicates the live notice against history on reconnect.
 export function buildSystemNotice(
   sessionId: string,
   message: string,
@@ -468,13 +197,6 @@ export function buildSystemNotice(
   };
 }
 
-/**
- * Emit + persist a system notice that fires WITHIN a turn (e.g. a guarded-mode
- * banner on `agent_init`, a blocked-actions summary on `agent_result`). Recorded
- * in-band via `emitChatCard` so `buildTurnMessages` interleaves it at its true
- * transcript position when it flushes the turn, and persisted immediately so it
- * survives a mid-turn reconnect.
- */
 export function emitNoticeInTurn(
   runner: Pick<
     SessionRunnerInterface,
@@ -495,14 +217,6 @@ export function emitNoticeInTurn(
   emitChatCard(runner, ws, persisted, { chatHistoryManager, sessionId });
 }
 
-/**
- * Emit + persist a system notice that fires AFTER the turn's final persist (e.g.
- * an unresolved-merge-conflict warning during post-turn auto-commit) or outside
- * a turn entirely (a rewind queue-clear). `recordedCards` are already flushed by
- * then, so this appends the row directly — landing it at the current end of
- * history, which is the correct post-turn position. `emit` is the caller's
- * broadcast (`runner.emitMessage` or the per-connection `emit`).
- */
 export function emitNoticePostTurn(
   emit: (m: WsServerMessage) => void,
   chatHistory: { append(sessionId: string, message: PersistedMessage): unknown },
@@ -515,20 +229,6 @@ export function emitNoticePostTurn(
   chatHistory.append(sessionId, persisted);
 }
 
-/**
- * docs/266 — persist a system notice for a session with NO live transport at
- * all: no runner, so no viewers and no turn-event buffer.
- *
- * The case is a server-side event that concerns a session nobody is attached to
- * — a pull request merging while the session is closed or its container has been
- * reclaimed. The event happened whether or not anyone was watching, so the
- * notice belongs in the transcript the user finds when they come back; the live
- * emit is simply the half that has no destination.
- *
- * A separate function rather than {@link emitNoticePostTurn} with a no-op `emit`
- * so the call site says what it means, and so "there is no transport here" can
- * never be mistaken for a forgotten broadcast.
- */
 export function persistNoticeUnattached(
   chatHistory: { append(sessionId: string, message: PersistedMessage): unknown },
   sessionId: string,

@@ -35,34 +35,13 @@ import { takeRoleStandingInstructions } from "../services/session-role.js";
 import { dependencyGapAgentPrefix } from "../dependency-staleness.js";
 import { imageHash, imageUrl } from "../transcript-projection.js";
 
-// docs/149 — re-export so existing `selectAgentEnvForPush` consumers (unit
-// tests, secret-resolver coverage) keep their import path working while the
-// canonical home moves to `session-agent-env.ts`.
 export { selectAgentEnvForPush };
 
-// The prompt-assembly helpers moved to `../prompt-assembly.ts` so the dispatch
-// path (`dispatched-turn.ts`) can reuse them without importing this ctx-heavy
-// module. Re-exported here for the existing import sites (`send-message.ts`,
-// `agent-prompt.test.ts`).
 export { saveImagesToUploadsDir, assembleAgentPrompt };
 
-/** Full handler context — send-message handlers need all three sub-contexts. */
 type FullCtx = ConnectionCtx & RunnerCtx & AppCtx;
 
-/**
- * Flip the in-progress rows of an interrupted turn to `in_progress=0` so the
- * accumulated partial work survives the next turn's `replaceInProgress` wipe
- * (the "first turn erased from history" bug from docs/156).
- *
- * Best-effort: if the chatHistoryManager's DB has already been closed (which
- * happens when the agent's `done` event fires from a setTimeout callback
- * after app shutdown / test teardown — vitest's FakeClaudeProcess.interrupt()
- * schedules a 10ms delayed "done" emission, plenty long for the test fixture
- * to be torn down first), swallow the better-sqlite3 "database connection is
- * not open" error rather than crashing on an unhandled rejection. The partial
- * messages going unpersisted in this edge case is acceptable; corrupting the
- * process with an unhandled error is not.
- */
+// Finalize partial rows before the next turn replaces in-progress history.
 function persistInterruptedTurn(
   ctx: FullCtx,
   sessionId: string,
@@ -78,56 +57,25 @@ function persistInterruptedTurn(
   }
 }
 
-/**
- * Drain the next message from the runner's queue and start a new agent turn.
- * Shared between the agent's `done` handler (normal post-turn path) and the
- * `error` handler (so a transient /agent/start failure — typically a 409
- * race with the previous turn's worker-side cleanup — doesn't strand the
- * rest of the queue).
- *
- * Callers must have already cleared the runner's `_agent` reference and set
- * `running = false`. This helper sets `running = true` again when it shifts
- * a message off, and starts the new turn via `startQueuedMessage`.
- *
- * planning#257 — the re-entry below (`runAgentWithMessage`) can only express an
- * INTERACTIVE turn: text, attachments, permission mode. A server-dispatched
- * entry also carries `systemTurn`, `onTurnComplete`, `postTurn`, and `activity`,
- * which this path used to drop on the floor — a docs/196 wake-turn queued behind
- * a user turn ran as an ordinary turn and its merge watch never advanced. So the
- * dequeued entry is routed by `startQueuedMessage`: dispatched entries go back
- * through `runner.runDispatchedTurn` with the full option set, and only
- * interactive ones reach the narrower re-entry here.
- */
 export async function drainNextQueuedMessage(
   ctx: FullCtx,
   runner: SessionRunnerInterface | null,
   capturedSessionId: string | undefined,
   capturedSessionDir: string | null | undefined,
   emit: (msg: WsServerMessage) => void,
-  /** docs/295 — the turn this drain runs off is ShipIt's own compaction turn. */
   compactionTurn = false,
 ): Promise<void> {
   if (!runner) return;
 
-  // planning#338 — a system flow (the rebase driver) grabbed the session while this
-  // turn's post-turn work was still finishing (the window between `tryDrain`
-  // clearing `running` and this drain running is an await on the local commit).
-  // Starting a queued turn now would displace the flow's agent slot mid-rebase.
-  // Leave the queue alone: the flow's `finally` releases it when it settles.
-  // The one interactive turn that owns the flag is the compaction turn, whose
-  // drain is what starts the message it ran ahead of.
+  // A system flow can acquire the session during the awaited commit.
   if (runner.systemTurnInProgress && !compactionTurn) return;
 
   const messageQueue = runner.messageQueue;
   if (compactionTurn) {
-    // The compaction's result arrived, so its turn is over. Cleared HERE, not
-    // only in its `finishTurn`: a streaming compaction reuses the resident
-    // process, and the next turn strips its listeners before `done` runs.
+    // Clear here: resident reuse can remove finishTurn's listener before done.
     runner.systemTurnInProgress = false;
     if (capturedSessionId) noteMissedCompaction(runner, ctx.chatHistoryManager, capturedSessionId);
   }
-  // A stop during the compaction stops the compaction; the message it ran
-  // ahead of still runs (req 9).
   if (runner.wasInterrupted && !compactionTurn) {
     if (messageQueue.length > 0) {
       runner.clearQueue();
@@ -153,20 +101,13 @@ export async function drainNextQueuedMessage(
   });
 }
 
-/** docs/178 — is this queued text the `/compact` command for the active agent? */
 function isCompactCommandFor(ctx: FullCtx, text: string): boolean {
   const capable =
     ctx.agentRegistry.get(ctx.getActiveAgentId())?.capabilities.supportsCompaction ?? false;
   return capable && parseCompactCommand(text).match;
 }
 
-/**
- * docs/295 — the decision, on the WS transport's deps. `systemTurnInProgress`
- * is held while it runs (the caller has `running` up): a send arriving in the
- * window would otherwise be steered into the idle resident process and run
- * ahead of this message, with neither compaction nor reset. Released on `no`;
- * on `yes` the compaction turn owns it.
- */
+// Hold systemTurnInProgress during the decision to prevent steering past compaction.
 export async function decideCompactBeforeTurn(
   ctx: FullCtx,
   runner: SessionRunnerInterface,
@@ -206,13 +147,6 @@ export async function decideCompactBeforeTurn(
   }
 }
 
-/**
- * docs/295 — compact first: put the message at the FRONT of the queue (it was
- * next, and stays next) with `compactContext: false`, so the compaction for it
- * is not decided twice, and run the `/compact` turn. That turn's drain starts
- * the message. A system turn, so a send arriving meanwhile queues behind it
- * instead of being steered into it.
- */
 export async function runCompactionAhead(
   ctx: FullCtx,
   runner: SessionRunnerInterface,
@@ -236,12 +170,6 @@ export async function runCompactionAhead(
   });
 }
 
-/**
- * The WS transport's own queue re-entry: resolve the entry's attachments and
- * start an interactive turn. Reached ONLY for `execution: "interactive"` entries
- * (see `startQueuedMessage`) — a server-dispatched entry would lose its
- * `systemTurn` / `onTurnComplete` here.
- */
 async function runQueuedInteractiveMessage(
   ctx: FullCtx,
   runner: SessionRunnerInterface,
@@ -250,7 +178,6 @@ async function runQueuedInteractiveMessage(
   emit: (msg: WsServerMessage) => void,
   next: QueuedMessage,
 ): Promise<void> {
-  // docs/295 — a message that queued behind another turn compacts too (req 4).
   if (
     capturedSessionId && capturedSessionDir && !isCompactCommandFor(ctx, next.text)
     && await decideCompactBeforeTurn(ctx, runner, capturedSessionId, capturedSessionDir, next.compactContext)
@@ -284,9 +211,6 @@ async function runQueuedInteractiveMessage(
     nextValidatedFiles = [...nextValidatedFiles, ...uploadResult.files];
     if (uploadResult.images.length > 0) {
       allNextImages = [...(allNextImages ?? []), ...uploadResult.images];
-      // See send-message.ts: originals are kept in place so
-      // `uploadPaths` in chat history matches the actual on-disk path,
-      // which is what makes hydrateUploads work correctly.
     }
   }
   const nextSession = capturedSessionId
@@ -301,13 +225,8 @@ async function runQueuedInteractiveMessage(
       permissionMode: next.permissionMode,
       isNewSession: false,
       uploadPaths: nextUploadRefs?.map((u) => u.path),
-      // docs/144 — the hint rode the queue with the message; keep it attached
-      // now the message finally becomes a turn.
       ...(next.dictated ? { dictated: true } : {}),
-      // docs/218 — the per-send tick box rode the queue too.
       ...(next.resetMergedBranch !== undefined ? { resetMergedBranch: next.resetMergedBranch } : {}),
-      // docs/178 req 12 — a `/compact` that had to queue is still a `/compact`
-      // when it drains; re-derived from the text, as the send handler does.
       ...(isCompactCommandFor(ctx, next.text) ? { compact: true } : {}),
     });
   } catch (err) {
@@ -316,21 +235,6 @@ async function runQueuedInteractiveMessage(
   }
 }
 
-/**
- * Core WS agent execution — now a thin transport adapter over the shared
- * `executeAgentTurn` (turn-executor.ts). Shared between send_message and
- * home_send_with_repo handlers. Session state (activeAppSessionId,
- * activeSessionDir) must already be set before calling this.
- *
- * The adapter's job is the genuinely WS-specific work: capture per-connection
- * session state at turn start (immune to mid-turn session switches), resolve
- * the registry-backed runner, apply the guarded-mode downgrade, decide live
- * streaming + acquire/reuse the agent process, resolve attachments and assemble
- * the slash-aware prompt, and build the `SystemTurnDeps`/`TurnInput` the
- * executor consumes. Everything from there — reset, env-prep, spawn, listener
- * wiring, and post-turn commit/push/PR/drain — runs in the shared executor, so
- * the WS turn and the dispatched turn can't drift apart.
- */
 export async function runAgentWithMessage(ctx: FullCtx, opts: {
   userText: string;
   images?: ImageAttachment[];
@@ -338,99 +242,38 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
   agentSessionId?: string;
   permissionMode?: PermissionMode;
   isNewSession: boolean;
-  /** Original upload paths consumed by this message (for sent-state tracking on reload). */
   uploadPaths?: string[];
-  /**
-   * Set when the turn was started by the "Send comments" action on a file
-   * preview. Persisted onto the initiating user row so the bubble rehydrates as
-   * a `UserReviewCard` (file list + comment count) instead of degrading to a
-   * plain text bubble on reload. The prompt text remains the source of truth.
-   */
   userReview?: { filePaths: string[]; commentCount: number };
-  /**
-   * docs/178 — this turn is a context-compaction request (`/compact`). The
-   * prompt is `/compact`; for Claude the CLI honors it as a slash command, and
-   * the flag is forwarded to Codex so it issues `thread/compact/start` instead
-   * of a normal turn. Set by the `/compact` interception in send-message.ts.
-   */
   compact?: boolean;
-  /**
-   * docs/218 — per-send intent for the auto-reset-merged-branch control. `false`
-   * = user unticked it for this message (skip); `true`/undefined = follow the
-   * global setting. Non-sticky.
-   */
+  /** false skips reset; true/undefined follows the global setting. */
   resetMergedBranch?: boolean;
-  /**
-   * docs/295 — ShipIt started this turn (the merged-session compaction), so it
-   * gets no user bubble: nobody typed its prompt.
-   */
   silent?: boolean;
-  /** docs/169 — the turn is ShipIt's own; sends queue behind it, never into it. */
   systemTurn?: boolean;
-  /**
-   * docs/144 — the user dictated this message by voice, so `userText` is a
-   * machine transcription. Adds the `<dictated_input>` context block to the
-   * assembled prompt; the persisted user row keeps the verbatim text.
-   */
   dictated?: boolean;
-  /**
-   * Echo this user message to every attached viewer as `system_user_message`.
-   *
-   * Set by the user-typed entry points (`send_message`, `answer_question`),
-   * carrying the sender's `requestId` so THAT tab dedupes against its own
-   * optimistic bubble while every other viewer — a second tab, the desktop while
-   * the user types on their phone — finally renders the message. Without it
-   * those viewers saw the agent answer a message that wasn't on screen until
-   * they reloaded.
-   *
-   * Left unset by the queue-drain re-entry below: that message's bubble is
-   * restored on every viewer by `queue_updated`'s `dequeued` field, so an echo
-   * would double it. Presence — not the id, which older clients omit — is what
-   * turns the echo on.
-   */
+  /** Presence enables echo; omit for queued messages already restored by dequeued. */
   userEcho?: { clientRequestId?: string };
 }): Promise<void> {
   const { userText, images, validatedFiles, permissionMode, isNewSession, uploadPaths, userReview } = opts;
 
-  // Capture the session context at turn start. These values must NOT be read
-  // from ctx later because the user may switch sessions while the agent runs.
+  // Capture before awaits: the user can switch sessions during this turn.
   const capturedSessionId = ctx.getActiveAppSessionId();
   const capturedSessionDir = ctx.getActiveSessionDir();
   const turnStartHeadHash = capturedSessionDir
     ? await ctx.createGitManager(capturedSessionDir).getHeadHash()
     : null;
 
-  // Bump `last_used_at` at turn *start* (the post-merge auto-archive prune ranks
-  // merged sessions by most-recent activity).
   if (capturedSessionId) ctx.sessionManager.track(capturedSessionId);
 
-  // Resolve the runner via the registry (by session ID) so it survives WS
-  // disconnects — critical for queue-drained turns that finish after the
-  // originating socket is gone.
   const runner = resolveRunner(ctx, capturedSessionId);
 
   const agentId = ctx.getActiveAgentId();
 
-  // docs/138 — if a previous turn found guarded mode unavailable, silently
-  // downgrade `guarded` → `auto` (omit) so we don't keep re-requesting it.
   const effectivePermissionMode: PermissionMode | undefined =
     permissionMode === "guarded" && (runner?.guardedUnavailable ?? false) ? undefined : permissionMode;
 
-  // Live steering (docs/140): use streaming when enabled and the agent supports
-  // it, reusing the resident streaming process across turns rather than spawning
-  // a new one.
   const agentInfo = ctx.agentRegistry.get(agentId);
   const useStreaming = ctx.credentialStore.getLiveSteering() && (agentInfo?.capabilities.supportsSteering ?? false);
-  // docs/260 — a resident streaming process holds its spawn-time credential in
-  // memory, so a turn that selection would route to a DIFFERENT credential has
-  // to kill it. Env-prep owns the switch, but it runs inside
-  // `executeAgentTurn`, by which point this function has already handed the
-  // executor an agent to write into — killing it there would leave
-  // `sendUserMessage` addressing a dead process. So release it here, before it
-  // can be captured; with no resident agent the turn simply spawns fresh
-  // against the newly-selected credentials. Never fires while the process
-  // holds background work (req 13) — the turn then runs on the resident
-  // credential instead (`requireResidentRoute` in the executor).
+  // Release stale credentials before the executor captures a process to write into.
   const failoverSession = capturedSessionId ? ctx.sessionManager.get(capturedSessionId) : undefined;
   if (
     useStreaming &&
@@ -441,21 +284,9 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
   ) {
     const resident = runner?.getAgent() ?? null;
     if (resident) {
-      // planning#318 — settle the retired turn FIRST, for the reason spelled out in
-      // `resident-spawn-guard.ts`: this block clears the slot, so the fresh
-      // spawn below installs over an empty one and the displacement hook never
-      // fires, while the retired turn's own `agent_done` is dropped as a stale
-      // spawn. It has to run before `removeAllListeners()`, since the
-      // settlement travels on one of those listeners. Settlement only; a turn
-      // that already settled latches, so this is a no-op for the ordinary case.
+      // Settle before removing the listener that handles superseded.
       resident.emit("superseded");
-      // Drop the previous turn's listeners BEFORE killing — same reason as
-      // `releaseResidentOnSpawnChange`: the kill's late `done`/`error` (an
-      // SSE exit, or an in-flight worker HTTP call rejecting locally on the
-      // proxy) must not re-run that turn's terminal flow. Left attached, a
-      // late local `error` ran the listener teardown against THIS turn's
-      // fresh accumulators and finalized its env-prep failover notice into a
-      // permanent duplicate row.
+      // Late done/error events must not finalize the next turn's state.
       try {
         resident.removeAllListeners();
       } catch {
@@ -469,12 +300,6 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
       runner?.setAgent(null);
     }
   }
-  // A resident streaming process keeps its spawn-time shaping for life — model,
-  // endpoint and credential alike — so reusing one after the user picked
-  // something different would silently run the old one (and report it back into
-  // the picker's trigger label, contradicting the dropdown). Release it here —
-  // before it can be captured below — so this turn spawns fresh. Same shape as
-  // the failover release above; see `resident-spawn-guard.ts`.
   if (useStreaming && capturedSessionId) {
     releaseResidentOnSpawnChange(
       runner,
@@ -485,20 +310,13 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
   const currentAgent = existingAgent ?? ctx.agentFactory(agentId);
   if (!existingAgent && runner) runner.setAgent(currentAgent);
 
-  // Broadcast to all viewers via the runner; fall back to the per-connection
-  // socket when there's no registry-backed runner (workspace-less session).
   const emit = (m: WsServerMessage): void => {
     if (runner) runner.emitMessage(m);
     else ctx.send(m);
   };
-  // Session id the executor uses for run-params / persistence / SSE.
   const sessionId = capturedSessionId ?? runner?.sessionId ?? "";
-  // docs/140 — drop the previous turn's per-turn listeners off a reused process
-  // before the executor re-wires its own, else they fire N times after N turns.
   if (existingAgent) existingAgent.removeAllListeners();
 
-  // Chat-history metadata for the persisted user row (inline base64 images +
-  // path/preview for files).
   const historyImages = images?.map((img) => ({ data: img.data, mediaType: img.mediaType }));
   const historyFiles = validatedFiles.length > 0
     ? validatedFiles.map((f) => ({
@@ -516,21 +334,13 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
       images: historyImages,
       files: historyFiles,
       uploadPaths: uploadPaths && uploadPaths.length > 0 ? uploadPaths : undefined,
-      // Persist the "Send comments" card metadata so the user bubble rehydrates
-      // as a UserReviewCard instead of a raw prompt bubble on reload.
       ...(userReview ? { userReview } : {}),
-      // The row and its `system_user_message` echo must agree on one identity:
-      // a receiving tab reconciles the echo against whichever of the two it saw
-      // first, and text cannot tell two "continue" sends apart.
+      // Match the echo's identity so identical messages remain distinct.
       ...(opts.userEcho?.clientRequestId ? { clientRequestId: opts.userEcho.clientRequestId } : {}),
     });
   };
 
-  // The same payload, projected for the wire (docs/244 / planning#299): base64
-  // bodies become the content-addressed `/images/:hash` URLs a history load
-  // would serve, so a phone-uploaded screenshot doesn't cross the wire twice.
-  // The executor emits this only after `persistUserMessage` has written the row
-  // these URLs resolve against.
+  // Emit after persistence: image URLs resolve against the stored row.
   const userEcho = opts.userEcho
     ? {
         ...(opts.userEcho.clientRequestId ? { clientRequestId: opts.userEcho.clientRequestId } : {}),
@@ -544,27 +354,11 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
           : {}),
         ...(historyFiles ? { files: historyFiles } : {}),
         ...(uploadPaths && uploadPaths.length > 0 ? { uploadPaths } : {}),
-        // Without this a "Send comments" submission renders on other viewers as
-        // the raw generated prompt instead of the UserReviewCard the persisted
-        // row rebuilds — the echo has to match what a reload would show.
         ...(userReview ? { userReview } : {}),
       }
     : undefined;
 
-  // docs/218 — pre-turn auto-reset of a MERGED session's branch to the latest
-  // base, BEFORE the turn runs. The decision, the git move, the "branch updated"
-  // card and the planning#297 skip notice all live in the shared hook, which the
-  // dispatch path calls too (planning#333) — so a message from the Agent Interface
-  // SDK, `shipit session message`, or a wake turn continues on the same fresh
-  // base a typed message would. Fully fail-safe: a skip/throw leaves the branch
-  // un-moved and the turn runs normally.
-  //
-  // Skip entirely for a `/compact` request (docs/178): compaction is a
-  // maintenance command, not a continuation of work, so it must NOT trigger the
-  // destructive branch move — and the `[System] …PR was merged…` prefix the
-  // reset prepends would derail the compaction (the agent reacts to the merge
-  // notice instead of compacting). The reset still runs on the user's next real
-  // turn, where it belongs.
+  // Compaction must neither move the branch nor receive instructions to resume work.
   let resetHook: PreTurnResetHookResult = { agentPrefix: "" };
   if (capturedSessionId && capturedSessionDir && runner && !opts.compact) {
     resetHook = await applyPreTurnReset({
@@ -579,63 +373,25 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
       runner,
       sessionId: capturedSessionId,
       sessionDir: capturedSessionDir,
-      // The per-send tick box (Phase 3): `false` = unticked for this message.
       ...(opts.resetMergedBranch !== undefined ? { intent: opts.resetMergedBranch } : {}),
     });
   }
   const resetAgentPrefix = resetHook.agentPrefix;
 
-  // docs/221 — drain the pending out-of-band notice. The docs/218 reset above
-  // both moves the branch and speaks to the agent in the same breath because it
-  // runs INSIDE the turn it describes; a manual "Sync with <base>" cannot — it
-  // runs from an HTTP route while no turn exists (`runRebaseFlow` refuses to
-  // start one), so it leaves the sentence here for the next turn to deliver.
-  // Consume-and-clear is transactional, so it is delivered exactly once.
-  //
-  // Skipped for `/compact` for the same reason the reset is (docs/178): a
-  // maintenance command must not be handed a "your branch moved" instruction to
-  // react to. Leaving the notice pending means the user's next real turn still
-  // gets it.
   const pendingAgentNotice =
     capturedSessionId && !opts.compact
       ? ctx.sessionManager.consumePendingAgentNotice(capturedSessionId) ?? ""
       : "";
 
-  // nikzlabs/shipit#2350 — how the user resolved a bug-report consent card. Same shape
-  // and the same reason as the notice above: the resolution happens outside any
-  // turn (a click on a card), and nothing wakes the session for it, because
-  // filing a bug is a side errand and interrupting the pair of them to announce
-  // what the card on screen already says would be the distraction. So it waits
-  // here and rides the next turn. Read-and-mark is transactional, so the agent
-  // is told exactly once; skipped for `/compact` for the same reason as above,
-  // which leaves the outcome pending for the next real turn.
   const bugOutcomeNotice =
     capturedSessionId && !opts.compact
       ? buildBugOutcomeNotice(ctx.chatHistoryManager.consumeUnreportedBugOutcomes(capturedSessionId))
       : "";
 
-  // Assemble the prompt from user text plus optional file/image context. Images
-  // are saved to the host uploads dir and referenced by path (avoids large
-  // base64 payloads over HTTP to the worker). The notices ride in front so the
-  // agent sees them this turn only (the pending one is already cleared; the
-  // reset prefix was never persisted). Chronological order: the out-of-band sync
-  // happened before this turn, the reset happened moments ago.
   const activeDir = ctx.getActiveDir();
   const fileContext = validatedFiles.length > 0 ? formatFileContext(validatedFiles) : "";
   const imageContext =
     images && images.length > 0 && activeDir ? saveImagesToUploadsDir(images, activeDir) : "";
-  // nikzlabs/shipit#2429 — the unverified-dependency instruction, last because it is
-  // the consequence of whatever the reset above just did to the tree. Read LIVE
-  // off the runner rather than consumed from a slot: the gap stays set until an
-  // install clears it, so this repeats every turn until the session is actually
-  // fixed, and it cannot clobber (or be clobbered by) `pendingAgentNotice`.
-  //
-  // Skipped for `/compact` like the three above it, and for the same reason each
-  // of them is: a compaction is ShipIt asking for a summary, not a turn that
-  // touches the tree, so an instruction to run the install is at best noise in
-  // the summary and at worst something the turn tries to act on. Nothing is lost
-  // by waiting — unlike the consume-once notices, this one is re-derived from
-  // live state, so the next real turn carries it unchanged.
   const dependencyPrefix = opts.compact ? "" : dependencyGapAgentPrefix(runner?.dependencyGap);
   const agentPrefix = [
     pendingAgentNotice,
@@ -645,10 +401,6 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
   ]
     .filter(Boolean)
     .join("\n\n");
-  // docs/272 req 2 — the standing instructions of the role this session was
-  // started on, on its FIRST turn only. The latch lives in the helper (keyed on
-  // `originRoleName`), so calling it unconditionally here is correct and the two
-  // turn entry points cannot disagree about when a role has spoken.
   const roleContext = capturedSessionId
     ? takeRoleStandingInstructions(capturedSessionId, {
         sessionManager: ctx.sessionManager,
@@ -665,14 +417,8 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
       ...(roleContext ? { roleContext } : {}),
     });
 
-  // docs/218 — the persisted "branch updated" card (or the planning#297 skip notice)
-  // is emitted right after the resumed user row, from inside the executor via
-  // the `afterUserMessagePersisted` hook, so it lands in the FRESH turn (post
-  // `resetRunnerTurnState`) at its true transcript anchor. The closure comes
-  // back from `applyPreTurnReset`, which owns the durability + throw-guard.
   const afterUserMessagePersisted = resetHook.afterUserMessagePersisted;
 
-  // Listener deps — same shape the runner-registry builds for system turns.
   const listenerDeps: AgentListenerDeps = {
     sessionManager: ctx.sessionManager,
     chatHistoryManager: ctx.chatHistoryManager,
@@ -695,11 +441,8 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
       }),
   };
 
-  // Build the shared executor deps from ctx — mirrors runner-registry-factory's
-  // system-turn wiring so the WS turn and the dispatched turn consume one shape.
   const deps: SystemTurnDeps = {
     agentFactory: (id) => ctx.agentFactory(id),
-    // docs/179 — token healer for the runtime-401 auto-retry.
     ...(ctx.ensureAgentTokenFresh ? { ensureAgentTokenFresh: ctx.ensureAgentTokenFresh } : {}),
     autoCommit: async (sessionDir, summary) => {
       const git = ctx.createGitManager(sessionDir);
@@ -708,13 +451,10 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
         await git.autoCommit(summary);
       return { commitHash, parentHash, conflictedFiles, rebaseInProgress, secretFindings, unreadable };
     },
-    // Only used by the fallback commit path; the WS path always uses commitTurn
-    // (which drives its own push via postTurnCommit → ctx.scheduleAutoPush).
     scheduleAutoPush: (sessionDir, sessionId) => ctx.scheduleAutoPush(ctx.createGitManager(sessionDir), sessionId),
     listenerDeps,
     buildRunParams: async (sessionId, id, p, turnRoute) => {
-      // Read agentSessionId fresh from the DB — env-prep's docs/153 leak repair
-      // (run by the executor immediately before this) updates it there.
+      // Env preparation can replace agentSessionId; read it again.
       const session = ctx.sessionManager.get(sessionId);
       return buildAgentRunParams({
         deps: {
@@ -740,9 +480,6 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
       return prepareSessionAgentEnvironment(runner, {
         sessionId,
         agentId: id,
-        // docs/150-multiple-provider-subscriptions req 13 — this IS the turn's pre-spawn step, so an
-        // unroutable turn fails here rather than spawning against an
-        // exhausted account.
         enforceAccountRouting: true,
         ...(envOpts?.reusingResidentAgent ? { reusingResidentAgent: true } : {}),
         ...(envOpts?.excludeRouteIds ? { excludeRouteIds: envOpts.excludeRouteIds } : {}),
@@ -758,12 +495,9 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
         },
       });
     },
-    // docs/260-turn-level-account-routing req 10 — labels for attempt notices, in the user's own words.
     routeLabel: (routeId) =>
       ctx.providerAccountManager?.getByRouteId(routeId)?.label
       ?? ctx.credentialStore.getCredentialRoute(routeId)?.label,
-    // docs/260-turn-level-account-routing req 2 — billing mode + service of the turn's captured route,
-    // so failure policy never re-reads the session row.
     routeProfile: (kind, routeId) => {
       const row = ctx.providerAccountManager?.getByRouteId(routeId)
         ?? ctx.credentialStore.getCredentialRoute(routeId);
@@ -784,8 +518,6 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
         },
       });
     },
-    // docs/179 — the runtime-401 recovery's unconditional token push. Only the
-    // recovery path calls it; the ordinary per-turn sync-in stays guarded.
     repushSessionAgentToken: (sessionId, id) => {
       repushSessionAgentToken(runner, {
         sessionId,
@@ -804,10 +536,6 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
         ...(deferPushArm ? { deferPushArm } : {}),
       }),
     postTurnPrFlow: async (sessionId, sessionDir, commitHash, emit) => {
-      // docs/202 — detect a rebase-then-progress on a merged session and re-arm
-      // it (clear merged + record superseded PR + SSE session_list) BEFORE the
-      // card emit, so `emitPrLifecycleAfterCommit` sees an un-merged session and
-      // threads the breadcrumb through.
       await detectAndReArmMergedSession({
         deps: {
           sessionManager: ctx.sessionManager,
@@ -835,8 +563,6 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
       });
     },
     postTurnReArmReset: async (sessionId, sessionDir, emit) => {
-      // docs/216 — re-arm a merged session whose branch was reset to a clean
-      // base (no commit, so the commit-gated postTurnPrFlow above misses it).
       await detectAndReArmResetSession({
         deps: {
           sessionManager: ctx.sessionManager,
@@ -848,11 +574,6 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
         sessionDir,
         emit,
       });
-      // docs/218 — recompute + push the composer's reset-eligibility signal
-      // after every turn. A turn that reset the branch (or committed new work)
-      // flips it false → the control disappears; an unticked send leaves it
-      // eligible → the control reappears. Safety-only; the client ANDs the
-      // global setting. Best-effort — never blocks the post-turn flow.
       try {
         await emitResetEligible(
           {
@@ -879,30 +600,18 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
     },
   };
 
-  // Preserve a partial interrupted turn (flip in-progress rows to persisted).
   const onInterruptedTurn = (): void => {
     if (!runner || !capturedSessionId) return;
     const partial = buildTurnMessages(runner.chatMessageGroups, runner.steeredMessages ?? [], runner.recordedCards ?? [], { inProgress: false });
     persistInterruptedTurn(ctx, capturedSessionId, partial);
-    // docs/163 — the interrupted turn is now finalized into chat history, so
-    // clear the turn-event replay buffer. Otherwise the buffer stays dirty
-    // (lastPersistedBufferIndex only advances on tool-result / agent_result
-    // boundaries, neither of which fires on an interrupt without a result) and
-    // a later WS reconnect re-emits the turn on top of the persisted copy,
-    // duplicating it on reload. Mirrors the clean-completion (`agent_result`)
-    // and error paths.
+    // Prevent reconnect replay from duplicating the finalized history.
     runner.clearTurnEventBuffer();
   };
 
-  // Queue-drain re-entry — resolves the next message's attachments and recurses
-  // into this adapter, so the executor's post-turn drain funnels back through
-  // the WS path's attachment handling.
   const drainNext = (): Promise<void> =>
     drainNextQueuedMessage(ctx, runner, capturedSessionId, capturedSessionDir, emit, opts.silent === true);
 
-  // docs/218 — a branch that moved must leave a record even if the turn dies
-  // before it reaches the anchor (`afterUserMessagePersisted`). `ensureRecorded`
-  // is latched against that hook, so exactly one of them writes the card.
+  // Record the branch move even if the turn fails before the user-row hook.
   try {
     await executeAgentTurn(runner, deps, currentAgent, {
       agentId,
@@ -911,9 +620,6 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
       userText,
       ...(effectivePermissionMode !== undefined ? { permissionMode: effectivePermissionMode } : {}),
       ...(opts.systemTurn ? { systemTurn: true } : {}),
-      // The SENDING tab already rendered an optimistic bubble, but no other
-      // attached viewer has one — so echo, and let that tab dedupe on its own
-      // `clientRequestId`.
       emitUserEcho: userEcho !== undefined,
       ...(userEcho ? { userEcho } : {}),
       persistUserMessage,
@@ -921,12 +627,7 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
       isNewSession,
       fallbackTitle: userText.slice(0, 80) || "New session",
       turnStartHeadHash,
-      // The value above is frozen at spawn, and this closure outlives the turn
-      // it was built for: a turn the CLI starts on its own is adopted by it
-      // hours later (`rearmForCliStartedTurn`). Hand the executor a way to read
-      // HEAD again so that turn gets a turn-start head of its own instead of
-      // inheriting this one. Same captured `sessionDir` as the read above — a
-      // mid-turn session switch must not redirect it.
+      // Adopted CLI turns need their own starting HEAD in the captured directory.
       ...(capturedSessionDir
         ? { readTurnStartHeadHash: () => ctx.createGitManager(capturedSessionDir).getHeadHash() }
         : {}),

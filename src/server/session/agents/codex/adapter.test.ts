@@ -7,10 +7,6 @@ import { CodexAdapter } from "./adapter.js";
 import type { AgentEvent } from "../agent-process.js";
 import { CODEX_TOOL_NAMES } from "../../../shared/agent-registry.js";
 
-/**
- * To test the CodexAdapter without spawning a real process, we mock child_process.spawn.
- * The FakeCodexProcess simulates stdin/stdout/stderr and the JSON-RPC protocol.
- */
 class FakeStdio extends EventEmitter {
   writable = true;
   written: string[] = [];
@@ -25,11 +21,7 @@ class FakeChildProcess extends EventEmitter {
   stdout = new EventEmitter();
   stderr = new EventEmitter();
   killed = false;
-  /**
-   * A real `spawn()` that exec'd sets a numeric pid; only a spawn that FAILED
-   * leaves it `undefined`. `killChild` keys off exactly that, so the fake has
-   * to carry one or it models a process that never started.
-   */
+  // Without a PID, killChild treats this as a failed spawn.
   pid: number | undefined = 4242;
 
   kill(_signal?: string): boolean {
@@ -37,49 +29,35 @@ class FakeChildProcess extends EventEmitter {
     return true;
   }
 
-  /** Simulate the app-server sending a JSON-RPC response. */
   sendResponse(id: number, result: unknown): void {
     const line = `${JSON.stringify({ id, result })  }\n`;
     this.stdout.emit("data", Buffer.from(line));
   }
 
-  /** Simulate the app-server sending a JSON-RPC error response. */
   sendErrorResponse(id: number, code: number, message: string): void {
     const line = `${JSON.stringify({ id, error: { code, message } })  }\n`;
     this.stdout.emit("data", Buffer.from(line));
   }
 
-  /** Simulate the app-server sending a notification. */
   sendNotification(method: string, params?: Record<string, unknown>): void {
     const line = `${JSON.stringify({ method, params: params ?? {} })  }\n`;
     this.stdout.emit("data", Buffer.from(line));
   }
 
-  /** Get parsed JSON-RPC requests that were written to stdin. */
   getRequests(): { method: string; id?: number; params?: unknown }[] {
     return this.stdin.written.map((line) => JSON.parse(line.trim()));
   }
 
-  /** Get the last request written to stdin. */
   getLastRequest(): { method: string; id?: number; params?: unknown } | undefined {
     const reqs = this.getRequests();
     return reqs[reqs.length - 1];
   }
 }
 
-// Mock child_process.spawn to return our fake process. Also capture the env
-// the spawn was called with so the dual-auth tests can assert that
-// OPENAI_API_KEY was (or wasn't) forwarded to the child process. See
-// docs/119-codex-subscription-auth/plan.md.
 let fakeProc: FakeChildProcess;
 let lastSpawnEnv: NodeJS.ProcessEnv | undefined;
 let lastSpawnArgs: string[] | undefined;
-/**
- * `$CODEX_HOME/config.toml` as it stood AT SPAWN TIME. Everything the adapter
- * writes there has to be in place before the app-server reads it, and a check
- * made after `run()` returns cannot tell "written before the spawn" from
- * "written after" — the app-server would already have missed it.
- */
+// Capture at spawn: later writes would miss the app-server's config read.
 let configAtSpawn: string | undefined;
 
 function readConfigToml(codexHome: string | undefined): string | undefined {
@@ -103,14 +81,10 @@ vi.mock("node:child_process", () => ({
     return fakeProc;
   },
   execFileSync: () => {
-    // Simulate `which codex` succeeding (binary found)
     return Buffer.from("/usr/local/bin/codex\n");
   },
 }));
 
-// Real implementation, made observable. planning#509 — the app-server's
-// teardown must take its MCP servers' own children with it, so which helper the
-// adapter reaches for is the contract, not an implementation detail.
 vi.mock("../../../shared/kill-child.js", async (importOriginal) => {
   // eslint-disable-next-line no-restricted-syntax -- the mock factory's signature requires the inline import type
   const real = await importOriginal<typeof import("../../../shared/kill-child.js")>();
@@ -124,7 +98,6 @@ describe("CodexAdapter", () => {
 
   beforeEach(() => {
     events = [];
-    // Set OPENAI_API_KEY to prevent auth_required emission
     process.env.OPENAI_API_KEY = "test-key-123";
   });
 
@@ -132,7 +105,6 @@ describe("CodexAdapter", () => {
     delete process.env.OPENAI_API_KEY;
   });
 
-  /** Helper: create adapter, run it, and complete the init handshake. */
   async function createAndInit(
     prompt = "Hello",
     sessionId?: string,
@@ -149,34 +121,26 @@ describe("CodexAdapter", () => {
       ...(model !== undefined ? { model } : {}),
     });
 
-    // Allow the microtask for initializeAndRun to start
     await vi.waitFor(() => {
       expect(fakeProc.getRequests().length).toBeGreaterThanOrEqual(1);
     });
 
-    // Respond to initialize request (id: 1)
     fakeProc.sendResponse(1, { serverInfo: { name: "codex-app-server" } });
 
-    // Wait for thread/start or thread/resume request
     await vi.waitFor(() => {
       const reqs = fakeProc.getRequests();
-      // id 1 = initialize, notification = initialized, id 2 = thread/start or thread/resume
       expect(reqs.length).toBeGreaterThanOrEqual(3);
     });
 
-    // Respond to thread/start (id: 2) or thread/resume (id: 2)
     fakeProc.sendResponse(2, { threadId: "thread-abc-123" });
 
-    // Wait for turn/start request
     await vi.waitFor(() => {
       const reqs = fakeProc.getRequests();
       expect(reqs.length).toBeGreaterThanOrEqual(4);
     });
 
-    // Respond to turn/start (id: 3)
     fakeProc.sendResponse(3, { turnId: "turn-001" });
 
-    // Wait for the agent_init event to be emitted
     await vi.waitFor(() => {
       expect(events.some((e) => e.type === "agent_init")).toBe(true);
     });
@@ -187,8 +151,6 @@ describe("CodexAdapter", () => {
     expect(adapter.agentId).toBe("codex");
   });
 
-  // docs/217 — reasoning effort rides a `-c model_reasoning_effort=` global
-  // override placed BEFORE the `app-server` subcommand, at spawn time.
   describe("reasoning effort (docs/217)", () => {
     it("passes -c model_reasoning_effort= when reasoningEffort is set", () => {
       adapter = new CodexAdapter(() => false);
@@ -219,10 +181,6 @@ describe("CodexAdapter", () => {
     expect(adapter.capabilities.models[0]).toBe("gpt-5.6-sol");
     expect(adapter.capabilities.models).not.toContain("gpt-5.6");
     expect(adapter.capabilities.models).toContain("gpt-5.4");
-    // docs/266 item 15 — chat-native review requires a shell tool and a
-    // subagent primitive, and no MCP surface (docs/220 deleted the last
-    // `submit_review` write path). Codex ships `shell` and the model-invoked
-    // `spawn_agent` collab tool, so the affordance is enabled.
     expect(adapter.capabilities.supportsReview).toBe(true);
     expect(adapter.capabilities.toolNames).toContain("shell");
     expect(adapter.capabilities.toolNames).toContain("spawn_agent");
@@ -316,9 +274,6 @@ describe("CodexAdapter", () => {
   });
 
   it("passes systemPrompt as developerInstructions on thread/start", async () => {
-    // ShipIt's environment instructions reach Claude via `--append-system-prompt`;
-    // Codex's equivalent is `developerInstructions` on thread/start. Without
-    // this, Codex sessions had no idea they were running inside ShipIt.
     adapter = new CodexAdapter();
     adapter.on("event", (e) => events.push(e));
     adapter.run({
@@ -369,10 +324,6 @@ describe("CodexAdapter", () => {
   });
 
   it("extracts threadId from the 0.132 `thread.id` response shape", async () => {
-    // Regression guard for the reported "issue with the selected model" bug:
-    // CLI 0.132.x moved the id from a top-level `threadId` to a nested
-    // `thread.id`. Reading only `threadId` left it null, so `turn/start` went
-    // out with `threadId: null` and the server rejected the whole turn.
     adapter = new CodexAdapter();
     adapter.on("event", (e) => events.push(e));
     adapter.run({ prompt: "Hello", cwd: "/workspace" });
@@ -380,7 +331,6 @@ describe("CodexAdapter", () => {
     await vi.waitFor(() => expect(fakeProc.getRequests().length).toBeGreaterThanOrEqual(1));
     fakeProc.sendResponse(1, { serverInfo: { name: "codex-app-server" } });
     await vi.waitFor(() => expect(fakeProc.getRequests().length).toBeGreaterThanOrEqual(3));
-    // New nested shape:
     fakeProc.sendResponse(2, { thread: { id: "thread-nested-456" } });
     await vi.waitFor(() => expect(fakeProc.getRequests().length).toBeGreaterThanOrEqual(4));
 
@@ -398,9 +348,6 @@ describe("CodexAdapter", () => {
     const reqs = fakeProc.getRequests();
     const turnStart = reqs.find((r) => r.method === "turn/start");
     expect(turnStart).toBeDefined();
-    // `input` is a sequence of typed content blocks — the Codex
-    // app-server rejects a bare string with JSON-RPC -32600 since CLI
-    // 0.131.x. See codex-adapter.ts comment in `initializeAndRun`.
     expect((turnStart!.params as any).input).toEqual([
       { type: "text", text: "Write a hello world script" },
     ]);
@@ -408,10 +355,6 @@ describe("CodexAdapter", () => {
   });
 
   it("never sends turn/start `input` as a bare string (regression guard)", async () => {
-    // The Codex app-server tightened the schema in 0.131.x and now
-    // rejects a string `input` with -32600. The UI surfaced this as a
-    // misleading "selected model may not exist" error. Guard against
-    // regressing to the old shape.
     await createAndInit("anything");
     const turnStart = fakeProc.getRequests().find((r) => r.method === "turn/start");
     expect(turnStart).toBeDefined();
@@ -433,17 +376,6 @@ describe("CodexAdapter", () => {
   });
 
   it("forwards the model it is given, without re-mapping a retired id", async () => {
-    // docs/252 phase 8 — this used to assert the opposite: the boundary rewrote
-    // `gpt-5.6` to `gpt-5.6-sol` via `normalizeCodexModelId`. It must not, and
-    // the reason is req 5: two services may offer the same model id, so a
-    // boundary holding only an id cannot say whose retirement applies and would
-    // rewrite a model the session's own service still serves.
-    //
-    // The behaviour that test protected is preserved a layer up and asserted
-    // there — `applyModelRetirement` resolves and PERSISTS the successor before
-    // the turn is built, so a session on `gpt-5.6` reaches this point already
-    // holding `gpt-5.6-sol` (see `model-retirement.test.ts` and the retirement
-    // case in `integration_tests/codex-agent.test.ts`).
     await createAndInit("Hello", undefined, "/workspace", "gpt-5.6");
 
     const initEvent = events.find((e) => e.type === "agent_init");
@@ -455,10 +387,8 @@ describe("CodexAdapter", () => {
 
   it("maps an agentMessage item to agent_assistant text", async () => {
     await createAndInit("Hello");
-    events.length = 0; // Clear init events
+    events.length = 0;
 
-    // CLI 0.132.x: agentMessage carries a plain `text` string (not a
-    // `role:"assistant"` + `content[]` shape) and is keyed by `id`.
     fakeProc.sendNotification("item/completed", {
       item: { type: "agentMessage", id: "msg-1", text: "Hello! How can I help?" },
     });
@@ -477,16 +407,8 @@ describe("CodexAdapter", () => {
     await createAndInit("Hello");
     events.length = 0;
 
-    // Stream the text incrementally...
     fakeProc.sendNotification("item/agentMessage/delta", { itemId: "msg-1", delta: "Hi " });
     fakeProc.sendNotification("item/agentMessage/delta", { itemId: "msg-1", delta: "there" });
-    // ...then the completed item arrives with the full text. The orchestrator's
-    // `runner.turnSummary = text` overwrites on every event, so without a
-    // final consolidated event turnSummary ends up as just the last tiny
-    // delta (often a single character like "."), which became the commit
-    // message. Re-emit the full text with isStreamCompletion=true so the
-    // orchestrator can replace turnSummary without double-counting
-    // accumulatedText / chatMessageGroups.
     fakeProc.sendNotification("item/completed", {
       item: { type: "agentMessage", id: "msg-1", text: "Hi there" },
     });
@@ -545,7 +467,6 @@ describe("CodexAdapter", () => {
           type: "tool_use",
           id: "call-001",
           name: "shell",
-          // The `/bin/bash -lc '…'` wrapper is stripped so it reads like Claude's Bash.
           input: { command: "ls -la", cwd: "/workspace" },
         },
       ],
@@ -635,9 +556,6 @@ describe("CodexAdapter", () => {
   });
 
   it("labels internally-tagged kinds and surfaces the top-level diff (not [object Object])", async () => {
-    // Verified wire shape (Codex App Server v2, FileUpdateChange): `diff` is
-    // top-level and `kind` is an internally-tagged enum object
-    // `{ type: "add"|"delete"|"update", move_path? }`.
     await createAndInit("Edit a file");
     events.length = 0;
 
@@ -689,9 +607,6 @@ describe("CodexAdapter", () => {
   });
 
   it("normalizes Codex 0.136 add fileChange raw content into added diff lines", async () => {
-    // Runtime-verified against codex-cli 0.136.0: completed fileChange items
-    // for new files carry raw file content in `diff`, while `turn/diff/updated`
-    // carries the full unified diff. DiffBlock needs +/- lines for its stats.
     await createAndInit("Write a file");
     events.length = 0;
 
@@ -783,7 +698,6 @@ describe("CodexAdapter", () => {
     await createAndInit("Hello");
     events.length = 0;
 
-    // CLI 0.132.x: `delta` is a plain string, not a `{content:[…]}` object.
     fakeProc.sendNotification("item/agentMessage/delta", { itemId: "msg-1", delta: "Partial " });
 
     await vi.waitFor(() => {
@@ -800,7 +714,6 @@ describe("CodexAdapter", () => {
     await createAndInit("Hello");
     events.length = 0;
 
-    // Token usage arrives on its own notification (not in turn/completed).
     fakeProc.sendNotification("thread/tokenUsage/updated", {
       tokenUsage: {
         total: { inputTokens: 150, outputTokens: 75, cachedInputTokens: 100 },
@@ -808,7 +721,6 @@ describe("CodexAdapter", () => {
         modelContextWindow: 272000,
       },
     });
-    // v2 nests status under `turn`.
     fakeProc.sendNotification("turn/completed", {
       turn: { id: "turn-001", status: "completed" },
     });
@@ -822,12 +734,6 @@ describe("CodexAdapter", () => {
       type: "agent_result",
       status: "success",
       sessionId: "thread-abc-123",
-      // docs/252 phase 3 — Codex's `inputTokens` INCLUDES `cachedInputTokens`
-      // (measured against the app-server), where Claude's are disjoint. The
-      // adapter normalizes to the disjoint convention here, at the boundary that
-      // knows this harness's semantics, so the pricing code can multiply the
-      // classes independently without double-charging the cached tokens at the
-      // full input rate: 150 - 100 = 50.
       tokens: { input: 50, output: 75, cacheRead: 100 },
       contextTokens: 130,
       contextWindow: 272000,
@@ -835,13 +741,6 @@ describe("CodexAdapter", () => {
     expect((resultEvent as any).error).toBeUndefined();
   });
 
-  // planning#341 — the case the phase-3 test above did not carry, which is how
-  // the defect survived: `cacheWriteInputTokens` is a detail of `inputTokens`
-  // just as `cachedInputTokens` is, so it must come out of the input class too.
-  // Left in, `costFromRates` bills those tokens at the ordinary input rate AND
-  // again at the write rate (1.25× input on OpenAI's GPT-5.6 family), with no
-  // harness dollar figure to mask it. Verified against codex-cli 0.146.0, which
-  // passes the Responses `input_tokens` total through untouched.
   it("takes cache-written tokens out of the input class as well as the cached ones", async () => {
     await createAndInit("Hello");
     events.length = 0;
@@ -863,34 +762,18 @@ describe("CodexAdapter", () => {
     });
 
     const resultEvent = events.find((e) => e.type === "agent_result");
-    // 1000 - 800 - 50, and the three input classes still sum back to the total.
     expect(resultEvent).toMatchObject({
       tokens: { input: 150, output: 42, cacheRead: 800, cacheWrite: 50 },
     });
   });
 
-  // planning#367 — every token test above drives ONE turn, which is exactly how
-  // this survived: the app-server's `total` is the running rollup for the whole
-  // THREAD, and `thread/resume` restores the accumulator from the rollout file
-  // (which lives in the persistent `~/.codex` volume), so it never resets for
-  // the life of a ShipIt session. Recorded verbatim, turn N of a session posted
-  // the first N turns' tokens — a ~31-turn session read as roughly 11–18× its
-  // real usage, in `atApiRatesUsd` and, on a metered key, in real money.
-  //
-  // ShipIt runs one app-server per turn, so each turn here gets its own adapter
-  // and its own fake process — nothing carries over in memory, which is the
-  // point: the baseline comes from the snapshot `thread/resume` REPLAYS.
-  // Measured against codex-cli 0.146.0 with a local Responses recorder returning
-  // identical usage every call: `total.inputTokens` 1000 → 2000 → 3000 while
-  // `last.inputTokens` stayed 1000.
+  // Each turn has a new process. Resume replays the thread's cumulative usage.
   describe("a resumed thread's cumulative token rollup", () => {
     const THREAD = "thread-abc-123";
 
-    /** Drive one whole ShipIt turn and return its `agent_result`. */
     async function runTurn(opts: {
       turnId: string;
       resume?: boolean;
-      /** Snapshots the app-server pushes, in order, as `[turnId, rollup]`. */
       snapshots: [string, { inputTokens: number; cachedInputTokens: number; outputTokens: number }][];
     }): Promise<AgentEvent | undefined> {
       await createAndInit("Hello", opts.resume ? THREAD : undefined);
@@ -912,8 +795,6 @@ describe("CodexAdapter", () => {
       return events.find((e) => e.type === "agent_result");
     }
 
-    // The three turns consumed the same thing, so they must record the same
-    // thing — not 1×, 2×, 3×.
     const ROLLUP_AFTER = [
       { inputTokens: 1000, cachedInputTokens: 800, outputTokens: 10 },
       { inputTokens: 2000, cachedInputTokens: 1600, outputTokens: 20 },
@@ -925,8 +806,6 @@ describe("CodexAdapter", () => {
       const first = await runTurn({ turnId: "turn-1", snapshots: [["turn-1", ROLLUP_AFTER[0]]] });
       expect(first).toMatchObject({ tokens: ONE_TURN, contextTokens: 1000, contextWindow: 272000 });
 
-      // Turn 2 resumes: the app-server replays turn 1's snapshot under turn 1's
-      // id before turn 2 reports its own. That replay is the baseline.
       const second = await runTurn({
         turnId: "turn-2",
         resume: true,
@@ -942,9 +821,6 @@ describe("CodexAdapter", () => {
       expect(third).toMatchObject({ tokens: ONE_TURN });
     });
 
-    // The secondary defect: the replayed snapshot is the PREVIOUS turn's
-    // cumulative total and the previous turn's context occupancy. A turn that
-    // reported nothing of its own must record nothing, not that snapshot again.
     it("records nothing for a turn whose only snapshot is the replayed one", async () => {
       const result = await runTurn({
         turnId: "turn-2",
@@ -953,14 +829,10 @@ describe("CodexAdapter", () => {
       });
       expect((result as { tokens?: unknown }).tokens).toBeUndefined();
       expect((result as { contextTokens?: unknown }).contextTokens).toBeUndefined();
-      // The model's context window is not turn-scoped, so it still comes through.
       expect(result).toMatchObject({ contextWindow: 272000 });
     });
   });
 
-  // Reported nothing and consumed zero are different facts, and a present-but-
-  // empty rollup is the first. An all-zero `tokens` block prices to $0 through
-  // the catalogue's rates and asserts a Codex turn was free.
   it("emits no tokens for a usage rollup with no numbers in it", async () => {
     await createAndInit("Hello");
     events.length = 0;
@@ -1037,7 +909,6 @@ describe("CodexAdapter", () => {
       rateLimits: { limitId: "codex", limitName: null },
     });
 
-    // Give the adapter a tick to (not) emit.
     await new Promise((r) => setTimeout(r, 10));
     expect(events.some((e) => e.type === "agent_rate_limits")).toBe(false);
   });
@@ -1069,13 +940,6 @@ describe("CodexAdapter", () => {
     expect(fakeProc.killed).toBe(true);
   });
 
-  /**
-   * planning#509 — Codex tears its app-server down at the end of EVERY turn, and
-   * a plain pid kill left the MCP servers' own descendants running: a Playwright
-   * browser outlived one production turn by ~19 minutes, burning CPU. Teardown
-   * must go through the tree helper, so assert the call rather than only that
-   * the root died.
-   */
   it("tears down the whole process tree, not just the app-server pid", async () => {
     await createAndInit("Hello");
 
@@ -1088,10 +952,6 @@ describe("CodexAdapter", () => {
   });
 
   it("interrupts gracefully via turn/interrupt instead of killing the process", async () => {
-    // docs/140 — a graceful interrupt asks the app-server to end the active
-    // turn (which it does with turn/completed status:"interrupted") rather than
-    // SIGTERMing the process. Killing here would lose the clean turn boundary
-    // the AskUserQuestion answer flow depends on.
     await createAndInit("Hello");
     fakeProc.stdin.written.length = 0;
 
@@ -1101,10 +961,7 @@ describe("CodexAdapter", () => {
     expect(req?.method).toBe("turn/interrupt");
     expect((req!.params as any).threadId).toBe("thread-abc-123");
     expect((req!.params as any).turnId).toBe("turn-001");
-    // Must be a JSON-RPC request (has an id) so the rejection fallback can
-    // observe an older app-server that lacks the method.
     expect(req!.id).toBeDefined();
-    // The process stays alive — the app-server tears it down at turn/completed.
     expect(fakeProc.killed).toBe(false);
   });
 
@@ -1116,20 +973,16 @@ describe("CodexAdapter", () => {
     expect(req).toBeDefined();
     expect(fakeProc.killed).toBe(false);
 
-    // An app-server without the method rejects the request → we must kill so
-    // the process doesn't linger resident waiting for input.
     fakeProc.sendErrorResponse(req!.id!, -32601, "Method not found: turn/interrupt");
 
     await vi.waitFor(() => expect(fakeProc.killed).toBe(true));
   });
 
   it("falls back to kill() on interrupt when no turn is active", async () => {
-    // No active turn to cancel — interrupt degrades to a hard kill.
     adapter = new CodexAdapter(() => false);
     adapter.on("event", (e) => events.push(e));
     adapter.run({ prompt: "Hello", cwd: "/workspace" });
     await vi.waitFor(() => expect(fakeProc.getRequests().length).toBeGreaterThanOrEqual(1));
-    // Never completed the handshake, so currentTurnId is null.
 
     adapter.interrupt();
 
@@ -1138,9 +991,6 @@ describe("CodexAdapter", () => {
   });
 
   it("emits agent_steer_rejected when turn/steer is rejected (ActiveTurnNotSteerable)", async () => {
-    // docs/140 — a steer the app-server refuses (review/compaction turns) must
-    // not vanish. The adapter surfaces the rejection so the orchestrator can
-    // re-queue the message instead of dropping it.
     await createAndInit("Hello");
     events.length = 0;
 
@@ -1153,7 +1003,6 @@ describe("CodexAdapter", () => {
     await vi.waitFor(() => {
       expect(events.some((e) => e.type === "agent_steer_rejected")).toBe(true);
     });
-    // Carries the trimmed steer text so the orchestrator can re-queue it.
     expect(events.find((e) => e.type === "agent_steer_rejected")).toEqual({
       type: "agent_steer_rejected",
       text: "change course",
@@ -1168,8 +1017,6 @@ describe("CodexAdapter", () => {
     const steer = fakeProc.getRequests().find((r) => r.method === "turn/steer");
     expect(steer).toBeDefined();
 
-    // Accepted steer returns a turnId — no rejection, and a delivery ack so the
-    // orchestrator marks the steer delivered and never re-queues it at turn end.
     fakeProc.sendResponse(steer!.id!, { turnId: "turn-001" });
 
     await vi.waitFor(() => {
@@ -1190,30 +1037,18 @@ describe("CodexAdapter", () => {
     const reqs = fakeProc.getRequests();
     const steer = reqs.find((r) => r.method === "turn/steer");
     expect(steer).toBeDefined();
-    // Matches the same content-block schema as turn/start — see the
-    // explanatory comment in codex-adapter.ts `writeStdin`.
     expect((steer!.params as any).input).toEqual([
       { type: "text", text: "user reply text" },
     ]);
-    // `expectedTurnId` is mandatory — the app-server validates it is
-    // non-empty and matches the active turn, and silently drops the steer
-    // otherwise. `createAndInit` responds to turn/start with turnId:"turn-001",
-    // captured as the fallback turn id.
     expect((steer!.params as any).expectedTurnId).toBe("turn-001");
-    // Must be a JSON-RPC *request* (has an id), not a notification — the
-    // app-server silently discards a turn/steer sent without an id, which is
-    // what made Codex live steering a no-op. Verified against the real
-    // app-server (0.130/0.132).
     expect(steer!.id).toBeDefined();
   });
 
   it("captures expectedTurnId from the turn/started event", async () => {
     await createAndInit("Hello");
 
-    // A later turn/started supersedes the turn/start-response fallback.
     fakeProc.sendNotification("turn/started", { turn: { id: "turn-042" } });
     await vi.waitFor(() => {
-      // give the notification a tick to be processed
       expect(true).toBe(true);
     });
 
@@ -1225,8 +1060,6 @@ describe("CodexAdapter", () => {
   it("drops steer when no turn is active (no expectedTurnId to send)", async () => {
     await createAndInit("Hello");
 
-    // Complete the turn — clears currentTurnId. The process is killed on
-    // turn/completed, but the guard on `currentTurnId` is what protects us.
     fakeProc.sendNotification("turn/completed", { turn: { status: "completed" } });
     await vi.waitFor(() => {
       expect(events.some((e) => e.type === "agent_result")).toBe(true);
@@ -1449,16 +1282,6 @@ describe("CodexAdapter", () => {
     });
   });
 
-  // ---- AskUserQuestion bridge (docs/147) ----
-  //
-  // The `shipit` bridge's ask tool surfaces its question card through the worker
-  // round-trip (the bridge POSTs to `/agent-ops/ask/submit`, which injects a
-  // synthetic AskUserQuestion tool_use), NOT through Codex's event stream — the
-  // app-server only emits an `mcpToolCall` item on `completed`, which never
-  // arrives for a blocking question. So the adapter must IGNORE the ask tool in
-  // both phases: any tool_use here would duplicate the bridge's card, and any
-  // tool_result would flip it to "answered".
-
   it("ignores a shipit ask mcpToolCall on item/started (the bridge surfaces it)", async () => {
     await createAndInit("Hello");
     events.length = 0;
@@ -1467,7 +1290,6 @@ describe("CodexAdapter", () => {
       item: {
         type: "mcpToolCall",
         id: "call-ask-1",
-        // Server-qualified and bare names both match isAskUserQuestionTool.
         tool: "shipit__AskUserQuestion",
         arguments: JSON.stringify({
           questions: [
@@ -1492,13 +1314,11 @@ describe("CodexAdapter", () => {
     await createAndInit("Hello");
     events.length = 0;
 
-    // A `completed` for the ask tool must not produce a tool_result — that
-    // would flip the question card to "answered" and disable the options.
     fakeProc.sendNotification("item/completed", {
       item: {
         type: "mcpToolCall",
         id: "call-ask-3",
-        tool: "AskUserQuestion", // bare name also matches
+        tool: "AskUserQuestion",
         result: "ignored",
       },
     });
@@ -1508,7 +1328,6 @@ describe("CodexAdapter", () => {
   });
 
   it("normalizes split Codex MCP identity to ShipIt's canonical tool name", async () => {
-    // Regression: the ask special-case must not swallow other MCP tools.
     await createAndInit("Hello");
     events.length = 0;
 
@@ -1733,7 +1552,6 @@ describe("CodexAdapter", () => {
 
     fakeProc.sendNotification("item/agentMessage/delta", { itemId: "msg-1", delta: "" });
 
-    // No event should be emitted for empty text
     await new Promise((r) => setTimeout(r, 50));
     expect(events).toHaveLength(0);
   });
@@ -1753,15 +1571,9 @@ describe("CodexAdapter", () => {
   });
 
   it("auto-approves a v2 commandExecution approval request", async () => {
-    // The model can request escalated permissions even under
-    // approvalPolicy:"never", which the app-server delivers as a server→client
-    // REQUEST (id + method). Leaving it unanswered blocks the turn forever
-    // (status → waitingOnApproval, UI stuck on "Thinking…"). The container is
-    // our sandbox, so we auto-approve — exactly like the Claude adapter.
     await createAndInit("Run a privileged command");
     fakeProc.stdin.written.length = 0;
 
-    // Simulate a server→client request (has BOTH id and method).
     const reqLine = `${JSON.stringify({
       id: 9001,
       method: "item/commandExecution/requestApproval",
@@ -1916,8 +1728,6 @@ describe("CodexAdapter", () => {
   });
 
   it("replies with a JSON-RPC error to an unhandled server request (no hang)", async () => {
-    // We can't satisfy a tool-input/elicitation request autonomously, so we
-    // reply with an error instead of leaving the turn stalled on "Thinking…".
     await createAndInit("Hello");
     fakeProc.stdin.written.length = 0;
 
@@ -1939,10 +1749,6 @@ describe("CodexAdapter", () => {
   });
 
   it("does not treat a server request as a response to a pending call", async () => {
-    // Regression guard: a server→client request shares the id-bearing shape of
-    // a response. If misrouted, the approval is dropped and the turn hangs.
-    // After init, no pending request should be resolved by the approval frame —
-    // the turn proceeds normally afterward.
     await createAndInit("Hello");
     events.length = 0;
 
@@ -1953,7 +1759,6 @@ describe("CodexAdapter", () => {
     })}\n`;
     fakeProc.stdout.emit("data", Buffer.from(reqLine));
 
-    // The turn can still complete (proving the adapter wasn't wedged).
     fakeProc.sendNotification("turn/completed", { turn: { id: "t", status: "completed" } });
     await vi.waitFor(() => {
       expect(events.some((e) => e.type === "agent_result")).toBe(true);
@@ -1962,10 +1767,6 @@ describe("CodexAdapter", () => {
   });
 
   it("sends turn/start with approvalPolicy:never and dangerFullAccess sandbox", async () => {
-    // ShipIt's container IS the sandbox and the agent operates autonomously,
-    // so Codex's own approval gate / bubblewrap sandbox must be disabled —
-    // otherwise shell commands stall on an unanswered approval request and
-    // bubblewrap fails to create a namespace in-container.
     await createAndInit("Run a command");
 
     const turnStart = fakeProc.getRequests().find((r) => r.method === "turn/start");
@@ -1974,7 +1775,6 @@ describe("CodexAdapter", () => {
     expect((turnStart!.params as any).sandboxPolicy).toEqual({ type: "dangerFullAccess" });
   });
 
-  // docs/178 — native compaction signals + trigger.
   describe("compaction (docs/178)", () => {
     it("advertises supportsCompaction", () => {
       adapter = new CodexAdapter();
@@ -1995,7 +1795,6 @@ describe("CodexAdapter", () => {
       });
 
       const started = events.find((e) => e.type === "agent_compaction_started");
-      // Not ShipIt-requested → labeled auto by correlation.
       expect(started).toEqual({ type: "agent_compaction_started", trigger: "auto" });
       const done = events.find((e) => e.type === "agent_compacted") as any;
       expect(done.trigger).toBe("auto");
@@ -2028,18 +1827,15 @@ describe("CodexAdapter", () => {
       adapter.run({ prompt: "/compact", cwd: "/workspace", sessionId: "thread-xyz", compact: true });
 
       await vi.waitFor(() => expect(fakeProc.getRequests().length).toBeGreaterThanOrEqual(1));
-      fakeProc.sendResponse(1, { serverInfo: {} }); // initialize
+      fakeProc.sendResponse(1, { serverInfo: {} });
       await vi.waitFor(() => expect(fakeProc.getRequests().length).toBeGreaterThanOrEqual(3));
-      fakeProc.sendResponse(2, { threadId: "thread-xyz" }); // thread/resume
+      fakeProc.sendResponse(2, { threadId: "thread-xyz" });
 
       await vi.waitFor(() => {
         expect(fakeProc.getRequests().some((r) => r.method === "thread/compact/start")).toBe(true);
       });
-      // The compaction spawn must NOT also start a normal turn.
       expect(fakeProc.getRequests().some((r) => r.method === "turn/start")).toBe(false);
 
-      // The contextCompaction completion is the turn terminus: it emits the
-      // card, a synthetic success result, and tears the process down.
       fakeProc.sendNotification("item/completed", { item: { type: "contextCompaction", id: "c3" } });
       await vi.waitFor(() => {
         expect(events.some((e) => e.type === "agent_result")).toBe(true);
@@ -2048,14 +1844,6 @@ describe("CodexAdapter", () => {
       expect(fakeProc.killed).toBe(true);
     });
 
-    // planning#367 — a compact-only run makes a model request of its own and
-    // raises the thread's rollup. Measured against codex-cli 0.146.0: it gets a
-    // `turn/started` with its own id, the resume replays the previous turn's
-    // snapshot under the OLD id, and the compaction's own snapshots follow under
-    // the new one (total 1000 → 2000, `last` ending at the post-compaction
-    // occupancy). Before the per-turn subtraction those tokens were swept up by
-    // the next turn's cumulative total; now the next turn's baseline excludes
-    // them, so a synthetic result without them would drop them for good.
     it("records a compact-only run's own tokens in its synthetic result", async () => {
       adapter = new CodexAdapter(() => false);
       adapter.on("event", (e) => events.push(e));
@@ -2069,7 +1857,6 @@ describe("CodexAdapter", () => {
         expect(fakeProc.getRequests().some((r) => r.method === "thread/compact/start")).toBe(true);
       });
 
-      // The resume replays the previous turn's rollup under its old id…
       fakeProc.sendNotification("thread/tokenUsage/updated", {
         threadId: "thread-xyz",
         turnId: "turn-before",
@@ -2079,7 +1866,6 @@ describe("CodexAdapter", () => {
           modelContextWindow: 258400,
         },
       });
-      // …and the compaction turn reports its own consumption under its own.
       fakeProc.sendNotification("turn/started", { threadId: "thread-xyz", turn: { id: "turn-compact" } });
       fakeProc.sendNotification("thread/tokenUsage/updated", {
         threadId: "thread-xyz",
@@ -2096,28 +1882,14 @@ describe("CodexAdapter", () => {
         expect(events.some((e) => e.type === "agent_result")).toBe(true);
       });
       expect(events.find((e) => e.type === "agent_result")).toMatchObject({
-        // The compaction's own request — not the thread's running total.
         tokens: { input: 200, output: 10, cacheRead: 800 },
-        // The post-compaction occupancy, which is the point of the run.
         contextTokens: 5439,
       });
     });
   });
 });
 
-// ---------------------------------------------------------------------------
-// Feature 119 — Codex subscription auth dual-mode resolution
-//
-// Covers the env-key path with file auth disabled through the adapter's
-// injectable probe. The real file-auth branch table is covered by
-// `src/server/shared/agent-registry.test.ts` (registry layer) and
-// `src/server/orchestrator/codex-auth.test.ts` (manager layer).
-// ---------------------------------------------------------------------------
-
 describe("CodexAdapter / dual-mode auth (feature 119)", () => {
-  // The HOME tests below drive `agentHome()` / `codexHome()`, both of which read
-  // process.env at call time — so the block owns those variables outright and
-  // puts the runner's own values back afterwards.
   const HOME_VARS = ["HOME", "AGENT_HOME", "CODEX_HOME", "DEEPSEEK_API_KEY"] as const;
   let savedEnv: Partial<Record<(typeof HOME_VARS)[number], string | undefined>> = {};
 
@@ -2162,11 +1934,6 @@ describe("CodexAdapter / dual-mode auth (feature 119)", () => {
     expect(lastSpawnEnv?.OPENAI_API_KEY).toBe("sk-platform-billing");
   });
 
-  // planning#390 — with no resolver the spawn still names its own HOME, from
-  // AGENT_HOME rather than from whatever the hosting process inherited. In a
-  // session container the two are the same value, so this is a no-op there; in
-  // local mode the ambient HOME is the dogfood image's root-owned /root and
-  // inheriting it killed the CLI before the turn started.
   it("spawns with the AGENT_HOME-derived home when no resolver is given", async () => {
     process.env.OPENAI_API_KEY = "sk-platform-billing";
     process.env.AGENT_HOME = "/workspace/.inner-shipit/agent-home";
@@ -2181,11 +1948,6 @@ describe("CodexAdapter / dual-mode auth (feature 119)", () => {
     expect(lastSpawnEnv?.CODEX_HOME).toBe("/workspace/.inner-shipit/agent-home/.codex");
   });
 
-  // planning#390's actual failure shape: a redirected service resolves to a
-  // string/reserved route, for which `resolveLocalAgentHome` returns undefined.
-  // That branch must still carry a writable HOME/CODEX_HOME — it is the one the
-  // whole Codex×custom-URL surface runs on, and the one that used to inherit
-  // /root while a subscription turn (an account route) got an explicit home.
   it("carries a writable HOME/CODEX_HOME for a redirected service whose resolver returns undefined", async () => {
     process.env.AGENT_HOME = "/workspace/.inner-shipit/agent-home";
     process.env.HOME = "/root";
@@ -2193,8 +1955,6 @@ describe("CodexAdapter / dual-mode auth (feature 119)", () => {
 
     const adapter = new CodexAdapter(
       () => false,
-      // A reserved/string route: pinned to no provider account, so the resolver
-      // answers `undefined` exactly as it does in the dogfood instance.
       { resolveHome: () => undefined },
     );
     adapter.on("event", () => { /* drain */ });
@@ -2215,8 +1975,6 @@ describe("CodexAdapter / dual-mode auth (feature 119)", () => {
     await vi.waitFor(() => expect(lastSpawnEnv).toBeDefined());
     expect(lastSpawnEnv?.HOME).toBe("/workspace/.inner-shipit/agent-home");
     expect(lastSpawnEnv?.CODEX_HOME).toBe("/workspace/.inner-shipit/agent-home/.codex");
-    // The redirect itself is unchanged — the credential still lands in the
-    // harness's own variable, so this guard cannot pass on a spawn that lost it.
     expect(lastSpawnEnv?.OPENAI_API_KEY).toBe("sk-deepseek");
   });
 
@@ -2233,17 +1991,10 @@ describe("CodexAdapter / dual-mode auth (feature 119)", () => {
 
     await vi.waitFor(() => expect(lastSpawnEnv).toBeDefined());
     expect(lastSpawnEnv?.HOME).toBe(root);
-    // CODEX_HOME too: the CLI prefers it over HOME, so an inherited one would
-    // otherwise win over the account we just selected.
     expect(lastSpawnEnv?.CODEX_HOME).toBe(`${root}/.codex`);
-    // The subscription probe reads the SAME root, so an account with a
-    // credentials file is not mistaken for an unauthenticated one.
     expect(probed).toContain(`${root}/.codex`);
   });
 
-  // 2026-08-21 incident — a same-harness sub-agent spawn's isolated per-spawn
-  // HOME (`AgentRunParams.homeDir`) outranks the constructor resolver, and both
-  // variables move together (the CLI prefers CODEX_HOME over HOME).
   it("prefers a per-spawn homeDir over the resolver, for HOME, CODEX_HOME, and the auth probe", async () => {
     const spawnHome = "/credentials/sub-agent-homes/spawn-9";
     const probed: (string | undefined)[] = [];
@@ -2261,7 +2012,6 @@ describe("CodexAdapter / dual-mode auth (feature 119)", () => {
     expect(probed).toContain(`${spawnHome}/.codex`);
   });
 
-  // docs/150-multiple-provider-subscriptions req 12 — failover moves work between subscriptions only.
   it("does not fall back to the env key for a scoped account with no auth.json", () => {
     process.env.OPENAI_API_KEY = "sk-platform-billing";
 
@@ -2291,13 +2041,6 @@ describe("CodexAdapter / dual-mode auth (feature 119)", () => {
     expect(platformLog).toBeDefined();
   });
 
-  // Codex disables a project's own `.codex/` config, hooks and exec policies —
-  // and logs an ERROR on `initialize` — until the directory is trusted in
-  // `$CODEX_HOME/config.toml`, and every ShipIt workspace has a `.codex/`
-  // (plugin skills create one per harness). The entry has to exist BEFORE the
-  // app-server starts, which is why the adapter writes it on the spawn path.
-  // Shape and idempotency are covered in project-trust.test.ts; this guards the
-  // wiring, so deleting the call fails here.
   it("trusts the spawn cwd in the config root the child will read", async () => {
     const home = mkdtempSync(path.join(tmpdir(), "codex-spawn-home-"));
     try {
@@ -2310,8 +2053,6 @@ describe("CodexAdapter / dual-mode auth (feature 119)", () => {
 
       await vi.waitFor(() => expect(lastSpawnEnv).toBeDefined());
       expect(lastSpawnEnv?.CODEX_HOME).toBe(home);
-      // Read as of the spawn call, so writing it afterwards cannot pass: the
-      // app-server reads the config on startup and would have missed it.
       expect(configAtSpawn).toContain('[projects."/workspace"]\ntrust_level = "trusted"');
     } finally {
       rmSync(home, { recursive: true, force: true });

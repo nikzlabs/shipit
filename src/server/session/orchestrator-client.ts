@@ -1,45 +1,19 @@
-/**
- * Tiny HTTP client used by the session worker's `/agent-ops/*` broker to call
- * the orchestrator's session-scoped routes.
- *
- * This is the only piece of code in the worker that knows how to talk to the
- * orchestrator over HTTP. The agent-ops router goes through it; the shim
- * never touches the orchestrator directly.
- *
- * Configuration (env vars set by the orchestrator at container creation):
- * - `SHIPIT_HOST` / `SHIPIT_PORT` — orchestrator address (set by
- *   `container-lifecycle.ts:buildEnv`).
- * - `SESSION_ID` — the session this container belongs to. The worker injects
- *   this into every request path so the agent cannot specify a different one.
- */
 import http from "node:http";
 import https from "node:https";
 import { getErrorMessage } from "../shared/utils.js";
 
 export interface OrchestratorClientOptions {
-  /** Override the orchestrator base URL. Defaults to http://${SHIPIT_HOST}:${SHIPIT_PORT}. */
   baseUrl?: string;
-  /** Override the session ID. Defaults to `process.env.SESSION_ID`. */
   sessionId?: string;
 }
 
-/** A response shape the worker uses internally — mirrors `fetch`'s status + json/text. */
 export interface OrchestratorResponse {
   ok: boolean;
   status: number;
   body: unknown;
 }
 
-/**
- * Resolves all candidate orchestrator URLs from env, ordered by preference.
- *
- * `SHIPIT_HOST` historically contained the orchestrator container hostname.
- * That hostname changes when the orchestrator container is recreated, while
- * long-lived session containers keep their original env. The stable Compose
- * service alias (`shipit`) continues to resolve to the current orchestrator on
- * the shared Docker network, so keep it as a fallback for worker->orchestrator
- * callbacks such as the review MCP bridge and gh shim.
- */
+// Container recreation can invalidate SHIPIT_HOST; the Compose alias stays stable.
 export function resolveOrchestratorBaseUrls(): string[] {
   const host = process.env.SHIPIT_HOST;
   const port = process.env.SHIPIT_PORT;
@@ -54,18 +28,10 @@ export function resolveOrchestratorBaseUrls(): string[] {
   return [...new Set(hosts)].map((h) => `http://${h}:${port}`);
 }
 
-/**
- * Resolves the session ID for this container from env. Returns `null` if unset.
- * `SESSION_ID` is set by `container-lifecycle.ts:buildEnv`.
- */
 export function resolveSessionId(): string | null {
   return process.env.SESSION_ID ?? null;
 }
 
-/**
- * Tiny HTTP wrapper that scopes every call to the worker's session and the
- * configured orchestrator. Used by the agent-ops broker.
- */
 export class OrchestratorClient {
   private readonly baseUrls: string[];
   private readonly sessionId: string;
@@ -85,34 +51,13 @@ export class OrchestratorClient {
     this.sessionId = sessionId;
   }
 
-  /**
-   * Build a session-scoped path. The session ID is always injected by the
-   * worker — the agent cannot influence which session the request targets.
-   */
+  // Scope requests with the worker's session ID, never an ID supplied by the agent.
   private url(baseUrl: string, suffix: string): string {
     const tail = suffix.startsWith("/") ? suffix : `/${suffix}`;
     return `${baseUrl}/api/sessions/${encodeURIComponent(this.sessionId)}${tail}`;
   }
 
-  /**
-   * Send a JSON request to a session-scoped orchestrator endpoint.
-   *
-   * `opts.timeoutMs` selects the transport (matching the `worker-http.ts`
-   * convention where `0` means "unbounded"):
-   * - omitted → plain `fetch` (the default for short PR/issue/source relays).
-   * - positive (docs/182, the `shipit session wait` segment loop) → `fetch`
-   *   with an AbortController so a black-holed (half-open) socket fails fast;
-   *   a timed-out segment surfaces as `status: 0` (transient), which the shim
-   *   swallows and retries rather than treating as a real outcome.
-   * - `0` → an explicitly UNBOUNDED request (the `shipit agent run` spawn relay).
-   *   Routed over Node's `http` rather than `fetch`: undici's default 300s
-   *   `headersTimeout` would otherwise abort a multi-minute sub-agent consult —
-   *   which the chain intends to run up to the 30-minute sub-agent cap — with an
-   *   opaque "fetch failed", surfaced to the agent as an unreachable worker.
-   *
-   * Either transport preserves the multi-baseUrl fallback: a transport error on
-   * one candidate is collected and the next is tried.
-   */
+  // timeoutMs: 0 uses Node HTTP to avoid fetch's default 300s header timeout.
   async request(
     method: "GET" | "POST" | "PATCH" | "PUT" | "DELETE",
     suffix: string,
@@ -144,11 +89,6 @@ export class OrchestratorClient {
     };
   }
 
-  /**
-   * `fetch`-based transport. Throws on a transport error (so {@link request}'s
-   * fallback loop tries the next baseUrl); a non-2xx response or a body that
-   * doesn't parse as JSON resolves normally with whatever status/body arrived.
-   */
   private async requestFetch(
     method: string,
     url: string,
@@ -174,12 +114,6 @@ export class OrchestratorClient {
     }
   }
 
-  /**
-   * Node-`http`/`https` transport with NO response timeout — see {@link request}
-   * for why the unbounded spawn leg must avoid undici's default header timeout.
-   * Throws on a transport error (caught by the fallback loop); any HTTP status
-   * resolves normally.
-   */
   private requestNodeHttp(
     method: string,
     url: string,

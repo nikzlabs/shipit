@@ -1,43 +1,13 @@
 import type { SecretFinding } from "../../shared/secret-scan.js";
 import type { UnreadableWorkspace } from "../../shared/git.js";
 
-/**
- * planning#296 — why the disk ladder refused to reclaim a session, as far as the
- * user needs to care. Three of the four mirror the refusal branches of
- * `GitManager.autoCommit` (`shared/git.ts`), collapsing anything they can't
- * attribute into `"unknown"` so a future refusal path still produces a message
- * instead of a blank one; `no-repository` is the ladder's own refusal, for a
- * workspace that is no longer a git repository at all and so has no commit for
- * an auto-commit to refuse.
- */
 export type EvictBlockReason =
   | { kind: "secret"; findings: SecretFinding[] }
   | { kind: "conflict"; conflictedFiles: string[]; rebaseInProgress: boolean }
   | { kind: "no-repository" }
-  /**
-   * docs/266 / planning#407 — ShipIt's own git could not READ part of the
-   * workspace, so a commit could never contain it. Like `no-repository` this is
-   * the ladder's own refusal rather than one of `autoCommit`'s: the wipe is
-   * what would destroy the content, and the block is what stops it.
-   */
   | { kind: "unreadable"; unreadable: UnreadableWorkspace }
   | { kind: "unknown" };
 
-/**
- * planning#296 — build the persisted chat notice shown when the `light → evicted`
- * rung refuses to reclaim a session because its uncommitted work could not be
- * made durable (the auto-commit was refused by the secret scanner or by an
- * unresolved merge state).
- *
- * The user cannot otherwise tell this happened: the session is idle, nothing is
- * attached to it, and the only trace is an orchestrator log line. Since the
- * session is now pinned at `light` until a human acts, the notice has to say
- * what is wrong, that the work is safe, and what unblocks it.
- *
- * Secret matches arrive already redacted (a short public prefix + length, never
- * the token body — see `secret-scan.ts`), so this text is safe to persist into
- * chat history. Tone/shape mirrors `formatSecretScanNotice`.
- */
 export function formatEvictBlockedNotice(reason: EvictBlockReason): string {
   const preserved =
     "Your uncommitted changes are still on disk and were not touched — ShipIt will keep this "
@@ -63,10 +33,6 @@ export function formatEvictBlockedNotice(reason: EvictBlockReason): string {
     );
   }
 
-  // Not an auto-commit refusal, so it does NOT use the shared `preserved`
-  // paragraph: that one promises the work will be committed and pushed on the
-  // next turn, and here nothing ever will be. The files are safe and they are
-  // also permanently un-pushable, and the only way out is a person.
   if (reason.kind === "no-repository") {
     return (
       "⚠️ Disk cleanup paused for this session — its workspace is no longer a git repository "
@@ -80,11 +46,6 @@ export function formatEvictBlockedNotice(reason: EvictBlockReason): string {
     );
   }
 
-  // docs/266 / planning#407 — like `no-repository`, this does NOT use the shared
-  // `preserved` paragraph: that one promises the next turn will commit and push
-  // the work, and nothing will until a person changes the path's permissions or
-  // gitignores it. The eviction is what would have deleted the content, so the
-  // notice says plainly that it is uncommitted and only here.
   if (reason.kind === "unreadable") {
     const missed = reason.unreadable.kind === "omitted"
       ? "so its contents are left out of every commit ShipIt makes"
@@ -93,12 +54,7 @@ export function formatEvictBlockedNotice(reason: EvictBlockReason): string {
     return (
       `⚠️ Disk cleanup paused for this session — ShipIt could not read \`${reason.unreadable.detail}\` `
       + `in your workspace, ${missed}.\n\n`
-      // Deliberately NOT "they exist only here". This block also fires for the
-      // postgres archetype — a directory that IS committed and pushed, whose
-      // mode a service tightened to 0700 at boot — and git cannot compare a
-      // subtree it cannot open. Claiming the content is unique would be a
-      // warning that is simply false for that user (review finding). ShipIt
-      // refuses the wipe because it cannot tell, and says so.
+      // Unreadable files may already be pushed; their uniqueness cannot be checked.
       + "Those files are still on disk and were not touched. ShipIt cannot check whether they "
       + "exist anywhere else, so it will not delete this checkout — which means the session keeps "
       + "using disk until the path is readable. Cached dependencies are not held back, so opening "

@@ -1,116 +1,4 @@
-/**
- * Disk janitor — runs once at orchestrator startup to reclaim:
- *   - **Orphan session compose volumes** — both labeled (post-fix) and
- *     unlabeled legacy ones. Identified by the predictable compose
- *     project-name pattern `shipit-<12-hex-of-sid>_<volname>`. We
- *     cross-reference the embedded session prefix against the **active
- *     sessions in the DB** and only delete volumes whose session is no
- *     longer tracked (i.e., archived or deleted). This is critical:
- *     idle-evicted sessions leave their volumes dangling on disk by
- *     design (so a warm resume can re-attach), and a naive `docker
- *     volume prune --filter dangling=true` would silently destroy that
- *     state.
- *   - **Orphan `shipit/*` remote branches** whose PR is merged and which
- *     no live session points at. Catches the historical backlog from
- *     before `markMergedAndPruneExcess` started deleting branches at
- *     merge-detection time. Skipped if GitHub auth or the repo's bare
- *     cache isn't available. See `sweepOrphanMergedBranches` for the
- *     safety criteria (must have ≥1 merged PR, no open PR, no live
- *     session using the branch).
- *   - **Orphan session networks** — both the per-session bridge network
- *     created for Docker-enabled agent containers (`shipit-session-<12-hex>`,
- *     `container-lifecycle.ts`) and the compose network created by
- *     `docker compose up` (`shipit-session-<full-sid>`, `compose-generator.ts`).
- *     Both embed the session id after a `shipit-session-` name prefix, so
- *     the same active-sessions cross-reference used for volumes applies:
- *     a network whose session is no longer tracked is removed; an
- *     idle-evicted session's network is preserved for warm resume. The
- *     primary cleanup paths (`cleanupSessionDockerResources`, compose
- *     teardown, `killStaleContainers`) handle the happy path — this is
- *     the safety net for when they didn't run (unclean shutdown).
- *   - **Archived session workspaces** older than `coldArtifactRetentionDays`
- *     (planning#199). Pure crash-recovery backstop for archives where `fs.rm`
- *     didn't run — `archiveSession` already drops the workspace synchronously
- *     at archive time (planning#194) on a healthy host, so this normally finds
- *     nothing. Chat history, usage, and session metadata are preserved;
- *     `unarchiveSession` re-clones from the bare cache.
- *   - **Dead `dep-cache/<hash>/nm-store` directories** for live repos. The
- *     lockfile-keyed `node_modules` copy store (docs/148) was removed in
- *     docs/183 Phase 1 (superseded by the overlay rolling base), so the whole
- *     subtree is reclaimed wholesale (~2.4 GB observed). Effectively one-time:
- *     the worker never writes nm-store again, so later sweeps no-op — which is
- *     why this one-shot migration cleanup stays here rather than on the periodic
- *     pass (it neither accumulates with the clock nor recovers from a crash).
- *   - **Orphan egress sidecars** (planning#224) — the Tier B resolver / Tier C SNI
- *     proxy (docs/172) share the agent container's network namespace, so when
- *     the agent container dies theirs dies with it and they strand in `Exited`
- *     with nothing to remove them. Identified by parent-liveness, NOT by the
- *     active-sessions cross-reference the volume/network sweeps use: the test is
- *     "does this sidecar's netns parent still exist and run?", which is what
- *     makes it incarnation-aware (a session that OOM'd and was recreated is
- *     still live, but its OLD sidecars are garbage). The crash site itself now
- *     reaps them (`container-health.ts`); this is the backstop for the orphans a
- *     previous orchestrator process never got to. See `egress-orphan-reaper.ts`.
- *
- * Why startup-only (no timer) for THESE sweeps: every item above is
- * recovering from a failure earlier in the lifecycle — orphan volumes only
- * exist if archive teardown crashed, orphan workspaces only exist if archive's
- * fs.rm failed, orphan credentials/logs only exist if the disposal/teardown path
- * didn't run, orphan branches only exist if the per-merge deletion hook didn't
- * fire, orphan egress sidecars only exist if the crash-site reap didn't run.
- * None of them accumulate steadily, so running periodically would mostly
- * burn cycles doing nothing. Startup is the natural "we just came back
- * from possibly-unclean shutdown — clean up after the previous run" moment.
- *
- * Steady-growth sweeps live elsewhere (planning#198): the disk reclaim that grows with
- * the CLOCK — unreferenced repo/dep caches, `repo-memory/`, obsolete overlay bases,
- * stale pnpm stores — moved to `runSteadyStateReclaim` (`steady-state-reclaim.ts`),
- * which rides the periodic disk-tier escalation pass (`escalateDiskTiers`, fired at
- * boot, per-activation, and hourly). prod is deployed *manually*, not on push, so the
- * orchestrator can run a long time between restarts; a boot-only sweep would let
- * those caches pile up unreclaimed between deploys, and a wedged box (full disk → new
- * starts fail) would never reclaim at all. The disk-tier escalation ladder itself
- * (docs/161, idle node_modules → hot/light/evicted) is the other steady-state disk
- * task and likewise does NOT live here — it's `escalateDiskTiers`
- * (`tier-escalation.ts`). The failure-recovery sweeps below deliberately get NO
- * timer; this janitor remains the post-(unclean-)restart safety net for them.
- *
- * Scope split — what this DOESN'T do:
- *   - **BuildKit cache + dangling images** are pruned by `deploy.sh`
- *     right after each `docker compose build`. They only grow as a side
- *     effect of builds.
- *   - **Per-session named-volume cleanup** is performed by
- *     `ServiceManager.stop({ removeVolumes: true })` from `archiveSession`
- *     / `fullReset`. This module only sweeps the leftovers when that
- *     primary cleanup didn't happen.
- *
- * Behavior knobs (env vars):
- *   - DISK_JANITOR_COLD_ARTIFACT_RETENTION_DAYS (planning#199): the single
- *     cold-artifact retention, in days, read once in `startup-monitors.ts` and
- *     shared by two consumers. In THIS module it governs the crash-recovery
- *     archived-workspace backstop (user-archived sessions whose `workspaceDir`
- *     survived a crashed synchronous cleanup); the same value also drives the
- *     steady-state cold-cache reclaim (`repo-cache` / `dep-cache` / `pnpm-store`
- *     / `repo-memory`) in `steady-state-reclaim.ts` (planning#198 moved those sweeps
- *     onto the periodic escalation pass). Replaces the two coincidental
- *     `DISK_JANITOR_ARCHIVED_WORKSPACE_DAYS` (default `0`, disabled) +
- *     `DISK_JANITOR_CACHE_DAYS` (default `30`) knobs. Default `30`. The
- *     archived-workspace sweep is no longer independently tunable: it's pure
- *     crash-recovery (planning#194 frees the workspace synchronously at archive
- *     time), so it rides the same retention.
- *   - DISK_JANITOR_ORPHAN_BRANCHES: when `"false"`, disables the
- *     orphan-`shipit/*`-branch sweep. Default enabled (set the env var to
- *     `"false"` to opt out). The sweep no-ops anyway without GitHub auth.
- *   - DISK_JANITOR_PACE_MS: milliseconds to pause between each destructive
- *     operation (volume/network removal, branch delete, workspace/nm-store/
- *     credential/log rm). The startup sweep is fire-and-forget and never urgent —
- *     every item recovers from a past failure — so we deliberately drip it out
- *     rather than have a burst of `docker` spawns and git pushes contend with a
- *     concurrent agent start for the Docker daemon / bare-cache git layer. This
- *     is what keeps a just-restarted box's agents responsive WITHOUT deferring
- *     the reclaim to a later (and more disruptive) moment. Default `500`.
- */
-
+// Boot recovery for failed teardown and legacy artifacts. Periodic cache reclaim lives in steady-state-reclaim.ts.
 import path from "node:path";
 import fs from "node:fs/promises";
 import type Docker from "dockerode";
@@ -131,129 +19,35 @@ import { getMessage, sleep, defaultRunDocker, reclaimRegenerableSessionDirs } fr
 export interface DiskJanitorDeps {
   sessionManager: SessionManager;
   repoStore: RepoStore;
-  /** Root that holds the `dep-cache/<hash>/nm-store` subtree this janitor reaps. */
   stateDir: string;
-  /**
-   * planning#199 — the single cold-artifact retention (days). In this module it
-   * drives the crash-recovery archived-workspace backstop (sweep archived
-   * session workspaces older than this); post-planning#198 the cold caches that once
-   * shared a knob with it live in `steady-state-reclaim.ts`, but both still read
-   * the SAME value (the old `DISK_JANITOR_ARCHIVED_WORKSPACE_DAYS` +
-   * `DISK_JANITOR_CACHE_DAYS` coincidentally-30d pair collapsed into one). The
-   * archived-workspace sweep is no longer independently tunable: it's pure
-   * crash-recovery (planning#194 frees the workspace synchronously at archive time —
-   * see `sweepArchivedWorkspaces`). Defaults to {@link COLD_ARTIFACT_RETENTION_DAYS}.
-   */
   coldArtifactRetentionDays?: number;
-  /**
-   * docs/138 — source-of-truth credentials root (e.g. `/credentials`). When
-   * provided, the janitor sweeps per-session credential subtrees under
-   * `<credentialsDir>/sessions/<id>` whose session is archived or no longer
-   * tracked, so provisioned agent credentials don't linger on disk. Omitted in
-   * tests / runtimes without container credentials.
-   */
   credentialsDir?: string;
-  /**
-   * docs/192 — sessions root (`<workspaceDir>/sessions`). When provided, the
-   * janitor sweeps per-session `logs/` dirs whose session is archived or no
-   * longer tracked, so durable container logs don't outlive their session.
-   * Omitted in tests / runtimes without on-disk sessions.
-   */
   sessionsRoot?: string;
-  /**
-   * Shell-out hook for docker prune commands. Overridable for tests so we
-   * never touch a real Docker daemon from unit tests. Resolves with the
-   * combined stdout/stderr of the command (the "Total reclaimed space"
-   * line is parsed from this).
-   */
   runDocker?: (args: string[]) => Promise<string>;
-  /**
-   * Optional. When all three are provided AND `sweepOrphanBranches !== false`,
-   * the janitor sweeps merged-PR `shipit/*` branches that were left behind
-   * before the per-merge deletion hook (`markMergedAndPruneExcess`) shipped.
-   * Omitted in tests that don't exercise this path; in production all three
-   * are wired in `index.ts`.
-   */
   githubAuthManager?: GitHubAuthManager;
-  /**
-   * planning#426 — the second parameter is load-bearing, not optional decoration:
-   * the sweep's `push --delete` supplies its own repo-scoped credential rather
-   * than relying on the orchestrator's ambient global helper. A factory that
-   * ignores it (a test fake) still type-checks and still pushes — it just pushes
-   * the way it did before.
-   */
+  // The factory must forward the explicit credential to remote operations.
   createRepoGit?: (dir: string, credential?: GitRemoteCredential) => RepoGit;
   getBareCacheDir?: (repoUrl: string) => string;
-  /** Default true. Set false to disable the branch sweep entirely. */
   sweepOrphanBranches?: boolean;
-  /**
-   * planning#224 — Docker client for the orphan egress-sidecar sweep. The Tier B/C
-   * sidecars (docs/172) share the agent container's network namespace, so when
-   * the agent dies its sidecars are stranded in `Exited` with nothing to remove
-   * them. The crash site itself now reaps them (`container-health.ts`); this
-   * boot sweep is the backstop for the orphans a PREVIOUS orchestrator process
-   * never got to — it died mid-cleanup, the Docker daemon restarted, or the
-   * agent container was removed out-of-band.
-   *
-   * Uses dockerode rather than the `runDocker` shell-out hook because the sweep
-   * needs `inspect` (to read each sidecar's `HostConfig.NetworkMode` and then
-   * its parent's `State.Running`), not a prune. Omitted in tests and in
-   * runtimes with no container manager, which skips the sweep.
-   */
   docker?: Docker;
-  /**
-   * Throttle: milliseconds to pause between each destructive operation
-   * (volume/network removal, branch delete, workspace/nm-store/credential/log rm).
-   * The startup sweep is never urgent — every item is recovering from a past
-   * failure — so we deliberately drip the reclaim out rather than hammer the
-   * Docker daemon and the bare-cache git layer that a concurrent agent start
-   * also needs. Defaults to `0` (no pause) so unit tests stay fast; production
-   * wires a gentle pace via `DISK_JANITOR_PACE_MS` in `index.ts`.
-   */
   paceMs?: number;
 }
 
 export interface DiskJanitorResult {
-  /** Session-compose volumes removed (cross-referenced against active sessions). */
   orphanVolumesRemoved: number;
-  /** Session networks removed (cross-referenced against active sessions). */
   orphanNetworksRemoved: number;
   workspacesRemoved: number;
-  /** docs/183 — dead `dep-cache/<hash>/nm-store` dirs removed (supersedes docs/148). */
   nmStoresRemoved: number;
-  /** Remote `shipit/*` branches whose PR is merged and no live session uses them. */
   orphanBranchesRemoved: number;
-  /** Per-session credential subtrees removed (archived or untracked sessions). */
   credentialDirsRemoved: number;
-  /** docs/192 — per-session `logs/` dirs removed (archived or untracked sessions). */
   logDirsRemoved: number;
-  /** planning#224 — egress sidecars (docs/172) whose netns parent is gone or stopped. */
   orphanEgressSidecarsRemoved: number;
-  /** docs/262 — plugin install containers left behind by a previous process. */
   orphanPluginInstallsRemoved: number;
-  /**
-   * docs/272-shared-cache-ownership — nodes under the shared git caches
-   * (`repo-cache/`, `marketplace-cache/`) handed back to the orchestrator's own
-   * identity. Nonzero means drift was found; a steady deployment reports 0.
-   */
   sharedTreeNodesReclaimed: number;
 }
 
-/**
- * planning#199 — the one cold-artifact retention default (days). Read once in
- * `startup-monitors.ts` and shared by both the crash-recovery archived-workspace
- * backstop (here) and the steady-state cold-cache reclaim
- * (`steady-state-reclaim.ts`, planning#198), which previously had two coincidental
- * `30`-day knobs that could drift apart.
- */
 export const COLD_ARTIFACT_RETENTION_DAYS = 30;
 
-/**
- * Run the disk-janitor sweep once. Each sub-step is wrapped in try/catch
- * so one failing reclaim doesn't block the others. Always resolves —
- * never rejects — so callers can fire-and-forget at startup without
- * needing a `.catch`.
- */
 export async function runDiskJanitor(deps: DiskJanitorDeps): Promise<DiskJanitorResult> {
   const result: DiskJanitorResult = {
     orphanVolumesRemoved: 0,
@@ -269,19 +63,9 @@ export async function runDiskJanitor(deps: DiskJanitorDeps): Promise<DiskJanitor
   };
   const runDocker = deps.runDocker ?? defaultRunDocker;
   const paceMs = deps.paceMs ?? 0;
-  // planning#199 — the single cold-artifact retention; here it drives the
-  // archived-workspace crash-recovery backstop (the cold caches that share this
-  // value are swept by `steady-state-reclaim.ts` on the periodic pass, planning#198).
   const coldDays = deps.coldArtifactRetentionDays ?? COLD_ARTIFACT_RETENTION_DAYS;
 
-  // docs/262 — plugin install containers and their generation volumes. FIRST,
-  // and the order is load-bearing: the volume sweep below filters on
-  // `dangling=true`, so a volume an orphaned install container still holds is
-  // invisible to it — and by the next boot, when it finally is dangling, that
-  // sweep deliberately preserves every volume belonging to a live session.
-  // Reaping here is also liveness-free, unlike the sweeps below: an install
-  // cannot outlive the process that awaited it, so at boot any survivor is an
-  // orphan.
+  // Remove install containers first: attached volumes are invisible to the dangling-volume sweep.
   if (deps.docker) {
     try {
       result.orphanPluginInstallsRemoved = await reapOrphanPluginInstalls(
@@ -324,15 +108,7 @@ export async function runDiskJanitor(deps: DiskJanitorDeps): Promise<DiskJanitor
     console.warn("[disk-janitor] nm-store sweep failed:", getMessage(err));
   }
 
-  // docs/272-shared-cache-ownership req 1/2 — the shared git trees ShipIt owns
-  // outside any session. Boot-only is the right cadence per CLAUDE.md's split:
-  // ownership drift is leftover state from previous incarnations (a pre-drop build
-  // writing as root inside a uid-1000 tree; a hardlinked chown from a plugin
-  // install), not something that grows with the clock. The cheap gate in
-  // `RepoGit` handles anything that appears while the process is up; this is the
-  // pass that repairs what is already on disk, including the object-file drift no
-  // top-level stat can see. Idempotent — a uniform tree costs one lstat per node
-  // and zero chowns — and inert below root, so every test and local mode skip it.
+  // Repair object ownership drift that RepoGit's root-only check cannot detect.
   try {
     result.sharedTreeNodesReclaimed = reclaimSharedTrees(deps.stateDir);
   } catch (err) {
@@ -359,11 +135,7 @@ export async function runDiskJanitor(deps: DiskJanitorDeps): Promise<DiskJanitor
     }
   }
 
-  // planning#224 — egress sidecars whose netns parent (the agent container) is gone
-  // or stopped. Unlike every other sweep here, this one needs NO active-sessions
-  // cross-reference: parent-liveness is the entire test, so it correctly reaps
-  // orphans belonging to sessions that are still very much alive (the common
-  // case — a session whose container OOM'd and was recreated).
+  // Sidecars follow their network-namespace parent, not the session's current incarnation.
   if (deps.docker) {
     try {
       result.orphanEgressSidecarsRemoved = await reapOrphanEgressSidecars(
@@ -408,22 +180,6 @@ export async function runDiskJanitor(deps: DiskJanitorDeps): Promise<DiskJanitor
   return result;
 }
 
-/**
- * docs/138 — remove per-session credential subtrees under
- * `<credentialsDir>/sessions/<id>` whose session is archived or no longer
- * tracked in the DB. These hold copies of the pinned agent's credentials
- * (provisioned on first turn); they should not outlive the session.
- *
- * Preserved: dirs for **live, non-user-archived** sessions — i.e. sessions
- * still in `allIds()` and NOT user-archived. planning#181: a disk-EVICTED session
- * (`listArchived()` = `disk_tier = 'evicted'`) is NOT eligible — it is still
- * live state the user can return to (its workspace re-clones from the bare
- * cache on activation), so its credentials must survive. Only genuinely-gone
- * (untracked) or USER-archived sessions are reaped. An archived session that's
- * later unarchived simply re-provisions on its next first turn / container create.
- *
- * Returns the count of subtrees removed.
- */
 async function sweepOrphanCredentialDirs(
   sessionManager: SessionManager,
   credentialsDir: string,
@@ -434,26 +190,19 @@ async function sweepOrphanCredentialDirs(
   try {
     entries = await fs.readdir(root);
   } catch {
-    return 0; // No per-session credentials dir yet — nothing to sweep.
+    return 0;
   }
 
   const tracked = new Set(sessionManager.allIds());
-  // planning#181: key off USER-archive state, not `disk_tier = 'evicted'`. A
-  // disk-evicted but non-user-archived session is live and must keep its
-  // credentials; only an explicit user-archive (or a deleted/untracked row)
-  // makes them reclaimable.
+  // Disk eviction alone must not remove credentials needed on resume.
   const userArchived = new Set(
     sessionManager.listAll().filter((s) => s.userArchived).map((s) => s.id),
   );
-  // docs/110 — defense-in-depth: never sweep a pinned (persistent) session's
-  // credentials. Such a session is already tracked-and-not-archived, so the
-  // check below keeps it; this makes the persistence invariant explicit.
   const pinned = new Set(sessionManager.listAll().filter((s) => s.pinnedAt).map((s) => s.id));
 
   let removed = 0;
   for (const entry of entries) {
     if (pinned.has(entry)) continue;
-    // Keep dirs for sessions that are still tracked AND not user-archived.
     if (tracked.has(entry) && !userArchived.has(entry)) continue;
     const full = path.join(root, entry);
     try {
@@ -468,22 +217,6 @@ async function sweepOrphanCredentialDirs(
   return removed;
 }
 
-/**
- * docs/192 — remove per-session `logs/` dirs (`<sessionsRoot>/<id>/logs`) whose
- * session is archived or no longer tracked. Container logs are durable scratch:
- * they should not outlive the session, and — unlike {@link sweepArchivedWorkspaces}
- * — there is NO `!remoteUrl` skip, because a log dir is always disposable (it's
- * never the only copy of the user's work). An archived session that is later
- * unarchived simply starts a fresh log backlog.
- *
- * Preserved: dirs for live, non-user-archived sessions (still in `allIds()` and
- * NOT user-archived), and pinned sessions — mirrors the credential-dir sweep so
- * warm / disk-evicted sessions keep their logs for resume. planning#181: a
- * disk-evicted (`listArchived()`) but non-user-archived session is live, so it
- * is NOT eligible for reaping.
- *
- * Returns the count of `logs/` dirs removed.
- */
 async function sweepOrphanSessionLogs(
   sessionManager: SessionManager,
   sessionsRoot: string,
@@ -493,12 +226,10 @@ async function sweepOrphanSessionLogs(
   try {
     entries = await fs.readdir(sessionsRoot);
   } catch {
-    return 0; // No sessions root yet — nothing to sweep.
+    return 0;
   }
 
   const tracked = new Set(sessionManager.allIds());
-  // planning#181 — key off USER-archive state, not disk eviction (see the
-  // credential-dir sweep): a disk-evicted but non-user-archived session is live.
   const userArchived = new Set(
     sessionManager.listAll().filter((s) => s.userArchived).map((s) => s.id),
   );
@@ -510,7 +241,6 @@ async function sweepOrphanSessionLogs(
     if (tracked.has(entry) && !userArchived.has(entry)) continue;
     const logsDir = path.join(sessionsRoot, entry, "logs");
     try {
-      // Only count it if there was actually a logs dir to remove.
       await fs.stat(logsDir);
     } catch {
       continue;
@@ -527,35 +257,6 @@ async function sweepOrphanSessionLogs(
   return removed;
 }
 
-/**
- * Remove session-compose named volumes whose session is no longer
- * tracked in the active sessions list — handles both labeled
- * (`shipit-managed=true`, post-fix) and unlabeled legacy volumes
- * uniformly. Volumes are identified by the predictable compose
- * project-name pattern:
- *
- *     shipit-<first-12-chars-of-sessionId>_<volname>
- *
- * The 12-char prefix is extracted and cross-referenced against
- * `sessionManager.list()` (active, non-archived sessions). If the
- * prefix matches an active session, the volume is preserved — this is
- * critical for **idle-evicted** sessions whose containers are gone but
- * whose volumes must remain on disk for a warm resume. A naive
- * `docker volume prune --filter dangling=true` would silently destroy
- * that state.
- *
- * Safety properties:
- *   - The orchestrator's own data volumes start with `shipit_`
- *     (underscore), never `shipit-`, so they can't match.
- *   - Regex check rejects volume names a user might have created
- *     (e.g. `shipit-foo`); only names matching the strict
- *     `shipit-<12 hex/hyphen chars>_` shape are considered.
- *   - `--filter dangling=true` is still applied as defence-in-depth —
- *     docker returns only unattached volumes, so an attached
- *     currently-active session's volumes are invisible to the sweep.
- *
- * Returns the count of volumes actually removed.
- */
 async function sweepOrphanSessionVolumes(
   sessionManager: SessionManager,
   runDocker: (args: string[]) => Promise<string>,
@@ -563,10 +264,7 @@ async function sweepOrphanSessionVolumes(
 ): Promise<number> {
   const SESSION_VOLUME_RE = /^shipit-([a-f0-9-]{12})_/;
 
-  // Preserve volumes for every session that still holds on-disk state, i.e.
-  // anything not `evicted`. `list()` would exclude merged sessions that fell
-  // out of the sidebar's top-N view even though they're still `hot` — their
-  // volumes must survive for a warm resume.
+  // Sidebar-hidden sessions can still hold disk state and need their volumes.
   const livePrefixes = new Set(
     sessionManager.listAll()
       .filter((s) => s.diskTier !== "evicted")
@@ -603,8 +301,7 @@ async function sweepOrphanSessionVolumes(
       await runDocker(["volume", "rm", name]);
       removed += 1;
     } catch {
-      // Volume might have just been attached or already removed by a
-      // concurrent sweep — both are fine, skip silently.
+      // A concurrent operation may have attached or removed the volume.
     }
   }
   if (removed > 0) {
@@ -613,36 +310,6 @@ async function sweepOrphanSessionVolumes(
   return removed;
 }
 
-/**
- * Remove session networks whose session is no longer tracked in the
- * active sessions list. Two network shapes are created per session and
- * both are handled here uniformly:
- *
- *   - `shipit-session-<first-12-chars-of-sessionId>` — the per-session
- *     bridge network for Docker-enabled agent containers
- *     (`container-lifecycle.ts:createContainer`).
- *   - `shipit-session-<full-sessionId>` — the compose network created by
- *     `docker compose up` from the generated override
- *     (`compose-generator.ts`).
- *
- * Both embed the session id directly after the `shipit-session-` name
- * prefix, and the first 12 characters of that id are always
- * `sessionId.slice(0, 12)` — the same key `sweepOrphanSessionVolumes`
- * cross-references. So we extract those 12 chars and preserve any
- * network whose session is still tracked (critical for idle-evicted
- * sessions, whose container/services are gone but whose row remains in
- * the DB for a warm resume).
- *
- * Safety properties:
- *   - `--filter dangling=true` is applied as defence-in-depth — Docker
- *     only returns networks with no attached containers, so an active
- *     session's network (agent container or running compose services
- *     attached) is invisible to the sweep.
- *   - The strict `^shipit-session-([a-f0-9-]{12})` regex rejects any
- *     network a user might have named `shipit-session-foo`.
- *
- * Returns the count of networks actually removed.
- */
 async function sweepOrphanSessionNetworks(
   sessionManager: SessionManager,
   runDocker: (args: string[]) => Promise<string>,
@@ -650,21 +317,7 @@ async function sweepOrphanSessionNetworks(
 ): Promise<number> {
   const SESSION_NETWORK_RE = /^shipit-(?:session|egress)-([a-f0-9-]{12})/;
 
-  // Preserve networks for every session that still holds on-disk state, i.e.
-  // anything not `evicted` (see `sweepOrphanSessionVolumes` for why `list()`
-  // is too narrow here).
-  //
-  // Re-read per call rather than snapshotting once: this sweep is
-  // fire-and-forget from boot (`startup-monitors.ts`) and paced, so it can
-  // still be running well after the server starts accepting session creates. A
-  // session created after a one-shot snapshot would be invisible to it, and its
-  // network exists BEFORE its container joins (`container-lifecycle.ts` creates
-  // the network, then prepares overlays, then attaches) — so it is `dangling`
-  // and unprotected for exactly the window that matters. That is the same
-  // create-vs-prune race that made `docker network prune -f` in `deploy.sh`
-  // delete 18 live session networks on 2026-08-10; a narrower window is still
-  // the same bug. The read is a synchronous in-memory/SQLite list against a
-  // 500ms-paced loop, so per-removal is free.
+  // Re-read before each removal: a new session's network is dangling until its container attaches.
   const livePrefixes = (): Set<string> => new Set(
     sessionManager.listAll()
       .filter((s) => s.diskTier !== "evicted")
@@ -700,15 +353,11 @@ async function sweepOrphanSessionNetworks(
   for (const { name, prefix } of candidates) {
     try {
       await sleep(paceMs);
-      // Re-check immediately before the destructive call: a session created
-      // since the listing above owns this name now, and its network is
-      // `dangling` until its container attaches.
       if (livePrefixes().has(prefix)) continue;
       await runDocker(["network", "rm", name]);
       removed += 1;
     } catch {
-      // Network might have just been attached or already removed by a
-      // concurrent sweep — both are fine, skip silently.
+      // A concurrent operation may have attached or removed the network.
     }
   }
   if (removed > 0) {
@@ -717,32 +366,6 @@ async function sweepOrphanSessionNetworks(
   return removed;
 }
 
-/**
- * Delete `workspaceDir` for USER-archived sessions whose `last_used_at` is
- * older than `days`. Chat history, usage, and session metadata are
- * preserved — `unarchiveSession` re-clones from the bare cache when the
- * user restores the session.
- *
- * planning#181: `listArchived()` returns `disk_tier = 'evicted'` sessions, which
- * also covers non-user-archived sessions reclaimed by the docs/161 disk ladder.
- * Those remain live (re-cloned on activation), so the loop skips any session
- * the user did not explicitly archive — the workspace lifecycle is tied to
- * user-archive state, not disk tier.
- *
- * In the current product all sessions have a `remoteUrl`, and
- * `archiveSession` already removes the workspace at archive time, so on
- * a healthy host this sweep is a no-op. It exists as a safety net for:
- *   - archives that failed mid-flight (worker crash, fs error)
- *   - legacy sessions from before the cleanup code shipped
- *   - any future edge case where the workspace outlives the archive
- *
- * Sessions without a `remoteUrl` are skipped defensively — if such a
- * session ever ends up archived (test fixtures, legacy data), there is
- * no remote to re-clone from, so deleting its workspace would lose
- * irretrievable user work.
- *
- * Returns the count of workspaces actually removed.
- */
 async function sweepArchivedWorkspaces(
   sessionManager: SessionManager,
   days: number,
@@ -754,30 +377,14 @@ async function sweepArchivedWorkspaces(
   let removed = 0;
   for (const session of archived) {
     if (!session.workspaceDir) continue;
-    // planning#181 — `listArchived()` is `disk_tier = 'evicted'`, which includes
-    // non-user-archived sessions reclaimed by the docs/161 disk ladder. Those
-    // are LIVE state the user can return to (workspace re-clones from the bare
-    // cache on activation), so this safety-net sweep must never reclaim them.
-    // Only a session the user explicitly archived is eligible — its workspace
-    // is re-cloned by `unarchiveSession` on restore.
+    // listArchived includes disk-evicted sessions the user has not archived.
     if (!session.userArchived) continue;
-    // docs/110 — defensive: never sweep a pinned (persistent) session. Archive
-    // clears the pin, so a pinned session is never in `listArchived()` to begin
-    // with; this guard states the invariant in code rather than relying on it.
     if (session.pinnedAt) continue;
-    // Defensive: never sweep a session without a remoteUrl — even though
-    // the product guarantees every session has one, a stale row from a
-    // prior schema or a test fixture could land here, and deleting the
-    // workspace would be unrecoverable.
+    // Without a remote, this may be the only copy of the user's work.
     if (!session.remoteUrl) continue;
     const lastUsedMs = Date.parse(session.lastUsedAt);
     if (!Number.isFinite(lastUsedMs) || lastUsedMs >= cutoffMs) continue;
-    // planning#194 — reclaim the checkout AND the regenerable overlay/ sibling,
-    // preserving durable siblings (uploads/). The legacy code rm'd only the
-    // checkout and orphaned the overlay upper, leaking ~60 GB on prod. Because
-    // each target is stat-checked independently, this also catches sessions
-    // whose `workspace/` was already removed by a prior reclaim but whose
-    // `overlay/` orphan survived — the exact leak shape this sweep must mop up.
+    // Include orphaned overlay siblings while preserving uploads.
     const { removed: removedDirs, failed } = await reclaimRegenerableSessionDirs(
       session.workspaceDir,
       { paceMs },
@@ -798,17 +405,7 @@ async function sweepArchivedWorkspaces(
   return removed;
 }
 
-/**
- * docs/183 Phase 1 — reclaim the now-dead lockfile-keyed `node_modules` copy
- * store. The `nm-store` fast path (docs/148) was deleted; the overlay rolling
- * base supersedes it, so the entire `dep-cache/<repoHash>/nm-store/` subtree is
- * dead weight (~2.4 GB observed on prod). Remove the whole directory under each
- * tracked repo. (Untracked repos' `dep-cache/<hash>` is removed wholesale by
- * `sweepOrphanedCaches`, which covers their nm-store too.)
- *
- * One-time in effect: once removed, the worker never writes nm-store again, so
- * subsequent startup sweeps find nothing and no-op.
- */
+// nm-store was replaced by overlay bases and has no remaining writer.
 async function sweepDeadNmStores(
   stateDir: string,
   repoStore: RepoStore,
@@ -822,7 +419,7 @@ async function sweepDeadNmStores(
     try {
       await fs.stat(nmRoot);
     } catch {
-      continue; // No nm-store for this repo — nothing to do.
+      continue;
     }
     try {
       await sleep(paceMs);
@@ -836,24 +433,6 @@ async function sweepDeadNmStores(
   return removed;
 }
 
-/**
- * docs/272-shared-cache-ownership req 1/2 — hand every shared git tree back to
- * the orchestrator's own identity.
- *
- * Both roots, and both for reasons the class already proved. `repo-cache/` is
- * where planning#425 and planning#428 live, and it holds the plugin bare caches
- * too (`getBareCacheDir` is the same helper for both), so one pass covers the
- * whole of planning#417's cache side. `marketplace-cache/` is planning#418's tree:
- * that issue made a broken catalog cache *recoverable* but never addressed the
- * ownership drift that broke it, and its write-up records the cause as
- * undetermined — a root process getting `insufficient permission for adding an
- * object`, which is this class's signature.
- *
- * Synchronous and unpaced, unlike the reclaims around it. Those delete things and
- * hammer the Docker daemon; this one `lstat`s and occasionally `lchown`s, both
- * cheap and neither destructive, and pacing it would stretch a bounded walk
- * across the window in which the first claim arrives.
- */
 function reclaimSharedTrees(stateDir: string): number {
   const roots = [bareCacheRoot(stateDir), getCatalogCacheRoot(stateDir)];
   let reclaimed = 0;
@@ -863,21 +442,6 @@ function reclaimSharedTrees(stateDir: string): number {
   return reclaimed;
 }
 
-/**
- * GraphQL response shapes for the orphan-branch sweep — declared at module
- * scope so the types stay close to the queries that produce them.
- *
- * The sweep issues two separate paginated queries (see
- * `fetchShipitBranchesWithPrStates`):
- *   1. `refs(refPrefix: "refs/heads/shipit/")` — what branches exist.
- *   2. `pullRequests(states: [OPEN, MERGED])` — head ref → PR states map.
- *
- * We deliberately do NOT use `Ref.associatedPullRequests` here: it returned
- * empty for every branch on ShipIt's own repo whose PR was merged (181 of
- * 186 affected), while the PR-side `pullRequests(headRefName:)` query
- * returned them correctly. See the diagnostic write-up referenced from
- * docs/. The PR-side enumeration is the only reliable join.
- */
 interface ShipitRefsConnection {
   pageInfo: { hasNextPage: boolean; endCursor: string | null };
   nodes: { name: string }[];
@@ -904,79 +468,6 @@ interface ShipitPrStatesQueryResult {
   };
 }
 
-/**
- * Sweep orphaned `shipit/*` remote branches whose PR is merged.
- *
- * This is the safety-net for branches that leaked before
- * `markMergedAndPruneExcess` (services/session.ts) started deleting head
- * branches at merge-detection time. Per-merge deletion handles the
- * going-forward path; this sweep clears the historical backlog and any
- * future merges that slipped through (e.g. the orchestrator was down when
- * the merge happened, the catch-up probe ran while auth was disconnected).
- *
- * Safety criteria — a branch is only deleted when ALL hold:
- *   1. Name starts with `shipit/` (we created it).
- *   2. At least one associated PR is in state `MERGED`. Bare branches with
- *      no PRs are left alone (might be local-only work the user pushed).
- *      Branches whose only PRs are `CLOSED` (closed without merging) are
- *      also left alone — that closure could mean "user changed their mind
- *      but wants the commits."
- *   3. No associated PR is in state `OPEN` (some workflows reuse a head
- *      branch across multiple PRs; if any are still open, hands off).
- *   4. No non-archived ShipIt session points at this branch. Archived
- *      sessions are excluded because `unarchiveSession` generates a fresh
- *      branch name, so the old one is genuinely orphaned.
- *
- * Skip conditions:
- *   - GitHub auth not present → no-op (returns 0).
- *   - Repo URL doesn't parse as github.com (SSH/HTTPS/owner/repo
- *     extraction) → skip that repo.
- *   - GraphQL query fails or returns no data → skip that repo.
- *   - Bare cache directory missing → skip that repo's deletions (push
- *     --delete needs a local git context; the cache is the cheapest one
- *     we have. A REST DELETE fallback is possible but unnecessary in
- *     practice — repos without caches were probably already cleaned up
- *     by `sweepOrphanedCaches`).
- *
- * ## How the push authenticates (planning#426)
- *
- * This docstring used to say the cache's remote URL is "refreshed to embed the
- * current token before pushing". That has not been true since docs/262 req 19:
- * `setRemoteUrl` runs every URL through `credentialFreeRemote`, which STRIPS an
- * embedded credential and can now only ever remove one. The mechanism the
- * docstring named was deliberately deleted, and nothing replaced it here — so
- * this push carried no credential of its own and depended entirely on the
- * orchestrator's ambient global helper being present and readable. When it is
- * not, the push dies with `fatal: could not read Username for
- * 'https://github.com'`, which is one of the three paths that produced those
- * lines in the planning#410 soak.
- *
- * It now resolves an explicit repo-scoped credential — the same one every other
- * deliberate remote op takes (`getRepoScopedGitCredential`), which this sweep is
- * unusually well placed to ask for because it already knows `owner`/`repo`. Two
- * things follow, and both are the point:
- *
- *   - The push no longer *depends* on ambient config, so it cannot lose its
- *     credential to a state elsewhere in the process.
- *   - `RepoGit`'s credentialled path sets `GIT_TERMINAL_PROMPT=0`, so a genuinely
- *     absent credential fails fast and classifiably instead of stalling into
- *     git's "could not read Username" — and the log below then names WHICH of the
- *     two shapes happened: no credential (plumbing) or a refusal (this token
- *     cannot reach this repository, which is legitimate and still worth saying).
- */
-/**
- * planning#426 — the credential this sweep's `push --delete` runs with.
- *
- * `getRepoScopedGitCredential` is the same resolver the git-credential broker and
- * every dropped-uid remote op use: a short-lived, single-repo installation token
- * when a GitHub App is configured, and the PAT when one is not. Scoped to
- * `https://github.com` and offered to no other origin, which is why the raw PAT
- * in an ambient host-blind helper was the weaker shape even when it worked.
- *
- * Never throws — a resolver failure resolves to `null`, which the caller reads as
- * "skip this repo and say why". A sweep that cannot authenticate must decline
- * loudly, not push and let git ask for a username nobody can answer.
- */
 async function resolveCacheCredential(
   githubAuthManager: GitHubAuthManager,
   owner: string,
@@ -1003,13 +494,7 @@ async function sweepOrphanMergedBranches(
 ): Promise<number> {
   if (!githubAuthManager.authenticated) return 0;
 
-  // Build a remote → live-branches index from every non-evicted session.
-  // We deliberately use `listAll()` (minus evicted), NOT `list()`: a merged
-  // session that has dropped out of the sidebar's per-repo top-N view is still
-  // `hot` on disk and the user can resume it, so its branch must be preserved.
-  // Only `evicted` sessions' branches are treated as orphaned, because
-  // `unarchiveSession` generates a fresh branch on restore (see
-  // services/session.ts), so the old branch is truly abandoned.
+  // Sidebar visibility does not determine whether a session still owns its branch.
   const liveByRemote = new Map<string, Set<string>>();
   for (const s of sessionManager.listAll()) {
     if (s.diskTier === "evicted") continue;
@@ -1043,22 +528,15 @@ async function sweepOrphanMergedBranches(
     const liveBranches = liveByRemote.get(repo.url) ?? new Set<string>();
     const cacheDir = getBareCacheDir(repo.url);
 
-    // Lazy: only stat the cache dir / construct RepoGit / refresh creds
-    // when we actually have a deletion to perform for this repo.
     let cacheGit: RepoGit | null = null;
     const ensureCacheGit = async (): Promise<RepoGit | null> => {
       if (cacheGit) return cacheGit;
       try {
         await fs.stat(cacheDir);
       } catch {
-        return null; // No bare cache for this repo — skip.
+        return null;
       }
-      // planning#426 — an explicit credential for this repository, rather than
-      // whatever the ambient global helper happens to hold. `null` means the
-      // resolver could not produce one at all (no token for this host, a mint that
-      // failed with no PAT behind it); say so once per repo and skip, because a
-      // push with nothing to authenticate with can only produce the "could not
-      // read Username" line this issue is about.
+      // Resolve credentials explicitly; the ambient helper may be absent.
       const credential = await resolveCacheCredential(
         githubAuthManager, parsed.owner, parsed.repo,
       );
@@ -1071,10 +549,7 @@ async function sweepOrphanMergedBranches(
       }
       const gitInstance = createRepoGit(cacheDir, credential);
       try {
-        // Normalize the cache's origin URL to the plain form. Credentials
-        // come from the global git credential helper, not the URL.
-        // Overwriting here also strips any token a previous code path baked
-        // into the URL, so push errors below cannot leak the token.
+        // Strip credentials left in origin by older code before a push can expose them.
         await gitInstance.setRemoteUrl(repo.url);
       } catch (err) {
         console.warn(
@@ -1087,13 +562,6 @@ async function sweepOrphanMergedBranches(
       return cacheGit;
     };
 
-    // Pre-compute the eligible set so we can log a complete summary per
-    // repo even when we end up performing 0 deletions. Without this, a repo
-    // whose N branches are all somehow ineligible looks identical in the
-    // logs to a repo with no branches at all — which is exactly how the
-    // `Ref.associatedPullRequests` bug went undetected for so long (every
-    // branch reported empty states, so the sweep silently did nothing for
-    // the entire historical backlog).
     const eligible = branches.filter((b) => {
       const fullName = `shipit/${b.shortName}`;
       if (liveBranches.has(fullName)) return false;
@@ -1112,17 +580,13 @@ async function sweepOrphanMergedBranches(
       const fullName = `shipit/${branch.shortName}`;
 
       const git = await ensureCacheGit();
-      if (!git) break; // No cache → skip remaining branches for this repo.
+      if (!git) break;
 
       try {
         await sleep(paceMs);
         await git.deleteBranch(fullName);
         removed += 1;
       } catch (err) {
-        // planning#426 — name which of the two shapes this was. They need
-        // different fixes and the old single line conflated them: a missing
-        // credential is a plumbing bug on our side, a refusal means the connected
-        // account cannot reach this repository, which is legitimate.
         const message = getMessage(err);
         const shape = /could not read Username|terminal prompts disabled/i.test(message)
           ? " (no credential reached git — this is a ShipIt plumbing fault, please report it)"
@@ -1140,43 +604,13 @@ async function sweepOrphanMergedBranches(
   return removed;
 }
 
-/**
- * Fetch all `refs/heads/shipit/*` branches for a repo together with the
- * states of their associated pull requests.
- *
- * Implementation: two paginated GraphQL passes joined client-side.
- *
- *   Pass 1 enumerates `refs(refPrefix: "refs/heads/shipit/")` — this
- *   gives us the canonical list of `shipit/*` branches that exist on the
- *   remote. The refPrefix filter keeps the query cost bounded by branch
- *   count, not by total repo refs.
- *
- *   Pass 2 enumerates `pullRequests(states: [OPEN, MERGED])` and groups
- *   them by `headRefName`. CLOSED-without-merge PRs are intentionally
- *   not queried — the sweep's policy treats them identically to "no PR"
- *   (both buckets are preserved), so dropping them shrinks the response
- *   without changing any outcome.
- *
- * Why not `Ref.associatedPullRequests`? Because empirically it returns
- * empty for branches whose PR is merged: observed on ShipIt's own repo,
- * 181 merged PRs had a `Ref → PR` back-link of zero results, while the
- * `PR → headRefName` forward query returned them correctly. That broke
- * the sweep silently for the entire historical backlog. The PR-side
- * enumeration is the only reliable join.
- *
- * Pages are hard-capped at 50 per pass (≤5,000 PRs / branches), which
- * comfortably exceeds anything a real ShipIt user could accumulate. If a
- * branch's PR happens to fall past the cap it lands in our map as
- * "absent" → the sweep treats it as no-PR → preserved, which is the safe
- * direction to err.
- */
+// Join from the PR side: Ref.associatedPullRequests has omitted merged PRs in production.
 async function fetchShipitBranchesWithPrStates(
   githubAuthManager: GitHubAuthManager,
   owner: string,
   repo: string,
 ): Promise<{ shortName: string; states: string[] }[]> {
-  // Pass 1: enumerate shipit/* refs. `refs.nodes[].name` is the suffix
-  // after `refPrefix` (i.e. `foo`, not `shipit/foo`).
+  // Ref names are relative to refs/heads/shipit/; PR headRefName includes shipit/.
   const refsQuery = /* GraphQL */ `
     query ShipitBranchRefs($owner: String!, $repo: String!, $cursor: String) {
       repository(owner: $owner, name: $repo) {
@@ -1202,9 +636,6 @@ async function fetchShipitBranchesWithPrStates(
     if (!cursor) break;
   }
 
-  // Pass 2: enumerate OPEN+MERGED PRs and group their states by
-  // `headRefName`. The headRefName is the full branch name without the
-  // `refs/heads/` prefix (e.g. `shipit/foo`).
   const prQuery = /* GraphQL */ `
     query ShipitBranchPRs($owner: String!, $repo: String!, $cursor: String) {
       repository(owner: $owner, name: $repo) {
@@ -1237,27 +668,13 @@ async function fetchShipitBranchesWithPrStates(
     if (!cursor) break;
   }
 
-  // Join: branch's relative name → full `shipit/<name>` → states from map.
-  // Branches with no matching PR get an empty states array, which the
-  // sweep correctly treats as "no MERGED" → preserve.
   return branchNames.map((shortName) => ({
     shortName,
     states: Array.from(prStatesByHead.get(`shipit/${shortName}`) ?? []),
   }));
 }
 
-/**
- * Drop every Docker volume labeled `shipit-session=<sessionId>`. Used by
- * `archiveSession` as a fallback for the case where the runner was already
- * disposed (e.g. by idle eviction) before archive ran — in that scenario
- * the `removeVolumesOnDispose` flag never fires because there's no
- * `disposed` handler left to read it, and the named volumes leak until
- * the next orchestrator startup. Calling this unconditionally from
- * archive is a fast no-op when the flag-driven path already cleaned up.
- *
- * `runDocker` is injectable for tests. The real implementation uses the
- * same `defaultRunDocker` spawner the startup janitor uses.
- */
+// Archive fallback when the runner was already disposed and cannot remove its volumes.
 export async function pruneSessionVolumes(
   sessionId: string,
   opts: { runDocker?: (args: string[]) => Promise<string> } = {},

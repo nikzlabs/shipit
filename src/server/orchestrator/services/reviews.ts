@@ -1,13 +1,3 @@
-/**
- * Review services — server-persisted, per-(session, file) reviews.
- *
- * Backs the unified review surface (docs/112-unified-review-surface):
- * markdown drafts get selection-anchored comments, code drafts get
- * line-anchored comments, and both share the same draft/sent/history lifecycle.
- * Every comment is human-authored: the AI write path was removed in docs/203
- * (plain-text review) and docs/220 (cross-agent review surfacing).
- */
-
 import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -20,24 +10,11 @@ import type {
 } from "../../shared/types.js";
 import { ServiceError } from "./types.js";
 
-// ---- Selection anchoring (markdown only) ----
-
 interface ReanchoredSplit {
   anchored: SelectionReviewComment[];
   orphaned: SelectionReviewComment[];
 }
 
-/**
- * Locate a selection-anchored comment in the current document body. Returns
- * the offset of the first match disambiguated by `contextBefore`/`contextAfter`
- * when the same `quotedText` appears multiple times, or `-1` if the quoted
- * text is no longer present.
- *
- * Disambiguation is best-effort: if no occurrence is bracketed by the saved
- * context windows, the first occurrence wins. The context match is exact —
- * it doesn't try to be clever about whitespace drift, because clever matching
- * is exactly how comments end up attached to the wrong text.
- */
 export function locateSelection(
   content: string,
   comment: Pick<SelectionReviewComment, "quotedText" | "contextBefore" | "contextAfter">,
@@ -62,12 +39,6 @@ export function locateSelection(
   return firstMatch;
 }
 
-/**
- * Walk a list of review comments and route each selection-anchored comment
- * either to "anchored" (its `quotedText` is still present in the doc) or
- * "orphaned" (the quoted text no longer exists). Line comments are always
- * anchored.
- */
 export function reanchorComments(
   comments: ReviewComment[],
   content: string,
@@ -91,8 +62,6 @@ export function reanchorComments(
   return { anchored, orphaned, lines };
 }
 
-// ---- File-type detection ----
-
 const MARKDOWN_EXTS = new Set(["md", "mdx", "markdown"]);
 
 export function detectFileReviewType(filePath: string): FileReviewType {
@@ -100,17 +69,12 @@ export function detectFileReviewType(filePath: string): FileReviewType {
   return MARKDOWN_EXTS.has(ext) ? "markdown" : "code";
 }
 
-// ---- Hash utility ----
-
 function hashContent(content: string): string {
   return createHash("sha256").update(content).digest("hex");
 }
 
-// ---- Filesystem helpers ----
-
 async function readFileSafe(workspaceDir: string, filePath: string): Promise<string | null> {
   const fullPath = path.resolve(workspaceDir, filePath);
-  // Defend against path traversal: must remain inside workspace.
   if (!fullPath.startsWith(path.resolve(workspaceDir))) {
     throw new ServiceError(400, "Invalid file path");
   }
@@ -121,9 +85,6 @@ async function readFileSafe(workspaceDir: string, filePath: string): Promise<str
   }
 }
 
-// ---- CRUD service functions ----
-
-/** List all reviews (drafts + sent) for a (session, file) pair, newest first. */
 export function listFileReviews(
   reviewStore: FileReviewStore,
   sessionId: string,
@@ -132,7 +93,6 @@ export function listFileReviews(
   return reviewStore.listReviews(sessionId, filePath);
 }
 
-/** Get the current draft review for a (session, file), or null. */
 export function getDraftReview(
   reviewStore: FileReviewStore,
   sessionId: string,
@@ -141,10 +101,6 @@ export function getDraftReview(
   return reviewStore.getDraft(sessionId, filePath);
 }
 
-/**
- * Ensure a draft exists for the (session, file). Creates one if none exists,
- * snapshotting the current file content. Returns the existing draft otherwise.
- */
 export async function ensureDraftReview(
   reviewStore: FileReviewStore,
   sessionId: string,
@@ -164,7 +120,6 @@ export async function ensureDraftReview(
   return reviewStore.createDraft(sessionId, filePath, fileType, hash);
 }
 
-/** Add a selection-anchored comment to a draft review. */
 export function addSelectionComment(
   reviewStore: FileReviewStore,
   reviewId: string,
@@ -198,7 +153,6 @@ export function addSelectionComment(
   );
 }
 
-/** Add a line-anchored comment to a draft review. */
 export function addLineComment(
   reviewStore: FileReviewStore,
   reviewId: string,
@@ -224,7 +178,6 @@ export function addLineComment(
   return reviewStore.addLineComment(reviewId, line, text);
 }
 
-/** Update a comment's text. */
 export function updateReviewComment(
   reviewStore: FileReviewStore,
   reviewId: string,
@@ -244,7 +197,6 @@ export function updateReviewComment(
   reviewStore.updateComment(reviewId, commentId, text);
 }
 
-/** Delete a comment from a review. */
 export function deleteReviewComment(
   reviewStore: FileReviewStore,
   reviewId: string,
@@ -260,7 +212,6 @@ export function deleteReviewComment(
   reviewStore.deleteComment(reviewId, commentId);
 }
 
-/** Delete a draft review entirely. */
 export function deleteDraftReview(reviewStore: FileReviewStore, reviewId: string): void {
   const review = reviewStore.getReview(reviewId);
   if (!review) {
@@ -272,20 +223,8 @@ export function deleteDraftReview(reviewStore: FileReviewStore, reviewId: string
   reviewStore.deleteDraft(reviewId);
 }
 
-// ---- Prompt construction ----
-
-/** Ceiling on the send dialog's free-text note (docs/260). */
 export const MAX_NOTE_LENGTH = 4000;
 
-/**
- * docs/260 — the send dialog's free-text note, rendered as the FIRST piece of
- * feedback: after the lead-in line, before the anchored comments. A note is
- * either a summary (which belongs before what it summarizes) or the one comment
- * that fits no line (which has no other natural position), and the closing
- * "address each piece of feedback" instruction has to stay the last line, so the
- * bottom is not available. It carries no label — it is the user's own words in
- * the user's own message.
- */
 function noteBlock(note: string | undefined): string {
   const trimmed = note?.trim();
   return trimmed ? `${trimmed}\n\n` : "";
@@ -377,10 +316,6 @@ function buildCodePrompt(
   return prompt;
 }
 
-/**
- * Send a review — marks it sent and returns the constructed prompt.
- * Reads the file from disk to get current content/headings for the prompt.
- */
 export async function sendReview(
   reviewStore: FileReviewStore,
   reviewId: string,
@@ -397,8 +332,6 @@ export async function sendReview(
   if (review.comments.length === 0) {
     throw new ServiceError(400, "Cannot send a review with no comments");
   }
-  // The note is context, not an attachment point for a whole file. An
-  // unbounded free-text field on a prompt path gets a ceiling.
   if (note !== undefined && note.length > MAX_NOTE_LENGTH) {
     throw new ServiceError(400, `Note must be ${MAX_NOTE_LENGTH} characters or fewer`);
   }
@@ -411,10 +344,7 @@ export async function sendReview(
     content,
     note,
   );
-  // The status check above happened before the awaited file read, so it can't
-  // be trusted on its own: two concurrent sends of the same draft both reach
-  // here. The conditional UPDATE decides, and the loser is rejected rather than
-  // dispatching a second identical prompt to the agent.
+  // A concurrent send can pass the earlier check; the conditional update decides the winner.
   if (!reviewStore.markSent(reviewId, note)) {
     throw new ServiceError(400, "Review already sent");
   }

@@ -1,12 +1,3 @@
-/**
- * Tests for the Tier A egress install wiring (docs/172 Gap 1, planning#92).
- *
- * Covers the unit-testable seams: the flag gate, the GitHub-meta fetch
- * (parse / cache / fallback), the allow-set inputs, and the installer's env
- * construction + fail-closed behavior (via a fake Docker). The actual
- * iptables/netns application is verified on a live host, not here.
- */
-
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -26,10 +17,6 @@ import {
 import { EGRESS_GITHUB_CIDRS_FALLBACK, EGRESS_TIER_A_RESOLVE_HOSTS } from "./egress-firewall.js";
 
 beforeEach(() => _resetEgressCidrCache());
-
-// ---------------------------------------------------------------------------
-// Flag gate
-// ---------------------------------------------------------------------------
 
 describe("egressEnforceEnabled", () => {
   it("is ON by default and for any value other than '0'", () => {
@@ -61,10 +48,6 @@ describe("egressEnforcementActive", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// fetchGitHubMetaCidrs
-// ---------------------------------------------------------------------------
-
 function jsonResponse(body: unknown, ok = true, status = 200): Response {
   return { ok, status, json: async () => body } as unknown as Response;
 }
@@ -75,7 +58,7 @@ describe("fetchGitHubMetaCidrs", () => {
       jsonResponse({ web: ["192.30.252.0/22"], api: ["140.82.112.0/20"], git: ["143.55.64.0/20"] }),
     );
     const cidrs = await fetchGitHubMetaCidrs({ fetchImpl: fetchImpl as unknown as typeof fetch });
-    expect(cidrs).toEqual(["140.82.112.0/20", "143.55.64.0/20", "192.30.252.0/22"]); // sorted, deduped
+    expect(cidrs).toEqual(["140.82.112.0/20", "143.55.64.0/20", "192.30.252.0/22"]);
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
@@ -118,10 +101,6 @@ describe("fetchGitHubMetaCidrs", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// buildTierAEgressInputs
-// ---------------------------------------------------------------------------
-
 describe("buildTierAEgressInputs", () => {
   it("returns the concrete resolve-hosts plus fetched CIDRs", async () => {
     const inputs = await buildTierAEgressInputs({
@@ -131,10 +110,6 @@ describe("buildTierAEgressInputs", () => {
     expect(inputs.cidrs).toContain("140.82.112.0/20");
   });
 });
-
-// ---------------------------------------------------------------------------
-// installEgressFirewall (fake Docker)
-// ---------------------------------------------------------------------------
 
 function fakeDocker(exitCode: number) {
   const calls: { create?: unknown } = {};
@@ -171,7 +146,7 @@ describe("installEgressFirewall", () => {
     expect(cfg.Env).toContain("EGRESS_ALLOWED_HOSTS=api.anthropic.com");
     expect(cfg.Env).toContain("EGRESS_ALLOWED_CIDRS=140.82.112.0/20");
     expect(container.start).toHaveBeenCalled();
-    expect(container.remove).toHaveBeenCalled(); // cleaned up
+    expect(container.remove).toHaveBeenCalled();
   });
 
   it("throws (fail-closed) when the installer exits non-zero, and still removes the sidecar", async () => {
@@ -208,10 +183,6 @@ describe("init-firewall hostname resolution", () => {
     }
   });
 });
-
-// ---------------------------------------------------------------------------
-// allowEgressToSubnets (fake Docker) — planning#92 preview reachability
-// ---------------------------------------------------------------------------
 
 describe("allowEgressToSubnets", () => {
   it("launches the allow-subnet sidecar in the agent netns with NET_ADMIN + the subnet env", async () => {

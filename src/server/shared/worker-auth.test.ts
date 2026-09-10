@@ -1,9 +1,3 @@
-/**
- * planning#313 — policy tests for the worker trust boundary. These cover
- * `decideWorkerRequest` and its helpers directly; the Fastify wiring is covered
- * in `session/worker-auth-guard.test.ts`.
- */
-
 import { describe, it, expect } from "vitest";
 import {
   LIFECYCLE_PATHS,
@@ -23,7 +17,6 @@ import {
 const TOKEN = "a".repeat(64);
 const OTHER_SESSION_IP = "172.18.0.7";
 
-/** Shorthand for a decision with sensible defaults. */
 function decide(over: Partial<Parameters<typeof decideWorkerRequest>[0]>) {
   return decideWorkerRequest({
     url: "/agent/status",
@@ -67,8 +60,6 @@ describe("isLoopbackOnlyPath", () => {
   });
 
   it("does NOT cover the orchestrator-facing routes with similar names", () => {
-    // `/present/:id/raw` is how the orchestrator reads an artifact for the
-    // Present tab — it must stay reachable off-container.
     expect(isLoopbackOnlyPath("/present/abc123/raw")).toBe(false);
     expect(isLoopbackOnlyPath("/agent/start")).toBe(false);
     expect(isLoopbackOnlyPath("/agent/permission/resolve")).toBe(false);
@@ -90,17 +81,14 @@ describe("isLifecyclePath", () => {
     ]) {
       expect(isLifecyclePath(path), path).toBe(true);
     }
-    // A literal list can only catch a typo in the set, never a route added to
-    // `AgentController` and forgotten here — that is pinned against the real
-    // route table in `session/worker-auth-guard.test.ts`.
     expect(LIFECYCLE_PATHS.size).toBe(9);
   });
 
   it("excludes the status probe and anything outside the exact set", () => {
     for (const path of [
-      "/agent/status", // health/adoption probe — must stay open on loopback
-      "/agent-ops/agent/spawn", // the broker; a different group entirely
-      "/agent/startle", // exact match, not a prefix
+      "/agent/status",
+      "/agent-ops/agent/spawn",
+      "/agent/startle",
       "/services/list",
       "/health",
       "/present-files/x",
@@ -115,8 +103,6 @@ describe("isLifecyclePath", () => {
   });
 
   it("sees through percent-encoding, which the router decodes before matching", () => {
-    // `POST /agent/%6bill` reaches the /agent/kill handler; comparing the raw
-    // URL alone was a live bypass.
     for (const path of ["/agent/%6bill", "/agent/%6Bill", "/%61gent/start", "/agent/%73tart"]) {
       expect(isLifecyclePath(path), path).toBe(true);
     }
@@ -124,17 +110,11 @@ describe("isLifecyclePath", () => {
   });
 
   it("does not over-decode: %2F stays encoded, as it does in the router", () => {
-    // `decodeURI` leaves reserved characters alone, which is why `/agent%2Fkill`
-    // does NOT reach the kill handler — denying it would be a guard that
-    // disagrees with the router in the other direction.
     expect(isLifecyclePath("/agent%2Fkill")).toBe(false);
     expect(isLifecyclePath("/services/list")).toBe(false);
   });
 
   it("survives a malformed escape instead of throwing", () => {
-    // `decodeURI("%zz")` throws a URIError. The router answers 400 without
-    // routing, so the raw spelling is the only one that could have matched — but
-    // an exception here would surface as a 500 from the auth hook.
     expect(() => isLifecyclePath("/agent/%zz")).not.toThrow();
     expect(isLifecyclePath("/agent/%zz")).toBe(false);
     expect(() => isLoopbackOnlyPath("/agent-ops/%zz")).not.toThrow();
@@ -144,10 +124,6 @@ describe("isLifecyclePath", () => {
 
 describe("routerPathname", () => {
   it("cuts at a fragment, which the router treats as a delimiter", () => {
-    // The guard used to split only on `?`. `POST /agent/kill#x` then classified
-    // as the unprotected `/agent/kill#x` while Fastify dispatched it to the
-    // /agent/kill handler — a live bypass on a real socket (app.inject
-    // normalizes it away, which is why an inject-only probe missed it).
     expect(routerPathname("/agent/kill#x")).toBe("/agent/kill");
     expect(routerPathname("/agent/kill?a=1#x")).toBe("/agent/kill");
     expect(routerPathname("/agent/kill?a=1")).toBe("/agent/kill");
@@ -159,8 +135,6 @@ describe("routerPathname", () => {
   });
 
   it("leaves `;` alone — useSemicolonDelimiter is off, so those paths 404", () => {
-    // Splitting here would deny paths the router never routes, and would also
-    // truncate a legitimate /present-files/<id> containing a semicolon.
     expect(routerPathname("/agent/kill;x=1")).toBe("/agent/kill;x=1");
   });
 
@@ -203,9 +177,6 @@ describe("generateWorkerToken", () => {
 
 describe("decideWorkerRequest", () => {
   it("planning#313: a peer session container cannot reach /agent-ops even with a valid token", () => {
-    // The regression proper. Session A learns B's container name, dials
-    // agent-<b>:9100 and POSTs a broker route; B's worker would relay it with
-    // B's own SESSION_ID injected.
     for (const path of LOOPBACK_ONLY_PREFIXES.map((p) => `${p}anything`)) {
       const denied = decide({ url: path, presentedToken: TOKEN });
       expect(denied.allow, path).toBe(false);
@@ -214,18 +185,12 @@ describe("decideWorkerRequest", () => {
   });
 
   it("planning#313: a peer session container cannot reach the orchestrator-facing routes either", () => {
-    // Same class, different route group: /terminal/start + /terminal/input is
-    // command execution in another session's container, and PUT /secrets
-    // rewrites its agent env.
     for (const path of ["/terminal/start", "/secrets", "/files/read"]) {
       const denied = decide({ url: path });
       expect(denied.allow, path).toBe(false);
       expect(denied.reason).toBe("bad-token");
     }
 
-    // The lifecycle routes are refused for the same peer, under planning#241's rule
-    // rather than this one — a stricter reason for a strictly narrower group, so
-    // the planning#313 guarantee is unchanged.
     for (const path of ["/agent/message", "/agent/kill"]) {
       const denied = decide({ url: path });
       expect(denied.allow, path).toBe(false);
@@ -254,9 +219,6 @@ describe("decideWorkerRequest", () => {
   });
 
   it("planning#421: refuses every remote caller when no token is configured", () => {
-    // This used to ALLOW, as a compatibility fallback for a container created by
-    // an orchestrator that predates the token. Failing open there served the
-    // whole orchestrator-facing surface to anything on the session subnet.
     for (const url of ["/agent/start", "/install", "/terminal/start", "/secrets"]) {
       expect(decide({ url, configuredToken: undefined }), url).toEqual({
         allow: false,
@@ -266,10 +228,6 @@ describe("decideWorkerRequest", () => {
   });
 
   it("planning#421: a tokenless worker refuses /install from a peer container", () => {
-    // `/install` executes `agent.install` with `shell: true` in the
-    // credential-bearing agent container, and `compose-service-egress.ts` lets a
-    // contained plugin service reach that container. What keeps the POST out is
-    // this rule — so it gets a test rather than a paragraph in a plan.
     const denied = decide({
       url: "/install",
       remoteAddress: "172.18.0.9",
@@ -279,15 +237,11 @@ describe("decideWorkerRequest", () => {
   });
 
   it("planning#421: a tokenless worker still serves its own agent over loopback", () => {
-    // In-process test workers are the only tokenless population left, and they
-    // drive the worker over 127.0.0.1. Loopback buys nothing an agent with a
-    // shell in the container does not already have.
     expect(decide({ url: "/agent/start", remoteAddress: "127.0.0.1", configuredToken: undefined }))
       .toEqual({ allow: true, reason: "loopback" });
   });
 
   it("still closes the loopback-only routes when no token is configured", () => {
-    // The fallback above must not reopen the reported hole.
     const denied = decide({ url: "/agent-ops/session/create", configuredToken: undefined });
     expect(denied.allow).toBe(false);
     expect(denied.reason).toBe("loopback-only");
@@ -298,8 +252,6 @@ describe("decideWorkerRequest", () => {
   });
 
   it("planning#241: loopback is NOT enough for any lifecycle route", () => {
-    // The carve-out from the blanket loopback allow. Being inside the container
-    // identifies the caller; it does not authorize it to touch the live agent.
     for (const path of LIFECYCLE_PATHS) {
       const denied = decide({ url: path, remoteAddress: "127.0.0.1" });
       expect(denied.allow, path).toBe(false);
@@ -308,8 +260,6 @@ describe("decideWorkerRequest", () => {
   });
 
   it("planning#241: a fragment or absolute-form target cannot smuggle a lifecycle route past", () => {
-    // Both reproduced against a real server on a real socket before the fix:
-    // every one of these was served 200 by the /agent/kill handler.
     for (const url of [
       "/agent/kill#x",
       "/agent/start#x",
@@ -324,10 +274,6 @@ describe("decideWorkerRequest", () => {
   });
 
   it("planning#313: an absolute-form target cannot smuggle past the loopback-only rule", () => {
-    // A trailing fragment can't defeat prefix matching, but the absolute form
-    // can: the whole URL fails `startsWith("/agent-ops/")`, so before the fix a
-    // token-bearing peer fell through to the token check and was served — while
-    // the documented invariant is that a token does NOT open these routes.
     const denied = decide({
       url: "http://127.0.0.1:9100/agent-ops/voice/note",
       presentedToken: TOKEN,
@@ -345,13 +291,6 @@ describe("decideWorkerRequest", () => {
   });
 
   it("planning#241: the incident shape — a stray in-container /agent/start never reaches the 409", () => {
-    // The 2026-07-25 self-kill: an integration-test fixture's
-    // ContainerSessionRunner POSTed /agent/start at 127.0.0.1:9100, the live
-    // worker answered 409 "Agent already running" twice, and the runner's
-    // persistent-409 recovery cleared the "stale" agent with /agent/kill —
-    // SIGTERMing the agent running vitest. The runner looks its token up by
-    // worker base URL, so for a foreign URL it presents none; both legs are now
-    // refused at the guard, ahead of any handler that could 409.
     for (const path of ["/agent/start", "/agent/kill"]) {
       const denied = decide({ url: path, remoteAddress: "127.0.0.1", presentedToken: undefined });
       expect(denied.allow, path).toBe(false);
@@ -366,8 +305,6 @@ describe("decideWorkerRequest", () => {
   });
 
   it("planning#241: leaves /agent/status and the rest of the loopback surface alone", () => {
-    // Over-broad prefix matching here would break the health/adoption probe and
-    // the agent's own service + present routes.
     for (const path of ["/agent/status", "/services/list", "/agent-ops/issue/list", "/present-files/x"]) {
       const allowed = decide({ url: path, remoteAddress: "127.0.0.1" });
       expect(allowed.allow, path).toBe(true);
@@ -376,9 +313,6 @@ describe("decideWorkerRequest", () => {
   });
 
   it("planning#241: an unconfigured worker keeps its lifecycle behavior on LOOPBACK only", () => {
-    // Step 3 defers to the tokenless case, so an in-process test worker can still
-    // drive /agent/start over 127.0.0.1. planning#421 took the remote half away: the
-    // same call from another container is refused, not waved through.
     const own = decide({ url: "/agent/start", remoteAddress: "127.0.0.1", configuredToken: undefined });
     expect(own.allow).toBe(true);
 
@@ -387,8 +321,6 @@ describe("decideWorkerRequest", () => {
   });
 
   it("exposes stable wire names for the header and env var", () => {
-    // Both cross a process boundary (HTTP header / container env), so a rename
-    // is a compatibility break, not a refactor.
     expect(WORKER_AUTH_HEADER).toBe("x-shipit-worker-token");
     expect(WORKER_TOKEN_ENV).toBe("SHIPIT_WORKER_TOKEN");
   });

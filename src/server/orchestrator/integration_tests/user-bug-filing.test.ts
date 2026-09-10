@@ -24,16 +24,6 @@ import type { CredentialStore } from "../credential-store.js";
 import type { GitHubAuthManager } from "../github-auth.js";
 import type { WsBugReportCard, WsBugReportFiled, WsBugReportFailed } from "../../shared/types.js";
 
-/**
- * docs/164 — user bug filing, end-to-end. Drives the two-step flow with a
- * stubbed GitHub auth manager:
- *   1. the agent's `report_shipit_bug` relays a draft to the bug-report route,
- *      which REDACTS it server-side and emits a consent card (nothing filed);
- *   2. only the user's `submit_bug_report` confirm files the issue on the
- *      fixed upstream repo under the user's own identity.
- * Also covers: redaction is applied to the card, no issue is created before
- * confirm, and a GitHub scope error surfaces a reconnect prompt.
- */
 describe("Integration: user bug filing", () => {
   let app: FastifyInstance;
   let port: number;
@@ -43,12 +33,6 @@ describe("Integration: user bug filing", () => {
   let sessionManager: SessionManager;
   let githubAuthManager: StubGitHubAuthManager;
   let sessionId: string;
-  /**
-   * nikzlabs/shipit#2350 — every agent the app spawned, so a test can read the prompt the
-   * outcome wake-turn actually delivered. The signal is only real if it reaches
-   * the AGENT; asserting on the WS card alone would pass while the agent stayed
-   * uninformed, which is the whole defect.
-   */
   let agents: FakeClaudeProcess[];
 
   beforeEach(async () => {
@@ -58,7 +42,7 @@ describe("Integration: user bug filing", () => {
     credentialStore = createTestCredentialStore(tmpDir);
     agents = [];
     githubAuthManager = new StubGitHubAuthManager();
-    await githubAuthManager.setToken("test-token"); // authenticate as test-user
+    await githubAuthManager.setToken("test-token");
 
     app = await buildApp({
       createGitManager: (dir: string) => new GitManager(dir),
@@ -94,10 +78,8 @@ describe("Integration: user bug filing", () => {
 
   it("redacts the draft, emits a card, and files only after explicit confirm", async () => {
     const client = await TestClient.connect(port, sessionId);
-    await client.receive(); // preview_status
+    await client.receive();
 
-    // The agent relays a draft whose body contains a secret + email — these
-    // must be scrubbed by Stage 1 before the card is ever shown.
     const relay = await app.inject({
       method: "POST",
       url: `/api/sessions/${sessionId}/bug-report`,
@@ -108,7 +90,6 @@ describe("Integration: user bug filing", () => {
     });
     expect(relay.statusCode).toBe(200);
 
-    // No issue created yet — the relay only proposes.
     expect(githubAuthManager.createIssueCalls).toHaveLength(0);
 
     const card = (await client.receiveType("bug_report_card")) as WsBugReportCard;
@@ -116,13 +97,10 @@ describe("Integration: user bug filing", () => {
     expect(card.body).not.toContain("ghp_ABCDEFGHIJKLMNOP");
     expect(card.body).not.toContain("me@example.com");
     expect(card.body).toContain("[REDACTED]");
-    // The body marker carries the producer for maintainer-side labeling.
     expect(card.body).toContain("<!-- shipit-report source=session");
-    // Stage 2 didn't run (no real CLI in tests) → flagged for the human.
     expect(card.stage2Ran).toBe(false);
     expect(card.filedAs).toBe("test-user");
 
-    // User confirms — now (and only now) the issue is filed.
     client.send({
       type: "submit_bug_report",
       cardId: card.cardId,
@@ -140,7 +118,6 @@ describe("Integration: user bug filing", () => {
     expect(call.repo).toBe("shipit");
     expect(call.title).toBe("Preview won't reload");
     expect(call.labels).toEqual(["user-reported", "source:session"]);
-    // The redaction survives all the way to the filed payload.
     expect(call.body).not.toContain("ghp_ABCDEFGHIJKLMNOP");
 
     client.close();
@@ -154,7 +131,7 @@ describe("Integration: user bug filing", () => {
     });
 
     const client = await TestClient.connect(port, sessionId);
-    await client.receive(); // preview_status
+    await client.receive();
 
     await app.inject({
       method: "POST",
@@ -175,7 +152,7 @@ describe("Integration: user bug filing", () => {
   it("(a) persists the card durably even though no turn is running", async () => {
     const histMgr = (app as unknown as { chatHistoryManager: ChatHistoryManager }).chatHistoryManager;
     const client = await TestClient.connect(port, sessionId);
-    await client.receive(); // preview_status
+    await client.receive();
 
     await app.inject({
       method: "POST",
@@ -184,12 +161,6 @@ describe("Integration: user bug filing", () => {
     });
     const card = (await client.receiveType("bug_report_card")) as WsBugReportCard;
 
-    // A USER-filed report arrives with no turn in flight, so `emitChatCard`
-    // appends it as an already-final row rather than folding it into an
-    // in-progress turn that doesn't exist. That distinction is the whole point:
-    // an `in_progress=1` row is deleted wholesale by the NEXT turn's first
-    // `replaceInProgress`, so the card the user just filed would silently
-    // disappear from the transcript as soon as they sent another message.
     const persisted = histMgr.load(sessionId).filter((m) => m.bugReport);
     expect(persisted).toHaveLength(1);
     expect(persisted[0].bugReport?.cardId).toBe(card.cardId);
@@ -203,7 +174,7 @@ describe("Integration: user bug filing", () => {
     const histMgr = (app as unknown as { chatHistoryManager: ChatHistoryManager }).chatHistoryManager;
 
     const client = await TestClient.connect(port, sessionId);
-    await client.receive(); // preview_status
+    await client.receive();
 
     await app.inject({
       method: "POST",
@@ -212,13 +183,8 @@ describe("Integration: user bug filing", () => {
     });
     const card = (await client.receiveType("bug_report_card")) as WsBugReportCard;
 
-    // `emitChatCard` already persisted the card in-band the instant it fired
-    // (docs/191) — no manual append needed. Finalize the in-progress rows to
-    // simulate the proposing turn ending (in production `agent_result` →
-    // `finalizeInProgress` does this), which is when the user clicks Submit.
     histMgr.finalizeInProgress(sessionId);
 
-    // It replays on attach (reload rebuilds from this history).
     const historyBefore = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/history` });
     const cardsBefore = (historyBefore.json() as { messages: { bugReport?: PersistedBugReport }[] }).messages
       .map((m) => m.bugReport)
@@ -226,7 +192,6 @@ describe("Integration: user bug filing", () => {
     expect(cardsBefore).toHaveLength(1);
     expect(cardsBefore[0]?.phase).toBe("draft");
 
-    // User confirms → filed. The terminal state is patched into the same record.
     client.send({ type: "submit_bug_report", cardId: card.cardId, title: card.title, body: card.body });
     await client.receiveType("bug_report_filed");
 
@@ -234,7 +199,6 @@ describe("Integration: user bug filing", () => {
     const cardsAfter = (historyAfter.json() as { messages: { bugReport?: PersistedBugReport }[] }).messages
       .map((m) => m.bugReport)
       .filter(Boolean);
-    // No duplicate card — the single record is updated in place.
     expect(cardsAfter).toHaveLength(1);
     expect(cardsAfter[0]?.phase).toBe("filed");
     expect(cardsAfter[0]?.issueNumber).toBe(1234);
@@ -247,7 +211,7 @@ describe("Integration: user bug filing", () => {
     const histMgr = (app as unknown as { chatHistoryManager: ChatHistoryManager }).chatHistoryManager;
 
     const client = await TestClient.connect(port, sessionId);
-    await client.receive(); // preview_status
+    await client.receive();
 
     await app.inject({
       method: "POST",
@@ -256,22 +220,14 @@ describe("Integration: user bug filing", () => {
     });
     const card = (await client.receiveType("bug_report_card")) as WsBugReportCard;
 
-    // Simulate the proposing turn STILL running — the agent filed a bug then
-    // kept working, so `recordedCards` holds the draft snapshot and the turn has
-    // NOT finalized. This is the window a DB-only patch lost: the rebuild at
-    // finalize would clobber `filed` back to `draft`.
     const runner = (app as unknown as {
       runnerRegistry: { get(id: string): SessionRunnerInterface | undefined };
     }).runnerRegistry.get(sessionId)!;
     runner.running = true;
 
-    // User confirms mid-turn → filed.
     client.send({ type: "submit_bug_report", cardId: card.cardId, title: card.title, body: card.body });
     await client.receiveType("bug_report_filed");
 
-    // The proposing turn now finalizes (mirrors the `agent_result` path):
-    // rebuild the permanent rows from `recordedCards`. Because the recorded card
-    // was patched in place, this carries `filed` rather than reverting to draft.
     runner.running = false;
     histMgr.replaceInProgress(
       sessionId,
@@ -283,7 +239,6 @@ describe("Integration: user bug filing", () => {
     const cardsAfter = (historyAfter.json() as { messages: { bugReport?: PersistedBugReport }[] }).messages
       .map((m) => m.bugReport)
       .filter(Boolean);
-    // The terminal state survives finalize — no revert to the editable draft.
     expect(cardsAfter).toHaveLength(1);
     expect(cardsAfter[0]?.phase).toBe("filed");
     expect(cardsAfter[0]?.issueNumber).toBe(1234);
@@ -291,18 +246,9 @@ describe("Integration: user bug filing", () => {
     client.close();
   });
 
-  /**
-   * nikzlabs/shipit#2350 — the consent gate used to swallow its own result. The user still
-   * decides; the agent is now told what they decided, so it can stop describing
-   * a filed report as pending and can cite the issue it produced.
-   *
-   * Delivery is a PREFIX on the user's next turn, never a turn of its own:
-   * filing a bug is a side errand, and waking the session to announce what the
-   * card on screen already says would interrupt both of them for nothing.
-   */
   it("tells the agent the report was filed, with the issue number and URL, on the next user turn", async () => {
     const client = await TestClient.connect(port, sessionId);
-    await client.receive(); // preview_status
+    await client.receive();
 
     await app.inject({
       method: "POST",
@@ -315,17 +261,12 @@ describe("Integration: user bug filing", () => {
     await client.receiveType("bug_report_filed");
     await settle();
 
-    // Resolving the card must not start a turn of its own. In this harness a
-    // turn of any kind has to spawn an agent, so an empty list is the strongest
-    // possible statement that nothing woke the session.
     expect(agents).toHaveLength(0);
 
-    // The user speaks next; the outcome rides in front of their words.
     const prompt = await sendUserTurn(client, () => agents, "What is left to do?");
     expect(prompt).toContain("FILED as issue #1234");
     expect(prompt).toContain("nikzlabs/shipit/issues/1234");
     expect(prompt).toContain("Preview won't reload");
-    // The user's own message is still there, and still last.
     expect(prompt.endsWith("What is left to do?")).toBe(true);
 
     client.close();
@@ -333,7 +274,7 @@ describe("Integration: user bug filing", () => {
 
   it("delivers the outcome exactly once — the turn after that is clean", async () => {
     const client = await TestClient.connect(port, sessionId);
-    await client.receive(); // preview_status
+    await client.receive();
 
     await app.inject({
       method: "POST",
@@ -362,7 +303,7 @@ describe("Integration: user bug filing", () => {
     });
 
     const client = await TestClient.connect(port, sessionId);
-    await client.receive(); // preview_status
+    await client.receive();
 
     await app.inject({
       method: "POST",
@@ -374,14 +315,9 @@ describe("Integration: user bug filing", () => {
     client.send({ type: "submit_bug_report", cardId: card.cardId, title: card.title, body: card.body });
     await client.receiveType("bug_report_failed");
 
-    // A failed filing leaves the card back at `draft`, so there is no outcome
-    // to report — the next turn carries the user's words and nothing else.
     const afterFailure = await sendUserTurn(client, () => agents, "Carry on");
     expect(afterFailure).toBe("Carry on");
 
-    // Liveness: the negative above must not be able to pass merely because the
-    // notice path is broken. The user fixes their token and resubmits, and the
-    // very same harness does deliver.
     githubAuthManager.setCreateIssueResult(null);
     client.send({ type: "submit_bug_report", cardId: card.cardId, title: card.title, body: card.body });
     await client.receiveType("bug_report_filed");
@@ -395,7 +331,7 @@ describe("Integration: user bug filing", () => {
     const histMgr = (app as unknown as { chatHistoryManager: ChatHistoryManager }).chatHistoryManager;
 
     const client = await TestClient.connect(port, sessionId);
-    await client.receive(); // preview_status
+    await client.receive();
 
     await app.inject({
       method: "POST",
@@ -409,10 +345,8 @@ describe("Integration: user bug filing", () => {
     const dismissed = await client.receiveType("bug_report_dismissed");
     expect((dismissed as { cardId: string }).cardId).toBe(card.cardId);
 
-    // Nothing was filed — Cancel is not a quiet submit.
     expect(githubAuthManager.createIssueCalls).toHaveLength(0);
 
-    // The decision is durable: a reload must not resurrect an editable draft.
     const historyAfter = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/history` });
     const cardsAfter = (historyAfter.json() as { messages: { bugReport?: PersistedBugReport }[] }).messages
       .map((m) => m.bugReport)
@@ -421,7 +355,7 @@ describe("Integration: user bug filing", () => {
     expect(cardsAfter[0]?.phase).toBe("dismissed");
 
     await settle();
-    expect(agents).toHaveLength(0); // a decline wakes nobody either
+    expect(agents).toHaveLength(0);
 
     const prompt = await sendUserTurn(client, () => agents, "Anything else?");
     expect(prompt).toContain("DECLINED by the user");
@@ -430,24 +364,14 @@ describe("Integration: user bug filing", () => {
     client.close();
   });
 
-  /**
-   * The stale-`recordedCards` path, which the plain post-turn test cannot reach:
-   * a card proposed MID-TURN is recorded on the runner, and that snapshot is
-   * cleared only at the next turn start — so once the proposing turn finalizes,
-   * the recorded copy still says `draft` while the DB says `filed`. A Cancel
-   * that trusted the recorded copy would overwrite a real success with a
-   * decline and tell the agent a filed report was declined.
-   */
   it("ignores a Cancel after filing even when the proposing turn left a stale recorded draft", async () => {
     const client = await TestClient.connect(port, sessionId);
-    await client.receive(); // preview_status
+    await client.receive();
 
     const runner = (app as unknown as {
       runnerRegistry: { get(id: string): SessionRunnerInterface | undefined };
     }).runnerRegistry.get(sessionId)!;
 
-    // Propose while a turn is running → the product code records the card on
-    // the runner. Capture that real entry; it is the snapshot the bug hinges on.
     runner.running = true;
     await app.inject({
       method: "POST",
@@ -459,14 +383,10 @@ describe("Integration: user bug filing", () => {
     expect(draftSnapshot?.message.bugReport?.phase).toBe("draft");
     const staleEntry = structuredClone(draftSnapshot!);
 
-    // The proposing turn ends. `recordedCards` is cleared only at the NEXT turn
-    // start, so the draft snapshot outlives the turn and goes stale.
     runner.running = false;
     client.send({ type: "submit_bug_report", cardId: card.cardId, title: card.title, body: card.body });
     await client.receiveType("bug_report_filed");
 
-    // Reinstate that stale snapshot — a real proposing turn simply leaves it
-    // behind, and only the NEXT turn's start clears it.
     runner.recordedCards = [staleEntry];
     expect(runner.recordedCards[0].message.bugReport?.phase).toBe("draft");
 
@@ -477,10 +397,8 @@ describe("Integration: user bug filing", () => {
     const cardsAfter = (historyAfter.json() as { messages: { bugReport?: PersistedBugReport }[] }).messages
       .map((m) => m.bugReport)
       .filter(Boolean);
-    // The success stands: not rewritten to a decline, issue link not dropped.
     expect(cardsAfter[0]?.phase).toBe("filed");
     expect(cardsAfter[0]?.issueUrl).toContain("nikzlabs/shipit/issues/1234");
-    // And the agent is never told a filed report was declined.
     const prompt = await sendUserTurn(client, () => agents, "Status?");
     expect(prompt).not.toContain("DECLINED");
     expect(prompt).toContain("FILED as issue #1234");
@@ -488,16 +406,10 @@ describe("Integration: user bug filing", () => {
     client.close();
   });
 
-  /**
-   * The recorded-patch path: the card is resolved WHILE its proposing turn is
-   * still running, so `persistCardTransition` patches `recordedCards` rather
-   * than the DB row. The outcome must still reach the next turn — this is the
-   * interaction the clobber concern is about, and it was previously untested.
-   */
   it("delivers an outcome that was resolved mid-turn, after that turn finalizes", async () => {
     const histMgr = (app as unknown as { chatHistoryManager: ChatHistoryManager }).chatHistoryManager;
     const client = await TestClient.connect(port, sessionId);
-    await client.receive(); // preview_status
+    await client.receive();
 
     const runner = (app as unknown as {
       runnerRegistry: { get(id: string): SessionRunnerInterface | undefined };
@@ -511,7 +423,6 @@ describe("Integration: user bug filing", () => {
     });
     const card = (await client.receiveType("bug_report_card")) as WsBugReportCard;
 
-    // Confirmed mid-turn → the recorded snapshot is patched, not the DB row.
     client.send({ type: "submit_bug_report", cardId: card.cardId, title: card.title, body: card.body });
     await client.receiveType("bug_report_filed");
     expect(
@@ -519,7 +430,6 @@ describe("Integration: user bug filing", () => {
         ?.phase,
     ).toBe("filed");
 
-    // The proposing turn finalizes from that patched snapshot.
     runner.running = false;
     histMgr.replaceInProgress(
       sessionId,
@@ -537,7 +447,7 @@ describe("Integration: user bug filing", () => {
 
   it("holds the outcome back on /compact, so the next real turn still gets it", async () => {
     const client = await TestClient.connect(port, sessionId);
-    await client.receive(); // preview_status
+    await client.receive();
 
     await app.inject({
       method: "POST",
@@ -548,9 +458,6 @@ describe("Integration: user bug filing", () => {
     client.send({ type: "submit_bug_report", cardId: card.cardId, title: card.title, body: card.body });
     await client.receiveType("bug_report_filed");
 
-    // A maintenance command must not be handed a status line to react to —
-    // and skipping the consume (rather than consuming and dropping) is what
-    // keeps the outcome available afterwards.
     const compact = await sendUserTurn(client, () => agents, "/compact");
     expect(compact).not.toContain("FILED as issue");
 
@@ -560,16 +467,10 @@ describe("Integration: user bug filing", () => {
     client.close();
   });
 
-  /**
-   * Terminal in both directions. A second tab that never saw the dismissal must
-   * not be able to file a report the user declined — the issue is public and
-   * filed under their name, and the agent has already been told it never would
-   * be.
-   */
   it("refuses a Submit for a card the user already declined", async () => {
     const histMgr = (app as unknown as { chatHistoryManager: ChatHistoryManager }).chatHistoryManager;
     const client = await TestClient.connect(port, sessionId);
-    await client.receive(); // preview_status
+    await client.receive();
 
     await app.inject({
       method: "POST",
@@ -582,9 +483,8 @@ describe("Integration: user bug filing", () => {
     client.send({ type: "dismiss_bug_report", cardId: card.cardId });
     await client.receiveType("bug_report_dismissed");
 
-    // The stale tab submits anyway.
     client.send({ type: "submit_bug_report", cardId: card.cardId, title: card.title, body: card.body });
-    await client.receiveType("bug_report_dismissed"); // re-asserted, not filed
+    await client.receiveType("bug_report_dismissed");
     expect(githubAuthManager.createIssueCalls).toHaveLength(0);
 
     const historyAfter = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/history` });
@@ -603,7 +503,7 @@ describe("Integration: user bug filing", () => {
   it("does not file twice when a stale tab re-submits an already-filed card", async () => {
     const histMgr = (app as unknown as { chatHistoryManager: ChatHistoryManager }).chatHistoryManager;
     const client = await TestClient.connect(port, sessionId);
-    await client.receive(); // preview_status
+    await client.receive();
 
     await app.inject({
       method: "POST",
@@ -617,7 +517,6 @@ describe("Integration: user bug filing", () => {
     await client.receiveType("bug_report_filed");
 
     client.send({ type: "submit_bug_report", cardId: card.cardId, title: card.title, body: card.body });
-    // The stale client is re-told the state it missed, and no second issue exists.
     const second = (await client.receiveType("bug_report_filed")) as { number: number };
     expect(second.number).toBe(1234);
     expect(githubAuthManager.createIssueCalls).toHaveLength(1);
@@ -627,13 +526,11 @@ describe("Integration: user bug filing", () => {
 
   it("refuses a dismissal naming an unknown card", async () => {
     const client = await TestClient.connect(port, sessionId);
-    await client.receive(); // preview_status
+    await client.receive();
 
     client.send({ type: "dismiss_bug_report", cardId: "bug-card-does-not-exist" });
     const err = (await client.receiveType("error")) as { message: string };
     expect(err.message).toMatch(/unknown bug report card/i);
-    // No phantom collapse, and nothing to tell the agent about a card nobody
-    // proposed.
     const prompt = await sendUserTurn(client, () => agents, "Carry on");
     expect(prompt).toBe("Carry on");
 
@@ -642,7 +539,7 @@ describe("Integration: user bug filing", () => {
 
   it("ignores a Cancel that arrives after the report was already filed", async () => {
     const client = await TestClient.connect(port, sessionId);
-    await client.receive(); // preview_status
+    await client.receive();
 
     await app.inject({
       method: "POST",
@@ -676,16 +573,10 @@ describe("Integration: user bug filing", () => {
   });
 });
 
-/** Let any dispatch that was going to happen happen, so an empty list means something. */
 async function settle(ms = 200): Promise<void> {
   await new Promise((r) => setTimeout(r, ms));
 }
 
-/**
- * Send a user message and return the prompt the agent actually received —
- * which is where the outcome notice has to appear, since the point of the
- * feature is that the AGENT is told, not that a card changed on screen.
- */
 async function sendUserTurn(
   client: TestClient,
   getAgents: () => FakeClaudeProcess[],
@@ -698,8 +589,6 @@ async function sendUserTurn(
   for (;;) {
     const spawned = getAgents()[before];
     if (spawned?.runCalled) {
-      // End the turn so a following `sendUserTurn` starts a fresh agent instead
-      // of queueing behind this one.
       spawned.emit("done", 0);
       await new Promise((r) => setTimeout(r, 50));
       return spawned.lastPrompt;

@@ -13,15 +13,8 @@ import {
 } from "./auth-manager.js";
 import { sanitizeClaudeAuthDiagnostic } from "./auth-diagnostics.js";
 
-// docs/150 — mock node-pty so the scoped-spawn test can assert the CLI is
-// launched with HOME pointed at the account root, without spawning a real
-// `claude /login`. The other suites in this file don't spawn, so the mock is
-// inert for them. `vi.hoisted` keeps the capture array reachable from the
-// hoisted `vi.mock` factory.
 const ptyHoisted = vi.hoisted(() => ({
   calls: [] as { cmd: string; args: readonly string[]; opts: { env?: Record<string, string> } }[],
-  // Captured CLI lifecycle callbacks + a kill counter, so the freshness suite
-  // can drive the exit path and assert the PTY isn't SIGHUP'd prematurely.
   exitHandlers: [] as ((e: { exitCode: number }) => void)[],
   dataHandlers: [] as ((data: string) => void)[],
   writes: [] as string[],
@@ -105,14 +98,12 @@ describe("extractAuthUrl", () => {
   });
 
   it("prefers Anthropic console URL over generic patterns", () => {
-    // AUTH_URL_PATTERNS is ordered: console > claude.ai > generic auth > login
     const text = "Open https://console.anthropic.com/login?code=abc";
     const result = extractAuthUrl(text);
     expect(result).toBe("https://console.anthropic.com/login?code=abc");
   });
 
   it("strips ANSI escape codes before matching", () => {
-    // PTY output includes ANSI codes for colors, cursor movement, etc.
     const text = "\x1b[1mOpen \x1b[36mhttps://console.anthropic.com/verify?code=abc\x1b[0m in your browser";
     expect(extractAuthUrl(text)).toBe("https://console.anthropic.com/verify?code=abc");
   });
@@ -125,8 +116,6 @@ describe("extractUrlFromBuffer", () => {
   });
 
   it("joins URL split across multiple lines by PTY wrapping", () => {
-    // Real-world scenario: PTY wraps at 80 chars, splitting the URL.
-    // An empty line separates the URL block from the "Paste code here" prompt.
     const buffer = [
       "Browser didn't open? Use the url below to sign in:",
       "",
@@ -144,7 +133,6 @@ describe("extractUrlFromBuffer", () => {
   });
 
   it("extracts the last URL when multiple are present", () => {
-    // CLI outputs redirect URL first, then the code-paste URL
     const buffer = [
       "Opening https://claude.ai/oauth/authorize?redirect_uri=http://localhost:40393",
       "",
@@ -178,7 +166,6 @@ describe("extractUrlFromBuffer", () => {
   });
 
   it("returns null for very short URLs", () => {
-    // URLs shorter than 20 chars are rejected
     expect(extractUrlFromBuffer("https://a.b")).toBeNull();
   });
 
@@ -188,8 +175,6 @@ describe("extractUrlFromBuffer", () => {
   });
 
   it("handles real Docker PTY output with 6-line wrapped URL", () => {
-    // Exact format from Docker logs — URL wrapped at ~80 cols, two blank lines
-    // before "Paste code here" trigger (PTY strips spaces from trigger text)
     const buffer = [
       "Browser didn't open?Use the urlbelowtosignin(ctocopy)",
       "",
@@ -211,17 +196,12 @@ describe("extractUrlFromBuffer", () => {
   });
 
   it("strips DEC private mode escape sequences", () => {
-    // PTY may emit \x1b[?25l (hide cursor) which the basic ANSI regex misses
     const buffer = "\x1b[?25lhttps://claude.ai/oauth/authorize?code=true&client_id=abc123\x1b[?25h\n\nDone";
     expect(extractUrlFromBuffer(buffer)).toBe("https://claude.ai/oauth/authorize?code=true&client_id=abc123");
   });
 
   it("handles trigger text glued directly to URL end (no empty line)", () => {
-    // The PTY may glue the "Paste code here" prompt directly onto the URL
-    // with no newline between. The caller (AuthManager) truncates at the
-    // trigger position, so extractUrlFromBuffer receives a clean buffer.
     const fullBuffer = "https://claude.ai/oauth/authorize?code=true&state=abc123Pastecodehereifprompted";
-    // Simulating what AuthManager does: truncate at trigger position
     const triggerPos = fullBuffer.indexOf("Pastecodehereifprompted");
     const truncated = fullBuffer.substring(0, triggerPos);
     expect(extractUrlFromBuffer(truncated)).toBe("https://claude.ai/oauth/authorize?code=true&state=abc123");
@@ -249,13 +229,6 @@ describe("sanitizeClaudeAuthDiagnostic", () => {
 });
 
 describe("AuthManager.checkCredentials", () => {
-  // Save/restore Anthropic auth env vars so tests don't depend on the host
-  // shell and don't leak state between tests. We don't try to assert the
-  // *unauthenticated* case here because the dev container may have a real
-  // ~/.claude/.credentials.json on disk that flips the OR'd authentication
-  // check on regardless of env. The disk-only path is already exercised
-  // implicitly by the production deploy; what's new in this change is the
-  // env-var branch.
   let origApiKey: string | undefined;
   let origAuthToken: string | undefined;
 
@@ -281,12 +254,6 @@ describe("AuthManager.checkCredentials", () => {
   });
 
   it("returns true when ANTHROPIC_AUTH_TOKEN is set (dogfooding path)", () => {
-    // ShipIt-in-ShipIt: the outer orch forwards its Claude OAuth access
-    // token to the inner orch as ANTHROPIC_AUTH_TOKEN. The inner orch has
-    // no /root/.claude/.credentials.json on disk, so this env var is the
-    // only signal that authentication is configured. Before this fix
-    // checkCredentials() only looked at ANTHROPIC_API_KEY and would report
-    // the inner orch as unauthenticated in OAuth-only setups.
     process.env.ANTHROPIC_AUTH_TOKEN = "oauth-access-token-abc";
     const mgr = new AuthManager();
     expect(mgr.checkCredentials()).toBe(true);
@@ -333,8 +300,6 @@ describe("extractExpiresAt", () => {
 });
 
 describe("extractPlanLabel", () => {
-  // Mirrors the exact shape captured during doc 135 Phase 0 against a
-  // real Anthropic Max-20x credentials file.
   it("renders 'Max 20x' from rateLimitTier=default_claude_max_20x", () => {
     expect(extractPlanLabel({
       claudeAiOauth: {
@@ -398,9 +363,7 @@ describe("AuthManager / account-scoped (docs/150)", () => {
     process.env.ANTHROPIC_API_KEY = "sk-ant-test";
     process.env.ANTHROPIC_AUTH_TOKEN = "bearer";
     const mgr = new AuthManager();
-    // No file in the account dir → scoped check is false despite env auth...
     expect(mgr.isConfigured({ credentialDir: tmp })).toBe(false);
-    // ...while the singleton check still honors env auth.
     expect(mgr.isConfigured()).toBe(true);
 
     fs.mkdirSync(path.join(tmp, ".claude"), { recursive: true });
@@ -422,7 +385,6 @@ describe("AuthManager / scoped spawn (docs/150)", () => {
   beforeEach(() => {
     ptyHoisted.calls.length = 0;
     ptyHoisted.dataHandlers.length = 0;
-    // Fake timers so the 15s watchdog + wizard-Enter debounce don't leak/fire.
     vi.useFakeTimers();
   });
 
@@ -448,10 +410,6 @@ describe("AuthManager / scoped spawn (docs/150)", () => {
     }
   });
 
-  // docs/150 — `startAccountAuth` refuses while another account owns the flow,
-  // so a scope that outlives its process locks the provider out of sign-in
-  // entirely. A cancel emits no terminal complete/failed event, so `cancel()`
-  // is the only thing that can release it.
   it("cancel() releases the account scope, not just the PTY", () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-claude-home-"));
     try {
@@ -461,7 +419,6 @@ describe("AuthManager / scoped spawn (docs/150)", () => {
 
       mgr.cancel();
 
-      // Stale scope here would 409 every later sign-in for this provider.
       expect(mgr.getActiveAccountId()).toBeNull();
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });
@@ -477,12 +434,6 @@ describe("AuthManager / scoped spawn (docs/150)", () => {
   });
 
   it("wipes a stale/expired credential file before spawning the login CLI", () => {
-    // The fix for the "must Clear saved credentials before re-authenticating"
-    // bug: `claude /login` only runs the full code-paste flow from a clean
-    // slate. An expired `.credentials.json` left on disk makes it short-circuit
-    // and never write a fresh token, so the login silently no-ops. Starting the
-    // flow must remove the scope's credential files first — automatically doing
-    // what the user previously had to do by hand.
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-claude-wipe-"));
     try {
       const credPath = path.join(tmp, ".claude", ".credentials.json");
@@ -492,7 +443,6 @@ describe("AuthManager / scoped spawn (docs/150)", () => {
       const mgr = new AuthManager();
       mgr.startOAuthFlow({ accountId: "acct-reauth", credentialDir: tmp });
 
-      // Stale file gone, yet the CLI was still spawned to start a fresh login.
       expect(fs.existsSync(credPath)).toBe(false);
       expect(ptyHoisted.calls).toHaveLength(1);
       mgr.kill();
@@ -502,14 +452,6 @@ describe("AuthManager / scoped spawn (docs/150)", () => {
   });
 
   it("strips ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN / CLAUDE_CODE_OAUTH_TOKEN from the login subprocess env", () => {
-    // Companion to the on-disk wipe: `claude /login` honors these env vars over
-    // the interactive OAuth flow, so a stale key/token in the orchestrator's
-    // environment makes the flow hang on "Starting…" no matter how clean the
-    // disk is. All three subscription-bearer vars must never be inherited by
-    // the login child — while the orchestrator's own `process.env` is left
-    // untouched. CLAUDE_CODE_OAUTH_TOKEN (set by `claude setup-token`) is the
-    // third such var and is easy to miss — a forwarded one (e.g. dogfood
-    // secrets) would re-introduce the hang.
     const origKey = process.env.ANTHROPIC_API_KEY;
     const origToken = process.env.ANTHROPIC_AUTH_TOKEN;
     const origOauth = process.env.CLAUDE_CODE_OAUTH_TOKEN;
@@ -524,8 +466,6 @@ describe("AuthManager / scoped spawn (docs/150)", () => {
       expect(env.ANTHROPIC_API_KEY).toBeUndefined();
       expect(env.ANTHROPIC_AUTH_TOKEN).toBeUndefined();
       expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
-      // The orchestrator's own env is unchanged — env-var auth still works for
-      // agent turns / dogfooding.
       expect(process.env.ANTHROPIC_API_KEY).toBe("sk-ant-stale");
       expect(process.env.ANTHROPIC_AUTH_TOKEN).toBe("stale-bearer");
       expect(process.env.CLAUDE_CODE_OAUTH_TOKEN).toBe("stale-oauth-token");
@@ -541,21 +481,14 @@ describe("AuthManager / scoped spawn (docs/150)", () => {
   });
 
   it("tears down a stale PTY and restarts instead of silently no-oping", () => {
-    // The deadlock that forced users to click "Clear saved credentials" first:
-    // a hung first login left `this.proc` non-null, so every subsequent "Sign
-    // in" early-returned (no-op) and the UI sat on "Starting…" forever — the
-    // only escape was signOut()/kill() via "Clear credentials". Re-starting the
-    // flow must now kill the stale PTY and spawn a fresh one, making "Sign in"
-    // self-healing.
     ptyHoisted.killed = 0;
     const mgr = new AuthManager();
 
-    mgr.startOAuthFlow(); // first attempt — leaves a live PTY
+    mgr.startOAuthFlow();
     expect(ptyHoisted.calls).toHaveLength(1);
     expect(ptyHoisted.killed).toBe(0);
 
-    mgr.startOAuthFlow(); // retry while the first is still "running"
-    // The stale PTY was killed and a brand-new login was spawned (not a no-op).
+    mgr.startOAuthFlow();
     expect(ptyHoisted.killed).toBe(1);
     expect(ptyHoisted.calls).toHaveLength(2);
     mgr.kill();
@@ -635,21 +568,12 @@ describe("AuthManager / auth diagnostics", () => {
 });
 
 describe("AuthManager / fresh-credential completion gate", () => {
-  // Regression for the stale-credential short-circuit: re-authenticating an
-  // account that already has a credential file used to "complete" on the very
-  // first 500ms poll tick (pure existsSync), killing the CLI before it could
-  // exchange the pasted code into a new token. The completion checks now
-  // require the credential file to be *newer* than a baseline captured at flow
-  // start, so only a genuinely-new write counts.
   let tmp: string;
   const CRED_REL = path.join(".claude", ".credentials.json");
 
-  // Absolute mtimes (epoch ms) — deterministic regardless of wall clock or
-  // fake timers. STALE < FRESH, so a rewrite to FRESH advances past baseline.
-  const STALE_MTIME = 1_000_000_000_000; // 2001
-  const FRESH_MTIME = 2_000_000_000_000; // 2033
+  const STALE_MTIME = 1_000_000_000_000;
+  const FRESH_MTIME = 2_000_000_000_000;
 
-  /** Write a credential file and stamp it with an explicit mtime. */
   function writeCred(mtimeMs: number): void {
     const credPath = path.join(tmp, CRED_REL);
     fs.mkdirSync(path.dirname(credPath), { recursive: true });
@@ -658,7 +582,6 @@ describe("AuthManager / fresh-credential completion gate", () => {
     fs.utimesSync(credPath, when, when);
   }
 
-  /** Capture the normalized terminal events for assertions. */
   function track(mgr: AuthManager): { complete: number; failed: { reason?: string }[] } {
     const seen = { complete: 0, failed: [] as { reason?: string }[] };
     mgr.on("complete", () => { seen.complete++; });
@@ -687,17 +610,15 @@ describe("AuthManager / fresh-credential completion gate", () => {
     mgr.startOAuthFlow({ accountId: "acct-stale", credentialDir: tmp });
     mgr.sendCode("auth-code-xyz");
 
-    // One poll tick: the stale file must not be mistaken for a fresh write.
     vi.advanceTimersByTime(500);
     expect(seen.complete).toBe(0);
     expect(seen.failed).toHaveLength(0);
-    expect(ptyHoisted.killed).toBe(0); // CLI not SIGHUP'd mid-exchange
+    expect(ptyHoisted.killed).toBe(0);
 
-    // The CLI finishes the exchange and writes fresh credentials.
     writeCred(FRESH_MTIME);
     vi.advanceTimersByTime(500);
     expect(seen.complete).toBe(1);
-    expect(ptyHoisted.killed).toBe(1); // killed exactly once, on real success
+    expect(ptyHoisted.killed).toBe(1);
   });
 
   it("poll completes when credentials first appear (no pre-existing file)", () => {
@@ -707,7 +628,7 @@ describe("AuthManager / fresh-credential completion gate", () => {
     mgr.sendCode("auth-code-xyz");
 
     vi.advanceTimersByTime(500);
-    expect(seen.complete).toBe(0); // nothing written yet
+    expect(seen.complete).toBe(0);
 
     writeCred(FRESH_MTIME);
     vi.advanceTimersByTime(500);
@@ -721,7 +642,6 @@ describe("AuthManager / fresh-credential completion gate", () => {
     mgr.startOAuthFlow({ accountId: "acct-timeout", credentialDir: tmp });
     mgr.sendCode("auth-code-xyz");
 
-    // 60 ticks × 500ms = 30s — the full poll budget.
     vi.advanceTimersByTime(30_000);
     expect(seen.complete).toBe(0);
     expect(seen.failed).toHaveLength(1);
@@ -748,7 +668,7 @@ describe("AuthManager / fresh-credential completion gate", () => {
     const seen = track(mgr);
     mgr.startOAuthFlow({ accountId: "acct-exit-fresh", credentialDir: tmp });
 
-    writeCred(FRESH_MTIME); // CLI persisted a new token before exiting
+    writeCred(FRESH_MTIME);
     for (const cb of ptyHoisted.exitHandlers) cb({ exitCode: 0 });
 
     expect(seen.complete).toBe(1);
@@ -757,12 +677,6 @@ describe("AuthManager / fresh-credential completion gate", () => {
 });
 
 describe("AuthManager / one terminal outcome per flow", () => {
-  // Regression: the credentials poll detected success, killed the CLI, emitted
-  // `complete` and then cleared the account scope — so the PTY's own exit
-  // handler ran next, still saw fresh credentials, and emitted a SECOND
-  // `complete` with `getActiveAccountId() === null`. The unscoped duplicate
-  // reached the SSE wiring as an account-less sign-in, which pushed the flat
-  // root's token into every pinned session.
   let tmp: string;
   const CRED_REL = path.join(".claude", ".credentials.json");
   const FRESH_MTIME = 2_000_000_000_000;
@@ -775,7 +689,6 @@ describe("AuthManager / one terminal outcome per flow", () => {
     fs.utimesSync(credPath, when, when);
   }
 
-  /** Record each terminal event together with the scope live at emit time. */
   function trackScoped(mgr: AuthManager): { complete: (string | null)[]; failed: (string | null)[] } {
     const seen = { complete: [] as (string | null)[], failed: [] as (string | null)[] };
     mgr.on("complete", () => { seen.complete.push(mgr.getActiveAccountId()); });
@@ -807,8 +720,6 @@ describe("AuthManager / one terminal outcome per flow", () => {
     vi.advanceTimersByTime(500);
     expect(seen.complete).toEqual(["acct-once"]);
 
-    // The poll's kill() makes the CLI exit; the credentials are still fresh on
-    // disk, so the exit handler's own success check passes. It must stay quiet.
     for (const cb of ptyHoisted.exitHandlers) cb({ exitCode: 129 });
     expect(seen.complete).toEqual(["acct-once"]);
     expect(seen.failed).toEqual([]);
@@ -834,7 +745,7 @@ describe("AuthManager / one terminal outcome per flow", () => {
     const seen = trackScoped(mgr);
     mgr.startOAuthFlow({ accountId: "acct-cancelled", credentialDir: tmp });
 
-    mgr.cancel(); // the user gave up; the scope is released here
+    mgr.cancel();
     for (const cb of ptyHoisted.exitHandlers) cb({ exitCode: 129 });
 
     expect(seen.failed).toEqual([]);
@@ -847,13 +758,11 @@ describe("AuthManager / one terminal outcome per flow", () => {
     mgr.startOAuthFlow({ accountId: "acct-first", credentialDir: tmp });
     const staleExit = [...ptyHoisted.exitHandlers];
 
-    // A second attempt tears the stale PTY down; its exit lands afterwards.
     mgr.startOAuthFlow({ accountId: "acct-second", credentialDir: tmp });
     for (const cb of staleExit) cb({ exitCode: 129 });
     expect(seen.failed).toEqual([]);
     expect(seen.complete).toEqual([]);
 
-    // The live flow still owns its outcome.
     mgr.sendCode("auth-code-xyz");
     writeCred(FRESH_MTIME);
     vi.advanceTimersByTime(500);

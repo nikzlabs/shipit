@@ -3,16 +3,6 @@ import { describe, it, expect, vi } from "vitest";
 import { materializeRunnerSync, materializeRunner } from "./materialize-runner.js";
 import type { MaterializeRunnerDeps } from "./materialize-runner.js";
 
-/**
- * Unit coverage for the shared runner materialization (docs/131).
- *
- * This logic used to live inside `activateSession`'s per-connection closure and
- * now backs two transports (WS connect and HTTP dispatch). These pin the two
- * properties that make sharing safe: the guards can't be skipped by the new
- * caller, and the common path stays *synchronous* so the WS connect handler's
- * frame ordering is unchanged.
- */
-
 function makeDeps(overrides: {
   session?: Record<string, unknown> | undefined;
   existingRunner?: Record<string, unknown> | undefined;
@@ -40,15 +30,11 @@ function makeDeps(overrides: {
 
 describe("materializeRunnerSync", () => {
   it("creates a runner for a session that has no runner", () => {
-    // The whole point of docs/131 req 8: a session nobody has open is still
-    // reachable. Before this, only a WS connect ever called getOrCreate.
     const { deps, getOrCreate } = makeDeps({
       session: { workspaceDir: "/w/cold", agentId: "codex" },
     });
     const outcome = materializeRunnerSync(deps, "cold", "claude");
     expect(outcome.status).toBe("ready");
-    // The session's own agent wins over the caller's fallback — a recovered
-    // runner seeded with the global default must not spawn the wrong CLI.
     expect(getOrCreate).toHaveBeenCalledWith("cold", "/w/cold", "codex");
   });
 
@@ -59,8 +45,6 @@ describe("materializeRunnerSync", () => {
   });
 
   it("refuses to boot anything for an archived session", () => {
-    // "Archived sessions receive nothing." Sharing this function is what stops
-    // the HTTP path from quietly reintroducing a way around the invariant.
     for (const flag of ["archived", "userArchived"]) {
       const { deps, getOrCreate } = makeDeps({
         session: { workspaceDir: "/w/old", [flag]: true },
@@ -109,10 +93,6 @@ describe("materializeRunnerSync", () => {
   });
 
   it("defers only the case that needs the disk", () => {
-    // Regression guard: WS connect calls this WITHOUT awaiting and then sends
-    // more frames, so a session that needs no restore must resolve with zero
-    // yields. Making this async again reorders `session_container_freshness`
-    // behind those frames (caught by connection.test.ts the first time).
     const { deps: noRemote } = makeDeps({ session: { workspaceDir: "/w" } });
     expect(materializeRunnerSync(noRemote, "s", "claude").status).toBe("ready");
 
@@ -122,8 +102,6 @@ describe("materializeRunnerSync", () => {
     expect(materializeRunnerSync(withRemote, "s", "claude")).toEqual({
       status: "needs-restore", workspaceDir: "/w", agentId: "claude",
     });
-    // No runner until the checkout is known to exist — booting a container
-    // against a missing bind-mount source is the loop planning#181 fixed.
     expect(getOrCreate).not.toHaveBeenCalled();
   });
 });
@@ -133,7 +111,6 @@ describe("materializeRunner", () => {
     const { deps, getOrCreate } = makeDeps({
       session: { workspaceDir: "/w", remoteUrl: "https://github.com/a/b" },
     });
-    // The bare cache is gone too — `restoreSessionWorkspace` throws.
     deps.createRepoGit = (() => { throw new Error("cache is gone"); }) as never;
     const outcome = await materializeRunner(deps, "s", "claude");
     expect(outcome).toMatchObject({ status: "restore-failed" });

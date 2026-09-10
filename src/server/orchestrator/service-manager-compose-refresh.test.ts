@@ -1,25 +1,3 @@
-/**
- * nikzlabs/shipit#2426 — a `docker-compose.yml` edit reaches the GENERATED
- * override, not just the user's file.
- *
- * `docker compose up` re-reads the project file every time, so a `command:`
- * edit always landed. The generated override did not: it was written by
- * `start()`/`reconcile()` and by nothing else, and compose merges it OVER the
- * user's file. Every field the override derives — a service's `volumes:`, which
- * is where the workspace mount and its nested dep-dir overlays live, `env_file:`
- * from `x-shipit-secrets`, the user's named volumes — therefore kept whatever it
- * held at the last full start, through any number of `shipit service restart`
- * cycles. The only thing that refreshed it was the config-file watcher's
- * `reconcile()`, a best-effort inotify over a bind mount.
- *
- * The re-parse that `withUpInFlight` already ran for validation now feeds the
- * override too. These tests pin what makes that safe: a changed file reaches the
- * override, a service dropped from the file stops being declared, an UNCHANGED
- * file rewrites nothing (compose recreates a container whenever its config
- * differs from what the running one was built with, so a gratuitous rewrite
- * would recreate the stack on every crash retry), and an edit that fails
- * validation still refuses the `up` without disturbing the override.
- */
 import { describe, it, expect, afterEach } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
@@ -77,7 +55,6 @@ describe("ServiceManager override refresh on a compose edit (#2426)", () => {
     return { mgr, composePath, overridePath, readOverride, ups };
   }
 
-  /** The container-side targets service `name` mounts, per the override. */
   function targets(doc: OverrideDoc, name: string): string[] {
     return (doc.services[name]?.volumes ?? []).map((v) => (typeof v === "string" ? v : v.target ?? ""));
   }
@@ -87,9 +64,6 @@ describe("ServiceManager override refresh on a compose edit (#2426)", () => {
     await mgr.start();
     expect(targets(readOverride(), "web")).toContain("/app");
 
-    // The user re-points the service at a subdirectory and restarts it. Before
-    // this fix the override kept mounting the workspace root at /app and won
-    // the merge, so the edit did nothing.
     fs.writeFileSync(composePath, MANUAL_WEB.replace("'.:/app'", "'./game:/srv'"));
     await mgr.restartService("web");
 
@@ -109,8 +83,6 @@ describe("ServiceManager override refresh on a compose edit (#2426)", () => {
     await mgr.startService("web");
 
     expect(fs.readFileSync(overridePath, "utf-8")).toBe(before);
-    // Byte-identical is not enough — a rewrite still changes the file compose
-    // hashes its decision against, so assert nothing wrote at all.
     expect(fs.statSync(overridePath).mtimeMs).toBe(mtimeBefore);
     await mgr.stop();
   });
@@ -124,9 +96,6 @@ describe("ServiceManager override refresh on a compose edit (#2426)", () => {
     await mgr.start();
     expect(Object.keys(readOverride().services)).toContain("api");
 
-    // A stale override declaring a service the base file no longer defines is
-    // not merely untidy: compose fails the whole project load on a service with
-    // neither an image nor a build context, so `web` could not start either.
     fs.writeFileSync(composePath, MANUAL_WEB);
     await mgr.restartService("web");
 
@@ -134,14 +103,6 @@ describe("ServiceManager override refresh on a compose edit (#2426)", () => {
     await mgr.stop();
   });
 
-  /**
-   * docs/262 — the override is the ONLY place a plugin service's definition
-   * exists, so a refresh that rebuilt it from the project's compose file alone
-   * would delete every plugin service from the stack the moment the user edited
-   * their own file. Admission stays `start()`'s decision (a plugin refused for a
-   * port collision must not be silently re-admitted here either), so the refresh
-   * carries the admitted set forward verbatim.
-   */
   it("carries plugin services through a refresh triggered by a project edit", async () => {
     const { mgr, composePath, readOverride } = makeManager();
     mgr.setPluginServices([{

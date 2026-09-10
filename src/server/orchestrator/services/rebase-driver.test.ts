@@ -21,35 +21,11 @@ import { releaseQueuedTurn } from "../queue-drain.js";
 import { testDispatch } from "../integration_tests/dispatch-test-helpers.js";
 import type { AgentProcess, AgentEvent, AgentRunParams, WsServerMessage } from "../../shared/types.js";
 
-// planning#146: the rebase driver must hand the workspace (BOTH `.git` AND the
-// worktree) back to the worker uid after its git ops (the `postTurn: "none"`
-// path elides the usual post-turn handoff). It does so via the shared
-// `handWorkspaceBackToWorker` helper, whose `.git`/worktree/dep-dir internals
-// are unit-tested in session-worker-uid.test.ts. The real helper is a no-op
-// unless SHIPIT_SESSION_WORKER_UID is set AND the process can chown to that uid
-// (root-only), and a test can't drop to another uid to reproduce the real
-// EACCES — so we spy on it to assert the driver WIRES the handoff. The
-// end-to-end "agent edits a conflicted file it does not own" proof is the manual
-// dev validation, noted in docs/150. importOriginal keeps the module's other
-// exports intact for transitive importers.
-//
-// planning#412 — those git ops are NOT root-run: since
-// docs/266-orchestrator-git-trust-boundary E1 they drop to the session's own
-// identity on this existing tree (see the driver's file-header note). What the
-// handback reconciles is `.git`'s owner against the uid that will next run git
-// in it, and the worktree's against the identity the container runs as.
 vi.mock("../session-worker-uid.js", async (importOriginal) => {
   // eslint-disable-next-line no-restricted-syntax -- vitest's importOriginal generic requires an inline import() type
   const actual = await importOriginal<typeof import("../session-worker-uid.js")>();
   return { ...actual, handWorkspaceBackToWorker: vi.fn() };
 });
-// nikzlabs/shipit#2349: a rebase re-materializes the worktree through the
-// ORCHESTRATOR's git, whose LFS smudge filter is disabled by design, so every
-// LFS-tracked path it touched is left as ~130-byte pointer text in a tree that
-// reads clean. What the real helper does about that is proven end-to-end against
-// a real git-lfs in `git-lfs.test.ts`; these tests own the other half — that the
-// driver CALLS it, and calls it only where a rewrite actually happened and only
-// once the tree has settled.
 vi.mock("../git-lfs.js", async (importOriginal) => {
   // eslint-disable-next-line no-restricted-syntax -- vitest's importOriginal generic requires an inline import() type
   const actual = await importOriginal<typeof import("../git-lfs.js")>();
@@ -66,12 +42,6 @@ import type { ChatHistoryManager } from "../chat-history.js";
 import type { SessionManager } from "../sessions.js";
 import type { UsageManager } from "../usage.js";
 
-/**
- * Fake agent for rebase tests. The test injects a "resolution function" that
- * decides what file edits to perform when the agent runs. After running, the
- * agent emits an `agent_assistant` (so accumulatedText is populated) followed
- * by `done`.
- */
 class FakeRebaseAgent extends EventEmitter {
   readonly agentId = "claude" as const;
   readonly capabilities = {
@@ -85,17 +55,11 @@ class FakeRebaseAgent extends EventEmitter {
     supportsReview: true,
   };
 
-  /**
-   * Resolution function — called when run() is invoked. Should edit files in
-   * `cwd` to remove conflict markers, then return a summary string used as the
-   * assistant's "I resolved..." message in chat.
-   */
   constructor(private resolve: (cwd: string) => string) {
     super();
   }
 
   run(params: AgentRunParams): void {
-    // Run async so listeners attach first.
     setImmediate(() => {
       try {
         const summary = this.resolve(params.cwd);
@@ -120,7 +84,6 @@ class FakeRebaseAgent extends EventEmitter {
   kill(): void { /* no-op */ }
 }
 
-/** Build a bare-repo + working-clone with one initial commit. */
 function setupRepoWithRemote(tmpDir: string) {
   const bareDir = path.join(tmpDir, "bare.git");
   const workDir = path.join(tmpDir, "work");
@@ -137,16 +100,11 @@ function setupRepoWithRemote(tmpDir: string) {
   return { bareDir, workDir, git: new GitManager(workDir) };
 }
 
-/**
- * Diverge feature branch and main: feature edits shared.txt one way, main edits
- * it another way. Pushing both creates a conflict on rebase.
- */
 function createConflictingDivergence(bareDir: string, workDir: string) {
   execSync("git checkout -b feature", { cwd: workDir, stdio: "pipe" });
   fs.writeFileSync(path.join(workDir, "shared.txt"), "feature edit\n");
   execSync("git add -A && git commit -m 'Feature change'", { cwd: workDir, stdio: "pipe" });
 
-  // Push main forward via a temp clone so origin/main diverges.
   const tempClone = path.join(path.dirname(workDir), "temp-clone");
   fs.mkdirSync(tempClone, { recursive: true });
   execSync(`git clone ${bareDir} .`, { cwd: tempClone, stdio: "pipe" });
@@ -157,10 +115,6 @@ function createConflictingDivergence(bareDir: string, workDir: string) {
   fs.rmSync(tempClone, { recursive: true, force: true });
 }
 
-/**
- * Diverge feature branch from main without conflicts: feature touches a
- * different file than main.
- */
 function createCleanDivergence(bareDir: string, workDir: string) {
   execSync("git checkout -b feature", { cwd: workDir, stdio: "pipe" });
   fs.writeFileSync(path.join(workDir, "feature.txt"), "feature\n");
@@ -176,19 +130,10 @@ function createCleanDivergence(bareDir: string, workDir: string) {
   fs.rmSync(tempClone, { recursive: true, force: true });
 }
 
-/** Stub GitHubAuthManager used by the driver's force-push step. */
 function makeStubAuth(authenticated: boolean): GitHubAuthManager {
   return { authenticated } as GitHubAuthManager;
 }
 
-/**
- * Stub ChatHistoryManager that captures every assistant + user write the
- * driver and listener perform. The shared listener (`wireAgentListeners`)
- * uses `replaceInProgress` to write incremental message groups on
- * `agent_result`, then `finalizeInProgress` to clear the in-progress flag —
- * we track the *finalized* set so assertions match what the user would see
- * on reload.
- */
 function makeStubHistory(captured: { role: string; text: string }[]): ChatHistoryManager {
   let inProgress: { role: string; text: string }[] = [];
   return {
@@ -208,11 +153,6 @@ function makeStubHistory(captured: { role: string; text: string }[]): ChatHistor
   } as unknown as ChatHistoryManager;
 }
 
-/**
- * Minimal stub for SessionManager — `get` plus the docs/221 pending-notice slot,
- * which the driver writes on a manual sync that moved the branch. `notices`
- * is exposed so a test can assert what the agent will be told next turn.
- */
 function makeStubSessionManager(notices: string[] = []): SessionManager {
   return {
     get: (sessionId: string) => ({ sessionId, agentSessionId: undefined }),
@@ -225,12 +165,6 @@ function makeStubSessionManager(notices: string[] = []): SessionManager {
   } as unknown as SessionManager;
 }
 
-/**
- * Minimal stubs for the listener-side managers (usage tracking and OAuth).
- * The rebase flow funnels through `wireAgentListeners` shared with the WS
- * path, so these need to exist even when the fake agent never produces
- * usage or hits an auth gate.
- */
 function makeStubUsageManager(): UsageManager {
   return {
     record: () => {},
@@ -240,14 +174,6 @@ function makeStubUsageManager(): UsageManager {
 }
 
 
-/**
- * docs/169 — the conflict-resolution turn now runs through `runner.dispatch`,
- * which requires `SystemTurnDeps` wired on the runner (else dispatch enqueues
- * and the turn never starts). This wrapper builds those deps from the same
- * stubs the driver deps already carry, so the test exercises the real shared
- * dispatch path (the unification refactor's whole point) before delegating to
- * `runRebaseFlow`.
- */
 async function runFlow(
   deps: Parameters<typeof runRebaseFlow>[0],
   baseBranch: string,
@@ -286,7 +212,6 @@ describe("rebase-driver: runRebaseFlow", () => {
     origGitEditor = process.env.GIT_EDITOR;
     initGlobalGitConfig(path.join(tmpDir, "credentials"));
     setGitIdentity("Test User", "test@test.com");
-    // Prevent rebase --continue from opening an editor
     process.env.GIT_EDITOR = "true";
   });
 
@@ -300,7 +225,6 @@ describe("rebase-driver: runRebaseFlow", () => {
 
   it("up-to-date branch — emits rebase_complete and skips agent", async () => {
     const { workDir, git } = setupRepoWithRemote(tmpDir);
-    // No divergence — branch is already at HEAD of main.
     const runner = new SessionRunner({
       sessionId: "s1",
       sessionDir: workDir,
@@ -324,7 +248,6 @@ describe("rebase-driver: runRebaseFlow", () => {
     expect(result.status).toBe("up_to_date");
     expect(messages.find((m) => m.type === "rebase_complete")).toBeDefined();
     expect(messages.find((m) => m.type === "rebase_started")).toBeUndefined();
-    // Agent is never invoked, so no chat messages are persisted.
     expect(captured).toHaveLength(0);
   });
 
@@ -340,7 +263,6 @@ describe("rebase-driver: runRebaseFlow", () => {
     const messages: WsServerMessage[] = [];
     runner.on("message", (m: WsServerMessage) => messages.push(m));
 
-    // Set the feature branch as the upstream so force-push has a target.
     execSync("git push -u origin feature", { cwd: workDir, stdio: "pipe" });
 
     const result = await runFlow({
@@ -367,9 +289,6 @@ describe("rebase-driver: runRebaseFlow", () => {
       expect(completeMsg.forcePushed).toBe(true);
     }
 
-    // The force push must surface a github_push_result so the UI can show
-    // confirmation (regression: the rebase used to swallow the result, leaving
-    // the user unsure whether the rebased history actually reached origin).
     const pushResult = messages.find((m) => m.type === "github_push_result");
     expect(pushResult).toBeDefined();
     if (pushResult?.type === "github_push_result") {
@@ -378,12 +297,6 @@ describe("rebase-driver: runRebaseFlow", () => {
     }
   });
 
-  // A rebase rewrites the working tree from the orchestrator, so the incoming
-  // `shipit.yaml` / compose file can declare services the running session knows
-  // nothing about. The in-container inotify watcher is not a dependable signal
-  // for a cross-container write (and is started best-effort), so the driver
-  // tells the runner directly. Without this, "sync with main" silently leaves
-  // the session running the pre-rebase compose stack.
   it("clean rebase — re-evaluates the session's shipit.yaml/compose config", async () => {
     const { workDir, bareDir, git } = setupRepoWithRemote(tmpDir);
     createCleanDivergence(bareDir, workDir);
@@ -411,11 +324,6 @@ describe("rebase-driver: runRebaseFlow", () => {
     expect(reevaluate).toHaveBeenCalledTimes(1);
   });
 
-  // nikzlabs/shipit#2429 — the dependency half of the same fact. A rebase can bring
-  // in a lockfile naming packages the container's `node_modules` has never held;
-  // before this the session kept the pre-rebase dependency tree, the dev server
-  // started fine, and every request failed on an import it could not resolve
-  // while `shipit service list` still said `running`.
   it("clean rebase — re-checks the session's dependencies", async () => {
     const { workDir, bareDir, git } = setupRepoWithRemote(tmpDir);
     createCleanDivergence(bareDir, workDir);
@@ -484,7 +392,6 @@ describe("rebase-driver: runRebaseFlow", () => {
     const messages: WsServerMessage[] = [];
     runner.on("message", (m: WsServerMessage) => messages.push(m));
 
-    // Let fetch + rebase succeed, then make the force push itself throw.
     const forcePushSpy = vi
       .spyOn(git, "forcePush")
       .mockRejectedValue(new Error("simulated push failure: connection refused"));
@@ -505,7 +412,6 @@ describe("rebase-driver: runRebaseFlow", () => {
       expect(result).toHaveProperty("forcePushed", false);
       expect(forcePushSpy).toHaveBeenCalled();
 
-      // Failure must be visible to the user — both as a push result and as a log entry.
       const pushResult = messages.find((m) => m.type === "github_push_result");
       expect(pushResult).toBeDefined();
       if (pushResult?.type === "github_push_result") {
@@ -574,7 +480,6 @@ describe("rebase-driver: runRebaseFlow", () => {
       chatHistoryManager: makeStubHistory(captured),
       agentFactory: () => new FakeRebaseAgent((cwd) => {
         agentInvocations++;
-        // "Resolve" by writing a clean merged version.
         fs.writeFileSync(path.join(cwd, "shared.txt"), "merged result\n");
         return "Resolved shared.txt by merging both edits.";
       }) as unknown as AgentProcess,
@@ -585,19 +490,16 @@ describe("rebase-driver: runRebaseFlow", () => {
     expect(result.status).toBe("conflicts_resolved");
     expect(agentInvocations).toBe(1);
 
-    // Verify file contents are clean (no conflict markers).
     const final = fs.readFileSync(path.join(workDir, "shared.txt"), "utf-8");
     expect(final).not.toContain("<<<<<<<");
     expect(final).not.toContain(">>>>>>>");
 
-    // Verify expected WS event sequence.
     const types = messages.map((m) => m.type);
     expect(types).toContain("rebase_started");
     expect(types).toContain("rebase_conflicts");
     expect(types).toContain("system_user_message");
     expect(types).toContain("rebase_complete");
 
-    // Chat history should record both the prompt and the assistant resolution.
     const userMsg = captured.find((m) => m.role === "user");
     const assistantMsg = captured.find((m) => m.role === "assistant");
     expect(userMsg?.text).toContain("Rebasing onto");
@@ -605,18 +507,6 @@ describe("rebase-driver: runRebaseFlow", () => {
   });
 
   it("conflicts — preserves tool calls and splits assistant messages at tool-result boundary", async () => {
-    // Regression test for the "invisible tool calls + concatenated assistant
-    // text" bug. Before the unification refactor, the rebase driver had its
-    // own custom event listener that joined assistant text blocks with no
-    // separator across events and dropped all tool_use blocks — producing
-    // chat-history rows like:
-    //   { role: "assistant", text: "I'll examine the conflict.Conflict resolved." }
-    // with no record of the file edit the agent made between the two
-    // utterances. After the refactor, the rebase flow goes through
-    // `wireAgentListeners` (same as the WS user-typed path), so message
-    // groups split at tool-result boundaries and tool_use blocks are
-    // preserved on each group. This test exercises the exact event sequence
-    // from the bug report.
     const { workDir, bareDir, git } = setupRepoWithRemote(tmpDir);
     createConflictingDivergence(bareDir, workDir);
     execSync("git push -u origin feature", { cwd: workDir, stdio: "pipe" });
@@ -628,19 +518,12 @@ describe("rebase-driver: runRebaseFlow", () => {
     });
     const captured: { role: string; text: string; toolUse?: { id: string; name: string }[]; toolResults?: { toolUseId: string }[]; branchSynced?: unknown }[] = [];
 
-    /**
-     * Fake agent that emits the canonical "assistant says X → tool call →
-     * tool result → assistant says Y → agent_result" sequence. The Read +
-     * Edit names mirror Claude's actual tool taxonomy so the listener treats
-     * them as ordinary tools (not standalone tools like AskUserQuestion).
-     */
     class FakeToolUsingAgent extends FakeRebaseAgent {
       constructor(private fileEditPath: string, private fileEditContent: string) {
         super(() => "unused");
       }
       override run(params: AgentRunParams): void {
         setImmediate(() => {
-          // 1. Assistant preamble + tool_use (Edit).
           this.emit("event", {
             type: "agent_assistant",
             content: [
@@ -653,21 +536,15 @@ describe("rebase-driver: runRebaseFlow", () => {
               },
             ],
           } as AgentEvent);
-          // 2. Perform the edit (mirrors what a real tool result implies).
           fs.writeFileSync(this.fileEditPath, this.fileEditContent);
-          // 3. Tool result. The listener's `agent_tool_result` branch flips
-          //    `needsNewMessageGroup` so the NEXT agent_assistant starts a
-          //    fresh group instead of concatenating into the first one.
           this.emit("event", {
             type: "agent_tool_result",
             content: [{ type: "tool_result", tool_use_id: "tool_1", content: "File updated." }],
           } as AgentEvent);
-          // 4. Assistant follow-up (post-tool).
           this.emit("event", {
             type: "agent_assistant",
             content: [{ type: "text", text: "Conflict resolved." }],
           } as AgentEvent);
-          // 5. Result + done.
           this.emit("event", {
             type: "agent_result",
             status: "success",
@@ -692,30 +569,18 @@ describe("rebase-driver: runRebaseFlow", () => {
 
     expect(result.status).toBe("conflicts_resolved");
 
-    // Captured rows: one user (the conflict prompt) + two assistant rows
-    // (preamble-with-tool-call, then post-tool-result text). Before the fix
-    // the second assistant row didn't exist — its text was concatenated
-    // into the first row's text and the tool_use was missing entirely.
     const userRow = captured.find((m) => m.role === "user");
     expect(userRow?.text).toContain("Rebasing onto");
 
-    // The completion card is an assistant row too (it carries `branchSynced`
-    // and no text), so exclude it — this assertion is about the TURN's rows.
     const assistantRows = captured.filter((m) => m.role === "assistant" && !m.branchSynced);
     expect(assistantRows).toHaveLength(2);
 
-    // First assistant row: the preamble TEXT + the tool_use block, plus the
-    // tool_result that came back. Without the fix this row's text would have
-    // been "I'll examine the conflict in shared.txt and resolve it.Conflict
-    // resolved." (no separator, two utterances joined) and `toolUse` would
-    // have been undefined.
     expect(assistantRows[0].text).toBe("I'll examine the conflict in shared.txt and resolve it.");
     expect(assistantRows[0].toolUse).toHaveLength(1);
     expect(assistantRows[0].toolUse?.[0].name).toBe("Edit");
     expect(assistantRows[0].toolResults).toHaveLength(1);
     expect(assistantRows[0].toolResults?.[0].toolUseId).toBe("tool_1");
 
-    // Second assistant row: just the post-tool text, no tool_use.
     expect(assistantRows[1].text).toBe("Conflict resolved.");
     expect(assistantRows[1].toolUse).toBeUndefined();
   });
@@ -765,13 +630,6 @@ describe("rebase-driver: runRebaseFlow", () => {
     ).rejects.toThrow(/Cannot resolve base branch/);
   });
 
-  // planning#146: every `runRebaseFlow` exit path must hand BOTH `.git` AND the
-  // worktree back to the worker uid, because the driver's git ops rewrite both
-  // and it dispatches resolution turns with `postTurn: "none"` (which elides the
-  // usual post-turn handoff). Handing only `.git` back restores git operability
-  // but leaves the conflicted files the agent must EDIT owned by whoever ran
-  // that git, so the resolution turn still fails EACCES. (planning#412: that is
-  // the session's own identity, not root — file-header note in the driver.)
   it("planning#146: hands .git AND worktree back to the worker uid on the up-to-date path", async () => {
     const { workDir, git } = setupRepoWithRemote(tmpDir);
     const runner = new SessionRunner({ sessionId: "s1", sessionDir: workDir, defaultAgentId: "claude" });
@@ -818,8 +676,6 @@ describe("rebase-driver: runRebaseFlow", () => {
     execSync("git push -u origin feature", { cwd: workDir, stdio: "pipe" });
     const runner = new SessionRunner({ sessionId: "s1", sessionDir: workDir, defaultAgentId: "claude" });
 
-    // The worktree handoff MUST have fired by the time the agent runs (so the
-    // conflicted file is writable). Assert it from inside the resolution fn.
     let worktreeHandedBackBeforeEdit = false;
     const result = await runFlow({
       git,
@@ -840,8 +696,6 @@ describe("rebase-driver: runRebaseFlow", () => {
 
     expect(result.status).toBe("conflicts_resolved");
     expect(worktreeHandedBackBeforeEdit).toBe(true);
-    // The handoff fires at least twice: before the resolution turn + in the
-    // final finally.
     expect(vi.mocked(handWorkspaceBackToWorker).mock.calls.length).toBeGreaterThanOrEqual(2);
   });
 
@@ -862,7 +716,6 @@ describe("rebase-driver: runRebaseFlow", () => {
       }, "nonexistent-branch-xyz"),
     ).rejects.toThrow(/Cannot resolve base branch/);
 
-    // The finally must still run on the throw path — for both handoffs.
     expect(handWorkspaceBackToWorker).toHaveBeenCalledWith(workDir);
   });
 
@@ -916,10 +769,6 @@ describe("rebase-driver: runRebaseFlow", () => {
     execSync("git push -u origin feature", { cwd: workDir, stdio: "pipe" });
     const runner = new SessionRunner({ sessionId: "s1", sessionDir: workDir, defaultAgentId: "claude" });
 
-    // Smudging mid-rebase would overwrite a conflicted LFS pointer — which is
-    // text carrying conflict markers — with binary content, destroying the very
-    // conflict the agent is being asked to resolve. So the restore must not have
-    // run by the time the resolution turn edits files.
     let restoredBeforeResolution = false;
     const result = await runFlow({
       git,
@@ -948,9 +797,6 @@ describe("rebase-driver: runRebaseFlow", () => {
     execSync("git push -u origin feature", { cwd: workDir, stdio: "pipe" });
     const runner = new SessionRunner({ sessionId: "s1", sessionDir: workDir, defaultAgentId: "claude" });
 
-    // The agent dies without resolving, so the driver aborts. `git rebase
-    // --abort` checks the pre-rebase tree back out through the same filter-less
-    // git, so a FAILED sync leaves stubs exactly as a successful one would.
     await expect(
       runFlow({
         git,
@@ -974,20 +820,11 @@ describe("rebase-driver: runRebaseFlow", () => {
   });
 
   it("nikzlabs/shipit#2349: restores BEFORE the handback and BEFORE the queue release", async () => {
-    // Both orderings are the fix, not incidental. A restore after the queue
-    // release lets a turn queued during the sync start against the stubs — the
-    // exact reported failure — and one after the handback would have the chown
-    // no longer holding the last write. Without this test an implementation that
-    // simply moved the call two lines down still passes everything else.
     const { workDir, bareDir, git } = setupRepoWithRemote(tmpDir);
     createCleanDivergence(bareDir, workDir);
     execSync("git push -u origin feature", { cwd: workDir, stdio: "pipe" });
     const runner = new SessionRunner({ sessionId: "s1", sessionDir: workDir, defaultAgentId: "claude" });
 
-    // Read the two facts from inside the restore rather than by mocking the
-    // queue module: `systemTurnInProgress` is cleared in the same `finally`
-    // immediately before `releaseQueuedTurn`, so it still being true is exactly
-    // "the queue has not been released yet".
     let handbacksBefore = -1;
     let holdStillHeld = false;
     vi.mocked(restoreLfsAfterTreeRewrite).mockImplementation(() => {
@@ -1007,17 +844,12 @@ describe("rebase-driver: runRebaseFlow", () => {
       sseBroadcast: () => {},
     }, "main");
 
-    // A clean rebase reaches the `finally` having handed back nothing yet, so the
-    // restore must see zero handbacks — and it must still hold the session.
     expect(handbacksBefore).toBe(0);
     expect(holdStillHeld).toBe(true);
     expect(handWorkspaceBackToWorker).toHaveBeenCalledWith(workDir);
   });
 
   it("nikzlabs/shipit#2349: holds the runner while restoring, so the idle enforcer can't cut it short", async () => {
-    // CLAUDE.md invariant 5: the restore runs with `running` already false, and
-    // auto-resolve runs precisely on idle, viewerless sessions — so without a
-    // post-turn hold the enforcer may destroy the container mid-pull.
     const { workDir, bareDir, git } = setupRepoWithRemote(tmpDir);
     createCleanDivergence(bareDir, workDir);
     execSync("git push -u origin feature", { cwd: workDir, stdio: "pipe" });
@@ -1041,7 +873,6 @@ describe("rebase-driver: runRebaseFlow", () => {
     }, "main");
 
     expect(heldDuringRestore).toBe(true);
-    // And released afterwards — a leaked hold pins the container forever.
     expect(runner.postTurnWorkInFlight).toBe(false);
   });
 
@@ -1066,8 +897,6 @@ describe("rebase-driver: runRebaseFlow", () => {
   });
 });
 
-/** Advance origin/main by one commit via a throwaway clone (so workDir's
- * origin/main diverges from its local main without touching local main). */
 function advanceOriginMain(bareDir: string, workDir: string, file: string, content: string) {
   const tempClone = path.join(path.dirname(workDir), `temp-adv-${file}`);
   fs.mkdirSync(tempClone, { recursive: true });
@@ -1079,7 +908,6 @@ function advanceOriginMain(bareDir: string, workDir: string, file: string, conte
   fs.rmSync(tempClone, { recursive: true, force: true });
 }
 
-/** Two-method stub matching `RebasePrStatusPoller`, with call-arg assertions. */
 interface StubPoller {
   notifyAutoPush: ReturnType<typeof vi.fn<(sessionId: string) => void>>;
   forceRefreshSession: ReturnType<typeof vi.fn<(sessionId: string) => Promise<void>>>;
@@ -1092,12 +920,6 @@ function makeStubPoller(): StubPoller {
   };
 }
 
-/**
- * planning#369 — the rebase flow is what CLEARS GitHub's `CONFLICTING` state, so it
- * owes the PR-status poller a nudge. Without it the card kept its "Merge
- * conflicts" chip and "Resolve conflicts" button for up to a slow tick (120s),
- * and indefinitely with the polling gate closed, after the fix had landed.
- */
 describe("rebase-driver: planning#369 PR status refresh after a push", () => {
   let tmpDir: string;
   let origGitConfigGlobal: string | undefined;
@@ -1149,8 +971,6 @@ describe("rebase-driver: planning#369 PR status refresh after a push", () => {
     const result = await runFlow(depsWithPoller(git, runner, true, poller), "main");
 
     expect(result).toHaveProperty("forcePushed", true);
-    // Both halves: the cadence bump alone waits a full slow tick for the first
-    // reading; the one-shot alone often catches GitHub mid-recompute (UNKNOWN).
     expect(poller.notifyAutoPush).toHaveBeenCalledWith("s1");
     expect(poller.forceRefreshSession).toHaveBeenCalledWith("s1");
   });
@@ -1186,8 +1006,6 @@ describe("rebase-driver: planning#369 PR status refresh after a push", () => {
     const result = await runFlow(depsWithPoller(git, runner, false, poller), "main");
 
     expect(result).toHaveProperty("forcePushed", false);
-    // GitHub's view of the branch did not change — a refresh would only cost a
-    // request and re-render the same conflicting state.
     expect(poller.notifyAutoPush).not.toHaveBeenCalled();
     expect(poller.forceRefreshSession).not.toHaveBeenCalled();
   });
@@ -1215,18 +1033,10 @@ describe("rebase-driver: planning#369 PR status refresh after a push", () => {
 
     const result = await runFlow(depsWithPoller(git, runner, true, poller), "main");
 
-    // The push already landed; a failed status refresh must not undo that.
     expect(result).toHaveProperty("forcePushed", true);
   });
 });
 
-/**
- * planning#369 (secondary) — the up-to-date short-circuit asks a purely LOCAL
- * question, while GitHub computes `mergeable` from the PUSHED head. A branch
- * holding an unpushed commit is "up to date" locally and CONFLICTING on GitHub,
- * and the old code pushed nothing — so the chip could never clear, however many
- * times the user pressed the button.
- */
 describe("rebase-driver: planning#369 up-to-date branch with unpushed commits", () => {
   let tmpDir: string;
   let origGitConfigGlobal: string | undefined;
@@ -1267,7 +1077,6 @@ describe("rebase-driver: planning#369 up-to-date branch with unpushed commits", 
     prStatusPoller,
   });
 
-  /** Branch already contains origin/main, is pushed, then gains a local-only commit. */
   function setupUnpushedCommit(tmpDirPath: string) {
     const repo = setupRepoWithRemote(tmpDirPath);
     execSync("git checkout -b feature", { cwd: repo.workDir, stdio: "pipe" });
@@ -1285,11 +1094,10 @@ describe("rebase-driver: planning#369 up-to-date branch with unpushed commits", 
     const poller = makeStubPoller();
 
     const localHead = await git.getHeadHash();
-    expect(await git.getRefHash("origin/feature")).not.toBe(localHead); // remote is behind
+    expect(await git.getRefHash("origin/feature")).not.toBe(localHead);
 
     const result = await runFlow({ ...deps(git, runner, true, poller), recordSyncCard: true }, "main");
 
-    // Still an up-to-date rebase — nothing was replayed — but the remote caught up.
     expect(result.status).toBe("up_to_date");
     expect(await git.getRefHash("origin/feature")).toBe(localHead);
 
@@ -1301,7 +1109,7 @@ describe("rebase-driver: planning#369 up-to-date branch with unpushed commits", 
     const card = messages.find((m) => m.type === "branch_synced_card");
     if (card?.type === "branch_synced_card") {
       expect(card.card.forcePushed).toBe(true);
-      expect(card.card.headFromSha).toBe(card.card.headToSha); // no rebase happened
+      expect(card.card.headFromSha).toBe(card.card.headToSha);
     }
     expect(poller.notifyAutoPush).toHaveBeenCalledWith("s1");
     expect(poller.forceRefreshSession).toHaveBeenCalledWith("s1");
@@ -1341,13 +1149,8 @@ describe("rebase-driver: planning#369 up-to-date branch with unpushed commits", 
     expect(messages.find((m) => m.type === "github_push_result")).toBeUndefined();
   });
 
-  // The session CAN be on the base branch — `syncLocalBaseRef` has a clause for
-  // exactly that. `origin/main` is trivially an ancestor of a `main` checkout
-  // carrying local commits, so without the guard "Sync with main" would publish
-  // straight to `main` and bypass the pull request.
   it("session is ON the base branch — refuses to publish to it", async () => {
     const { workDir, git } = setupRepoWithRemote(tmpDir);
-    // Still on `main`, pushed, then a local-only commit.
     fs.writeFileSync(path.join(workDir, "local-only.txt"), "never pushed\n");
     execSync("git add -A && git commit -m 'Local only'", { cwd: workDir, stdio: "pipe" });
 
@@ -1359,17 +1162,10 @@ describe("rebase-driver: planning#369 up-to-date branch with unpushed commits", 
     const result = await runFlow(deps(git, runner, true), "main");
 
     expect(result.status).toBe("up_to_date");
-    expect(await git.getRefHash("origin/main")).toBe(originMainBefore); // untouched
+    expect(await git.getRefHash("origin/main")).toBe(originMainBefore);
     expect(messages.find((m) => m.type === "github_push_result")).toBeUndefined();
   });
 
-  // The ancestry question is asked of HEAD, but `git push origin <branch>` pushes
-  // the BRANCH REF. When those disagree — a detached HEAD, where
-  // `getCurrentBranch()` falls back to a name rather than reporting the
-  // detachment — the push aims at a ref the check never examined. Here the branch
-  // ref already matches origin, so the push is a silent no-op that would
-  // nonetheless be reported as a successful force-push, and the commit on the
-  // detached HEAD would never reach GitHub at all.
   it("HEAD is detached ahead of the branch ref — declines rather than reporting a phantom push", async () => {
     const { workDir, git } = setupRepoWithRemote(tmpDir);
     execSync("git checkout -b feature", { cwd: workDir, stdio: "pipe" });
@@ -1377,7 +1173,6 @@ describe("rebase-driver: planning#369 up-to-date branch with unpushed commits", 
     execSync("git checkout --detach HEAD", { cwd: workDir, stdio: "pipe" });
     fs.writeFileSync(path.join(workDir, "detached.txt"), "off-branch\n");
     execSync("git add -A && git commit -m 'Detached commit'", { cwd: workDir, stdio: "pipe" });
-    // Reproduce the fallback: a detached HEAD reported as an ordinary branch.
     vi.spyOn(git, "getCurrentBranch").mockResolvedValue("feature");
 
     const runner = new SessionRunner({ sessionId: "s1", sessionDir: workDir, defaultAgentId: "claude" });
@@ -1386,12 +1181,10 @@ describe("rebase-driver: planning#369 up-to-date branch with unpushed commits", 
     const result = await runFlow(deps(git, runner, true), "main");
     vi.mocked(git.getCurrentBranch).mockRestore();
 
-    // No push, and — critically — no claim that one happened.
     expect(result).toHaveProperty("forcePushed", false);
     expect(await git.getRefHash("origin/feature")).toBe(originFeatureBefore);
   });
 
-  /** Land a third-party commit on `origin/feature` from a throwaway clone. */
   function raceCommitOntoOriginFeature(bareDir: string): string {
     const tempClone = path.join(tmpDir, `racer-${Math.abs(bareDir.length)}`);
     fs.mkdirSync(tempClone, { recursive: true });
@@ -1410,17 +1203,10 @@ describe("rebase-driver: planning#369 up-to-date branch with unpushed commits", 
     const runner = new SessionRunner({ sessionId: "s1", sessionDir: workDir, defaultAgentId: "claude" });
     const result = await runFlow(deps(git, runner, true), "main");
 
-    // The flow's own fetch sees the divergence, so the ancestor clause declines.
     expect(result).toHaveProperty("forcePushed", false);
     expect(await git.getRefHash("origin/feature")).toBe(racerSha);
   });
 
-  // The window the ancestor check cannot close: a commit landing between the
-  // check and the push. `git.forcePush()` re-reads the LIVE tip and leases
-  // against that, so it would have adopted the racer's commit as the lease and
-  // overwritten it. Passing the checked sha makes git reject the push instead.
-  // Simulated by making the check observe the pre-racer tip, which is exactly
-  // what a real race looks like from inside the flow.
   it("remote moves between the ancestor check and the push — the lease rejects it", async () => {
     const { workDir, bareDir, git } = setupUnpushedCommit(tmpDir);
     const preRacer = await git.getRefHash("origin/feature");
@@ -1438,17 +1224,11 @@ describe("rebase-driver: planning#369 up-to-date branch with unpushed commits", 
     vi.mocked(git.getRefHash).mockRestore();
 
     expect(result).toHaveProperty("forcePushed", false);
-    // The racer's commit is still the remote tip — not clobbered.
     execSync("git fetch origin", { cwd: workDir, stdio: "pipe" });
     expect(await git.getRefHash("origin/feature")).toBe(racerSha);
     expect(messages.find((m) => m.type === "git_push_rejected")).toBeDefined();
   });
 
-  // `writeBack` in auto-conflict-resolve-manager.ts derives `pushed` from
-  // `outcome === "success" && forcePushed`. Reporting a push as `deferred` would
-  // skip the settle window and leave await-fresh-signal unarmed, so the next poll
-  // — still holding GitHub's pre-push CONFLICTING verdict — re-fires against a
-  // head that no longer has the conflict. That is the docs/146 spin.
   it("auto-resolve: an up-to-date flow that pushed is reported as success, not deferred", async () => {
     const { workDir, git } = setupUnpushedCommit(tmpDir);
     const runner = new SessionRunner({ sessionId: "s1", sessionDir: workDir, defaultAgentId: "claude" });
@@ -1459,13 +1239,6 @@ describe("rebase-driver: planning#369 up-to-date branch with unpushed commits", 
   });
 
   it("nikzlabs/shipit#2349: on the auto-resolve TIMEOUT, restores before draining the queue", async () => {
-    // The hole a reviewer found in the first cut of this fix. The timeout
-    // teardown aborts the rebase (rewriting the worktree back through the same
-    // smudge-disabled git) and this wrapper then drains IMMEDIATELY, while the
-    // flow is still waiting for the killed resolution turn to settle. Relying on
-    // the flow's own `finally` therefore does NOT order the restore before the
-    // drain: a message queued during the sync starts against the stubs, which is
-    // the exact failure #2349 reports.
     const { workDir, bareDir, git } = setupRepoWithRemote(tmpDir);
     createConflictingDivergence(bareDir, workDir);
     execSync("git push -u origin feature", { cwd: workDir, stdio: "pipe" });
@@ -1477,7 +1250,6 @@ describe("rebase-driver: planning#369 up-to-date branch with unpushed commits", 
       return Promise.resolve({ status: "not-an-lfs-repo" as const, usesLfs: false });
     });
 
-    // An agent that never finishes, so the wall-clock timeout is what settles.
     const hangingAgent = () => Object.assign(new EventEmitter(), {
       agentId: "claude" as const,
       capabilities: {
@@ -1509,8 +1281,6 @@ describe("rebase-driver: planning#369 up-to-date branch with unpushed commits", 
 
     const result = await runAutoResolveAttempt(deps(git, runner, true), "main");
 
-    // Nothing changed on GitHub, so the budget must not move and the UI must not
-    // flash a contradicting envelope after the inner `rebase_complete`.
     expect(result).toMatchObject({ outcome: "deferred", didWork: false, suppressEmit: true });
   });
 
@@ -1576,25 +1346,18 @@ describe("rebase-driver: docs/221 sync card + local base move", () => {
 
     expect(result.status).toBe("rebased");
 
-    // Local main fast-forwarded to origin/main (the headline correctness ask).
     expect(await git.getRefHash("main")).toBe(await git.getRefHash("origin/main"));
 
-    // A persisted, broadcast card recording the move.
     const card = messages.find((m) => m.type === "branch_synced_card");
     expect(card).toBeDefined();
     if (card?.type === "branch_synced_card") {
       expect(card.card.base).toBe("main");
       expect(card.card.forcePushed).toBe(true);
-      expect(card.card.headFromSha).not.toBe(card.card.headToSha); // branch rebased
+      expect(card.card.headFromSha).not.toBe(card.card.headToSha);
     }
-    // The card is written to chat history (survives reload), not emit-only.
     expect(captured.some((m) => m.branchSynced)).toBe(true);
   });
 
-  // 2026-08-17 incident: the automatic path rebased, resolved conflicts and
-  // force-pushed, and left the transcript with the conflict prompt and nothing
-  // else — no way for the user to tell the branch had come out healthy. The card
-  // is now unconditional wherever the branch was actually rewritten.
   it("emits the sync card on the automatic path too (recordSyncCard unset) — and still moves local main", async () => {
     const { workDir, bareDir, git } = setupRepoWithRemote(tmpDir);
     createCleanDivergence(bareDir, workDir);
@@ -1614,9 +1377,7 @@ describe("rebase-driver: docs/221 sync card + local base move", () => {
       expect(card.card.forcePushed).toBe(true);
       expect(card.card.headFromSha).not.toBe(card.card.headToSha);
     }
-    // Durable, not emit-only — the whole point is that it is still there tomorrow.
     expect(captured.some((m) => m.branchSynced)).toBe(true);
-    // Local base move is unconditional (plain correctness), independent of the card.
     expect(await git.getRefHash("main")).toBe(await git.getRefHash("origin/main"));
   });
 
@@ -1630,7 +1391,6 @@ describe("rebase-driver: docs/221 sync card + local base move", () => {
 
     const result = await runFlow({
       ...baseDeps(git, runner, captured, true),
-      // Resolve the conflict the way the auto-resolve agent would.
       agentFactory: () => new FakeRebaseAgent((cwd) => {
         fs.writeFileSync(path.join(cwd, "shared.txt"), "merged\n");
         return "Resolved the conflict.";
@@ -1638,8 +1398,6 @@ describe("rebase-driver: docs/221 sync card + local base move", () => {
     }, "main");
 
     expect(result.status).toBe("conflicts_resolved");
-    // Reassurance is only reassuring below the alarming content: the card is the
-    // last row in history, after the resolution turn's own rows.
     expect(captured.length).toBeGreaterThan(1);
     expect(captured[captured.length - 1].branchSynced).toBeDefined();
   });
@@ -1654,9 +1412,6 @@ describe("rebase-driver: docs/221 sync card + local base move", () => {
     const history = deps.chatHistoryManager as unknown as { append: () => void };
     history.append = () => { throw new Error("history is wedged"); };
 
-    // The branch was rewritten and pushed before the card was written — a DB
-    // failure must not report that as a failed sync (and, on the automatic
-    // path, burn an attempt).
     const result = await runFlow(deps, "main");
     expect(result.status).toBe("rebased");
   });
@@ -1664,15 +1419,13 @@ describe("rebase-driver: docs/221 sync card + local base move", () => {
   it("up-to-date branch but local main behind — moves main, emits card, and flags baseMoved on rebase_complete", async () => {
     const { workDir, bareDir, git } = setupRepoWithRemote(tmpDir);
     execSync("git checkout -b feature", { cwd: workDir, stdio: "pipe" });
-    // Advance origin/main, then bring feature up to date so the sync is a no-op
-    // rebase — leaving local main the only thing still behind.
     advanceOriginMain(bareDir, workDir, "up.txt", "up\n");
     execSync("git fetch origin", { cwd: workDir, stdio: "pipe" });
     execSync("git rebase origin/main", { cwd: workDir, stdio: "pipe" });
     execSync("git push -u origin feature", { cwd: workDir, stdio: "pipe" });
 
     const originMain = await git.getRefHash("origin/main");
-    expect(await git.getRefHash("main")).not.toBe(originMain); // local main is behind
+    expect(await git.getRefHash("main")).not.toBe(originMain);
 
     const runner = new SessionRunner({ sessionId: "s1", sessionDir: workDir, defaultAgentId: "claude" });
     const messages: WsServerMessage[] = [];
@@ -1681,7 +1434,7 @@ describe("rebase-driver: docs/221 sync card + local base move", () => {
     const result = await runFlow({ ...baseDeps(git, runner, [], true), recordSyncCard: true }, "main");
 
     expect(result.status).toBe("up_to_date");
-    expect(await git.getRefHash("main")).toBe(originMain); // local main caught up
+    expect(await git.getRefHash("main")).toBe(originMain);
 
     const card = messages.find((m) => m.type === "branch_synced_card");
     expect(card).toBeDefined();
@@ -1690,13 +1443,12 @@ describe("rebase-driver: docs/221 sync card + local base move", () => {
     expect(complete).toBeDefined();
     if (complete?.type === "rebase_complete") {
       expect(complete.upToDate).toBe(true);
-      expect(complete.baseMoved).toBe(true); // suppresses the "Already up to date" toast
+      expect(complete.baseMoved).toBe(true);
     }
   });
 
   it("nothing to do (local main already current) — still records the manual sync", async () => {
     const { workDir, git } = setupRepoWithRemote(tmpDir);
-    // No divergence: session is on main, which already matches origin/main.
     const runner = new SessionRunner({ sessionId: "s1", sessionDir: workDir, defaultAgentId: "claude" });
     const messages: WsServerMessage[] = [];
     runner.on("message", (m: WsServerMessage) => messages.push(m));
@@ -1717,11 +1469,6 @@ describe("rebase-driver: docs/221 sync card + local base move", () => {
   });
 });
 
-/**
- * docs/221 — the agent-facing half of a manual sync. The card tells the user; a
- * pending notice tells the agent on its next turn, because the sync itself runs
- * with no turn in flight to prepend to.
- */
 describe("rebase-driver: docs/221 pending agent notice", () => {
   let tmpDir: string;
   let origGitConfigGlobal: string | undefined;
@@ -1776,7 +1523,6 @@ describe("rebase-driver: docs/221 pending agent notice", () => {
 
     expect(result.status).toBe("rebased");
     expect(notices).toHaveLength(1);
-    // Structural anchors only — the prose is copy, not contract.
     expect(notices[0]).toContain("[System]");
     expect(notices[0]).toContain("origin/main");
     expect(notices[0]).toContain("force-pushed");
@@ -1853,22 +1599,6 @@ describe("rebase-driver: constants", () => {
   });
 });
 
-/**
- * planning#338 — a production session stranded mid-rebase: a queued user message was
- * dispatched while the conflict-resolution system turn was in flight, its fresh
- * proxy displaced the resolution turn's agent slot, and the driver's
- * continuation (`git add -A && git rebase --continue`) never ran — nor did
- * anything run `git rebase --abort`, so every later turn's auto-commit refused
- * with "rebase in progress" until a human cleaned up by hand.
- *
- * Two independent fixes under test here:
- *  1. The flow HOLDS `systemTurnInProgress` for its whole duration and every
- *     user-turn entry path respects it, so a message arriving mid-flow queues
- *     and drains after the flow settles.
- *  2. Defense in depth: when a resolution turn is displaced (or otherwise ends
- *     short of `completed`) anyway, the driver aborts the rebase and leaves a
- *     persisted notice — the workspace can never strand mid-rebase.
- */
 describe("rebase-driver: planning#338 displacement + queue hold", () => {
   let tmpDir: string;
   let origGitConfigGlobal: string | undefined;
@@ -1892,10 +1622,6 @@ describe("rebase-driver: planning#338 displacement + queue hold", () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  /** A resolution agent whose turn is displaced by a newer spawn: it emits
-   * `superseded` (what `supersedeDisplacedAgent` fires at the displaced proxy)
-   * and never produces a result — its terminal events would be sse-dropped as
-   * stale in production. */
   class FakeSupersededAgent extends EventEmitter {
     readonly agentId = "claude" as const;
     run(): void {
@@ -1926,16 +1652,10 @@ describe("rebase-driver: planning#338 displacement + queue hold", () => {
       }, "main"),
     ).rejects.toThrow(/interrupted/);
 
-    // The incident state: nothing continued OR aborted the rebase, so the
-    // workspace sat mid-rebase and auto-commit refused forever. The driver now
-    // aborts before rethrowing.
     expect(await git.isRebaseInProgress()).toBe(false);
-    // The user gets a durable explanation, not just a transient WS event.
     const notice = captured.find((m) => m.text.includes("aborted"));
     expect(notice).toBeDefined();
     expect(notice?.text).toContain("interrupted");
-    // The displaced turn does not re-assert the flow's hold — the displacing
-    // turn owns the runner now, and the flag is not the flow's to keep.
     expect(runner.systemTurnInProgress).toBe(false);
   });
 
@@ -1961,8 +1681,6 @@ describe("rebase-driver: planning#338 displacement + queue hold", () => {
       }, "main"),
     ).rejects.toThrow(/Agent error during rebase conflict resolution/);
 
-    // Before planning#338 the user-driven path relied on the route's `rebase_aborted`
-    // EVENT alone and never touched git — the rebase stayed in progress.
     expect(await git.isRebaseInProgress()).toBe(false);
     expect(runner.systemTurnInProgress).toBe(false);
     expect(captured.some((m) => m.text.includes("aborted"))).toBe(true);
@@ -1987,8 +1705,6 @@ describe("rebase-driver: planning#338 displacement + queue hold", () => {
       agentFactory: () => new FakeRebaseAgent((cwd) => {
         agentInvocations++;
         if (agentInvocations === 1) {
-          // A user message arrives while the resolution turn is running. It
-          // must queue — not displace the resolution turn's agent slot.
           queuedHandle = runner.dispatch(testDispatch({ text: "Build it from the reverse-engineered API" }));
           fs.writeFileSync(path.join(cwd, "shared.txt"), "merged result\n");
           return "Resolved.";
@@ -1999,12 +1715,10 @@ describe("rebase-driver: planning#338 displacement + queue hold", () => {
       sseBroadcast: () => {},
     }, "main");
 
-    // The rebase completed untouched by the concurrent message…
     expect(result.status).toBe("conflicts_resolved");
     expect(await git.isRebaseInProgress()).toBe(false);
     expect(messages.some((m) => m.type === "message_queued")).toBe(true);
 
-    // …and the queued message then ran as its own turn after the flow settled.
     expect(queuedHandle).not.toBeNull();
     const outcome = await queuedHandle!.settled;
     expect(outcome.status).toBe("completed");
@@ -2016,7 +1730,7 @@ describe("rebase-driver: planning#338 displacement + queue hold", () => {
   it("the hold is exclusive — a second flow entering while one holds the session is refused with 409", async () => {
     const { workDir, git } = setupRepoWithRemote(tmpDir);
     const runner = new SessionRunner({ sessionId: "s1", sessionDir: workDir, defaultAgentId: "claude" });
-    runner.systemTurnInProgress = true; // another flow's hold (running=false)
+    runner.systemTurnInProgress = true;
 
     await expect(
       runFlow({
@@ -2030,7 +1744,6 @@ describe("rebase-driver: planning#338 displacement + queue hold", () => {
         sseBroadcast: () => {},
       }, "main"),
     ).rejects.toThrow(/system turn is in progress/);
-    // The refused flow must not clear the hold it does not own.
     expect(runner.systemTurnInProgress).toBe(true);
   });
 
@@ -2041,8 +1754,6 @@ describe("rebase-driver: planning#338 displacement + queue hold", () => {
     const runner = new SessionRunner({ sessionId: "s1", sessionDir: workDir, defaultAgentId: "claude" });
     const captured: { role: string; text: string }[] = [];
 
-    // The displacement path reaches the driver's abort — which then fails,
-    // leaving the workspace genuinely mid-rebase.
     const abortSpy = vi.spyOn(git, "rebaseAbort").mockRejectedValue(new Error("cannot lock ref"));
 
     await expect(
@@ -2059,21 +1770,15 @@ describe("rebase-driver: planning#338 displacement + queue hold", () => {
     ).rejects.toThrow(/interrupted/);
     abortSpy.mockRestore();
 
-    // The workspace really is still mid-rebase — and the durable notice says
-    // so instead of claiming "the branch is unchanged".
     expect(await git.isRebaseInProgress()).toBe(true);
     const notice = captured.find((m) => m.text.includes("FAILED"));
     expect(notice).toBeDefined();
     expect(notice?.text).toContain("still mid-rebase");
 
-    // Clean up the real rebase state so afterEach's rm doesn't race git.
     await git.rebaseAbort().catch(() => {});
   });
 
   it("dispatchOnRunner enqueues a non-system dispatch while the flow holds the session between turns", async () => {
-    // The gap the production incident fell through: `tryDrain` clears `running`
-    // at `agent_result` while the driver still has git work (and possibly more
-    // resolution turns) ahead. The flow-held flag must make dispatch enqueue.
     const { workDir } = setupRepoWithRemote(tmpDir);
     const runner = new SessionRunner({ sessionId: "s1", sessionDir: workDir, defaultAgentId: "claude" });
     runner.setSystemTurnDeps({
@@ -2092,26 +1797,20 @@ describe("rebase-driver: planning#338 displacement + queue hold", () => {
         ({ prompt, sessionId, cwd: workDir }) as AgentRunParams,
     });
 
-    runner.systemTurnInProgress = true; // the flow's hold, no turn in flight
+    runner.systemTurnInProgress = true;
 
     const handle = runner.dispatch(testDispatch({ text: "user msg mid-flow" }));
     expect(runner.running).toBe(false);
     expect(runner.queueLength).toBe(1);
 
-    // Another SYSTEM turn (CI fix / wake shape: systemTurn without
-    // postTurn:"none") is no safer mid-rebase — it queues too.
     const ciHandle = runner.dispatch(testDispatch({ text: "fix CI", systemTurn: true }));
     expect(runner.running).toBe(false);
     expect(runner.queueLength).toBe(2);
 
-    // The flow's own resolution turns (`systemTurn` + `postTurn: "none"`, the
-    // driver's exclusive shape) must still start.
     const sysHandle = runner.dispatch(testDispatch({ text: "resolve conflicts", systemTurn: true, postTurn: "none" }));
     expect(runner.running).toBe(true);
     await sysHandle.settled;
 
-    // Release the hold the way the flow's finally does, and drain. The head
-    // starts; the second entry drains off the first's own post-turn drain.
     runner.systemTurnInProgress = false;
     expect(releaseQueuedTurn(runner)).toBe(true);
     await handle.settled;
@@ -2120,22 +1819,6 @@ describe("rebase-driver: planning#338 displacement + queue hold", () => {
   });
 });
 
-/**
- * The 2026-09-07 incident (session 43c732e1, branch
- * `shipit/git-lfs-content-optimization-45hjy1`): a manual "Sync with `main`"
- * ran `git rebase origin/main` against a workspace whose index was not empty
- * and git refused — `cannot rebase: Your index contains uncommitted changes`.
- *
- * The flow's guards cannot see that state. `runner.running` and
- * `runner.systemTurnInProgress` describe a TURN, and the post-turn commit runs
- * with both already false (`tryDrain` clears `running` at `agent_result`;
- * `runCommitAndPr` runs several awaits later). The automatic conflict-resolve
- * path has always pre-flighted a dirty tree; the manual path had nothing.
- *
- * `prepareWorkspaceForRebase` closes both halves: it takes the per-workspace
- * mutex `postTurnCommit` holds for its whole `git add -A` + `git commit`, and
- * it refuses — durably, in the transcript — when the tree cannot be made clean.
- */
 describe("rebase-driver: pre-rebase workspace preparation", () => {
   let tmpDir: string;
   let origGitConfigGlobal: string | undefined;
@@ -2163,21 +1846,11 @@ describe("rebase-driver: pre-rebase workspace preparation", () => {
   const makeRunner = (workDir: string): SessionRunner =>
     new SessionRunner({ sessionId: "s1", sessionDir: workDir, defaultAgentId: "claude" });
 
-  /**
-   * THE regression test. A post-turn commit is mid-flight on the same
-   * workspace — staged, not yet committed, holding the workspace mutex — when
-   * the user clicks Sync. Before the fix the flow read the turn flags (both
-   * already false), fetched, and ran `git rebase` straight into that index.
-   *
-   * Asserted on ORDER, not on a timeout: the commit must land before
-   * `git.rebase` is invoked at all.
-   */
   it("waits out an in-flight post-turn commit instead of rebasing into its index", async () => {
     const { workDir, bareDir, git } = setupRepoWithRemote(tmpDir);
     createCleanDivergence(bareDir, workDir);
     const runner = makeRunner(workDir);
 
-    // The previous turn's edit, not yet committed.
     fs.writeFileSync(path.join(workDir, "from-last-turn.txt"), "work\n");
 
     const order: string[] = [];
@@ -2187,8 +1860,6 @@ describe("rebase-driver: pre-rebase workspace preparation", () => {
       return realRebase(ref);
     });
 
-    // `postTurnCommit` runs its whole `git add -A` + `git commit` inside this
-    // mutex; we reproduce that shape rather than the whole pipeline.
     const commitInFlight = withWorkspaceLock(workDir, async () => {
       execSync("git add -A", { cwd: workDir, stdio: "pipe" });
       await new Promise((resolve) => setTimeout(resolve, 250));
@@ -2212,16 +1883,10 @@ describe("rebase-driver: pre-rebase workspace preparation", () => {
 
     expect(order).toEqual(["commit", "rebase"]);
     expect(result.status).toBe("rebased");
-    // The turn's work survived the rebase and is on the branch.
     expect(fs.readFileSync(path.join(workDir, "from-last-turn.txt"), "utf8")).toBe("work\n");
     expect(execSync("git log --oneline -3", { cwd: workDir }).toString()).toContain("Previous turn");
   });
 
-  /**
-   * A tree nobody is coming back for — an agent killed mid-turn, an edit made
-   * in the terminal panel. An explicit sync SAVES it through the established
-   * pipeline; it never stashes and never discards.
-   */
   it("saves an otherwise-orphaned dirty tree through the commit pipeline, then rebases", async () => {
     const { workDir, bareDir, git } = setupRepoWithRemote(tmpDir);
     createCleanDivergence(bareDir, workDir);
@@ -2235,7 +1900,6 @@ describe("rebase-driver: pre-rebase workspace preparation", () => {
         cwd: workDir,
         stdio: "pipe",
       });
-      // Handed over the instant it exists, exactly as `postTurnCommit` does.
       deferPushArm(armPush);
       return { commitHash: execSync("git rev-parse HEAD", { cwd: workDir }).toString().trim() };
     });
@@ -2257,18 +1921,9 @@ describe("rebase-driver: pre-rebase workspace preparation", () => {
     expect(result.status).toBe("rebased");
     expect(result).toHaveProperty("forcePushed", true);
     expect(fs.readFileSync(path.join(workDir, "unsaved.txt"), "utf8")).toBe("precious\n");
-    // The flow's own force-push published that commit, so the deferred plain
-    // push must NOT also fire — a debounced push racing a force-push is
-    // rejected non-fast-forward and reported as a divergence that never was.
     expect(armPush).not.toHaveBeenCalled();
   });
 
-  /**
-   * The save pipeline refusing is its job (a likely secret in the diff,
-   * unresolved conflict markers). The sync must then stop with the tree
-   * untouched, explain itself durably, and hand back the auto-push for
-   * whatever the pipeline did manage to commit.
-   */
   it("refuses the sync when the pipeline cannot clean the tree, and says so durably", async () => {
     const { workDir, bareDir, git } = setupRepoWithRemote(tmpDir);
     createCleanDivergence(bareDir, workDir);
@@ -2291,36 +1946,23 @@ describe("rebase-driver: pre-rebase workspace preparation", () => {
       usageManager: makeStubUsageManager(),
       sseBroadcast: () => {},
       recordSyncCard: true,
-      // The shape `postTurnCommit` returns on a secret block: no commit, tree
-      // left exactly as the user left it.
       commitPendingWork: async (deferPushArm: (arm: () => void) => void) => {
         deferPushArm(armPush);
         return { commitHash: null };
       },
     }, "main")).rejects.toMatchObject({ statusCode: 409 });
 
-    // Nothing was rebased, nothing was stashed, nothing was discarded.
     expect(execSync("git rev-parse HEAD", { cwd: workDir }).toString().trim()).toBe(headBefore);
     expect(fs.readFileSync(path.join(workDir, "has-a-secret.txt"), "utf8")).toBe("sk-live-xxx\n");
     expect(messages.find((m) => m.type === "rebase_started")).toBeUndefined();
 
-    // Durable, not just a transient `rebase_aborted`: the explanation is in the
-    // transcript the user still has after a reload.
     const notice = captured.find((m) => m.text.includes("did not start"));
     expect(notice).toBeDefined();
     expect(notice?.text).toContain("could not save this session's uncommitted changes");
     expect(notice?.text).toContain("your work is untouched");
-    // A commit the pipeline DID make would be left local and unpushed
-    // otherwise; the arm comes back to us because no force-push will run.
     expect(armPush).toHaveBeenCalledTimes(1);
   });
 
-  /**
-   * The automatic conflict-resolve path wires no save pipeline on purpose — it
-   * must never commit work the user did not ask it to commit. It refuses with
-   * the same 409 the wrapper reads as "defer, no budget burned", and stays
-   * SILENT: a persisted notice per poll would be noise.
-   */
   it("refuses a dirty tree with no save pipeline, and leaves no notice on the automatic path", async () => {
     const { workDir, bareDir, git } = setupRepoWithRemote(tmpDir);
     createCleanDivergence(bareDir, workDir);
@@ -2339,7 +1981,6 @@ describe("rebase-driver: pre-rebase workspace preparation", () => {
       agentFactory: () => new FakeRebaseAgent(() => "should not run") as unknown as AgentProcess,
       usageManager: makeStubUsageManager(),
       sseBroadcast: () => {},
-      // recordSyncCard unset ⇒ the automatic path.
     }, "main")).rejects.toMatchObject({ statusCode: 409 });
 
     expect(execSync("git rev-parse HEAD", { cwd: workDir }).toString().trim()).toBe(headBefore);
@@ -2347,18 +1988,11 @@ describe("rebase-driver: pre-rebase workspace preparation", () => {
     expect(captured).toHaveLength(0);
   });
 
-  /**
-   * A workspace already mid-rebase is named for what it is. Letting the
-   * dirty-tree branch report it would blame the tree for a state `autoCommit`
-   * refuses to clean by design, and the user would be told to commit work that
-   * cannot be committed.
-   */
   it("names an already-in-progress rebase instead of blaming the working tree", async () => {
     const { workDir, bareDir, git } = setupRepoWithRemote(tmpDir);
     createConflictingDivergence(bareDir, workDir);
     const runner = makeRunner(workDir);
 
-    // Strand the workspace mid-rebase, exactly as an interrupted one would.
     execSync("git fetch origin", { cwd: workDir, stdio: "pipe" });
     try {
       execSync("git rebase origin/main", { cwd: workDir, stdio: "pipe" });
@@ -2383,11 +2017,6 @@ describe("rebase-driver: pre-rebase workspace preparation", () => {
     expect(notice?.text).toContain("git rebase --abort");
   });
 
-  /**
-   * The flow must not have taken the hold it releases in its `finally` and
-   * then left it set on a refusal — a stranded `systemTurnInProgress`
-   * suppresses live steering for the rest of the session (planning#338).
-   */
   it("releases the session hold when preparation refuses", async () => {
     const { workDir, bareDir, git } = setupRepoWithRemote(tmpDir);
     createCleanDivergence(bareDir, workDir);
@@ -2410,10 +2039,6 @@ describe("rebase-driver: pre-rebase workspace preparation", () => {
   });
 });
 
-/**
- * Review findings against the first cut of the preparation step. Each is a
- * distinct way the SAVE could go wrong once the sync was allowed to make one.
- */
 describe("rebase-driver: pre-sync save — publication and handoff", () => {
   let tmpDir: string;
   let origGitConfigGlobal: string | undefined;
@@ -2441,17 +2066,8 @@ describe("rebase-driver: pre-sync save — publication and handoff", () => {
   const makeRunner = (workDir: string): SessionRunner =>
     new SessionRunner({ sessionId: "s1", sessionDir: workDir, defaultAgentId: "claude" });
 
-  /**
-   * `pushIfAheadOfRemote` refuses to push a session checked out on the base
-   * branch, because that would land commits on `main` and bypass the pull
-   * request. The pre-sync commit's deferred arm is a plain `git push origin
-   * <branch>` — so firing it whenever "we did not force-push" would do the very
-   * thing that refusal exists to prevent. "Prohibited" and "not yet" are
-   * different answers.
-   */
   it("never publishes the pre-sync commit when the session is on the base branch", async () => {
     const { workDir, git } = setupRepoWithRemote(tmpDir);
-    // On `main`, up to date with origin, but carrying uncommitted work.
     const runner = makeRunner(workDir);
     const captured: { role: string; text: string }[] = [];
     fs.writeFileSync(path.join(workDir, "dirty-on-main.txt"), "local\n");
@@ -2479,20 +2095,12 @@ describe("rebase-driver: pre-sync save — publication and handoff", () => {
 
     expect(result.status).toBe("up_to_date");
     expect(result).toHaveProperty("forcePushed", false);
-    // The commit exists locally and the remote never saw it.
     expect(execSync("git log --oneline -1", { cwd: workDir }).toString()).toContain("Save work");
     expect(armPush).not.toHaveBeenCalled();
-    // And the user is told why, rather than left to notice.
     const notice = captured.find((m) => m.text.includes("NOT pushed"));
     expect(notice?.text).toContain("checked out on `main`");
   });
 
-  /**
-   * Everything after the save can throw — the second inspection here,
-   * `postTurnCommit`'s own chat bookkeeping. An arm that travelled on the
-   * return value was dropped on exactly those paths, leaving the commit local,
-   * unpushed and unexplained. The flow owns it from the instant it exists.
-   */
   it("still arms the pre-sync commit's push when preparation throws after the save", async () => {
     const { workDir, bareDir, git } = setupRepoWithRemote(tmpDir);
     createCleanDivergence(bareDir, workDir);
@@ -2501,8 +2109,6 @@ describe("rebase-driver: pre-sync save — publication and handoff", () => {
     fs.writeFileSync(path.join(workDir, "unsaved.txt"), "precious\n");
     const armPush = vi.fn();
 
-    // The post-save inspection fails. `inspectWorkingTree` is called once
-    // before the save and once after; fail only the second.
     const realInspect = git.inspectWorkingTree.bind(git);
     let inspections = 0;
     vi.spyOn(git, "inspectWorkingTree").mockImplementation(async () => {
@@ -2526,7 +2132,6 @@ describe("rebase-driver: pre-sync save — publication and handoff", () => {
           cwd: workDir,
           stdio: "pipe",
         });
-        // Handed over BEFORE anything that can throw, which is the contract.
         deferPushArm(armPush);
         return { commitHash: execSync("git rev-parse HEAD", { cwd: workDir }).toString().trim() };
       },
@@ -2535,21 +2140,12 @@ describe("rebase-driver: pre-sync save — publication and handoff", () => {
     expect(armPush).toHaveBeenCalledTimes(1);
   });
 
-  /**
-   * `systemTurnInProgress` does not exclude every writer: a file save from the
-   * editor writes to disk before it takes the commit mutex, and its own commit
-   * guard consults only `running`. So the tree can be dirtied again between
-   * preparation and `git rebase` — which is why the final inspection has to sit
-   * inside the same critical section as the rebase, not merely before it.
-   */
   it("refuses a tree dirtied after preparation, rather than letting git report it", async () => {
     const { workDir, bareDir, git } = setupRepoWithRemote(tmpDir);
     createCleanDivergence(bareDir, workDir);
     const runner = makeRunner(workDir);
     const captured: { role: string; text: string }[] = [];
 
-    // A late writer that lands while the flow is fetching — after preparation
-    // read a clean tree.
     const realFetch = git.fetch.bind(git);
     vi.spyOn(git, "fetch").mockImplementation(async (remote?: string) => {
       await realFetch(remote);
@@ -2569,21 +2165,12 @@ describe("rebase-driver: pre-sync save — publication and handoff", () => {
       recordSyncCard: true,
     }, "main")).rejects.toMatchObject({ statusCode: 409 });
 
-    // Refused with an explanation of our own, not git's raw
-    // "index contains uncommitted changes"...
     const notice = captured.find((m) => m.text.includes("did not start"));
     expect(notice?.text).toContain("changed while the sync was preparing");
-    // ...and the late edit is still there, uncommitted and unrebased.
     expect(fs.readFileSync(path.join(workDir, "late-edit.txt"), "utf8")).toBe("typed while syncing\n");
-    // No LFS restore is owed: nothing rewrote the worktree.
     expect(vi.mocked(restoreLfsAfterTreeRewrite)).not.toHaveBeenCalled();
   });
 
-  /**
-   * A failure the driver already explained must not also collect the route's
-   * generic notice, and one it did not explain must collect it — the sync's
-   * only other report is a transient `rebase_aborted`.
-   */
   it("tags the failures it already explained, and only those", async () => {
     const { workDir, bareDir, git } = setupRepoWithRemote(tmpDir);
     createCleanDivergence(bareDir, workDir);
@@ -2603,8 +2190,6 @@ describe("rebase-driver: pre-sync save — publication and handoff", () => {
     }, "main").catch((err: unknown) => err);
     expect(syncFailureAlreadyExplained(explained)).toBe(true);
 
-    // The automatic path persists nothing, so it is not "already explained"
-    // either — and a plain failure never is.
     expect(syncFailureAlreadyExplained(new Error("fetch died"))).toBe(false);
     expect(syncFailureAlreadyExplained(null)).toBe(false);
   });

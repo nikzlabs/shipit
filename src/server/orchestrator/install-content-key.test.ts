@@ -1,11 +1,3 @@
-// Follow-up to nikzlabs/shipit#2429 — tell the user at SETUP that the
-// content-keyed install skip is off, rather than after the failure it causes.
-//
-// The fixture mirrors PRODUCTION shapes deliberately: every entry point takes
-// the session's CLONE (`<sessionRoot>/workspace`), because that is what
-// `ContainerSessionRunner.sessionDir` holds. Passing the session ROOT would
-// write the record one level off and pass anyway.
-
 import { describe, expect, it, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
@@ -37,7 +29,6 @@ function agent(install: string[], installInputs: string[] | null = null): Conten
   return { install, installInputs };
 }
 
-/** Where the record lands — asserted directly so a path change is caught. */
 function recordPath(): string {
   return path.join(sessionRoot, "state", "shared", CONTENT_KEY_OFF_FILE);
 }
@@ -52,7 +43,6 @@ describe("contentKeyingIsOff", () => {
   it("is true when a step is not a recognized dependency install and install-inputs is absent", () => {
     expect(contentKeyingIsOff(agent(["npm ci", "npm run build"]))).toBe(true);
     expect(contentKeyingIsOff(agent(["./scripts/bootstrap.sh"]))).toBe(true);
-    // The production case this was found on: a build step plus `dist` in dep-dirs.
     expect(contentKeyingIsOff(agent(["npm ci", "npx prisma generate"]))).toBe(true);
   });
 
@@ -60,7 +50,6 @@ describe("contentKeyingIsOff", () => {
     expect(
       contentKeyingIsOff(agent(["npm ci", "npm run build"], ["package.json", "package-lock.json"])),
     ).toBe(false);
-    // Even an explicit empty list: it opts out on purpose (`deps-hash.ts`).
     expect(contentKeyingIsOff(agent(["npm ci", "npm run build"], []))).toBe(false);
   });
 
@@ -70,8 +59,6 @@ describe("contentKeyingIsOff", () => {
   });
 
   it("is true for a recognized but input-free install, which also hashes to nothing", () => {
-    // `uv venv` is recognized (→ `[]`), but the union is empty, so
-    // `resolveDepsHashInputs` still yields null and both halves stay off.
     expect(contentKeyingIsOff(agent(["uv venv"]))).toBe(true);
   });
 });
@@ -83,7 +70,6 @@ describe("evaluateContentKeyReport", () => {
     expect(fs.existsSync(recordPath())).toBe(true);
     expect(reportedContentKeyOff(workspaceDir)).toEqual(["npm ci", "npm run build"]);
 
-    // A container recreate / activation re-runs setup — and stays quiet.
     expect(evaluateContentKeyReport(workspaceDir, cfg)).toBe(false);
     expect(evaluateContentKeyReport(workspaceDir, cfg)).toBe(false);
   });
@@ -117,8 +103,6 @@ describe("evaluateContentKeyReport", () => {
   it("clears the record once the config is fixed — either remedy", () => {
     expect(evaluateContentKeyReport(workspaceDir, agent(["npm ci", "npm run build"]))).toBe(true);
 
-    // (a) declare install-inputs — the command list is unchanged, so this is
-    // exactly the case a command-list-keyed check would have missed.
     expect(
       evaluateContentKeyReport(
         workspaceDir,
@@ -128,7 +112,6 @@ describe("evaluateContentKeyReport", () => {
     expect(fs.existsSync(recordPath())).toBe(false);
     expect(installContentKeyDiagnostic(workspaceDir)).toBeNull();
 
-    // (b) move the build into the service command — a pure dependency install.
     expect(evaluateContentKeyReport(workspaceDir, agent(["npm ci", "npm run build"]))).toBe(true);
     expect(evaluateContentKeyReport(workspaceDir, agent(["npm ci"]))).toBe(false);
     expect(fs.existsSync(recordPath())).toBe(false);
@@ -189,9 +172,6 @@ describe("contentKeyOffNotice", () => {
   });
 
   it("says nothing is broken — it is not the post-rewrite gap notice", () => {
-    // The #2429 notice reports a tree that has already moved. Sharing its
-    // phrasing is the specific thing to avoid: a session that hits both must
-    // not read two paragraphs that sound the same.
     expect(notice).toContain("Nothing is broken by this");
     expect(notice).not.toContain("rewrote this session's working tree");
     expect(notice).not.toContain("may no longer match");

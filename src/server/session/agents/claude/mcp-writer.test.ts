@@ -4,13 +4,6 @@ import fs from "node:fs";
 import { ClaudeAdapter } from "./adapter.js";
 import type { AgentMcpBridge, McpServerConfig } from "../agent-process.js";
 
-/**
- * docs/088 / docs/125 / docs/155 hair 10 / planning#130 — ClaudeAdapter writes a
- * per-turn `--mcp-config` JSON file bundling the built-in Playwright server, the
- * consolidated `shipit` bridge (when present), and any user-configured MCP
- * servers (with `$secret:` placeholders resolved against process.env). Missing
- * secrets drop the server and report it back via onServerFailed.
- */
 describe("ClaudeAdapter.writeMcpConfig (docs/155 hair 10, planning#130)", () => {
   let adapter: ClaudeAdapter;
   let onServerFailed: ReturnType<typeof vi.fn<(name: string, reason: string) => void>>;
@@ -21,9 +14,6 @@ describe("ClaudeAdapter.writeMcpConfig (docs/155 hair 10, planning#130)", () => 
   };
 
   beforeEach(() => {
-    // Adapter is constructed with a minimal stub inner so the wireEvents
-    // setup doesn't try to spawn anything. writeMcpConfig() doesn't touch
-    // inner — it only writes the JSON file.
     adapter = new ClaudeAdapter(new EventEmitter() as never);
     onServerFailed = vi.fn<(name: string, reason: string) => void>();
   });
@@ -59,7 +49,6 @@ describe("ClaudeAdapter.writeMcpConfig (docs/155 hair 10, planning#130)", () => 
   it("registers ONE consolidated shipit server selecting Claude's tool subset", () => {
     const { config } = write();
     const servers = config.mcpServers as Record<string, { command: string; args: string[]; env: Record<string, string> }>;
-    // No per-tool servers — just `shipit`.
     expect(servers["shipit-review"]).toBeUndefined();
     expect(servers["shipit-present"]).toBeUndefined();
     expect(servers["shipit-permission"]).toBeUndefined();

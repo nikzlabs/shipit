@@ -1,20 +1,4 @@
-/**
- * docs/109 reqs 10–11 — a backgrounded subagent's card must retire when the
- * subagent finishes.
- *
- * The bug this pins: a `run_in_background` Task's `tool_result` is written once,
- * at launch, as the CLI's acknowledgement, and is never superseded. The card
- * therefore said "Running in the background — its report will appear here when
- * it finishes" forever, **including after a full reload**, long after the
- * subagent had finished and the parent agent had acted on its output.
- *
- * Every assertion here reads the PERSISTED transcript (`GET /history`), not the
- * live emit, because "survives a reload" is the half the emit-only version of
- * this fix would have got wrong.
- *
- * Fixtures are the real CLI 2.1.219 payloads — see the wire trace in
- * `orchestrator/subagent-completion.ts`.
- */
+// CLI 2.1.219 fixtures; wire trace: ../subagent-completion.ts.
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
@@ -95,7 +79,6 @@ describe("Integration: a finished background subagent's card", () => {
 
   const settle = (ms = 150) => new Promise((r) => setTimeout(r, ms));
 
-  /** Launch a backgrounded subagent: the Task tool_use plus the CLI's ack. */
   function launchBackgroundSubagent() {
     lastClaude.emit("event", {
       type: "assistant",
@@ -119,7 +102,6 @@ describe("Integration: a finished background subagent's card", () => {
     });
   }
 
-  /** The stored result for the Task call, as a reloading browser would see it. */
   async function storedResult(sessionId: string): Promise<ToolResultEntry | undefined> {
     const res = await fetch(`http://127.0.0.1:${port}/api/sessions/${sessionId}/history`);
     const body = await res.json() as { messages: { toolResults?: ToolResultEntry[] }[] };
@@ -130,17 +112,9 @@ describe("Integration: a finished background subagent's card", () => {
     return undefined;
   }
 
-  /**
-   * The common case, and the one a naive fix gets wrong: the notification lands
-   * while the launching turn is still open. Measured against the real CLI, a
-   * short subagent's notification arrived 168ms BEFORE its launching turn's
-   * `result` — so the row lives in the runner's accumulator, and the next
-   * tool-result boundary's `replaceInProgress` rewrites the DB from it. A
-   * database-only patch is silently undone at that boundary.
-   */
   it("retires mid-turn, and the retirement survives the next tool-result boundary", async () => {
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
     const sessionId = client.sessionId;
 
     client.send({ type: "send_message", text: "Look into the number seven" });
@@ -152,7 +126,6 @@ describe("Integration: a finished background subagent's card", () => {
     await settle();
     expect(isBackgroundLaunchAck(parseSubagentReport((await storedResult(sessionId))!.content).text)).toBe(true);
 
-    // The subagent finishes while the launching turn is still streaming.
     lastClaude.emit("event", {
       type: "agent_self_wake",
       taskId: "af0615944a51b4583",
@@ -166,8 +139,6 @@ describe("Integration: a finished background subagent's card", () => {
     const update = await client.receiveType("subagent_report_update");
     expect(update).toMatchObject({ sessionId, toolUseId: TOOL_ID });
 
-    // The turn continues and hits another tool-result boundary, which deletes
-    // every in_progress row and re-inserts from the accumulator.
     lastClaude.emit("event", {
       type: "assistant",
       message: {
@@ -188,12 +159,10 @@ describe("Integration: a finished background subagent's card", () => {
     const parsed = parseSubagentReport(stored!.content);
     expect(isBackgroundLaunchAck(parsed.text)).toBe(false);
     expect(parsed.text).toBe(REPORT);
-    // req 5 — the notification's accounting becomes the header chips.
     expect(parseReportMeta(parsed.meta)).toEqual({ tokens: 10408, toolUses: 0, durationMs: 2757 });
     client.close();
   });
 
-  /** The other half: a long subagent whose launching turn finalized long ago. */
   it("retires a card whose turn already finished, and it stays retired on reload", async () => {
     const client = await TestClient.connect(port);
     await client.receive();
@@ -221,7 +190,6 @@ describe("Integration: a finished background subagent's card", () => {
     client.close();
   });
 
-  /** req 9 / req 11 — a failure closes out the promise as an error, not a report. */
   it("marks a failed background subagent's result as an error", async () => {
     const client = await TestClient.connect(port);
     await client.receive();
@@ -251,12 +219,6 @@ describe("Integration: a finished background subagent's card", () => {
     client.close();
   });
 
-  /**
-   * The regression guard for the dangerous direction. `task_notification` fires
-   * for background *shell* commands too, carrying the Bash call's tool_use_id
-   * and a one-line summary. Rewriting that result would replace real command
-   * output with `Background command "npm test" completed`.
-   */
   it("leaves a background Bash command's result untouched", async () => {
     const client = await TestClient.connect(port);
     await client.receive();

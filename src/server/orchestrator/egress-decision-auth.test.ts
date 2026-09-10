@@ -1,12 +1,3 @@
-/**
- * planning#371 — the decision-query token registry.
- *
- * Three concerns: a token is valid only for the session it was minted for; a
- * token this process never minted is recovered from the sidecar's own
- * environment (the orchestrator-restart case); and the recovery is throttled, so
- * a container-reachable route cannot be used to drive Docker inspections.
- */
-
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 
 import {
@@ -45,9 +36,6 @@ describe("egress decision tokens", () => {
     expect(await verifyEgressDecisionToken("sess-a", second)).toBe(true);
   });
 
-  // Review finding — `containComposeServices` launches one proxy per contained
-  // service in a single pass, so the cap has to sit well above any real stack
-  // or it evicts credentials whose sidecars are still running.
   it("keeps every token of a stack larger than any real one live at once", async () => {
     const tokens = Array.from({ length: 64 }, () => mintEgressDecisionToken("sess-a"));
     for (const token of tokens) {
@@ -70,14 +58,12 @@ describe("egress decision tokens", () => {
   });
 
   it("recovers a token this process never minted (orchestrator restart)", async () => {
-    // Minted by a previous orchestrator, still in the live sidecar's env.
     const survivor = mintEgressDecisionToken("sess-a");
     clearEgressDecisionTokens("sess-a");
     setEgressDecisionTokenRecovery(async (sessionId) =>
       sessionId === "sess-a" ? [survivor] : []);
 
     expect(await verifyEgressDecisionToken("sess-a", survivor)).toBe(true);
-    // And it is cached — a second query does not re-inspect.
     setEgressDecisionTokenRecovery(async () => {
       throw new Error("should not be consulted again");
     });

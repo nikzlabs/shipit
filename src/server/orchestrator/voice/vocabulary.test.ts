@@ -8,7 +8,6 @@ describe("coding vocabulary", () => {
   });
 
   it("splits multi-word terms into single tokens for Deepgram keywords", () => {
-    // "pull request" → "pull", "request"; "Claude Code" → "Claude", "Code".
     expect(DEEPGRAM_KEYWORDS).toContain("pull");
     expect(DEEPGRAM_KEYWORDS).toContain("request");
     expect(DEEPGRAM_KEYWORDS).toContain("Code");
@@ -16,7 +15,6 @@ describe("coding vocabulary", () => {
   });
 
   it("de-duplicates tokens that appear in more than one term", () => {
-    // "Claude" appears standalone and in "Claude Code".
     const claudeCount = DEEPGRAM_KEYWORDS.filter((k) => k === "Claude").length;
     expect(claudeCount).toBe(1);
   });

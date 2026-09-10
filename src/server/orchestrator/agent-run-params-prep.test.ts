@@ -20,7 +20,6 @@ describe("prepareClaudeRunParams", () => {
     const out = prepareClaudeRunParams(baseParams, { autoCreatePrActive: true });
     expect(out.settingsPath).toBe("/etc/shipit/managed-settings.json");
     expect(out.autoCreatePr).toBe(true);
-    // Shared fields pass through untouched.
     expect(out.prompt).toBe("hello");
     expect(out.cwd).toBe("/workspace/session-x");
     expect(out.systemPrompt).toBe("do the thing");
@@ -82,8 +81,6 @@ describe("getPrepareRunParams", () => {
   it("falls back to identity when the agent is not registered", () => {
     const map = new Map<string, PrepareRunParamsFn>();
     map.set("claude", prepareClaudeRunParams);
-    // Pretend Cursor lands without registering its hook yet — fallback keeps
-    // the system working instead of throwing at every turn.
     expect(getPrepareRunParams(map as never, "cursor" as never)).toBe(
       identityPrepareRunParams,
     );

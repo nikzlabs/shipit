@@ -1,32 +1,3 @@
-/**
- * Integration test for the Codex (ChatGPT subscription) device-auth flow.
- *
- * Covers the full HTTP -> SSE -> agent_list cycle that doc 119 Phase 2.3
- * specified, exercising the real `CodexAuthManager`, the account-scoped login
- * routes, the `wireEventHandlers` SSE re-broadcast, and the `AgentRegistry`
- * auth refresh — only the `codex` binary itself is faked:
- *
- *   POST /api/provider-accounts/codex/:accountId/login
- *     -> CodexAuthManager spawns (faked) `codex login --device-auth`
- *     -> stdout prints the verification URL + user code
- *     -> SSE `agent_auth_pending` { loginId: "openai-chatgpt", accountId, details: { kind: "device-code", ... } }
- *   fake codex writes auth.json + exits 0
- *     -> SSE `agent_auth_complete` { loginId: "openai-chatgpt" }
- *     -> agentRegistry.refreshAuth("codex") flips hasRunnableModels
- *     -> SSE `agent_list` with codex hasRunnableModels: true
- *
- * The SSE event family is unified (docs/155 Phase 2b) — payload-shape
- * differences across backends live in the discriminated `details` field.
- *
- * docs/150-multiple-provider-subscriptions req 16 — the singleton `POST /api/codex-auth/start` this used to
- * drive is gone; connecting the first Codex subscription goes through the same
- * per-account route as the second.
- *
- * The credentials file lands in a temp dir that the manager's injected
- * `checkAuthFile` probe points at, mirroring the real
- * `/credentials/.codex/auth.json` without touching it.
- */
-
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { EventEmitter } from "node:events";
 import { Readable } from "node:stream";
@@ -50,10 +21,6 @@ import {
 import { DatabaseManager } from "../../shared/database.js";
 import type { FastifyInstance } from "fastify";
 
-// ---------------------------------------------------------------------------
-// Fake `codex login --device-auth` process
-// ---------------------------------------------------------------------------
-
 /** Canonical stdout the real CLI prints (sans ANSI), URL + one-time code. */
 const CANONICAL_OUTPUT =
   "Welcome to Codex\n\n" +
@@ -62,10 +29,6 @@ const CANONICAL_OUTPUT =
   "2. Enter this one-time code (expires in 15 minutes)\n" +
   "   K8RE-8MIGC\n";
 
-/**
- * Minimal ChildProcess stand-in — only the surface CodexAuthManager touches:
- * stdout/stderr Readables, `on("close" | "error")`, and `kill()`.
- */
 class FakeChildProcess extends EventEmitter {
   pid = 4242;
   stdout = new Readable({ read() {} });
@@ -82,10 +45,6 @@ function makeSpawn(): { proc: FakeChildProcess; spawnFn: SpawnFn } {
   const spawnFn: SpawnFn = () => proc as unknown as ChildProcess;
   return { proc, spawnFn };
 }
-
-// ---------------------------------------------------------------------------
-// SSE test client — reads `/api/events` frames over a real HTTP connection
-// ---------------------------------------------------------------------------
 
 interface SseFrame {
   event: string;
@@ -114,8 +73,6 @@ class SseTestClient {
       );
       const client = new SseTestClient(req);
       req.on("error", reject);
-      // The server starts streaming immediately; give the response a tick
-      // to wire up before resolving so early frames aren't missed.
       req.on("response", () => setTimeout(() => resolve(client), 20));
     });
   }
@@ -141,10 +98,6 @@ class SseTestClient {
     }
   }
 
-  /**
-   * Resolve with the next not-yet-consumed frame matching `event` (and an
-   * optional predicate). Polls because frames arrive asynchronously.
-   */
   async waitFor(
     event: string,
     predicate: (data: Record<string, unknown>) => boolean = () => true,
@@ -179,10 +132,6 @@ const findCodex = (
       | undefined
   )?.find((a) => a.id === "codex");
 
-// ---------------------------------------------------------------------------
-// Suite
-// ---------------------------------------------------------------------------
-
 describe("Integration: Codex device-auth flow (HTTP -> SSE -> agent_list)", () => {
   let app: FastifyInstance;
   let port: number;
@@ -194,11 +143,6 @@ describe("Integration: Codex device-auth flow (HTTP -> SSE -> agent_list)", () =
   let savedOpenAIKey: string | undefined;
   let sse: SseTestClient | null = null;
 
-  /**
-   * docs/150-multiple-provider-subscriptions req 16 — connecting a subscription is "create the row, start its
-   * login", identically for the first account and the fifth. There is no
-   * account-less start any more, so every flow below begins here.
-   */
   const createCodexAccount = async (): Promise<string> => {
     const res = await app.inject({
       method: "POST",
@@ -207,9 +151,6 @@ describe("Integration: Codex device-auth flow (HTTP -> SSE -> agent_list)", () =
     });
     expect(res.statusCode).toBe(200);
     const { account } = res.json() as { account: { id: string } };
-    // A scoped flow spawns the CLI with HOME pointed at the account root, so
-    // the credentials the fake "writes" have to land there — that is the path
-    // both the manager's close-handler check and the registry probe read.
     authFilePath = path.join(tmpDir, "provider-accounts", "codex", account.id, ".codex", "auth.json");
     fs.mkdirSync(path.dirname(authFilePath), { recursive: true });
     return account.id;
@@ -221,13 +162,10 @@ describe("Integration: Codex device-auth flow (HTTP -> SSE -> agent_list)", () =
   beforeEach(async () => {
     dbManager = createTestDatabaseManager();
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-codex-auth-"));
-    // Force the API-key fallback off so codex starts unauthenticated and the
-    // only path to hasRunnableModels: true is the device-auth file landing.
+    // Disable the API-key fallback so it cannot mask device-auth failure.
     savedOpenAIKey = process.env.OPENAI_API_KEY;
     delete process.env.OPENAI_API_KEY;
 
-    // The credentials file the faked `codex` will "write" — the manager's
-    // injected probe reads this temp path instead of /credentials/.codex.
     authFilePath = path.join(tmpDir, "codex-auth.json");
 
     const { proc, spawnFn } = makeSpawn();
@@ -238,8 +176,6 @@ describe("Integration: Codex device-auth flow (HTTP -> SSE -> agent_list)", () =
       timeoutMs: 60_000,
     });
 
-    // Registry must see codex as installed; its codex auth is bound to the
-    // manager exactly as app-di.ts wires the production registry.
     const registry = new AgentRegistry({
       checkBinary: async (binary) => binary === "claude" || binary === "codex",
       checkClaudeAuth: () => true,
@@ -255,9 +191,7 @@ describe("Integration: Codex device-auth flow (HTTP -> SSE -> agent_list)", () =
       authManager: new StubAuthManager() as unknown as AuthManager,
       agentRegistry: registry,
       codexAuthManager,
-      // Account creation writes a credential root, so it has to land in the
-      // temp dir — without this the provider-account manager defaults to the
-      // real `/credentials` and the test mutates the host's accounts.
+      // Keep account creation out of the real credentials directory.
       credentialsDir: tmpDir,
       workspaceDir: tmpDir,
       serveStatic: false,
@@ -286,44 +220,29 @@ describe("Integration: Codex device-auth flow (HTTP -> SSE -> agent_list)", () =
   it("drives the device flow end to end and flips codex hasRunnableModels", async () => {
     sse = await SseTestClient.connect(port);
 
-    // Snapshot on connect reports codex unauthenticated (no file, no env key).
     const initial = await sse.waitFor("agent_list", (d) => !!findCodex(d));
     expect(findCodex(initial)?.hasRunnableModels).toBe(false);
-    // docs/217 — the connect snapshot must carry per-agent `reasoning` (it uses
-    // the same listAgents() serializer as the broadcasts). A drifted inline copy
-    // once omitted it, so the composer's reasoning control vanished on every SSE
-    // reconnect (session switch / tab refocus) until an auth broadcast re-sent it.
     expect(findCodex(initial)?.reasoning?.options.length).toBeGreaterThan(0);
 
-    // Kick off the flow through the one connect path (docs/150-multiple-provider-subscriptions req 16).
     const accountId = await createCodexAccount();
     const start = await startAccountLogin(accountId);
     expect(start.statusCode).toBe(202);
     expect(start.json()).toMatchObject({ success: true });
 
-    // CLI prints the verification URL + user code -> SSE agent_auth_pending.
-    // docs/155 Phase 2b — unified event family; the per-agent payload lives
-    // in the discriminated `details.kind: "device-code"` variant.
     fakeProc.stdout.push(Buffer.from(CANONICAL_OUTPUT, "utf-8"));
     const pending = await sse.waitFor(
       "agent_auth_pending",
       (d) => (d as { loginId?: string }).loginId === "openai-chatgpt",
     ) as { loginId: string; accountId?: string; details: { kind: string; verificationUri: string; userCode: string; expiresInSec: number } };
-    // docs/150-multiple-provider-subscriptions reqs 16/19 — the challenge must name its account. The client
-    // files it under that row and has no provider-wide slot to fall back to,
-    // so an unqualified event is dropped and the row sits blank forever.
     expect(pending.accountId).toBe(accountId);
     expect(pending.details.kind).toBe("device-code");
     expect(pending.details.verificationUri).toBe("https://auth.openai.com/codex/device");
     expect(pending.details.userCode).toBe("K8RE-8MIGC");
     expect(pending.details.expiresInSec).toBeGreaterThan(0);
 
-    // User approves: the CLI writes auth.json under the (temp) credentials
-    // dir and exits 0.
     fs.writeFileSync(authFilePath, JSON.stringify({ tokens: { access_token: "tok" } }));
     fakeProc.emit("close", 0);
 
-    // Completion broadcast, then agent_list with codex hasRunnableModels: true.
     const complete = await sse.waitFor(
       "agent_auth_complete",
       (d) => (d as { loginId?: string }).loginId === "openai-chatgpt",
@@ -335,7 +254,6 @@ describe("Integration: Codex device-auth flow (HTTP -> SSE -> agent_list)", () =
     );
     expect(findCodex(after)?.hasRunnableModels).toBe(true);
 
-    // The auth file ended up under the temp credentials dir (doc 119 §2.3).
     expect(fs.existsSync(authFilePath)).toBe(true);
   });
 
@@ -352,7 +270,6 @@ describe("Integration: Codex device-auth flow (HTTP -> SSE -> agent_list)", () =
       (d) => (d as { loginId?: string }).loginId === "openai-chatgpt",
     );
 
-    // CLI exits non-zero without writing credentials.
     fakeProc.emit("close", 1);
 
     const failed = await sse.waitFor(
@@ -363,7 +280,6 @@ describe("Integration: Codex device-auth flow (HTTP -> SSE -> agent_list)", () =
     expect(failed.reason).toBe("error");
     expect(failed.message).toMatch(/code 1/);
 
-    // No credentials file -> registry still reports codex unauthenticated.
     expect(fs.existsSync(authFilePath)).toBe(false);
     const boot = await app.inject({ method: "GET", url: "/api/bootstrap" });
     expect(findCodex(boot.json())?.hasRunnableModels).toBe(false);
@@ -382,8 +298,6 @@ describe("Integration: Codex device-auth flow (HTTP -> SSE -> agent_list)", () =
       (d) => (d as { loginId?: string }).loginId === "openai-chatgpt",
     );
 
-    // A second start against the running flow re-emits the cached pending
-    // event (page-reload recovery) rather than spawning a second process.
     const second = await startAccountLogin(accountId);
     expect(second.statusCode).toBe(202);
 

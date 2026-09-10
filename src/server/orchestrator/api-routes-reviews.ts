@@ -1,12 +1,3 @@
-/**
- * File review API routes (unified review surface, docs/112).
- *
- * All reviews are scoped to a (session, file path) pair. Markdown files get
- * section-anchored comments, code files get line-anchored comments. The send
- * action constructs a structured prompt server-side and returns it; the
- * client dispatches it via the existing `send_message` flow.
- */
-
 import type { FastifyInstance } from "fastify";
 import type { ApiDeps } from "./api-routes.js";
 import { resolveSessionDir } from "./api-routes.js";
@@ -29,9 +20,6 @@ export async function registerReviewRoutes(
   app: FastifyInstance,
   deps: ApiDeps,
 ): Promise<void> {
-  // ----------------------------------------------------------------
-  // List reviews for a (session, file)
-  // ----------------------------------------------------------------
   app.get<{
     Params: { sessionId: string };
     Querystring: { filePath?: string };
@@ -48,9 +36,6 @@ export async function registerReviewRoutes(
     },
   );
 
-  // ----------------------------------------------------------------
-  // Get current draft (without creating one)
-  // ----------------------------------------------------------------
   app.get<{
     Params: { sessionId: string };
     Querystring: { filePath?: string };
@@ -72,9 +57,6 @@ export async function registerReviewRoutes(
     },
   );
 
-  // ----------------------------------------------------------------
-  // Ensure draft (create if none, else return existing)
-  // ----------------------------------------------------------------
   app.post<{
     Params: { sessionId: string };
     Body: { filePath: string };
@@ -101,9 +83,6 @@ export async function registerReviewRoutes(
     },
   );
 
-  // ----------------------------------------------------------------
-  // Add a comment (body discriminates line vs section)
-  // ----------------------------------------------------------------
   app.post<{
     Params: { sessionId: string; reviewId: string };
     Body:
@@ -148,9 +127,6 @@ export async function registerReviewRoutes(
     },
   );
 
-  // ----------------------------------------------------------------
-  // Update a comment
-  // ----------------------------------------------------------------
   app.patch<{
     Params: { sessionId: string; reviewId: string; commentId: string };
     Body: { text: string };
@@ -175,9 +151,6 @@ export async function registerReviewRoutes(
     },
   );
 
-  // ----------------------------------------------------------------
-  // Delete a comment
-  // ----------------------------------------------------------------
   app.delete<{
     Params: { sessionId: string; reviewId: string; commentId: string };
   }>(
@@ -200,12 +173,6 @@ export async function registerReviewRoutes(
     },
   );
 
-  // ----------------------------------------------------------------
-  // Send a review (mark sent + return prompt)
-  //
-  // The body carries the send dialog's optional free-text note (docs/260). It
-  // stays optional — a caller that sends no body at all still sends the review.
-  // ----------------------------------------------------------------
   app.post<{
     Params: { sessionId: string; reviewId: string };
     Body: { note?: string } | undefined;
@@ -231,9 +198,6 @@ export async function registerReviewRoutes(
     },
   );
 
-  // ----------------------------------------------------------------
-  // Delete a draft (e.g., on close-without-saving)
-  // ----------------------------------------------------------------
   app.delete<{
     Params: { sessionId: string; reviewId: string };
   }>(

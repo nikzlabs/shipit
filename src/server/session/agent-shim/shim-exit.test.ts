@@ -1,13 +1,4 @@
-/**
- * Regression tests for the shim flush-on-exit contract (`shim-exit.ts`).
- *
- * These MUST spawn a real subprocess with a real pipe on stdout: the bug is a
- * property of `process.exit()` racing Node's asynchronous pipe writes, so an
- * in-process test with a stubbed `ShimIO` cannot see it. Before the fix, output
- * larger than the 64 KiB Linux pipe buffer came back truncated at exactly 65,536
- * bytes — `shipit issue view --comments --json | wc -c` returned 65536 while the
- * same command redirected to a file returned the full document.
- */
+// Real subprocess pipes expose exit racing asynchronous writes; stubbed IO cannot.
 
 import { describe, it, expect, afterEach } from "vitest";
 import { spawn } from "node:child_process";
@@ -23,7 +14,6 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(HERE, "../../../..");
 const TSX = path.join(REPO_ROOT, "node_modules", ".bin", "tsx");
 
-/** Comfortably past the 64 KiB pipe buffer that used to swallow the tail. */
 const BIG_CHARS = 300_000;
 
 const tempDirs: string[] = [];
@@ -38,10 +28,6 @@ afterEach(async () => {
   }
 });
 
-/**
- * Run a TypeScript entry point under tsx with **piped** stdio (the failing
- * condition) and collect everything it wrote.
- */
 function runPiped(
   entry: string,
   args: string[],
@@ -64,7 +50,6 @@ function runPiped(
   });
 }
 
-/** Write a throwaway fixture module into a temp dir and return its path. */
 async function writeFixture(source: string): Promise<string> {
   const dir = await fsp.mkdtemp(path.join(os.tmpdir(), "shim-exit-"));
   tempDirs.push(dir);
@@ -73,7 +58,6 @@ async function writeFixture(source: string): Promise<string> {
   return file;
 }
 
-/** Absolute import specifier for a sibling shim module, `.js` as ESM requires. */
 function shimModule(name: string): string {
   return path.join(HERE, `${name}.js`);
 }
@@ -128,11 +112,6 @@ describe("shim stdout flushing", () => {
 });
 
 describe("shipit issue view --json over a pipe", () => {
-  /**
-   * The reported repro, end-to-end through the real `shipit` entry point: a
-   * brokered issue whose rendered JSON is well past 64 KiB must still parse on
-   * the other side of a pipe.
-   */
   it("returns a complete, parseable document for a large issue", { timeout: 60_000 }, async () => {
     const description = "d".repeat(BIG_CHARS);
     const server = http.createServer((req, res) => {

@@ -1,20 +1,3 @@
-/**
- * Claude (OAuth) transcript-cleanup adapter (docs/144).
- *
- * Default cleanup path. Uses the Claude Code OAuth bearer surfaced by
- * `AuthManager.getAccessToken()` to call the Anthropic Messages API with the
- * locked cleanup prompt. Cleanup is a tiny Haiku call that fits inside the
- * subscription's headroom — no extra key, no extra bill.
- *
- * OAuth tokens minted by the Claude Code CLI are only accepted by the API
- * when the request identifies itself as Claude Code: the `anthropic-beta:
- * oauth-2025-04-20` header plus a system prompt whose first block is the
- * Claude Code identity string. If a future API change rejects this path the
- * adapter throws and `cleanTranscript()` falls through to the raw transcript
- * (and `pickCleanupProvider` can still select OpenAI) — see plan open
- * question #8.
- */
-
 import { buildCleanupPrompt } from "../cleanup-prompt.js";
 import { VoiceProviderError, type CleanupOptions, type CleanupProvider } from "./types.js";
 

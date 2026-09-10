@@ -1,21 +1,3 @@
-/**
- * MCP server service layer (docs/088-mcp-integration).
- *
- * Pure functions over `CredentialStore` that implement the CRUD + validation
- * rules for account-level MCP servers. Consumed by `api-routes-mcp.ts`.
- *
- * Storage model:
- *   - Server config blobs live in `CredentialStore.mcpServers` keyed by name.
- *     Blobs hold `$secret:` placeholders, never raw values — safe to log and
- *     return over HTTP.
- *   - Raw secret values live in `CredentialStore.agentEnv` under the
- *     `mcp__<server>__<KEY>` namespace, set via `setMcpSecret`.
- *
- * The route hands this layer a config blob (already placeholder-form) plus a
- * separate `secrets` map of `mcp__*` key → raw value. This layer never echoes
- * secret values back.
- */
-
 import type { CredentialStore } from "../credential-store.js";
 import type {
   McpServerConfig,
@@ -24,38 +6,21 @@ import type {
 } from "../../shared/types/mcp-types.js";
 import { ServiceError } from "./types.js";
 
-/** Soft cap on simultaneously-enabled servers (see plan §Security #5). */
 export const MAX_ENABLED_MCP_SERVERS = 10;
 
-/** Server names reserved for built-in MCP servers. */
 const RESERVED_NAMES = new Set(["playwright"]);
 
-/**
- * Name must be lowercase alphanumeric, starting with a letter. Hyphens are
- * intentionally disallowed: the name becomes part of the `mcp__<name>__<KEY>`
- * env-var key, and env var identifiers can't contain hyphens (the worker's
- * `PUT /secrets` handler validates against `/^[A-Za-z_][A-Za-z0-9_]*$/`).
- */
+// Names become part of mcp__<name>__<KEY> environment keys, so exclude hyphens.
 const NAME_RE = /^[a-z][a-z0-9]*$/;
 
-/**
- * Shell metacharacters disallowed in the stdio `command` field. The command
- * is spawned by the Claude CLI's MCP layer; we keep it to a bare executable
- * name or path so a config blob can't smuggle a shell pipeline.
- */
 const SHELL_METACHAR_RE = /[;&|`$(){}<>\n\r]/;
 
-/** Convert the storage map to the array wire form, sorted by name. */
 export function listMcpServers(credentialStore: CredentialStore): McpServerConfig[] {
   return Object.values(credentialStore.getAllMcpServers()).sort((a, b) =>
     a.name.localeCompare(b.name),
   );
 }
 
-/**
- * Validate a server config blob. Throws `ServiceError(400, ...)` on any
- * violation. Returns a normalized copy (name trimmed, `enabled` defaulted).
- */
 export function validateMcpServerConfig(raw: unknown): McpServerConfig {
   if (!raw || typeof raw !== "object") {
     throw new ServiceError(400, "MCP server config must be an object");
@@ -137,10 +102,6 @@ function validateStringRecord(value: unknown, field: string): Record<string, str
   return value as Record<string, string>;
 }
 
-/**
- * Validate the `secrets` map from a POST/PUT body: keys must be in the
- * `mcp__<server>__*` namespace for the given server, values must be strings.
- */
 export function validateMcpSecrets(
   serverName: string,
   raw: unknown,
@@ -166,17 +127,12 @@ export function validateMcpSecrets(
   return out;
 }
 
-/** Count currently-enabled servers, optionally excluding one by name. */
 function countEnabled(credentialStore: CredentialStore, excludeName?: string): number {
   return Object.values(credentialStore.getAllMcpServers()).filter(
     (s) => s.enabled && s.name !== excludeName,
   ).length;
 }
 
-/**
- * Add a new MCP server. Throws 409 if the name already exists, 400 if the
- * enabled-server cap would be exceeded.
- */
 export function addMcpServer(
   credentialStore: CredentialStore,
   rawConfig: unknown,
@@ -200,14 +156,7 @@ export function addMcpServer(
   return config;
 }
 
-/**
- * Update an existing MCP server. Supports rename (when `config.name !== id`):
- * the old blob + its `mcp__<old>__*` secrets are dropped first.
- *
- * Returns `{ config, clearedSecretKeys }` — `clearedSecretKeys` lists
- * `mcp__*` keys that must be pushed to the worker as empty strings so the
- * worker drops them from `process.env`.
- */
+/** Push clearedSecretKeys to the worker as empty strings to remove stale environment values. */
 export function updateMcpServer(
   credentialStore: CredentialStore,
   id: string,
@@ -225,7 +174,6 @@ export function updateMcpServer(
   }
   const secrets = validateMcpSecrets(config.name, rawSecrets);
 
-  // Cap check — exclude the server being edited from the current count.
   if (config.enabled && countEnabled(credentialStore, id) + 1 > MAX_ENABLED_MCP_SERVERS) {
     throw new ServiceError(
       400,
@@ -250,11 +198,6 @@ export function updateMcpServer(
   return { config, clearedSecretKeys };
 }
 
-/**
- * Remove an MCP server and all its `mcp__<name>__*` secrets. Returns the list
- * of cleared secret keys so the caller can push them to the worker as empty
- * strings.
- */
 export function removeMcpServer(
   credentialStore: CredentialStore,
   id: string,

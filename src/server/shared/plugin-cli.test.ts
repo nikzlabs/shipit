@@ -1,8 +1,3 @@
-/**
- * docs/262 reqs 17, 20 — the command plan both sides of the container edge
- * share. Every case here is a way a surfaced command could be silently wrong.
- */
-
 import { describe, it, expect } from "vitest";
 import { planPluginCommands, RESERVED_PLUGIN_COMMANDS } from "./plugin-cli.js";
 import type { PluginExport, PluginUse } from "./plugin-repos.js";
@@ -20,7 +15,6 @@ function use(
   return { plugin, from, alias, overrides: { services: {}, commands, settings: {} } };
 }
 
-/** Resolve every import against one flat table of `alias → export`. */
 function table(entries: Record<string, { repo: string; exported: PluginExport | null }>) {
   return (u: PluginUse) => entries[u.alias] ?? { repo: null, exported: null };
 }
@@ -45,8 +39,6 @@ describe("planPluginCommands", () => {
     );
 
     expect(plan.commands.map((c) => c.name)).toEqual(["rt-reqs"]);
-    // The manifest's own name still travels, because that is what the run
-    // boundary looks the command up by.
     expect(plan.commands[0].declared).toBe("reqs");
     expect(plan.issues.size).toBe(0);
   });
@@ -57,13 +49,10 @@ describe("planPluginCommands", () => {
       table({ reqs: { repo: "game-tools", exported: exported("requirements", { reqs: "cli" }) } }),
     );
 
-    // The command itself still surfaces — only the rename was meaningless.
     expect(plan.commands.map((c) => c.name)).toEqual(["reqs"]);
     expect(plan.issues.get("game-tools")?.join("\n")).toContain("`nope` is not a command");
   });
 
-  // The requirement's own words: report the collision *before running the
-  // ambiguous one*. First-declared-wins is exactly what that rules out.
   it("refuses EVERY claimant of a contested name and names the fix", () => {
     const plan = planPluginCommands(
       [use("a", "one", "repo-a"), use("b", "two", "repo-b")],
@@ -106,9 +95,6 @@ describe("planPluginCommands", () => {
     expect(plan.issues.size).toBe(0);
   });
 
-  // The parser accepts `reqs:` and `REQS:` as distinct YAML keys, so picking
-  // the first match would let declaration order silently decide which rename
-  // applies (review finding).
   it("refuses a command whose rename is declared twice in different cases", () => {
     const plan = planPluginCommands(
       [use("reqs", "requirements", "game-tools", { reqs: { as: "one" }, REQS: { as: "two" } })],
@@ -158,8 +144,6 @@ describe("planPluginCommands", () => {
     expect(plan.commands.map((c) => c.name)).toEqual(["alpha", "zulu"]);
   });
 
-  // A declared repository name is unconstrained enough to be `constructor` —
-  // the exact defect the settings resolver's `Map` was introduced to fix.
   it("groups issues in a Map, so a prototype-named repository is not truthy for free", () => {
     const plan = planPluginCommands(
       [use("ok", "one", "constructor")],

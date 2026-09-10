@@ -30,10 +30,10 @@ Run Gradle from the **Gradle project root** (the dir with `settings.gradle(.kts)
 `cd` into that dir first — there's nothing to configure.
 
 ```bash
-cd android                       # the Gradle root in this repo
-./gradlew assembleDebug          # full compile + package — "did I break the build?"
-./gradlew lint                   # manifest/resource/accessibility + edge-to-edge/inset checks
-./gradlew test                   # JVM unit tests (+ Robolectric, if the repo uses it)
+cd android
+./gradlew assembleDebug
+./gradlew lint
+./gradlew test
 ```
 
 - **Prefer `./gradlew`** (the committed wrapper pins the exact Gradle version). It
@@ -72,11 +72,9 @@ Two mature libraries, both headless on the baked toolchain:
 - **Roborazzi** — renders via Robolectric.
 
 ```bash
-# Paparazzi (task names follow the variant, e.g. ...Debug):
-./gradlew verifyPaparazziDebug   # check current renders against committed goldens
-./gradlew recordPaparazziDebug   # regenerate goldens after an intended visual change
+./gradlew verifyPaparazziDebug
+./gradlew recordPaparazziDebug
 
-# Roborazzi:
 ./gradlew verifyRoborazziDebug
 ./gradlew recordRoborazziDebug
 ```
@@ -100,7 +98,7 @@ snapshot-testable; cover the surrounding native chrome instead.)
 
 ```bash
 apkanalyzer apk summary app/build/outputs/apk/debug/app-debug.apk
-aapt2 dump badging  app/build/outputs/apk/debug/app-debug.apk   # merged manifest, perms
+aapt2 dump badging  app/build/outputs/apk/debug/app-debug.apk
 ```
 
 `apkanalyzer` also dumps the resource table, DEX/method counts, and dependency
@@ -113,7 +111,7 @@ an off-matrix `compileSdk`, an NDK, CMake — Gradle fails with a precise "missi
 package" error. Install exactly what it names, then re-run:
 
 ```bash
-sdkmanager --list                          # what's installed / available
+sdkmanager --list
 sdkmanager --install "platforms;android-33"
 sdkmanager --install "ndk;26.1.10909125" "cmake;3.22.1"
 ```
@@ -132,18 +130,17 @@ the interactive preview — declare an **emulator as a Compose service** in
 too slow — fall back to a cloud device farm (below).
 
 ```yaml
-# docker-compose.yml — add alongside any web preview services
 services:
   emulator:
-    image: budtmo/docker-android:emulator_14.0   # or an AOSP emulator-webrtc image
-    user: "1300:1301"              # REQUIRED — androidusr, numeric; see compose.md
+    image: budtmo/docker-android:emulator_14.0
+    user: "1300:1301" # Required numeric androidusr identity; see compose.md.
     environment:
-      - WEB_VNC=true                       # REQUIRED — enables the noVNC web UI on 6080
-      - EMULATOR_DEVICE=Samsung Galaxy S10 # device profile
-    devices: ["/dev/kvm:/dev/kvm"] # hardware accel (the platform allowlists exactly this mapping)
-    ports: ["6080:6080"]           # the emulator's web UI — rendered in the preview pane
-    expose: ["5555"]               # adb, reachable on the Compose network by service name
-    x-shipit-preview: auto         # shows the web UI as the interactive preview
+      - WEB_VNC=true
+      - EMULATOR_DEVICE=Samsung Galaxy S10
+    devices: ["/dev/kvm:/dev/kvm"]
+    ports: ["6080:6080"]
+    expose: ["5555"]
+    x-shipit-preview: auto
 ```
 
 `/dev/kvm:/dev/kvm` is the **only** device mapping ShipIt permits — any other
@@ -168,10 +165,10 @@ Android home screen, not your app. The preview shows your app only after you
 SDK/Gradle) and **push** it over adb:
 
 ```bash
-cd android && ./gradlew assembleDebug                       # build the APK here
-adb connect emulator:5555                                   # reach the service by DNS
-adb install -r app/build/outputs/apk/debug/app-debug.apk    # install onto the device
-adb shell monkey -p <your.application.id> -c android.intent.category.LAUNCHER 1  # launch it
+cd android && ./gradlew assembleDebug
+adb connect emulator:5555
+adb install -r app/build/outputs/apk/debug/app-debug.apk
+adb shell monkey -p <your.application.id> -c android.intent.category.LAUNCHER 1
 ```
 
 Re-run install + launch after each rebuild to refresh what the preview pane shows.
@@ -190,9 +187,9 @@ services:
     devices: ["/dev/kvm:/dev/kvm"]
     ports: ["6080:6080"]
     expose: ["5555"]
-    depends_on: [android]        # starting the preview brings the builder up too
+    depends_on: [android]
     x-shipit-preview: manual
-  android:                       # the SDK/Gradle build + hot-reload worker
+  android:
     build: { context: ., dockerfile: docker/Dockerfile.android-dev }
     working_dir: /workspace/android
     volumes: [".:/workspace"]
@@ -212,7 +209,7 @@ ShipIt's own `docker-compose.yml` for the reference implementation.
 ### Debug a running app
 
 ```bash
-adb logcat                                   # crashes, exceptions, Log.* — read this first
+adb logcat
 adb install app/build/outputs/apk/debug/app-debug.apk
 adb shell am start -n com.example/.MainActivity
 ```
@@ -223,11 +220,11 @@ The `adb` triad mirrors `browser_snapshot` / `browser_click` /
 `browser_take_screenshot`:
 
 ```bash
-adb exec-out uiautomator dump /dev/tty       # SNAPSHOT: view hierarchy (resource-id/text/bounds)
-adb shell input tap <x> <y>                  # PRESS: tap at coordinates from the dump
-adb shell input text "hello"                 # type
-adb shell input keyevent KEYCODE_BACK        # keys
-adb exec-out screencap -p > /tmp/.shot.png   # SCREENSHOT (then surface with `present`)
+adb exec-out uiautomator dump /dev/tty
+adb shell input tap <x> <y>
+adb shell input text "hello"
+adb shell input keyevent KEYCODE_BACK
+adb exec-out screencap -p > /tmp/.shot.png
 ```
 
 For resilient flows without computing coordinates, **Maestro** (YAML: `tapOn`,

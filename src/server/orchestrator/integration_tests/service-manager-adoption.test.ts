@@ -1,11 +1,3 @@
-/**
- * Unit tests for `adoptExistingServiceManager` — the lifecycle handoff
- * that lets `restartAgent` recreate the agent container while leaving
- * the running compose stack attached to a new runner.
- *
- * See docs/127-restart-agent.
- */
-
 import { describe, it, expect } from "vitest";
 import { EventEmitter } from "node:events";
 import { adoptExistingServiceManager } from "../app-lifecycle.js";
@@ -13,18 +5,12 @@ import { ContainerSessionRunner } from "../container-session-runner.js";
 import type { ServiceManager } from "../service-manager.js";
 import type { SessionContainerManager } from "../session-container.js";
 
-/**
- * Build a ContainerSessionRunner with a placeholder worker URL so
- * `whenWorkerReady()` is deferred until we manually call `setWorkerUrl`.
- * The runner instance is real (so `isContainerRunner(runner)` returns
- * true), but we never actually connect to a worker.
- */
 function makeRunner(sessionId: string): ContainerSessionRunner {
   return new ContainerSessionRunner({
     sessionId,
     sessionDir: "/tmp/x",
     defaultAgentId: "claude",
-    workerUrl: "http://0.0.0.0:0", // placeholder — defers _workerReady
+    workerUrl: "http://0.0.0.0:0", // Defer readiness until setWorkerUrl.
   });
 }
 
@@ -34,12 +20,10 @@ interface StubServiceManager extends EventEmitter {
   _setInstallRunningCalls: boolean[];
   _setInstallRunningOpts: ({ failed?: boolean } | undefined)[];
   _setSecretsLoaderCalls: (() => Promise<Record<string, string>>)[];
-  /** planning#2503 — the gate's failure latch, which a skipping caller must consult. */
   installGateFailed: boolean;
   setInstallRunning(running: boolean, opts?: { failed?: boolean }): boolean;
   setSecretsLoader(loader: () => Promise<Record<string, string>>): void;
   stop(): Promise<void>;
-  /** Real runner's setServiceManager calls this — return an empty snapshot. */
   getSecretsSnapshot(): {
     declared: string[];
     missingByService: Record<string, string[]>;
@@ -47,15 +31,9 @@ interface StubServiceManager extends EventEmitter {
     agentNames: string[];
     agentValues: Record<string, string>;
   };
-  /** Real runner's setServiceManager also calls this. */
   getServices(): { name: string; status: string; port?: number; preview: string; error?: string }[];
 }
 
-/**
- * Build a stub ServiceManager that satisfies the surface the real
- * ContainerSessionRunner.setServiceManager touches. Tracks stack_error
- * listener count and stop() calls so tests can assert on lifecycle.
- */
 function makeStubServiceManager(): StubServiceManager {
   const emitter = new EventEmitter();
   const mgr = Object.assign(emitter, {
@@ -66,10 +44,6 @@ function makeStubServiceManager(): StubServiceManager {
     _setSecretsLoaderCalls: [] as (() => Promise<Record<string, string>>)[],
     _gateOpen: false,
     installGateFailed: false,
-    // Models the real transition contract (planning#2503): a same-value call is
-    // ignored and reports `false`, which is how a caller knows whether it owns
-    // the open bracket. A fake that always reported `true` could not fail on
-    // closing a gate somebody else opened.
     setInstallRunning(running: boolean, opts?: { failed?: boolean }): boolean {
       if (this._gateOpen === running) return false;
       this._gateOpen = running;
@@ -94,7 +68,6 @@ function makeStubServiceManager(): StubServiceManager {
     },
     getServices() { return []; },
   });
-  // Wrap on/off to track stack_error listener count for assertions.
   const originalOn = mgr.on.bind(mgr);
   mgr.on = ((ev: string, fn: (...args: unknown[]) => void) => {
     if (ev === "stack_error") mgr._stackErrorListenerCount += 1;
@@ -134,7 +107,6 @@ describe("adoptExistingServiceManager (docs/127)", () => {
       installPromise: null,
     });
 
-    // Real runner exposes the manager via getter — confirms adoption wiring.
     expect(runner.serviceManager).toBe(mgr);
 
     runner.dispose({ force: true });
@@ -152,12 +124,7 @@ describe("adoptExistingServiceManager (docs/127)", () => {
       installPromise: null,
     });
 
-    // Two, and each is a different job on the same event: the adoption path's
-    // own listener reports the failure (banner + Logs), and the runner's
-    // `setServiceManager` re-sends the service list, because a start that failed
-    // rebuilt the map just as much as one that succeeded (#2325). What this
-    // guards is that adoption does not STACK them — a third would mean the same
-    // failure reported twice, which is the docs/127 regression.
+    // One listener reports errors; the other sends the rebuilt service list.
     expect(mgr._stackErrorListenerCount).toBe(2);
 
     runner.dispose({ force: true });
@@ -175,15 +142,10 @@ describe("adoptExistingServiceManager (docs/127)", () => {
       installPromise: null,
     });
 
-    // Synchronously after the call AND a couple of microtask drains,
-    // connectToNetwork must NOT have fired — the runner is in placeholder
-    // mode and whenWorkerReady() is unresolved.
     await Promise.resolve();
     await Promise.resolve();
     expect(cm._connectCalls).toHaveLength(0);
 
-    // Drive the readiness signal (simulates the container manager calling
-    // runner.setWorkerUrl once the new container's IP resolves).
     runner.setWorkerUrl("http://10.0.0.42:4000");
     await Promise.resolve();
     await Promise.resolve();
@@ -237,21 +199,14 @@ describe("adoptExistingServiceManager (docs/127)", () => {
       installPromise: null,
     });
 
-    // Simulate the restartAgent-style dispose path.
     runner.preserveComposeOnDispose = true;
     runner.dispose({ force: true });
 
-    // Microtasks settle (stop is async even though we never call it here).
     await Promise.resolve();
     await Promise.resolve();
 
-    // CRITICAL: stop() must NOT have been called — the point of the
-    // preserve flag is to keep compose running.
     expect(mgr._stopCalls).toBe(0);
-    // Map entry survives so the next setupServiceManager adopts it.
     expect(serviceManagers.has("s1")).toBe(true);
-    // The OLD runner's stack_error listener is detached so it can't fire
-    // for the (preserved) manager's future errors.
     expect(mgr._stackErrorListenerCount).toBe(0);
   });
 
@@ -270,11 +225,8 @@ describe("adoptExistingServiceManager (docs/127)", () => {
       installPromise: null,
     });
 
-    // Default flow: dispose WITHOUT preserve → tear down compose AND
-    // evict from the map (same semantics as the create-path disposed handler).
     runner.dispose({ force: true });
 
-    // mgr.stop() runs asynchronously — let it settle.
     await Promise.resolve();
     await Promise.resolve();
 
@@ -297,9 +249,6 @@ describe("adoptExistingServiceManager (docs/127)", () => {
       secretsLoader: freshLoader,
     });
 
-    // The adopted manager must have been handed the new closure — the
-    // OLD closure baked in at original construction referenced the now-
-    // disposed previous runner.
     expect(mgr._setSecretsLoaderCalls).toHaveLength(1);
     expect(mgr._setSecretsLoaderCalls[0]).toBe(freshLoader);
 
@@ -316,7 +265,6 @@ describe("adoptExistingServiceManager (docs/127)", () => {
       composeStopPromises: new Map(),
       containerManager: cm,
       installPromise: null,
-      // secretsLoader intentionally omitted
     });
 
     expect(mgr._setSecretsLoaderCalls).toHaveLength(0);
@@ -324,22 +272,7 @@ describe("adoptExistingServiceManager (docs/127)", () => {
     runner.dispose({ force: true });
   });
 
-  /**
-   * planning#501 / docs/288 — the one place this feature can silently undo
-   * itself.
-   *
-   * The stack this path adopts is ALREADY RUNNING: a warm session's preview,
-   * pre-started before anyone claimed it. Closing the install gate is
-   * `holdGatedServicesForReinstall` → `docker compose stop` on exactly those
-   * services — SIGTERM, 10s grace, SIGKILL. And on a warm claim the install
-   * marker is present, so `runner.runInstall` short-circuits in milliseconds:
-   * the bracket buys nothing and costs the whole feature. The claim would adopt
-   * a running preview and immediately stop it.
-   *
-   * These tests fail if the unconditional re-hold comes back.
-   */
   describe("install gate on adoption (docs/288)", () => {
-    /** Adopt with a decision relay, returning the levers to drive it. */
     function adoptWithRelay(mgr: StubServiceManager, opts: { latchedFailed?: boolean } = {}): {
       runner: ContainerSessionRunner;
       decide: (d: "skipped" | "started") => void;
@@ -372,15 +305,12 @@ describe("adoptExistingServiceManager (docs/127)", () => {
       const mgr = makeStubServiceManager();
       const h = adoptWithRelay(mgr);
 
-      // Nothing yet — the decision has not arrived, so nothing has been decided.
       expect(mgr._setInstallRunningCalls).toEqual([]);
 
       h.decide("skipped");
       h.finish({ ok: true });
       await h.settle();
 
-      // The pre-started services are never held, never `compose stop`ped, and
-      // the gate is never closed on a bracket nobody opened.
       expect(mgr._setInstallRunningCalls).toEqual([]);
       h.runner.dispose({ force: true });
     });
@@ -400,9 +330,6 @@ describe("adoptExistingServiceManager (docs/127)", () => {
     });
 
     it("fails closed when the install fails without the worker ever deciding", async () => {
-      // The transport-failure / dispose shapes: `onWorkerDecision` never fires,
-      // so a skip-by-default would leave a broken dependency tree looking
-      // healthy. The bracket must still latch the gated services to `error`.
       const mgr = makeStubServiceManager();
       const h = adoptWithRelay(mgr);
 
@@ -414,10 +341,6 @@ describe("adoptExistingServiceManager (docs/127)", () => {
     });
 
     it("repairs a gate already latched by an earlier failure, even on a skip", async () => {
-      // `_installFailed` is cleared only by a false→true transition, and the
-      // docs/286 watchdog refuses to recover a gate it can see failed — so a
-      // skip that made no transition would strand those services in `error` for
-      // the rest of the session.
       const mgr = makeStubServiceManager();
       const h = adoptWithRelay(mgr, { latchedFailed: true });
 
@@ -432,8 +355,6 @@ describe("adoptExistingServiceManager (docs/127)", () => {
     });
 
     it("does NOT repair a latched gate on an UNVERIFIED completion", async () => {
-      // `unverified` is synthesized from having observed nothing — it means "we
-      // cannot tell", which is not the positive evidence a repair needs.
       const mgr = makeStubServiceManager();
       const h = adoptWithRelay(mgr, { latchedFailed: true });
 
@@ -460,28 +381,17 @@ describe("adoptExistingServiceManager (docs/127)", () => {
       installPromise,
     });
 
-    // Install starts → gate opens immediately
     expect(mgr._setInstallRunningCalls).toEqual([true]);
 
-    // Install finishes → gate closes
     resolveInstall({ ok: true });
     await Promise.resolve();
     await Promise.resolve();
     expect(mgr._setInstallRunningCalls).toEqual([true, false]);
-    // Successful install closes the gate without the `failed` flag.
     expect(mgr._setInstallRunningOpts[1]).toEqual({ failed: false });
 
     runner.dispose({ force: true });
   });
 
-  /**
-   * #2426 — the compose override is written by `start()`/`reconcile()` and by
-   * nothing else, so re-pointing an adopted manager at a different overlay set
-   * has to be followed by a reconcile. Without it the stale override on disk
-   * keeps feeding every later `compose up`, and a service container — whose
-   * mount set is frozen at CREATE time — is merely `start`ed with the wrong
-   * mounts, indefinitely.
-   */
   describe("dep-dir overlay re-point (#2426)", () => {
     const SESSION = { remoteUrl: "https://github.com/acme/repo.git", kind: "repo" };
     const PAIRS = [{ depDir: "node_modules", volumeName: "shipit-s1_overlay-aaaa" }];
@@ -491,8 +401,6 @@ describe("adoptExistingServiceManager (docs/127)", () => {
         connectToNetwork: async () => undefined,
         provisionedOverlayDepDirs: () => PAIRS,
         dockerClient: { getVolume: () => ({ inspect: async () => ({}) }) },
-        // This container's creation did not have to recreate a rotated overlay
-        // volume, so the set is the only thing that can ask for a reconcile.
         consumeOverlayVolumesRecreated: () => false,
       } as unknown as SessionContainerManager;
     }
@@ -515,15 +423,11 @@ describe("adoptExistingServiceManager (docs/127)", () => {
         composeStopPromises: new Map(),
         containerManager: buildOverlayContainerManager(),
         installPromise: null,
-        // Containment deliberately UNCHANGED — the overlay set is the only
-        // reason a reconcile could be owed here.
         session: SESSION as never,
         workspaceDir: "/ws/s1",
       });
 
       runner.setWorkerUrl("http://10.0.0.42:4000");
-      // The chain is whenWorkerReady → applyOverlayDepDirs (two Docker awaits)
-      // → reconcile → connectToNetwork; drain generously rather than counting.
       for (let i = 0; i < 50; i++) await Promise.resolve();
       runner.dispose({ force: true });
       return { reconciles, applied };
@@ -535,15 +439,6 @@ describe("adoptExistingServiceManager (docs/127)", () => {
       expect(reconciles).toBe(1);
     });
 
-    /**
-     * docs/288 — a stack the WARM POOL pre-started was built against the tree as
-     * it stood before the claim, which has since reset the clone to
-     * `origin/main`. The bind mount and the dev server's own file watcher
-     * reconcile SOURCE; they reconcile nothing about the stack DEFINITION — a
-     * service added upstream, a port changed, `compose.file` moved. Nothing else
-     * would notice either: the worker's config watcher only starts once the
-     * session is activated, so it never sees the refresh that preceded it.
-     */
     it("reconciles once when adopting a warm pre-started stack, even with nothing else changed", async () => {
       const runner = makeRunner("s1");
       let reconciles = 0;
@@ -554,8 +449,6 @@ describe("adoptExistingServiceManager (docs/127)", () => {
         preStartedWarm: boolean;
         updateComposeConfig: (c: { file: string; dockerSocket: boolean }) => boolean;
       };
-      // Overlay UNCHANGED and containment unchanged — the warm marker is the
-      // only thing that can ask for a reconcile here.
       mgr.setOverlayDepDirs = () => false;
       mgr.reconcile = async () => { reconciles += 1; };
       mgr.preStartedWarm = true;
@@ -575,23 +468,14 @@ describe("adoptExistingServiceManager (docs/127)", () => {
       runner.setWorkerUrl("http://10.0.0.42:4000");
       for (let i = 0; i < 50; i++) await Promise.resolve();
 
-      // The CURRENT declaration is handed over, and the stack is reconciled
-      // against it once.
       expect(applied).toEqual([{ file: "docker-compose.yml", dockerSocket: false }]);
       expect(reconciles).toBe(1);
-      // Consumed: a later restart-adoption of the same manager is docs/127's
-      // case, where the stack and the tree never parted company.
       expect(mgr.preStartedWarm).toBe(false);
       runner.dispose({ force: true });
     });
 
     it("does not reconcile when the set is identical", async () => {
-      // The common case: volume names are session-stable, so a recreate mints
-      // the same names and the override on disk is still correct. Reconciling
-      // anyway would restart the stack on every agent restart.
       const { reconciles, applied } = await driveAdoption(false);
-      // Asserted so the negative can't pass vacuously: the re-point DID run,
-      // it just had nothing to change.
       expect(applied).toEqual([PAIRS]);
       expect(reconciles).toBe(0);
     });
@@ -614,8 +498,6 @@ describe("adoptExistingServiceManager (docs/127)", () => {
 
     expect(mgr._setInstallRunningCalls).toEqual([true]);
 
-    // Install finishes with a failure → gate closes with failed: true so
-    // gated services latch to error instead of starting.
     resolveInstall({ ok: false });
     await Promise.resolve();
     await Promise.resolve();

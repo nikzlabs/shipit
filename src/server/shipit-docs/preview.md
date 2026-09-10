@@ -135,7 +135,7 @@ migrate against, a cache to flush, an emulator to drive. Don't tell the user to
 click Start:
 
 ```bash
-shipit service list           # what exists, what's running, each service's url
+shipit service list
 shipit service start db
 shipit service logs db --lines 200
 ```
@@ -161,7 +161,7 @@ services:
     command: npm run dev -- --host 0.0.0.0 --port 3000
     ports: ["3000:3000"]
     x-shipit-preview: auto
-    x-shipit-depends-on-install: true   # default for auto — gate on install
+    x-shipit-depends-on-install: true
 ```
 
 Set it to `false` only when a preview service genuinely does not depend on

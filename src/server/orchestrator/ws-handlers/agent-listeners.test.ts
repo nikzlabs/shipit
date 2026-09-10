@@ -88,8 +88,6 @@ describe("wireAgentListeners", () => {
       persistUserMessage: vi.fn(),
     });
 
-    // Failover can repoint the row while the outgoing process is still
-    // emitting its terminal rate-limit event.
     session.providerRouteId = "acct-new";
     const event = {
       type: "agent_rate_limits",
@@ -109,10 +107,6 @@ describe("wireAgentListeners", () => {
   });
 
   it("records the turn's credential route even when the result carries no usage telemetry (docs/260-turn-level-account-routing req 10)", () => {
-    // A Codex compact result reports no tokens or cost, but its route is
-    // still the fact the next turn's "Continuing on X" notice compares
-    // against. Left unrecorded, the comparison would read an OLDER turn's
-    // route and mis-fire.
     const agent = new FakeAgent();
     const runner = new SessionRunner({
       sessionId: "session-1",
@@ -182,14 +176,6 @@ describe("wireAgentListeners", () => {
     runner.dispose({ force: true });
   });
 
-  // docs/150-multiple-provider-subscriptions req 13 — a turn blocked because no connected account can serve it
-  // reaches the same `error` listener as a crashed process (env-prep throws,
-  // `executeAgentTurn` re-emits). It must inherit the terminal-turn cleanup but
-  // NOT the "Agent process error" framing: nothing crashed, and the message
-  // already tells the user what to do.
-  // docs/150-multiple-provider-subscriptions req 7 — a turn the provider killed for quota is the most reliable
-  // exhaustion signal there is: the account itself refusing work, not telemetry
-  // describing it. Stamping it is what makes the NEXT turn fail over.
   describe("marking a supplied secret auth_failed on the surface path (planning#358)", () => {
     function wireForAuthFailure(routeKind: "reserved" | "account") {
       const agent = new FakeAgent();
@@ -213,10 +199,6 @@ describe("wireAgentListeners", () => {
     }
 
     it("marks a metered key route, which `recoverAuth` can never reach", () => {
-      // The regression this pins: marking only in `turn-executor.recoverAuth`
-      // covered `{sub, vendor-owned}` and left every API-key row — the most
-      // literal supplied secret — reading `ready` forever, because
-      // `stopsOnFailure` makes `willRecover` false so `recoverAuth` never runs.
       const { agent, runner, marked } = wireForAuthFailure("reserved");
       agent.emit("auth_required");
       expect(marked).toEqual(["cred_a"]);
@@ -260,10 +242,6 @@ describe("wireAgentListeners", () => {
     });
 
     it("clears even when the result carries an error", () => {
-      // Auth failures never arrive as `agent_result` — they come through
-      // `auth_required`. So a result with a quota error still proves the
-      // credential authenticated, and gating on `!error` would leave a healthy
-      // credential marked broken whenever its first turn back hit a limit.
       const { agent, runner, cleared } = wireForResult("cred_a");
       agent.emit("event", { type: "agent_result", error: "API Error: 500" } as AgentEvent);
       expect(cleared).toEqual(["cred_a"]);
@@ -271,10 +249,6 @@ describe("wireAgentListeners", () => {
     });
 
     it("does not clear when the same turn already failed authentication", () => {
-      // Measured regression: against an invalid key the CLI raises
-      // `auth_required` AND then emits an `agent_result`, so an ungated clear
-      // undid the mark inside one failed turn and the row went back to `ready`
-      // on a credential that had just been refused.
       const { agent, runner, cleared } = wireForResult("cred_a");
       agent.emit("auth_required");
       agent.emit("event", { type: "agent_result", error: "401" } as AgentEvent);
@@ -283,8 +257,6 @@ describe("wireAgentListeners", () => {
     });
 
     it("clears nothing when the turn captured no route", () => {
-      // A result that cannot name the credential it ran on must not clear a
-      // guess — the same rule the exhaustion stamp follows.
       const { agent, runner, cleared } = wireForResult(undefined);
       agent.emit("event", { type: "agent_result" } as AgentEvent);
       expect(cleared).toEqual([]);
@@ -320,8 +292,6 @@ describe("wireAgentListeners", () => {
       const { agent, runner, marked, session } = wireForResult();
       const resetAt = new Date(Date.now() + 3_600_000).toISOString();
 
-      // The old process can finish after failover has already repointed the
-      // persisted session. Its exhaustion still belongs to the old route.
       session.providerRouteId = "acct-new";
 
       agent.emit("event", {
@@ -355,10 +325,6 @@ describe("wireAgentListeners", () => {
       runner.dispose({ force: true });
     });
 
-    // The shape production actually hit: the Claude CLI reported the limit as an
-    // ordinary assistant message and ended the turn `subtype: "success"`, so the
-    // adapter left `error` undefined and this stamp — gated on it — never ran.
-    // The turn retired as a success and the notice became the commit subject.
     it("benches the account when the limit arrives as assistant text on a success turn", () => {
       const { agent, runner, marked } = wireForResult();
       const now = Date.now();
@@ -375,10 +341,6 @@ describe("wireAgentListeners", () => {
       runner.dispose({ force: true });
     });
 
-    // A turn the provider refused for quota is a failed turn even when the CLI
-    // dressed it up as a successful one. Without the promotion, an exhaustion
-    // with no account left to fail over to (the retry is bounded to one hop)
-    // still retires as a success — the original incident, one account along.
     it("promotes a text-detected exhaustion to a failed turn", () => {
       const { agent, runner } = wireForResult();
       runner.running = true;
@@ -422,12 +384,6 @@ describe("wireAgentListeners", () => {
   });
 
   describe("errored result with no streamed content persists an error row (planning#438)", () => {
-    // The shape of a CLI that died at startup: grok/opencode synthesize the
-    // terminal result from process exit, codex maps a failed `turn/completed`
-    // — either way an `agent_result` arrives carrying `error` with zero
-    // stream events before it. `receivedResult` is then true downstream, so
-    // the executor's no-result row and the dispatch retry both stand down;
-    // the listener itself must leave the persisted explanation.
     const startupDeath = {
       type: "agent_result",
       status: "error",
@@ -474,9 +430,6 @@ describe("wireAgentListeners", () => {
     });
 
     it("the error row survives a reload — real history round-trip", () => {
-      // Same emission, but through a REAL ChatHistoryManager: what `load`
-      // returns is exactly what `GET /history` rehydrates after a page
-      // reload, which is the surface the silent-empty-turn bug lived on.
       const d = deps();
       d.chatHistoryManager = new ChatHistoryManager(new DatabaseManager(":memory:")) as never;
       const { agent, runner } = wire(d);
@@ -486,8 +439,6 @@ describe("wireAgentListeners", () => {
       const loaded = (d.chatHistoryManager as unknown as ChatHistoryManager).load("session-1");
       const row = loaded.find((m) => m.isError);
       expect(row).toMatchObject(errorRow);
-      // Finalized — not an in_progress row the next turn's replaceInProgress
-      // would delete.
       expect(row?.inProgress).toBeUndefined();
       runner.dispose({ force: true });
     });
@@ -514,8 +465,6 @@ describe("wireAgentListeners", () => {
     });
 
     it("adds no row when the same turn already failed authentication", () => {
-      // The auth handler owns the persisted, actionable explanation on that
-      // path (agent-auth-handler.ts); a second generic row would duplicate it.
       const { agent, runner, d } = wire();
 
       agent.emit("auth_required");
@@ -528,11 +477,6 @@ describe("wireAgentListeners", () => {
     });
 
     it("adds no row for a quota refusal — the failover owns that turn's outcome", () => {
-      // docs/150-multiple-provider-subscriptions req 14: a quota-refused turn
-      // is about to be re-run on the next account, and a turn being re-run has
-      // not ended. If no account is left, the terminal `ProviderRouteUnavailableError`
-      // carries the actionable routing message; the provider's raw refusal
-      // landing here first would pre-empt it in the transcript.
       const { agent, runner, d } = wire();
 
       agent.emit("event", {
@@ -550,14 +494,6 @@ describe("wireAgentListeners", () => {
     });
 
     it("DOES add a row for a quota refusal on a metered key, which never fails over", () => {
-      // The other half of the rule above, and the case it got wrong. The
-      // suppression is valid only because the executor re-runs the turn — but
-      // `stopsOnFailure` is `billingMode === "key"`, so a metered key gets no
-      // failover at all. Suppressing there gave the turn neither a retry to
-      // explain it nor a row saying why, and a reload showed a failed turn with
-      // no reason in it. Found by the planning#453 review, made reachable by
-      // that PR: until Grok's adapter started forwarding the provider's own
-      // "Out of credits" text, no key-billed refusal matched the classifier.
       const d = deps();
       const agent = new FakeAgent();
       const runner = new SessionRunner({
@@ -578,7 +514,7 @@ describe("wireAgentListeners", () => {
         }),
       });
 
-      // The verbatim text the grok CLI produced at the 429 recorder.
+      // Grok CLI capture against a local recorder returning 429.
       const refusal =
         "Out of credits: Your team has either used all available credits or "
         + "reached its monthly spending limit.";
@@ -596,15 +532,6 @@ describe("wireAgentListeners", () => {
     });
 
     it("DOES add a row for a quota refusal on a CLI-started turn, which never re-dispatches", () => {
-      // docs/140 — the third shape of the same drift, and the one the docstring
-      // on `quotaRefusalCanFailOver` used to declare impossible ("it can only
-      // make the listener KEEP a row"). It does the opposite: the listener DROPS
-      // the row here, on the premise that the executor's req-14 failover will
-      // explain the turn instead — and the executor refuses to re-dispatch a
-      // turn the CLI started on its own, because `input.prompt` belongs to the
-      // previous turn. Production 2026-09-06 (session cdde30c2): no retry, no
-      // row, and an adopted turn that had streamed nothing visible left the user
-      // with no explanation at all.
       const { agent, runner, d } = wire(undefined, {
         isServingAdoptedTurn: () => true,
       });
@@ -635,19 +562,9 @@ describe("wireAgentListeners", () => {
       runner.dispose({ force: true });
     });
 
-    // One death, one bubble. The grok adapter re-emits the OS error from
-    // `proc.on("error")` AND still synthesizes a result from the independent
-    // `close` handler, so both writers can fire for a single failure.
     describe("only the first writer records a terminal error row", () => {
       const tick = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
 
-      /**
-       * The distinct error texts this turn wrote. Deliberately a SET over every
-       * write: `replaceInProgress` deletes and re-inserts the turn's rows on
-       * every rebuild, so one row legitimately appears in several snapshots —
-       * counting writes would measure the rebuild, not the transcript. What the
-       * latch guarantees is that one death yields one MESSAGE.
-       */
       function errorTexts(d: AgentListenerDeps): string[] {
         const appended = (d.chatHistoryManager.append as ReturnType<typeof vi.fn>).mock.calls
           .map((c) => c[1] as { isError?: boolean; text?: string });
@@ -657,8 +574,6 @@ describe("wireAgentListeners", () => {
       }
 
       it("the `error` event wins when it fires first, and the synthesized result stands down", async () => {
-        // The production ordering: grok re-emits the OS error, then its
-        // independent `close` handler synthesizes the result anyway.
         const d = deps();
         const history = new ChatHistoryManager(new DatabaseManager(":memory:"));
         d.chatHistoryManager = history as never;
@@ -668,8 +583,6 @@ describe("wireAgentListeners", () => {
         await tick();
         agent.emit("event", startupDeath);
 
-        // Exactly one row in the history a reload reads — carrying the
-        // OS-level cause, which is the more specific of the two.
         const rows = history.load("session-1").filter((m) => m.isError);
         expect(rows).toHaveLength(1);
         expect(rows[0]!.text).toBe("Error: spawn ENOENT");
@@ -683,8 +596,6 @@ describe("wireAgentListeners", () => {
         agent.emit("error", new Error("spawn ENOENT"));
         await tick();
 
-        // The late `error` adds nothing the result did not already say, so its
-        // own message never reaches the transcript.
         expect(errorTexts(d)).toEqual([errorRow.text]);
         runner.dispose({ force: true });
       });
@@ -732,8 +643,6 @@ describe("wireAgentListeners", () => {
         text: blocked.message,
         isError: true,
       });
-      // Terminal-turn cleanup still runs, so the runner is reclaimable and the
-      // queue drains — a blocked turn must not wedge the session.
       expect(runner.running).toBe(false);
       expect(runner.lastTurnErrored).toBe(true);
       runner.dispose({ force: true });
@@ -766,8 +675,6 @@ describe("wireAgentListeners", () => {
       onAgentAuthRequired?: (agentId: string) => void;
       markSessionAccountExhausted?: (sessionId: string, until: number, routeId?: string) => void;
       session?: Record<string, unknown>;
-      // docs/260 — the turn's captured route, which replaced the session row
-      // as the source of reserved-vs-account branching in the auth handler.
       getCapturedRouteId?: () => string | undefined;
       getCapturedRouteKind?: () => "account" | "reserved" | "string" | undefined;
     }) {
@@ -808,9 +715,7 @@ describe("wireAgentListeners", () => {
 
       expect(killSpy).toHaveBeenCalled();
       expect(recoverAuth).toHaveBeenCalledTimes(1);
-      // No sign-in card, no OAuth flow — the recovery re-dispatches silently.
       expect(emitted.find((m) => m.type === "auth_required")).toBeUndefined();
-      // running is left set on the quiet path so the client doesn't flicker.
       expect(runner.running).toBe(true);
       runner.dispose({ force: true });
     });
@@ -827,12 +732,9 @@ describe("wireAgentListeners", () => {
 
       expect(killSpy).toHaveBeenCalled();
       expect(recoverAuth).toHaveBeenCalledTimes(1);
-      // Heal failed → surface an actionable error directing the user to
-      // Settings, NOT the auto-launched OAuth flow / global sign-in overlay.
       const err = emitted.find((m) => m.type === "error") as { message?: string } | undefined;
       expect(err).toBeDefined();
       expect(err?.message).toContain("Settings");
-      // restore mocked timers/spies via dispose handled by GC; runner local.
     });
 
     it("surfaces a re-auth error when no recovery hooks are wired", async () => {
@@ -845,26 +747,16 @@ describe("wireAgentListeners", () => {
       const err = emitted.find((m) => m.type === "error") as { message?: string } | undefined;
       expect(err).toBeDefined();
       expect(err?.message).toContain("Settings");
-      // No recovery → running cleared as before.
       expect(runner.running).toBe(false);
       runner.dispose({ force: true });
     });
 
-    // The production incident: the sign-in notice was the user's ONLY signal
-    // that the turn had died, and it was emit-only. No viewer was attached at
-    // the failure instant and idle-cleanup disposed the runner five seconds
-    // later — so the message reached nobody and left no trace. It must now be
-    // in chat history, finalized, the moment it fires.
     it("PERSISTS the re-auth notice into chat history, finalized", async () => {
       const { agent, runner, d } = wireAuth({});
 
       agent.emit("auth_required");
       await tick();
 
-      // On this path the teardown clears `running` before the notice fires, so
-      // it lands as a directly-appended, already-final row. That is the whole
-      // guarantee: it is in chat history, not parked in an in-progress set the
-      // next turn's `replaceInProgress` would delete (docs/156).
       expect(d.chatHistoryManager.append).toHaveBeenCalledWith(
         "session-1",
         expect.objectContaining({
@@ -873,8 +765,6 @@ describe("wireAgentListeners", () => {
           isError: true,
         }),
       );
-      // The turn's partial output is flushed and finalized alongside it — this
-      // is the one turn ending that never reaches `onInterruptedTurn`.
       expect(d.chatHistoryManager.replaceInProgress).toHaveBeenCalledWith("session-1", expect.any(Array));
       expect(d.chatHistoryManager.finalizeInProgress).toHaveBeenCalledWith("session-1");
       runner.dispose({ force: true });
@@ -911,9 +801,6 @@ describe("wireAgentListeners", () => {
       runner.dispose({ force: true });
     });
 
-    // docs/252 phase 5, req 12 — the branch is the BILLING MODE of the failing
-    // selection. Everything above is the `sub` path and is unchanged; these are
-    // the deletions.
     describe("a key-authenticated service never enters re-auth (docs/252 req 12)", () => {
       const keySession = {
         serviceId: "deepseek",
@@ -923,10 +810,6 @@ describe("wireAgentListeners", () => {
       };
 
       it("does not heal or re-dispatch, even with a healer wired", async () => {
-        // The whole recovery is an OAuth token refresh followed by a re-run of
-        // the turn. There is no OAuth token behind an API key, so healing is a
-        // no-op that reports success and the re-run spends the turn again on the
-        // credential that just refused it.
         const willRecoverAuth = vi.fn(() => true);
         const recoverAuth = vi.fn().mockResolvedValue(true);
         const { agent, runner } = wireAuth({
@@ -945,9 +828,6 @@ describe("wireAgentListeners", () => {
       });
 
       it("does not nudge the vendor's OAuth refresher", async () => {
-        // The hook belongs to the harness's own vendor and can broadcast a
-        // global "Sign in" toast. Firing it because a DeepSeek key was rejected
-        // reports the wrong service as broken.
         const onAgentAuthRequired = vi.fn();
         const { agent, runner } = wireAuth({ onAgentAuthRequired, session: keySession });
 
@@ -974,7 +854,6 @@ describe("wireAgentListeners", () => {
       });
 
       it("still nudges the refresher for the harness vendor's OWN subscription", async () => {
-        // The `key` gate must not swallow the case the refresher exists for.
         const onAgentAuthRequired = vi.fn();
         const { agent, runner } = wireAuth({
           onAgentAuthRequired,
@@ -996,10 +875,6 @@ describe("wireAgentListeners", () => {
       });
     });
 
-    // Found by cross-backend review. A subscription that is not the harness
-    // vendor's — GLM's coding plan — has no OAuth token to heal and no refresher
-    // to nudge, so the `sub` path healed nothing, told Anthropic about a GLM
-    // failure, and left the dead credential selected for every later turn.
     describe("a non-vendor subscription credential is set aside (docs/252 req 12)", () => {
       const glmSession = {
         serviceId: "zai",
@@ -1015,7 +890,6 @@ describe("wireAgentListeners", () => {
         const { agent, runner } = wireAuth({
           markSessionAccountExhausted,
           session: glmSession,
-          // docs/260 — reserved-ness comes from the turn's captured route.
           getCapturedRouteId: () => "cred_a",
           getCapturedRouteKind: () => "reserved",
         });
@@ -1028,9 +902,6 @@ describe("wireAgentListeners", () => {
       });
 
       it("never benches a metered key", async () => {
-        // The stamp is a subscription window; a key has none, and req 12 forbids
-        // failing one over. `markCredentialRouteExhausted` refuses too — this is
-        // the belt at the call site.
         const markSessionAccountExhausted = vi.fn();
         const { agent, runner } = wireAuth({
           markSessionAccountExhausted,
@@ -1089,9 +960,6 @@ describe("wireAgentListeners", () => {
     });
   });
 
-  // docs/179 — the sibling of the auth notice: a rejected `--resume` that the
-  // executor could not auto-recover leaves the user with a turn that produced
-  // nothing, so its explanation has to be durable too.
   describe("unrecoverable stale resume", () => {
     it("persists the couldn't-resume error instead of only emitting it", async () => {
       const agent = new FakeAgent();
@@ -1100,7 +968,7 @@ describe("wireAgentListeners", () => {
         sessionDir: "/tmp/session-1",
         defaultAgentId: "codex",
       });
-      runner.running = true; // the stderr line arrives mid-turn
+      runner.running = true;
       const emitted: { type?: string; message?: string }[] = [];
       runner.on("message", (m) => emitted.push(m as { type?: string; message?: string }));
       const d = deps();
@@ -1108,7 +976,7 @@ describe("wireAgentListeners", () => {
         capturedSessionId: "session-1",
         isNewSession: false,
         persistUserMessage: vi.fn(),
-        recoverMissingConversation: () => false, // executor declined (budget spent)
+        recoverMissingConversation: () => false,
       });
 
       agent.emit("log", "stderr", "No conversation found with session ID: abc-123");
@@ -1154,7 +1022,7 @@ describe("wireAgentListeners", () => {
       sessionDir: "/tmp/session-1",
       defaultAgentId: "codex",
     });
-    runner.running = true; // compaction fires mid-turn
+    runner.running = true;
     const emitted: any[] = [];
     runner.on("message", (m) => emitted.push(m));
 
@@ -1164,14 +1032,12 @@ describe("wireAgentListeners", () => {
       persistUserMessage: vi.fn(),
     });
 
-    // Start → emit-only transient indicator, NOT recorded for persistence.
     agent.emit("event", { type: "agent_compaction_started", trigger: "manual" } satisfies AgentEvent);
     expect(emitted).toEqual([
       { type: "compaction_status", sessionId: "session-1", active: true, trigger: "manual" },
     ]);
     expect(runner.recordedCards).toHaveLength(0);
 
-    // Completion → clear the indicator AND persist a transcript card.
     agent.emit("event", {
       type: "agent_compacted",
       trigger: "manual",
@@ -1185,7 +1051,6 @@ describe("wireAgentListeners", () => {
     expect(cardMsg.card).toMatchObject({ trigger: "manual", preTokens: 100, postTokens: 20 });
     expect(typeof cardMsg.card.id).toBe("string");
 
-    // Recorded in-band so buildTurnMessages folds it into the persisted turn.
     expect(runner.recordedCards).toHaveLength(1);
     expect(runner.recordedCards[0].message.compaction).toMatchObject({
       trigger: "manual",
@@ -1275,9 +1140,6 @@ describe("wireAgentListeners", () => {
     });
 
     it("authored voice_note batched with AskUserQuestion: emits one card (authored) and suppresses the derived nudge", () => {
-      // The reported bug's exact shape — a parallel tool call. The card must
-      // ride the same fast event-stream channel as the dialog (not the slow
-      // relay), and the authored headline must win over the derived one.
       const credentialStore = { getVoiceDeliveryMode: () => "native", getVoiceWebhook: () => null } as unknown as CredentialStore;
       const deliverVoiceNote = (payload: { summary: string }, r: SessionRunner, source: "authored" | "ask" | "plan") =>
         void routeVoiceNote(payload, { runner: r, sessionId: "session-1", credentialStore, source, chatHistoryManager: { replaceInProgress: () => {}, append: () => {} } });
@@ -1300,14 +1162,6 @@ describe("wireAgentListeners", () => {
     });
 
     it("persists the in-progress turn the instant the authored card is recorded (no reconnect-clobber window)", () => {
-      // Regression (docs/163): the card was only written to chat history at the
-      // NEXT tool-result / agent_result boundary. Between firing and that
-      // boundary it lived only in the live client array + recordedCards — so a
-      // mid-turn `loadSessionHistory` (any WS reconnect) replaced the transcript
-      // with a DB snapshot lacking the card, and it vanished until a later
-      // reload. The window widened when the agent kept replying (pure-text
-      // replies hit no tool-result boundary). Fix: persist in-progress eagerly,
-      // mirroring the live-steer handler, so the card is durable immediately.
       const credentialStore = { getVoiceDeliveryMode: () => "native", getVoiceWebhook: () => null } as unknown as CredentialStore;
       const replaceInProgress = vi.fn();
       const chatHistoryManager = {
@@ -1322,10 +1176,8 @@ describe("wireAgentListeners", () => {
         deliverVoiceNote: deliverVoiceNote as unknown as AgentListenerDeps["deliverVoiceNote"],
         chatHistoryManager,
       });
-      runner.running = true; // the agent authors the note mid-turn
+      runner.running = true;
 
-      // ONLY the voice_note tool event — no tool_result, no trailing reply, so
-      // the only thing that could persist the card is the eager persist.
       agent.emit("event", {
         type: "agent_assistant",
         content: [
@@ -1343,8 +1195,6 @@ describe("wireAgentListeners", () => {
     });
 
     it("does not persist in-progress when no voice-note card is recorded this event", () => {
-      // Guard against a needless replaceInProgress on every plain tool event —
-      // the eager persist must be gated on a card actually being recorded.
       const replaceInProgress = vi.fn();
       const chatHistoryManager = {
         replaceInProgress,
@@ -1367,7 +1217,6 @@ describe("wireAgentListeners", () => {
       const deliverVoiceNote = vi.fn();
       const { agent, runner } = wire({ deliverVoiceNote });
 
-      // Simulate the agent authoring a headline via the built-in tool first.
       const credentialStore = { getVoiceDeliveryMode: () => "native", getVoiceWebhook: () => null } as unknown as CredentialStore;
       await routeVoiceNote(
         { summary: "I have a question coming up." },
@@ -1411,9 +1260,6 @@ describe("wireAgentListeners", () => {
     });
 
     it("places an end-of-turn card AFTER the assistant content, not above the turn", () => {
-      // Anchored at 2 == the two persistable groups produced so far, so the card
-      // lands last — exactly where the tool was issued. This is the regression:
-      // an out-of-band append kept an early id and floated the card to the top.
       const out = buildTurnMessages(
         [group("doing work"), group("almost done")],
         [],
@@ -1425,7 +1271,6 @@ describe("wireAgentListeners", () => {
         "almost done",
         "card:v1",
       ]);
-      // The card carries the in-band voiceNote payload, finalized (no inProgress).
       expect(out[2]).toMatchObject({ role: "assistant", text: "", voiceNote: { id: "v1" } });
       expect(out[2].inProgress).toBeUndefined();
     });
@@ -1442,8 +1287,6 @@ describe("wireAgentListeners", () => {
         "card:mid",
         "second",
       ]);
-      // In-progress rebuild flags every row so the next replaceInProgress cycle
-      // deletes and reinserts them together — the card included.
       expect(out.every((m) => m.inProgress)).toBe(true);
     });
 
@@ -1466,16 +1309,6 @@ describe("wireAgentListeners", () => {
   });
 });
 
-/**
- * docs/235 / planning#246 — the background-task marker is what keeps a session that
- * is waiting (rather than thinking) from reading as idle.
- *
- * The listener's job is only to keep the RUNNER's state true; the runner
- * announces the change itself (`background_work`) and one subscriber in
- * `runner-registry-factory` turns that into the cross-session SSE broadcast.
- * These assert the listener drives the runner correctly on both edges,
- * including the crash path — which emits no draining event of its own.
- */
 describe("wireAgentListeners — background-work marker", () => {
   function wireForBackgroundTasks() {
     const agent = new FakeAgent();
@@ -1484,8 +1317,6 @@ describe("wireAgentListeners — background-work marker", () => {
       sessionDir: "/tmp/session-bg",
       defaultAgentId: "codex",
     });
-    // The tracker's liveness gate collapses the count to 0 without a resident
-    // streaming process, so a task can only be outstanding while one is up.
     runner.isStreamingActive = true;
     runner.setAgent(agent as unknown as AgentProcess);
     const announced: string[][] = [];
@@ -1521,8 +1352,6 @@ describe("wireAgentListeners — background-work marker", () => {
     expect(announced.at(-1)).toEqual([]);
   });
 
-  // A crashed process emits no draining event of its own, so the marker would
-  // otherwise keep a dead session pulsing green in every sidebar.
   it("announces the drain when the agent process errors out", () => {
     const { agent, runner, announced } = wireForBackgroundTasks();
 
@@ -1536,9 +1365,6 @@ describe("wireAgentListeners — background-work marker", () => {
     expect(runner.backgroundWorkDescriptions).toEqual([]);
   });
 
-  // Deduped on value: the inputs are touched far more often than they change
-  // (`isStreamingActive` at both ends of every turn, a clear on an already-empty
-  // tracker), and each announcement costs an SSE frame to every browser.
   it("stays silent when nothing actually changed", () => {
     const { agent, runner, announced } = wireForBackgroundTasks();
 
@@ -1550,20 +1376,6 @@ describe("wireAgentListeners — background-work marker", () => {
   });
 });
 
-/**
- * docs/267 — a turn the CLI starts on its own must announce itself on the
- * GLOBAL SSE, not only on the session's own WebSocket.
- *
- * `session_status` reaches attached viewers; every other sidebar derives its
- * dot from `activeRunnerSessions`, whose only additive input is the
- * `session_agent_started` broadcast. Missing it, `SessionStatusDot` falls
- * through "agent running" to the green CI checkmark for a session that is
- * working — the reported bug.
- *
- * The pairing is what these pin: the announcement fires on the false→true edge
- * ONLY, and only where `turn-executor` re-arms a post-turn flow that will
- * broadcast the matching `session_agent_finished`.
- */
 describe("wireAgentListeners — a CLI-started turn announces itself cross-session (docs/267)", () => {
   function wireForAdoption(opts: { useStreaming?: boolean } = {}) {
     const agent = new FakeAgent();
@@ -1588,7 +1400,6 @@ describe("wireAgentListeners — a CLI-started turn announces itself cross-sessi
     return { agent, runner, started };
   }
 
-  /** The orchestrator's own turn, ended by its `agent_result`. */
   function runAndEndATurn(agent: FakeAgent, runner: SessionRunner): void {
     runner.running = true;
     agent.emit("event", {
@@ -1624,10 +1435,6 @@ describe("wireAgentListeners — a CLI-started turn announces itself cross-sessi
     expect(started()).toEqual([{ sessionId: "session-wake" }]);
   });
 
-  // The trap: `adoptCliStartedTurn` runs on EVERY task notification — 15+ times
-  // in one session in the production log — and only the first is a real
-  // false→true transition. An unconditional broadcast would emit a burst of SSE
-  // frames to every browser per turn.
   it("broadcasts exactly once however many notifications one adopted turn produces", () => {
     const { agent, runner, started } = wireForAdoption({ useStreaming: true });
     runAndEndATurn(agent, runner);
@@ -1640,7 +1447,6 @@ describe("wireAgentListeners — a CLI-started turn announces itself cross-sessi
     agent.emit("event", wake);
     agent.emit("event", wake);
     agent.emit("event", wake);
-    // …and the adopted turn's own output, which reaches the other adoption edge.
     agent.emit("event", {
       type: "agent_assistant",
       content: [{ type: "text", text: "working" }],
@@ -1649,9 +1455,6 @@ describe("wireAgentListeners — a CLI-started turn announces itself cross-sessi
     expect(started()).toHaveLength(1);
   });
 
-  // A job started earlier in the CURRENT turn reporting back mid-stream is the
-  // common shape (docs/237). It is not a new turn, and the session is already
-  // marked running everywhere.
   it("stays silent for a notification that lands mid-turn", () => {
     const { agent, runner, started } = wireForAdoption({ useStreaming: true });
     runner.running = true;
@@ -1665,11 +1468,6 @@ describe("wireAgentListeners — a CLI-started turn announces itself cross-sessi
     expect(started()).toEqual([]);
   });
 
-  // An add with no guaranteed remove is worse than the bug being fixed: only a
-  // STREAMING turn gets `turn-executor`'s re-arm, and only that re-armed flow
-  // broadcasts `session_agent_finished`. A one-shot turn's `done` finds
-  // `running` true (this adoption set it) and suppresses its finished
-  // broadcast — so a start announced there would never be retracted.
   it("stays silent on a one-shot turn, where nothing would broadcast the matching finish", () => {
     const { agent, runner, started } = wireForAdoption();
     runAndEndATurn(agent, runner);
@@ -1680,7 +1478,6 @@ describe("wireAgentListeners — a CLI-started turn announces itself cross-sessi
       status: "completed",
     } satisfies AgentEvent);
 
-    // The runner state is unchanged — this gate is about the broadcast only.
     expect(runner.running).toBe(true);
     expect(started()).toEqual([]);
   });

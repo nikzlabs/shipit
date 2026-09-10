@@ -1,13 +1,3 @@
-/**
- * Issue tracker services (docs/170 — inline tracker Issues tab).
- *
- * Pure functions over `CredentialStore` + the tracker registry, consumed by
- * `api-routes-issues.ts`. Read-only + connect/bind: list trackers, list issues
- * for a tracker, and the Linear connect/team-binding mutations. No write-back
- * to the tracker (setting priority/status/comments) — that's a deferred
- * follow-up per the planning#69 scope.
- */
-
 import type { CredentialStore } from "../credential-store.js";
 import type {
   ListIssuesResult,
@@ -44,41 +34,15 @@ import {
 } from "../../shared/plugin-feedback.js";
 import { ServiceError } from "./types.js";
 
-/**
- * Whether an issue's status marks it as a duplicate. A duplicate is terminal —
- * the work lives on the issue it duplicates — so it belongs with the done set,
- * not the open working set, and is dropped when the caller hasn't opted into
- * done issues (the Issues tab's "Show done" toggle off; the agent's default
- * `open` list scope). Matched on the normalized status *name* because neither
- * tracker exposes "duplicate" as a status *type*: Linear models it as a
- * workflow state named "Duplicate" (whose type may be `canceled` or, in some
- * teams, a non-terminal type that the adapter's type filter wouldn't catch),
- * and GitHub as a close-reason the read adapter folds into a plain "Closed".
- */
+// Linear can assign a non-terminal type to its Duplicate state, so match the name.
 export function isDuplicateStatus(name?: string): boolean {
   return name?.trim().toLowerCase() === "duplicate";
 }
 
-/**
- * docs/248-declared-issue-trackers req 11/19 — the message a fail-closed destination lookup produces.
- * Names the declared set so the agent can correct the reference instead of
- * retrying blind, and states plainly that there is no fallback.
- */
 function undeclaredTrackerMessage(trackerId: string, registry: TrackerRegistry): string {
-  // Shared with the shim's own fail-closed messages so one repository describes
-  // itself the same way everywhere — including its plugin repositories, which
-  // are reachable destinations but not trackers (docs/262 req 25).
   return `\`${trackerId}\` is not a tracker this repository declares, and ShipIt has no implicit tracker to fall back to. ${describeDeclaredNames(registry.destinations())}`;
 }
 
-/**
- * docs/248 — the destinations a session can reach, plus the warnings its
- * `shipit.yaml` parse produced (req 8). This is the reference-resolution context
- * the `shipit issue` shim needs: names are declared in the repository, and the
- * shim resolves `planning#42` against exactly the set the orchestrator would.
- * Returning the warnings on the same call is what puts declaration problems in
- * CLI output where the agent can act on them.
- */
 export function listTrackerDestinations(
   credentialStore: CredentialStore,
   fetchImpl?: FetchImpl,
@@ -90,7 +54,6 @@ export function listTrackerDestinations(
   };
 }
 
-/** All declared trackers + their configured state — drives the sub-tab switcher. */
 export function listTrackers(
   credentialStore: CredentialStore,
   fetchImpl?: FetchImpl,
@@ -99,12 +62,7 @@ export function listTrackers(
   return buildTrackerRegistry(credentialStore, fetchImpl, github).list();
 }
 
-/**
- * List issues for one tracker, priority-sorted. When the tracker isn't
- * configured we return its info with an empty list (the client renders the
- * "Connect" empty state) rather than erroring — an unconfigured tracker is a
- * normal state, not a failure.
- */
+/** An unconfigured tracker returns the UI's Connect empty state. */
 export async function listIssuesForTracker(
   credentialStore: CredentialStore,
   trackerId: string,
@@ -121,17 +79,11 @@ export async function listIssuesForTracker(
     return { tracker: tracker.info(), issues: [] };
   }
   try {
-    // Fetch the issues and the tracker's assignable statuses together — the
-    // latter powers the list's inline status editor (docs/191). Statuses are
-    // best-effort: a failed states lookup must not blank the whole list, so it
-    // degrades to "no inline editor" rather than a 502.
+    // Status lookup failure disables the editor without hiding the issue list.
     const [issues, availableStatuses] = await Promise.all([
       tracker.listIssues(options),
       tracker.listStatuses().catch(() => [] as { name: string; type?: string; color?: string }[]),
     ]);
-    // Duplicates are terminal, so they only belong in the list once the caller
-    // opts into done issues — drop them from the default open working set
-    // (tracker-neutral; see `isDuplicateStatus`).
     const visible = options?.includeDone
       ? issues
       : issues.filter((i) => !isDuplicateStatus(i.status?.name));
@@ -145,15 +97,6 @@ export async function listIssuesForTracker(
   }
 }
 
-/**
- * List the full set of available labels (name + color) for one tracker — the
- * foundation a follow-up label filter facet / on-page editor consumes, and the
- * same fetch that yields the real per-label colors the chips render (planning#94
- * foundation). Like `listIssuesForTracker`, an unconfigured tracker is a normal
- * empty state (`{ labels: [] }`), not an error — the follow-up UI degrades to
- * "no labels to pick from" rather than surfacing a failure. A reachable-tracker
- * failure (auth/network) surfaces as a 502.
- */
 export async function listLabelsForTracker(
   credentialStore: CredentialStore,
   trackerId: string,
@@ -175,15 +118,6 @@ export async function listLabelsForTracker(
   }
 }
 
-/**
- * List the full set of assignable statuses (name + type + color) for one tracker
- * — Linear's team workflow states in board order, GitHub's fixed Open/Closed
- * pair (planning#201). The read-only discovery surface behind `shipit issue statuses`,
- * so the agent can see the valid `status` targets without first viewing an issue
- * (`view` only carries `availableStatuses` per-issue). Like `listLabelsForTracker`
- * an unconfigured tracker is a normal empty state (`{ statuses: [] }`), not an
- * error; a reachable-tracker failure (auth/network) surfaces as a 502.
- */
 export async function listStatusesForTracker(
   credentialStore: CredentialStore,
   trackerId: string,
@@ -205,15 +139,6 @@ export async function listStatusesForTracker(
   }
 }
 
-/**
- * Resolve a configured tracker or throw a `ServiceError` the route maps to an
- * HTTP status: 404 for an undeclared tracker, 409 for a declared-but-unconnected
- * one (the agent should connect it, not retry). Used by the write services below.
- *
- * docs/248-declared-issue-trackers req 11 — the 404 is a **fail-closed**, not a lookup miss to route
- * around: an id naming no declared destination has nowhere to go, and the
- * message says so rather than leaving the agent to guess (req 19).
- */
 function resolveConfiguredTracker(
   credentialStore: CredentialStore,
   trackerId: string,
@@ -226,8 +151,6 @@ function resolveConfiguredTracker(
   );
 }
 
-/** The same resolution against a registry the caller already built — for a
- * write that also has to ask what KIND of destination it resolved to. */
 function resolveConfiguredTrackerIn(registry: TrackerRegistry, trackerId: string): Tracker {
   const tracker = registry.get(trackerId as TrackerId);
   if (!tracker) throw new ServiceError(404, undeclaredTrackerMessage(trackerId, registry));
@@ -237,17 +160,6 @@ function resolveConfiguredTrackerIn(registry: TrackerRegistry, trackerId: string
   return tracker;
 }
 
-/**
- * Fetch a single issue from one tracker by its tracker-native id (docs/175 —
- * the agent's `shipit issue view` path). The same registry that backs the
- * Issues tab, reused for a single-issue read: GitHub wants the bare number,
- * Linear the key (the caller resolves this via `parseIssueRef`).
- *
- * Unlike `listIssuesForTracker`, an unconfigured tracker is an error here, not
- * an empty result: a `view` has no useful "empty state" — if the tracker can't
- * be reached the agent needs to know why. A missing issue (or a GitHub PR
- * number, which `getIssue` returns null for) is a 404.
- */
 export async function getIssueForTracker(
   credentialStore: CredentialStore,
   trackerId: string,
@@ -278,13 +190,6 @@ export async function getIssueForTracker(
   return { tracker: tracker.info(), issue };
 }
 
-/**
- * List an issue's comments for the inline detail-view thread (docs/189
- * follow-up). The read sibling of `getIssueForTracker`: an unconfigured tracker
- * is an error (the thread has no useful empty state if the tracker can't be
- * reached), a missing issue surfaces as the tracker's own error. Oldest-first,
- * the order a reader expects a discussion in.
- */
 export async function listIssueCommentsForTracker(
   credentialStore: CredentialStore,
   trackerId: string,
@@ -310,14 +215,7 @@ export async function listIssueCommentsForTracker(
   }
 }
 
-/**
- * Post a comment a USER typed in the inline detail view (docs/189 follow-up).
- * Deliberately separate from `commentOnIssueForTracker` (the agent's
- * do-then-surface write): a user-authored comment is visible in the thread it
- * lands in, so it does NOT emit a provenance card into the chat transcript and
- * has no undo lifecycle. Returns the created comment so the client appends it to
- * the open thread without a refetch.
- */
+/** Direct UI writes return the changed item without an agent provenance card or undo. */
 export async function addIssueCommentForTracker(
   credentialStore: CredentialStore,
   trackerId: string,
@@ -336,18 +234,6 @@ export async function addIssueCommentForTracker(
   }
 }
 
-// ---- User-initiated inline writes (docs/191) --------------------------------
-//
-// The status/priority siblings of `addIssueCommentForTracker`: a direct user
-// manipulation in the Issues tab, NOT the agent's do-then-surface write. They
-// return the updated issue for an in-place patch and emit no provenance card /
-// undo (unlike `setIssueStatusForTracker`, which returns an `IssueWriteOutcome`).
-
-/**
- * Set an issue's status from a user action in the UI (docs/191). `status` is a
- * native state name or a normalized type; an unresolvable value surfaces as a
- * 422 listing the valid options (via {@link toResolutionServiceError}).
- */
 export async function userSetIssueStatus(
   credentialStore: CredentialStore,
   trackerId: string,
@@ -368,13 +254,6 @@ export async function userSetIssueStatus(
   return { issue: issue! };
 }
 
-/**
- * Set an issue's priority from a user action in the UI (docs/191). Linear-only
- * by product decision: GitHub has no native priority field and its adapter
- * rejects the write, so the UI only surfaces this control for Linear; a GitHub
- * call here returns a 422. `priority` is a normalized level
- * (`urgent|high|medium|low|none`).
- */
 export async function userSetIssuePriority(
   credentialStore: CredentialStore,
   trackerId: string,
@@ -395,16 +274,7 @@ export async function userSetIssuePriority(
   return { issue: issue! };
 }
 
-/**
- * Replace an issue's full label set from a user action in the UI (the on-page
- * label editor). `labels` is the COMPLETE desired set of label names — a
- * wholesale replace, not a delta — because the editor commits the issue's
- * end-state, so removals are names left out and `[]` clears all labels. Both
- * trackers support labels natively (Linear issue labels, GitHub REST labels),
- * so this isn't gated like priority. An unresolvable name surfaces as a 422
- * listing the valid options (via {@link toResolutionServiceError}); GitHub, for
- * instance, rejects a name that isn't a defined repo label.
- */
+/** Replace the complete label set; [] clears all labels. */
 export async function userSetIssueLabels(
   credentialStore: CredentialStore,
   trackerId: string,
@@ -424,50 +294,22 @@ export async function userSetIssueLabels(
   return { issue: issue! };
 }
 
-// ---- Writes (docs/177) ------------------------------------------------------
-
-/**
- * The result of a do-then-surface write: the issue (post-write for edit/status/
- * assignee; current for comment), a human summary, and the undo snapshot the
- * provenance card carries. The route stamps tracker/attribution/cardId on top.
- */
 export interface IssueWriteOutcome {
   issue: TrackerIssue;
   verb: IssueWriteVerb;
   summary: string;
   undo: IssueWriteUndo;
-  /**
-   * docs/189 — the display-only "what changed" values for the card's second
-   * line (comment preview, title/status/assignee deltas). The route copies this
-   * onto `IssueWriteCard.content`. Absent for a `create` (no "before" state).
-   */
   content?: IssueWriteContent;
-  /**
-   * planning#232 — labels minted on the fly by `--create-missing-labels` before this
-   * write applied them. Each gets its OWN provenance card (verb `label`, undo =
-   * delete-if-unused) in addition to the main write card, so a flag-driven
-   * label creation is exactly as visible and reversible as an explicit
-   * `shipit issue label create`. Absent when no labels were created.
-   */
+  /** Each implicitly created label gets its own provenance card and undo. */
   labelCreations?: LabelCreation[];
 }
 
-/**
- * One label created as a do-then-surface write (planning#232) — by the standalone
- * `shipit issue label create` or by `--create-missing-labels` on create/edit.
- * Carries everything the route needs to mint the provenance card.
- */
 export interface LabelCreation {
   label: IssueLabel;
   summary: string;
   undo: Extract<IssueWriteUndo, { kind: "label" }>;
 }
 
-/**
- * One label EDIT as a do-then-surface write (planning#88) — `shipit issue label edit`.
- * The same shape as {@link LabelCreation} with the reverse-write snapshot for
- * the fields that changed, plus the card's second-line content.
- */
 export interface LabelEdit {
   label: IssueLabel;
   summary: string;
@@ -475,35 +317,20 @@ export interface LabelEdit {
   content: IssueWriteContent;
 }
 
-/** Both label writes share the card-minting shape the route consumes. */
 export type LabelWrite = LabelCreation | LabelEdit;
 
-/** Compare two label colors ignoring `#` and casing (`#D73A4A` === `d73a4a`). */
 function sameColor(a: string | undefined, b: string | undefined): boolean {
   const norm = (v: string | undefined) => (v ?? "").trim().replace(/^#/, "").toLowerCase();
   return norm(a) === norm(b);
 }
 
-/**
- * Clip a comment body to a short preview for the provenance card's second line
- * (docs/189). Collapses runs of whitespace to keep the two-line clamp honest,
- * then truncates with an ellipsis. The full comment lives in the tracker.
- */
 function clipComment(body: string): string {
   const collapsed = body.trim().replace(/\s+/g, " ");
   const MAX = 280;
   return collapsed.length > MAX ? `${collapsed.slice(0, MAX).trimEnd()}…` : collapsed;
 }
 
-/**
- * Map a `TrackerResolutionError` to a 422 listing the valid options. On the
- * agent's create/edit paths (`opts.labelHint`), an unknown-label rejection also
- * points at the two sanctioned ways to mint the label (planning#232) — before that,
- * the dead end forced users to create labels by hand in the tracker UI.
- */
 function toResolutionServiceError(err: unknown, opts?: { labelHint?: boolean }): never {
-  // A refusal, not a resolution failure (planning#88) — 403, and no options list,
-  // because there is no other value the agent could have passed that would work.
   if (err instanceof TrackerPermissionError) {
     throw new ServiceError(403, err.message);
   }
@@ -518,11 +345,6 @@ function toResolutionServiceError(err: unknown, opts?: { labelHint?: boolean }):
   throw new ServiceError(502, err instanceof Error ? err.message : String(err));
 }
 
-/**
- * A short " (priority: High, labels: security, bug)" suffix for a write summary,
- * so the provenance card reflects the labels/priority that were set (planning#94).
- * Empty when the issue has no labels and no explicit priority.
- */
 function describeAttrs(issue: TrackerIssue): string {
   const parts: string[] = [];
   if (issue.priority.level !== "none") parts.push(`priority: ${issue.priority.label}`);
@@ -544,14 +366,6 @@ async function loadIssueOr404(tracker: Tracker, id: string): Promise<TrackerIssu
   return issue;
 }
 
-/**
- * Create a new tracker label so `--label` can apply it (planning#232 — the
- * `shipit issue label create` verb). Do-then-surface like the other writes:
- * the label is created immediately and the route mints a provenance card whose
- * undo deletes the label if it's still unused. A same-name label already
- * existing (case-insensitive) is a 409 — nothing to create, and re-creating
- * would silently fork casing.
- */
 export async function createLabelForTracker(
   credentialStore: CredentialStore,
   trackerId: string,
@@ -571,12 +385,7 @@ export async function createLabelForTracker(
   }
   const clash = existing.find((l) => l.name.toLowerCase() === trimmed.toLowerCase());
   if (clash) {
-    // Deliberately still an error, not update-if-different (planning#88): this path is
-    // also reached by `--create-missing-labels`, where the name came from a
-    // `--label` typo, and a create that repainted a live label carried by
-    // hundreds of issues is the worst outcome a typo could have. Correcting a
-    // label is a deliberate act, so it gets a deliberate verb — which the
-    // message now names, because before it the rejection was a dead end.
+    // Creation must not modify an existing label used by other issues.
     throw new ServiceError(
       409,
       `Label "${clash.name}" already exists on ${tracker.label} — nothing to create. ` +
@@ -596,35 +405,6 @@ export async function createLabelForTracker(
   };
 }
 
-/**
- * Correct an existing label — rename, recolor, re-describe (planning#88 —
- * `shipit issue label edit`). Do-then-surface like every other write: applied
- * immediately, with a provenance card whose Undo restores the prior values.
- *
- * This closes the gap `label create` left open. Create refuses a name that
- * already exists in any casing (deliberately — see below), and there is no
- * delete, so a label minted with the wrong color or casing was permanently
- * wrong through ShipIt: docs/247 hit exactly that with `Feature` and
- * `priority: high` minted grey by a reachability probe, on 147 issues between
- * them, with nothing in the product able to fix it.
- *
- * **Rename is in scope, and it is not a re-labeling.** Both backends rename in
- * place, so every issue carrying the label keeps carrying it and simply displays
- * the new name — which is also what makes the undo a true reverse write. The
- * `Bug` / `bug` casing collision that motivated this can only be fixed by a
- * rename.
- *
- * **`label create` keeps failing on an existing name** rather than becoming
- * update-if-different. Create is reachable from `--create-missing-labels`, where
- * the name comes from a `--label` typo; a create that quietly repainted a live
- * label carried by 147 issues would be the worst possible outcome of a typo.
- * Correcting a label is a deliberate act, so it gets a deliberate verb.
- *
- * Failure modes are all pre-write: an unknown label is a 404 naming the valid
- * set, a new name colliding with a DIFFERENT label is a 409 (neither backend
- * merges cleanly, and a silent merge is unrecoverable), and an edit that would
- * change nothing is a 409 rather than a card with a meaningless Undo.
- */
 export async function updateLabelForTracker(
   credentialStore: CredentialStore,
   trackerId: string,
@@ -651,24 +431,17 @@ export async function updateLabelForTracker(
     throw new ServiceError(502, err instanceof Error ? err.message : String(err));
   }
   if (!target) {
-    // Name the valid set the way every other resolution failure does, so the
-    // agent corrects the name instead of retrying blind. Best-effort: a failed
-    // list must not mask the real answer ("no such label").
     let options: string[] = [];
     try {
       options = (await tracker.listLabels()).map((l) => l.name).slice(0, 50);
     } catch {
-      // Leave the list empty rather than replacing "no such label" with a
-      // secondary failure the agent can do nothing with.
+      // Preserve the original lookup failure.
     }
     const list = options.length > 0 ? ` Existing labels: ${options.join(", ")}.` : "";
     throw new ServiceError(404, `No label "${trimmed}" exists on ${tracker.label}.${list}`);
   }
 
-  // A rename onto a name a DIFFERENT label already holds is refused: GitHub
-  // rejects it outright and Linear would leave two labels the agent then has to
-  // reconcile, so neither backend gives us a merge worth exposing. A
-  // casing-only rename (`bug` → `Bug`) is the label itself, not a collision.
+  // A casing-only rename is not a collision with another label.
   if (newName && newName.toLowerCase() !== target.name.toLowerCase()) {
     let clash: (IssueLabel & { id: string }) | null;
     try {
@@ -685,8 +458,7 @@ export async function updateLabelForTracker(
     }
   }
 
-  // Narrow the patch to what actually differs, so the undo snapshot restores
-  // only fields this write really changed.
+  // Undo must restore only fields this write changed.
   const renamed = newName !== undefined && newName !== target.name;
   const recolored = patch.color !== undefined && !sameColor(patch.color, target.color);
   const redescribed = patch.description !== undefined && patch.description !== (target.description ?? "");
@@ -720,12 +492,9 @@ export async function updateLabelForTracker(
     summary: `edited label ${parts.join(", ")}`,
     undo: {
       kind: "label-edit",
-      // The id AFTER the write: on GitHub the name IS the id, so a rename moves
-      // it, and undo has to address the label as it now stands.
+      // GitHub uses the name as the ID, so undo must use the post-rename ID.
       labelId: updated!.id,
       ...(renamed ? { previousName: target.name } : {}),
-      // Only restorable when the tracker told us the prior color; both do in
-      // practice (every label carries one), so the omission is a formality.
       ...(recolored && target.color ? { previousColor: target.color } : {}),
       ...(redescribed ? { previousDescription: target.description ?? "" } : {}),
     },
@@ -736,14 +505,6 @@ export async function updateLabelForTracker(
   };
 }
 
-/**
- * Create any requested label that doesn't exist yet — the `--create-missing-
- * labels` opt-in on create/edit (planning#232). Matching is case-insensitive against
- * the tracker's existing set (the same contract label RESOLUTION uses), so a
- * mere casing difference never forks a duplicate label. Returns one
- * `LabelCreation` per label actually minted, for the per-label provenance
- * cards. Without the flag this is never called and unknown labels keep failing.
- */
 async function createMissingLabels(tracker: Tracker, names: string[]): Promise<LabelCreation[]> {
   let existing: IssueLabel[];
   try {
@@ -772,13 +533,7 @@ async function createMissingLabels(tracker: Tracker, names: string[]): Promise<L
   return creations;
 }
 
-/**
- * docs/262 req 25 — the plugin repository a create is filing feedback on, when
- * that is what it is doing.
- *
- * Keyed on **the name the create was addressed through** — see
- * `addressedAsPluginRepo` for why the destination alone is not enough.
- */
+/** Use the addressed name: one destination can have tracker and plugin aliases. */
 function pluginFeedbackTarget(
   registry: TrackerRegistry,
   trackerId: string,
@@ -794,19 +549,6 @@ function pluginFeedbackTarget(
   return name ? repos.find((r) => r.name.toLowerCase() === name) ?? repos[0] : repos[0];
 }
 
-/**
- * Create a new issue in the tracker's bound scope (docs/187). Unlike the other
- * writes there is no prior state to snapshot — the undo target is the new
- * issue's own id, and undo cancels/closes it. The route stamps `card.issueId`
- * from `outcome.issue.id`.
- *
- * When the create is addressed at a declared **plugin repository** (docs/262
- * req 25), the session's plugin context — repository name, declared ref, exact
- * running commit — is appended to the body here rather than left to the caller.
- * The agent cannot read that commit from the checkout it browses, and req 25
- * asks the report to carry it; server-side is also the only place that knows it
- * for the UI path as well as the shim's.
- */
 export async function createIssueForTracker(
   credentialStore: CredentialStore,
   trackerId: string,
@@ -817,7 +559,6 @@ export async function createIssueForTracker(
     priority?: string;
     parent?: string;
     createMissingLabels?: boolean;
-    /** The declared name the create was addressed through (docs/262 req 25). */
     trackerName?: string;
   } = {},
   fetchImpl?: FetchImpl,
@@ -827,9 +568,7 @@ export async function createIssueForTracker(
   const tracker = resolveConfiguredTrackerIn(registry, trackerId);
   const feedbackRepo = pluginFeedbackTarget(registry, trackerId, opts.trackerName, github);
   const finalBody = feedbackRepo ? withPluginFeedbackContext(body, feedbackRepo) : body;
-  // Opt-in only (planning#232): mint unknown labels BEFORE the create so label
-  // resolution can't reject them. Without the flag an unknown label still fails
-  // (with the label-create hint) — a typo must not silently spawn a label.
+  // Create missing labels only on explicit opt-in; a typo must not create one.
   const labelCreations =
     opts.createMissingLabels && opts.labels && opts.labels.length > 0
       ? await createMissingLabels(tracker, opts.labels)
@@ -855,7 +594,6 @@ export async function createIssueForTracker(
   };
 }
 
-/** Add a comment; undo deletes it by the returned comment id. */
 export async function commentOnIssueForTracker(
   credentialStore: CredentialStore,
   trackerId: string,
@@ -881,23 +619,7 @@ export async function commentOnIssueForTracker(
   };
 }
 
-/**
- * Rewrite one of the issue's comments (planning#88 — `shipit issue comment edit`);
- * undo restores the body it replaced.
- *
- * A comment was write-once before this: an agent that posted a wrong or stale
- * comment could only post another asking readers to ignore the first, and
- * `CLAUDE.md` has agents commenting on every design-doc update, so the mistakes
- * accumulated in the surface meant to be read. It also removes the one-way door
- * in docs/247's migration, which replays 1,344 comments — issue bodies stay
- * editable, comments did not.
- *
- * The issue is named alongside the comment (not derived from it) for the same
- * reason every other verb names its destination: a comment id is backend-global,
- * so the issue is what scopes it. The adapter enforces that pairing, plus
- * authorship. `shipit issue view <ref> --comments --json` already returns both
- * ids together, so requiring both costs the caller nothing.
- */
+/** The adapter checks that this comment belongs to the issue and the current author. */
 export async function editCommentForTracker(
   credentialStore: CredentialStore,
   trackerId: string,
@@ -920,19 +642,11 @@ export async function editCommentForTracker(
     verb: "comment-edit",
     summary: `edited a comment on ${issue.identifier}`,
     undo: { kind: "comment-edit", commentId, previousBody: previousBody! },
-    // The NEW body is the card's second line; the prior text is one Undo away.
     content: { comment: clipComment(body) },
   };
 }
 
-/**
- * Edit title, description, labels, and/or priority; snapshot the prior values
- * for undo. Labels are ADDITIVE (planning#94): the requested names are merged into
- * the issue's existing labels rather than replacing them, so editing labels can
- * never silently drop a label the agent didn't mention. The adapter's
- * `updateIssue({ labels })` is a wholesale replace, so we pass it the merged
- * set; undo restores the prior set by replacing back to it.
- */
+/** Agent label edits are additive; the adapter replaces sets, so pass the merged set. */
 export async function updateIssueForTracker(
   credentialStore: CredentialStore,
   trackerId: string,
@@ -943,16 +657,12 @@ export async function updateIssueForTracker(
   opts: { createMissingLabels?: boolean } = {},
 ): Promise<IssueWriteOutcome> {
   const tracker = resolveConfiguredTracker(credentialStore, trackerId, fetchImpl, github);
-  // Opt-in only (planning#232): mint unknown labels up front, mirroring create.
   const labelCreations =
     opts.createMissingLabels && patch.labels && patch.labels.length > 0
       ? await createMissingLabels(tracker, patch.labels)
       : [];
   const prior = await loadIssueOr404(tracker, id);
-  // The prior label *names* (the read shape now carries colors; the write API
-  // resolves names → ids, and undo restores by name).
   const priorLabelNames = (prior.labels ?? []).map((l) => l.name);
-  // Merge requested labels into the existing set (additive, de-duped).
   const mergedLabels =
     patch.labels !== undefined
       ? [...priorLabelNames, ...patch.labels.filter((l) => !priorLabelNames.includes(l))]
@@ -975,8 +685,6 @@ export async function updateIssueForTracker(
     ...(patch.description !== undefined ? { previousDescription: prior.description ?? "" } : {}),
     ...(patch.labels !== undefined ? { previousLabels: priorLabelNames } : {}),
     ...(patch.priority !== undefined ? { previousPriority: prior.priority.level } : {}),
-    // Reparent (planning#208): snapshot the prior parent's internal id so undo restores
-    // the exact relation (or `null` when it was top-level → undo detaches back).
     ...(patch.parent !== undefined ? { previousParentId: prior.parentId ?? null } : {}),
   };
   const changed = [
@@ -988,9 +696,6 @@ export async function updateIssueForTracker(
   ]
     .filter(Boolean)
     .join(" & ");
-  // Surface the change on the card's second line (docs/189): the title
-  // before/after when it changed, a description-touched flag, and a faint note
-  // for label/priority/parent edits so an attrs-only edit isn't a blank line.
   const attrParts: string[] = [];
   if (patch.priority !== undefined) attrParts.push(`priority → ${updated!.priority.label}`);
   if (patch.labels !== undefined) {
@@ -1012,7 +717,6 @@ export async function updateIssueForTracker(
   };
 }
 
-/** Set status (normalized type or native name); snapshot the prior native name. */
 export async function setIssueStatusForTracker(
   credentialStore: CredentialStore,
   trackerId: string,
@@ -1035,13 +739,11 @@ export async function setIssueStatusForTracker(
     issue: updated!,
     verb: "status",
     summary: `set ${updated!.identifier} → ${toStatus}`,
-    // Restore by the prior native state name (both trackers accept native names).
     undo: { kind: "status", previousStatus: fromStatus },
     content: { status: { from: fromStatus, to: toStatus } },
   };
 }
 
-/** Set/clear assignee; snapshot the prior tracker-internal assignee id. */
 export async function setIssueAssigneeForTracker(
   credentialStore: CredentialStore,
   trackerId: string,
@@ -1072,31 +774,16 @@ export async function setIssueAssigneeForTracker(
   };
 }
 
-/**
- * Reverse a previously-recorded write — the Undo affordance on the provenance
- * card (docs/177). Replays the snapshot captured at write time: delete the
- * comment, restore the prior title/description, restore the prior status name,
- * or re-assign the prior internal id (verbatim, never re-resolved).
- */
 export async function undoIssueWrite(
   credentialStore: CredentialStore,
   card: Pick<IssueWriteCard, "tracker" | "trackerName" | "issueId" | "undo">,
   fetchImpl?: FetchImpl,
   github?: GitHubTrackerContext,
 ): Promise<void> {
-  // docs/248-declared-issue-trackers req 11's carve-out — an Undo acts on the destination recorded on
-  // the card, even when the repository no longer declares it. This is the one
-  // path that does NOT go through the narrowed `get()`; see
-  // `TrackerRegistry.getRecorded`.
+  // Undo can reach its recorded destination after its declaration is removed.
   const registry = buildTrackerRegistry(credentialStore, fetchImpl, github);
 
-  // req 16's exception. Undo is not re-targeted by a re-pointed name: the write
-  // happened to a specific issue, and the snapshot being restored is that
-  // issue's. Following the name would apply it to a different issue of the same
-  // number that never had it — on Linear the team guard would catch the attempt,
-  // but on GitHub nothing would, so the wrong repository's issue would silently
-  // be rewritten. Undo is for reversing something done minutes ago; once the
-  // declaration has moved under it, refusing is the honest answer.
+  // A moved name must not apply this snapshot to a different destination.
   if (card.trackerName) {
     const now = registry.destinationForName(card.trackerName);
     if (now && now.id !== card.tracker) {
@@ -1121,22 +808,14 @@ export async function undoIssueWrite(
         await tracker.deleteComment(card.undo.commentId);
         return;
       case "comment-edit":
-        // Restore the exact body the rewrite replaced. The adapter re-runs the
-        // same belonging + authorship guards the forward write passed, which
-        // still hold — ShipIt edited it once, so ShipIt authored it.
         await tracker.updateComment(card.issueId, card.undo.commentId, card.undo.previousBody);
         return;
       case "edit":
         await tracker.updateIssue(card.issueId, {
           ...(card.undo.previousTitle !== undefined ? { title: card.undo.previousTitle } : {}),
           ...(card.undo.previousDescription !== undefined ? { description: card.undo.previousDescription } : {}),
-          // Replace the label set back to the prior one, and re-apply the prior
-          // priority level (planning#94). previousLabels is the exact set to restore.
           ...(card.undo.previousLabels !== undefined ? { labels: card.undo.previousLabels } : {}),
           ...(card.undo.previousPriority !== undefined ? { priority: card.undo.previousPriority } : {}),
-          // Restore the prior parent relation (planning#208): the snapshotted internal
-          // id (which the adapter resolves verbatim), or `null` to detach back to
-          // top-level when the issue had no parent before the edit.
           ...(card.undo.previousParentId !== undefined ? { parent: card.undo.previousParentId } : {}),
         });
         return;
@@ -1144,15 +823,10 @@ export async function undoIssueWrite(
         await tracker.setStatus(card.issueId, card.undo.previousStatus);
         return;
       case "assignee":
-        // raw: replay the exact prior id (or null → unassign), no re-resolution.
         await tracker.setAssignee(card.issueId, card.undo.previousAssigneeId, { raw: true });
         return;
       case "create":
-        // No prior state to restore — cancel the issue we created. Prefer a
-        // `canceled` state, but some Linear teams have none configured; fall
-        // back to `completed` (close it) rather than leaving the created issue
-        // stranded with a dead Undo. GitHub always resolves `canceled`
-        // (close-as-not_planned), so the fallback only fires for Linear.
+        // Some Linear teams have no canceled state; close the created issue instead.
         try {
           await tracker.setStatus(card.issueId, "canceled");
         } catch (statusErr) {
@@ -1164,15 +838,9 @@ export async function undoIssueWrite(
         }
         return;
       case "label":
-        // Delete the created label only while nothing carries it; the adapter
-        // throws an explanation otherwise, which surfaces on the card (planning#232).
         await tracker.deleteUnusedLabel(card.undo.labelId, card.undo.labelName);
         return;
       case "label-edit": {
-        // Restore exactly the fields the edit changed (planning#88). A rename undoes
-        // in place like the forward write did, so no issue is re-labeled either
-        // way; a field the edit never touched is absent from the snapshot and is
-        // therefore left alone rather than being reset to a guess.
         const restore = {
           ...(card.undo.previousName !== undefined ? { name: card.undo.previousName } : {}),
           ...(card.undo.previousColor !== undefined ? { color: card.undo.previousColor } : {}),
@@ -1188,15 +856,6 @@ export async function undoIssueWrite(
   }
 }
 
-// ---- Linear connect / binding (settings) ----
-
-/**
- * Store a Linear API token after validating it can reach the API. We validate
- * by listing teams (cheap, read-only); the returned teams are handed back as a
- * **lookup**, so the settings UI can show which team keys are available for a
- * `kind: linear` declaration. docs/248-declared-issue-trackers req 4 — picking one here no longer binds
- * anything: the team lives in the repository's declaration.
- */
 export async function connectLinear(
   credentialStore: CredentialStore,
   token: string,
@@ -1214,11 +873,6 @@ export async function connectLinear(
   return { teams };
 }
 
-/**
- * List the workspace's Linear teams. docs/248-declared-issue-trackers req 4 — a lookup for *writing* a
- * declaration (which team keys does this credential reach?), not a picker that
- * persists a binding.
- */
 export async function getLinearTeams(
   credentialStore: CredentialStore,
   fetchImpl: FetchImpl = fetch,
@@ -1232,7 +886,6 @@ export async function getLinearTeams(
   }
 }
 
-/** Disconnect Linear: clear the stored credential. */
 export function disconnectLinear(credentialStore: CredentialStore): void {
   credentialStore.clearLinear();
 }

@@ -1,19 +1,3 @@
-/**
- * docs/150-multiple-provider-subscriptions req 18 — a child session's follow-up turn must run on the child's
- * OWN agent, not on the orchestrator's global default.
- *
- * The bug this guards: `SessionRunnerRegistry.getOrCreate` applies its
- * `defaultAgentId` argument only when it CONSTRUCTS a runner. `sendChildMessage`
- * correctly passes `child.agentId ?? defaultAgentId`, but when a runner already
- * exists in the registry — seeded with the global default by container rescue
- * (`services/recovery.ts`) or the warm pool — that argument is ignored and the
- * stale runner comes back. Everything downstream then reads `runner.agentId`:
- * `prepareSessionAgentEnvironment` provisions THAT agent's credentials, and
- * `runDispatchedTurn` is handed `runner._agentId` as the agent to run. So a
- * Codex child ran Claude, with Claude's credentials provisioned to match, which
- * is what made it look intentional rather than broken.
- */
-
 import { describe, it, expect, vi } from "vitest";
 import { ResolvedChildMessageError, sendChildMessage } from "./child-sessions.js";
 import type { SessionManager } from "../sessions.js";
@@ -39,9 +23,7 @@ function stubRunner(agentId: AgentId, running = false) {
 
 function stubRegistry(runner: ReturnType<typeof stubRunner>) {
   return {
-    // The heart of the bug: an existing runner is returned as-is and the
-    // agentId argument is discarded. Modelled faithfully rather than stubbed
-    // away, so this test fails if the production call stops reconciling.
+    // Like the registry, return existing runners without applying the agentId argument.
     getOrCreate: vi.fn(() => runner),
     get: vi.fn(() => runner),
     dispose: vi.fn(),
@@ -102,7 +84,7 @@ describe("sendChildMessage — agent reconciliation (req 18)", () => {
 
   it("runs the child's persisted agent when the registry hands back a stale runner", async () => {
     vi.spyOn(console, "log").mockImplementation(() => {});
-    const runner = stubRunner("claude"); // seeded by container rescue
+    const runner = stubRunner("claude");
     const registry = stubRegistry(runner);
 
     await sendChildMessage(
@@ -111,22 +93,16 @@ describe("sendChildMessage — agent reconciliation (req 18)", () => {
       "parent-1",
       "child-1",
       "keep going",
-      "claude", // orchestrator default — deliberately NOT the child's agent
-      undefined, // no credentialsDir: skip env-prep, isolate the agent decision
+      "claude",
+      undefined,
       undefined,
     );
 
-    // The runner is what `runDispatchedTurn` reads its agent id from, so this
-    // is the assertion that the TURN runs on Codex — not merely that a local
-    // variable was computed correctly.
     expect(runner.agentId).toBe("codex");
     expect(runner.dispatch).toHaveBeenCalledTimes(1);
   });
 
   it("leaves a running turn's agent alone", async () => {
-    // The agent process is already spawned under the old id; reassigning would
-    // desynchronize the runner from its own live process. The message queues
-    // and the NEXT turn picks up the reconciled id.
     const runner = stubRunner("claude", true);
     const registry = stubRegistry(runner);
 
@@ -145,8 +121,6 @@ describe("sendChildMessage — agent reconciliation (req 18)", () => {
   });
 
   it("falls back to the orchestrator default for a child that has never run", async () => {
-    // A never-run child has no persisted agent yet, so the seed is all there
-    // is and must not be overwritten with nothing.
     const runner = stubRunner("claude");
     const registry = stubRegistry(runner);
 

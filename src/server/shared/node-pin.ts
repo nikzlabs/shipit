@@ -1,34 +1,3 @@
-/**
- * Node version pin resolution (docs/248, nikzlabs/shipit#1728).
- *
- * A repo pins the Node major it targets; the session-worker image bakes its own
- * (`node:24-slim` today). Without this, `node -v` in a session disagrees with
- * the project's `.nvmrc`, native addons compile against the wrong ABI, and the
- * Node that installs `node_modules` disagrees with the Node a Compose preview
- * service pins for the same mounted workspace.
- *
- * This module is the **pure** half: read the pin, decide whether the Node
- * already running satisfies it, and pick the best candidate from a list of
- * available versions. Downloading and installing lives in
- * `session/node-runtime.ts`, which is the only part that touches the network
- * and the filesystem outside the workspace.
- *
- * Pin sources, in precedence order (requirement 3 — deliberately only these
- * two; `.node-version`, `volta.node`, `mise.toml` and `.tool-versions` are NOT
- * read):
- *   1. `.nvmrc` at the workspace root — wins, because it pins a version.
- *   2. `package.json` `engines.node` — usually a range, so it is a constraint
- *      rather than a choice.
- *
- * The range grammar implemented here is the npm-`engines` subset that actually
- * appears in the wild — `>=`, `>`, `<=`, `<`, `=`, `^`, `~`, x-ranges, `*`,
- * space-separated intersections, and `||` unions. It is deliberately NOT a
- * general semver implementation: the `semver` package would be a new runtime
- * dependency under the 7-day-cooldown policy for a job whose entire input space
- * is "which Node major does this repo target", and an unparseable range is a
- * *reported* outcome here (`unsupported`), never a wrong one.
- */
-
 import fs from "node:fs";
 import path from "node:path";
 
@@ -44,13 +13,8 @@ export type { NodePinSource };
 
 export interface NodePin {
   source: NodePinSource;
-  /** The literal text as written in the repo, for display in diagnostics. */
   raw: string;
-  /**
-   * The parsed constraint, or `null` when the text is a form we don't
-   * implement (`lts/jod`, `node`, `stable`, a git URL, …). A null spec is
-   * surfaced as an `unsupported` outcome rather than silently ignored.
-   */
+  /** null means unsupported. */
   spec: RangeSpec | null;
 }
 
@@ -62,18 +26,12 @@ export interface Comparator {
   version: NodeVersion;
 }
 
-// ---------------------------------------------------------------------------
-// Version parsing / comparison
-// ---------------------------------------------------------------------------
-
-/** Parse `v22.20.1` / `22.20.1` / `22.20.1-rc.1`. Returns null if not a version. */
 export function parseVersion(text: string): NodeVersion | null {
   const m = /^v?(\d+)\.(\d+)\.(\d+)/.exec(text.trim());
   if (!m) return null;
   return { major: Number(m[1]), minor: Number(m[2]), patch: Number(m[3]) };
 }
 
-/** Standard semver ordering. Negative when `a < b`. */
 export function compareVersions(a: NodeVersion, b: NodeVersion): number {
   return a.major - b.major || a.minor - b.minor || a.patch - b.patch;
 }
@@ -82,10 +40,6 @@ export function formatVersion(v: NodeVersion): string {
   return `${v.major}.${v.minor}.${v.patch}`;
 }
 
-/**
- * Parse a possibly-partial version (`20`, `20.1`, `20.x`, `20.1.2`). `x`/`X`/`*`
- * in a position means "unspecified", matching npm's x-range convention.
- */
 function parsePartial(text: string): { major: number; minor: number | null; patch: number | null } | null {
   const cleaned = text.trim().replace(/^v/, "");
   if (cleaned === "") return null;
@@ -97,32 +51,17 @@ function parsePartial(text: string): { major: number; minor: number | null; patc
       nums.push(null);
       continue;
     }
-    // No leading zeros: `020` is not a valid semver component, and silently
-    // reading it as 20 would activate a Node the repo never asked for.
     if (!/^(0|[1-9]\d*)$/.test(part)) return null;
     nums.push(Number(part));
   }
   const [major, minor = null, patch = null] = nums;
-  // `x.2.3` is meaningless — a wildcard major with a concrete minor.
   if (major === null || major === undefined) return null;
-  // Same for `20.x.3`: once a position is a wildcard, everything right of it
-  // must be too. npm rejects these; so do we, rather than inventing a meaning.
   if (minor === null && patch !== null) return null;
   return { major, minor, patch };
 }
 
-// ---------------------------------------------------------------------------
-// Range parsing
-// ---------------------------------------------------------------------------
-
-/** The always-true comparator set: `>=0.0.0`. */
 const ANY: Comparator[] = [{ op: ">=", version: { major: 0, minor: 0, patch: 0 } }];
 
-/**
- * Parse an npm-style range into a union of comparator sets. Returns null when
- * any part of the range uses a form we don't implement, so the caller can
- * report `unsupported` instead of quietly matching the wrong thing.
- */
 export function parseRange(text: string): RangeSpec | null {
   const trimmed = text.trim();
   if (trimmed === "" || trimmed === "*" || trimmed === "x" || trimmed === "X") return [ANY];
@@ -132,7 +71,6 @@ export function parseRange(text: string): RangeSpec | null {
   for (const union of unions) {
     const raw = union.trim().split(/\s+/).filter(Boolean);
     if (raw.length === 0) return null;
-    // A hyphen range (`18 - 22`) arrives as three tokens; not implemented.
     if (raw.includes("-")) return null;
     const tokens = joinLooseOperators(raw);
     if (!tokens) return null;
@@ -147,14 +85,6 @@ export function parseRange(text: string): RangeSpec | null {
   return spec;
 }
 
-/**
- * Re-attach an operator that was written with a space after it.
- *
- * `">= 20"` is valid npm syntax and appears in real `engines.node` fields, but
- * splitting on whitespace turns it into a bare `>=` with no operand — which
- * would be rejected as `unsupported` and quietly leave the repo on the image's
- * Node. Returns null for a trailing operator with nothing to bind to.
- */
 function joinLooseOperators(tokens: string[]): string[] | null {
   const out: string[] = [];
   for (let i = 0; i < tokens.length; i++) {
@@ -171,7 +101,6 @@ function joinLooseOperators(tokens: string[]): string[] | null {
   return out;
 }
 
-/** Expand a single token (`^20.1`, `>=18`, `22.x`) into concrete comparators. */
 function parseComparator(token: string): Comparator[] | null {
   const opMatch = /^(>=|<=|>|<|=|\^|~)?\s*(.+)$/.exec(token);
   if (!opMatch) return null;
@@ -186,8 +115,6 @@ function parseComparator(token: string): Comparator[] | null {
     case ">=":
       return [{ op: ">=", version: lower }];
     case ">":
-      // `>20` means "after everything in the 20 line" when the minor/patch are
-      // unspecified — npm's x-range semantics, not `>20.0.0`.
       if (minor === null) return [{ op: ">=", version: { major: major + 1, minor: 0, patch: 0 } }];
       if (patch === null) return [{ op: ">=", version: { major, minor: minor + 1, patch: 0 } }];
       return [{ op: ">", version: lower }];
@@ -198,7 +125,7 @@ function parseComparator(token: string): Comparator[] | null {
     case "<":
       return [{ op: "<", version: lower }];
     case "^":
-      // Node majors are never 0, so the `^0.x` special case doesn't arise.
+      // The ^0.x special case is not implemented.
       return [
         { op: ">=", version: lower },
         { op: "<", version: { major: major + 1, minor: 0, patch: 0 } },
@@ -214,7 +141,6 @@ function parseComparator(token: string): Comparator[] | null {
       ];
     }
     default: {
-      // Bare or `=`-prefixed. A partial is an x-range; a full version is exact.
       if (minor === null) {
         return [
           { op: ">=", version: lower },
@@ -232,7 +158,6 @@ function parseComparator(token: string): Comparator[] | null {
   }
 }
 
-/** Whether `version` satisfies the parsed range. */
 export function satisfies(version: NodeVersion, spec: RangeSpec): boolean {
   return spec.some((set) => set.every((c) => matchesComparator(version, c)));
 }
@@ -253,7 +178,6 @@ function matchesComparator(v: NodeVersion, c: Comparator): boolean {
   }
 }
 
-/** The newest version in `available` that satisfies the range, or null. */
 export function pickBest(available: NodeVersion[], spec: RangeSpec): NodeVersion | null {
   let best: NodeVersion | null = null;
   for (const v of available) {
@@ -263,20 +187,7 @@ export function pickBest(available: NodeVersion[], spec: RangeSpec): NodeVersion
   return best;
 }
 
-// ---------------------------------------------------------------------------
-// Reading the pin out of a workspace
-// ---------------------------------------------------------------------------
-
-/**
- * Read the repo's Node pin. `.nvmrc` wins over `engines.node` (requirement 3).
- * Returns null when the repo pins nothing at all — the common case, and the one
- * where this whole feature must stay invisible.
- *
- * A `.nvmrc` that exists but holds an unsupported form (`lts/jod`, `node`) is
- * returned with a null `spec` rather than falling through to `engines.node`:
- * the repo did express a preference, and silently honoring a *different* source
- * would be more surprising than reporting that we couldn't read this one.
- */
+/** An unsupported .nvmrc still takes precedence over engines.node. */
 export function readNodePin(workspaceDir: string): NodePin | null {
   const nvmrc = readNvmrc(workspaceDir);
   if (nvmrc) return nvmrc;
@@ -290,7 +201,6 @@ function readNvmrc(workspaceDir: string): NodePin | null {
   } catch {
     return null;
   }
-  // nvm reads the first non-empty line; `#` comments are a de-facto convention.
   const raw = text
     .split("\n")
     .map((line) => line.replace(/#.*$/, "").trim())

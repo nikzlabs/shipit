@@ -1,14 +1,3 @@
-/**
- * Unit tests for the `gh` shim. Covers:
- * - argument parsing
- * - allowlist enforcement (rejected subcommands, --repo, --web)
- * - happy paths for each supported subcommand
- * - error formatting (auth, validation, unknown PR)
- * - exit codes
- *
- * The shim talks to the worker over HTTP. Tests inject a fake `call` function
- * so we never actually open a socket.
- */
 
 import { describe, it, expect } from "vitest";
 import fsp from "node:fs/promises";
@@ -28,11 +17,6 @@ interface MockResponse {
   body: Record<string, unknown>;
 }
 
-/**
- * Build a test harness. Returns the io capture, a recorder for calls, and a
- * `runner(argv, responses)` function. `responses` is keyed by `${method} ${path}`
- * and lets a single test queue specific results for the broker.
- */
 function makeRunner() {
   let stdout = "";
   let stderr = "";
@@ -51,8 +35,6 @@ function makeRunner() {
   async function run(
     argv: string[],
     responses: Record<string, MockResponse> = {},
-    // docs/211 — the cwd `gh` ran in. The shim forwards it so the orchestrator
-    // can resolve the repo-aware target. Fixed here so payloads are deterministic.
     cwd = "/workspace/myrepo",
   ): Promise<{ stdout: string; stderr: string; exitCode: number | null; calls: RecordedCall[] }> {
     stdout = "";
@@ -65,7 +47,6 @@ function makeRunner() {
       const key = `${method} ${path.split("?")[0]}`;
       const matching = responses[key];
       if (matching) return { status: matching.status, body: matching.body };
-      // Default: 200 with empty body so handlers fall through to "no PR" cases
       return { status: 200, body: { pr: null, prs: [] } };
     };
 
@@ -80,9 +61,6 @@ function makeRunner() {
   return { run };
 }
 
-// ---------------------------------------------------------------------------
-// parseFlags
-// ---------------------------------------------------------------------------
 
 describe("parseFlags", () => {
   it("parses positional + value flags + boolean flags", () => {
@@ -125,9 +103,6 @@ describe("parseFlags", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// Top-level dispatch
-// ---------------------------------------------------------------------------
 
 describe("runShim — help and version", () => {
   it("prints help when no args", async () => {
@@ -159,9 +134,6 @@ describe("runShim — help and version", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// Allowlist
-// ---------------------------------------------------------------------------
 
 describe("runShim — allowlist", () => {
   it.each([
@@ -204,9 +176,6 @@ describe("runShim — allowlist", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// gh pr create
-// ---------------------------------------------------------------------------
 
 describe("gh pr create", () => {
   it("posts to /agent-ops/pr/create with title + body and prints URL", async () => {
@@ -239,7 +208,6 @@ describe("gh pr create", () => {
       ["pr", "create", "-t", "T", "--draft", "--fill"],
       { "POST /agent-ops/pr/create": { status: 200, body: { url: "u" } } },
     );
-    // Run again to inspect — the previous run reset state on each run() call.
     const out = await run(
       ["pr", "create", "-t", "T", "--draft", "--fill"],
       { "POST /agent-ops/pr/create": { status: 200, body: { url: "u" } } },
@@ -358,7 +326,6 @@ describe("gh pr create", () => {
       },
     );
     expect(out.stderr).toContain("Existing open PR");
-    // The benign dedup must not shout about unshipped work.
     expect(out.stderr).not.toContain("NOT shipped");
     expect(out.stdout.trim()).toBe("https://github.com/x/y/pull/2");
     expect(out.exitCode).toBe(0);
@@ -384,11 +351,8 @@ describe("gh pr create", () => {
     expect(out.stderr).toContain("MERGED");
     expect(out.stderr).toContain("#177");
     expect(out.stderr).toContain("NOT shipped");
-    // The documented escape, with the real base branch substituted in.
     expect(out.stderr).toContain("git merge origin/main");
-    // …and the warnings it must not weaken.
     expect(out.stderr).toContain("Do NOT rebase");
-    // Still gh-compatible: URL on stdout, exit 0.
     expect(out.stdout.trim()).toBe("https://github.com/x/y/pull/177");
     expect(out.exitCode).toBe(0);
   });
@@ -417,8 +381,6 @@ describe("gh pr create", () => {
   });
 
   it("says there is nothing to ship when the branch is on the base with an empty diff", async () => {
-    // The other way `advancedBeyondMergedBase` returns false. Telling the agent
-    // to merge the base in here would be a no-op it could loop on.
     const { run } = makeRunner();
     const out = await run(
       ["pr", "create", "-t", "T", "-b", "B"],
@@ -465,8 +427,6 @@ describe("gh pr create", () => {
   });
 
   it("says the base ref could not be refreshed when the fetch failed", async () => {
-    // ShipIt declined to decide rather than risk a duplicate PR. The agent must
-    // not read that as "nothing to ship".
     const { run } = makeRunner();
     const out = await run(
       ["pr", "create", "-t", "T", "-b", "B"],
@@ -491,8 +451,6 @@ describe("gh pr create", () => {
   });
 
   it("never renders shell metacharacters from a hostile base branch name", async () => {
-    // `baseBranch` comes from GitHub and lands inside a command the agent is
-    // told to run. Git allows `;` and `$()` in ref names.
     const { run } = makeRunner();
     const out = await run(
       ["pr", "create", "-t", "T", "-b", "B"],
@@ -516,8 +474,6 @@ describe("gh pr create", () => {
   });
 
   it("falls back to the open-PR wording when the orchestrator sends no reason", async () => {
-    // An older orchestrator (or a replayed response) has no discriminator. The
-    // pre-existing behavior — print the URL, note the dedup — must survive.
     const { run } = makeRunner();
     const out = await run(
       ["pr", "create", "-t", "T", "-b", "B"],
@@ -561,9 +517,6 @@ describe("gh pr create", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// gh pr edit / comment / ready / close / reopen
-// ---------------------------------------------------------------------------
 
 describe("gh pr edit", () => {
   it("requires -t or -b", async () => {
@@ -639,7 +592,6 @@ describe("gh pr edit", () => {
       { "PATCH /agent-ops/pr/5": { status: 200, body: { url: "u", number: 5 } } },
     );
     expect(out.exitCode).toBe(0);
-    // De-duped and comma-split, mirroring `gh pr create --label`.
     expect(out.calls[0].body).toMatchObject({
       addLabels: ["enhancement", "feature"],
       removeLabels: ["documentation"],
@@ -761,9 +713,6 @@ describe("gh pr ready / close / reopen", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// gh pr merge (docs/224)
-// ---------------------------------------------------------------------------
 
 describe("gh pr merge", () => {
   it("POSTs to /merge with default method 'merge'", async () => {
@@ -845,9 +794,6 @@ describe("gh pr merge", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// gh pr view / list / status
-// ---------------------------------------------------------------------------
 
 describe("gh pr view", () => {
   it("prints plain-text view when no --json", async () => {
@@ -899,15 +845,6 @@ describe("gh pr view", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// -q / --jq
-//
-// The production bug: `gh pr view N --json state -q .state 2>/dev/null` exited 2
-// on the unsupported-flag path *before* ever reaching the broker, so a polling
-// loop saw an empty string forever and could not distinguish it from "not
-// merged yet". These cover the flag working, and every failure mode staying
-// distinguishable from the generic flag rejection.
-// ---------------------------------------------------------------------------
 
 describe("gh -q/--jq", () => {
   const prView = {
@@ -922,7 +859,6 @@ describe("gh -q/--jq", () => {
     const out = await run(["pr", "view", "2018", "--json", "state", "-q", ".state"], prView);
     expect(out.exitCode).toBe(0);
     expect(out.stdout).toBe("MERGED\n");
-    // The broker was actually reached — the bug was failing before this call.
     expect(out.calls.some((c) => c.path.startsWith("/agent-ops/pr/view"))).toBe(true);
   });
 
@@ -961,8 +897,6 @@ describe("gh -q/--jq", () => {
     const out = await run(["pr", "list", "--json", "state", "-q", expr], {
       "GET /agent-ops/pr/list": { status: 200, body: { prs: [{ state: "OPEN" }] } },
     });
-    // Exit 3 is the differentiable signal for a caller that swallows stderr —
-    // 2 is the generic unsupported-flag path this fix exists to get away from.
     expect(out.exitCode).toBe(3);
     expect(out.stderr).toContain(expr);
     expect(out.stderr).toContain("unsupported jq expression");
@@ -1054,7 +988,6 @@ describe("gh pr list", () => {
       ["pr", "list", "--state", "closed"],
       { "GET /agent-ops/pr/list": { status: 200, body: { prs: [] } } },
     );
-    // The path will include ?state=closed in the broker call
     const { run: run2 } = makeRunner();
     const out = await run2(
       ["pr", "list", "--state", "closed"],
@@ -1063,9 +996,6 @@ describe("gh pr list", () => {
     expect(out.calls[0].path).toContain("state=closed");
   });
 
-  // `--state merged` used to fall through the broker's `state` fallback and
-  // list the OPEN PRs instead — no error, no warning, and a caller that
-  // reasonably concluded the repo had no merged PRs at all.
   it("refuses an unknown --state instead of quietly listing the open PRs", async () => {
     const { run } = makeRunner();
     const out = await run(
@@ -1075,15 +1005,9 @@ describe("gh pr list", () => {
     expect(out.exitCode).toBe(2);
     expect(out.stderr).toContain('unknown --state "mrged"');
     expect(out.stderr).toContain("open, closed, merged, all");
-    // Refused before the network call, like an unknown --json field.
     expect(out.calls).toEqual([]);
   });
 
-  /**
-   * `-L/--limit` was parsed and then never forwarded, so `--limit 100` exited 0
-   * having returned the default 30 — a number the caller did not ask for, with
-   * nothing to say so.
-   */
   it("forwards --limit to the broker", async () => {
     const { run } = makeRunner();
     const out = await run(
@@ -1121,7 +1045,6 @@ describe("gh pr list", () => {
   });
 
   it("sends no limit at all when the flag is absent", async () => {
-    // Absent must keep meaning "the server's default", not limit=undefined.
     const { run } = makeRunner();
     const out = await run(
       ["pr", "list"],
@@ -1160,9 +1083,6 @@ describe("gh pr list", () => {
   });
 
   it("prints the broker's error instead of 'No pull requests found'", async () => {
-    // An unreadable repository and an empty one must not look alike: a 403 on
-    // a private repo used to arrive as `{ prs: [] }` and print the same line a
-    // genuinely empty repository does.
     const { run } = makeRunner();
     const out = await run(
       ["pr", "list"],
@@ -1233,9 +1153,6 @@ describe("gh pr status", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// Repo-aware brokering (docs/211) — cwd inference + --repo
-// ---------------------------------------------------------------------------
 
 describe("repo-aware brokering (docs/211)", () => {
   it("forwards the cwd in the create payload so the broker resolves the clone", async () => {
@@ -1247,7 +1164,6 @@ describe("repo-aware brokering (docs/211)", () => {
     );
     expect(out.exitCode).toBe(0);
     expect(out.calls[0].body).toMatchObject({ title: "T", cwd: "/workspace/cloned-repo" });
-    // No --repo given, so the payload carries no explicit repo override.
     expect(out.calls[0].body).not.toHaveProperty("repo");
   });
 
@@ -1310,13 +1226,6 @@ describe("repo-aware brokering (docs/211)", () => {
     expect(out.calls[0].body).toMatchObject({ cwd: "/workspace/clone-x", repo: "octocat/hello" });
   });
 
-  /**
-   * A `--repo` that parsed to nothing used to reach the orchestrator as "no
-   * --repo given" and fall back to the session's own repository, so
-   * `gh pr list --repo octocat` returned the CURRENT repo's PRs with exit 0.
-   * Every verb that takes --repo goes through the two target builders, so all
-   * of them must refuse it.
-   */
   describe("an explicit --repo that means nothing", () => {
     it.each([
       ["pr list (query target)", ["pr", "list", "--repo", "octocat"]],
@@ -1347,9 +1256,6 @@ describe("repo-aware brokering (docs/211)", () => {
     });
 
     it("refuses an empty --repo — the unset-shell-variable case", async () => {
-      // `gh pr close 11 --repo "$REPO"` with $REPO unset. Reading that as "no
-      // --repo given" would close PR 11 in whichever repo the session is bound
-      // to, which is the most damaging shape this whole fix removes.
       const { run } = makeRunner();
       const out = await run(["pr", "close", "11", "--repo", ""], {});
       expect(out.exitCode).toBe(2);
@@ -1358,7 +1264,6 @@ describe("repo-aware brokering (docs/211)", () => {
     });
 
     it("leaves the no---repo path alone", async () => {
-      // Absent is not malformed: it still means "the cwd's / session's repo".
       const { run } = makeRunner();
       const out = await run(
         ["pr", "list"],
@@ -1380,19 +1285,14 @@ describe("repo-aware brokering (docs/211)", () => {
       "/workspace/clone-y",
     );
     expect(out.exitCode).toBe(0);
-    // The status lookup that resolved the PR number forwarded the target...
     const statusCall = out.calls.find((c) => c.path.startsWith("/agent-ops/pr/status"));
     expect(statusCall?.path).toContain("cwd=%2Fworkspace%2Fclone-y");
     expect(statusCall?.path).toContain("repo=octocat%2Fhello");
-    // ...and the comment POST carried the same target in its body.
     const commentCall = out.calls.find((c) => c.path === "/agent-ops/pr/7/comment");
     expect(commentCall?.body).toMatchObject({ body: "hi", cwd: "/workspace/clone-y", repo: "octocat/hello" });
   });
 });
 
-// ---------------------------------------------------------------------------
-// gh run list / view (GitHub Actions reads)
-// ---------------------------------------------------------------------------
 
 describe("gh run list", () => {
   const RUN = {
@@ -1411,8 +1311,6 @@ describe("gh run list", () => {
   });
 
   it("refuses an invalid --limit before the network call", async () => {
-    // `run list` did forward the flag, but never checked it — the route then
-    // dropped a non-numeric value and ran with the default.
     const { run } = makeRunner();
     const out = await run(["run", "list", "-L", "0"], {});
     expect(out.exitCode).toBe(2);
@@ -1525,9 +1423,6 @@ describe("gh run view", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// gh run rerun (the one Actions write)
-// ---------------------------------------------------------------------------
 
 describe("gh run rerun", () => {
   const OK = {
@@ -1544,7 +1439,6 @@ describe("gh run rerun", () => {
     expect(out.calls[0].method).toBe("POST");
     expect(out.calls[0].path).toBe("/agent-ops/run/rerun");
     expect(out.calls[0].body).toMatchObject({ failed: false, cwd: "/workspace/myrepo" });
-    // No id key at all — the orchestrator resolves the current branch's latest run.
     expect(Object.keys(out.calls[0].body as object)).not.toContain("id");
     expect(out.stdout).toContain("Re-running run 42 (CI)");
     expect(out.stdout).toContain("gh run view 42");
@@ -1566,8 +1460,6 @@ describe("gh run rerun", () => {
   it.each([
     ["latest"], ["1e3"], ["0x2a"], ["1.5"], [" 42"], ["0"], ["42abc"],
   ])("rejects the coercible run id %s before calling the broker", async (id) => {
-    // `Number()` accepts every one of these and would address a DIFFERENT run
-    // than the agent typed, so the check is a decimal-digit regex, not Number().
     const { run } = makeRunner();
     const out = await run(["run", "rerun", id]);
     expect(out.exitCode).not.toBe(0);
@@ -1584,7 +1476,6 @@ describe("gh run rerun", () => {
   });
 
   it("surfaces the orchestrator's own-branch refusal verbatim", async () => {
-    // The guardrail lives server-side; the shim's job is to not swallow it.
     const { run } = makeRunner();
     const out = await run(["run", "rerun", "9"], {
       "POST /agent-ops/run/rerun": {
@@ -1616,9 +1507,6 @@ describe("gh run rerun", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// gh run cancel / delete and gh workflow run stay blocked
-// ---------------------------------------------------------------------------
 
 describe("CI verbs that remain unavailable", () => {
   it("refuses gh run cancel, gh run delete, and gh workflow run", async () => {
@@ -1631,9 +1519,6 @@ describe("CI verbs that remain unavailable", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// gh workflow list / view (read-only)
-// ---------------------------------------------------------------------------
 
 describe("gh workflow list", () => {
   it("GETs /agent-ops/workflow/list and prints name/state/id", async () => {
@@ -1647,8 +1532,6 @@ describe("gh workflow list", () => {
   });
 
   it("applies -L to the rows, instead of parsing it and ignoring it", async () => {
-    // The orchestrator takes no limit here, so this one is applied client-side.
-    // That is still an answer of the size the caller asked for.
     const { run } = makeRunner();
     const out = await run(
       ["workflow", "list", "-L", "1"],
@@ -1708,18 +1591,7 @@ describe("gh workflow view", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// gh pr view — reading PR comments (docs/255)
-//
-// The motivating bug: a reviewer left detailed findings on a PR and the agent
-// could not read them through any supported path. `--json comments` returned
-// `{}` — and so did `--json totallyBogusField`, so an unsupported field was
-// indistinguishable from "this PR has no discussion". These cover both halves:
-// the reads now exist, and an unsupported field can never masquerade as absent
-// data again.
-// ---------------------------------------------------------------------------
 
-/** A PR payload carrying a conversation, as the broker returns it. */
 function prWithConversation(over: Record<string, unknown> = {}) {
   return {
     pr: {
@@ -1762,7 +1634,6 @@ describe("gh pr view --comments", () => {
     expect(out.stdout).toContain("src/foo.ts:42 [unresolved]");
     expect(out.stdout).toContain("+leak()");
     expect(out.stdout).toContain("this leaks");
-    // The conversation costs an extra round-trip, so the shim must ask for it.
     expect(out.calls[0].path).toContain("comments=true");
   });
 
@@ -1772,7 +1643,6 @@ describe("gh pr view --comments", () => {
       ["pr", "view", "42", "--comments"],
       { "GET /agent-ops/pr/view": { status: 200, body: prWithConversation() } },
     );
-    // Anyone who can comment authors this text, so it is data, not instructions.
     expect(out.stdout).toContain(`${UNTRUSTED_OPEN_MARKER} PULL REQUEST CONTENT`);
     expect(out.stdout).toContain(`${UNTRUSTED_CLOSE_MARKER} PULL REQUEST CONTENT`);
   });
@@ -1789,7 +1659,6 @@ describe("gh pr view --comments", () => {
       ["pr", "view", "42", "--comments"],
       { "GET /agent-ops/pr/view": { status: 200, body: payload } },
     );
-    // Exactly one real closing marker — the forged one is neutralised.
     expect(out.stdout.match(/(?<!&lt;)<<END UNTRUSTED PULL REQUEST CONTENT/g)).toHaveLength(1);
     expect(out.stdout).toContain("&lt;&lt;END UNTRUSTED");
   });
@@ -1800,7 +1669,6 @@ describe("gh pr view --comments", () => {
       ["pr", "view", "42", "--comments"],
       { "GET /agent-ops/pr/view": { status: 200, body: prWithConversation({ commentsTotal: 62 }) } },
     );
-    // A windowed fetch must not read as the whole conversation.
     expect(out.stdout).toContain("--- Comments (62 (showing 1)) ---");
   });
 
@@ -1876,10 +1744,9 @@ describe("gh pr view — plain output conversation summary", () => {
     );
     expect(out.exitCode).toBe(0);
     expect(out.stdout).toContain("1 comment · 1 review · 1 review thread (1 unresolved)");
-    expect(out.stdout).not.toContain("UNTRUSTED"); // counts only, no borrowed text
+    expect(out.stdout).not.toContain("UNTRUSTED");
     expect(out.stdout).toContain("gh pr view 42 --comments");
     expect(out.calls[0].path).toContain("comments=true");
-    // The body is still the PR's, not the discussion's.
     expect(out.stdout).toContain("Body");
   });
 
@@ -1928,7 +1795,6 @@ describe("gh pr view — plain output conversation summary", () => {
     expect(out.exitCode).toBe(0);
     expect(out.stdout).toContain("T #42");
     expect(out.stderr).toContain("comments could not be read");
-    // Never a count that would read as "no discussion".
     expect(out.stdout).not.toContain("No comments");
   });
 });
@@ -1993,7 +1859,6 @@ describe("gh --json field validation", () => {
     expect(out.stderr).toContain('unknown --json field: "totallyBogusField"');
     expect(out.stderr).toContain("Supported fields for gh pr view:");
     expect(out.stderr).toContain("reviewThreads");
-    // Rejected before any network call — the same shape as real gh.
     expect(out.calls).toHaveLength(0);
   });
 

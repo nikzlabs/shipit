@@ -1,12 +1,3 @@
-/**
- * docs/241 — admission for the always-on preview reservation.
- *
- * The cap is small (default 1 per deployment) and the release toggle only
- * exists on a non-archived sidebar row, so anything counted but unreachable
- * takes the deployment's only slot for good. These tests pin the reachability
- * half of that: what the cap counts, and what it must ignore.
- */
-
 import { describe, it, expect, beforeEach, afterEach, vi, type Mock } from "vitest";
 import { buildReservationFullMessage, listActiveReservations, setKeepPreviewRunning } from "./session.js";
 import { SessionManager } from "../sessions.js";
@@ -68,9 +59,6 @@ describe("docs/241 reservation admission", () => {
     });
 
     it("explains a cap lowered to zero under an existing reservation", () => {
-      // Lowering the cap does not revoke reservations already granted, so the
-      // holder-shaped sentence would promise a slot that turning it off never
-      // frees — and report "1 of 0 in use".
       const message = buildReservationFullMessage([info("a", "Held")], 0);
       expect(message).toContain("capacity 0");
       expect(message).not.toContain("of 0 in use");
@@ -79,14 +67,9 @@ describe("docs/241 reservation admission", () => {
   });
 
   it("does not count an archived session's stale reservation", () => {
-    // Rows archived before `SessionManager.archive` learned to clear the flag
-    // still exist in deployed databases. Such a row is unreachable — it is not
-    // in the sidebar, so its toggle is never rendered — and counting it made
-    // the last slot impossible to reclaim.
     const stale = makeSession("stale");
     sessionManager.setKeepPreviewRunning(stale, true);
     sessionManager.archive(stale);
-    // Simulate the pre-fix row: archived, flag still set.
     sessionManager.setKeepPreviewRunning(stale, true);
     expect(sessionManager.get(stale)?.keepPreviewRunning).toBe(true);
 
@@ -110,7 +93,6 @@ describe("docs/241 reservation admission", () => {
   it("lets the holder re-toggle itself without tripping its own cap", () => {
     const holder = makeSession("holder");
     setKeepPreviewRunning(sessionManager, holder, true, activate, 1);
-    // Re-enabling an already-reserved session is a no-op, not a second claim.
     expect(() => setKeepPreviewRunning(sessionManager, holder, true, activate, 1)).not.toThrow();
 
     setKeepPreviewRunning(sessionManager, holder, false, activate, 1);

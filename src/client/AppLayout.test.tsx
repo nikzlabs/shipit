@@ -10,16 +10,8 @@ afterEach(() => {
   useSettingsStore.getState().setProviderAccounts([]);
 });
 
-/**
- * docs/150 — the header's status group has to make room for one named pill per
- * connected subscription (req 10). These cover the rule that decides whether it
- * renders inline or collapses into the status dropdown; the widths themselves
- * were checked in the running app at 640 / 768 / 900 / 1024 / 1280.
- */
 describe("statusGroupBreakpoint", () => {
   it("keeps the one-account header exactly as it was", () => {
-    // The single-pill layout is the one users have today, and it fits from
-    // `sm` — changing it would be a regression dressed up as a fix.
     expect(statusGroupBreakpoint(1)).toEqual({
       statusInline: "hidden sm:contents",
       statusCollapsed: "sm:hidden",
@@ -39,14 +31,9 @@ describe("statusGroupBreakpoint", () => {
   });
 
   it("does not escalate past lg — beyond three pills, truncation carries it", () => {
-    // There is no wider breakpoint to escalate to, and a fourth account must
-    // not push the group into the dropdown on every desktop.
     expect(statusGroupBreakpoint(9)).toEqual(statusGroupBreakpoint(3));
   });
 
-  // The inline and collapsed classes are complements: exactly one of the two
-  // surfaces renders at any width. A mismatch would either duplicate the pills
-  // or hide them entirely.
   it("pairs each inline breakpoint with its own collapse breakpoint", () => {
     for (const count of [0, 1, 2, 3, 4]) {
       const { statusInline, statusCollapsed } = statusGroupBreakpoint(count);
@@ -68,8 +55,6 @@ describe("useSubscriptionPillCount", () => {
     expect(result.current).toBe(2);
   });
 
-  // A reserved env/API-key route has no account row, so it exists only as a
-  // snapshot — but it still occupies a pill's worth of header.
   it("counts a reserved route that only the snapshot map knows about", () => {
     const limits: SubscriptionLimitsMap = {
       "anthropic:sub": {

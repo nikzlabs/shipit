@@ -120,19 +120,6 @@ describe("AgentRegistry", () => {
   });
 
   it("every shipped harness reports supportsReview=true", async () => {
-    // docs/266 item 15 — chat-native review needs a shell tool and a subagent
-    // primitive, and since docs/220 removed the last `submit_review` write path
-    // it needs NO MCP surface: the flow is a plain chat message
-    // (`compose-review-body.ts`). docs/125's "subagents AND custom MCP tools"
-    // rule is what kept this false on opencode and grok, and planning#459
-    // probed both live at depth 0 — each ran
-    // `shipit agent run --role reviewer --prompt-file -` itself and returned
-    // material findings.
-    //
-    // The flag gates the file-preview / Present "Ask agent to review"
-    // affordance, so a regression flipping any of these back to false silently
-    // hides the button on that backend while `/review` — which is ungated —
-    // keeps working, which is the confusing half of the bug.
     const registry = createRegistry({
       installedBinaries: ["claude", "codex", "opencode", "grok"],
     });

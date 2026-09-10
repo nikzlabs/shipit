@@ -1,11 +1,3 @@
-/**
- * Unit tests for the per-action service-request timeouts (docs/238).
- *
- * The regression these guard: a flat 60s deadline on every action, which broke
- * `start` for exactly the services that need it. A manual service is manual
- * because it's heavy, and `startService` runs `docker compose up -d --build` —
- * a cold image pull or a Dockerfile build routinely outruns a minute.
- */
 
 import { describe, it, expect } from "vitest";
 import {
@@ -59,9 +51,6 @@ describe("serviceRequestTimeoutMs", () => {
 describe("serviceTimeoutMessage", () => {
   it("tells the caller a timed-out start is STILL RUNNING, and how to check", () => {
     const msg = serviceTimeoutMessage("start", 600_000);
-    // The distinction is load-bearing: the worker giving up on the callback does
-    // not cancel the orchestrator's `docker compose up`. Reading it as a hard
-    // failure makes the agent retry a start that was about to succeed.
     expect(msg).toContain("still running");
     expect(msg).toContain("shipit service list");
     expect(msg).toContain("shipit service logs");

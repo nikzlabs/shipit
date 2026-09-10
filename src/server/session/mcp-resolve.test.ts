@@ -1,10 +1,3 @@
-/**
- * Unit tests for the pure MCP `$secret:` resolver (docs/088).
- *
- * Verifies the substring-substitution contract: walks `env` / `headers` /
- * `args`, replaces `$secret:KEY` with `env[KEY]`, drops the entire server
- * if any referenced key is missing or empty.
- */
 
 import { describe, it, expect } from "vitest";
 import { resolveMcpServer, substituteMcpPlaceholders } from "./mcp-resolve.js";
@@ -215,9 +208,6 @@ describe("resolveMcpServer (docs/088)", () => {
     });
 
     it("rejects $platform: identifiers with uppercase or invalid characters", () => {
-      // $platform: ids must match /[a-z][a-z0-9_]*/. Anything else isn't a
-      // valid placeholder and is left as a literal — there's no way the user
-      // could have stored tokens under those source ids anyway.
       const config: McpServerConfig = {
         name: "x",
         type: "http",
@@ -226,7 +216,6 @@ describe("resolveMcpServer (docs/088)", () => {
         enabled: true,
       };
       const { resolved, missing } = resolveMcpServer(config, {});
-      // No placeholders matched → no substitutions, no missing reports.
       expect(missing).toEqual([]);
       expect(resolved).toEqual({
         type: "http",
@@ -237,9 +226,6 @@ describe("resolveMcpServer (docs/088)", () => {
   });
 });
 
-// The connectivity-test path (worker `/mcp/test`) shares this helper so it
-// can't drift from the agent's resolver — the bug it fixes was a duplicate
-// secret-only resolver that left `$platform:` literals in the auth header.
 describe("substituteMcpPlaceholders (shared by agent + test paths)", () => {
   it("substitutes both $secret: and $platform: in one string", () => {
     const missing: string[] = [];

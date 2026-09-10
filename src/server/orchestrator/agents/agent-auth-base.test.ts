@@ -28,7 +28,6 @@ describe("probeNestedString", () => {
     expect(
       probeNestedString({ accessToken: "top", access_token: "snake" }, ["accessToken", "access_token"]),
     ).toBe("top");
-    // Second alias wins when the first is absent.
     expect(probeNestedString({ access_token: "snake" }, ["accessToken", "access_token"])).toBe("snake");
   });
 

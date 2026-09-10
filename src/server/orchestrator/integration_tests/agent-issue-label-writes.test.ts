@@ -1,24 +1,3 @@
-/**
- * Integration test for the tracker label writes (planning#232 create, planning#88 edit).
- *
- * Drives the real orchestrator (`buildApp()`) with a live WS viewer (which puts
- * a runner in the registry) and a faked GitHub REST layer whose repo label set
- * is MUTABLE, asserting the label write paths end-to-end:
- *
- *  - `POST /issue/label/create` (the `shipit issue label create` broker target)
- *    mints the label, emits + persists one `verb: "label"` provenance card with
- *    a delete-if-unused undo snapshot, and is idempotent across a verbatim
- *    replay (same dedup contract as the other writes, planning#114);
- *  - `POST /issue/label/edit` corrects an existing label's color/casing, persists
- *    a `verb: "label-edit"` card whose undo restores the prior values, absorbs a
- *    replay, and keeps edits to DIFFERENT labels distinct (the dedup key's
- *    target slot is the label, so the second must not collapse into the first);
- *  - `POST /issue/create` with `createMissingLabels` mints unknown labels first
- *    (one extra card per minted label, before the main create card) and reports
- *    them as `createdLabels`; WITHOUT the flag an unknown label still fails,
- *    now pointing at `label create` / `--create-missing-labels`.
- */
-
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
@@ -49,7 +28,6 @@ function jsonResponse(body: unknown, status = 200): Response {
   });
 }
 
-/** The declared destination these tests address (docs/248-declared-issue-trackers req 13). */
 const DECLARED_TRACKER = "github:octocat/hello-world";
 
 describe("Integration: issue label writes (planning#232 create, planning#88 edit)", () => {
@@ -78,7 +56,6 @@ describe("Integration: issue label writes (planning#232 create, planning#88 edit
 
     const trackerFetch = vi.fn(async (url: string, init?: { method?: string; body?: string }) => {
       const method = init?.method ?? "GET";
-      // Mint a repo label — the mutable set means a follow-up resolve sees it.
       if (url.endsWith("/labels") && method === "POST") {
         labelPostCount += 1;
         const body = JSON.parse(init?.body ?? "{}") as { name: string; color?: string };
@@ -86,8 +63,6 @@ describe("Integration: issue label writes (planning#232 create, planning#88 edit
         repoLabels.push(created);
         return jsonResponse(created, 201);
       }
-      // Rename/recolor in place, addressed by the label's CURRENT name — GitHub's
-      // own contract, and why a rename doesn't re-label a single issue.
       if (url.includes("/labels/") && method === "PATCH") {
         labelPatchCount += 1;
         const name = decodeURIComponent(url.slice(url.indexOf("/labels/") + "/labels/".length));
@@ -102,7 +77,6 @@ describe("Integration: issue label writes (planning#232 create, planning#88 edit
       if (url.includes("/labels") && method === "GET") {
         return jsonResponse(repoLabels.map((l) => ({ ...l })));
       }
-      // Create an issue on the session repo.
       if (url.endsWith("/issues") && method === "POST") {
         const body = JSON.parse(init?.body ?? "{}") as { title?: string; labels?: string[] };
         return jsonResponse(
@@ -150,10 +124,6 @@ describe("Integration: issue label writes (planning#232 create, planning#88 edit
     const created = await createTestSession(sessionManager, tmpDir);
     sessionId = created.sessionId;
     sessionManager.setRemoteUrl(sessionId, "https://github.com/octocat/hello-world.git");
-    // docs/248-declared-issue-trackers req 13 — a create (of an issue OR a label) always names its
-    // destination, and the orchestrator refuses the unnamed `github` id as a
-    // backstop against a `curl` that bypasses the shim. So these tests declare
-    // the session's own repository under a name and address it by that.
     fs.writeFileSync(
       path.join(created.sessionDir, "shipit.yaml"),
       "issues:\n  trackers:\n    - kind: github\n      repo: octocat/hello-world\n      name: planning\n",
@@ -178,7 +148,7 @@ describe("Integration: issue label writes (planning#232 create, planning#88 edit
 
   it("label create mints the label, persists a card with delete-if-unused undo, and dedups a replay", async () => {
     const client = await TestClient.connect(port, sessionId);
-    await client.receive(); // preview_status
+    await client.receive();
 
     const post = () =>
       app.inject({
@@ -194,8 +164,6 @@ describe("Integration: issue label writes (planning#232 create, planning#88 edit
     expect(body.summary).toBe('created label "t3code"');
     expect(body.label.name).toBe("t3code");
 
-    // A verbatim replay (crash/retry, planning#114 contract) neither re-creates the
-    // label nor mints a second card.
     const replay = await post();
     expect(replay.statusCode).toBe(200);
     expect((replay.json() as { cardId: string }).cardId).toBe(body.cardId);
@@ -261,8 +229,6 @@ describe("Integration: issue label writes (planning#232 create, planning#88 edit
       verb: "label-edit",
       identifier: "security",
       issueId: "",
-      // The snapshot names only what changed, so undo can't revert a field the
-      // edit never touched.
       undo: { kind: "label-edit", labelId: "security", previousColor: "#ededed" },
       undoState: "available",
       content: { attrs: "color → #8b5cf6" },
@@ -287,12 +253,9 @@ describe("Integration: issue label writes (planning#232 create, planning#88 edit
       verb: "label-edit",
       identifier: "Security",
       content: { label: { before: "security", after: "Security" } },
-      // The undo address is the post-rename id — on GitHub the name IS the id.
       undo: { kind: "label-edit", labelId: "Security", previousName: "security" },
     });
 
-    // Undo is the reverse write: rename it back, in place, again touching no
-    // issue that carries it.
     client.send({ type: "undo_issue_write", cardId: card.cardId });
     let update = await client.receiveType("issue_write_update");
     while ((update as { undoState?: string }).undoState === "undoing") {
@@ -314,9 +277,6 @@ describe("Integration: issue label writes (planning#232 create, planning#88 edit
       url: `/api/sessions/${sessionId}/issue/label/edit`,
       payload: { tracker: DECLARED_TRACKER, name: "security", color: "#8b5cf6" },
     });
-    // Same patch content, different target label: if the dedup key ignored the
-    // label, the second would silently collapse into the first and come back
-    // with its card, leaving `bug` un-fixed with nothing to show for it.
     const editBug = await app.inject({
       method: "POST",
       url: `/api/sessions/${sessionId}/issue/label/edit`,
@@ -343,7 +303,7 @@ describe("Integration: issue label writes (planning#232 create, planning#88 edit
       payload: { tracker: DECLARED_TRACKER, name: "t3code", color: "#8b5cf6" },
     });
     expect(missing.statusCode).toBe(404);
-    expect((missing.json() as { error: string }).error).toContain("security"); // the valid set
+    expect((missing.json() as { error: string }).error).toContain("security");
 
     const noop = await app.inject({
       method: "POST",
@@ -376,16 +336,13 @@ describe("Integration: issue label writes (planning#232 create, planning#88 edit
     expect(res.statusCode).toBe(200);
     const body = res.json() as { ok: boolean; createdLabels?: string[]; labels: string[] };
     expect(body.ok).toBe(true);
-    // Only the genuinely-missing label was minted; both were applied.
     expect(body.createdLabels).toEqual(["t3code"]);
     expect(body.labels).toEqual(["security", "t3code"]);
     expect(labelPostCount).toBe(1);
 
-    // Two cards: the label creation FIRST (it happened first), then the create.
     const cards = await writeCardsInHistory();
     expect(cards).toHaveLength(2);
     expect(cards[0]).toMatchObject({ verb: "label", identifier: "t3code" });
-    // req 15 — the card carries the declared name form.
     expect(cards[1]).toMatchObject({ verb: "create", identifier: "planning#7" });
 
     client.close();
@@ -403,7 +360,7 @@ describe("Integration: issue label writes (planning#232 create, planning#88 edit
     expect(res.statusCode).toBe(422);
     const error = (res.json() as { error: string }).error;
     expect(error).toContain('No label "t3code"');
-    expect(error).toContain("security"); // the valid options
+    expect(error).toContain("security");
     expect(error).toContain("shipit issue label create");
     expect(error).toContain("--create-missing-labels");
     expect(labelPostCount).toBe(0);

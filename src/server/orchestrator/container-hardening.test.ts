@@ -1,14 +1,3 @@
-/**
- * docs/172 Gap 5 (planning#99) — unit tests for kernel-tier hardening resolvers and
- * the committed seccomp profile's structural invariants.
- *
- * These assert env-gating (default-OFF), fail-closed seccomp resolution, and
- * that the profile is a default-DENY allowlist that denies the high-risk
- * syscalls while keeping the ones the worker/agent actually need. They do NOT
- * assert live kernel behavior (that requires a real Docker host — verify there
- * before enabling in prod, per the egress precedent).
- */
-
 import { describe, it, expect } from "vitest";
 import fs from "node:fs";
 import {
@@ -79,7 +68,6 @@ describe("committed seccomp profile invariants", () => {
 
   it("is a default-deny allowlist", () => {
     expect(profile.defaultAction).toBe("SCMP_ACT_ERRNO");
-    // Every syscall rule is an explicit allow — nothing re-opens via ERRNO/TRAP.
     for (const s of profile.syscalls) {
       expect(s.action).toBe("SCMP_ACT_ALLOW");
     }
@@ -96,7 +84,7 @@ describe("committed seccomp profile invariants", () => {
       "read", "write", "openat", "close", "mmap", "mprotect", "futex",
       "clone", "clone3", "execve", "execveat", "wait4", "exit_group",
       "socket", "connect", "epoll_wait", "arch_prctl",
-      "setuid", "setgid", "setgroups", "chown", "fchownat", // gosu drop
+      "setuid", "setgid", "setgroups", "chown", "fchownat",
       "statx", "newfstatat", "getdents64", "rseq",
     ]) {
       expect(allowed.has(need), `expected ${need} to be allowed`).toBe(true);
@@ -129,22 +117,13 @@ describe("read-only rootfs", () => {
 
   it("enumerates the minimal writable tmpfs set with /tmp and /home exec", () => {
     const tmpfs = readonlyRootfsTmpfs();
-    // The image-rootfs writable paths come back as tmpfs; the persistent
-    // bind/volume mounts (/workspace, /credentials, …) are NOT re-listed here.
-    // docs/262 added /plugins: it holds only the symlinks the worker creates
-    // into the read-only plugin store, so under a read-only rootfs it must be
-    // writable or the agent-facing plugin path cannot exist at all. /plugin-bin
-    // (req 17) is the same story for the generated companion-CLI wrappers.
     expect(Object.keys(tmpfs).sort()).toEqual(["/home/shipit", "/plugin-bin", "/plugins", "/run", "/tmp"]);
-    // The wrappers are executed, so this one must be `exec` specifically.
     expect(tmpfs["/plugin-bin"]).toContain("exec");
     expect(tmpfs["/plugin-bin"]).not.toContain("noexec");
     expect(tmpfs["/tmp"]).toContain("exec");
     expect(tmpfs["/tmp"]).not.toContain("noexec");
-    // npm-global installs executables under ~/.npm-global/bin → home must exec.
     expect(tmpfs["/home/shipit"]).toContain("exec");
     expect(tmpfs["/home/shipit"]).not.toContain("noexec");
-    // No mount is a setuid/device surface.
     for (const opts of Object.values(tmpfs)) {
       expect(opts).toContain("nosuid");
       expect(opts).toContain("nodev");

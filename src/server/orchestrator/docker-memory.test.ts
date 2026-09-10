@@ -2,12 +2,6 @@ import { describe, it, expect } from "vitest";
 import Docker from "dockerode";
 import { readDockerMemoryStats } from "./docker-memory.js";
 
-/**
- * docs/284 — the per-session breakdown is what lets the idle enforcer subtract
- * what a reclaim actually freed. Without it the enforcer cannot tell whether
- * one container covered the shortfall, and falls back to stopping a single
- * session per pass, so the attribution is load-bearing rather than cosmetic.
- */
 function fakeDocker(containers: { Id: string; Labels: Record<string, string>; usage: number; failStats?: boolean }[]): Docker {
   return {
     info: async () => ({ MemTotal: 1000 }),
@@ -39,8 +33,6 @@ describe("readDockerMemoryStats", () => {
     });
   });
 
-  // A session whose agent container was already reclaimed still has a stack,
-  // and tier 2 needs to know what stopping it would give back.
   it("attributes a session that has services but no agent container", async () => {
     const stats = await readDockerMemoryStats(fakeDocker([
       { Id: "web-a", Labels: { "shipit-parent-session": "a" }, usage: 40 },
@@ -59,9 +51,6 @@ describe("readDockerMemoryStats", () => {
     expect(stats?.bySession).toEqual({ a: { agentBytes: 30, serviceBytes: 0 } });
   });
 
-  // A failed per-container read is UNKNOWN, not zero. Left as a zero entry the
-  // enforcer would read the session as "measured, frees nothing" and keep
-  // reclaiming other sessions on the strength of a number nobody read.
   it("omits a session whose container stats could not be read", async () => {
     const stats = await readDockerMemoryStats(fakeDocker([
       { Id: "agent-a", Labels: { "shipit-session-id": "a" }, usage: 100 },
@@ -70,7 +59,6 @@ describe("readDockerMemoryStats", () => {
     ]));
 
     expect(stats?.bySession).toEqual({ b: { agentBytes: 50, serviceBytes: 0 } });
-    // The readable containers still count toward the global shortfall.
     expect(stats?.usedBytes).toBe(150);
   });
 

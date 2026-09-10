@@ -14,26 +14,10 @@ import {
 import { sessionAutoCommitAllowed } from "../services/auto-commit-gate.js";
 import { chownWorkspaceGitToSessionWorker } from "../session-worker-uid.js";
 
-/** Minimal handler context — postTurnCommit only needs git + chat history + auto-push + the session kind gate. */
 type PostTurnCtx = Pick<ConnectionCtx & AppCtx, "createGitManager" | "chatHistoryManager" | "sessionManager"> & {
   scheduleAutoPush: (git: ReturnType<AppCtx["createGitManager"]>, sessionId?: string) => void;
 };
 
-/**
- * Auto-commit working tree changes after an agent turn and link the commit to
- * the last assistant message in chat history. Returns the commit hash or null.
- *
- * `turnSummary` is required and must be supplied by the caller from the
- * captured runner (`runner.turnSummary`). It used to fall back to
- * `ctx.getTurnSummary()`, but that getter routes through the per-connection
- * `attachedRunner` and silently returns "" after WS disconnect — see feature
- * 095 for context.
- *
- * Wrapped in the per-workspace mutex shared with `services/marketplace.ts` so
- * a plugin-install path-scoped `git add` cannot race the post-turn `git add -A`
- * on the same workspace (docs/149). When no install is in flight the mutex
- * resolves immediately.
- */
 export async function postTurnCommit(
   ctx: PostTurnCtx,
   opts: {
@@ -41,137 +25,26 @@ export async function postTurnCommit(
     sessionId: string | undefined;
     emit: (msg: WsServerMessage) => void;
     turnSummary: string;
-    /**
-     * HEAD captured when the turn started. If the agent performs its own clean
-     * git operation during the turn (for example a rebase), autoCommit() sees
-     * no working-tree changes. We still need to auto-push when the branch tip
-     * moved.
-     */
     turnStartHeadHash?: string | null;
-    /**
-     * The runner that owns this turn. When provided, the commit info is also
-     * stashed on `runner.pendingCommitLink` so the agent_result handler in
-     * `wireAgentListeners` can apply it after `replaceInProgress` finalizes
-     * the chat rows. Without this fallback, a turn where `agent_result`
-     * persists the rows AFTER `postTurnCommit` runs (codex sometimes emits
-     * two `turn/completed` events) ends up with a successful commit but no
-     * commit_hash on any chat row — so the rewind preview shows "0 files".
-     */
     runner?: SessionRunnerInterface | null;
-    /**
-     * Hand the auto-push ARM to the caller instead of arming it here.
-     *
-     * Only the arming moves. The merged-branch decision, and the notice it
-     * emits when it refuses, still happen right after the commit, against the
-     * state the commit produced — deferring the *decision* would let the
-     * docs/202 re-arm (which clears `mergedAt` inside the PR flow) change the
-     * answer underneath it.
-     *
-     * The caller that passes this is `turn-executor.ts`, and its reason is
-     * ordering: the post-turn PR flow does its own synchronous `git push` —
-     * a `forcePush` when re-arming past a merged pull request — and a debounced
-     * plain push racing that one is rejected non-fast-forward, which posts the
-     * "your branch has diverged" notice for a branch that is fine. Until now
-     * the only thing keeping the two apart was the 5s debounce being longer
-     * than the PR flow, which is not a guarantee: PR creation writes its title
-     * with an LLM and can exceed it. Arming after that flow removes the race
-     * instead of out-waiting it, which is what lets the debounce go to 0.
-     *
-     * Callers with no git work of their own after the commit (the interrupt
-     * fallback) omit it and are armed inline, exactly as before.
-     */
+    /** Defer arming until after PR pushes, but decide before that flow clears mergedAt. */
     deferPushArm?: (arm: () => void) => void;
   },
 ): Promise<string | null> {
-  // docs/128 / docs/211 — ShipIt does not auto-commit an `ops` or `sandbox`
-  // session. The rule and its full rationale live in ONE place,
-  // `services/auto-commit-gate.ts`; this is one of its five consult sites.
-  //
-  // Two kinds, one gate, for two originally-different reasons:
-  //   - **sandbox** has NO root git repo (the agent clones into subdirs), so the
-  //     unconditional `git.autoCommit()` below would error on the non-repo root.
-  //   - **ops** is a throwaway host-debugging cockpit with no remote, no branch
-  //     lifecycle and no PR card. docs/128 originally let it COMMIT (calling the
-  //     workspace history "part of the incident log") while gating only the
-  //     push. That decision is REVERSED at the operator's request: an ops
-  //     session's history is no longer an incident log, and the ops agent is
-  //     told in its system prompt (`prompts/git-workflow-ops.md`) that it owns
-  //     git itself — so anything an investigation wants to keep is committed
-  //     deliberately by the agent, filed as an issue, or carried into a
-  //     `--shipit-source` fix session.
-  //
-  // Gated by KIND, never inferred from `remoteUrl`. Returning null also
-  // short-circuits the caller's PR-lifecycle flow (`runCommitAndPr` only runs it
-  // when a commit hash comes back), so no push and no PR card fire either.
-  //
-  // Only ShipIt's automatic commit is refused. An explicit agent-driven
-  // `gh pr create` still commits + pushes through its own path, so a cwd-scoped
-  // clone inside an ops workspace is unaffected.
   if (!sessionAutoCommitAllowed(ctx.sessionManager, opts.sessionId)) {
     return null;
   }
+  // Share the install lock: path-scoped staging must not race git add -A.
   return withWorkspaceLock(opts.sessionDir, async () => {
-    // docs/266 — reconcile `.git` BEFORE the commit, not only after it.
-    //
-    // The handback below has always run post-hoc, which was sufficient while
-    // orchestrator git was root and could write a `.git` in any state. Since E1
-    // it drops to the tree's owner, so it can arrive at a `.git` some earlier
-    // root-side write left unwritable and lose the whole turn:
-    // `fatal: could not open '.git/COMMIT_EDITMSG': Permission denied` — raised
-    // AFTER `git add -A` succeeds, so the work is staged and then stranded, which
-    // is `CLAUDE.md` invariant 2's unrecoverable case.
-    //
-    // Post-hoc repair alone converges only on the NEXT turn, and only if there is
-    // one. Running it here as well turns a lost turn into no turn lost. Inside
-    // the lock, so it cannot race a plugin-install `git add` on the same
-    // workspace.
-    //
-    // Cost, stated honestly rather than as the flattering half: this DOUBLES the
-    // per-turn `.git` walk, and there is no "already owned" short-circuit in
-    // `chownGitMetadataRecursive`. Only the object store is O(fanout) — outside
-    // `objects/` the walk is O(metadata nodes), so refs, reflogs and `worktrees/`
-    // all scale with it. Measured ~0.5 ms on this repo's own clone, which is why
-    // it is spent unconditionally; a refs-heavy repo is where to look first if
-    // that ever stops being true.
+    // Repair before git drops to the tree owner; post-commit repair would be too late.
     chownWorkspaceGitToSessionWorker(opts.sessionDir);
     try {
       return await commitInLock();
     } finally {
-      // docs/150 §7 addendum: the git ops above write into `.git` — `git status`
-      // refreshes `.git/index`, and a commit writes objects/refs/reflogs. Hand
-      // `.git` back here, on every path (commit, no-op, throw). No-op unless a
-      // uid resolves — see `resolveGitDirOwner`.
-      //
-      // planning#412 — this used to say those ops "run as the root orchestrator"
-      // and leave `.git` `root:root`. Since E1 they run as the tree's own
-      // identity (the paragraph above this `try` is the same fact stated from
-      // the other side), so what this reconciles is `.git`'s owner against
-      // `resolveGitDirOwner` — the identity that will next run git in it, which
-      // is the orchestrator's dropped uid AND the agent's, and the two can
-      // disagree. Left unreconciled the agent's next in-container `git` fails
-      // appending to a reflog it does not own; the ops themselves stay root only
-      // where no identity resolves (local mode, dev, tests).
       chownWorkspaceGitToSessionWorker(opts.sessionDir);
     }
   });
 
-  /**
-   * planning#297 — the single auto-push site for this turn, gated on the merged-branch
-   * guard (`services/merged-push-guard.ts`, which carries the full rationale).
-   *
-   * A merged session's branch has no open pull request and, on most repos, no
-   * remote branch either — so the ordinary debounced push RECREATES it, stranding
-   * the commit as an orphan nobody reviews. The commit above still stands (work is
-   * never lost); only the silent push is refused, and only this one: an explicit
-   * `gh pr create` pushes through its own force-pushing path, exactly like the
-   * auto-commit gate above.
-   *
-   * The refusal is loud by construction — it is the *silence* that made this a
-   * user-reported bug twice, so a blocked push always leaves a persisted notice.
-   *
-   * No ops/sandbox check here: those kinds return at the top of `postTurnCommit`
-   * and never reach this function at all.
-   */
   async function pushUnlessMerged(
     git: ReturnType<AppCtx["createGitManager"]>,
     commitHash: string | null,
@@ -185,9 +58,6 @@ export async function postTurnCommit(
         )
       : null;
     if (!block || !sessionId) {
-      // Decided here, armed here or later — see `deferPushArm`. The closure
-      // captures the same `git` and session id the inline call would have used,
-      // so the two paths push identically.
       const arm = (): void => ctx.scheduleAutoPush(git, opts.sessionId);
       if (opts.deferPushArm) opts.deferPushArm(arm);
       else arm();
@@ -207,31 +77,10 @@ export async function postTurnCommit(
         "warn",
       );
     } catch (err) {
-      // The notice is the point, but it must not be able to fail the turn: this
-      // runs inside the post-turn commit, whose caller treats a throw as "the
-      // commit failed" and skips the PR flow. Losing the notice is bad; losing
-      // the PR card because the notice threw is worse.
       console.error(`[merged-push-guard] notice failed for ${sessionId}:`, err);
     }
   }
 
-  /**
-   * docs/266-orchestrator-git-trust-boundary req 15 / planning#407 — `git.autoCommit`, with the guarantee that a
-   * turn which committed NOTHING says so in the transcript.
-   *
-   * `autoCommit` returns the two states it can classify (`unreadable`, and the
-   * secret/conflict refusals). Everything else it cannot classify it rethrows —
-   * and a throw here lands in `postTurnStep`, which logs and continues. That is
-   * right for the steps around the commit and wrong for the commit itself:
-   * requirement 15 says a turn whose work was not committed at all must be
-   * REPORTED, and "a log line is not a report".
-   *
-   * Reports, then rethrows unchanged. The throw is what stops the push and the
-   * PR card, and nothing about that control flow should change — the only thing
-   * added is that the user finds out. The notice is best-effort for the same
-   * reason the merged-push one is: losing the notice is bad, replacing git's
-   * error with a chat-history error is worse.
-   */
   async function autoCommitReportingFailure(
     git: ReturnType<AppCtx["createGitManager"]>,
     summary: string,
@@ -264,14 +113,6 @@ export async function postTurnCommit(
     const firstLine = opts.turnSummary.split("\n")[0]?.slice(0, 120) || "Agent turn";
     const { commitHash, conflictedFiles, rebaseInProgress, secretFindings, unreadable } =
       await autoCommitReportingFailure(git, firstLine);
-    // docs/266-orchestrator-git-trust-boundary reqs 14 + 15 — orchestrator git now runs as the session's uid, so
-    // for the first time it can hit workspace content it cannot read (a compose
-    // service running at its own explicit `user:`). The two outcomes need
-    // different words, which is why they are two requirements and not one: an
-    // unreadable DIRECTORY leaves a commit that exists and is short, an
-    // unreadable FILE leaves no commit at all. Persisted, not logged — the whole
-    // point is that git's exit codes report success in the first case and
-    // `postTurnStep` would swallow the second into a log line nobody reads.
     if (unreadable && opts.sessionId) {
       emitNoticePostTurn(
         opts.emit,
@@ -282,11 +123,6 @@ export async function postTurnCommit(
       );
     }
     if (secretFindings.length > 0 && opts.sessionId) {
-      // docs/213 / planning#317 — the commit was refused because the staged diff
-      // carried a likely secret. `recordSecretBlock` owns all three responses:
-      // the persisted redacted notice (as before), the sticky banner state, and
-      // a bounded remediation turn so the agent learns its work did not land.
-      // commitHash is null, so the no-commit path below short-circuits push + PR.
       recordSecretBlock(
         {
           sessionId: opts.sessionId,
@@ -298,19 +134,7 @@ export async function postTurnCommit(
         secretFindings,
       );
     }
-    // planning#317 — the scan actually ran and came back clean, so any standing block
-    // is over. Deliberately NOT cleared on the conflict/rebase branch:
-    // `autoCommit` returns there BEFORE staging or scanning, so a secret still in
-    // the tree would go unscanned and the banner would clear on a lie. Only "no
-    // findings, and nothing stopped us from looking" retires the block — which
-    // covers both a successful commit and a genuinely clean tree.
-    //
-    // docs/266 adds a THIRD such early return, and it belongs on the same side of
-    // this line: `unreadable.kind === "blocked"` means `git add -A` exited 128
-    // and staged nothing, so `stagedDiff` was never scanned either. Clearing the
-    // banner there would retire it on exactly the lie this condition exists to
-    // prevent. The `omitted` kind is different — staging and scanning both ran,
-    // they just saw less of the tree — so it does not block the clear.
+    // These early returns skip scanning; they cannot clear an existing secret block.
     if (
       opts.sessionId
       && secretFindings.length === 0
@@ -325,9 +149,6 @@ export async function postTurnCommit(
       });
     }
     if ((conflictedFiles.length > 0 || rebaseInProgress) && opts.sessionId) {
-      // Persisted (append + emit), not emit-only, so the conflict warning
-      // survives a reload. It fires after the turn's final persist, so
-      // appending lands it at the current end of history — the right spot.
       emitNoticePostTurn(
         opts.emit,
         ctx.chatHistoryManager,
@@ -343,15 +164,7 @@ export async function postTurnCommit(
         currentHeadHash &&
         currentHeadHash !== opts.turnStartHeadHash
       ) {
-        // docs/213 — the agent moved HEAD itself this turn (e.g. it ran its own
-        // `git commit`), so `autoCommit` saw a clean tree and never scanned that
-        // content. Guard the auto-push: if the move is a pure ADDITION on top of
-        // the turn-start HEAD (turnStartHead is an ancestor of HEAD), scan the
-        // newly-added commits and refuse the push on a finding. If history was
-        // rewritten instead (rebase/amend/reset — turnStartHead is NOT an
-        // ancestor), skip the scan: those commits replay pre-existing history, so
-        // re-flagging them would false-block a legitimate rebase (and any secret
-        // there is already in history, not newly introduced this turn).
+        // Scan agent-made additions; rewritten history is excluded to avoid flagging replayed commits.
         const addedOnTop = await git.isAncestor(opts.turnStartHeadHash, currentHeadHash);
         if (addedOnTop) {
           const findings = scanDiffForSecrets(
@@ -370,8 +183,6 @@ export async function postTurnCommit(
                 findings,
               );
             }
-            // Do NOT push the secret-bearing commit(s). It stays local; the agent
-            // must amend/scrub it before it can reach the remote.
             return null;
           }
         }
@@ -381,19 +192,10 @@ export async function postTurnCommit(
     }
 
     opts.emit({ type: "git_committed", hash: commitHash, message: firstLine });
-    // docs/171 — release carve-out: auto-push pushes the session BRANCH only and
-    // MUST NOT push tags. `scheduleAutoPush` → `GitManager.push(remote, branch)`
-    // never passes `--tags` or a tag refspec, so a version-bump commit rides the
-    // normal branch push while the release TAG is pushed separately and only
-    // after explicit confirmation (the agent's `git push origin vX.Y.Z`, see
-    // /shipit-docs/release.md). A published tag is outward-facing and effectively
-    // irreversible, so it is never an automatic side-effect of a turn.
     await pushUnlessMerged(git, commitHash);
 
     if (opts.sessionId && parentHash) {
-      // Stash the link info on the runner FIRST so the agent_result handler
-      // can retry the link if our updateLastMessage call below finds no
-      // in_progress=0 rows yet (the racy case described above).
+      // The result handler retries this link if final history rows do not exist yet.
       if (opts.runner) {
         opts.runner.pendingCommitLink = { commitHash, parentCommitHash: parentHash };
       }

@@ -1,17 +1,3 @@
-/**
- * permission tool — `permission_prompt` (planning#114 / docs/193). Registered as the
- * Claude CLI's `--permission-prompt-tool`: instead of auto-denying a gated
- * (sensitive-file) edit in headless mode, the CLI calls this tool, which
- * forwards the request to the worker's `PermissionBroker` and BLOCKS until the
- * user answers the approve/deny card.
- *
- * Resilient long poll (Thread B / planning#114): it does NOT hold one fetch open for
- * the whole wait (that trips undici's timeout when a user takes their time).
- * Instead it opens the request, then polls `/await` in short bounded holds.
- * Network blips are retried with exponential backoff; a real 4xx/5xx broker
- * rejection fails closed immediately. Extracted verbatim from the former
- * standalone `mcp-permission-bridge.ts` for the consolidated bridge.
- */
 
 import type { ToolDescriptor } from "./types.js";
 
@@ -21,7 +7,6 @@ const TOOL_DESCRIPTION = [
   "file); it is not meant to be called directly by the model.",
 ].join(" ");
 
-// The CLI passes the gated call as { tool_name, input, tool_use_id }.
 const inputSchema = {
   type: "object" as const,
   properties: {
@@ -32,9 +17,8 @@ const inputSchema = {
   required: ["tool_name"],
 };
 
-/** Bounded hold per `await` poll — short enough that no client timeout fires. */
+// Bound each hold to avoid client timeouts while the user decides.
 export const POLL_TIMEOUT_MS = 25_000;
-/** Consecutive network failures tolerated (with backoff) before failing closed. */
 export const MAX_CONSECUTIVE_FAILURES = 6;
 const BACKOFF_BASE_MS = 500;
 const BACKOFF_CAP_MS = 8_000;
@@ -80,9 +64,6 @@ export const permissionTool: ToolDescriptor = {
     };
     const toolInput = a.input ?? {};
 
-    // Retry a transient network failure with backoff (a brief worker blip), but
-    // surface a real broker rejection (4xx/5xx) immediately, and give up after a
-    // sustained streak. Returns the parsed reply or throws on exhausted retries.
     const postResilient = async (path: string, body: unknown): Promise<PermissionReply> => {
       let failures = 0;
       for (;;) {
@@ -109,7 +90,6 @@ export const permissionTool: ToolDescriptor = {
         toolUseId: a.tool_use_id,
       });
 
-      // Pre-approved (handled interrupt tool / remembered path): answered inline.
       if (opened.behavior) {
         return opened.behavior === "allow"
           ? envelope({ behavior: "allow", updatedInput: toolInput })
@@ -121,8 +101,7 @@ export const permissionTool: ToolDescriptor = {
         return envelope({ behavior: "deny", message: "Permission service returned no request id." });
       }
 
-      // Poll until the user answers. `pending` just means "ask again" — a slow
-      // user loops here indefinitely with no failure (no ShipIt-imposed deadline).
+      // Pending approval has no overall deadline.
       for (;;) {
         const reply = await postResilient("/agent-ops/permission/await", {
           requestId,
@@ -130,7 +109,6 @@ export const permissionTool: ToolDescriptor = {
         });
         if (reply.pending) continue;
         if (reply.behavior === "allow") {
-          // `updatedInput` is mandatory on allow — echo the original input back.
           return envelope({ behavior: "allow", updatedInput: toolInput });
         }
         return envelope({ behavior: "deny", message: reply.message || "Permission denied." });

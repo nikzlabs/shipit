@@ -20,14 +20,12 @@ export interface WsFileContent {
   type: "file_content";
   path: string;
   content: string;
-  /** When true, the file is binary and `content` contains a human-readable message instead of file data. */
+  /** content holds a message instead of binary data. */
   isBinary?: boolean;
 }
 
-// ---- File watcher types ----
-
 export interface WsFilesChanged {
   type: "files_changed";
-  /** Relative paths of files that changed in the workspace. */
+  /** Workspace-relative paths. */
   paths: string[];
 }

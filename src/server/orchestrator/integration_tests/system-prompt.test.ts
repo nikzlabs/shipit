@@ -22,11 +22,6 @@ import {
 import { DatabaseManager } from "../../shared/database.js";
 import { AGENT_SYSTEM_INSTRUCTIONS, buildAgentSystemInstructions } from "../agent-instructions.js";
 
-// docs/117 Phase 2 — `agent-execution.ts` now passes `currentAgent.agentId`
-// into `buildAgentSystemInstructions`, so the runtime prompt includes the
-// per-agent "Parallel sessions" section. FakeClaudeProcess reports
-// `agentId === "claude"`, so the expected baseline for these tests is the
-// Claude-flavoured rendering.
 const CLAUDE_AGENT_INSTRUCTIONS = buildAgentSystemInstructions({ agentId: "claude" });
 
 describe("Integration: System prompt", () => {
@@ -71,7 +66,6 @@ describe("Integration: System prompt", () => {
   });
 
   it("system prompt is passed to ClaudeProcess.run() when set", async () => {
-    // Set a system prompt via HTTP
     const settingsRes = await app.inject({
       method: "PUT",
       url: "/api/settings",
@@ -80,9 +74,8 @@ describe("Integration: System prompt", () => {
     expect(settingsRes.statusCode).toBe(200);
 
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
-    // Send a message to Claude
     client.send({ type: "send_message", text: "Hello" });
     await waitForClaude(() => lastClaude);
 
@@ -91,15 +84,6 @@ describe("Integration: System prompt", () => {
     client.close();
   });
 
-  /**
-   * planning#292 — the WS turn and the server-dispatched (system) turn read the
-   * global prompt through *different* closures: `route-registry.ts`'s
-   * per-connection `readSystemPrompt` and `bootstrap-managers.ts`'s app-scope
-   * `readSystemPromptApp`. Both now call `readGlobalSystemPrompt`, but only the
-   * first was covered — so a change that disconnected the app-scope one would
-   * have silently dropped the prompt from CI-fix, child and wake turns while
-   * every other test stayed green.
-   */
   it("system prompt reaches a server-dispatched turn, not just a WS turn", async () => {
     const settingsRes = await app.inject({
       method: "PUT",
@@ -109,9 +93,8 @@ describe("Integration: System prompt", () => {
     expect(settingsRes.statusCode).toBe(200);
 
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
-    // Dispatch over HTTP — the same path CI-fix / child / wake turns take.
     const res = await app.inject({
       method: "POST",
       url: `/api/sessions/${client.sessionId}/agent/dispatch`,
@@ -127,21 +110,18 @@ describe("Integration: System prompt", () => {
 
   it("system prompt contains only agent instructions when no user prompt file exists", async () => {
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
     client.send({ type: "send_message", text: "Hello" });
     await waitForClaude(() => lastClaude);
 
     expect(lastClaude.lastSystemPrompt).toBe(CLAUDE_AGENT_INSTRUCTIONS);
-    // Sanity: keep AGENT_SYSTEM_INSTRUCTIONS referenced so the no-options
-    // baseline stays imported (the Settings UI snapshot still uses it).
     expect(typeof AGENT_SYSTEM_INSTRUCTIONS).toBe("string");
 
     client.close();
   });
 
   it("agent system instructions are omitted when disabled", async () => {
-    // Disable agent system instructions
     const disableRes = await app.inject({
       method: "PUT",
       url: "/api/settings",
@@ -149,7 +129,6 @@ describe("Integration: System prompt", () => {
     });
     expect(disableRes.statusCode).toBe(200);
 
-    // Set a user system prompt
     await app.inject({
       method: "PUT",
       url: "/api/settings",
@@ -157,7 +136,7 @@ describe("Integration: System prompt", () => {
     });
 
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
     client.send({ type: "send_message", text: "Hello" });
     await waitForClaude(() => lastClaude);

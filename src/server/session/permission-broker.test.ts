@@ -33,10 +33,6 @@ describe("describePermissionRequest", () => {
 });
 
 describe("describePermissionDetails", () => {
-  // The summary is clipped to ~100 chars, which for a `sed -i` cuts off the
-  // target path — the part that explains why the CLI gated the call. `details`
-  // is what the card's disclosure expands to, so it must carry the WHOLE
-  // command (multi-line included), not the summary's first line again.
   it("carries the raw command whole, newlines and all", () => {
     const command = "sed -i 's/teh/the/' /workspace/src/server/session/a-very-long-path/file.ts\necho done";
     expect(describePermissionDetails({ command })).toBe(command);
@@ -52,10 +48,6 @@ describe("describePermissionDetails", () => {
     expect(describePermissionDetails(undefined)).toBeUndefined();
   });
 
-  // A toggle that expands to what the card already shows is noise — and, since
-  // the card is persisted, persisted noise. Both of these are the COMMON shape,
-  // not an edge: most gated Bash calls are short, and `apply_patch` carries
-  // nothing but the path.
   it("has nothing to show when the summary already contains the whole command", () => {
     expect(describePermissionDetails({ command: "ls" }, { summary: "Bash: ls" })).toBeUndefined();
   });
@@ -86,15 +78,11 @@ describe("PermissionBroker", () => {
 
     const req = events[0];
     if (req.type !== "agent_permission_request") throw new Error("unreachable");
-    // The summary is still the clipped one-liner the card shows collapsed...
     expect(req.summary!.length).toBeLessThanOrEqual(101 + "Bash: ".length);
-    // ...and the details carry what the summary had to cut, including the
-    // target path the user needs in order to decide.
     expect(req.details).toBe(command);
   });
 
-  // With the summary DERIVED, not supplied — the production shape. An explicit
-  // summary would have made this pass even under an exact-equality check.
+  // Derive the summary: an explicit one could hide a faulty equality check.
   it("omits details for a short command the summary already shows in full", () => {
     const { broker, events } = makeBroker();
     broker.openRequest({ toolName: "Bash", input: { command: "ls" } });
@@ -131,7 +119,6 @@ describe("PermissionBroker", () => {
     await expect(pending).resolves.toEqual({ behavior: "allow" });
     expect(broker.pendingCount).toBe(0);
 
-    // A resolved event is broadcast for the orchestrator to patch the card.
     expect(events[1]).toMatchObject({ type: "agent_permission_resolved", behavior: "allow" });
   });
 
@@ -139,12 +126,8 @@ describe("PermissionBroker", () => {
     vi.useFakeTimers();
     try {
       const { broker } = makeBroker();
-      // The held promise is intentionally not awaited — `request` only settles
-      // on a user decision, which we never make here.
       void broker.request({ toolName: "Write", input: { file_path: ".env" } });
 
-      // Even after a very long wait, the request is still pending — a settled
-      // request would have been removed from the broker's map. There is no timeout.
       await vi.advanceTimersByTimeAsync(60 * 60 * 1000);
       expect(broker.pendingCount).toBe(1);
     } finally {
@@ -162,7 +145,6 @@ describe("PermissionBroker", () => {
     const eventCountAfterFirst = events.length;
     const second = await broker.request({ toolName: "Edit", input: { file_path: ".npmrc" } });
     expect(second).toEqual({ behavior: "allow" });
-    // No new request/resolved events for the remembered path.
     expect(events).toHaveLength(eventCountAfterFirst);
   });
 
@@ -172,9 +154,6 @@ describe("PermissionBroker", () => {
     broker.resolve((events[0] as { requestId: string }).requestId, { behavior: "allow" });
     await first;
 
-    // Same path again → a fresh card surfaces (not auto-allowed). The request
-    // intentionally stays pending (we only assert it was registered), so it's
-    // `void`ed rather than awaited — awaiting would block until resolve/timeout.
     void broker.request({ toolName: "Write", input: { file_path: ".npmrc" } });
     expect(broker.pendingCount).toBe(1);
   });
@@ -187,12 +166,9 @@ describe("PermissionBroker", () => {
 
     broker.clearPending();
 
-    // Promises settle (so the worker doesn't leak a held bridge response)…
     await expect(a).resolves.toMatchObject({ behavior: "deny" });
     await expect(b).resolves.toMatchObject({ behavior: "deny" });
     expect(broker.pendingCount).toBe(0);
-    // …but NO resolved event is broadcast — the card is left pending, never
-    // flipped to a synthetic terminal/expired state.
     expect(events).toHaveLength(eventsBefore);
     expect(events.some((e) => e.type === "agent_permission_resolved")).toBe(false);
   });
@@ -211,7 +187,6 @@ describe("PermissionBroker", () => {
     expect(events[0].type).toBe("agent_permission_request");
 
     const poll = broker.poll(opened.requestId!, 5000);
-    // Resolve while the poll is held; it should return the decision and consume.
     expect(broker.resolve(opened.requestId!, { behavior: "allow" })).toBe(true);
     await expect(poll).resolves.toEqual({ settled: true, decision: { behavior: "allow" } });
     expect(broker.pendingCount).toBe(0);
@@ -220,7 +195,6 @@ describe("PermissionBroker", () => {
   it("poll returns { settled: false } when the bounded hold elapses (request stays pending)", async () => {
     const { broker } = makeBroker();
     const opened = broker.openRequest({ toolName: "Write", input: { file_path: ".env" }, toolUseId: "tu" });
-    // A short hold elapses with no answer → poll again, request still pending.
     await expect(broker.poll(opened.requestId!, 5)).resolves.toEqual({ settled: false });
     expect(broker.pendingCount).toBe(1);
   });
@@ -230,7 +204,6 @@ describe("PermissionBroker", () => {
     const a = broker.openRequest({ toolName: "Write", input: { file_path: ".npmrc" }, toolUseId: "dup" });
     const b = broker.openRequest({ toolName: "Write", input: { file_path: ".npmrc" }, toolUseId: "dup" });
     expect(b.requestId).toBe(a.requestId);
-    // Only ONE card broadcast despite two opens (no stacking).
     expect(events).toHaveLength(1);
     expect(broker.pendingCount).toBe(1);
   });
@@ -255,7 +228,6 @@ describe("PermissionBroker", () => {
     const { broker } = makeBroker();
     const opened = broker.openRequest({ toolName: "Write", input: { file_path: ".npmrc" }, toolUseId: "tu" });
     broker.resolve(opened.requestId!, { behavior: "deny", message: "nope" });
-    // The entry is retained (settled) until a consumer reads it.
     await expect(broker.poll(opened.requestId!, 5000)).resolves.toEqual({
       settled: true,
       decision: { behavior: "deny", message: "nope" },
@@ -264,15 +236,10 @@ describe("PermissionBroker", () => {
   });
 
   it("auto-allows ShipIt-handled interrupt tools without surfacing a card", async () => {
-    // AskUserQuestion / ExitPlanMode are handled by ShipIt's own interrupt flow
-    // (question card / PlanApproval card). The Claude CLI still routes them
-    // through --permission-prompt-tool (docs/193); the broker must auto-allow so
-    // a dead-end permission card never appears instead of the real card.
     for (const toolName of ["AskUserQuestion", "ExitPlanMode"]) {
       const { broker, events } = makeBroker();
       const decision = await broker.request({ toolName, input: {} });
       expect(decision).toEqual({ behavior: "allow" });
-      // No request/resolved events: nothing was surfaced or persisted.
       expect(events).toHaveLength(0);
       expect(broker.pendingCount).toBe(0);
     }

@@ -1,15 +1,3 @@
-/**
- * Integration tests for auto-create PR after a meaningful agent turn.
- *
- * The setting `credentialStore.autoCreatePr` (off by default) gates the
- * behavior. When on, every turn that produces a non-empty commit AND has no
- * existing PR for the branch should trigger `quickCreatePr` and emit the
- * "creating" → "open" lifecycle phases.
- *
- * Previously this only fired for the first turn of a brand-new session
- * (`isNewSession === true`). Doc 099 widens it to fire for any meaningful turn.
- */
-
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
@@ -42,8 +30,6 @@ let credentialStore: CredentialStore;
 let repoStore: RepoStore;
 let latestClaude: FakeClaudeProcess | null = null;
 let dbManager: DatabaseManager;
-// docs/202 — controls the stubbed `advancedBeyondMergedBase` so a test can
-// simulate "branch rebased + progressed" without building a real rebase.
 let reArmProgressed = false;
 
 beforeEach(async () => {
@@ -53,7 +39,7 @@ beforeEach(async () => {
   reArmProgressed = false;
 
   githubAuth = new StubGitHubAuthManager();
-  githubAuth.setPrData(null); // No pre-existing PR
+  githubAuth.setPrData(null);
 
   sessionManager = new SessionManager(dbManager);
   repoStore = new RepoStore(dbManager);
@@ -62,9 +48,7 @@ beforeEach(async () => {
   app = await buildApp({
     credentialStore,
     workspaceDir: tmpDir,
-    // Stub push + listRemoteBranches so quickCreatePr can run without a real
-    // remote. Other GitManager calls (commit, addRemote, getCurrentBranch,
-    // diffStatVsBranch) hit the real git binary on the temp repo.
+    // Stub remote operations; local Git operations use the temporary repository.
     createGitManager: (dir: string) => {
       const real = new GitManager(dir);
       return new Proxy(real, {
@@ -72,18 +56,10 @@ beforeEach(async () => {
           if (prop === "push") return async () => {};
           if (prop === "forcePush") return async () => {};
           if (prop === "listRemoteBranches") return async () => ["main"];
-          // docs/202 — stub the re-arm detection so a test can flip
-          // "progressed" without constructing a real rebase against a remote.
           if (prop === "advancedBeyondMergedBase") return async () => reArmProgressed;
-          // The clause-reporting sibling `agentCreatePr` uses. Kept in step with
-          // the boolean above so the two stubs can't disagree.
           if (prop === "mergedBaseProgress") {
             return async () => (reArmProgressed ? "progressed" : "base-not-contained");
           }
-          // The re-arm helper freshens `origin/<base>` before deciding (a stale
-          // remote-tracking ref inverts the detection — see
-          // `services/freshen-base-ref.ts`). There's no real remote here, so a
-          // real fetch would throw and the helper would fail safe.
           if (prop === "fetch") return async () => {};
           if (prop === "fetchBranch") return async () => {};
           return (target as never)[prop as never];
@@ -111,7 +87,7 @@ beforeEach(async () => {
   const addr = app.server.address();
   const port = typeof addr === "object" && addr ? addr.port : 0;
   client = await TestClient.connect(port);
-  await client.receive(); // initial preview_status
+  await client.receive();
 });
 
 afterEach(async () => {
@@ -121,14 +97,7 @@ afterEach(async () => {
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 
-/**
- * Run the first turn to bring the session into existence on disk, then
- * configure the session so subsequent turns will satisfy all auto-create
- * preconditions (remote URL, renamed branch, GitHub URL on git origin,
- * checked out feature branch).
- */
 async function setupPrimedSession(): Promise<{ sessionId: string; sessionDir: string }> {
-  // First turn — creates the session directory + initial commit
   client.send({ type: "send_message", text: "hello" });
   const claude = await waitForClaude(() => latestClaude);
   claude.emit("event", {
@@ -138,20 +107,16 @@ async function setupPrimedSession(): Promise<{ sessionId: string; sessionDir: st
   });
   claude.finish("agent-session-1");
 
-  // Drain the first turn's messages — quiet-period bounded so we don't
-  // sit on a 3 s tail when the burst finishes in <100 ms.
   await client.drain({ quietMs: 150 });
 
   const sessionsDir = path.join(tmpDir, "sessions");
   const sessionId = fs.readdirSync(sessionsDir)[0];
   const sessionDir = path.join(sessionsDir, sessionId, "workspace");
 
-  // Configure remote on the actual git repo and on session metadata
   execSync("git remote add origin https://github.com/test-user/test-repo.git", {
     cwd: sessionDir,
     env: { ...process.env, HOME: tmpDir },
   });
-  // Switch to a feature branch so quickCreatePr's head !== base
   execSync("git checkout -b shipit/test-feature", {
     cwd: sessionDir,
     env: { ...process.env, HOME: tmpDir },
@@ -161,8 +126,6 @@ async function setupPrimedSession(): Promise<{ sessionId: string; sessionDir: st
     sessionId,
     "https://github.com/test-user/test-repo.git",
   );
-  // Subsequent turns exercise PR lifecycle behavior on a repository that has
-  // already passed the user's Trust action.
   repoStore.add("https://github.com/test-user/test-repo.git");
   repoStore.setTrusted("https://github.com/test-user/test-repo.git", true);
   sessionManager.setBranch(sessionId, "shipit/test-feature");
@@ -180,7 +143,6 @@ describe("auto-create PR after meaningful turn", () => {
       credentialStore.setAutoCreatePr(true);
       const { sessionId, sessionDir } = await setupPrimedSession();
 
-      // Second turn — isNewSession=false because msg.sessionId is set
       fs.writeFileSync(path.join(sessionDir, "feature.ts"), "export const x = 1;\n");
       client.send({ type: "send_message", text: "make a feature", sessionId });
 
@@ -192,14 +154,10 @@ describe("auto-create PR after meaningful turn", () => {
       });
       claude2.finish("agent-session-1");
 
-      // The "open" event arrives after "creating" — wait directly for it
-      // instead of draining the full timeout, then collect the burst tail
-      // for the phase assertions.
       const openEvent = (await client.receiveType(
         "pr_lifecycle_update",
         5000,
       )) as WsServerMessage & { phase: string; pr?: { number: number } };
-      // First lifecycle event might be "creating" — keep pulling until "open".
       let resolvedOpen = openEvent;
       const phases = [resolvedOpen.phase];
       while (resolvedOpen.phase !== "open") {
@@ -223,8 +181,6 @@ describe("auto-create PR after meaningful turn", () => {
       credentialStore.setAutoCreatePr(true);
       const { sessionId, sessionDir } = await setupPrimedSession();
 
-      // Simulate the prior merge: stamp merged_at + seed the poller's merged
-      // snapshot so the re-arm helper can read the prior base/number.
       const mergedSummary = {
         sessionId,
         prNumber: 999,
@@ -243,10 +199,9 @@ describe("auto-create PR after meaningful turn", () => {
       };
       sessionManager.markMerged(sessionId);
       sessionManager.setPrStatus(sessionId, mergedSummary);
-      app.prStatusPoller!.loadPersisted(); // seed lastKnown → getStatus returns it
-      reArmProgressed = true; // advancedBeyondMergedBase → true
+      app.prStatusPoller!.loadPersisted();
+      reArmProgressed = true;
 
-      // New work + a turn — the post-turn flow should re-arm, then auto-create.
       fs.writeFileSync(path.join(sessionDir, "next.ts"), "export const y = 2;\n");
       client.send({ type: "send_message", text: "more work", sessionId });
       const prev = latestClaude;
@@ -266,11 +221,9 @@ describe("auto-create PR after meaningful turn", () => {
         evt = (await client.receiveType("pr_lifecycle_update", 5000)) as typeof evt;
         phases.push(evt.phase);
       }
-      // The re-armed card opened a NEW PR and carries the breadcrumb.
       expect(phases).toContain("open");
       expect(evt.previousMergedPr?.number).toBe(999);
 
-      // The session was un-merged (back to Active) and remembers it shipped.
       const after = sessionManager.get(sessionId);
       expect(after?.mergedAt).toBeFalsy();
       expect(after?.previousMergedPr?.number).toBe(999);
@@ -295,12 +248,7 @@ describe("auto-create PR after meaningful turn", () => {
       });
       claude2.finish("agent-session-1");
 
-      // Wait for the 'ready' phase before asserting, rather than draining a
-      // fixed quiet period: `drain({ quietMs: 250 })` returns on the first
-      // 250 ms gap, which on a loaded machine lands before the post-turn PR
-      // flow has emitted anything at all (observed as `expected [] to include
-      // 'ready'`). The quiet tail inside `collectUntil` still gives the
-      // "no 'creating' event" assertion its let-time-pass window.
+      // A quiet period alone can end before the PR flow starts.
       const messages = await client.collectUntil(
         (m) => m.type === "pr_lifecycle_update" && (m as { phase?: string }).phase === "ready",
         { quietMs: 250 },
@@ -321,7 +269,6 @@ describe("auto-create PR after meaningful turn", () => {
       credentialStore.setAutoCreatePr(true);
       const { sessionId } = await setupPrimedSession();
 
-      // Second turn — DO NOT write any file, so autoCommit returns null
       client.send({ type: "send_message", text: "tell me a joke", sessionId });
       const prev = latestClaude;
       const claude2 = await waitForClaude(() => latestClaude, prev);
@@ -335,8 +282,6 @@ describe("auto-create PR after meaningful turn", () => {
       const phases = messages
         .filter((m) => m.type === "pr_lifecycle_update")
         .map((m) => (m as { phase: string }).phase);
-      // Neither a "creating" nor a "ready" card — the post-commit block is
-      // entirely skipped because there is no commit.
       expect(phases).not.toContain("creating");
       expect(phases).not.toContain("ready");
     },
@@ -346,7 +291,6 @@ describe("auto-create PR after meaningful turn", () => {
     "does not auto-create when GitHub is not authenticated",
     { timeout: 15_000 },
     async () => {
-      // Note: no setToken() call
       credentialStore.setAutoCreatePr(true);
       const { sessionId, sessionDir } = await setupPrimedSession();
 

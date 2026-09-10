@@ -1,9 +1,3 @@
-/**
- * docs/128 — service-level applyTemplate tests focused on the ops session path:
- * the server-authoritative kind="ops" must be stamped before any container can
- * boot, and the privileged template can only ever create a *fresh* session.
- */
-
 import { describe, it, expect, afterEach, beforeEach } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
@@ -71,10 +65,8 @@ describe("applyTemplate (service) — ops session", () => {
       "ops",
     );
 
-    // The server-authoritative kind was set.
     expect(state.kinds["new-sess"]).toBe("ops");
     expect(result.session?.kind).toBe("ops");
-    // Privileged workspace files landed on disk.
     expect(fs.existsSync(path.join(sessionDir, "shipit.yaml"))).toBe(true);
     expect(fs.existsSync(path.join(sessionDir, "docker-compose.yml"))).toBe(true);
     expect(fs.readFileSync(path.join(sessionDir, "shipit.yaml"), "utf-8")).toContain(
@@ -82,12 +74,6 @@ describe("applyTemplate (service) — ops session", () => {
     );
   });
 
-  // docs/128 / docs/211 — the auto-commit gate (`auto-commit-gate.ts`) stops
-  // ShipIt committing an ops session, and `setKind(…, "ops")` has already run by
-  // the time the template commit fires. Template application is deliberately NOT
-  // gated: it is session CREATION, not a turn, and skipping it would hand the
-  // agent a workspace that is dirty from its first second with the template's own
-  // files showing as unstaged changes.
   it("still commits the applied template for an ops session", async () => {
     const state: FakeSessionState = { kinds: {}, sessions: {} };
     const sessionDir = freshSessionDir();
@@ -128,7 +114,6 @@ describe("applyTemplate (service) — ops session", () => {
         "existing-sess",
       ),
     ).rejects.toBeInstanceOf(ServiceError);
-    // kind must not have been set on the existing session.
     expect(state.kinds["existing-sess"]).toBeUndefined();
   });
 
@@ -161,10 +146,7 @@ describe("applyTemplate (service) — ops session", () => {
       "target-sess",
     );
 
-    // Fresh ops session is still created (target is a reference, not retrofit).
     expect(state.kinds["new-sess"]).toBe("ops");
-    // Named after its quarry, and the seed contains only stable context so the
-    // operator can append the incident-specific investigation request.
     expect(createdTitle).toBe("Ops — debug: Flaky checkout flow");
     expect(result.seedPrompt).toBeDefined();
     expect(result.seedPrompt).toBe(
@@ -218,13 +200,6 @@ describe("applyTemplate (service) — ops session", () => {
   });
 });
 
-/**
- * docs/192 — regression guard for the non-bare-cache bug. The template
- * creation path used to `git init` the shared cache dir as a *non-bare*
- * working tree with `main` checked out, which made every later cache fetch
- * fail with "refusing to fetch into branch 'refs/heads/main' checked out".
- * The cache must be a genuine bare repo, identical to the add-by-URL path.
- */
 describe("createRepoWithTemplate (service) — bare cache", () => {
   let tmpDir: string;
   let origGitConfigGlobal: string | undefined;
@@ -243,9 +218,6 @@ describe("createRepoWithTemplate (service) — bare cache", () => {
   });
 
   it("creates the shared repo cache as a bare repo (not a non-bare working tree)", async () => {
-    // A local bare repo stands in for the freshly-created GitHub remote, so the
-    // scaffold push and the cache's `cloneBare` operate against a real origin
-    // without needing network or credentials.
     const originDir = path.join(tmpDir, "origin.git");
     fs.mkdirSync(originDir, { recursive: true });
     execSync("git init --bare -b main", { cwd: originDir, stdio: "pipe" });
@@ -267,23 +239,17 @@ describe("createRepoWithTemplate (service) — bare cache", () => {
     expect(result.success).toBe(true);
     expect(result.repoUrl).toBe(originDir);
 
-    // The cache is a genuine bare repo …
     const isBare = execSync("git rev-parse --is-bare-repository", { cwd: cacheDir })
       .toString()
       .trim();
     expect(isBare).toBe("true");
 
-    // … with NO checked-out working tree (the file the template scaffolds must
-    // not be sitting at the top level of the cache dir).
     expect(fs.existsSync(path.join(cacheDir, "index.html"))).toBe(false);
     expect(fs.existsSync(path.join(cacheDir, ".git"))).toBe(false);
 
-    // … carrying the pushed template in its object store …
     const tree = execSync("git ls-tree --name-only main", { cwd: cacheDir }).toString();
     expect(tree).toContain("index.html");
 
-    // … and no repo-local credential helper (the bare cache is orchestrator-only
-    // and never mounted into a session container, so it needs no broker helper).
     const localHelper = execSync("git config --local --get-all credential.helper || true", {
       cwd: cacheDir,
     })
@@ -291,14 +257,11 @@ describe("createRepoWithTemplate (service) — bare cache", () => {
       .trim();
     expect(localHelper).toBe("");
 
-    // … and origin repointed at the real remote, not the throwaway scaffold dir
-    // (which is deleted — a stale origin would break every future cache fetch).
     const originUrl = execSync("git config --get remote.origin.url", { cwd: cacheDir })
       .toString()
       .trim();
     expect(originUrl).toBe(originDir);
 
-    // The remote actually received the scaffold push on main.
     const originLog = execSync("git log --format=%s main", { cwd: originDir }).toString();
     expect(originLog).toContain("Initial setup: Static HTML");
   });
@@ -306,8 +269,6 @@ describe("createRepoWithTemplate (service) — bare cache", () => {
   it("threads a trimmed org owner into createRepo, and omits it for the personal account", async () => {
     const seen: { opts: { owner?: string } }[] = [];
     const run = (owner?: string) => {
-      // Each run gets its own bare origin — pushing two fresh scaffolds at the
-      // same remote's main would be rejected non-fast-forward.
       const idx = seen.length;
       const originDir = path.join(tmpDir, `origin-${idx}.git`);
       fs.mkdirSync(originDir, { recursive: true });
@@ -331,12 +292,9 @@ describe("createRepoWithTemplate (service) — bare cache", () => {
       );
     };
 
-    // Whitespace-padded org login is trimmed and routed as `owner`.
     await run("  acme  ");
     expect(seen[0].opts.owner).toBe("acme");
 
-    // Personal account (empty owner) must NOT carry an owner key — otherwise it
-    // would hit POST /orgs/{owner}/repos with a username and 404/422.
     await run("");
     expect("owner" in seen[1].opts).toBe(false);
   });

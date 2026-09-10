@@ -86,8 +86,8 @@ describe("upload service functions", () => {
     });
 
     it("sums file sizes", async () => {
-      fs.writeFileSync(path.join(tmpDir, "a.txt"), "hello"); // 5 bytes
-      fs.writeFileSync(path.join(tmpDir, "b.txt"), "world!"); // 6 bytes
+      fs.writeFileSync(path.join(tmpDir, "a.txt"), "hello");
+      fs.writeFileSync(path.join(tmpDir, "b.txt"), "world!");
       const size = await getUploadsDirSize(tmpDir);
       expect(size).toBe(11);
     });
@@ -101,7 +101,6 @@ describe("upload service functions", () => {
       expect(result.path).toBe("/uploads/test.txt");
       expect(result.size).toBe(11);
       expect(result.type).toBe("upload");
-      // Verify file was actually written
       const written = fs.readFileSync(path.join(tmpDir, "test.txt"), "utf-8");
       expect(written).toBe("hello world");
     });
@@ -126,10 +125,9 @@ describe("upload service functions", () => {
     });
 
     it("rejects files exceeding session quota", async () => {
-      // Write a file close to the quota
       const existingSize = MAX_UPLOAD_SESSION_QUOTA - 100;
       fs.writeFileSync(path.join(tmpDir, "existing.bin"), Buffer.alloc(existingSize));
-      const data = Buffer.alloc(200); // would exceed quota
+      const data = Buffer.alloc(200);
       await expect(saveUploadedFile(tmpDir, "over.bin", data)).rejects.toThrow(/quota/);
     });
 
@@ -190,10 +188,6 @@ describe("upload service functions", () => {
 
   describe("saveUploadedFile — concurrent writers (docs/293)", () => {
     it("gives every concurrent upload of the same name its own file", async () => {
-      // `deduplicateFilename` only reports a name that was free a moment ago, so
-      // concurrent requests all got the same answer and overwrote each other.
-      // That became destructive once the route learned to roll its writes back:
-      // one request's rollback would delete another's successful upload.
       const saved = await Promise.all(
         Array.from({ length: 8 }, (_, i) =>
           saveUploadedFile(tmpDir, "same.txt", Buffer.from(`writer ${i}`)),
@@ -203,7 +197,6 @@ describe("upload service functions", () => {
       const paths = saved.map((s) => s.path);
       expect(new Set(paths).size).toBe(8);
 
-      // Every writer's bytes survived — nobody was overwritten.
       const contents = saved
         .map((s) => fs.readFileSync(path.join(tmpDir, path.basename(s.path)), "utf8"))
         .sort();
@@ -213,12 +206,8 @@ describe("upload service functions", () => {
     });
 
     it("leaves nothing behind when the write itself fails", async () => {
-      // A write that creates the file and then fails (a full disk) would leave a
-      // partial file the caller never learns the name of.
       const before = fs.readdirSync(tmpDir);
-      // The file is CREATED and then the write fails — the shape a full disk
-      // actually takes. A mock that merely rejects leaves nothing behind, so it
-      // could not fail whether or not the cleanup exists.
+      // Create partial content before failing so the test detects missing cleanup.
       const spy = vi.spyOn(fsPromises, "writeFile").mockImplementationOnce(async (p) => {
         fs.writeFileSync(p as string, "partial");
         throw Object.assign(new Error("ENOSPC: no space left on device"), { code: "ENOSPC" });

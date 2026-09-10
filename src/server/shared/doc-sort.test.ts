@@ -2,7 +2,6 @@ import { describe, it, expect } from "vitest";
 
 import { compareDocsByRecency } from "./doc-sort.js";
 
-/** Sort bare paths newest-first and return them. Convenience for assertions. */
 function order(paths: string[]): string[] {
   return [...paths].sort(compareDocsByRecency);
 }
@@ -24,7 +23,6 @@ describe("compareDocsByRecency", () => {
     });
 
     it("compares the prefix numerically, not lexically (99 vs 100)", () => {
-      // The whole point of the change: lexical compare puts "100" before "99".
       expect(
         order(["docs/99-old/plan.md", "docs/100-new/plan.md"]),
       ).toEqual(["docs/100-new/plan.md", "docs/99-old/plan.md"]);
@@ -37,7 +35,6 @@ describe("compareDocsByRecency", () => {
     });
 
     it("treats zero-padded and unpadded numbers by value", () => {
-      // "007" and "7" are the same feature number; padding must not change order.
       expect(
         order(["docs/007-a/plan.md", "docs/12-b/plan.md", "docs/9-c/plan.md"]),
       ).toEqual([
@@ -48,7 +45,6 @@ describe("compareDocsByRecency", () => {
     });
 
     it("breaks ties between same-numbered dirs with stable ascending text", () => {
-      // Shouldn't happen in practice (numbers are unique) but must be deterministic.
       expect(
         order(["docs/168-zebra/plan.md", "docs/168-alpha/plan.md"]),
       ).toEqual(["docs/168-alpha/plan.md", "docs/168-zebra/plan.md"]);
@@ -71,7 +67,6 @@ describe("compareDocsByRecency", () => {
     });
 
     it("does NOT let a high-lexical un-numbered doc jump the newest feature", () => {
-      // "zzz" sorts last lexically descending would put it first — guard against it.
       expect(
         order(["docs/zzz-notes.md", "docs/168-feature/plan.md"]),
       ).toEqual(["docs/168-feature/plan.md", "docs/zzz-notes.md"]);
@@ -98,7 +93,6 @@ describe("compareDocsByRecency", () => {
     });
 
     it("sorts the directory level before the filename level", () => {
-      // Newer dir wins even though its file sorts later alphabetically.
       expect(
         order([
           "docs/100-a/zeta.md",
@@ -119,8 +113,6 @@ describe("compareDocsByRecency", () => {
     });
 
     it("compares segment-by-segment, not on the joined string", () => {
-      // A naive full-string compare could be fooled by separators; ensure the
-      // feature number is what drives the result.
       expect(
         order([
           "docs/9-deep/nested/a.md",
@@ -149,7 +141,6 @@ describe("compareDocsByRecency", () => {
       ];
       for (const a of paths) {
         for (const b of paths) {
-          // `|| 0` normalizes -0 → 0 so the self-comparison (both 0) matches.
           expect(Math.sign(compareDocsByRecency(a, b)) || 0).toBe(
             -Math.sign(compareDocsByRecency(b, a)) || 0,
           );
@@ -165,7 +156,6 @@ describe("compareDocsByRecency", () => {
         "docs/architecture.md",
         "README.md",
       ]);
-      // Re-sorting a shuffled copy must yield the same order.
       const shuffled = [
         "docs/architecture.md",
         "docs/199-y/checklist.md",

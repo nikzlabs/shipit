@@ -1,53 +1,14 @@
-# ShipIt-in-ShipIt dogfooding image (feature 118).
-#
-# Minimal image for the `dev` Compose service: a Node runtime plus the agent
-# CLIs. It no longer pre-bakes node_modules — the `dev` service now shares the
-# agent container's bind-mounted /workspace/node_modules (populated by
-# `agent.install`) instead of carrying its own copy. See the volumes/command
-# notes in docker-compose.yml, and feature 137 (docs/137-depends-on-install)
-# for the broader "share the install output instead of racing it" rationale,
-# for why the separate tree and the in-command `npm install` were removed.
-#
-# Node version is pinned to the SAME node:24-slim digest as the agent /
-# session-worker prod image. This is load-bearing:
-# the native modules in node_modules (better-sqlite3, node-pty, …) are built by
-# `agent.install` inside the node:24 agent container, and the `dev` service must
-# share that ABI to load them. (Previously this image was node:22 with its own
-# node_modules; that split is gone now that the tree is shared.)
-
+# Match the worker's Node digest: both containers share compiled native dependencies.
 FROM node:24-slim@sha256:4e6b70dd6cbfc88c8157ba19aa3d9f9cce6ba4703576d55459e45efcbc9c5f5d
 
 WORKDIR /workspace
 
-# Runtime tools the inner orchestrator needs. The previous full `node:22` base
-# bundled git; `node:24-slim` does not, so install it explicitly along with the
-# same toolset baked into the session-worker runtime image
-# (Dockerfile.session-worker.prod). git is load-bearing — the inner
-# orch's GitManager shells out to it for clone/commit/diff. The others keep the
-# inner orch's behavior at parity with a real session container.
 RUN apt-get update \
     && apt-get install -y acl git git-lfs curl python3 make g++ zip unzip ripgrep bubblewrap \
     && rm -rf /var/lib/apt/lists/*
 
-# docs/231 — Git LFS for the inner orchestrator. `--skip-smudge` matches the
-# other orchestrator images (clean on so auto-commit writes pointers, smudge off
-# so `git clone --local` from the bare cache can't fail on a bogus LFS endpoint);
-# canonical comment in Dockerfile.prod. In RUNTIME_MODE=local this container is
-# also the agent's host, so a manual `git checkout` here writes pointer stubs —
-# run `git lfs pull` after one. Real session containers get the full install.
 RUN git lfs install --system --skip-repo --skip-smudge
 
-# Install the agent CLIs so the inner orchestrator (RUNTIME_MODE=local) can
-# spawn them in-process via claude-adapter / codex-adapter. The shared
-# AgentRegistry detects agents with `which <binary>`, so without these on PATH
-# the inner UI shows "Not installed" on the Agent Setup screen and no session
-# can start. Lockfile-pinned, integrity-verified install shared with the worker
-# images (docs/141); canonical comment in Dockerfile.session-worker.prod.
-# docs/252 phase 9 — the shared installer selects which harnesses land here from
-# the SHIPIT_HARNESSES build arg (req 14) and writes the declared set to
-# /opt/shipit/agents/installed.json, which the inner AgentRegistry reads instead
-# of probing PATH.
-# Empty = install-agent-clis' DEFAULT_HARNESSES (docs/271). Set to override.
 ARG SHIPIT_HARNESSES=
 COPY docker/agent-cli/package.json docker/agent-cli/package-lock.json /opt/agent-cli/
 COPY docker/agent-cli/install-agent-clis.sh /usr/local/bin/install-agent-clis
@@ -55,96 +16,26 @@ RUN chmod 0755 /usr/local/bin/install-agent-clis
 RUN --mount=type=cache,target=/root/.npm install-agent-clis
 ENV PATH="/opt/agent-cli/node_modules/.bin:${PATH}"
 
-# planning#300 — Chromium + its system libraries for the Playwright MCP browser
-# tools. `playwright-mcp` being on PATH (above) is only half of it: the server
-# still has to launch a browser, and neither the binary nor the ~50 shared libs
-# Chromium links against are in node:24-slim. Without this layer every
-# `browser_*` tool fails on first call, which is exactly the state planning#300
-# found — MCP config written, tools advertised, nothing behind them.
-#
-# Copied from Dockerfile.session-worker.prod (canonical comment there): install
-# system deps via the pinned `playwright` CLI, then fetch the chrome-for-testing
-# build via @playwright/mcp's own installer, both invoked by bare name off
-# /opt/agent-cli's PATH rather than `npx <pkg>` (which would re-fetch an
-# unpinned copy). The browser is pinned to a shared readable path because this
-# container does NOT necessarily run as root: with SHIPIT_SESSION_WORKER_UID set
-# on the deployment the compose generator forces `user: <uid>:<uid>` onto the
-# `dev` service, and the default install location ($HOME/.cache/ms-playwright)
-# would then be unreadable — the same planning#284 constraint that moved AGENT_HOME
-# out of /root. `--isolated` in PLAYWRIGHT_MCP_ARGS keeps the writable profile
-# dir in /tmp, so read-only here is enough (docs/150 §8).
+# Browser binaries must be readable by the non-root runtime UID.
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/playwright-browsers
 RUN mkdir -p /opt/playwright-browsers \
  && playwright install-deps chromium \
  && HOME=/opt/playwright-browsers playwright-mcp install-browser chrome-for-testing \
  && chmod -R a+rX /opt/playwright-browsers
 
-# No-op git credential helper. Session workspaces carry a local
-# `credential.helper = /usr/local/bin/shipit-git-credential` (the brokering
-# binary, installed only in the session-worker images). When the orchestrator —
-# or, in local mode (RUNTIME_MODE=local), the in-process agent — runs git
-# against such a workspace, git answers `get` from the global inline helper but
-# still calls the local broker for `store`/`erase`; without the binary that
-# fails with "shipit-git-credential: not found" (docs/192). This silent no-op
-# absorbs those calls so the global helper stays the sole credential source.
+# Absorb store/erase calls from workspace-local broker settings; global auth answers get.
 RUN printf '#!/bin/sh\nexec cat >/dev/null 2>&1\n' > /usr/local/bin/shipit-git-credential \
  && chmod 0755 /usr/local/bin/shipit-git-credential
 
-# The managed-settings file and the hooks it points at. Both session-worker
-# images install these; this one did not, and in local mode the agent spawns
-# HERE — `prepareClaudeRunParams` hardcodes `--settings
-# /etc/shipit/managed-settings.json`, and the Claude CLI treats a missing
-# settings file as fatal. So every dogfood turn died on
-# `Error: Settings file not found` before the model was ever reached, which
-# made the docs/118 "chat-driven dev loop on the ShipIt source" unable to run
-# a single turn.
-#
-# The hooks come along because the settings file references them by path; a
-# settings file whose hook commands don't exist would trade one failure for a
-# subtler one.
 COPY docker/agent-hooks/stop-pr-check.sh /etc/shipit/agent-hooks/stop-pr-check.sh
 COPY docker/agent-hooks/block-branch-ops.mjs /etc/shipit/agent-hooks/block-branch-ops.mjs
 COPY docker/agent-hooks/managed-settings.json /etc/shipit/managed-settings.json
 RUN chmod 0755 /etc/shipit/agent-hooks/stop-pr-check.sh /etc/shipit/agent-hooks/block-branch-ops.mjs
 
-# The curated `gh` shim (docs/251). Both session-worker images install this and
-# this one did not, so a dogfood turn that tried to open a PR got `gh: not
-# found` — which put every PR-shaped feature out of reach of the dogfood loop.
-#
-# TWO differences from the session-worker images' copy of this install, both
-# load-bearing:
-#
-#  1. Paths are `/workspace`, not `/app`. The worker images COPY the repo to
-#     /app; this one bind-mounts the outer session's checkout at /workspace and
-#     shares its node_modules (see docker-compose.yml). Same absolute-path-to-tsx
-#     rationale as the canonical comment in Dockerfile.session-worker.prod: `node
-#     --import tsx` would resolve the bare specifier against the cwd's
-#     node_modules and fail wherever the agent happens to run `gh`.
-#  2. The shim talks to an `/agent-ops` broker, and local mode has no worker
-#     hosting one. `orchestrator/local-agent-ops.ts` starts a session-bound host
-#     per session and passes its address in `SHIPIT_AGENT_OPS_URL`, which the
-#     shim prefers over its `127.0.0.1:$WORKER_PORT` default. Installing the
-#     binary without that host would trade `gh: not found` for a connection
-#     error, which is why this arrives together with it and not before.
-#
-# The `shipit` shim is deliberately NOT installed: it shares the plumbing but
-# only works in part here (`shipit service` needs a ServiceManager and local
-# mode runs no Compose stacks; `shipit agent run` spawns a sub-agent). Tracked
-# with the worker-served MCP tools in planning#305. See docs/251.
+# Use absolute checkout paths so tsx resolution does not depend on the caller's cwd.
 RUN printf '#!/bin/sh\nexec /workspace/node_modules/.bin/tsx /workspace/src/server/session/agent-shim/gh.ts "$@"\n' > /usr/local/bin/gh \
  && chmod 0755 /usr/local/bin/gh
 
-# docs/150 §9 — local mode (RUNTIME_MODE=local) hosts the agent processes
-# in-process (claude-adapter / codex-adapter), which resolve their HOME via
-# agentHome(). DEFAULT_AGENT_HOME is /home/shipit, a user this image does not
-# have, so AGENT_HOME must be pinned to something that exists and is writable.
-#
-# `/root` is the image-level fallback only. The real value comes from
-# docker-compose.yml, which points AGENT_HOME at a dir under the bind-mounted
-# state dir — because this image cannot know the mount path, and because the
-# container does NOT necessarily run as root: with SHIPIT_SESSION_WORKER_UID set
-# on the deployment, the compose generator forces `user: <uid>:<uid>` onto every
-# service that doesn't declare its own, and a non-root process cannot write
-# /root (planning#284). Read the compose comment before changing either value.
+# Compose overrides both homes with a writable path for its session UID.
 ENV HOME=/root
 ENV AGENT_HOME=/root

@@ -1,65 +1,25 @@
-/**
- * Shared CLI plumbing for the `gh` and `shipit` agent shims.
- *
- * Both shims are curated, sandboxed CLIs installed inside the session worker
- * container; they don't touch the orchestrator directly but POST to the
- * worker's `/agent-ops/*` broker on localhost. The mechanics of that — flag
- * parsing, the broker HTTP call, the IO abstraction tests inject into, reading
- * a body from a file or stdin, and the small value-coercion / JSON-filter
- * helpers — are identical between the two, so they live here and are imported
- * by both `gh.ts` and `shipit.ts`.
- *
- * Shim-specific surface (help text, the rejected-subcommand allowlists, the
- * per-shim `formatError` messages, the resilient wait loop) stays in the
- * respective entry module.
- */
 
 import fsp from "node:fs/promises";
 import http from "node:http";
 import https from "node:https";
 import { exitAfterFlush, shimWrite } from "./shim-exit.js";
 
-// ---------------------------------------------------------------------------
-// Flag parsing
-// ---------------------------------------------------------------------------
 
 export interface ParsedFlags {
   positional: string[];
-  /** Map flag name → string value (last value wins). */
   values: Record<string, string>;
-  /**
-   * Repeatable value flags collected into arrays, in the order seen. e.g.
-   * `--label a --label b` → `{ label: ["a", "b"] }`. Used for flags like
-   * `--label` that the underlying CLI accepts more than once.
-   */
   arrays: Record<string, string[]>;
-  /** Boolean flags that were present. */
   booleans: Set<string>;
-  /** Tracks unsupported flags so we can reject them with a helpful error. */
   unsupported: string[];
 }
 
 export interface FlagSpec {
-  /** Flag → output key. e.g. { "--title": "title", "-t": "title" } */
+  /** Flag to output key, e.g. { "--title": "title", "-t": "title" }. */
   values?: Record<string, string>;
-  /**
-   * Repeatable value flags → output key. e.g. { "--label": "label", "-l": "label" }.
-   * Each occurrence is appended to an array rather than overwriting.
-   */
   arrays?: Record<string, string>;
-  /** Boolean flags → output key. e.g. { "--json": "json" } */
   booleans?: Record<string, string>;
 }
 
-/**
- * Parse args using a flag spec. Anything not in the spec is treated as
- * positional unless it begins with `-`, in which case it's tracked as
- * "unsupported" and surfaced as an error by the caller.
- *
- * Both shims share this parser — same `--flag=value` shorthand, same
- * "missing value → unsupported" behavior — so they handle agent typos
- * symmetrically.
- */
 export function parseFlags(args: string[], spec: FlagSpec): ParsedFlags {
   const valueSpec = spec.values ?? {};
   const arraySpec = spec.arrays ?? {};
@@ -75,7 +35,6 @@ export function parseFlags(args: string[], spec: FlagSpec): ParsedFlags {
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
 
-    // `--flag=value` shorthand — split it up before classifying.
     let token = arg;
     let inlineValue: string | undefined;
     if (token.startsWith("--") && token.includes("=")) {
@@ -132,12 +91,8 @@ export function parseFlags(args: string[], spec: FlagSpec): ParsedFlags {
   return out;
 }
 
-// ---------------------------------------------------------------------------
-// Broker HTTP call
-// ---------------------------------------------------------------------------
 
 export interface ShimEnv {
-  /** Worker URL. Defaults to http://127.0.0.1:9100. */
   workerUrl?: string;
 }
 
@@ -149,13 +104,6 @@ export function workerBaseUrl(env: ShimEnv = {}): string {
   return `http://127.0.0.1:${port}`;
 }
 
-/**
- * Describe a transport error, surfacing the underlying cause code when present.
- * The global `fetch` (undici) collapses every low-level failure into the opaque
- * `TypeError: fetch failed`; the real signal (connection refused, reset, or a
- * client-side header/body timeout) lives on `err.cause.code`. Exposing it turns
- * an unactionable "fetch failed" into "fetch failed (UND_ERR_HEADERS_TIMEOUT)".
- */
 function describeTransportError(err: unknown): string {
   if (err instanceof Error) {
     const code = (err as { cause?: { code?: unknown } }).cause?.code;
@@ -164,16 +112,7 @@ function describeTransportError(err: unknown): string {
   return String(err);
 }
 
-/**
- * Unbounded JSON request over Node's `http`/`https` — no response timeout at
- * all. Used for the long-lived `shipit agent run` spawn leg, which legitimately
- * runs up to the sub-agent wall-clock cap (tens of minutes). The global `fetch`
- * (undici) imposes a default 300s `headersTimeout`/`bodyTimeout` that an
- * AbortController-free call CANNOT disable, so a multi-minute consult aborts
- * with the opaque "fetch failed" even though the run is still in flight. Node's
- * `http` has no default response timeout, so it honors the unbounded contract.
- * Resolves with the parsed JSON + status; rejects on a genuine transport error.
- */
+// fetch retains a 300s header/body timeout even without an AbortController.
 function requestJsonUnbounded(
   method: string,
   url: string,
@@ -210,33 +149,11 @@ function requestJsonUnbounded(
   });
 }
 
-/**
- * Send a request to the worker's /agent-ops broker.
- * Returns parsed JSON and HTTP status. Network errors are surfaced as
- * status: 0 with an error body so the caller can format a helpful message.
- *
- * `timeoutMs` selects the transport:
- * - omitted (the `gh` shim and most `shipit` paths) → plain `fetch`.
- * - positive (docs/182, the `shipit` wait loop) → `fetch` with an
- *   AbortController per-segment timeout so a black-holed (half-open) socket
- *   fails fast instead of hanging until an OS-level timeout. A timed-out
- *   request surfaces as `status: 0`, which the loop retries with backoff.
- * - `0` → an explicitly UNBOUNDED request (the `shipit agent run` spawn). Routed
- *   over Node's `http` rather than `fetch`, because undici's default 300s
- *   `headersTimeout` would otherwise abort a multi-minute sub-agent consult with
- *   the opaque "fetch failed" — misread as an unreachable worker.
- */
-/**
- * Statuses a resilient wait loop must treat as "the transport hiccuped, retry"
- * rather than as an outcome: 0 is the shim's own unreachable/aborted marker,
- * and 502/503/504 are a proxy or a restarting orchestrator. Shared by
- * `shipit session wait` (docs/182) and `shipit agent result --wait` (docs/248)
- * so the two loops cannot drift apart on what counts as transient.
- */
 export function isTransientStatus(status: number): boolean {
   return status === 0 || status === 502 || status === 503 || status === 504;
 }
 
+// timeoutMs: omitted uses fetch defaults; positive bounds headers; zero is unbounded.
 export async function callBroker(
   method: "GET" | "POST" | "PATCH",
   path: string,
@@ -294,22 +211,7 @@ export async function callBroker(
   };
 }
 
-// ---------------------------------------------------------------------------
-// Value / output helpers
-// ---------------------------------------------------------------------------
 
-/**
- * Coerce an unknown value to a printable string. Strings and numbers pass
- * through; everything else (null, undefined, objects) becomes the empty
- * string so we never write `[object Object]` or `null` into agent output.
- */
-/**
- * Clamp `text` to `max` chars, reporting whether it was truncated. Shared by
- * every shim surface that renders attacker-influenced free text inside an
- * untrusted-input envelope (issue bodies/comments, PR review feedback) — the
- * envelope's `truncated` flag comes from here, so a clipped block always says
- * it was clipped.
- */
 export function capText(text: string, max: number): { text: string; truncated: boolean } {
   if (text.length <= max) return { text, truncated: false };
   return { text: `${text.slice(0, max).trimEnd()}\n…[truncated]`, truncated: true };
@@ -321,11 +223,6 @@ export function asString(value: unknown): string {
   return "";
 }
 
-/**
- * Project an object down to a whitelist of `--json FIELDS`. Used by
- * `gh pr view --json …` and `gh pr list --json …`. An empty/absent field list
- * returns the object unchanged.
- */
 export function filterJson(
   obj: Record<string, unknown>,
   fields: string[] | undefined,
@@ -338,16 +235,7 @@ export function filterJson(
   return out;
 }
 
-// ---------------------------------------------------------------------------
-// `-q` / `--jq` — a deliberately tiny jq subset over an already-filtered payload
-// ---------------------------------------------------------------------------
 
-/**
- * One step of a supported jq path expression.
- *
- * Deliberately closed: field access, array index, array/object iteration. There
- * is no pipe, no filter, no function call, no arithmetic — see `applyJq`.
- */
 type JqStep =
   | { kind: "field"; name: string }
   | { kind: "index"; index: number }
@@ -355,31 +243,13 @@ type JqStep =
 
 export type JqResult =
   | { ok: true; values: string[] }
-  /**
-   * `unsupported` — the expression is outside the implemented subset (a parse
-   * refusal, reported before any data is touched). `evaluation` — the
-   * expression is supported but doesn't fit the data (jq's own error class).
-   * Callers map the two onto distinct exit codes so a caller that swallows
-   * stderr can still tell them apart.
-   */
   | { ok: false; kind: "unsupported" | "evaluation"; message: string };
 
-/** Human-readable list of what `applyJq` accepts, for error messages. */
 export const JQ_SUPPORTED_FORMS = "`.`, `.field`, `.a.b`, `.[]`, `.[].field`, `.[0]`, `.field[].sub`";
 
-/** Bound on path depth — a shim payload is a flat PR/run record, not a tree. */
 const JQ_MAX_STEPS = 16;
 
-/**
- * Parse a simple-path jq expression into steps, or `null` if it uses anything
- * outside the supported subset.
- *
- * The parser is the security boundary: it accepts ONLY `.`, identifiers,
- * `[<digits>]` and `[]`, so nothing that reaches `applyJq` can express a
- * computation, reach outside the value it is handed, or run unbounded. Anything
- * else — a pipe, `select(...)`, string literals, `..`, `@base64` — is rejected
- * here rather than partially interpreted.
- */
+// Accept only bounded paths; never evaluate jq code.
 function parseJqPath(expr: string): JqStep[] | null {
   const src = expr.trim();
   if (!src.startsWith(".")) return null;
@@ -391,7 +261,6 @@ function parseJqPath(expr: string): JqStep[] | null {
     const ch = src[i];
     if (ch === ".") {
       i++;
-      // `.[]` / `.[0]` — the bracket is consumed by the next iteration.
       if (src[i] === "[") continue;
       const m = /^[A-Za-z_][A-Za-z0-9_]*/.exec(src.slice(i));
       if (!m) return null;
@@ -419,11 +288,6 @@ function jqTypeName(value: unknown): string {
   return typeof value === "object" ? "object" : typeof value;
 }
 
-/**
- * Render one jq output value the way `jq -r` (which is what `gh -q` uses) does:
- * strings raw and unquoted, scalars stringified, `null` as `null`, and
- * containers as compact JSON.
- */
 function formatJqValue(value: unknown): string {
   if (typeof value === "string") return value;
   if (value === null || value === undefined) return "null";
@@ -431,17 +295,6 @@ function formatJqValue(value: unknown): string {
   return JSON.stringify(value);
 }
 
-/**
- * Evaluate a simple-path jq expression against an already-filtered JSON payload
- * (docs: `gh … --json FIELDS -q EXPR`).
- *
- * This is NOT a jq implementation and must not become one — it exists so that
- * the idiomatic `gh pr view --json state -q .state` works instead of failing as
- * an unsupported flag. It walks a fixed list of path steps over the value it is
- * handed; it has no access to anything else, evaluates no user-supplied code,
- * and cannot loop. Expressions beyond the subset are refused explicitly
- * (`kind: "unsupported"`) rather than silently returning nothing.
- */
 export function applyJq(value: unknown, expr: string): JqResult {
   const steps = parseJqPath(expr);
   if (!steps) {
@@ -482,12 +335,6 @@ export function applyJq(value: unknown, expr: string): JqResult {
   return { ok: true, values: current.map(formatJqValue) };
 }
 
-/**
- * Normalize repeated `--label`/`-l` occurrences into a flat, de-duped string
- * array. Matches real gh semantics: `--label a --label b` and `--label a,b`
- * both yield `["a", "b"]`. Whitespace is trimmed and empty entries dropped.
- * Shared so the two shims handle `--label` the same way (planning#94).
- */
 export function normalizeLabels(raw: string[] | undefined): string[] {
   if (!raw || raw.length === 0) return [];
   const out: string[] = [];
@@ -500,9 +347,6 @@ export function normalizeLabels(raw: string[] | undefined): string[] {
   return out;
 }
 
-// ---------------------------------------------------------------------------
-// IO abstraction so tests can capture stdout/stderr without spawning processes
-// ---------------------------------------------------------------------------
 
 export interface ShimIO {
   stdout: (text: string) => void;
@@ -510,11 +354,6 @@ export interface ShimIO {
   exit: (code: number) => void;
 }
 
-/**
- * The real process IO. Writes go through `shimWrite` and the exit through
- * `exitAfterFlush` so a large document piped to `jq`/`head`/`$(…)` is not
- * silently truncated at the 64 KiB pipe buffer — see `shim-exit.ts`.
- */
 export const defaultIO: ShimIO = {
   stdout: (text) => shimWrite(process.stdout, text),
   stderr: (text) => shimWrite(process.stderr, text),
@@ -524,7 +363,7 @@ export const defaultIO: ShimIO = {
 export function fail(io: ShimIO, message: string, code = 2): never {
   io.stderr(message.endsWith("\n") ? message : `${message}\n`);
   io.exit(code);
-  throw new Error("__shim_exit__"); // unreachable in practice; thrown so TS narrows
+  throw new Error("__shim_exit__");
 }
 
 export function success(io: ShimIO, message: string): void {
@@ -532,16 +371,7 @@ export function success(io: ShimIO, message: string): void {
   io.exit(0);
 }
 
-/**
- * Run `handler` if the shim is asked to terminate while a long call is in
- * flight, and return a release function to call once it isn't (planning#247).
- *
- * Node's default SIGTERM behavior is to die with no output, which is precisely
- * wrong for a command whose work continues on the server after the process is
- * gone: the caller is left with nothing, and nothing that says there is
- * anything to go back for. Installing a listener replaces that default, so the
- * handler is responsible for exiting.
- */
+// The handler replaces default signal behavior and must exit the process.
 export function onTerminationSignal(handler: () => void): () => void {
   const signals: NodeJS.Signals[] = ["SIGTERM", "SIGINT", "SIGHUP"];
   for (const signal of signals) process.on(signal, handler);
@@ -550,23 +380,8 @@ export function onTerminationSignal(handler: () => void): () => void {
   };
 }
 
-// ---------------------------------------------------------------------------
-// Body-from-file/stdin resolution
-// ---------------------------------------------------------------------------
 
-/**
- * Read all of stdin to a string.
- *
- * `stdin` is injectable so unit tests can feed a fake stream without touching
- * the real `process.stdin`. The `idleTimeoutMs` backstop guards the
- * "non-TTY-but-never-EOF" case — an inherited open pipe with no writer that
- * delivers zero bytes and never reaches EOF, which would otherwise hang the
- * async read forever (the production hang behind this fix). The timer fires
- * ONLY while nothing has arrived yet; once any byte is seen we assume a real
- * producer and wait for natural EOF, so a legitimately slow/large heredoc is
- * never truncated. The TTY check in `readBodyFromFileOrStdin` is the primary,
- * fast-failing guard; this is belt-and-suspenders.
- */
+// Bound empty inherited pipes, but let started input run to EOF without truncation.
 export async function readStdin(
   stdin: NodeJS.ReadStream = process.stdin,
   idleTimeoutMs = 15_000,
@@ -607,22 +422,6 @@ export async function readStdin(
   });
 }
 
-/**
- * Read a body/prompt from a file path, or from stdin when the path is `-`.
- *
- * When the source is `-` but there is no piped stdin (it's a TTY, so nothing
- * will ever be written), fail fast with actionable guidance instead of hanging
- * on a read that never completes — the production bug this fix targets. The
- * message is derived from `noun` ("body file" → "body"/`--body-file`,
- * "prompt file" → "prompt"/`--prompt-file`) so it reads correctly for every
- * caller (`gh ... --body-file -`, `shipit issue/session/agent ... -file -`).
- *
- * On a read error, fails the command with `<errorPrefix>: could not read
- * <noun> <source>: <message>` (matching each shim's existing wording via the
- * `errorPrefix`/`noun` parameters) and never returns.
- *
- * `stdin` is injectable for tests; real callers use the default `process.stdin`.
- */
 export async function readBodyFromFileOrStdin(
   source: string,
   io: ShimIO,
@@ -631,7 +430,7 @@ export async function readBodyFromFileOrStdin(
   stdin: NodeJS.ReadStream = process.stdin,
 ): Promise<string> {
   if (source === "-" && stdin.isTTY) {
-    const kind = noun.replace(/ file$/, ""); // "body file" → "body", "prompt file" → "prompt"
+    const kind = noun.replace(/ file$/, "");
     fail(
       io,
       `${errorPrefix}: no ${kind} on stdin — pass a file path instead of '-', or pipe the ${kind} via a single-quoted heredoc (… --${kind}-file - <<'EOF' … EOF).`,
@@ -642,6 +441,6 @@ export async function readBodyFromFileOrStdin(
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     fail(io, `${errorPrefix}: could not read ${noun} ${source}: ${message}`);
-    throw new Error("__shim_exit__", { cause: err }); // unreachable; fail() exits.
+    throw new Error("__shim_exit__", { cause: err });
   }
 }

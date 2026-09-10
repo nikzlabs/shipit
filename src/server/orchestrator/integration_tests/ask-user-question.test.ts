@@ -28,9 +28,7 @@ describe("Integration: AskUserQuestion / answer_question flow", () => {
   let port: number;
   let tmpDir: string;
   let sessionManager: SessionManager;
-  /** Most recently created FakeClaudeProcess — set by agentFactory. */
   let lastClaude: FakeClaudeProcess = null as any;
-  /** Every FakeClaudeProcess this app created, in order. */
   let allClaudes: FakeClaudeProcess[];
   let dbManager: DatabaseManager;
   let credentialStore: CredentialStore;
@@ -74,39 +72,21 @@ describe("Integration: AskUserQuestion / answer_question flow", () => {
     try {
       fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
     } catch {
-      // Ignore cleanup errors — temp dir will be cleaned by OS
+      // Best-effort cleanup.
     }
   });
 
   it("answer_question kills the stale steering-capable agent and falls through to a fresh --resume spawn when the steering gate fails", async () => {
-    // Regression: the user reported that an AskUserQuestion answer "appeared
-    // in the chat, but the agent didn't react" — the same silent-drop shape
-    // commit ee313d3661 fixed for `handleSendMessage`. The recent commit added
-    // the `isStreamingActive` gate to `handleAnswerQuestion` but kept a legacy
-    // `writeStdin` fallback below it. For steering-capable adapters (the only
-    // kind in the registry today: claude, codex) `writeStdin` lands as raw
-    // bytes on a process whose adapter expects NDJSON, and the line is
-    // silently dropped. The fix mirrors `handleSendMessage`'s stale-kill at
-    // line 263: drop the stale ref, fall through to the fresh-spawn `--resume`
-    // path so the answer actually reaches the model.
-    //
-    // Default test setup (`liveSteering=false`, registry says
-    // `supportsSteering=true` for claude) hits the exact gate-failed shape
-    // that triggered the production bug: `existingAgent` is non-null,
-    // `streamingActive` is false (the agent spawned with `useStreaming=false`).
+    // Steering is supported, but disabled in this setup.
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
-    // First turn — agent is mid-turn, not yet finished.
     client.send({ type: "send_message", text: "Ask me something" });
     const firstClaude = await waitForClaude(() => lastClaude);
 
     client.send({ type: "answer_question", toolUseId: "tool-1", answers: { "0": "Redis" } });
     await waitForClaude(() => lastClaude, firstClaude);
 
-    // Stale ref was killed, a fresh agent was spawned via the `--resume` path
-    // with the answer as the next prompt. NOT routed through `writeStdin` on
-    // the stale process (which would have been silently dropped).
     expect(firstClaude.killed).toBe(true);
     expect(firstClaude.stdinData).toEqual([]);
     expect(lastClaude).not.toBe(firstClaude);
@@ -117,29 +97,21 @@ describe("Integration: AskUserQuestion / answer_question flow", () => {
   });
 
   it("answer_question starts new Claude process when no process is running", async () => {
-    // Pre-populate a session so we can resume
     sessionManager.track("existing-sess", "Test session");
 
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
-    // Start and immediately finish a Claude turn to set currentSessionId
     client.send({ type: "send_message", text: "First message", sessionId: "existing-sess" });
     await waitForClaude(() => lastClaude);
     const firstClaude = lastClaude;
 
-    // Simulate Claude finishing
     firstClaude.finish("existing-sess");
     await new Promise((r) => setTimeout(r, 100));
 
-    // Now Claude is null — send an answer
     client.send({ type: "answer_question", toolUseId: "tool-2", answers: { "0": "PostgreSQL" } });
-    // Poll for the respawn instead of betting on 50 ms: spawning goes through
-    // `createSessionDir()`'s async mkdir, which a loaded machine stretches
-    // well past that budget.
     await waitForClaude(() => lastClaude, firstClaude);
 
-    // A new ClaudeProcess should have been created
     expect(lastClaude).not.toBe(firstClaude);
     expect(lastClaude.runCalled).toBe(true);
     expect(lastClaude.lastPrompt).toBe("PostgreSQL");
@@ -149,23 +121,15 @@ describe("Integration: AskUserQuestion / answer_question flow", () => {
   });
 
   it("answer_question preserves plan mode on the resumed turn (no silent plan-mode exit)", async () => {
-    // Regression (Thread A): a clarifying AskUserQuestion answered while the
-    // session is in plan mode must resume IN plan mode. An answer is a fresh
-    // `--resume` turn; before the fix `handleAnswerQuestion` forwarded no
-    // permission mode, so the resumed CLI dropped to default and the agent
-    // started implementing — silently "exiting plan mode" the user never
-    // approved. The client now forwards the chip and the server re-pins it.
     sessionManager.track("plan-sess", "Plan session");
 
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
     client.send({ type: "send_message", text: "Plan this", sessionId: "plan-sess", permissionMode: "plan" });
     const firstClaude = await waitForClaude(() => lastClaude);
     expect(firstClaude.lastPermissionMode).toBe("plan");
 
-    // Finish the planning turn so the answer takes the fresh-spawn `--resume`
-    // path (no resident process).
     firstClaude.finish("plan-sess");
     await new Promise((r) => setTimeout(r, 100));
 
@@ -181,41 +145,23 @@ describe("Integration: AskUserQuestion / answer_question flow", () => {
     expect(resumed).not.toBe(firstClaude);
     expect(resumed.runCalled).toBe(true);
     expect(resumed.lastPrompt).toBe("Frontend");
-    // The crux: the resumed turn re-pins plan mode rather than dropping to default.
     expect(resumed.lastPermissionMode).toBe("plan");
 
     client.close();
   });
 
   it("answer_question fall-through emits session_status running=true to viewers", async () => {
-    // Regression test for: after answering an agent question, the UI's
-    // "Thinking..." indicator and sidebar active-runner dot fail to appear
-    // because the handler skipped the running-state side effects that
-    // handleSendMessage performs (set runner.running=true, broadcast
-    // session_agent_started SSE, emit session_status). Without this,
-    // useAttentionInfo on the client surfaces "Waiting for your input" and
-    // the chat panel stays idle even though the agent is actively working.
-    //
-    // Use createTestSession() to get a real workspaceDir — the session_status
-    // emit gates on `answerRunner`, which only exists for sessions whose
-    // sessionDir is tracked (otherwise the WS handler can't create a runner).
     const { sessionId } = await createTestSession(sessionManager, tmpDir, "Ask-test");
     const client = await TestClient.connect(port, sessionId);
-    await client.receive(); // preview_status
+    await client.receive();
 
-    // Drive the first turn to completion so the handler hits the
-    // fall-through (no-running-agent) branch on the next answer_question.
     client.send({ type: "send_message", text: "First", sessionId });
     await waitForClaude(() => lastClaude);
     const firstClaude = lastClaude;
     firstClaude.finish(sessionId);
 
-    // Wait for the post-turn cycle to settle — the test only needs the
-    // runner to be in the no-running-agent state before answer_question.
     await new Promise((r) => setTimeout(r, 200));
-    // Drain everything currently buffered so the next receive() picks up
-    // messages emitted after answer_question, not stale ones from the
-    // first turn.
+    // Discard status messages from the first turn.
     while (true) {
       try {
         await client.receive(50);
@@ -224,9 +170,6 @@ describe("Integration: AskUserQuestion / answer_question flow", () => {
       }
     }
 
-    // Now send the answer — this is the fall-through path. We expect a
-    // session_status with running=true to be broadcast so attached viewers
-    // (including ones that didn't initiate the answer) get the right state.
     client.send({ type: "answer_question", toolUseId: "tool-2", answers: { "0": "PostgreSQL" } });
 
     let sawRunning = false;
@@ -244,9 +187,6 @@ describe("Integration: AskUserQuestion / answer_question flow", () => {
     }
     expect(sawRunning).toBe(true);
 
-    // Sanity: the new Claude process was actually started. Wait for run()
-    // because the handler awaits readSystemPrompt() between emitting
-    // session_status and calling currentAgent.run().
     await waitForClaude(() => lastClaude, firstClaude);
     expect(lastClaude).not.toBe(firstClaude);
     expect(lastClaude.runCalled).toBe(true);
@@ -256,7 +196,7 @@ describe("Integration: AskUserQuestion / answer_question flow", () => {
 
   it("answer_question returns error for empty answer", async () => {
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
     client.send({ type: "answer_question", toolUseId: "tool-3", answers: {} });
     const msg = await client.receiveType("error");
@@ -269,16 +209,11 @@ describe("Integration: AskUserQuestion / answer_question flow", () => {
 
   it("answer_question with multiple answers uses the client-formatted text verbatim as the fresh-spawn prompt", async () => {
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
     client.send({ type: "send_message", text: "test" });
     const firstClaude = await waitForClaude(() => lastClaude);
 
-    // Multi-question answers are a bullet list with the question text inline,
-    // so commas inside an answer aren't ambiguous with the separator between
-    // answers. After the steering-gate-fail kill+respawn, the formatted text
-    // becomes the fresh agent's `--resume` prompt verbatim — same text the
-    // chat bubble shows.
     client.send({
       type: "answer_question",
       toolUseId: "tool-4",
@@ -298,14 +233,11 @@ describe("Integration: AskUserQuestion / answer_question flow", () => {
 
   it("answer_question falls back to joining answers when text is omitted", async () => {
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
     client.send({ type: "send_message", text: "test" });
     const firstClaude = await waitForClaude(() => lastClaude);
 
-    // Old client (no `text` field) — server still joins so existing sessions
-    // keep working through the rollout. The joined text becomes the fresh
-    // spawn's prompt.
     client.send({
       type: "answer_question",
       toolUseId: "tool-4b",
@@ -321,15 +253,9 @@ describe("Integration: AskUserQuestion / answer_question flow", () => {
   });
 
   it("answer_question steers via sendUserMessage when liveSteering is on and the resident process is streaming (no kill, no respawn)", async () => {
-    // Live-steering happy path: the persistent streaming process is blocked
-    // on AskUserQuestion, and the answer must reach the resident CLI via
-    // `sendUserMessage` (NDJSON) — NOT trigger a kill+respawn. This pins the
-    // gate so the steering-capable / streaming-active branch keeps working
-    // after the stale-kill fall-through was added to handleAnswerQuestion.
     const credentialStore = createTestCredentialStore(tmpDir);
     credentialStore.setLiveSteering(true);
 
-    // Rebuild the app with live steering enabled (the suite default is off).
     await app.close();
     app = await buildApp({
       credentialStore,
@@ -349,17 +275,13 @@ describe("Integration: AskUserQuestion / answer_question flow", () => {
     port = match ? Number(match[1]) : 0;
 
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
     client.send({ type: "send_message", text: "Pick something" });
     const claude = await waitForClaude(() => lastClaude);
-    // With liveSteering=true and the registry's `supportsSteering=true` for
-    // claude, the runner spins up with `isStreamingActive=true`.
     expect(claude.lastUseStreaming).toBe(true);
 
-    // Drive the agent up to the AskUserQuestion interrupt: the listener flips
-    // running=false on agent_result, but keeps the streaming process alive
-    // (no `done` event). isStreamingActive stays true.
+    // Omit `done` to keep the streaming process alive.
     claude.initSession("steer-answer-session");
     claude.emit("event", {
       type: "result",
@@ -379,34 +301,15 @@ describe("Integration: AskUserQuestion / answer_question flow", () => {
     });
     await new Promise((r) => setTimeout(r, 100));
 
-    // Same process — NOT killed, NOT respawned.
     expect(claude.killed).toBe(false);
     expect(lastClaude).toBe(claude);
-    // FakeClaudeProcess.sendUserMessage proxies to writeStdin, so stdinData
-    // captures the steered answer. NDJSON framing happens inside the real
-    // adapter (out of scope for this fake) — the contract under test is
-    // "sendUserMessage was called with the answer text".
+    // The fake records sendUserMessage in stdinData; it does not test NDJSON framing.
     expect(claude.stdinData).toContain("Redis");
 
     client.close();
   });
 
   it("runs the answered turn's post-turn flow (auto-commit) under live steering — regression for the stale streamingPostTurnFired guard", async () => {
-    // Root cause of "the answer pastes into chat but the agent never starts /
-    // nothing happens": the old handleAnswerQuestion steering branch called
-    // `existingAgent.sendUserMessage(answerText)` directly, WITHOUT going
-    // through `runAgentWithMessage`. So it never re-wired listeners. The
-    // AskUserQuestion-interrupt turn's `agent_result` had already set that
-    // turn's `streamingPostTurnFired` closure flag to true; because the answer
-    // turn reused those same listeners, its `agent_result` hit the stale guard
-    // and skipped the entire post-turn block (queue drain, auto-commit, PR
-    // card, session_agent_finished).
-    //
-    // The fix routes the answer through `runAgentWithMessage`, whose reuse path
-    // calls `existingAgent.removeAllListeners()` and wires a FRESH
-    // `streamingPostTurnFired=false` closure. This test pins that the answered
-    // turn's post-turn auto-commit actually fires — observable as a
-    // `git_committed` WS message — which the broken path never emitted.
     const credentialStore = createTestCredentialStore(tmpDir);
     credentialStore.setLiveSteering(true);
 
@@ -428,21 +331,15 @@ describe("Integration: AskUserQuestion / answer_question flow", () => {
     const match = /:(\d+)$/.exec(address);
     port = match ? Number(match[1]) : 0;
 
-    // A real git-initialized session dir so post-turn auto-commit can produce a
-    // commit (and emit `git_committed`) when the workspace has changes.
     const { sessionId, sessionDir } = await createTestSession(sessionManager, tmpDir, "Steer-commit");
     const client = await TestClient.connect(port, sessionId);
-    await client.receive(); // preview_status
+    await client.receive();
 
-    // Turn 1: spawn the streaming agent.
     client.send({ type: "send_message", text: "Pick something", sessionId });
     const claude = await waitForClaude(() => lastClaude);
     expect(claude.lastUseStreaming).toBe(true);
     claude.initSession(sessionId);
 
-    // Drive to the AskUserQuestion interrupt: agent_result(error) ends the turn
-    // (running=false) but keeps the streaming process alive. This also sets the
-    // FIRST turn's streamingPostTurnFired=true — the stale flag the bug reused.
     claude.emit("event", {
       type: "result",
       subtype: "error",
@@ -453,7 +350,6 @@ describe("Integration: AskUserQuestion / answer_question flow", () => {
     await new Promise((r) => setTimeout(r, 50));
     expect(claude.killed).toBe(false);
 
-    // Drain everything buffered so the next receive() picks up post-answer msgs.
     while (true) {
       try {
         await client.receive(50);
@@ -462,28 +358,19 @@ describe("Integration: AskUserQuestion / answer_question flow", () => {
       }
     }
 
-    // Create a working-tree change so the answered turn has something to commit.
     fs.writeFileSync(path.join(sessionDir, "answer-output.txt"), "from the answered turn");
 
-    // Answer the question. Under the fix this reuses the streaming agent via
-    // sendUserMessage AND re-wires fresh listeners.
     client.send({
       type: "answer_question",
       toolUseId: "ask-commit-1",
       answers: { "0": "Redis" },
       text: "Redis",
     });
-    // Poll for the answer reaching the resident process rather than betting on
-    // 50 ms — delivery goes through the WS handler and the runner registry.
     await waitFor(() => claude.stdinData.includes("Redis"), "answer delivered to stdin");
-    // Reused process — not killed, not respawned, answer delivered.
     expect(claude.killed).toBe(false);
     expect(lastClaude).toBe(claude);
     expect(claude.stdinData).toContain("Redis");
 
-    // End the answered turn. With fresh listeners this fires the streaming
-    // post-turn block → auto-commit → `git_committed`. With the stale guard it
-    // would be silently skipped.
     claude.emit("event", {
       type: "result",
       subtype: "success",
@@ -508,21 +395,13 @@ describe("Integration: AskUserQuestion / answer_question flow", () => {
   });
 
   it("does not interrupt when AskUserQuestion is emitted with missing/empty questions", async () => {
-    // The model occasionally emits AskUserQuestion with malformed input (no
-    // `questions` field, or an empty array). The Claude CLI's input validator
-    // rejects this with InputValidationError, which flows back to the model
-    // as a tool_result so it can self-correct within the same turn. The
-    // client also can't render the question card without a `questions` array.
-    // Interrupting on a malformed call would kill the turn before the model
-    // gets the error back, stranding the user with no card and no progress.
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
     client.send({ type: "send_message", text: "Pick one" });
     await waitForClaude(() => lastClaude);
     expect(lastClaude.interrupted).toBe(false);
 
-    // Missing `questions` entirely (the actual production failure mode).
     lastClaude.emit("event", {
       type: "assistant",
       message: {
@@ -537,7 +416,6 @@ describe("Integration: AskUserQuestion / answer_question flow", () => {
     await new Promise((r) => setTimeout(r, 30));
     expect(lastClaude.interrupted).toBe(false);
 
-    // Empty `questions` array — also malformed (schema requires minItems: 1).
     lastClaude.emit("event", {
       type: "assistant",
       message: {
@@ -556,21 +434,13 @@ describe("Integration: AskUserQuestion / answer_question flow", () => {
   });
 
   it("interrupts the agent when it emits an AskUserQuestion tool_use", async () => {
-    // Without the interrupt, the Claude CLI in `-p` mode would auto-resolve
-    // the AskUserQuestion call (no interactive terminal to wait on) and the
-    // model would continue with whatever it planned next. The user would see
-    // the question card AND the agent's subsequent output even though they
-    // never answered. The fix in agent-listeners.ts interrupts the agent as
-    // soon as we observe the AskUserQuestion tool_use.
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
     client.send({ type: "send_message", text: "Pick one" });
     await waitForClaude(() => lastClaude);
     expect(lastClaude.interrupted).toBe(false);
 
-    // Simulate the CLI emitting an AskUserQuestion tool_use as part of the
-    // assistant turn — same shape that ClaudeAdapter would produce.
     lastClaude.emit("event", {
       type: "assistant",
       message: {
@@ -591,30 +461,18 @@ describe("Integration: AskUserQuestion / answer_question flow", () => {
     });
     await new Promise((r) => setTimeout(r, 30));
 
-    // Agent should have been interrupted — the CLI shouldn't be allowed to
-    // continue with whatever auto-resolved result the headless mode produced.
     expect(lastClaude.interrupted).toBe(true);
 
     client.close();
   });
 
   it("suppresses the CLI's auto-resolved tool_result for an interrupted AskUserQuestion", async () => {
-    // In live-steering (streaming) mode the CLI auto-resolves AskUserQuestion
-    // before the orchestrator's `control_request` interrupt takes effect, so
-    // the synthetic `user` event arrives at the orchestrator and would be
-    // forwarded as `agent_tool_result`. If the client received it, MessageList
-    // would set `questionDisabled = !!el.result` and AskUserQuestion would
-    // render its options as already-answered — leaving the user unable to
-    // click anything. The orchestrator tracks the interrupted AskUserQuestion
-    // ids and drops matching tool_result blocks before broadcasting.
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
     client.send({ type: "send_message", text: "Pick one" });
     await waitForClaude(() => lastClaude);
 
-    // Emit a well-formed AskUserQuestion so the orchestrator interrupts and
-    // remembers `ask-suppress-1` as a suppressed id.
     lastClaude.emit("event", {
       type: "assistant",
       message: {
@@ -636,9 +494,6 @@ describe("Integration: AskUserQuestion / answer_question flow", () => {
     await new Promise((r) => setTimeout(r, 30));
     expect(lastClaude.interrupted).toBe(true);
 
-    // Now simulate the CLI's auto-resolved tool_result — a `user` event
-    // carrying a tool_result block referencing the same id. Without the
-    // suppression this would be broadcast to the client as agent_tool_result.
     lastClaude.emit("event", {
       type: "user",
       message: {
@@ -650,9 +505,6 @@ describe("Integration: AskUserQuestion / answer_question flow", () => {
       },
     });
 
-    // Collect everything the client sees in the next short window. We assert
-    // no agent_tool_result for `ask-suppress-1` slips through. Drain until the
-    // receive call times out (no more buffered messages).
     let sawSuppressedResult = false;
     const deadline = Date.now() + 200;
     while (Date.now() < deadline) {
@@ -679,14 +531,8 @@ describe("Integration: AskUserQuestion / answer_question flow", () => {
   });
 
   it("survives a tool_result whose content is a bare string while suppression is active", async () => {
-    // The Anthropic message schema permits `content` as a plain string, and the
-    // adapter passes `message.content` through untouched — so the suppression
-    // filter met a string and threw `TypeError: content.filter is not a
-    // function` out of the SSE parser mid-turn, stranding the turn and
-    // requeuing an unacknowledged steer (nikzlabs/shipit#1874). Nothing is
-    // suppressible in a string, so the event must pass through intact.
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
     client.send({ type: "send_message", text: "Pick one" });
     await waitForClaude(() => lastClaude);
@@ -735,12 +581,7 @@ describe("Integration: AskUserQuestion / answer_question flow", () => {
     }
     expect(sawStringToolResult).toBe(true);
 
-    // Everything above only proves the event was BROADCAST, and the broadcast
-    // happens before the downstream extraction that actually threw. So the
-    // assertions that matter come after: the reported failure was not "the
-    // event went missing", it was that the TypeError escaped mid-listener and
-    // stranded the turn — leaving the steer that followed unacknowledged and
-    // the session wedged. Drive exactly that sequence.
+    // Broadcast precedes extraction: also check that extraction did not strand the turn.
     const strandedClaude = lastClaude;
     client.send({
       type: "answer_question",
@@ -749,18 +590,10 @@ describe("Integration: AskUserQuestion / answer_question flow", () => {
       text: "Redis",
     });
 
-    // The steer is honored: this build has live steering off, so the
-    // interrupted process has already exited (the interrupt ends a non-
-    // streaming turn) and the answer resumes on a FRESH agent carrying it as
-    // the prompt. A listener that died on the malformed event never gets here —
-    // the turn would still be marked running and the answer dropped as a
-    // duplicate.
     await waitForClaude(() => lastClaude, strandedClaude);
     expect(lastClaude).not.toBe(strandedClaude);
     expect(lastClaude.lastPrompt).toBe("Redis");
 
-    // And the answered turn still reaches a terminal state rather than
-    // spinning forever.
     lastClaude.initSession("string-content-session");
     lastClaude.emit("event", {
       type: "agent_result",
@@ -787,30 +620,15 @@ describe("Integration: AskUserQuestion / answer_question flow", () => {
 
     client.close();
   });
-  // docs/260-turn-level-account-routing reqs 6, 9, 12 — an answer is a full turn on the shared routing
-  // path (`handleAnswerQuestion` delegates to `runAgentWithMessage`), so it
-  // takes the same per-turn account selection and attempt loop a user-typed
-  // turn does. Under docs/150 this scenario was a preflight block ("no CLI
-  // ever spawns"); docs/260 inverts it: refusal memory alone must never stop
-  // a turn (req 5), the optimistic first selection still returns a
-  // refusal-blocked account (req 12), and the turn fails only after every
-  // account has actually refused THIS turn — with the failure built from what
-  // the provider said (req 6).
   it("still tries refusal-benched accounts for an answer, failing only after every account actually refuses (docs/260-turn-level-account-routing reqs 6, 9, 12)", async () => {
     const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
+    await client.receive();
 
-    // A first turn, on an install with no accounts yet, so the session exists
-    // before quota enters the picture.
     client.send({ type: "send_message", text: "Ask me something" });
     const firstClaude = await waitForClaude(() => lastClaude);
     firstClaude.finish(client.sessionId);
     await new Promise((r) => setTimeout(r, 100));
 
-    // Both connected Claude subscriptions carry refusal memory: a harness
-    // refusal stamp (`exhaustedUntil` + `exhaustedAt`, the shape
-    // `refusalBlockedUntil` honours). This is exactly the state that used to
-    // deadlock routing.
     const accounts = new ProviderAccountManager({ credentialsDir, credentialStore });
     const resetAt = Date.now() + 30 * 60 * 1000;
     for (const label of ["Work", "Personal"]) {
@@ -822,31 +640,20 @@ describe("Integration: AskUserQuestion / answer_question flow", () => {
 
     client.send({ type: "answer_question", toolUseId: "tool-quota", answers: { "0": "Redis" } });
 
-    // reqs 9, 12 — the benched account is still TRIED: a CLI spawns and the
-    // user's answer is its prompt. Blocking here (the docs/150 behavior) is
-    // the regression this test now guards against.
     const attempt1 = await waitForClaude(() => lastClaude, firstClaude);
     expect(attempt1.lastPrompt).toBe("Redis");
 
-    // The provider itself refuses the first attempt → the attempt loop moves
-    // to the second account and re-runs the answer (req 6: the turn keeps
-    // trying with the user's payload).
     const quotaError = "You've hit Claude's 5h usage limit. It resets at 2099-01-01T00:00:00.000Z.";
     attempt1.emit("event", { type: "agent_result", error: quotaError, sessionId: "quota-sess" });
     const attempt2 = await waitForClaude(() => lastClaude, attempt1);
     expect(attempt2.lastPrompt).toBe("Redis");
 
-    // The second account refuses too. Every candidate is now in the turn's
-    // attempt ledger, so the turn fails terminally — and the message is built
-    // from the provider's own refusals (req 6), inviting the resend that is
-    // the user's forceful retry (req 12).
     attempt2.emit("event", { type: "agent_result", error: quotaError, sessionId: "quota-sess" });
 
     const err = await client.receiveType("error") as unknown as { message: string };
     expect(err.message).toContain("Every connected account refused this turn for quota");
     expect(err.message).toContain("usage limit");
     expect(err.message).toContain("Send this message again");
-    // The ledger bounds the loop: exactly one real attempt per account.
     expect(allClaudes.slice(spawnedBefore).filter((c) => c.runCalled)).toHaveLength(2);
 
     client.close();

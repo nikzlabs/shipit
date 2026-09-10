@@ -18,10 +18,6 @@ import {
 } from "./compose-generator.js";
 
 describe("parseStopGracePeriodMs (docs/283)", () => {
-  // The install-gate teardown bounds its wait on this value, so reading it too
-  // SHORT reopens the gate into a container still shutting down — the docs/239
-  // race. Every case below is about which direction an error goes in.
-
   it("reads a bare number as seconds, per Compose", () => {
     expect(parseStopGracePeriodMs(30)).toBe(30_000);
     expect(parseStopGracePeriodMs("30")).toBe(30_000);
@@ -37,19 +33,14 @@ describe("parseStopGracePeriodMs (docs/283)", () => {
   });
 
   it("distinguishes absent from unreadable", () => {
-    // Absent means "the service declared nothing" — the caller applies
-    // Compose's default. It must NOT be conflated with a value we failed to
-    // read, which could be far longer than that default.
     expect(parseStopGracePeriodMs(undefined)).toBeUndefined();
     expect(parseStopGracePeriodMs(null)).toBeUndefined();
   });
 
   it("fails LONG on anything it cannot read", () => {
-    // The asymmetry is the whole point: over-waiting delays a rare recovery,
-    // under-waiting causes the bug this feature exists to prevent.
     expect(parseStopGracePeriodMs("about a minute")).toBe(UNKNOWN_STOP_GRACE_PERIOD_MS);
-    expect(parseStopGracePeriodMs("1m30")).toBe(UNKNOWN_STOP_GRACE_PERIOD_MS);   // trailing unitless
-    expect(parseStopGracePeriodMs("30d")).toBe(UNKNOWN_STOP_GRACE_PERIOD_MS);    // unit we don't handle
+    expect(parseStopGracePeriodMs("1m30")).toBe(UNKNOWN_STOP_GRACE_PERIOD_MS);
+    expect(parseStopGracePeriodMs("30d")).toBe(UNKNOWN_STOP_GRACE_PERIOD_MS);
     expect(parseStopGracePeriodMs("")).toBe(UNKNOWN_STOP_GRACE_PERIOD_MS);
     expect(parseStopGracePeriodMs({})).toBe(UNKNOWN_STOP_GRACE_PERIOD_MS);
     expect(parseStopGracePeriodMs(-5)).toBe(UNKNOWN_STOP_GRACE_PERIOD_MS);
@@ -131,8 +122,6 @@ services:
     expect(services[0].shipitPreview).toBe("auto");
     expect(services[1].shipitPreview).toBe("manual");
   });
-
-  // ---- x-shipit-depends-on-install (docs/137) ----
 
   it("defaults dependsOnInstall to true for auto-preview services", () => {
     const dir = setup();
@@ -219,8 +208,6 @@ services:
     expect(services[0].profiles).toEqual(["debug", "testing"]);
   });
 
-  // ---- Security validation ----
-
   it("rejects privileged: true", () => {
     const dir = setup();
     const p = writeCompose(dir, `
@@ -272,8 +259,6 @@ services:
     expect(() => parseComposeFile(p, { dockerSocket: false })).toThrow("network_mode: host");
   });
 
-  // docs/213 Phase 3 — the Android emulator service needs /dev/kvm. ShipIt
-  // allows exactly that one device mapping and rejects any other passthrough.
   it("accepts the exact /dev/kvm:/dev/kvm device mapping (emulator)", () => {
     const dir = setup();
     const p = writeCompose(dir, `
@@ -380,9 +365,6 @@ services:
       .toThrow("reserved `shipit-session` network");
   });
 
-  // planning#386 — an Open session's override APPENDS `shipit-session` instead of
-  // `!override`-ing the list, so Compose merges the project's declaration into
-  // ShipIt's own. `driver:` is a key the override never sets, so it survives.
   it("rejects a project declaration of the reserved network in an Open session too", () => {
     const dir = setup();
     const p = writeCompose(dir, `services:\n  web:\n    image: node:20\nnetworks:\n  shipit-session:\n    driver: macvlan\n`);
@@ -474,10 +456,6 @@ networks:
     expect(() => parseComposeFile(p, { dockerSocket: false })).not.toThrow();
   });
 
-  // planning#386 — `include:` does not extend the model this validator reads, it
-  // REPLACES it: the included file's top-level `volumes:` block resolves at
-  // `up` time and is never seen here, so the root file can mount a host bind by
-  // name with nothing to refuse. It was rejected for contained sessions only.
   it("rejects `include:` in every session, not only contained ones", () => {
     const dir = setup();
     const p = writeCompose(dir, `
@@ -493,12 +471,6 @@ services:
     expect(() => parseComposeFile(p, { dockerSocket: false, containEgress: true })).toThrow("include:");
   });
 
-  /**
-   * A build step is not covered by docs/263's service-network policy, and
-   * `build.network: host` puts every `RUN` in the daemon's own namespace — the
-   * host's — with moby granting the `network.host` entitlement by default. The
-   * declaration is refused rather than rewritten, like its neighbours.
-   */
   it("rejects build.network: host in contained services", () => {
     const dir = setup();
     const p = writeCompose(dir, `
@@ -511,7 +483,6 @@ services:
 `);
     expect(() => parseComposeFile(p, { dockerSocket: false, containEgress: true }))
       .toThrow("`build.network: host` is not allowed for contained services");
-    // Open sessions are unchanged: containment is what this rule is for.
     expect(() => parseComposeFile(p, { dockerSocket: false })).not.toThrow();
   });
 
@@ -528,8 +499,6 @@ services:
     expect(() => parseComposeFile(named, { dockerSocket: false, containEgress: true }))
       .toThrow("`build.network: backend` is not allowed");
 
-    // An interpolated value is refused as itself — it is not one of the two
-    // states this rule can reason about, whatever it resolves to later.
     const interpolated = writeCompose(dir, `
 services:
   app:
@@ -553,7 +522,6 @@ services:
       expect(() => parseComposeFile(ok, { dockerSocket: false, containEgress: true })).not.toThrow();
     }
 
-    // An ordinary build, and the short `build: <context>` form, stay allowed.
     const plain = writeCompose(dir, `
 services:
   app:
@@ -577,8 +545,6 @@ services:
       .toThrow("build.privileged");
     expect(() => parseComposeFile(privileged, { dockerSocket: false })).not.toThrow();
 
-    // Compose coerces a quoted boolean, so the string spelling is the same
-    // request and must not read as an unknown value.
     const quoted = writeCompose(dir, `
 services:
   app:
@@ -602,7 +568,6 @@ services:
     expect(() => parseComposeFile(entitlements, { dockerSocket: false, containEgress: true }))
       .toThrow("build.entitlements");
 
-    // `privileged: false` and an empty list are not requests for anything.
     const harmless = writeCompose(dir, `
 services:
   app:
@@ -615,13 +580,6 @@ services:
     expect(() => parseComposeFile(harmless, { dockerSocket: false, containEgress: true })).not.toThrow();
   });
 
-  /**
-   * The false half of compose-go's `toBoolean` — `n`/`no`/`off` alongside
-   * `false` — must not read as a privilege request, or the refusal fires on a
-   * file that asked for nothing (review finding). Its true half must still be
-   * refused, and an unrecognised spelling stays refused: Compose rejects the
-   * file for it anyway.
-   */
   it("reads every boolean spelling Compose reads for build.privileged", () => {
     const dir = setup();
     const write = (value: string) => writeCompose(dir, `
@@ -795,9 +753,6 @@ services:
     })).toThrow("reserved UID");
   });
 
-  // docs/270 req 4a — a session identity comes from a reserved high range, and a
-  // project may not declare a `user:` inside it. Without this a project could
-  // run a service as another session's identity.
   it("rejects a user: inside ShipIt's per-session UID range", () => {
     const dir = setup();
     const p = writeCompose(dir, `
@@ -810,8 +765,6 @@ services:
   });
 
   it("rejects it on an OPEN session too, not only a contained one", () => {
-    // The hazard is running as another session's identity, which has nothing to
-    // do with egress — so the check cannot live with the contained-service rule.
     const dir = setup();
     const p = writeCompose(dir, `
 services:
@@ -824,8 +777,6 @@ services:
   });
 
   it("still accepts the UIDs real images and projects actually use", () => {
-    // req 4: an explicit numeric `user:` must keep working. The range is chosen
-    // so that every one of these is far below it.
     const dir = setup();
     for (const user of ["33", "101", "999", "1000", "1001:1001", "65534"]) {
       const p = writeCompose(dir, `
@@ -862,11 +813,6 @@ services:
     expect(() => parseComposeFile(p, { dockerSocket: false })).toThrow("Path traversal");
   });
 
-  // planning#386 — the top-level `volumes:` block is the service-level bind rule's
-  // primitive by another name, and it was reaching the daemon unvalidated: the
-  // local driver's `driver_opts` (`type: none` / `device:` / `o: bind`) IS a
-  // host bind, and the service that mounts it declares nothing but a name, so
-  // every check above sees an ordinary named volume.
   it("rejects a host bind encoded in a top-level volume's driver_opts (planning#386)", () => {
     const dir = setup();
     const p = writeCompose(dir, `
@@ -887,11 +833,6 @@ volumes:
     expect(() => parseComposeFile(p, { dockerSocket: false })).toThrow("driver_opts");
   });
 
-  // The check reads the RESOLVED document, and that is the load-bearing half:
-  // a rewritten compose file can hide the payload behind an anchor defined
-  // anywhere in the file, or behind a merge key, and a validator that pattern-
-  // matched the source text would see neither. An alias is not a custom tag, so
-  // it survives the contained-mode tag refusal and has to be caught here.
   it("cannot be evaded by hiding the driver_opts behind an anchor", () => {
     const dir = setup();
     const p = writeCompose(dir, `
@@ -931,18 +872,11 @@ volumes:
   escape:
     <<: *escape
 `);
-    // Open mode resolves merge keys (\`parseYaml(…, { merge: true })\`) and the
-    // rule sees the merged entry; contained mode refuses merge keys outright,
-    // one layer earlier. Both refuse — for different stated reasons.
     expect(() => parseComposeFile(p, { dockerSocket: false })).toThrow("driver_opts");
     expect(() => parseComposeFile(p, { dockerSocket: false, containEgress: true }))
       .toThrow("merge keys");
   });
 
-  // The list form is skipped by the rule (it is not a mapping), and that is
-  // safe on its own terms rather than because Compose rejects it: a sequence
-  // entry is a bare volume NAME with no room for a `driver_opts`, a `driver` or
-  // an `external`. Pinned so the early return is not read as an oversight.
   it("has nothing to refuse in the list form of a volumes block", () => {
     const dir = setup();
     const p = writeCompose(dir, `
@@ -978,8 +912,6 @@ volumes:
       .toThrow("driver_opts");
   });
 
-  // The same block reaches the network the same way: `type: nfs` mounts from
-  // the HOST's network namespace, so it is not stopped by containment either.
   it("rejects a remote-filesystem volume declaration", () => {
     const dir = setup();
     const p = writeCompose(dir, `
@@ -1013,9 +945,6 @@ volumes:
     expect(() => parseComposeFile(p, { dockerSocket: false })).toThrow("volume driver");
   });
 
-  // `external: true` attaches a volume this session did not create — on a
-  // shared daemon that includes another session's workspace volume, whose name
-  // is not a secret.
   it("rejects an external volume declaration", () => {
     const dir = setup();
     const p = writeCompose(dir, `
@@ -1047,10 +976,6 @@ volumes:
     expect(() => parseComposeFile(p, { dockerSocket: false })).toThrow("name:");
   });
 
-  // Review findings — two false refusals, neither with any safety to show for
-  // it. An empty options map is what a templating layer emits for a case that
-  // produced no options, and Compose coerces a quoted boolean
-  // case-insensitively, so `"FALSE"` means false there.
   it("allows empty option maps and every casing of a false `external`", () => {
     const dir = setup();
     const p = writeCompose(dir, `
@@ -1107,11 +1032,6 @@ volumes:
     expect(parseUserNamedVolumes(p).map((v) => v.name)).toEqual(["pgdata", "cache"]);
   });
 
-  // planning#371 (review finding) — a `secrets:` entry is the volumes rule's
-  // primitive by another name: a service secret is bind-mounted by the daemon
-  // (a host path), and a BUILD secret is read client-side, in the
-  // orchestrator's own filesystem — which is how a compose file could still
-  // reach the environment `composeSpawnEnv` stops passing.
   it("rejects an absolute env_file path (the CLI reads it, in the orchestrator's own fs)", () => {
     const dir = setup();
     const p = writeCompose(dir, `
@@ -1201,8 +1121,6 @@ services:
     expect(() => parseComposeFile(p, { dockerSocket: false })).toThrow("path traversal");
   });
 
-  // The literal is validated here and resolved by Compose, so an interpolated
-  // path would sail past both checks above.
   it("rejects an interpolated secret file path", () => {
     const dir = setup();
     const p = writeCompose(dir, `
@@ -1299,10 +1217,6 @@ services:
 
   it("wraps YAML parse errors as ComposeValidationError (e.g. mid-merge conflict markers)", () => {
     const dir = setup();
-    // Simulates a real-world case where the user is mid-merge and the
-    // compose file contains git conflict markers. The orchestrator's
-    // file-change → reconcile path catches this and we want it logged as
-    // a one-line ComposeValidationError, not a YAMLParseError stack.
     const p = writeCompose(dir, `services:
   web:
     image: node:20
@@ -1318,13 +1232,6 @@ services:
       .toThrow(/not valid YAML/);
   });
 
-  /**
-   * planning#377 — a caller that can only report one sentence needs to know
-   * which of the two things happened, because only one of them has a fix to
-   * name. A file ShipIt could not understand is `malformed`; a file it
-   * understood and DECLINED is `refused`, and its message already carries the
-   * rule and the line to add.
-   */
   describe("distinguishes a malformed file from a refused one", () => {
     function kindOf(content: string, opts: { dockerSocket: boolean; containEgress?: boolean }): string {
       const p = writeCompose(tmpDir, content);
@@ -1343,12 +1250,6 @@ services:
       expect(kindOf("- a\n- b\n", { dockerSocket: false })).toBe("malformed");
     });
 
-    /**
-     * The two containment rules that throw from INSIDE the parse `try` block.
-     * They refuse a document that parsed perfectly, so re-wrapping them as
-     * "not valid YAML" was both untrue and — once callers tell the two apart —
-     * the wrong kind (review finding).
-     */
     it("keeps a refusal raised during the parse pass a refusal", () => {
       setup();
       const contained = { dockerSocket: false, containEgress: true };
@@ -1360,18 +1261,12 @@ services:
         `x-base: &base\n  privileged: true\nservices:\n  web:\n    <<: *base\n    image: x\n    user: "1001"\n`,
         contained,
       )).toBe("refused");
-      // And the message stays the rule's own, not "not valid YAML: <rule>".
       const p = writeCompose(tmpDir, `services:\n  web:\n    image: x\n    user: "1001"\n    privileged: !override true\n`);
       expect(() => parseComposeFile(p, contained)).toThrow(/^Custom YAML tags/);
     });
 
     it("marks a well-formed file it declines as refused", () => {
       setup();
-      // The one that made this worth telling apart: a contained session refuses
-      // a well-formed file over a rule about its content. This used to be the
-      // missing `user:` on a stock file, which docs/271 stopped refusing (ShipIt
-      // supplies the identity instead); a DECLARED root user is still refused,
-      // and is the same shape of decline.
       expect(kindOf(`services:
   web:
     image: node:22-alpine
@@ -1443,11 +1338,6 @@ describe("generateComposeOverride", () => {
       fs.writeFileSync(file, content);
       return file;
     };
-    // Explicit about the var: with no worker uid there is no fill-in, so an
-    // undeclared service would run as the image default (often root) and the
-    // declaration is the only thing that can rule that out (docs/271). The
-    // assertion below is about THAT deployment, and it read as environmental
-    // truth until this suite ran inside a container that sets the var.
     const orig = process.env.SHIPIT_SESSION_WORKER_UID;
     try {
       delete process.env.SHIPIT_SESSION_WORKER_UID;
@@ -1464,13 +1354,6 @@ describe("generateComposeOverride", () => {
     }
   });
 
-  // docs/271 — the rule above is about the uid a contained service RUNS as, and
-  // a declaration is only one way to have one. Where ShipIt fills in the session
-  // identity, demanding a declaration on top of it was not a second safeguard:
-  // it was unsatisfiable. The uid the project would have to name to be correct is
-  // the session's own, and naming that one is refused by the range rule — so a
-  // contained project could only choose between a compose file refused whole and
-  // services that could not write their own workspace (github#2374).
   it("accepts an undeclared user in contained mode when ShipIt supplies the identity", () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "compose-contained-fillin-"));
     const file = path.join(dir, "docker-compose.yml");
@@ -1479,13 +1362,9 @@ describe("generateComposeOverride", () => {
     try {
       process.env.SHIPIT_SESSION_WORKER_UID = "2000006";
       expect(() => parseComposeFile(file, { dockerSocket: false, containEgress: true })).not.toThrow();
-      // The range rule still refuses a DECLARED session uid — this relaxes what
-      // ShipIt demands of the project, not what the project may say.
       fs.writeFileSync(file, `services:\n  web:\n    image: app:test\n    user: "2000006"\n`);
       expect(() => parseComposeFile(file, { dockerSocket: false, containEgress: true }))
         .toThrow("reserves for per-session identities");
-      // And root is still refused, because a fill-in is what makes an undeclared
-      // service non-root and this service is not undeclared.
       fs.writeFileSync(file, `services:\n  web:\n    image: app:test\n    user: "0"\n`);
       expect(() => parseComposeFile(file, { dockerSocket: false, containEgress: true }))
         .toThrow("numeric, non-root");
@@ -1495,27 +1374,6 @@ describe("generateComposeOverride", () => {
     }
   });
 
-  // ShipIt's own stack has to obey ShipIt's own rule. It stopped obeying it the
-  // day docs/263 landed: no dogfood service declared `user:`, and because the
-  // rejection fails the WHOLE file rather than one service, `shipit service
-  // start dev` died on a stack where only `emulator` was really unfixable.
-  // Reading the repo's real file (not a fixture) is the point — a fixture would
-  // have stayed green through exactly that regression.
-  //
-  // docs/272 — and it now depends on the NON-ROOT RUNTIME, which this test has to
-  // state rather than inherit from whatever the runner's environment happens to
-  // be. Those services declare no `user:` on purpose: a declared one cannot be
-  // this session's uid, so it cannot own the workspace, so git refuses it
-  // ("dubious ownership"). ShipIt fills the identity in instead — and the fill-in
-  // exists only where a worker uid does.
-  //
-  // Both directions are asserted because the second is a real constraint, not an
-  // implementation detail: on a deployment with containment ON and no worker uid,
-  // an undeclared service would run as the image default (often root), so the
-  // refusal is correct and this stack genuinely cannot run there. Containment is
-  // gated on `SESSION_EGRESS_ENFORCE` and the sidecar image, NOT on the worker uid
-  // (`egress-firewall-install.ts`), so that combination is configurable rather
-  // than impossible. Pinning only the passing direction would have hidden it.
   it("this repository's own compose file is valid in contained mode, on the non-root runtime", () => {
     const own = path.join(process.cwd(), "docker-compose.yml");
     const orig = process.env.SHIPIT_SESSION_WORKER_UID;
@@ -1526,7 +1384,6 @@ describe("generateComposeOverride", () => {
       delete process.env.SHIPIT_SESSION_WORKER_UID;
       expect(() => parseComposeFile(own, { dockerSocket: false, containEgress: true }))
         .toThrow("numeric, non-root");
-      // Open sessions are unaffected either way — nothing there requires a `user:`.
       expect(() => parseComposeFile(own, { dockerSocket: false })).not.toThrow();
     } finally {
       if (orig === undefined) delete process.env.SHIPIT_SESSION_WORKER_UID;
@@ -1540,8 +1397,6 @@ describe("generateComposeOverride", () => {
       baseOpts,
     );
     expect(override).toContain("shipit-preview-mode: manual");
-    // Profiles are no longer used — manual services stay in the project
-    // so depends_on references resolve correctly
     expect(override).not.toContain("profiles");
   });
 
@@ -1603,7 +1458,6 @@ describe("generateComposeOverride", () => {
       [{ name: "db", volumes: ["pgdata:/var/lib/postgresql/data"] }],
       { ...baseOpts, workspaceVolume: "shipit-ws-vol" },
     );
-    // Non-workspace volume should pass through as-is
     expect(override).toContain("pgdata:/var/lib/postgresql/data");
   });
 
@@ -1617,9 +1471,6 @@ describe("generateComposeOverride", () => {
   });
 });
 
-// #1646 — when the non-root worker runtime is active, compose services must run
-// as the same UID so dev-server caches in the shared workspace are agent-owned
-// and a terminal `npm run build` doesn't EACCES on a root-owned `.vite` dir.
 describe("generateComposeOverride — session-worker UID (#1646)", () => {
   const baseOpts = {
     sessionId: "test-session-123",
@@ -1689,17 +1540,9 @@ describe("generateComposeOverride — session-worker UID (#1646)", () => {
       baseOpts,
     );
     const doc = parseYaml(override) as { services: Record<string, { user?: string }> };
-    // The override omits `user:` so compose merge keeps the user's `root`.
     expect(doc.services.web.user).toBeUndefined();
   });
 
-  // docs/213 — the Android emulator image (budtmo) runs as its own baked-in user
-  // and keeps startup scripts under /home/androidusr. Forcing the session-worker
-  // UID onto it fails at boot with:
-  //   sh: /home/androidusr/docker-android/mixins/scripts/run.sh: Permission denied
-  // The canonical recipe now declares the same user numerically (`1300:1301`),
-  // because a contained session rejects a name it cannot check. A NAME must
-  // still survive the override in an Open session, which is what this pins.
   it("preserves a named user: so images with their own baked-in user still boot", () => {
     process.env.SHIPIT_SESSION_WORKER_UID = "1000";
     const override = generateComposeOverride(
@@ -1710,12 +1553,6 @@ describe("generateComposeOverride — session-worker UID (#1646)", () => {
     expect(doc.services.emulator.user).toBeUndefined();
   });
 
-  // docs/271 — a service ShipIt does NOT get to name the uid of still has to be
-  // able to write the workspace, and the group is the only channel left: the
-  // workspace is owned by the session uid, and this service is deliberately not
-  // it. Without the supplementary group, an image with a baked-in account
-  // (`1300:1301`) is outside the session's group entirely, so no amount of
-  // group-write on the tree reaches it.
   it("adds the session group to a service that declares its own user", () => {
     process.env.SHIPIT_SESSION_WORKER_UID = "1000";
     const override = generateComposeOverride(
@@ -1725,7 +1562,6 @@ describe("generateComposeOverride — session-worker UID (#1646)", () => {
     const doc = parseYaml(override) as {
       services: Record<string, { user?: string; group_add?: string[] }>;
     };
-    // The uid stays the project's choice — req 4, unchanged.
     expect(doc.services.emulator.user).toBeUndefined();
     expect(doc.services.emulator.group_add).toEqual(["1000"]);
   });
@@ -1736,18 +1572,10 @@ describe("generateComposeOverride — session-worker UID (#1646)", () => {
     const doc = parseYaml(override) as {
       services: Record<string, { user?: string; group_add?: string[] }>;
     };
-    // Its primary gid already IS the session group — a supplementary copy of it
-    // would be noise in every generated file.
     expect(doc.services.web.user).toBe("1000:1000");
     expect(doc.services.web.group_add).toBeUndefined();
   });
 
-  // docs/271 review finding A1. Validation trimmed before testing for absence,
-  // so it read `user: ""` as "declared nothing" and admitted it under
-  // containment; generation kept the empty string, so it read the same service as
-  // "declared something" and skipped the fill-in. The empty value then reached
-  // the daemon, which resolves it to the image default — root, on the usual
-  // images. Both readers must answer the same question the same way.
   it("treats an empty user: as absent, and fills in the identity rather than leaving root", () => {
     process.env.SHIPIT_SESSION_WORKER_UID = "2000006";
     for (const declared of ['""', '"   "']) {
@@ -1759,16 +1587,11 @@ describe("generateComposeOverride — session-worker UID (#1646)", () => {
       const doc = parseYaml(override) as {
         services: Record<string, { user?: string; group_add?: string[] }>;
       };
-      // Filled in — NOT left for the image default to decide.
       expect(doc.services.web.user).toBe("2000006:2000006");
       expect(doc.services.web.group_add).toBeUndefined();
     }
   });
 
-  // docs/271 review finding A2. `sessionWorkerUid()` returns 0 as a number
-  // (it rejects only a negative), so a deployment that sets the var to 0 would
-  // have had the fill-in emit `user: "0:0"` — root under containment. That
-  // deployment failed closed before the relaxation and must keep failing closed.
   it("refuses an undeclared contained service when the fill-in would be root", () => {
     process.env.SHIPIT_SESSION_WORKER_UID = "0";
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "compose-root-fillin-"));
@@ -1801,9 +1624,6 @@ describe("writeComposeOverride", () => {
     if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  // docs/246 — the override is written to the directory it's GIVEN (the
-  // session's state dir in production), not to a `.shipit/` subdirectory of a
-  // clone. That is the whole point of the move: `git add -A` can't reach it.
   it("writes the override into the given directory", () => {
     const dir = setup();
     const content = "services: {}\n";
@@ -1812,8 +1632,6 @@ describe("writeComposeOverride", () => {
     expect(fs.readFileSync(result, "utf-8")).toBe(content);
   });
 
-  // docs/262 req 23 — the override carries a plugin's delivered credential
-  // values, so it is no longer an ordinary generated file.
   it("writes the override 0600, including over a pre-existing looser file", () => {
     const dir = setup();
     const target = path.join(dir, "compose.override.yml");
@@ -1835,13 +1653,9 @@ describe("writeComposeOverride", () => {
     expect(fs.existsSync(path.join(dir, ".shipit"))).toBe(false);
   });
 
-  // docs/246 — the docs/150 §7 chown handoff is deliberately GONE. It existed
-  // because the override lived in the worker-owned clone; the state dir is not
-  // mounted into the container, so there is no worker uid to hand it to and a
-  // chown here would only obscure that.
   it("does not chown the override, even with the worker-uid flag set", () => {
     const myUid = process.getuid?.();
-    if (myUid === undefined) return; // not POSIX — skip
+    if (myUid === undefined) return;
     const orig = process.env.SHIPIT_SESSION_WORKER_UID;
     process.env.SHIPIT_SESSION_WORKER_UID = String(myUid);
     try {
@@ -1856,10 +1670,6 @@ describe("writeComposeOverride", () => {
     }
   });
 });
-
-// ---------------------------------------------------------------------------
-// x-shipit-secrets parsing & override env_file injection (Phase 1, feature 087)
-// ---------------------------------------------------------------------------
 
 describe("x-shipit-secrets parsing", () => {
   let tmpDir: string;
@@ -1965,8 +1775,6 @@ services:
     const services = parseComposeFile(p, { dockerSocket: false });
     expect(services[0].secrets).toEqual(["VALID_NAME"]);
   });
-
-  // ---- Phase 2: object-form metadata captured into secretRequirements ----
 
   it("populates secretRequirements with description / required / agent / source", () => {
     const dir = setup();
@@ -2103,7 +1911,6 @@ describe("generateComposeOverride env_file injection", () => {
     expect(override).toContain(`${ENV_ROOT}/.env.api`);
   });
 
-  // docs/183 — out-of-workspace env-file paths
   it("uses supplied absolute env-file paths when serviceEnvFiles is present", () => {
     const override = generateComposeOverride(
       [
@@ -2120,15 +1927,10 @@ describe("generateComposeOverride env_file injection", () => {
     );
     expect(override).toContain("/workspace/service-env/test-session-123/.env.web");
     expect(override).toContain("/workspace/service-env/test-session-123/.env.api");
-    // The workspace-relative path is NOT used when the absolute path is supplied.
     expect(override).not.toContain(".shipit/.env.web");
     expect(override).not.toContain(".shipit/.env.api");
   });
 
-  // planning#292 — a service missing from the map gets NO env_file rather than the
-  // old `.shipit/.env.<service>` fallback. Nothing writes that file any more, so
-  // referencing it would fail the whole stack at `up` time instead of one
-  // service, and it named a path inside the user's git clone (docs/246-shipit-state-out-of-clone req 7).
   it("emits no env_file for a service missing from serviceEnvFiles", () => {
     const override = generateComposeOverride(
       [
@@ -2139,7 +1941,6 @@ describe("generateComposeOverride env_file injection", () => {
         ...baseOpts,
         serviceEnvFiles: {
           web: "/workspace/service-env/test-session-123/.env.web",
-          // api intentionally omitted
         },
       },
     );
@@ -2147,11 +1948,6 @@ describe("generateComposeOverride env_file injection", () => {
     expect(override).not.toContain(".env.api");
   });
 
-  /**
-   * docs/262 req 23 — a plugin service's declared credentials are emitted into
-   * its own `environment`, which is the only place Compose cannot let anything
-   * else win.
-   */
   describe("plugin services (req 23)", () => {
     const probe = {
       name: "probe",
@@ -2187,9 +1983,6 @@ describe("generateComposeOverride env_file injection", () => {
     });
 
     it("wins over the same name declared by the plugin's own fragment", () => {
-      // Compose gives `environment` precedence over `env_file`, so a fragment
-      // that hardcodes a name it also declared would otherwise run on its own
-      // literal while the card reported the project's stored value satisfied.
       const shadowing = {
         ...probe,
         pluginDefinition: { ...probe.pluginDefinition, environment: { FAL_KEY: "fragment-literal" } },
@@ -2202,9 +1995,6 @@ describe("generateComposeOverride env_file injection", () => {
     });
 
     it("never overrides one of ShipIt's own contract variables", () => {
-      // A credential named after a contract variable is dropped: those name the
-      // mounts ShipIt made, and a stored secret does not get to move a plugin's
-      // idea of where the project is.
       const override = generateComposeOverride(
         [probe],
         { ...baseOpts, pluginServiceEnv: { probe: { SHIPIT_PROJECT_DIR: "/elsewhere" } } },
@@ -2217,7 +2007,6 @@ describe("generateComposeOverride env_file injection", () => {
         [probe],
         { ...baseOpts, pluginServiceEnv: { probe: { FAL_KEY: `a$b$\{GITHUB_TOKEN}` } } },
       );
-      // `$$` is Compose's own escape and renders back as a literal `$`.
       expect(override).toContain(`a$$b$$\{GITHUB_TOKEN}`);
       expect(override).not.toContain(`a$b$\{GITHUB_TOKEN}`);
     });
@@ -2231,9 +2020,6 @@ describe("generateComposeOverride env_file injection", () => {
     });
 
     it("delivers nothing when the project has no value, and does not hijack the entrypoint", () => {
-      // The Docker-secrets branch replaces `entrypoint` to load `/run/secrets`.
-      // For a plugin service that line came from the plugin's own fragment, so
-      // plugin credentials take the environment path in both modes.
       const override = generateComposeOverride(
         [probe],
         {
@@ -2253,10 +2039,6 @@ describe("generateComposeOverride env_file injection", () => {
     });
   });
 });
-
-// ---------------------------------------------------------------------------
-// Phase 1 follow-up: Docker-secrets mode
-// ---------------------------------------------------------------------------
 
 describe("generateComposeOverride — Docker-secrets mode", () => {
   const baseOpts = {
@@ -2332,27 +2114,21 @@ describe("generateComposeOverride — Docker-secrets mode", () => {
     const override = generateComposeOverride(
       [
         { name: "api", secrets: ["DATABASE_URL"] },
-        { name: "redis" }, // no secrets
+        { name: "redis" },
       ],
       {
         ...baseOpts,
         dockerSecrets: dockerSecretsOpts({ api: ["DATABASE_URL"] }),
       },
     );
-    // Top-level secrets block exists but the redis service doesn't reference it
     const redisIdx = override.indexOf("redis:");
     const apiIdx = override.indexOf("api:");
     expect(redisIdx).toBeGreaterThan(0);
     expect(apiIdx).toBeGreaterThan(0);
-    // redis service block shouldn't contain the entrypoint hijack
     const afterRedis = override.slice(redisIdx, redisIdx + 200);
     expect(afterRedis).not.toContain("secrets-entrypoint");
   });
 
-  // planning#287 — the wrapper mount used to come out of the workspace volume, which
-  // is why a generated `secrets-entrypoint.sh` had to be copied into the user's
-  // git clone (docs/246-shipit-state-out-of-clone req 1). It is now bind-mounted from its staged absolute
-  // path, so the mount is identical whether or not a workspace volume exists.
   it("bind-mounts the wrapper from its absolute staged path, even with a workspace volume", () => {
     const override = generateComposeOverride(
       [{ name: "api", secrets: ["DATABASE_URL"], volumes: [".:/app"] }],
@@ -2376,7 +2152,6 @@ describe("generateComposeOverride — Docker-secrets mode", () => {
       read_only: true,
     });
     expect(parsed.services.api!.entrypoint).toEqual(["/shipit/secrets-entrypoint.sh"]);
-    // Nothing anchors the wrapper to the clone any more.
     expect(override).not.toContain(".shipit/secrets-entrypoint.sh");
   });
 
@@ -2388,8 +2163,6 @@ describe("generateComposeOverride — Docker-secrets mode", () => {
       [{ name: "api", secrets: ["DATABASE_URL"] }],
       { ...baseOpts, dockerSecrets: noEntrypoint },
     );
-    // Secrets are still delivered as files; only the env-var wrapper is absent,
-    // so the service boots rather than failing on a mount source that isn't there.
     expect(override).toContain("shipit-DATABASE_URL");
     expect(override).not.toContain("secrets-entrypoint");
   });
@@ -2421,13 +2194,10 @@ describe("generateComposeOverride — overlay dep-dir mounts (docs/183 Phase 5)"
     );
     const doc = overrideDoc(override);
     const vols = doc.services.web.volumes ?? [];
-    // The normal workspace mount (state volume, source + .git) is preserved...
     expect(vols).toContainEqual(
       expect.objectContaining({ source: "shipit-workspace", target: "/app" }),
     );
-    // ...and the dep-dir overlay volume is mounted nested under it.
     expect(vols).toContainEqual({ type: "volume", source: NM.volumeName, target: "/app/node_modules" });
-    // The referenced overlay volume is declared external (daemon owns its lifecycle).
     expect(doc.volumes?.[NM.volumeName]).toEqual({ name: NM.volumeName, external: true });
   });
 
@@ -2456,7 +2226,7 @@ describe("generateComposeOverride — overlay dep-dir mounts (docs/183 Phase 5)"
         ...baseOpts,
         overlayDepDirs: [
           { depDir: "backend/node_modules", volumeName: "vol-be" },
-          { depDir: "node_modules", volumeName: "vol-root" }, // not under ./backend
+          { depDir: "node_modules", volumeName: "vol-root" },
         ],
       },
     );
@@ -2464,7 +2234,6 @@ describe("generateComposeOverride — overlay dep-dir mounts (docs/183 Phase 5)"
     const vols = doc.services.api.volumes ?? [];
     expect(vols).toContainEqual({ type: "volume", source: "vol-be", target: "/srv/node_modules" });
     expect(vols.some((v) => isObj(v) && v.source === "vol-root")).toBe(false);
-    // Only the used volume gets an external declaration.
     expect(doc.volumes?.["vol-be"]).toEqual({ name: "vol-be", external: true });
     expect(doc.volumes?.["vol-root"]).toBeUndefined();
   });
@@ -2477,9 +2246,7 @@ describe("generateComposeOverride — overlay dep-dir mounts (docs/183 Phase 5)"
     const mount = (overrideDoc(override).services.web.volumes ?? []).find(
       (v) => isObj(v) && v.source === NM.volumeName,
     );
-    expect(mount && isObj(mount) ? mount.volume : "missing").toBeUndefined(); // no subpath
-    // Guardrail: a service mount must never reach an overlay-base/ lowerdir or the
-    // shipit-workspace storage subpath for a dep dir.
+    expect(mount && isObj(mount) ? mount.volume : "missing").toBeUndefined();
     expect(override).not.toContain("overlay-base");
     expect(override).not.toContain("sessions/abc/workspace/node_modules");
   });
@@ -2492,7 +2259,7 @@ describe("generateComposeOverride — overlay dep-dir mounts (docs/183 Phase 5)"
     const doc = overrideDoc(override);
     const vols = doc.services.db.volumes ?? [];
     expect(vols.some((v) => isObj(v) && v.source === NM.volumeName)).toBe(false);
-    expect(doc.volumes?.[NM.volumeName]).toBeUndefined(); // unused → not declared
+    expect(doc.volumes?.[NM.volumeName]).toBeUndefined();
   });
 
   it("emits nothing overlay-related when overlayDepDirs is absent (non-overlay session unchanged)", () => {
@@ -2515,17 +2282,6 @@ describe("generateComposeOverride — overlay dep-dir mounts (docs/183 Phase 5)"
     ]);
   });
 
-  /**
-   * nikzlabs/shipit#2426 — the case above, written the way almost every Node
-   * compose file writes it. `- /app/node_modules` is an ANONYMOUS volume: the
-   * canonical idiom for stopping a `.:/app` host bind from clobbering the
-   * container's dependencies. It has no source, and the short-form parser used
-   * to report no target either, so the de-duplication that promises "the daemon
-   * never sees a duplicate target" skipped it and the service ended up declaring
-   * two mounts at `/app/node_modules`. An anonymous volume winning that contest
-   * is #2426 in full: a second, private dependency tree nothing on the agent
-   * side can reach.
-   */
   it("drops an anonymous volume at a dep dir rather than declaring two mounts there", () => {
     const override = generateComposeOverride(
       [{ name: "web", volumes: [".:/app", "/app/node_modules"] }],
@@ -2535,7 +2291,6 @@ describe("generateComposeOverride — overlay dep-dir mounts (docs/183 Phase 5)"
     expect(vols.filter((v) => (isObj(v) ? v.target : v) === "/app/node_modules")).toEqual([
       { type: "volume", source: NM.volumeName, target: "/app/node_modules" },
     ]);
-    // The workspace mount it was shielding is untouched.
     expect(vols).toContainEqual(expect.objectContaining({ source: "shipit-workspace", target: "/app" }));
   });
 
@@ -2547,13 +2302,6 @@ describe("generateComposeOverride — overlay dep-dir mounts (docs/183 Phase 5)"
     expect(overrideDoc(override).services.web.volumes ?? []).toContain("/app/.cache");
   });
 
-  /**
-   * nikzlabs/shipit#2426 — `./game/:/app` is the same mount as `./game:/app` to
-   * compose, but the raw `"game/"` subdir it used to yield is not a path
-   * segment, so no dep dir under `game/` matched and the service silently got
-   * the plain directory instead of the agent's overlay. Silent divergence
-   * through a trailing slash.
-   */
   it("nests dep-dir overlays through a subdir mount written with a trailing slash", () => {
     const override = generateComposeOverride(
       [{ name: "game", volumes: ["./game/:/app"] }],
@@ -2565,17 +2313,11 @@ describe("generateComposeOverride — overlay dep-dir mounts (docs/183 Phase 5)"
     );
     const vols = overrideDoc(override).services.game.volumes ?? [];
     expect(vols).toContainEqual({ type: "volume", source: "vol-game", target: "/app/node_modules" });
-    // ...and the workspace mount itself no longer carries the trailing slash
-    // into the volume subpath handed to the daemon.
     expect(vols).toContainEqual(
       expect.objectContaining({ target: "/app", volume: { subpath: "s/w/game" } }),
     );
   });
 
-  // docs/262 / nikzlabs/shipit#2298 — a plugin service's mounts are ShipIt's own,
-  // already rewritten onto the workspace volume with a subpath, so the
-  // relative-source matcher above never saw them and every dep dir reached a
-  // plugin as the empty mount point it is on the volume.
   describe("plugin services (docs/262)", () => {
     const WS = "sessions/abc/workspace";
     const pluginService = (
@@ -2606,7 +2348,7 @@ describe("generateComposeOverride — overlay dep-dir mounts (docs/183 Phase 5)"
         { ...baseOpts, workspaceSubpath: WS, overlayDepDirs: [NM] },
       ));
       const vols = doc.services.probe.volumes ?? [];
-      expect(vols).toContainEqual(projectMount); // the tree mounts survive
+      expect(vols).toContainEqual(projectMount);
       expect(vols).toContainEqual({ type: "volume", source: NM.volumeName, target: "/plugin/node_modules" });
       expect(vols).toContainEqual({ type: "volume", source: NM.volumeName, target: "/project/node_modules" });
       expect(doc.volumes?.[NM.volumeName]).toEqual({ name: NM.volumeName, external: true });
@@ -2620,10 +2362,6 @@ describe("generateComposeOverride — overlay dep-dir mounts (docs/183 Phase 5)"
       expect(vols.some((v) => isObj(v) && v.source === NM.volumeName)).toBe(false);
     });
 
-    // Its dependencies are its own, and it starts with `dependsOnInstall: false`
-    // — so the project's `node_modules` would be a tree it could read while
-    // `agent.install` writes it. Exposing them to a consuming plugin is a
-    // separate decision that has to settle the gate first.
     it("adds nothing for a TRACKED plugin, including at its /project mount", () => {
       const generationMount = { type: "volume", source: "shipit-abc_plugin-tools", target: "/plugin", read_only: true };
       const doc = overrideDoc(generateComposeOverride(
@@ -2632,7 +2370,7 @@ describe("generateComposeOverride — overlay dep-dir mounts (docs/183 Phase 5)"
       ));
       const vols = doc.services.probe.volumes ?? [];
       expect(vols.some((v) => isObj(v) && v.source === NM.volumeName)).toBe(false);
-      expect(doc.volumes?.[NM.volumeName]).toBeUndefined(); // unused → not declared
+      expect(doc.volumes?.[NM.volumeName]).toBeUndefined();
     });
 
     it("maps a fragment's own subdirectory mount and skips dep dirs outside it", () => {
@@ -2683,9 +2421,9 @@ describe("validateDevices (docs/213 — only /dev/kvm)", () => {
     const forms: unknown[] = [
       "/dev/kvm",
       "/dev/kvm:/dev/kvm",
-      "/dev/kvm:/dev/kvm:rwm", // cgroup permissions are ignored
+      "/dev/kvm:/dev/kvm:rwm",
       { source: "/dev/kvm", target: "/dev/kvm" },
-      { source: "/dev/kvm" }, // target defaults to source
+      { source: "/dev/kvm" },
     ];
     for (const dev of forms) {
       expect(() => validateDevices("emulator", { devices: [dev] }, true)).not.toThrow();
@@ -2698,8 +2436,8 @@ describe("validateDevices (docs/213 — only /dev/kvm)", () => {
       "/dev/sda",
       "/dev/sda:/dev/sda",
       "/dev/snd:/dev/snd:rwm",
-      "/dev/kvm:/dev/sda", // host is kvm but container target is not
-      "/dev/sda:/dev/kvm", // container is kvm but host source is not
+      "/dev/kvm:/dev/sda",
+      "/dev/sda:/dev/kvm",
       { source: "/dev/sda", target: "/dev/sda" },
     ];
     for (const dev of bad) {

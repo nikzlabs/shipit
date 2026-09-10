@@ -1,34 +1,10 @@
-/**
- * MCP OAuth metadata discovery (docs/139-mcp-dynamic-client-registration).
- *
- * Implements the MCP authorization discovery chain so the OAuth flow can be
- * driven from the provider's *own* authorization server rather than hardcoded
- * registry endpoints:
- *
- *   1. Probe `mcpUrl` unauthenticated → read `resource_metadata` from the 401
- *      `WWW-Authenticate` header (authoritative). Fall back to the well-known
- *      paths only if the challenge is absent.
- *   2. Fetch the protected-resource metadata → `authorization_servers[0]`.
- *   3. Fetch the authorization-server metadata (RFC 8414) → authorize / token /
- *      registration endpoints + supported PKCE methods.
- *
- * **Security (SSRF):** discovery follows URLs derived from the provider's own
- * responses, so every hop is origin-validated before the fetch — the
- * `resource_metadata` URL must share `mcpUrl`'s origin, the AS must share the
- * `resource` origin, and each discovered endpoint must share the AS origin.
- * `mcpUrl` is registry/operator-controlled today; if it ever becomes
- * user-supplied, add an allowlist before relaxing these checks.
- */
-
 import { getErrorMessage } from "../../shared/utils.js";
 import { ServiceError } from "./types.js";
 
-/** Normalized result of a successful discovery run. */
 export interface DiscoveredOAuthMetadata {
   authorizationEndpoint: string;
   tokenEndpoint: string;
   registrationEndpoint?: string;
-  /** PKCE code challenge methods the AS advertises. */
   codeChallengeMethods: string[];
 }
 
@@ -37,27 +13,16 @@ interface CacheEntry {
   expiresAt: number;
 }
 
-/** Endpoints are stable; a short TTL avoids re-probing on every connect. */
 const DISCOVERY_TTL_MS = 10 * 60 * 1000;
 const discoveryCache = new Map<string, CacheEntry>();
 
-/** Exposed for tests — clears the in-memory discovery cache. */
 export function _clearDiscoveryCache(): void {
   discoveryCache.clear();
 }
 
-/**
- * Discover the OAuth endpoints for a hosted MCP server starting from its
- * `mcpUrl`. Results are cached in-memory with a short TTL.
- *
- * Throws `ServiceError(502)` on any discovery failure (unreachable metadata,
- * origin mismatch, missing S256 support) — these surface as inline errors in
- * the Settings panel before the popup opens.
- */
 export async function discoverOAuthMetadata(opts: {
   mcpUrl: string;
   fetchImpl?: typeof fetch;
-  /** Override for tests — defaults to `Date.now`. */
   now?: () => number;
 }): Promise<DiscoveredOAuthMetadata> {
   const now = (opts.now ?? Date.now)();
@@ -72,10 +37,8 @@ export async function discoverOAuthMetadata(opts: {
     throw new ServiceError(502, `Invalid MCP URL: ${opts.mcpUrl}`);
   }
 
-  // 1. Find the protected-resource metadata URL (header first).
   const resourceMetadataUrl = await findResourceMetadataUrl(opts.mcpUrl, mcpOrigin, f);
 
-  // 2. Protected-resource metadata → authorization_servers[0].
   const prMeta = await fetchJson(f, resourceMetadataUrl, "protected-resource metadata");
   const resource = stringField(prMeta, "resource") ?? opts.mcpUrl;
   const resourceOrigin = originOf(resource) ?? mcpOrigin;
@@ -89,9 +52,7 @@ export async function discoverOAuthMetadata(opts: {
   }
   requireSameOrigin(asUrl, resourceOrigin, "authorization server");
 
-  // 3. Authorization-server metadata (RFC 8414, openid-configuration fallback).
   const asMeta = await fetchAuthServerMetadata(f, asUrl);
-  // `asUrl` was just origin-validated, so `originOf` is guaranteed non-null.
   const asOrigin = originOf(asUrl) ?? "";
 
   const authorizationEndpoint = stringField(asMeta, "authorization_endpoint");
@@ -113,7 +74,7 @@ export async function discoverOAuthMetadata(opts: {
   const codeChallengeMethods = arrayField(asMeta, "code_challenge_methods_supported").filter(
     (m): m is string => typeof m === "string",
   );
-  // We always send S256; refuse rather than start a flow that will fail.
+  // The OAuth flow always sends S256.
   if (codeChallengeMethods.length > 0 && !codeChallengeMethods.includes("S256")) {
     throw new ServiceError(
       502,
@@ -131,16 +92,7 @@ export async function discoverOAuthMetadata(opts: {
   return value;
 }
 
-// ---------------------------------------------------------------------------
-// Steps
-// ---------------------------------------------------------------------------
-
-/**
- * Resolve the protected-resource metadata URL. The MCP auth spec says the
- * authoritative source is the `resource_metadata` value in the `401`
- * `WWW-Authenticate` header; we fall back to the well-known guesses only if
- * the challenge is absent.
- */
+// An advertised resource_metadata URL takes precedence over well-known paths.
 async function findResourceMetadataUrl(
   mcpUrl: string,
   mcpOrigin: string,
@@ -152,8 +104,6 @@ async function findResourceMetadataUrl(
     return headerUrl;
   }
 
-  // Fall back to the well-known paths (both the bare and resource-suffixed
-  // forms — the suffixed form is what Notion publishes).
   const origin = mcpOrigin;
   const suffix = pathSuffix(mcpUrl);
   const candidates = [
@@ -169,10 +119,6 @@ async function findResourceMetadataUrl(
   );
 }
 
-/**
- * Unauthenticated probe of `mcpUrl`. Returns the `resource_metadata` URL from
- * the `WWW-Authenticate` header of a 401, or `undefined` if absent.
- */
 async function probeWwwAuthenticate(
   mcpUrl: string,
   f: typeof fetch,
@@ -185,7 +131,6 @@ async function probeWwwAuthenticate(
       body: JSON.stringify({ jsonrpc: "2.0", method: "initialize", id: 0 }),
     });
   } catch {
-    // Network error probing the endpoint — let the well-known fallback try.
     return undefined;
   }
   const header = res.headers.get("www-authenticate");
@@ -193,12 +138,6 @@ async function probeWwwAuthenticate(
   return parseResourceMetadata(header);
 }
 
-/**
- * Fetch authorization-server metadata per RFC 8414. For an origin-rooted
- * issuer the well-known segment is appended; for an issuer *with a path* the
- * segment is inserted between host and path. Falls back to
- * `openid-configuration` on 404.
- */
 async function fetchAuthServerMetadata(
   f: typeof fetch,
   issuer: string,
@@ -230,31 +169,14 @@ async function fetchAuthServerMetadata(
   );
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-/**
- * Parse the `resource_metadata` parameter out of a `WWW-Authenticate` header.
- * Example header:
- *   Bearer realm="OAuth", resource_metadata="https://x/.well-known/...", error="invalid_token"
- */
 export function parseResourceMetadata(header: string): string | undefined {
   const m = /resource_metadata\s*=\s*"([^"]+)"/i.exec(header);
   if (m) return m[1];
-  // Tolerate an unquoted form.
   const m2 = /resource_metadata\s*=\s*([^\s,]+)/i.exec(header);
   return m2 ? m2[1] : undefined;
 }
 
-/**
- * RFC 8414 well-known URL construction. For an origin-rooted issuer
- * (`https://host` or `https://host/`) the segment is appended:
- *   `https://host/.well-known/<segment>`
- * For an issuer with a path component the segment is inserted between host
- * and path:
- *   `https://host/.well-known/<segment>/<path>`
- */
+// RFC 8414 places the well-known segment before the issuer's path.
 export function buildWellKnown(issuer: string, segment: string): string {
   const u = new URL(issuer);
   const path = u.pathname.replace(/\/$/, "");
@@ -264,7 +186,6 @@ export function buildWellKnown(issuer: string, segment: string): string {
   return `${u.origin}/.well-known/${segment}${path}`;
 }
 
-/** Return the path (with any trailing slash trimmed) of a URL, or "". */
 function pathSuffix(url: string): string {
   try {
     const u = new URL(url);
@@ -285,10 +206,6 @@ function originOf(url: string): string | undefined {
   }
 }
 
-/**
- * Throw `ServiceError(502)` unless `url` is HTTPS and shares `expectedOrigin`.
- * The SSRF guard: discovery must never follow a derived URL off-origin.
- */
 function requireSameOrigin(url: string, expectedOrigin: string, label: string): void {
   const origin = originOf(url);
   if (!origin) {

@@ -1,11 +1,3 @@
-/**
- * OpenAI TTS adapter (docs/144).
- *
- * Streams synthesized speech as `audio/mpeg` (or the requested format). The
- * service layer caches the bytes by content hash so re-pressing Play doesn't
- * re-bill OpenAI; this adapter just performs one synthesis call.
- */
-
 import { VoiceProviderError, type TtsProvider, type TtsSpeakOptions } from "./types.js";
 
 const OPENAI_SPEECH_URL = "https://api.openai.com/v1/audio/speech";

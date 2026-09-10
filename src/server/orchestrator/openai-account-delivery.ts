@@ -1,4 +1,3 @@
-/** One-way account delivery for OpenCode. Only the source owns renewal. */
 import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
@@ -40,8 +39,7 @@ function updateBinding(sourceRoot: string, binding: Binding): void {
   const file = path.join(sourceRoot, ".codex", "auth.json");
   try {
     const auth: unknown = JSON.parse(fs.readFileSync(file, "utf8"));
-    // Validate identity even if expiry has elapsed. A stale or torn source
-    // during renewal must not delete a still-loaded consumer's auth record.
+    // Check identity even after expiry; a partial renewal must not remove loaded credentials.
     const token = openCodeAccessToken(auth, 0);
     if (token.accountId !== binding.identity) {
       removeOpenCodeAccount(binding.dataHome);
@@ -55,7 +53,6 @@ function updateBinding(sourceRoot: string, binding: Binding): void {
   }
 }
 
-/** Subscribe to atomic source rewrites, not token writes from the consumer. */
 export function provisionOpenCodeAccount(
   sourceRoot: string,
   home: string,
@@ -132,7 +129,6 @@ function watchBinding(sourceRoot: string, binding: Binding): void {
   source.bindings.set(binding.dataHome, binding);
 }
 
-/** Reattach a persisted consumer after orchestrator restart, before renewal. */
 export function restoreOpenCodeAccount(
   home: string,
   sourceForAccount: (accountId: string) => string,
@@ -177,7 +173,6 @@ export function revokeOpenCodeAccount(home: string, xdgHome?: string): void {
   }
 }
 
-/** Revoke scoped consumers as well as primary session copies on sign-out. */
 export function revokeOpenCodeSource(sourceRoot: string): void {
   const source = sources.get(sourceRoot);
   if (!source) return;

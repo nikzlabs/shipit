@@ -1,19 +1,3 @@
-/**
- * Container overlay / pnpm provisioning (docs/183, docs/197, docs/198).
- *
- * Extracted from SessionContainerManager for single-responsibility modules.
- * This module owns the dep-dir overlay-store integration — resolving the
- * per-dep-dir overlay specs a container should mount, and resolving the shared
- * per-runtime pnpm store dir that replaces the overlay for pnpm repos — plus
- * the worker-image-ID resolution the overlay scope keys on. Overlay volume
- * creation/teardown itself happens in `container-lifecycle.ts` from the specs
- * this module produces.
- *
- * All functions receive explicit dependencies rather than accessing class state;
- * the manager caches the worker image ID and threads its docker/volume/state
- * config through the deps object.
- */
-
 import type Docker from "dockerode";
 import {
   buildOverlaySpecs,
@@ -29,45 +13,12 @@ import { readBasePointerByHash } from "./overlay-base.js";
 import { claimOverlayBaseGeneration } from "./overlay-base-claims.js";
 import type { SessionInfo } from "../shared/types.js";
 
-// ---------------------------------------------------------------------------
-// Dependency bundle
-// ---------------------------------------------------------------------------
-
 export interface OverlayProvisionerDeps {
   docker: Docker;
-  /**
-   * Docker named volume for workspace data. Overlay subtrees and the pnpm store
-   * must live on the SAME superblock as `/workspace`, so both provisioning paths
-   * no-op without it.
-   */
   workspaceVolume?: string;
-  /**
-   * Orchestrator-visible root of the workspace state volume (the app's
-   * `stateDir`). Needed by the overlay dep store to create each overlay's
-   * lower/upper/work dirs and to anchor the pnpm store dir.
-   */
   stateDir?: string;
 }
 
-// ---------------------------------------------------------------------------
-// Worker image ID — overlay runtime scope fingerprint (docs/183)
-// ---------------------------------------------------------------------------
-
-/**
- * docs/183 — resolve the Docker image ID of the session-worker base image. This
- * is the ABI fingerprint the overlay dep store keys its rolling base scope on
- * (`overlayRuntimeKey`): a worker-image rebuild that bumps Node or glibc changes
- * this id, rotating the scope so an ABI-incompatible base (e.g. one holding a
- * `better-sqlite3` compiled against the old ABI) is never reused. Resolved at
- * runtime — not hardcoded in deploy.sh — so a self-update rotates the scope for
- * free.
- *
- * Returns `""` (a miss) when the image can't be inspected (Docker unavailable /
- * image absent) — the caller then leaves the scope on the `"unknown"` fallback,
- * which simply means no rotation (the prior behavior), never a wrong reuse. The
- * caller (`SessionContainerManager`) caches the result, incl. the miss, so this
- * adds no per-session Docker call.
- */
 export async function resolveWorkerImageId(docker: Docker, imageName: string): Promise<string> {
   try {
     const info = await docker.getImage(imageName).inspect();
@@ -81,20 +32,6 @@ export async function resolveWorkerImageId(docker: Docker, imageName: string): P
   }
 }
 
-/**
- * planning#196 — resolve the **pinned base-image digest** baked into the session-worker
- * image's `BASE_IMAGE_DIGEST` env (set from the worker Dockerfile's digest-pinned
- * `FROM`). This is the ABI fingerprint the overlay scope now keys on instead of
- * the full worker-image id: it stays constant across app-code-only rebuilds and
- * rolls only on a deliberate base bump, so a deploy no longer mints a fresh base
- * scope. The orchestrator can't read the worker's baked env from its own process,
- * so it reads it out of the image's `Config.Env` here, once at startup.
- *
- * Returns `""` (a miss) when the image can't be inspected OR carries no
- * `BASE_IMAGE_DIGEST` (a pre-planning#196 worker image) — the caller then leaves the
- * scope on the `SESSION_WORKER_IMAGE_ID`/`"unknown"` fallback, i.e. the prior
- * behavior, never a wrong reuse. Cached by the caller, incl. the miss.
- */
 export async function resolveWorkerBaseDigest(docker: Docker, imageName: string): Promise<string> {
   try {
     const info = await docker.getImage(imageName).inspect();
@@ -110,21 +47,6 @@ export async function resolveWorkerBaseDigest(docker: Docker, imageName: string)
   }
 }
 
-/**
- * docs/248 — the Node version baked into the worker image, read from the same
- * image env as {@link resolveWorkerBaseDigest}.
- *
- * The overlay base scope has to know this to decide whether a repo's Node pin
- * actually changes the runtime. Without it the orchestrator would either share
- * one base across two Node ABIs (the bug: a base whose native addons were built
- * under Node 24, mounted into a Node-22 session, where a plain `npm install`
- * will NOT rebuild an already-present addon) or split the scope for every repo
- * that merely *has* an `engines.node` field, invalidating most of the fleet.
- *
- * The official `node:*` images set `NODE_VERSION`. Returns `""` on any miss;
- * the caller then errs toward splitting the scope, which costs one cold install
- * rather than risking an ABI mismatch.
- */
 export async function resolveWorkerNodeVersion(docker: Docker, imageName: string): Promise<string> {
   try {
     const info = await docker.getImage(imageName).inspect();
@@ -140,49 +62,20 @@ export async function resolveWorkerNodeVersion(docker: Docker, imageName: string
   }
 }
 
-// ---------------------------------------------------------------------------
-// Overlay spec resolution (docs/183)
-// ---------------------------------------------------------------------------
-
-/**
- * docs/183 dep-dir design — resolve the per-dep-dir overlay specs for a session,
- * or `[]` when the feature is killed off / the session is ineligible / nothing is
- * overlay-worthy. Async because it inspects the workspace state volume for its
- * daemon-host mountpoint. The caller passes the result into
- * `buildConfigForWorkspace({ overlaySpecs })`.
- *
- * Returns `[]` (the byte-for-byte-unchanged path) when:
- *  - the `OVERLAY_DEP_STORE=0`/`false` kill switch is set, the session has no
- *    remote, or it is an ops session (`resolveOverlayScope` → null);
- *  - there is no workspace state volume to anchor the overlay subtrees against
- *    (dev/bind mode); or
- *  - no declared dep dir survives contextual validation (`validDepDirsForOverlay`:
- *    parent exists + git-ignored artifact).
- */
 export async function prepareOverlaySpecs(
   deps: OverlayProvisionerDeps,
   opts: {
     sessionId: string;
     workspaceDir: string;
     session: Pick<SessionInfo, "remoteUrl" | "kind">;
-    /**
-     * Keep only specs whose overlay volume already exists on the daemon. The
-     * compose path passes `true`: it consumes the specs as `external` volume
-     * references, and the volumes are created at agent-container-create time —
-     * so a container built before the flag was enabled (or whose provisioning
-     * failed) has none, and referencing them would fail the whole `compose up`.
-     * Creation paths omit this (they are about to create the volumes).
-     */
+    /** Compose external-volume references must already exist; creation paths omit this. */
     requireProvisioned?: boolean;
   },
 ): Promise<DepDirOverlaySpec[]> {
   const scope = resolveOverlayScope(opts.session, process.env, opts.workspaceDir);
   if (!scope) return [];
   if (!deps.workspaceVolume) return [];
-  // docs/197 Part 2 — pnpm repos do NOT overlay `node_modules`: pnpm's
-  // store→node_modules hardlinks cannot cross the overlayfs boundary (EXDEV) and
-  // silently degrade to a full per-session copy. They get a shared same-fs pnpm
-  // store instead (`preparePnpmStore`), so the overlay specs are skipped here.
+  // pnpm hardlinks cannot cross overlayfs; use a shared store on the workspace filesystem.
   if (isPnpmRepo(opts.workspaceDir)) return [];
   const declared = depDirsForSession({ workspaceDir: opts.workspaceDir });
   const valid = await validDepDirsForOverlay(declared, opts.workspaceDir);
@@ -195,26 +88,12 @@ export async function prepareOverlaySpecs(
     depDirs: valid,
     volumeMountpoint,
     stateRoot: stateDir,
-    // Pin each mount to the scope's CURRENT base generation (bases are
-    // immutable `g<N>` dirs — see overlay-base.ts). No pointer / no stateDir
-    // → generation 0, the empty cold-start lowerdir.
     generationForScope: stateDir
       ? (scopeHash) => readBasePointerByHash(stateDir, scopeHash)?.generation ?? 0
       : undefined,
   });
   if (!opts.requireProvisioned) {
-    // planning#440 — a creation path has just DECIDED which generation this
-    // session will mount, and from here until `container.start()` returns
-    // nothing the disk janitor can see pins it: the pointer may advance (a
-    // same-scope publish) and `docker ps` cannot list a container that does not
-    // exist yet, so `sweepStaleBaseGenerations` would reap the lowerdir this
-    // container is on its way to mounting. Claim it for the duration. Done here
-    // rather than at volume-create time because the window opens at the
-    // decision, not at the volume; and only on creation paths —
-    // `requireProvisioned` callers (compose mounts, sibling containers) are
-    // reading back what a RUNNING container already has, which `docker ps`
-    // already pins. See overlay-base-claims.ts for why the claim expires
-    // instead of being released.
+    // Pin at selection: until the container exists, Docker cannot show the janitor that this base is needed.
     for (const spec of specs) claimOverlayBaseGeneration(spec.scopeHash, spec.generation);
     return specs;
   }
@@ -232,48 +111,14 @@ export async function prepareOverlaySpecs(
   return provisioned;
 }
 
-// ---------------------------------------------------------------------------
-// Sibling-container overlay resolution (nikzlabs/shipit#2426)
-// ---------------------------------------------------------------------------
-
-/**
- * The (dep dir → overlay volume) pairs a container OTHER than the agent's should
- * nest under its copy of the session's working tree — a plugin companion CLI's
- * invocation container, whose `/project` (and `/plugin` under `repo: self`)
- * otherwise hold the empty mount point the dep dir is on the workspace volume.
- *
- * **The agent container's record is the answer; re-derivation is the fallback.**
- * The record says what the agent ACTUALLY has mounted. Re-deriving reads the
- * live workspace — `shipit.yaml`'s `dep-dirs`, the pnpm signals,
- * `git check-ignore` — all of which move under a running session, and any
- * disagreement hands the sibling a different dependency tree than the agent has.
- * The pnpm signals are the sharp edge: adding a `pnpm-lock.yaml` mid-session
- * flips `isPnpmRepo`, `prepareOverlaySpecs` then returns `[]` for a session whose
- * agent container is still holding live overlays, and the CLI gets the empty
- * directory this whole mechanism exists to avoid.
- *
- * This supersedes an earlier decision, and the reason it does is that the
- * decision's premise expired rather than that it was wrong. `plugin-cli-run.ts`
- * recorded re-derivation as reviewed-and-accepted on the grounds that nothing
- * exposed the container's mounts and that a value resolved once would "stay
- * wrong for good" while a re-derivation at least converges on the next
- * container recreate. Both halves have since stopped holding: the record is
- * exposed (`provisionedOverlayDepDirs`), and it is scoped to the CONTAINER, not
- * the session — a recreate rebuilds it from the new specs, so it converges on
- * exactly the same event, while also being right in between.
- *
- * `null` from the record still means "cannot say" (no container record at all),
- * and only that falls through. Both paths are filtered to volumes that exist:
- * naming one that does not is how a `compose up` fails outright, and how a
- * `docker create` silently conjures an empty volume instead.
- */
+// Prefer recorded mounts: workspace config may change while the agent still uses its original overlays.
 export async function resolveSiblingOverlayDepDirs(
   deps: OverlayProvisionerDeps,
   opts: {
     sessionId: string;
     workspaceDir: string;
     session: Pick<SessionInfo, "remoteUrl" | "kind">;
-    /** The agent container's recorded pairs, or `null` when there is no record. */
+    /** Null means no record; an empty array means no overlays. */
     provisioned: { depDir: string; volumeName: string }[] | null,
   },
 ): Promise<{ depDir: string; volumeName: string }[]> {
@@ -300,28 +145,6 @@ export async function resolveSiblingOverlayDepDirs(
   return usable;
 }
 
-// ---------------------------------------------------------------------------
-// pnpm shared store resolution (docs/197 Part 2)
-// ---------------------------------------------------------------------------
-
-/**
- * docs/197 Part 2 — resolve the shared per-runtime pnpm store host dir for a
- * session, or `undefined` when the store doesn't apply. Returns the dir only
- * when ALL hold:
- *  - the session is overlay-eligible (`resolveOverlayScope` non-null — i.e. the
- *    `OVERLAY_DEP_STORE` kill switch is NOT set, the session is repo-backed and
- *    non-ops). The store rides the same rollout gate as the overlay it replaces,
- *    so the kill-switched path is byte-for-byte unchanged;
- *  - there is a workspace state volume (so the store can be a Subpath of the SAME
- *    superblock as `/workspace` — the hardlink requirement) and a state dir to
- *    anchor it; and
- *  - the workspace is a pnpm repo (`isPnpmRepo`).
- *
- * For a pnpm repo this is populated INSTEAD of `prepareOverlaySpecs` (which
- * returns [] for the same repos) — one mechanism per ecosystem. The dir itself is
- * created lazily at container-create time; this is a pure path computation (no
- * Docker, no fs), safe to call on every creation path.
- */
 export function preparePnpmStore(
   deps: Pick<OverlayProvisionerDeps, "workspaceVolume" | "stateDir">,
   opts: {

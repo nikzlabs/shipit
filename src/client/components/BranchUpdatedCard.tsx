@@ -1,17 +1,3 @@
-/**
- * BranchUpdatedCard — inline record that a merged session's branch was
- * automatically reset to the latest base before the turn ran (docs/218).
- *
- * Rendered right after the user's message (and before the agent's response) when
- * the pre-turn auto-reset fired. A destructive automatic op must not happen
- * silently, so this is the user-facing signal of record: it states the move and
- * shows the concrete `was → now` SHAs for auditability. The card has NO lifecycle
- * (no undo) — the merged change IS the permanent record — so the full payload
- * arrives on the chat message and the component renders straight from props (no
- * store). Per CLAUDE.md §2 (inline beats link-out) the PR number is plain text,
- * not a GitHub link.
- */
-
 import { GitBranchIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import type { BranchAutoResetCard as BranchAutoResetCardData } from "../../server/shared/types.js";
@@ -20,7 +6,6 @@ export interface BranchUpdatedCardProps {
   card: BranchAutoResetCardData;
 }
 
-/** Short, git-style 7-char SHA. */
 function short(sha: string): string {
   return sha.slice(0, 7);
 }
@@ -40,10 +25,6 @@ export function BranchUpdatedCard({ card }: BranchUpdatedCardProps) {
             Branch {card.forced ? "force-reset" : "updated"} to latest{" "}
             <code className="px-1.5 py-0.5 rounded bg-(--color-bg-tertiary)">{card.base}</code>
           </div>
-          {/* planning#279 — a forced reset skipped the "this branch is exactly what
-              merged" safety check, so it must not read as the routine automatic
-              move. The recorded reason is the whole accountability story for a
-              trust-based override, so it is shown, not tucked away. */}
           {card.forced ? (
             <div className="mt-1 text-(--color-text-secondary)">
               This branch was reset to the latest{" "}

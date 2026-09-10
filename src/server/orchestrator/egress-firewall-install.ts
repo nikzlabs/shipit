@@ -1,29 +1,3 @@
-/**
- * Egress firewall install — Tier A enforcement wiring (docs/172 Gap 1, planning#92).
- *
- * Launches the short-lived privileged **installer sidecar** that shares the
- * agent container's network namespace and applies the default-deny `iptables`
- * `OUTPUT` policy + `ipset` allow-set (see `docker/egress-sidecar/init-firewall.sh`
- * and `docs/172-agent-containment/egress-control.md`). The agent container keeps
- * `CapDrop: ["ALL"]` / non-root (planning#33); the capability to install the rules
- * lives only in this sidecar, which exits immediately after — the rules persist
- * in the netns and the agent cannot flush them.
- *
- * Enabled by default (planning#92 default-on): containment runs unless an operator
- * explicitly sets `SESSION_EGRESS_ENFORCE=0`. The install gate also requires the
- * sidecar image (`SESSION_EGRESS_SIDECAR_IMAGE`) — a contained session whose
- * deployment can't supply it fails closed (see `container-lifecycle.ts`). The
- * installer detects incapable hosts (no NET_ADMIN sidecar) and offers the
- * opt-out at install time (the `deployment/{local,vps}/setup.sh` preflights).
- *
- * This module is the orchestration seam. The pieces that are pure and
- * unit-testable — the GitHub meta fetch + parse + fallback, the allow-set
- * inputs, the flag gate — are tested in `egress-firewall-install.test.ts`. The
- * actual `docker run --network container:<id> --cap-add NET_ADMIN` + iptables
- * application requires a live Docker host and is verified there, not in unit
- * tests.
- */
-
 import type Docker from "dockerode";
 import {
   EGRESS_TIER_A_RESOLVE_HOSTS,
@@ -36,44 +10,17 @@ import type { EgressEnforcementStatus } from "../shared/types.js";
 
 const GITHUB_META_URL = "https://api.github.com/meta";
 const META_FETCH_TIMEOUT_MS = 5_000;
-const META_CACHE_TTL_MS = 60 * 60 * 1000; // 1h — GitHub ranges change rarely
+const META_CACHE_TTL_MS = 60 * 60 * 1000;
 
-/**
- * Is Tier A egress enforcement enabled? Default ON — containment runs unless an
- * operator explicitly opts out with `SESSION_EGRESS_ENFORCE=0`. Any other value
- * (including unset/empty) keeps it on, so a stock deployment is contained.
- */
 export function egressEnforceEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
   return env.SESSION_EGRESS_ENFORCE !== "0";
 }
 
-/**
- * Can this deployment actually ENFORCE containment? Enforcement is *active* only
- * when it's enabled AND the privileged installer sidecar image is configured
- * (`SESSION_EGRESS_SIDECAR_IMAGE`). This is the honest answer the UI needs to
- * distinguish containment *policy* (the durable Contained/Open switch) from
- * actual *enforcement*: a deployment with enforcement enabled but no sidecar
- * image shows "Contained" yet would fail closed at session start, so the UI must
- * warn rather than show a reassuring green state. Mirrors the install gate in
- * `container-lifecycle.ts` (`egressEnforce && !egressSidecarImage` → fail-closed).
- */
 export function egressEnforcementActive(env: NodeJS.ProcessEnv = process.env): boolean {
   return egressEnforceEnabled(env) && Boolean(env.SESSION_EGRESS_SIDECAR_IMAGE);
 }
 
-/**
- * docs/285 — WHICH of the two inactive deployments this is. `enforcementActive:
- * false` covers both, and they have **opposite** consequences: with enforcement
- * switched off a Contained session runs **open**, while a missing sidecar image
- * makes it **fail closed** and not start at all. One boolean cannot say which,
- * so every warning built on it alone either overstates one case or hedges into
- * uselessness — and a user cannot tell whether their contained session is about
- * to run wide open or refuse to start.
- *
- * Ordered deliberately: `SESSION_EGRESS_ENFORCE=0` wins when both hold, because
- * the switch is what actually decides the outcome — the missing image only
- * matters once enforcement is back on.
- */
+// Disabled runs open; no-sidecar refuses contained session starts.
 export function egressEnforcementStatus(
   env: NodeJS.ProcessEnv = process.env,
 ): EgressEnforcementStatus {
@@ -81,35 +28,22 @@ export function egressEnforcementStatus(
   return env.SESSION_EGRESS_SIDECAR_IMAGE ? "active" : "no-sidecar";
 }
 
-// --- GitHub meta CIDR fetch (cached + fallback) ----------------------------
-
 interface CidrCache {
   at: number;
   cidrs: string[];
 }
 let cidrCache: CidrCache | null = null;
 
-/** Test-only: clear the module-level GitHub-CIDR cache between cases. */
 export function _resetEgressCidrCache(): void {
   cidrCache = null;
 }
 
 export interface FetchCidrsOpts {
-  /** Inject `fetch` for tests. */
   fetchImpl?: typeof fetch;
-  /** Inject the clock for tests. */
   now?: () => number;
   ttlMs?: number;
 }
 
-/**
- * Fetch the current GitHub egress CIDR ranges from the public `meta` endpoint,
- * parsed + validated via {@link parseGitHubMetaCidrs}/{@link buildIpsetMembers}.
- * Cached for {@link META_CACHE_TTL_MS}. On ANY failure (network, non-2xx, empty
- * parse) falls back to {@link EGRESS_GITHUB_CIDRS_FALLBACK} so GitHub stays
- * reachable — egress enforcement must not make `git` flaky because `meta` was
- * briefly down. The endpoint is public, so no token is needed.
- */
 export async function fetchGitHubMetaCidrs(opts: FetchCidrsOpts = {}): Promise<string[]> {
   const now = opts.now ?? Date.now;
   const ttl = opts.ttlMs ?? META_CACHE_TTL_MS;
@@ -133,58 +67,29 @@ export async function fetchGitHubMetaCidrs(opts: FetchCidrsOpts = {}): Promise<s
   }
 }
 
-// --- Allow-set inputs ------------------------------------------------------
-
 export interface TierAEgressInputs {
-  /** Concrete FQDNs the installer resolves (in the agent netns) and allows. */
   hosts: string[];
-  /** CIDR ranges to allow (GitHub meta + fallback). */
   cidrs: string[];
 }
 
-/**
- * Build the inputs the installer sidecar needs: the concrete resolve-host list
- * plus the GitHub CIDR ranges. Hostname → IP resolution happens inside the
- * sidecar (in the agent's own DNS view, before the deny policy is set), so the
- * pinned IPs match what the agent will actually resolve.
- */
+// Resolve hosts inside the agent's network namespace before installing the deny policy.
 export async function buildTierAEgressInputs(opts: FetchCidrsOpts = {}): Promise<TierAEgressInputs> {
   const cidrs = await fetchGitHubMetaCidrs(opts);
   return { hosts: [...EGRESS_TIER_A_RESOLVE_HOSTS], cidrs };
 }
 
-// --- Installer sidecar launch ----------------------------------------------
-
 export interface InstallEgressFirewallOpts {
-  /** Docker id of the running agent container whose netns we install into. */
   agentContainerId: string;
-  /** Image that contains `init-firewall.sh` + iptables/ipset/bind-tools. */
   sidecarImage: string;
   inputs: TierAEgressInputs;
-  /**
-   * docs/172 Tier B — when set, the installer locks DNS to the in-netns resolver:
-   * port-53 egress is allowed ONLY for this uid (the resolver's upstream queries),
-   * and the agent is blocked from Docker's embedded DNS. Absent → Tier A (DNS open).
-   */
+  /** Restrict upstream DNS to this UID; omitted leaves DNS open. */
   resolverUid?: number;
-  /**
-   * docs/172 Tier C — when set, the installer REDIRECTs the agent's outbound :443
-   * to the in-netns SNI proxy on {@link proxyPort}, excluding this proxy uid (so
-   * the proxy's own dials aren't re-redirected). Absent → no SNI redirect.
-   */
+  /** Redirect HTTPS through the proxy, exempting its own UID. */
   proxyUid?: number;
-  /** Port the SNI proxy listens on (default 8443). Only used with proxyUid. */
   proxyPort?: number;
-  /** Labels to stamp on the sidecar container (for cleanup/discovery). */
   labels?: Record<string, string>;
 }
 
-/**
- * Run the installer sidecar in the agent container's network namespace and wait
- * for it to finish. Throws if the installer exits non-zero (including its
- * `example.com`-must-fail self-test) — the caller treats that as **fail-closed**
- * and tears down the agent container rather than run it with unenforced egress.
- */
 export async function installEgressFirewall(
   docker: Docker,
   opts: InstallEgressFirewallOpts,
@@ -193,11 +98,9 @@ export async function installEgressFirewall(
     Image: opts.sidecarImage,
     Labels: opts.labels,
     HostConfig: {
-      // Share the agent's netns so iptables/ipset apply to ITS stack. The agent
-      // itself has no NET_ADMIN; this sidecar does, and only briefly.
       NetworkMode: `container:${opts.agentContainerId}`,
       CapAdd: ["NET_ADMIN"],
-      AutoRemove: false, // removed manually below after reading the exit code
+      AutoRemove: false, // Read the exit code before removal.
     },
     Env: [
       `EGRESS_ALLOWED_HOSTS=${opts.inputs.hosts.join(" ")}`,
@@ -230,40 +133,14 @@ export async function installEgressFirewall(
   }
 }
 
-// --- Intra-session subnet allow (planning#92 — preview reachability) -------------
-
 export interface AllowEgressToSubnetsOpts {
-  /** Docker id of the running agent container whose netns we add the rule to. */
   agentContainerId: string;
-  /** Image that contains `allow-subnet.sh` + iptables/ip6tables. */
   sidecarImage: string;
-  /** CIDR subnets to allow (the session/compose network's IPAM subnets). */
   subnets: string[];
-  /** Labels to stamp on the sidecar container (for cleanup/discovery). */
   labels?: Record<string, string>;
 }
 
-/**
- * Re-open the agent's default-deny egress to its OWN session/compose network
- * subnet(s), so the (multi-homed) agent — and its in-netns Playwright browser —
- * can reach preview service containers by IP (docs/172 Gap 1, planning#92).
- *
- * The Tier A installer (`init-firewall.sh`) runs at agent-container creation and
- * only allows the *default-gateway* bridge subnet; a session's compose/preview
- * network is created later and attached to the agent after the fact, so its
- * subnet is dropped by `OUTPUT DROP`. This runs the short-lived `allow-subnet.sh`
- * sidecar in the agent's netns to append an `ACCEPT` for that one subnet — the
- * agent gains no route to any other network, so cross-session isolation is
- * unchanged. We deliberately allow only the specific session subnet, never broad
- * RFC1918 (which the host could forward into its own VPC/LAN).
- *
- * **Best-effort, not fail-closed.** Unlike {@link installEgressFirewall} (whose
- * failure tears the container down), a failure here is logged and swallowed by
- * the caller: failing to open the preview subnet only degrades the agent's own
- * browser reachability — it never weakens containment. Returns the validated
- * subnets that were submitted (empty when nothing valid was passed → no-op, no
- * sidecar launched).
- */
+// Preview networks attach after the initial firewall. Allow their specific subnets, not all RFC1918.
 export async function allowEgressToSubnets(
   docker: Docker,
   opts: AllowEgressToSubnetsOpts,
@@ -274,7 +151,6 @@ export async function allowEgressToSubnets(
   const container = await docker.createContainer({
     Image: opts.sidecarImage,
     Labels: opts.labels,
-    // Override the image's default Tier A entrypoint with the subnet-allow script.
     Entrypoint: ["/usr/local/bin/allow-subnet.sh"],
     HostConfig: {
       NetworkMode: `container:${opts.agentContainerId}`,

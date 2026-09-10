@@ -1,10 +1,3 @@
-/**
- * Unit tests for the sub-agent spawn service (docs/144). Exercises the
- * authorization gates (setting, auth, pin, recursion, per-turn cap), the happy
- * path (spawn → usage attribution → chips), and the sign-out credential sweep,
- * using lightweight stubs so no container/worker is involved.
- */
-
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
@@ -46,33 +39,15 @@ interface FakeSession {
   id: string;
   agentId?: string;
   agentPinned?: boolean;
-  /** docs/261 — the row's model selection, which the reviewer ranking must NOT trust blindly. */
   serviceId?: string;
   billingMode?: "sub" | "key";
   model?: string;
 }
 
-/**
- * docs/261 req 7 — the explicit target every non-role spawn now carries.
- *
- * There is no "just the harness" shape left: a one-shot run names the harness,
- * the service, the billing mode, the model AND the reasoning level, and an
- * omission is refused rather than completed from a stored default. The triple is
- * a real catalogue row and matches the fake registry's eligible set, so these
- * tests exercise the gates rather than the validation (which has its own file).
- */
 function explicit(
   subAgentId: "codex" | "claude",
   over: Partial<Extract<SubAgentSpawnTarget, { kind: "explicit" }>> = {},
 ): SubAgentSpawnTarget {
-  // docs/264 — the triple is the named harness's OWN vendor, because resolution
-  // now refuses a harness pointed at a model it shares no API style with (the
-  // check that used to exist only as `assertHarnessCanRunSelection`, and so was
-  // absent from the child path entirely). This fixture used to hand Claude Code
-  // a GPT model on every call and pass, because the fake registry's eligible set
-  // said it could — a fixture blind to the very pairing the real catalogue
-  // forbids. Cross-agent review surfaced the missing check; the fixture was how
-  // it stayed invisible.
   const claude = {
     serviceId: "anthropic",
     billingMode: "sub" as const,
@@ -93,11 +68,6 @@ function explicit(
   };
 }
 
-/**
- * docs/252 phase 9 — harnesses this "deployment" declares it does NOT have.
- * Empty by default: with no declaration nothing is refused for not being
- * installed, which is the report-less (CI, dev checkout) case.
- */
 const uninstalledHarnesses = new Set<string>();
 vi.mock("../../shared/installed-harnesses.js", async (importOriginal) => {
   const actual = await importOriginal<typeof InstalledHarnesses>();
@@ -116,18 +86,9 @@ function makeDeps(opts: {
   spawnResult?: SubAgentRunResult;
   spawnResults?: SubAgentRunResult[];
   runnerPresent?: boolean;
-  /** docs/261 — credential routes the reviewer resolution can choose between. */
   credentialRoutes?: { id: string; serviceId: string; billingMode: "sub" | "key"; via: string; status: string; priority: number; isPrimary: boolean; label: string; createdAt: number; updatedAt: number; exhaustedUntil?: number; exhaustedAt?: number }[];
-  /** docs/264-agent-roles req 8 — standing instructions stored on the role being started. */
   rolePrompt?: string;
-  /** docs/275 — override the registry's eligible set where a test spawns a harness the default rows don't cover. */
   eligibleModels?: { serviceId: string; serviceName: string; billingMode: string; modelId: string; label: string }[];
-  /**
-   * 2026-08-21 regression — credential provisioning runs only for a
-   * ContainerSessionRunner with a credentialsDir. `containerRunner` grafts the
-   * class prototype onto the fake (own props shadow the accessors) so
-   * `instanceof` passes without constructing a real container runner.
-   */
   credentialsDir?: string;
   containerRunner?: boolean;
 }) {
@@ -135,8 +96,6 @@ function makeDeps(opts: {
     opts.session === undefined ? { id: "s1", agentId: "claude", agentPinned: true } : opts.session;
   const emitMessage = vi.fn();
   const record = vi.fn();
-  // docs/264 — the reviewer as the store synthesizes it: automatic params, plus
-  // whatever editable metadata was stored under its reserved key.
   const reviewerRole = {
     name: "reviewer",
     params: { kind: "auto" as const },
@@ -154,27 +113,17 @@ function makeDeps(opts: {
   }));
   const recordAgentRateLimits = vi.fn();
   const replaceInProgress = vi.fn();
-  // planning#280 — the pending → terminal transition patches the finalized DB row
-  // whenever the originating turn is no longer holding the card.
   const updateSubAgentConsultCard = vi.fn(() => true);
   const append = vi.fn();
-  // emitChatCard reads chatMessageGroups/steeredMessages and mutates recordedCards,
-  // then persists via chatHistoryManager.replaceInProgress — stub all four.
   const runner = {
     subAgentSpawnsThisTurn: opts.subAgentSpawnsThisTurn ?? 0,
-    /** docs/261 — the resident CLI's spawn stamp; a test sets it to say what is really running. */
     appliedSpawnIdentity: undefined as string | undefined,
-    // A FOREGROUND consult: the invoking agent is blocked waiting, so its turn
-    // is still in flight and the card rides the in-progress turn. The
-    // backgrounded (post-turn) case has its own describe block below.
     running: true,
     emitMessage,
     chatMessageGroups: [] as never[],
     steeredMessages: [] as never[],
     recordedCards: [] as never[],
-    // Own properties (even where undefined/empty) so the containerRunner
-    // graft's prototype members — which read the absent `this.turn` — never
-    // fire. These are every runner member the card-persistence path touches.
+    // Own properties shadow container accessors that require the absent this.turn.
     committedBodyIds: undefined,
     getTurnEventBuffer: () => [] as never[],
     lastPersistedBufferIndex: 0,
@@ -191,19 +140,12 @@ function makeDeps(opts: {
       },
     ),
   };
-  // After the literal, so every own data property above shadows the class's
-  // prototype accessors instead of being routed through them.
   if (opts.containerRunner) Object.setPrototypeOf(runner, ContainerSessionRunner.prototype);
   const selectAccountForTurn = vi.fn((_provider: string, selectOpts?: { exclude?: string[] }): AccountSelection => ({
     ok: true as const,
     route: { kind: "account" as const, id: selectOpts?.exclude?.length ? "acct-secondary" : "acct-primary" },
   }));
   const markAccountExhausted = vi.fn();
-  // planning#344 — the reactive failover benches a string-delivered credential
-  // through the STORE, so the fake holds a mutable working copy the bench can
-  // stamp and the re-select walk can then see. Mirrors the real store's rules:
-  // an unknown id and a metered `key` row are refused (null); a benched row is
-  // returned stamped.
   const credentialRouteRows = (opts.credentialRoutes ?? []).map((r) => ({ ...r }));
   const markCredentialRouteExhausted = vi.fn((routeId: string, until: number) => {
     const row = credentialRouteRows.find((r) => r.id === routeId);
@@ -219,23 +161,12 @@ function makeDeps(opts: {
     } as never,
     credentialStore: {
       getEnableSubAgents: () => opts.enableSubAgents ?? true,
-      // planning#342 — benching reads the failing row's own service rather than
-      // deriving one from the harness, so the fake has to answer for the
-      // account ids these tests fail over between. planning#344 — stored
-      // `cred_` rows answer too, so the string walk's bench and the per-route
-      // spawn shaping resolve against the same rows the test wired.
       getCredentialRoute: (routeId: string) =>
         credentialRouteRows.find((r) => r.id === routeId)
         ?? (routeId.startsWith("acct-") ? { id: routeId, serviceId: "openai" } : undefined),
       markCredentialRouteExhausted,
       getFailoverCutoffs: () => ({ session: 90, weekly: 90 }),
-      // docs/261 — the reviewer resolution reads the two slots and the credential
-      // routes. Unpinned + whatever routes the test wired: an unpinned slot is
-      // *auto-configured*, which is the state a fresh install is in.
       getReviewerPin: () => undefined,
-      // docs/264 — a role now resolves through the role store, and the reviewer
-      // is the role it always yields (synthesized, params resolved by ShipIt), so
-      // `--role reviewer` reaches exactly docs/261's ranking through one more hop.
       getRoles: () => [reviewerRole],
       getRole: (name: string) => (name === "reviewer" ? reviewerRole : undefined),
       listCredentialRoutes: (serviceId?: string, billingMode?: string) =>
@@ -255,10 +186,6 @@ function makeDeps(opts: {
             name: "Codex",
             installed: true,
             hasRunnableModels: opts.hasRunnableModels ?? true,
-            // docs/252 phase 3 — a real registry entry carries the eligible set.
-            // docs/261 req 7 — and it is what an EXPLICIT call is checked
-            // against: a harness told to run a model no credential of its own
-            // offers is refused rather than rerouted.
             eligibleModels: opts.eligibleModels ?? [
               {
                 serviceId: "openai",
@@ -274,8 +201,6 @@ function makeDeps(opts: {
                 modelId: "gpt-5.6-terra",
                 label: "GPT-5.6 Terra",
               },
-              // A second SERVICE and a second billing MODE, so a test can vary
-              // the axes a hard-coded `openai/sub` would otherwise satisfy.
               {
                 serviceId: "anthropic",
                 serviceName: "Anthropic",
@@ -283,11 +208,6 @@ function makeDeps(opts: {
                 modelId: "claude-opus-5",
                 label: "Opus 5",
               },
-              // …and the same model on the SUBSCRIPTION, which is what an
-              // `explicit("claude")` target names: a Claude Code spawn has to be
-              // pointed at a model Claude Code can actually speak to, now that
-              // resolution refuses the pairing rather than leaving it to a
-              // registry set a fake could always widen.
               {
                 serviceId: "anthropic",
                 serviceName: "Anthropic",
@@ -299,9 +219,6 @@ function makeDeps(opts: {
           })),
     } as never,
     runnerRegistry: { get: vi.fn(() => (opts.runnerPresent === false ? undefined : runner)) } as never,
-    // planning#344 — `subscriptionLimitsFor` is what the string walk reaches
-    // for the same quota snapshots the account walk uses; an empty map is the
-    // "no reader, no opinion" neutral.
     providerAccountManager: { selectAccountForTurn, markAccountExhausted, subscriptionLimitsFor: vi.fn(() => ({})) } as never,
     usageManager: { record, getSessionUsage, getSessionTokenTotals } as never,
     recordAgentRateLimits,
@@ -337,9 +254,6 @@ describe("runSubAgent — authorization gates", () => {
     await expectServiceError(runSubAgent(deps, "s1", { target: explicit("codex"), prompt: "review", depth: 0 }), 400);
   });
 
-  // docs/252 phase 9 (req 14) — a harness this deployment did not install offers
-  // nothing, credentials or not. Checked BEFORE auth: "connect it in Settings"
-  // would be a dead end for a harness that is not here.
   it("rejects a harness this deployment did not install (400)", async () => {
     uninstalledHarnesses.add("codex");
     const { deps, runner } = makeDeps({});
@@ -376,15 +290,7 @@ describe("runSubAgent — authorization gates", () => {
     await expectServiceError(runSubAgent(deps, "s1", { target: explicit("codex"), prompt: "   ", depth: 0 }), 400);
   });
 
-  // docs/261 — a harness pointed at a model no credential of its own offers is
-  // refused rather than rerouted: an explicit call is taken literally.
   it("rejects an explicit selection the named harness cannot run (400)", async () => {
-    // A REAL catalogue row on the other vendor, so what is being refused is the
-    // pairing rather than a typo'd model id. docs/264 moved this refusal into
-    // resolution (`resolveSpawnTarget`, a catalogue fact — no API style in
-    // common) so that BOTH spawn commands get it; it used to live only in
-    // `assertHarnessCanRunSelection` here, which is why a child session naming
-    // the same incoherent pair was accepted and persisted.
     const { deps, runner } = makeDeps({});
     const err = await expectServiceError(
       runSubAgent(deps, "s1", {
@@ -402,12 +308,6 @@ describe("runSubAgent — authorization gates", () => {
     expect(runner.spawnSubAgent).not.toHaveBeenCalled();
   });
 
-  /**
-   * The per-turn budget is spent by spawns, not by attempts. The cap is CHECKED
-   * before anything is resolved and INCREMENTED only once every refusal is
-   * behind us — otherwise three typo'd calls exhaust a turn's reviews without a
-   * single sub-agent having run.
-   */
   it("does not spend a cap slot on a refused call", async () => {
     const { deps, runner } = makeDeps({});
     for (let i = 0; i < SUB_AGENT_PER_TURN_CAP; i++) {
@@ -421,19 +321,10 @@ describe("runSubAgent — authorization gates", () => {
       );
     }
     expect(runner.subAgentSpawnsThisTurn).toBe(0);
-    // …and the turn's reviews still work.
     await runSubAgent(deps, "s1", { target: explicit("codex"), prompt: "review", depth: 0 });
     expect(runner.spawnSubAgent).toHaveBeenCalledTimes(1);
   });
 
-  /**
-   * Every gate about the CALLER — its session, its depth, its budget — runs
-   * before the target is resolved, so the status a caller gets says what is
-   * actually wrong with the call. A sub-agent trying to spawn a sub-agent is
-   * refused for recursion even on an install where no reviewer could have been
-   * resolved anyway; the reverse order would report "no reviewer available" and
-   * send the caller looking at its Settings.
-   */
   it("refuses a recursive role call for recursion, not for an unresolvable reviewer", async () => {
     const { deps } = makeDeps({ credentialRoutes: [] });
     await expectServiceError(
@@ -451,11 +342,6 @@ describe("runSubAgent — authorization gates", () => {
   });
 });
 
-/**
- * docs/261 reqs 6 + 4 — asking for a review by ROLE. The caller names nothing
- * about who reviews; the harness, the model and the level are resolved from the
- * user's reviewer settings and ranked against what the session is running.
- */
 describe("runSubAgent — --role reviewer", () => {
   const keyRoute = (serviceId: string) => ({
     id: `${serviceId}-key`,
@@ -478,32 +364,12 @@ describe("runSubAgent — --role reviewer", () => {
     await runSubAgent(deps, "s1", { target: { kind: "role", role: "reviewer", overrides: {} }, prompt: "review", depth: 0 });
     const arg = (runner.spawnSubAgent as unknown as { mock: { calls: Record<string, unknown>[][] } })
       .mock.calls[0][0];
-    // The session has NO model selection, so the ranking collapses onto the
-    // harness axis (tierBasis "harness-only") — and since docs/268 BOTH derived
-    // slots reach a different-harness candidate (the anthropic key resolves
-    // onto OpenCode) and tie at the same rung. The harness-only tie-break
-    // (planning#408) then prefers the GPT slot: a Claude Code session most
-    // likely runs a Claude-family model, so the anthropic slot's claude-opus-5
-    // on OpenCode would review its own likely author. A session with a known
-    // model still ranks by identity (the reviewer-model tests pin that).
     expect(arg.agentId).toBe("codex");
     expect(arg.model).toBe("gpt-5.6-sol");
-    // req 5 — the level is part of the reviewer, never the harness's own default.
     expect(arg.reasoningEffort).toBeTruthy();
-    // The captured route travels with it: a key-delivered credential is shaped,
-    // so the spawn carries the endpoint the reviewer's service is reached on.
     expect(arg.serviceRouting).toBeDefined();
   });
 
-  /**
-   * docs/261 phase 4 (req 9) — the consult card reports what the review ACTUALLY
-   * ran on, and "actually" is the load-bearing word: the card, the spawn and the
-   * usage row all read the one target captured at admission, so they cannot
-   * disagree about which model reviewed the work or which credential paid.
-   *
-   * A role is the case that needs this most. Nothing in the call names a model,
-   * so without the card the only record of who reviewed is a host log line.
-   */
   it("persists the resolved reviewer on the consult card, matching the spawn and the bill", async () => {
     const { deps, runner, emitMessage, record } = makeDeps({
       session: { id: "s1", agentId: "claude", agentPinned: true },
@@ -518,31 +384,19 @@ describe("runSubAgent — --role reviewer", () => {
       .filter((m) => m.type === "sub_agent_consult_card")
       .map((m) => m.card!);
 
-    // Both deliveries — the pending card and the terminal one.
     expect(cards).toHaveLength(2);
     for (const card of cards) {
       expect(card.subAgentId).toBe(arg.agentId);
       expect(card.runOn).toEqual({
-        // Same resolution as the spawn test above (planning#408: the
-        // harness-only tie-break lands on the GPT slot).
         serviceId: "openai",
         billingMode: "key",
         modelId: arg.model,
         reasoningEffort: arg.reasoningEffort,
       });
     }
-    // The same model the consult's usage row is attributed to. Two derivations
-    // of "what ran" is how a card ends up naming a model the bill never saw.
     expect(record.mock.calls[0][5]).toMatchObject({ model: arg.model });
   });
 
-  /**
-   * docs/264-agent-roles req 14 — the card says what was ASKED FOR as well as what ran.
-   *
-   * `runOn` alone cannot answer "was this the reviewer, or `deep-dive`?": a role
-   * resolves to a tuple, and the reviewer's resolves differently per run, so the
-   * tuple is not the name and the name is not recoverable from it.
-   */
   it("records the ROLE on the consult card, beside what it resolved to", async () => {
     const { deps, emitMessage } = makeDeps({
       session: { id: "s1", agentId: "claude", agentPinned: true },
@@ -558,8 +412,6 @@ describe("runSubAgent — --role reviewer", () => {
   });
 
   it("leaves the role off the card when the caller named all five parameters", async () => {
-    // Nothing was asked for by name, so there is nothing to attribute — an
-    // invented role name would be worse than an absent one.
     const { deps, emitMessage } = makeDeps({});
     await runSubAgent(deps, "s1", { target: explicit("codex"), prompt: "go", depth: 0 });
     const card = emitMessage.mock.calls
@@ -570,11 +422,6 @@ describe("runSubAgent — --role reviewer", () => {
     expect(card?.roleName).toBeUndefined();
   });
 
-  /**
-   * docs/264-agent-roles req 8 — a role's standing instructions reach the callee, labelled,
-   * with the run's own task. A sub-agent has one prompt channel, so this is the
-   * only way a role can say what the job IS rather than only what runs it.
-   */
   it("joins the role's standing instructions onto the prompt it spawns with", async () => {
     const { deps, runner } = makeDeps({
       credentialRoutes: [keyRoute("openai"), keyRoute("anthropic")],
@@ -606,8 +453,6 @@ describe("runSubAgent — --role reviewer", () => {
     expect(arg.prompt).toBe("Review PR 12.");
   });
 
-  // req 4 — "reviewing works whichever model is implementing", with nothing to
-  // keep in sync. The same install, a different implementer, a different answer.
   it("sends a Codex session's work the other way, with nothing reconfigured", async () => {
     const { deps, runner } = makeDeps({
       session: { id: "s1", agentId: "codex", agentPinned: true },
@@ -619,21 +464,8 @@ describe("runSubAgent — --role reviewer", () => {
     expect(arg.agentId).toBe("claude");
   });
 
-  /**
-   * req 4 — the ranking compares against what the session is RUNNING, not what
-   * its row says, and the difference is not cosmetic. The row is mutable under a
-   * running turn (`set_model`), so the failure this pins is: a Claude harness
-   * produces work with DeepSeek, the user switches the picker to Opus, the agent
-   * then asks for a review — and a row-based ranking calls DeepSeek the distant
-   * one and hands the work straight back to the model that wrote it.
-   *
-   * Reading the resident process's spawn stamp instead gives the opposite, and
-   * correct, answer. A test that used the row would pass either way, which is
-   * why the two are deliberately set to DIFFERENT models here.
-   */
   it("ranks against the resident process's stamp, not a row changed mid-turn", async () => {
     const { deps, runner } = makeDeps({
-      // The row: the user has just switched the picker to Opus.
       session: {
         id: "s1",
         agentId: "claude",
@@ -644,34 +476,24 @@ describe("runSubAgent — --role reviewer", () => {
       },
       credentialRoutes: [keyRoute("anthropic"), keyRoute("deepseek")],
     });
-    // What is actually producing the work: DeepSeek, on the Claude harness.
     runner.appliedSpawnIdentity = "claude|deepseek|key|deepseek-flash|anthropic-messages|https://x";
     await runSubAgent(deps, "s1", { target: { kind: "role", role: "reviewer", overrides: {} }, prompt: "review", depth: 0 });
     const arg = (runner.spawnSubAgent as unknown as { mock: { calls: Record<string, unknown>[][] } })
       .mock.calls[0][0];
-    // Anthropic: a different family from what ran. Ranking against the ROW would
-    // have picked DeepSeek here — the thing that produced the work.
     expect(arg.model).toBe("claude-opus-5");
   });
 
-  // The review STOPS and says so rather than spawning something unrunnable —
-  // docs/252 req 9's shape, never a silent no-op.
   it("refuses when no configured reviewer has a usable credential", async () => {
     const { deps, runner } = makeDeps({ credentialRoutes: [] });
     const err = await expectServiceError(
       runSubAgent(deps, "s1", { target: { kind: "role", role: "reviewer", overrides: {} }, prompt: "review", depth: 0 }),
       400,
     );
-    // docs/264 — the refusal is now the ROLE's ("the role X cannot run: …"),
-    // because every role resolves through one path. The remedy is what matters
-    // and it is unchanged: connect a service, or wait for the quota.
     expect(err.message).toContain('role "reviewer" cannot run');
     expect(err.message).toContain("Connect a service in Settings");
     expect(runner.spawnSubAgent).not.toHaveBeenCalled();
   });
 
-  // The role resolves a reviewer; it does not bypass the gates that decide
-  // whether ANY sub-agent may run.
   it("still honours the global gate", async () => {
     const { deps } = makeDeps({
       enableSubAgents: false,
@@ -685,12 +507,6 @@ describe("runSubAgent — --role reviewer", () => {
 });
 
 describe("runSubAgent — happy path", () => {
-  /**
-   * planning#344 — docs/252's string-delivered subscription shape: GLM's
-   * coding plan, several stored keys in one `(zai, sub)` group. This is the
-   * credential set a consult must fail over across exactly as a turn does —
-   * the shape the account-only bench-and-retry loop used to leave stranded.
-   */
   const glmPlanCredential = (id: string, priority: number) => ({
     id,
     serviceId: "zai",
@@ -714,22 +530,6 @@ describe("runSubAgent — happy path", () => {
     expect(runner.spawnSubAgent).toHaveBeenCalledWith(
       expect.objectContaining({ agentId: "codex", prompt: "review this", depth: 0 }),
     );
-    // usage attributed to the sub-agent, not the pinned agent — now WITH the
-    // sub-agent's token breakdown (docs/144), not undefined/undefined.
-    //
-    // docs/252 phase 3 — and with an explicit cost SOURCE plus full attribution.
-    // A one-shot consult's figure is already this run's own, which `record()`
-    // previously inferred from `subAgentId` being set; the discriminator states
-    // it instead, so a rate-derived figure and a harness running total can
-    // coexist. The attribution is present even though this fixture sets NO
-    // sub-agent default: an unset default means "the harness's first model", so
-    // it resolves to the first eligible entry rather than writing a `legacy`
-    // row — which is supposed to mean "before ShipIt tracked this", not "this
-    // install never opened the Settings tab".
-    // The cost is ZERO, not the consult's reported 0.03: the resolved selection
-    // is a SUBSCRIPTION, and a subscription turn spends no money (req 16). The
-    // rates ride along in `attribution` so phase 6 can still say what it would
-    // have cost at API rates.
     expect(record).toHaveBeenCalledWith("s1", 0, 4200, 1000, 200, {
       subAgentId: "codex",
       costSource: "per-turn",
@@ -737,16 +537,8 @@ describe("runSubAgent — happy path", () => {
       attribution: expect.objectContaining({ serviceId: "openai", billingMode: "sub" }),
       contextTokens: 1200,
     });
-    // transient running spinner, the DURABLE pending card (planning#280), the live
-    // bill refresh, then the terminal consult card.
     const msgs = emitMessage.mock.calls.map((c) => c[0] as { type: string });
-    // The spinner carries the OWNING session id so the client can drop it when
-    // it arrives for a session other than the one being viewed.
     expect(msgs[0]).toMatchObject({ type: "sub_agent_spawn", sessionId: "s1", subAgentId: "codex" });
-    // docs/261 phase 4 (req 9) — the card says what the consult RUNS ON from the
-    // moment it is created, not only once it finishes: a backgrounded consult is
-    // in flight for minutes, and a row that cannot name the model until then is
-    // useless for exactly as long as anyone is looking at it.
     expect(msgs[1]).toMatchObject({
       type: "sub_agent_consult_card",
       card: expect.objectContaining({
@@ -760,7 +552,6 @@ describe("runSubAgent — happy path", () => {
         },
       }),
     });
-    // the bill update is flagged subAgent so it doesn't move the context dial
     expect(msgs[2]).toMatchObject({
       type: "usage_update",
       sessionId: "s1",
@@ -770,30 +561,21 @@ describe("runSubAgent — happy path", () => {
     });
     expect(msgs[3]).toMatchObject({
       type: "sub_agent_consult_card",
-      // docs/220 — the card carries the sub-agent's verbatim output so the
-      // brokered consult is visible, not just attested.
       card: expect.objectContaining({
         subAgentId: "codex",
         status: "success",
         durationMs: 4200,
         costUsd: 0.03,
         outputMarkdown: "2 bugs found",
-        // Carried through the pending → terminal patch. The patch spreads the
-        // pending card, so a field added to one and not the other would vanish
-        // exactly when the card becomes the permanent record.
         runOn: expect.objectContaining({ modelId: "gpt-5.6-sol" }),
       }),
     });
-    // the spinner and the card share a spawnId (the card clears the spinner)
     expect((msgs[3] as unknown as { card: { spawnId: string } }).card.spawnId).toBe(
       (msgs[0] as unknown as { spawnId: string }).spawnId,
     );
-    // planning#280 — the pending and terminal deliveries are ONE card, patched in
-    // place. Two ids would render two rows for one consult.
     expect((msgs[3] as unknown as { card: { cardId: string } }).card.cardId).toBe(
       (msgs[1] as unknown as { card: { cardId: string } }).card.cardId,
     );
-    // the card was persisted in-band (not emit-only) — survives switch/reload
     expect(replaceInProgress).toHaveBeenCalled();
   });
 
@@ -801,8 +583,6 @@ describe("runSubAgent — happy path", () => {
     const { deps, emitMessage } = makeDeps({
       spawnResult: {
         status: "success",
-        // A two-message answer — the exact shape that used to reach the caller
-        // as its tail only.
         text: "The plan is viable, but…\n\nI found nine definite problems.",
         truncated: false,
         durationMs: 1102_000,
@@ -811,24 +591,15 @@ describe("runSubAgent — happy path", () => {
     });
     const res = await runSubAgent(deps, "s1", { target: explicit("codex"), prompt: "review", depth: 0 });
 
-    // the LAST consult-card emission is the terminal one (the first is pending)
     const card = emitMessage.mock.calls
       .map((c) => c[0] as { type: string; card?: { spawnId: string; outputMarkdown?: string } })
       .filter((m) => m.type === "sub_agent_consult_card")
       .at(-1)?.card;
-    // What the agent acts on and what the user reads are one document, named by
-    // one id — divergence here is the planning#247 failure, silent and undetectable.
     expect(card?.outputMarkdown).toBe(res.text);
     expect(res.spawnId).toBe(card?.spawnId);
   });
 
   it("emits a long consult as its preview line while persisting the whole output (docs/244, planning#299)", async () => {
-    // The card face draws one 140-character line and the viewer is a click away,
-    // so under requirement 1 the rest doesn't belong on the wire. What must NOT
-    // change is the stored copy: it is what the fetch endpoint serves and what
-    // `shipit agent result` reads back, so planning#247's "one artifact, two
-    // surfaces" still holds — the preview is a transport detail, not a second
-    // extraction.
     const review = Array.from({ length: 300 }, (_, i) => `finding ${i}`).join("\n");
     const { deps, emitMessage, replaceInProgress } = makeDeps({
       spawnResult: { status: "success", text: review, truncated: false, durationMs: 900_000, costUsd: 0 },
@@ -843,9 +614,7 @@ describe("runSubAgent — happy path", () => {
     expect(emitted?.outputTruncated).toBe(true);
     expect(emitted?.outputMarkdown).not.toContain("finding 299");
 
-    // The caller still gets the whole thing…
     expect(res.text).toBe(review);
-    // …and so does chat history, which is where the fetch resolves against.
     const persistedCard = replaceInProgress.mock.calls
       .map((c) => c[1] as { subAgentConsult?: { outputMarkdown?: string; outputTruncated?: true } }[])
       .at(-1)
@@ -854,11 +623,6 @@ describe("runSubAgent — happy path", () => {
     expect(persistedCard?.subAgentConsult?.outputTruncated).toBeUndefined();
   });
 
-  // docs/261 req 7 — the model and the effort come from the CALL, and they are
-  // the whole reason the explicit shape exists: `--model` used to be parsed by
-  // the shim and dropped before the route, while the effort came from a stored
-  // per-harness default the caller could not see. Both now reach the spawn
-  // verbatim, which is the hop this test pins.
   it("forwards the explicitly named model and effort to the spawn", async () => {
     const { deps, runner } = makeDeps({});
     await runSubAgent(deps, "s1", {
@@ -871,11 +635,6 @@ describe("runSubAgent — happy path", () => {
     );
   });
 
-  // The model has no "omit it" branch any more, and the effort's absence is a
-  // FACT rather than an unset default: a reviewer's level is part of what a
-  // reviewer IS (req 5), an explicit call on a level-having harness must name
-  // one (req 7), and only a harness that declares no levels runs with the key
-  // absent — because there is no flag to pass there (docs/275 req 2, below).
   it("always passes a model and an effort — there is no unset default left", async () => {
     const { deps, runner } = makeDeps({});
     await runSubAgent(deps, "s1", { target: explicit("codex"), prompt: "review", depth: 0 });
@@ -885,14 +644,6 @@ describe("runSubAgent — happy path", () => {
     expect(arg.model).toBe("gpt-5.6-sol");
   });
 
-  /**
-   * docs/275 req 2 — the motivating acceptance case, through the whole service:
-   * a fully-specified target on a harness that declares no reasoning levels
-   * (grok, docs/274 req 8) validates and spawns, with `reasoningEffort` absent
-   * from the spawn options — the absence of the KEY is what makes the adapter
-   * pass no reasoning flag. This is the plumbing the docs/274 Phase 10
-   * "`shipit agent run` both directions" item was structurally blocked on.
-   */
   it("spawns a complete target on a no-levels harness with the effort key absent (docs/275)", async () => {
     const { deps, runner } = makeDeps({
       eligibleModels: [{
@@ -923,14 +674,6 @@ describe("runSubAgent — happy path", () => {
     expect("reasoningEffort" in arg).toBe(false);
   });
 
-  /**
-   * docs/261 req 3 — a model is `(service, billing mode, id)`, and all three
-   * come from the call. Every other test here happens to name `openai/sub`,
-   * which a hop that hard-coded or defaulted those two would satisfy; this one
-   * names a different service AND a different mode, and follows them all the way
-   * into the usage row's attribution — which is where getting them wrong bills
-   * the wrong credential.
-   */
   it("carries the named service and billing mode into the spawn and the attribution", async () => {
     const { deps, runner, record } = makeDeps({
       credentialRoutes: [{
@@ -966,15 +709,8 @@ describe("runSubAgent — happy path", () => {
       spawnResult: { status: "success", text: "ok", truncated: false, durationMs: 1000, costUsd: 0, rateLimits },
     });
     await runSubAgent(deps, "s1", { target: explicit("codex"), prompt: "review", depth: 0 });
-    // Attributed to the sub-agent (codex), so its pill — not the pinned
-    // agent's — refreshes. docs/252 req 10 adds the session AND the route the
-    // consult actually ran on: quota is filed against whatever `(service,
-    // mode)` owns that route, so letting the orchestrator re-derive one would
-    // name a credential this consult never used.
     const call = recordAgentRateLimits.mock.calls[0];
     expect(call.slice(0, 4)).toEqual(["codex", rateLimits.session, rateLimits.weekly, "s1"]);
-    // The 5th argument is the consult's OWN resolved route id, which is what
-    // stops the orchestrator re-deriving one from the session.
     expect(call).toHaveLength(5);
   });
 
@@ -995,10 +731,6 @@ describe("runSubAgent — happy path", () => {
       { optimistic?: boolean } | undefined,
     ];
     expect(service).toBe("openai");
-    // docs/260-turn-level-account-routing req 12 — `optimistic` (return blocked accounts anyway) belongs
-    // to the TURN's own attempt loop, which will actually try the result. A
-    // consult is a non-turn caller: it selects non-optimistically, so a
-    // refusal-blocked account is skipped rather than handed back.
     expect(selectOpts?.optimistic).toBeUndefined();
     expect(runner.spawnSubAgent).toHaveBeenCalledTimes(1);
   });
@@ -1018,10 +750,6 @@ describe("runSubAgent — happy path", () => {
     expect(result.text).toBe("review complete");
   });
 
-  // Same blind spot as a primary turn: a consult that hits the limit mid-run
-  // gets the notice as its final assistant text and still reports `success`,
-  // so gating the fallback on `error` alone silently returned the notice as
-  // the consult's answer instead of failing over.
   it("benches and retries when the limit arrives as the run's final text on a success", async () => {
     const { deps, runner, markAccountExhausted } = makeDeps({
       spawnResults: [
@@ -1081,9 +809,6 @@ describe("runSubAgent — happy path", () => {
     );
   });
 
-  // A text-channel notice leaves `status: "success"`, so without the promotion
-  // the consult renders as a completed review whose entire answer is the
-  // provider's limit notice.
   it("fails the consult when the last account's limit arrived as final text", async () => {
     const earliestResetAt = "2099-08-02T11:00:00.000Z";
     const { deps, runner, selectAccountForTurn } = makeDeps({
@@ -1100,9 +825,6 @@ describe("runSubAgent — happy path", () => {
     expect(result.error).toContain("out of quota");
   });
 
-  // The error is the provider talking; only when it is silent do we read the
-  // model's words. A non-quota failure whose partial output happens to look
-  // like a notice must not bench a healthy account.
   it("does not read the text channel when the run carries a non-quota error", async () => {
     const { deps, runner, markAccountExhausted } = makeDeps({
       spawnResult: { status: "error", text: "You've hit your session limit · resets 5:10pm (UTC)", error: "This account cannot access model opus", truncated: false, durationMs: 10, costUsd: 0 },
@@ -1123,12 +845,6 @@ describe("runSubAgent — happy path", () => {
     expect(markAccountExhausted).not.toHaveBeenCalled();
   });
 
-  // planning#344 — docs/252 req 12, the one-shot half: a consult on a
-  // string-delivered subscription must bench a spent credential through the
-  // store and retry on the next one in the user's order, exactly as a turn on
-  // the same group already does. Before the fix the bench-and-retry loop was
-  // gated on the ACCOUNT id, so a string route neither benched nor retried —
-  // the run simply failed.
   it("benches a hard-exhausted string credential and retries on the next in the group", async () => {
     const resetAt = "2099-08-02T12:00:00.000Z";
     const { deps, runner, markCredentialRouteExhausted, markAccountExhausted } = makeDeps({
@@ -1149,13 +865,9 @@ describe("runSubAgent — happy path", () => {
     const result = await runSubAgent(deps, "s1", { target, prompt: "review", depth: 0 });
 
     expect(markCredentialRouteExhausted).toHaveBeenCalledWith("cred-glm-a", Date.parse(resetAt));
-    // The string shape benches through the STORE, never the account manager.
     expect(markAccountExhausted).not.toHaveBeenCalled();
     expect(runner.spawnSubAgent).toHaveBeenCalledTimes(2);
     expect(result.text).toBe("review complete");
-    // Each attempt reads ITS OWN credential's delivery variable — a retry that
-    // kept the first attempt's shaping would authenticate with the credential
-    // the loop just benched while attributing the run to the one it moved to.
     const calls = (runner.spawnSubAgent as unknown as { mock: { calls: Record<string, unknown>[][] } })
       .mock.calls;
     expect(calls[0][0].serviceRouting).toMatchObject({
@@ -1184,18 +896,12 @@ describe("runSubAgent — happy path", () => {
     });
     const result = await runSubAgent(deps, "s1", { target, prompt: "review", depth: 0 });
 
-    // Both credentials attempted exactly once, both benched, and the walk's
-    // `all_exhausted` ends the run instead of a third spawn.
     expect(runner.spawnSubAgent).toHaveBeenCalledTimes(2);
     expect(markCredentialRouteExhausted).toHaveBeenCalledTimes(2);
     expect(result.status).toBe("error");
     expect(result.error).toContain("out of quota");
   });
 
-  // req 12's other half, stated for the consult path: a metered key has no
-  // subscription window to exhaust, so the store refuses to bench it and the
-  // loop stops on the run's original error rather than retrying the only
-  // credential the walk can ever name.
   it("does not fail over a metered key that reports exhaustion", async () => {
     const { deps, runner, markCredentialRouteExhausted } = makeDeps({
       spawnResult: { status: "error", text: "", error: "Quota exceeded", truncated: false, durationMs: 10, costUsd: 0 },
@@ -1215,7 +921,6 @@ describe("runSubAgent — happy path", () => {
     const result = await runSubAgent(deps, "s1", { target, prompt: "review", depth: 0 });
 
     expect(runner.spawnSubAgent).toHaveBeenCalledTimes(1);
-    // The bench was attempted and refused by the store's `key` rule.
     expect(markCredentialRouteExhausted).toHaveBeenCalledWith("cred-glm-key", expect.any(Number));
     expect(result.status).toBe("error");
     expect(result.error).toBe("Quota exceeded");
@@ -1241,8 +946,6 @@ describe("runSubAgent — happy path", () => {
       .map((c) => c[0] as { type: string; card?: { cardId?: string } })
       .filter((m) => m.type === "sub_agent_consult_card")
       .map((m) => m.card?.cardId);
-    // planning#280 — two runs × (pending + terminal) = 4 emissions, but only TWO
-    // distinct cards: each run's pending row is patched, not duplicated.
     expect(cardIds).toHaveLength(4);
     expect(new Set(cardIds).size).toBe(2);
     expect(cardIds[0]).toBe(cardIds[1]);
@@ -1253,9 +956,6 @@ describe("runSubAgent — happy path", () => {
   it("finalizes the pending card as an error when the spawn throws (never left pending)", async () => {
     const { deps, runner, emitMessage, updateSubAgentConsultCard } = makeDeps({});
     runner.spawnSubAgent = vi.fn(async () => {
-      // The backgrounded shape docs/236 recommends: the launching turn ends
-      // while the consult is still in flight, so the terminal state has to land
-      // via the finalized-DB-row patch rather than this turn's recorded card.
       runner.running = false;
       throw new Error("worker unreachable");
     });
@@ -1272,9 +972,7 @@ describe("runSubAgent — happy path", () => {
       type: "sub_agent_consult_card",
       card: expect.objectContaining({ status: "error" }),
     });
-    // a transport failure produced no result, so there is no output to carry
     expect((msgs[2] as unknown as { card: { outputMarkdown?: string } }).card.outputMarkdown).toBeUndefined();
-    // the terminal state landed in the DB too — the transcript can't stay pending
     expect(updateSubAgentConsultCard).toHaveBeenCalledWith(
       "s1",
       expect.any(String),
@@ -1283,7 +981,6 @@ describe("runSubAgent — happy path", () => {
   });
 
   it("allows a same-provider spawn (no extra credentials needed)", async () => {
-    // session pinned to claude, sub-agent also claude → no cross-provider window
     const { deps, runner } = makeDeps({ session: { id: "s1", agentId: "claude", agentPinned: true } });
     const res = await runSubAgent(deps, "s1", { target: explicit("claude"), prompt: "draft tests", depth: 0 });
     expect(res.status).toBe("success");
@@ -1300,18 +997,11 @@ describe("runSubAgent — happy path", () => {
   });
 });
 
-/**
- * planning#280 — the in-flight consult card's lifecycle. The incident: a
- * backgrounded Codex consult ran for 15 minutes, the user switched sessions
- * (wiping the transient spinner), then hit Restart agent. Nothing survived — no
- * in-flight surface, no terminal card, and `shipit agent result` was empty.
- */
 describe("runSubAgent — durable in-flight consult card", () => {
   it("persists a pending card at spawn time, before the run finishes", async () => {
     let cardAtSpawn: { status: string } | undefined;
     const { deps, runner, replaceInProgress } = makeDeps({});
     runner.spawnSubAgent = vi.fn(async () => {
-      // Observed from INSIDE the run: what a session switch would rehydrate.
       cardAtSpawn = (runner.recordedCards as unknown as { message: { subAgentConsult: { status: string } } }[])
         .at(-1)?.message.subAgentConsult;
       expect(replaceInProgress).toHaveBeenCalled();
@@ -1322,15 +1012,9 @@ describe("runSubAgent — durable in-flight consult card", () => {
   });
 
   it("patches the finalized DB row when the originating turn already ended", async () => {
-    // The common shape after docs/236: the agent backgrounds a long consult, its
-    // turn finalizes, and the result lands during a LATER turn. Re-recording
-    // into that later turn would both misplace the card and revive a finalized
-    // turn as a duplicate in-progress row.
     const { deps, runner, updateSubAgentConsultCard, replaceInProgress } = makeDeps({});
     let persistsAtSpawn = 0;
     runner.spawnSubAgent = vi.fn(async () => {
-      // The turn that issued the consult has finalized; its recorded cards are
-      // cleared by the next turn's `resetRunnerTurnState`.
       persistsAtSpawn = replaceInProgress.mock.calls.length;
       (runner as unknown as { running: boolean }).running = false;
       runner.recordedCards = [] as never[];
@@ -1344,16 +1028,10 @@ describe("runSubAgent — durable in-flight consult card", () => {
       expect.any(String),
       expect.objectContaining({ status: "success", outputMarkdown: "9 findings" }),
     );
-    // no FURTHER in-progress rebuild after the pending persist — the finalized
-    // turn is not revived as a duplicate in-progress row
     expect(replaceInProgress.mock.calls.length).toBe(persistsAtSpawn);
   });
 
   it("lands a cancelled card through the LIVE runner when the original was disposed", async () => {
-    // Restart agent force-disposes the runner and destroys the container under
-    // the in-flight spawn. Emitting through the disposed runner drops the live
-    // card AND clobbers persisted rows from its stale turn state — so the runner
-    // is re-resolved from the registry at completion time.
     const { deps, runner, emitMessage, updateSubAgentConsultCard } = makeDeps({});
     const liveEmit = vi.fn();
     const liveRunner = {
@@ -1364,7 +1042,6 @@ describe("runSubAgent — durable in-flight consult card", () => {
       recordedCards: [] as never[],
     };
     runner.spawnSubAgent = vi.fn(async () => {
-      // The registry hands out the REPLACEMENT runner once the old one is gone.
       (deps.runnerRegistry as unknown as { get: ReturnType<typeof vi.fn> }).get =
         vi.fn(() => liveRunner);
       throw new WorkerAbortedError("/agent/spawn", "runner disposed");
@@ -1374,28 +1051,22 @@ describe("runSubAgent — durable in-flight consult card", () => {
       runSubAgent(deps, "s1", { target: explicit("codex"), prompt: "review", depth: 0 }),
     ).rejects.toBeInstanceOf(WorkerAbortedError);
 
-    // An abort is a cancellation, not a fault.
     expect(liveEmit).toHaveBeenCalledWith(
       expect.objectContaining({
         type: "sub_agent_consult_card",
         card: expect.objectContaining({ status: "cancelled" }),
       }),
     );
-    // docs/144 §8 — and it says WHICH terminator, carrying the same word the
-    // orchestrator log does. "Cancelled" alone is what made the 2026-08-31
-    // incident slow: the card, the agent and the log each told a different half.
     const cancelledCard = liveEmit.mock.calls
       .map((c) => c[0] as { type: string; card?: { status?: string; statusDetail?: string } })
       .find((m) => m.type === "sub_agent_consult_card" && m.card?.status === "cancelled")!.card!;
     expect(cancelledCard.statusDetail).toBe(teardownConsultDetail("runner disposed"));
     expect(cancelledCard.statusDetail).toContain("torn down");
     expect(cancelledCard.statusDetail).toContain("runner disposed");
-    // and NOT through the disposed runner, whose viewers are gone
     const staleTerminal = emitMessage.mock.calls
       .map((c) => c[0] as { type: string; card?: { status?: string } })
       .filter((m) => m.type === "sub_agent_consult_card" && m.card?.status !== "pending");
     expect(staleTerminal).toHaveLength(0);
-    // the cancellation is durable — a reload shows "Cancelled", not "Asking…"
     expect(updateSubAgentConsultCard).toHaveBeenCalledWith(
       "s1",
       expect.any(String),
@@ -1406,15 +1077,10 @@ describe("runSubAgent — durable in-flight consult card", () => {
     );
   });
 
-  // The other terminator, arriving through a NORMAL return: the process hosting
-  // the spawn was shut down under it and the result still made it back — the
-  // worker going down (container mode) or a forced dispose (local mode, where
-  // there is no worker to name). Nothing on the primary turn can produce this
-  // status any more (docs/144 §8), so the card can name the cause outright.
   it("names the host shutdown when a cancelled result comes back from the run", async () => {
     const { deps, runner, updateSubAgentConsultCard } = makeDeps({});
     runner.spawnSubAgent = vi.fn(async () => {
-      runner.running = false; // backgrounded: the launching turn ended first
+      runner.running = false;
       return {
         status: "cancelled",
         text: "partial review",
@@ -1432,8 +1098,6 @@ describe("runSubAgent — durable in-flight consult card", () => {
       expect.objectContaining({
         status: "cancelled",
         statusDetail: HOST_SHUTDOWN_CONSULT_DETAIL,
-        // the partial answer is still carried — the card says what was lost AND
-        // shows what survived
         outputMarkdown: "partial review",
       }),
     );
@@ -1442,7 +1106,7 @@ describe("runSubAgent — durable in-flight consult card", () => {
   it("finalizes as a timeout when the transport backstop fires", async () => {
     const { deps, runner, updateSubAgentConsultCard } = makeDeps({});
     runner.spawnSubAgent = vi.fn(async () => {
-      runner.running = false; // backgrounded: the launching turn ended first
+      runner.running = false;
       throw new WorkerTimeoutError("/agent/spawn", SUB_AGENT_TRANSPORT_TIMEOUT_MS);
     });
     await expect(
@@ -1496,15 +1160,6 @@ describe("getSubAgentResult (planning#247)", () => {
     expect(() => getSubAgentResult(reader([card("aaa1", "x")]), "s1", "zzz")).toThrow(/No sub-agent run with id/);
   });
 
-  /**
-   * planning#402 defect A, pinned on its own — no deletion involved. Two rows for
-   * one run existed in production (a live turn re-flushing its `recordedCards`
-   * beside an already-finalized copy), and taking the first match meant a stale
-   * `pending` row shadowed the terminal one for good: `shipit agent result`
-   * reported a finished 12-minute review as still running, with its output on
-   * the very next row. `replaceInProgress` now prevents new duplicates; this
-   * repairs the ones already stranded.
-   */
   describe("duplicate rows for one run (planning#402)", () => {
     const pendingCard = (spawnId: string) => ({ ...card(spawnId, ""), status: "pending" as const });
 
@@ -1528,7 +1183,6 @@ describe("getSubAgentResult (planning#247)", () => {
     });
 
     it("counts distinct runs, not rows, when judging a prefix ambiguous", () => {
-      // Two rows for ONE run is a duplicate to resolve, not an ambiguous id.
       expect(getSubAgentResult(reader([pendingCard("aaa1"), card("aaa1", "x")]), "s1", "aaa").spawnId)
         .toBe("aaa1");
       expect(() => getSubAgentResult(reader([card("aaa1", "x"), card("aaa2", "y")]), "s1", "aaa"))
@@ -1537,12 +1191,6 @@ describe("getSubAgentResult (planning#247)", () => {
   });
 });
 
-/**
- * docs/248 — `waitForSubAgentResult` backs `shipit agent result --wait`, whose
- * whole point is that a caller which backgrounded a long consult never has to
- * script a sleep/grep loop. The properties worth pinning are the ones that make
- * the wait safe to interrupt and safe to retry.
- */
 describe("waitForSubAgentResult (docs/248)", () => {
   type Status = "pending" | "success" | "error" | "timeout" | "cancelled";
   const card = (spawnId: string, status: Status, outputMarkdown = "") => ({
@@ -1554,11 +1202,6 @@ describe("waitForSubAgentResult (docs/248)", () => {
     createdAt: "2026-08-04T00:00:00Z",
   });
 
-  /**
-   * A reader whose card list is re-read on every call, plus a virtual clock the
-   * wait's own `sleep` advances — so the loop's timing is exercised
-   * deterministically without real timers.
-   */
   function harness(states: ReturnType<typeof card>[][]) {
     let reads = 0;
     let clock = 0;
@@ -1584,7 +1227,6 @@ describe("waitForSubAgentResult (docs/248)", () => {
     const res = await waitForSubAgentResult(h.deps, "s1", { segmentMs: 60_000, ...h.opts });
     expect(res.outcome).toBe("finished");
     expect(res.card.outputMarkdown).toBe("done");
-    // The fast-path derive only — a terminal run must not arm the loop.
     expect(h.readCount()).toBe(1);
   });
 
@@ -1614,9 +1256,6 @@ describe("waitForSubAgentResult (docs/248)", () => {
   });
 
   it("pins the run on the first derive — a newer run started mid-wait must not hijack it", async () => {
-    // No spawnId ⇒ "the most recent run". A second consult starts while we are
-    // waiting; without pinning, "most recent" would silently switch to it and
-    // report ITS status as the answer to a question about the first run.
     const h = harness([
       [card("aaa1", "pending")],
       [card("aaa1", "pending"), card("bbb2", "success", "other run")],
@@ -1636,11 +1275,9 @@ describe("waitForSubAgentResult (docs/248)", () => {
   });
 
   it("keeps waiting when the card is momentarily unreadable mid-wait", async () => {
-    // A history rewrite between two polls must not be reported as "the run
-    // vanished" — a lookup that was valid once is not re-validated into failure.
     const h = harness([
       [card("aaa1", "pending")],
-      [], // transient: nothing readable this instant
+      [],
       [card("aaa1", "success", "recovered")],
     ]);
     const res = await waitForSubAgentResult(h.deps, "s1", { segmentMs: 60_000, ...h.opts });
@@ -1649,56 +1286,10 @@ describe("waitForSubAgentResult (docs/248)", () => {
   });
 });
 
-/**
- * The guarantee `getSubAgentResult`'s docstring makes: **the result outlives the
- * call**. A `shipit agent run` launched in the background — which
- * `shipit-docs/agent.md` actively tells the agent to do, because a long consult
- * outlasts the invoking agent's foreground shell cap — finishes server-side
- * after the launching turn has ended, and its output must still be re-readable
- * afterwards.
- *
- * It was not. The consult card went through `emitChatCard`'s in-progress path,
- * which re-inserted the ALREADY-FINALIZED turn as a second `in_progress=1` copy
- * with the card inside it; the next turn's first `replaceInProgress` deletes
- * every `in_progress=1` row for the session and deleted the card with it. In
- * production `shipit agent result ecb1fc11-…` answered "No sub-agent runs in
- * this session yet" for a run that had just printed that very id, and an
- * 18-minute Codex review was gone.
- *
- * These run against a REAL `ChatHistoryManager` on purpose: the failure lives
- * entirely in the delete/re-insert semantics of `replaceInProgress`, which a
- * `vi.fn()` stub cannot express. They assert the guarantee (the output is still
- * there) rather than which persistence path produced it.
- */
 describe("a backgrounded consult that finishes AFTER its launching turn (planning#247)", () => {
   const OUTPUT = "## Findings\n\n- `foo.ts:42` — a real bug\n";
   const TURN_ONE_TEXT = "Launching a Codex review in the background…";
 
-  /**
-   * Two shapes a backgrounded consult actually takes, differing in whether the
-   * launching turn is still open when the shim POSTs:
-   *
-   *  - `mid-turn` — the ordinary case. The agent runs `shipit agent run &`
-   *    inside its turn, so the pending card rides that turn; the turn finalizes
-   *    while the consult is still going, and only the terminal patch is
-   *    post-turn.
-   *  - `post-turn` — the shim fires from a background shell started in an
-   *    EARLIER turn, so even the pending card arrives with no turn in flight.
-   *    This is the shape `emitChatCard`'s post-turn append exists for: routed
-   *    through the in-progress path the pending row is deleted by the next
-   *    turn's `replaceInProgress`, and the terminal patch then has no row to
-   *    find.
-   *  - `foreground` — planning#402. The agent did NOT background it, so its own
-   *    HTTP call is what holds the turn open: the turn is still in flight when
-   *    the consult finishes, the terminal card is written into that turn's
-   *    `in_progress=1` rows, and the turn is then preempted before it ever
-   *    finalizes (in production, by an auto-fix turn 330 ms later). The next
-   *    turn's first `replaceInProgress` deleted the success row, and `shipit
-   *    agent result` read `pending` for hours while 16,529 characters of review
-   *    sat nowhere.
-   *
-   * Either way the run must still be re-readable afterwards.
-   */
   function consultScenario(launch: "mid-turn" | "post-turn" | "foreground") {
     const dbManager = new DatabaseManager(":memory:");
     const chatHistoryManager = new ChatHistoryManager(dbManager);
@@ -1715,8 +1306,6 @@ describe("a backgrounded consult that finishes AFTER its launching turn (plannin
       steeredMessages: [],
       recordedCards: [],
       spawnSubAgent: vi.fn(async () => {
-        // The launching turn ends while the consult is still in flight — the
-        // whole reason the agent was told to background it.
         if (launch === "mid-turn") finalizeTurnOne();
         return {
           status: "success" as const,
@@ -1729,7 +1318,6 @@ describe("a backgrounded consult that finishes AFTER its launching turn (plannin
     };
 
     chatHistoryManager.append("s1", { role: "user", text: "get Codex's read on this diff" });
-    // In the post-turn shape the turn is already over before the shim POSTs.
     if (launch === "post-turn") finalizeTurnOne();
 
     const deps = {
@@ -1743,7 +1331,6 @@ describe("a backgrounded consult that finishes AFTER its launching turn (plannin
     return { dbManager, chatHistoryManager, runner, deps };
   }
 
-  /** Turn 2 begins: accumulators reset, then the first tool-result boundary. */
   function startTurnTwo(chatHistoryManager: ChatHistoryManager, runner: Record<string, unknown>) {
     runner.chatMessageGroups = [];
     runner.recordedCards = [];
@@ -1762,11 +1349,8 @@ describe("a backgrounded consult that finishes AFTER its launching turn (plannin
 
         startTurnTwo(chatHistoryManager, runner as never);
 
-        // The whole point of the feature: the invoking agent can recover the
-        // output it may never have received, by the id the run printed.
         const byId = getSubAgentResult({ chatHistoryManager }, "s1", res.spawnId);
         expect(byId.outputMarkdown).toBe(OUTPUT);
-        // …and with no id at all, which is the common recovery invocation.
         expect(getSubAgentResult({ chatHistoryManager }, "s1").spawnId).toBe(res.spawnId);
         dbManager.close();
       });
@@ -1776,8 +1360,6 @@ describe("a backgrounded consult that finishes AFTER its launching turn (plannin
         await runSubAgent(deps, "s1", { target: explicit("codex"), prompt: "review", depth: 0 });
         startTurnTwo(chatHistoryManager, runner as never);
 
-        // Both rehydration paths CLAUDE.md calls out read `load()`. Exactly one
-        // card: the pending row patched in place, never a second copy.
         const cards = chatHistoryManager.load("s1").filter((m) => m.subAgentConsult);
         expect(cards).toHaveLength(1);
         expect(cards[0].subAgentConsult?.status).toBe("success");
@@ -1789,9 +1371,6 @@ describe("a backgrounded consult that finishes AFTER its launching turn (plannin
         const { dbManager, chatHistoryManager, deps } = consultScenario(launch);
         await runSubAgent(deps, "s1", { target: explicit("codex"), prompt: "review", depth: 0 });
 
-        // The in-progress path revived the finished turn's assistant row as a
-        // second copy, so the user saw the same message twice until the next
-        // turn swept it — and the card — away.
         const echoes = chatHistoryManager.load("s1").filter((m) => m.text === TURN_ONE_TEXT);
         expect(echoes).toHaveLength(1);
         dbManager.close();
@@ -1800,13 +1379,6 @@ describe("a backgrounded consult that finishes AFTER its launching turn (plannin
   }
 });
 
-/**
- * planning#301 — the wiring test for `commitSubAgentWork`. The gating/lock/notice
- * behaviour is pinned in `sub-agent-commit.test.ts`; what matters here is that
- * `runSubAgent` actually reaches it on the terminal path, so a consult that
- * outlives its turn no longer leaves its work uncommitted (the 100-minute Codex
- * run whose edits missed the merged PR).
- */
 describe("runSubAgent — committing work a consult left after its turn ended (planning#301)", () => {
   let tmpDir: string;
   let origGitConfigGlobal: string | undefined;
@@ -1844,11 +1416,7 @@ describe("runSubAgent — committing work a consult left after its turn ended (p
       steeredMessages: [] as never[],
       recordedCards: [] as never[],
       spawnSubAgent: vi.fn(async () => {
-        // The consult writes into the session workspace, as a review that
-        // records its findings (or applies a fix) does.
         fs.writeFileSync(path.join(tmpDir, "consult.md"), "codex findings");
-        // …and the launching turn finishes first — the whole reason the agent
-        // was told to background it.
         if (opts.turnEndsDuringConsult) runner.running = false;
         return { status: "success" as const, text: "done", truncated: false, durationMs: 1_100_000, costUsd: 0 };
       }),
@@ -1873,8 +1441,6 @@ describe("runSubAgent — committing work a consult left after its turn ended (p
     const log = await git.log();
     expect(log[0].message).toContain("Sub-agent consult (codex)");
     expect(schedulePostTurnPush).toHaveBeenCalledTimes(1);
-    // docs/218 — the reset gate requires a clean tree; a dirty one left by a
-    // finished consult is what stranded the merged session in the incident.
     expect(await git.isClean()).toBe(true);
   });
 
@@ -1883,14 +1449,13 @@ describe("runSubAgent — committing work a consult left after its turn ended (p
 
     await runSubAgent(deps, "s1", { target: explicit("codex"), prompt: "review", depth: 0 });
 
-    expect((await git.log()).length).toBe(2); // init + the turn's commit
+    expect((await git.log()).length).toBe(2);
     expect(schedulePostTurnPush).not.toHaveBeenCalled();
     expect(await git.isClean()).toBe(false);
   });
 
   it("still delivers the consult's result when the commit path fails", async () => {
     const { deps } = scenario({ turnEndsDuringConsult: true });
-    // A workspace that isn't a git repo at all — `autoCommit` throws.
     (deps as unknown as { createGitManager: (d: string) => GitManager }).createGitManager = () =>
       new GitManager(fs.mkdtempSync(path.join(os.tmpdir(), "shipit-not-a-repo-")));
 
@@ -1901,18 +1466,6 @@ describe("runSubAgent — committing work a consult left after its turn ended (p
   });
 });
 
-/**
- * docs/287 — the OTHER half of "the parent turn already ended": the work is
- * committed (planning#301, above) and then the agent is actually told.
- *
- * On a ShipIt-started turn nothing else does that — the CLI ran one-shot, so it
- * reaped its background job and exited, and `agent_self_wake` cannot happen. The
- * consult finished, the card persisted, the user read the review, and the agent
- * was never re-invoked. These pin the wiring: the terminal card and the
- * originating turn's epoch reach the delivery, and they reach it AFTER the
- * commit — a wake that beat the commit could start a turn which discards the
- * consult's own edits.
- */
 describe("runSubAgent — handing a finished consult back to the agent (docs/287)", () => {
   let tmpDir: string;
   let origGitConfigGlobal: string | undefined;
@@ -1951,7 +1504,7 @@ describe("runSubAgent — handing a finished consult back to the agent (docs/287
       recordedCards: [] as never[],
       spawnSubAgent: vi.fn(async () => {
         fs.writeFileSync(path.join(tmpDir, "consult.md"), "codex findings");
-        runner.running = false; // the launching turn ended while the consult ran
+        runner.running = false;
         return {
           status: "success" as const,
           text: "done",
@@ -1962,14 +1515,7 @@ describe("runSubAgent — handing a finished consult back to the agent (docs/287
         };
       }),
     };
-    /** What the tree looked like at the instant the delivery was invoked. */
     let treeCleanAtDelivery: boolean | undefined;
-    /**
-     * The delivery is deliberately NOT awaited by `runSubAgent` (it can boot a
-     * container), so a test that wants to see its effect has to await this
-     * instead of the spawn call. `gate` lets a test hold it open and prove the
-     * result comes back without it.
-     */
     let settleGate: (() => void) | undefined;
     const gate = opts.holdDelivery
       ? new Promise<void>((r) => { settleGate = r; })
@@ -1994,7 +1540,6 @@ describe("runSubAgent — handing a finished consult back to the agent (docs/287
       deliverConsultResult,
       treeClean: () => treeCleanAtDelivery,
       releaseDelivery: () => settleGate?.(),
-      /** Await the delivery the spawn started but did not wait for. */
       delivery: () => deliverConsultResult.mock.results[0]?.value as Promise<void> | undefined,
     };
   }
@@ -2010,20 +1555,11 @@ describe("runSubAgent — handing a finished consult back to the agent (docs/287
     expect(req.originatingTurnEpoch).toBe(4);
     expect(req.card.status).toBe("success");
     expect(req.card.spawnId).toBe(res.spawnId);
-    // The SAME text the caller got back, so the wake can point at the card
-    // instead of carrying a second copy (planning#247).
     expect(req.card.outputMarkdown).toBe("done");
-    // Ordering, not sequence-by-inspection: the consult's own edits are already
-    // in git by the time a turn could be woken on top of them.
     await s.delivery();
     expect(s.treeClean()).toBe(true);
   });
 
-  /**
-   * The delivery must not hold the shim's HTTP response open. A wake against an
-   * idle-reaped session boots a container and waits up to 30s for its worker;
-   * `runSubAgent` starts that work and returns without it.
-   */
   it("returns the result without waiting for the delivery to finish", async () => {
     const s = scenario({ holdDelivery: true });
 
@@ -2035,7 +1571,6 @@ describe("runSubAgent — handing a finished consult back to the agent (docs/287
     await s.delivery();
   });
 
-  /** A failed run is still an answer the agent has to react to. */
   it("delivers a failed consult too", async () => {
     const s = scenario({ spawnResult: { status: "error", text: "", error: "boom" } });
 
@@ -2045,7 +1580,6 @@ describe("runSubAgent — handing a finished consult back to the agent (docs/287
     expect(s.deliverConsultResult.mock.calls[0][0].card.status).toBe("error");
   });
 
-  /** Delivery is a courtesy on top of the result — never a way to lose it. */
   it("still returns the consult's result when the delivery throws", async () => {
     const s = scenario();
     s.deliverConsultResult.mockImplementation(async () => { throw new Error("registry exploded"); });
@@ -2056,7 +1590,6 @@ describe("runSubAgent — handing a finished consult back to the agent (docs/287
     expect(res.text).toBe("done");
   });
 
-  /** Narrow helper so the `as never` cast stays in one place. */
   function deps(s: { deps: unknown }): Parameters<typeof runSubAgent>[0] {
     return s.deps as Parameters<typeof runSubAgent>[0];
   }
@@ -2072,13 +1605,10 @@ describe("sweepSubAgentCredentialsOnSignOut", () => {
   });
 
   it("wipes cross-agent creds from sessions where the agent is NOT pinned, leaves pinned ones", () => {
-    // Seed a fake source-of-truth .codex subtree so provisioning has something to copy.
     fs.mkdirSync(path.join(root, ".codex"), { recursive: true });
     fs.writeFileSync(path.join(root, ".codex", "auth.json"), "{}");
 
-    // Session A is pinned to claude (codex would be a sub-agent) → provisioned codex subtree.
     provisionSubAgentCredentials(root, "sessA", "codex");
-    // Session B is pinned to codex → it legitimately holds .codex; must NOT be wiped.
     provisionSubAgentCredentials(root, "sessB", "codex");
 
     const dirA = path.join(perSessionCredentialsDir(root, "sessA"), ".codex");
@@ -2095,8 +1625,8 @@ describe("sweepSubAgentCredentialsOnSignOut", () => {
 
     sweepSubAgentCredentialsOnSignOut("codex", { sessionManager, credentialsDir: root });
 
-    expect(fs.existsSync(path.join(dirA, "auth.json"))).toBe(false); // temporary auth swept
-    expect(fs.existsSync(dirB)).toBe(true); // preserved (codex is the pinned agent)
+    expect(fs.existsSync(path.join(dirA, "auth.json"))).toBe(false);
+    expect(fs.existsSync(dirB)).toBe(true);
   });
 
   it("is a no-op without a credentialsDir (local mode)", () => {
@@ -2105,21 +1635,6 @@ describe("sweepSubAgentCredentialsOnSignOut", () => {
   });
 });
 
-/**
- * 2026-08-21 incident (host session 53cf9934) — a spawn whose harness equals
- * the session's pinned harness used to provision its credentials INTO the
- * session's own subtree, the very files the LIVE primary CLI re-reads
- * mid-turn. A cross-provider route (GLM's z.ai flat key under the claude
- * harness) then 401'd the primary within seconds; the quiet auth retry killed
- * the turn, cancelled every in-flight spawn, and replayed the same prompt into
- * the same wall, looping. The fix gives every same-harness spawn an ISOLATED
- * per-spawn home and hands its container path to the run as `homeDir`.
- *
- * These tests run the REAL provisioning against a temp credentials root (the
- * prototype graft makes the fake pass the ContainerSessionRunner gate) and pin
- * both halves: the session subtree stays byte-identical through a same-harness
- * spawn, and the cross-harness borrow keeps its existing shape.
- */
 describe("runSubAgent — same-harness spawns never touch the session's live credentials", () => {
   let root: string;
   beforeEach(() => {
@@ -2127,8 +1642,6 @@ describe("runSubAgent — same-harness spawns never touch the session's live cre
   });
   afterEach(() => {
     fs.rmSync(root, { recursive: true, force: true });
-    // Cross-harness tests open a borrow; the service's finally closes it, but
-    // keep the process-local ledger clean even if an assertion throws first.
     clearSubtreeBorrows();
   });
 
@@ -2139,7 +1652,6 @@ describe("runSubAgent — same-harness spawns never touch the session's live cre
     fs.writeFileSync(path.join(dir, ".claude", ".credentials.json"), claudeCreds(tail));
   };
 
-  /** Wire a capture into the spawn fake: what did the worker-side see mid-run? */
   function captureSpawn(runner: { spawnSubAgent: unknown }, sessionFile: string) {
     const seen: { homeDir?: string; sessionBytes?: string; marker?: string; homeToken?: string } = {};
     runner.spawnSubAgent = vi.fn(async (req: { spawnId: string; homeDir?: string }) => {
@@ -2166,23 +1678,17 @@ describe("runSubAgent — same-harness spawns never touch the session's live cre
 
     const result = await runSubAgent(deps, "s1", { target: explicit("claude"), prompt: "review", depth: 0 });
 
-    // Mid-run: the spawn got its own home with the routed account's copy, and
-    // the primary's file and marker were untouched — the incident's regression.
     expect(seen.homeDir).toBe(`/credentials/sub-agent-homes/${result.spawnId}`);
     expect(seen.homeToken).toContain("tok-CONSULT");
     expect(seen.sessionBytes).toBe(before);
     expect(seen.marker).toBe("acct-session");
-    // Post-run: still byte-identical, and the spawn home is gone.
     expect(fs.readFileSync(sessionFile, "utf-8")).toBe(before);
     expect(readSessionAccountMarker(root, "s1").claude).toBe("acct-session");
     expect(fs.existsSync(subAgentSpawnHomeDir(root, "s1", result.spawnId))).toBe(false);
   });
 
-  // The incident's exact shape: a string-delivered credential (GLM via z.ai)
-  // resolves NO account, so the old code provisioned the FLAT root over the
-  // session subtree ("provision-credentials agent=claude account=flat").
   it("a string-routed (flat) same-harness spawn is isolated too — the GLM shape", async () => {
-    seedClaude(root, "FLAT"); // the flat source-of-truth root
+    seedClaude(root, "FLAT");
     const sessionDir = perSessionCredentialsDir(root, "s1");
     seedClaude(sessionDir, "PRIMARY-LIVE");
     writeSessionAccountMarker(root, "s1", "claude", "acct-session");
@@ -2213,8 +1719,6 @@ describe("runSubAgent — same-harness spawns never touch the session's live cre
     expect(fs.existsSync(subAgentSpawnHomeDir(root, "s1", result.spawnId))).toBe(false);
   });
 
-  // The control: a CROSS-harness spawn keeps the session-subtree borrow it has
-  // always used — those paths collide with nothing the primary reads.
   it("a cross-harness spawn still borrows the session subtree and gets no homeDir", async () => {
     fs.mkdirSync(path.join(root, "provider-accounts", "codex", "acct-primary", ".codex"), { recursive: true });
     fs.writeFileSync(
@@ -2235,23 +1739,13 @@ describe("runSubAgent — same-harness spawns never touch the session's live cre
 
     await runSubAgent(deps, "s1", { target: explicit("codex"), prompt: "review", depth: 0 });
 
-    // Mid-run: the borrow, exactly as before — subtree provisioned, marker set.
     expect(seen.homeDir).toBeUndefined();
     expect(seen.codexOnDisk).toBe(true);
     expect(seen.marker).toBe("acct-primary");
-    // Post-run: temporary auth wiped, marker cleared.
     expect(fs.existsSync(path.join(sessionDir, ".codex", "auth.json"))).toBe(false);
     expect(readSessionAccountMarker(root, "s1").codex).toBeUndefined();
   });
 
-  /**
-   * docs/144 §8 — with the primary-turn coupling gone, the wall-clock cap is one
-   * of only two things that can end a consult, so it stops being an edge case.
-   * The cap is what stands between an unbounded run and a borrow of the
-   * reviewer's account held open in the session subtree forever, along with a
-   * live process and consumed subscription quota — so the release has to survive
-   * the non-success statuses too, not just the happy path above.
-   */
   it("closes the credential borrow when the run ends on its wall-clock cap", async () => {
     fs.mkdirSync(path.join(root, "provider-accounts", "codex", "acct-primary", ".codex"), { recursive: true });
     fs.writeFileSync(
@@ -2265,9 +1759,7 @@ describe("runSubAgent — same-harness spawns never touch the session's live cre
     let borrowedDuringRun = false;
     runner.spawnSubAgent = vi.fn(async () => {
       borrowedDuringRun = fs.existsSync(path.join(sessionDir, ".codex", "auth.json"));
-      runner.running = false; // backgrounded: the launching turn ended first
-      // What `runAgentToCompletion` resolves with when its timer fires: the
-      // process is SIGTERMed and whatever text arrived is flagged truncated.
+      runner.running = false;
       return { status: "timeout", text: "half a review", truncated: true, durationMs: 1_800_000, costUsd: 0 };
     }) as never;
 
@@ -2275,11 +1767,8 @@ describe("runSubAgent — same-harness spawns never touch the session's live cre
 
     expect(res.status).toBe("timeout");
     expect(borrowedDuringRun).toBe(true);
-    // The borrow is closed and the marker cleared — the same teardown a success
-    // gets, on the path that a runaway consult actually takes.
     expect(fs.existsSync(path.join(sessionDir, ".codex", "auth.json"))).toBe(false);
     expect(readSessionAccountMarker(root, "s1").codex).toBeUndefined();
-    // and the card is terminal, so nothing is left reading "Asking…"
     expect(updateSubAgentConsultCard).toHaveBeenCalledWith(
       "s1",
       expect.any(String),

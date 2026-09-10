@@ -1,12 +1,3 @@
-/**
- * docs/150-multiple-provider-subscriptions reqs 13, 17 — which selection failures stop a turn, and what the
- * user is told when one does.
- *
- * Assertions key off structure (the reason, the reset instant, the model name,
- * the presence of a next step) rather than exact prose, so copy edits don't
- * churn the suite.
- */
-
 import { describe, it, expect } from "vitest";
 import {
   ProviderRouteUnavailableError,
@@ -20,9 +11,6 @@ describe("isTurnBlockingFailure", () => {
     expect(isTurnBlockingFailure({ reason: "all_exhausted", earliestResetAt: null })).toBe(true);
   });
 
-  // Not-signed-in already has a guided surface (hasRunnableModels, the Settings
-  // account rows). Turning it into a thrown turn error would replace that flow
-  // with a dead end.
   it("does not block the turn when the user simply has not connected an account", () => {
     expect(isTurnBlockingFailure({ reason: "auth_required" })).toBe(false);
   });
@@ -37,8 +25,6 @@ describe("describeAccountSelectionFailure", () => {
     });
     expect(message).toContain("Claude");
     expect(message).toContain(resetAt);
-    // req 13 — ShipIt does not hold the prompt, so the message must tell the
-    // user the resend is theirs to make.
     expect(message.toLowerCase()).toContain("again");
   });
 
@@ -87,8 +73,6 @@ describe("routeFromSelection", () => {
         reason: "all_exhausted",
         earliestResetAt: "2026-08-01T14:30:00.000Z",
       });
-      // The rendered message is the one the user sees, so it must not be empty
-      // and must not be the class name.
       expect(blocked.message).toContain("2026-08-01T14:30:00.000Z");
     }
   });

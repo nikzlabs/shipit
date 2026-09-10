@@ -6,12 +6,6 @@ import type { GitManager } from "../../shared/git.js";
 import type { SessionInfo, WsServerMessage } from "../../shared/types.js";
 import type { PrStatusSummary } from "../../shared/types/github-types.js";
 
-/**
- * docs/202 — unit tests for the shared re-arm helper called by BOTH post-turn
- * sites. Detection gating (turn-gated, local-git-only) + the clearMerged/reArm/
- * session_list wiring.
- */
-
 function makeSession(over: Partial<SessionInfo> = {}): SessionInfo {
   return {
     id: "s1",
@@ -48,9 +42,7 @@ function harness(opts: {
   session: SessionInfo | undefined;
   priorStatus?: PrStatusSummary;
   advanced?: boolean | (() => Promise<boolean>);
-  /** HEAD sha the stub reports — compared against `session.mergedHeadSha`. */
   headSha?: string | null;
-  /** Make the base-ref freshening fetch fail. */
   fetchFails?: boolean;
 }) {
   const clearMerged = vi.fn();
@@ -143,9 +135,6 @@ describe("detectAndReArmMergedSession (docs/202)", () => {
   });
 
   it("carries the merged-tip anchor into the breadcrumb it stores", async () => {
-    // Same reason as the docs/216 path: `clearMerged` nulls `merged_head_sha`,
-    // and the explicit reset-to-base gate reads it. Without the durable copy a
-    // re-armed session can never satisfy the gate again.
     const h = harness({
       session: makeSession({ mergedAt: "2026-02-01", mergedHeadSha: "a1f3c9d0" }),
       priorStatus: makePrStatus(),
@@ -176,15 +165,6 @@ describe("detectAndReArmMergedSession (docs/202)", () => {
     expect(h.reArm).not.toHaveBeenCalled();
   });
 
-  /**
-   * The detection is base-relative and `origin/<base>` in a session clone only
-   * moves when THAT clone fetches — nothing on the merge path does. Deciding off
-   * a stale ref reported "progressed" for an untouched merged branch (its
-   * merge-base with its own fork point IS the fork point), which un-merged the
-   * session on its first committing turn and left a "ready" card with the stale
-   * diff + "Create PR" — while also wiping `mergedHeadSha`, permanently
-   * disabling the docs/218 auto-advance for that session.
-   */
   describe("base-ref freshness (stale origin/<base> false positive)", () => {
     it("fetches origin before evaluating progress", async () => {
       const h = harness({
@@ -195,8 +175,6 @@ describe("detectAndReArmMergedSession (docs/202)", () => {
       });
       expect(await h.run()).toBe(true);
       expect(h.fetch).toHaveBeenCalledWith("origin");
-      // Ordering is what matters: the base ref must be current *before* the
-      // decision reads it.
       expect(h.fetch.mock.invocationCallOrder[0])
         .toBeLessThan(h.advancedBeyondMergedBase.mock.invocationCallOrder[0]);
     });
@@ -206,7 +184,7 @@ describe("detectAndReArmMergedSession (docs/202)", () => {
         session: makeSession({ mergedAt: "2026-02-01", mergedHeadSha: "merged-tip" }),
         priorStatus: makePrStatus(),
         headSha: "moved-past-merge",
-        advanced: true, // would re-arm if the stale ref were trusted
+        advanced: true,
         fetchFails: true,
       });
       expect(await h.run()).toBe(false);
@@ -220,7 +198,7 @@ describe("detectAndReArmMergedSession (docs/202)", () => {
         session: makeSession({ mergedAt: "2026-02-01", mergedHeadSha: "merged-tip" }),
         priorStatus: makePrStatus(),
         headSha: "merged-tip",
-        advanced: true, // the stale-ref answer — must not be consulted
+        advanced: true,
       });
       expect(await h.run()).toBe(false);
       expect(h.fetch).not.toHaveBeenCalled();
@@ -240,22 +218,13 @@ describe("detectAndReArmMergedSession (docs/202)", () => {
     });
   });
 
-  /**
-   * Regression — the re-arm read the poller's LIVE snapshot as "the prior merged
-   * PR" on the strength of `session.mergedAt` alone. A session carrying a stale
-   * merge record next to a freshly-opened PR therefore had that OPEN PR written
-   * into `previous_merged_pr`, which seeds `supersededPrNumbers` (and is re-seeded
-   * from the column on every restart) — so `verifyMissingPr` reports the PR's
-   * real merge as `"suppressed"` and the session's merge detection stops until a
-   * different-numbered PR appears. Observed in production 2026-08-19.
-   */
   describe("the prior PR must actually be merged", () => {
     for (const prState of ["open", "closed"] as const) {
       it(`stays merged and records nothing when the snapshot is ${prState}`, async () => {
         const h = harness({
-          session: makeSession({ mergedAt: "2026-02-01" }), // stale record
+          session: makeSession({ mergedAt: "2026-02-01" }),
           priorStatus: makePrStatus({ prNumber: 2484, prState }),
-          advanced: true, // would re-arm if the snapshot were trusted
+          advanced: true,
         });
         expect(await h.run()).toBe(false);
         expect(h.createGitManager).not.toHaveBeenCalled();
@@ -351,10 +320,6 @@ describe("detectAndReArmResetSession (docs/216)", () => {
   });
 
   it("carries the merged-tip anchor into the breadcrumb it stores, but not into the card", async () => {
-    // `clearMerged` nulls `merged_head_sha`; the explicit reset-to-base gate
-    // reads it, so without the durable copy a re-armed session can never satisfy
-    // the gate again and is force-only forever. The CARD is client-facing state
-    // and deliberately does not carry it.
     const h = resetHarness({
       session: makeSession({ mergedAt: "2026-02-01", mergedHeadSha: "a1f3c9d0" }),
       priorStatus: makePrStatus(),
@@ -383,8 +348,6 @@ describe("detectAndReArmResetSession (docs/216)", () => {
     });
     expect(h.reArm).toHaveBeenCalledWith("s1", 42);
     expect(h.sseBroadcast).toHaveBeenCalledWith("session_list", expect.objectContaining({ sessions: expect.any(Array) }));
-    // The card carries previousMergedPr so it overrides the active viewer's
-    // stale terminal merged card, with a 0-diff "ready" phase (no auto-create).
     expect(h.emit).toHaveBeenCalledWith(expect.objectContaining({
       type: "pr_lifecycle_update",
       sessionId: "s1",
@@ -408,14 +371,11 @@ describe("detectAndReArmResetSession (docs/216)", () => {
     expect(h.emit).not.toHaveBeenCalled();
   });
 
-  // Same guard as the sibling path — see its regression note. This path reaches
-  // `clearMerged` on a *clean* branch, so an unmerged PR recorded here would
-  // poison the breadcrumb just as readily.
   it("stays merged and records nothing when the snapshot is not merged", async () => {
     const h = resetHarness({
       session: makeSession({ mergedAt: "2026-02-01" }),
       priorStatus: makePrStatus({ prNumber: 2484, prState: "open" }),
-      atBase: true, // would re-arm if the snapshot were trusted
+      atBase: true,
     });
     expect(await h.run()).toBe(false);
     expect(h.createGitManager).not.toHaveBeenCalled();

@@ -5,7 +5,6 @@ import type { ClaudeEvent } from "../../../shared/types.js";
 import type { McpServerStatus } from "../../../shared/types/mcp-types.js";
 import type { AgentRunParams } from "../agent-process.js";
 
-/** Minimal fake ClaudeProcess for testing the adapter in isolation. */
 class FakeInnerProcess extends EventEmitter {
   runCalled = false;
   killed = false;
@@ -42,16 +41,9 @@ describe("ClaudeAdapter", () => {
     expect(adapter.capabilities.supportsPermissionModes).toBe(true);
     expect(adapter.capabilities.supportedPermissionModes).toContain("auto");
     expect(adapter.capabilities.supportedPermissionModes).toContain("plan");
-    // docs/138 — the classifier-gated guarded mode is advertised.
     expect(adapter.capabilities.supportedPermissionModes).toContain("guarded");
     expect(adapter.capabilities.toolNames).toContain("Write");
     expect(adapter.capabilities.toolNames).toContain("Bash");
-    // docs/266 item 15 — chat-native review needs a shell tool (to run
-    // `shipit agent run --role reviewer`) and a subagent primitive (the
-    // fallback branch), and since docs/220 deleted the last `submit_review`
-    // write path it needs no MCP surface at all. Claude Code has Bash and
-    // Task. The flag drives the file-preview modal's "Ask agent to review"
-    // affordance.
     expect(adapter.capabilities.supportsReview).toBe(true);
     expect(adapter.capabilities.toolNames).toContain("Agent");
   });
@@ -81,10 +73,6 @@ describe("ClaudeAdapter", () => {
     });
   });
 
-  // The spawn appends `[1m]` to a 1M model's `--model` so CLI 2.1.251 does not
-  // hold an id it fails to recognize to its assumed 200K window. The CLI echoes
-  // that value back, so `agent_init` has to report the catalogue id instead —
-  // it is what the usage row, the model label and the harness-switch seed key on.
   it("reports the selected catalogue id, not the [1m] the spawn appended", () => {
     const inner = new FakeInnerProcess();
     const adapter = new ClaudeAdapter(inner as any);
@@ -104,8 +92,6 @@ describe("ClaudeAdapter", () => {
   });
 
   it("keeps [1m] when it is the selected catalogue id itself", () => {
-    // Z.ai's subscription row IS `glm-5.3[1m]`; its key-mode row is `glm-5.3`.
-    // One reported string, two right answers — only the selection separates them.
     const subInner = new FakeInnerProcess();
     const subAdapter = new ClaudeAdapter(subInner as any);
     const subEvents: unknown[] = [];
@@ -184,11 +170,6 @@ describe("ClaudeAdapter", () => {
     expect((events[0] as any).permissionDenials).toBeUndefined();
   });
 
-  // docs/178 — native compaction signals. Before this, the `case "system"`
-  // mapped EVERY system subtype to a bogus agent_init; now it discriminates.
-  // docs/235 — the CLI can start a turn on its own when a backgrounded job
-  // finishes. These four `system` subtypes were previously dropped by the
-  // adapter's `default: return null`, which is why the orchestrator never knew.
   describe("background tasks / self-wake (docs/235)", () => {
     function harness() {
       const inner = new FakeInnerProcess();
@@ -220,8 +201,6 @@ describe("ClaudeAdapter", () => {
     });
 
     it("maps an empty task list to an explicit drained signal", () => {
-      // `tasks: []` is how the CLI says "nothing outstanding" — it must reach
-      // the runner, otherwise the count never falls back to zero.
       const { inner, events } = harness();
       inner.emit("event", { type: "system", subtype: "background_tasks_changed", tasks: [] } as ClaudeEvent);
       expect(events).toEqual([{ type: "agent_background_tasks", tasks: [] }]);
@@ -253,13 +232,6 @@ describe("ClaudeAdapter", () => {
       }]);
     });
 
-    /**
-     * docs/109 reqs 10–11 — for a backgrounded subagent this event is the ONLY
-     * completion signal on the wire (no second `tool_result` ever arrives for
-     * the Task), so dropping `tool_use_id` here is what left the card claiming
-     * "Running in the background" forever. Payload is the real CLI 2.1.219
-     * notification.
-     */
     it("carries the tool_use_id and usage a backgrounded subagent reports", () => {
       const { inner, events } = harness();
 
@@ -285,8 +257,6 @@ describe("ClaudeAdapter", () => {
     });
 
     it("drops task_started / task_updated as redundant per-task deltas", () => {
-      // Their effect is already covered by the authoritative
-      // `background_tasks_changed` list emitted alongside them.
       const { inner, events } = harness();
       inner.emit("event", { type: "system", subtype: "task_started", task_id: "a" } as ClaudeEvent);
       inner.emit("event", {
@@ -299,12 +269,7 @@ describe("ClaudeAdapter", () => {
     });
 
     it("drops thinking_tokens / task_progress as named cases, not unknown subtypes", () => {
-      // Both are byte-shaped from a real CLI 2.1.224 capture (2026-08-17,
-      // docs/272 Run 1). thinking_tokens is a per-tick estimate superseded by
-      // the authoritative usage on `result`; task_progress is a per-task
-      // liveness ping superseded by `background_tasks_changed` +
-      // `task_notification`. The docs/272 run flagged them as undocumented
-      // silent drops through the bare default — this locks them as deliberate.
+      // CLI 2.1.224 capture, 2026-08-17.
       const { inner, events } = harness();
       inner.emit("event", {
         type: "system",
@@ -490,10 +455,6 @@ describe("ClaudeAdapter", () => {
   });
 
   it("maps a replayed user message (isReplay) to agent_user_replay (docs/140)", () => {
-    // --replay-user-messages echoes an accepted steer as a delivery ack. The
-    // adapter must surface it (concatenating its text blocks) so the
-    // orchestrator can match it against the steer it sent — NOT drop it, and
-    // NOT mis-map it to agent_tool_result.
     const inner = new FakeInnerProcess();
     const adapter = new ClaudeAdapter(inner as any);
 
@@ -562,10 +523,6 @@ describe("ClaudeAdapter", () => {
   });
 
   it("extracts per-turn context from the last iteration, not the sum", () => {
-    // Multi-call turn: the CLI's top-level usage fields are sums across all
-    // API calls in the turn. The dial would over-count by 3× here if we
-    // used them as "current context size". The last iteration's
-    // input + cache_read + cache_create is the real occupancy.
     const inner = new FakeInnerProcess();
     const adapter = new ClaudeAdapter(inner as any);
     const events: unknown[] = [];
@@ -578,7 +535,6 @@ describe("ClaudeAdapter", () => {
       total_cost_usd: 0.10,
       duration_ms: 5000,
       usage: {
-        // Sums across 3 iterations — would read as 300K of context if used.
         input_tokens: 30,
         output_tokens: 600,
         cache_read_input_tokens: 270_000,
@@ -586,7 +542,6 @@ describe("ClaudeAdapter", () => {
         iterations: [
           { input_tokens: 10, cache_read_input_tokens: 80_000, cache_creation_input_tokens: 10_000 },
           { input_tokens: 10, cache_read_input_tokens: 90_000, cache_creation_input_tokens: 10_000 },
-          // Real per-turn context = 10 + 100_000 + 10_000 = 110_010
           { input_tokens: 10, cache_read_input_tokens: 100_000, cache_creation_input_tokens: 10_000 },
         ],
       },
@@ -603,7 +558,6 @@ describe("ClaudeAdapter", () => {
     expect(events).toHaveLength(1);
     expect((events[0] as any).contextTokens).toBe(110_010);
     expect((events[0] as any).contextWindow).toBe(1_000_000);
-    // Turn-wide totals stay untouched — they're the right number for billing.
     expect((events[0] as any).tokens).toEqual({
       input: 30,
       output: 600,
@@ -705,8 +659,6 @@ describe("ClaudeAdapter", () => {
       },
     } satisfies ClaudeEvent);
 
-    // Simulate starting another one-shot turn after the prior process ended
-    // abnormally, without emitting a result that would normally clear state.
     adapter.run({ prompt: "retry", cwd: "/tmp" } as AgentRunParams);
     inner.emit("event", {
       type: "result",
@@ -792,12 +744,7 @@ describe("ClaudeAdapter", () => {
     expect((events[1] as any).contextTokens).toBeUndefined();
   });
 
-  // The GLM shape, measured against `glm-5.3[1m]` on Z.ai's Anthropic endpoint
-  // (2026-08-17): every `assistant` event's usage is zeroed because the CLI
-  // snapshots it from `message_start`, `result.usage.iterations` is an EMPTY
-  // array rather than absent, and the only real per-call numbers arrive in the
-  // closing `message_delta` frame that `--include-partial-messages` re-emits.
-  // Without that frame the dial summed the turn totals — 2.1M on a 1M window.
+  // Captured from glm-5.3[1m] via Z.ai's Anthropic endpoint, 2026-08-17.
   it("uses the final message_delta when a provider zeroes assistant usage", () => {
     const inner = new FakeInnerProcess();
     const adapter = new ClaudeAdapter(inner as any);
@@ -840,24 +787,16 @@ describe("ClaudeAdapter", () => {
       },
     } satisfies ClaudeEvent);
 
-    // The two stream frames are consumed, not forwarded: the CLI's own
-    // `assistant` events already carry the content.
     expect(events.map((e) => (e as any).type)).toEqual([
       "agent_assistant",
       "agent_assistant",
       "agent_result",
     ]);
-    // The LAST call's prompt (282 + 24,704), not the 49,727 turn-wide sum.
     expect((events[2] as any).contextTokens).toBe(24_986);
-    // Billing totals stay the turn-wide sums.
     expect((events[2] as any).tokens).toMatchObject({ input: 16_511, cacheRead: 33_216 });
   });
 
-  // DeepSeek's shape once the flag applies to it too: BOTH sources are
-  // populated, and the real wire order within a call is `assistant` first then
-  // the closing `message_delta` — so the delta is what "latest wins" resolves
-  // to. Measured 2026-08-17 on `deepseek-flash`: the two agree exactly, and
-  // the last call read 168 + 25,216.
+  // Captured from deepseek-flash, 2026-08-17.
   it("takes the closing delta when a provider populates both sources", () => {
     const inner = new FakeInnerProcess();
     const adapter = new ClaudeAdapter(inner as any);
@@ -1089,10 +1028,6 @@ describe("ClaudeAdapter", () => {
   });
 
   it("scales the CLI's 0–1 utilization fraction to a 0–100 percentage", () => {
-    // The CLI forwards `anthropic-ratelimit-unified-*-utilization` verbatim and
-    // that header is a FRACTION: one account read `0.06`/`0.66` in the headers
-    // while /api/oauth/usage reported `6.0`/`67.0` for the same windows.
-    // Treating it as a percentage rendered a real 92% session as "5h 1%".
     const inner = new FakeInnerProcess();
     const adapter = new ClaudeAdapter(inner as any);
     const events: any[] = [];
@@ -1112,8 +1047,6 @@ describe("ClaudeAdapter", () => {
   });
 
   it("passes through a utilization above 1 as an already-0–100 percentage", () => {
-    // Defensive: a fraction can't exceed 1 for a capped window, so >1 means the
-    // upstream scale changed. Better to render 42% than to multiply it to 100%.
     const inner = new FakeInnerProcess();
     const adapter = new ClaudeAdapter(inner as any);
     const events: any[] = [];
@@ -1143,7 +1076,6 @@ describe("ClaudeAdapter", () => {
     } satisfies ClaudeEvent);
 
     expect(events).toHaveLength(2);
-    // Second event carries BOTH windows now that the adapter has seen each.
     expect(events[1].session?.usedPct).toBeCloseTo(12, 6);
     expect(events[1].weekly?.usedPct).toBeCloseTo(80, 6);
   });
@@ -1165,10 +1097,6 @@ describe("ClaudeAdapter", () => {
   });
 
   it("emits rate_limit_event with usedPct=null when utilization is missing but resetsAt is present", () => {
-    // Claude CLI 2.1.140 only includes `utilization` once a warning threshold
-    // trips (anthropics/claude-code#50518) — until then the rate_limit_event
-    // carries just {rateLimitType, resetsAt}. The adapter must still surface
-    // the window so the badge can render a countdown-only pill.
     const inner = new FakeInnerProcess();
     const adapter = new ClaudeAdapter(inner as any);
     const events: any[] = [];
@@ -1256,9 +1184,6 @@ describe("ClaudeAdapter", () => {
 
   describe("setPermissionMode (docs/138)", () => {
     it("is a no-op when the inner process is not a StreamingClaudeProcess", () => {
-      // The one-shot ClaudeProcess re-applies the mode at every spawn —
-      // there's nothing to push mid-process. Adapter must not throw or
-      // misroute a control_request to the wrong inner.
       const inner = new FakeInnerProcess();
       const adapter = new ClaudeAdapter(inner as any);
 
@@ -1270,9 +1195,6 @@ describe("ClaudeAdapter", () => {
     });
 
     it("forwards to the streaming inner with the ShipIt → CLI mapping", async () => {
-      // Build a fake StreamingClaudeProcess subclass so `instanceof` passes
-      // without spawning a real CLI. Capture the cliMode that the adapter
-      // pushes through `inner.setPermissionMode`.
       const { StreamingClaudeProcess } = await import("./process.js");
       const calls: string[] = [];
       class FakeStreaming extends StreamingClaudeProcess {
@@ -1288,16 +1210,10 @@ describe("ClaudeAdapter", () => {
       adapter.setPermissionMode("auto");
       adapter.setPermissionMode(undefined);
 
-      // plan → "plan", guarded → CLI "auto" (the classifier-gated mode),
-      // ShipIt "auto" / undefined → CLI "default" (no-flag default the CLI
-      // reports in its init event).
       expect(calls).toEqual(["plan", "auto", "default", "default"]);
     });
   });
 
-  // docs/088 — Per-MCP-server liveness signal extracted from the Claude CLI
-  // init event. These tests pin the contract that the worker depends on for
-  // its `mcp_server_status` SSE broadcasts.
   describe("MCP server liveness (docs/088)", () => {
     it("emits mcp_status for each entry in the init event's mcp_servers", () => {
       const inner = new FakeInnerProcess();
@@ -1342,9 +1258,6 @@ describe("ClaudeAdapter", () => {
     });
 
     it("does not emit mcp_status when mcp_servers is an empty array", () => {
-      // An init event with an empty mcp_servers array is the CLI explicitly
-      // reporting "no MCP servers configured" — there's nothing to surface
-      // and emitting an empty batch would just be noise on the SSE channel.
       const inner = new FakeInnerProcess();
       const adapter = new ClaudeAdapter(inner as any);
 
@@ -1362,8 +1275,6 @@ describe("ClaudeAdapter", () => {
     });
 
     it("still maps the init event to agent_init alongside mcp_status", () => {
-      // The MCP side-channel must not displace the normal agent_init flow —
-      // model context and session tracking depend on it firing on every init.
       const inner = new FakeInnerProcess();
       const adapter = new ClaudeAdapter(inner as any);
 
@@ -1396,10 +1307,6 @@ describe("ClaudeAdapter", () => {
     });
 
     it("maps 'needs-auth' to failed with an auth-required reason", () => {
-      // OAuth-style MCP servers (Linear hosted, Gamma, etc.) report
-      // `needs-auth` until the user completes Phase 2's OAuth flow.
-      // For Phase 1 we surface this as `failed` with explanatory text;
-      // when 088 Phase 2 lands we'll route this to a richer state.
       expect(mapCliMcpStatus({ name: "linear", status: "needs-auth" })).toEqual({
         name: "linear",
         state: "failed",
@@ -1416,10 +1323,6 @@ describe("ClaudeAdapter", () => {
     });
 
     it("preserves unknown CLI statuses in the reason so we don't drop a new signal silently", () => {
-      // Future-proofing: if Anthropic adds a new status value (e.g.,
-      // "rate-limited"), we still surface a useful red badge — the literal
-      // status string makes it into the reason so the user / debug logs
-      // see what the CLI actually said.
       expect(mapCliMcpStatus({ name: "x", status: "rate-limited" })).toEqual({
         name: "x",
         state: "failed",

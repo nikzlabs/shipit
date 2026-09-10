@@ -55,11 +55,6 @@ function sanitizeUrl(raw: string): string {
   }
 }
 
-/**
- * Sanitize Claude CLI auth diagnostics before they are allowed onto the SSE
- * stream. The goal is useful structure, not perfect raw logs: redact full
- * auth URLs, OAuth codes/tokens, email addresses, and local credential paths.
- */
 export function sanitizeClaudeAuthDiagnostic(input: string): string {
   return stripAnsi(input)
     .replace(URL_PATTERN, (url) => sanitizeUrl(url))
@@ -70,8 +65,6 @@ export function sanitizeClaudeAuthDiagnostic(input: string): string {
     .replace(ROOT_SECRET_PATH_PATTERN, "/root/.[redacted]")
     .replace(CREDENTIALS_PATH_PATTERN, "/credentials/[redacted]")
     .replace(LONG_SECRET_PATTERN, (value) => {
-      // UUIDs and ordinary long option names are useful and not secrets by
-      // themselves; leave UUID-shaped text alone, redact opaque blobs.
       if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value)) {
         return value;
       }

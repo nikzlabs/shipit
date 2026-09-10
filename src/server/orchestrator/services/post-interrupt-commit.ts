@@ -1,24 +1,4 @@
-/**
- * Post-interrupt commit fallback (docs/021 follow-up).
- *
- * The normal post-turn commit/PR flow in `agent-execution.ts` runs from either
- *   - the non-streaming `done` handler (process exit), or
- *   - the streaming `agent_result` handler (turn boundary).
- *
- * Neither is guaranteed when the user interrupts:
- *   - Streaming `interrupt()` sends a `control_request` on stdin. The CLI
- *     stays alive and may not emit `agent_result` for an aborted turn — so
- *     `done` never fires and nothing commits.
- *   - The recovery `killAgent` path manually clears `runner.running` after
- *     SIGTERM precisely because it can't trust the `agent_done` SSE event to
- *     arrive — same gap on the commit side.
- *
- * This helper runs the same commit + PR lifecycle as the post-turn flow,
- * triggered from the interrupt/kill paths. Idempotent: `autoCommit` returns
- * null on a clean tree, and `emitPrLifecycleAfterCommit` no-ops when
- * `commitHash` is null, so racing with the normal post-turn flow is safe.
- */
-
+// Interrupts may produce neither process exit nor a turn result to trigger the normal commit.
 import type { GitManager } from "../../shared/git.js";
 import type { GitHubAuthManager } from "../github-auth.js";
 import type { ChatHistoryManager } from "../chat-history.js";
@@ -31,12 +11,6 @@ import { emitPrLifecycleAfterCommit } from "./pr-lifecycle.js";
 import { getErrorMessage } from "../validation.js";
 import type { GenerateText } from "../non-turn-model.js";
 
-/**
- * Deps for the commit fallback. The shape mirrors `PrLifecycleDeps` plus the
- * git manager and chat-history manager `postTurnCommit` needs, and an
- * optional `scheduleAutoPush` (omitted from the recovery path — recovery is
- * commit-only; the user will reattach and a normal turn will push later).
- */
 export interface PostInterruptCommitDeps {
   sessionManager: SessionManager;
   chatHistoryManager: ChatHistoryManager;
@@ -48,18 +22,9 @@ export interface PostInterruptCommitDeps {
   scheduleAutoPush?: (git: GitManager, sessionId?: string) => void;
 }
 
-/**
- * Delay before the interrupt-time commit fires. Long enough that the agent
- * process has had time to flush any in-flight writes (so the partial work
- * lands in one commit, not split across this fallback and the normal
- * post-turn handler), short enough that the user sees the commit promptly.
- */
+// Allow pending writes time to finish before committing partial work.
 export const INTERRUPT_COMMIT_FALLBACK_DELAY_MS = 2000;
 
-/**
- * Commit any partial work after an interrupt/kill and emit a PR lifecycle
- * update. Safe to call multiple times — idempotent at the git layer.
- */
 export async function runPostInterruptCommit(args: {
   deps: PostInterruptCommitDeps;
   runner: SessionRunnerInterface;
@@ -70,13 +35,7 @@ export async function runPostInterruptCommit(args: {
   const sessionId = runner.sessionId;
   const sessionDir = runner.sessionDir;
 
-  // The same ordering `turn-executor.ts` applies, for the same reason: the PR
-  // lifecycle flow below does its own synchronous `git push` — a `forcePush`
-  // when re-arming past a merged pull request — and a plain auto-push racing it
-  // is rejected non-fast-forward, which reports a divergence that never
-  // happened. Held here and fired in the `finally`, so it survives a throwing
-  // PR flow: the commit is already made, and one that never pushes and never
-  // explains itself is what the whole auto-push module exists to prevent.
+  // Arm auto-push after the PR flow's own push, even if that flow throws.
   const pending: { arm: (() => void) | null } = { arm: null };
   try {
     const commitHash = await postTurnCommit(
@@ -124,11 +83,6 @@ export async function runPostInterruptCommit(args: {
   }
 }
 
-/**
- * Fire-and-forget wrapper that defers the commit by
- * `INTERRUPT_COMMIT_FALLBACK_DELAY_MS`, then runs `runPostInterruptCommit`.
- * Returns the timer handle so callers (mostly tests) can cancel if needed.
- */
 export function scheduleInterruptCommit(args: {
   deps: PostInterruptCommitDeps;
   runner: SessionRunnerInterface;

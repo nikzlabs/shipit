@@ -1,12 +1,3 @@
-/**
- * Unit tests for GitHub PR review-thread GraphQL mutation helpers (docs/102).
- *
- * Mocks `globalThis.fetch` to exercise the request shape and the response
- * envelope handling without hitting GitHub. Each test asserts both the
- * GraphQL body (`query` + `variables`) and the returned `{ success, message }`
- * shape so the contract with `services/github-pr-comments.ts` is locked in.
- */
-
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import {
   addReviewThreadReply,

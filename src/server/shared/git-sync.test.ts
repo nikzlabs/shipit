@@ -26,17 +26,14 @@ describe("GitManager: push and pull", () => {
   });
 
   it("push sends commits to a bare remote", async () => {
-    // Create a bare repo to act as the remote
     const { execSync } = await import("node:child_process");
     execSync("git init --bare -b main", { cwd: bareDir });
 
     const git = new GitManager(tmpDir);
     await git.init();
 
-    // Add the bare repo as remote
     await git.addRemote("origin", bareDir);
 
-    // Create a commit to push
     fs.writeFileSync(path.join(tmpDir, "pushed.txt"), "hello");
     await git.autoCommit("Push test");
 
@@ -49,19 +46,17 @@ describe("GitManager: push and pull", () => {
     const { execSync } = await import("node:child_process");
     execSync("git init --bare -b main", { cwd: bareDir });
 
-    // Clone into two working copies (use separate dirs, not tmpDir which has git config files)
+    // tmpDir already contains config files; clone into empty directories.
     const workDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-git-work-"));
     const cloneDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-git-clone-"));
     try {
       execSync(`git clone ${bareDir} .`, { cwd: workDir, stdio: "pipe" });
       execSync(`git clone ${bareDir} .`, { cwd: cloneDir, stdio: "pipe" });
 
-      // Create a commit in the clone and push
       fs.writeFileSync(path.join(cloneDir, "from-clone.txt"), "from clone");
       execSync("git add -A && git commit -m 'From clone'", { cwd: cloneDir, stdio: "pipe" });
       execSync("git push", { cwd: cloneDir, stdio: "pipe" });
 
-      // Pull in the original
       const git = new GitManager(workDir);
       const branch = await git.getCurrentBranch();
       const result = await git.pull("origin", branch);
@@ -98,7 +93,6 @@ describe("GitManager: forceUpdateBranchRef + getRefHash (docs/221)", () => {
       execSync("git init -b main", { cwd: work, stdio: "pipe" });
       fs.writeFileSync(path.join(work, "a.txt"), "c1\n");
       execSync("git add -A && git commit -m c1", { cwd: work, stdio: "pipe" });
-      // A second branch one commit ahead of main.
       execSync("git checkout -b feature", { cwd: work, stdio: "pipe" });
       fs.writeFileSync(path.join(work, "a.txt"), "c2\n");
       execSync("git add -A && git commit -m c2", { cwd: work, stdio: "pipe" });
@@ -107,12 +101,10 @@ describe("GitManager: forceUpdateBranchRef + getRefHash (docs/221)", () => {
       const featureSha = await git.getRefHash("feature");
       expect(await git.getRefHash("main")).not.toBe(featureSha);
 
-      // Move main up to feature while staying ON feature.
       await git.forceUpdateBranchRef("main", "feature");
 
-      expect(await git.getCurrentBranch()).toBe("feature"); // HEAD unchanged
-      expect(await git.getRefHash("main")).toBe(featureSha); // ref moved
-      // Working tree untouched — still feature's content, not a checkout of main.
+      expect(await git.getCurrentBranch()).toBe("feature");
+      expect(await git.getRefHash("main")).toBe(featureSha);
       expect(fs.readFileSync(path.join(work, "a.txt"), "utf-8")).toBe("c2\n");
     } finally {
       fs.rmSync(work, { recursive: true, force: true });

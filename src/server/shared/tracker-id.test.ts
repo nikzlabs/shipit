@@ -42,9 +42,6 @@ describe("githubTrackerId / parseGitHubTrackerId", () => {
   });
 
   it("returns null for the bare `github` id", () => {
-    // Bare `github` means "whatever repository the operation resolved" — the
-    // session's own code repo. It deliberately does NOT decay to a default here;
-    // choosing one would be the substitution req 3 forbids.
     expect(parseGitHubTrackerId("github")).toBeNull();
   });
 
@@ -78,9 +75,6 @@ describe("linearTrackerId / parseLinearTrackerId (docs/248-declared-issue-tracke
     expect(parseLinearTrackerId("linear:shi")).toBe("SHI");
   });
 
-  // The bare `linear` is the retired deployment-wide binding (req 1 removed it),
-  // so it names no destination this build can reach — it must not silently
-  // resolve to some team.
   it("returns null for the retired bare `linear` id", () => {
     expect(parseLinearTrackerId("linear")).toBeNull();
   });

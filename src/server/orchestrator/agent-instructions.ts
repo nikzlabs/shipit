@@ -1,25 +1,3 @@
-/**
- * Built-in system instructions prepended to the agent's system prompt.
- * These help the agent understand the ShipIt environment it operates in.
- *
- * Visible and toggleable in Settings > Instructions for transparency.
- *
- * The output is intentionally static within a session. There are exactly two
- * axes — `agentId` (Parallel sessions wording) and the session `mode`
- * (`std` / `ops` docs/128 / `sandbox` docs/211) — and both are fixed for a
- * session's lifetime. Every combination is rendered ONCE at module load into
- * `PRECOMPUTED_INSTRUCTIONS`; the exported `buildAgentSystemInstructions` is a
- * pure lookup with no per-turn assembly, so the Anthropic prompt cache stays
- * warm across turns. Dynamic per-machine
- * context (cwd, git status, env, memory paths) is moved into the first user
- * message by the CLI's `--exclude-dynamic-system-prompt-sections` flag, not
- * added to this prompt.
- *
- * Prompt TEXT lives in `prompts/*.md` next to this file (the `{{TOKEN}}`
- * skeleton plus one fragment per `.md`); this module owns only the COMPOSITION
- * — which fragment fills each token for a given axis. See CLAUDE.md › "Prompts".
- */
-
 import type { AgentId } from "../shared/types.js";
 import { loadPrompt, fillPromptTokens } from "./load-prompt.js";
 import { CLAUDE_PARALLEL_SESSIONS_SECTION } from "./agents/claude/system-prompt.js";
@@ -27,19 +5,7 @@ import { CODEX_PARALLEL_SESSIONS_SECTION } from "./agents/codex/system-prompt.js
 import { OPENCODE_PARALLEL_SESSIONS_SECTION } from "./agents/opencode/system-prompt.js";
 import { GROK_PARALLEL_SESSIONS_SECTION } from "./agents/grok/system-prompt.js";
 
-/**
- * Per-agent "Parallel sessions" prompt fragments, keyed so the builder
- * does a single Map lookup instead of an `agentId === "claude"`/`"codex"`
- * if-cascade (docs/155 hair 9). The fragments themselves live in each
- * agent's `agents/<id>/system-prompt.ts`; this map only collects them
- * for the dispatcher below. Backends without a fragment register no
- * entry and fall through to the empty string at the call site.
- *
- * Kept local (and not derived from `buildAgentRuntime`'s
- * `parallelSessionsSections`) because the fragments are static module
- * constants and `buildAgentSystemInstructions` is also called from the
- * Settings UI baseline path that has no app-DI context.
- */
+// Settings also uses this builder without app dependency injection.
 const PARALLEL_SESSIONS_SECTIONS: ReadonlyMap<AgentId, string> = new Map([
   ["claude", CLAUDE_PARALLEL_SESSIONS_SECTION],
   ["codex", CODEX_PARALLEL_SESSIONS_SECTION],
@@ -48,143 +14,41 @@ const PARALLEL_SESSIONS_SECTIONS: ReadonlyMap<AgentId, string> = new Map([
 ]);
 
 export interface AgentSystemInstructionOptions {
-  /**
-   * Identity of the agent the prompt is being assembled for. Drives the
-   * per-agent "when to reach for `shipit session create`" guidance in the
-   * Parallel sessions section: Claude gets a "Task-first" rule (since the
-   * `Task` tool already covers in-turn fan-out), while Codex — which has no
-   * in-process subagent primitive — is told `shipit session create` is its
-   * only fan-out primitive but is still heavy and user-visible. Omit to skip
-   * the Parallel sessions section entirely (the default rendering used by
-   * the no-options test fixture).
-   *
-   * `agentId` is fixed for a session's lifetime, so making it the only
-   * branching axis preserves prompt-cache stability within a session.
-   *
-   * See docs/117-agent-spawned-sessions/plan.md.
-   */
   agentId?: AgentId;
-  /**
-   * docs/128 — true when this is a privileged ops session
-   * (`session.kind === "ops"`). It is a *second* fixed-for-the-session
-   * branching axis, exactly like `agentId`, so it doesn't break the
-   * prompt-cache-stability contract (the string is still static within a
-   * session). When set, the builder:
-   *
-   *   - splices in an "Ops session" block that names the read-only privilege
-   *     surface (Docker via the proxy, journal mounts) and the
-   *     `journalctl -D /var/log/journal` rule, so the agent knows what it is
-   *     and stops treating a privileged host-debug box like an app workspace;
-   *   - swaps the aggressive "always open a PR" guidance for a read-only
-   *     variant — an ops session investigates, it doesn't ship features;
-   *   - swaps the auto-commit Git guidance for the ops "you own git" variant.
-   *     ShipIt does not auto-commit an ops session (`services/auto-commit-gate.ts`),
-   *     so the standard fragment's "do NOT run git commit — this is handled for
-   *     you" would be false AND harmful: it tells the agent not to commit work
-   *     that nothing else will commit. Ops gets its OWN fragment rather than
-   *     reusing the sandbox one, because the sandbox text assumes no root repo
-   *     and free branch creation — an ops workspace is a repo, on a branch, with
-   *     branch creation blocked;
-   *   - drops the "scaffold a new project" best-practice bullet, which is
-   *     nonsense in a host-debugging context.
-   *
-   * The shared base (environment, terminal, service logs, browser, platform
-   * docs) is unchanged — ops is an overlay, not a separate prompt. Defaults
-   * to false so the non-ops rendering is byte-identical to today.
-   */
   isOps?: boolean;
-  /**
-   * docs/211 — true when this is a sandbox session (`session.kind ===
-   * "sandbox"`). Mutually exclusive with {@link isOps} (a session is exactly one
-   * kind); like `isOps` it is a fixed-for-the-session branching axis, so the
-   * prompt-cache-stability contract holds. When set, the builder:
-   *
-   *   - splices in a "Sandbox session" orientation block (no bound repo; clone
-   *     into `/workspace/<name>`; no preview/PR card; workspace persists but
-   *     pushed state is the source of truth);
-   *   - swaps the auto-commit Git guidance for the "you own git yourself"
-   *     variant (a sandbox has no session branch and ShipIt does not auto-commit
-   *     or guard branch creation);
-   *   - swaps the "always open a PR on this branch" guidance for the per-repo
-   *     `gh` variant (open PRs from inside each clone); and
-   *   - drops the `RELEASES` and "scaffold a new project" fragments, like ops.
-   *
-   * Defaults to false. When both `isOps` and `isSandbox` are passed, ops wins
-   * (defensive — the two are mutually exclusive at the source).
-   */
   isSandbox?: boolean;
 }
 
-// ---------------------------------------------------------------------------
-// Prompt text. The base skeleton (`prompts/skeleton.md`) carries `{{TOKEN}}`
-// holes; each conditional fragment is its own `.md`. This module only chooses
-// which fragment fills each hole per axis (see `renderInstructions`). Loaded
-// once at module init — a missing/renamed file throws here, failing the boot
-// loudly rather than crashing mid-turn. See CLAUDE.md › "Prompts".
-// ---------------------------------------------------------------------------
 const SKELETON = loadPrompt(import.meta.url, "./prompts/skeleton.md");
 
-// docs/128 — ops overlay, spliced in right after Environment.
 const OPS_SECTION = loadPrompt(import.meta.url, "./prompts/ops-session.md");
-// docs/211 — sandbox orientation overlay, in the same Environment-adjacent slot.
 const SANDBOX_SECTION = loadPrompt(import.meta.url, "./prompts/sandbox-session.md");
-// Git workflow: ShipIt's auto-commit guidance vs the two "you own git" variants.
-// One per privileged kind — they are NOT interchangeable. The sandbox text is
-// written around having no root repo at all ("work inside the clone you created
-// under /workspace/<name>", "create branches yourself"); an ops workspace IS a
-// repo, on a branch, with branch creation blocked by the `block-branch-ops`
-// hook. See `services/auto-commit-gate.ts` for the invariant both describe.
 const GIT_WORKFLOW_STANDARD = loadPrompt(import.meta.url, "./prompts/git-workflow.md");
 const GIT_WORKFLOW_SANDBOX = loadPrompt(import.meta.url, "./prompts/git-workflow-sandbox.md");
 const GIT_WORKFLOW_OPS = loadPrompt(import.meta.url, "./prompts/git-workflow-ops.md");
-// Pull requests: full action-oriented guidance vs the read-only ops / per-repo sandbox variants.
 const PULL_REQUESTS_STANDARD = loadPrompt(import.meta.url, "./prompts/pull-requests.md");
 const PULL_REQUESTS_OPS = loadPrompt(import.meta.url, "./prompts/pull-requests-ops.md");
 const PULL_REQUESTS_SANDBOX = loadPrompt(import.meta.url, "./prompts/pull-requests-sandbox.md");
-// docs/171 — release guidance, dropped for ops + sandbox sessions.
 const RELEASES = loadPrompt(import.meta.url, "./prompts/releases.md");
-// docs/128 — the "scaffold a new project" best-practice bullet, dropped for ops + sandbox.
 const NEW_PROJECT_BEST_PRACTICE = loadPrompt(import.meta.url, "./prompts/new-project-best-practice.md");
-// docs/128 — standard preview guidance vs the ops compose-services clarification.
-// A sandbox renders no preview, so it drops this section entirely.
 const LIVE_PREVIEW = loadPrompt(import.meta.url, "./prompts/live-preview.md");
 const COMPOSE_SERVICES_OPS = loadPrompt(import.meta.url, "./prompts/compose-services-ops.md");
-// docs/245 — Codex needs an explicit tie-breaker for confirmation-shaped
-// continuations; Claude already follows the intended behavior without one.
 const CODEX_IMPLIED_ACTION = loadPrompt(
   import.meta.url,
   "./agents/codex/implied-action.md",
 );
-/** Backend-specific behavioral guidance; absent entries intentionally render empty. */
 const IMPLIED_ACTION_SECTIONS: ReadonlyMap<AgentId, string> = new Map([
   ["codex", CODEX_IMPLIED_ACTION],
 ]);
 
-/**
- * The session-mode branching axis. `std` is an ordinary repo/local session;
- * `ops` (docs/128) and `sandbox` (docs/211) are the privileged kinds. Mutually
- * exclusive — a session is exactly one mode, fixed for its lifetime.
- */
 type SessionMode = "std" | "ops" | "sandbox";
 
-/** Resolve the session mode from the (mutually exclusive) overlay flags. Ops wins. */
 function sessionMode(isOps: boolean, isSandbox: boolean): SessionMode {
   if (isOps) return "ops";
   if (isSandbox) return "sandbox";
   return "std";
 }
 
-/**
- * Assemble one variant of the agent system instructions. The only axes are
- * `agentId` (Parallel sessions wording) and the session `mode` (`std` / `ops`
- * docs/128 / `sandbox` docs/211) — both fixed for a session's lifetime. This
- * function does the section composition, but it is NEVER called per-turn: every
- * `(agentId, mode)` combination is rendered ONCE at module load into
- * `PRECOMPUTED_INSTRUCTIONS` below, and the public
- * `buildAgentSystemInstructions` is a pure lookup. That keeps the per-turn path
- * free of any conditionals — each session always reads the exact same frozen
- * constant — which is what the Anthropic prompt cache needs.
- */
 function renderInstructions(
   agentId: AgentId | undefined,
   mode: SessionMode,
@@ -192,11 +56,6 @@ function renderInstructions(
   const isOps = mode === "ops";
   const isSandbox = mode === "sandbox";
 
-  // Per-agent "when to reach for `shipit session create`" guidance. The
-  // section is only emitted when an `agentId` is supplied — the no-options
-  // rendering used by the Settings UI baseline and the no-options test
-  // fixture skips it. Per-agent wording lives in
-  // `agents/<id>/system-prompt.ts`; see docs/117 and docs/155 hair 9.
   const parallelSessionsSection = agentId
     ? PARALLEL_SESSIONS_SECTIONS.get(agentId) ?? ""
     : "";
@@ -204,8 +63,6 @@ function renderInstructions(
   return fillPromptTokens(SKELETON, {
     OPS_SECTION: isOps ? OPS_SECTION : isSandbox ? SANDBOX_SECTION : "",
     GIT_WORKFLOW: isOps ? GIT_WORKFLOW_OPS : isSandbox ? GIT_WORKFLOW_SANDBOX : GIT_WORKFLOW_STANDARD,
-    // Sandbox renders no preview pane, so it drops the section entirely; ops
-    // swaps it for the compose-services clarification; std keeps Live preview.
     LIVE_PREVIEW: isOps ? COMPOSE_SERVICES_OPS : isSandbox ? "" : LIVE_PREVIEW,
     PULL_REQUESTS: isOps ? PULL_REQUESTS_OPS : isSandbox ? PULL_REQUESTS_SANDBOX : PULL_REQUESTS_STANDARD,
     RELEASES: isOps || isSandbox ? "" : RELEASES,
@@ -215,29 +72,12 @@ function renderInstructions(
   });
 }
 
-
-/**
- * Variant cache key. The rendered string depends only on which Parallel
- * sessions fragment applies and the session mode. An `agentId` with no
- * registered fragment renders identically to "no agent", so it maps to the
- * same empty-fragment key — that keeps the precomputed set finite and complete
- * (one entry per registered agent + the no-agent baseline, times the three
- * session modes).
- */
 function variantKey(agentId: AgentId | undefined, mode: SessionMode): string {
   const idPart = agentId && PARALLEL_SESSIONS_SECTIONS.has(agentId) ? agentId : "";
   return `${idPart}|${mode}`;
 }
 
-/**
- * Every variant rendered ONCE at module load and frozen. Keyed by
- * `variantKey`. Built from the no-agent baseline plus each registered Parallel
- * sessions agent, each in all three session modes. Because `agentId` and the
- * session mode are both fixed for a session's lifetime, a session reads exactly
- * one of these constants for its entire life — the per-turn path never
- * re-assembles a prompt, so the string handed to the CLI is byte-stable across
- * turns and the Anthropic prompt cache stays warm.
- */
+// Precompute session-fixed variants to keep system prompts byte-stable across turns.
 const PRECOMPUTED_INSTRUCTIONS: ReadonlyMap<string, string> = (() => {
   const agentIds: readonly (AgentId | undefined)[] = [
     undefined,
@@ -253,14 +93,6 @@ const PRECOMPUTED_INSTRUCTIONS: ReadonlyMap<string, string> = (() => {
   return map;
 })();
 
-/**
- * Return the prebuilt agent system instructions for this session. Pure lookup —
- * no string assembly, no conditionals affecting the returned content — so every
- * turn of a given session gets the identical frozen string. The conditional
- * axes (`agentId`, session mode) are both fixed for a session's lifetime; the
- * actual composition happened once at module load (see `renderInstructions` /
- * `PRECOMPUTED_INSTRUCTIONS`).
- */
 export function buildAgentSystemInstructions(
   options: AgentSystemInstructionOptions = {},
 ): string {
@@ -269,10 +101,4 @@ export function buildAgentSystemInstructions(
   )!;
 }
 
-/**
- * Cached rendering of the agent system instructions with no agentId. Used by
- * the Settings UI baseline. The per-turn rendering in agent-execution.ts
- * passes the session's actual `agentId` so the running agent sees the
- * matching Parallel sessions section.
- */
 export const AGENT_SYSTEM_INSTRUCTIONS = buildAgentSystemInstructions();

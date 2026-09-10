@@ -1,20 +1,4 @@
-/**
- * Container recovery API routes — health probe, recovery actions, and the
- * full diagnostics payload.
- *
- * See docs/112-container-recovery/plan.md and
- * docs/124-session-rescue-and-diagnostics/plan.md. Four endpoints:
- *
- *   GET  /api/sessions/:id/container/health         — aggregated health strip
- *   GET  /api/sessions/:id/diagnostics              — full debug payload (124 §3)
- *   POST /api/sessions/:id/agent/kill               — SIGKILL the agent
- *   POST /api/sessions/:id/container/restart        — destroy + recreate (Rescue session)
- *   POST /api/sessions/:id/agent/container/restart  — destroy + recreate agent only (127)
- *
- * These are HTTP rather than WebSocket because they need to work even
- * when the per-session WS or the worker itself is in a degraded state,
- * and HTTP gives a clean ACK.
- */
+// Recovery must remain available when the session WebSocket or worker fails.
 
 import type { FastifyInstance } from "fastify";
 import type { ApiDeps } from "./api-routes.js";
@@ -37,7 +21,6 @@ export async function registerContainerRoutes(
 ): Promise<void> {
   const { sessionManager } = deps;
 
-  // GET /api/sessions/:id/container/health — diagnostics for the health strip
   app.get<{ Params: { id: string } }>(
     "/api/sessions/:id/container/health",
     async (request, reply) => {
@@ -64,7 +47,6 @@ export async function registerContainerRoutes(
     },
   );
 
-  // GET /api/sessions/:id/diagnostics — full debug payload (Session diagnostics panel + bug reports)
   app.get<{ Params: { id: string } }>(
     "/api/sessions/:id/diagnostics",
     async (request, reply) => {
@@ -81,7 +63,6 @@ export async function registerContainerRoutes(
             serviceManagers: deps.serviceManagers ?? new Map<string, ServiceManager>(),
             getLogBuffer: deps.getLogBuffer ?? (() => []),
             getWorkspaceDir: (id) => sessionManager.get(id)?.workspaceDir ?? null,
-            // docs/150-multiple-provider-subscriptions req 11 — which account this session is running on.
             getSessionRoute: (id) => sessionManager.get(id),
             getAccountLabel: (provider, accountId) =>
               deps.providerAccountManager.get(accountServiceForHarness(provider), accountId)?.label,
@@ -99,7 +80,6 @@ export async function registerContainerRoutes(
     },
   );
 
-  // POST /api/sessions/:id/agent/kill — force-kill the agent (SIGKILL)
   app.post<{ Params: { id: string } }>(
     "/api/sessions/:id/agent/kill",
     async (request, reply) => {
@@ -137,7 +117,6 @@ export async function registerContainerRoutes(
     },
   );
 
-  // POST /api/sessions/:id/container/restart — destroy + recreate container
   app.post<{ Params: { id: string } }>(
     "/api/sessions/:id/container/restart",
     async (request, reply) => {
@@ -150,10 +129,6 @@ export async function registerContainerRoutes(
             defaultAgentId: deps.defaultAgentId,
             ...(deps.oomBreaker ? { oomBreaker: deps.oomBreaker } : {}),
             ...(deps.loopDetector ? { loopDetector: deps.loopDetector } : {}),
-            // docs/285 — Rescue has always had the stranded-second-viewer
-            // problem too: only the tab that pressed the button reconnects,
-            // while every other tab keeps an open socket to a disposed runner.
-            // The announcement costs nothing here and fixes both callers.
             sseBroadcast: deps.sseBroadcast,
           },
           request.params.id,
@@ -169,9 +144,6 @@ export async function registerContainerRoutes(
     },
   );
 
-  // POST /api/sessions/:id/agent/container/restart — destroy + recreate JUST the
-  // agent container; leave the compose stack running. Lighter-weight than the
-  // full Rescue session. See docs/127-restart-agent.
   app.post<{ Params: { id: string } }>(
     "/api/sessions/:id/agent/container/restart",
     async (request, reply) => {

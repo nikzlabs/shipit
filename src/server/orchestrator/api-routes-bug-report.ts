@@ -1,18 +1,3 @@
-/**
- * Bug-report API routes (docs/164 — user bug filing).
- *
- * Surface:
- *   POST /api/sessions/:sessionId/bug-report   { title, body }
- *
- * The agent's `report_shipit_bug` tool (the `shipit` bridge → worker
- * `/agent-ops/bug/report` → here) relays the draft. This route runs the
- * mandatory server-side redaction pipeline, stamps the platform build, and
- * emits a `bug_report_card` into the chat for the user to review. It does NOT
- * file anything — creation only happens after the user confirms the card, via
- * the `submit_bug_report` WS message. Filing under the user's own GitHub
- * identity therefore stays consent-gated.
- */
-
 import { randomUUID } from "node:crypto";
 import type { FastifyInstance, FastifyReply } from "fastify";
 import type { ApiDeps } from "./api-routes.js";
@@ -43,13 +28,11 @@ export async function registerBugReportRoutes(app: FastifyInstance, deps: ApiDep
         return;
       }
 
-      // Confirm the session exists (and resolves to a real dir) before doing work.
       if (!resolveSessionDir(deps.sessionManager, sessionId, reply)) return;
       const session = deps.sessionManager.get(sessionId);
 
       const runner = deps.runnerRegistry.get(sessionId);
       if (!runner) {
-        // No active runner means there's nowhere to render the consent card.
         reply.code(409).send({ error: "Session is not active — open it to file a bug report." });
         return;
       }
@@ -64,8 +47,6 @@ export async function registerBugReportRoutes(app: FastifyInstance, deps: ApiDep
           body,
           producer,
           buildId: resolveBuildId(),
-          // Prefer an injected Stage-2 runner (test mode wires a no-op);
-          // otherwise derive it from the session's own agent CLI.
           ...(deps.bugReportModelRunner
             ? { run: deps.bugReportModelRunner }
             : session?.agentId
@@ -76,13 +57,6 @@ export async function registerBugReportRoutes(app: FastifyInstance, deps: ApiDep
         const filedAs = deps.githubAuthManager.getStatus().username;
         const createdAt = new Date().toISOString();
 
-        // Persist the card in-band with the proposing turn so it survives a
-        // session switch / full reload, not just a WS reconnect. `emitChatCard`
-        // emits the live card AND records it (anchored so `buildTurnMessages`
-        // lands it where the `report_shipit_bug` tool fired, not floating above
-        // the whole turn) — the single primitive that makes a transcript card
-        // impossible to ship emit-only. Filed/failed transitions later patch
-        // this record in place via `updateBugReportCard`.
         const persistedCard: PersistedBugReport = {
           cardId: compiled.cardId,
           phase: "draft",

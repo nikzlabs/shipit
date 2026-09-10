@@ -1,15 +1,3 @@
-/**
- * docs/150-multiple-provider-subscriptions req 12 — a reserved env/API-key route is metered billing, never a
- * subscription account.
- *
- * The requirement is that ShipIt never rolls a spent subscription onto
- * pay-as-you-go billing. The structural half of that guarantee is that
- * configuring an API key must not create or "ready" a stored account row: if it
- * did, the reserved route would become reachable through ordinary account
- * selection and req 12 would depend on ordering inside the selection walk
- * rather than on the two things being different in kind.
- */
-
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
@@ -46,13 +34,10 @@ describe("reserved routes never become subscription accounts (req 12)", () => {
     const mgr = new ProviderAccountManager({ credentialsDir: root, credentialStore: store });
     mgr.migrateDefaultAccounts();
 
-    // The route is available...
     const sel = mgr.selectAccountForTurn("anthropic");
     expect(sel.ok).toBe(true);
     if (sel.ok) expect(sel.route).toEqual({ kind: "reserved", id: "claude-api-key" });
 
-    // ...but nothing appears in the account list, so no UI row, no priority
-    // position, and nothing for failover to select as a subscription.
     expect(mgr.list("anthropic")).toHaveLength(0);
   });
 
@@ -69,13 +54,8 @@ describe("reserved routes never become subscription accounts (req 12)", () => {
   });
 
   it("fails an exhausted subscription rather than rolling onto the API key", () => {
-    // The heart of req 12. An API key is configured and would work, but a spent
-    // subscription must not silently start spending money — the turn fails and
-    // the user is told when the window resets.
     process.env.ANTHROPIC_API_KEY = "sk-ant-test";
-    // Inside the docs/260 re-probe cap, so the STATED reset is what the
-    // failure names; a longer reset would be truncated to the ~30-minute cap
-    // (req 9 — a refusal is re-tried within the cap whatever it claims).
+    // Keep the reset inside the re-probe cap so its exact time is returned.
     const resetAt = Date.now() + 20 * 60 * 1000;
     const mgr = new ProviderAccountManager({ credentialsDir: root, credentialStore: store });
     const acct = mgr.create("anthropic", "Subscription");
@@ -93,8 +73,6 @@ describe("reserved routes never become subscription accounts (req 12)", () => {
   });
 
   it("prefers the OAuth env route over the API key for Claude", () => {
-    // `claude-env-oauth` is a subscription token supplied by env, so it is
-    // quota-bearing and must outrank metered billing.
     process.env.ANTHROPIC_API_KEY = "sk-ant-test";
     process.env.ANTHROPIC_AUTH_TOKEN = "oauth-token";
     const mgr = new ProviderAccountManager({ credentialsDir: root, credentialStore: store });

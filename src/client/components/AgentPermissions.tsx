@@ -2,14 +2,6 @@ import { GitMergeIcon } from "@phosphor-icons/react";
 import { useRepoStore } from "../stores/repo-store.js";
 import { ICON_SIZE } from "../design-tokens.js";
 
-/**
- * docs/287 — per-repository agent permissions, in the Project Settings dialog.
- *
- * Currently one grant: may an agent merge the pull request its own session
- * opened? Here rather than in a tab of its own — one toggle does not justify a
- * navigation category — and NOT declarable in `shipit.yaml`, which the agent
- * can write.
- */
 export function AgentPermissions({ repoUrl }: { repoUrl: string }) {
   const repo = useRepoStore((s) => s.repos.find((r) => r.url === repoUrl));
   const setAllow = useRepoStore((s) => s.setRepoAllowAgentMerge);

@@ -1,29 +1,9 @@
-/**
- * docs/128 — Ops session template.
- *
- * The ops session is a privileged host-debugging session: the agent gets
- * read-only Docker access (via a hardened `docker-socket-proxy` sibling over
- * TCP) and read-only systemd journal mounts, so an operator can debug the
- * production ShipIt host without leaving the UI.
- *
- * This template only carries the *workspace contents* (README, shipit.yaml,
- * docker-compose.yml, prompts/). The privilege itself is gated on the
- * server-authoritative `session.kind === "ops"` field — set at creation by
- * `applyTemplate` (services/templates.ts), never by anything in the workspace.
- * A non-ops session that copies this `shipit.yaml` gets its host mounts
- * silently dropped (see container-lifecycle.ts).
- */
+// Ops privileges require the server-owned session kind; copying these files grants none.
 
 import type { ProjectTemplate } from "../shared/types.js";
 
 export const OPS_TEMPLATE_ID = "ops";
 
-/**
- * Hardened docker-socket-proxy compose service. The real `/var/run/docker.sock`
- * is mounted only into this sibling — never the agent container. Read-only API
- * surface: containers/events/images/info/networks/volumes are allowed; every
- * mutating or sensitive endpoint (POST, EXEC, secrets, swarm, build) is denied.
- */
 const DOCKER_COMPOSE_YML = `# docs/128 — read-only Docker access for the ops session.
 #
 # In Contained mode the agent remains contained. This server-authorized proxy
@@ -508,17 +488,7 @@ source references and a recommended patch outline so someone with write access
 can land it.
 `;
 
-/**
- * docs/128 — seed prompt for an ops session opened *to investigate another
- * session* (the sidebar "Investigate in Ops session" entry point).
- *
- * The client bakes this into the new ops session's composer draft so the
- * operator lands with only the durable context already typed: which session
- * is being investigated and that the investigation is read-only. The operator
- * adds the incident-specific symptoms and request; prescribing Docker,
- * journal, resource, or reporting steps here made the draft confidently wrong
- * for investigations that did not need those surfaces.
- */
+// Seed only durable context; the operator supplies symptoms and the request.
 export function buildOpsInvestigationSeed(target: {
   id: string;
   title: string;

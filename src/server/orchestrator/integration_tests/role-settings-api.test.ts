@@ -27,15 +27,6 @@ import { CredentialStore } from "../credential-store.js";
 import { initGlobalGitConfig, setGitIdentity } from "../git-config.js";
 import type { RoleView } from "../../shared/types/agent-types.js";
 
-/**
- * docs/264 phase 2 (reqs 1, 2, 5, 6, 17, 18) — role CRUD **over HTTP**.
- *
- * The unit tests exercise the write planner directly and the component tests
- * mock `fetch`, so between them both suites pass if the route forgets to forward
- * or persist `roles` at all — the hole cross-backend review found on docs/261's
- * equivalent. This closes it end to end: real app, real route, real store, one
- * assertion per hop the value has to cross.
- */
 describe("Integration: role settings over HTTP (docs/264 phase 2)", () => {
   let app: FastifyInstance;
   let tmpDir: string;
@@ -75,7 +66,6 @@ describe("Integration: role settings over HTTP (docs/264 phase 2)", () => {
     }
   });
 
-  /** Store an API-key credential through the real route, as the UI does. */
   async function addCredential(serviceId: string): Promise<void> {
     const res = await app.inject({
       method: "POST",
@@ -95,11 +85,6 @@ describe("Integration: role settings over HTTP (docs/264 phase 2)", () => {
     return app.inject({ method: "PUT", url: "/api/settings", payload: { roles } });
   }
 
-  /**
-   * A tuple this install really can run. `deepseek-flash` is the shipped
-   * dual-harness model, so it is also what makes "the role names its harness"
-   * (req 6) mean something here rather than being derivable.
-   */
   const PINNED = {
     kind: "pinned",
     harnessId: "claude",
@@ -124,7 +109,6 @@ describe("Integration: role settings over HTTP (docs/264 phase 2)", () => {
     });
     expect(res.statusCode, res.body).toBe(200);
 
-    // The response carries the RESOLUTION — the tab renders straight off this.
     const answered = res.json().roles as RoleView[];
     const created = answered.find((r) => r.name === "deep dive");
     expect(created?.resolved).toMatchObject({
@@ -135,7 +119,6 @@ describe("Integration: role settings over HTTP (docs/264 phase 2)", () => {
     });
     expect(created?.description).toBe("The thorough one");
 
-    // The STORE holds it, and a fresh bootstrap agrees with the response.
     expect(credentialStore.getRole("deep dive")).toMatchObject({ params: PINNED });
     expect(await bootstrapRoles()).toEqual(answered);
   });
@@ -160,12 +143,6 @@ describe("Integration: role settings over HTTP (docs/264 phase 2)", () => {
     expect(credentialStore.getRole("deep dive")?.description).toBe("mine");
   });
 
-  /**
-   * Req 6 at the API edge — and the reason the harness is stored rather than
-   * derived. `minimal` is a level Codex declares and Claude Code does not, and
-   * `deepseek-flash` runs on both, so only a role that NAMES its harness can
-   * be checked against the right level set.
-   */
   it("refuses a level the named harness does not declare, naming the parameter", async () => {
     await addCredential("deepseek");
     const res = await put({
@@ -219,31 +196,14 @@ describe("Integration: role settings over HTTP (docs/264 phase 2)", () => {
       params: { kind: "auto" },
       reserved: true,
     });
-    // Still synthesized, still automatic — the metadata is the only stored half.
     expect(credentialStore.getRole("reviewer")?.params).toEqual({ kind: "auto" });
   });
 
-  /**
-   * The save's boundary, stated as a test: it checks the harness is installed
-   * and can carry the model at the level named — the facts only an edit can
-   * change — and stops there. Whether a credential exists for the
-   * `(service, billing mode)`, and whether it can be routed right now, are
-   * account and clock facts that change without anyone editing a role.
-   *
-   * **Rewritten 2026-08-15 (planning#388).** This test used to assert the
-   * opposite — that a save is refused when no credential exists — which is what
-   * made a **disconnected role uneditable**: the whole role is revalidated on
-   * every write (req 17), so editing only a description was refused for a
-   * credential that edit did not touch, while the list told the user to leave the
-   * role alone and reconnect the service. The next test is the case that could
-   * not be expressed while this one held.
-   */
   it("saves a tuple this install has no credential for, and reports it disconnected", async () => {
     const res = await put({ "deep dive": { params: PINNED } });
     expect(res.statusCode, res.body).toBe(200);
     const created = (res.json().roles as RoleView[]).find((r) => r.name === "deep dive");
     expect(created?.unavailableReason).toBe("disconnected");
-    // No field is marked: the tuple is correct, so there is nothing to edit.
     expect(created?.invalidField).toBeUndefined();
     expect(credentialStore.getRole("deep dive")).toMatchObject({ params: PINNED });
   });
@@ -258,8 +218,6 @@ describe("Integration: role settings over HTTP (docs/264 phase 2)", () => {
   });
 
   it("still refuses a tuple fault while no credential exists", async () => {
-    // The save did not stop checking — `minimal` is Codex's level and not
-    // Claude Code's, and that is a fact about the catalogue rather than the account.
     const res = await put({
       "deep dive": { params: { ...PINNED, reasoningEffort: "minimal" } },
     });

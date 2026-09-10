@@ -6,15 +6,6 @@ import { execSync } from "node:child_process";
 import { GitManager } from "./git.js";
 import { initGlobalGitConfig, setGitIdentity } from "../orchestrator/git-config.js";
 
-/**
- * Regression tests for the diff-stat scaling bug: simple-git's default
- * `--stat` parsing derives per-file insertions/deletions from git's
- * width-scaled histogram bar, so large diffs reported per-file counts that
- * were orders of magnitude too small (the "Changes vs master" dialog summed
- * them into a wrong total while the PR card showed the exact summary-line
- * total). All diff-stat reads now go through `--numstat`, whose columns are
- * exact — these tests pin that with a diff big enough to trigger scaling.
- */
 describe("GitManager diff stats (--numstat exactness)", () => {
   let tmpDir: string;
   let origGitConfigGlobal: string | undefined;
@@ -40,8 +31,6 @@ describe("GitManager diff stats (--numstat exactness)", () => {
     await git.init();
     run("git branch base");
 
-    // Far beyond the --stat graph width, so the histogram bar is scaled and
-    // the old +/- character counting would undercount massively.
     const bigLines = 10_000;
     fs.writeFileSync(path.join(tmpDir, "big.json"), `${Array(bigLines).fill('{"x":1},').join("\n")}\n`);
     fs.writeFileSync(path.join(tmpDir, "small.txt"), "one\ntwo\nthree\n");
@@ -53,8 +42,6 @@ describe("GitManager diff stats (--numstat exactness)", () => {
     expect(big).toMatchObject({ insertions: bigLines, deletions: 0, binary: false });
     expect(small).toMatchObject({ insertions: 3, deletions: 0, binary: false });
 
-    // The dialog sums per-file numbers; the PR card uses diffStatVsBranch
-    // totals. Both must agree exactly.
     const summed = perFile.reduce(
       (acc, f) => ({ ins: acc.ins + f.insertions, del: acc.del + f.deletions }),
       { ins: 0, del: 0 },

@@ -1,19 +1,3 @@
-/**
- * Focused unit test for `runPreInstall` — the warm-pool pre-install executor
- * that the docs/178 trust gate sits in front of.
- *
- * The trust *gate* itself (skip `runPreInstall` for an untrusted remote) lives
- * inside the standby-creation callback in `warmSessionForRepo` and is covered
- * structurally by the `repoStore.isTrusted` unit tests + the standby flow
- * staying green. This file covers the other half: that when pre-install *does*
- * run, it forwards exactly the repo's resolved `agent.install` commands to the
- * worker — and, crucially for the gate's intent, that an empty/absent install
- * config never touches the worker at all (nothing executes).
- *
- * We stand up a real HTTP worker stub (mirroring `sse-client.test.ts`) instead
- * of mocking `workerInstall`, so the test exercises the genuine HTTP path the
- * warm flow uses against `session-worker.ts`'s `/install` + `/install/status`.
- */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import http from "node:http";
 import fs from "node:fs";
@@ -30,17 +14,13 @@ interface InstallRequest {
 interface WorkerStub {
   url: string;
   requests: InstallRequest[];
-  /** Reply for `POST /install`. Defaults to `{ started: false }` (no poll). */
   installReply: Record<string, unknown>;
-  /** Replies pulled in order for each `GET /install/status`. */
   statusReplies: Record<string, unknown>[];
   close: () => Promise<void>;
 }
 
 async function startWorkerStub(): Promise<WorkerStub> {
-  // Build the worker object up front so the request handler closes over the
-  // SAME mutable object the test tweaks (`worker.installReply = …`); spreading
-  // into a fresh return value would leave the handler reading stale defaults.
+  // Return this same object so handlers observe the test's reply changes.
   const worker = {
     url: "",
     requests: [] as InstallRequest[],
@@ -111,7 +91,6 @@ describe("runPreInstall (warm-pool pre-install executor)", () => {
   });
 
   it("never touches the worker when there is no install config (nothing executes)", async () => {
-    // No shipit.yaml at all → resolveShipitConfig yields an empty install list.
     await runPreInstall(tmpDir, worker.url, "sess-2");
     expect(worker.requests).toHaveLength(0);
   });
@@ -129,14 +108,12 @@ describe("runPreInstall (warm-pool pre-install executor)", () => {
     await runPreInstall(tmpDir, worker.url, "sess-4");
 
     expect(worker.requests.some((r) => r.url === "/install")).toBe(true);
-    // skipped => no status poll
     expect(worker.requests.some((r) => r.url === "/install/status")).toBe(false);
   });
 
   it("polls /install/status to completion once the worker reports started", async () => {
     writeInstall(["npm ci"]);
     worker.installReply = { started: true };
-    // First poll still running, second poll done — exercises the loop.
     worker.statusReplies = [
       { running: true },
       { running: false, lastResult: { ok: true } },

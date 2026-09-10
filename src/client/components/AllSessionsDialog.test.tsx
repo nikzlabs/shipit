@@ -4,13 +4,6 @@ import userEvent from "@testing-library/user-event";
 import { AllSessionsDialog } from "./AllSessionsDialog.js";
 import type { SessionInfo } from "../../server/shared/types.js";
 
-/**
- * `SessionItem` (rendered inside the dialog) calls `useMediaQuery("(pointer: coarse)")`
- * via its parent, but here the items are rendered directly without the sidebar
- * wrapper — they read the `isTouch` prop as undefined, which is fine.
- * Stub matchMedia anyway so any future media-query call from a nested component
- * doesn't blow up jsdom.
- */
 function mockMatchMedia() {
   Object.defineProperty(window, "matchMedia", {
     writable: true,
@@ -54,9 +47,6 @@ const defaultProps = () => ({
 });
 
 describe("AllSessionsDialog", () => {
-  // docs/156: session row actions moved from inline buttons into the row's
-  // `[⋯] Session actions` overflow menu. The tests below exercise the menu.
-
   it("offers Restore in the row overflow for archived sessions", async () => {
     const user = userEvent.setup();
     const props = defaultProps();
@@ -66,7 +56,6 @@ describe("AllSessionsDialog", () => {
     render(<AllSessionsDialog {...props} />);
     await user.click(screen.getByLabelText("Session actions"));
     expect(await screen.findByText("Restore")).toBeInTheDocument();
-    // Archived rows hide Rename + Archive — only Restore is offered.
     expect(screen.queryByText("Rename")).toBeNull();
     expect(screen.queryByText("Archive")).toBeNull();
   });
@@ -118,7 +107,6 @@ describe("AllSessionsDialog", () => {
       baseSession({ id: "s1", title: "Archived one", archived: true }),
     ];
     render(<AllSessionsDialog {...props} />);
-    // Click the session row to resume
     fireEvent.click(screen.getByText("Archived one"));
     await waitFor(() => {
       expect(props.onUnarchive).toHaveBeenCalledWith("s1");
@@ -127,8 +115,6 @@ describe("AllSessionsDialog", () => {
   });
 
   it("reflects an evicted (not user-archived) session's disk tier and restores it on resume", async () => {
-    // docs/161 — the disk-idle ladder can evict a session without hiding it, so
-    // an `evicted` session stays listed but must re-clone from cache on select.
     const props = defaultProps();
     props.sessions = [
       baseSession({ id: "s1", title: "Cold session", diskTier: "evicted" }),
@@ -150,9 +136,6 @@ describe("AllSessionsDialog", () => {
   });
 
   it("offers Sandbox / Host-Ops filters only when such sessions exist and scopes by kind", () => {
-    // docs/128 / docs/211 — repo-less sandbox/ops sessions have no `remoteUrl`,
-    // so the repo dropdown must expose kind-based options to make an archived
-    // one reachable (otherwise it's only visible under "All Repositories").
     const props = defaultProps();
     props.sessions = [
       baseSession({ id: "r1", title: "Repo work", remoteUrl: "https://github.com/acme/app" }),
@@ -161,18 +144,15 @@ describe("AllSessionsDialog", () => {
     ];
     render(<AllSessionsDialog {...props} />);
 
-    // Both kind options are present.
     const select = screen.getByRole("combobox") as HTMLSelectElement;
     expect(screen.getByRole("option", { name: "Sandbox" })).toBeTruthy();
     expect(screen.getByRole("option", { name: "Host / Ops" })).toBeTruthy();
 
-    // Selecting Sandbox surfaces the archived sandbox session and hides others.
     fireEvent.change(select, { target: { value: "__sandbox__" } });
     expect(screen.getByText("Sandbox archived")).toBeTruthy();
     expect(screen.queryByText("Repo work")).toBeNull();
     expect(screen.queryByText("Ops session")).toBeNull();
 
-    // Selecting Host / Ops scopes to ops sessions.
     fireEvent.change(select, { target: { value: "__ops__" } });
     expect(screen.getByText("Ops session")).toBeTruthy();
     expect(screen.queryByText("Sandbox archived")).toBeNull();

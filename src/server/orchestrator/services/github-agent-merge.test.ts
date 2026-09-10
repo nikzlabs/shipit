@@ -4,21 +4,6 @@ import { resetMergeAttribution } from "./merge-attribution.js";
 import type { GitManager } from "../../shared/git.js";
 import type { GitHubAuthManager } from "../github-auth.js";
 
-/**
- * docs/224 — `agentMergePullRequest` backs `gh pr merge` for sandbox sessions
- * with the dangerous-ops grant. The route owns the capability gate; this service
- * owns the guardrails: green checks, no draft, no force, branch protection
- * deferred to GitHub. These tests cover each guardrail branch.
- *
- * docs/287 — the guardrails now come from ONE live read
- * (`services/merge-gate.ts`) rather than `viewPullRequest` + `getCheckStatus`.
- * That is a fix to this path, not only a foundation for the new one: the old
- * helper swallowed its own errors and mapped both "no checks configured" and a
- * failed API read to `"none"`, which this service treated as permission to
- * merge. The fake therefore answers the gate's query, and every assertion below
- * that used to describe a check summary now describes a rollup.
- */
-
 const REMOTE = "https://github.com/o/r.git";
 const HEAD_SHA = "sha-head";
 
@@ -29,7 +14,6 @@ function makeGit(): GitManager {
   } as unknown as GitManager;
 }
 
-/** The gate's own answer. `rollupState: null` means GitHub reports no checks. */
 function gate(over: {
   state?: string; isDraft?: boolean; reviewDecision?: string | null;
   headRefOid?: string; rollupCommitOid?: string; rollupState?: string | null;
@@ -64,15 +48,8 @@ function makeGitHub(
 ): GitHubAuthManager {
   return {
     authenticated: true,
-    // Dispatching on the query text rather than answering every GraphQL call
-    // the same way: a fake that aliases the gate read with any other query
-    // cannot fail a test that wires the wrong one.
     graphqlQuery: vi.fn(async (query: string) => (query.includes("MergeGate") ? gateAnswer : null)),
-    // docs/287 — the agent merge goes through the THREE-way attempt, because
-    // its durable claim is kept or dropped on the distinction between "GitHub
-    // refused" and "we never heard back". `mergePullRequest` (the boolean
-    // wrapper) is deliberately absent from this fake: a test that wired the
-    // wrong one would otherwise pass.
+    // Omit the boolean merge wrapper so tests detect losing the indeterminate outcome.
     mergePullRequestAttempt: vi.fn(async () => ({
       outcome: "merged" as const, message: "Pull request merged", mergeCommitSha: "merge-sha",
     })),
@@ -86,7 +63,6 @@ describe("agentMergePullRequest", () => {
     const github = makeGitHub();
     const res = await agentMergePullRequest(makeGit(), github, { number: 5, sessionId: "s1", remoteUrl: REMOTE });
     expect(res.success).toBe(true);
-    // req 16 — pinned to the commit the gate examined.
     expect(github.mergePullRequestAttempt).toHaveBeenCalledWith("o", "r", 5, "merge", HEAD_SHA);
   });
 
@@ -97,9 +73,6 @@ describe("agentMergePullRequest", () => {
   });
 
   it("merges when GitHub reports no checks and no grace window applies", async () => {
-    // A caller with no poller supplies no grace, which is the honest answer:
-    // there is nothing that can tell "this repository has no CI" from "the
-    // workflows have not registered yet".
     const github = makeGitHub({}, gate({ rollupState: null }));
     const res = await agentMergePullRequest(makeGit(), github, { number: 5, sessionId: "s1", remoteUrl: REMOTE });
     expect(res.success).toBe(true);
@@ -116,8 +89,6 @@ describe("agentMergePullRequest", () => {
   });
 
   it("refuses when the read itself fails, instead of reading it as no checks", async () => {
-    // The fail-open this replaced: `getCheckStatus()` swallowed its errors and
-    // returned `"none"`, and `"none"` was permission to merge.
     const github = makeGitHub({}, null);
     const res = await agentMergePullRequest(makeGit(), github, { number: 5, sessionId: "s1", remoteUrl: REMOTE });
     expect(res.success).toBe(false);
@@ -136,7 +107,6 @@ describe("agentMergePullRequest", () => {
     const github = makeGitHub({}, gate({ rollupState: "PENDING" }));
     const res = await agentMergePullRequest(makeGit(), github, { number: 5, sessionId: "s1", remoteUrl: REMOTE });
     expect(res.success).toBe(false);
-    // The sandbox keeps the `--auto` affordance, so its refusal still names it.
     expect(res.message).toContain("--auto");
     expect(github.mergePullRequestAttempt).not.toHaveBeenCalled();
     expect(github.enableAutoMerge).not.toHaveBeenCalled();
@@ -177,7 +147,6 @@ describe("agentMergePullRequest", () => {
     expect(res.message).toBe("At least 1 approving review is required.");
   });
 
-  // docs/287 req 9 — the three outcomes, and what each does to the claim.
   describe("the durable claim", () => {
     it("claims before the merge call, and settles only a witnessed success", async () => {
       const order: string[] = [];
@@ -195,15 +164,10 @@ describe("agentMergePullRequest", () => {
         onIndeterminate: async () => { order.push("indeterminate"); },
       });
       expect(res.success).toBe(true);
-      // The claim is durable BEFORE the call, because the call can reject after
-      // GitHub accepted it — and success is reported only after settlement.
       expect(order).toEqual([`claim:${HEAD_SHA}`, "merge", "settle"]);
     });
 
     it("refuses to merge at all when the last gate says no, in the gate's own words", async () => {
-      // The gate covers two different facts — a withdrawn permission and an
-      // unresolved earlier attempt — so a caller told only "no" would have to
-      // guess which one to report. The message it returns is the answer.
       const github = makeGitHub();
       const res = await agentMergePullRequest(makeGit(), github, {
         number: 5, sessionId: "s1", remoteUrl: REMOTE,
@@ -215,8 +179,6 @@ describe("agentMergePullRequest", () => {
     });
 
     it("reports an indeterminate attempt without settling it", async () => {
-      // The merge MAY have happened. Settling would claim a merge nobody saw;
-      // dropping the claim would lose the only evidence there is.
       const calls: string[] = [];
       const github = makeGitHub({
         mergePullRequestAttempt: vi.fn(async () => ({
@@ -257,8 +219,6 @@ describe("agentMergePullRequest", () => {
     await expect(agentMergePullRequest(makeGit(), github, { number: 5, sessionId: "s1", remoteUrl: REMOTE })).rejects.toMatchObject({ statusCode: 401 });
   });
 
-  // docs/266 req 7 — before this, `gh pr merge` merged silently, so an incident
-  // review could not tell it apart from a merge done in GitHub's own web UI.
   describe("the merge record", () => {
     function mergeLines(log: { mock: { calls: unknown[][] } }): string[] {
       return log.mock.calls.map((c) => String(c[0])).filter((l) => l.includes("Merged PR #"));
@@ -279,8 +239,6 @@ describe("agentMergePullRequest", () => {
       }
     });
 
-    // Arming is not merging (the packet's own constraint): a `--auto` that hands
-    // the PR to GitHub must not be recorded as a merge that has happened.
     it("records nothing when --auto only arms auto-merge", async () => {
       resetMergeAttribution();
       const log = vi.spyOn(console, "log").mockImplementation(() => { /* silence */ });
@@ -296,8 +254,6 @@ describe("agentMergePullRequest", () => {
       }
     });
 
-    // An already-merged PR is a no-op report, not a merge this process performed —
-    // recording it would attribute someone else's merge to `gh pr merge`.
     it("records nothing for a PR that was already merged", async () => {
       resetMergeAttribution();
       const log = vi.spyOn(console, "log").mockImplementation(() => { /* silence */ });

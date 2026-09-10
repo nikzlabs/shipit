@@ -1,8 +1,3 @@
-/**
- * Tests for the Tier C egress allow-once WS handler (docs/172, planning#92),
- * focusing on the durable write-through + live reload on "Add to allowlist".
- */
-
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { handleEgressDecision } from "./egress-handlers.js";
 import { DatabaseManager } from "../../shared/database.js";
@@ -73,8 +68,6 @@ describe("handleEgressDecision", () => {
   });
 
   it("patches the recorded card in place (not the DB row) when the proposing turn is still in flight", () => {
-    // A pending egress card recorded on an IN-FLIGHT turn, mirroring emitChatCard.
-    // The decision must not be lost when that turn finalizes from recordedCards.
     const dbUpdates: unknown[] = [];
     const flushed: unknown[] = [];
     const runner = {
@@ -101,10 +94,8 @@ describe("handleEgressDecision", () => {
 
     handleEgressDecision(ctx, { type: "egress_decision", action: "allow-once", host: "cdn.example.com", cardId: "c1" });
 
-    // In-flight → recorded card patched to the resolved phase, DB-row patch skipped.
     expect((runner.recordedCards[0].message as { egressPrompt?: { phase?: string } }).egressPrompt?.phase).toBe("allowed-once");
     expect(dbUpdates).toHaveLength(0);
-    // ...and the patched in-progress set was flushed so a reload sees it.
     expect(flushed.length).toBeGreaterThan(0);
   });
 });

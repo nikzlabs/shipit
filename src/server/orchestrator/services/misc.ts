@@ -1,8 +1,3 @@
-/**
- * Miscellaneous services — reads (features, usage, bootstrap) and mutations
- * (full reset, preview errors).
- */
-
 import path from "node:path";
 import fs from "node:fs/promises";
 import type { SessionManager } from "../sessions.js";
@@ -25,42 +20,25 @@ import { getGitHubStatus } from "./github.js";
 import { listRepos } from "./repos.js";
 import { sessionCredentialsRoot } from "../session-credentials.js";
 
-// ---- Read operations ----
-
-/** Get usage stats. */
 export function getUsageStats(usageManager: UsageManager) {
   return usageManager.getStats();
 }
 
-/**
- * Read the Tailscale sslip preview host advertised to the client (docs/216).
- *
- * Read at request time (not a boot snapshot) so a forwarder restart that
- * re-derives the host on a tailnet IP change is reflected without restarting the
- * orchestrator — the self-healing property. The file path is resolved per call
- * (not cached at module load) so it honors an env override set after import.
- * Missing file (the common, non-Tailscale case) → `undefined`. The file is
- * root-written, but we still validate it is a bare `host[:port]` before handing
- * it to the client to build preview origins.
- */
+// Read per request so a changed tailnet address does not require an orchestrator restart.
 async function readTailnetPreviewHost(): Promise<string | undefined> {
   const file =
     process.env.SHIPIT_TAILNET_PREVIEW_HOST_FILE ?? "/opt/shipit/.tailnet-preview-host";
   try {
     const raw = await fs.readFile(file, "utf8");
     const host = raw.split("\n")[0]?.trim() ?? "";
-    // Pin to the exact shape the forwarder advertises — a dashed tailnet IPv4
-    // under sslip.io with an optional port. This is defense-in-depth: the file
-    // is root-written, but a bad/misconfigured value must not be able to point
-    // .ts.net users' preview iframes at an arbitrary domain.
+    // Restrict preview destinations to the forwarder's sslip.io form.
     if (/^\d{1,3}-\d{1,3}-\d{1,3}-\d{1,3}\.sslip\.io(:\d{1,5})?$/.test(host)) return host;
   } catch {
-    // ENOENT on a non-Tailscale deploy, or unreadable → no override.
+    // No override when absent or unreadable.
   }
   return undefined;
 }
 
-/** Get all data needed for the initial bootstrap. */
 export async function getBootstrapData(deps: {
   sessionManager: SessionManager;
   repoStore?: RepoStore;
@@ -70,16 +48,8 @@ export async function getBootstrapData(deps: {
   credentialStore?: CredentialStore;
   providerAccountManager?: ProviderAccountManager;
   workspaceDir: string;
-  /**
-   * Orchestrator runtime mode (feature 118). Forwarded verbatim to the client
-   * so the inner UI can render the local-mode banner and hide container-only
-   * affordances. Defaults to `"containerized"` when omitted.
-   */
   runtimeMode?: RuntimeMode;
 }): Promise<BootstrapData> {
-  // Each call is wrapped individually so a failure in one (e.g. expired
-  // GitHub token causing listUserRepos to throw) doesn't kill the entire
-  // bootstrap — the other data still loads.
   const [sessions, settings, tailnetPreviewHost] = await Promise.all([
     listSessions(deps.sessionManager, deps.createGitManager).catch((err: unknown) => {
       console.error("[bootstrap] Failed to list sessions:", err);
@@ -88,22 +58,12 @@ export async function getBootstrapData(deps: {
     getGlobalSettings(deps.agentRegistry, deps.workspaceDir, deps.credentialStore, deps.providerAccountManager).catch((err: unknown): GlobalSettings => {
       console.error("[bootstrap] Failed to get global settings:", err);
       return {
-        // docs/257 reqs 8 + 9 — computed rather than defaulted even in the
-        // failure fallback: it reads the agent registry, which is in memory and
-        // did not fail here, so a hard-coded `false` would disable the composer
-        // on a perfectly runnable install just because the settings file was
-        // unreadable. The onboarding stamp rides along for the same reason —
-        // omitting it here would put the panel back over an install that
-        // completed onboarding long ago.
+        // Settings failure must not disable a runnable agent or repeat onboarding.
         ...resolveHarnessOnboarding(deps.agentRegistry, deps.credentialStore),
         gitIdentity: { name: "", email: "" },
         systemPrompt: "",
         agents: listAgents(deps.agentRegistry),
-        // docs/150 — an empty map is honest here: this is the "settings could
-        // not be read" fallback, and the client renders the per-provider rows
-        // from whatever it gets rather than inventing cutoffs of its own.
         failoverCutoffs: {},
-        // req 21 — same reasoning: no invented modes in the fallback shape.
         accountSelectionMode: {},
         memoryBudgetMb: deps.credentialStore?.getMemoryBudgetMb() ?? null,
         agentSystemInstructionsEnabled: true,
@@ -117,26 +77,12 @@ export async function getBootstrapData(deps: {
         voiceDeliveryMode: "native",
         voiceWebhookConfigured: false,
         providerAccounts: [],
-        // docs/252 — same reasoning again: "settings could not be read" must not
-        // be reported as "you have no credentials", so this stays empty rather
-        // than being reconstructed from a store the read above already failed on.
         credentialRoutes: [],
-        // docs/261 — the two slots are still reported, as unresolved. An empty
-        // array would say "this build has no reviewers", which is a different
-        // and untrue statement; two `nothing_eligible` slots say what actually
-        // happened, which is that the settings read failed and nothing could be
-        // resolved from it.
         reviewers: [
           { slot: "first", source: "auto", unavailableReason: "nothing_eligible" },
           { slot: "second", source: "auto", unavailableReason: "nothing_eligible" },
         ],
-        // docs/264-agent-roles req 2 — **the reviewer is always present**, including here.
-        // It is synthesized rather than stored, so its existence does not depend
-        // on the read that just failed, and asserting it costs nothing. The
-        // roles the user created are the part this cannot know, and they are
-        // simply absent: an install with six roles reports one here, which
-        // understates the list rather than contradicting the requirement that
-        // makes "review this" always resolvable.
+        // The reserved reviewer exists independently of stored user roles.
         roles: [{ name: "reviewer", params: { kind: "auto" }, reserved: true }],
       };
     }),
@@ -155,9 +101,6 @@ export async function getBootstrapData(deps: {
   };
 }
 
-// ---- Mutation operations ----
-
-/** Full reset — destroys all workspace data. */
 export async function fullReset(
   sessionManager: SessionManager,
   usageManager: UsageManager,
@@ -166,19 +109,8 @@ export async function fullReset(
   repoStore?: RepoStore,
   databaseManager?: DatabaseManager,
   composeStopPromises?: Map<string, Promise<void>>,
-  /**
-   * docs/138 — credentials root (e.g. `/credentials`). When provided, every
-   * per-session credential subtree under `<credentialsDir>/sessions` is dropped
-   * (the user is wiping everything; provisioned agent creds must not survive).
-   * The top-level source-of-truth creds (`.claude`, `.codex`, …) are preserved
-   * so a full reset doesn't sign the user out.
-   */
   credentialsDir?: string,
 ): Promise<void> {
-  // Signal compose-stop to drop named volumes for every active session
-  // before we tear them down — full reset is the user saying "wipe
-  // everything," so per-session named volumes (node_modules caches, etc.)
-  // must not survive.
   for (const sid of runnerRegistry.ids()) {
     const runner = runnerRegistry.get(sid);
     if (runner && "removeVolumesOnDispose" in runner) {
@@ -186,24 +118,14 @@ export async function fullReset(
     }
   }
 
-  // Dispose all runners. Each runner.dispose() fires its "disposed" event
-  // synchronously, which causes `trackComposeStop` to populate
-  // `composeStopPromises` with the in-flight `docker compose down
-  // --volumes` for that session.
+  // Disposal synchronously registers compose-stop promises.
   runnerRegistry.disposeAll();
 
-  // Wait for those compose-downs to finish before we wipe the workspace
-  // directory and clear the DB. Without this, a long-running compose-down
-  // can still be holding volumes the user expects to be gone, and the
-  // subsequent fs.rm of the workspace dir races the compose tool that's
-  // also reading it.
+  // Compose still reads workspace files while stopping; wait before deleting them.
   if (composeStopPromises && composeStopPromises.size > 0) {
     await Promise.allSettled([...composeStopPromises.values()]);
   }
 
-  // Clear all database tables first (before deleting the DB file on disk).
-  // This keeps the in-memory prepared statements consistent for the remainder
-  // of this process's lifetime.
   if (databaseManager) {
     databaseManager.clearAll();
   } else {
@@ -212,9 +134,7 @@ export async function fullReset(
     if (repoStore) repoStore.clear();
   }
 
-  // Delete everything inside the workspace directory, but preserve the SQLite
-  // database files — clearAll() already emptied all tables and the open connection
-  // must remain valid for subsequent operations.
+  // Keep the emptied database files so the open SQLite connection remains valid.
   const preservePatterns = new Set([".shipit.db", ".shipit.db-wal", ".shipit.db-shm"]);
   const entries = await fs.readdir(workspaceDir);
   for (const entry of entries) {
@@ -226,20 +146,16 @@ export async function fullReset(
     }
   }
 
-  // docs/138 — drop all per-session credential subtrees. They live under the
-  // credentials root (separate from the workspace dir), so the workspace wipe
-  // above doesn't touch them. The top-level source-of-truth creds are left in
-  // place so a full reset doesn't sign the user out of Claude/Codex.
+  // Remove session copies outside the workspace, preserving the user's source credentials.
   if (credentialsDir) {
     try {
       await fs.rm(sessionCredentialsRoot(credentialsDir), { recursive: true, force: true });
     } catch {
-      // Best-effort — the disk-janitor sweeps any leftovers on next startup.
+      // Best-effort cleanup.
     }
   }
 }
 
-/** Report a preview error (log broadcast). */
 export function validatePreviewError(
   message: string,
   stack?: string,

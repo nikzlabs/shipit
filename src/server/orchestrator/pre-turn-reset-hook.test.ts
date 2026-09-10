@@ -1,13 +1,3 @@
-/**
- * docs/218 + planning#333 — the shared per-turn wiring of the merged-branch reset.
- *
- * `services/pre-turn-reset.test.ts` covers the gate and the git move. This
- * covers what a turn does around it, and above all the guarantee the user asked
- * for in so many words: **the "Branch updated to latest <base>" card always
- * appears when the branch moved.** A destructive move nobody watched happen,
- * with no record in the transcript, is the failure mode planning#297 already had to
- * fix once for the skip case.
- */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { applyPreTurnReset, type PreTurnResetHookDeps, type PreTurnResetRunner } from "./pre-turn-reset-hook.js";
 import { clearResetSkipEpisode } from "./services/pre-turn-reset.js";
@@ -22,10 +12,6 @@ vi.mock("./session-worker-uid.js", () => ({ handWorkspaceBackToWorker: vi.fn() }
 const MERGED_SHA = "a1f3c9d0000000000000000000000000000000aa";
 const BASE_TIP = "7e02b480000000000000000000000000000000bb";
 
-/**
- * docs/266 — one notice per refusal episode, and the episode is module state
- * keyed by session id. Every test here is "s1", so clear it between them.
- */
 beforeEach(() => { clearResetSkipEpisode("s1"); });
 
 function makeSession(over: Partial<SessionInfo> = {}): SessionInfo {
@@ -70,8 +56,6 @@ function makeGit(over: Partial<Record<keyof GitManager, unknown>> = {}): GitMana
     isMergeOrSequencerInProgress: vi.fn().mockResolvedValue(false),
     getHeadHash: vi.fn().mockResolvedValue(MERGED_SHA),
     getRefHash: vi.fn().mockResolvedValue(BASE_TIP),
-    // The gate's provable-safety clause. False here: this branch still holds the
-    // merged commits, so it is not contained in the base and the anchor decides.
     isAncestor: vi.fn().mockResolvedValue(false),
     fetch: vi.fn().mockResolvedValue(undefined),
     resetHardToRemoteBase: vi.fn().mockResolvedValue({ from: MERGED_SHA, to: BASE_TIP }),
@@ -108,9 +92,6 @@ function makeHarness(over: {
     steeredMessages: [],
     getTurnEventBuffer: () => [],
     lastPersistedBufferIndex: 0,
-    // nikzlabs/shipit#2429 — the reset rewrites the whole worktree from the
-    // orchestrator, so the hook has to tell the live session its config and its
-    // dependency tree may both belong to the pre-reset checkout.
     reevaluateWorkspaceConfig: vi.fn(),
     notifyWorkspaceRewritten: vi.fn(),
   } as unknown as PreTurnResetRunner;
@@ -119,12 +100,8 @@ function makeHarness(over: {
     sessionManager: {
       get: () => session,
       getPrStatus: () => prStatus ?? null,
-      // Touched only by the re-arm, which bails before this on a session with
-      // no live merged snapshot.
       clearMerged: vi.fn(),
     },
-    // The re-arm is exercised in `pr-rearm.test.ts`; here it only needs to not
-    // throw, so its own gate (`prior?.baseBranch`) is what runs.
     prStatusPoller: { getStatus: () => prStatus ?? null, reArm: vi.fn() },
     createGitManager: () => over.git ?? makeGit(),
     sseBroadcast: vi.fn(),
@@ -153,7 +130,7 @@ describe("applyPreTurnReset — the branch moved", () => {
     const result = await run(h);
 
     expect(result.agentPrefix).toContain("was merged into main");
-    expect(h.appended).toHaveLength(0); // nothing written until the anchor fires
+    expect(h.appended).toHaveLength(0);
 
     result.afterUserMessagePersisted!("s1");
 
@@ -171,11 +148,6 @@ describe("applyPreTurnReset — the branch moved", () => {
     expect(h.emitted).toContainEqual({ type: "reset_eligible", sessionId: "s1", eligible: false });
   });
 
-  // nikzlabs/shipit#2429 — the reset re-materializes the worktree from the
-  // orchestrator, exactly like a sync/rebase, and the turn it exists to enable
-  // starts the moment this returns. A container left on the pre-reset
-  // `node_modules` fails every request on an unresolvable import while
-  // `shipit service list` still reports the service as `running`.
   it("tells the live session its config and dependencies were rewritten", async () => {
     const h = makeHarness();
     await run(h);
@@ -184,9 +156,6 @@ describe("applyPreTurnReset — the branch moved", () => {
   });
 
   it("still records the card when the turn dies before the anchor fires", async () => {
-    // The guarantee: a moved branch ALWAYS leaves a record. If the turn throws
-    // during setup, `afterUserMessagePersisted` never runs — `ensureRecorded`
-    // (called from the caller's `finally`) writes it instead.
     const h = makeHarness();
     const result = await run(h);
 
@@ -196,12 +165,6 @@ describe("applyPreTurnReset — the branch moved", () => {
   });
 
   it("appends the late record directly — never as an in-progress rewrite (docs/236)", async () => {
-    // `ensureRecorded` fires when the turn died before the anchor, often before
-    // `executeAgentTurn` ran at all — so `resetRunnerTurnState` never cleared the
-    // runner and `chatMessageGroups` may still hold the PREVIOUS turn's messages
-    // while `running` is still true. Recording in-band there would rewrite that
-    // finished turn as `in_progress=1` rows for the next turn's
-    // `replaceInProgress` to delete wholesale.
     const h = makeHarness({ running: true });
     const result = await run(h);
 
@@ -233,10 +196,6 @@ describe("applyPreTurnReset — the branch moved", () => {
   });
 
   it("retries on the fallback when the anchored write threw (latch closes on success)", async () => {
-    // `emitChatCard` emits BEFORE it records or persists, so a throwing WS
-    // listener used to consume the only delivery and leave the card in neither
-    // `recordedCards` nor durable history — an emit-only transcript card. The
-    // latch must close on success, not on attempt.
     const h = makeHarness();
     const result = await run(h);
     let failNextEmit = true;
@@ -246,22 +205,15 @@ describe("applyPreTurnReset — the branch moved", () => {
       realEmit.call(h.runner, msg);
     };
 
-    result.afterUserMessagePersisted!("s1"); // throws inside, swallowed
+    result.afterUserMessagePersisted!("s1");
     expect(h.appended.filter((m) => "branchAutoReset" in m)).toHaveLength(0);
 
-    result.ensureRecorded!("s1"); // the retry the latch must still allow
+    result.ensureRecorded!("s1");
 
     expect(h.appended.filter((m) => "branchAutoReset" in m)).toHaveLength(1);
   });
 
   it("returns the delivery callbacks even when the post-reset bookkeeping throws", async () => {
-    // The branch is already reset and force-pushed by the time the re-arm runs.
-    // A throw there must not reject out of the hook: both callers establish
-    // their `try/finally` only AFTER it returns, so the turn would abort with
-    // the branch moved and no record — and none reconstructable, since the
-    // re-arm may already have cleared `mergedAt`.
-    // A stateful git, so the reset actually moves HEAD and the re-arm gets past
-    // its own `unmovedSinceMerge` short-circuit to the `reArm` below.
     let head = MERGED_SHA;
     const h = makeHarness({
       git: makeGit({
@@ -280,7 +232,7 @@ describe("applyPreTurnReset — the branch moved", () => {
     };
 
     const result = await run(h);
-    expect(h.deps.sessionManager.clearMerged).toHaveBeenCalled(); // the re-arm did reach it
+    expect(h.deps.sessionManager.clearMerged).toHaveBeenCalled();
 
     expect(result.agentPrefix).toContain("was merged into main");
     result.ensureRecorded!("s1");
@@ -299,19 +251,10 @@ describe("applyPreTurnReset — the branch did not move", () => {
     const notice = h.appended.find((m) => m.notice === true);
     expect(notice?.text).toContain("Branch not updated to the latest base");
     expect(notice?.noticeLevel).toBe("warn");
-    // Nothing moved, so the composer control must stay as it was — and #2429's
-    // rewrite hooks must not fire either: a refused reset touched no file, and
-    // re-running `agent.install` for it would be pure cost.
     expect(h.emitted.some((m) => m.type === "reset_eligible")).toBe(false);
     expect(h.runner.notifyWorkspaceRewritten).not.toHaveBeenCalled();
   });
 
-  /**
-   * docs/266 — the user has already read this exact paragraph (merge detection
-   * wrote it, or an earlier turn did), so the repeat is dropped. The turn still
-   * carries the agent prefix: the agent is a fresh reader every turn, and it is
-   * what stops the next commit-for-a-dead-PR.
-   */
   it("drops the repeat of a refusal the user was already shown", async () => {
     const dirty = { git: makeGit({ isClean: vi.fn().mockResolvedValue(false) }) };
     await run(makeHarness(dirty));
@@ -323,11 +266,6 @@ describe("applyPreTurnReset — the branch did not move", () => {
     expect(h.appended.find((m) => m.notice === true)).toBeUndefined();
   });
 
-  /**
-   * docs/266 — the notice claims the refusal episode when the outcome is built,
-   * so a write that never lands would silence every later turn under the same
-   * refusal. A failed LATE write gives the claim back.
-   */
   it("gives the claim back when the late transcript write fails, so the next turn retries", async () => {
     const err = vi.spyOn(console, "error").mockImplementation(() => {});
     const dirty = { git: makeGit({ isClean: vi.fn().mockResolvedValue(false) }) };
@@ -362,21 +300,9 @@ describe("applyPreTurnReset — the branch did not move", () => {
   });
 });
 
-/**
- * docs/282 — the poll-window race, end to end through the hook.
- *
- * This is the production incident's exact sequence (session 15ff6abd, PR #101,
- * 2026-08-22): the branch was committed and pushed, the user merged on GitHub,
- * and their next message was admitted 1.5 s later — 1.7 s BEFORE the 15-second
- * poller reached the merge. The gate saw an unmerged session, refused silently,
- * and the turn's commit landed stacked on already-shipped history.
- */
 describe("applyPreTurnReset — a merge the poller has not observed yet", () => {
-  /** `origin/<session-branch>`: the branch is fully pushed, so HEAD is what merged. */
   const PUSHED_TIP = MERGED_SHA;
 
-  /** Distinguishes the branch's own remote ref from the base's — the default
-   * `makeGit` answers BASE_TIP for every ref, which would read as "unpushed". */
   const raceGit = (): GitManager =>
     makeGit({
       getHeadHash: vi.fn().mockResolvedValue(PUSHED_TIP),
@@ -385,10 +311,6 @@ describe("applyPreTurnReset — a merge the poller has not observed yet", () => 
       ),
     });
 
-  /**
-   * A harness whose session and PR snapshot are LIVE, and whose probe promotes
-   * both — exactly what `verifyMissingPr` + `onMergeDetectedCb` do between them.
-   */
   function makeRaceHarness(opts: { merges?: boolean; bookkeepingHangs?: boolean } = {}) {
     const emitted: WsServerMessage[] = [];
     const appended: PersistedMessage[] = [];
@@ -451,11 +373,6 @@ describe("applyPreTurnReset — a merge the poller has not observed yet", () => 
   });
 
   it("leaves the `verifiedAbsent` debounce un-armed, so the NEXT merge is still detected", async () => {
-    // The probe expects an OPEN pull request and runs on every qualifying turn.
-    // Arming the poller's single-probe debounce here would mean a PR merged
-    // moments later falls out of the OPEN bulk view with the debounce already
-    // set, and is never REST-verified — merge detection off until a forced
-    // refresh. See `PrStatusPoller.forceVerifySessionPrState`.
     const h = makeRaceHarness();
     await applyPreTurnReset({ deps: h.deps, runner: h.runner, sessionId: "s1", sessionDir: "/ws" });
     expect(h.forceVerifySessionPrState).toHaveBeenCalledWith("s1", { armAbsentDebounce: false });
@@ -470,16 +387,6 @@ describe("applyPreTurnReset — a merge the poller has not observed yet", () => 
     expect(h.emitted).toHaveLength(0);
   });
 
-  /**
-   * The reset must NOT run against half-finished merge bookkeeping.
-   * `markMergedAndPruneExcess` stamps `merged_at` before it awaits the
-   * `git push --delete` of the merged head branch, so a recheck that gives up
-   * mid-bookkeeping sees a merged session while that deletion is still in
-   * flight. Resetting there would force-push the branch back for the pending
-   * delete to remove it — a deleted branch instead of a stranded commit. The
-   * turn runs un-reset, exactly as it did before this feature; the next one,
-   * against settled state, resets.
-   */
   it("refuses to reset while the merge bookkeeping is still in flight", async () => {
     const h = makeRaceHarness({ bookkeepingHangs: true });
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
