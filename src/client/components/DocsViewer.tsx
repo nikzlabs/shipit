@@ -96,6 +96,7 @@ function IssueChip({ issue, onOpenIssue }: { issue: string; onOpenIssue?: OpenDo
       </Badge>
     );
   }
+  // Unknown tracker shapes have no inline destination, so preserve their URL.
   return (
     <a
       href={ref.url}
@@ -188,7 +189,7 @@ export function DocsViewer({ files: allFiles, onFileClick, onRefresh, onOpenIssu
     });
   }, [allFiles, searchQuery]);
 
-  // Build once: repeated sibling scans made each streamed render cost 342–486 ms.
+  // Build once: repeated scans over 866 docs made each streamed render cost 342–486 ms.
   const index = useMemo(() => buildDocIndex(files), [files]);
 
   const modifiedInSession = useMemo(

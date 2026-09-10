@@ -5,10 +5,12 @@ import { PopoverContent } from "./ui/popover.js";
 import type { FileTreeNode } from "../../server/shared/types.js";
 
 export interface FileAutoCompleteProps {
+  /** Query text after the @ sigil. */
   query: string;
   fileTree: FileTreeNode[];
   onSelect: (filePath: string) => void;
   onDismiss: () => void;
+  /** Absolute paths under /uploads. */
   uploadPaths?: string[];
 }
 

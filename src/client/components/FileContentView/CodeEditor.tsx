@@ -145,6 +145,7 @@ export function CodeEditor({
       editorInstanceRef.current?.dispose();
       editorInstanceRef.current = null;
     };
+    // Adding lineComments would recreate Monaco for every comment update.
   }, [filePath, content, sessionId, addLineComment, editComment, deleteComment, setComposing, readOnly, revealLine, language]);
 
   // eslint-disable-next-line no-restricted-syntax -- syncing widget state with store updates

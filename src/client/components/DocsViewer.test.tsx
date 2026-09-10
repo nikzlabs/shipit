@@ -22,6 +22,7 @@ describe("DocsViewer", () => {
     onRefresh: vi.fn(),
   });
 
+  // Issue pointers resolve only against trackers declared in this store.
   beforeEach(() => {
     useIssuesStore.setState({
       trackers: [
@@ -434,6 +435,7 @@ describe("DocsViewer", () => {
       ];
 
       const { rerender } = render(<DocsViewer {...props} />);
+      // Exact counts catch both per-render and per-document index rebuilds.
       expect(buildSpy).toHaveBeenCalledTimes(1);
       const groupingCalls = trackedSpy.mock.calls.length;
       expect(groupingCalls).toBeGreaterThan(0);

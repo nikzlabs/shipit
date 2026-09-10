@@ -98,6 +98,7 @@ const DIFF_EDITOR_OPTIONS = {
   fontSize: 12,
   lineNumbers: "on" as const,
   folding: false,
+  // Keep both wrap settings equal so the original and modified rows align.
   wordWrap: "on" as const,
   renderOverviewRuler: false,
   diffWordWrap: "on" as const,
@@ -207,10 +208,10 @@ export function DiffPanel({ diff, onClose, commitMessage, onSendComments }: Diff
     });
   }, []);
 
-  // eslint-disable-next-line no-restricted-syntax -- component-owned manager Map
+  // eslint-disable-next-line no-restricted-syntax -- this Map stays stable for the component lifetime
   useEffect(() => {
     return () => {
-      // eslint-disable-next-line react-hooks/exhaustive-deps -- dispose the component-owned Map
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- the stable Map must be read at unmount
       for (const manager of managersRef.current.values()) {
         manager.dispose();
       }
