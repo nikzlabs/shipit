@@ -123,7 +123,7 @@ describe("firstEligibleSelectionForHarness", () => {
     expect(selection).toEqual({
       serviceId: "deepseek",
       billingMode: "key",
-      modelId: "deepseek-v4-flash",
+      modelId: "deepseek-flash",
     });
   });
 
@@ -334,7 +334,7 @@ describe("selectRouteForSelection — scoped to the SELECTED billing mode", () =
   it("resolves a custom service to its own stored credential, not to an account", () => {
     const selected = selectRouteForSelection(
       "claude",
-      { serviceId: "deepseek", billingMode: "key", modelId: "deepseek-v4-flash" },
+      { serviceId: "deepseek", billingMode: "key", modelId: "deepseek-flash" },
       {
         credentialStore: store([route({ id: "cred_ds", serviceId: "deepseek" })], { cred_ds: "sk" }),
         providerAccountManager: { selectAccountForTurn: () => anthropicAccount, subscriptionLimitsFor: () => ({}) },
@@ -573,7 +573,7 @@ describe("string-delivered subscription failover", () => {
     // silent hop onto a second metered credential the requirement refuses.
     const selected = selectRouteForSelection(
       "claude",
-      { serviceId: "deepseek", billingMode: "key", modelId: "deepseek-v4-flash" },
+      { serviceId: "deepseek", billingMode: "key", modelId: "deepseek-flash" },
       {
         credentialStore: store(
           [
@@ -616,7 +616,7 @@ describe("serviceRoutingForSelection", () => {
   it("shapes a string-delivered credential", () => {
     const routing = serviceRoutingForSelection(
       "claude",
-      { serviceId: "deepseek", billingMode: "key", modelId: "deepseek-v4-flash" },
+      { serviceId: "deepseek", billingMode: "key", modelId: "deepseek-flash" },
       { kind: "reserved", id: "cred_ds" },
       storeHolding("cred_ds"),
     );
@@ -653,7 +653,7 @@ describe("serviceRoutingForSelection", () => {
     expect(
       serviceRoutingForSelection(
         "claude",
-        { serviceId: "deepseek", billingMode: "key", modelId: "deepseek-v4-flash" },
+        { serviceId: "deepseek", billingMode: "key", modelId: "deepseek-flash" },
         { kind: "reserved", id: "claude-api-key" },
         // The store holds a row for it: that, not the id's shape, is what makes
         // it stored — `collectServiceCredentialEnv` writes a per-route variable
@@ -669,7 +669,7 @@ describe("serviceRoutingForSelection", () => {
     expect(
       serviceRoutingForSelection(
         "claude",
-        { serviceId: "deepseek", billingMode: "key", modelId: "deepseek-v4-flash" },
+        { serviceId: "deepseek", billingMode: "key", modelId: "deepseek-flash" },
         { kind: "reserved", id: "env:DEEPSEEK_API_KEY" },
         storeHolding(),
       ),
@@ -738,7 +738,7 @@ describe("serviceRoutingForSelection", () => {
     expect(
       serviceRoutingForSelection(
         "claude",
-        { serviceId: "deepseek", billingMode: "key", modelId: "deepseek-v4-flash" },
+        { serviceId: "deepseek", billingMode: "key", modelId: "deepseek-flash" },
         undefined,
         storeHolding(),
       ),
@@ -762,7 +762,7 @@ describe("sessionSpawnIdentity — the resident-process boundary", () => {
     // these two are equal, no kill fires, and the next turn runs on the previous
     // service's endpoint and credential — billing the wrong account (req 11).
     const direct = session({
-      model: "deepseek-v4-flash",
+      model: "deepseek-flash",
       serviceId: "deepseek",
       billingMode: "key",
     });

@@ -114,7 +114,7 @@ describe("Integration: Image upload", () => {
     sessions.setModelSelection(client.sessionId, {
       serviceId: "deepseek",
       billingMode: "key",
-      modelId: "deepseek-v4-flash",
+      modelId: "deepseek-v4-pro",
     });
 
     client.send({
@@ -126,7 +126,7 @@ describe("Integration: Image upload", () => {
     });
 
     const msg = await client.receiveType("error");
-    expect((msg as any).message).toContain("V4 Flash");
+    expect((msg as any).message).toContain("V4 Pro");
     expect((msg as any).message).toContain("cannot read images");
     // And no turn was started — the whole point is not to spend one going blind.
     expect(lastClaude).toBeFalsy();

@@ -293,7 +293,7 @@ export async function createHeadlessSession(
   // See docs/166-quick-capture-agent-pin.
   //
   // …EXCEPT when the two do not disagree at all. docs/252 ended "each model
-  // belongs to exactly one harness": `deepseek-v4-flash` and `deepseek-v4-pro`
+  // belongs to exactly one harness": `deepseek-flash` and `deepseek-v4-pro`
   // are in BOTH harnesses' model lists today, and `agentIdForModel` answers
   // with whichever `AGENT_DEFS` sorts first (claude). Treating that as a
   // mismatch overrode a harness the caller explicitly asked for and could

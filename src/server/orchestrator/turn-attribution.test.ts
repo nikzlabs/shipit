@@ -13,7 +13,7 @@ describe("turnAttributionFor", () => {
     const attr = turnAttributionFor({
       serviceId: "deepseek",
       billingMode: "key",
-      modelId: "deepseek-v4-flash",
+      modelId: "deepseek-flash",
     });
     expect(attr?.serviceId).toBe("deepseek");
     expect(attr?.billingMode).toBe("key");

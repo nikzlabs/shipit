@@ -9,9 +9,9 @@ import type { RoleView } from "../../../../server/shared/types/agent-types.js";
  * docs/264 phase 2 (reqs 2, 6, 8, 9, 17) — the role editor itself.
  *
  * The bullet most likely to be built wrong is req 6's harness control, so it is
- * pinned against the real rows rather than convenient ones: **`deepseek-v4-flash`
+ * pinned against the real rows rather than convenient ones: **`deepseek-flash`
  * is carried by both installed harnesses** and `claude-opus-5` by one, which is
- * exactly what the shipped catalogue has (`deepseek-v4-flash` and
+ * exactly what the shipped catalogue has (`deepseek-flash` and
  * `deepseek-v4-pro` declare all three API styles, so both harnesses share one
  * with each; no other row does). A read-only harness field would leave the first
  * of those unable to say which harness it means. The catalogue itself is pinned
@@ -30,7 +30,7 @@ const agents: AgentOption[] = [
     name: "Claude Code",
     installed: true,
     hasRunnableModels: true,
-    models: ["claude-opus-5", "deepseek-v4-flash"],
+    models: ["claude-opus-5", "deepseek-flash"],
     eligibleModels: [
       {
         serviceId: "anthropic",
@@ -44,9 +44,9 @@ const agents: AgentOption[] = [
         serviceId: "deepseek",
         serviceName: "DeepSeek",
         billingMode: "key",
-        modelId: "deepseek-v4-flash",
-        label: "V4 Flash",
-        canonicalModelKey: "deepseek-v4-flash",
+        modelId: "deepseek-flash",
+        label: "V4.1 Flash",
+        canonicalModelKey: "deepseek-v4.1-flash",
       },
     ],
     supportsReview: true,
@@ -63,15 +63,15 @@ const agents: AgentOption[] = [
     name: "Codex",
     installed: true,
     hasRunnableModels: true,
-    models: ["deepseek-v4-flash"],
+    models: ["deepseek-flash"],
     eligibleModels: [
       {
         serviceId: "deepseek",
         serviceName: "DeepSeek",
         billingMode: "key",
-        modelId: "deepseek-v4-flash",
-        label: "V4 Flash",
-        canonicalModelKey: "deepseek-v4-flash",
+        modelId: "deepseek-flash",
+        label: "V4.1 Flash",
+        canonicalModelKey: "deepseek-v4.1-flash",
       },
     ],
     supportsReview: true,
@@ -113,7 +113,7 @@ const DUAL_HARNESS = {
   harnessId: "claude",
   serviceId: "deepseek",
   billingMode: "key" as const,
-  modelId: "deepseek-v4-flash",
+  modelId: "deepseek-flash",
   reasoningEffort: "max",
 };
 
@@ -167,7 +167,7 @@ describe("RoleEditor — the harness is a real control where the model has a cho
     // away, and Claude not declaring `minimal` says nothing about which of ITS levels
     // they would have wanted. Default is the one answer that needs no guess.
     const saved = savedParams(onSave);
-    expect(saved).toMatchObject({ harnessId: "claude", modelId: "deepseek-v4-flash" });
+    expect(saved).toMatchObject({ harnessId: "claude", modelId: "deepseek-flash" });
     expect(saved).not.toHaveProperty("reasoningEffort");
   });
 
@@ -275,7 +275,7 @@ describe("RoleEditor — a role whose tuple no longer resolves", () => {
     await userEvent.click(screen.getByTestId("role-editor-service-trigger"));
     await userEvent.click(screen.getByTestId("role-editor-service-option-deepseek:key"));
     await userEvent.click(screen.getByTestId("role-editor-save"));
-    expect(savedParams(onSave)).toMatchObject({ serviceId: "deepseek", modelId: "deepseek-v4-flash" });
+    expect(savedParams(onSave)).toMatchObject({ serviceId: "deepseek", modelId: "deepseek-flash" });
   });
 });
 

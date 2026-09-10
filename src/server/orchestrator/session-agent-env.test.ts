@@ -561,7 +561,7 @@ describe("prepareSessionAgentEnvironment", () => {
     const deepseekSelection = {
       serviceId: "deepseek",
       billingMode: "key",
-      modelId: "deepseek-v4-flash",
+      modelId: "deepseek-flash",
     };
 
     beforeEach(() => {

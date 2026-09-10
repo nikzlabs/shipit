@@ -710,7 +710,7 @@ export async function registerRoutes(
         const roleDecidesHarness = !!session.roleName;
         // planning#389 / docs/252 — MEMBERSHIP, not the single "owner" the
         // registry-order lookup above answers with. That ambiguity is not only the
-        // role's problem: `deepseek-v4-flash` carries three API styles, so ALL
+        // role's problem: `deepseek-flash` carries three API styles, so ALL
         // three harnesses list it and the derived owner is always Claude Code. A
         // harness that was actually NAMED and can actually run the model is not
         // the stale-key case this guard is for — deriving there discarded the

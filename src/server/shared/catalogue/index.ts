@@ -567,9 +567,8 @@ export function selectionHonoursEffort(
  * planning#460 — can the model this selection names take an image?
  *
  * Resolved through the row's `canonicalModelKey` rather than its id, which is
- * what makes one verdict serve `deepseek-v4-flash` at DeepSeek,
- * `deepseek/deepseek-v4-flash` at two gateways and the same id again at OpenCode
- * Zen and Go. See {@link MODEL_VISION} for why the fact is keyed there and not
+ * what makes one verdict serve `deepseek-flash` at DeepSeek and at OpenCode Go,
+ * and `deepseek/deepseek-v4.1-flash` at Vercel. See {@link MODEL_VISION} for why the fact is keyed there and not
  * on the row.
  *
  * A selection naming no catalogue row answers `"unverified"` — the same answer a

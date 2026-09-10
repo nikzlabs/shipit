@@ -42,7 +42,7 @@ function open(props: Partial<Parameters<typeof SupportedModelsDialog>[0]> = {}) 
  * One row's harness answers, **scoped to the `(service, mode)` the row is in**.
  *
  * The first version took a bare model id and read `getAllByTestId(...)[0]`, which
- * is how this suite came to pin nothing about the gateways: `deepseek-v4-flash`
+ * is how this suite came to pin nothing about the gateways: `deepseek-flash`
  * is a row of DeepSeek, OpenRouter AND Vercel, and only the first was ever
  * inspected. Cross-backend review found that a `buildSupport` that skipped a
  * whole service — every OpenRouter row answering "no harness runs this" — shipped
@@ -83,7 +83,7 @@ describe("SupportedModelsDialog", () => {
     open();
     // DeepSeek speaks a style all three harnesses speak — the case a single
     // "runs on" name per model could not express.
-    expect(answers("deepseek:key", "deepseek-v4-flash")).toEqual({
+    expect(answers("deepseek:key", "deepseek-flash")).toEqual({
       claude: "yes",
       codex: "yes",
       opencode: "yes",
@@ -161,7 +161,7 @@ describe("SupportedModelsDialog", () => {
       screen.getAllByTestId("supported-models-narrow-anthropic:key-claude")[0],
     ).not.toHaveTextContent(/not installed/);
     // The row still carries OpenCode's real answer.
-    expect(answers("deepseek:key", "deepseek-v4-flash").opencode).toBe("yes");
+    expect(answers("deepseek:key", "deepseek-flash").opencode).toBe("yes");
   });
 
   it("says a harness runs a model but is absent, in words rather than by opacity alone", () => {
@@ -169,7 +169,7 @@ describe("SupportedModelsDialog", () => {
     // The answer is a glyph, so the same answer is sr-only TEXT — and it names
     // both sides, since the cell sits in a column away from the model name.
     const cell = within(screen.getByTestId("supported-models-mode-deepseek:key")).getByTestId(
-      "supported-models-cell-deepseek-v4-flash-opencode",
+      "supported-models-cell-deepseek-flash-opencode",
     );
     expect(within(cell).getByText(/OpenCode runs .*, but OpenCode is not installed here/))
       .toBeInTheDocument();
@@ -300,12 +300,12 @@ describe("SupportedModelsDialog", () => {
     // `/[0-9]+M|[0-9]+K/` passed a swapped input/output pair, a 1000x window
     // error, and another model's rates entirely (cross-backend review).
     open();
-    const row = screen.getByTestId("supported-models-row-deepseek:key-deepseek-v4-flash");
-    expect(row).toHaveTextContent("V4 Flash");
-    expect(row).toHaveTextContent("deepseek-v4-flash");
+    const row = screen.getByTestId("supported-models-row-deepseek:key-deepseek-flash");
+    expect(row).toHaveTextContent("V4.1 Flash");
+    expect(row).toHaveTextContent("deepseek-flash");
     expect(row).toHaveTextContent("1M");
     // Input first, output second — the order the column head states.
-    expect(row).toHaveTextContent("$0.14 / $0.28");
+    expect(row).toHaveTextContent("$0.3 / $1.2");
 
     // A 200K window is said as 200K, not 0.2M — the sub-million branch.
     expect(screen.getByTestId("supported-models-row-anthropic:sub-haiku")).toHaveTextContent("200K");

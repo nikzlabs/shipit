@@ -38,7 +38,7 @@ import { DatabaseManager } from "../../shared/database.js";
  * `agentIdForModel` answers "claude" for all of them. This is the exact model
  * the incident was reproduced on.
  */
-const SHARED_MODEL = "deepseek-v4-flash";
+const SHARED_MODEL = "deepseek-flash";
 /** Anthropic-messages only, so Codex genuinely cannot run it — docs/142 Problem C. */
 const CLAUDE_ONLY_MODEL = "claude-opus-5";
 /** OpenAI styles only: Codex and OpenCode list it, Claude Code cannot run it. */

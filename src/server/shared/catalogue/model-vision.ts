@@ -15,8 +15,8 @@
  * that is true of the model rather than of the offering: `canonicalModelKey`
  * (`model-identity.ts`), whose whole design rule is that *"adding a service that
  * offers an existing model adds NO entry here"*. `deepseek-v4-flash` appears in
- * five rows across four services; on a `ModelDef` field its verdict would be
- * authored five times, and the fifth is where the typo lands.
+ * four rows across three services; on a `ModelDef` field its verdict would be
+ * authored four times, and the fourth is where the typo lands.
  *
  * **If a service is ever MEASURED to differ** (a gateway whose translation drops
  * the image part while the upstream model sees fine), that is the day a
@@ -123,6 +123,12 @@ export const MODEL_VISION: Record<CanonicalModelKey, VisionSupport> = {
   "glm-5.2": "no",
   "glm-5.3": "no",
   // -------------------------------------------------------------------------
+
+  // The successor to the row above, and the opposite verdict. The only MEASURED
+  // entry in this table: a 16x16 solid-red PNG sent to `deepseek-flash` at
+  // DeepSeek's own endpoint came back "Red" (2026-09-10). Both public sources
+  // agree, as does the vendor's own table (Vision ✓ here, ✗ for V4 Pro).
+  "deepseek-v4.1-flash": "yes",
 
   "gemini-3.7-flash": "yes",
 

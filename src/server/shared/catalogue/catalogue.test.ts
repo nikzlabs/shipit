@@ -129,24 +129,20 @@ describe("no shipped row still carries a sentinel", () => {
   });
 
   // Pins the 2026-08-16 correction recorded in `services.ts`. A gateway is NOT a
-  // pass-through: it marks the same model up or down, in both directions and by
-  // large multiples. The old code reused the upstream vendor's price constant on
-  // every gateway row, so the figure a user saw for a DeepSeek turn through
-  // OpenRouter was wrong by ~2.3× in one direction and ~2.7× in the other. An
-  // "each row has A price" check cannot see that; only naming the pairs can.
+  // pass-through: it marks the same model up or down, by large multiples. The old
+  // code reused the upstream vendor's price constant on every gateway row, so the
+  // figure a user saw for a DeepSeek turn through OpenRouter was wrong. An "each
+  // row has A price" check cannot see that; only comparing the pairs can.
   it("a gateway prices a model independently of the vendor that makes it", () => {
     const direct = (modelId: string) =>
       getModel({ serviceId: "deepseek", billingMode: "key", modelId });
     const or = (modelId: string) => getModel({ serviceId: "openrouter", billingMode: "key", modelId });
     const vercel = (modelId: string) => getModel({ serviceId: "vercel", billingMode: "key", modelId });
 
-    // OpenRouter undercuts DeepSeek's own rate for Flash and marks Pro up.
-    expect(or("deepseek/deepseek-v4-flash")?.price.input).toBeLessThan(
-      direct("deepseek-v4-flash")!.price.input,
-    );
-    expect(or("deepseek/deepseek-v4-pro")?.price.input).toBeGreaterThan(
-      direct("deepseek-v4-pro")!.price.input,
-    );
+    // Which way a gateway differs is not asserted — that flips whenever either
+    // side reprices. That it differs at all is the invariant.
+    expect(or("deepseek/deepseek-v4-pro")?.price.input).not.toBe(direct("deepseek-v4-pro")!.price.input);
+    expect(vercel("deepseek/deepseek-v4-pro")?.price.input).not.toBe(direct("deepseek-v4-pro")!.price.input);
     // And the two gateways do not agree with each other either.
     expect(or("deepseek/deepseek-v4-flash")?.price.input).not.toBe(
       vercel("deepseek/deepseek-v4-flash")?.price.input,
@@ -352,6 +348,7 @@ describe("model identity and lineage (docs/261 req 4)", () => {
       modelIdentityFor({ serviceId: "deepseek", billingMode: "key", modelId: "nope" }),
     ).toBeUndefined();
   });
+
 });
 
 describe("the selection triple names exactly one row", () => {
@@ -521,9 +518,8 @@ describe("retirement records keep a session able to take a turn (req 13)", () =>
 });
 
 describe("resolving a retired model (req 13, phase 8)", () => {
-  // The shipped catalogue declares exactly one retirement, `gpt-5.6 →
-  // gpt-5.6-sol` under both OpenAI modes. It is the worked example throughout;
-  // the invariant tests above are what keep any future row resolvable.
+  // The shipped catalogue's worked example, `gpt-5.6 → gpt-5.6-sol` under both
+  // OpenAI modes; the invariant tests above keep any future row resolvable.
   const RETIRED: ModelSelection = { serviceId: "openai", billingMode: "sub", modelId: "gpt-5.6" };
 
   it("moves a pinned selection onto the successor of its OWN service and mode", () => {
@@ -783,8 +779,8 @@ describe("the harness\u00d7service join", () => {
     // harnesses. Vercel documents a Responses surface, so it reaches Codex too;
     // OpenRouter's was verified 2026-08-15 (planning#391) and reaches Codex for
     // the rows that declare the style.
-    expect(catalogueModelIdsForHarness("claude")).toContain("deepseek-v4-flash");
-    expect(catalogueModelIdsForHarness("codex")).toContain("deepseek-v4-flash");
+    expect(catalogueModelIdsForHarness("claude")).toContain("deepseek-flash");
+    expect(catalogueModelIdsForHarness("codex")).toContain("deepseek-flash");
     expect(catalogueModelIdsForHarness("codex")).toContain("deepseek-v4-pro");
     expect(catalogueModelIdsForHarness("codex")).toContain("openai/gpt-5.6-sol");
     expect(catalogueModelIdsForHarness("claude")).toContain("anthropic/claude-opus-5");
@@ -1002,7 +998,7 @@ describe("spawn shaping", () => {
     const shaping = resolveSpawnShaping("claude", {
       serviceId: "deepseek",
       billingMode: "key",
-      modelId: "deepseek-v4-flash",
+      modelId: "deepseek-flash",
     });
     expect(shaping?.style).toBe("anthropic-messages");
     expect(shaping?.endpoint.url).toBe("https://api.deepseek.com/anthropic");
@@ -1019,7 +1015,7 @@ describe("spawn shaping", () => {
     const shaping = resolveSpawnShaping("codex", {
       serviceId: "deepseek",
       billingMode: "key",
-      modelId: "deepseek-v4-flash",
+      modelId: "deepseek-flash",
     });
     expect(shaping?.style).toBe("openai-responses");
     expect(shaping?.endpoint.url).toBe("https://api.deepseek.com/v1");
@@ -1304,9 +1300,10 @@ describe("resolving a bare model id", () => {
   });
 
   it("honours a preferred service without being constrained by it", () => {
-    // `deepseek-v4-flash` is offered by DeepSeek directly; the gateways carry it
-    // under a namespaced id, so the bare id resolves to DeepSeek either way.
-    expect(resolveModelSelection("deepseek-v4-flash", "deepseek")?.serviceId).toBe("deepseek");
+    // `deepseek-flash` is offered under that exact id by two services, so the
+    // preference is what decides — in both directions.
+    expect(resolveModelSelection("deepseek-flash", "deepseek")?.serviceId).toBe("deepseek");
+    expect(resolveModelSelection("deepseek-flash", "opencode")?.serviceId).toBe("opencode");
     // A preference the id is not offered under falls back rather than failing.
     expect(resolveModelSelection("claude-opus-5", "openrouter")?.serviceId).toBe("anthropic");
   });
@@ -1720,8 +1717,8 @@ describe("per-model image input (planning#460)", () => {
     expect(
       visionSupportFor({ serviceId: "openrouter", billingMode: "key", modelId: "deepseek/deepseek-v4-flash" }),
     ).toBe("no");
-    // And the plain case, at the vendor.
-    expect(visionSupportFor({ serviceId: "deepseek", billingMode: "key", modelId: "deepseek-v4-flash" })).toBe("no");
+    // A vendor id carrying no version, tied to its key by `MODEL_ID_ALIASES`.
+    expect(visionSupportFor({ serviceId: "deepseek", billingMode: "key", modelId: "deepseek-flash" })).toBe("yes");
   });
 
   it("answers unverified — never no — for a selection it cannot resolve", () => {

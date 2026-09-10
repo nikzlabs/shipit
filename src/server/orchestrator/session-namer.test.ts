@@ -449,7 +449,7 @@ describe("generateSessionName", () => {
     const mod = await import("./session-namer.js");
     await mod.generateSessionName("hi", {
       harnessId: "claude",
-      model: "deepseek-v4-flash",
+      model: "deepseek-flash",
       serviceRouting: {
         serviceId: "deepseek",
         serviceName: "DeepSeek",
@@ -463,7 +463,7 @@ describe("generateSessionName", () => {
     });
 
     expect(seenArgs).toContain("--model");
-    expect(seenArgs).toContain("deepseek-v4-flash");
+    expect(seenArgs).toContain("deepseek-flash");
     expect(seenEnv.ANTHROPIC_BASE_URL).toBe("https://api.deepseek.com/anthropic");
     expect(seenEnv.ANTHROPIC_API_KEY).toBe("sk-deepseek");
   });

@@ -60,7 +60,7 @@ const DEEP_DIVE: AgentRole = {
     harnessId: "claude",
     serviceId: "deepseek",
     billingMode: "key",
-    modelId: "deepseek-v4-flash",
+    modelId: "deepseek-flash",
     reasoningEffort: "high",
   },
 };
@@ -132,7 +132,7 @@ describe("resolveUserRole refuses rather than substituting (req 8)", () => {
       harnessId: "claude",
       serviceId: "deepseek",
       billingMode: "key",
-      modelId: "deepseek-v4-flash",
+      modelId: "deepseek-flash",
       reasoningEffort: "high",
     });
   });
@@ -157,7 +157,7 @@ describe("applyRoleToSession writes the ORDINARY fields (req 3)", () => {
     expect(sessionManager.setModelSelection).toHaveBeenCalledWith("s1", {
       serviceId: "deepseek",
       billingMode: "key",
-      modelId: "deepseek-v4-flash",
+      modelId: "deepseek-flash",
     });
     expect(sessionManager.setReasoning).toHaveBeenCalledWith("s1", "high");
     expect(sessionManager.setRoleName).toHaveBeenCalledWith("s1", "deep dive");

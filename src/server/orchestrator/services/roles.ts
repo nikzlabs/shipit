@@ -19,7 +19,7 @@
  * deriving one, which is the whole reason it is not `resolveReviewerPinPatch`:
  * that function derives a harness (`harnessesForSelection(patch, …)[0]`) and
  * checks the reasoning level against whichever it picked, so a level checked at
- * save time can be *used* somewhere else — `deepseek-v4-flash` is offered under
+ * save time can be *used* somewhere else — `deepseek-flash` is offered under
  * both `anthropic-messages` and `openai-responses`, and the two harnesses
  * declare different level sets. On the reviewer path that gap is closed by
  * re-deriving the level at every point of use (planning#352,

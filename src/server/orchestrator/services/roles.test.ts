@@ -11,7 +11,7 @@ import type { AgentRole, CredentialRoute, ReviewerPin, ReviewerSlot } from "../.
  * catalogue would let them pass and disagree with what ShipIt does.
  *
  * The dual-harness case that used to need fabricating is **real**:
- * `deepseek-v4-flash` and `deepseek-v4-pro` declare `[openai-chat-completions,
+ * `deepseek-flash` and `deepseek-v4-pro` declare `[openai-chat-completions,
  * openai-responses, anthropic-messages]`, and `resolveStyle` needs one style in
  * common — so both harnesses carry them. Their level sets differ (`none` and
  * `minimal` are Codex's and not
@@ -102,7 +102,7 @@ const DEEPSEEK_ON_CLAUDE = {
   harnessId: "claude" as const,
   serviceId: "deepseek",
   billingMode: "key" as const,
-  modelId: "deepseek-v4-flash",
+  modelId: "deepseek-flash",
   reasoningEffort: "high",
 };
 
@@ -211,7 +211,7 @@ describe("checkRolePinnedParams — the level follows the harness the ROLE names
     const triple = {
       serviceId: "deepseek",
       billingMode: "key" as const,
-      modelId: "deepseek-v4-flash",
+      modelId: "deepseek-flash",
       reasoningEffort: "minimal",
     };
 
@@ -423,7 +423,7 @@ describe("resolveRoleByName — a pinned role (reqs 6, 7, 10)", () => {
     expect(target.selection).toEqual({
       serviceId: "deepseek",
       billingMode: "key",
-      modelId: "deepseek-v4-flash",
+      modelId: "deepseek-flash",
     });
     expect(target.prompt).toBe("Check requirements.");
     expect(target.roleName).toBe("deep-dive");
@@ -553,12 +553,12 @@ describe("resolveRoleByName — a pinned role (reqs 6, 7, 10)", () => {
     const attempt = () =>
       resolveRoleByName(
         "deep-dive",
-        { serviceId: "anthropic", billingMode: "sub", modelId: "deepseek-v4-flash" },
+        { serviceId: "anthropic", billingMode: "sub", modelId: "deepseek-flash" },
         CLAUDE_IMPLEMENTER,
         deps([pinnedRole("deep-dive", DEEPSEEK_ON_CLAUDE)]),
       );
     expect(attempt).toThrow(
-      /cannot run: No model "deepseek-v4-flash" is offered by anthropic on the "sub" billing mode\./,
+      /cannot run: No model "deepseek-flash" is offered by anthropic on the "sub" billing mode\./,
     );
     expect(attempt).not.toThrow(/Name --/);
   });
@@ -817,7 +817,7 @@ describe("resolveRoleByName — the reviewer, overridden (reqs 10, 16)", () => {
         harnessId: "claude",
         serviceId: "deepseek",
         billingMode: "key",
-        modelId: "deepseek-v4-flash",
+        modelId: "deepseek-flash",
         reasoningEffort: "max",
       },
       CLAUDE_IMPLEMENTER,
@@ -989,7 +989,7 @@ describe("resolveRoleByName — the reviewer, overridden (reqs 10, 16)", () => {
       harnessId: "claude" as const,
       serviceId: "deepseek",
       billingMode: "key" as const,
-      modelId: "deepseek-v4-flash",
+      modelId: "deepseek-flash",
       reasoningEffort: "minimal",
     };
     const messages = ["reviewer", "deep-dive"].map((name) => {
@@ -1049,7 +1049,7 @@ describe("buildRoleSettings — the server sends the resolution", () => {
         harnessId: "claude",
         harnessName: "Claude Code",
         serviceName: "DeepSeek",
-        label: "V4 Flash",
+        label: "V4.1 Flash",
         reasoningEffort: "high",
       },
     });

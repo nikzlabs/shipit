@@ -437,7 +437,7 @@ describe("the composer before a session is active (docs/272 reqs 5, 12)", () => 
     localStorage.setItem("shipit-role-name", "deep dive");
     localStorage.setItem(
       "vibe-model-id",
-      JSON.stringify({ serviceId: "deepseek", billingMode: "key", modelId: "deepseek-v4-flash" }),
+      JSON.stringify({ serviceId: "deepseek", billingMode: "key", modelId: "deepseek-flash" }),
     );
     setRoles([DEEP_DIVE]);
     render(

@@ -213,7 +213,7 @@ describe("Integration: quick-capture headless sessions", () => {
         repoUrl: REPO_URL,
         initialPrompt: "Match this design",
         agent: "claude",
-        model: "deepseek-v4-flash",
+        model: "deepseek-v4-pro",
         serviceId: "deepseek",
         billingMode: "key",
       },
@@ -241,7 +241,7 @@ describe("Integration: quick-capture headless sessions", () => {
     // referencing the image would pass everything above.
     const history = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/history` });
     expect(history.body).toContain("cannot read images");
-    expect(history.body).toContain("V4 Flash");
+    expect(history.body).toContain("V4 Pro");
   });
 
   it("references an attached image in the dispatched first-turn prompt", { timeout: 15_000 }, async () => {

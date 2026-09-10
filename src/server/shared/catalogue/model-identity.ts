@@ -128,6 +128,11 @@ export const MODEL_IDENTITIES = {
 
   deepseekV4Flash: identity("deepseek-v4-flash", "deepseek"),
   deepseekV4Pro: identity("deepseek-v4-pro", "deepseek"),
+  // V4.1 Flash is a DISTINCT canonical model, not a spelling of V4 Flash — the
+  // same reasoning as the GLM-5.2/5.3 pair. Both stay declared: DeepSeek retired
+  // V4 Flash at its own endpoint (`services.ts`) while the gateways still serve
+  // those weights. `deepseek-flash`, the vendor's current id, is aliased below.
+  deepseekV41Flash: identity("deepseek-v4.1-flash", "deepseek"),
 
   // One canonical model under three ids: `glm-5.2[1m]` on the coding plan,
   // `glm-5.2` on Z.ai's own key, `z-ai/glm-5.2` at OpenRouter. This is the pair
@@ -204,6 +209,11 @@ export const MODEL_ID_ALIASES: Record<string, string> = {
   "claude-fable-5-1": "claude-fable-5.1",
   "x-preview-f-free": "ox-alpha",
   "ox-alpha-free": "ox-alpha",
+  // DeepSeek's own version-free id for V4.1 Flash, which OpenCode Go copies,
+  // where the gateways spell it `deepseek/deepseek-v4.1-flash`. The vendor's
+  // model table names this id's MODEL VERSION as DeepSeek-V4.1-Flash outright
+  // (2026-09-10) — a read fact, not a guess from the word "flash".
+  "deepseek-flash": "deepseek-v4.1-flash",
 };
 
 /**

@@ -450,3 +450,46 @@ bias:
 The alternative — withholding a frontier coding model from users who have already paid for it,
 to avoid an imprecise comparison figure — is the worse trade. Replace both with the published
 rate when Z.ai publishes one.
+
+## 2026-09-10 — DeepSeek V4.1 Flash, and the retirement it carries
+
+Probed directly against each service's real endpoint from a session container (not through the
+dogfood instance), one request per pair, each with an impossible model id as a control on the
+same route.
+
+| Pair | Result |
+|---|---|
+| `deepseek:key` / `deepseek-flash` / `openai-chat-completions` | **pass** — 200, `"model":"deepseek-flash"` |
+| `deepseek:key` / `deepseek-flash` / `openai-responses` | **pass** — 200, `"object":"response"`, `"status":"completed"` |
+| `deepseek:key` / `deepseek-flash` / `anthropic-messages` | **pass** — 200, `"type":"message"` |
+| `deepseek:key` / *impossible id* / all three — control | 400 `The supported API model names are deepseek-flash, deepseek-v4-pro` |
+| `deepseek:key` / `deepseek-flash` / image input | **pass** — a 16×16 solid-red PNG came back "Red" |
+| `opencode:sub` (Go) / `deepseek-flash` / `openai-chat-completions` | **pass** — 200 |
+| `opencode:sub` (Go) / *impossible id* — control | 401 `Model … is not supported` |
+| `openrouter:key` / `deepseek/deepseek-v4.1-flash` | **fail** — 404, see below |
+| `vercel:key` / every pair, control included | **no verdict** — 402 `insufficient_funds` |
+
+**V4 Flash is retired at DeepSeek and the old id still answers.** The vendor's model table
+states that `deepseek-v4-flash` and `deepseek-v4-flash-vision-exp` are "still accepted" but
+served by V4.1 Flash and billed at its price. That is the worst shape a retirement can take —
+nothing fails, so a pin on the old id kept taking turns while ShipIt named the wrong model,
+priced it at a rate DeepSeek no longer charges, and refused images the model can read. The
+`retired` record in `services.ts` is what moves those pins.
+
+**OpenRouter lists V4.1 Flash but could not serve it.** Every request 404'd with "0 endpoints
+out of 1 requested are available matching your guardrail restrictions and data policy … Paid
+model training violation (account settings)", while `deepseek/deepseek-v4-flash` (via Alibaba)
+and `deepseek/deepseek-v4-pro` (via Baidu) both answered 200 on the same key in the same run,
+and an impossible id answered a different error. So the id is valid and the key is fine: every
+provider fronting this model there trains on prompts. No row is authored until a non-training
+provider serves it.
+
+**Two request-shape facts about OpenCode Go**, since either one makes a live model look dead:
+it answers `403 error code: 1010` to a generic HTTP-library user agent, and `400
+MissingSessionID` without an `x-opencode-session` header. Both are documented requirements of
+its validated clients.
+
+**Prices moved as well as models.** DeepSeek now charges by the clock — peak 01:00–04:00 and
+06:00–10:00 UTC Monday to Friday, off-peak at half — and V4 Pro's rate had drifted from the
+0.435/0.87 this repo carried to 0.66/1.98 off-peak. `DEEPSEEK_PRICES` records why the peak
+tier is the one carried.

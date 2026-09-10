@@ -136,7 +136,7 @@ describe("makeNonTurnGenerateText", () => {
     expect(text).toBe(OK_RESULT.text);
     const req = (spawn.mock.calls as unknown as [{ agentId: string; model: string; serviceRouting?: unknown }][])[0][0];
     expect(req.agentId).toBe("claude");
-    expect(req.model).toBe("deepseek-v4-flash");
+    expect(req.model).toBe("deepseek-flash");
     // A string-delivered credential is shaped: endpoint + credential target.
     expect(req.serviceRouting).toBeTruthy();
   });
