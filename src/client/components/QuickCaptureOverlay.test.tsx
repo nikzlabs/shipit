@@ -6,6 +6,7 @@ import type { MessageInput } from "./MessageInput.js";
 import { useUiStore } from "../stores/ui-store.js";
 import { useRepoStore } from "../stores/repo-store.js";
 import { useSessionStore } from "../stores/session-store.js";
+import { useSettingsStore } from "../stores/settings-store.js";
 import type { SessionInfo } from "../../server/shared/types.js";
 import type { RepoInfo } from "../../server/shared/types.js";
 
@@ -410,11 +411,11 @@ describe("QuickCaptureOverlay", () => {
     // and they are also where deriving the harness from the model is a coin
     // flip — so this is the case the pick has to survive intact.
     localStorage.setItem("vibe-agent-id", "claude");
-    localStorage.setItem("vibe-model-id", "deepseek-v4-pro");
+    localStorage.setItem("vibe-model-id", "deepseek-v4-flash");
     useUiStore.setState({
       agentList: [
-        { id: "claude", name: "Claude", installed: true, hasRunnableModels: true, models: ["claude-opus-4-8", "deepseek-v4-pro"], supportsReview: true },
-        { id: "codex", name: "Codex", installed: true, hasRunnableModels: true, models: ["gpt-5.5", "deepseek-v4-pro"], supportsReview: true },
+        { id: "claude", name: "Claude", installed: true, hasRunnableModels: true, models: ["claude-opus-4-8", "deepseek-v4-flash"], supportsReview: true },
+        { id: "codex", name: "Codex", installed: true, hasRunnableModels: true, models: ["gpt-5.5", "deepseek-v4-flash"], supportsReview: true },
       ],
     });
     useRepoStore.setState({
@@ -429,12 +430,89 @@ describe("QuickCaptureOverlay", () => {
     expect(lastMessageInputProps?.activeAgentId).toBe("codex");
     fireEvent.click(screen.getByRole("button", { name: "Send mock" }));
     expect(startQuickSessionMock).toHaveBeenCalledWith(
-      expect.objectContaining({ agent: "codex", model: "deepseek-v4-pro" }),
+      expect.objectContaining({ agent: "codex", model: "deepseek-v4-flash" }),
       expect.any(Function),
     );
 
     localStorage.removeItem("vibe-agent-id");
     localStorage.removeItem("vibe-model-id");
+  });
+
+  it("creates with the ROLE's model and level, even after the role is taken back off", () => {
+    /*
+      docs/272 — **the creation params read this component's state, and a role
+      pick used to move only the seeds.**
+
+      `selectedAgentId` is derived from the seed on every render, so the harness
+      followed a role already; `selectedModel` and `selectedReasoning` are
+      `useState` and were moved only by the model and harness handlers. While the
+      role is in force the server hides the gap — the creation body carries
+      `role`, and the server writes the role's own parameters over what was sent.
+      Choosing "No role" removes that override, and the mismatch reaches the
+      session: the row said the role's model, the session ran the one seeded
+      before the role was ever picked.
+
+      The level is the same defect through the other field, so it is exercised
+      here too: an explicit level picked BEFORE the role has to give way to the
+      role's.
+    */
+    localStorage.setItem("vibe-agent-id", "claude");
+    localStorage.setItem("vibe-model-id", "claude-opus-4-8");
+    useSettingsStore.setState({
+      roles: [
+        {
+          name: "triage",
+          params: {
+            kind: "pinned",
+            harnessId: "codex",
+            serviceId: "openai",
+            billingMode: "sub",
+            modelId: "gpt-5.6-sol",
+            reasoningEffort: "low",
+          },
+          reserved: false,
+          resolved: {
+            harnessId: "codex",
+            harnessName: "Codex",
+            serviceId: "openai",
+            billingMode: "sub",
+            serviceName: "OpenAI",
+            modelId: "gpt-5.6-sol",
+            label: "GPT-5.6 Sol",
+            reasoningEffort: "low",
+          },
+        },
+      ],
+    } as never);
+    useUiStore.setState({
+      agentList: [
+        { id: "claude", name: "Claude", installed: true, hasRunnableModels: true, models: ["claude-opus-4-8"], supportsReview: true },
+        { id: "codex", name: "Codex", installed: true, hasRunnableModels: true, models: ["gpt-5.6-sol"], supportsReview: true },
+      ],
+    });
+    useRepoStore.setState({
+      repos: [repo("https://github.com/acme/app.git")],
+      activeRepoUrl: "https://github.com/acme/app.git",
+    });
+    openOverlay();
+
+    render(<QuickCaptureOverlay onAddRepo={vi.fn()} />);
+    // A level chosen by hand first, so the role has something to overrule.
+    act(() => lastMessageInputProps?.onReasoningChange?.("max"));
+    act(() => lastMessageInputProps?.onRoleChange?.("triage"));
+    // req 18 — "No role" drops the name and the standing instructions and leaves
+    // the parameters where the role put them. It is also what removes the
+    // server-side override that was hiding this.
+    act(() => lastMessageInputProps?.onRoleChange?.(undefined));
+
+    fireEvent.click(screen.getByRole("button", { name: "Send mock" }));
+    expect(startQuickSessionMock).toHaveBeenCalledWith(
+      expect.objectContaining({ agent: "codex", model: "gpt-5.6-sol", reasoning: "low" }),
+      expect.any(Function),
+    );
+
+    localStorage.removeItem("shipit-role-name");
+    localStorage.removeItem("shipit-reasoning-by-agent");
   });
 
   it("forwards the active agent's saved reasoning seed as the creation param (docs/217)", () => {

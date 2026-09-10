@@ -59,6 +59,7 @@ import {
 } from "./index.js";
 import type {
   ApiStyle,
+  BillingMode,
   BillingModeDef,
   HarnessId,
   ModelDef,
@@ -103,13 +104,13 @@ describe("no shipped row still carries a sentinel", () => {
   });
 
   it("a gateway prices a model independently of the vendor that makes it", () => {
-    const direct = (modelId: string) =>
-      getModel({ serviceId: "deepseek", billingMode: "key", modelId });
     const or = (modelId: string) => getModel({ serviceId: "openrouter", billingMode: "key", modelId });
     const vercel = (modelId: string) => getModel({ serviceId: "vercel", billingMode: "key", modelId });
 
-    expect(or("deepseek/deepseek-v4-pro")?.price.input).not.toBe(direct("deepseek-v4-pro")!.price.input);
-    expect(vercel("deepseek/deepseek-v4-pro")?.price.input).not.toBe(direct("deepseek-v4-pro")!.price.input);
+    // On GLM-5.2: no DeepSeek model is on the vendor and both gateways any more.
+    const zai = (modelId: string) => getModel({ serviceId: "zai", billingMode: "key", modelId });
+    expect(or("z-ai/glm-5.2")?.price.input).not.toBe(zai("glm-5.2")!.price.input);
+    expect(vercel("zai/glm-5.2")?.price.input).not.toBe(zai("glm-5.2")!.price.input);
     expect(or("deepseek/deepseek-v4-flash")?.price.input).not.toBe(
       vercel("deepseek/deepseek-v4-flash")?.price.input,
     );
@@ -262,8 +263,8 @@ describe("model identity and lineage (docs/261 req 4)", () => {
 
   it("reports a selection's identity, and nothing for a triple naming no row", () => {
     expect(
-      modelIdentityFor({ serviceId: "deepseek", billingMode: "key", modelId: "deepseek-v4-pro" }),
-    ).toEqual({ canonicalModelKey: "deepseek-v4-pro", family: "deepseek" });
+      modelIdentityFor({ serviceId: "deepseek", billingMode: "key", modelId: "deepseek-flash" }),
+    ).toEqual({ canonicalModelKey: "deepseek-v4.1-flash", family: "deepseek" });
     expect(
       modelIdentityFor({ serviceId: "deepseek", billingMode: "key", modelId: "nope" }),
     ).toBeUndefined();
@@ -455,6 +456,82 @@ describe("resolving a retired model (req 13, phase 8)", () => {
     }
   });
 
+  it("gives each STYLE its own successor where the family cannot succeed itself", () => {
+    /*
+      DeepSeek V4 Pro left the catalogue on 2026-09-10. Everywhere it was listed,
+      V4 Flash carries every style it had — except at Vercel, where Pro was
+      declared under three styles (its `openai-responses` pass is a measurement
+      recorded on that row) and Flash carries only two.
+
+      So that one record splits: Claude Code, which speaks `anthropic-messages`,
+      lands on the DeepSeek family; Codex, which speaks only `openai-responses`,
+      lands on GLM-5.2. It is the only successor in the catalogue that crosses
+      vendors, and it is what the per-style map exists for — a bare
+      `oldId → newId` could not express it, and the alternative was widening
+      Flash to a style nobody measured it under.
+    */
+    const pinned: ModelSelection = {
+      serviceId: "vercel",
+      billingMode: "key",
+      modelId: "deepseek/deepseek-v4-pro",
+    };
+    expect(retirementSuccessor("claude", pinned)).toEqual({
+      serviceId: "vercel",
+      billingMode: "key",
+      modelId: "deepseek/deepseek-v4-flash",
+    });
+    expect(retirementSuccessor("codex", pinned)).toEqual({
+      serviceId: "vercel",
+      billingMode: "key",
+      modelId: "zai/glm-5.2",
+    });
+    // …and where the family DOES succeed itself, both harnesses land on it.
+    const direct: ModelSelection = {
+      serviceId: "deepseek",
+      billingMode: "key",
+      modelId: "deepseek-v4-pro",
+    };
+    expect(retirementSuccessor("claude", direct)?.modelId).toBe("deepseek-flash");
+    expect(retirementSuccessor("codex", direct)?.modelId).toBe("deepseek-flash");
+  });
+
+  it("leaves NO mode that offered a retired model without a record for it", () => {
+    /*
+      **The invariant loops above cannot catch an omission**, and that is exactly
+      how this shipped wrong once: they iterate `mode.retired`, so a mode that
+      dropped a model and never declared the retirement has nothing to iterate
+      and passes in silence. A session pinned there gets `undefined` from the
+      resolver, retirement does nothing on reconnect, and the unlisted-model
+      fallback picks the harness's first model instead of the same-service
+      successor req 13 promises.
+
+      So the five modes that offered V4 Pro are named here, by hand. Naming them
+      is the point: a list derived from the catalogue would be derived from the
+      same records whose absence is the bug.
+    */
+    const RETIRED_V4_PRO: { serviceId: string; billingMode: BillingMode; harness: HarnessId; to: string }[] = [
+      { serviceId: "deepseek", billingMode: "key", harness: "claude", to: "deepseek-flash" },
+      { serviceId: "deepseek", billingMode: "key", harness: "codex", to: "deepseek-flash" },
+      { serviceId: "openrouter", billingMode: "key", harness: "claude", to: "deepseek/deepseek-v4-flash" },
+      { serviceId: "openrouter", billingMode: "key", harness: "codex", to: "deepseek/deepseek-v4-flash" },
+      { serviceId: "vercel", billingMode: "key", harness: "claude", to: "deepseek/deepseek-v4-flash" },
+      { serviceId: "vercel", billingMode: "key", harness: "codex", to: "zai/glm-5.2" },
+      // OpenCode's two products declare `openai-chat-completions` only, which
+      // Claude Code does not speak — so `opencode` is the harness there.
+      { serviceId: "opencode", billingMode: "key", harness: "opencode", to: "deepseek-v4-flash" },
+      { serviceId: "opencode", billingMode: "sub", harness: "opencode", to: "deepseek-v4-flash" },
+    ];
+    for (const { serviceId, billingMode, harness, to } of RETIRED_V4_PRO) {
+      const modelId = serviceId === "openrouter" || serviceId === "vercel"
+        ? "deepseek/deepseek-v4-pro"
+        : "deepseek-v4-pro";
+      expect(
+        retirementSuccessor(harness, { serviceId, billingMode, modelId }),
+        `${serviceId}/${billingMode} offers ${harness} no successor for ${modelId}`,
+      ).toEqual({ serviceId, billingMode, modelId: to });
+    }
+  });
+
   it("offers nothing to a harness that speaks none of the retired model's styles", () => {
     expect(retirementSuccessor("claude", RETIRED)).toBeUndefined();
   });
@@ -613,11 +690,9 @@ describe("the harness\u00d7service join", () => {
   it("reaches services the harness shares a style with, and no others", () => {
     expect(catalogueModelIdsForHarness("claude")).toContain("deepseek-flash");
     expect(catalogueModelIdsForHarness("codex")).toContain("deepseek-flash");
-    expect(catalogueModelIdsForHarness("codex")).toContain("deepseek-v4-pro");
     expect(catalogueModelIdsForHarness("codex")).toContain("openai/gpt-5.6-sol");
     expect(catalogueModelIdsForHarness("claude")).toContain("anthropic/claude-opus-5");
     expect(catalogueModelIdsForHarness("codex")).toContain("deepseek/deepseek-v4-flash");
-    expect(catalogueModelIdsForHarness("codex")).toContain("deepseek/deepseek-v4-pro");
     expect(catalogueModelIdsForHarness("codex")).not.toContain("anthropic/claude-opus-5");
     expect(catalogueModelIdsForHarness("codex")).not.toContain("z-ai/glm-5.2");
   });
@@ -961,10 +1036,11 @@ describe("the launch catalogue is a requirement, not a capability (req 15)", () 
     expect(zen("claude-sonnet-5")!.price.input).toBeLessThan(
       getModel({ serviceId: "anthropic", billingMode: "key", modelId: "claude-sonnet-5" })!.price.input,
     );
-    expect(zen("deepseek-v4-pro")!.price.input).toBeGreaterThan(
-      getModel({ serviceId: "deepseek", billingMode: "key", modelId: "deepseek-v4-pro" })!.price.input,
+    // On Go: Zen lists no V4.1 row, so the vendor comparison is stated there.
+    expect(go("deepseek-flash")!.price.input).not.toBe(
+      getModel({ serviceId: "deepseek", billingMode: "key", modelId: "deepseek-flash" })!.price.input,
     );
-    expect(go("deepseek-v4-pro")!.price.input).not.toBe(zen("deepseek-v4-pro")!.price.input);
+    expect(go("deepseek-v4-flash")!.price.input).not.toBe(zen("deepseek-v4-flash")!.price.input);
     expect(zen("gpt-5.6-terra")!.price.input).toBeGreaterThan(
       getModel({ serviceId: "openai", billingMode: "key", modelId: "gpt-5.6-terra" })!.price.input,
     );

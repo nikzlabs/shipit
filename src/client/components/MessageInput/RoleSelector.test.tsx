@@ -990,3 +990,84 @@ describe("ComposerSettingsMenu — the role row (docs/272 req 15)", () => {
     expect(screen.getByTestId("composer-settings-row-reasoning")).toBeInTheDocument();
   });
 });
+
+/**
+ * docs/272 req 15, in the NARROW layout — the one place a role's parameters are
+ * reached without unmounting anything.
+ *
+ * The wide row drops an optimistic pick for free: choosing a role folds the
+ * parameters away, which unmounts the three selectors. `ComposerSettingsMenu`
+ * keeps its hooks mounted and only stops rendering their rows, so the picks
+ * outlived the role that replaced them.
+ *
+ * `useNarrowContainer` reports `false` where `ResizeObserver` is missing, which
+ * is jsdom — so every other test in this file sees the wide row, and this one
+ * opts in by stubbing the observer and faking the composer's measured width.
+ */
+describe("a role folds away hand-picked parameters in the narrow menu too", () => {
+  class ResizeObserverStub {
+    observe(): void {}
+    unobserve(): void {}
+    disconnect(): void {}
+  }
+
+  beforeEach(() => {
+    vi.stubGlobal("ResizeObserver", ResizeObserverStub);
+    Object.defineProperty(HTMLElement.prototype, "clientWidth", {
+      configurable: true,
+      get: () => 400,
+    });
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    // @ts-expect-error -- restoring the jsdom default (always 0)
+    delete HTMLElement.prototype.clientWidth;
+    localStorage.removeItem("shipit-role-name");
+    localStorage.removeItem("vibe-model-id");
+    localStorage.removeItem("vibe-agent-id");
+    localStorage.removeItem("shipit-reasoning-by-agent");
+  });
+
+  it("shows the role's level, not the one picked by hand before it", async () => {
+    setRoles([DEEP_DIVE, TRIAGE]);
+    useSessionStore.setState({ sessionId: undefined, sessions: [] });
+    render(
+      <MessageInput
+        onSend={vi.fn().mockReturnValue(true)}
+        disabled={false}
+        agents={[claude, codex]}
+        activeAgentId="claude"
+        onAgentChange={vi.fn()}
+        onModelChange={vi.fn()}
+        onReasoningChange={vi.fn()}
+        onRoleChange={vi.fn()}
+        hasActiveSession={false}
+      />,
+    );
+    // The narrow layout really is the one on screen.
+    expect(screen.getByTestId("composer-settings-trigger")).toBeInTheDocument();
+
+    // Pick a MODEL and a level by hand — the menu holds an optimistic value for
+    // each, through two different hooks, and the key has to clear both.
+    await userEvent.click(screen.getByTestId("composer-settings-trigger"));
+    await userEvent.click(screen.getByTestId("composer-settings-row-model"));
+    await userEvent.click(screen.getByTestId("composer-settings-model-claude-opus-5"));
+    await userEvent.click(screen.getByTestId("composer-settings-trigger"));
+    await userEvent.click(screen.getByTestId("composer-settings-row-reasoning"));
+    await userEvent.click(screen.getByTestId("composer-settings-reasoning-max"));
+
+    // Then choose a role that sets a different one, and ask to see what it set.
+    await userEvent.click(screen.getByTestId("composer-settings-trigger"));
+    await userEvent.click(screen.getByTestId("composer-settings-row-role"));
+    await userEvent.click(screen.getByTestId("composer-settings-role-triage"));
+    await userEvent.click(screen.getByTestId("composer-settings-trigger"));
+    await userEvent.click(screen.getByTestId("composer-settings-role-adjust"));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("composer-settings-row-reasoning")).toHaveTextContent("Low");
+    });
+    expect(screen.getByTestId("composer-settings-row-harness")).toHaveTextContent("Codex");
+    expect(screen.getByTestId("composer-settings-row-model")).toHaveTextContent("GPT-6 Astra");
+  });
+});

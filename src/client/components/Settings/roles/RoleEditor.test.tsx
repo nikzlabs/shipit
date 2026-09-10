@@ -11,9 +11,9 @@ import type { RoleView } from "../../../../server/shared/types/agent-types.js";
  * The bullet most likely to be built wrong is req 6's harness control, so it is
  * pinned against the real rows rather than convenient ones: **`deepseek-flash`
  * is carried by both installed harnesses** and `claude-opus-5` by one, which is
- * exactly what the shipped catalogue has (`deepseek-flash` and
- * `deepseek-v4-pro` declare all three API styles, so both harnesses share one
- * with each; no other row does). A read-only harness field would leave the first
+ * exactly what the shipped catalogue has (`deepseek-flash` declares all three
+ * API styles, so both harnesses share it; no other row does). A read-only
+ * harness field would leave the first
  * of those unable to say which harness it means. The catalogue itself is pinned
  * server-side, where its rules live — `services/role-settings.test.ts` and
  * `integration_tests/role-settings-api.test.ts` both drive the real one.

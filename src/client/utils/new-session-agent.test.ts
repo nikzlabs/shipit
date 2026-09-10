@@ -52,8 +52,8 @@ describe("newSessionAgentId", () => {
     // anything through OpenRouter — is runnable on either harness, and deriving
     // an owner then just returns whichever sorts first. That out-voted the
     // user's own harness pick, so picking Codex on such a model did nothing.
-    const shared = [agent("claude", ["deepseek-v4-pro"]), agent("codex", ["deepseek-v4-pro"])];
-    localStorage.setItem("vibe-model-id", "deepseek-v4-pro");
+    const shared = [agent("claude", ["deepseek-v4-flash"]), agent("codex", ["deepseek-v4-flash"])];
+    localStorage.setItem("vibe-model-id", "deepseek-v4-flash");
     localStorage.setItem("vibe-agent-id", "codex");
     expect(newSessionAgentId(shared)).toBe("codex");
     localStorage.setItem("vibe-agent-id", "claude");
@@ -65,10 +65,10 @@ describe("newSessionAgentId", () => {
     // (req 14), or a credential that went away, would otherwise seed a session
     // whose very first turn cannot start.
     const shared = (codex: Partial<AgentOption>) => [
-      agent("claude", ["deepseek-v4-pro"]),
-      { ...agent("codex", ["deepseek-v4-pro"]), ...codex },
+      agent("claude", ["deepseek-v4-flash"]),
+      { ...agent("codex", ["deepseek-v4-flash"]), ...codex },
     ];
-    localStorage.setItem("vibe-model-id", "deepseek-v4-pro");
+    localStorage.setItem("vibe-model-id", "deepseek-v4-flash");
     localStorage.setItem("vibe-agent-id", "codex");
     expect(newSessionAgentId(shared({ installed: false }))).toBe("claude");
     expect(newSessionAgentId(shared({ hasRunnableModels: false }))).toBe("claude");

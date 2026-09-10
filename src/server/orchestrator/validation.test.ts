@@ -59,12 +59,15 @@ describe("formatFileContext", () => {
 
 describe("imageAttachmentRefusal (planning#460)", () => {
   const PNG: ImageAttachment[] = [{ data: "aGk=", mediaType: "image/png", filename: "shot.png" }];
-  const TEXT_ONLY = { serviceId: "deepseek", billingMode: "key" as const, modelId: "deepseek-v4-pro" };
+  // V4 Pro was retired on 2026-09-10. This row is the other text-only DeepSeek
+  // the vision map names, and it declares `anthropic-messages`, so a Claude
+  // session can still be pinned to it — which is what these cases need.
+  const TEXT_ONLY = { serviceId: "openrouter", billingMode: "key" as const, modelId: "deepseek/deepseek-v4-flash" };
   const VISION = { serviceId: "anthropic", billingMode: "sub" as const, modelId: "claude-sonnet-5" };
 
   it("refuses an attached image on a model the catalogue knows is text-only", () => {
     const refusal = imageAttachmentRefusal(TEXT_ONLY, PNG, undefined);
-    expect(refusal).toContain("V4 Pro");
+    expect(refusal).toContain("V4 Flash");
     expect(refusal).toContain("DeepSeek");
   });
 

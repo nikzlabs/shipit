@@ -26,7 +26,6 @@ export const MODEL_VISION: Record<CanonicalModelKey, VisionSupport> = {
   "gpt-5.2": "yes",
 
   "deepseek-v4-flash": "no",
-  "deepseek-v4-pro": "no",
   "glm-5.2": "no",
   "glm-5.3": "no",
 

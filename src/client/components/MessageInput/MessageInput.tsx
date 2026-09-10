@@ -1257,9 +1257,31 @@ export function MessageInput({
                 )}
 
                 <ComposerSettingsMenu
-                  // Keyed on the session so an optimistic pick can't linger across a switch,
-                  // for the same reason `ReasoningSelector` is keyed in the wide row.
-                  key={sessionId ?? "__new__"}
+                  /*
+                    Keyed on the session so an optimistic pick can't linger
+                    across a switch, for the same reason `ReasoningSelector` is
+                    keyed in the wide row — **and on the role, which the wide row
+                    does not need.**
+
+                    `useModelPickerState` and `useReasoningPickerState` each hold
+                    an optimistic `pending` value that outranks both the session
+                    and the seed. The wide row drops them for free: a fresh role
+                    pick folds the parameters away (`roleParamsRevealed`), which
+                    UNMOUNTS those three selectors. This menu keeps its hooks
+                    mounted and only stops rendering their rows, so the picks
+                    survived — pick a model and a level by hand, then choose a
+                    role, then "Adjust parameters…", and the menu showed the
+                    hand-picked pair under the new role's name. There is no
+                    server echo on a composer with no session bound to clear the
+                    model one, and the reasoning one has no reconciliation at all.
+
+                    Safe on a bound session: the name read there is the SERVER's
+                    (`sessionRoleName`), which arrives in the same message as the
+                    model and the level, so the remount can never show a gap.
+                    With none bound, the seeds are written in the same event as
+                    the name.
+                  */
+                  key={`${sessionId ?? "__new__"}:${roleInForce ?? ""}`}
                   agents={agents}
                   activeAgentId={activeAgentId}
                   onAgentChange={onAgentChange}

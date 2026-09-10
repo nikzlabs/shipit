@@ -503,3 +503,31 @@ the first of these. All six are fixed.
       "say nothing rather than claim" case. Not exercised by any test, and said
       here rather than left implied: the per-credential-shape union in
       `buildSupport`, since no shipped mode disagrees between its shapes today.
+- [x] **Curation (reqs 6, 13): DeepSeek V4 Pro retired, 2026-09-10.** Removed on the
+      user's instruction from all five `(service, mode)` blocks that listed it —
+      DeepSeek direct, OpenRouter, Vercel, OpenCode Zen, OpenCode Go — as a
+      retirement rather than a deletion, so a pinned session moves to a successor
+      instead of naming a row that is gone. **The successor is whichever DeepSeek
+      row is CURRENT on that service**, and that differs by service after the V4.1
+      Flash change landed the same day: at DeepSeek's own endpoint V4 Flash is
+      itself retired, so Pro succeeds to **V4.1 Flash** (`deepseek-flash`) — which
+      the vendor corroborates, since its table routes `deepseek-v4-pro` to V4.1
+      Flash from 2026-09-14. At the two gateways and the two OpenCode products,
+      V4 Flash is still current and takes it. The one exception is
+      **Vercel's `openai-responses`**, where Pro was declared under three styles
+      (that style is a measurement recorded on the row) and Flash carries only two:
+      that style takes `zai/glm-5.2`, the only successor in the catalogue that
+      crosses vendors and exactly what the per-style map exists for. Widening Flash
+      to a style nobody measured it under was the alternative, and this file's rule
+      is that a style is a measurement, not a deduction. `MODEL_IDENTITIES.deepseekV4Pro`,
+      the vision entry and the five `v4pro` price constants went with it — the
+      catalogue's own "declares no identity no row uses" test is what enforces that.
+      Dated measurement logs (`pair-verification.md`, `catalogue.md`) are left as
+      written: they record what was measured on the day, not what ships now.
+      **Two of the five records were missed on the first pass** — OpenCode Zen and
+      Go lost their rows and kept `retired: []`, which is the catalogue mistake
+      req 13 names, and no existing test could see it: the invariant loops iterate
+      `mode.retired`, so a mode declaring nothing has nothing to iterate and passes
+      in silence. The guard added for it names the five retiring pairs by hand
+      rather than deriving them from the catalogue — a derived list would come from
+      the same records whose absence is the bug.

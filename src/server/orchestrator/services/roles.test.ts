@@ -25,6 +25,7 @@ function route(
 
 const DEEPSEEK_KEY = route({ serviceId: "deepseek", billingMode: "key" });
 const ANTHROPIC_KEY = route({ serviceId: "anthropic", billingMode: "key" });
+const OPENAI_KEY = route({ serviceId: "openai", billingMode: "key" });
 const ANTHROPIC_ACCOUNT = route({ serviceId: "anthropic", billingMode: "sub", via: "account" });
 
 interface FakeStoreOpts {
@@ -483,17 +484,28 @@ describe("resolveRoleByName — a pinned role (reqs 6, 7, 10)", () => {
   });
 
   it("keeps the role's service when the overridden model lives on it too", async () => {
+    // Needs a service offering TWO models the role's harness can run, so the
+    // bare model override has somewhere to go without naming a service. That
+    // used to be DeepSeek's own pair; V4 Pro was retired on 2026-09-10 and left
+    // one row there, so the case is stated on Anthropic's key mode instead.
     const { resolveRoleByName } = await import("./roles.js");
+    const role = pinnedRole("deep-dive", {
+      harnessId: "claude",
+      serviceId: "anthropic",
+      billingMode: "key",
+      modelId: "claude-opus-5",
+      reasoningEffort: "high",
+    });
     const target = resolveRoleByName(
       "deep-dive",
-      { modelId: "deepseek-v4-pro" },
+      { modelId: "claude-sonnet-5" },
       CLAUDE_IMPLEMENTER,
-      deps([pinnedRole("deep-dive", DEEPSEEK_ON_CLAUDE)]),
+      deps([role]),
     );
     expect(target.selection).toEqual({
-      serviceId: "deepseek",
+      serviceId: "anthropic",
       billingMode: "key",
-      modelId: "deepseek-v4-pro",
+      modelId: "claude-sonnet-5",
     });
   });
 
@@ -535,9 +547,15 @@ describe("resolveRoleByName — a pinned role (reqs 6, 7, 10)", () => {
       {},
       { reasoningEffort: "max" },
       { harnessId: "codex" as const, reasoningEffort: "none" },
-      { modelId: "deepseek-v4-pro" },
+      // A BARE model override stays on the role's own service, so this names
+      // the one model DeepSeek still offers (V4 Pro was retired 2026-09-10). The
+      // value does not move; the override path it exercises is the point.
+      { modelId: "deepseek-flash" },
       { serviceId: "anthropic", billingMode: "key" as const, modelId: "claude-opus-5" },
-      { serviceId: "deepseek", billingMode: "key" as const, modelId: "deepseek-v4-pro" },
+      // A triple that MOVES the model as well as the service — the bare entry
+      // above cannot, now that DeepSeek's key mode offers one row, so without
+      // this the loop would only ever validate tuples equal to the role's own.
+      { serviceId: "anthropic", billingMode: "key" as const, modelId: "claude-sonnet-5" },
     ]) {
       const target = resolveRoleByName("deep-dive", overrides, CLAUDE_IMPLEMENTER, d);
       const asStored = checkRolePinnedParams(
@@ -610,7 +628,7 @@ describe("resolveRoleByName — the reviewer, un-overridden (req 2 intact)", () 
         first: {
           serviceId: "deepseek",
           billingMode: "key",
-          modelId: "deepseek-v4-pro",
+          modelId: "deepseek-flash",
           reasoningEffort: "low",
         },
       },
@@ -620,7 +638,7 @@ describe("resolveRoleByName — the reviewer, un-overridden (req 2 intact)", () 
       env: EMPTY_ENV,
       isInstalled: ALL_INSTALLED,
     });
-    expect(target.selection.modelId).toBe("deepseek-v4-pro");
+    expect(target.selection.modelId).toBe("deepseek-flash");
     expect(target.reasoningEffort).toBe("low");
   });
 });
@@ -697,21 +715,28 @@ describe("resolveRoleByName — the reviewer, overridden (reqs 10, 16)", () => {
 
   it("keeps the ranked route when only the level moved, and drops it when the tuple did", async () => {
     const { resolveRoleByName } = await import("./roles.js");
+    // OpenAI is here so a second model the ranked harness can run exists to move
+    // to: Anthropic's rows are `anthropic-messages` only.
     const deps = () => ({
-      credentialStore: storeWith({ routes: [ANTHROPIC_KEY, DEEPSEEK_KEY], roles: [REVIEWER] }),
+      credentialStore: storeWith({
+        routes: [ANTHROPIC_KEY, DEEPSEEK_KEY, OPENAI_KEY],
+        roles: [REVIEWER],
+      }),
       env: EMPTY_ENV,
       isInstalled: ALL_INSTALLED,
     });
-    expect(
-      resolveRoleByName("reviewer", { reasoningEffort: "low" }, CLAUDE_IMPLEMENTER, deps()).route,
-    ).toBeDefined();
+    const ranked = resolveRoleByName("reviewer", { reasoningEffort: "low" }, CLAUDE_IMPLEMENTER, deps());
+    expect(ranked.route).toBeDefined();
+    // That the override MOVED the tuple is asserted below, not assumed: landing
+    // back on the ranked pick would make this vacuous.
     const moved = resolveRoleByName(
       "reviewer",
-      { modelId: "deepseek-v4-pro" },
+      { serviceId: "deepseek", billingMode: "key", modelId: "deepseek-flash" },
       CLAUDE_IMPLEMENTER,
       deps(),
     );
-    expect(moved.selection.modelId).toBe("deepseek-v4-pro");
+    expect(moved.selection.modelId).toBe("deepseek-flash");
+    expect(moved.selection.modelId).not.toBe(ranked.selection.modelId);
     expect(moved.route).toBeUndefined();
   });
 

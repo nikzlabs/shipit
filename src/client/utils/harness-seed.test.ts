@@ -30,11 +30,11 @@ function agent(id: string, eligibleModels: EligibleModelOption[]): AgentOption {
 
 const claude = agent("claude", [
   row({ modelId: "claude-opus-5" }),
-  row({ modelId: "deepseek-v4-pro", serviceId: "deepseek", serviceName: "DeepSeek", billingMode: "key" }),
+  row({ modelId: "deepseek-v4-flash", serviceId: "deepseek", serviceName: "DeepSeek", billingMode: "key" }),
 ]);
 const codex = agent("codex", [
   row({ modelId: "gpt-5.6-sol", serviceId: "openai", serviceName: "OpenAI" }),
-  row({ modelId: "deepseek-v4-pro", serviceId: "deepseek", serviceName: "DeepSeek", billingMode: "key" }),
+  row({ modelId: "deepseek-v4-flash", serviceId: "deepseek", serviceName: "DeepSeek", billingMode: "key" }),
 ]);
 const agents = [claude, codex];
 
@@ -47,8 +47,8 @@ describe("modelRowAfterHarnessPick", () => {
   it("keeps the model when the new harness offers it", () => {
     // A harness switch is not a model switch — and the models that make this
     // matter are exactly the ones both harnesses run.
-    const picked = modelRowAfterHarnessPick(codex.eligibleModels!, { modelId: "deepseek-v4-pro" });
-    expect(picked?.modelId).toBe("deepseek-v4-pro");
+    const picked = modelRowAfterHarnessPick(codex.eligibleModels!, { modelId: "deepseek-v4-flash" });
+    expect(picked?.modelId).toBe("deepseek-v4-flash");
   });
 
   it("prefers the same (service, billing mode) over the same id elsewhere", () => {
@@ -86,19 +86,19 @@ describe("persistHarnessPick", () => {
   });
 
   it("keeps a shared model, moving only the harness", () => {
-    localStorage.setItem("vibe-model-id", "deepseek-v4-pro");
+    localStorage.setItem("vibe-model-id", "deepseek-v4-flash");
     localStorage.setItem("vibe-agent-id", "claude");
     persistHarnessPick({ agentId: "codex", agents });
     expect(localStorage.getItem("vibe-agent-id")).toBe("codex");
-    expect(getSavedModelId()).toBe("deepseek-v4-pro");
+    expect(getSavedModelId()).toBe("deepseek-v4-flash");
   });
 
   it("prefers an explicit current model over the saved seed", () => {
     // The composer passes the LIVE session model, so the switch keeps what the
     // user is looking at rather than whatever the slot last held.
     localStorage.setItem("vibe-model-id", "claude-opus-5");
-    persistHarnessPick({ agentId: "codex", agents, current: { modelId: "deepseek-v4-pro" } });
-    expect(getSavedModelId()).toBe("deepseek-v4-pro");
+    persistHarnessPick({ agentId: "codex", agents, current: { modelId: "deepseek-v4-flash" } });
+    expect(getSavedModelId()).toBe("deepseek-v4-flash");
   });
 
   it("clears a parked redirect — the user has spoken", () => {
