@@ -439,23 +439,10 @@ describe("QuickCaptureOverlay", () => {
   });
 
   it("creates with the ROLE's model and level, even after the role is taken back off", () => {
-    /*
-      docs/272 — **the creation params read this component's state, and a role
-      pick used to move only the seeds.**
-
-      `selectedAgentId` is derived from the seed on every render, so the harness
-      followed a role already; `selectedModel` and `selectedReasoning` are
-      `useState` and were moved only by the model and harness handlers. While the
-      role is in force the server hides the gap — the creation body carries
-      `role`, and the server writes the role's own parameters over what was sent.
-      Choosing "No role" removes that override, and the mismatch reaches the
-      session: the row said the role's model, the session ran the one seeded
-      before the role was ever picked.
-
-      The level is the same defect through the other field, so it is exercised
-      here too: an explicit level picked BEFORE the role has to give way to the
-      role's.
-    */
+    // docs/272 — the creation params read this component's state, and a role pick
+    // used to move only the seeds. The server hid it while the role was in force
+    // (it writes the role's parameters over what was sent); "No role" removes that
+    // cover. The level is the same defect through the other field.
     localStorage.setItem("vibe-agent-id", "claude");
     localStorage.setItem("vibe-model-id", "claude-opus-4-8");
     useSettingsStore.setState({
@@ -497,12 +484,9 @@ describe("QuickCaptureOverlay", () => {
     openOverlay();
 
     render(<QuickCaptureOverlay onAddRepo={vi.fn()} />);
-    // A level chosen by hand first, so the role has something to overrule.
     act(() => lastMessageInputProps?.onReasoningChange?.("max"));
     act(() => lastMessageInputProps?.onRoleChange?.("triage"));
-    // req 18 — "No role" drops the name and the standing instructions and leaves
-    // the parameters where the role put them. It is also what removes the
-    // server-side override that was hiding this.
+    // req 18 — "No role" leaves the parameters where the role put them.
     act(() => lastMessageInputProps?.onRoleChange?.(undefined));
 
     fireEvent.click(screen.getByRole("button", { name: "Send mock" }));

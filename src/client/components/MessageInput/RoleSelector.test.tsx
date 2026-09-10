@@ -530,25 +530,9 @@ describe("the composer before a session is active (docs/272 reqs 5, 12)", () => 
   });
 
   it("shows the parameters of the role JUST PICKED, not the one before it", async () => {
-    /*
-      **The new-session route is its own case, and it is where this broke.**
-
-      `/{repo}/new` claims a WARM session, so the composer has a `sessionId`
-      while `hasActiveSession` is false — and `SessionManager.list()` filters
-      `warm = 0`, so there is no row for it to read. The three pickers therefore
-      fall through to the ui store's `activeAgentId`, which `useUiStore.reset()`
-      seeds ONCE, on arrival, and which `useConnectionSync` only ever syncs from
-      a session row. Choosing a role rewrote the three seeds
-      (`utils/role-seed.ts`) and nothing moved that field, so "Adjust
-      parameters…" showed the harness, model and level of the role selected
-      BEFORE this one.
-
-      So this drives the whole client half: pick the role, deliver the server's
-      answer to it, then ask to see what it set. `activeAgentId` starts as the
-      snapshot the route arrived with, exactly as it would in the app — the
-      wrapper reads it from the store the way `App.tsx` does, or the fix would
-      have nothing to move.
-    */
+    // `/{repo}/new`: a warm session is bound but has no row, so the pickers read
+    // `activeAgentId`. The wrapper reads it from the store the way `App.tsx` does,
+    // or the fix would have nothing to move.
     localStorage.setItem("shipit-role-name", "deep dive");
     localStorage.setItem("vibe-agent-id", "claude");
     localStorage.setItem(
@@ -580,7 +564,6 @@ describe("the composer before a session is active (docs/272 reqs 5, 12)", () => 
 
     await openRoleMenu();
     await userEvent.click(screen.getByTestId("role-option-triage"));
-    // The server applies the role and answers with what the session moved to.
     act(() => {
       handleModelSelectionChanged(undefined as never, {
         type: "model_selection_changed",
@@ -593,8 +576,6 @@ describe("the composer before a session is active (docs/272 reqs 5, 12)", () => 
       });
     });
 
-    // A fresh pick folds the parameters away, so this is the reported flow in
-    // full: choose a role, then ask to see what it set.
     await userEvent.click(screen.getByTestId("role-selector-trigger"));
     await userEvent.click(screen.getByTestId("role-adjust-parameters"));
 
@@ -606,19 +587,9 @@ describe("the composer before a session is active (docs/272 reqs 5, 12)", () => 
   });
 
   it("takes the level from the harness the row NAMES, not from the store's active one", async () => {
-    /*
-      The wide row's reasoning control resolved its harness by a second rule —
-      `agents.find(a => a.id === activeAgentId)` — where the harness picker
-      beside it uses `displayedHarness`. With **no session bound at all** (Quick
-      Capture, and the new-session route before its warm session is claimed) those
-      two disagree by design: the picker previews the seed, while `activeAgentId`
-      belongs to whichever session is running behind the overlay. So a role picked
-      here named its own harness and model and the level of somebody else's.
-
-      There is no session to echo an answer for, which is exactly why this case is
-      separate from the one above: the store write cannot reach it, and the second
-      rule is the whole defect.
-    */
+    // With no session bound (Quick Capture), the harness picker previews the seed
+    // while `activeAgentId` belongs to the session behind the overlay. No echo can
+    // reach this case, so it isolates the reasoning control's own harness rule.
     localStorage.setItem("shipit-role-name", "triage");
     localStorage.setItem("shipit-reasoning-by-agent", JSON.stringify({ claude: "high" }));
     setRoles([DEEP_DIVE, TRIAGE]);
@@ -992,17 +963,10 @@ describe("ComposerSettingsMenu — the role row (docs/272 req 15)", () => {
 });
 
 /**
- * docs/272 req 15, in the NARROW layout — the one place a role's parameters are
- * reached without unmounting anything.
- *
- * The wide row drops an optimistic pick for free: choosing a role folds the
- * parameters away, which unmounts the three selectors. `ComposerSettingsMenu`
- * keeps its hooks mounted and only stops rendering their rows, so the picks
- * outlived the role that replaced them.
- *
- * `useNarrowContainer` reports `false` where `ResizeObserver` is missing, which
- * is jsdom — so every other test in this file sees the wide row, and this one
- * opts in by stubbing the observer and faking the composer's measured width.
+ * docs/272 req 15 in the NARROW layout, where a role's parameters are reached
+ * without unmounting anything — so an optimistic pick outlived the role that
+ * replaced it. `useNarrowContainer` reports `false` without `ResizeObserver`
+ * (jsdom), so this block stubs it to opt in to the narrow row.
  */
 describe("a role folds away hand-picked parameters in the narrow menu too", () => {
   class ResizeObserverStub {
@@ -1045,11 +1009,9 @@ describe("a role folds away hand-picked parameters in the narrow menu too", () =
         hasActiveSession={false}
       />,
     );
-    // The narrow layout really is the one on screen.
     expect(screen.getByTestId("composer-settings-trigger")).toBeInTheDocument();
 
-    // Pick a MODEL and a level by hand — the menu holds an optimistic value for
-    // each, through two different hooks, and the key has to clear both.
+    // A model and a level by hand: two different hooks, both must be cleared.
     await userEvent.click(screen.getByTestId("composer-settings-trigger"));
     await userEvent.click(screen.getByTestId("composer-settings-row-model"));
     await userEvent.click(screen.getByTestId("composer-settings-model-claude-opus-5"));
@@ -1057,7 +1019,6 @@ describe("a role folds away hand-picked parameters in the narrow menu too", () =
     await userEvent.click(screen.getByTestId("composer-settings-row-reasoning"));
     await userEvent.click(screen.getByTestId("composer-settings-reasoning-max"));
 
-    // Then choose a role that sets a different one, and ask to see what it set.
     await userEvent.click(screen.getByTestId("composer-settings-trigger"));
     await userEvent.click(screen.getByTestId("composer-settings-row-role"));
     await userEvent.click(screen.getByTestId("composer-settings-role-triage"));

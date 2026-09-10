@@ -405,18 +405,9 @@ export function MessageInput({
     });
   };
   const showRoleControl = !!onRoleChange && (hasRoles || !!roleInForce);
-  /**
-   * The harness the wide row's reasoning control describes — **the one the
-   * harness picker beside it names**, resolved once and read by both.
-   *
-   * It used to be `agents.find((a) => a.id === activeAgentId)` at the call site,
-   * which is a different rule from `displayedHarness`'s and disagrees with it
-   * wherever the ui store's field is not the answer: on `/{repo}/new` the pickers
-   * preview the SEED, so after choosing a role the levels came from the harness
-   * of the role chosen before it. `ComposerSettingsMenu` already reads the
-   * derived harness — this is the wide row catching up, so the two layouts and
-   * the two controls cannot name three different things.
-   */
+  // The harness the reasoning control describes: the one the harness picker
+  // beside it names. Reading `activeAgentId` here was a second rule, and the two
+  // disagree wherever no session is bound (Quick Capture previews the seed).
   const displayedHarnessAgent = useHarnessPickerState({
     agents,
     activeAgentId,
@@ -1257,30 +1248,11 @@ export function MessageInput({
                 )}
 
                 <ComposerSettingsMenu
-                  /*
-                    Keyed on the session so an optimistic pick can't linger
-                    across a switch, for the same reason `ReasoningSelector` is
-                    keyed in the wide row — **and on the role, which the wide row
-                    does not need.**
-
-                    `useModelPickerState` and `useReasoningPickerState` each hold
-                    an optimistic `pending` value that outranks both the session
-                    and the seed. The wide row drops them for free: a fresh role
-                    pick folds the parameters away (`roleParamsRevealed`), which
-                    UNMOUNTS those three selectors. This menu keeps its hooks
-                    mounted and only stops rendering their rows, so the picks
-                    survived — pick a model and a level by hand, then choose a
-                    role, then "Adjust parameters…", and the menu showed the
-                    hand-picked pair under the new role's name. There is no
-                    server echo on a composer with no session bound to clear the
-                    model one, and the reasoning one has no reconciliation at all.
-
-                    Safe on a bound session: the name read there is the SERVER's
-                    (`sessionRoleName`), which arrives in the same message as the
-                    model and the level, so the remount can never show a gap.
-                    With none bound, the seeds are written in the same event as
-                    the name.
-                  */
+                  // Keyed on the session so an optimistic pick can't linger
+                  // across a switch — and on the role, which the wide row does
+                  // not need: a role pick unmounts its selectors, while this menu
+                  // keeps its hooks and only hides their rows, so the picks
+                  // outlived the role that replaced them.
                   key={`${sessionId ?? "__new__"}:${roleInForce ?? ""}`}
                   agents={agents}
                   activeAgentId={activeAgentId}

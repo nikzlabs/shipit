@@ -343,9 +343,8 @@ export const SERVICES = [
             styles: [A_MSG, O_CC],
             successors: { [A_MSG]: "anthropic/claude-fable-5.1", [O_CC]: "anthropic/claude-fable-5.1" },
           },
-          // V4 Pro left the catalogue on the user's instruction (2026-09-10).
-          // The Flash row here carries all three of its styles, so the family
-          // succeeds itself.
+          // V4 Pro left the catalogue on 2026-09-10; Flash carries all three of
+          // its styles here.
           {
             id: "deepseek/deepseek-v4-pro",
             styles: [A_MSG, O_CC, O_RESP],

@@ -469,29 +469,11 @@ export function QuickCaptureOverlay({
                 const role = useSettingsStore.getState().roles.find((r) => r.name === roleName);
                 applyRoleSeeds(role);
                 clearParkedHarness();
-                /*
-                  **The creation params read this component's state, not the
-                  seed, so the role has to move it too.**
-
-                  `selectedAgentId` is derived from the seed on every render, so
-                  the harness followed a role already — but `selectedModel` and
-                  `selectedReasoning` are `useState`, and only the model and
-                  harness handlers above ever moved them. So a role pick left the
-                  overlay showing (and creating with) the previously seeded model.
-
-                  While the role is still in force the server hides it: the
-                  creation body carries `role`, and `applyRoleToSession` writes
-                  the role's own parameters over whatever was sent. Choosing "No
-                  role" removes that override, and the mismatch reaches the
-                  session — the row said Opus, the session ran the model seeded
-                  before the role was ever picked.
-
-                  The level is CLEARED rather than set, exactly as the harness
-                  handler clears it: `send` falls back to
-                  `getSavedReasoning(selectedAgentId)`, which `applyRoleSeeds`
-                  has just written for the role's own harness. Setting it here
-                  would be a second copy of the same number.
-                */
+                // The creation params read this state, not the seed, so the role
+                // has to move it too — `selectedAgentId` is derived per render and
+                // followed already, these two did not. The level is cleared rather
+                // than set, as the harness handler clears it: `send` falls back to
+                // the per-harness seed `applyRoleSeeds` has just written.
                 if (role?.resolved) setSelectedModel(role.resolved.modelId);
                 setSelectedReasoning(undefined);
               }

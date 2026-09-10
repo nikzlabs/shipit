@@ -237,45 +237,26 @@ Two consequences fell out of fixing it, and both are simplifications:
 
 ### …and the harness the pickers read has to follow the server's answer
 
-Writing the seeds was necessary and not sufficient, and the gap showed up as *"the parameters are
-from the previous role, so they are completely wrong"*.
+Writing the seeds was necessary and not sufficient: the gap showed up as *"the parameters are from
+the previous role"*.
 
 `/{repo}/new` is a **third** case, distinct from both the ones `seedFromHistory` names. It claims a
-warm session, so a session IS bound (`seedFromHistory` is false) — and that session has no row
-(`warm = 0`), so there is nothing to describe either. `displayedHarness` therefore falls through to
-the ui store's `activeAgentId`. `useUiStore.reset()` seeds that field once, on arrival, and
-`useConnectionSync` only ever syncs it **from a session row** — so on this route nothing moved it
-again. Choosing a role rewrote the three seeds and not that field, and everything downstream
-followed the stale harness: the model list was the old harness's (the role's model was not in it, so
-the picker fell to its first row) and `getSavedReasoning` is keyed by harness (so the level was the
-other role's). One stale field, three wrong controls, and a "correction" made with those controls
-then silently leaves the role.
+warm session, so a session IS bound — and that session has no row (`warm = 0`), so there is nothing
+to describe either. `displayedHarness` falls through to the ui store's `activeAgentId`, which
+`useUiStore.reset()` seeds once on arrival and `useConnectionSync` only ever syncs **from a session
+row**. Choosing a role rewrote the seeds and not that field, and the stale harness took the model
+list and the per-harness reasoning seed with it.
 
-So **`model_selection_changed` moves `activeAgentId` too**, for the session on screen — the same
-message that already carries the role's name, the model, the billing pair and the level. It is the
-right source and the seed is not: the seed is *global*, so letting the pickers read it directly here
-would let any other surface that writes it — Quick Capture choosing a role for the **next** session —
-repaint this composer to describe a session it is not connected to. This message is per-connection
-and says what the bound session actually moved to. It is never written back to localStorage, which
-is `setActiveAgentId`'s standing contract.
+So **`model_selection_changed` moves `activeAgentId` too**, for the session on screen. The seed
+would be the wrong source: it is *global*, so any other surface that writes it — Quick Capture
+choosing a role for the **next** session — would repaint this composer to describe a session it is
+not connected to. This message is per-connection. It is never written back to localStorage, which is
+`setActiveAgentId`'s standing contract.
 
-Two things were fixed alongside it, both cases of a role changing the harness by a route nothing else
-watched:
-
-- **The wide row's reasoning control resolved its harness by a second rule** —
-  `agents.find(a => a.id === activeAgentId)`, where the harness picker beside it uses
-  `displayedHarness`. The two disagree wherever there is no session bound at all (Quick Capture, and
-  `/{repo}/new` before its warm session is claimed): the picker previews the seed while that field
-  belongs to the session running *behind* the overlay, so a role there named its own harness and
-  model and somebody else's level. It now takes the harness `useHarnessPickerState` resolves, which
-  is what the narrow menu already did.
-- **The skills are refetched when the confirmed harness actually moved.** Skills are per-backend
-  (Claude scans `.claude/skills`, Codex `.codex/skills`) and the composer's autocomplete already
-  switches its insert prefix on the harness, but only an *explicit* harness pick refetched them
-  (`handleAgentChange`). A role that changes harness is the same event by another route, and it was
-  the one route that left the list behind. Gated on the id having changed, so `set_model` and
-  `set_reasoning` — which answer with the unchanged harness, and are the common case — add no
-  request.
+Two things were fixed alongside it, both a role changing the harness by a route nothing else watched:
+the wide row's reasoning control resolved its harness by a second rule (`activeAgentId` rather than
+`displayedHarness`, which disagree wherever no session is bound), and the skills were not refetched,
+though they are per-backend and only an explicit harness pick refreshed them.
 
 ## What the composer shows
 

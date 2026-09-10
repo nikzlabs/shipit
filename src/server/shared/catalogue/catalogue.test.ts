@@ -456,59 +456,13 @@ describe("resolving a retired model (req 13, phase 8)", () => {
     }
   });
 
-  it("gives each STYLE its own successor where the family cannot succeed itself", () => {
-    /*
-      DeepSeek V4 Pro left the catalogue on 2026-09-10. Everywhere it was listed,
-      V4 Flash carries every style it had — except at Vercel, where Pro was
-      declared under three styles (its `openai-responses` pass is a measurement
-      recorded on that row) and Flash carries only two.
-
-      So that one record splits: Claude Code, which speaks `anthropic-messages`,
-      lands on the DeepSeek family; Codex, which speaks only `openai-responses`,
-      lands on GLM-5.2. It is the only successor in the catalogue that crosses
-      vendors, and it is what the per-style map exists for — a bare
-      `oldId → newId` could not express it, and the alternative was widening
-      Flash to a style nobody measured it under.
-    */
-    const pinned: ModelSelection = {
-      serviceId: "vercel",
-      billingMode: "key",
-      modelId: "deepseek/deepseek-v4-pro",
-    };
-    expect(retirementSuccessor("claude", pinned)).toEqual({
-      serviceId: "vercel",
-      billingMode: "key",
-      modelId: "deepseek/deepseek-v4-flash",
-    });
-    expect(retirementSuccessor("codex", pinned)).toEqual({
-      serviceId: "vercel",
-      billingMode: "key",
-      modelId: "zai/glm-5.2",
-    });
-    // …and where the family DOES succeed itself, both harnesses land on it.
-    const direct: ModelSelection = {
-      serviceId: "deepseek",
-      billingMode: "key",
-      modelId: "deepseek-v4-pro",
-    };
-    expect(retirementSuccessor("claude", direct)?.modelId).toBe("deepseek-flash");
-    expect(retirementSuccessor("codex", direct)?.modelId).toBe("deepseek-flash");
-  });
-
   it("leaves NO mode that offered a retired model without a record for it", () => {
-    /*
-      **The invariant loops above cannot catch an omission**, and that is exactly
-      how this shipped wrong once: they iterate `mode.retired`, so a mode that
-      dropped a model and never declared the retirement has nothing to iterate
-      and passes in silence. A session pinned there gets `undefined` from the
-      resolver, retirement does nothing on reconnect, and the unlisted-model
-      fallback picks the harness's first model instead of the same-service
-      successor req 13 promises.
-
-      So the five modes that offered V4 Pro are named here, by hand. Naming them
-      is the point: a list derived from the catalogue would be derived from the
-      same records whose absence is the bug.
-    */
+    // The invariant loops above iterate `mode.retired`, so a mode that dropped a
+    // model and declared nothing has nothing to iterate and passes in silence —
+    // which is how two of these five shipped missing. Named by hand for that
+    // reason: a derived list would come from the records whose absence is the bug.
+    // Vercel's two rows are also the per-style split (Flash for Claude Code,
+    // GLM-5.2 for Codex, which speaks only `openai-responses`).
     const RETIRED_V4_PRO: { serviceId: string; billingMode: BillingMode; harness: HarnessId; to: string }[] = [
       { serviceId: "deepseek", billingMode: "key", harness: "claude", to: "deepseek-flash" },
       { serviceId: "deepseek", billingMode: "key", harness: "codex", to: "deepseek-flash" },

@@ -88,39 +88,14 @@ export const handleModelSelectionChanged: Handler<WsModelSelectionChanged> = (_c
   if (session.sessionId === data.sessionId && !started) {
     saveRoleName(data.roleName ?? undefined);
   }
-  // docs/272 — **and the ui store's `activeAgentId` follows the same answer,
-  // because on `/{repo}/new` it is the only thing the pickers have to read.**
+  // docs/272 — on `/{repo}/new` the warm session has no row, so `displayedHarness`
+  // reads `activeAgentId` instead; `useConnectionSync` only ever syncs that FROM a
+  // row, so nothing moved it there and a role pick left the pickers on the
+  // previous role's harness. Not written to localStorage: `setActiveAgentId`'s
+  // contract is that an internal sync never moves the new-session default.
   //
-  // That route claims a WARM session, so a session is bound while
-  // `SessionManager.list()` filters `warm = 0` — the row updated above does not
-  // exist, and `displayedHarness` falls through to this field. `useUiStore.reset()`
-  // seeds it once, on arrival, and `useConnectionSync` only ever syncs it FROM a
-  // session row, so nothing moved it afterwards: choosing a role rewrote the three
-  // seeds (`utils/role-seed.ts`) and left the harness on the previously seeded
-  // one. The model list was then that harness's, the role's model was not in it,
-  // and `getSavedReasoning` was keyed by it — three controls describing the role
-  // chosen BEFORE this one, reported as "the parameters are from the previous
-  // role".
-  //
-  // The server's answer is the right source and the seed is not: the seed is
-  // global, so any other surface that moves it (Quick Capture picking a role for
-  // the NEXT session) would repaint this composer to describe a session it is not
-  // connected to. This message is per-connection and says what the bound session
-  // actually moved to.
-  //
-  // Only for the session on screen, and never written to localStorage — that is
-  // `setActiveAgentId`'s standing contract: an internal sync must not move the
-  // global "new session default".
-  //
-  // **A harness that actually moved also invalidates the skills**, for the reason
-  // `handleAgentChange` refetches on an explicit pick: skills are per-backend
-  // (Claude scans `.claude/skills`, Codex `.codex/skills`), and the composer's
-  // autocomplete already switches its insert prefix on the harness. A role that
-  // changes harness is that same event arriving by another route, and it was the
-  // one route that left the list behind — the menu offered the old harness's
-  // skills, with the new harness's prefix, and omitted the ones only it has.
-  // Gated on the id having changed, so a `set_model` or `set_reasoning` (which
-  // report the unchanged harness) adds no request.
+  // Skills are per-backend, so a harness that actually moved invalidates them —
+  // the same refetch `handleAgentChange` does for an explicit pick.
   if (session.sessionId === data.sessionId) {
     const ui = useUiStore.getState();
     if (ui.activeAgentId !== data.agentId) {

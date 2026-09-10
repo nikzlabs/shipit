@@ -484,10 +484,8 @@ describe("resolveRoleByName — a pinned role (reqs 6, 7, 10)", () => {
   });
 
   it("keeps the role's service when the overridden model lives on it too", async () => {
-    // Needs a service offering TWO models the role's harness can run, so the
-    // bare model override has somewhere to go without naming a service. That
-    // used to be DeepSeek's own pair; V4 Pro was retired on 2026-09-10 and left
-    // one row there, so the case is stated on Anthropic's key mode instead.
+    // Needs a service offering two models the role's harness can run. DeepSeek's
+    // key mode has one since V4 Pro was retired, so this uses Anthropic's.
     const { resolveRoleByName } = await import("./roles.js");
     const role = pinnedRole("deep-dive", {
       harnessId: "claude",
@@ -547,14 +545,10 @@ describe("resolveRoleByName — a pinned role (reqs 6, 7, 10)", () => {
       {},
       { reasoningEffort: "max" },
       { harnessId: "codex" as const, reasoningEffort: "none" },
-      // A BARE model override stays on the role's own service, so this names
-      // the one model DeepSeek still offers (V4 Pro was retired 2026-09-10). The
-      // value does not move; the override path it exercises is the point.
+      // A bare override stays on the role's service, which offers one model now.
       { modelId: "deepseek-flash" },
       { serviceId: "anthropic", billingMode: "key" as const, modelId: "claude-opus-5" },
-      // A triple that MOVES the model as well as the service — the bare entry
-      // above cannot, now that DeepSeek's key mode offers one row, so without
-      // this the loop would only ever validate tuples equal to the role's own.
+      // …and one that actually moves the model, which the bare entry cannot.
       { serviceId: "anthropic", billingMode: "key" as const, modelId: "claude-sonnet-5" },
     ]) {
       const target = resolveRoleByName("deep-dive", overrides, CLAUDE_IMPLEMENTER, d);
