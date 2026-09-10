@@ -13,7 +13,7 @@ import { ServiceError } from "./types.js";
  * each declares, are statements about ShipIt's own catalogue, and a fabricated
  * one would let them pass while disagreeing with what actually runs.
  *
- * The dual-harness pair is real and is the fixture: `deepseek-v4-flash` is
+ * The dual-harness pair is real and is the fixture: `deepseek-flash` is
  * carried by both `claude` and `codex` (`services.ts` declares all three styles
  * on it), and their level sets differ — `minimal` is Codex's and not Claude
  * Code's.
@@ -83,7 +83,7 @@ const PINNED = {
   harnessId: "claude",
   serviceId: "deepseek",
   billingMode: "key",
-  modelId: "deepseek-v4-flash",
+  modelId: "deepseek-flash",
   reasoningEffort: "high",
 } satisfies RolePinnedParams;
 
@@ -262,7 +262,7 @@ describe("applyRoleWrites — the reviewer is present, editable, and neither ren
 
 describe("applyRoleWrites — params are refused at SAVE, naming the parameter (req 6)", () => {
   it("refuses a level the named harness does not declare, for a model both harnesses carry", () => {
-    // `minimal` is Codex's level and not Claude Code's, and `deepseek-v4-flash` runs
+    // `minimal` is Codex's level and not Claude Code's, and `deepseek-flash` runs
     // on both — so this is refusable only because the role NAMES its harness.
     const err = refusal(() =>
       apply({ "deep-dive": write({ params: { ...PINNED, reasoningEffort: "minimal" } }) }),
@@ -281,7 +281,7 @@ describe("applyRoleWrites — params are refused at SAVE, naming the parameter (
     const { reasoningEffort: _dropped, ...atDefault } = PINNED;
     const { byName } = apply({ "deep-dive": write({ params: atDefault }) });
     const params = byName.get("deep-dive")?.params;
-    expect(params).toMatchObject({ harnessId: "claude", modelId: "deepseek-v4-flash" });
+    expect(params).toMatchObject({ harnessId: "claude", modelId: "deepseek-flash" });
     // Stored as the ABSENCE of the key, so a round-trip through the credential
     // store's JSON cannot turn Default into a level.
     expect(params && "reasoningEffort" in params).toBe(false);

@@ -15,7 +15,7 @@ const agents: AgentOption[] = [
     name: "Claude Code",
     installed: true,
     hasRunnableModels: true,
-    models: ["claude-sonnet-5", "deepseek-v4-flash"],
+    models: ["claude-sonnet-5", "deepseek-flash"],
     eligibleModels: [
       {
         serviceId: "anthropic",
@@ -37,9 +37,9 @@ const agents: AgentOption[] = [
         serviceId: "deepseek",
         serviceName: "DeepSeek",
         billingMode: "key",
-        modelId: "deepseek-v4-flash",
-        label: "V4 Flash",
-        canonicalModelKey: "deepseek-v4-flash",
+        modelId: "deepseek-flash",
+        label: "V4.1 Flash",
+        canonicalModelKey: "deepseek-v4.1-flash",
       },
     ],
     supportsReview: true,
@@ -373,12 +373,12 @@ describe("ModelSelector", () => {
       />,
     );
     await user.click(screen.getByTestId("model-trigger"));
-    await user.click(screen.getByTestId("model-option-deepseek-v4-flash"));
+    await user.click(screen.getByTestId("model-option-deepseek-flash"));
     expect(onModelChange).toHaveBeenCalledWith(
       expect.objectContaining({
         serviceId: "deepseek",
         billingMode: "key",
-        modelId: "deepseek-v4-flash",
+        modelId: "deepseek-flash",
       }),
     );
   });
@@ -399,7 +399,7 @@ describe("ModelSelector", () => {
     unmount();
 
     setSessionState(
-      makeSession({ model: "deepseek-v4-flash", serviceId: "deepseek", billingMode: "key" }),
+      makeSession({ model: "deepseek-flash", serviceId: "deepseek", billingMode: "key" }),
     );
     render(
       <ModelSelector agents={agents} activeAgentId="claude" modelInfo={null} hasActiveSession />,
@@ -449,7 +449,7 @@ describe("ModelSelector", () => {
     // the seed — so the overlay showed Sonnet while creating DeepSeek.
     setSessionState(makeSession({ agentId: "claude", model: "claude-sonnet-5" }));
     localStorage.setItem("vibe-agent-id", "claude");
-    localStorage.setItem("vibe-model-id", "deepseek:key:deepseek-v4-flash");
+    localStorage.setItem("vibe-model-id", "deepseek:key:deepseek-flash");
     render(
       <ModelSelector
         agents={agents}
@@ -459,7 +459,7 @@ describe("ModelSelector", () => {
         seedFromHistory
       />,
     );
-    expect(screen.getByTestId("model-trigger")).toHaveTextContent("V4 Flash");
+    expect(screen.getByTestId("model-trigger")).toHaveTextContent("V4.1 Flash");
   });
 
   it("checks exactly one row when nothing has pinned a group yet", async () => {
@@ -488,9 +488,9 @@ describe("ModelSelector", () => {
   });
 
   it("still honours a saved seed the displayed harness does offer", () => {
-    localStorage.setItem("vibe-model-id", "deepseek:key:deepseek-v4-flash");
+    localStorage.setItem("vibe-model-id", "deepseek:key:deepseek-flash");
     render(<ModelSelector agents={agents} activeAgentId="claude" modelInfo={null} />);
-    expect(screen.getByTestId("model-trigger")).toHaveTextContent("V4 Flash");
+    expect(screen.getByTestId("model-trigger")).toHaveTextContent("V4.1 Flash");
   });
 
   it("falls back to one unnamed group when the payload predates eligibleModels", async () => {
@@ -501,7 +501,7 @@ describe("ModelSelector", () => {
     );
     await user.click(screen.getByTestId("model-trigger"));
     expect(screen.getByTestId("model-option-claude-sonnet-5")).toBeTruthy();
-    expect(screen.getByTestId("model-option-deepseek-v4-flash")).toBeTruthy();
+    expect(screen.getByTestId("model-option-deepseek-flash")).toBeTruthy();
   });
 
   it("reflects a freshly picked model immediately, ahead of the last turn's report", async () => {
@@ -517,8 +517,8 @@ describe("ModelSelector", () => {
       />,
     );
     await user.click(screen.getByTestId("model-trigger"));
-    await user.click(screen.getByTestId("model-option-deepseek-v4-flash"));
-    expect(screen.getByTestId("model-trigger")).toHaveTextContent("V4 Flash");
+    await user.click(screen.getByTestId("model-option-deepseek-flash"));
+    expect(screen.getByTestId("model-trigger")).toHaveTextContent("V4.1 Flash");
   });
 
   it("moves the checkmark on a switch that changes only the billing group", async () => {
@@ -590,9 +590,9 @@ describe("ModelSelector", () => {
     // Now move the row to a DIFFERENT model. A pending pick that survived would
     // still be winning the precedence and the trigger would read "Sonnet 5".
     rerender(
-      render1(makeSession({ model: "deepseek-v4-flash", serviceId: "deepseek", billingMode: "key" })),
+      render1(makeSession({ model: "deepseek-flash", serviceId: "deepseek", billingMode: "key" })),
     );
-    expect(screen.getByTestId("model-trigger")).toHaveTextContent("V4 Flash");
+    expect(screen.getByTestId("model-trigger")).toHaveTextContent("V4.1 Flash");
   });
 
   it("snaps back when the server REFUSES the pick and the row therefore never changes", async () => {

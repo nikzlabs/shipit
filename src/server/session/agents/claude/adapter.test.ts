@@ -856,7 +856,7 @@ describe("ClaudeAdapter", () => {
   // DeepSeek's shape once the flag applies to it too: BOTH sources are
   // populated, and the real wire order within a call is `assistant` first then
   // the closing `message_delta` — so the delta is what "latest wins" resolves
-  // to. Measured 2026-08-17 on `deepseek-v4-flash`: the two agree exactly, and
+  // to. Measured 2026-08-17 on `deepseek-flash`: the two agree exactly, and
   // the last call read 168 + 25,216.
   it("takes the closing delta when a provider populates both sources", () => {
     const inner = new FakeInnerProcess();

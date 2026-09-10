@@ -27,15 +27,15 @@ const agents: AgentOption[] = [
     name: "Claude Code",
     installed: true,
     hasRunnableModels: true,
-    models: ["deepseek-v4-flash", "deepseek-v4"],
+    models: ["deepseek-flash", "deepseek-v4"],
     eligibleModels: [
       {
         serviceId: "deepseek",
         serviceName: "DeepSeek",
         billingMode: "key",
-        modelId: "deepseek-v4-flash",
-        label: "V4 Flash",
-        canonicalModelKey: "deepseek-v4-flash",
+        modelId: "deepseek-flash",
+        label: "V4.1 Flash",
+        canonicalModelKey: "deepseek-v4.1-flash",
       },
       {
         serviceId: "deepseek",
@@ -61,7 +61,7 @@ const agents: AgentOption[] = [
     name: "Codex",
     installed: true,
     hasRunnableModels: true,
-    models: ["deepseek-v4-flash"],
+    models: ["deepseek-flash"],
     // The SAME triple on a second installed harness. The harness is derived
     // (req 9), so this must not become a second row the user picks between.
     eligibleModels: [
@@ -69,9 +69,9 @@ const agents: AgentOption[] = [
         serviceId: "deepseek",
         serviceName: "DeepSeek",
         billingMode: "key",
-        modelId: "deepseek-v4-flash",
-        label: "V4 Flash",
-        canonicalModelKey: "deepseek-v4-flash",
+        modelId: "deepseek-flash",
+        label: "V4.1 Flash",
+        canonicalModelKey: "deepseek-v4.1-flash",
       },
     ],
     supportsReview: true,
@@ -81,9 +81,9 @@ const agents: AgentOption[] = [
 const RESOLVED_FLASH = {
   serviceId: "deepseek",
   billingMode: "key" as const,
-  modelId: "deepseek-v4-flash",
+  modelId: "deepseek-flash",
   serviceName: "DeepSeek",
-  label: "V4 Flash",
+  label: "V4.1 Flash",
   harnessId: "claude",
   source: "default" as const,
 };
@@ -109,7 +109,7 @@ describe("BackgroundWorkSection", () => {
   it("offers only models, with no row for a default", async () => {
     const user = userEvent.setup();
     useSettingsStore.getState().setNonTurnModel(
-      { serviceId: "deepseek", billingMode: "key", modelId: "deepseek-v4-flash" },
+      { serviceId: "deepseek", billingMode: "key", modelId: "deepseek-flash" },
       RESOLVED_FLASH,
     );
 
@@ -118,7 +118,7 @@ describe("BackgroundWorkSection", () => {
 
     expect(screen.queryByTestId("background-work-model-default")).toBeNull();
     expect(screen.queryByText(/ShipIt's default/)).toBeNull();
-    expect(screen.getByTestId("background-work-model-option-deepseek-v4-flash")).toBeTruthy();
+    expect(screen.getByTestId("background-work-model-option-deepseek-flash")).toBeTruthy();
   });
 
   /**
@@ -128,7 +128,7 @@ describe("BackgroundWorkSection", () => {
    */
   it("describes the work without naming a state or a rule", () => {
     useSettingsStore.getState().setNonTurnModel(
-      { serviceId: "deepseek", billingMode: "key", modelId: "deepseek-v4-flash" },
+      { serviceId: "deepseek", billingMode: "key", modelId: "deepseek-flash" },
       RESOLVED_FLASH,
     );
 
@@ -154,7 +154,7 @@ describe("BackgroundWorkSection", () => {
     expect(screen.queryByTestId("harness-trigger")).toBeNull();
     // One model offered on two installed harnesses is ONE option, not two.
     await user.click(screen.getByTestId("background-work-model"));
-    expect(screen.getAllByTestId("background-work-model-option-deepseek-v4-flash")).toHaveLength(1);
+    expect(screen.getAllByTestId("background-work-model-option-deepseek-flash")).toHaveLength(1);
   });
 
   /**
@@ -183,7 +183,7 @@ describe("BackgroundWorkSection", () => {
     render(<BackgroundWorkSection agentList={agents} />);
     await user.click(screen.getByTestId("background-work-model"));
 
-    expect(screen.getByTestId("background-work-model-option-deepseek-v4-flash")).toBeTruthy();
+    expect(screen.getByTestId("background-work-model-option-deepseek-flash")).toBeTruthy();
     expect(screen.getByTestId("background-work-model-option-deepseek-v4")).toBeTruthy();
     expect(screen.queryByTestId("background-work-model-option-claude-opus-5")).toBeNull();
   });
@@ -242,7 +242,7 @@ describe("BackgroundWorkSection", () => {
     const fetchMock = vi.fn(async () => ({ ok: true, json: async () => ({}) }));
     vi.stubGlobal("fetch", fetchMock);
     useSettingsStore.getState().setNonTurnModel(
-      { serviceId: "deepseek", billingMode: "key", modelId: "deepseek-v4-flash" },
+      { serviceId: "deepseek", billingMode: "key", modelId: "deepseek-flash" },
       RESOLVED_FLASH,
     );
 

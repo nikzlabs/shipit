@@ -13,7 +13,7 @@
  *
  * **The harness is a real control, not a readout** (req 6). An earlier draft of
  * the design said every model has exactly one harness, so the field could ship
- * read-only; that is false — `deepseek-v4-flash` and `deepseek-v4-pro` are
+ * read-only; that is false — `deepseek-flash` and `deepseek-v4-pro` are
  * carried by *both* harnesses, so a read-only field would leave a DeepSeek role
  * unable to say which harness it means, which is the expressiveness req 6 exists
  * to give it. So: a picker where the model has more than one valid harness, a

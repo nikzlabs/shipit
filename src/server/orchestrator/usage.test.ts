@@ -515,7 +515,7 @@ describe("UsageManager — the usage split (docs/252 req 16)", () => {
     });
     // A metered turn on another service: cost_usd is the money.
     mgr.record("s", 0.5, 1000, 200_000, 50_000, {
-      costSource: "per-turn", attribution: key("deepseek"), model: "deepseek-v4-flash",
+      costSource: "per-turn", attribution: key("deepseek"), model: "deepseek-flash",
     });
 
     const usage = mgr.getSessionUsage("s")!;

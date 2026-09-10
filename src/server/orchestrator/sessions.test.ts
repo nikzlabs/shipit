@@ -1344,7 +1344,7 @@ describe("SessionManager — model selection (docs/252)", () => {
     mgr.setModelSelection("s1", {
       serviceId: "deepseek",
       billingMode: "key",
-      modelId: "deepseek-v4-flash",
+      modelId: "deepseek-flash",
     });
     mgr.setProviderRoute("s1", "reserved", "deepseek-api-key");
     expect(mgr.get("s1")?.providerRouteBillingMode).toBe("key");
@@ -1391,7 +1391,7 @@ describe("SessionManager — model selection (docs/252)", () => {
     mgr.setModelSelection("s1", {
       serviceId: "deepseek",
       billingMode: "key",
-      modelId: "deepseek-v4-flash",
+      modelId: "deepseek-flash",
     });
     mgr.setProviderRoute("s1", "reserved", "deepseek-api-key");
     mgr.setModelSelection("s1", {

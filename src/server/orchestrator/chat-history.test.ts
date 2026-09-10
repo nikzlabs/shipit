@@ -1526,7 +1526,7 @@ describe("ChatHistoryManager", () => {
         serviceId: "deepseek",
         serviceName: "DeepSeek",
         billingMode: "key",
-        modelId: "deepseek-v4-flash",
+        modelId: "deepseek-flash",
         fallback: "The session kept its placeholder title.",
         createdAt: "2026-08-09T00:00:00.000Z",
       },

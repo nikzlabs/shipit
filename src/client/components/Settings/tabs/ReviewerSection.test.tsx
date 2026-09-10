@@ -211,12 +211,12 @@ describe("ReviewerSection", () => {
    * It is not a fact. `resolveReviewerSlots` derives it implementer-independently
    * (`resolveSlotPlan(plan, …, undefined)`); `selectReviewer` passes the
    * implementer's harness as `avoidHarnessId`. Where both installed harnesses
-   * carry the model — the shipped `deepseek-v4-flash` does — this view answers
+   * carry the model — the shipped `deepseek-flash` does — this view answers
    * Claude Code and a Claude session's review actually runs on Codex. Users read
    * the mismatch as their pin failing to apply.
    *
    * The fixture is the INCIDENT's own shape rather than the file's default
-   * Claude-only slot: `deepseek-v4-flash` is really carried by both installed
+   * Claude-only slot: `deepseek-flash` is really carried by both installed
    * harnesses, so it is the row where this view and the review genuinely
    * disagree — the same pairing `RolesTab.test.tsx` uses for the same reason.
    *
@@ -234,15 +234,15 @@ describe("ReviewerSection", () => {
         pin: {
           serviceId: "deepseek",
           billingMode: "key",
-          modelId: "deepseek-v4-flash",
+          modelId: "deepseek-flash",
           reasoningEffort: "max",
         },
         resolved: {
           serviceId: "deepseek",
           billingMode: "key",
-          modelId: "deepseek-v4-flash",
+          modelId: "deepseek-flash",
           serviceName: "DeepSeek",
-          label: "V4 Flash",
+          label: "V4.1 Flash",
           // Derived with no implementer to avoid. A Claude session's review of
           // this very slot resolves to Codex instead.
           harnessId: "claude",
@@ -286,15 +286,15 @@ describe("ReviewerSection", () => {
         pin: {
           serviceId: "deepseek",
           billingMode: "key",
-          modelId: "deepseek-v4-flash",
+          modelId: "deepseek-flash",
           reasoningEffort: "max",
         },
         resolved: {
           serviceId: "deepseek",
           billingMode: "key",
-          modelId: "deepseek-v4-flash",
+          modelId: "deepseek-flash",
           serviceName: "DeepSeek",
-          label: "V4 Flash",
+          label: "V4.1 Flash",
           harnessId: "claude",
           harnessName: "Claude Code",
           reasoningEffort: "max",

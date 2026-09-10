@@ -541,7 +541,7 @@ describe("UsageModal — the usage split (docs/252 req 16)", () => {
   };
   const meteredGroup = {
     key: "deepseek:key", kind: "key" as const, serviceId: "deepseek", billingMode: "key" as const,
-    models: ["deepseek-v4-flash"], turns: 4, tokens: 310_000, costUsd: 0.11, atApiRatesUsd: 0.11,
+    models: ["deepseek-flash"], turns: 4, tokens: 310_000, costUsd: 0.11, atApiRatesUsd: 0.11,
   };
   const legacyGroup = {
     key: "legacy", kind: "legacy" as const,

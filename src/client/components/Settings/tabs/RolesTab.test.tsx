@@ -30,7 +30,7 @@ const agents: AgentOption[] = [
     name: "Claude Code",
     installed: true,
     hasRunnableModels: true,
-    models: ["claude-opus-5", "deepseek-v4-flash"],
+    models: ["claude-opus-5", "deepseek-flash"],
     eligibleModels: [
       {
         serviceId: "anthropic",
@@ -44,9 +44,9 @@ const agents: AgentOption[] = [
         serviceId: "deepseek",
         serviceName: "DeepSeek",
         billingMode: "key",
-        modelId: "deepseek-v4-flash",
-        label: "V4 Flash",
-        canonicalModelKey: "deepseek-v4-flash",
+        modelId: "deepseek-flash",
+        label: "V4.1 Flash",
+        canonicalModelKey: "deepseek-v4.1-flash",
       },
     ],
     supportsReview: true,
@@ -60,7 +60,7 @@ const agents: AgentOption[] = [
   },
   {
     // The dual-harness half of the pair: the SAME DeepSeek triple, on the second
-    // installed harness. The ids are the SHIPPED ones — `deepseek-v4-flash` is
+    // installed harness. The ids are the SHIPPED ones — `deepseek-flash` is
     // really carried by both harnesses — so this fixture mirrors a real row
     // rather than inventing the case it tests. The catalogue itself is pinned
     // server-side, where the rules live (`role-settings.test.ts`,
@@ -69,15 +69,15 @@ const agents: AgentOption[] = [
     name: "Codex",
     installed: true,
     hasRunnableModels: true,
-    models: ["deepseek-v4-flash"],
+    models: ["deepseek-flash"],
     eligibleModels: [
       {
         serviceId: "deepseek",
         serviceName: "DeepSeek",
         billingMode: "key",
-        modelId: "deepseek-v4-flash",
-        label: "V4 Flash",
-        canonicalModelKey: "deepseek-v4-flash",
+        modelId: "deepseek-flash",
+        label: "V4.1 Flash",
+        canonicalModelKey: "deepseek-v4.1-flash",
       },
     ],
     supportsReview: true,
@@ -104,7 +104,7 @@ function pinnedRole(over: Partial<RoleView> = {}): RoleView {
       harnessId: "claude",
       serviceId: "deepseek",
       billingMode: "key",
-      modelId: "deepseek-v4-flash",
+      modelId: "deepseek-flash",
       reasoningEffort: "max",
     },
     resolved: {
@@ -113,8 +113,8 @@ function pinnedRole(over: Partial<RoleView> = {}): RoleView {
       serviceId: "deepseek",
       billingMode: "key",
       serviceName: "DeepSeek",
-      modelId: "deepseek-v4-flash",
-      label: "V4 Flash",
+      modelId: "deepseek-flash",
+      label: "V4.1 Flash",
       reasoningEffort: "max",
       reasoningLabel: "Max",
     },
@@ -177,7 +177,7 @@ describe("RolesTab — the list", () => {
     expect(row.textContent).toContain("The thorough one");
     const resolution = screen.getByTestId("role-resolution-deep-dive").textContent ?? "";
     expect(resolution).toContain("DeepSeek");
-    expect(resolution).toContain("V4 Flash");
+    expect(resolution).toContain("V4.1 Flash");
     expect(resolution).toContain("Claude Code");
     expect(resolution).toContain("Max");
     // A summary, not a row of controls: no service/model/level pickers here.
@@ -415,7 +415,7 @@ describe("RolesTab — the harness the user picked is what gets written", () => 
           harnessId: "codex",
           serviceId: "deepseek",
           billingMode: "key",
-          modelId: "deepseek-v4-flash",
+          modelId: "deepseek-flash",
           reasoningEffort: "minimal",
         },
       }),

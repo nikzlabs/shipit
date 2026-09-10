@@ -188,7 +188,7 @@ describe("buildReviewerSettings (req 8)", () => {
     const pin: ReviewerPin = {
       serviceId: "deepseek",
       billingMode: "key",
-      modelId: "deepseek-v4-flash",
+      modelId: "deepseek-flash",
       reasoningEffort: "minimal",
     };
     const views = buildReviewerSettings({
@@ -202,7 +202,7 @@ describe("buildReviewerSettings (req 8)", () => {
     expect(reasoningOptionsFor("claude", {
       serviceId: "deepseek",
       billingMode: "key",
-      modelId: "deepseek-v4-flash",
+      modelId: "deepseek-flash",
     }).map((option) => option.value)).toContain(views[0].resolved?.reasoningEffort);
     const subs = views[0].resolved?.effortSubstitutions ?? [];
     const claude = subs.find((s) => s.harnessId === "claude");

@@ -716,7 +716,7 @@ export function credentialSecretForRoute(
  *
  * The resident-process guard used to compare two model *strings*, which is
  * sound only while a model id identifies a service. It does not (req 5): the
- * same `deepseek-v4-flash` is reachable direct and through a gateway, so a
+ * same `deepseek-flash` is reachable direct and through a gateway, so a
  * switch between them left the strings equal, fired no kill, and ran the next
  * turn on the old process — old endpoint, old credential, wrong account billed
  * (req 11). Phase 3 is the phase that first makes that switch reachable, so it

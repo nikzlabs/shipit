@@ -17,7 +17,7 @@ describe("NonTurnFailureCard", () => {
     purpose: "session-naming" as const,
     serviceName: "DeepSeek",
     billingMode: "key" as const,
-    modelId: "deepseek-v4-flash",
+    modelId: "deepseek-flash",
     fallback: "The session kept its placeholder title.",
   };
 

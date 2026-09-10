@@ -29,7 +29,7 @@
  * **docs/252 phase 3 widened the identity from a model string to the whole
  * spawn-relevant tuple**, and sequencing that later would have been a bug rather
  * than a deferral. A model id does not identify a service (req 5): the same
- * `deepseek-v4-flash` is reachable directly and through a gateway, so under the
+ * `deepseek-flash` is reachable directly and through a gateway, so under the
  * old string comparison a switch between them looked like no change at all —
  * no kill, and the next turn ran on the previous service's endpoint and
  * credential, billing the wrong account (req 11). Phase 3 is the phase that

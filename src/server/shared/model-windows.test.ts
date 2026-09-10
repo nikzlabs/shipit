@@ -88,7 +88,7 @@ describe("context windows survive the catalogue derivation unchanged", () => {
     // old table had never heard of, so they fell to the 200K default. They are
     // unreachable until phase 2 gives them a credential — which is why adding
     // them is not a user-visible change.
-    for (const model of ["deepseek-v4-flash", "deepseek-v4-pro", "glm-5.2"]) {
+    for (const model of ["deepseek-flash", "deepseek-v4-pro", "glm-5.2"]) {
       expect(preCatalogueLookup(model)).toBe(200_000);
       expect(getContextWindowForModel(model)).toBe(1_000_000);
     }

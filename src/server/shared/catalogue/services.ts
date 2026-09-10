@@ -147,10 +147,24 @@ const OPENAI_PRICES = {
   gpt52: { input: 1.75, output: 14, cacheRead: 0.175, cacheWrite: 0 },
 } as const;
 
-/** DeepSeek list rates, per million tokens (2026-08-09). No separate cache-write charge. */
+/**
+ * DeepSeek list rates, per million tokens, re-read from
+ * `api-docs.deepseek.com/quick_start/pricing` on **2026-09-10**. No separate
+ * cache-write charge.
+ *
+ * **These are the PEAK figures.** DeepSeek now prices by the clock — peak
+ * (01:00–04:00 and 06:00–10:00 UTC, Mon–Fri) and off-peak at half — and
+ * `ModelPrice` carries one figure per axis. Peak is chosen because a clock tier
+ * has no modal turn, so the tie breaks on the direction of the error: a read-out
+ * that can be 2× high beats one that can be 2× low. It is also what makes the
+ * three services offering V4.1 Flash comparable — they publish the same two
+ * rates under different conventions, and agree once on the same tier.
+ *
+ * V4 Pro moved too: this row read 0.435 / 0.87, its single pre-peak-pricing rate.
+ */
 const DEEPSEEK_PRICES = {
-  v4flash: { input: 0.14, output: 0.28, cacheRead: 0.0028, cacheWrite: 0.14 },
-  v4pro: { input: 0.435, output: 0.87, cacheRead: 0.003625, cacheWrite: 0.435 },
+  v41flash: { input: 0.3, output: 1.2, cacheRead: 0.006, cacheWrite: 0.3 },
+  v4pro: { input: 1.32, output: 3.96, cacheRead: 0.044, cacheWrite: 1.32 },
 } as const;
 
 /** Z.ai list rates for GLM-5.2, per million tokens (2026-08-09). */
@@ -221,6 +235,11 @@ const VERCEL_PRICES = {
   v4flash: { input: 0.2, output: 0.4, cacheRead: 0.04, cacheWrite: 0.2 },
   v4pro: { input: 1.74, output: 3.48, cacheRead: 0.14, cacheWrite: 1.74 },
   glm52: { input: 1.1, output: 3.851, cacheRead: 0.275, cacheWrite: 1.1 },
+  // 2026-09-10. The one DERIVED figure in this file: Vercel headlines the
+  // OFF-peak rate (0.15/0.6/0.003) plus `peak_pricing.multiplier: 2`, so this is
+  // its own published rate on the peak tier {@link DEEPSEEK_PRICES} explains.
+  // It lands on DeepSeek's published peak rate exactly.
+  v41flash: { input: 0.3, output: 1.2, cacheRead: 0.006, cacheWrite: 0.3 },
 } as const;
 
 /**
@@ -273,6 +292,10 @@ const OPENCODE_ZEN_PRICES = {
  */
 const OPENCODE_GO_PRICES = {
   v4flash: { input: 0.22, output: 0.66, cacheRead: 0.007, cacheWrite: 0.22 },
+  // 2026-09-10, live models.dev. Go publishes ONE rate per model rather than a
+  // peak/off-peak pair, so there is no tier to choose — verbatim, even though it
+  // equals DeepSeek's off-peak figure.
+  v41flash: { input: 0.15, output: 0.6, cacheRead: 0.003, cacheWrite: 0.15 },
   v4pro: { input: 0.66, output: 1.98, cacheRead: 0.022, cacheWrite: 0.66 },
   glm5x: { input: 1.4, output: 4.4, cacheRead: 0.26, cacheWrite: 1.4 },
   kimiK3: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3 },
@@ -612,9 +635,33 @@ export const SERVICES = [
           [A_MSG]: "https://api.deepseek.com/anthropic",
         },
         credentials: [{ via: "string", storageEnv: "DEEPSEEK_API_KEY" }],
-        retired: [],
+        // ✅ 2026-09-10 — V4 Flash is RETIRED at DeepSeek's own endpoint, per the
+        // vendor table these prices come from: the old id is "still accepted",
+        // served by V4.1 Flash and billed at its rate. That is why the row could
+        // not simply be left alone — a pin on it kept taking turns while ShipIt
+        // named the wrong model, priced it at a retired rate and refused images
+        // V4.1 can read. A retirement record fixes all three (req 13).
+        retired: [
+          {
+            id: "deepseek-v4-flash",
+            styles: [O_CC, O_RESP, A_MSG],
+            successors: {
+              [O_CC]: "deepseek-flash",
+              [O_RESP]: "deepseek-flash",
+              [A_MSG]: "deepseek-flash",
+            },
+          },
+        ],
+        // ✅ 2026-09-10 — `deepseek-flash` MEASURED on all three styles against
+        // the real endpoint: all 200, with an impossible id answering 400 on
+        // every one, so each is validated routing and not a silent default.
+        // Evidence: `pair-verification.md`.
+        //
+        // ⚠ 2026-09-14 — the same table announces that from 04:00 UTC that day
+        // `deepseek-v4-pro` is ROUTED to V4.1 Flash and billed at its rate "until
+        // V4.1 Pro is released". Re-check the Pro row on or after that date.
         models: [
-          { id: "deepseek-v4-flash", label: "V4 Flash", ...MODEL_IDENTITIES.deepseekV4Flash, styles: [O_CC, O_RESP, A_MSG], contextWindow: ONE_M, price: DEEPSEEK_PRICES.v4flash },
+          { id: "deepseek-flash", label: "V4.1 Flash", ...MODEL_IDENTITIES.deepseekV41Flash, styles: [O_CC, O_RESP, A_MSG], contextWindow: ONE_M, price: DEEPSEEK_PRICES.v41flash },
           { id: "deepseek-v4-pro", label: "V4 Pro", ...MODEL_IDENTITIES.deepseekV4Pro, styles: [O_CC, O_RESP, A_MSG], contextWindow: ONE_M, price: DEEPSEEK_PRICES.v4pro },
         ],
       },
@@ -825,6 +872,12 @@ export const SERVICES = [
           // weaker than a measurement, and the sweep that produced the sentence
           // above is exactly why it is labelled as one.
           { id: "anthropic/claude-fable-5.1", label: "Fable 5.1", ...MODEL_IDENTITIES.fable51, styles: [A_MSG, O_CC], contextWindow: ONE_M, price: ANTHROPIC_PRICES.fable51 },
+          // ❌ 2026-09-10 — `deepseek/deepseek-v4.1-flash` is absent by
+          // measurement, not oversight: OpenRouter lists it, but a live request
+          // 404s on "Paid model training violation (account settings)" where the
+          // two rows below answered 200 on the same key. Every provider fronting
+          // it there trains on prompts, which the default privacy setting
+          // excludes. Add it when a non-training provider serves the model.
           { id: "deepseek/deepseek-v4-flash", label: "DeepSeek V4 Flash", ...MODEL_IDENTITIES.deepseekV4Flash, styles: [A_MSG, O_CC, O_RESP], contextWindow: ONE_M, price: OPENROUTER_PRICES.v4flash },
           { id: "deepseek/deepseek-v4-pro", label: "DeepSeek V4 Pro", ...MODEL_IDENTITIES.deepseekV4Pro, styles: [A_MSG, O_CC, O_RESP], contextWindow: ONE_M, price: OPENROUTER_PRICES.v4pro },
           { id: "z-ai/glm-5.2", label: "GLM-5.2", ...MODEL_IDENTITIES.glm52, styles: [A_MSG, O_CC], contextWindow: ONE_M, price: OPENROUTER_PRICES.glm52 },
@@ -914,6 +967,12 @@ export const SERVICES = [
           { id: "openai/gpt-5.6-sol", label: "GPT-5.6 Sol", ...MODEL_IDENTITIES.gpt56sol, styles: [O_RESP, O_CC], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.sol },
           { id: "openai/gpt-5.6-terra", label: "GPT-5.6 Terra", ...MODEL_IDENTITIES.gpt56terra, styles: [O_RESP, O_CC], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.terra },
           { id: "deepseek/deepseek-v4-flash", label: "DeepSeek V4 Flash", ...MODEL_IDENTITIES.deepseekV4Flash, styles: [A_MSG, O_CC], contextWindow: ONE_M, price: VERCEL_PRICES.v4flash },
+          // 2026-09-10 — from Vercel's live list (1M context, image input). Its
+          // styles are CARRIED OVER from the row above rather than measured, the
+          // same inference the Fable 5.1 rows state: every request to this
+          // gateway on this pass, control included, answered `402
+          // insufficient_funds`, so the run says nothing either way.
+          { id: "deepseek/deepseek-v4.1-flash", label: "DeepSeek V4.1 Flash", ...MODEL_IDENTITIES.deepseekV41Flash, styles: [A_MSG, O_CC], contextWindow: ONE_M, price: VERCEL_PRICES.v41flash },
           // V4 Pro holds the SWE-bench Verified record (80.6%) under an MIT
           // licence; only V4 Flash was listed here before. Both of its styles are
           // measured rather than carried over from the Flash row beside it.
@@ -1171,6 +1230,12 @@ export const SERVICES = [
           { id: "kimi-k3", label: "Kimi K3", ...MODEL_IDENTITIES.kimiK3, styles: [O_CC], contextWindow: ONE_M, price: OPENCODE_GO_PRICES.kimiK3 },
           { id: "deepseek-v4-pro", label: "DeepSeek V4 Pro", ...MODEL_IDENTITIES.deepseekV4Pro, styles: [O_CC], contextWindow: ONE_M, price: OPENCODE_GO_PRICES.v4pro },
           { id: "deepseek-v4-flash", label: "DeepSeek V4 Flash", ...MODEL_IDENTITIES.deepseekV4Flash, styles: [O_CC], contextWindow: ONE_M, price: OPENCODE_GO_PRICES.v4flash },
+          // ✅ 2026-09-10 — MEASURED: a live chat-completions turn on `/zen/go/v1`
+          // returned 200, against an impossible-id control answering 401 on the
+          // same route. Go's own model list names "DeepSeek V4.1 Flash" too. Go
+          // rejects a request lacking a named user agent or an `x-opencode-session`
+          // header before it looks at the model — `pair-verification.md`.
+          { id: "deepseek-flash", label: "DeepSeek V4.1 Flash", ...MODEL_IDENTITIES.deepseekV41Flash, styles: [O_CC], contextWindow: ONE_M, price: OPENCODE_GO_PRICES.v41flash },
           { id: "ox-alpha-free", label: "Ox Alpha Free", ...MODEL_IDENTITIES.oxAlpha, styles: [O_CC], contextWindow: ONE_M, price: OPENCODE_GO_PRICES.oxAlpha, reasoningEfforts: ["max", "high", "low"] },
           // Go's one `openai-responses` model, and the only way Codex can run
           // on the subscription rather than on Zen credits. ✅ live registry

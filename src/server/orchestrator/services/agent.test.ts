@@ -64,9 +64,9 @@ describe("dispatchAgentMessage image admission (planning#460)", () => {
     // service rather than through the composer. Ingresses that call
     // `runner.dispatch` DIRECTLY (Quick Capture) never come through here at all;
     // the backstop in `dispatched-turn.ts` is what covers those.
-    const deps = depsFor({ warm: false, serviceId: "deepseek", billingMode: "key", model: "deepseek-v4-flash" });
+    const deps = depsFor({ warm: false, serviceId: "deepseek", billingMode: "key", model: "deepseek-v4-pro" });
     await expect(dispatchAgentMessage(deps as never, "session", { text: "what is this?", images: PNG }))
-      .rejects.toThrow(/V4 Flash.*cannot read images/s);
+      .rejects.toThrow(/cannot read images/s);
   });
 
   it("dispatches the same image at a session pinned to a model that can see", async () => {

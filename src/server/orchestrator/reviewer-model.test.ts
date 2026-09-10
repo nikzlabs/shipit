@@ -587,7 +587,7 @@ describe("reviewer harness derivation", () => {
  * setting; a review then derives its own harness and its own row. Copying the
  * level across that gap is the defect, and docs/261 predicted it would be fixed
  * "by the commit that makes a model dual-harness". That commit landed —
- * `deepseek-v4-flash` gained the third style — and **nothing failed**, which is
+ * `deepseek-flash` gained the third style — and **nothing failed**, which is
  * why the fix ships with a guard rather than only with a test of the fix.
  *
  * The scan below is that guard: it is a statement about the real catalogue, so a
@@ -633,13 +633,13 @@ describe("a pinned level does not cross onto a selection that refuses it (planni
           first: {
             serviceId: "deepseek",
             billingMode: "key",
-            modelId: "deepseek-v4-flash",
+            modelId: "deepseek-flash",
             reasoningEffort: "minimal",
           },
           second: {
             serviceId: "deepseek",
             billingMode: "key",
-            modelId: "deepseek-v4-flash",
+            modelId: "deepseek-flash",
             reasoningEffort: "minimal",
           },
         }),
@@ -651,7 +651,7 @@ describe("a pinned level does not cross onto a selection that refuses it (planni
     if (!result.ok) return;
     // The crossing the defect needs: a Codex-only level resolved on Claude.
     expect(result.target.harnessId).toBe("claude");
-    expect(result.target.selection.modelId).toBe("deepseek-v4-flash");
+    expect(result.target.selection.modelId).toBe("deepseek-flash");
     expect(result.target.source).toBe("pinned");
     expect(result.target.reasoningEffort).not.toBe("minimal");
     expect(
@@ -673,7 +673,7 @@ describe("a pinned level does not cross onto a selection that refuses it (planni
           first: {
             serviceId: "deepseek",
             billingMode: "key",
-            modelId: "deepseek-v4-flash",
+            modelId: "deepseek-flash",
             reasoningEffort: "minimal",
           },
         }),
@@ -789,7 +789,7 @@ describe("reviewerEffortSubstitutions", () => {
       {
         serviceId: "deepseek",
         billingMode: "key",
-        modelId: "deepseek-v4-flash",
+        modelId: "deepseek-flash",
         reasoningEffort: "minimal",
       },
       { credentialStore: storeWith([DEEPSEEK_KEY]), env: {} },
@@ -804,7 +804,7 @@ describe("reviewerEffortSubstitutions", () => {
       reasoningOptionsFor("claude", {
         serviceId: "deepseek",
         billingMode: "key",
-        modelId: "deepseek-v4-flash",
+        modelId: "deepseek-flash",
       }).map((o) => o.value),
     ).toContain(claude?.reasoningEffort);
     expect(claude?.reasoningLabel).toBeTruthy();
@@ -824,7 +824,7 @@ describe("reviewerEffortSubstitutions", () => {
       {
         serviceId: "deepseek",
         billingMode: "key",
-        modelId: "deepseek-v4-flash",
+        modelId: "deepseek-flash",
         reasoningEffort: "high",
       },
       { credentialStore: storeWith([DEEPSEEK_KEY]), env: {} },
@@ -858,7 +858,7 @@ describe("reviewerEffortSubstitutions", () => {
     const { reviewerEffortSubstitutions } = await import("./reviewer-model.js");
     expect(
       reviewerEffortSubstitutions(
-        { serviceId: "deepseek", billingMode: "key", modelId: "deepseek-v4-flash" },
+        { serviceId: "deepseek", billingMode: "key", modelId: "deepseek-flash" },
         { credentialStore: storeWith([DEEPSEEK_KEY]), env: {} },
       ),
     ).toEqual([]);
@@ -948,7 +948,7 @@ describe("selecting the reviewer furthest from the implementer (req 4)", () => {
           second: {
             serviceId: "deepseek",
             billingMode: "key",
-            modelId: "deepseek-v4-flash",
+            modelId: "deepseek-flash",
             reasoningEffort: "high",
           },
         }),

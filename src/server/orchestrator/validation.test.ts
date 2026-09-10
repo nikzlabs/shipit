@@ -62,7 +62,7 @@ describe("formatFileContext", () => {
 
 describe("imageAttachmentRefusal (planning#460)", () => {
   const PNG: ImageAttachment[] = [{ data: "aGk=", mediaType: "image/png", filename: "shot.png" }];
-  const TEXT_ONLY = { serviceId: "deepseek", billingMode: "key" as const, modelId: "deepseek-v4-flash" };
+  const TEXT_ONLY = { serviceId: "deepseek", billingMode: "key" as const, modelId: "deepseek-v4-pro" };
   const VISION = { serviceId: "anthropic", billingMode: "sub" as const, modelId: "claude-sonnet-5" };
 
   it("refuses an attached image on a model the catalogue knows is text-only", () => {
@@ -70,7 +70,7 @@ describe("imageAttachmentRefusal (planning#460)", () => {
     // The message has to name the model, because acting on it means changing the
     // model — "this model cannot read images" with no model named tells the user
     // nothing they can do.
-    expect(refusal).toContain("V4 Flash");
+    expect(refusal).toContain("V4 Pro");
     expect(refusal).toContain("DeepSeek");
   });
 

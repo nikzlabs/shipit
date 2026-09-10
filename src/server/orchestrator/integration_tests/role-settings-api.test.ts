@@ -96,7 +96,7 @@ describe("Integration: role settings over HTTP (docs/264 phase 2)", () => {
   }
 
   /**
-   * A tuple this install really can run. `deepseek-v4-flash` is the shipped
+   * A tuple this install really can run. `deepseek-flash` is the shipped
    * dual-harness model, so it is also what makes "the role names its harness"
    * (req 6) mean something here rather than being derivable.
    */
@@ -105,7 +105,7 @@ describe("Integration: role settings over HTTP (docs/264 phase 2)", () => {
     harnessId: "claude",
     serviceId: "deepseek",
     billingMode: "key",
-    modelId: "deepseek-v4-flash",
+    modelId: "deepseek-flash",
     reasoningEffort: "high",
   };
 
@@ -130,7 +130,7 @@ describe("Integration: role settings over HTTP (docs/264 phase 2)", () => {
     expect(created?.resolved).toMatchObject({
       harnessId: "claude",
       serviceId: "deepseek",
-      modelId: "deepseek-v4-flash",
+      modelId: "deepseek-flash",
       reasoningEffort: "high",
     });
     expect(created?.description).toBe("The thorough one");
@@ -163,7 +163,7 @@ describe("Integration: role settings over HTTP (docs/264 phase 2)", () => {
   /**
    * Req 6 at the API edge — and the reason the harness is stored rather than
    * derived. `minimal` is a level Codex declares and Claude Code does not, and
-   * `deepseek-v4-flash` runs on both, so only a role that NAMES its harness can
+   * `deepseek-flash` runs on both, so only a role that NAMES its harness can
    * be checked against the right level set.
    */
   it("refuses a level the named harness does not declare, naming the parameter", async () => {

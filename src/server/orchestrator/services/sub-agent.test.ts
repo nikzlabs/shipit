@@ -645,7 +645,7 @@ describe("runSubAgent — --role reviewer", () => {
       credentialRoutes: [keyRoute("anthropic"), keyRoute("deepseek")],
     });
     // What is actually producing the work: DeepSeek, on the Claude harness.
-    runner.appliedSpawnIdentity = "claude|deepseek|key|deepseek-v4-flash|anthropic-messages|https://x";
+    runner.appliedSpawnIdentity = "claude|deepseek|key|deepseek-flash|anthropic-messages|https://x";
     await runSubAgent(deps, "s1", { target: { kind: "role", role: "reviewer", overrides: {} }, prompt: "review", depth: 0 });
     const arg = (runner.spawnSubAgent as unknown as { mock: { calls: Record<string, unknown>[][] } })
       .mock.calls[0][0];
