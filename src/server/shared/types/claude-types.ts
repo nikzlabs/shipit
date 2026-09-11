@@ -127,6 +127,8 @@ export interface ClaudeContentBlockToolUse {
   diffStats?: { added: number; removed: number };
   /** Original lengths of shortened or removed string keys. */
   inputChars?: Record<string, number>;
+  /** ISO time the orchestrator first saw the call; absent on older rows. */
+  startedAt?: string;
 }
 
 export type ClaudeContentBlock = ClaudeContentBlockText | ClaudeContentBlockToolUse;

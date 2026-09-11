@@ -210,6 +210,14 @@ describe("projectToolUse", () => {
     expect(projected.input.content).toBeUndefined();
   });
 
+  it("keeps the call time on a block whose body it strips", () => {
+    const tool = {
+      ...use("Edit", { file_path: "/a.ts", old_string: bigOutput, new_string: `${bigOutput}\nmore` }),
+      startedAt: "2026-09-11T14:32:05.000Z",
+    };
+    expect(projectToolUse(tool).startedAt).toBe("2026-09-11T14:32:05.000Z");
+  });
+
   it("leaves a small edit alone — the markers would cost more than the body", () => {
     const tool = use("Edit", { file_path: "/a.ts", old_string: "a\nb", new_string: "x\ny\nz" });
     expect(projectToolUse(tool)).toBe(tool);

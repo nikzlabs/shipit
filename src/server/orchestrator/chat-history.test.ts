@@ -265,6 +265,7 @@ describe("ChatHistoryManager", () => {
           id: "tool-1",
           name: "Edit",
           input: { file_path: "/workspace/app.ts", old_string: "x", new_string: "y" },
+          startedAt: "2026-09-11T14:32:05.000Z",
         },
       ],
     };
@@ -273,6 +274,9 @@ describe("ChatHistoryManager", () => {
     const loaded = mgr.load("sess-1");
     expect(loaded[0].toolUse).toHaveLength(1);
     expect(loaded[0].toolUse![0].name).toBe("Edit");
+    // The call time is what the tool-call dialog shows, so it has to survive a
+    // reload — not just the live emit.
+    expect(loaded[0].toolUse![0].startedAt).toBe("2026-09-11T14:32:05.000Z");
   });
 
   it("persists a compaction card so it survives a reload (docs/178)", () => {

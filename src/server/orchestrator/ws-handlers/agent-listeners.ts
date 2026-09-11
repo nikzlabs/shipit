@@ -20,6 +20,7 @@ import crypto from "node:crypto";
 import {
   extractToolResults,
   stampToolDurations,
+  stampToolUseStartTimes,
   cliPermissionModeToApplied,
   isWellFormedAskUserQuestion,
   createAgentToolTracker,
@@ -45,7 +46,7 @@ import { ProviderRouteUnavailableError } from "../provider-route-preflight.js";
 
 export { buildTurnMessages, persistTurnInProgress } from "../chat-card-persistence.js";
 
-export { extractToolResults, stampToolDurations } from "./agent-event-normalizer.js";
+export { extractToolResults, stampToolDurations, stampToolUseStartTimes } from "./agent-event-normalizer.js";
 export { recordSteeredMessage, requeueUndeliveredSteers } from "./agent-message-builder.js";
 export { normalizeAgentUsageLimitError } from "./agent-rate-limits.js";
 
@@ -482,6 +483,12 @@ export function wireAgentListeners(
 
     if (event.type === "agent_tool_result") {
       event = stampToolDurations(event, toolTracker.toolUseStartTimes, Date.now());
+    }
+
+    // Stamp before the wire emit and before accumulation, so the live row and
+    // the persisted row carry the same time.
+    if (event.type === "agent_assistant") {
+      event = stampToolUseStartTimes(event, toolTracker.toolUseStartTimes, Date.now());
     }
 
     const isInternalStreamCompletion =

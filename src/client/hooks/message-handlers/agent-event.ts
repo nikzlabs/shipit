@@ -193,6 +193,7 @@ export const handleAgentEvent: Handler<WsAgentEvent> = (_ctx, data) => {
         input: Record<string, unknown>;
         bodyTruncated?: true;
         diffStats?: { added: number; removed: number };
+        startedAt?: string;
       } => b.type === "tool_use");
 
     // Subagent events (Task tool nested events) — attach to the parent
