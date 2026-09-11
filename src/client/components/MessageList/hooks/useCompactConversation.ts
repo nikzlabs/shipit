@@ -14,7 +14,7 @@ export function useCompactConversation(
   enabled: boolean, elements: VisualElement[], matches: Map<number, SearchMatch[]>,
   containerRef: RefObject<HTMLDivElement | null>,
 ) {
-  // Mounting during a turn: its start is unknown, so keep that history full until idle.
+
   // Live appends do not mark every row inProgress (agent-event.ts), hence the boundary.
   const [expanded, setExpanded] = useState<Set<ChatMessage>>(() => new Set());
   const [observed, setObserved] = useState({ sessionId, loading: isLoading, count: messages.length, activeFrom: isLoading ? 0 : Infinity });
@@ -45,10 +45,10 @@ export function useCompactConversation(
         const a = indexOf(selection.anchorNode);
         const b = indexOf(selection.focusNode);
         if (a !== undefined && b !== undefined) {
-          // Typical drag: work is bounded to the selected range, not the whole history.
+
           for (let i = Math.min(a, b); i <= Math.max(a, b); i++) indices.add(i);
         } else {
-          // A selection crossing the transcript boundary needs the full intersection check.
+
           root.querySelectorAll<HTMLElement>("[data-compact-index]").forEach((row) => {
             if (selection.rangeCount > 0 && selection.getRangeAt(0).intersectsNode(row)) indices.add(Number(row.dataset.compactIndex));
           });

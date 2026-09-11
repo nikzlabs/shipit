@@ -4,12 +4,6 @@ import { DEFAULT_SORT_PREFS, type GroupKey, type SortDir, type SortKey, type Sor
 import type { BillingMode, ModelSelection } from "../../server/shared/catalogue/index.js";
 import { parseSelection, resolveModelSelection, selectionExists, serializeSelection } from "../../server/shared/catalogue/index.js";
 
-/**
- * Parse a JSON string with a guaranteed fallback. Returns `fallback` when `raw`
- * is null/empty, when `JSON.parse` throws, or when `validate` throws. `validate`
- * doubles as a transform: it receives the parsed `unknown` and returns the
- * typed/narrowed `T` (e.g. filtering an object down to well-formed entries).
- */
 export function parseJsonWithFallback<T>(
   raw: string | null,
   fallback: T,
@@ -24,13 +18,6 @@ export function parseJsonWithFallback<T>(
   }
 }
 
-/**
- * Read a localStorage key, JSON-parse it, and apply an optional `transform`,
- * with a guaranteed fallback. Returns `fallback` when the key is absent,
- * localStorage is unavailable, the value isn't valid JSON, or `transform`
- * throws. The single chokepoint for the repeated
- * `try { getItem → JSON.parse → filter } catch { fallback }` pattern.
- */
 export function getLocalStorageObject<T>(
   key: string,
   fallback: T,
@@ -73,9 +60,6 @@ export function saveSidebarCollapsed(collapsed: boolean): void {
   }
 }
 
-// docs/260 — which of the sidebar's two views is showing: the repo tree
-// ("all") or the flat needs-attention list ("attention"). Browser-local view
-// state, like the collapse flag above; not server-persisted.
 export type SidebarView = "all" | "attention";
 
 export function getSavedSidebarView(): SidebarView {
@@ -94,9 +78,6 @@ export function saveSidebarView(view: SidebarView): void {
   }
 }
 
-// NOTE: "services" was removed (docs/175 — Services is now a drawer inside the
-// Preview tab, not a standalone tab). A legacy persisted "services" value fails
-// the membership check in getSavedRightTab() and falls back to "preview".
 const VALID_RIGHT_TABS = ["preview", "docs", "issues", "files", "plugins", "terminal", "history", "pr", "host", "present"] as const;
 export type SavedRightTab = typeof VALID_RIGHT_TABS[number];
 
@@ -164,11 +145,7 @@ export function saveAgentId(agentId: AgentId): void {
  */
 export interface ParkedHarness {
   agentId: AgentId;
-  /**
-   * The model seed in force at park time. The whole triple, not a bare id: the
-   * restore has to put the user back on the service and billing mode they were
-   * on, or it hands back the harness and silently re-bills the model.
-   */
+
   model?: { modelId: string; serviceId?: string; billingMode?: BillingMode };
 }
 
@@ -206,21 +183,6 @@ export function clearParkedHarness(): void {
   }
 }
 
-/**
- * docs/252 — `vibe-model-id` is one of the three persisted model selections, and
- * the easiest to miss: it is the seed for a **new** session's model, injected
- * into every session WebSocket's query string. A bare id there silently decides
- * what a fresh session bills to the moment one id belongs to two services or two
- * billing modes, so the slot now holds the serialized triple.
- *
- * **The same key, not a new one.** `parseSelection` rejects a bare id by
- * construction, which is exactly the "legacy, migrate it" signal — so a value
- * written by an older build is recognised, resolved through the catalogue, and
- * written back in the new form on first read. There is no second key to keep in
- * sync and no window where two builds disagree about which one is authoritative:
- * an older build reading a serialized value gets a string it does not offer, and
- * falls through to the agent's default exactly as it does for any unknown model.
- */
 function readRawModelPreference(): string | undefined {
   try {
     return localStorage.getItem(MODEL_PREFERENCE_KEY) ?? undefined;
@@ -249,11 +211,9 @@ function writeRawModelPreference(value: string | undefined): void {
 export function getSavedModelSelection(): ModelSelection | undefined {
   const raw = readRawModelPreference();
   const parsed = parseSelection(raw);
-  // Syntax is not existence. A triple stored by a build whose catalogue carried
-  // a service this one has dropped still parses, and returning it would seed a
-  // new session with a row nothing can resolve an endpoint from. Checking here
+
   // (rather than at every reader) is what keeps the invariant "a selection names
-  // a real catalogue row, or there is no selection" true on the client too.
+
   if (parsed) return selectionExists(parsed) ? parsed : undefined;
   const migrated = resolveModelSelection(raw);
   if (migrated) writeRawModelPreference(serializeSelection(migrated));
@@ -296,10 +256,6 @@ export function saveModelId(modelId: string | undefined): void {
   writeRawModelPreference(selection ? serializeSelection(selection) : modelId);
 }
 
-// docs/217 — composer reasoning seed, keyed PER AGENT so switching agents
-// restores each one's last composer pick. One JSON blob `{ [agentId]: effort }`.
-// This is only the SEED for a new session; the per-session value is server-
-// persisted (the session row) and authoritative once chosen.
 const REASONING_BY_AGENT_KEY = "shipit-reasoning-by-agent";
 
 function readReasoningByAgent(): Record<string, string> {
@@ -319,7 +275,7 @@ export function getSavedReasoning(agentId: string): string | undefined {
 export function saveReasoning(agentId: string, effort: string | null): void {
   try {
     const map = readReasoningByAgent();
-    // Rebuild rather than `delete map[agentId]` (no dynamic-delete).
+
     const next: Record<string, string> = {};
     for (const [id, v] of Object.entries(map)) {
       if (id !== agentId) next[id] = v;
@@ -331,12 +287,6 @@ export function saveReasoning(agentId: string, effort: string | null): void {
   }
 }
 
-// The repo of the most recent quick session (docs/145). Quick capture defaults
-// to this rather than the repo the user is *currently* sitting in: the overlay's
-// dominant use is "I'm working in repo A and just spotted a gap in repo B" —
-// the same B, over and over. Remembering the last quick-session target makes
-// that a zero-click path, and the picker is still one click away for the
-// occasional switch. Falls back to the current session's repo when unset.
 const LAST_QUICK_SESSION_REPO_KEY = "shipit-last-quick-session-repo";
 
 export function getSavedQuickSessionRepo(): string | undefined {
@@ -359,26 +309,6 @@ export function saveQuickSessionRepo(url: string | undefined): void {
   }
 }
 
-/**
- * docs/272-user-selectable-roles req 12 — the role the user last selected, which the NEXT new
- * session starts on.
- *
- * The same treatment the model and the harness already get, for the same
- * reason: a user who works through a role works through it repeatedly, and
- * re-picking it on every new session is a click that says nothing. Still a
- * starting point and still optional (reqs 3, 7) — it is changed, and left, in
- * the same place it was chosen.
- *
- * **Cleared by a harness / model / reasoning pick**, wherever one is made. That
- * is req 15 applied to the seed as well as to the session: leaving a role means
- * changing how the session runs, and a seed that outlived the leaving would
- * quietly re-apply the role to the next session the user starts.
- *
- * A name, not a resolved tuple. The role's parameters are the server's to
- * resolve at the moment it starts (req 8 — nothing is ever substituted), so a
- * cached copy here would be a second answer that goes stale the first time the
- * role is edited.
- */
 const ROLE_PREFERENCE_KEY = "shipit-role-name";
 
 export function getSavedRoleName(): string | undefined {
@@ -421,7 +351,6 @@ export function saveActiveRepo(url: string | undefined): void {
   }
 }
 
-/** Local display preference; malformed or unavailable storage means full view. */
 export function getSavedCompactConversation(): boolean {
   try { return localStorage.getItem(COMPACT_CONVERSATION_KEY) === "true"; }
   catch { return false; }
@@ -465,12 +394,6 @@ export function saveSoundOnFinish(enabled: boolean): void {
     // localStorage may be unavailable
   }
 }
-
-// `QUICK_CAPTURE_HOTKEY_KEY` is retained for the docs/180 legacy migration in
-// getSavedKeybindings(); the per-key getter/setter moved into the keybindings
-// blob.
-
-// ---- Voice settings (docs/144) ----
 
 const VOICE_INPUT_ENABLED_KEY = "shipit-voice-input-enabled";
 const STT_PROVIDER_KEY = "shipit-stt-provider";
@@ -531,8 +454,6 @@ export const saveVoiceLanguage = (v: string): void => saveString(VOICE_LANGUAGE_
 export const getSavedVoicePlaybackEnabled = (): boolean => getSavedBool(VOICE_PLAYBACK_ENABLED_KEY, false);
 export const saveVoicePlaybackEnabled = (v: boolean): void => saveBool(VOICE_PLAYBACK_ENABLED_KEY, v);
 
-// docs/163 — hands-free voice notes. OFF by default so the no-surprise-audio
-// promise holds for users who don't opt in.
 export const getSavedVoiceHandsFree = (): boolean => getSavedBool(VOICE_HANDS_FREE_KEY, false);
 export const saveVoiceHandsFree = (v: boolean): void => saveBool(VOICE_HANDS_FREE_KEY, v);
 export const getSavedTtsProvider = (): string => getSavedString(TTS_PROVIDER_KEY, "openai");
@@ -559,13 +480,6 @@ export function saveTtsSpeed(value: number): void {
   }
 }
 
-// ---- Keybindings (docs/180) ----
-//
-// A single JSON blob holding only the user's *overrides* (binding id → chord);
-// anything absent falls back to the registry default. On first read we migrate
-// the legacy per-key entries (quick-capture + voice mode A/B) so existing users
-// keep their custom chords when those editors moved into the Keyboard tab.
-
 const KEYBINDINGS_KEY = "shipit-keybindings";
 
 export function getSavedKeybindings(): Record<string, string> {
@@ -580,7 +494,7 @@ export function getSavedKeybindings(): Record<string, string> {
         return out;
       });
     }
-    // No blob yet — migrate legacy single-purpose keys if present.
+
     const migrated: Record<string, string> = {};
     const legacy: [string, string][] = [
       [QUICK_CAPTURE_HOTKEY_KEY, "quick-capture"],
@@ -608,14 +522,6 @@ export function saveKeybindings(map: Record<string, string>): void {
 const PERMISSION_MODE_BY_SESSION_KEY = "shipit-permission-mode-by-session";
 const VALID_PERMISSION_MODES: readonly PermissionMode[] = ["auto", "plan", "guarded"];
 
-/**
- * Per-session permission-mode overrides, persisted so a page reload restores a
- * session's true mode. Without this the chip fell back to the global "auto"
- * default after a reload, which is sent on the wire as `undefined` and silently
- * left a plan-pinned persistent streaming CLI wedged ("can't exit plan mode").
- * The GLOBAL default is deliberately NOT persisted (plan is a per-conversation
- * choice) — only the per-session map. Unknown modes are dropped defensively.
- */
 export function getSavedPermissionModeBySession(): Record<string, PermissionMode> {
   return getLocalStorageObject<Record<string, PermissionMode>>(PERMISSION_MODE_BY_SESSION_KEY, {}, (parsed) => {
     const result: Record<string, PermissionMode> = {};
@@ -636,15 +542,6 @@ export function savePermissionModeBySession(map: Record<string, PermissionMode>)
   }
 }
 
-// ---- Present tab: last-viewed artifact per session (docs/093) ----
-//
-// The Present tab's active artifact, remembered per session so a session switch
-// OR a full page reload lands the user back on the artifact they were viewing
-// instead of snapping to the first one. Keyed by the content-addressed
-// `presentId` (stable across re-presents; a numeric index would drift as
-// artifacts append/clear). Pure view state, browser-local, not server-persisted
-// — it can differ between devices, which is fine. A stale entry (artifact since
-// gone) is harmless: the store falls back to clamping when the id isn't found.
 const ACTIVE_PRESENT_BY_SESSION_KEY = "shipit-active-present-by-session";
 
 export function getSavedActivePresentBySession(): Record<string, string> {
@@ -664,15 +561,6 @@ export function saveActivePresentBySession(map: Record<string, string>): void {
     // localStorage may be unavailable
   }
 }
-
-// ---- Changed-docs strip collapse state (docs/205) ----
-//
-// Per-session expanded/collapsed state for the PR card's changed-docs strip.
-// Pure view state, so it lives in localStorage (not server-persisted) and can
-// differ between desktop and mobile. A session with no stored preference falls
-// back to the caller-supplied default — the PR card passes expanded on desktop
-// (roomy) and collapsed on mobile (where header height is precious). A stored
-// preference always wins, so toggling once pins that session's choice.
 
 const CHANGED_DOCS_EXPANDED_KEY = "shipit-changed-docs-expanded-by-session";
 
@@ -741,9 +629,6 @@ export function saveCollapsedParents(collapsed: Set<string>): void {
   } catch { /* ignore */ }
 }
 
-// docs/161 — per-repo collapsed state for the "Recently resolved" sub-section.
-// Keyed by repo URL, like COLLAPSED_REPOS_KEY. Absence = expanded (the default),
-// so a fresh user sees the resolved list open; presence = the user collapsed it.
 const COLLAPSED_RESOLVED_KEY = "shipit-collapsed-resolved";
 
 export function getSavedCollapsedResolved(): Set<string> {
@@ -763,11 +648,8 @@ export function saveCollapsedResolved(collapsed: Set<string>): void {
   } catch { /* ignore */ }
 }
 
-// Per-root-session EXPANDED state for the resolved members of a spawn brood.
-// Inverted relative to COLLAPSED_RESOLVED_KEY above: a brood's resolved children
 // are hidden by DEFAULT (absence = collapsed), because a big feature can spawn
-// 10-15 children and the merged ones are finished work. Presence = the user
-// expanded that brood's resolved sub-section.
+
 const EXPANDED_RESOLVED_CHILDREN_KEY = "shipit-expanded-resolved-children";
 
 export function getSavedExpandedResolvedChildren(): Set<string> {
@@ -802,7 +684,6 @@ export function saveOpsCollapsed(collapsed: boolean): void {
   } catch { /* ignore */ }
 }
 
-// docs/211 — collapsed state for the "Sandbox" sidebar group.
 const SANDBOX_COLLAPSED_KEY = "shipit-sandbox-collapsed";
 
 export function getSavedSandboxCollapsed(): boolean {
@@ -818,13 +699,11 @@ export function saveSandboxCollapsed(collapsed: boolean): void {
   } catch { /* ignore */ }
 }
 
-// docs/222 — collapsed state for the sidebar's "Hidden" repos section. Starts
-// collapsed (true) by default so it stays unobtrusive for users who hide repos.
 const HIDDEN_REPOS_COLLAPSED_KEY = "shipit-hidden-repos-collapsed";
 
 export function getSavedHiddenReposCollapsed(): boolean {
   try {
-    // Default true (collapsed) when unset.
+
     return localStorage.getItem(HIDDEN_REPOS_COLLAPSED_KEY) !== "0";
   } catch { /* ignore */ }
   return true;
@@ -838,7 +717,6 @@ export function saveHiddenReposCollapsed(collapsed: boolean): void {
 
 const DRAFT_MESSAGE_KEY_PREFIX = "shipit-draft-message:";
 
-/** Read the saved draft message text for a session (or `"new:{repo-slug}"` for the new-session view). */
 export function getSavedDraftMessage(sessionKey: string): string | undefined {
   try {
     const value = localStorage.getItem(DRAFT_MESSAGE_KEY_PREFIX + sessionKey);
@@ -848,7 +726,6 @@ export function getSavedDraftMessage(sessionKey: string): string | undefined {
   }
 }
 
-/** Persist (or clear, if `text` is empty) the draft message text for a session. */
 export function saveDraftMessage(sessionKey: string, text: string): void {
   try {
     if (text) {
@@ -861,17 +738,8 @@ export function saveDraftMessage(sessionKey: string, text: string): void {
   }
 }
 
-// Paths of uploads that have been attached to the composer but not yet sent —
-// the durable half of a "draft." Draft *text* survives a reload/session-switch
-// via the key above; this is the matching record for the attachment chips so
-// they survive too. The default for a file on disk is NOT a chip (see
-// `hydrateUploads`), so only paths explicitly listed here are restored as
-// chips, and the set self-heals against chat history on hydrate — this is what
-// keeps the resurrection bug (an already-sent file reappearing as a chip) from
-// returning.
 const DRAFT_UPLOADS_KEY_PREFIX = "shipit-draft-uploads:";
 
-/** Read the saved draft (attached-but-unsent) upload paths for a session. */
 export function getSavedDraftUploads(sessionKey: string): string[] {
   try {
     const raw = localStorage.getItem(DRAFT_UPLOADS_KEY_PREFIX + sessionKey);
@@ -883,7 +751,6 @@ export function getSavedDraftUploads(sessionKey: string): string[] {
   }
 }
 
-/** Persist (or clear, if empty) the draft upload paths for a session. */
 export function saveDraftUploads(sessionKey: string, paths: string[]): void {
   try {
     if (paths.length > 0) {
@@ -896,7 +763,6 @@ export function saveDraftUploads(sessionKey: string, paths: string[]): void {
   }
 }
 
-/** Add a path to a session's draft uploads (attached, not yet sent). */
 export function addDraftUpload(sessionKey: string, path: string): void {
   const paths = getSavedDraftUploads(sessionKey);
   if (paths.includes(path)) return;
@@ -904,7 +770,6 @@ export function addDraftUpload(sessionKey: string, path: string): void {
   saveDraftUploads(sessionKey, paths);
 }
 
-/** Remove paths from a session's draft uploads (sent, or chip removed). */
 export function removeDraftUploads(sessionKey: string, toRemove: string[]): void {
   if (toRemove.length === 0) return;
   const remove = new Set(toRemove);
@@ -912,15 +777,6 @@ export function removeDraftUploads(sessionKey: string, toRemove: string[]): void
   const next = paths.filter((p) => !remove.has(p));
   if (next.length !== paths.length) saveDraftUploads(sessionKey, next);
 }
-
-// ---- Issues-tab filters (docs/173) ----
-//
-// The Issues filter bar (search + priority/status/assignee/label facets) is
-// workspace-scoped reference state, not per-session, so it persists in
-// localStorage and survives a page reload. The facets are `Set`s, so we
-// serialize them to arrays and rehydrate. Priorities are validated against the
-// fixed enum on read; freeform status/assignee/label values are pruned to the
-// loaded list by the store after each fetch, so a stale value here is harmless.
 
 const ISSUE_FILTERS_KEY = "shipit-issue-filters";
 
@@ -982,12 +838,7 @@ export function saveIssueFilters(filters: IssueFilters): void {
   }
 }
 
-// ---- Issues-tab sort/group prefs + collapse state (docs/206) ----
-//
-// Both are workspace-scoped reference state (the issue list isn't per-session or
-// per-repo), so they persist in localStorage globally and survive reloads. Sort
 // prefs are validated field-by-field on read so a malformed/old blob can never
-// crash the panel — anything unrecognized falls back to the default.
 
 const ISSUE_SORT_KEY = "shipit-issue-sort";
 const ISSUE_COLLAPSED_KEY = "shipit-issue-collapsed";
@@ -1028,15 +879,10 @@ export function saveSortPrefs(prefs: SortPrefs): void {
   }
 }
 
-/**
- * Explicit per-parent collapse overrides (docs/206): `{ [issueId]: boolean }`,
- * `true` = collapsed, `false` = expanded; absent = untouched (layout default).
- * A legacy array form (`string[]` of collapsed ids) is migrated to `{id: true}`.
- */
 export function getSavedIssueCollapsed(): Record<string, boolean> {
   return getLocalStorageObject<Record<string, boolean>>(ISSUE_COLLAPSED_KEY, {}, (parsed) => {
     if (Array.isArray(parsed)) {
-      // Legacy: an array of collapsed ids → explicit `true` overrides.
+
       const out: Record<string, boolean> = {};
       for (const x of parsed) if (typeof x === "string") out[x] = true;
       return out;
@@ -1060,9 +906,8 @@ export function saveIssueCollapsed(collapsed: Record<string, boolean>): void {
   }
 }
 
-// "Show done" toggle for the Issues tab. Persisted separately from the filter
 // facets because it's a fetch-scope control (re-fetches with a wider state set),
-// not a client-side facet over the already-loaded list.
+
 const ISSUE_INCLUDE_DONE_KEY = "shipit-issue-include-done";
 
 export function getSavedIncludeDone(): boolean {

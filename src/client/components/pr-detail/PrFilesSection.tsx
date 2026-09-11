@@ -36,8 +36,7 @@ export function PrFilesSection({
   files?: PrFileStat[];
 }) {
   const [loading, setLoading] = useState(false);
-  // `baseBranch` is empty before the PR status lands; fall back to the repo's
-  // real default rather than "main", which would 400 on a `master` repo.
+
   const repoDefaultBranch = useSessionDefaultBranch(sessionId);
 
   const handleViewDiff = async () => {

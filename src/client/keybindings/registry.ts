@@ -1,9 +1,5 @@
-// Central keyboard-shortcut registry — the single source of truth for which
-// shortcuts exist, what they do, their default chords, and whether they can be
-// rebound. The ? overlay (display), the Keyboard settings tab (editing), and the
-// global keydown handlers all read from here. See docs/180-keybinding-registry.
 
-/** Stable identifiers for every shortcut. */
+
 export type KeybindingId =
   | "toggle-shortcuts"
   | "new-session"
@@ -11,7 +7,7 @@ export type KeybindingId =
   | "toggle-attention-view"
   | "voice-mode-a"
   | "voice-mode-b"
-  // Fixed reference rows (editable: false) — shown for completeness only.
+
   | "send-message"
   | "newline"
   | "chat-search"
@@ -23,7 +19,7 @@ export interface KeybindingDef {
   id: KeybindingId;
   label: string;
   group: KeybindingGroup;
-  /** Chord in "mod+alt+n" notation. Empty for fixed keys that aren't chords. */
+
   defaultBinding: string;
   /** When false, the row is reference-only and cannot be rebound. */
   editable: boolean;
@@ -33,16 +29,10 @@ export interface KeybindingDef {
    * keypress mid-sentence can't trigger them.
    */
   requiresSecondModifier?: boolean;
-  /** Label shown on non-editable rows (e.g. "Enter", "Esc"). */
+
   fixedHint?: string;
 }
 
-/**
- * The registry. Order within a group is the display order. Editable entries are
- * genuine global *commands*; fixed entries are context-sensitive editor
- * behaviors that can't be safely rebound (rebinding Enter-to-send or Esc would
- * break the chat editor), so they're shown read-only.
- */
 export const KEYBINDINGS: readonly KeybindingDef[] = [
   {
     id: "toggle-shortcuts",
@@ -67,9 +57,7 @@ export const KEYBINDINGS: readonly KeybindingDef[] = [
     requiresSecondModifier: true,
   },
   {
-    // docs/260-attention-sidebar-view req 14 — flips the sidebar between the repo tree and the flat
-    // "Needs you" list. Deliberately in the `mod+alt+…` family quick-capture
-    // already uses: `mod+shift+a` is reserved by macOS Chrome for tab search at
+
     // the browser level, where a page cannot preventDefault it, so that chord
     // would simply never fire for a large share of users.
     id: "toggle-attention-view",
@@ -137,7 +125,6 @@ export function getKeybindingDef(id: KeybindingId): KeybindingDef {
   return def;
 }
 
-/** All ids that can be rebound — the set the editing UI and conflict check use. */
 export const EDITABLE_KEYBINDING_IDS: readonly KeybindingId[] = KEYBINDINGS.filter(
   (d) => d.editable,
 ).map((d) => d.id);
@@ -180,7 +167,6 @@ export function isValidChord(chord: string, requireSecondModifier = false): bool
   return true;
 }
 
-/** Does a keydown event match a chord string? Reused for every global handler. */
 export function eventMatchesChord(e: KeyboardEvent, chord: string): boolean {
   const p = parseChord(chord);
   if (!p.key) return false;
@@ -216,7 +202,6 @@ const KEY_DISPLAY: Record<string, string> = {
   arrowright: "→",
 };
 
-/** Split a chord into display tokens, e.g. "mod+shift+o" → ["⌘","⇧","O"]. */
 export function chordToKeys(chord: string): string[] {
   if (!chord) return [];
   return chord
@@ -227,11 +212,6 @@ export function chordToKeys(chord: string): string[] {
     .map((p) => KEY_DISPLAY[p] ?? (p.length === 1 ? p.toUpperCase() : p.charAt(0).toUpperCase() + p.slice(1)));
 }
 
-/**
- * Canonical form for equality checks (conflict detection). Collapses
- * ctrl/cmd/meta → "mod" and sorts modifiers, so `ctrl+shift+o` and
- * `mod+shift+o` compare equal (they match the same events).
- */
 export function normalizeChord(chord: string): string {
   const p = parseChord(chord);
   if (!p.key) return chord.toLowerCase();
@@ -242,16 +222,11 @@ export function normalizeChord(chord: string): string {
   return [...mods, p.key].join("+");
 }
 
-/**
- * Build a chord string from a keydown event during capture. Returns null if the
- * event is only a modifier press (so the UI keeps waiting for a real key).
- */
 export function chordFromEvent(e: KeyboardEvent): string | null {
   const key = e.key;
   if (["Control", "Meta", "Alt", "Shift", "OS", "Dead"].includes(key)) return null;
   const parts: string[] = [];
-  // Normalize Ctrl/Cmd to "mod" so a binding captured on one platform works on
-  // the other (the matcher treats "mod" as Ctrl-or-Cmd).
+
   if (e.ctrlKey || e.metaKey) parts.push("mod");
   if (e.altKey) parts.push("alt");
   if (e.shiftKey) parts.push("shift");

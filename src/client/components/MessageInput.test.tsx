@@ -9,10 +9,6 @@ import { INSET_FOCUS_RING } from "../design-tokens.js";
 
 afterEach(cleanup);
 
-/**
- * Stub `window.matchMedia` so `useIsMobile()` returns the desired value.
- * Pass `true` to simulate a mobile viewport.
- */
 function mockMatchMedia(isMobile: boolean) {
   Object.defineProperty(window, "matchMedia", {
     writable: true,
@@ -26,7 +22,7 @@ function mockMatchMedia(isMobile: boolean) {
 }
 
 beforeEach(() => {
-  // Default to desktop so existing tests keep their previous behavior.
+
   mockMatchMedia(false);
 });
 
@@ -62,9 +58,7 @@ describe("MessageInput", () => {
     });
 
     it("does NOT send on Enter when on a mobile viewport", () => {
-      // On mobile, the on-screen keyboard's return key should insert a newline
-      // rather than fire-and-forget the message — matches native chat-app
-      // behavior. The user sends via the explicit send button instead.
+
       mockMatchMedia(true);
       const onSend = vi.fn().mockReturnValue(true);
       render(<MessageInput onSend={onSend} disabled={false} />);
@@ -98,12 +92,7 @@ describe("MessageInput", () => {
   });
 
   describe("live steering (docs/140)", () => {
-    // `liveSteeringActive` is the already-resolved gate the parent passes down:
-    // supportsSteering capability AND the liveSteering setting AND the agent
-    // running. When true, the running composer shows BOTH Stop and Send so the
-    // user can inject a message mid-turn. When false it follows the legacy
-    // behavior — only Stop renders while running, and mid-turn input rides the
-    // per-turn queue instead.
+
     it("renders both Stop and Send while running when steering is active", () => {
       render(
         <MessageInput
@@ -129,13 +118,12 @@ describe("MessageInput", () => {
         />,
       );
       const sendButton = screen.getByTestId("send-button");
-      // Empty input → send stays disabled even though the agent is running.
+
       expect(sendButton).toBeDisabled();
 
       const textarea = screen.getByPlaceholderText("Describe what to build... (type @ to attach files)");
       fireEvent.change(textarea, { target: { value: "also update the README" } });
-      // With text present and the turn in flight, send is enabled — this is the
-      // enabled-while-running behavior that distinguishes steering from the queue.
+
       expect(sendButton).not.toBeDisabled();
     });
 
@@ -161,7 +149,7 @@ describe("MessageInput", () => {
     });
 
     it("shows only Stop (no Send) while running when steering is OFF — legacy queue path", () => {
-      // Default: liveSteeringActive is false (capability false or setting off).
+
       render(
         <MessageInput
           onSend={vi.fn().mockReturnValue(true)}
@@ -228,7 +216,7 @@ describe("MessageInput", () => {
   });
 
   describe("harness and model selectors", () => {
-    // docs/252 phase 3 — two controls, not one grouped dropdown.
+
     it("renders both when onAgentChange is provided", () => {
       render(
         <MessageInput
@@ -264,31 +252,20 @@ describe("MessageInput", () => {
   });
 
   describe("focus reclaim on blur", () => {
-    // Regression: the textarea used to reclaim focus after ANY blur with
-    // relatedTarget=null and activeElement=body. That blew away in-progress
-    // text selections — when the user mousedowned on a chat message (non-
-    // focusable text), the textarea blurred, focus jumped to body, the
-    // requestAnimationFrame fired, and the textarea grabbed focus back,
-    // collapsing the selection. The intent was only to defend against
-    // cross-origin iframe focus theft, so we now only reclaim when
-    // activeElement is an IFRAME.
+
     it("does NOT reclaim focus when blur leaves activeElement=body", async () => {
       render(<MessageInput onSend={vi.fn().mockReturnValue(true)} disabled={false} />);
       const textarea = screen.getByPlaceholderText("Describe what to build... (type @ to attach files)") as HTMLTextAreaElement;
       textarea.focus();
       expect(document.activeElement).toBe(textarea);
 
-      // Simulate a blur with relatedTarget=null while activeElement is body
-      // (the natural state when the user mousedowns on non-focusable text).
       textarea.blur();
       fireEvent.blur(textarea, { relatedTarget: null });
       expect(document.activeElement).toBe(document.body);
 
-      // Wait for the rAF inside handleBlur to run.
       await new Promise((r) => requestAnimationFrame(() => r(undefined)));
       await new Promise((r) => requestAnimationFrame(() => r(undefined)));
 
-      // Textarea should NOT have stolen focus back — selection-cancelling bug fixed.
       expect(document.activeElement).toBe(document.body);
     });
 
@@ -299,48 +276,35 @@ describe("MessageInput", () => {
       textarea.focus();
       focusSpy.mockClear();
 
-      // Inject an iframe and fire its load event — the involuntary focus steal we
-      // DO defend against (e.g. the preview reloading after an edit). The
-      // capture-phase load listener records the timestamp.
       const iframe = document.createElement("iframe");
       document.body.appendChild(iframe);
       iframe.dispatchEvent(new Event("load"));
 
       iframe.focus();
-      // Some test DOMs don't actually shift activeElement on iframe.focus(); coerce
-      // it via Object.defineProperty so the assertion under test runs against the
-      // expected state.
+
       Object.defineProperty(document, "activeElement", { configurable: true, get: () => iframe });
       fireEvent.blur(textarea, { relatedTarget: null });
 
       await new Promise((r) => requestAnimationFrame(() => r(undefined)));
       await new Promise((r) => requestAnimationFrame(() => r(undefined)));
 
-      // The handler should have called textarea.focus() to reclaim focus from the
       // iframe, because the steal immediately followed a load event.
       expect(focusSpy).toHaveBeenCalled();
-      // (Reset the property override so other tests aren't affected.)
+
       delete (document as unknown as Record<string, unknown>).activeElement;
       iframe.remove();
     });
 
     it("does NOT reclaim focus when the user moves into an iframe (no recent load)", async () => {
-      // Regression: when the user deliberately moves focus into an iframe — clicking
-      // the preview (canvas/WebGL games), switching to the Present tab, interacting
-      // with a doc — the browser focuses the iframe and blurs the textarea. The old
-      // reclaim logic yanked focus back to the textarea, fighting the user for the
-      // cursor while they worked on the right side. The fix gates the reclaim on a
+
       // recent iframe LOAD event; with no load, the move is intentional and we leave
-      // focus alone.
+
       render(<MessageInput onSend={vi.fn().mockReturnValue(true)} disabled={false} />);
       const textarea = screen.getByPlaceholderText("Describe what to build... (type @ to attach files)") as HTMLTextAreaElement;
       const focusSpy = vi.spyOn(textarea, "focus");
       textarea.focus();
       focusSpy.mockClear();
 
-      // No load event — the user simply moved focus into the iframe. Keep the
-      // iframe DETACHED: appending a connected iframe makes jsdom fire its own
-      // async load event, which would defeat the "no recent load" precondition.
       const iframe = document.createElement("iframe");
       Object.defineProperty(document, "activeElement", { configurable: true, get: () => iframe });
       fireEvent.blur(textarea, { relatedTarget: null });
@@ -349,7 +313,7 @@ describe("MessageInput", () => {
       await new Promise((r) => requestAnimationFrame(() => r(undefined)));
 
       // Reclaim must NOT fire — focus stays in the iframe so the right-side surface
-      // (preview, Present tab, doc) keeps the cursor.
+
       expect(focusSpy).not.toHaveBeenCalled();
 
       delete (document as unknown as Record<string, unknown>).activeElement;
@@ -358,7 +322,7 @@ describe("MessageInput", () => {
   });
 
   describe("auto-focus on session change", () => {
-    // Helper: wait two animation frames so the rAF inside the focus block fires.
+
     const waitForFocusRaf = async () => {
       await new Promise((r) => requestAnimationFrame(() => r(undefined)));
       await new Promise((r) => requestAnimationFrame(() => r(undefined)));
@@ -366,7 +330,7 @@ describe("MessageInput", () => {
 
     it("focuses the textarea when focusKey changes on desktop", async () => {
       const { rerender } = render(<MessageInput onSend={vi.fn().mockReturnValue(true)} disabled={false} focusKey="session-A" />);
-      // Move focus elsewhere so we can observe whether the textarea reclaims it.
+
       (document.activeElement as HTMLElement | null)?.blur();
       document.body.focus();
       expect(document.activeElement).toBe(document.body);
@@ -379,9 +343,7 @@ describe("MessageInput", () => {
     });
 
     it("does NOT focus the textarea when focusKey changes on a mobile viewport", async () => {
-      // On mobile, focusing the textarea pops the on-screen keyboard. Switching
-      // sessions shouldn't summon the keyboard — the user can tap to type when
-      // they actually want to.
+
       mockMatchMedia(true);
       const { rerender } = render(<MessageInput onSend={vi.fn().mockReturnValue(true)} disabled={false} focusKey="session-A" />);
       (document.activeElement as HTMLElement | null)?.blur();
@@ -432,9 +394,7 @@ describe("MessageInput", () => {
     });
 
     it("auto-focuses the textarea on mount on a mobile viewport", async () => {
-      // The overlay is a deliberate, user-initiated surface, so popping the
-      // mobile keyboard on open is wanted — unlike the chat focusKey path,
-      // which skips mobile to avoid summoning the keyboard on session switch.
+
       mockMatchMedia(true);
       render(<MessageInput onSend={vi.fn().mockReturnValue(true)} disabled={false} surface="overlay" />);
       await new Promise((r) => requestAnimationFrame(() => r(undefined)));
@@ -485,16 +445,13 @@ describe("MessageInput", () => {
       const { rerender } = render(<MessageInput onSend={vi.fn().mockReturnValue(true)} disabled={false} focusKey="session-A" />);
       const textarea = screen.getByPlaceholderText("Describe what to build... (type @ to attach files)") as HTMLTextAreaElement;
 
-      // Type into A.
       fireEvent.change(textarea, { target: { value: "A's draft" } });
       expect(textarea.value).toBe("A's draft");
 
-      // Switch to B — A's draft persists, B's draft loads.
       rerender(<MessageInput onSend={vi.fn().mockReturnValue(true)} disabled={false} focusKey="session-B" />);
       expect(textarea.value).toBe("B's draft");
       expect(localStorage.getItem("shipit-draft-message:session-A")).toBe("A's draft");
 
-      // Switch back to A — A's draft is recovered.
       rerender(<MessageInput onSend={vi.fn().mockReturnValue(true)} disabled={false} focusKey="session-A" />);
       expect(textarea.value).toBe("A's draft");
     });
@@ -509,12 +466,9 @@ describe("MessageInput", () => {
     });
 
     it("preserves typed text while focusKey is held stable across re-renders (new-session graduation)", () => {
-      // Regression: on the /{slug}/new view, claimSession() resolves a few
+
       // seconds after mount and sets sessionId in the store. App.tsx must
-      // keep MessageInput's focusKey="new" across that resolution — otherwise
-      // focusKey flips from "new" to the real session ID mid-type and the
-      // draft-swap logic loads the (empty) draft for the brand-new session,
-      // wiping the user's text. This test pins the contract: a stable focusKey
+
       // must NOT clear the textarea on re-render, even when other props change.
       const { rerender } = render(
         <MessageInput onSend={vi.fn().mockReturnValue(true)} disabled={true} focusKey="new" />,
@@ -525,16 +479,12 @@ describe("MessageInput", () => {
       fireEvent.change(textarea, { target: { value: "hello world" } });
       expect(textarea.value).toBe("hello world");
 
-      // Simulate App.tsx re-rendering after claimSession resolves: other props
-      // change (e.g. `disabled` flips as the WS opens) but focusKey stays "new".
       rerender(<MessageInput onSend={vi.fn().mockReturnValue(true)} disabled={false} focusKey="new" />);
       expect(textarea.value).toBe("hello world");
     });
 
     it("keeps each repo's new-session draft separate (docs/259 req 4)", () => {
-      // App.tsx keys the new-session view on `new:{slug}` rather than a single
-      // "new", so switching repos from the new-session repo bar swaps the
-      // composer text instead of carrying one repo's draft into another.
+
       const { rerender } = render(
         <MessageInput onSend={vi.fn().mockReturnValue(true)} disabled={false} focusKey="new:owner/alpha" />,
       );
@@ -548,16 +498,13 @@ describe("MessageInput", () => {
       expect(textarea.value).toBe("");
       fireEvent.change(textarea, { target: { value: "beta readme" } });
 
-      // Switch back: alpha's own draft is restored, not beta's.
       rerender(<MessageInput onSend={vi.fn().mockReturnValue(true)} disabled={false} focusKey="new:owner/alpha" />);
       expect(textarea.value).toBe("fix the alpha crash");
       expect(localStorage.getItem("shipit-draft-message:new:owner/beta")).toBe("beta readme");
     });
 
     it("does not load or save drafts on the overlay surface", () => {
-      // Pre-seed a draft under the overlay's historical key — if the overlay
-      // ever ran the persistence path it would pick this up and prefill the
-      // quick-capture input, which is exactly the bug we don't want.
+
       localStorage.setItem("shipit-draft-message:__quick_capture__", "stale overlay draft");
 
       render(
@@ -573,8 +520,6 @@ describe("MessageInput", () => {
       ) as HTMLTextAreaElement;
       expect(textarea.value).toBe("");
 
-      // Typing should not write to localStorage either — the overlay is a
-      // fresh launcher, not a per-session composer.
       fireEvent.change(textarea, { target: { value: "fresh prompt" } });
       expect(localStorage.getItem("shipit-draft-message:__quick_capture__")).toBe("stale overlay draft");
     });
@@ -594,13 +539,13 @@ describe("MessageInput", () => {
       render(<MessageInput onSend={vi.fn().mockReturnValue(true)} disabled={false} />);
       const fileInput = screen.getByTestId("file-input") as HTMLInputElement;
       expect(fileInput.type).toBe("file");
-      expect(fileInput.accept).toBe(""); // accepts all file types
+      expect(fileInput.accept).toBe("");                          
       expect(fileInput.multiple).toBe(true);
     });
 
     it("buffers attached files in overlay surface and surfaces them as deferredFiles on send", () => {
       const onSend = vi.fn().mockReturnValue(true);
-      // surface="overlay" → MessageInput buffers raw files locally (quick-capture path).
+
       render(<MessageInput onSend={onSend} disabled={false} surface="overlay" />);
       const fileInput = screen.getByTestId("file-input");
 
@@ -608,7 +553,6 @@ describe("MessageInput", () => {
       const pngFile = new File(["img"], "photo.png", { type: "image/png" });
       fireEvent.change(fileInput, { target: { files: [textFile, pngFile] } });
 
-      // Send carries the raw Files as deferredFiles (uploadRefs empty since no session).
       const textarea = screen.getByPlaceholderText("Describe what to build... (type @ to attach files)");
       fireEvent.change(textarea, { target: { value: "go" } });
       fireEvent.click(screen.getByLabelText("Send message"));
@@ -747,8 +691,7 @@ describe("MessageInput", () => {
       useSettingsStore.setState({ autoResetMergedBranch: true });
       render(<MessageInput onSend={vi.fn().mockReturnValue(true)} disabled={false} sessionId="s1" />);
       typeAndSend();
-      // The branch is about to be reset → control vanishes without waiting for
-      // the post-turn `reset_eligible: false`.
+
       expect(usePrStore.getState().resetEligibleBySession.s1).toBeUndefined();
       expect(screen.queryByTestId("reset-merged-branch-control")).not.toBeInTheDocument();
     });
@@ -757,10 +700,10 @@ describe("MessageInput", () => {
       usePrStore.setState({ resetEligibleBySession: { s1: true } });
       useSettingsStore.setState({ autoResetMergedBranch: true });
       render(<MessageInput onSend={vi.fn().mockReturnValue(true)} disabled={false} sessionId="s1" />);
-      fireEvent.click(screen.getByTestId("reset-merged-branch-control")); // untick
+      fireEvent.click(screen.getByTestId("reset-merged-branch-control"));          
       typeAndSend();
       // No reset will run, so the signal must not be optimistically cleared —
-      // the server's post-turn recompute keeps it eligible.
+
       expect(usePrStore.getState().resetEligibleBySession.s1).toBe(true);
     });
   });
@@ -833,7 +776,7 @@ describe("MessageInput", () => {
       usePrStore.setState({ resetEligibleBySession: { s1: true } });
       useSettingsStore.setState({ autoResetMergedBranch: true });
       renderComposer(vi.fn(), nonCompactingAgent);
-      // Only this one goes — the branch reset is unrelated to the harness.
+
       expect(screen.queryByTestId("compact-context-control")).not.toBeInTheDocument();
       expect(screen.getByTestId("reset-merged-branch-control")).toBeInTheDocument();
     });
@@ -874,8 +817,7 @@ describe("MessageInput", () => {
       useSettingsStore.setState({ autoResetMergedBranch: true });
       const onSend = renderComposer();
       typeAndSend();
-      // Absent, not `false`: the server then follows the global setting, which
-      // is how a programmatic continuation (req 13) behaves.
+
       expect(onSend.mock.calls[0]![0]).not.toHaveProperty("compactContext");
     });
 
@@ -883,15 +825,9 @@ describe("MessageInput", () => {
       usePrStore.setState({ resetEligibleBySession: { s1: true } });
       useSettingsStore.setState({ autoResetMergedBranch: true });
       // Must report the send as ACCEPTED: the re-tick sits after the refusal
-      // check, so a composer whose parent turned the send away keeps both the
-      // text and the tick state the user had.
+
       const onSend = renderComposer(vi.fn(() => true));
-      // Untick BOTH. Unticking only the compaction is not the case to test: the
-      // still-ticked reset optimistically clears eligibility, both controls
-      // vanish for the turn, and their reappearance re-ticks them anyway. It is
-      // the all-unticked send that leaves the session eligible and the controls
-      // on screen — so without an explicit re-tick the opt-out would silently
-      // ride every later message in the session.
+
       fireEvent.click(screen.getByTestId("reset-merged-branch-control"));
       fireEvent.click(screen.getByTestId("compact-context-control"));
       typeAndSend();
@@ -905,10 +841,7 @@ describe("MessageInput", () => {
     });
 
     it("does not carry an untick into a different session", () => {
-      // The composer is not keyed by session, so switching between two ALREADY
-      // eligible sessions leaves the visibility boolean true throughout — the
-      // re-check has to key on the session too, or one session's opt-out
-      // silently governs another session's send.
+
       usePrStore.setState({ resetEligibleBySession: { s1: true, s2: true } });
       useSettingsStore.setState({ autoResetMergedBranch: true });
       const onSend = vi.fn();
@@ -918,7 +851,7 @@ describe("MessageInput", () => {
           agents={compactingAgent} activeAgentId="claude"
         />,
       );
-      fireEvent.click(screen.getByTestId("compact-context-control")); // untick in s1
+      fireEvent.click(screen.getByTestId("compact-context-control"));                
       rerender(
         <MessageInput
           onSend={onSend} disabled={false} sessionId="s2"
@@ -933,8 +866,8 @@ describe("MessageInput", () => {
       usePrStore.setState({ resetEligibleBySession: { s1: true } });
       useSettingsStore.setState({ autoResetMergedBranch: true });
       const onSend = renderComposer();
-      fireEvent.click(screen.getByTestId("compact-context-control")); // untick
-      // The control goes away (the branch moved) and comes back on a later merge.
+      fireEvent.click(screen.getByTestId("compact-context-control"));          
+
       act(() => { usePrStore.setState({ resetEligibleBySession: {} }); });
       act(() => { usePrStore.setState({ resetEligibleBySession: { s1: true } }); });
       typeAndSend();
@@ -942,12 +875,6 @@ describe("MessageInput", () => {
     });
   });
 
-  /**
-   * docs/260 — the narrow composer row. `useNarrowContainer` reports `false`
-   * where `ResizeObserver` is missing, which is jsdom, so every test above sees
-   * the WIDE row unchanged and only these opt in by stubbing the observer and
-   * faking the composer's measured width.
-   */
   describe("narrow composer row (docs/260)", () => {
     class ResizeObserverStub {
       observe(): void {}
@@ -955,7 +882,6 @@ describe("MessageInput", () => {
       disconnect(): void {}
     }
 
-    /** Force every measured element to report `width`, so the hook sees it. */
     function stubComposerWidth(width: number) {
       vi.stubGlobal("ResizeObserver", ResizeObserverStub);
       Object.defineProperty(HTMLElement.prototype, "clientWidth", {
@@ -1015,14 +941,11 @@ describe("MessageInput", () => {
     it("collapses the settings into one control below 700px (req 3)", () => {
       renderComposer(520);
       expect(screen.getByTestId("composer-settings-trigger")).toBeInTheDocument();
-      // The three controls it replaces are gone from the row, not merely hidden.
+
       expect(screen.queryByTestId("harness-trigger")).toBeNull();
       expect(screen.queryByTestId("model-trigger")).toBeNull();
       expect(screen.queryByTestId("reasoning-trigger")).toBeNull();
-      // docs/285 — the permission mode is NOT among them any more. It carries
-      // the session's network access too, and that pair belongs in the row on
-      // every viewport (reqs 5, 6); folding it here is what left mobile with a
-      // nesting level whose only job was to lead somewhere else (req 9).
+
       expect(screen.getByTestId("permission-mode-selector")).toBeInTheDocument();
     });
 
@@ -1034,9 +957,7 @@ describe("MessageInput", () => {
     });
 
     it("keys off the COMPOSER's width, not the window's (req 2)", () => {
-      // The reported bug: a desktop window with the chat panel dragged narrow.
-      // `isMobile` is false here, so a viewport-keyed rule would render the wide
-      // row and clip Send — which is what shipped before this feature.
+
       mockMatchMedia(false);
       renderComposer(520);
       expect(screen.getByTestId("composer-settings-trigger")).toBeInTheDocument();
@@ -1048,7 +969,7 @@ describe("MessageInput", () => {
       const group = document.querySelector(".overflow-hidden.min-w-0");
       expect(group).not.toBeNull();
       // Send is a SIBLING of the group, never inside it — that, and `shrink-0`,
-      // is the whole overflow guarantee. It is not an arithmetic argument.
+
       expect(group!.contains(send)).toBe(false);
       expect(send.className).toContain("shrink-0");
     });
@@ -1076,14 +997,9 @@ describe("MessageInput", () => {
     });
 
     it("pins the wide row's actions too, clipping its labels instead (req 1, req 8)", () => {
-      // The wide row can still need up to 808px, so between 700 and 808 it used
-      // to push Send off the edge — the original bug in a narrower band. Both
-      // ends are now pinned and the four labelled controls in the middle give
+
       // way, rather than the left, because in THIS row the mic is on the left
-      // and req 1 protects it too.
-      // The mic only renders with voice input on, and it is the point of this
-      // test: in the WIDE row it sits on the left, so clipping the left would
-      // eat it.
+
       useSettingsStore.setState({ voiceInputEnabled: true });
       renderComposer(760, { isLoading: true, onInterrupt: vi.fn(), liveSteeringActive: true });
       const group = screen.getByTestId("wide-row-clip-group");
@@ -1092,9 +1008,9 @@ describe("MessageInput", () => {
       for (const id of ["stop-button", "send-button"]) {
         expect(group.contains(screen.getByTestId(id))).toBe(false);
       }
-      // The mic is pinned as well — it sits outside the group in this layout.
+
       expect(group.contains(screen.getByTestId("mic-button"))).toBe(false);
-      // ...and the labelled controls are the ones inside it.
+
       expect(group.contains(screen.getByTestId("model-trigger"))).toBe(true);
       expect(group.contains(screen.getByTestId("harness-trigger"))).toBe(true);
     });
@@ -1124,9 +1040,7 @@ describe("MessageInput", () => {
       const inset = INSET_FOCUS_RING.split(" ");
 
       // Reasoning is absent from this list because the fixture's agent has no
-      // reasoning knob, so its trigger self-hides. It costs nothing: it renders
-      // the same `PICKER_TRIGGER_CLASS` as harness and model, and
-      // `picker-consistency.test.tsx` asserts that string on all eight pickers.
+
       renderComposer(760, { permissionMode: "guarded" });
       for (const id of [
         "context-dial",

@@ -1,11 +1,5 @@
-/**
- * docs/294 — what a send does with the composer's attachments.
- *
- * This logic used to live inline in `App.handleSend`, answered separately by
- * each branch, and `App.tsx` has no test harness. Three silent losses came out
- * of that: `/review` dispatched without the uploads, then without the
- * `@`-mentioned files, and `/compact` discarded both.
- */
+
+
 import { describe, it, expect } from "vitest";
 import { buildAttachmentPlan } from "./attachment-plan.js";
 import type { UploadItem, UploadRef } from "../../server/shared/types.js";
@@ -46,8 +40,7 @@ describe("buildAttachmentPlan — an ordinary message", () => {
   });
 
   it("omits each key when that kind is absent", () => {
-    // The server reads both as absent-or-non-empty; an empty array would send it
-    // down the attachment-resolution path for nothing.
+
     const plan = buildAttachmentPlan({
       text: "hello", uploadRefs: [], uploads: [], pendingFiles: [],
     });
@@ -69,14 +62,14 @@ describe("buildAttachmentPlan — an ordinary message", () => {
     expect(plan.bubble.images).toEqual([
       { data: "", mediaType: "image/png", src: "blob:shot" },
     ]);
-    // ...and not ALSO as a file row, which would draw it twice.
+
     expect(plan.bubble.files).toBeUndefined();
-    // The frame still references it — the thumbnail is display only.
+
     expect(plan.frame.uploads).toEqual([SHOT]);
   });
 
   it("prefers the stable data URL over the blob URL for an image", () => {
-    // A blob URL is revoked when the chip churns; the bubble outlives it.
+
     const plan = buildAttachmentPlan({
       text: "x",
       uploadRefs: [SHOT],
@@ -91,8 +84,7 @@ describe("buildAttachmentPlan — an ordinary message", () => {
   });
 
   it("ignores an upload that is not ready, even though it has a path", () => {
-    // Split from the missing-path case below on purpose: combined, either
-    // condition alone rejected the fixture, so neither was actually pinned.
+
     const plan = buildAttachmentPlan({
       text: "x",
       uploadRefs: [SHOT],
@@ -131,7 +123,7 @@ describe("buildAttachmentPlan — /compact (docs/294 reqs 5-6)", () => {
     });
     expect(plan.frame).toEqual({});
     expect(plan.bubble).toEqual({});
-    // req 5 — the attachments stay in the composer for the next real message.
+
     expect(plan.clearAttachments).toBe(false);
   });
 
@@ -147,7 +139,7 @@ describe("buildAttachmentPlan — /compact (docs/294 reqs 5-6)", () => {
   });
 
   it("does not mistake a longer word for the command", () => {
-    // Non-vacuous control for the three cases above.
+
     const plan = buildAttachmentPlan({
       text: "/compactfoo",
       uploadRefs: [NOTES],

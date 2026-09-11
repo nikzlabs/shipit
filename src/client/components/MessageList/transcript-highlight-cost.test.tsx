@@ -68,7 +68,7 @@ const { clearHighlightCache, HIGHLIGHT_CACHE_LIMITS } = await import("../../util
 const { MessageList } = await import("./MessageList.js");
 
 const CODE = Array.from({ length: 40 }, (_, i) => `  const value_${i} = compute(${i});`).join("\n");
-/** No language on the fence, so this takes the auto-detection path. */
+
 const UNLABELLED_BLOCK = `Here it is:\n\n\`\`\`\n${CODE}\n\`\`\`\n\nThat's the file.`;
 
 function bot(text: string, extra: Partial<ChatMessage> = {}): ChatMessage {
@@ -78,20 +78,16 @@ function user(text: string): ChatMessage {
   return { role: "user", text };
 }
 
-/** Calls that got past `memo` + `useMemo`, i.e. the work the chain failed to skip. */
 function highlightAttempts(): number {
   return attempts.length;
 }
 
-/** Calls that got past the cache too, i.e. the highlighting actually performed. */
 function highlightRuns(): number {
   return runs.length;
 }
 
 function startCounting() {
-  // The cache lives for the module, so one test's blocks would otherwise still
-  // be resident for another's — which changes nothing about `attempts` (that
-  // probe is above the cache) but is what makes `runs` mean anything.
+
   clearHighlightCache();
   attempts.length = 0;
   runs.length = 0;
@@ -120,9 +116,6 @@ describe("MessageList — a transcript update does not re-highlight unchanged co
     const { rerender } = render(<MessageList messages={base} isLoading={false} />);
     expect(highlightAttempts()).toBe(1);
 
-    // What `App` does on every store update: a fresh array, freshly-created
-    // inline callbacks, and a changed `sessionTitle` (which feeds every row's
-    // `forkDefaultName`). None of it touches the block's text.
     for (let i = 0; i < 10; i++) {
       rerender(
         <MessageList
@@ -146,8 +139,6 @@ describe("MessageList — a transcript update does not re-highlight unchanged co
     const { rerender } = render(<MessageList messages={build()} isLoading={false} />);
     expect(highlightAttempts()).toBe(1);
 
-    // A history reload / turn snapshot replaces every `ChatMessage` object, so
-    // each row's `anchor` prop changes identity and every row re-renders. The
     // block's text is byte-identical, so the highlight must not be re-attempted.
     for (let i = 0; i < 5; i++) rerender(<MessageList messages={build()} isLoading={false} />);
 
@@ -175,8 +166,6 @@ describe("MessageList — a transcript update does not re-highlight unchanged co
     const { rerender } = render(<MessageList messages={base} isLoading={false} />);
     expect(highlightAttempts()).toBe(1);
 
-    // Typing in the search bar rebuilds `searchMatches` on every keystroke,
-    // which rebuilds `matchesByMessage` — a prop on every row.
     for (let i = 1; i <= 4; i++) {
       const matches: SearchMatch[] = [{ messageIndex: 0, start: 0, length: i }];
       rerender(
@@ -188,13 +177,9 @@ describe("MessageList — a transcript update does not re-highlight unchanged co
   });
 
   it("holds when the transcript has more distinct blocks than the cache can keep", () => {
-    // The cache is bounded, so beyond its capacity it stops hiding anything —
-    // which is exactly when a broken memo chain becomes expensive again on a
-    // long conversation. The contract has to hold at that scale on its own.
+
     startCounting();
-    // Deliberately tiny blocks: this test is about how many highlights are
-    // ATTEMPTED past the capacity line, and 72 full-size ones would spend the
-    // whole budget of the suite on auto-detection proving nothing extra.
+
     const n = HIGHLIGHT_CACHE_LIMITS.MAX_ENTRIES + 8;
     const build = () =>
       Array.from({ length: n }, (_, i) => bot(`Block ${i}\n\n\`\`\`\nconst b${i} = ${i};\n\`\`\``));
@@ -203,8 +188,6 @@ describe("MessageList — a transcript update does not re-highlight unchanged co
     const { rerender } = render(<MessageList messages={messages} isLoading={false} />);
     expect(highlightAttempts()).toBe(n);
 
-    // Every message object replaced, twice. Each row re-renders; none of the
-    // blocks changed, so nothing may re-enter the factory — cache or no cache.
     rerender(<MessageList messages={build()} isLoading={false} />);
     rerender(<MessageList messages={build()} isLoading={false} />);
 
@@ -217,7 +200,6 @@ describe("MessageList — a transcript update does not re-highlight unchanged co
     const { rerender } = render(<MessageList messages={[first]} isLoading={false} />);
     expect(highlightAttempts()).toBe(1);
 
-    // A second, DIFFERENT block legitimately costs one more highlight — and the
     // first block must not be re-highlighted to pay for it.
     const second = bot(`And another:\n\n\`\`\`\n${CODE}\nconst extra = 1;\n\`\`\``);
     rerender(<MessageList messages={[first, second]} isLoading={false} />);
@@ -242,13 +224,9 @@ describe("MessageList — a remount does not re-run the highlighter", () => {
     first.unmount();
 
     // A remount is what a `useMemo` cannot cover, and the transcript reaches it
-    // by several ordinary routes: history cleared and rehydrated, a tool-call
-    // modal reopened, crossing the mobile/desktop breakpoint (which swaps two
-    // distinct trees in `AppLayout`), a row whose `key` changed.
+
     render(<MessageList messages={base} isLoading={false} />);
 
-    // The memo chain is expected to let this one through — a mounting component
-    // always runs its factory — and the cache is what makes it free.
     expect(highlightAttempts()).toBe(2);
     expect(highlightRuns()).toBe(1);
   });

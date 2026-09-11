@@ -38,9 +38,7 @@ function ChecksSummary({ display, checks }: { display: CiDisplay; checks: PrCard
     return <p className="text-sm text-(--color-text-tertiary)">No CI checks for this PR.</p>;
   }
   if (display.kind === "none") {
-    // Terminal, and worth spelling out: "no workflow matched" points the user
-    // straight at the fix (add a `pull_request` trigger) instead of leaving
-    // them to wonder whether CI is merely slow. docs/230.
+
     return (
       <p className="text-sm text-(--color-text-tertiary)">
         No CI checks ran for this PR — no workflow matched the pull request event.
@@ -80,10 +78,6 @@ function ChecksSummary({ display, checks }: { display: CiDisplay; checks: PrCard
   );
 }
 
-/**
- * docs/174 — review/approval status row. Renders nothing for "none" (no review
- * requirement), matching the inline card's `ReviewIndicator`.
- */
 function ReviewSummary({ reviewDecision }: { reviewDecision: PrReviewDecision | undefined }) {
   if (!reviewDecision || reviewDecision === "none") return null;
 
@@ -118,23 +112,20 @@ export function PrStatusSection({ sessionId, card }: { sessionId: string; card: 
   const checks = card.checks ?? (status ? status.checks : undefined);
   const ciDisplay = useCiDisplay(checks);
   const autoFix = card.autoFix;
-  // The arming that can still act, not whatever the card last carried: on a
-  // merged/closed PR this is `undefined`, so neither the toggle nor the "Will
-  // merge when CI passes." line survives the merge (docs/077).
+
   const autoMerge = useActiveAutoMerge(sessionId);
   const isCiFailed = ciDisplay.kind === "failure";
   const isCiPassed = ciDisplay.kind === "success";
   const isCiNone = ciDisplay.kind === "none";
   const isConflicting = mergeable === "conflicting";
-  // docs/174 — gate the merge button on GitHub's review decision too.
+
   const isReviewBlocked = reviewDecision === "review_required" || reviewDecision === "changes_requested";
   const isAutoFixRunning = autoFix?.status === "running";
   const isAutoFixExhausted = autoFix?.status === "exhausted";
   const showConflictUi = isConflicting && rebaseStatus === "idle" && card.phase === "open" && pr;
   const canMerge = (isCiPassed || isCiNone) && !isConflicting && !isReviewBlocked;
   const showMergeButton = card.phase === "open" && canMerge && !autoMerge?.enabled;
-  // docs/169 — auto-fix is a global setting; the manual "Fix CI" button shows
-  // when CI failed and the auto-loop isn't actively handling it.
+
   const showFixButton = card.phase === "open" && isCiFailed && !isAutoFixRunning && (!autoFixCi || isAutoFixExhausted);
   const showAutoMergeToggle = card.phase === "open" && (!isCiFailed || isCiPassed);
   return (

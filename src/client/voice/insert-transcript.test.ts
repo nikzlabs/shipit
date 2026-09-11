@@ -10,7 +10,7 @@ describe("spliceTranscript", () => {
 
   it("inserts at the cursor position", () => {
     const r = spliceTranscript({ value: "ab cd", selectionStart: 3, selectionEnd: 3, transcript: "XY" });
-    // prev char is a space → no extra leading space
+
     expect(r.value).toBe("ab XYcd");
     expect(r.cursor).toBe(5);
   });
@@ -39,7 +39,7 @@ describe("spliceTranscript", () => {
 
   it("clamps out-of-range selection indices", () => {
     const r = spliceTranscript({ value: "abc", selectionStart: 99, selectionEnd: -5, transcript: "Z" });
-    // start clamps to 3, end clamps to >= start
+
     expect(r.value).toBe("abc Z");
   });
 });

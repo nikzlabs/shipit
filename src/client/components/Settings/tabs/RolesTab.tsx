@@ -64,7 +64,6 @@ async function refetchRoles(): Promise<void> {
   }
 }
 
-/** Which role the editor is open on: an existing one, or a role being created. */
 interface EditorTarget {
   role: RoleView | undefined;
 }
@@ -78,15 +77,6 @@ export function RolesTab({ agentList = [] }: { agentList?: AgentOption[] }) {
   const reviewer = roles.find((role) => role.reserved);
   const pinned = roles.filter((role) => !role.reserved);
 
-  /**
-   * One write of the whole role (req 17), through the existing settings mutation
-   * surface — not a route of its own.
-   *
-   * The response carries every role back, resolved, and replaces the list. A
-   * refusal stays in the editor rather than becoming a toast the dialog covers:
-   * it names the parameter that is wrong (req 6), which is only useful beside
-   * the control that sets it.
-   */
   const save = async (name: string, write: RoleWrite | null): Promise<boolean> => {
     setBusy(true);
     setError(undefined);
@@ -105,17 +95,11 @@ export function RolesTab({ agentList = [] }: { agentList?: AgentOption[] }) {
       return true;
     } catch (err) {
       const message = err instanceof Error ? err.message : "Failed to save the role";
-      // A delete has no dialog to report into, so it reports where the user is.
+
       if (write === null) useUiStore.getState().setToast({ message });
       else setError(message);
       console.error("[settings] save role failed:", err);
-      // A failure is AMBIGUOUS — the connection can drop after the server
-      // committed — so the list is not left holding a guess. Re-read what the
-      // server actually has, the way `ReviewerSection` does after its own
-      // failed write. It matters more here: a rename that committed and lost
-      // its response would leave the editor offering to retry under a
-      // `previousName` the server no longer knows, which is refused, and the
-      // user would need a reload to find out why.
+
       void refetchRoles();
       return false;
     } finally {
@@ -200,7 +184,7 @@ export function RolesTab({ agentList = [] }: { agentList?: AgentOption[] }) {
       {editing && (
         <RoleEditor
           // Remounts on target change, so the draft never carries a previous
-          // role's fields into the next one.
+
           key={editing.role?.name ?? "__new__"}
           role={editing.role}
           agentList={agentList}
@@ -218,13 +202,6 @@ export function RolesTab({ agentList = [] }: { agentList?: AgentOption[] }) {
   );
 }
 
-/**
- * The description and standing instructions of a role, above its params.
- *
- * Shared by the Reviewer section, whose params are the two slot cards — reqs 8
- * and 9 apply to it exactly as they do to any other role, and its metadata is
- * the half of it that IS editable.
- */
 function RoleMetadata({ role, onEdit }: { role: RoleView; onEdit: () => void }) {
   return (
     <div className="flex items-start justify-between gap-2" data-testid="reviewer-metadata">

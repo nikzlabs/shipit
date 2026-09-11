@@ -96,7 +96,6 @@ const MODE_META: Record<
   },
 };
 
-// Display order: most → least oversight.
 const LADDER: PermissionMode[] = ["plan", "guarded", "auto"];
 
 /**
@@ -125,11 +124,10 @@ export function isGuardedModelOk({
   return effectiveAlias !== "haiku";
 }
 
-/** docs/285 — everything the Network section needs, or `undefined` to omit it. */
 export interface NetworkSectionProps {
   mode: NetworkMode;
   onChange: (mode: NetworkMode) => void;
-  /** The workspace default, so `Inherit` can name what it currently inherits. */
+
   globalEnabled: boolean;
   enforcementStatus: EgressEnforcementStatus;
   /**
@@ -139,20 +137,9 @@ export interface NetworkSectionProps {
    * it", and the client cannot see what the container actually booted with.
    */
   pendingRestart: boolean;
-  /**
-   * No turn has run yet, so the choice is still free — it will be in force from
-   * the first one. Drives which of the two footers is shown; they say opposite
-   * things and both are true at their own moment.
-   */
+
   beforeFirstTurn: boolean;
-  /**
-   * req 10 — whether `globalEnabled` has actually been read from the server.
-   *
-   * False means the workspace default is genuinely unknown, and the control says
-   * so rather than printing its optimistic placeholder as fact. Naming the wrong
-   * inherited value is worse than naming none: the user reads it, believes their
-   * session is contained, and sends.
-   */
+
   loaded: boolean;
 }
 
@@ -170,53 +157,33 @@ export function PermissionModeSelector({
   agents: AgentOption[];
   activeAgentId: AgentId;
   modelInfo?: ModelInfo | null;
-  /**
-   * docs/257 req 3 — the composer is dead as a whole (no runnable service), so
-   * there is no turn for a permission mode to govern. The control stays visible
-   * (it still reports the mode a future turn will run under) but does not open.
-   */
+
   disabled?: boolean;
-  /**
-   * docs/285 — the Network section. Omitted for a sandbox session, whose network
-   * access IS one of its capability grants (docs/211, docs/279): offering this
-   * as well would put two controls over one session's egress.
-   */
+
   network?: NetworkSectionProps;
 }) {
   const activeAgent = agents.find((a) => a.id === activeAgentId);
   const supported = activeAgent?.supportedPermissionModes ?? [];
 
-  // Build the offered set: always include `auto` (every agent runs it), plus
-  // any other modes the agent advertises. Ordered along the oversight ladder.
   const available = LADDER.filter((m) => m === "auto" || supported.includes(m));
 
   const guardedModelOk = isGuardedModelOk({ agents, activeAgentId, modelInfo });
 
-  // A harness with one permission mode (Codex) has nothing to toggle there —
-  // but docs/285 gave this control a second job, so it now renders the network
-  // section alone rather than disappearing and taking that job with it.
   const showModes = available.length > 1;
   if (!showModes && !network) return null;
 
-  // The mode we actually display as active. If the stored mode isn't currently
-  // offered (agent/model changed out from under it), fall back to auto.
   const displayMode: PermissionMode = available.includes(mode) ? mode : "auto";
   const Meta = MODE_META[displayMode];
   const modeIsDefault = displayMode === "auto";
 
   const networkIsDefault = !network || network.mode === "inherit";
   // req 10 — an unread workspace default cannot decide that this session is
-  // contained, so `Inherit` warns about nothing until the value is known. An
-  // explicit pick needs no default and is unaffected.
+
   const contained = network && (network.mode !== "inherit" || network.loaded)
     ? resolvesToContained(network.mode, network.globalEnabled)
     : false;
   const warning = network && contained ? enforcementWarning(network.enforcementStatus) : null;
 
-  // The trigger is worded only when something is NOT at its default; otherwise
-  // it stays the bare icon it has always been. Network wins the label when both
-  // are non-default: the mode has three states the user changes routinely, while
-  // an explicit network pick is the rare, consequential one.
   const triggerLabel = !networkIsDefault
     ? NETWORK_MODE_LABEL[network.mode]
     : modeIsDefault
@@ -227,11 +194,8 @@ export function PermissionModeSelector({
     : Meta.icon;
   const highlighted = !modeIsDefault || !networkIsDefault;
 
-  // req 10 — the COMMON state has to be readable too, and there is no hover on
-  // touch, so the effective values are stated in the accessible name rather than
-  // left to a tint the prototype's worded case demonstrates and the default case
   // never shows. An explicit pick says it OVERRIDES the workspace: that the
-  // choice is pinned is the part req 10 asks to be stated, and it is exactly
+
   // what a colour cannot carry.
   const networkSummary = network
     ? networkIsDefault
@@ -324,9 +288,7 @@ export function PermissionModeSelector({
                     <p className="text-xs text-(--color-text-tertiary) mt-0.5">
                       {m === "inherit"
                         // req 10 — name the value being inherited, and do NOT
-                        // present it as pinned: `Inherit` resolves when the
-                        // container starts, so it follows a workspace change
-                        // made in between. That is what the word means (req 3).
+
                         ? network.loaded
                           ? `Follow the workspace setting — currently ${network.globalEnabled ? "Contained" : "Open"}.`
                           : "Follow the workspace setting."
@@ -376,7 +338,6 @@ export function PermissionModeSelector({
   );
 }
 
-/** A labelled group heading inside the flat menu. */
 function SectionHeader({ children }: { children: React.ReactNode }) {
   return (
     <div className="px-3 pt-2 pb-1 text-[10px] font-semibold uppercase tracking-wider text-(--color-text-tertiary)">

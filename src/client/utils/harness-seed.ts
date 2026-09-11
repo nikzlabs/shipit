@@ -35,7 +35,6 @@ import type { AgentOption, ModelChoice } from "../agent-types.js";
  * will the next session be created on".
  */
 
-/** What the caller is on now, as much of it as it knows. */
 export interface CurrentSeed {
   modelId?: string;
   serviceId?: string;
@@ -87,22 +86,16 @@ export function modelRowAfterHarnessPick(
 export function persistHarnessPick(opts: {
   agentId: AgentId;
   agents: AgentOption[];
-  /**
-   * What to keep if the new harness can run it. Defaults to the saved seed —
-   * pass the live session model when the composer is showing one, so the switch
-   * keeps what the user is looking at rather than what the slot happens to hold,
-   * or the parked triple when handing a redirected selection back.
-   */
+
   current?: CurrentSeed;
 }): string | undefined {
   const { agentId, agents } = opts;
   const saved = getSavedModelSelection();
   const modelId = opts.current?.modelId ?? getSavedModelId();
-  // The saved `(service, billing mode)` is inherited only when it describes the
-  // SAME model. A caller that knows only the id — the composer, reading the live
+
   // session model — must not have the slot's service attached to a model it was
   // never about, or "prefer the same group" would prefer a group the model is
-  // not in and quietly skip to `rows[0]`.
+
   const group =
     opts.current?.serviceId !== undefined
       ? { serviceId: opts.current.serviceId, billingMode: opts.current.billingMode }
@@ -129,10 +122,7 @@ export function persistHarnessPick(opts: {
     saveModelId(next.modelId);
   }
   // `saveModelSelection` REFUSES a triple this build's catalogue cannot place,
-  // and refuses it silently. The seed is what the harness is derived from, so a
-  // refusal would leave the pick outvoted by the model it failed to write — the
-  // very bug this function exists to fix. Fall back to the bare id, which is
-  // stored as-is.
+
   if (getSavedModelId() !== next.modelId) saveModelId(next.modelId);
   return next.modelId;
 }

@@ -13,7 +13,6 @@ import { LARGE_PASTE_THRESHOLD_CHARS, PASTED_TEXT_FILENAME } from "./MessageInpu
 
 afterEach(cleanup);
 
-/** Paste plain text into the composer's textarea. */
 function pasteText(text: string) {
   const textarea = screen.getByRole("textbox");
   const event = new Event("paste", { bubbles: true, cancelable: true });
@@ -34,15 +33,14 @@ describe("MessageInput — large paste becomes a file", () => {
 
   it("cancels the browser's own insert so the text does not also land in the input", () => {
     // jsdom never inserts pasted text, so an "input is empty" assertion would
-    // pass with the feature removed. preventDefault is the observable that
-    // actually distinguishes the two.
+
     render(<MessageInput surface="overlay" onSend={vi.fn().mockReturnValue(true)} disabled={false} />);
     const event = pasteText("x".repeat(LARGE_PASTE_THRESHOLD_CHARS));
     expect(event.defaultPrevented).toBe(true);
   });
 
   it("leaves a paste below the threshold to the input", () => {
-    // docs/292 req 3.
+
     render(<MessageInput surface="overlay" onSend={vi.fn().mockReturnValue(true)} disabled={false} />);
     const event = pasteText("x".repeat(LARGE_PASTE_THRESHOLD_CHARS - 1));
     expect(event.defaultPrevented).toBe(false);
@@ -50,7 +48,7 @@ describe("MessageInput — large paste becomes a file", () => {
   });
 
   it("does not convert a paste on a composer that cannot send", () => {
-    // docs/257 req 3 — attaching to a dead input is the same dead input.
+
     render(
       <MessageInput
         surface="overlay"
@@ -64,7 +62,7 @@ describe("MessageInput — large paste becomes a file", () => {
   });
 
   it("attaches a pasted image rather than the text that came with it", () => {
-    // A copy from a web page carries both text/html+text/plain and an image.
+
     // The image branch runs first and the text must not produce a second chip.
     render(<MessageInput surface="overlay" onSend={vi.fn().mockReturnValue(true)} disabled={false} />);
     const textarea = screen.getByRole("textbox");
@@ -77,9 +75,9 @@ describe("MessageInput — large paste becomes a file", () => {
       },
     });
     fireEvent(textarea, event);
-    // The image lands as an image chip...
+
     expect(screen.getByAltText("shot.png")).toBeInTheDocument();
-    // ...and the text that rode along with it produced no second, text chip.
+
     expect(screen.queryByTestId("upload-chip-name")).toBeNull();
   });
 });

@@ -1,17 +1,4 @@
-/**
- * SessionDiagnosticsPanel — single-screen aggregate of everything the
- * orchestrator knows about a session.
- *
- * See docs/124-session-rescue-and-diagnostics §3. Reachable from the
- * SessionHealthStrip's "Open diagnostics" button. Polls
- * `GET /api/sessions/:id/diagnostics` while open. The "Copy" button
- * dumps the full payload as JSON for bug reports.
- *
- * The panel is read-only: every action belongs to other surfaces
- * (Kill agent / Restart container live in the strip itself). This
- * screen exists so the user can SEE state — and copy it into a chat
- * or issue when something is broken.
- */
+
 
 // eslint-disable-next-line no-restricted-imports -- useEffect: polling external state
 import { useEffect, useState, useCallback } from "react";
@@ -27,12 +14,8 @@ import {
 import { CopyButton } from "./ui/copy-button.js";
 import { useApi, ApiError } from "../hooks/useApi.js";
 import { ICON_SIZE } from "../design-tokens.js";
-// docs/248 — the one payload field with a shared type. The rest of this file
-// mirrors the server shapes locally (see below); this one is imported so the
-// state union can't drift from the resolver that produces it.
-import type { NodeRuntimeStatus } from "../../server/shared/types.js";
 
-// ---- Server payload shape (mirrors services/diagnostics.ts) ----
+import type { NodeRuntimeStatus } from "../../server/shared/types.js";
 
 interface ContainerHealthPayload {
   containerState: string;
@@ -46,7 +29,7 @@ interface ContainerHealthPayload {
   lastCreateErrorAt: number | null;
   workerUrl: string | null;
   containerId: string | null;
-  /** Docker-units limits the container actually booted with, or null when unknown. */
+
   bootedLimits: { memoryLimit: number; cpuQuota: number; pidsLimit: number } | null;
 }
 
@@ -91,9 +74,9 @@ interface ParsedShipitConfig {
   compose?: { file: string; dockerSocket: boolean };
   version?: number;
   warnings: string[];
-  /** YAML parse error message, if shipit.yaml is malformed. */
+
   parseError?: string;
-  /** Automatic per-session memory sizing, derived from host capacity (docs/229). */
+
   sizing: SessionMemorySizing;
 }
 
@@ -106,7 +89,6 @@ interface OomBreakerState {
   windowMs: number;
 }
 
-/** docs/150-multiple-provider-subscriptions req 11 — the provider account this session is running on. */
 interface ProviderRouteDiagnostic {
   agentId: string | null;
   kind: "account" | "reserved" | null;
@@ -164,8 +146,6 @@ export function SessionDiagnosticsPanel({ sessionId, open, onOpenChange }: Sessi
     }
   }, [api, sessionId]);
 
-  // Poll while open. Reset state when the dialog closes so the next
-  // open starts clean.
   // eslint-disable-next-line no-restricted-syntax -- polling external state while dialog is open
   useEffect(() => {
     if (!open || !sessionId) {
@@ -178,9 +158,6 @@ export function SessionDiagnosticsPanel({ sessionId, open, onOpenChange }: Sessi
     return () => clearInterval(id);
   }, [open, sessionId, poll]);
 
-  // Built lazily at click time so `clientCopiedAt` reflects the moment the user
-  // copied, not when the panel last rendered. The button is disabled while
-  // `!data`, so this only runs with a payload in hand.
   const copyPayload = useCallback(() => {
     if (!data) return "";
     return JSON.stringify({ ...data, clientCopiedAt: new Date().toISOString() }, null, 2);
@@ -283,8 +260,6 @@ export function SessionDiagnosticsPanel({ sessionId, open, onOpenChange }: Sessi
     </Dialog>
   );
 }
-
-// ---- Sub-components ----
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
@@ -393,7 +368,7 @@ function ParsedConfigRows({
   contentKeyOff,
 }: {
   config: ParsedShipitConfig | null;
-  /** Docker-units limits the container actually booted with — see ContainerHealth.bootedLimits. */
+
   bootedLimits: { memoryLimit: number; cpuQuota: number; pidsLimit: number } | null;
   /**
    * Set when this session's `agent.install` resolves no dependency-input set —
@@ -412,10 +387,6 @@ function ParsedConfigRows({
   }
   const { agent, compose, warnings, version, parseError, sizing } = config;
 
-  // Memory is auto-sized from host capacity (docs/229). Show the host facts
-  // that produced the per-session ceiling, then the value the container
-  // actually booted with so a warm→claim drift (booted limit frozen at create,
-  // sizing read live) is still visible side by side.
   const baselineLabel = sizing.baselineSource === "auto"
     ? "auto (host-derived)"
     : "DEFAULT_SESSION_MEMORY_MB";
@@ -496,20 +467,6 @@ function ParsedConfigRows({
   );
 }
 
-/**
- * docs/150-multiple-provider-subscriptions req 11 — "which account is this session on right now?".
- *
- * The account's *name* is the answer; `route id` is below it for bug reports,
- * where the opaque `acct_…` is what correlates with the server logs.
- */
-/**
- * docs/248 — how the repo's `.nvmrc` / `engines.node` was resolved.
- *
- * This is requirement 6's surface. The reported bug wasn't that a session ran
- * the wrong Node major, it was that it did so *invisibly* — so the states that
- * mean "your pin is not being honored" are rendered as errors with their
- * reason, not folded into a terse "ok".
- */
 function NodeRuntimeRows({ runtime }: { runtime: NodeRuntimeStatus | null }) {
   if (!runtime) {
     return (

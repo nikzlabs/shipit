@@ -167,8 +167,8 @@ transport. `ProxyAgentProcess` already forwards unknown `AgentEvent`s.
 `SessionRunnerInterface` gains:
 
 ```ts
-readonly backgroundTaskCount: number;   // last background_tasks_changed
-readonly agentBusy: boolean;            // running || backgroundTaskCount > 0
+readonly backgroundTaskCount: number;
+readonly agentBusy: boolean;
 ```
 
 `agent-listeners.ts` sets `backgroundTaskCount` on `agent_background_tasks`. On

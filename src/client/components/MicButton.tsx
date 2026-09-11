@@ -35,21 +35,15 @@ export function MicButton({
   large = false,
 }: {
   voice: VoiceInputApi;
-  /** Human-readable hotkey shown in the idle tooltip, e.g. "Ctrl+Shift+Space". */
+
   hotkeyLabel?: string;
-  /** Opens the Voice settings tab — wired to the error state's "Fix in settings". */
+
   onOpenSettings?: () => void;
-  /**
-   * Enlarge the touch target. Set on mobile, where this button — not the
-   * push-to-talk hotkey — is the only way to start dictation, so a tiny
-   * icon is a usability problem (docs/144).
-   */
+
   large?: boolean;
 }) {
   const { state, elapsedMs, errorMessage } = voice;
-  // On mobile (`large`) the mic is a primary thumb target sitting next to Send,
-  // so it grows to match the bottom-bar buttons: MD icon, larger padding, and a
-  // 44px floor on the hit area (Apple HIG minimum). Desktop stays compact.
+
   const pad = large ? "p-3" : "p-1.5";
   const iconSize = large ? ICON_SIZE.MD : ICON_SIZE.SM;
   const floor = large ? "min-h-11 min-w-11" : "";
@@ -62,7 +56,7 @@ export function MicButton({
     } else if (state === "idle") {
       voice.startRecording();
     }
-    // transcribing: ignore clicks
+
   };
 
   if (state === "recording") {
@@ -114,10 +108,6 @@ export function MicButton({
       </button>
     );
 
-    // Mobile (`large`): the full-screen MobileRecordingOverlay owns the error
-    // UI (message + Resend/Re-record/Dismiss); this inline button sits behind
-    // it, so a plain dismiss-on-click is enough. Desktop: anchor a popover that
-    // surfaces the message and the recovery actions inline.
     if (large) {
       return <WithTooltip label={errorMessage ?? "Voice error"}>{errorButton}</WithTooltip>;
     }

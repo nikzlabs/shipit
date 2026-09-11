@@ -21,7 +21,6 @@ export function useAutoFix(params: {
   const autoFixCooldownRef = useRef(false);
   const autoFixErrorSignatureRef = useRef<string | null>(null);
 
-  // Forward preview errors to the server for terminal log relay
   // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {
     const sessionId = useSessionStore.getState().sessionId;
@@ -37,11 +36,9 @@ export function useAutoFix(params: {
     (text: string) => {
       const sid = useSessionStore.getState().sessionId;
       if (!sid) return;
-      // docs/150 — auto-fix POSTs to the dispatch route, same as the manual
+
       // "Send to Agent" button. `requestPermission` is intentionally NOT
-      // called here (auto-fire shouldn't pop a notification prompt at the
-      // user out of nowhere — preserves the asymmetry of the previous WS
-      // path, which also skipped it).
+
       void dispatchAgentMessage({
         sessionId: sid,
         text,
@@ -52,7 +49,6 @@ export function useAutoFix(params: {
     [apiPost],
   );
 
-  // Auto-fix logic
   const prevErrorCountRef = useRef(0);
   // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {

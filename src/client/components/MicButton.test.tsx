@@ -46,7 +46,7 @@ describe("MicButton", () => {
     render(<MicButton voice={voice} />);
     const btn = screen.getByRole("button", { name: "Stop recording" });
     expect(btn).toHaveAttribute("data-state", "recording");
-    // 65_000ms → 01:05
+
     expect(screen.getByText("01:05")).toBeInTheDocument();
   });
 
@@ -73,7 +73,7 @@ describe("MicButton", () => {
       "data-state",
       "error",
     );
-    // No retainable audio → only re-record ("Try again"), no Resend.
+
     expect(screen.getByTestId("voice-error-panel")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Try again" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Resend" })).not.toBeInTheDocument();
@@ -112,7 +112,7 @@ describe("MicButton", () => {
   });
 
   it("includes the hotkey label in the idle button accessible name when provided", () => {
-    // aria-label stays stable; the hotkey lands in the tooltip label.
+
     render(<MicButton voice={makeVoice()} hotkeyLabel="Ctrl+Shift+Space" />);
     expect(screen.getByRole("button", { name: "Dictate a message" })).toBeInTheDocument();
   });

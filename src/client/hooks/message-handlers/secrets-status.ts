@@ -8,7 +8,7 @@ export const handleSecretsStatus: Handler<WsSecretsStatus> = (_ctx, data) => {
     missingByService: data.missingByService,
     missingRequired: data.missingRequired,
     // docs/262 req 23 — grouped per plugin; `?? []` because an older server
-    // (or a replayed message from one) simply has no plugin needs to report.
+
     plugins: data.plugins ?? [],
   });
 };

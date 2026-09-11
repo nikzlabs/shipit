@@ -1,15 +1,5 @@
-/**
- * Tests for SessionHealthStrip — focused on state preservation across
- * unmount/remount, which is the failure mode that produced the "click
- * Restart agent → switch right-panel tab → come back to 'Container
- * missing' with no overlay, no error, no logs" regression.
- *
- * The right-panel tabs (Preview / Terminal / Docs / Files / History)
- * render via ternary in `App.tsx`, so any tab switch unmounts the
- * Terminal panel and the SessionHealthStrip with it. Anything that
- * lives in React-local `useState` / `useRef` inside the strip is wiped
- * on remount; rescue state has to live in Zustand to survive.
- */
+
+
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
 import { render, screen, cleanup, fireEvent, waitFor, act } from "@testing-library/react";
 import { SessionHealthStrip } from "./SessionHealthStrip.js";
@@ -20,8 +10,7 @@ const fetchMock = vi.fn();
 beforeEach(() => {
   fetchMock.mockReset();
   vi.stubGlobal("fetch", fetchMock);
-  // Reset Zustand session store between tests so rescue state from one
-  // test doesn't leak into the next.
+
   useSessionStore.setState({
     rescueState: null,
     recoveryActionError: null,
@@ -64,7 +53,6 @@ const healthRunning = {
   containerId: "abcdef123456",
 };
 
-/** Queue a sequence of fetch responses (each consumed by one fetch call). */
 function queueResponses(responses: { status?: number; body: unknown }[]) {
   for (const r of responses) {
     fetchMock.mockResolvedValueOnce(
@@ -76,7 +64,6 @@ function queueResponses(responses: { status?: number; body: unknown }[]) {
   }
 }
 
-/** Default catch-all so unconsumed polls don't return undefined. */
 function defaultPolls(body: unknown = healthMissing) {
   fetchMock.mockResolvedValue(
     new Response(JSON.stringify(body), {
@@ -89,9 +76,7 @@ function defaultPolls(body: unknown = healthMissing) {
 describe("SessionHealthStrip", () => {
   describe("state preservation across unmount/remount (tab switch)", () => {
     it("preserves the rescue overlay when the strip is unmounted+remounted mid-restart", async () => {
-      // Seed Zustand as if the user had just clicked Restart agent: the strip
-      // sets `rescueState` with `startedAt` before the POST resolves. We
-      // simulate the in-flight state directly rather than driving it through
+
       // the button so the test isn't sensitive to fetch ordering.
       const startedAt = Date.now();
       useSessionStore.getState().setRescueState({
@@ -101,9 +86,6 @@ describe("SessionHealthStrip", () => {
 
       defaultPolls(healthMissing);
 
-      // First mount — strip should see the in-flight rescue state and render
-      // the "Restarting agent…" label rather than the bare "Container missing"
-      // diagnostic.
       const { unmount } = render(
         <SessionHealthStrip sessionId="sess-1" onReconnectWs={() => {}} />,
       );
@@ -111,20 +93,14 @@ describe("SessionHealthStrip", () => {
         expect(screen.getByText("Restarting agent…")).toBeTruthy();
       });
 
-      // Tab switch: unmount the strip (simulating App.tsx's ternary swap to
-      // a different right-panel tab) and immediately remount it.
       unmount();
 
       // CRITICAL: the unmount must NOT have wiped rescueState. Before the
-      // fix this assertion failed — the mount-time useEffect that's meant
-      // to clear state on session change was firing on every mount and
-      // calling setRescueState(null) unconditionally.
+
       expect(useSessionStore.getState().rescueState).not.toBeNull();
       expect(useSessionStore.getState().rescueState?.phase).toBe("restarting_agent");
       expect(useSessionStore.getState().rescueState?.startedAt).toBe(startedAt);
 
-      // Remount — fresh React-local state, but Zustand is preserved so the
-      // "Restarting agent…" overlay should still render.
       render(<SessionHealthStrip sessionId="sess-1" onReconnectWs={() => {}} />);
       await waitFor(() => {
         expect(screen.getByText("Restarting agent…")).toBeTruthy();
@@ -165,7 +141,6 @@ describe("SessionHealthStrip", () => {
         <SessionHealthStrip sessionId="sess-1" onReconnectWs={() => {}} />,
       );
 
-      // Switch to a different session — this should fire the reset useEffect.
       rerender(<SessionHealthStrip sessionId="sess-2" onReconnectWs={() => {}} />);
 
       await waitFor(() => {
@@ -183,7 +158,6 @@ describe("SessionHealthStrip", () => {
         startedAt,
       });
 
-      // First poll returns healthy. The strip should clear the rescue state.
       defaultPolls(healthRunning);
 
       render(<SessionHealthStrip sessionId="sess-1" onReconnectWs={() => {}} />);
@@ -203,7 +177,7 @@ describe("SessionHealthStrip", () => {
       defaultPolls({
         ...healthMissing,
         lastCreateError: "Container ran out of memory",
-        lastCreateErrorAt: startedAt + 2000, // after the rescue click
+        lastCreateErrorAt: startedAt + 2000,                          
       });
 
       render(<SessionHealthStrip sessionId="sess-1" onReconnectWs={() => {}} />);
@@ -222,7 +196,6 @@ describe("SessionHealthStrip", () => {
         startedAt,
       });
 
-      // Create error is OLDER than the rescue click — should be ignored.
       defaultPolls({
         ...healthMissing,
         lastCreateError: "old error from prior attempt",
@@ -231,7 +204,6 @@ describe("SessionHealthStrip", () => {
 
       render(<SessionHealthStrip sessionId="sess-1" onReconnectWs={() => {}} />);
 
-      // Wait one poll cycle, then assert phase didn't flip to "failed".
       await act(async () => {
         await new Promise((r) => setTimeout(r, 50));
       });
@@ -239,12 +211,6 @@ describe("SessionHealthStrip", () => {
     });
   });
 
-  // `lastCreateError` carries `getErrorMessage(err)` straight from a failed
-  // Docker create, so it is unbounded and routinely multi-line. The strip is a
-  // `flex: 0 1 auto` child of TerminalPanel's column and the log view is
-  // `flex-1 min-h-0`, so an unbounded error box takes its content height first
-  // and the log gets only what is left — measured in a browser at 316px of a
-  // 420px panel, leaving the log with no visible rows at all.
   describe("a long creation error cannot squeeze out the log view", () => {
     it("bounds the error box's height and scrolls the overflow", async () => {
       defaultPolls({
@@ -255,20 +221,12 @@ describe("SessionHealthStrip", () => {
 
       render(<SessionHealthStrip sessionId="sess-1" onReconnectWs={() => {}} />);
 
-      // Queried by ROLE + accessible name, not by testid: that fails if either
-      // the `role` or the `aria-label` goes away, which a testid lookup would
-      // not notice.
       const box = await screen.findByRole("group", { name: "Container creation error detail" });
       expect(box).toHaveClass("max-h-20", "overflow-y-auto");
-      // The clipped text has to be reachable without a mouse.
+
       expect(box).toHaveAttribute("tabindex", "0");
     });
 
-    // The expanded details block sits in the same column and carries the poll
-    // error, which is unbounded too. Measured at a 420px panel with a long poll
-    // error: the block reached 232px and the log view fell to 97px, with no
-    // ceiling on either. The cap sits above the block's natural height (178px),
-    // so opening details is visually unchanged.
     it("bounds the expanded details block, which carries the unbounded poll error", async () => {
       fetchMock.mockRejectedValue(new Error("connect ECONNREFUSED 172.18.0.5:8080 ".repeat(20)));
 
@@ -283,8 +241,7 @@ describe("SessionHealthStrip", () => {
 
   describe("button click sets rescueState with startedAt", () => {
     it("sets rescueState with startedAt when Restart agent is clicked", async () => {
-      // First call: GET /container/health → missing
-      // Second call: POST /agent/container/restart → starting
+
       queueResponses([
         { body: healthMissing },
         {
@@ -296,13 +253,12 @@ describe("SessionHealthStrip", () => {
           },
         },
       ]);
-      defaultPolls(healthMissing); // subsequent polls
+      defaultPolls(healthMissing);                    
 
       render(<SessionHealthStrip sessionId="sess-1" onReconnectWs={() => {}} />);
 
-      // Wait for initial health to land so the strip is in its idle state.
       await waitFor(() => {
-        // The "Container missing" badge is visible.
+
         const matches = screen.getAllByText(/Container missing/i);
         expect(matches.length).toBeGreaterThan(0);
       });

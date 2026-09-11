@@ -47,26 +47,10 @@ import { WithTooltip } from "../ui/tooltip.js";
 import { BillingModePill, MODE_LABEL } from "../BillingModePill.js";
 import type { BillingMode, ServiceDef } from "../../../server/shared/catalogue/index.js";
 
-// The label and the pill are shared with the composer's model menu, which makes
 // the same statement about the same pair. Re-exported because this module was
-// where both used to live.
+
 export { MODE_LABEL };
 
-/**
- * The avatar: the **vendor's own mark**, in the tile that gives the eye a fixed
- * left edge to scan down.
- *
- * It was the service's initial, on the reasoning that the catalogue carries no
- * artwork and a letter is honest about that. It is — and a column of `A` `O` `D`
- * `G` `O` `V` still makes the reader decode a character to learn something the
- * name one control to the right already says, with two of the six launch
- * services sharing a letter. {@link ServiceLogo} keeps the letter as its
- * fallback, so a new catalogue row needs no asset either way.
- *
- * The tile stays: the marks have wildly different aspect ratios (Vercel's
- * triangle against OpenRouter's wide arrow), and the box is what makes a column
- * of them line up.
- */
 function ServiceAvatar({ service }: { service: ServiceDef }) {
   return (
     <span
@@ -137,16 +121,13 @@ export function ServiceCard({
 }: {
   service: ServiceDef;
   billingMode: BillingMode;
-  /**
-   * How many credentials this `(service, mode)` holds. Rendered as a pill only
-   * past one — "1 account" is a count nobody needed counting.
-   */
+
   credentialCount: number;
-  /** "account" for a login-backed mode, "credential" for a supplied secret. */
+
   countNoun: string;
   /** How many models this `(service, mode)` offers — the count, never the ids. */
   modelCount: number;
-  /** Open the supported-models dialog at this service (req 23). */
+
   onShowModels: () => void;
   /**
    * The shaded band under the body.
@@ -166,10 +147,7 @@ export function ServiceCard({
   return (
     <div
       // `shrink-0` is load-bearing, not decoration. The panel is a
-      // `flex-col h-full overflow-y-auto`, and `overflow-hidden` — which is what
-      // clips the routing band into the rounded corners — resets this card's
-      // `min-height: auto` to 0, so without it every card collapses to a bare
-      // 1px line under the column's height constraint.
+
       className="shrink-0 overflow-hidden rounded-md border border-(--color-border-secondary)"
       data-testid={testId}
     >

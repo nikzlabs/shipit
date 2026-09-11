@@ -1,7 +1,7 @@
-/* Light theme — :root provides defaults, .light is used by the theme picker */
+
 :root,
 .light {
-  /* Surfaces */
+
   --color-bg-primary: #ffffff;
   --color-bg-secondary: #f9fafb;
   --color-bg-tertiary: #f3f4f6;
@@ -10,25 +10,21 @@
   --color-bg-hover: rgba(0, 0, 0, 0.04);
   --color-bg-active: rgba(0, 0, 0, 0.08);
 
-  /* Text */
   --color-text-primary: #111827;
   --color-text-secondary: #4b5563;
   --color-text-tertiary: #9ca3af;
   --color-text-inverse: #ffffff;
   --color-text-link: #2563eb;
 
-  /* Borders */
   --color-border-primary: #dfe1e6;
   --color-border-secondary: #d1d5db;
   --color-border-focus: #3b82f6;
 
-  /* Accent */
   --color-accent: #2563eb;
   --color-accent-hover: #1d4ed8;
   --color-accent-text: #ffffff;
   --color-accent-subtle: rgba(37, 99, 235, 0.1);
 
-  /* Status */
   --color-success: #16a34a;
   --color-success-subtle: rgba(22, 163, 74, 0.1);
   --color-success-border: rgba(22, 163, 74, 0.3);
@@ -39,7 +35,6 @@
   --color-info: #2563eb;
   --color-info-subtle: rgba(37, 99, 235, 0.1);
 
-  /* Domain-specific */
   --color-pr: #7c3aed;
   --color-pr-subtle: rgba(124, 58, 237, 0.1);
   --color-pr-border: rgba(124, 58, 237, 0.3);
@@ -53,24 +48,17 @@
   --color-folder: #eab308;
   --color-autofix: #f97316;
   --color-attention: #d97706;
-  /* docs/260 — the attention amber as TEXT/glyph colour. `--color-attention` is a
-     3px marker on a row: at 12px and below it measures 2.35–2.89:1 on the light
-     themes' surfaces, under the 4.5:1 AA asks of small text. This is the lightest
-     shade of the same amber ramp that clears 4.5:1 on each theme, so the sidebar's
-     "Needs you" switch stays legible without touching the marker's colour. */
+
   --color-attention-text: #b45309;
 
-  /* Context meter */
   --color-context-ok: #22c55e;
   --color-context-mid: #eab308;
   --color-context-high: #f97316;
   --color-context-full: #ef4444;
 
-  /* Scrollbar */
   --color-scrollbar-thumb: rgba(156, 163, 175, 0.4);
   --color-scrollbar-thumb-hover: rgba(107, 114, 128, 0.6);
 
-  /* Syntax highlighting (GitHub Light) */
   --color-syntax-base: #24292e;
   --color-syntax-bg: #ffffff;
   --color-syntax-keyword: #d73a49;
@@ -88,6 +76,5 @@
   --color-syntax-deletion: #b31d28;
   --color-syntax-deletion-bg: #ffeef0;
 
-  /* Typography */
   --font-size-code: 13px;
 }

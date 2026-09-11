@@ -1,8 +1,5 @@
-// Barrel for the MessageList directory. Preserves every name the old monolithic
-// `MessageList.tsx` exported, so the historical `./components/MessageList` import
-// path resolves unchanged (via the sibling shim file).
 
-// ── Type exports (canonical location for backward compat) ──
+
 export type {
   ToolUseBlock,
   ToolResultBlock,

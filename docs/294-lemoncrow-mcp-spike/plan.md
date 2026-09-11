@@ -351,7 +351,7 @@ repository depends on it.
 uv venv --python 3.12 /persist/lc/venv
 VIRTUAL_ENV=/persist/lc/venv uv pip install -e <lemoncrow@403ea9ba> httpx "mcp>=1.0" tiktoken
 node docs/294-lemoncrow-mcp-spike/prepare_tokenizer.mjs   # writes /persist/tkcache
-# ripwire v0.4.0 extracted to /persist/rw/ripwire-0.4.0-linux-x64/
+
 pkill -f "lemoncrow[.]gateway.*mcp daemon"                # fresh daemon, see above
 /persist/lc/venv/bin/python docs/294-lemoncrow-mcp-spike/measure_lc.py
 ```

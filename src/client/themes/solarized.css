@@ -1,6 +1,6 @@
-/* Solarized theme — classic Solarized Dark color scheme */
+
 .solarized {
-  /* Surfaces */
+
   --color-bg-primary: #002b36;
   --color-bg-secondary: #073642;
   --color-bg-tertiary: #0a4050;
@@ -9,25 +9,21 @@
   --color-bg-hover: rgba(147, 161, 161, 0.08);
   --color-bg-active: rgba(147, 161, 161, 0.14);
 
-  /* Text */
   --color-text-primary: #eee8d5;
   --color-text-secondary: #93a1a1;
   --color-text-tertiary: #657b83;
   --color-text-inverse: #002b36;
   --color-text-link: #268bd2;
 
-  /* Borders */
   --color-border-primary: #094656;
   --color-border-secondary: #2a5460;
   --color-border-focus: #268bd2;
 
-  /* Accent */
   --color-accent: #b58900;
   --color-accent-hover: #a07800;
   --color-accent-text: #002b36;
   --color-accent-subtle: rgba(181, 137, 0, 0.15);
 
-  /* Status */
   --color-success: #859900;
   --color-success-subtle: rgba(133, 153, 0, 0.15);
   --color-success-border: rgba(133, 153, 0, 0.3);
@@ -38,7 +34,6 @@
   --color-info: #268bd2;
   --color-info-subtle: rgba(38, 139, 210, 0.15);
 
-  /* Domain-specific */
   --color-pr: #6c71c4;
   --color-pr-subtle: rgba(108, 113, 196, 0.15);
   --color-pr-border: rgba(108, 113, 196, 0.3);
@@ -47,17 +42,14 @@
   --color-attention: #f59e0b;
   --color-attention-text: #f59e0b;
 
-  /* Context meter */
   --color-context-ok: #859900;
   --color-context-mid: #b58900;
   --color-context-high: #cb4b16;
   --color-context-full: #dc322f;
 
-  /* Scrollbar */
   --color-scrollbar-thumb: rgba(101, 123, 131, 0.4);
   --color-scrollbar-thumb-hover: rgba(147, 161, 161, 0.5);
 
-  /* Syntax highlighting (Solarized Dark) */
   --color-syntax-base: #839496;
   --color-syntax-bg: #002b36;
   --color-syntax-keyword: #859900;
@@ -75,6 +67,5 @@
   --color-syntax-deletion: #dc322f;
   --color-syntax-deletion-bg: #380008;
 
-  /* Typography */
   --font-size-code: 13px;
 }

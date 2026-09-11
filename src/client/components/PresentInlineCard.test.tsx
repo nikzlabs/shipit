@@ -1,13 +1,4 @@
-/**
- * PresentInlineCard tests (docs/280).
- *
- * The card is metadata-only by design, so the behaviour worth pinning is what
- * it does with an artifact it does NOT hold: fetch it lazily, re-render when the
- * bytes change under it (that is how a re-present refreshes the card in place),
- * and degrade to a placeholder rather than a broken frame when the artifact is
- * gone. Rendering per kind is asserted at the boundary each kind is visible at —
- * an iframe for HTML/SVG, an `<img>` for images, text for markdown/plain.
- */
+
 
 import { afterEach, describe, it, expect, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
@@ -30,7 +21,6 @@ function card(over: Partial<PresentInlineCardData> = {}): PresentInlineCardData 
   };
 }
 
-/** Seed the store with the artifact the card points at, optionally with bytes. */
 function seedArtifact(over: Partial<PresentInlineCardData> = {}, content?: string) {
   const c = card(over);
   usePresentStore.setState({
@@ -96,7 +86,7 @@ describe("PresentInlineCard", () => {
   });
 
   it("says so when the artifact is no longer available", () => {
-    // Card in the transcript, artifact gone from the store (session cleared).
+
     render(<PresentInlineCard card={card()} />);
     expect(screen.getByText(/no longer available/i)).toBeTruthy();
     expect(document.querySelector("iframe")).toBeNull();
@@ -112,9 +102,6 @@ describe("PresentInlineCard", () => {
     render(<PresentInlineCard card={seedArtifact({}, "<h1>v1</h1>")} />);
     expect(document.querySelector("iframe")?.getAttribute("srcdoc")).toContain("v1");
 
-    // A re-present drops the cached bytes and the refetch caches new ones; the
-    // card follows the artifact instead of freezing at the version it was
-    // emitted with — this is what makes one card enough for the whole loop.
     act(() => usePresentStore.getState().setContent(PRESENT_ID, "<h1>v2</h1>"));
     expect(document.querySelector("iframe")?.getAttribute("srcdoc")).toContain("v2");
   });

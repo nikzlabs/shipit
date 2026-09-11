@@ -10,8 +10,6 @@ import type {
 } from "../../server/shared/types/github-types.js";
 import { useSettingsStore } from "./settings-store.js";
 
-// ---- Types ----
-
 interface ImportSearchResult {
   fullName: string;
   description: string | null;
@@ -20,21 +18,20 @@ interface ImportSearchResult {
   cloneUrl: string;
 }
 
-/** PR lifecycle card state for a single session. */
 export interface PrCardState {
   cardId: string;
   phase: "ready" | "creating" | "open" | "merged" | "closed" | "error";
-  /** Current branch name (ready phase). */
+
   headBranch?: string;
-  /** Files changed (ready phase). */
+
   files?: PrFileStat[];
   totalInsertions?: number;
   totalDeletions?: number;
-  /** PR info (open/merged phases). */
+
   pr?: {
     number: number;
     title: string;
-    /** PR description body (markdown source). Optional; omitted when none. */
+
     body?: string;
     createdAt?: string;
     author?: { login: string; avatarUrl: string };
@@ -45,33 +42,29 @@ export interface PrCardState {
     deletions: number;
     files?: PrFileStat[];
   };
-  /** CI check status (open phase). */
+
   checks?: {
     state: "pending" | "success" | "failure" | "none";
     total: number;
     passed: number;
     failed: number;
     pending: number;
-    /** Per-check failure details. */
+
     failedChecks?: { name: string; summary: string }[];
-    /**
-     * Epoch ms at which a poller-forced `pending` (the grace override for "CI
-     * hasn't registered yet") expires. Past it, an empty check set is the
-     * terminal "no checks" state — see `useCiDisplay`.
-     */
+
     graceUntil?: number;
   };
-  /** Auto-fix loop state (open phase). docs/169: toggle is now a global setting. */
+
   autoFix?: {
     status: "idle" | "running" | "deferred" | "exhausted";
     attemptCount: number;
     maxAttempts: number;
   };
-  /** Auto-merge state (open phase). */
+
   autoMerge?: {
     enabled: boolean;
     mergeMethod: "squash" | "merge" | "rebase";
-    /** True when ShipIt, not GitHub, owns the merge. See `managedReason`. */
+
     managed?: boolean;
     /**
      * Why ShipIt owns it (docs/266). `native-unavailable` is a repo
@@ -80,9 +73,9 @@ export interface PrCardState {
      * treated as `native-unavailable` (the only case before docs/266).
      */
     managedReason?: AutoMergeManagedReason;
-    /** GitHub settings URL for configuring branch protection. */
+
     settingsUrl?: string;
-    /** The real GitHub error that triggered the managed-merge fallback. */
+
     reason?: string;
     error?: { code: string; message: string; settingsUrl: string };
     /**
@@ -97,11 +90,7 @@ export interface PrCardState {
      */
     armedForPrNumber?: number;
   };
-  /**
-   * docs/146 — auto-resolve-conflicts state (open phase). Populated from
-   * the PR status snapshot; the failure banner only renders when
-   * `status === "exhausted"`.
-   */
+
   autoResolve?: {
     status: "idle" | "running" | "deferred" | "exhausted";
     attemptCount: number;
@@ -109,43 +98,29 @@ export interface PrCardState {
     lastError?: string;
     nextEligibleAt?: number;
   };
-  /**
-   * PR-level (issue) comments — docs/133 Phase 4. Only populated while the PR
-   * tab is open (the poller gates the fetch); `undefined` means "not fetched".
-   */
+
   issueComments?: PrIssueComment[];
-  /** Review threads (line comments) — docs/133 Phase 4, read-only. */
+
   reviewThreads?: PrReviewThread[];
-  /**
-   * docs/202 — set on a re-armed session's card (previously shipped a PR, then
-   * the branch was rebased + progressed). Drives the "Previously merged #N" note
-   * on the ready/open card, and is the signal that lets this card override a
-   * stale terminal (merged/closed) card in `updateCard`'s regress guard.
-   */
+
   previousMergedPr?: {
     number: number;
     url: string;
     title: string;
     baseBranch: string;
   };
-  /** Error message (error phase). */
+
   errorMessage?: string;
-  /**
-   * Classification of the error (error phase). "auth" means the GitHub token
-   * is missing/expired and the user should reconnect — the card surfaces a
-   * "Sign in to GitHub" action alongside Retry. Defaults to a generic error
-   * with only Retry.
-   */
+
   errorKind?: "auth" | "generic";
 }
 
 interface PrState {
-  // ---- PR lifecycle card state (SSE-driven) ----
-  /** sessionId → PrStatusSummary from the poller. */
+
   statusBySession: Record<string, PrStatusSummary>;
-  /** sessionId → PrCardState for inline card rendering. */
+
   cardBySession: Record<string, PrCardState>;
-  /** sessionId → auto-merge preference/state, available before a PR card exists. */
+
   autoMergeBySession: Record<string, NonNullable<PrCardState["autoMerge"]>>;
   /**
    * docs/205/210 — sessionId → notable files (docs + allowlisted config +
@@ -173,95 +148,42 @@ interface PrState {
    */
   resetEligibleBySession: Record<string, boolean>;
 
-  // Repo import search (used by home page repo picker)
   importSearchResults: ImportSearchResult[];
 
-  // SSE-driven actions
-  /**
-   * Bulk update from pr_status SSE event. `removals` contains session IDs
-   * whose PR snapshot was cleared on the server (e.g., on unarchive — the
-   * session starts a fresh branch, so the previous PR no longer applies).
-   *
-   * `isSnapshot` marks the authoritative initial-connect payload: `updates`
-   * is then the COMPLETE poller-derived PR set, so any session we still hold
-   * poller state for but that's absent from `updates` is dropped. This lets a
-   * reconnect (notably mobile foreground, where the dead SSE socket missed
-   * incremental removals) converge to the server's current truth instead of
-   * leaving stale CI/PR cards behind. In-flight cards the poller doesn't track
-   * yet (phases `creating`/`ready`/`error`) are preserved.
-   */
   applyPrStatusUpdates: (updates: PrStatusSummary[], removals?: string[], isSnapshot?: boolean) => void;
-  /** Update inline card from pr_lifecycle_update WS message. */
+
   updateCard: (sessionId: string, card: PrCardState) => void;
-  /**
-   * docs/210 — set the changed-docs strip for a session, from a
-   * `pr_notable_files` WS message (emitted each post-turn commit and on viewer
-   * re-connect). Writes the standalone `notableFilesBySession` slice so it's
-   * independent of the poller-owned card; the list is authoritative — an empty
-   * array clears the strip. `cardId` is unused (the slice is keyed by session).
-   */
+
   setNotableFiles: (sessionId: string, cardId: string, notableFiles: NotableFileChange[]) => void;
-  /** docs/218 — set the transient reset-eligibility signal for a session (from `reset_eligible` WS). */
+
   setResetEligible: (sessionId: string, eligible: boolean) => void;
 
-  // CI fix actions
-  /** Trigger manual CI fix. Returns error message on failure, null on success. */
   fixCI: (sessionId: string) => Promise<string | null>;
 
-  // Conversation actions (docs/133 Phase 4)
-  /**
-   * Post a PR-level (issue) comment. Optimistically appends it to the card so
-   * the user sees it immediately, then reconciles on the next poll. Returns an
-   * error message on failure (after reverting the optimistic append), null on
-   * success.
-   */
   postComment: (sessionId: string, body: string) => Promise<string | null>;
 
-  // Review-thread sync actions (docs/102)
-  /**
-   * Reply to a PR review thread. Optimistically appends the reply to the
-   * matching thread on the card and reconciles on the next poll. Returns an
-   * error message on failure (after reverting), null on success.
-   */
   replyToThread: (sessionId: string, threadId: string, body: string) => Promise<string | null>;
-  /**
-   * Mark a PR review thread as resolved. Optimistically flips `isResolved`
-   * on the card and reconciles on the next poll. Returns an error message
-   * on failure (after reverting), null on success.
-   */
+
   resolveThread: (sessionId: string, threadId: string) => Promise<string | null>;
-  /**
-   * Reopen a previously-resolved PR review thread. Same optimistic + revert
-   * pattern as `resolveThread`.
-   */
+
   unresolveThread: (sessionId: string, threadId: string) => Promise<string | null>;
 
-  // PR edit actions (docs/133 Phase 2)
-  /**
-   * Edit the PR title and/or body. Optimistically updates the card so the
-   * change shows immediately, then reconciles on the next poll. Reverts the
-   * optimistic change and returns an error message on failure; null on success.
-   */
   updatePr: (
     sessionId: string,
     changes: { title?: string; body?: string },
   ) => Promise<string | null>;
 
-  // Merge actions
-  /** Merge the PR with the given method. Returns error message on failure, null on success. */
   merge: (sessionId: string, method?: string) => Promise<string | null>;
-  /** Close the open PR without merging. Returns error message on failure, null on success. */
+
   closePr: (sessionId: string) => Promise<string | null>;
-  /** Toggle auto-merge on/off. */
+
   toggleAutoMerge: (sessionId: string, enabled: boolean) => Promise<void>;
-  /** Update the preferred merge method. */
+
   setMergeMethod: (sessionId: string, method: "squash" | "merge" | "rebase") => Promise<void>;
 
-  // Repo import actions
   setImportSearchResults: (results: ImportSearchResult[]) => void;
   searchRepos: (query: string) => Promise<void>;
 
-  // Reset
   reset: () => void;
 }
 
@@ -277,8 +199,6 @@ const initialState = {
 export const usePrStore = create<PrState>((set, get) => ({
   ...initialState,
 
-  // ---- SSE-driven actions ----
-
   applyPrStatusUpdates: (updates, removals, isSnapshot) => {
     set((state) => {
       const nextStatus = { ...state.statusBySession };
@@ -286,12 +206,6 @@ export const usePrStore = create<PrState>((set, get) => ({
       const nextAutoMerge = { ...state.autoMergeBySession };
       const nextNotable = { ...state.notableFilesBySession };
 
-      // Authoritative snapshot: drop poller state for any session not present
-      // in `updates`. statusBySession is purely poller-owned so it's pruned
-      // wholesale; for cardBySession we only prune poller-authoritative phases
-      // (open/merged/closed) so an in-flight, WS-driven card (creating/ready/
-      // error) isn't wiped by a snapshot that predates the poller learning of
-      // its PR.
       if (isSnapshot) {
         const present = new Set(updates.map((u) => u.sessionId));
         for (const sessionId of Object.keys(nextStatus)) {
@@ -305,8 +219,7 @@ export const usePrStore = create<PrState>((set, get) => ({
           if (pollerPhase && !present.has(sessionId)) {
             // eslint-disable-next-line @typescript-eslint/no-dynamic-delete
             delete nextCards[sessionId];
-            // Drop the strip for a card pruned as stale, so a now-gone PR can't
-            // leave its changed-docs chips behind.
+
             // eslint-disable-next-line @typescript-eslint/no-dynamic-delete
             delete nextNotable[sessionId];
           }
@@ -330,27 +243,18 @@ export const usePrStore = create<PrState>((set, get) => ({
         nextStatus[update.sessionId] = update;
         const isTerminal = update.prState === "merged" || update.prState === "closed";
         if (isTerminal) {
-          // A terminal PR retires the auto-merge arming with it. The server
-          // drops its `AutoMergeManager` state at the same transition, but its
-          // terminal `pr_status` summary carries no `autoMerge` field — and an
-          // absent field means "unchanged" everywhere else in this reducer — so
-          // the sticky entry has to be cleared from the terminal `prState`
-          // instead. Without this the merged/closed card's overflow menu keeps
-          // showing the toggle ON for a PR that no longer exists, and the next
+
           // PR on this session inherits an arming the user never gave it.
           // eslint-disable-next-line @typescript-eslint/no-dynamic-delete
           delete nextAutoMerge[update.sessionId];
         } else if (update.autoMerge) {
-          // Stamp the arming with the PR it arrived on, so a later card that
-          // carries it forward (a re-armed session's ready card) can be told
-          // apart from a genuine pre-arm. See `selectActiveAutoMerge`.
+
           nextAutoMerge[update.sessionId] = {
             ...update.autoMerge,
             armedForPrNumber: update.prNumber,
           };
         }
 
-        // Update the inline card to reflect poller data
         const existing = nextCards[update.sessionId];
         if (isTerminal) {
           nextCards[update.sessionId] = {
@@ -369,11 +273,11 @@ export const usePrStore = create<PrState>((set, get) => ({
               deletions: update.deletions,
               files: update.files,
             },
-            // Deliberately not carried over: the arming died with the PR
+
             // (see the clear above), so a terminal card must not resurrect it
-            // from `existing` or the by-session map.
+
             autoMerge: undefined,
-            // Preserve last-known conversation when an update omits it (light poll).
+
             issueComments: update.issueComments ?? existing?.issueComments,
             reviewThreads: update.reviewThreads ?? existing?.reviewThreads,
           };
@@ -398,7 +302,7 @@ export const usePrStore = create<PrState>((set, get) => ({
             autoFix: update.autoFix,
             autoMerge: nextAutoMerge[update.sessionId] ?? update.autoMerge,
             ...(update.autoResolve !== undefined ? { autoResolve: update.autoResolve } : {}),
-            // Preserve last-known conversation when an update omits it (light poll).
+
             issueComments: update.issueComments ?? existing?.issueComments,
             reviewThreads: update.reviewThreads ?? existing?.reviewThreads,
           };
@@ -417,28 +321,19 @@ export const usePrStore = create<PrState>((set, get) => ({
   updateCard: (sessionId, card) => {
     set((state) => {
       const existing = state.cardBySession[sessionId];
-      // Don't regress from terminal phases (merged/closed) — SSE poller is
-      // authoritative. EXCEPTION (docs/202): a card carrying `previousMergedPr`
-      // is a re-armed session (merged → rebased + progressed → ready for a new
+
       // PR). It MUST be allowed to replace the stale terminal card, and order-
-      // independently: re-arm broadcasts no destructive `pr_status` removal (it
+
       // would race this card across transports), so this override is the sole
-      // path that clears the old merged card on the active viewer.
+
       if (existing && (existing.phase === "merged" || existing.phase === "closed") &&
           card.phase !== "merged" && card.phase !== "closed" &&
           !card.previousMergedPr) {
         return state;
       }
-      // docs/202 — a re-armed, non-terminal card is also the client-side signal
-      // that the poller dropped its snapshot. `PrStatusPoller.reArm` clears
+
       // `lastKnown` *silently* (broadcasting `pr_status { removals }` would race
-      // this card across two transports and could wipe it), so nothing else
-      // retires the stale merged summary here until a reconnect snapshot prunes
-      // it. Leaving it in place keeps `PrStateBadge` — which resolves
-      // `status?.prState` ahead of the card phase — rendering the purple merged
-      // icon on the ready card AND the Active sidebar row, contradicting this
-      // feature's "gray like a fresh session" indicator and doubling the merge
-      // glyph next to the "Previously merged #N" note. Mirroring the server's
+
       // silent clear here converges without the racy removal.
       const reArmed = Boolean(card.previousMergedPr) && card.phase !== "merged" && card.phase !== "closed";
       let nextStatus = state.statusBySession;
@@ -466,8 +361,7 @@ export const usePrStore = create<PrState>((set, get) => ({
   setNotableFiles: (sessionId, _cardId, notableFiles) => {
     set((state) => {
       const next = { ...state.notableFilesBySession };
-      // Authoritative: an empty list clears the strip. Drop the key so the map
-      // doesn't grow an entry per session that ever had — then lost — changed docs.
+
       if (notableFiles.length === 0) {
         // eslint-disable-next-line @typescript-eslint/no-dynamic-delete
         delete next[sessionId];
@@ -480,8 +374,7 @@ export const usePrStore = create<PrState>((set, get) => ({
 
   setResetEligible: (sessionId, eligible) => {
     set((state) => {
-      // Drop the key when ineligible so the map doesn't grow an entry per session
-      // that was ever briefly eligible; absence reads as "not eligible".
+
       const next = { ...state.resetEligibleBySession };
       if (eligible) {
         next[sessionId] = true;
@@ -503,14 +396,12 @@ export const usePrStore = create<PrState>((set, get) => ({
         const data = await res.json() as { error?: string };
         return data.error || "Failed to fix CI issues";
       }
-      // State updates come from SSE, not from the POST response
+
       return null;
     } catch (err) {
       return err instanceof Error ? err.message : "Failed to fix CI issues";
     }
   },
-
-  // ---- Conversation actions (docs/133 Phase 4) ----
 
   postComment: async (sessionId, body) => {
     const trimmed = body.trim();
@@ -526,8 +417,6 @@ export const usePrStore = create<PrState>((set, get) => ({
       url: "",
     };
 
-    // Optimistically append so the comment shows immediately; the next poll
-    // tick reconciles with GitHub's authoritative copy.
     set((state) => {
       const existing = state.cardBySession[sessionId];
       if (!existing) return state;
@@ -575,14 +464,6 @@ export const usePrStore = create<PrState>((set, get) => ({
       return err instanceof Error ? err.message : "Failed to post comment";
     }
   },
-
-  // ---- Review-thread sync actions (docs/102) ----
-  //
-  // All three follow the same pattern as `postComment`: optimistically mutate
-  // the matching thread on the card, fire the HTTP call, revert on failure.
-  // The next poll tick (5s by default) reconciles with GitHub's authoritative
-  // state, so success doesn't need to overwrite anything — leaving the
-  // optimistic copy in place avoids a flicker.
 
   replyToThread: async (sessionId, threadId, body) => {
     const trimmed = body.trim();
@@ -756,8 +637,6 @@ export const usePrStore = create<PrState>((set, get) => ({
     }
   },
 
-  // ---- PR edit actions (docs/133 Phase 2) ----
-
   updatePr: async (sessionId, changes) => {
     const card = get().cardBySession[sessionId];
     if (!card?.pr) return "No pull request to update";
@@ -780,8 +659,6 @@ export const usePrStore = create<PrState>((set, get) => ({
       });
     };
 
-    // Optimistically apply the edit so it shows immediately; the next poll
-    // reconciles with GitHub's authoritative copy.
     applyPr({
       ...card.pr,
       ...(typeof changes.title === "string" ? { title: changes.title } : {}),
@@ -796,7 +673,7 @@ export const usePrStore = create<PrState>((set, get) => ({
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({})) as { error?: string };
-        // Revert to the pre-edit title/body.
+
         const current = get().cardBySession[sessionId];
         if (current?.pr) applyPr({ ...current.pr, title: prev.title, body: prev.body });
         return data.error || "Failed to update pull request";
@@ -808,8 +685,6 @@ export const usePrStore = create<PrState>((set, get) => ({
       return err instanceof Error ? err.message : "Failed to update pull request";
     }
   },
-
-  // ---- Merge actions ----
 
   merge: async (sessionId, method) => {
     try {
@@ -829,8 +704,7 @@ export const usePrStore = create<PrState>((set, get) => ({
       if (!data.success) {
         return data.message || "Failed to merge pull request";
       }
-      // Optimistically update card phase so the button disappears immediately
-      // instead of waiting for SSE poller to detect the merge.
+
       if (!data.autoMergeEnabled) {
         set((state) => {
           const existing = state.cardBySession[sessionId];
@@ -850,8 +724,7 @@ export const usePrStore = create<PrState>((set, get) => ({
   },
 
   closePr: async (sessionId) => {
-    // The close route is keyed by PR number; resolve it from whichever source
-    // has it (the inline card, else the poller snapshot).
+
     const prNumber =
       get().cardBySession[sessionId]?.pr?.number ?? get().statusBySession[sessionId]?.prNumber;
     if (!prNumber) return "No open pull request to close";
@@ -864,8 +737,7 @@ export const usePrStore = create<PrState>((set, get) => ({
         const data = (await res.json().catch(() => ({}))) as { error?: string; message?: string };
         return data.error || data.message || "Failed to close pull request";
       }
-      // Optimistically flip the card to closed so the merge controls disappear
-      // immediately instead of waiting for the SSE poller to notice.
+
       set((state) => {
         const existing = state.cardBySession[sessionId];
         if (!existing) return state;
@@ -883,23 +755,17 @@ export const usePrStore = create<PrState>((set, get) => ({
   },
 
   toggleAutoMerge: async (sessionId, enabled) => {
-    // Snapshot prior auto-merge state so we can revert if the request fails.
-    // Optimistic flip below keeps the toggle responsive; without it the UI
-    // sits on the old value until the server round-trip + SSE poll lands.
+
     const prevAutoMerge = get().autoMergeBySession[sessionId];
     const prevCardAutoMerge = get().cardBySession[sessionId]?.autoMerge;
-    // Which PR this toggle is for, captured at send time. `undefined` means the
-    // user is pre-arming for the NEXT pull request (none yet, or the current one
-    // has merged) — the distinction the response handler needs below.
+
     const armedForPrNumber = livePrNumber(get(), sessionId);
 
     set((state) => {
       const existing = state.cardBySession[sessionId];
       const base = selectActiveAutoMerge(state, sessionId)
         ?? { enabled: false, mergeMethod: "squash" as const };
-      // Stamp the arming with the PR it is being made for — the live one, or
-      // nothing when the user is pre-arming (no PR yet, or the current one has
-      // merged and this is meant for the next). See `selectActiveAutoMerge`.
+
       const optimistic = { ...base, enabled, armedForPrNumber };
       return {
         autoMergeBySession: {
@@ -957,14 +823,7 @@ export const usePrStore = create<PrState>((set, get) => ({
       };
       set((state) => {
         const existing = state.cardBySession[sessionId];
-        // This toggle was for a live PR that has since reached its terminal
-        // state — a green PR can merge inside this very call — so the terminal
-        // `pr_status` has already retired the arming. Writing the response back
-        // on top would resurrect it, and this write is the LAST word (no further
-        // update ever carries an `autoMerge` for a merged PR), which is exactly
-        // how the toggle got stranded ON. Drop the entry instead; the server
-        // refuses the same window. A toggle made with NO live PR is a pre-arm
-        // for the next one and is deliberately left alone.
+
         if (armedForPrNumber !== undefined && isPrTerminal(state, sessionId)) {
           const cleared = { ...state.autoMergeBySession };
           // eslint-disable-next-line @typescript-eslint/no-dynamic-delete
@@ -982,14 +841,12 @@ export const usePrStore = create<PrState>((set, get) => ({
           enabled: data.enabled,
           mergeMethod: data.mergeMethod,
           managed: data.managed,
-          // Carried from the response, not left to the next poll broadcast: the
-          // tooltip renders immediately on toggle, and without this a
+
           // managed-because-live arming would flash the repo-misconfiguration
-          // wording in the meantime. docs/266.
+
           managedReason: data.managedReason,
           reason: data.reason,
-          // The PR this toggle was made for — so the arming is retired with that
-          // PR rather than read as a pre-arm for the next one.
+
           armedForPrNumber,
         };
         return {
@@ -1023,13 +880,11 @@ export const usePrStore = create<PrState>((set, get) => ({
         const data = await res.json() as { error?: string };
         console.error("[pr-store] Set merge method failed:", data.error);
       }
-      // State updates come from SSE
+
     } catch (err) {
       console.error("[pr-store] Set merge method failed:", err);
     }
   },
-
-  // ---- Repo import actions ----
 
   setImportSearchResults: (importSearchResults) => set({ importSearchResults }),
 
@@ -1048,8 +903,6 @@ export const usePrStore = create<PrState>((set, get) => ({
   },
 }));
 
-// ---- Derived selectors ----
-
 /**
  * True when the session's CURRENT pull request has reached a terminal state
  * (merged, or closed without merging).
@@ -1066,10 +919,6 @@ export function isPrTerminal(state: PrState, sessionId: string): boolean {
   return prState === "merged" || prState === "closed";
 }
 
-/**
- * The number of the pull request an arming made right now would belong to, or
- * `undefined` when there is none to act on (no PR yet, or a terminal one).
- */
 function livePrNumber(state: PrState, sessionId: string): number | undefined {
   if (isPrTerminal(state, sessionId)) return undefined;
   return state.cardBySession[sessionId]?.pr?.number ?? state.statusBySession[sessionId]?.prNumber;
@@ -1105,7 +954,6 @@ export function selectActiveAutoMerge(
   return arming.armedForPrNumber === livePrNumber(state, sessionId) ? arming : undefined;
 }
 
-/** Hook form of {@link selectActiveAutoMerge}. */
 export function useActiveAutoMerge(
   sessionId: string,
 ): NonNullable<PrCardState["autoMerge"]> | undefined {

@@ -13,11 +13,10 @@ export interface CompactRun {
   end: number;
   lastProse: number;
   hasText: boolean;
-  /** User message identity survives appends, but not history replacement. */
+
   identity: ChatMessage;
 }
 
-/** Conservative assistant runs. Steered input can split a real turn; keep extra prose then. */
 export function compactRuns(messages: ChatMessage[], activeFrom: number): CompactRun[] {
   const runs: CompactRun[] = [];
   let start = -1;
@@ -47,13 +46,11 @@ export function compactRuns(messages: ChatMessage[], activeFrom: number): Compac
   return runs;
 }
 
-/** Only known ordinary detail can disappear. All special tools/cards/notices stay. */
 export function isCompactDetail(el: VisualElement, messages: ChatMessage[], run: CompactRun): boolean {
   if (el.kind === "tool-group") return !el.items.some((item) => item.result?.isError);
   if (el.kind !== "message") return false;
   const m = messages[el.index];
-  // Standalone tools with accompanying prose can remain INSIDE the bubble.
-  // Keep that whole row, just like an attachment row; hiding it loses the question/plan.
+
   if (!el.hideTools && m.toolUse?.some((tool) => !isTaskListTool(tool.name))) return false;
   return m.role === "assistant" && el.index !== run.lastProse && !isTerminalTranscriptEntry(m)
     && !m.isError && !m.rolledBack && !m.images?.length && !m.files?.length;

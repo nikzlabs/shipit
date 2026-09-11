@@ -51,8 +51,7 @@
  */
 
 // useEffect is used solely for its cleanup: a pending cutoff edit must be
-// persisted when the control unmounts (closing Settings), which no event
-// handler can observe.
+
 // eslint-disable-next-line no-restricted-imports -- unmount flush, see above
 import { useEffect, useRef, useState } from "react";
 import { loginForProvider } from "./ProviderAccountRows.js";
@@ -62,14 +61,6 @@ import type { BillingMode } from "../../../server/shared/catalogue/index.js";
 import { useSettingsStore } from "../../stores/settings-store.js";
 import { WithTooltip } from "../ui/tooltip.js";
 
-/**
- * A tooltip that leads with the thing's own name.
- *
- * Two of the band's four strings are a name plus an explanation, and the name
- * is the part the shortened on-screen label may have dropped ("Spread evenly"
- * ← "Spread across accounts"). Putting it on a bold first line is what makes
- * the full name still reachable rather than merely implied.
- */
 function TitledHint({ title, hint }: { title: string; hint: string }) {
   return (
     <span className="flex max-w-64 flex-col gap-0.5">
@@ -100,7 +91,7 @@ export function CredentialSelectionModeControl({
   serviceId: string;
   billingMode: BillingMode;
   serviceName: string;
-  /** "account" for a login-backed mode, "credential" for a supplied secret. */
+
   noun: string;
 }) {
   const key = credentialModeKey(serviceId, billingMode);
@@ -131,12 +122,6 @@ export function CredentialSelectionModeControl({
     }
   };
 
-  /**
-   * One segment. `role="radio"` on a button rather than an `<input type=radio>`
-   * so the tooltip has a focusable trigger it can wrap — a native radio inside
-   * a `<label>` puts the hover target and the focus target in two places, and
-   * Radix would attach to one of them.
-   */
   const option = (value: "strict" | "balanced", label: string, fullName: string, hint: string) => (
     <WithTooltip side="top" label={<TitledHint title={fullName} hint={hint} />}>
       <button
@@ -202,17 +187,11 @@ const CUTOFF_EXPLANATION =
 const CUTOFF_KEYS = ["session", "weekly"] as const;
 type CutoffKey = (typeof CUTOFF_KEYS)[number];
 
-/** What a `(service, mode)` with no stored cutoffs behaves as, server-side. */
 const DEFAULT_CUTOFFS: Record<CutoffKey, number> = { session: 90, weekly: 90 };
 
 const currentCutoffs = (key: string): Record<CutoffKey, number> =>
   useSettingsStore.getState().failoverCutoffs[key] ?? DEFAULT_CUTOFFS;
 
-/**
- * Persist one cutoff. Deliberately a module-level function over the store,
- * not a closure over component state: it is called from an unmount cleanup,
- * where the component's state and its setters are already gone.
- */
 async function saveCutoff(
   key: string,
   provider: AgentId | undefined,
@@ -221,8 +200,7 @@ async function saveCutoff(
   raw: string,
 ): Promise<void> {
   const value = Number.parseInt(raw, 10);
-  // The server validates 1-100 and 400s otherwise; don't send a value the
-  // user is still mid-typing (an empty field parses to NaN).
+
   if (!Number.isInteger(value) || value < 1 || value > 100) return;
   const before = currentCutoffs(key);
   if (value === before[field]) return;
@@ -235,30 +213,16 @@ async function saveCutoff(
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
   } catch (err) {
-    // Roll back only our own optimistic write, and only if it is still the
+
     // value on screen — a slow failure must not clobber a newer edit or the
-    // other field, both of which can land while this request is in flight.
+
     const now = currentCutoffs(key);
     if (now[field] === value) {
       useSettingsStore.getState().setFailoverCutoffs(key, { ...now, [field]: before[field] });
     }
-    // docs/257 req 5. This one is the clearest case for a STORE-held notice
-    // rather than component state: `saveCutoff` is deliberately a module-level
+
     // function over the store because it is called from an unmount cleanup,
-    // where the component's state and its setters are already gone. The notice
-    // channel is keyed by LOGIN FLOW — see the block below for what that means
-    // when the mode has no login at all.
-    /**
-     * The notice channel is keyed by LOGIN FLOW, and a string-delivered
-     * subscription need not have one — GLM's coding plan is a subscription with
-     * no login flow, and Anthropic's plan can arrive as a supplied token on an
-     * install with no account. Re-keying the whole notice map by
-     * `(service, mode)` is a larger change than this control warrants, so
-     * without a login the failure is logged and the field's **rollback** is
-     * the feedback: the number visibly snaps back to the stored one, which is
-     * the same signal the notice accompanies. Weaker, and stated rather than
-     * hidden.
-     */
+
     const loginId = provider ? loginForProvider(provider) : undefined;
     if (loginId) {
       useSettingsStore.getState().setProviderAccountNotice(loginId, {
@@ -270,28 +234,6 @@ async function saveCutoff(
   }
 }
 
-/**
- * docs/150-multiple-provider-subscriptions reqs 4-6 — the two proactive cutoffs for one `(service, mode)`.
- *
- * Deliberately worded as "start using the next account at N%", not "limit":
- * crossing a cutoff moves *new* work, it does not stop the account working. An
- * account past its cutoff is still used when no account is under one, which is
- * what keeps a low setting from stranding quota.
- *
- * The inputs are controlled by a per-field draft, and a draft commits on Enter,
- * on blur, and — the case that used to lose edits silently — on unmount. These
- * were `defaultValue` + `onBlur` alone, so closing the Settings dialog straight
- * after typing (Escape, the close button, a click outside) unmounted the input
- * without ever firing blur and discarded the edit with no feedback at all.
- *
- * There is deliberately no debounced save-while-typing: it would PUT the "8" on
- * the way to "85", and unmount-commit already covers everything a debounce
- * would have. Nothing pending is left to a timer.
- *
- * A committed draft is cleared, so the field falls back to the store value —
- * which is what makes a failed save's rollback visible rather than sitting
- * behind a stale uncontrolled DOM value.
- */
 export function FailoverCutoffControls({
   serviceId,
   billingMode,
@@ -315,14 +257,9 @@ export function FailoverCutoffControls({
   const cutoffs = stored ?? DEFAULT_CUTOFFS;
   const [drafts, setDrafts] = useState<Partial<Record<CutoffKey, string>>>({});
 
-  // The unmount cleanup and the commit path both need the drafts as of *now*,
-  // not as of the render they closed over.
   const draftsRef = useRef(drafts);
   draftsRef.current = drafts;
 
-  // Mount-only, cleanup-only: flushing a pending edit when the control goes
-  // away is the whole point, and the identifiers below name which control that
-  // is for its entire lifetime.
   // eslint-disable-next-line no-restricted-syntax -- cleanup on unmount; see above
   useEffect(() => () => {
     for (const field of CUTOFF_KEYS) {
@@ -334,20 +271,13 @@ export function FailoverCutoffControls({
   const commit = (field: CutoffKey) => {
     const raw = draftsRef.current[field];
     if (raw === undefined) return;
-    // Drop the draft before saving so a second commit for the same edit (blur
-    // right after Enter) is a no-op instead of a duplicate PUT. An invalid or
-    // unchanged value is dropped too: nothing was saved, so the field snapping
-    // back to the stored number is the honest thing to show.
+
     const { [field]: _committed, ...rest } = draftsRef.current;
     draftsRef.current = rest;
     setDrafts(rest);
     void saveCutoff(key, provider, serviceName, field, raw);
   };
 
-  // Inline, and both on the band's one row: the label is the window it names
-  // ("5h", "7d" — the same two the quota pill's meters are labelled with, so
-  // the number a cutoff is measured against is named the same way on both), and
-  // the paragraph they shared is now the tooltip they share.
   const field = (name: CutoffKey, label: string, longLabel: string) => (
     <WithTooltip side="top" label={<TitledHint title={`${longLabel} cutoff`} hint={CUTOFF_EXPLANATION} />}>
       <label className="flex shrink-0 items-center gap-1 text-[11px] text-(--color-text-tertiary)">

@@ -257,8 +257,8 @@ was, before this change:**
 
 ```ts
 await safeSimpleGit().raw(["clone", "--local", "--no-checkout", bareCacheDir, targetDir]);
-const git = safeSimpleGit(targetDir);          // ← drops to the SESSION's uid
-await git.raw(["config", "gc.auto", "0"]);     // ← on a root:root tree
+const git = safeSimpleGit(targetDir);
+await git.raw(["config", "gc.auto", "0"]);
 ```
 
 `targetDir` is `<sessionDir>/state/plugins/<repo>/generations/<commit>.staging-*`
@@ -383,7 +383,7 @@ is a production soak, and it is the reason this procedure has a soak step.**
 ## Arming
 
 ```bash
-# On the host
+
 echo 'SHIPIT_GIT_STRICT_OWNERSHIP=1' >> /etc/shipit/shipit.env
 /opt/shipit/deployment/vps/deploy.sh
 ```
@@ -397,7 +397,7 @@ Confirm the entry is gone rather than assuming the redeploy took:
 
 ```bash
 docker compose exec shipit git config --file /credentials/.gitconfig --get-all safe.directory
-# expect: no output, exit 1
+
 ```
 
 **`--file`, not `--global`.** `GIT_CONFIG_GLOBAL` is set by the orchestrator on

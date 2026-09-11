@@ -42,7 +42,7 @@ describe("handleBranchAutoResetCard (docs/218)", () => {
 
   it("is idempotent by cardId — a reconnect replay appends once", () => {
     handleBranchAutoResetCard(ctx, event());
-    handleBranchAutoResetCard(ctx, event()); // same cardId (history load + buffer replay)
+    handleBranchAutoResetCard(ctx, event());                                              
     expect(useSessionStore.getState().messages).toHaveLength(1);
   });
 

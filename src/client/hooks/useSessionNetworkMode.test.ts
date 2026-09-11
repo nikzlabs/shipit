@@ -7,11 +7,6 @@ import {
 } from "./useSessionNetworkMode.js";
 import type { EgressSessionSettings } from "../../server/shared/types.js";
 
-/**
- * docs/285 — the Send barrier's contract: it may only open on a value the SERVER
- * accepted, and a response may only land on the session it was asked about.
- */
-
 function settings(over: Partial<EgressSessionSettings> = {}): EgressSessionSettings {
   return {
     sessionId: "s1",
@@ -36,11 +31,7 @@ describe("useSessionNetworkMode (docs/285)", () => {
   });
 
   it("keeps Send barred while an EARLIER write is still rebuilding", async () => {
-    // The revision clock orders writes by ARRIVAL; the barrier has to release on
-    // INTENT. Two rapid picks whose responses come back out of order — easy now
-    // that a write waits for a container rebuild — would otherwise let the one
-    // that answered first open the barrier while the other is still tearing a
-    // container down and building its replacement. Send would go out mid-rebuild.
+
     const puts: ((v: Response) => void)[] = [];
     vi.stubGlobal("fetch", vi.fn(async (_url: string, init?: RequestInit) => {
       if (init?.method === "PUT") {
@@ -57,7 +48,6 @@ describe("useSessionNetworkMode (docs/285)", () => {
     await waitFor(() => expect(puts).toHaveLength(2));
     expect(result.current.saving).toBe(true);
 
-    // The SECOND write answers first — its rebuild happened to be a no-op.
     await act(async () => {
       puts[1]!({
         ok: true, status: 200, json: async () => settings({ override: false }),
@@ -76,9 +66,7 @@ describe("useSessionNetworkMode (docs/285)", () => {
 
   it("reverts a failed write to the SERVER's value, not the last optimistic one", async () => {
     // The two writes must OVERLAP, or this cannot fail on the bug: if the first
-    // one settles before the second is issued, its own revert has already put
-    // the control back to Inherit and the wrong fallback looks right. So both
-    // PUTs are held open, both picks are made, and only then do they fail.
+
     const puts: ((v: Response) => void)[] = [];
     vi.stubGlobal("fetch", vi.fn(async (_url: string, init?: RequestInit) => {
       if (init?.method === "PUT") {
@@ -96,10 +84,6 @@ describe("useSessionNetworkMode (docs/285)", () => {
     expect(result.current.mode).toBe("open");
     await waitFor(() => expect(puts).toHaveLength(2));
 
-    // Both fail. Reverting to the DISPLAYED value would restore the first pick's
-    // guess — leaving the control on Contained while the server holds Inherit,
-    // with the barrier open. On an Open workspace the first turn then runs Open
-    // under a Contained promise.
     await act(async () => {
       puts[0]?.({ ok: false, status: 500 } as Response);
       puts[1]?.({ ok: false, status: 500 } as Response);
@@ -112,10 +96,7 @@ describe("useSessionNetworkMode (docs/285)", () => {
 
   it("does not release Send past a write the server DID accept", async () => {
     // The ordering a remembered fallback cannot survive: an older write
-    // succeeds, a newer one fails. Reverting to a value captured when the newer
-    // write was issued rewinds past the accepted change — showing Inherit (read
-    // as "currently Contained") while the server holds Open, with Send released
-    // and the first turn about to run Open.
+
     let serverOverride: boolean | null = null;
     const puts: { resolve: (v: Response) => void; body: boolean | null }[] = [];
     vi.stubGlobal("fetch", vi.fn(async (_url: string, init?: RequestInit) => {
@@ -137,7 +118,6 @@ describe("useSessionNetworkMode (docs/285)", () => {
     act(() => { result.current.setMode("contained"); });
     await waitFor(() => expect(puts).toHaveLength(2));
 
-    // PUT 1 succeeds — the server is now explicitly Open.
     await act(async () => {
       serverOverride = false;
       puts[0]?.resolve({
@@ -147,7 +127,7 @@ describe("useSessionNetworkMode (docs/285)", () => {
       } as Response);
       await Promise.resolve();
     });
-    // PUT 2 fails.
+
     await act(async () => {
       puts[1]?.resolve({ ok: false, status: 500 } as Response);
       await Promise.resolve();
@@ -159,9 +139,7 @@ describe("useSessionNetworkMode (docs/285)", () => {
   });
 
   it("drops a response for a session it has navigated away from", async () => {
-    // Revisions are keyed per session, so an in-flight response for A still
-    // satisfies A's revision long after the hook moved to B — and would paint
-    // A's value onto B's control.
+
     let releaseA: (() => void) | null = null;
     const fetchMock = vi.fn(async (url: string) => {
       if (url.includes("/s1")) {
@@ -193,7 +171,7 @@ describe("useSessionNetworkMode (docs/285)", () => {
   it("bars Send while a write is in flight and releases it on success", async () => {
     // The GET reflects what the PUT persisted, because the real server does. A
     // stub whose read contradicts its own write cannot tell a correct re-read
-    // from one that clobbers the value the user just chose.
+
     let stored: boolean | null = null;
     let releasePut: ((v: Response) => void) | null = null;
     vi.stubGlobal("fetch", vi.fn(async (_url: string, init?: RequestInit) => {
@@ -210,9 +188,7 @@ describe("useSessionNetworkMode (docs/285)", () => {
     await waitFor(() => expect(result.current.loaded).toBe(true));
 
     act(() => { result.current.setMode("contained"); });
-    // The whole point: for an ungraduated session this write REBUILDS the
-    // container, so a first turn dispatched here would go into the one being
-    // torn down.
+
     expect(result.current.saving).toBe(true);
 
     await act(async () => {
@@ -228,12 +204,7 @@ describe("useSessionNetworkMode (docs/285)", () => {
   });
 
   it("converges on the SERVER's value when responses arrive out of issue order", async () => {
-    // The revision clock orders writes by the order they were ISSUED; the server
-    // applies them in the order they ARRIVE. If a later-issued write reaches the
-    // server first, the earlier one wins there while the client discards its
-    // response as stale — leaving the display showing a value the server does
-    // not hold, with Send released over it. The settle-time re-read is what
-    // repairs that without depending on the SSE invalidation.
+
     let stored: boolean | null = null;
     const puts: { override: boolean | null; resolve: (v: Response) => void }[] = [];
     vi.stubGlobal("fetch", vi.fn(async (_url: string, init?: RequestInit) => {
@@ -249,11 +220,10 @@ describe("useSessionNetworkMode (docs/285)", () => {
     const { result } = renderHook(() => useSessionNetworkMode("s1"));
     await waitFor(() => expect(result.current.loaded).toBe(true));
 
-    act(() => { result.current.setMode("contained") });  // issued first
-    act(() => { result.current.setMode("open") });       // issued second
+    act(() => { result.current.setMode("contained") });                 
+    act(() => { result.current.setMode("open") });                       
     await waitFor(() => expect(puts).toHaveLength(2));
 
-    // The server took them in the OTHER order, so "contained" is what it holds.
     stored = puts[1]!.override;
     await act(async () => {
       puts[1]!.resolve({ ok: true, status: 200, json: async () => settings({ override: stored }) } as Response);
@@ -266,7 +236,7 @@ describe("useSessionNetworkMode (docs/285)", () => {
     });
 
     await waitFor(() => expect(result.current.saving).toBe(false));
-    // Displays what the SERVER holds, not what was picked last.
+
     expect(result.current.mode).toBe("contained");
   });
 });
@@ -278,10 +248,9 @@ describe("useSessionNetworkMode — the barrier only opens on a known value (doc
   });
 
   it("stays barred when the recovery read ALSO fails", async () => {
-    // The failure path re-reads instead of guessing. If that read fails too, the
+
     // value on screen is still the optimistic one the server never accepted —
-    // so clearing the barrier here would enable Send on a policy nobody can
-    // name. Staying barred is recoverable; the turn is not.
+
     let allowGet = true;
     vi.stubGlobal("fetch", vi.fn(async (_url: string, init?: RequestInit) => {
       if (init?.method === "PUT") return { ok: false, status: 500 } as Response;
@@ -298,26 +267,21 @@ describe("useSessionNetworkMode — the barrier only opens on a known value (doc
       await Promise.resolve();
     });
     await waitFor(() => expect(result.current.mode).toBe("contained"));
-    // Neither the write nor the recovery read reached the server.
+
     expect(result.current.saving).toBe(true);
   });
 
   it("lets a later read win over an earlier one that returns after it", async () => {
-    // Two GETs at the same write revision — the mount hydration and a refetch
-    // driven by another tab's change — both pass the write clock's check, so
-    // without a read counter whichever LANDS last wins regardless of which was
-    // ASKED last, and the stale one wins permanently.
+
     const gets: ((v: Response) => void)[] = [];
     vi.stubGlobal("fetch", vi.fn(async () => new Promise<Response>((r) => { gets.push(r); })));
 
     const { result } = renderHook(() => useSessionNetworkMode("s1"));
     await waitFor(() => expect(gets).toHaveLength(1));
 
-    // A second read is issued (as the cross-tab invalidation does).
     act(() => { notifySessionNetworkModeChanged("s1"); });
     await waitFor(() => expect(gets).toHaveLength(2));
 
-    // The NEWER read answers first, then the older one arrives.
     await act(async () => {
       gets[1]?.({ ok: true, status: 200, json: async () => settings({ override: false }) } as Response);
       await Promise.resolve();

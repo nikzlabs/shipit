@@ -34,9 +34,7 @@ describe("handleUsageUpdate (docs/252 req 16)", () => {
   });
 
   it("carries the per-service split live, not just the totals", () => {
-    // Regression (cross-backend review): the handler REPLACES
-    // `currentSessionUsage`, so a totals-only message blanked the "by service"
-    // split that `/history` had hydrated — and it stayed blank until reload,
+
     // because the fetch-on-open refreshes all-session stats only.
     handleUsageUpdate(ctx, update());
     const usage = useUiStore.getState().currentSessionUsage!;
@@ -54,12 +52,6 @@ describe("handleUsageUpdate (docs/252 req 16)", () => {
   });
 });
 
-/**
- * planning#482 — the socket is keyed off the route while this handler reads the
- * store, and a session switch moves the store first. Everything the handler
- * writes is a session-less global describing the session on screen, so the
- * outgoing session's trailing usage used to land on the incoming one.
- */
 describe("handleUsageUpdate — session scoping", () => {
   beforeEach(() => {
     useUiStore.getState().setCurrentSessionUsage(null);
@@ -81,15 +73,6 @@ describe("handleUsageUpdate — session scoping", () => {
   });
 });
 
-/**
- * planning#482 — `contextTokens` means "how much of the window the session
- * occupies NOW". Nothing on `usage_update` measures that: `cumulativeInputTokens`
- * is a lifetime sum that only grows, and it was written into the field. The
- * authoritative reading is `turn_usage_update`, which a turn reporting no token
- * telemetry (a Codex compact result) does not produce — so the dial was left
- * pinned to the lifetime sum at exactly the moment a compaction had freed
- * context.
- */
 describe("handleUsageUpdate — the context reading is not this message's to make", () => {
   beforeEach(() => {
     useUiStore.getState().setCurrentSessionUsage(null);
@@ -98,15 +81,13 @@ describe("handleUsageUpdate — the context reading is not this message's to mak
   });
 
   it("keeps the last real occupancy when a compaction turn reports only totals", () => {
-    // The dial's last authoritative reading, from `turn_usage_update`.
+
     useUiStore.getState().setContextTokens(30_000);
 
-    // The compaction turn: no per-turn row, so no `turn_usage_update` follows —
-    // only these session-lifetime sums, 12x the real occupancy.
     handleUsageUpdate(ctx, update({ cumulativeInputTokens: 360_000, cumulativeOutputTokens: 90_000 }));
 
     expect(useUiStore.getState().contextTokens).toBe(30_000);
-    // The cost + cumulative rollups this message DOES own still land.
+
     expect(useUiStore.getState().cumulativeInputTokens).toBe(360_000);
     expect(useUiStore.getState().currentSessionUsage).not.toBeNull();
   });

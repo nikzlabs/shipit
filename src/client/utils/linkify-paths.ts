@@ -32,31 +32,13 @@
 
 import type { InlineCode, Link, Root, RootContent, Text } from "mdast";
 
-/**
- * Matches a relative repo path: an optional `./`, one or more `segment/` parts,
- * a final `name.ext` (extension is letter-led, 1–10 chars — rejects `1.2.3`),
- * and an optional `:line[:col]` or `#L12` / `#12` suffix. The leading lookbehind
- * prevents matching mid-token (inside an email, a longer path, or a word).
- */
 const PATH_RE =
   /(?<![\w@./-])(?:\.\/)?(?:[\w.-]+\/)+[\w.-]+\.[A-Za-z][A-Za-z0-9]{0,9}(?::\d+(?::\d+)?)?(?:#L?\d+)?/g;
 
-/**
- * A linkified path keeps the leaf type of the node it came from: a match in a
- * `text` node yields `text` gaps and a `link`-over-`text`; a match in an
- * `inlineCode` node yields `inlineCode` gaps and a `link`-over-`inlineCode`, so
- * the rendered link stays monospace.
- */
 function leaf(value: string, code: boolean): Text | InlineCode {
   return code ? { type: "inlineCode", value } : { type: "text", value };
 }
 
-/**
- * Split one node's string value into alternating leaf / `link` nodes on each
- * path match. `code` selects whether the leaves (and the link's child) are
- * `inlineCode` or `text`. Returns `null` when nothing matched, so callers can
- * leave the original node untouched (and avoid needless array churn).
- */
 function linkifyValue(value: string, code: boolean): (Text | InlineCode | Link)[] | null {
   PATH_RE.lastIndex = 0;
   const out: (Text | InlineCode | Link)[] = [];
@@ -94,7 +76,7 @@ function transform(node: { children: RootContent[] }): void {
   const { children } = node;
   for (let i = 0; i < children.length; i++) {
     const child = children[i];
-    // Leave existing links (incl. GFM-autolinked URLs) entirely alone.
+
     if (child.type === "link") continue;
     if (child.type === "text" || child.type === "inlineCode") {
       const replaced = linkifyValue(child.value, child.type === "inlineCode");
@@ -110,7 +92,6 @@ function transform(node: { children: RootContent[] }): void {
   }
 }
 
-/** Remark plugin entry point. */
 export function remarkLinkifyPaths() {
   return (tree: Root): void => {
     transform(tree);

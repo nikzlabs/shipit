@@ -58,7 +58,6 @@ import { Dialog, DialogContent, DialogTitle } from "../ui/dialog.js";
 import { ServiceLogo } from "../ServiceLogo.js";
 import { MODE_LABEL } from "./ServiceCard.js";
 
-/** One row's identity: a `(service, mode, model)` triple flattened to a string. */
 function rowKey(serviceId: string, billingMode: BillingMode, modelId: string): string {
   return `${credentialModeKey(serviceId, billingMode)}:${modelId}`;
 }
@@ -77,9 +76,7 @@ function buildSupport(): Map<string, Set<AgentId>> {
   for (const harness of allHarnesses()) {
     for (const service of allServices()) {
       for (const mode of service.modes) {
-        // Per accepted credential shape, `.some`-style — the same shape as
-        // `harnessSupportsMode`, one level down. A mode that accepts an account
-        // AND a string is supported if EITHER reaches the harness.
+
         for (const credential of mode.credentials) {
           for (const entry of eligibleEntriesForHarness(harness.id, [
             { serviceId: service.id, billingMode: mode.kind, via: credential.via },
@@ -109,10 +106,6 @@ function formatContext(tokens: number): string {
   return `${Math.round(tokens / 1000)}K`;
 }
 
-/**
- * A USD-per-million rate. Sub-dollar rates keep their decimals (DeepSeek's
- * $0.14 is the whole point of the row); whole ones lose the `.00`.
- */
 function formatPrice(rate: number): string {
   if (rate === 0) return "$0";
   if (rate < 1) return `$${Number(rate.toFixed(3))}`;
@@ -156,7 +149,7 @@ function SupportCell({
           aria-hidden
           size={ICON_SIZE.SM}
           weight="bold"
-          // A harness this deployment lacks keeps its answer at an opacity that
+
           // says it cannot be acted on here.
           className={`mx-auto text-(--color-success) ${installed ? "" : "opacity-40"}`}
         />
@@ -167,7 +160,6 @@ function SupportCell({
   );
 }
 
-/** One `(service, mode)` — the grid, headed by the mode it bills under. */
 function ModeTable({
   service,
   billingMode,
@@ -185,7 +177,7 @@ function ModeTable({
   installedIds: Set<string>;
   support: Map<string, Set<AgentId>>;
   narrowedTo: AgentId | undefined;
-  /** req 24 — the column head IS the control. See the head's own comment. */
+
   onNarrow: (harnessId: AgentId) => void;
 }) {
   const visible = narrowedTo
@@ -316,10 +308,7 @@ function ModeTable({
 
 export function SupportedModelsDialog({
   agentList = [],
-  /**
-   * The service to open on — a card's `N models` names itself, the panel's
-   * header control names nothing and opens at the top.
-   */
+
   initialServiceId,
   onClose,
 }: {
@@ -346,7 +335,7 @@ export function SupportedModelsDialog({
         : new Set(agentList.filter((a) => a.installed).map((a) => a.id)),
     [agentList, harnesses],
   );
-  /** req 24 — the harness the list is narrowed to, or nothing. */
+
   const [narrowedTo, setNarrowedTo] = useState<AgentId | undefined>(undefined);
   const paneRef = useRef<HTMLDivElement | null>(null);
   const sectionRefs = useRef<Record<string, HTMLElement | null>>({});
@@ -361,15 +350,6 @@ export function SupportedModelsDialog({
    */
   const landed = useRef(false);
 
-  /**
-   * Scroll a service to the top of the pane. Used by the nav, and once on open
-   * when a card named the service to land on.
-   *
-   * Measured from the two boxes rather than from `offsetTop`, which would depend
-   * on which ancestor happens to be the offset parent — the dialog is `fixed`, so
-   * that is currently the dialog and not the pane, and it would silently change
-   * if either grew a `relative`.
-   */
   const scrollTo = (serviceId: string): void => {
     const section = sectionRefs.current[serviceId];
     const pane = paneRef.current;
@@ -387,13 +367,6 @@ export function SupportedModelsDialog({
     : rows.length;
   const narrowedHarness = harnesses.find((h) => h.id === narrowedTo);
 
-  /**
-   * Does this service keep anything under the current narrowing? Asked so a
-   * service that keeps nothing can say so **in place** (req 24) — a section that
-   * simply vanished would leave the reader to work out whether the service is
-   * gone or merely empty, and the whole list would read as a catalogue that had
-   * shrunk.
-   */
   const keepsSomething = (service: ServiceDef): boolean =>
     !narrowedTo
     || service.modes.some((mode) =>
@@ -471,9 +444,7 @@ export function SupportedModelsDialog({
                 key={service.id}
                 type="button"
                 onClick={() => scrollTo(service.id)}
-                // A service the narrowing empties stays listed, faded: the nav is
-                // also the answer to "which services does this harness reach at
-                // all", and removing the row would delete that answer.
+
                 className={`flex w-full items-center gap-2 rounded-md px-1.5 py-1 text-left text-xs hover:bg-(--color-bg-hover) ${
                   keepsSomething(service)
                     ? "text-(--color-text-secondary)"
@@ -494,16 +465,7 @@ export function SupportedModelsDialog({
 
           <div
             className="min-w-0 flex-1 overflow-y-auto p-4"
-            /**
-             * **The scroll happens on the PANE's ref, not the section's** — which
-             * is not a preference, it is the only one of the two that can work.
-             * React attaches child refs before the parent's, so a section
-             * callback that called `scrollTo` ran while `paneRef.current` was
-             * still null: the dialog opened at the top of the catalogue however
-             * it was opened, and the test asserting the section merely EXISTED
-             * could not fail on it. By the time the parent's callback runs, every
-             * section is registered.
-             */
+
             ref={(el) => {
               paneRef.current = el;
               if (el && initialServiceId && !landed.current) {

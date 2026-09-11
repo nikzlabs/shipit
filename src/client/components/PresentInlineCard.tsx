@@ -47,7 +47,6 @@ import { handleAgentInterfaceRequest } from "../agent-interface-sdk/handle-reque
 import { useEventListener } from "../hooks/useEventListener.js";
 import { revealWorkspaceTab } from "../utils/reveal-workspace-tab.js";
 
-/** Frame height bounds. Small artifacts shrink to fit; large ones scroll inside the cap. */
 const MIN_FRAME_H = 64;
 const MAX_FRAME_H = 420;
 /** Height used until the document reports its own (and for a frame that never does). */
@@ -55,14 +54,13 @@ const DEFAULT_FRAME_H = 220;
 
 export interface PresentInlineCardProps {
   card: PresentInlineCardData;
-  /** Dispatch a message the artifact composed through the Agent Interface SDK. */
+
   onAgentInterfaceMessage?: (text: string, provenance: AgentInterfaceProvenance) => Promise<void>;
 }
 
 export function PresentInlineCard({ card, onAgentInterfaceMessage }: PresentInlineCardProps) {
   const sessionId = useSessionStore((s) => s.sessionId);
-  // Subscribe to THIS artifact's entry only, so an unrelated present elsewhere in
-  // the carousel doesn't re-render every inline card in the transcript.
+
   const entry = usePresentStore((s) => s.presentations.find((p) => p.presentId === card.presentId));
   const content = entry?.content;
 
@@ -72,13 +70,10 @@ export function PresentInlineCard({ card, onAgentInterfaceMessage }: PresentInli
   const [frameHeight, setFrameHeight] = useState(DEFAULT_FRAME_H);
 
   const kind = kindFromMimeType(card.mimeType, card.filePath);
-  // An artifact that has left the store (session cleared) can no longer be
-  // fetched — the card says so rather than showing an empty frame.
+
   const missing = !entry;
   const sdkActive = onScreen && kind === "html" && !!onAgentInterfaceMessage;
 
-  // Pull the bytes once the card is on screen. Deferring to visibility keeps a
-  // long transcript full of inline artifacts from firing every fetch on load.
   // eslint-disable-next-line no-restricted-syntax -- lazy content fetch keyed on visibility
   useEffect(() => {
     if (onScreen && sessionId && entry && content === undefined) {
@@ -86,9 +81,6 @@ export function PresentInlineCard({ card, onAgentInterfaceMessage }: PresentInli
     }
   }, [onScreen, sessionId, entry, content, card.presentId]);
 
-  // On-screen gate. Without IntersectionObserver (jsdom, older browsers) treat
-  // the card as visible: the fetch and the SDK are both things the user asked
-  // for, so failing open matches the artifact simply being rendered.
   // eslint-disable-next-line no-restricted-syntax -- IntersectionObserver subscription with cleanup
   useEffect(() => {
     const el = rootRef.current;
@@ -105,8 +97,6 @@ export function PresentInlineCard({ card, onAgentInterfaceMessage }: PresentInli
     return () => io.disconnect();
   }, []);
 
-  // Messages from this card's own frame: the height it measured, the SDK
-  // handshake, and any message the artifact composed for the agent.
   useEventListener(window, "message", (event) => {
     const iframe = frameRef.current;
     if (!iframe?.contentWindow || event.source !== iframe.contentWindow || event.origin !== "null") return;
@@ -134,7 +124,6 @@ export function PresentInlineCard({ card, onAgentInterfaceMessage }: PresentInli
     }
   });
 
-  // Keep the artifact's `visibility` subscribers in step as the card scrolls.
   // eslint-disable-next-line no-restricted-syntax -- synchronize visibility into the sandboxed artifact
   useEffect(() => {
     frameRef.current?.contentWindow?.postMessage(
@@ -222,9 +211,7 @@ function PresentInlineBody({
         <RenderedFrame
           kind={kind}
           content={content}
-          // req 7 — inline HTML gets the SDK, so an artifact can collect input
-          // and message the agent. Only ever enabled while the card is on screen,
-          // and `handleAgentInterfaceRequest` is gated on the same flag.
+
           enableAgentInterface={kind === "html" && sdkActive}
           reportHeight
           frameRef={frameRef}

@@ -2,7 +2,6 @@ import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
 import { render, screen, cleanup, fireEvent, waitFor } from "@testing-library/react";
 import { SessionDiagnosticsPanel } from "./SessionDiagnosticsPanel.js";
 
-// Mock global fetch the panel uses via useApi.
 const fetchMock = vi.fn();
 
 beforeEach(() => {
@@ -132,15 +131,15 @@ describe("SessionDiagnosticsPanel", () => {
       expect(screen.getByText("Session diagnostics")).toBeTruthy();
       expect(screen.getByText("Container & worker")).toBeTruthy();
     });
-    // Health values rendered
+
     expect(screen.getAllByText("running").length).toBeGreaterThan(0);
     expect(screen.getByText(/yes \(8ms\)/)).toBeTruthy();
-    // Compose services rendered (collapsed)
+
     expect(screen.getByText("web")).toBeTruthy();
     expect(screen.getByText("db")).toBeTruthy();
-    // Runner section rendered
+
     expect(screen.getByText("Runner")).toBeTruthy();
-    // Recent logs rendered
+
     expect(screen.getByText(/Recent logs/)).toBeTruthy();
     expect(screen.getByText(/Session container paused/)).toBeTruthy();
   });
@@ -177,14 +176,12 @@ describe("SessionDiagnosticsPanel", () => {
     await waitFor(() => {
       expect(screen.getByText("Parsed shipit.yaml")).toBeTruthy();
     });
-    // Auto-derived session memory is shown (44237 MiB on the sample 96 GB host).
+
     expect(screen.getByText(/44237 MiB — auto/)).toBeTruthy();
     expect(screen.getByText("npm install")).toBeTruthy();
     expect(screen.getByText("docker-compose.yml")).toBeTruthy();
   });
 
-  // Follow-up to nikzlabs/shipit#2429 — the panel is where a user learns that
-  // content-keying is off, before the failure it eventually causes.
   it("reports a non-content-keyable install, and stays quiet otherwise", async () => {
     mockOk(samplePayload);
     const { unmount } = render(
@@ -198,7 +195,7 @@ describe("SessionDiagnosticsPanel", () => {
       ...samplePayload,
       installContentKeyOff: {
         commands: ["npm ci", "npm run build"],
-        // The server renders the whole explanation; the panel only places it.
+
         notice: "the content-keyed install skip is off for this session",
       },
     });
@@ -244,8 +241,7 @@ describe("SessionDiagnosticsPanel", () => {
     await waitFor(() => {
       expect(screen.getByText(/tripped — refusing new containers/)).toBeTruthy();
     });
-    // The retry hint paragraph splits its text across <code> + <strong>
-    // children, so we match on the combined textContent of the <p>.
+
     expect(
       screen.getByText((_content, node) => {
         if (node?.tagName !== "P") return false;
@@ -281,10 +277,6 @@ describe("SessionDiagnosticsPanel", () => {
     });
   });
 
-  // docs/150-multiple-provider-subscriptions req 11 — after a proactive cutoff or a hard-exhaustion retry has
-  // moved a session, this panel is where "which account am I on?" gets
-  // answered. The account's NAME is the answer; the opaque id is supporting
-  // detail for a bug report, not the thing the user reads.
   it("renders the active provider account by name, with the route id alongside", async () => {
     mockOk(samplePayload);
     render(
@@ -333,7 +325,6 @@ describe("SessionDiagnosticsPanel", () => {
     });
   });
 
-  // docs/248 — requirement 6. The reported bug was an INVISIBLE mismatch, so
   // the un-honored states must render their reason, not a terse "ok".
   describe("Node runtime section", () => {
     it("shows the honored pin and the container's own version", async () => {
@@ -345,7 +336,7 @@ describe("SessionDiagnosticsPanel", () => {
         expect(screen.getByText("Node runtime")).toBeTruthy();
       });
       expect(screen.getByText(/provisioned/)).toBeTruthy();
-      // Both the active version and what the pin resolved to render as v22.20.1.
+
       expect(screen.getAllByText("v22.20.1").length).toBe(2);
       expect(screen.getByText("v24.15.0")).toBeTruthy();
       expect(screen.getByText("22 (.nvmrc)")).toBeTruthy();

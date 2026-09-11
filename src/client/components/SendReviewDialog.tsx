@@ -1,22 +1,4 @@
-/**
- * SendReviewDialog — the confirmation step between "Send comments" and the
- * review actually reaching the agent (docs/260).
- *
- * It exists for one thing the review surface has nowhere to put: feedback that
- * belongs to no single line — an overall summary, a constraint, why the review
- * is happening. That goes in the note, and the note becomes the first piece of
- * feedback in the constructed prompt.
- *
- * Deliberately thin: the count and the target, one optional field, Cancel/Send.
- * It does NOT list the comments — the user reads those in the file behind it —
- * and there is no way to drop a comment from here (requirements.md → Later
- * versions).
- *
- * Presentational: the note lives in the CALLER's state, so cancelling and
- * reopening restores what was typed, and an unmount can't silently eat it.
- * Shared by every send surface — the file-viewer dialog and the Present tab
- * (both via `FileReviewFooter`) and `DiffPanel`.
- */
+
 
 import { PaperPlaneTiltIcon } from "@phosphor-icons/react";
 import {
@@ -31,12 +13,6 @@ import { Button } from "./ui/button.js";
 import { ICON_SIZE } from "../design-tokens.js";
 import type { FileReviewControls } from "../hooks/use-file-review-controls.js";
 
-/**
- * Client-side ceiling on the note, mirroring `MAX_NOTE_LENGTH` in
- * `services/reviews.ts`. Enforced here as `maxLength` so the server's 400 is
- * unreachable by typing — without it the user hits a rejection they can't see
- * the cause of, and retrying the same text fails again.
- */
 export const MAX_NOTE_LENGTH = 4000;
 
 export function SendReviewDialog({
@@ -52,16 +28,15 @@ export function SendReviewDialog({
 }: {
   open: boolean;
   commentCount: number;
-  /** What the comments are on: a file path, or "3 files" for a diff review. */
+
   target: string;
   note: string;
   onNoteChange: (note: string) => void;
   onSend: () => void;
   onClose: () => void;
-  /** The send is in flight: both send affordances are held so one review
-   *  can't be submitted twice. */
+
   sending?: boolean;
-  /** Why the last send failed. The dialog stays open and shows it. */
+
   error?: string | null;
 }) {
   const countLabel = `${commentCount} comment${commentCount !== 1 ? "s" : ""}`;
@@ -91,8 +66,7 @@ export function SendReviewDialog({
               id="send-review-note"
               value={note}
               onChange={(e) => onNoteChange(e.target.value)}
-              // ⌘⏎ / Ctrl+⏎ sends from inside the dialog. This is NOT a bypass:
-              // the dialog still always opens first (req 8).
+
               onKeyDown={(e) => {
                 if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && !sending) {
                   e.preventDefault();
@@ -130,12 +104,6 @@ export function SendReviewDialog({
   );
 }
 
-/**
- * The same dialog, bound to `useFileReviewControls`. Both file-review surfaces
- * (the file-viewer dialog and the Present tab) render it through
- * `FileReviewFooter`'s `sendDialog` slot, so neither has to restate the wiring.
- * `DiffPanel` keeps its own comment state and uses `SendReviewDialog` directly.
- */
 export function FileReviewSendDialog({
   controls,
   filePath,

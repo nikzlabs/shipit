@@ -89,9 +89,6 @@ describe("PrDetailPanel", () => {
     expect(screen.getByText("Auto-merge")).toBeInTheDocument();
   });
 
-  // docs/077 — an arming dies with its pull request, so a merged PR's panel
-  // shows neither the toggle nor the "will merge" promise, even while the store
-  // still holds the arming (the terminal `pr_status` update can be missed).
   it("shows no auto-merge state on a merged PR", () => {
     setCard("s1", {
       ...openPrCard,
@@ -126,8 +123,6 @@ describe("PrDetailPanel", () => {
     setCard("s1", openPrCard);
     render(<PrDetailPanel sessionId="s1" />);
 
-    // The one-item overflow menu was dropped; the Open badge is itself the
-    // GitHub escape-hatch link (docs/133 §2 — inline is the primary surface).
     const link = screen.getByTitle("View on GitHub");
     expect(link.tagName).toBe("A");
     expect(link).toHaveAttribute("href", "https://github.com/o/r/pull/42");
@@ -168,7 +163,7 @@ describe("PrDetailPanel", () => {
         "/api/sessions/s1/pr/42",
         expect.objectContaining({ method: "PATCH" }),
       );
-      // Optimistic store update applied.
+
       expect(usePrStore.getState().cardBySession.s1.pr?.title).toBe("A better title");
     });
 
@@ -188,7 +183,7 @@ describe("PrDetailPanel", () => {
       await waitFor(() => {
         expect(screen.getByText("nope")).toBeInTheDocument();
       });
-      // Reverted to the original.
+
       expect(usePrStore.getState().cardBySession.s1.pr?.title).toBe("Add inline PR detail panel");
     });
 

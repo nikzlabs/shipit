@@ -1,15 +1,4 @@
-/**
- * Client helper for POST /api/sessions/:id/agent/dispatch (docs/150).
- *
- * Mirrors the optimistic-append pattern that WS `send_message` callsites already
- * use: append a synthetic user bubble (tagged `pendingDispatch: true` so the
- * `system_user_message` handler can dedupe by clearing the flag in place
- * instead of appending a duplicate), set the loading/activity state, then POST.
- *
- * On error, rolls back the optimistic bubble and surfaces a toast via the UI
- * store. The 401 case is the most common deliberate failure (the active agent
- * isn't authenticated); the toast routes through the standard error channel.
- */
+
 
 import { useSessionStore } from "../stores/session-store.js";
 import { useUiStore } from "../stores/ui-store.js";
@@ -30,8 +19,6 @@ export async function dispatchAgentMessage(opts: DispatchAgentMessageOptions): P
   const session = useSessionStore.getState();
   const requestId = randomId();
 
-  // Optimistic append — the server's `system_user_message` echo is deduped
-  // against this bubble via the `pendingDispatch` flag.
   session.setMessages((prev) => [...prev, {
     role: "user",
     text,
@@ -48,7 +35,7 @@ export async function dispatchAgentMessage(opts: DispatchAgentMessageOptions): P
       { text, activity, ...(agentInterface ? { agentInterface } : {}) },
     );
   } catch (err) {
-    // Roll back only this request; another identical send may have landed.
+
     useSessionStore.getState().setMessages((prev) =>
       prev.filter((message) => message.clientRequestId !== requestId));
     useSessionStore.getState().setIsLoading(false);
@@ -60,5 +47,4 @@ export async function dispatchAgentMessage(opts: DispatchAgentMessageOptions): P
   }
 }
 
-/** Re-export so callers can `instanceof`-check the failure shape if needed. */
 export type { ApiError };

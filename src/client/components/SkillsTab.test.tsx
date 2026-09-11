@@ -99,7 +99,6 @@ const fakeRepo: RepoInfo = {
   status: "ready",
 };
 
-/** Seed the catalog routes shared by most tests. */
 function catalogRoutes(fake: FakeFetch): FakeFetch {
   fake.on("GET", /\/api\/marketplaces\?agent=claude/, () => ({ marketplaces: [fakeMarketplace] }));
   fake.on("GET", /\/api\/marketplaces\/[^/]+\/plugins$/, () => ({
@@ -153,7 +152,6 @@ describe("SkillsTab (docs/149 v1c)", () => {
     });
     fireEvent.click(screen.getByTestId("skills-install-demo-plugin"));
 
-    // The install sheet renders a repo picker defaulted to the active repo.
     await waitFor(() => {
       expect(screen.getByTestId("skill-install-repo-select")).toBeInTheDocument();
     });
@@ -161,7 +159,6 @@ describe("SkillsTab (docs/149 v1c)", () => {
 
     fireEvent.click(screen.getByTestId("skill-install-confirm"));
 
-    // It hits the app-wide repo-targeted route, NOT a session-scoped route.
     await waitFor(() => {
       expect(fake.calls.some((c) => c.method === "POST" && c.url.endsWith("/api/plugins/install"))).toBe(true);
     });

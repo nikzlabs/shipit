@@ -26,15 +26,10 @@ const dir = path.dirname(fileURLToPath(import.meta.url));
 const cssPath = path.join(dir, "index.css");
 const themesDir = path.join(dir, "themes");
 
-/** Themes whose <html> class receives the dark palette overrides. */
 const DARK_THEMES = ["dark", "midnight", "forest", "rose", "claude", "codex", "opencode", "grok", "solarized", "high-contrast"];
 
-/**
- * Status colors that appear as sidebar glyphs on or beside a session row — the
- * PR badge, the live-agent dot, the sandbox cube. These get the widest berth.
- */
 const HOT_TOKENS = ["--color-pr", "--color-success", "--color-sandbox"];
-/** Status colors that appear incidentally elsewhere in the app. */
+
 const WARM_TOKENS = [
   "--color-error", "--color-warning", "--color-attention",
   "--color-accent", "--color-folder", "--color-autofix",
@@ -51,7 +46,6 @@ function parseHex(hex: string): Rgb {
   return [0, 2, 4].map((i) => parseInt(h.slice(i, i + 2), 16)) as Rgb;
 }
 
-/** Redmean colour difference — cheap, and good enough to catch "these are the same". */
 function difference(a: Rgb, b: Rgb): number {
   const rMean = (a[0] + b[0]) / 2;
   const [dr, dg, db] = [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
@@ -70,8 +64,7 @@ function readPalette(): { light: string[]; dark: string[] } {
     });
   };
   const firstEntry = css.indexOf("--repo-color-0");
-  // Light values sit in the `:root {` block immediately preceding the first
-  // entry; the dark overrides in the `.dark, …` block that follows it.
+
   return {
     light: grab(css.lastIndexOf(":root {", firstEntry), "light :root"),
     dark: grab(css.indexOf(".dark,", firstEntry), "dark-theme"),
@@ -101,9 +94,6 @@ describe("docs/254 — repo palette vs status colors", () => {
     expect(palette.dark).toHaveLength(REPO_COLOR_COUNT);
   });
 
-  // The cascade trap documented for --color-sandbox: the theme class sits on
-  // <html>, the same element as :root, so dark values placed in :root would win
-  // on source order and clobber every light theme.
   it("scopes the dark values to the dark-theme classes, not :root", () => {
     const css = fs.readFileSync(cssPath, "utf8");
     const darkSelector = css.slice(css.indexOf(".dark,", css.indexOf("--repo-color-0")));
@@ -120,7 +110,7 @@ describe("docs/254 — repo palette vs status colors", () => {
     // Every theme this test calls dark must actually exist…
     for (const t of DARK_THEMES) expect(shipped).toContain(t);
     // …and every shipped theme must be classified one way or the other, so a
-    // newly-added dark theme can't silently inherit the light palette.
+
     const css = fs.readFileSync(cssPath, "utf8");
     const darkVariant = css.slice(css.indexOf("@custom-variant dark"), css.indexOf("\n", css.indexOf("@custom-variant dark")));
     for (const t of shipped) {
@@ -158,8 +148,6 @@ describe("docs/254 — repo palette vs status colors", () => {
         }
       });
 
-      // req 5 is worthless if two palette entries are indistinguishable: the
-      // repos would have "different" colors that nobody can tell apart.
       it("keeps its own entries distinguishable from each other", () => {
         const colors = pal();
         for (let i = 0; i < colors.length; i++) {
@@ -196,20 +184,17 @@ describe("docs/254 — repo palette vs status colors", () => {
  */
 describe("docs/254 — assignment order spreads the palette", () => {
   const palette = readPalette();
-  /** Worst case across both surfaces: a pair can separate in dark and not light. */
+
   const gap = (i: number, j: number) =>
     Math.min(
       difference(parseHex(palette.light[i]), parseHex(palette.light[j])),
       difference(parseHex(palette.dark[i]), parseHex(palette.dark[j])),
     );
 
-  /** For each repo in turn, its distance to the nearest color already assigned. */
   const nearestOnArrival = (order: readonly number[]): number[] =>
     order.slice(1).map((idx, k) => Math.min(...order.slice(0, k + 1).map((prev) => gap(idx, prev))));
 
-  // The first handful is what nearly every workspace ever sees, so it carries
-  // the strict floor; the tail only has to stay above the palette's own bound.
-  const MIN_EARLY = 80; // repos 2-5
+  const MIN_EARLY = 80;             
   const MIN_ANY = MIN_MUTUAL;
 
   it("keeps the first repos far apart as they arrive", () => {
@@ -227,8 +212,6 @@ describe("docs/254 — assignment order spreads the palette", () => {
     }
   });
 
-  // The regression this exists to catch: reverting to lowest-free assignment.
-  // Stated as a comparison rather than an absolute so it keeps meaning if the
   // palette is retuned — whatever the hues become, spread must beat sequential.
   it("beats walking the palette in index order", () => {
     const sequential = nearestOnArrival(Array.from({ length: REPO_COLOR_COUNT }, (_, i) => i));
@@ -270,9 +253,9 @@ describe("docs/254 — assignment order spreads the palette", () => {
  * regression guardrails, not a proof that no visually heavy result can pass.
  */
 describe("docs/254 — header band weight", () => {
-  const MIN_SEPARATION = 1.04; // below this the band stops reading as a header at all
+  const MIN_SEPARATION = 1.04;                                                        
   const MAX_SEPARATION = { light: 1.15, dark: 1.3 };
-  /** Max spread across the 16 entries within one theme — see the test. */
+
   const MAX_SPREAD = 0.15;
 
   const css = fs.readFileSync(cssPath, "utf8");
@@ -292,7 +275,6 @@ describe("docs/254 — header band weight", () => {
     };
   }
 
-  /** Every theme's rail background, keyed by theme name. */
   function readRails(): { name: string; surface: "light" | "dark"; bg: Rgb }[] {
     return fs
       .readdirSync(themesDir)
@@ -307,7 +289,6 @@ describe("docs/254 — header band weight", () => {
       });
   }
 
-  /** What `color-mix(in srgb, <color> <mix>, <bg>)` resolves to. */
   function mix(color: Rgb, bg: Rgb, fraction: number): Rgb {
     return color.map((v, i) => Math.round(v * fraction + bg[i] * (1 - fraction))) as Rgb;
   }
@@ -328,7 +309,6 @@ describe("docs/254 — header band weight", () => {
   const mixes = readBandMix();
   const rails = readRails();
 
-  /** Every band this palette can produce on `theme`, as a contrast ratio to its rail. */
   const bandsFor = (rail: (typeof rails)[number]): number[] =>
     palette[rail.surface].map((hex) => contrast(mix(parseHex(hex), rail.bg, mixes[rail.surface]), rail.bg));
 
@@ -337,23 +317,12 @@ describe("docs/254 — header band weight", () => {
     expect(mixes.dark).toBeGreaterThan(0);
   });
 
-  // Everything below models `color-mix` in sRGB, in plain arithmetic, entirely
-  // independently of the component. That independence is the point — and it is
-  // also the failure mode: switch the production helper to `srgb-linear` and
-  // these numbers would keep measuring the OLD algorithm while staying green.
-  // So pin the space the model assumes. If this fails, the model is what needs
-  // updating, not the assertion.
   it("models the same color space production actually mixes in", () => {
     expect(groupBandFill("#123456").startsWith("color-mix(in srgb,")).toBe(true);
   });
 
   // The band is only opaque because BOTH color-mix inputs are. `color-mix` does
-  // not composite onto an opaque backdrop — it interpolates, so mixing a
-  // translucent color with an opaque one yields a translucent result, and the
-  // sticky header would let session rows scroll through it again. The rail
-  // background is opaque by construction; these are the foreground inputs, and
-  // they include the two SEMANTIC tokens the Ops and Sandbox groups feed in,
-  // which are not part of the palette and so are checked nowhere else.
+
   it("feeds the band only opaque colors, in every theme", () => {
     const opaque = /^#[0-9a-fA-F]{6}$/;
     for (const surface of ["light", "dark"] as const) {
@@ -361,8 +330,7 @@ describe("docs/254 — header band weight", () => {
         expect(opaque.test(c), `--repo-color-${i} (${c}) is not an opaque 6-digit hex`).toBe(true);
       }
     }
-    // --color-warning (Ops) and --color-sandbox (Sandbox). Each is declared per
-    // theme, and --color-sandbox additionally in index.css for dark themes.
+
     const sources = [
       ...fs.readdirSync(themesDir).filter((f) => f.endsWith(".css")).map((f) => [f, path.join(themesDir, f)] as const),
       ["index.css", cssPath] as const,
@@ -386,8 +354,6 @@ describe("docs/254 — header band weight", () => {
     expect(rails.some((r) => r.surface === "dark")).toBe(true);
   });
 
-  // Band-against-RAIL only — see the block comment for what that does and does
-  // not establish.
   it("keeps the band's separation from the rail inside the faint range", () => {
     for (const rail of rails) {
       for (const [i, ratio] of bandsFor(rail).entries()) {
@@ -408,10 +374,6 @@ describe("docs/254 — header band weight", () => {
     }
   });
 
-  // Unique to a hue wash, and it has no analogue in the neutral fill it
-  // replaced: the band is now derived per repo, so an entry that mixes much
-  // darker than its neighbours would give one repo a conspicuously heavier
-  // header than the rest for no reason the user can act on.
   it("weighs every repo's header about the same within a theme", () => {
     for (const rail of rails) {
       const bands = bandsFor(rail);

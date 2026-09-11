@@ -30,22 +30,14 @@ import type { PrCardState } from "../stores/pr-store.js";
 type Checks = PrCardState["checks"];
 
 export type CiDisplay =
-  /** The poller hasn't reported yet — we don't know whether CI exists. */
+
   | { kind: "unknown" }
-  /** Settled: this PR has no check runs and none are coming. Terminal. */
+
   | { kind: "none" }
   | { kind: "pending"; passed: number; total: number }
   | { kind: "success"; total: number }
   | { kind: "failure"; passed: number; failed: number; total: number };
 
-/**
- * Map a raw checks summary to what the UI should show at instant `now`.
- *
- * `undefined` checks stay `"unknown"` rather than collapsing to `"none"`:
- * callers gate the merge button on `"none"`, and treating "haven't heard from
- * the poller" as "no CI applies" would flash the button in the gap between PR
- * creation and the first poll.
- */
 export function deriveCiDisplay(checks: Checks, now: number = Date.now()): CiDisplay {
   if (!checks) return { kind: "unknown" };
 
@@ -62,9 +54,7 @@ export function deriveCiDisplay(checks: Checks, now: number = Date.now()): CiDis
     case "none":
       return { kind: "none" };
     case "pending": {
-      // A forced-pending override whose window has closed is really "none".
-      // Only `total === 0` qualifies — once GitHub reports actual checks the
-      // pending state is genuine and has no deadline attached.
+
       if (
         checks.total === 0
         && checks.graceUntil !== undefined
@@ -77,11 +67,6 @@ export function deriveCiDisplay(checks: Checks, now: number = Date.now()): CiDis
   }
 }
 
-/**
- * React binding for {@link deriveCiDisplay}. Schedules a single re-render at
- * the grace deadline so an open card retires its spinner on time instead of
- * waiting for the next unrelated store update.
- */
 export function useCiDisplay(checks: Checks): CiDisplay {
   const [, forceRender] = useState(0);
   const graceUntil = checks?.state === "pending" && checks.total === 0

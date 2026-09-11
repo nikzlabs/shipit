@@ -23,19 +23,14 @@
 import { useState, type DragEvent, type HTMLAttributes } from "react";
 
 export interface RowDragProps {
-  /** Spread on the row's outer element — it is the drop target. */
+
   container: HTMLAttributes<HTMLElement>;
-  /** Spread on the grip. Only the grip is `draggable`; see {@link useRowDrag}. */
+
   handle: HTMLAttributes<HTMLElement> & { draggable: true };
   isDragging: boolean;
   isOver: boolean;
 }
 
-/**
- * @param ids the group's current order
- * @param onReorder called with the complete new order, once, on a drop that moves something
- * @param disabled while a request from a previous drop is still in flight
- */
 export function useRowDrag(
   ids: string[],
   onReorder: (next: string[]) => void,
@@ -56,16 +51,13 @@ export function useRowDrag(
   };
 
   return (id: string): RowDragProps | undefined => {
-    // Below two rows there is no order to change, so there is no grip: a
-    // handle that can only ever drop a row back where it started is a control
-    // that does nothing, on every single-credential card in the panel.
+
     if (ids.length < 2 || disabled) return undefined;
     return {
       container: {
         onDragOver: (event: DragEvent) => {
           if (draggingId === null) return;
-          // Without this the browser refuses the drop and fires no `drop`
-          // event at all — the row springs back and nothing happens.
+
           event.preventDefault();
           if (overId !== id) setOverId(id);
         },
@@ -76,8 +68,7 @@ export function useRowDrag(
         draggable: true,
         onDragStart: (event: DragEvent) => {
           setDraggingId(id);
-          // Firefox starts no drag at all unless the payload is set, and the
-          // effect governs the cursor the user sees over a valid target.
+
           event.dataTransfer.effectAllowed = "move";
           event.dataTransfer.setData("text/plain", id);
         },

@@ -1,7 +1,5 @@
-/**
- * Small on/off switch shared by the Settings tabs (Advanced toggles, Voice).
- * Extracted from the former monolithic `Settings.tsx` (P15 split).
- */
+
+
 export function ToggleSwitch({ enabled, onToggle, testId, label }: { enabled: boolean; onToggle: (v: boolean) => void; testId?: string; label?: string }) {
   return (
     <button

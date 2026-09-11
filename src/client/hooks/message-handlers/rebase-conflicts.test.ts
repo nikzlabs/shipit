@@ -26,8 +26,7 @@ describe("handleRebaseConflicts", () => {
   });
 
   it("ignores a message for another session", () => {
-    // `useGitStore` is global; a replay racing a session switch would otherwise
-    // paint the rebase surface of whichever session happens to be rendered.
+
     handleRebaseConflicts(ctx, {
       type: "rebase_conflicts",
       sessionId: "other-session",

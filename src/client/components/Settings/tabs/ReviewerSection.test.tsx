@@ -42,9 +42,7 @@ const agents: AgentOption[] = [
         canonicalModelKey: "claude-sonnet-5",
       },
       {
-        // The SAME model as Anthropic's Opus 5, through a gateway, spelled
-        // differently. Two strings, one set of weights — which is why changing
-        // the service compares `canonicalModelKey` and not the id.
+
         serviceId: "openrouter",
         serviceName: "OpenRouter",
         billingMode: "key",
@@ -76,7 +74,7 @@ const agents: AgentOption[] = [
     installed: true,
     hasRunnableModels: true,
     models: ["deepseek-v4"],
-    // The SAME triple on a second installed harness. The harness is derived
+
     // (req 3), so this must not become a second row the user picks between.
     eligibleModels: [
       {
@@ -98,10 +96,7 @@ const agents: AgentOption[] = [
     },
   },
   {
-    // planning#435 — a harness that DECLARES levels and honours none of them on
-    // a key-billed row. It is in this fixture so the "no menu" case below tests
-    // the mode gate rather than a missing `reasoning` prop, which would pass for
-    // the wrong reason.
+
     id: "grok",
     name: "Grok Build",
     installed: true,
@@ -145,7 +140,6 @@ const autoSlot = (slot: "first" | "second", over: Partial<ReviewerSlotView> = {}
   ...over,
 });
 
-/** A slot that has resolved onto DeepSeek — the fixture's other service. */
 const deepseekResolution = {
   serviceId: "deepseek",
   billingMode: "key" as const,
@@ -163,14 +157,13 @@ function bodyOf(fetchMock: ReturnType<typeof vi.fn>, call = 0): Record<string, u
   return JSON.parse(args[1].body) as Record<string, unknown>;
 }
 
-/** A PUT that echoes the slots back, as the real route does. */
 function okFetch(reviewers: ReviewerSlotView[] = []) {
   return vi.fn(async () => ({ ok: true, json: async () => ({ reviewers }) }));
 }
 
 beforeEach(() => {
   useSettingsStore.getState().setReviewers([]);
-  // Toasts outlive a test otherwise, so "no toast was raised" would pass on the
+
   // *previous* test's toast — the assertion that must not be blind.
   useUiStore.getState().setToast(null);
   vi.restoreAllMocks();
@@ -178,11 +171,7 @@ beforeEach(() => {
 });
 
 describe("ReviewerSection", () => {
-  /**
-   * Req 8's visible state, both halves at once: the label AND what the slot
-   * resolves to. An untouched install has to read as "auto-configured, and here
-   * is the reviewer you have" rather than as an empty control.
-   */
+
   it("labels an untouched slot auto-configured and names what it resolves to", () => {
     useSettingsStore.getState().setReviewers([autoSlot("first"), autoSlot("second")]);
     render(<ReviewerSection agentList={agents} />);
@@ -192,41 +181,15 @@ describe("ReviewerSection", () => {
     const resolution = screen.getByTestId("reviewer-resolution-first").textContent ?? "";
     expect(resolution).toContain("Anthropic");
     expect(resolution).toContain("Opus 5");
-    // The derived harness (req 3) and the derived level (req 5) are both stated
-    // — a reviewer that named a model and left the level to the CLI would be
-    // the one thing req 5 rules out, and here that would look like a missing
-    // clause.
+
     expect(resolution).toContain("Claude Code");
     expect(resolution).toContain("High");
-    // And the billing mode, as the pill every other model surface uses. Without
+
     // this the "what it resolves to" check passes over a resolution that cannot
-    // say which credential pays — and a model is selected by the whole triple.
+
     expect(screen.getByTestId("reviewer-mode-pill-first").textContent).toBe("Subscription");
   });
 
-  /**
-   * The harness is the one field on this row that is a PREDICTION, and the row
-   * shipped stating it flat: "running on Claude Code".
-   *
-   * It is not a fact. `resolveReviewerSlots` derives it implementer-independently
-   * (`resolveSlotPlan(plan, …, undefined)`); `selectReviewer` passes the
-   * implementer's harness as `avoidHarnessId`. Where both installed harnesses
-   * carry the model — the shipped `deepseek-flash` does — this view answers
-   * Claude Code and a Claude session's review actually runs on Codex. Users read
-   * the mismatch as their pin failing to apply.
-   *
-   * The fixture is the INCIDENT's own shape rather than the file's default
-   * Claude-only slot: `deepseek-flash` is really carried by both installed
-   * harnesses, so it is the row where this view and the review genuinely
-   * disagree — the same pairing `RolesTab.test.tsx` uses for the same reason.
-   *
-   * So this asserts the CLAIM rather than the sentence: the harness is still
-   * named (req 8 keeps it legible) AND what it depends on is said. Only the
-   * hedge's *subject* is pinned, not its exact phrasing — a reword that keeps
-   * the conditional should not have to touch this test. The pre-fix assertions
-   * could not fail on any of it: they were `toContain("Claude Code")`, which a
-   * flat prediction satisfies exactly as well as a qualified one.
-   */
   it("states the derived harness as a per-review choice, not as settled fact", () => {
     useSettingsStore.getState().setReviewers([
       autoSlot("first", {
@@ -243,8 +206,7 @@ describe("ReviewerSection", () => {
           modelId: "deepseek-flash",
           serviceName: "DeepSeek",
           label: "V4.1 Flash",
-          // Derived with no implementer to avoid. A Claude session's review of
-          // this very slot resolves to Codex instead.
+
           harnessId: "claude",
           harnessName: "Claude Code",
           reasoningEffort: "max",
@@ -256,29 +218,17 @@ describe("ReviewerSection", () => {
     render(<ReviewerSection agentList={agents} />);
 
     const harness = screen.getByTestId("reviewer-harness-first").textContent ?? "";
-    // Req 8 — the harness stays on the row. Dropping it would make Settings
-    // silent about the axis this feature took away from `CLAUDE.md`.
+
     expect(harness).toContain("Claude Code");
-    // ...and it is tied to the thing it actually varies with. Naming the
-    // reviewed session is the whole correction: without it the row answers for
-    // every session, including the ones it is wrong for.
+
     expect(harness).toMatch(/per review/i);
     expect(harness).toMatch(/reviewed session/i);
-    // And the unqualified claim is gone from the row entirely.
+
     expect(screen.getByTestId("reviewer-resolution-first").textContent).not.toMatch(
       /running on Claude Code/i,
     );
   });
 
-  /**
-   * planning#352 — the pin applies partially, and the tab says where.
-   *
-   * The same incident row as above, and the same reason it is used: this view
-   * resolves onto Claude Code, which offers `max`, while a Claude session's
-   * review runs on Codex, which does not. Stating "at Max" and stopping there is
-   * what made the substitution silent, so the harness that re-derives is named
-   * along with what the level becomes there.
-   */
   it("names where a pinned level does not survive, and what it becomes", () => {
     useSettingsStore.getState().setReviewers([
       autoSlot("first", {
@@ -311,17 +261,16 @@ describe("ReviewerSection", () => {
 
     const codex = screen.getByTestId("reviewer-effort-substituted-first-codex").textContent ?? "";
     expect(codex).toContain("Codex");
-    // Both halves: the level that does not apply, and the one that does there.
+
     expect(codex).toContain("Max");
     expect(codex).toContain("High");
-    // A harness that sends no level at all says that rather than naming one.
+
     const grok = screen.getByTestId("reviewer-effort-substituted-first-grok").textContent ?? "";
     expect(grok).toMatch(/no level/i);
     // The slot's own resolution still reads as the pin, because here it is one.
     expect(screen.getByTestId("reviewer-resolution-first").textContent).toContain("at Max");
   });
 
-  /** Nothing to warn about when the pin applies wherever a review could land. */
   it("says nothing about substitutions when the pinned level survives", () => {
     useSettingsStore.getState().setReviewers([
       autoSlot("first", {
@@ -338,23 +287,13 @@ describe("ReviewerSection", () => {
     );
   });
 
-  /**
-   * planning#352's settings-path half. A service change that keeps the model
-   * carries the level along; where the newly derived selection does not offer
-   * it, the server re-derives rather than refusing — so the edit lands, and the
-   * one thing that changed under it has to be said out loud.
-   *
-   * A COMPARISON of what was sent against what came back, which is all this file
-   * is allowed to know: which harness offers which level stays the server's rule
-   * (req 8).
-   */
   it("says so when the server stored a different level than the one sent", async () => {
     const user = userEvent.setup();
     const answered: ReviewerSlotView[] = [
       autoSlot("first", {
         source: "pinned",
         // Sent `high` with the model; stored `medium`, because the newly
-        // derived selection does not offer `high`.
+
         pin: {
           serviceId: "openrouter",
           billingMode: "key",
@@ -380,8 +319,7 @@ describe("ReviewerSection", () => {
     useSettingsStore.getState().setReviewers([autoSlot("first"), autoSlot("second")]);
 
     render(<ReviewerSection agentList={agents} />);
-    // The same model on another service, so the level rides along — the exact
-    // edit the old refusal made impossible without lowering the level first.
+
     await user.click(screen.getByTestId("reviewer-first-service-trigger"));
     await user.click(screen.getByTestId("reviewer-first-service-option-openrouter:key"));
 
@@ -394,7 +332,6 @@ describe("ReviewerSection", () => {
     expect(toast).toContain("Medium");
   });
 
-  /** No toast when the level the server stored is the level that was sent. */
   it("stays quiet when the level came back unchanged", async () => {
     const user = userEvent.setup();
     vi.stubGlobal(
@@ -446,15 +383,10 @@ describe("ReviewerSection", () => {
 
     expect(screen.getByTestId("reviewer-state-first").textContent).toBe("Pinned");
     expect(screen.getByTestId("reviewer-reset-first")).toBeTruthy();
-    // Auto-configured slots have nothing to reset.
+
     expect(screen.queryByTestId("reviewer-reset-second")).toBeNull();
   });
 
-  /**
-   * "The derived default rendered as a labelled option, not a blank." The first
-   * entry of the model menu is auto-configuration, and on an unpinned slot it
-   * names what that currently resolves to.
-   */
   it("renders the derived default as a labelled option at the top of the menu", async () => {
     const user = userEvent.setup();
     useSettingsStore.getState().setReviewers([autoSlot("first"), autoSlot("second")]);
@@ -467,11 +399,6 @@ describe("ReviewerSection", () => {
     expect(auto.textContent).toContain("Opus 5");
   });
 
-  /**
-   * The harness is derived (req 3), so one model offered on two installed
-   * harnesses is ONE choice. Two rows would imply a decision the user does not
-   * make here.
-   */
   it("offers a model reachable on both harnesses exactly once", async () => {
     const user = userEvent.setup();
     useSettingsStore.getState().setReviewers([
@@ -550,7 +477,7 @@ describe("ReviewerSection", () => {
   it("offers the derived harness's own reasoning levels", async () => {
     const user = userEvent.setup();
     useSettingsStore.getState().setReviewers([
-      // Resolves on Codex, whose level set includes both `minimal` and `max`.
+
       autoSlot("first", {
         resolved: {
           serviceId: "deepseek",
@@ -573,14 +500,6 @@ describe("ReviewerSection", () => {
     expect(screen.getByTestId("reviewer-reasoning-option-first-max")).toBeTruthy();
   });
 
-  /**
-   * docs/274 req 14 — a reviewer on a selection that honours NO level offers no
-   * menu at all, even though its harness declares four.
-   *
-   * grok on `xai/key` is that selection: the CLI drops `--reasoning-effort`
-   * before the wire there, and `resolveReviewerPinPatch` refuses a level for it —
-   * so a menu here would be four options whose every value comes back a 400.
-   */
   it("offers no reasoning menu for a selection whose harness sends no level", async () => {
     const user = userEvent.setup();
     useSettingsStore.getState().setReviewers([
@@ -599,14 +518,12 @@ describe("ReviewerSection", () => {
     ]);
 
     render(<ReviewerSection agentList={agents} />);
-    // The harness's `reasoning` capability IS present (see the fixture), so what
-    // hides the menu is the selection gate and nothing else.
+
     expect(agents.find((a) => a.id === "grok")?.reasoning?.options.length).toBeGreaterThan(0);
     expect(screen.queryByTestId("reviewer-reasoning-trigger-first")).toBeNull();
     void user;
   });
 
-  /** …and the SAME harness on its subscription row does offer them. */
   it("offers the levels on a selection whose harness does send them", async () => {
     const user = userEvent.setup();
     useSettingsStore.getState().setReviewers([
@@ -654,11 +571,6 @@ describe("ReviewerSection", () => {
     expect(bodyOf(fetchMock)).toEqual({ reviewers: { first: null } });
   });
 
-  /**
-   * The server sends the resolution and the client does not re-derive it, so
-   * the response replaces BOTH slots — slot 2 is ranked against slot 1, and
-   * editing one legitimately changes what the other reports.
-   */
   it("adopts the server's answer for both slots after a write", async () => {
     const user = userEvent.setup();
     const answered: ReviewerSlotView[] = [
@@ -688,11 +600,6 @@ describe("ReviewerSection", () => {
     expect(await screen.findByText(/Codex/)).toBeTruthy();
   });
 
-  /**
-   * A pin whose credential went away and an install that can run nothing read
-   * very differently, so the tab says which one happened rather than rendering
-   * the same blank for both.
-   */
   it("explains an unavailable pin and an install with nothing to run, differently", () => {
     useSettingsStore.getState().setReviewers([
       {
@@ -713,11 +620,6 @@ describe("ReviewerSection", () => {
     );
   });
 
-  /**
-   * Req 8's re-derivation, as the tab experiences it: the store is pushed a new
-   * resolution (by the `agent_list` SSE, when a credential changes) and the
-   * open tab follows it without a reload and without becoming "pinned".
-   */
   it("follows a pushed re-resolution while open, still auto-configured", () => {
     useSettingsStore.getState().setReviewers([autoSlot("first"), autoSlot("second")]);
     const { rerender } = render(<ReviewerSection agentList={agents} />);
@@ -745,13 +647,6 @@ describe("ReviewerSection", () => {
     expect(screen.getByTestId("reviewer-state-second").textContent).toBe("Auto-configured");
   });
 
-  /**
-   * Last-response-wins, pinned. Every response replaces BOTH slots (slot 2 is
-   * ranked against slot 1), so a slow first response landing after a fast
-   * second one would overwrite the newer snapshot — silently undoing an edit
-   * the user watched succeed. Cross-backend review found it; only the newest
-   * write's response is applied.
-   */
   it("ignores a stale response that lands after a newer write", async () => {
     const user = userEvent.setup();
     const stale: ReviewerSlotView[] = [autoSlot("first"), autoSlot("second")];
@@ -760,7 +655,6 @@ describe("ReviewerSection", () => {
       autoSlot("second"),
     ];
 
-    // First call resolves LAST; second call resolves first.
     let releaseStale: (() => void) | undefined;
     const staleGate = new Promise<void>((resolve) => { releaseStale = resolve; });
     let call = 0;
@@ -778,10 +672,10 @@ describe("ReviewerSection", () => {
     useSettingsStore.getState().setReviewers([autoSlot("first"), autoSlot("second")]);
 
     render(<ReviewerSection agentList={agents} />);
-    // Write 1 — hangs.
+
     await user.click(screen.getByTestId("reviewer-reasoning-trigger-second"));
     await user.click(screen.getByTestId("reviewer-reasoning-option-second-low"));
-    // Write 2 — resolves immediately and is the newest.
+
     await user.click(screen.getByTestId("reviewer-first-service-trigger"));
     await user.click(screen.getByTestId("reviewer-first-service-option-deepseek:key"));
     expect(useSettingsStore.getState().reviewers).toEqual(fresh);
@@ -791,11 +685,6 @@ describe("ReviewerSection", () => {
     await vi.waitFor(() => expect(useSettingsStore.getState().reviewers).toEqual(fresh));
   });
 
-  /**
-   * Busy is per slot. A single in-flight slot id meant starting a second write
-   * re-enabled the first control mid-flight, and whichever request finished
-   * first cleared the flag for the one still running.
-   */
   it("keeps a slot disabled while its own write is in flight", async () => {
     const user = userEvent.setup();
     let release: (() => void) | undefined;
@@ -816,7 +705,7 @@ describe("ReviewerSection", () => {
     const first = screen.getByTestId("reviewer-model-trigger-first") as HTMLButtonElement;
     const second = screen.getByTestId("reviewer-model-trigger-second") as HTMLButtonElement;
     expect(first.disabled).toBe(true);
-    // The OTHER slot is untouched — the two are independently editable.
+
     expect(second.disabled).toBe(false);
 
     release?.();
@@ -844,16 +733,10 @@ describe("ReviewerSection", () => {
 
     const { useUiStore } = await import("../../../stores/ui-store.js");
     expect(useUiStore.getState().toast?.message).toContain("No installed harness can run");
-    // The store is untouched, so the tab still shows what the server holds.
+
     expect(useSettingsStore.getState().reviewers[0].source).toBe("auto");
   });
 
-  /**
-   * docs/261 req 11 — the service is a CONTROL, and the billing mode rides on
-   * the row that acts on it. The tab shipped naming both in prose and offering
-   * neither, which answers "who reviews" and leaves "who pays" as something to
-   * read.
-   */
   it("offers the service as its own control, with its billing mode on each row", async () => {
     const user = userEvent.setup();
     useSettingsStore.getState().setReviewers([autoSlot("first"), autoSlot("second")]);
@@ -864,19 +747,14 @@ describe("ReviewerSection", () => {
       .toContain("Subscription");
     expect(screen.getByTestId("reviewer-first-service-option-deepseek:key").textContent)
       .toContain("API key");
-    // Two modes of one service would be two rows; one mode is one row. Four
+
     // rows because the fixture's four harnesses reach four `(service, mode)`
-    // pairs between them — anthropic:sub, anthropic:key, deepseek:key, xai:key.
+
     expect(screen.getAllByTestId(/^reviewer-first-service-option-/)).toHaveLength(4);
     expect(screen.getByTestId("reviewer-first-service-option-xai:key").textContent)
       .toContain("API key");
   });
 
-  /**
-   * docs/261 req 12 — the model list is bounded by the chosen service. The
-   * catalogue is meant to grow, so a menu holding every model of every service
-   * is a control that stops working later rather than one that works now.
-   */
   it("lists only the chosen service's models", async () => {
     const user = userEvent.setup();
     useSettingsStore.getState().setReviewers([autoSlot("first"), autoSlot("second")]);
@@ -917,12 +795,6 @@ describe("ReviewerSection", () => {
     });
   });
 
-  /**
-   * And the other half: a service that does not offer the model takes its own
-   * first one, without the level — the new model may resolve on a different
-   * harness with a different level set, and deriving that here is the
-   * client-side re-derivation req 8 rules out.
-   */
   it("falls back to the service's first model, leaving the level to the server", async () => {
     const user = userEvent.setup();
     const fetchMock = okFetch();

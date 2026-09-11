@@ -57,18 +57,14 @@ export function usePreviewLinkIntent(
     if (!intent) return;
     const store = usePreviewStore.getState();
 
-    // The intent describes a destination in one session and means nothing in
-    // another. `service_list` / `service_status` handlers ignore their own
     // `sessionId`, so this check cannot be delegated to them.
     if (!sessionId || intent.sessionId !== sessionId) {
       store.clearPreviewLinkIntent(intent.clickId);
       return;
     }
 
-    // Not a failure detector — an expired intent is dropped silently. Without
     // it, a service that never starts would leave the destination armed, and
-    // selecting that port by hand an hour later would yank the user to a place
-    // they no longer remember asking for.
+
     if (Date.now() - intent.startedAt > PREVIEW_LINK_INTENT_TTL_MS) {
       store.clearPreviewLinkIntent(intent.clickId);
       return;
@@ -76,7 +72,7 @@ export function usePreviewLinkIntent(
 
     const service = services.find((s) => s.name === intent.service);
     if (!service) {
-      // Declared at click time, gone now — the compose file changed under it.
+
       fail(store, intent.clickId, `This project declares no service named "${intent.service}".`);
       return;
     }
@@ -87,13 +83,9 @@ export function usePreviewLinkIntent(
       return;
     }
 
-    // A boot is in flight — ours or the user's. Waiting rather than re-sending
     // is the point: a click arriving during a start must not queue a second one.
     if (service.status === "starting") return;
 
-    // `stopped` and `error` both mean "not running", and req 12 says a pointer
-    // to a service that is not running starts it — including one sitting in
-    // `error` from an earlier attempt of its own. Refusing that would leave the
     // user holding a link that can never work again.
     if (!startRequested.current.has(service.name)) {
       if (!send({ type: "start_service", name: intent.service })) {
@@ -104,11 +96,8 @@ export function usePreviewLinkIntent(
       return;
     }
 
-    // We asked, and it is not running. `error` is a definite verdict, so it is
-    // reported (req 10). `stopped` is not: it is also what the service reads as
     // in the moment before the server answers, and a start that quietly never
-    // takes is the undetectable class req 10 is best-effort about. The intent's
-    // TTL clears that case rather than a timeout built to preserve a phrase.
+
     if (service.status === "error") {
       startRequested.current.delete(service.name);
       fail(store, intent.clickId, `Service "${intent.service}" failed to start.`);

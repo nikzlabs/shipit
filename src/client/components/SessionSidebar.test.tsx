@@ -11,10 +11,6 @@ import { useUiStore } from "../stores/ui-store.js";
 import { useRepoStore } from "../stores/repo-store.js";
 import type { SessionInfo, RepoInfo } from "../../server/shared/types.js";
 
-/**
- * Stub `window.matchMedia` so the sidebar's `useMediaQuery("(pointer: coarse)")`
- * resolves predictably. Pass `true` to simulate a touch device.
- */
 function mockMatchMedia({ isTouch = false }: { isTouch?: boolean } = {}) {
   Object.defineProperty(window, "matchMedia", {
     writable: true,
@@ -31,14 +27,13 @@ function mockMatchMedia({ isTouch = false }: { isTouch?: boolean } = {}) {
 }
 
 beforeEach(() => {
-  // Default to a non-touch (desktop) environment so existing tests keep their
-  // hover-revealed overflow visibility semantics.
+
   mockMatchMedia();
 });
 
 afterEach(() => {
   cleanup();
-  // Reset cross-test state so SessionStatusDot tests don't leak into others.
+
   useSessionStore.setState({
     activeRunnerSessions: new Set<string>(),
     messages: [],
@@ -162,14 +157,12 @@ describe("SessionSidebar", () => {
     it("shows Download chat only in the active session's menu", async () => {
       const user = userEvent.setup();
       const sessions = [baseSession({ id: "s1", title: "Active", remoteUrl: repoA.url })];
-      // Current session → item present.
+
       const { unmount } = render(<SessionSidebar {...defaultProps} sessions={sessions} currentSessionId="s1" />);
       await user.click(screen.getByLabelText("Session actions"));
       expect(await screen.findByText("Download chat")).toBeTruthy();
       unmount();
 
-      // Same session but NOT current → item absent (you'd download another
-      // session's transcript, which is confusing).
       render(<SessionSidebar {...defaultProps} sessions={sessions} currentSessionId="other" />);
       await user.click(screen.getByLabelText("Session actions"));
       expect(screen.queryByText("Download chat")).toBeNull();
@@ -221,9 +214,6 @@ describe("SessionSidebar", () => {
       render(<SessionSidebar {...defaultProps} sessions={sessions} currentSessionId="s1" />);
       await user.click(screen.getByLabelText("Session actions"));
 
-      // Current-session menus carry a second separator before the "Network
-      // access" group (the per-session egress override), so assert ≥1 rather
-      // than exactly one.
       expect((await screen.findAllByRole("separator")).length).toBeGreaterThan(0);
       expect(screen.getByText("Download chat")).toBeTruthy();
       expect(screen.queryByText("Investigate in Ops session")).toBeNull();
@@ -315,7 +305,7 @@ describe("SessionSidebar", () => {
 
   it("scopes View All Sessions to the clicked repo, not the current session's repo", async () => {
     const user = userEvent.setup();
-    // Current session lives in repo A; the menu is opened on repo B.
+
     useRepoStore.setState({ activeRepoUrl: repoA.url });
     const sessions = [baseSession({ id: "s1", title: "In repo A", remoteUrl: repoA.url })];
     render(
@@ -326,7 +316,7 @@ describe("SessionSidebar", () => {
     expect(useSessionStore.getState().allSessionsDialogOpen).toBe(true);
     expect(useSessionStore.getState().allSessionsDialogRepoUrl).toBe(repoB.url);
     // Looking at a repo's sessions must not move the active repo, which is
-    // persisted and decides where a NEW session lands.
+
     expect(useRepoStore.getState().activeRepoUrl).toBe(repoA.url);
   });
 
@@ -343,8 +333,7 @@ describe("SessionSidebar", () => {
     render(<SessionSidebar {...defaultProps} />);
     await user.click(screen.getByLabelText("repo repository menu"));
     await user.click(screen.getByText("Remove Repository"));
-    // A modal appears explaining what's removed vs kept — the menu's inline
-    // "click again" idiom is gone. The dialog confirm button is distinctly cased.
+
     expect(screen.getByText("Remove repository")).toBeTruthy();
     expect(screen.getByText(/Nothing on GitHub is changed/)).toBeTruthy();
     expect(screen.getByText("Cancel")).toBeTruthy();
@@ -357,10 +346,10 @@ describe("SessionSidebar", () => {
     render(<SessionSidebar {...defaultProps} />);
     await user.click(screen.getByLabelText("repo repository menu"));
     await user.click(screen.getByText("Remove Repository"));
-    // Cancelling does nothing…
+
     await user.click(screen.getByText("Cancel"));
     expect(removeRepo).not.toHaveBeenCalled();
-    // …confirming calls removeRepo with the repo URL.
+
     await user.click(screen.getByLabelText("repo repository menu"));
     await user.click(screen.getByText("Remove Repository"));
     await user.click(screen.getByText("Remove repository"));
@@ -370,16 +359,13 @@ describe("SessionSidebar", () => {
   it("shows no placeholder text when a repo group has no sessions (the 'New session' button is always present)", () => {
     render(<SessionSidebar {...defaultProps} sessions={[]} />);
     expect(screen.queryByText("No sessions")).toBeNull();
-    // The "New session" button is the always-available affordance.
+
     expect(screen.getByText("New session")).toBeTruthy();
   });
 
   it("shows Repository switcher in the top bar", () => {
     render(<SessionSidebar {...defaultProps} />);
-    // The expanded sidebar exposes a Repository switcher in the top bar — this
-    // dropdown houses "Add Repository" as one of its items, replacing the old
-    // standalone "+" button (which was easy to mis-click when intending to start
-    // a new session).
+
     expect(screen.getByLabelText("Repository")).toBeTruthy();
   });
 
@@ -389,7 +375,7 @@ describe("SessionSidebar", () => {
     const t2 = "2024-01-03T00:00:00.000Z";
     const t3 = "2024-01-04T00:00:00.000Z";
     const sessions = [
-      // Most-recently-used overall is merged — should still sink below active sessions.
+
       baseSession({
         id: "s-merged-recent",
         title: "Merged recent",
@@ -425,7 +411,6 @@ describe("SessionSidebar", () => {
     ];
     render(<SessionSidebar {...defaultProps} sessions={sessions} />);
 
-    // Active sessions ordered by createdAt desc, then merged ordered by mergedAt desc.
     const expectedOrder = ["Active new", "Active old", "Merged recent", "Merged old"];
     const renderedTitles = expectedOrder
       .map((t) => screen.getByText(t))
@@ -437,16 +422,15 @@ describe("SessionSidebar", () => {
     for (let i = 1; i < renderedTitles.length; i++) {
       const prev = renderedTitles[i - 1].node;
       const curr = renderedTitles[i].node;
-      // DOCUMENT_POSITION_FOLLOWING (4) means curr comes after prev.
+
       expect(prev.compareDocumentPosition(curr) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     }
   });
 
   it("sinks an archived merged session below a non-archived merged one", () => {
-    // Archived sessions in the sidebar are almost always merged (you archive
-    // after merge), so they share the demoted "Recently resolved" group. Within
+
     // that group the archived one must sink below the live-but-merged one even
-    // when it merged more recently.
+
     const t0 = "2024-01-01T00:00:00.000Z";
     const t1 = "2024-01-02T00:00:00.000Z";
     const sessions = [
@@ -456,7 +440,7 @@ describe("SessionSidebar", () => {
         remoteUrl: repoA.url,
         createdAt: t1,
         lastUsedAt: t1,
-        mergedAt: t1, // merged more recently than the live one
+        mergedAt: t1,                                          
         archived: true,
       }),
       baseSession({
@@ -472,7 +456,7 @@ describe("SessionSidebar", () => {
 
     const live = screen.getByText("Live merged");
     const archived = screen.getByText("Archived merged");
-    // Live-but-merged renders before the archived one despite the later mergedAt.
+
     expect(live.compareDocumentPosition(archived) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
@@ -492,7 +476,7 @@ describe("SessionSidebar", () => {
       remoteUrl: repoA.url,
       parentSessionId: "parent-1",
       rootSessionId: "parent-1",
-      // Newer than the live child — would sort first without the archived key.
+
       createdAt: "2024-01-02T00:00:00.000Z",
       userArchived: true,
     });
@@ -500,14 +484,13 @@ describe("SessionSidebar", () => {
 
     const live = screen.getByText("Live child");
     const archived = screen.getByText("Archived child");
-    // The live child renders before the archived one within the parent's brood.
+
     expect(live.compareDocumentPosition(archived) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   it("does not reorder sessions when lastUsedAt changes", () => {
     // Regression test: the order must be derived from createdAt (stable), not lastUsedAt
-    // (which updates on every agent event during a turn). Otherwise running agents would
-    // reshuffle the sidebar under the user's cursor.
+
     const tOld = "2024-01-01T00:00:00.000Z";
     const tNew = "2024-01-02T00:00:00.000Z";
     const tNewer = "2024-01-03T00:00:00.000Z";
@@ -520,7 +503,6 @@ describe("SessionSidebar", () => {
     const olderNode1 = screen.getByText("Older");
     expect(newerNode1.compareDocumentPosition(olderNode1) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 
-    // Simulate an agent event in the older session bumping its lastUsedAt past the newer one.
     // With MRU sorting this would reorder; with createdAt sorting the order must stay.
     const updated = [
       { ...sessions[0], lastUsedAt: tNewer },
@@ -557,7 +539,7 @@ describe("SessionSidebar", () => {
       const header = screen.getByText("Recently resolved");
       const merged = screen.getByText("Merged work");
       const active = screen.getByText("Active work");
-      // Active sits above the header; the merged session sits below it.
+
       expect(active.compareDocumentPosition(header) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
       expect(header.compareDocumentPosition(merged) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     });
@@ -597,19 +579,19 @@ describe("SessionSidebar", () => {
 
     it("keeps a reopened merged session (lastUsedAt > mergedAt) in the Active group", () => {
       // A merged session worked in since the merge rejoins Active — it must NOT
-      // sink under the 'Recently resolved' header.
+
       const sessions = [
         baseSession({
           id: "s-reopened",
           title: "Reopened merged",
           remoteUrl: repoA.url,
           createdAt: "2024-01-01T00:00:00.000Z",
-          lastUsedAt: "2024-02-01T00:00:00.000Z", // after mergedAt → reopened
+          lastUsedAt: "2024-02-01T00:00:00.000Z",                             
           mergedAt: "2024-01-15T00:00:00.000Z",
         }),
       ];
       render(<SessionSidebar {...defaultProps} sessions={sessions} />);
-      // The only session is reopened → it's Active, so no resolved header appears.
+
       expect(screen.queryByText("Recently resolved")).toBeNull();
       expect(screen.getByText("Reopened merged")).toBeTruthy();
     });
@@ -665,7 +647,7 @@ describe("SessionSidebar", () => {
         }),
       ];
       render(<SessionSidebar {...defaultProps} sessions={sessions} />);
-      // Expanded default — the resolved row is visible and the toggle offers Collapse.
+
       expect(screen.getByText("Merged work")).toBeTruthy();
       expect(screen.getByRole("button", { name: "Collapse recently resolved" })).toBeTruthy();
     });
@@ -693,11 +675,10 @@ describe("SessionSidebar", () => {
 
       await user.click(screen.getByRole("button", { name: "Collapse recently resolved" }));
 
-      // Resolved rows hide; the active session and the (now Expand) toggle remain.
       expect(screen.queryByText("Merged work")).toBeNull();
       expect(screen.getByText("Active work")).toBeTruthy();
       expect(screen.getByRole("button", { name: "Expand recently resolved" })).toBeTruthy();
-      // State is recorded per repo URL so it survives a reload (localStorage-backed).
+
       expect(useRepoStore.getState().collapsedResolved.has(repoA.url)).toBe(true);
     });
   });
@@ -716,7 +697,7 @@ describe("SessionSidebar", () => {
           id: "s-pinned",
           title: "Pinned work",
           remoteUrl: repoA.url,
-          createdAt: "2024-01-01T00:00:00.000Z", // older → would sort below if unpinned
+          createdAt: "2024-01-01T00:00:00.000Z",                                        
           lastUsedAt: "2024-01-01T00:00:00.000Z",
           pinnedAt: "2024-06-01T00:00:00.000Z",
         }),
@@ -727,7 +708,7 @@ describe("SessionSidebar", () => {
       const pinned = screen.getByText("Pinned work");
       const newSession = screen.getByText("New session");
       const active = screen.getByText("Active work");
-      // Pinned header → pinned row → New session → active row.
+
       expect(header.compareDocumentPosition(pinned) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
       expect(pinned.compareDocumentPosition(newSession) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
       expect(newSession.compareDocumentPosition(active) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
@@ -772,7 +753,7 @@ describe("SessionSidebar", () => {
       const divider = screen.getByTestId("pinned-divider");
       const pinned = screen.getByText("Pinned work");
       const active = screen.getByText("Active work");
-      // Pinned row → divider → active row.
+
       expect(pinned.compareDocumentPosition(divider) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
       expect(divider.compareDocumentPosition(active) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     });
@@ -785,7 +766,7 @@ describe("SessionSidebar", () => {
       const divider = screen.getByTestId("pinned-divider");
       const pinned = screen.getByText("Only pin");
       const newSession = screen.getByText("New session");
-      // Pinned row → divider → New session row.
+
       expect(pinned.compareDocumentPosition(divider) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
       expect(divider.compareDocumentPosition(newSession) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     });
@@ -797,15 +778,13 @@ describe("SessionSidebar", () => {
       ];
       render(<SessionSidebar {...defaultProps} sessions={sessions} />);
       const shell = screen.getByTestId("pinned-tree");
-      // Both rows live inside the shell, so the shell — not the list — is what
-      // spaces them. `gap` is inherited by nothing: a plain block wrapper here
-      // renders the rows flush (the docs/110 Phase 2 regression).
+
       expect(within(shell).getByText("Pinned root")).toBeTruthy();
       expect(within(shell).getByText("Spawned child")).toBeTruthy();
       for (const cls of ["flex", "flex-col", ROW_GAP_CLASS]) {
         expect(shell.className.split(/\s+/)).toContain(cls);
       }
-      // …and it is the SAME rhythm the surrounding list uses.
+
       expect(screen.getByTestId("group-session-list").className.split(/\s+/)).toContain(ROW_GAP_CLASS);
     });
 
@@ -837,7 +816,6 @@ describe("SessionSidebar", () => {
       const top = screen.getByText("Top pin").closest('[draggable="true"]')!;
       const bottom = screen.getByText("Bottom pin").closest('[draggable="true"]')!;
 
-      // Minimal DataTransfer that round-trips setData → getData.
       const data: Record<string, string> = {};
       const dataTransfer = {
         setData: (k: string, v: string) => { data[k] = v; },
@@ -846,10 +824,9 @@ describe("SessionSidebar", () => {
         dropEffect: "",
       };
       fireEvent.dragStart(top, { dataTransfer });
-      fireEvent.dragOver(bottom, { dataTransfer, clientY: 1000 }); // lower half → "after"
+      fireEvent.dragOver(bottom, { dataTransfer, clientY: 1000 });                        
       fireEvent.drop(bottom, { dataTransfer });
 
-      // p-top moved below p-bottom → new top-first order.
       expect(reorderSpy).toHaveBeenCalledWith(repoA.url, ["p-bottom", "p-top"]);
     });
   });
@@ -880,8 +857,7 @@ describe("SessionSidebar", () => {
     });
 
     it("suppresses the disk-tier badge for a user-archived session (archive icon covers it)", () => {
-      // A user-archived session is also evicted, but the archive affordance is
-      // the relevant signal — don't double up with the disk badge.
+
       const sessions = [
         baseSession({ id: "s1", title: "Hidden", remoteUrl: repoA.url, archived: true, userArchived: true, diskTier: "evicted" }),
       ];
@@ -898,8 +874,7 @@ describe("SessionSidebar", () => {
     };
 
     it("shows the agent-running indicator when CI failed but the agent is currently working", () => {
-      // The agent may already be addressing the failure (e.g. user followed up on a CI break);
-      // surfacing a stale 'CI failed' icon while it works misrepresents the session state.
+
       usePrStore.setState({ cardBySession: { "s1": failingChecks } });
       useSessionStore.setState({ activeRunnerSessions: new Set(["s1"]) });
 
@@ -922,8 +897,7 @@ describe("SessionSidebar", () => {
     });
 
     it("shows the auto-fix indicator (not agent-running) when auto-fix is in progress", () => {
-      // Auto-fix is a more specific kind of agent activity — keep the wrench icon
-      // so the user sees that ShipIt is automatically remediating the CI break.
+
       const card: PrCardState = {
         ...failingChecks,
         autoFix: { status: "running", attemptCount: 1, maxAttempts: 3 },
@@ -960,14 +934,13 @@ describe("SessionSidebar", () => {
       const sessions = [baseSession({ id: "s1", title: "Armed session", remoteUrl: repoA.url })];
       render(<SessionSidebar {...defaultProps} sessions={sessions} currentSessionId="s2" />);
 
-      // CI status and the auto-merge attribute are independent indicators.
       expect(screen.getByTitle("CI passed 3/3")).toBeTruthy();
       expect(screen.getByTitle("Auto-merge enabled")).toHaveClass(AUTO_MERGE_ICON_CLASS);
     });
 
     it("shows the auto-merge indicator even with no CI/PR yet (preference is session-level)", () => {
       // Auto-merge can be armed before any PR exists, so the badge must not be
-      // gated on CI/PR state.
+
       usePrStore.setState({ autoMergeBySession: { "s1": { enabled: true, mergeMethod: "squash" } } });
 
       const sessions = [baseSession({ id: "s1", title: "Armed pre-PR session", remoteUrl: repoA.url })];
@@ -977,10 +950,9 @@ describe("SessionSidebar", () => {
     });
 
     it("shows no auto-merge indicator once the arming's PR has merged", () => {
-      // The arming belongs to the merged PR (docs/077) — `armedForPrNumber`
-      // says so. The reducer normally retires it on the terminal update; the
+
       // badge must ALSO stay off when that update was missed and the entry is
-      // still sitting in the store.
+
       const card: PrCardState = { cardId: "card-1", phase: "merged", pr: mergedPr };
       usePrStore.setState({
         cardBySession: { "s1": card },
@@ -994,8 +966,7 @@ describe("SessionSidebar", () => {
     });
 
     it("keeps the indicator for a merged session armed for its NEXT PR", () => {
-      // Armed after the merge, from the card's overflow menu — no
-      // `armedForPrNumber`, so it is a pre-arm and not the dead PR's arming.
+
       const card: PrCardState = { cardId: "card-1", phase: "merged", pr: mergedPr };
       usePrStore.setState({
         cardBySession: { "s1": card },
@@ -1025,7 +996,7 @@ describe("SessionSidebar", () => {
 
     it("shows a caret on a parent that has spawned children", () => {
       render(<SessionSidebar {...defaultProps} sessions={[parent, childA, childB]} />);
-      // Default: expanded — caret says "Hide ...".
+
       expect(screen.getByLabelText("Hide 2 spawned sessions")).toBeTruthy();
       expect(screen.getByText("Child A")).toBeTruthy();
       expect(screen.getByText("Child B")).toBeTruthy();
@@ -1037,7 +1008,7 @@ describe("SessionSidebar", () => {
       await user.click(screen.getByLabelText("Hide 2 spawned sessions"));
       expect(screen.queryByText("Child A")).toBeNull();
       expect(screen.queryByText("Child B")).toBeNull();
-      // Parent stays visible with a "Show" caret.
+
       expect(screen.getByText("Parent")).toBeTruthy();
       expect(screen.getByLabelText("Show 2 spawned sessions")).toBeTruthy();
     });
@@ -1130,9 +1101,7 @@ describe("SessionSidebar", () => {
     });
 
     it("keeps a merged child visible when it is pinned", () => {
-      // docs/110 — an explicit pin outranks the automatic resolved-demotion. A
-      // pinned child renders under its parent rather than in the pinned
-      // sub-section, so this split is its only render path.
+
       const pinnedMerged = baseSession({
         ...mergedChild,
         title: "Pinned merged child",
@@ -1144,8 +1113,7 @@ describe("SessionSidebar", () => {
     });
 
     it("keeps a merged child visible when it has its own children in the brood", () => {
-      // Tucking away an intermediate merged child would leave its grandchild
-      // rendered at the same indent with no visible ancestor.
+
       const mergedMiddle = baseSession({
         id: "child-merged",
         title: "Merged middle",
@@ -1171,8 +1139,7 @@ describe("SessionSidebar", () => {
   });
 
   describe("docs/201 nested brood (grandchildren)", () => {
-    // A grandchild's rootSessionId is the TOP ancestor (root-1), not its
-    // immediate parent (child-1) — the spawn path stamps it that way.
+
     const root = baseSession({ id: "root-1", title: "Root", remoteUrl: repoA.url });
     const child = baseSession({
       id: "child-1",
@@ -1192,11 +1159,11 @@ describe("SessionSidebar", () => {
     it("renders a grandchild under its root (the pre-docs/201 bug hid it)", () => {
       render(<SessionSidebar {...defaultProps} sessions={[root, child, grandchild]} />);
       // All three visible — the grandchild used to vanish because the sidebar
-      // only nested direct children.
+
       expect(screen.getByText("Root")).toBeTruthy();
       expect(screen.getByText("Child")).toBeTruthy();
       expect(screen.getByText("Grandchild")).toBeTruthy();
-      // The whole brood (child + grandchild) counts toward the root's caret.
+
       expect(screen.getByLabelText("Hide 2 spawned sessions")).toBeTruthy();
     });
 
@@ -1210,7 +1177,7 @@ describe("SessionSidebar", () => {
     });
 
     it("still shows a grandchild at top level when its root is absent from the group", () => {
-      // Root not in the list (e.g. archived/merged out): the orphan fallback
+
       // renders the brood members at top level so they never disappear.
       render(<SessionSidebar {...defaultProps} sessions={[child, grandchild]} />);
       expect(screen.getByText("Child")).toBeTruthy();
@@ -1223,8 +1190,7 @@ describe("SessionSidebar", () => {
       const sessions = [baseSession({ id: "s1", title: "Inactive", remoteUrl: repoA.url })];
       render(<SessionSidebar {...defaultProps} sessions={sessions} currentSessionId="other" />);
       const trigger = screen.getByLabelText("Session actions");
-      // The trigger is still rendered (so it's reachable by keyboard); it just
-      // hover-reveals via opacity. Its wrapper carries `opacity-0`.
+
       const wrapper = trigger.closest("div");
       expect(wrapper?.className).toContain("opacity-0");
       expect(wrapper?.className).toContain("group-hover:opacity-100");
@@ -1288,8 +1254,7 @@ describe("SessionSidebar", () => {
       const user = userEvent.setup();
       const sessions = [baseSession({ id: "s1", title: "Old", remoteUrl: repoA.url, archived: true })];
       const onArchive = vi.fn();
-      // For archived rows the sidebar passes a Restore handler via the
-      // AllSessionsDialog path; here we just verify the menu shape.
+
       render(<SessionSidebar {...defaultProps} sessions={sessions} onArchive={onArchive} />);
       await user.click(screen.getByLabelText("Session actions"));
       // Archived rows show only Restore — Rename + Archive are intentionally hidden.
@@ -1310,7 +1275,6 @@ describe("SessionSidebar", () => {
       const input = await screen.findByLabelText("Session name") as HTMLInputElement;
       expect(input.value).toBe("Old name");
 
-      // Clear and type a new name, then submit with Enter.
       await user.clear(input);
       await user.type(input, "Fresh name{Enter}");
 
@@ -1332,7 +1296,7 @@ describe("SessionSidebar", () => {
       await user.type(input, "Discarded{Escape}");
 
       expect(renameSession).not.toHaveBeenCalled();
-      // The original title is shown again.
+
       expect(screen.getByText("Stay")).toBeInTheDocument();
     });
   });
@@ -1346,7 +1310,7 @@ describe("SessionSidebar", () => {
       render(<SessionSidebar {...defaultProps} sessions={sessions} />);
       expect(screen.getByText("Host / Ops")).toBeTruthy();
       expect(screen.getByText("Ops — prod-host")).toBeTruthy();
-      // The ops badge marks the row.
+
       expect(screen.getByText("ops")).toBeTruthy();
     });
 
@@ -1357,7 +1321,7 @@ describe("SessionSidebar", () => {
     });
 
     it("keeps an ops session out of its repo group even if it carries a remoteUrl", () => {
-      // Defensive: kind wins over remoteUrl for grouping, so a stray remote on an
+
       // ops session never pulls it into a repo bucket.
       const sessions = [
         baseSession({ id: "ops-1", title: "Ops host", kind: "ops", remoteUrl: repoA.url }),
@@ -1365,8 +1329,7 @@ describe("SessionSidebar", () => {
       render(<SessionSidebar {...defaultProps} sessions={sessions} />);
       const opsRow = screen.getByText("Ops host");
       const opsGroupHeader = screen.getByText("Host / Ops");
-      // Ops row should appear after the Host/Ops header (same group). The repo
-      // group has no session rows — only its always-present "New session" button.
+
       expect(opsGroupHeader.compareDocumentPosition(opsRow) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
       expect(screen.queryByText("No sessions")).toBeNull();
     });
@@ -1384,7 +1347,6 @@ describe("SessionSidebar", () => {
     expect(screen.getByText("API migration")).toBeTruthy();
   });
 
-  // docs/254 — per-repo identity edge spanning the whole group.
   describe("repo group separation", () => {
     const colored = (r: RepoInfo, colorIndex: number): RepoInfo => ({ ...r, colorIndex });
 
@@ -1402,14 +1364,11 @@ describe("SessionSidebar", () => {
       expect((groups[0] as HTMLElement).style.borderLeftWidth).toBe("3px");
     });
 
-    // req 11 — nothing to separate a lone group from.
     it("suppresses the treatment when there is only one group", () => {
       render(<SessionSidebar {...defaultProps} repos={[colored(repoA, 0)]} />);
       expect(document.querySelector("[data-repo-color-index]")).toBeNull();
     });
 
-    // req 11 — the count is GROUPS, not repos: one repo beside an Ops group is
-    // still two things the eye has to tell apart.
     it("applies the treatment to a lone repo when an ops group is also present", () => {
       const sessions = [
         baseSession({ id: "s1", title: "In repo A", remoteUrl: repoA.url }),
@@ -1435,18 +1394,12 @@ describe("SessionSidebar", () => {
       expect(ops.getAttribute("data-repo-color-index")).toBeNull();
     });
 
-    // A repo stored by a build older than the backfill migration has no color;
     // it must render plainly rather than with an invisible or arbitrary edge.
     it("draws no edge for a repo with no stored color", () => {
       render(<SessionSidebar {...defaultProps} repos={[repoA, repoB]} />);
       expect(document.querySelector("[data-repo-color-index]")).toBeNull();
     });
 
-    // Without a gap, two adjacent 3px edges meet and read as one continuous
-    // rail that changes color partway down — the opposite of "each repo owns a
-    // bounded run". Reported from the real UI, where the mock's margin was
-    // missing. Asserted against the exported constant, not a literal: the exact
-    // spacing is a tuning decision, "there is a gap at all" is not.
     it("separates adjacent group edges with a gap", () => {
       render(<SessionSidebar {...defaultProps} repos={[colored(repoA, 0), colored(repoB, 5)]} />);
       const groups = document.querySelectorAll("[data-repo-color-index]");
@@ -1454,18 +1407,12 @@ describe("SessionSidebar", () => {
       for (const g of groups) expect(g.className).toContain(GROUP_GAP_CLASS);
     });
 
-    // The band is a section header: butted straight against the first row it
-    // reads as just another row with a background. The clearance is sized to
-    // match the gap BETWEEN session rows, so the first row sits the same
-    // distance below the band as the rows sit from each other.
     it("insets rows from the band and the edge's end by the row-to-row gap", () => {
       render(<SessionSidebar {...defaultProps} repos={[colored(repoA, 0), colored(repoB, 5)]} />);
       const list = within(document.querySelector<HTMLElement>("[data-repo-color-index]")!)
         .getByTestId("group-session-list");
       expect(list.className).toContain(BAND_CLEARANCE_CLASS);
-      // One rhythm inside the group: `gap-1` separates the rows, and the same
-      // 4px sits above the first row and below the last (where the colored edge
-      // ends). A larger bottom inset reads as the edge overshooting its content.
+
       expect(list.className).toContain("gap-1");
       expect(BAND_CLEARANCE_CLASS).toBe("pt-1 pb-1");
       expect(list.className).not.toContain("pb-2");
@@ -1475,15 +1422,14 @@ describe("SessionSidebar", () => {
       render(<SessionSidebar {...defaultProps} repos={[colored(repoA, 0)]} />);
       const group = screen.getByText("repo").closest("div")?.parentElement?.parentElement;
       expect(group?.className ?? "").not.toContain(GROUP_GAP_CLASS);
-      // Scoped to the group: the sidebar's scroll container legitimately carries
-      // the same utility class in this mode, so an unscoped query would match it.
+
       const list = screen.getByTestId("group-session-list");
       expect(list.className).not.toContain(BAND_CLEARANCE_CLASS);
-      expect(list.className).toContain("pb-2"); // the original spacing, untouched
+      expect(list.className).toContain("pb-2");                                   
     });
 
     // The edge MUST be on the group, not the sticky header — on the header it
-    // breaks at the seam the moment the header pins.
+
     it("puts the edge on the group element, not on the sticky header", () => {
       render(<SessionSidebar {...defaultProps} repos={[colored(repoA, 0), colored(repoB, 1)]} />);
       const group = document.querySelector<HTMLElement>("[data-repo-color-index]")!;
@@ -1492,9 +1438,6 @@ describe("SessionSidebar", () => {
       expect(header.style.borderLeftWidth).toBe("");
     });
 
-    // The band is a wash of the group's OWN color, not a neutral fill: on a
-    // light theme the neutral (--color-bg-tertiary) was the DARKEST surface in
-    // the rail, so headers outweighed the sessions under them.
     it("washes each group's header band with that group's own color", () => {
       render(<SessionSidebar {...defaultProps} repos={[colored(repoA, 0), colored(repoB, 5)]} />);
       const groups = document.querySelectorAll<HTMLElement>("[data-repo-color-index]");
@@ -1504,16 +1447,6 @@ describe("SessionSidebar", () => {
       expect(bandOf(groups[0])).not.toBe(bandOf(groups[1]));
     });
 
-    // The header is `sticky`, so a translucent fill lets session rows scroll
-    // straight THROUGH it. Two things keep it opaque: the wash is mixed over the
-    // rail background rather than being the hue at low alpha, and the opaque
-    // class is on the header unconditionally, so the states that produce NO
-    // inline wash still resolve to a fill.
-    //
-    // Every state below is rendered separately and on purpose. An earlier
-    // version of this test asserted "every state" while only ever rendering a
-    // colored repo, so the two no-wash branches it named went unexercised
-    // (caught in the Codex review of PR #2045).
     describe("keeps the sticky header opaque", () => {
       const headerOf = (el: HTMLElement) => el.querySelector<HTMLElement>(".sticky")!;
 
@@ -1531,8 +1464,6 @@ describe("SessionSidebar", () => {
         expect(plain.className).toContain("bg-(--color-bg-primary)");
       });
 
-      // Separated, but this repo predates the color backfill: it gets no edge
-      // and no wash, while its NEIGHBOURS are washed. The one branch the old
       // test named and never actually rendered.
       it("when a separated repo has no stored color", () => {
         render(<SessionSidebar {...defaultProps} repos={[repoA, colored(repoB, 5)]} />);
@@ -1541,8 +1472,6 @@ describe("SessionSidebar", () => {
         expect(uncolored.className).toContain("bg-(--color-bg-primary)");
       });
 
-      // Ops and Sandbox wash from SEMANTIC tokens, not palette entries, so they
-      // are a separate code path from the repo groups above.
       it("on the Ops and Sandbox groups", () => {
         const sessions = [
           baseSession({ id: "s1", title: "In repo A", remoteUrl: repoA.url }),
@@ -1561,11 +1490,6 @@ describe("SessionSidebar", () => {
   });
 });
 
-/**
- * docs/260 — the "Needs you" view. The list itself is covered in
- * `SessionSidebar/AttentionSessionList.test.tsx`; these are the sidebar-level
- * wiring facts: where the switch sits, what its count says, and what it swaps.
- */
 describe("SessionSidebar needs-attention view", () => {
   afterEach(() => {
     useUiStore.getState().setSidebarView("all");
@@ -1579,7 +1503,7 @@ describe("SessionSidebar needs-attention view", () => {
   const findSwitch = () => screen.getByRole("button", { name: /need you/ });
 
   it("puts the switch beside the collapse control, not among the create controls", () => {
-    // req 4 — the switch and the collapse button both act on the sidebar; the
+
     // right-hand cluster is create/act controls the switch must not join.
     render(<SessionSidebar {...defaultProps} sessions={waiting()} />);
     const collapse = screen.getByRole("button", { name: "Collapse sidebar" });
@@ -1587,27 +1511,26 @@ describe("SessionSidebar needs-attention view", () => {
   });
 
   it("is the first control on the mobile bar, which has no collapse button", () => {
-    // req 15.
+
     render(<SessionSidebar {...defaultProps} sessions={waiting()} mobile />);
     expect(screen.queryByRole("button", { name: "Collapse sidebar" })).toBeNull();
     expect(findSwitch().parentElement?.firstElementChild).toBe(findSwitch());
   });
 
   it("carries the count in BOTH views, so the second one is discoverable", () => {
-    // req 5. Both sessions are idle with no PR, i.e. "Waiting for your input".
+
     render(<SessionSidebar {...defaultProps} repos={[repoA, repoB]} sessions={waiting()} />);
     expect(findSwitch().textContent).toContain("2");
 
     fireEvent.click(findSwitch());
-    // Selected by the count, not by "Show all sessions" — req 17 gives the
-    // collapse control that same name while this view is showing.
+
     expect(findSwitch().textContent).toContain("2");
   });
 
   it("swaps the repo tree for a flat list with no repo headers", () => {
-    // reqs 2, 3, 6, 10 — no grouping, no headers, and no band above the list.
+
     render(<SessionSidebar {...defaultProps} repos={[repoA, repoB]} sessions={waiting()} />);
-    // The repo group: a sticky header band and its own "New session" row.
+
     expect(screen.getByText("repo").closest(".sticky")).toBeTruthy();
     expect(screen.getAllByText("New session").length).toBe(2);
 
@@ -1617,12 +1540,12 @@ describe("SessionSidebar needs-attention view", () => {
     expect(screen.getByText("repo").closest(".sticky")).toBeNull();
     expect(screen.getByText("Needs me")).toBeTruthy();
     expect(screen.getByText("Also needs me")).toBeTruthy();
-    // The lit icon is the whole mode indicator — nothing else is added above.
+
     expect(screen.queryByText(/Needs you/)).toBeNull();
   });
 
   it("remembers the chosen view", () => {
-    // req 13 — the store is seeded from localStorage; this covers the write.
+
     render(<SessionSidebar {...defaultProps} sessions={waiting()} />);
     fireEvent.click(findSwitch());
     expect(useUiStore.getState().sidebarView).toBe("attention");
@@ -1630,15 +1553,11 @@ describe("SessionSidebar needs-attention view", () => {
   });
 
   it("adds no second switch to the collapsed rail", () => {
-    // A rail control could only mean "expand into the view" — a different
-    // action behind the same glyph. The rail shows no session state at all.
+
     render(<SessionSidebar {...defaultProps} sessions={waiting()} collapsed />);
     expect(screen.queryByRole("button", { name: /need you/ })).toBeNull();
   });
 
-  // req 17 — the corner button is the one the hand reaches for when the goal is
-  // "put the sidebar back to normal", so in this view it does that instead of
-  // collapsing. Collapsing is still reachable, one press later.
   describe("the collapse control", () => {
     it("leaves the view on the first press and collapses on the next", () => {
       const onToggleCollapse = vi.fn();
@@ -1648,23 +1567,17 @@ describe("SessionSidebar needs-attention view", () => {
       fireEvent.click(findSwitch());
       expect(useUiStore.getState().sidebarView).toBe("attention");
 
-      // First press: the view goes, the sidebar stays open — the repo tree is
-      // back on screen, not merely a flag flipped in the store.
       fireEvent.click(screen.getByRole("button", { name: "Back to all sessions" }));
       expect(onToggleCollapse).not.toHaveBeenCalled();
       expect(useUiStore.getState().sidebarView).toBe("all");
       expect(screen.getAllByText("New session").length).toBeGreaterThan(0);
 
-      // Second press, now in the all-sessions view: it collapses, as labelled.
       fireEvent.click(screen.getByRole("button", { name: "Collapse sidebar" }));
       expect(onToggleCollapse).toHaveBeenCalledTimes(1);
     });
 
     it("names itself for the press it will make, so the state is not hidden", async () => {
-      // Without this the button keeps saying "Collapse sidebar" and then changes
-      // the view — the mistake this fixes, moved into the screen reader. The
-      // TOOLTIP is asserted too: it is the sighted half of the same promise, and
-      // an aria-label-only check would pass if someone hard-coded it back.
+
       const user = userEvent.setup();
       render(<SessionSidebar {...defaultProps} sessions={waiting()} />);
       expect(screen.getByRole("button", { name: "Collapse sidebar" })).toBeTruthy();
@@ -1674,15 +1587,12 @@ describe("SessionSidebar needs-attention view", () => {
       const control = screen.getByRole("button", { name: "Back to all sessions" });
       expect(screen.queryByRole("button", { name: "Collapse sidebar" })).toBeNull();
 
-      // Radix renders tooltip copy twice (visible + the aria live region).
       await user.hover(control);
       expect(await screen.findAllByText("Back to all sessions")).not.toHaveLength(0);
     });
 
     it("does not borrow the switch's own name, which collides at a count of zero", () => {
-      // Two adjacent buttons under one name is ambiguous to a voice command and
-      // noise to a screen reader. At inbox zero the switch drops its count, so
-      // its active label is a bare "Show all sessions" — the colliding case.
+
       render(<SessionSidebar {...defaultProps} sessions={[]} />);
       fireEvent.click(screen.getByRole("button", { name: "Show sessions that need you" }));
       expect(screen.getAllByRole("button", { name: "Show all sessions" })).toHaveLength(1);
@@ -1690,9 +1600,7 @@ describe("SessionSidebar needs-attention view", () => {
     });
 
     it("expands into the remembered view, where the header press still leaves it", () => {
-      // Reachable from saved state (req 13) or from mod+alt+a while collapsed.
-      // The rail expands unconditionally; the header control then means whatever
-      // the restored view says it means, not whatever it meant before collapsing.
+
       const onToggleCollapse = vi.fn();
       function Harness() {
         const [collapsed, setCollapsed] = useState(true);
@@ -1716,7 +1624,7 @@ describe("SessionSidebar needs-attention view", () => {
 
       fireEvent.click(screen.getByRole("button", { name: "Back to all sessions" }));
       expect(useUiStore.getState().sidebarView).toBe("all");
-      // Only the expand moved the collapse state; the header press did not.
+
       expect(onToggleCollapse).toHaveBeenCalledTimes(1);
     });
   });

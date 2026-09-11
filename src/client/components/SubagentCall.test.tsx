@@ -1,9 +1,7 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
 import { render, screen, cleanup, fireEvent, waitFor } from "@testing-library/react";
 import { SubagentCall } from "./SubagentCall.js";
-// Deliberate client→session coupling (test-only): the alternative is a
-// hand-kept copy of the normalizer's output, the planning#337 anti-pattern. No
-// lint boundary blocks this today; the module is dependency-free pure TS.
+
 import { normalizeOpencodeToolResult } from "../../server/session/agents/opencode/opencode-tool-normalizer.js";
 import { useSessionStore } from "../stores/session-store.js";
 import type { ToolUseBlock, ToolResultBlock, SubagentEvent } from "./MessageList.js";
@@ -36,19 +34,13 @@ function workEvents(n: number): SubagentEvent[] {
   }));
 }
 
-/**
- * The work timeline is collapsed by default, in every state. A turn with two
- * or three subagents used to bury the main transcript under their tool calls;
- * the count on the toggle is what tells the reader work is happening without
- * spending the vertical space.
- */
 describe("SubagentCall work timeline", () => {
   it("stays collapsed while the subagent runs, showing a live action count", () => {
     render(<SubagentCall tool={task()} subagentEvents={workEvents(3)} isStreaming={true} />);
 
     expect(screen.queryByTestId("subagent-work")).not.toBeInTheDocument();
     expect(screen.getByTestId("subagent-work-toggle")).toHaveTextContent("3 actions");
-    // Something is clearly going on even with the timeline hidden.
+
     expect(screen.getByTestId("subagent-running")).toBeInTheDocument();
   });
 
@@ -78,19 +70,9 @@ describe("SubagentCall work timeline", () => {
   });
 });
 
-/**
- * planning#289 — the report the user reads.
- *
- * The parsing itself is covered exhaustively in
- * `utils/group-events-by-parent.test.ts`; these two assert the thing that was
- * actually broken on screen, which no unit test of the parser can show: the
- * card rendered `[{"type":"text","text":"…"}]` verbatim through the markdown
- * renderer.
- */
 describe("SubagentCall final report", () => {
   it("renders the prose from the CLI's block-array shape, not the JSON", () => {
-    // Verbatim from Claude Code CLI 2.1.219 on a live turn: the report block,
-    // then the CLI's own accounting footer.
+
     const content = JSON.stringify([
       { type: "text", text: "Counted the words: 2,145 across 264 lines." },
       { type: "text", text: "agentId: af658a55f1a8b9594\nsubagent_tokens: 49171\ntool_uses: 1" },
@@ -100,12 +82,10 @@ describe("SubagentCall final report", () => {
 
     const report = screen.getByTestId("subagent-final-report");
     expect(report).toHaveTextContent("Counted the words: 2,145 across 264 lines.");
-    // The regression itself: no JSON punctuation reaches the user.
+
     expect(report.textContent).not.toContain('"type"');
     expect(report.textContent).not.toContain('\\n');
 
-    // req 5 — the footer is addressed to the agent, not the reader. It is
-    // demoted to header chips rather than printed as raw `key: value` text.
     const meta = screen.getByTestId("subagent-report-meta");
     expect(meta).toHaveTextContent("49.2k tokens");
     expect(meta).toHaveTextContent("1 tool");
@@ -128,21 +108,8 @@ describe("SubagentCall final report", () => {
   });
 });
 
-/**
- * planning#434 — the OpenCode report, raw wire to DOM.
- *
- * OpenCode's `task` result arrives wrapped in `<task …><task_result>…</…>`
- * tags. In CommonMark the `<task …>` line opens an HTML block that runs to the
- * next blank line, and the report renderer passes `skipHtml` — so the whole
- * wrapper, report text included, was dropped and the panel rendered visually
- * empty while the persisted content was whole (the two surfaces disagree
- * exactly when a renderer swallows content, which is how the first
- * verification run recorded this as passing). The fix unwraps at the adapter
- * boundary; this test runs the REAL raw capture through the real normalizer
- * into the real card, so removing the unwrap goes red here at the DOM level.
- */
 describe("SubagentCall OpenCode report (planning#434)", () => {
-  // Verbatim result shape from OpenCode CLI 1.18.15 (docs/272 run 2026-08-18).
+
   const RAW_WIRE =
     '<task id="ses_8f214c2af" state="completed">\n<task_result>\n11\n</task_result>\n</task>';
 
@@ -156,9 +123,7 @@ describe("SubagentCall OpenCode report (planning#434)", () => {
 
   it("the raw wrapper renders EMPTY — the mechanism that makes the unwrap load-bearing", () => {
     // If this ever fails because the wrapper's inner text became visible, the
-    // markdown renderer stopped swallowing HTML blocks and the unwrap may no
-    // longer be the only thing keeping the report on screen — re-evaluate
-    // planning#434 before "fixing" this assertion.
+
     render(<SubagentCall tool={task()} parentToolResults={reportResult(RAW_WIRE)} isStreaming={false} />);
 
     expect(screen.getByTestId("subagent-final-report").textContent).not.toContain("11");
@@ -173,8 +138,7 @@ describe("SubagentCall OpenCode report (planning#434)", () => {
  * still running.
  */
 describe("SubagentCall backgrounded subagent", () => {
-  // Verbatim from Claude Code CLI on a live turn, trimmed to the two lines that
-  // carry the shape.
+
   const ACK = [
     "Async agent launched successfully. (This tool result is internal metadata — never quote or paste any part of it, including the agentId below, into a user-facing reply.)",
     "agentId: a90130de265682eb8 (internal ID - do not mention to user.)",
@@ -198,11 +162,6 @@ describe("SubagentCall backgrounded subagent", () => {
     expect(screen.queryByTestId("subagent-done")).toBeNull();
   });
 
-  /**
-   * The guard on the recognizer's narrowness. This repo's own docs quote the
-   * acknowledgement's opening sentence, so a subagent reporting on them would
-   * have its real report swallowed if the phrase alone were the test.
-   */
   it("does not swallow a real report that merely quotes the phrase", () => {
     const content = "The CLI returns \"Async agent launched successfully\" for a backgrounded Task.";
     render(<SubagentCall tool={task()} parentToolResults={reportResult(content)} isStreaming={false} />);
@@ -212,11 +171,6 @@ describe("SubagentCall backgrounded subagent", () => {
   });
 });
 
-/**
- * docs/109 reqs 6–8 — a long report clamps inline and opens in a modal, and the
- * transcript carries only the clamped head (`truncated`), so the modal fetches
- * the rest.
- */
 describe("SubagentCall long report", () => {
   const LONG = Array.from({ length: 40 }, (_, i) => `Finding ${i}: something worth saying.`).join("\n");
 
@@ -264,7 +218,6 @@ describe("SubagentCall long report", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    // What the serve path produces: the clamped head plus the markers.
     const sliced: ToolResultBlock[] = [
       { toolUseId: TASK_ID, content: LONG.split("\n").slice(0, 12).join("\n"), truncated: true, totalLines: 41 },
     ];
@@ -291,7 +244,6 @@ describe("SubagentCall long report", () => {
     render(<SubagentCall tool={task()} parentToolResults={sliced} isStreaming={false} />);
     fireEvent.click(screen.getByTestId("subagent-report-expand"));
 
-    // Not a blank modal: the head IS the head of what is being fetched.
     expect(screen.getByTestId("subagent-report-modal-body")).toHaveTextContent("Finding 0");
   });
 
@@ -332,8 +284,7 @@ describe("SubagentCall lazy prompt (docs/244)", () => {
   function deferredTask(chars: number): ToolUseBlock {
     return {
       ...task(),
-      // The projection removes `prompt` from `input` entirely and records what
-      // it was worth in `inputChars`.
+
       inputChars: { prompt: chars },
     };
   }
@@ -354,7 +305,7 @@ describe("SubagentCall lazy prompt (docs/244)", () => {
     render(<SubagentCall tool={deferredTask(4096)} isStreaming={false} />);
 
     expect(screen.getByTestId("subagent-prompt-toggle")).toHaveTextContent("Prompt (4096 chars)");
-    // Collapsed: nothing has been asked for, so nothing is fetched.
+
     expect(fetchMock).not.toHaveBeenCalled();
   });
 

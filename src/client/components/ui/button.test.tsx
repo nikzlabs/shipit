@@ -12,9 +12,7 @@ describe("Button size variants", () => {
       </Button>,
     );
     const btn = screen.getByRole("button", { name: "close" });
-    // The `icon` size is padding-based (square) with no fixed height, so it sizes
-    // to its glyph — this is what lets one size cover both icon-only and tight
-    // icon+label buttons.
+
     expect(btn.className).toContain("p-1");
     expect(btn.className).not.toMatch(/\bh-8\b/);
   });
@@ -32,15 +30,14 @@ describe("Button size variants", () => {
       </Button>,
     );
     const btn = screen.getByRole("button", { name: "edit" });
-    // The adopted icon-button sites rely on ghost owning the hover background +
-    // text-color transition that they used to hand-roll.
+
     expect(btn.className).toContain("p-1");
     expect(btn.className).toContain("hover:bg-(--color-bg-hover)");
   });
 
   it("lets a caller className override the icon size's padding via twMerge", () => {
     // The label-remove chip needs a round, zero-padding shape — the override must
-    // win over the size's `p-1`.
+
     render(
       <Button size="icon" className="p-0 size-3.5 rounded-full" aria-label="remove">
         x

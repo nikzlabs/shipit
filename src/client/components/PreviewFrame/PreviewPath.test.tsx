@@ -9,8 +9,7 @@ afterEach(() => {
 
 function stubClipboard() {
   const writeText = vi.fn().mockResolvedValue(undefined);
-  // Define onto the real navigator rather than replacing it — jsdom and the
-  // testing library read other properties off it.
+
   Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
   return writeText;
 }
@@ -18,10 +17,10 @@ function stubClipboard() {
 describe("PreviewPath", () => {
   it("renders no chip when the path is unknown", () => {
     // A non-proxied local preview never reports one; an empty chip would read
-    // as "this page has no URL".
+
     const { container } = render(<PreviewPath path={null} fullUrl={null} />);
     expect(screen.queryByRole("button")).not.toBeInTheDocument();
-    // The region itself stays, so the toolbar doesn't shift when a path arrives.
+
     expect(container.querySelector("div")).toBeInTheDocument();
   });
 
@@ -32,11 +31,7 @@ describe("PreviewPath", () => {
   });
 
   it("reserves width for the copy button so it cannot be clipped away", () => {
-    // The icon has always been shrink-0, which is not enough on its own: it
-    // sits inside a region that was free to collapse to zero, so it was cut
-    // away along with the text — losing the only route back to the absolute
-    // URL exactly when the path had got too short to read. The region floor is
-    // what keeps it, so assert the floor rather than the icon's own class.
+
     const { container } = render(<PreviewPath path="/orders" fullUrl="http://a--5173.localhost/orders" />);
     const region = container.firstElementChild as HTMLElement;
     expect(region.className).toContain("min-w-7");
@@ -44,16 +39,14 @@ describe("PreviewPath", () => {
   });
 
   it("exposes the address text as the element the toolbar measures", () => {
-    // usePreviewToolbarCollapse drops labels to keep THIS element above its
-    // minimum. If the marker moves or disappears the hook silently reads null
-    // and stops protecting the address, so pin it here.
+
     const { container } = render(<PreviewPath path="/orders?tab=open" fullUrl="http://a--5173.localhost/orders?tab=open" />);
     const measured = container.querySelector("[data-preview-address]");
     expect(measured).toBeInTheDocument();
     expect(measured).toHaveTextContent("/orders");
     expect(measured).toHaveTextContent("?tab=open");
     // Content-sized and shrinkable, never hidden: that is what stops a
-    // truncated address leaving unused space beside the copy button.
+
     expect(measured?.className).toContain("min-w-0");
     expect(measured?.className).toContain("overflow-hidden");
   });
@@ -67,14 +60,13 @@ describe("PreviewPath", () => {
 
   it("keeps the route in its own element so the query truncates first", () => {
     // The two halves must stay separate elements — a single string would let a
-    // long query push the route out of view, which is the part you read.
+
     render(<PreviewPath path="/a/b?x=1&y=2" fullUrl="http://h/a/b?x=1&y=2" />);
     expect(screen.getByText("/a/b")).not.toBe(screen.getByText("?x=1&y=2"));
   });
 
   it("splits a hash route at the query, not at the hash", () => {
-    // Hash routers keep the real route after "#", so dimming from "#" would
-    // grey out the only informative part.
+
     render(<PreviewPath path="/#/orders?tab=open" fullUrl="http://h/#/orders?tab=open" />);
     expect(screen.getByText("/#/orders")).toBeInTheDocument();
     expect(screen.getByText("?tab=open")).toBeInTheDocument();

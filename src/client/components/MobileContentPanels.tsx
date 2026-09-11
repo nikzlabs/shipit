@@ -24,11 +24,6 @@ interface MobileContentPanelsProps {
   rightPanel: ReactNode;
 }
 
-/**
- * Keeps both mobile content trees mounted while switching tabs. The chat tree
- * owns its scroll position and the workspace tree may contain a live preview
- * iframe, so unmounting either one turns a tab switch into a destructive reset.
- */
 export function MobileContentPanels({
   showHomeScreen,
   showNewSessionView,

@@ -242,7 +242,6 @@ instead (req 2).
     A role still decides only what the child *starts* as (req 11). Nothing re-reads it afterwards,
     and editing or deleting the role does not reach back into a child that already exists.
 
-
 ## Scope
 
 A role covers **what an agent runs on** and, optionally, **what job it is for**. It does not

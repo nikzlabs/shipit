@@ -53,9 +53,7 @@ describe("handleSystemUserMessage (dispatch echo)", () => {
 
 describe("handleSystemUserMessage (user-typed echo)", () => {
   it("appends the message for a viewer that did not send it", () => {
-    // The reported bug: the message was typed on the user's phone while the
-    // desktop had the same session open. The desktop has no optimistic bubble,
-    // so without this append it saw the agent's reply to a message that was
+
     // never on screen.
     handleSystemUserMessage(ctx, {
       type: "system_user_message",
@@ -82,9 +80,7 @@ describe("handleSystemUserMessage (user-typed echo)", () => {
   });
 
   it("matches the sender's bubble wherever it sits, not just at the tail", () => {
-    // Something can land after the optimistic bubble before the echo arrives —
-    // a card, or the turn's first streamed text — which is why the id is
-    // searched for rather than compared against the last message.
+
     useSessionStore.setState({
       messages: [
         { role: "user", text: "ship it", clientRequestId: "req-1" },
@@ -101,8 +97,7 @@ describe("handleSystemUserMessage (user-typed echo)", () => {
   });
 
   it("appends a repeated identical message rather than collapsing it by text", () => {
-    // Short repeats ("continue", "yes") are the common case for a second viewer,
-    // and text matching would silently swallow every one after the first.
+
     useSessionStore.setState({
       messages: [
         { role: "user", text: "continue" },
@@ -138,7 +133,7 @@ describe("handleSystemUserMessage (user-typed echo)", () => {
   });
 
   it("keeps the id on the appended bubble so a replayed echo does not duplicate it", () => {
-    // A mid-turn reconnect replays the turn-event buffer, so the same echo can
+
     // be delivered twice to a viewer that never sent it.
     const echo = {
       type: "system_user_message" as const,

@@ -14,12 +14,6 @@ import type { PrMergeableState, PrReviewDecision, SessionInfo } from "../../serv
 import type { NotableFileChange } from "../../server/shared/types/github-types.js";
 import { saveChangedDocsExpanded } from "../utils/local-storage.js";
 
-/**
- * Stub `window.matchMedia` so `useIsMobile()` returns the desired value.
- * Pass `true` to simulate a mobile viewport. jsdom doesn't implement
- * matchMedia, so every render of PrLifecycleCard (which calls useIsMobile)
- * needs this.
- */
 function mockMatchMedia(isMobile: boolean) {
   Object.defineProperty(window, "matchMedia", {
     writable: true,
@@ -43,16 +37,14 @@ function makeSession(overrides: Partial<SessionInfo> & { id: string }): SessionI
 }
 
 beforeEach(() => {
-  // Default to desktop for all tests; the changed-docs block overrides per-case.
+
   mockMatchMedia(false);
   usePrStore.setState({
     statusBySession: {},
     cardBySession: {},
     autoMergeBySession: {},
   });
-  // Reset stores that the merge-conflict UI reads (rebaseStatus, agent running).
-  // Without this, leftover state from a prior test (e.g. rebaseStatus = "in_progress")
-  // would suppress the conflict UI and produce confusing test failures.
+
   useGitStore.getState().reset();
   useSessionStore.setState({ activeRunnerSessions: new Set<string>(), isLoading: false, activity: undefined, sessions: [] });
   useCommentStore.setState({ commentsBySession: {} });
@@ -60,17 +52,11 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.restoreAllMocks();
-  // The mobile-layout test stubs matchMedia; unstub so the rest render desktop.
+
   vi.unstubAllGlobals();
   cleanup();
 });
 
-// ---- Helpers for merge-conflict tests ----
-
-/**
- * Seed a minimal `statusBySession` entry with the given mergeable value.
- * The PR card reads `mergeable` directly from this slice, not from `cardBySession`.
- */
 function setMergeable(
   sessionId: string,
   mergeable: PrMergeableState,
@@ -98,8 +84,6 @@ function setMergeable(
     },
   }));
 }
-
-// ---- Helpers ----
 
 function setCard(sessionId: string, card: PrCardState) {
   usePrStore.setState((s) => ({
@@ -157,12 +141,9 @@ const openPrCard: PrCardState = {
   },
 };
 
-// ---- PrLifecycleCard ----
-
 describe("PrLifecycleCard", () => {
   it("renders the right cluster (search + overflow) even when no PR card exists", () => {
-    // docs/156: the card always renders for an active session so the search
-    // icon and overflow menu have a stable home pre-PR.
+
     render(<PrLifecycleCard sessionId="no-card" onSearch={vi.fn()} />);
     expect(screen.getByLabelText("Search conversation")).toBeInTheDocument();
     expect(screen.getByLabelText("Pull request actions")).toBeInTheDocument();
@@ -195,17 +176,15 @@ describe("PrLifecycleCard", () => {
     render(<PrLifecycleCard sessionId="s1" onCreatePr={vi.fn()} />);
 
     expect(screen.getByText(/Previously merged #42/)).toBeInTheDocument();
-    // It links to the prior PR.
+
     const breadcrumb = screen.getByRole("link", { name: /Previously merged #42/ });
     expect(breadcrumb).toHaveAttribute("href", "https://github.com/o/r/pull/42");
-    // Text-only: the row already opens with PrStateBadge's glyph, and a second
-    // 12px git icon here read as a doubled badge (user report).
+
     expect(breadcrumb.querySelector("svg")).toBeNull();
   });
 
   // Truncation priority (docs/202, phone widths): the breadcrumb must YIELD
-  // width, not hold it. With `shrink-0` it kept its full width and the session
-  // title — the row's only shrinkable element — collapsed to a few characters.
+
   it("breadcrumb yields width instead of crushing the session title", () => {
     setCard("s1", {
       cardId: "c1",
@@ -219,11 +198,11 @@ describe("PrLifecycleCard", () => {
 
     const breadcrumb = screen.getByRole("link", { name: /Previously merged #42/ });
     expect(breadcrumb.className).not.toContain("shrink-0");
-    // Shrinkable + truncating: it gives up width faster than the title…
+
     expect(breadcrumb.className).toContain("min-w-0");
     expect(breadcrumb.className).toContain("shrink-[3]");
     expect(breadcrumb.querySelector(".truncate")).not.toBeNull();
-    // …while the full text survives in the tooltip.
+
     expect(breadcrumb).toHaveAttribute("title", "Previously merged: Old PR");
   });
 
@@ -256,7 +235,6 @@ describe("PrLifecycleCard", () => {
       totalDeletions: 2,
     });
 
-    // canAutoMerge undefined → top-bar overflow should NOT show Auto-merge either.
     render(<PrLifecycleCard sessionId="s1" onCreatePr={vi.fn()} />);
     await user.click(screen.getByLabelText("Pull request actions"));
     expect(screen.queryByText("Auto-merge")).toBeNull();
@@ -387,7 +365,7 @@ describe("PrLifecycleCard", () => {
     it("hides the item when the session has no remote", async () => {
       const user = userEvent.setup();
       setCard("s1", openPrCard);
-      // canAutoMerge omitted → no remote → no sync affordance.
+
       render(<PrLifecycleCard sessionId="s1" />);
       await user.click(screen.getByLabelText("Pull request actions"));
       expect(screen.queryByRole("menuitem", { name: /^Sync with/ })).toBeNull();
@@ -414,15 +392,11 @@ describe("PrLifecycleCard", () => {
   });
 
   describe("overflow menu clicks do not open PR details", () => {
-    // Regression: the overflow menu is portalled, so React still bubbles its
-    // synthetic click events up to the card's onClick. Radix items are
-    // `div[role="menuitem"]`, which the card's interactive-control guard didn't
-    // catch — so clicking a menu item also fired onOpenDetails. On mobile the
-    // first click of the two-step "Close PR" confirm switched to the PR tab,
+
     // navigating away before the user could confirm, so the PR never closed.
     it("clicking the Close PR confirm item never fires onOpenDetails", async () => {
       const user = userEvent.setup();
-      mockMatchMedia(true); // mobile, where the symptom was reported
+      mockMatchMedia(true);                                          
       useSessionStore.setState({ sessions: [makeSession({ id: "s1" })] });
       setCard("s1", openPrCard);
       const onOpenDetails = vi.fn();
@@ -430,12 +404,10 @@ describe("PrLifecycleCard", () => {
       render(<PrLifecycleCard sessionId="s1" canAutoMerge onOpenDetails={onOpenDetails} />);
       await user.click(screen.getByLabelText("Pull request actions"));
 
-      // First select arms the confirm and keeps the menu open.
       await act(async () => {
         await user.click(screen.getByRole("menuitem", { name: /Close (pull request|PR)/i }));
       });
-      // The menu stayed open (still showing a now-armed close item) and the
-      // card did NOT switch tabs.
+
       expect(onOpenDetails).not.toHaveBeenCalled();
     });
 
@@ -512,9 +484,6 @@ describe("PrLifecycleCard", () => {
 
     render(<PrLifecycleCard sessionId="s1" />);
 
-    // PR title replaces the "base ← head" branch label when a PR exists.
-    // Branch name no longer has an inline copy affordance — it moved to the
-    // overflow menu's "Copy branch name" item (see test below).
     expect(screen.getByText("Add feature")).toBeInTheDocument();
     expect(screen.queryByText("feature-branch")).not.toBeInTheDocument();
     expect(
@@ -574,8 +543,6 @@ describe("PrLifecycleCard", () => {
     expect(screen.getByTitle(/CI failed/)).toBeInTheDocument();
   });
 
-  // ---- Phase 2: per-check failure list ----
-
   it("renders failed checks list when CI fails with failedChecks details", () => {
     setCard("s1", {
       ...openPrCard,
@@ -594,7 +561,6 @@ describe("PrLifecycleCard", () => {
 
     const { container } = render(<PrLifecycleCard sessionId="s1" />);
 
-    // Check names and summaries appear in the rendered output
     expect(container.textContent).toContain("lint");
     expect(container.textContent).toContain("ESLint errors");
     expect(container.textContent).toContain("test");
@@ -613,9 +579,7 @@ describe("PrLifecycleCard", () => {
   });
 
   it("disables the Fix CI button while the agent is running (no redundant fix turn)", () => {
-    // docs/169 follow-up — a manual fix is a plain agent turn that no longer
-    // hides behind an auto-fix "running" state, so the button stays mounted.
-    // Gate it on agent-running so the user can't dispatch a second fix turn.
+
     setCard("s1", {
       ...openPrCard,
       checks: { state: "failure", total: 3, passed: 1, failed: 2, pending: 0 },
@@ -638,15 +602,11 @@ describe("PrLifecycleCard", () => {
     render(<PrLifecycleCard sessionId="s1" canAutoMerge />);
 
     await user.click(screen.getByLabelText("Pull request actions"));
-    // Auto-merge stays per-card; auto-fix is now an account-level setting.
+
     expect((await screen.findAllByText("Auto-merge")).length).toBeGreaterThan(0);
     expect(screen.queryByText("Auto-fix")).toBeNull();
   });
 
-  // `attemptCount` on the wire is the 1-BASED number of the attempt being
-  // DISPLAYED: the manager only increments its counter post-turn, so the poller
-  // adds the in-flight attempt in `attachAutomationState`. The card renders it
-  // exactly as received — a `+ 1` here would double-count it.
   it("shows auto-fix running state with the attempt counter as sent", () => {
     setCard("s1", {
       ...openPrCard,
@@ -663,7 +623,7 @@ describe("PrLifecycleCard", () => {
     setCard("s1", {
       ...openPrCard,
       checks: { state: "failure", total: 3, passed: 1, failed: 2, pending: 0 },
-      // What the poller now sends while the first fix turn is in flight.
+
       autoFix: { status: "running", attemptCount: 1, maxAttempts: 3 },
     });
 
@@ -683,7 +643,7 @@ describe("PrLifecycleCard", () => {
     render(<PrLifecycleCard sessionId="s1" />);
 
     expect(screen.getByText(/Auto-fix exhausted/)).toBeInTheDocument();
-    // Should show Fix CI Issues button as fallback
+
     expect(screen.getByText("Fix CI")).toBeInTheDocument();
   });
 
@@ -705,7 +665,6 @@ describe("PrLifecycleCard", () => {
       checks: { state: "success", total: 3, passed: 3, failed: 0, pending: 0 },
     });
 
-    // canAutoMerge undefined so neither toggle is in the overflow either.
     render(<PrLifecycleCard sessionId="s1" />);
 
     expect(screen.queryByText("Fix CI")).toBeNull();
@@ -714,10 +673,8 @@ describe("PrLifecycleCard", () => {
     expect(screen.queryByText("Auto-merge")).toBeNull();
   });
 
-  // docs/146 — the auto-resolve failure banner. `lastError` carries raw git
   // stderr on the error paths, so the banner must stay a fixed size and be
-  // closable; without both, a long error grows the card until it hides the
-  // conversation and there is no way out of it.
+
   describe("auto-resolve failure banner", () => {
     const exhausted = (lastError: string): PrCardState => ({
       ...openPrCard,
@@ -757,8 +714,7 @@ describe("PrLifecycleCard", () => {
     });
 
     // A viewer that reconnected across the intervening reset never renders the
-    // non-exhausted snapshots, so it sees `exhausted A -> exhausted B` directly.
-    // Keying the dismissal on the status alone would keep the new failure hidden.
+
     it("re-opens when a different failure replaces the dismissed one directly", () => {
       setCard("s1", exhausted("timeout"));
 
@@ -790,22 +746,20 @@ describe("PrLifecycleCard", () => {
       fireEvent.click(screen.getByTestId("auto-resolve-dismiss"));
       expect(screen.queryByTestId("auto-resolve-last-error")).toBeNull();
 
-      // Retry / user activity resets the manager to idle...
       act(() =>
         setCard("s1", {
           ...openPrCard,
           autoResolve: { status: "idle", attemptCount: 0, maxAttempts: 3 },
         }),
       );
-      // ...and the next exhaustion is visible again.
+
       act(() => setCard("s1", exhausted("timeout")));
       expect(screen.getByTestId("auto-resolve-last-error")).toBeInTheDocument();
     });
   });
 
   it("shows the no-CI-checks warning line only when auto-merge is armed AND checks.state is none (docs/175)", () => {
-    // Armed + zero checks on the head commit → the durable, conditional
-    // transparency line: this PR will merge as soon as it's mergeable.
+
     setCard("s1", {
       ...openPrCard,
       checks: { state: "none", total: 0, passed: 0, failed: 0, pending: 0 },
@@ -836,12 +790,9 @@ describe("PrLifecycleCard", () => {
   });
 
   it("renders the Auto-merge toggle in the top-bar overflow when the session has a remote (regardless of PR/CI state)", async () => {
-    // docs/156/169 — the Auto-merge toggle lives in the top-bar overflow, gated
-    // only on `canAutoMerge` (i.e. the session has a GitHub remote). No PR card
-    // and no CI state are required. (Auto-fix moved to global settings.)
+
     const user = userEvent.setup();
-    // Deliberately no card and no PR — the session having a remote is the only
-    // gate (PrActionsMenu derives `canAutoMerge` from `session.remoteUrl`).
+
     useSessionStore.setState({ sessions: [makeSession({ id: "no-card" })] });
     render(<PrLifecycleCard sessionId="no-card" canAutoMerge />);
     await user.click(screen.getByLabelText("Pull request actions"));
@@ -863,8 +814,6 @@ describe("PrLifecycleCard", () => {
     expect(screen.queryByText("Auto-merge")).toBeNull();
   });
 
-  // ---- Phase 3: merge button, auto-merge toggle, error messages ----
-
   it("renders merge button when CI passed", () => {
     setCard("s1", {
       ...openPrCard,
@@ -884,12 +833,9 @@ describe("PrLifecycleCard", () => {
 
     render(<PrLifecycleCard sessionId="s1" />);
 
-    // The merge row is `basis-full`, which is what forces the line break in the
-    // wrapping rows that host it. Without it the toggle and button get pulled
-    // up onto the diff/CI line.
     const mergeRow = screen.getByText("Squash and merge").closest("div.basis-full");
     expect(mergeRow).not.toBeNull();
-    // The chips live outside that row.
+
     expect(mergeRow).not.toContainElement(screen.getByText("+100"));
   });
 
@@ -905,13 +851,12 @@ describe("PrLifecycleCard", () => {
   });
 
   it("does not render merge button when checks status is undefined (poller hasn't run yet)", () => {
-    // After PR creation, the card transitions to "open" before the poller has
+
     // delivered any check status. The merge button must stay hidden during
-    // this gap — otherwise the user could merge before workflows register.
+
     setCard("s1", {
       ...openPrCard,
-      // No `checks` field — simulates the moment between quick-create
-      // returning and the first SSE pr_status update arriving.
+
     });
 
     render(<PrLifecycleCard sessionId="s1" />);
@@ -941,7 +886,7 @@ describe("PrLifecycleCard", () => {
 
     const button = screen.getByText("Squash and merge");
     expect(button).toBeDisabled();
-    // The tooltip explains why so the disabled state isn't a mystery.
+
     expect(button.getAttribute("title")).toContain("Agent is still working");
   });
 
@@ -980,9 +925,8 @@ describe("PrLifecycleCard", () => {
 
     render(<PrLifecycleCard sessionId="s1" canAutoMerge />);
 
-    // Inline copy is present before the overflow is even opened.
     expect(screen.getAllByText("Auto-merge")).toHaveLength(1);
-    // Opening the overflow does NOT add a second copy in the open phase.
+
     await user.click(screen.getByLabelText("Pull request actions"));
     expect(await screen.findAllByText("Auto-merge")).toHaveLength(1);
   });
@@ -1001,12 +945,10 @@ describe("PrLifecycleCard", () => {
 
     const inlineToggle = screen.getByRole("button", { name: /Auto-merge/ });
     // The toggle's wrapper is no longer gated to mobile — it must not be inside
-    // an `md:hidden` container.
+
     expect(inlineToggle.closest(".md\\:hidden")).toBeNull();
     expect(container.querySelector(".md\\:hidden")).toBeNull();
-    // Still sits next to the CI indicator in the badge row. The toggle now
-    // shares a wrap-as-one-unit group with the merge button, so the CI
-    // indicator is the group's previous sibling.
+
     const group = inlineToggle.closest("span.flex.items-center")?.parentElement;
     expect(group).toContainElement(inlineToggle);
     expect(group?.previousElementSibling).toHaveTextContent("CI 1/3");
@@ -1017,12 +959,7 @@ describe("PrLifecycleCard", () => {
   });
 
   it("moves the status/action cluster to a full-width row below the header on mobile", () => {
-    // The header's icon cluster (search / docs / ⋯) is a sibling column, so it
-    // narrows every wrapped row inside the left column — on a phone that leaves
-    // ~258px, and the auto-merge toggle (~123px) plus "Squash and merge"
-    // (~137px) need ~272px, which is why the button used to wrap onto a row of
-    // its own. Breaking the cluster out to the card's full width fits both at
-    // their real labels.
+
     vi.stubGlobal("matchMedia", (query: string) => ({
       matches: query.includes("767"),
       media: query,
@@ -1038,29 +975,24 @@ describe("PrLifecycleCard", () => {
 
     const { container } = render(<PrLifecycleCard sessionId="s1" canAutoMerge />);
 
-    // Full labels — no compacting needed once the row spans the card.
     const toggle = screen.getByRole("button", { name: /Auto-merge/ });
     const mergeButton = screen.getByText("Squash and merge");
-    // Both moved out of the header row (the element that hosts the icon
-    // cluster) and into the row below it.
+
     const header = container.firstElementChild;
     expect(header).not.toContainElement(toggle);
     expect(header).not.toContainElement(mergeButton);
     const actionsRow = header?.nextElementSibling;
     expect(actionsRow).toContainElement(toggle);
     expect(actionsRow).toContainElement(mergeButton);
-    // …and they still wrap as one unit within that row.
+
     const group = toggle.closest("span.flex.items-center")?.parentElement;
     expect(group).toContainElement(mergeButton);
   });
 
   it("starts the merge row's auto-merge toggle on the PR title's text edge, not its button padding", () => {
-    // Regression: the ghost toggle carries `px-2`, so its visible switch sat 8px
-    // right of the PR title it hangs under — invisible at rest, then obvious on
-    // hover when the ghost background painted the button's real box out to the
-    // title's edge. `pl-0` puts the switch AND its hover background on that
+
     // edge. Asserted on the class because the offset is pure CSS: jsdom does no
-    // layout, so a geometric assertion here would pass either way.
+
     setCard("s1", {
       ...openPrCard,
       checks: { state: "success", total: 3, passed: 3, failed: 0, pending: 0 },
@@ -1071,16 +1003,12 @@ describe("PrLifecycleCard", () => {
 
     const toggle = screen.getByRole("button", { name: /Auto-merge/ });
     expect(toggle.className).toContain("pl-0");
-    // Only the leading edge is flush — the right padding stays, so the toggle
-    // keeps its hover-target breathing room against the merge button.
+
     expect(toggle.className).toContain("px-2");
   });
 
   it("indents the mobile actions row to the PR title's offset, tracking the header's sm padding", () => {
-    // The row is hoisted out of the header, so it has to reproduce the title's
-    // offset by hand: px-3 (12) + badge w-5 (20) + gap-x-3 (12) = 44 = pl-11,
-    // and 48 = sm:pl-12 once the header widens to px-4 at 640px — a width this
-    // row still renders at, since it's shown below 768px.
+
     vi.stubGlobal("matchMedia", (query: string) => ({
       matches: query.includes("767"),
       media: query,
@@ -1104,8 +1032,7 @@ describe("PrLifecycleCard", () => {
 
   it("uses the shared neutral auto-merge icon color in the top-bar overflow", async () => {
     const user = userEvent.setup();
-    // No card → the toggle lives in the overflow (pre-PR arming), which is the
-    // surface this test covers.
+
     useSessionStore.setState({ sessions: [makeSession({ id: "no-card" })] });
     render(<PrLifecycleCard sessionId="no-card" canAutoMerge />);
 
@@ -1116,9 +1043,9 @@ describe("PrLifecycleCard", () => {
   });
 
   it("resets the 'Merging...' state when the sessionId prop changes", async () => {
-    // Regression: switching sessions while a merge was in flight used to leave
+
     // the button stuck on "Merging..." against the new session because the
-    // local React state in MergeButton survived the prop change.
+
     setCard("s1", {
       ...openPrCard,
       checks: { state: "success", total: 3, passed: 3, failed: 0, pending: 0 },
@@ -1135,7 +1062,6 @@ describe("PrLifecycleCard", () => {
     try {
       const { rerender } = render(<PrLifecycleCard sessionId="s1" />);
 
-      // Click the merge button to flip merging=true.
       await act(async () => {
         fireEvent.click(screen.getByText("Squash and merge"));
       });
@@ -1152,12 +1078,7 @@ describe("PrLifecycleCard", () => {
   });
 
   it("resets the 'Merging...' state on a session switch on mobile too", async () => {
-    // Regression: the desktop fix keyed only the header subtree, but on mobile
-    // PrStatusActions (and with it MergeButton's `merging` flag) is hoisted OUT
-    // of that subtree into a sibling row. The sibling wasn't keyed, so it
-    // survived the switch and pinned "Merging..." onto every session the user
-    // visited afterwards — the state the user hit after merging one session in
-    // the background and switching away mid-merge.
+
     mockMatchMedia(true);
     setCard("s1", {
       ...openPrCard,
@@ -1169,15 +1090,13 @@ describe("PrLifecycleCard", () => {
     });
 
     // Never-resolving fetch so the merge stays in flight, exactly as a
-    // background merge does from the moment the user switches away.
+
     const originalFetch = globalThis.fetch;
     globalThis.fetch = vi.fn(() => new Promise(() => {})) as unknown as typeof fetch;
 
     try {
       const { rerender, container } = render(<PrLifecycleCard sessionId="s1" />);
 
-      // Sanity: on mobile the button really is in the hoisted sibling row, not
-      // the keyed header — otherwise this test would pass for the wrong reason.
       const button = screen.getByText("Squash and merge");
       expect(container.firstElementChild).not.toContainElement(button);
 
@@ -1196,14 +1115,9 @@ describe("PrLifecycleCard", () => {
   });
 
   it("renders exactly one header row after repeated session switches on mobile", () => {
-    // Regression: the header div and the hoisted mobile actions row are siblings
-    // in the same fragment, and both were keyed on the bare sessionId. React only
-    // requires keys to be unique among siblings, so those were duplicates: the
-    // previous children got indexed into a Map by key, the actions row overwrote
-    // the header, and on a session switch React deleted what remained in that Map
+
     // — never the header. Its DOM node stayed behind, so each switch stacked one
-    // more stale PR header (with the previous session's title) under the app
-    // chrome. Desktop was unaffected: it renders only one keyed div.
+
     mockMatchMedia(true);
     const withTitle = (title: string): PrCardState => ({
       ...openPrCard,
@@ -1228,12 +1142,10 @@ describe("PrLifecycleCard", () => {
     rerender(<PrLifecycleCard sessionId="s2" onOpenDetails={onOpenDetails} />);
     rerender(<PrLifecycleCard sessionId="s3" onOpenDetails={onOpenDetails} />);
 
-    // Only the current session's PR title is on screen — no orphaned headers
-    // from the sessions the user passed through.
     expect(screen.getByText("PR three")).toBeInTheDocument();
     expect(screen.queryByText("PR one")).toBeNull();
     expect(screen.queryByText("PR two")).toBeNull();
-    // And exactly one header + one actions row, not one pair per visited session.
+
     expect(container.querySelectorAll('[aria-label="Open PR details"]')).toHaveLength(1);
   });
 
@@ -1259,7 +1171,7 @@ describe("PrLifecycleCard", () => {
     render(<PrLifecycleCard sessionId="s1" canAutoMerge />);
 
     expect(screen.queryByText("Will merge when CI passes")).toBeNull();
-    // The enabled Auto-merge toggle is the state indicator now.
+
     expect(screen.getByRole("button", { name: /Auto-merge/ })).toBeInTheDocument();
   });
 
@@ -1339,7 +1251,7 @@ describe("PrLifecycleCard", () => {
     expect(screen.getByText(/Branch has no commits/)).toBeInTheDocument();
     expect(screen.getByText("Retry")).toBeInTheDocument();
     // Generic errors do NOT show the "Sign in" action — that's reserved
-    // for auth-classified errors so it stays meaningful when surfaced.
+
     expect(screen.queryByText("Sign in to GitHub")).toBeNull();
   });
 
@@ -1357,8 +1269,6 @@ describe("PrLifecycleCard", () => {
     expect(screen.getByText(/reconnect to keep pushing/)).toBeInTheDocument();
     expect(screen.getByText("Sign in to GitHub")).toBeInTheDocument();
   });
-
-  // ---- 174: Review/approval gating ----
 
   describe("review approval gating", () => {
     const greenCard = {
@@ -1420,8 +1330,6 @@ describe("PrLifecycleCard", () => {
     });
   });
 
-  // ---- 113: Inline merge-conflict UI ----
-
   describe("merge-conflict UI", () => {
     it("hides the merge button when GitHub reports the PR as conflicting", () => {
       setCard("s1", {
@@ -1436,10 +1344,7 @@ describe("PrLifecycleCard", () => {
     });
 
     it("keeps the merge button visible when mergeability is unknown (avoid post-push flicker)", () => {
-      // GitHub returns UNKNOWN briefly after each push while it computes
-      // mergeability. Gating the button on this state would flicker it
-      // off-on every push — worse UX than letting an occasional click
-      // fail with the existing 405 toast.
+
       setCard("s1", {
         ...openPrCard,
         checks: { state: "success", total: 1, passed: 1, failed: 0, pending: 0 },
@@ -1465,8 +1370,7 @@ describe("PrLifecycleCard", () => {
     });
 
     it("hides the conflict UI when a rebase is already in progress", () => {
-      // RebaseBanner takes over the surface during the rebase. The PR card
-      // shouldn't double-render the same affordance.
+
       setCard("s1", {
         ...openPrCard,
         checks: { state: "success", total: 1, passed: 1, failed: 0, pending: 0 },
@@ -1495,9 +1399,7 @@ describe("PrLifecycleCard", () => {
     });
 
     it("calls startRebase with the PR's base branch on click — no confirmation, no chat prefill", async () => {
-      // The exception to "chat is the input surface" lives here: clicking
-      // fires the rebase driver directly. There is no toast, no chat box
-      // mutation, no second confirmation step.
+
       setCard("s1", {
         ...openPrCard,
         pr: {
@@ -1527,8 +1429,7 @@ describe("PrLifecycleCard", () => {
     });
 
     it("does not call startRebase if the agent is running when clicked", async () => {
-      // Disabled buttons don't fire onClick by default in the DOM, but the
-      // handler is also defensively guarded — verify both layers hold.
+
       setCard("s1", {
         ...openPrCard,
         checks: { state: "success", total: 1, passed: 1, failed: 0, pending: 0 },
@@ -1549,8 +1450,6 @@ describe("PrLifecycleCard", () => {
     });
   });
 });
-
-// ---- PrStateBadge ----
 
 describe("PrStateBadge", () => {
   it("renders branch badge when no status or card exists", () => {
@@ -1583,9 +1482,7 @@ describe("PrStateBadge", () => {
   });
 
   // docs/202 — a re-armed session must read as a fresh branch: the badge is the
-  // gray GitBranch icon, and the "Previously merged #N" note is the only sign it
-  // shipped once. Regression guard for the stale merged badge (which also put
-  // two identical GitMerge glyphs side by side on the ready card).
+
   it("falls back to the gray branch badge once a re-armed card retires the merged status", () => {
     setStatus("s1", "merged");
     usePrStore.getState().updateCard("s1", {
@@ -1648,13 +1545,11 @@ describe("PrStateBadge", () => {
 
     const badge = screen.getByTitle("PR closed");
     expect(badge).toBeInTheDocument();
-    // Closed is red (GitHub convention), distinct from the gray branch fallback.
+
     expect(badge.className).toContain("text-(--color-error)");
     expect(badge.className).not.toContain("text-(--color-text-tertiary)");
   });
 });
-
-// ---- Card → PR detail tab (docs/133) ----
 
 describe("PrLifecycleCard — open PR details", () => {
   it("calls onOpenDetails when the card body is clicked (open PR)", () => {
@@ -1683,9 +1578,8 @@ describe("PrLifecycleCard — open PR details", () => {
     await user.click(screen.getByLabelText("Pull request actions"));
     expect(onOpenDetails).not.toHaveBeenCalled();
 
-    // The auto-merge toggle now sits inline in the open-phase card row (a
     // button). Clicking it must not switch tab. fireEvent bypasses the
-    // pointer-events guard radix puts on the menu items.
+
     const mergeButtons = await screen.findAllByTitle("Enable auto-merge");
     fireEvent.click(mergeButtons[mergeButtons.length - 1]);
     expect(onOpenDetails).not.toHaveBeenCalled();
@@ -1702,12 +1596,10 @@ describe("PrLifecycleCard — open PR details", () => {
   });
 });
 
-// ---- Changed-docs strip (docs/205) ----
-
 describe("PrLifecycleCard — changed-docs strip", () => {
   beforeEach(() => {
     localStorage.clear();
-    // Default to desktop, where the strip is expanded by default.
+
     mockMatchMedia(false);
   });
 
@@ -1715,8 +1607,7 @@ describe("PrLifecycleCard — changed-docs strip", () => {
     { path: "docs/205-pr-changed-docs/plan.md", label: "205/plan.md", kind: "doc", status: "A" },
     { path: "shipit.yaml", label: "shipit.yaml", kind: "config", status: "M" },
   ];
-  // docs/210 — the strip is sourced from the standalone `notableFilesBySession`
-  // slice, so a card + a slice entry together drive it.
+
   const seedDocs = (sessionId: string) => {
     setCard(sessionId, openPrCard);
     setNotableFiles(sessionId, docFiles);
@@ -1729,8 +1620,7 @@ describe("PrLifecycleCard — changed-docs strip", () => {
   });
 
   it("does not render a floating strip when notable files exist but no card does", () => {
-    // The viewer-connect re-seed can populate the slice before the poller's card
-    // snapshot lands; without a card there's nothing to attach the strip to.
+
     setNotableFiles("s1", docFiles);
     render(<PrLifecycleCard sessionId="s1" />);
     expect(screen.queryByLabelText("Related issues and changed docs in this PR")).not.toBeInTheDocument();
@@ -1742,7 +1632,7 @@ describe("PrLifecycleCard — changed-docs strip", () => {
     const toggle = screen.getByLabelText("Related issues and changed docs in this PR");
     expect(toggle).toBeInTheDocument();
     expect(toggle).toHaveAttribute("aria-expanded", "true");
-    // Strip is expanded → chips rendered.
+
     expect(screen.getByText("205/plan.md")).toBeInTheDocument();
   });
 
@@ -1765,7 +1655,7 @@ describe("PrLifecycleCard — changed-docs strip", () => {
   });
 
   it("toggles the strip and persists the state per session", () => {
-    // Start collapsed so the toggle exercises the expand path.
+
     saveChangedDocsExpanded("s1", false);
     seedDocs("s1");
     const { unmount } = render(<PrLifecycleCard sessionId="s1" />);
@@ -1773,7 +1663,6 @@ describe("PrLifecycleCard — changed-docs strip", () => {
     expect(screen.getByText("205/plan.md")).toBeInTheDocument();
     expect(screen.getByLabelText("Related issues and changed docs in this PR")).toHaveAttribute("aria-expanded", "true");
 
-    // Remount (e.g. page reload) — the expanded state is restored from storage.
     unmount();
     seedDocs("s1");
     render(<PrLifecycleCard sessionId="s1" />);
@@ -1795,12 +1684,10 @@ describe("PrLifecycleCard — changed-docs strip", () => {
   });
 });
 
-// ---- Related-issue chips (docs/206) ----
-
 describe("PrLifecycleCard — related-issue chips", () => {
   beforeEach(() => {
     localStorage.clear();
-    saveChangedDocsExpanded("s1", true); // expand the panel so chips render
+    saveChangedDocsExpanded("s1", true);                                    
     useSessionStore.setState({ messages: [] });
     useIssuesStore.setState({ openIssue: vi.fn() });
   });
@@ -1820,7 +1707,7 @@ describe("PrLifecycleCard — related-issue chips", () => {
   });
 
   it("recovers the session-origin issue from the first user message", () => {
-    setCard("s1", openPrCard); // PR body names no issue
+    setCard("s1", openPrCard);                          
     useSessionStore.setState({
       messages: [{ role: "user", text: "You are working on issue SHI-201: ship it" }],
     });
@@ -1829,8 +1716,6 @@ describe("PrLifecycleCard — related-issue chips", () => {
     expect(screen.getByText("SHI-201")).toBeInTheDocument();
   });
 
-  // docs/248 — a chip only becomes an in-app link when the reference resolves to
-  // a destination this repository declares, so the store has to hold one.
   it("opens the inline issue detail when a chip is clicked", () => {
     const openIssue = vi.fn();
     useIssuesStore.setState({
@@ -1854,8 +1739,6 @@ describe("PrLifecycleCard — related-issue chips", () => {
     );
   });
 
-  // req 11 — a reference naming nothing declared still renders (it is what the
-  // PR body says) but stays a legible badge rather than a link into nothing.
   it("renders a chip for an undeclared reference without making it clickable", () => {
     const openIssue = vi.fn();
     useIssuesStore.setState({ openIssue, trackers: [] });

@@ -56,7 +56,6 @@ import {
 } from "../pickers/model-choice.js";
 import type { AgentOption } from "../../agent-types.js";
 
-/** The wire form of a pin. */
 interface Pin {
   serviceId: string;
   billingMode: "sub" | "key";
@@ -68,32 +67,19 @@ export function BackgroundWorkSection({ agentList = [] }: { agentList?: AgentOpt
   const resolved = useSettingsStore((s) => s.nonTurnModelResolved);
   const models = eligibleModelsOf(agentList);
   const services = servicesOf(models);
-  /**
-   * Which write is the newest, and whether one is in flight.
-   *
-   * The `<select>` this replaced was ONE control, so overlapping writes were not
-   * reachable; two dependent controls make them ordinary — change the service,
-   * then click a model before the response lands. Without this an older
-   * response (or an older failure's rollback) overwrites the newer state, and
-   * the model menu is briefly still listing the PREVIOUS service's models. The
-   * Reviewer tab learned the same lesson from cross-backend review, and this is
-   * its counter and its busy gate; found by the same review one surface over.
-   */
+
   const latestWrite = useRef(0);
   const [busy, setBusy] = useState(false);
 
   // Always a triple, never `null`. Clearing the setting is no longer reachable
-  // from the UI — there is nothing to clear it TO, since an empty setting is the
-  // state this section stopped having. The endpoint still accepts `null`.
+
   const save = async (next: Pin) => {
     const write = ++latestWrite.current;
     setBusy(true);
     const prev = useSettingsStore.getState();
     const previousPin = prev.nonTurnModel;
     const previousResolved = prev.nonTurnModelResolved;
-    // Optimistic on the PIN only. `nonTurnModelResolved` is the server's
-    // derivation (which harness, what label) and guessing it here would be a
-    // second implementation of req 9's rule — the response carries the real one.
+
     useSettingsStore.getState().setNonTurnModel(next, previousResolved);
     try {
       const res = await fetch("/api/settings", {
@@ -113,8 +99,7 @@ export function BackgroundWorkSection({ agentList = [] }: { agentList?: AgentOpt
         );
       }
     } catch (err) {
-      // Roll back only if nothing newer has been sent — otherwise this restores
-      // a snapshot the user has already moved on from.
+
       if (write === latestWrite.current) {
         useSettingsStore.getState().setNonTurnModel(previousPin, previousResolved);
       }
@@ -125,12 +110,6 @@ export function BackgroundWorkSection({ agentList = [] }: { agentList?: AgentOpt
     }
   };
 
-  // A pin the install can no longer run is NOT in `models` — its credential or
-  // its harness went away. Without saying so the controls would read as the
-  // default while the server still holds the pin and fails it on every session.
-  // Naming the pin's own ids is worse than naming a service and a model, and a
-  // great deal better than a control that looks unset; found by cross-backend
-  // review when this was a `<select>` with no row for the pin.
   const pinnedIsStale =
     !!pinned
     && !models.some(
@@ -140,16 +119,9 @@ export function BackgroundWorkSection({ agentList = [] }: { agentList?: AgentOpt
         && m.modelId === pinned.modelId,
     );
 
-  // The two controls read the resolution, not the pin: it carries the service
-  // and the model the server actually settled on, which is the same thing on a
-  // healthy pin and the honest answer when a pin went stale.
   const current = resolved ?? (pinnedIsStale ? undefined : pinned ? { ...pinned } : undefined);
   const serviceModels = modelsOfService(models, current);
-  // The eligible row when there is one; otherwise the resolution or the pin
-  // itself, whose identity `modelAfterServiceChange` recovers from the
-  // catalogue when no row carries it. A pin
-  // whose credential went away has no row at all, and that is exactly when the
-  // user re-points this at a service that survived.
+
   const currentModel = serviceModels.find((m) => m.modelId === current?.modelId)
     ?? current
     ?? pinned
@@ -245,10 +217,7 @@ export function BackgroundWorkSection({ agentList = [] }: { agentList?: AgentOpt
                 <PickerOption
                   key={`${serviceKeyOf(model)}:${model.modelId}`}
                   label={model.label}
-                  // Ticked from what is IN FORCE, not from the stored pin. The
-                  // two agree once the setting is written, and on an install
-                  // whose first settings read has not happened yet the
-                  // resolution is what background work would actually use.
+
                   selected={current?.modelId === model.modelId}
                   onSelect={() =>
                     void save({

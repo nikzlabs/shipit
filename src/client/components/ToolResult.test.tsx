@@ -8,7 +8,7 @@ import { highlightCode } from "../syntax-highlight.js";
 afterEach(() => {
   cleanup();
   // Globals are stubbed per-test (fetch, devicePixelRatio); a failing test must
-  // not leak its stub into the next one.
+
   vi.unstubAllGlobals();
 });
 
@@ -16,12 +16,6 @@ function result(content: string, isError?: boolean): ToolResultBlock {
   return { toolUseId: "toolu_test", content, isError };
 }
 
-/**
- * highlight.js escapes `"` as `&quot;`, and the DOM serializes it straight back
- * to a bare quote in `innerHTML` — so comparing raw hljs output against rendered
- * markup fails on that alone. Round-trip the expectation through the DOM so both
- * sides are in the same form.
- */
 function asRendered(html: string | null): string | null {
   if (html === null) return null;
   const el = document.createElement("code");
@@ -62,7 +56,7 @@ describe("ToolResult", () => {
 
     it("renders error result even when content is empty", () => {
       render(<ToolResult tool="Bash" result={result("", true)} />);
-      // Should not show "(no output)" for error results — show the error container
+
       expect(screen.queryByText("(no output)")).toBeNull();
     });
   });
@@ -120,7 +114,7 @@ describe("ToolResult", () => {
 
       fireEvent.click(screen.getByText(/Show all 50 lines/));
       expect(screen.getByText("Show less")).toBeInTheDocument();
-      // The full content should be visible
+
       expect(screen.getByText(/line 50/)).toBeInTheDocument();
     });
 
@@ -165,13 +159,9 @@ describe("ToolResult", () => {
     });
 
     // The Read tool call names the file it read, so the result panel never has
-    // to auto-detect. Auto-detection re-highlights the body once per registered
-    // grammar and a trace measured it at ~274 ms per call, synchronously inside
-    // the render — these pin that the path is actually used, not just accepted.
+
     it("highlights as the language of the file that was read", () => {
-      // Deliberately ambiguous content: as JSON this is an object, as Python a
-      // dict literal, and the two produce different markup — so the assertion
-      // below distinguishes "used the path" from "guessed".
+
       const content = '{"a": 1, "b": [2, 3]}';
       const { container } = render(
         <ToolResult tool="Read" result={result(content)} filePath="/workspace/config.py" />
@@ -202,7 +192,7 @@ describe("ToolResult", () => {
       const { container } = render(
         <ToolResult tool="Grep" result={result(grepOutput)} />
       );
-      // File paths should be colored blue
+
       const blueParts = container.querySelectorAll("span.text-\\(--color-text-link\\)");
       expect(blueParts.length).toBeGreaterThan(0);
       expect(blueParts[0].textContent).toBe("src/app.ts");
@@ -313,7 +303,7 @@ describe("ToolResult", () => {
       const { container } = render(
         <ToolResult tool="mcp__playwright__browser_snapshot" result={result(noImages)} />
       );
-      // No image container, rendered as generic text
+
       expect(container.querySelector("[data-testid='tool-result-images']")).toBeNull();
     });
 
@@ -326,18 +316,14 @@ describe("ToolResult", () => {
     });
 
     it("draws the image at natural size and scrolls rather than scaling it", () => {
-      // Neither bound has anything behind it: `ToolResult` renders only in the
-      // scrollable tool-call modal and these images have no click-to-full-size
-      // view. A height cap lost the screenshot outright; fitting the width was
-      // quieter and worse — a downscaled shot is indistinguishable from a
-      // faithful one, so the reader can't tell whose blur they're looking at.
+
       const imageOnly = JSON.stringify([
         { type: "image", source: { data: "abc123", media_type: "image/png" } },
       ]);
       render(<ToolResult tool="mcp__playwright__browser_take_screenshot" result={result(imageOnly)} />);
 
       const img = screen.getByAltText("Tool output image 1");
-      // `max-w-none` beats Tailwind preflight's `img { max-width: 100% }`, which
+
       // would re-fit the image and leave a scrollbar that never scrolls.
       expect(img.className).toContain("max-w-none");
       expect(img.className).not.toMatch(/\bmax-[wh]-(?!none)/);
@@ -345,10 +331,7 @@ describe("ToolResult", () => {
     });
 
     it("declares the viewer's pixel density so a 1x screenshot isn't magnified", () => {
-      // Our screenshots are 1x — headless Chromium runs at deviceScaleFactor 1.
-      // With no density declared the browser treats an image pixel as a CSS
-      // pixel, so a 2x display smears 1280 of them across 2560 physical pixels:
-      // a bitmap magnified 2x beside text the same display renders sharply.
+
       vi.stubGlobal("devicePixelRatio", 2);
       const imageOnly = JSON.stringify([
         { type: "image", source: { data: "abc123", media_type: "image/png" } },
@@ -357,7 +340,7 @@ describe("ToolResult", () => {
 
       const img = screen.getByAltText("Tool output image 1");
       const src = img.getAttribute("src")!;
-      // Same URL in both, so the candidate list costs no second request.
+
       expect(img.getAttribute("srcset")).toBe(`${src} 2x`);
     });
   });
@@ -422,14 +405,6 @@ describe("parseContentForImages", () => {
   });
 });
 
-/**
- * docs/244 — the modal-only path. A result whose content nothing draws inline
- * arrives with an EMPTY body and a `truncated` marker; `ToolResult` renders
- * only inside `ToolCallModal`, so mounting is the click that licenses a load.
- *
- * This is the half the server tests can't reach: they prove the payload is
- * stripped, not that the UI then puts the body back on the screen.
- */
 describe("ToolResult — lazy body fetch (planning#269 req 1)", () => {
   const BODY = "line one\nline two\nline three";
 
@@ -454,8 +429,6 @@ describe("ToolResult — lazy body fetch (planning#269 req 1)", () => {
 
     render(<ToolResult tool="Bash" result={stripped()} />);
 
-    // The bug this guards: an emptied body previously fell through to
-    // "(no output)", which is a lie about a result with plenty of it.
     expect(screen.getByText("Loading output…")).toBeInTheDocument();
     expect(screen.queryByText("(no output)")).not.toBeInTheDocument();
   });
@@ -470,8 +443,7 @@ describe("ToolResult — lazy body fetch (planning#269 req 1)", () => {
     expect(spy).toHaveBeenCalledTimes(1);
     expect(spy.mock.calls[0]?.[0]).toBe("/api/sessions/s1/tool-results/toolu_lazy");
     expect(screen.getByText(/line three/)).toBeInTheDocument();
-    // Once the whole body is in hand, the server's metadata stops being the
-    // authority — a 3-line body needs no "Show all 3 lines" affordance.
+
     expect(screen.queryByText(/Show all/)).not.toBeInTheDocument();
   });
 
@@ -493,25 +465,16 @@ describe("ToolResult — lazy body fetch (planning#269 req 1)", () => {
     expect(screen.getByText(/all here/)).toBeInTheDocument();
   });
 
-  /**
-   * The fetched body of an MCP image result is a content-block ARRAY, while the
-   * text the previews draw is what `parseContentForImages` unwraps out of it.
-   * `useExpandable` prefers `lazy.full` over its `content` prop, so passing the
-   * raw array through put the whole `JSON.stringify`'d payload — the base64
-   * screenshot included — into the text panel underneath the image it had just
-   * drawn. That is what a `browser_take_screenshot` tool-call modal rendered.
-   */
   it("draws the unwrapped text, not the raw block array, once an image result's body arrives", async () => {
     useSessionStore.setState({ sessionId: "s1" });
     const BASE64 = `iVBORw0KGgoAAAANSUhEUg${"A".repeat(200)}`;
-    // Over RESULT_STRIP_FLOOR_BYTES, or the server would have shipped this text
-    // inline and there would be nothing to fetch.
+
     const TEXT = `### Result\nScreenshot of viewport\n${"await page.screenshot({ scale: 'css' });\n".repeat(8)}`;
     const raw = JSON.stringify([
       { type: "text", text: TEXT },
       { type: "image", source: { type: "base64", media_type: "image/png", data: BASE64 } },
     ]);
-    // What the serve-path projection ships: text emptied, image behind a URL.
+
     const onWire = JSON.stringify([
       { type: "text", text: "" },
       { type: "image", source: { type: "base64", media_type: "image/png", shipit_url: "/api/sessions/s1/images/abc" } },
@@ -528,15 +491,13 @@ describe("ToolResult — lazy body fetch (planning#269 req 1)", () => {
     await screen.findByText(/Screenshot of viewport/);
     expect(container.textContent).not.toContain(BASE64);
     expect(container.textContent).not.toContain('"type":"image"');
-    // The image still renders — the point is the text panel, not the picture.
+
     expect(screen.getByTestId("tool-result-images")).toBeInTheDocument();
   });
 
   it("reports a failed body fetch beside the image instead of failing silently", async () => {
     useSessionStore.setState({ sessionId: "s1" });
-    // The projected screenshot shape: emptied text, URL-backed image. `hasImages`
-    // carries it past the "(no output)" / error branches, so a failed text fetch
-    // used to leave no trace at all.
+
     const onWire = JSON.stringify([
       { type: "text", text: "" },
       { type: "image", source: { type: "base64", media_type: "image/png", shipit_url: "/api/sessions/s1/images/abc" } },

@@ -6,7 +6,6 @@ import { useUiStore } from "../stores/ui-store.js";
 import { useSessionStore } from "../stores/session-store.js";
 import type { SessionInfo } from "../../server/shared/types.js";
 
-// jsdom doesn't implement scrollIntoView
 beforeAll(() => {
   Element.prototype.scrollIntoView = () => {};
 });
@@ -198,14 +197,13 @@ describe("MessageList", () => {
       expect(card).toBeInTheDocument();
       expect(card.textContent).toContain("Sent 3 comments");
       expect(card.textContent).toContain("docs/149/plan.md");
-      // Shaped like a user bubble, not an agent-side left-border card — that
-      // similarity is what made it blend into the surrounding agent turns.
+
       expect(card.className).toContain("bg-(--color-accent-subtle)");
       expect(card.className).not.toContain("border-l-2");
-      // Prompt body is collapsed by default — the toggle is visible, the body isn't.
+
       expect(screen.getByTestId("user-review-prompt-toggle")).toBeInTheDocument();
       expect(screen.queryByTestId("user-review-prompt")).not.toBeInTheDocument();
-      // Clicking the toggle expands the prompt body.
+
       fireEvent.click(screen.getByTestId("user-review-prompt-toggle"));
       expect(screen.getByTestId("user-review-prompt").textContent).toContain("comment 1");
     });
@@ -240,7 +238,7 @@ describe("MessageList", () => {
           isLoading={false}
         />
       );
-      // shell/Bash deliberately shows no tool word — just the command, flush.
+
       expect(screen.queryByText("Bash")).toBeNull();
       expect(screen.getByText("npm test")).toBeInTheDocument();
     });
@@ -353,7 +351,7 @@ describe("MessageList", () => {
       expect(groups).toHaveLength(1);
       expect(groups[0].className).toContain("max-h-30");
       expect(groups[0].className).toContain("overflow-y-auto");
-      // All tools render inside the group (Bash shows its command, no icon)
+
       expect(screen.getByText("npm test")).toBeInTheDocument();
       expect(screen.getByText("app.ts")).toBeInTheDocument();
       expect(screen.getByText("TODO")).toBeInTheDocument();
@@ -373,7 +371,7 @@ describe("MessageList", () => {
       );
       const groups = screen.getAllByTestId("tool-call-group");
       expect(groups).toHaveLength(1);
-      // DiffBlock verbs render as labeled icons inside the group
+
       expect(screen.getByLabelText("Edit")).toBeInTheDocument();
       expect(screen.getByLabelText("Write")).toBeInTheDocument();
     });
@@ -388,7 +386,7 @@ describe("MessageList", () => {
       render(<MessageList messages={messages} isLoading={false} />);
       const groups = screen.getAllByTestId("tool-call-group");
       expect(groups).toHaveLength(1);
-      // All three tools are inside the single group (Glob → files icon + "Glob" verb)
+
       expect(within(groups[0]).getByText("Glob")).toBeInTheDocument();
       expect(groups[0].textContent).toContain("a.ts");
       expect(groups[0].textContent).toContain("b.ts");
@@ -400,10 +398,10 @@ describe("MessageList", () => {
         { role: "assistant", text: "Now editing", toolUse: [{ type: "tool_use", id: "t2", name: "Edit", input: { file_path: "a.ts", old_string: "a", new_string: "b" } }] },
       ];
       render(<MessageList messages={messages} isLoading={false} />);
-      // Text bubbles should be visible
+
       expect(screen.getByText(/Let me check/)).toBeInTheDocument();
       expect(screen.getByText(/Now editing/)).toBeInTheDocument();
-      // Each message's tools form a separate group (order preserved)
+
       const groups = screen.getAllByTestId("tool-call-group");
       expect(groups).toHaveLength(2);
     });
@@ -498,7 +496,7 @@ describe("MessageList", () => {
           searchMatches={searchMatches}
         />
       );
-      // The full text should be present (split across text nodes)
+
       expect(screen.getByText(/abc/)).toBeInTheDocument();
       expect(screen.getByText(/xyz/)).toBeInTheDocument();
     });
@@ -506,7 +504,7 @@ describe("MessageList", () => {
     it("highlights text in non-code segments when message has code blocks", () => {
       const text = "find hello here\n```js\ncode\n```\nmore text";
       const messages = [msg("user", text)];
-      // "hello" starts at index 5 in the original text, within the first text segment
+
       const searchMatches = [{ messageIndex: 0, start: 5, length: 5 }];
 
       const { container } = render(
@@ -630,10 +628,9 @@ describe("MessageList", () => {
           isLoading={false}
         />
       );
-      // Code block should exist
+
       expect(container.querySelectorAll("pre code.hljs")).toHaveLength(1);
-      // Header is always rendered (it hosts the Copy button) — the label
-      // reads "code" when no explicit language was given.
+
       const headerLabel = container.querySelector(
         ".border-b.border-\\(--color-border-primary\\) > span"
       );
@@ -676,7 +673,7 @@ describe("MessageList", () => {
     });
 
     it("applies break-words to user message bubble so long unbroken strings wrap", () => {
-      // Reproduces overflow seen when a user pastes a long JSON/error blob with no whitespace.
+
       const longBlob = "a".repeat(500);
       render(
         <MessageList
@@ -697,7 +694,7 @@ describe("MessageList", () => {
           isLoading={false}
         />
       );
-      // The message bubble should NOT have whitespace-pre-wrap on the parent
+
       const bubble = container.querySelector("div[class*='bg-(--color-bg-secondary)']");
       expect(bubble?.className).not.toContain("whitespace-pre-wrap");
     });
@@ -711,7 +708,7 @@ describe("MessageList", () => {
         />
       );
       const codeEl = container.querySelector("pre code.hljs");
-      // highlight.js wraps tokens in <span> tags with hljs-* classes
+
       expect(codeEl?.innerHTML).toContain("hljs-");
     });
   });
@@ -765,8 +762,7 @@ describe("MessageList", () => {
     });
 
     it("offers fork-only at intermediate gaps while loading (planning#184)", () => {
-      // While a turn runs, in-place rewind (chat/code/both) is hidden but fork
-      // stays available — it spins off a new session and doesn't mutate this one.
+
       const onRewindAtGap = vi.fn();
       const errorMsg: ChatMessage = { role: "user", text: "bad", isError: true, streaming: false };
       render(
@@ -779,8 +775,7 @@ describe("MessageList", () => {
       const forkControl = screen.getAllByLabelText("Fork as new session")[0];
       expect(forkControl).toBeInTheDocument();
       expect(forkControl).not.toBeDisabled();
-      // The full rewind menu is suppressed mid-turn, and the current-state fork
-      // handle (rendered only when idle) is absent.
+
       expect(screen.queryByLabelText("Rewind options")).not.toBeInTheDocument();
       expect(screen.queryByLabelText("Fork current state")).not.toBeInTheDocument();
     });
@@ -843,10 +838,9 @@ describe("MessageList", () => {
           isLoading={false}
         />
       );
-      // Initially no modal — result not visible
+
       expect(screen.queryByText("greet output")).toBeNull();
 
-      // Click to open modal
       fireEvent.click(screen.getByLabelText("Show output"));
       expect(screen.getByText("greet output")).toBeInTheDocument();
     });
@@ -864,11 +858,10 @@ describe("MessageList", () => {
           isLoading={false}
         />
       );
-      // Open modal
+
       fireEvent.click(screen.getByLabelText("Show output"));
       expect(screen.getByText("hello world output")).toBeInTheDocument();
 
-      // Close modal
       fireEvent.click(screen.getByLabelText("Close"));
       expect(screen.queryByText("hello world output")).toBeNull();
     });
@@ -888,7 +881,7 @@ describe("MessageList", () => {
           isLoading={false}
         />
       );
-      // Both tools should have show output buttons
+
       const buttons = screen.getAllByLabelText("Show output");
       expect(buttons).toHaveLength(2);
     });
@@ -906,7 +899,7 @@ describe("MessageList", () => {
           isLoading={false}
         />
       );
-      // Edit tools are rendered as DiffBlock, not with the button
+
       expect(screen.queryByLabelText("Show output")).toBeNull();
     });
 
@@ -939,7 +932,7 @@ describe("MessageList", () => {
           isLoading={false}
         />
       );
-      // No match — no button should appear
+
       expect(screen.queryByLabelText("Show output")).toBeNull();
     });
 
@@ -968,9 +961,7 @@ describe("MessageList", () => {
           input: { title: "Sales Chart" },
         },
       ];
-      // Real shape: the MCP bridge returns a content-block array, which
-      // agent-event.ts JSON-stringifies into result.content. Use that exact
-      // shape (not a bare object) so this test exercises the production path.
+
       const results: ToolResultBlock[] = [
         {
           toolUseId: "t1",
@@ -996,9 +987,7 @@ describe("MessageList", () => {
     });
 
     it("renders a view chip when the bridge payload is a bare JSON object (legacy shipit-present name)", () => {
-      // planning#130 consolidated the per-tool servers into `shipit`, but pre-planning#130
-      // sessions persisted the tool call under `mcp__shipit-present__present`.
-      // isPresentTool still recognizes the legacy server name so those cards render.
+
       usePresentStore.getState().hydrate([
         {
           presentId: "pres_bare",
@@ -1030,7 +1019,7 @@ describe("MessageList", () => {
 
   describe("image rendering in messages", () => {
     const testImage: ChatMessageImage = {
-      data: "iVBORw0KGgo=", // tiny fake base64
+      data: "iVBORw0KGgo=",                    
       mediaType: "image/png",
     };
 
@@ -1285,15 +1274,8 @@ describe("MessageList", () => {
     });
   });
 
-  // Phase 1 of docs/153 deleted the MessageList freeze hack that snapshotted
-  // the message array while the user had an active text selection. The freeze
   // existed because the old `marked` + `dangerouslySetInnerHTML` pipeline
-  // rewrote whole subtrees on every streaming token, which detached the text
-  // nodes the browser's Selection Range pointed into. With `react-markdown`
-  // the React tree reconciles in place: appending text into a paragraph
-  // updates `nodeValue` on the same text node, leaving the selection anchor
-  // intact. These tests pin that property so the freeze hack doesn't have to
-  // be reintroduced.
+
   describe("streaming-selection stability (react-markdown)", () => {
     it("preserves the existing paragraph text node when a streaming token is appended", () => {
       const { container, rerender } = render(
@@ -1348,7 +1330,6 @@ describe("MessageList", () => {
     });
   });
 
-
   describe("task panel rendering (CLI 2.1.220 Task* tools)", () => {
     const create = (id: string, subject: string): ToolUseBlock => ({
       type: "tool_use",
@@ -1380,7 +1361,7 @@ describe("MessageList", () => {
       expect(screen.getByText("Read the code")).toBeInTheDocument();
       expect(screen.getByText("Write the fix")).toBeInTheDocument();
       expect(screen.getByText("0/2 completed")).toBeInTheDocument();
-      // The regression: the call used to fall through to the compact tool line.
+
       expect(screen.queryByText("TaskCreate")).not.toBeInTheDocument();
     });
 
@@ -1468,10 +1449,10 @@ describe("MessageList", () => {
       const { container } = render(
         <MessageList messages={messages} isLoading={false} />
       );
-      // Only one full panel (the latest)
+
       const panels = container.querySelectorAll('[data-testid="todo-panel"]');
       expect(panels).toHaveLength(1);
-      // Older TodoWrite is hidden, not shown as a one-liner
+
       expect(screen.queryByText("Updated task list")).not.toBeInTheDocument();
     });
 
@@ -1536,22 +1517,19 @@ describe("MessageList", () => {
       ];
       render(<MessageList messages={messages} isLoading={false} />);
       expect(screen.getByTestId("subagent-call")).toBeInTheDocument();
-      // The subagent's own work is reachable — this is what the Task-only gate
-      // discarded. It sits behind its (collapsed-by-default) disclosure.
+
       expect(screen.queryByTestId("subagent-work")).not.toBeInTheDocument();
       fireEvent.click(screen.getByTestId("subagent-work-toggle"));
       expect(screen.getByTestId("subagent-work")).toBeInTheDocument();
       expect(screen.getByText(/Running the command/)).toBeInTheDocument();
-      // And its final report.
+
       expect(screen.getByTestId("subagent-final-report")).toBeInTheDocument();
       expect(screen.getByText(/Output/)).toBeInTheDocument();
       expect(screen.getByTestId("subagent-done")).toBeInTheDocument();
     });
 
     it("keeps the description, subagent type and prompt an Agent call carried before", () => {
-      // The pre-fix strip showed `Agent (general-purpose): <description>` plus
-      // an inline prompt preview. None of that may be lost by routing into
-      // `SubagentCall` — the prompt just moves behind its disclosure.
+
       const tools: ToolUseBlock[] = [
         {
           type: "tool_use",
@@ -1615,7 +1593,7 @@ describe("MessageList", () => {
       );
       expect(screen.getByTestId("subagent-call")).toBeInTheDocument();
       expect(screen.getByText("Plan UI beautification approach")).toBeInTheDocument();
-      // Prompt is collapsed by default — toggle is visible, prompt body is not.
+
       expect(screen.getByTestId("subagent-prompt-toggle")).toBeInTheDocument();
       expect(screen.queryByTestId("subagent-prompt")).not.toBeInTheDocument();
     });
@@ -1687,14 +1665,12 @@ describe("MessageList", () => {
       ];
       render(<MessageList messages={messages} isLoading={false} />);
       expect(screen.getByTestId("subagent-call")).toBeInTheDocument();
-      // Final report is always visible
+
       expect(screen.getByTestId("subagent-final-report")).toBeInTheDocument();
       expect(screen.getByText(/Findings/)).toBeInTheDocument();
-      // "Done" status badge once final report has arrived
+
       expect(screen.getByTestId("subagent-done")).toBeInTheDocument();
-      // Work is collapsed by default — the toggle advertises the action count
-      // so the reader can see something happened without the timeline eating
-      // the transcript. Clicking it reveals the tool calls and per-step text.
+
       expect(screen.queryByTestId("subagent-work")).not.toBeInTheDocument();
       expect(screen.getByTestId("subagent-work-toggle")).toHaveTextContent("2 actions");
       fireEvent.click(screen.getByTestId("subagent-work-toggle"));
@@ -1759,7 +1735,7 @@ describe("MessageList", () => {
         { role: "assistant", text: "", toolUse: [{ type: "tool_use", id: "t3", name: "Read", input: { file_path: "a.ts" } }] },
       ];
       render(<MessageList messages={messages} isLoading={false} />);
-      // Task should break the tool group, resulting in two separate tool-call-groups
+
       const groups = screen.getAllByTestId("tool-call-group");
       expect(groups).toHaveLength(2);
       expect(screen.getByTestId("subagent-call")).toBeInTheDocument();
@@ -1773,7 +1749,7 @@ describe("MessageList", () => {
         { role: "assistant", text: "Editing", toolUse: [{ type: "tool_use", id: "t2", name: "Edit", input: { file_path: "b.ts", old_string: "a", new_string: "b" } }], streaming: true },
       ];
       render(<MessageList messages={messages} isLoading={true} />);
-      // There should be exactly one spinner in the DOM
+
       const spinners = document.querySelectorAll(".spinner");
       expect(spinners).toHaveLength(1);
     });
@@ -1799,8 +1775,7 @@ describe("MessageList", () => {
     });
 
     it("renders above a message the user sent while the compaction was running", () => {
-      // The anchor is the transcript length when the compaction started, so
-      // "/compact" is above the spinner and the message typed after it is below.
+
       useSessionStore.setState({ compacting: true, compactingAnchor: 1 });
 
       render(
@@ -1840,12 +1815,8 @@ describe("MessageList", () => {
     });
   });
 
-  // Reproduces the user-reported "missed questions" bug: an
-  // AskUserQuestion shown in chat history (or after Claude has continued
   // streaming after the prompt) used to be disabled because the question's
-  // message wasn't the last in the array. The fix is to gate disabling on
-  // whether the tool has a result, not on isLastMessage / streaming /
-  // isLoading.
+
   describe("AskUserQuestion clickability", () => {
     const askToolInput = {
       questions: [
@@ -1880,10 +1851,7 @@ describe("MessageList", () => {
     });
 
     it("remains clickable when its message is no longer the last in chat", () => {
-      // Reproduces the case where Claude has continued streaming text
-      // after the AskUserQuestion (or where any other event has bumped
-      // the question off the end of the messages array) before the user
-      // got to answer. Without this fix the click was dropped silently.
+
       const onAnswerQuestion = vi.fn();
       const messages: ChatMessage[] = [
         msg("user", "Help me decide"),
@@ -1903,8 +1871,7 @@ describe("MessageList", () => {
     });
 
     it("renders the answered state (and ignores clicks) when the tool has a result", () => {
-      // After a page reload, the persisted tool_result is the only
-      // signal that a historical AskUserQuestion has already been
+
       // answered. The component must read it and render the answered
       // state; clicks must not re-fire onAnswerQuestion.
       const onAnswerQuestion = vi.fn();
@@ -1929,10 +1896,7 @@ describe("MessageList", () => {
   });
 
   // planning#80 — the spawned-session card's "Open" button must route through the
-  // router-aware onResumeSession handler (which resets per-session stores and
-  // navigates), not the bare setSessionId fallback. The bare fallback left a
-  // stale URL and stale messages, which on mobile surfaced as a truncated
-  // dialogue behind an unchanged session.
+
   describe("spawned-session card open wiring", () => {
     function seedChild(id: string): void {
       useSessionStore.setState({
@@ -1982,12 +1946,6 @@ describe("MessageList", () => {
   });
 });
 
-/**
- * docs/258 — agent-authored pointers are live in assistant messages and nowhere
- * else. Worth guarding here rather than only at `MarkdownContent`: this is the
- * one call site that turns the capability on, and the messages it renders
- * include ones ShipIt did not author.
- */
 describe("MessageList — agent-authored pointers", () => {
   const POINTER = "[start it](shipit-preview://web/x?shipit-render=button)";
 
@@ -1997,9 +1955,7 @@ describe("MessageList — agent-authored pointers", () => {
   });
 
   it("does not render one in a message a preview page composed", () => {
-    // The Agent Interface SDK lets an arbitrary page the user built compose a
-    // message into this transcript. It arrives as `role: "user"`, which renders
-    // as plain text — no markdown, so no pointer and no way to start a service.
+
     render(<MessageList messages={[{
       role: "user",
       text: POINTER,

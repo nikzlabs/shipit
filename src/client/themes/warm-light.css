@@ -1,6 +1,6 @@
-/* Warm Light theme — cream and sand tones with amber accent */
+
 .warm-light {
-  /* Surfaces */
+
   --color-bg-primary: #fdf8f0;
   --color-bg-secondary: #f5ede0;
   --color-bg-tertiary: #ede4d4;
@@ -9,25 +9,21 @@
   --color-bg-hover: rgba(180, 120, 40, 0.06);
   --color-bg-active: rgba(180, 120, 40, 0.1);
 
-  /* Text */
   --color-text-primary: #2c2416;
   --color-text-secondary: #5c5040;
   --color-text-tertiary: #a89878;
   --color-text-inverse: #fdf8f0;
   --color-text-link: #b06820;
 
-  /* Borders */
   --color-border-primary: #e1d4be;
   --color-border-secondary: #d0c0a4;
   --color-border-focus: #c07828;
 
-  /* Accent */
   --color-accent: #c07828;
   --color-accent-hover: #a86418;
   --color-accent-text: #ffffff;
   --color-accent-subtle: rgba(192, 120, 40, 0.12);
 
-  /* Status */
   --color-success: #2d8a4e;
   --color-success-subtle: rgba(45, 138, 78, 0.1);
   --color-success-border: rgba(45, 138, 78, 0.3);
@@ -38,7 +34,6 @@
   --color-info: #b06820;
   --color-info-subtle: rgba(176, 104, 32, 0.1);
 
-  /* Domain-specific */
   --color-pr: #7840b0;
   --color-pr-subtle: rgba(120, 64, 176, 0.1);
   --color-pr-border: rgba(120, 64, 176, 0.3);
@@ -54,17 +49,14 @@
   --color-attention: #d97706;
   --color-attention-text: #92400e;
 
-  /* Context meter */
   --color-context-ok: #2d8a4e;
   --color-context-mid: #c09820;
   --color-context-high: #d07020;
   --color-context-full: #c43030;
 
-  /* Scrollbar */
   --color-scrollbar-thumb: rgba(168, 152, 120, 0.4);
   --color-scrollbar-thumb-hover: rgba(122, 108, 86, 0.6);
 
-  /* Syntax highlighting (warm paper tones) */
   --color-syntax-base: #3c3424;
   --color-syntax-bg: #fdf8f0;
   --color-syntax-keyword: #a84020;
@@ -82,6 +74,5 @@
   --color-syntax-deletion: #a84020;
   --color-syntax-deletion-bg: #fef0e8;
 
-  /* Typography */
   --font-size-code: 13px;
 }

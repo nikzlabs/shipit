@@ -1,15 +1,7 @@
 import { useCallback, useLayoutEffect, useRef, type RefCallback } from "react";
 
-/**
- * How much of the address the toolbar protects before it starts dropping
- * labels, in CSS pixels. This is the whole tuning surface of the collapse: it
- * decides how early labels give way. At 130px the first label goes at a panel
- * width of roughly 680px — about a half-width split pane — and the address
- * stays readable ("/requirements?f…") the whole way down to there.
- */
 export const ADDRESS_MIN_PX = 130;
 
-/** Marks the element whose width the collapse protects (PreviewPath's text). */
 export const ADDRESS_MEASURE_ATTR = "data-preview-address";
 
 /**
@@ -24,11 +16,10 @@ const STAGES = ["hideViewport", "hideAutofix", "hideService"] as const;
 
 export const MAX_COLLAPSE_STAGE = STAGES.length;
 
-/** What one probe of the laid-out toolbar reports back. */
 export interface CollapseProbe {
-  /** The row's content is wider than the row. */
+
   overflows: boolean;
-  /** Current width of the address text, or null when no address is shown. */
+
   addressWidth: number | null;
   /**
    * Whether the address is cut short — it wants more width than it has.
@@ -69,12 +60,11 @@ export function resolveCollapseStage(
   apply(stage);
   while (stage < maxStage) {
     const { overflows, addressWidth, addressTruncated } = probe();
-    // Starved means "cut short AND still under its minimum" — both halves are
+
     // load-bearing. Truncation alone is not starvation: a genuinely long URL
-    // stays truncated no matter how much room it gets, and would spend every
+
     // stage for nothing. Width alone is not starvation either, because a short
-    // path is narrow by nature rather than by pressure. The half-pixel of slack
-    // keeps sub-pixel layout from spending a stage that buys nothing.
+
     const starved =
       addressTruncated && addressWidth !== null && addressWidth < addressMin - 0.5;
     if (!overflows && !starved) break;
@@ -84,7 +74,6 @@ export function resolveCollapseStage(
   return stage;
 }
 
-/** Writes the stage onto the toolbar as the flags the labels hide off. */
 function applyStage(el: HTMLElement, stage: number): void {
   STAGES.forEach((flag, index) => {
     el.dataset[flag] = stage > index ? "true" : "false";
@@ -116,27 +105,21 @@ export function usePreviewToolbarCollapse(
   const measure = useCallback(() => {
     const el = elRef.current;
     if (!el) return;
-    // No layout yet — an unmounted panel, a display:none ancestor, or jsdom.
-    // Measuring here would read every width as 0, conclude the address is
-    // starved and collapse the bar completely, so leave it fully expanded.
+
     if (el.clientWidth === 0) return;
 
     resolveCollapseStage(
       addressMin,
       (stage) => applyStage(el, stage),
       () => {
-        // Reading these forces a synchronous reflow, so the next pass sees the
-        // effect of the stage just applied. The intermediate states are
+
         // measured but never painted, so there is no flicker.
         const overflows = el.scrollWidth > el.clientWidth + 1;
         const address = el.querySelector<HTMLElement>(`[${ADDRESS_MEASURE_ATTR}]`);
         return {
           overflows,
           addressWidth: address ? address.getBoundingClientRect().width : null,
-          // The route and query each carry `truncate`, so a clipped one reports
-          // scrollWidth past its clientWidth. Asking the children rather than
-          // the wrapper matters: the wrapper's own overflow is hidden and its
-          // children shrink to fit inside it, so the wrapper always looks full.
+
           addressTruncated: address
             ? Array.from(address.children).some(
                 (child) => child.scrollWidth > child.clientWidth + 1,

@@ -8,12 +8,6 @@ interface Props {
 }
 interface Snapshot { node: HTMLElement; top: number }
 
-/**
- * This boundary needs React's BEFORE-mutation snapshot: disclosures and row
- * visibility change together. A layout effect sees their already-changed layout.
- * React owns hidden; this boundary only preserves a reader's position. Bottom
- * following and gesture/selection protection stay with useMessageScroll.
- */
 export class CompactLayout extends Component<Props, Record<string, never>, Snapshot | null> {
   private frame: number | undefined;
 
@@ -53,8 +47,7 @@ export class CompactLayout extends Component<Props, Record<string, never>, Snaps
       const nextHeight = root.scrollHeight;
       stableFrames = nextHeight === height ? stableFrames + 1 : 0;
       height = nextHeight;
-      // content-visibility groups can resolve after the first layout. Settle
-      // briefly, with the same gesture/selection guards on every frame.
+
       if (++frames < 12 && stableFrames < 3) this.frame = window.requestAnimationFrame(restore);
     };
     restore();

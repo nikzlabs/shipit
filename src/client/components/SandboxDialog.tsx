@@ -35,7 +35,6 @@ export function SandboxDialog({
 }) {
   const [caps, setCaps] = useState<SessionCapabilities>(DEFAULT_SANDBOX_CAPABILITIES);
 
-  // Reset to defaults each time the dialog opens so a cancelled-then-reopened
   // flow never carries stale toggles.
   const reset = () => setCaps(DEFAULT_SANDBOX_CAPABILITIES);
 

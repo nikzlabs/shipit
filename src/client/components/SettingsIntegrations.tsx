@@ -34,7 +34,6 @@ interface SettingsIntegrationsProps {
   hasActiveSession: boolean;
 }
 
-/** 36px rounded tile that frames a service's brand mark. */
 function LogoTile({ children }: { children: ReactNode }) {
   return (
     <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-(--color-border-secondary) bg-(--color-bg-elevated) text-(--color-text-primary)">
@@ -43,9 +42,6 @@ function LogoTile({ children }: { children: ReactNode }) {
   );
 }
 
-/** Linear brand mark. Phosphor has no Linear logo; a brand glyph is the
- * sanctioned exception to the "no hardcoded SVG" rule (it's a logo, not a
- * generic UI icon). */
 function LinearLogo() {
   return (
     <svg viewBox="0 0 100 100" width={ICON_SIZE.MD} height={ICON_SIZE.MD} fill="#5e6ad2" aria-hidden="true">
@@ -105,8 +101,6 @@ function PullRequestSettings() {
   );
 }
 
-/** GitHub connection row: a "Managed by ShipIt" connected card + nested PR
- * toggle when authenticated, the token form otherwise. */
 function GitHubConnectionCard({
   githubStatus,
   onGitHubLogout,
@@ -218,5 +212,4 @@ export function SettingsIntegrations({
   );
 }
 
-/** Re-exported so the Integrations section can frame Linear with a brand tile. */
 export { LinearLogo };

@@ -80,8 +80,7 @@ describe("Settings", () => {
   it("calls onClose on backdrop click", async () => {
     const onClose = vi.fn();
     render(<Settings {...defaultProps} onClose={onClose} />);
-    // Radix Dialog overlay click is unreliable in jsdom; test via Escape which
-    // exercises the same onOpenChange(false) path.
+
     await userEvent.keyboard("{Escape}");
     expect(onClose).toHaveBeenCalled();
   });
@@ -116,12 +115,6 @@ describe("Settings - Services → Anthropic subscription", () => {
     expect(screen.queryByRole("tab", { name: "Codex" })).not.toBeInTheDocument();
   });
 
-  /**
-   * The whole point of the unification: the account rows sit INSIDE the same
-   * `ServiceCard` a string-delivered credential gets, rather than in a
-   * borderless block above the list. A card-shaped assertion is what catches a
-   * regression back to two components; asserting the rows exist would not.
-   */
   it("renders the account rows inside the service's own card, titled by service", () => {
     connectAnthropicSubscription();
     render(<Settings {...defaultProps} />);
@@ -130,14 +123,13 @@ describe("Settings - Services → Anthropic subscription", () => {
     expect(within(card).getByRole("heading", { name: "Anthropic" })).toBeInTheDocument();
     // The harness vendor never titles a credential card (docs/252 D2).
     expect(screen.queryByText(/Claude subscriptions/i)).not.toBeInTheDocument();
-    // The provider-wide singleton card is gone — connecting the first account
+
     // must not be a different flow from connecting the second.
     expect(screen.queryByTestId("claude-auth-card")).not.toBeInTheDocument();
   });
 
   it("lists no card at all for a subscription with no credential (req 17)", () => {
-    // The state the reveal used to create, and could not undo: a service listed
-    // with nothing in it and no way to remove it. It is now unreachable — a
+
     // card exists because a credential does.
     render(<Settings {...defaultProps} agentList={[claudeUnauthed]} />);
     expect(screen.queryByTestId("service-card-anthropic:sub")).not.toBeInTheDocument();
@@ -149,14 +141,12 @@ describe("Settings - Services → Anthropic subscription", () => {
     const card = screen.getByTestId("service-card-anthropic:sub");
     expect(within(card).queryByTestId("provider-account-add-claude")).not.toBeInTheDocument();
     expect(within(card).queryByRole("button", { name: /add/i })).not.toBeInTheDocument();
-    // The one door, on the panel rather than the card.
+
     expect(screen.getByTestId("services-add")).toBeInTheDocument();
   });
 
   it("creates the account and starts its sign-in from inside the add-service dialog (req 17)", async () => {
-    // req 17 — the sign-in is the last step of the one flow, not a hand-off to
-    // a button on a card. The card does not exist yet at this point, and that
-    // is the change: the account is what brings it into being.
+
     const now = Date.now();
     const created = {
       id: "acct-1",
@@ -180,8 +170,7 @@ describe("Settings - Services → Anthropic subscription", () => {
       "/api/provider-accounts",
       expect.objectContaining({ method: "POST" }),
     ));
-    // req 16: creating a row and starting its login is one action, so the very
-    // first account goes through the account-scoped login endpoint too.
+
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
       "/api/provider-accounts/claude/acct-1/login",
       expect.objectContaining({ method: "POST" }),
@@ -189,13 +178,9 @@ describe("Settings - Services → Anthropic subscription", () => {
     vi.unstubAllGlobals();
   });
 
-  // docs/150 — one login process per provider, so the server rejects a second
-  // concurrent sign-in with a 409. Surface that as a disabled affordance rather
-  // than letting the user click into the refusal.
   it("blocks a second concurrent sign-in while one account is authenticating", async () => {
     const now = Date.now();
-    // `externalId` is what says a row has connected before — without it these
-    // read as sign-in attempts, which the panel does not list (req 17).
+
     const base = { serviceId: "anthropic" as const, billingMode: "sub" as const, via: "account" as const, isPrimary: false, createdAt: now, updatedAt: now };
     useSettingsStore.getState().setProviderAccounts([
       { ...base, id: "acct-a", label: "Account A", isPrimary: true, status: "authenticating" as const, externalId: "ext-a" },
@@ -204,16 +189,13 @@ describe("Settings - Services → Anthropic subscription", () => {
 
     render(<Settings {...defaultProps} agentList={[claudeUnauthed]} />);
 
-    // docs/252 req 19 — both verbs live in the row's `\u22ef` now, so the guard is
-    // asserted where the user meets it. Radix renders one menu at a time, so
-    // each row is opened in turn.
     await userEvent.click(screen.getByLabelText("Manage Account B"));
-    // The row that is NOT signing in can't start a competing flow...
+
     expect(screen.getByTestId("provider-account-connect-acct-b")).toHaveAttribute("data-disabled");
     await userEvent.keyboard("{Escape}");
 
     await userEvent.click(screen.getByLabelText("Manage Account A"));
-    // ...and the one that is keeps its own way out.
+
     expect(screen.getByTestId("provider-account-cancel-login-acct-a")).not.toHaveAttribute("data-disabled");
   });
 
@@ -262,11 +244,8 @@ describe("Settings - Services → Anthropic subscription", () => {
     vi.unstubAllGlobals();
   });
 
-  // docs/260-turn-level-account-routing req 3 — disconnecting is one click, even for the last account.
   // Sessions are never pinned to an account, so there is no replacement to
-  // pick and no moved/stranded bookkeeping to report: the row disappears, the
-  // response carries `{accounts}` only, and each session simply routes among
-  // whatever accounts remain at its next turn.
+
   it("disconnects the last account in one click with nothing to report (docs/260-turn-level-account-routing req 3)", async () => {
     const now = Date.now();
     useSettingsStore.getState().setProviderAccounts([
@@ -287,26 +266,16 @@ describe("Settings - Services → Anthropic subscription", () => {
       "/api/provider-accounts/claude/acct-a",
       expect.objectContaining({ method: "DELETE" }),
     ));
-    // The row is gone, and with the last credential gone so is the card —
-    // req 17's "a service the user has not connected does not appear", arrived
-    // at from the other direction. There is nothing left to keep it on screen:
-    // a *reported* disconnect keeps its card through the notice clause, and
-    // this one has nothing to report.
+
     await waitFor(() => expect(screen.queryByTestId("provider-account-row-acct-a")).not.toBeInTheDocument());
     expect(screen.queryByTestId("service-card-anthropic:sub")).not.toBeInTheDocument();
-    // No replacement picker, no moved/stranded notice, no toast (req 3).
+
     expect(screen.queryByTestId("provider-account-replacement-acct-a")).not.toBeInTheDocument();
     expect(screen.queryByTestId("provider-accounts-notice-claude")).not.toBeInTheDocument();
     expect(useUiStore.getState().toast).toBeNull();
     vi.unstubAllGlobals();
   });
 
-  /**
-   * The collapsed "Use an API key instead" disclosure is gone with the vendor
-   * tabs. It wrote through to the very credential the Services add-flow writes
-   * (`anthropic:key`), so it was a second editor for one fact — and the card it
-   * produced is one row down in the same list.
-   */
   it("offers no second API-key editor on the subscription card", () => {
     connectAnthropicSubscription();
     render(<Settings {...defaultProps} agentList={[claudeUnauthed]} />);
@@ -370,15 +339,9 @@ describe("Settings - Services → Anthropic subscription", () => {
       serviceId: "anthropic", billingMode: "sub", via: "account",
       label: "Claude account 2",
       isPrimary: false,
-      // `unavailable` rather than `authenticating`: the row is one the user is
-      // about to reconnect, and a row already mid-login offers *Cancel
-      // sign-in* instead. The live challenge below is what the reconnect then
-      // renders in the dialog.
+
       status: "unavailable",
-      // Authenticated before — the row is re-connecting, not being created. A
-      // row with no identity and no successful login is an attempt, and the
-      // panel does not list attempts (req 17); the add-service dialog owns
-      // those, and `ServicesPanel.test.tsx` covers them there.
+
       externalId: "ext-secondary",
       createdAt: now,
       updatedAt: now,
@@ -390,10 +353,6 @@ describe("Settings - Services → Anthropic subscription", () => {
     await userEvent.click(screen.getByLabelText("Manage Claude account 2"));
     await userEvent.click(screen.getByTestId("provider-account-connect-acct-secondary"));
 
-    // The challenge is seeded AFTER the reconnect starts, which is when it
-    // really arrives — and it has to be: adopting an attempt cancels whatever
-    // login was running against it and clears the challenge that login left, so
-    // a code seeded beforehand is a dead one the dialog is right to drop.
     act(() => {
       useSettingsStore.getState().setProviderAccountAuth("anthropic-oauth", "acct-secondary", {
         loginId: "anthropic-oauth",
@@ -625,7 +584,6 @@ describe("Settings - Services → OpenAI subscription", () => {
     supportsReview: false,
   };
 
-  /** As above: the card is summoned by connecting an account, not by a reveal. */
   function connectOpenAiSubscription() {
     const now = Date.now();
     useSettingsStore.getState().setProviderAccounts([{
@@ -655,12 +613,6 @@ describe("Settings - Services → OpenAI subscription", () => {
     expect(screen.queryByTestId("provider-toggle-api-key-codex")).not.toBeInTheDocument();
   });
 
-  /**
-   * docs/252 req 19 — the device code renders in the add-service dialog, which
-   * *Reconnect* opens on step 3 for this account. Still one implementation for
-   * both providers (docs/150-multiple-provider-subscriptions req 16): `AccountChallenge` shows OpenAI's
-   * device-code variant here and Anthropic's paste variant above.
-   */
   it("renders a Codex device code in the sign-in it belongs to (req 16)", async () => {
     const now = Date.now();
     useSettingsStore.getState().setProviderAccounts([{
@@ -686,7 +638,6 @@ describe("Settings - Services → OpenAI subscription", () => {
       });
     });
 
-    // The device code belongs to the ACCOUNT, not to a provider-wide card.
     expect(await screen.findByTestId("provider-account-user-code-acct-codex-2")).toHaveTextContent("WXYZ-1234");
     expect(screen.getByRole("link", { name: "Open OpenAI authentication page" })).toHaveAttribute(
       "href",
@@ -695,15 +646,6 @@ describe("Settings - Services → OpenAI subscription", () => {
     vi.unstubAllGlobals();
   });
 
-  /**
-   * Two sign-ins can no longer be on screen at once — the challenge lives in
-   * one modal dialog (docs/252 req 19) and the server runs one login per
-   * provider anyway. What replaces "keep them independent" is the constraint
-   * that makes the question moot: **no challenge renders on a row at all.**
-   * Rebuilding one there is the regression this catches, and it would return
-   * the poorer copy the change removed — `AccountChallenge` renders `null`
-   * until the auth URL lands, so the row would again show nothing in between.
-   */
   it("renders no challenge on the rows themselves, whatever their state", () => {
     const now = Date.now();
     const base = { serviceId: "openai" as const, billingMode: "sub" as const, via: "account" as const, isPrimary: false, createdAt: now, updatedAt: now };
@@ -722,8 +664,7 @@ describe("Settings - Services → OpenAI subscription", () => {
 
     expect(screen.queryByTestId("provider-account-user-code-acct-a")).not.toBeInTheDocument();
     expect(screen.queryByTestId("provider-account-user-code-acct-b")).not.toBeInTheDocument();
-    // The rows still say what is going on — in a word, which is req 19's rule
-    // for a state that needs attention.
+
     expect(screen.getByTestId("provider-account-row-acct-a-status")).toHaveTextContent("signing in");
   });
 });
@@ -780,7 +721,6 @@ describe("Settings - Advanced tab", () => {
     expect(btn).toBeDisabled();
   });
 
-  // docs/284 — the count setting was replaced by a memory budget.
   it("renders the Memory Budget section, empty when no budget is set", async () => {
     await renderOnAdvancedTab();
     expect(screen.getByText("Memory Budget")).toBeInTheDocument();
@@ -797,8 +737,6 @@ describe("Settings - Advanced tab", () => {
     expect(onMemoryBudgetSave).toHaveBeenCalledWith(16 * 1024);
   });
 
-  // req 9 — clearing the field is how the user says "use the whole machine",
-  // and `null` is what carries that through to the server.
   it("saves null when the budget field is cleared", async () => {
     const onMemoryBudgetSave = vi.fn();
     await renderOnAdvancedTab({ memoryBudgetMb: 8192, onMemoryBudgetSave });
@@ -806,8 +744,6 @@ describe("Settings - Advanced tab", () => {
     await userEvent.click(screen.getByTestId("settings-memory-budget-save"));
     expect(onMemoryBudgetSave).toHaveBeenCalledWith(null);
   });
-
-  // ---- Release channels (feature 162) ----
 
   it("renders the release-channel selector", async () => {
     await renderOnAdvancedTab();
@@ -897,7 +833,7 @@ describe("Settings - Advanced tab", () => {
           expect.objectContaining({ method: "POST" }),
         );
       });
-      // Downgrade warning surfaces from the response.
+
       await waitFor(() => {
         expect(screen.getByTestId("settings-downgrade-warning")).toBeInTheDocument();
       });
@@ -1007,11 +943,7 @@ describe("Settings - Advanced tab", () => {
 });
 
 describe("Settings - Sidebar", () => {
-  /**
-   * docs/252 — one flat list, led by Services. The "Agent" group and its two
-   * per-vendor tabs are gone: a credential belongs to a service, not to the
-   * harness that drives it, so there is no vendor axis left to group on.
-   */
+
   it("lists one flat group with Services first and no vendor tabs", () => {
     render(<Settings {...defaultProps} />);
     const tabs = screen.getAllByRole("tab");

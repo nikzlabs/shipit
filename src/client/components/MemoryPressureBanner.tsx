@@ -33,8 +33,7 @@ function formatGiB(bytes: number): string {
 
 export function MemoryPressureBanner({ stats }: MemoryPressureBannerProps) {
   if (!stats || stats.totalBytes <= 0) return null;
-  // docs/284 req 12 — report against the budget that decides reclaim, not the
-  // host total. On a large host with a small budget, a host-measured banner
+
   // would never fire and previews would be stopped with no warning at all.
   const fraction = memoryUsedFraction(stats);
   if (fraction === null || !isUnderBannerPressure(stats)) return null;
@@ -44,7 +43,7 @@ export function MemoryPressureBanner({ stats }: MemoryPressureBannerProps) {
   const used = formatGiB(stats.usedBytes);
   const total = formatGiB(budgetBytes);
   const budgetIsSet = budgetBytes < stats.totalBytes;
-  // Severity: 80–89% warning (orange), 90%+ critical (red).
+
   const isCritical = fraction >= 0.90;
   const tone = isCritical
     ? "bg-(--color-error-subtle) text-(--color-error) border-(--color-error)/30"

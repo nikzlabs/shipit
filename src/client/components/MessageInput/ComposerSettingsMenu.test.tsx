@@ -96,8 +96,7 @@ describe("ComposerSettingsMenu", () => {
     });
 
     it("names both the model and what it opens, for a screen reader (req 9)", () => {
-      // The anchor shows one name but stands for four settings, so the visible
-      // label alone would understate it.
+
       renderMenu();
       const label = screen.getByTestId("composer-settings-trigger").getAttribute("aria-label");
       expect(label).toContain("Opus 5");
@@ -105,8 +104,7 @@ describe("ComposerSettingsMenu", () => {
     });
 
     it("can shrink and truncate, so the buttons beside it never move (req 8)", () => {
-      // The class contract is the mechanism: the anchor is the ONLY elastic item
-      // in the clipping group, so the name ellipsises before anything is cut.
+
       renderMenu();
       const trigger = screen.getByTestId("composer-settings-trigger");
       expect(trigger.className).toContain("min-w-0");
@@ -143,7 +141,7 @@ describe("ComposerSettingsMenu", () => {
       renderMenu();
       await user.click(screen.getByTestId("composer-settings-trigger"));
       await user.click(screen.getByTestId("composer-settings-row-harness"));
-      // No harness panel — the row is inert, and the reason is on the root.
+
       expect(screen.queryByTestId("composer-settings-harness-codex")).toBeNull();
       expect(screen.getByTestId("composer-settings-menu")).toHaveTextContent(/fixed after the first message/i);
     });
@@ -218,12 +216,10 @@ describe("ComposerSettingsMenu", () => {
 describe("ComposerSettingsMenu — no one-row root (docs/285 req 9)", () => {
   it("opens straight onto the role list when Role is all the root would hold", async () => {
     const user = userEvent.setup();
-    // A role in force with its parameters folded away: removing the Mode row
-    // left exactly one row on the root, whose only job was to open this panel.
+
     renderMenu({ onRoleChange: vi.fn(), sessionRoleName: "reviewer", roleParamsRevealed: false });
     await user.click(screen.getByTestId("composer-settings-trigger"));
-    // The role list itself, with no traversal and no back header to a root that
-    // would be empty behind it.
+
     expect(screen.getByTestId("composer-settings-role-none")).toBeInTheDocument();
     expect(screen.queryByTestId("composer-settings-back")).toBeNull();
   });
@@ -232,23 +228,20 @@ describe("ComposerSettingsMenu — no one-row root (docs/285 req 9)", () => {
     const user = userEvent.setup();
     // Same shape as above — the header is dropped because there is no root
     // behind the list. The separator that divided the two must go with it: on
-    // its own it is a rule with nothing above, which renders as an empty band
-    // at the very top of the sheet.
+
     renderMenu({ onRoleChange: vi.fn(), sessionRoleName: "reviewer", roleParamsRevealed: false });
     await user.click(screen.getByTestId("composer-settings-trigger"));
     const menu = screen.getByTestId("composer-settings-menu");
     const first = menu.firstElementChild;
     expect(first).not.toBeNull();
     expect(first!.getAttribute("role")).not.toBe("separator");
-    // "Adjust parameters…" keeps its own divider, so the panel is not simply
-    // separator-free — the top one specifically is gone.
+
     expect(menu.querySelectorAll("[role='separator']")).toHaveLength(1);
   });
 
   it("keeps the root when there is more than one row on it", async () => {
     const user = userEvent.setup();
-    // Parameters revealed → harness, model and level are back, so the root is a
-    // real choice rather than a step.
+
     renderMenu({ onRoleChange: vi.fn(), sessionRoleName: "reviewer", roleParamsRevealed: true });
     await user.click(screen.getByTestId("composer-settings-trigger"));
     expect(screen.getByTestId("composer-settings-row-model")).toBeInTheDocument();

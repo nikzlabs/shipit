@@ -32,10 +32,9 @@ describe("runner incarnations (docs/285)", () => {
 
   it("treats a LIVE replacement as authoritative with no prior generation", () => {
     // The case that was silently excluded. A `/new` viewer has never seen an
-    // earlier generation for its session, and a warm session is absent from the
-    // session list the snapshot is built from — so requiring a baseline meant
+
     // the sessions a network-mode rebuild replaces were the ones that never
-    // reconnected.
+
     useSessionStore.getState().noteRunnerIncarnations({ s1: 2 }, { merge: true, live: true });
     expect(nonce()).toBe(1);
   });
@@ -48,16 +47,13 @@ describe("runner incarnations (docs/285)", () => {
   });
 
   it("does not reconnect on a SNAPSHOT with no prior generation", () => {
-    // The first snapshot after connecting is not news; every session in it would
-    // otherwise read as replaced and the tab would reconnect on arrival.
+
     useSessionStore.getState().noteRunnerIncarnations({ s1: 3 });
     expect(nonce()).toBe(0);
   });
 
   it("ignores a snapshot that goes BACKWARDS", () => {
-    // A restarted server counts from zero again. Reading that as a replacement
-    // makes every tab reconnect in a loop against a server already handing them
-    // fresh runners.
+
     useSessionStore.getState().noteRunnerIncarnations({ s1: 5 });
     useSessionStore.getState().noteRunnerIncarnations({ s1: 2 });
     expect(nonce()).toBe(0);

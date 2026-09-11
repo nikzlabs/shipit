@@ -30,18 +30,13 @@ export function ServiceSelector({
   fallbackLabel = "No service",
 }: {
   services: ServiceChoice[];
-  /** The pair currently in force, or undefined when nothing resolves yet. */
+
   selected: { serviceId: string; billingMode: string } | undefined;
   onChange: (service: ServiceChoice) => void;
   disabled?: boolean;
-  /** Namespaces this control's test ids — a surface may hold two of them. */
+
   idPrefix: string;
-  /**
-   * What to name when the selection is not in the list — a pin whose credential
-   * went away. Callers pass the pinned service's raw id, which is a worse label
-   * than a name and a great deal better than a control that reads as empty
-   * while the server still holds a pin.
-   */
+
   fallbackLabel?: string;
 }) {
   const selectedKey = selected ? serviceKeyOf(selected) : undefined;
@@ -52,13 +47,7 @@ export function ServiceSelector({
       label={current?.serviceName ?? fallbackLabel}
       {...(current
         ? {
-            /*
-              The vendor's mark, in the slot the reasoning control's brain uses
-              — the same one Settings → Services draws on the card. Only when a
-              service actually resolves: `fallbackLabel` names a pin whose
-              credential went away, and a mark beside "No service" would be a
-              logo for nothing.
-            */
+
             icon: <ServiceLogo service={{ id: current.serviceId, name: current.serviceName }} />,
           }
         : {})}
@@ -66,8 +55,7 @@ export function ServiceSelector({
       triggerTestId={`${idPrefix}-service-trigger`}
       menuTestId={`${idPrefix}-service-menu`}
       menuWidth="w-64"
-      // No `services.length === 0` clause: an empty list renders no control at
-      // all (req 14), which is what this used to try to say with `disabled`.
+
       disabled={disabled}
     >
       {services.map((service) => {

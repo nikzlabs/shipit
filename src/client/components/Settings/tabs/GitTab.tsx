@@ -13,7 +13,6 @@ export function GitTab({
   const [gitEmail, setGitEmail] = useState(gitIdentity.email);
   const [gitSaved, setGitSaved] = useState(false);
 
-  // Sync local git identity state when props change (e.g. fetched from server)
   const prevGitIdentityRef = useRef(gitIdentity);
   if (prevGitIdentityRef.current.name !== gitIdentity.name || prevGitIdentityRef.current.email !== gitIdentity.email) {
     prevGitIdentityRef.current = gitIdentity;

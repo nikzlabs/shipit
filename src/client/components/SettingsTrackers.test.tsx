@@ -16,13 +16,11 @@ import { SettingsTrackers } from "./SettingsTrackers.js";
 
 const originalFetch = globalThis.fetch;
 
-/** Stubs the teams lookup that drives connected-vs-disconnected state. */
 function installFetchStub(teams: { id: string; key: string; name: string }[] | null) {
   globalThis.fetch = ((input: RequestInfo | URL) => {
     const url = typeof input === "string" ? input : "url" in input ? input.url : input.href;
     if (url.includes("/api/trackers/linear/teams")) {
-      // A missing credential answers 400 ("Connect Linear first"), which the
-      // card reads as disconnected rather than as an error.
+
       return Promise.resolve(
         teams
           ? new Response(JSON.stringify({ teams }), { status: 200 })
@@ -54,8 +52,7 @@ describe("SettingsTrackers", () => {
   it("shows no repository-scoped tracker declaration in workspace settings", async () => {
     const { container } = render(<SettingsTrackers />);
     await waitFor(() => expect(screen.getByTestId("linear-connected")).toBeInTheDocument());
-    // No config block, and no fragment of the `issues.trackers` declaration
-    // that lives in a repository's shipit.yaml.
+
     expect(container.querySelector("pre")).toBeNull();
     expect(container.textContent).not.toContain("shipit.yaml");
     expect(container.textContent).not.toContain("kind: linear");

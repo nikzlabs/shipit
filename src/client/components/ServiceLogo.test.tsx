@@ -19,15 +19,14 @@ import { ServiceLogo } from "./ServiceLogo.js";
 afterEach(cleanup);
 
 describe("ServiceLogo", () => {
-  /** The path each service draws, keyed by id — the basis of the two tests below. */
+
   const drawnPaths = (): Map<string, string> => {
     const drawn = new Map<string, string>();
     for (const service of allServices()) {
       const { container, unmount } = render(<ServiceLogo service={service} />);
       const svg = container.querySelector("svg");
       expect(svg, `no mark for ${service.id}`).not.toBeNull();
-      // The 24×24 grid every Simple Icons path is drawn on. A mark copied in
-      // under a different grid renders as a fragment of itself.
+
       expect(svg?.getAttribute("viewBox")).toBe("0 0 24 24");
       drawn.set(service.id, svg?.querySelector("path")?.getAttribute("d") ?? "");
       unmount();
@@ -40,9 +39,7 @@ describe("ServiceLogo", () => {
   });
 
   it("draws a DIFFERENT mark for each service", () => {
-    // The failure this catches is a copy-paste: a new row added by duplicating
-    // the one above it and changing only the key, which the compiler and every
-    // other assertion here accept happily.
+
     const drawn = drawnPaths();
     expect(new Set(drawn.values()).size).toBe(drawn.size);
   });
@@ -52,7 +49,7 @@ describe("ServiceLogo", () => {
       const { container, unmount } = render(<ServiceLogo service={service} />);
       const svg = container.querySelector("svg");
       expect(svg?.getAttribute("fill")).toBe("currentColor");
-      // A path with its own fill would defeat the svg-level one.
+
       expect(svg?.querySelector("path")?.getAttribute("fill")).toBeNull();
       unmount();
     }

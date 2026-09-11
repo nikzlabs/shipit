@@ -53,27 +53,20 @@ export function StartSessionButton({
   targetRepoUrl,
   onStartInRepo,
 }: {
-  /** Button text — the detail footer uses a longer "…from this issue" form. */
+
   label?: string;
   disabled?: boolean;
   title?: string;
   onClick: (e: MouseEvent<HTMLButtonElement>) => void;
-  /** Layout-only classes from the call site (e.g. row width / grid placement). */
+
   className?: string;
-  /**
-   * Button emphasis. Defaults to the calm `cta` used down the Issues list; the
-   * detail footer overrides to solid `primary` since it's the main action there.
-   */
+
   variant?: ButtonProps["variant"];
-  /**
-   * Repos offered in the picker. The caret half only renders when there are at
-   * least two (with one repo there is nothing to choose) and `onStartInRepo` is
-   * wired, so every existing call site keeps today's plain-button rendering.
-   */
+
   repos?: RepoInfo[];
-  /** The repo the plain click starts in — checkmarked in the menu. */
+
   targetRepoUrl?: string;
-  /** Start in an explicitly chosen repo instead of {@link targetRepoUrl}. */
+
   onStartInRepo?: (repoUrl: string) => void;
 }) {
   const showPicker = Boolean(onStartInRepo) && (repos?.length ?? 0) > 1;
@@ -81,9 +74,7 @@ export function StartSessionButton({
   const main = (
     <Button
       variant={variant}
-      // Standard `md` height (32px) so this lines up with every other text
-      // button. In the Issues list the action cell centers the button on the
-      // row's first-line baseline regardless of its height, so it still aligns.
+
       size="md"
       disabled={disabled}
       title={title}
@@ -101,8 +92,7 @@ export function StartSessionButton({
   if (!showPicker) return main;
 
   return (
-    // Layout classes from the call site move to the wrapper — the two halves
-    // size themselves inside it (the main half flexes, the caret stays snug).
+
     <div className={cn("inline-flex items-stretch", className)}>
       {main}
       <DropdownMenu>
@@ -113,9 +103,7 @@ export function StartSessionButton({
             disabled={disabled}
             aria-label="Start session in another repository"
             title="Start session in another repository"
-            // `-ml-px` collapses the two borders of the `cta` variant into one
-            // shared edge; the inset shadow draws the divider for variants that
-            // have no border of their own (e.g. solid `primary`).
+
             className="rounded-l-none -ml-px px-1.5 shadow-[inset_1px_0_0_0_color-mix(in_oklab,currentColor_25%,transparent)]"
             onClick={(e) => e.stopPropagation()}
           >
@@ -125,9 +113,7 @@ export function StartSessionButton({
         <DropdownMenuContent
           align="end"
           className="w-56"
-          // The Issues list row is itself a click target (it opens the detail
-          // view); without this a click that lands on the menu bubbles up and
-          // navigates away underneath the user.
+
           onClick={(e) => e.stopPropagation()}
         >
           <DropdownMenuLabel>Start session in</DropdownMenuLabel>

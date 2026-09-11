@@ -39,7 +39,7 @@ describe("handleSessionRenamedCard (docs/250)", () => {
 
   it("is idempotent by cardId — a reconnect replay appends once", () => {
     handleSessionRenamedCard(ctx, event());
-    handleSessionRenamedCard(ctx, event()); // same cardId (history load + buffer replay)
+    handleSessionRenamedCard(ctx, event());                                              
     expect(useSessionStore.getState().messages).toHaveLength(1);
   });
 

@@ -49,10 +49,6 @@ export const handleBackgroundTasks: Handler<WsBackgroundTasks> = (_ctx, data) =>
   if (data.sessionId !== store.sessionId) return;
   if (store.activeRunnerSessions.has(data.sessionId)) return;
 
-  // Between turns the status bar stays up while background work is outstanding:
-  // the session is not idle, it is waiting, and a cleared bar reads as
-  // "finished". `tool` is deliberately left unset — no tool call is running, so
-  // the tool spinner would be a lie.
   session.setIsLoading(pending);
   session.setActivity(pending ? { label: backgroundTaskLabel(data.descriptions) } : undefined);
 };

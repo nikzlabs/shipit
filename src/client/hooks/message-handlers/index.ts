@@ -99,17 +99,8 @@ import { handleVoiceNote } from "./voice-note.js";
 
 export type { HandlerContext, Handler } from "./types.js";
 
-/** Shorthand for the `type` field of any server → client message. */
 export type WsMessageType = WsServerMessage["type"];
 
-/**
- * Per-type narrowing helper: given a discriminator string `T`, resolves to
- * the specific variant of `WsServerMessage` with `type: T`.
- *
- * The dispatcher map below is typed as `Partial<{ [T in WsMessageType]:
- * Handler<WsMessageForType<T>> }>` so each entry's handler receives the
- * narrowed payload — no `any`, no manual casts at call sites.
- */
 type WsMessageForType<T extends WsMessageType> = Extract<WsServerMessage, { type: T }>;
 
 type MessageHandlerMap = {
@@ -298,20 +289,12 @@ function isForeignTranscriptMessage(data: WsServerMessage): boolean {
   return !!msgSessionId && !!activeSessionId && msgSessionId !== activeSessionId;
 }
 
-/**
- * Dispatch a single WS server message to its handler (if any).
- *
- * Performs the discriminated-union narrowing here so handlers can be
- * typed precisely against their specific message variant without callers
- * having to know which key to index.
- */
 export function dispatchMessage(ctx: HandlerContext, data: WsServerMessage): void {
   if (isForeignTranscriptMessage(data)) return;
   const handler = messageHandlers[data.type] as Handler | undefined;
   handler?.(ctx, data);
 }
 
-/** Create a fresh queued-message stash. See `QueuedMessageStash` doc. */
 export function createQueuedMessageStash(): QueuedMessageStash {
   return new Map();
 }

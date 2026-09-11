@@ -96,38 +96,13 @@ function PendingReviewButton({ sessionId, count }: { sessionId: string; count: n
   );
 }
 
-/**
- * Is the merge button allowed to show? Shared by the card's merge row and the
- * detail panel's action box so the two can't drift apart.
- *
- * Gates on CI state AND on GitHub-reported mergeability. Don't gate on
- * `mergeable === "unknown"` — that's the brief window after each push while
- * GitHub computes mergeability, and gating would flicker the button off-on
- * every push. The cost of a stale click during that window is bounded (the
- * merge attempt fails with a toast).
- *
- * docs/174 — also gate on GitHub's review decision. A base branch with a
- * required-review protection rule reports "review_required" until approved and
- * "changes_requested" when a reviewer blocks; both mean GitHub would reject the
- * merge, so hide the button. "approved"/"none" allow it ("none" = no review
- * requirement, the common solo-repo case).
- */
 function useCanMerge(card: PrCardState, sessionId: string): boolean {
   const mergeable = usePrStore((s) => s.statusBySession[sessionId]?.mergeable);
   const reviewDecision = usePrStore((s) => s.statusBySession[sessionId]?.reviewDecision);
   const ciDisplay = useCiDisplay(card.checks);
   const isCiPassed = ciDisplay.kind === "success";
   // "none" must come from the poller explicitly — `"unknown"` means we haven't
-  // heard from the poller yet, so we don't know whether CI exists. Treating
-  // that as "none" would let the merge button appear in the gap between PR
-  // creation and the first poll, before pending workflows have registered.
-  // The poller also force-overrides "none" → "pending" for a grace window
-  // when the repo runs CI but GitHub hasn't registered any checks for the
-  // current head SHA. Once that grace expires (docs-only PRs whose changed
-  // paths don't match any workflow's `paths:` filter, or a repo with no
-  // PR-triggered workflow at all), the state is legitimately "none" and the
-  // merge button appears. `useCiDisplay` also retires the override locally at
-  // its deadline, so a paused poller can't strand the button behind a spinner.
+
   const isCiNone = ciDisplay.kind === "none";
   const isReviewBlocked = reviewDecision === "review_required" || reviewDecision === "changes_requested";
   return (isCiPassed || isCiNone) && mergeable !== "conflicting" && !isReviewBlocked;
@@ -156,8 +131,7 @@ export function PrMergeActions({
   canAutoMerge?: boolean;
 }) {
   const canMerge = useCanMerge(card, sessionId);
-  // Same rule as every other auto-merge surface: an arming belongs to one pull
-  // request, so read it through the selector rather than off the card.
+
   const autoMerge = useActiveAutoMerge(sessionId);
   const showMergeButton = canMerge && !autoMerge?.enabled;
 
@@ -203,14 +177,9 @@ export function PrStatusActions({
   const isAutoFixExhausted = autoFix?.status === "exhausted";
   const isCiFailed = ciDisplay.kind === "failure";
   const isConflicting = mergeable === "conflicting";
-  // docs/169 — auto-fix is now a global setting, not a per-card toggle. Show the
-  // manual "Fix CI" button when CI failed and the auto-loop isn't actively
-  // handling it (global auto-fix off, or its budget exhausted).
+
   const showFixButton = isCiFailed && !isAutoFixRunning && (!autoFixCi || isAutoFixExhausted);
-  // The inline conflict UI yields to the RebaseBanner once a rebase is
-  // active — RebaseBanner is the surface for the in-flight flow. The
-  // indicator and Resolve button reappear if the rebase aborts back to
-  // the conflict state.
+
   const showConflictUi = isConflicting && rebaseStatus === "idle";
 
   return (

@@ -55,8 +55,6 @@
  * that hosts it, which is also where someone who wants to pin it goes looking.
  */
 
-// useEffect: a reconnect dialog is MOUNTED by the Reconnect click, so mount is
-// the event that starts its sign-in — see the call site.
 // eslint-disable-next-line no-restricted-imports -- mount-is-the-event, see above
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { CheckIcon, CircleHalfIcon, InfoIcon, MinusIcon, PlusIcon, WarningIcon } from "@phosphor-icons/react";
@@ -111,7 +109,6 @@ import { MODE_LABEL, ServiceCard } from "./ServiceCard.js";
 import { SupportedModelsDialog } from "./SupportedModelsDialog.js";
 import { CredentialSelectionModeControl, FailoverCutoffControls } from "./CredentialRouting.js";
 
-/** Every `(service, mode)` the catalogue declares, flattened in catalogue order. */
 function catalogueModes(): { service: ServiceDef; billingMode: BillingMode }[] {
   return allServices().flatMap((service) =>
     service.modes.map((mode) => ({ service, billingMode: mode.kind })),
@@ -220,12 +217,7 @@ export function ServicesPanel({ agentList = [] }: { agentList?: AgentOption[] })
   const routes = useSettingsStore((s) => s.credentialRoutes);
   const accounts = useSettingsStore((s) => s.providerAccounts);
   const notices = useSettingsStore((s) => s.providerAccountNotices);
-  /**
-   * The accounts the user *has*, which is not every row the store holds: a
-   * sign-in in flight has a row and is not a credential yet. See
-   * {@link isUnconnectedAttempt} — deriving it from the account is what stops
-   * the panel flickering a card in and out around one.
-   */
+
   const connectedAccounts = accounts.filter((a) => !isUnconnectedAttempt(a));
   /**
    * **The panel's one dialog, and the whole of how it was opened** (req 19).
@@ -242,14 +234,7 @@ export function ServicesPanel({ agentList = [] }: { agentList?: AgentOption[] })
   const [dialog, setDialog] = useState<
     { service?: ServiceDef; mode?: BillingMode; accountId?: string } | null
   >(null);
-  /**
-   * req 23 — the supported-models dialog, and the service it opened at.
-   *
-   * `null` is closed; `""` is "opened from the heading, start at the top"; a
-   * service id is a card's `N models`. One state rather than a boolean beside a
-   * target, for the reason the add dialog's own comment gives: two flags is how a
-   * panel comes to have two dialogs.
-   */
+
   const [modelsFor, setModelsFor] = useState<string | null>(null);
 
   /**
@@ -275,7 +260,7 @@ export function ServicesPanel({ agentList = [] }: { agentList?: AgentOption[] })
    */
   const configured = catalogueModes().filter(({ service, billingMode }) => {
     const provider = accountProviderFor(service, billingMode);
-    // The card's notice is filed under the login flow that produced it.
+
     const loginId = provider ? loginForProvider(provider) : undefined;
     return routes.some((r) => r.serviceId === service.id && r.billingMode === billingMode && r.via === "string")
       || (provider !== undefined
@@ -314,8 +299,6 @@ export function ServicesPanel({ agentList = [] }: { agentList?: AgentOption[] })
     />
   ));
 
-  // "Nothing configured" is the caption under the heading rather than a box of
-  // its own: empty, the whole panel is two lines and a button.
   const empty = configured.length === 0;
 
   return (
@@ -341,8 +324,7 @@ export function ServicesPanel({ agentList = [] }: { agentList?: AgentOption[] })
         <p
           className="mt-0.5 text-xs text-(--color-text-tertiary)"
           // The empty state keeps its own test id, because "nothing configured"
-          // is still a distinct state — it is just said in a line now instead of
-          // a dashed box.
+
           {...(empty ? { "data-testid": "services-empty" } : {})}
         >
           {empty
@@ -376,8 +358,7 @@ export function ServicesPanel({ agentList = [] }: { agentList?: AgentOption[] })
       <div>
         <Button
           variant={empty ? "primary" : "secondary"}
-          // Standard height, not `sm`: the row is compact enough without
-          // shrinking the target.
+
           size="md"
           className="rounded-md"
           onClick={() => setDialog({})}
@@ -442,9 +423,7 @@ export function ServicesPanel({ agentList = [] }: { agentList?: AgentOption[] })
  */
 function InstalledHarnesses({ agentList }: { agentList: AgentOption[] }) {
   const installed = agentList.filter((a) => a.installed);
-  // Nothing known yet (the agent list arrives with the bootstrap) reads the
-  // same as "none installed" if we render the empty case, so say nothing until
-  // there is something to say.
+
   if (agentList.length === 0) return null;
 
   return (
@@ -456,13 +435,7 @@ function InstalledHarnesses({ agentList }: { agentList: AgentOption[] }) {
           to drive it.
         </p>
       ) : (
-        // **One line, wrapping only when the width runs out.** They were one per
-        // line, on the reasoning that a harness row is a fact to read down. In
-        // practice an install has two or three of them, each a two-word chip, so
-        // the column spent three rows of the panel saying what fits in one — and
-        // the vertical stack read as a list with entries to act on, which is
-        // exactly what these are not. `items-center` keeps a wrapped chip
-        // aligned with its neighbours instead of stretching to the row height.
+
         <ul className="flex flex-wrap items-center gap-1">
           {installed.map((agent) => (
             <li
@@ -500,27 +473,19 @@ function ServiceModeCard({
   billingMode: BillingMode;
   routes: CredentialRoute[];
   agentList: AgentOption[];
-  /** Passed through to the account rows — see their prop's docstring. */
+
   onReconnect: (accountId: string) => void;
-  /** req 23 — the card's `N models` opens the one dialog at this service. */
+
   onShowModels: () => void;
 }) {
-  // A mode can hold BOTH shapes at once — Anthropic's subscription takes an
-  // OAuth account and an env-supplied token — so this renders whichever are
-  // present rather than choosing one. Collapsing to a single body is what would
-  // hide a credential the user could then neither see nor revoke.
+
   const provider = accountProviderFor(service, billingMode);
-  // The rows' own narrowing, not a second one that looks like it — see the
-  // hook. A card with `provider === undefined` has no account body, so the
-  // placeholder harness it is called with contributes nothing.
+
   const providerAccounts = useProviderAccounts(provider ?? "claude");
   const accounts = provider ? providerAccounts : [];
   const stringRoutes = routes.filter((r) => r.via === "string");
   const multiple = modeAllowsMultipleCredentials(billingMode);
-  // Counted from both feeds rather than from `routes` alone: `credentialRoutes`
-  // is a superset of `providerAccounts` on the wire, but the two are broadcast
-  // by different events, so a freshly connected account is in one and not yet
-  // in the other.
+
   const credentialCount = accounts.length + stringRoutes.length;
   /**
    * A mode holding BOTH shapes at once — Anthropic's subscription takes an
@@ -546,32 +511,9 @@ function ServiceModeCard({
    * credential was invisible.
    */
   const mixedDelivery = accounts.length > 0 && stringRoutes.length > 0;
-  /**
-   * What one credential of this mode *is*, in the user's words. An
-   * account-backed subscription has accounts; everything else has credentials,
-   * and calling a pasted key an "account" is the conflation this whole feature
-   * removes. A mixed card holds both, so it says the wider word.
-   */
-  /**
-   * What the header's count pill calls the things it is counting.
-   *
-   * "account" only when every counted credential IS one — the same
-   * present-not-possible correction as `mixedDelivery`. Reading it off
-   * `provider` said "2 accounts" over two supplied credentials on a card with
-   * no account at all, which is precisely the account/credential conflation
-   * this whole feature exists to remove.
-   */
+
   const noun = accounts.length > 0 && stringRoutes.length === 0 ? "account" : "credential";
-  /**
-   * The credentials the routing controls actually route between.
-   *
-   * The accounts when there are any, and otherwise the strings — **not** "the
-   * accounts whenever the mode could have some". The same correction as
-   * `mixedDelivery` above and for the same reason: a mode that accepts an
-   * account but currently holds two supplied credentials has a real pool of
-   * two, and reading the empty account list as the pool left it with no
-   * controls at all.
-   */
+
   const routedByAccount = accounts.length > 0;
   const routedCredentials = routedByAccount ? accounts : stringRoutes;
   const routedNoun = routedByAccount ? "account" : "credential";
@@ -612,25 +554,6 @@ function ServiceModeCard({
     reordering,
   );
 
-  // req 12 — `key` is single-credential by definition, so an API-key card gets
-  // no routing band at all: not a disabled group, not an empty section, and no
-  // sentence explaining the absence.
-  //
-  // req 19 — one row: the segmented control on the left, the cutoffs on the
-  // right. The band's four explanatory strings are kept in tooltips on those
-  // same controls (`CredentialRouting`), not deleted with the lines they were
-  // on.
-  //
-  // **One credential gets no band either.** It briefly carried a strip reading
-  // "One account — nothing to route between yet. Add a second to choose an
-  // order and a strategy." — the mock-up's D8 cell, adopted in the audit pass
-  // and then rejected on sight in the dogfood instance. It is the same sentence
-  // the key card was denied two paragraphs above: an explanation of an absence,
-  // printed once per single-credential service, every time Settings is opened,
-  // for a capability the user reaches by adding a credential — which is the one
-  // thing the panel's "Add a service" button already offers. The band appears
-  // when there is something to route between, and says nothing when there is
-  // not.
   const routing = !multiple ? undefined : routedCredentials.length > 1 ? (
     <div className="flex flex-wrap items-center justify-between gap-2">
       <CredentialSelectionModeControl
@@ -667,12 +590,6 @@ function ServiceModeCard({
     </div>
   ) : undefined;
 
-  // req 17 — **no card action of any kind.** A card shows what is there and
-  // lets the user manage it; everything is added through the panel's one "Add a
-  // service" button, including the second account of a service and the second
-  // key of a subscription that allows several. This card used to carry "Add
-  // account" for one delivery shape and "Add another" for the other — two doors
-  // into one dialog, permanently on screen, for something done rarely.
   return (
     <ServiceCard
       service={service}
@@ -718,16 +635,9 @@ function ServiceModeCard({
             <StringCredentialRow
               key={route.id}
               route={route}
-              // req 2's fallback order, and it is not cosmetic: the FIRST
-              // credential of a group is the one delivered, so moving a row
-              // changes which key sessions receive.
-              //
+
               // Never offered on a mixed card: the reorder endpoint requires
-              // EVERY route of the `(service, mode)` exactly once
-              // (`reorderCredentialRoutes`), and the account rows are in that
-              // set — so a list of just these ids is a 400. There is nothing to
-              // order anyway, since the env token is not in the accounts'
-              // failover chain.
+
               drag={multiple && !mixedDelivery ? stringDrag(route.id) : undefined}
             />
           ))}
@@ -771,17 +681,12 @@ function ServiceModeCard({
  */
 const MODE_NOTICES: Record<string, string> = {
   // docs/272 req 6. Two halves, both load-bearing. OpenCode publishes no
-  // per-key usage API (plan.md §8), so a Go card carries no remaining-quota
-  // figure and ShipIt learns of exhaustion only from the plan's own 429 — and
-  // the console's "Use balance" option turns that exhaustion into metered Zen
-  // spend server-side, with no error and no signal ShipIt could read. That is
-  // the "silent shift onto metered billing" docs/252 req 12 refuses to make;
+
   // ShipIt cannot prevent this one, so it says so where the credential lives.
   [credentialModeKey("opencode", "sub")]:
     "ShipIt cannot read OpenCode Go's usage — the service publishes no per-key quota API — so this card shows no remaining figure and reacts only to the plan's own limit errors. If “Use balance” is enabled in the OpenCode console, running out of Go usage continues on your metered Zen credits instead of stopping, and ShipIt is not told.",
 };
 
-/** The notice line for a `(service, mode)`, or nothing where there is none. */
 function ModeNotice({
   serviceId,
   billingMode,
@@ -806,29 +711,6 @@ function ModeNotice({
   );
 }
 
-/**
- * A string-delivered credential: the same `label · quota · ⋯` row an account
- * gets, with a key's verbs in the menu.
- *
- * **Rename is new here.** `PATCH /api/credential-routes/:id` has always taken a
- * label patch and nothing in the UI ever reached it, so a key was stuck with
- * whatever `generatedLabel` called it — "Anthropic key", "Anthropic key 2" —
- * for the life of the install. A row that can be reordered but not named is
- * exactly the asymmetry req 19 is closing between the two row types.
- *
- * **No quota pill for a key, and no sentence about the absence.** A key reports
- * no quota (req 10), and so does a subscription whose declared reader is not
- * implemented; either way the slot is simply empty, which is what the whole
- * column already means everywhere else. A string-delivered subscription with a
- * reader — GLM's plan since planning#339 — gets the pill like any other.
- */
-/**
- * This credential's quota snapshot, if one has been reported.
- *
- * An absent entry is not 0% — a credential no turn has run on yet has simply
- * not been measured, and the pill says `—` for the windows it has no number
- * for. Passed through rather than filled in.
- */
 function snapshotFor(
   limits: SubscriptionLimitsMap,
   route: CredentialRoute,
@@ -849,15 +731,7 @@ function StringCredentialRow({
   const [renaming, setRenaming] = useState(false);
   const [draftLabel, setDraftLabel] = useState("");
   const [value, setValue] = useState("");
-  /**
-   * docs/257 req 5 — reorder / remove / replace failures render on the row that
-   * produced them, not as a global toast.
-   *
-   * Reachable during onboarding, and not only afterwards: between docs/252
-   * phases 2 and 3 a user can add a DeepSeek or OpenRouter key from the
-   * onboarding panel and get a card whose `canRunTurns` stays false, so these
-   * rows exist while the panel is still on screen.
-   */
+
   const [error, setError] = useState("");
 
   const remove = async (): Promise<void> => {
@@ -876,7 +750,6 @@ function StringCredentialRow({
     }
   };
 
-  /** One PATCH for both verbs — the endpoint takes either field, or both. */
   const patch = async (body: { label: string } | { secret: string }): Promise<void> => {
     setBusy(true);
     setError("");
@@ -902,7 +775,7 @@ function StringCredentialRow({
 
   const commitRename = (): void => {
     const label = draftLabel.trim();
-    // Unchanged or empty still closes the field — see the account row's
+
     // `saveLabel` for why: the open state must not survive a no-op save.
     if (!label || label === route.label) { setRenaming(false); return; }
     void patch({ label });
@@ -915,21 +788,7 @@ function StringCredentialRow({
       {...(drag ? { drag } : {})}
       menuLabel={`Manage ${route.label}`}
       quota={
-        /*
-          **A supplied subscription credential reports quota too.** The compact
-          row gave the pill only to ACCOUNT rows, so the dogfood install — two
-          Anthropic plan tokens, no account — showed no numbers at all beside a
-          band offering an order and a strategy. The snapshot is recorded per
-          route and gated only on the mode being a subscription, and the header
-          pill has always rendered one for these routes; only this row did not.
 
-          `modeReportsQuota` rather than `billingMode === "sub"`: a declared
-          quota id is not an implemented reader, and an empty pill would say
-          "no usage" where the truth is "not measured". GLM's coding plan was
-          the case that made the distinction — it declared `zai-plan-usage` for
-          two phases with nothing behind it, and gained a reader in
-          planning#339.
-        */
         modeReportsQuota(route.serviceId, route.billingMode) ? (
           <SubscriptionLimitPill
             serviceId={route.serviceId}
@@ -1054,25 +913,6 @@ const STEP_1_LIST_COLUMN = "minmax(min-content, 26rem)";
  */
 const HARNESS_COLUMN = "w-[5.5rem] shrink-0 text-center";
 
-/**
- * The dialog's width, from the columns actually drawn: the list, the gap, one
- * `HARNESS_COLUMN` per installed harness with a `gap-1` between them, and the
- * dialog's own `p-4`. This used to be the literal `40.25rem`, which was that
- * arithmetic done once for the two harnesses shipped at the time; a third and a
- * fourth then had nowhere to go and were simply cut off.
- *
- * **Stated, not inferred.** A dialog is `position: fixed`, so leaving its width
- * to `auto` makes it shrink-to-fit its content — and step 1's rows wrap, which
- * collapses what they ask for to about the width of their longest *word*. The
- * dialog then came out ~620px on a 800px window, the list column landed on its
- * 13rem floor, and every row wrapped its modes with 150px of unused room beside
- * it. Saying the width removes that circularity: the columns decide the dialog,
- * the dialog decides the columns, in that order.
- *
- * `min(…, 100vw - 2rem)` keeps it on screen; past that cap `STEP_1_SCROLLER`
- * takes over. It is applied `md:` and up only, so the fullscreen mobile dialog
- * (`max-md:w-full`) is untouched.
- */
 function addServiceDialogWidth(step1: boolean, harnessCount: number): string {
   if (!step1 || harnessCount === 0) return "28rem";
   return `min(calc(26rem + 1rem + ${harnessCount} * 5.5rem + ${harnessCount - 1} * 0.25rem + 2rem), calc(100vw - 2rem))`;
@@ -1119,15 +959,9 @@ const STEP_1_SCROLLER = "overflow-x-auto";
  * this is a thing you read.
  */
 function HarnessSupportCell({ harness, service }: { harness: AgentOption; service: ServiceDef }) {
-  // `AgentOption.id` is a bare string on the wire; the cast is this file's
-  // existing idiom for the same bridge (see `ModelPicker`), and an id the
-  // catalogue does not know reads as unsupported rather than throwing.
-  //
-  // Tri-state since docs/268: a service's modes can genuinely disagree per
+
   // harness (OpenCode runs Anthropic with an API key but never its
-  // subscription), and a flat existential tick would promise a pairing step 2
-  // then refuses — the collapse `catalogue.test.ts` forbids. "some" names the
-  // modes that DO work, so the answer is readable before the mode is picked.
+
   const support = harnessServiceSupport(harness.id as AgentId, service.id);
   const supported = support !== "none";
   const runnableModes = service.modes
@@ -1140,11 +974,7 @@ function HarnessSupportCell({ harness, service }: { harness: AgentOption; servic
       : `${harness.name} ${supported ? "runs" : "cannot run"} ${service.name}`;
   return (
     <span
-      // The row button's own box metrics — a transparent border, `py-2`,
-      // `text-xs` — so a cell reads at the same size as the row it sits beside.
-      // It no longer carries the *alignment*: step 1's grid puts this cell and
-      // its row in one shared track, and the row is free to be two lines tall
-      // when a name needs the space (see `STEP_1_LIST_COLUMN`).
+
       className={`${HARNESS_COLUMN} border border-transparent py-2 text-xs`}
       title={answer}
       data-testid={`add-service-support-${service.id}-${harness.id}`}
@@ -1237,10 +1067,7 @@ function AddServiceDialog({
    * the same position**. `cancel` abandons only what this dialog created.
    */
   reconnectAccountId?: string;
-  /**
-   * Which harnesses this install has: the columns of step 1's support table,
-   * and whether the harness that runs a sign-in is installed.
-   */
+
   agentList?: AgentOption[];
   onClose: () => void;
 }) {
@@ -1250,18 +1077,9 @@ function AddServiceDialog({
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
   const [startingSignIn, setStartingSignIn] = useState(false);
-  /**
-   * The attempt this dialog is conducting.
-   *
-   * Held by id and re-read from the store on every render rather than kept as a
-   * snapshot: the row's `status` is what says the sign-in finished, and it
-   * arrives on the `provider_accounts` broadcast, not from the call that
-   * started it. Nothing outside this dialog needs it — the panel decides what
-   * to list from the accounts themselves ({@link isUnconnectedAttempt}), which
-   * is what keeps the two from disagreeing for a frame.
-   */
+
   const [signInAccountId, setSignInAccountId] = useState<string | undefined>(reconnectAccountId);
-  /** The user has left. Read by `startSignIn` after every await — see `cancel`. */
+
   const left = useRef(false);
   /**
    * This dialog **created** the account it is signing in.
@@ -1324,24 +1142,6 @@ function AddServiceDialog({
    */
   const [attemptUnseen, setAttemptUnseen] = useState(reconnectAccountId !== undefined);
 
-  /**
-   * **Choosing the mode starts its sign-in, when signing in is all the step
-   * would offer** (req 18).
-   *
-   * Picking OpenAI → Subscription used to land on a sentence and one button
-   * reading "Sign in to OpenAI": nothing to read, nothing to decide, and no
-   * other way forward — the user's click had already said everything the button
-   * asked. So the same click starts the login, and the step the user arrives at
-   * is the one carrying the code.
-   *
-   * It does **not** apply to a mode that also takes a key (Anthropic's
-   * subscription): there the step has a field, so starting a login the user did
-   * not ask for would pre-empt a real choice.
-   *
-   * Nothing auto-starts that would fail on arrival — a missing harness or
-   * another sign-in in flight leaves the step as it was, saying so, with the
-   * button to retry once the way is clear.
-   */
   const pickMode = (forService: ServiceDef, mode: BillingMode): void => {
     setBillingMode(mode);
     const provider = accountProviderFor(forService, mode);
@@ -1355,40 +1155,26 @@ function AddServiceDialog({
   const pickService = (next: ServiceDef): void => {
     setService(next);
     setError("");
-    // A one-option choice is not a choice, so a single-mode service goes
-    // straight to step 3 — and if that step is only a sign-in, straight into it.
+
     if (next.modes.length === 1) pickMode(next, next.modes[0].kind);
     else setBillingMode(undefined);
   };
 
-  // A mode's two delivery shapes are independent, and Anthropic's subscription
-  // accepts BOTH — an OAuth account and an env-supplied token. Treating "takes
-  // an account" as "takes nothing else" would hide the token input; treating
-  // "takes a string" as "needs no sign-in" is what left signing in unreachable
-  // from this dialog. So both affordances render on their own terms.
   const acceptsString =
     service && billingMode ? !!modeCredentialFor(service.id, billingMode, "string") : false;
   const acceptsAccount =
     service && billingMode ? !!modeCredentialFor(service.id, billingMode, "account") : false;
 
-  /** This step signs itself in (req 18) — so it owns what the footer shows. */
   const autoStarts = service && billingMode ? signInIsTheWholeStep(service, billingMode) : false;
   const signInProvider = service && billingMode ? accountProviderFor(service, billingMode) : undefined;
   // Called unconditionally, narrowed after — a hook cannot hide behind the
-  // step the user has reached.
-  // Attempts included: this is the one caller that is conducting one.
+
   const providerAccounts = useAllProviderAccounts(signInProvider ?? "claude");
   const accounts = signInProvider ? providerAccounts : [];
   const signInAccount = signInAccountId
     ? accounts.find((a) => a.id === signInAccountId)
     : undefined;
-  /**
-   * The sign-in finished — **read off the row, not off the call that started
-   * it.** That call returns long before the user has finished on the provider's
-   * page; what says it worked is the account turning `ready` on the
-   * `provider_accounts` broadcast. Derived rather than watched, so the dialog
-   * needs no effect and survives a reload mid-challenge exactly as the row does.
-   */
+
   if (!reconnectLeftReady && signInAccount && signInAccount.status !== "ready") {
     setReconnectLeftReady(true);
   }
@@ -1408,18 +1194,7 @@ function AddServiceDialog({
    */
   const supportHarnesses = agentList.filter((a) => a.installed);
   const adoptable = adoptableAttempt(accounts, signInAccountId);
-  /**
-   * docs/150 — the provider runs ONE login process, so a second one is a 409.
-   * Said here rather than after the click.
-   *
-   * Measured against the attempt we would **adopt**, not against
-   * `signInAccountId` alone. A stranded attempt is `authenticating` and
-   * invisible in the panel, so reading it as somebody else's sign-in disabled
-   * the one button that could recover it: the flow refused to start, citing a
-   * row the user could not see, and there was no other way to reach it. A
-   * *connected* row re-authenticating still blocks, which is the case the guard
-   * is actually for.
-   */
+
   const blockedBySignIn = signInProvider ? signInBlockedReason(accounts, adoptable?.id) : undefined;
   /**
    * **An attempt that stopped without connecting** — no live challenge, not
@@ -1458,13 +1233,11 @@ function AddServiceDialog({
   const authKey = signInLoginId && signInAccountId
     ? providerAccountAuthKey(signInLoginId, signInAccountId)
     : undefined;
-  /** Only Claude narrates; for Codex this is empty and the box just pulses. */
+
   const authStatus = useAuthStatus(signInProvider === "claude" ? signInAccountId : undefined);
   const pendingAuth = useSettingsStore((s) => (authKey ? s.providerAccountAuths[authKey] : undefined));
   const authError = useSettingsStore((s) => (authKey ? s.providerAccountAuthErrors[authKey] : undefined));
-  // Adjusted during render, like `reconnectLeftReady` above and for the same
-  // reason: the answer has to be frame-exact, and a frame late is a frame of the
-  // failure screen.
+
   if (attemptUnseen && (signInAccount?.status === "authenticating" || pendingAuth || authError)) {
     setAttemptUnseen(false);
   }
@@ -1540,21 +1313,14 @@ function AddServiceDialog({
   ): Promise<void> => {
     const provider = forService && forMode ? accountProviderFor(forService, forMode) : undefined;
     if (!provider) return;
-    // Read now, not at the last render, for the same reason.
+
     const known = providerAccountsOf(useSettingsStore.getState().providerAccounts, provider);
     setStartingSignIn(true);
-    // Nothing on screen describes this attempt yet — see `attemptUnseen`. Set
-    // before the first request, so the window it covers has no gap at its start.
+
     setAttemptUnseen(true);
     setError("");
     try {
-      /**
-       * **Adopt an attempt rather than starting a second one.** Three cases,
-       * one line: this dialog's own attempt (*Try again* after a failure), an
-       * attempt stranded by a reload — invisible in the panel now, and holding
-       * the provider's single login slot with nothing on screen to release it —
-       * and, otherwise, no attempt yet, so make one.
-       */
+
       const existing = adoptableAttempt(known, signInAccountId);
       /**
        * **A new attempt invalidates the last one's reason — and it has to be
@@ -1584,23 +1350,17 @@ function AddServiceDialog({
       }
       const account = existing ?? await createAccount(provider, known.map((a) => a.id));
       // Recorded the moment it is true, and never unset: from here on this
-      // dialog is entitled to delete the row on the way out. A *Try again*
-      // after a failed create adopts what the first attempt made, so the flag
-      // has to survive that adopt rather than be recomputed from `existing`.
+
       if (!existing && account) mintedHere.current = true;
       if (!account) {
         setError("Could not start the sign-in — no account was created.");
-        // There is no attempt to wait for, so stop waiting to see one. The
-        // dialog recovers either way (with no account, `signInIdle` puts *Sign
+
         // in* back), but a latch left armed over a start that never happened is
-        // a state that says something untrue about the flow. Found by review.
+
         setAttemptUnseen(false);
         return;
       }
-      // Taken BEFORE the login starts, on purpose: the account exists from the
-      // moment it is created, so learning its id only after the login had also
-      // started left a failed start un-abandonable — Cancel with nothing to
-      // delete, and a retry creating a second orphan each time.
+
       setSignInAccountId(account.id);
       /**
        * **Whoever leaves last cleans up.** `cancel` can only abandon an id it
@@ -1615,24 +1375,17 @@ function AddServiceDialog({
        * component been left?" and the answer must not be a render behind the
        * question. Found by the independent review.
        */
-      // `standDown`, not `abandonAccount`: `account` here is the row this
-      // dialog will sign in, and on a reconnect that is a connected credential
+
       // rather than an attempt — deleting it because the user pressed Esc
-      // during the round-trip would revoke it. See that function.
+
       if (left.current) {
         standDown(provider, account, !existing);
         return;
       }
-      // An adopted attempt may still have a login running against it (the CLI
-      // outlives the browser). Cancelling first is what makes the challenge
-      // this dialog then shows the live one, rather than a 409.
+
       if (existing) {
         await cancelAccountLogin(provider, account.id);
-        // …and drop the challenge it left behind. `cancelAccountLogin` is
-        // best-effort and does NOT clear `providerAccountAuths` (the account
-        // row's own cancel does it separately), so a stale code would render as
-        // this sign-in's live challenge and would suppress `signInStalled` —
-        // leaving a dialog with neither a completion nor a *Try again*.
+
         const loginId = loginForProvider(provider);
         if (loginId) useSettingsStore.getState().setProviderAccountAuth(loginId, account.id, null);
       }
@@ -1643,14 +1396,9 @@ function AddServiceDialog({
       await startAccountLogin(provider, account.id);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to start the sign-in");
-      // The attempt is over before anything could be observed of it, so stop
-      // waiting to observe one: this is what keeps the stalled panel — and its
+
       // *Try again* — reachable on a start that never got off the ground.
-      //
-      // And `reconnectLeftReady` is deliberately NOT set here. It once was, to
-      // reach that same panel, back when `signInStalled` read it — but a refused
-      // start leaves the row `ready`, so setting it completed `signedIn` and the
-      // dialog answered the refusal with "Connected … Done". The flag says the
+
       // reconnect took effect; a start that never happened did not.
       setAttemptUnseen(false);
     } finally {
@@ -1681,9 +1429,7 @@ function AddServiceDialog({
    * one sign-in.
    */
   const reconnectStarted = useRef(false);
-  // Two rules, two places: `no-restricted-syntax` reports on the call, and
-  // `exhaustive-deps` reports on the DEPENDENCY ARRAY, so its disable goes
-  // immediately above `}, [])` — same placement as `useSessionActivation.ts`.
+
   // eslint-disable-next-line no-restricted-syntax -- mount IS the event: this dialog is mounted BY the Reconnect click, and the start must own `startingSignIn`/`left`, which only `startSignIn` does.
   useEffect(() => {
     if (reconnectAccountId === undefined || reconnectStarted.current) return;
@@ -1715,9 +1461,7 @@ function AddServiceDialog({
    * reaches it.
    */
   const cancel = (): void => {
-    // Said before the stand-down, so a `startSignIn` still awaiting a response
-    // sees it and cleans up after itself: between the two of them, every
-    // account this dialog created is either connected or gone.
+
     left.current = true;
     if (signInProvider && signInAccountId && !signedIn) {
       standDown(signInProvider, signInAccount, mintedHere.current);
@@ -1829,12 +1573,11 @@ function AddServiceDialog({
                     <button
                       key={s.id}
                       onClick={() => pickService(s)}
-                      // `flex-wrap`, and a name that wraps rather than truncates:
+
                       // between them the service name is never cut, at any width.
-                      // The modes are the first thing to give — they drop to a
+
                       // second line under the name — because they are a fact
-                      // about the service that step 2 asks again, while the name
-                      // is the only thing identifying the row being pressed.
+
                       className="flex w-full flex-wrap items-center justify-between gap-x-3 gap-y-0.5 rounded-md border border-(--color-border-secondary) px-2.5 py-2 text-left text-xs text-(--color-text-primary) hover:bg-(--color-bg-hover)"
                       data-testid={`add-service-option-${s.id}`}
                     >
@@ -1967,9 +1710,7 @@ function AddServiceDialog({
                     its models are selectable now.
                   </p>
                 ) : signInStalled ? (
-                  // The same panel again, holding the reason and the record: a
-                  // failed sign-in is exactly when the CLI's own words matter,
-                  // and the copy above says "copy the diagnostic details".
+
                   <AuthPanel>
                     <p className="text-xs text-(--color-text-error)" data-testid="add-service-signin-stalled">
                       {authError ?? "The sign-in stopped before the account connected."} Try again
@@ -1982,8 +1723,7 @@ function AddServiceDialog({
                 ) : signInAccount || startingSignIn ? (
                   <>
                     {pendingAuth && signInAccount ? (
-                      // The provider's challenge, in the flow that asked for it —
-                      // the same component the account row renders.
+
                       <AccountChallenge
                         provider={signInProvider ?? "claude"}
                         account={signInAccount}
@@ -1991,26 +1731,7 @@ function AddServiceDialog({
                         onError={setError}
                       />
                     ) : (
-                      /*
-                        The same box the code lands in, at the same size, so
-                        nothing on the step moves when it does — and it is here
-                        from the step's FIRST frame, keyed off `startingSignIn`
-                        rather than off the account. Keyed off the account it
-                        arrived one request late, so the dialog opened short on
-                        a line of prose and then grew by the height of a panel,
-                        which is the jump this placeholder exists to remove.
-                      */
-                      /*
-                        **What the sign-in is doing goes IN the box**, not in a
-                        block under it: ShipIt's phase message where the link
-                        will be, the CLI's latest line where the field will be,
-                        and a pulse for the rest. Anthropic's wizard runs about
-                        six seconds and narrates the whole way, and a pulse
-                        alone reads as stuck. An earlier cut streamed three
-                        lines *below* the box, which put the same output on
-                        screen twice — live there, and again inside the
-                        collapsed buffer the challenge already carries.
-                      */
+
                       <ChallengePlaceholder
                         shape={signInProvider === "claude" ? "paste" : "code"}
                         {...(authStatus ? { status: authStatus } : {})}
@@ -2022,8 +1743,7 @@ function AddServiceDialog({
                             nothing. */}
                         {signInProvider === "claude" && (
                           <ClaudeAuthOutput
-                            // No id for the first frames — the account is still
-                            // being created — and the control renders anyway,
+
                             // because appearing later is what grew the panel.
                             {...(signInAccountId ? { accountId: signInAccountId } : {})}
                             evenWhenEmpty
@@ -2066,11 +1786,7 @@ function AddServiceDialog({
                   </p>
                 )}
                 <input
-                  // Focused on arrival where the field IS the step, so the key
-                  // goes in with one paste and no click. Not where the step
-                  // leads with a sign-in: there the field is the alternative,
-                  // and a caret sitting in it points away from the path the
-                  // heading recommends.
+
                   autoFocus={!acceptsAccount}
                   type="password"
                   value={secret}
@@ -2147,8 +1863,7 @@ function AddServiceDialog({
           */}
           {acceptsString && (!acceptsAccount || signInIdle) && (
             <Button
-              // Primary where the field is the step, and primary again once the
-              // user has answered the recommendation by typing in it.
+
               variant={acceptsAccount && !tokenEntered ? "secondary" : "primary"}
               size="md"
               className="rounded-md"
@@ -2186,11 +1901,7 @@ function AddServiceDialog({
           */}
           {acceptsAccount && signInIdle && (
             <Button
-              // Secondary where the step signs itself in — there the button is
-              // a recovery, not the way forward — and secondary once a token is
-              // in the field, where it is no longer the path the user chose.
-              // Demoted rather than removed: it is still a working way in, and
-              // a token typed by mistake is a click away from being abandoned.
+
               variant={autoStarts || tokenEntered ? "secondary" : "primary"}
               size="md"
               className="rounded-md"

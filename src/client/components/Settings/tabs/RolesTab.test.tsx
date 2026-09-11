@@ -59,12 +59,7 @@ const agents: AgentOption[] = [
     },
   },
   {
-    // The dual-harness half of the pair: the SAME DeepSeek triple, on the second
-    // installed harness. The ids are the SHIPPED ones — `deepseek-flash` is
-    // really carried by both harnesses — so this fixture mirrors a real row
-    // rather than inventing the case it tests. The catalogue itself is pinned
-    // server-side, where the rules live (`role-settings.test.ts`,
-    // `role-settings-api.test.ts` both drive the real catalogue).
+
     id: "codex",
     name: "Codex",
     installed: true,
@@ -122,7 +117,6 @@ function pinnedRole(over: Partial<RoleView> = {}): RoleView {
   };
 }
 
-/** A PUT that echoes the roles back, as the real route does. */
 function okFetch(roles: RoleView[] = []) {
   return vi.fn(async () => ({ ok: true, json: async () => ({ roles }) }));
 }
@@ -140,7 +134,6 @@ function bodyOf(fetchMock: ReturnType<typeof vi.fn>, call = 0): Record<string, u
   return JSON.parse(args[1].body) as Record<string, unknown>;
 }
 
-/** The one role the request wrote, whatever its name. */
 function writtenRole(fetchMock: ReturnType<typeof vi.fn>, call = 0) {
   const roles = bodyOf(fetchMock, call).roles as Record<string, unknown>;
   const [name, write] = Object.entries(roles)[0];
@@ -154,8 +147,6 @@ beforeEach(() => {
   vi.unstubAllGlobals();
 });
 
-// ---- The list (reqs 5, 9, 17) ----------------------------------------------
-
 describe("RolesTab — the list", () => {
   it("keeps the reviewer out of the role list and gives it no rename or delete (req 2)", () => {
     useSettingsStore.getState().setRoles([REVIEWER, pinnedRole()]);
@@ -163,7 +154,7 @@ describe("RolesTab — the list", () => {
 
     expect(screen.queryByTestId("role-row-reviewer")).toBeNull();
     expect(screen.queryByTestId("role-delete-reviewer")).toBeNull();
-    // Its own section is still there, with both docs/261 slot cards.
+
     expect(screen.getByTestId("reviewer-tab")).toBeTruthy();
     expect(screen.getByTestId("reviewer-metadata")).toBeTruthy();
   });
@@ -180,7 +171,7 @@ describe("RolesTab — the list", () => {
     expect(resolution).toContain("V4.1 Flash");
     expect(resolution).toContain("Claude Code");
     expect(resolution).toContain("Max");
-    // A summary, not a row of controls: no service/model/level pickers here.
+
     expect(screen.queryByTestId("role-editor-model-trigger")).toBeNull();
   });
 
@@ -210,9 +201,9 @@ describe("RolesTab — the list", () => {
     render(<RolesTab agentList={agents} />);
 
     const resolution = screen.getByTestId("role-resolution-deep-dive").textContent ?? "";
-    // The role's OWN stored harness, unhedged.
+
     expect(resolution).toContain("running on Claude Code");
-    // And none of the reviewer row's per-review hedging, which would be a lie here.
+
     expect(resolution).not.toMatch(/per review|nothing to avoid/i);
   });
 
@@ -232,16 +223,14 @@ describe("RolesTab — the list", () => {
     await waitFor(() => expect(fetchMock).toHaveBeenCalled());
     expect(urlOf(fetchMock)).toBe("/api/settings");
     expect(writtenRole(fetchMock)).toEqual({ name: "deep-dive", write: null });
-    // The server's answer replaces the list — nothing here is optimistic.
+
     await waitFor(() => expect(useSettingsStore.getState().roles).toEqual([REVIEWER]));
   });
 });
 
 describe("RolesTab — a failed write is ambiguous, so the list is re-read", () => {
   it("re-reads the roles from the server after a refused write", async () => {
-    // The rename committed and its response was lost. Without the re-read the
-    // editor would keep offering to retry under a `previousName` the server no
-    // longer knows — refused every time, with a reload the only way out.
+
     const renamed: RoleView = { ...pinnedRole(), name: "deeper-dive" };
     const fetchMock = vi.fn(async (url: string) =>
       url === "/api/bootstrap"
@@ -257,7 +246,6 @@ describe("RolesTab — a failed write is ambiguous, so the list is re-read", () 
     await userEvent.type(screen.getByTestId("role-editor-name"), "deeper-dive");
     await userEvent.click(screen.getByTestId("role-editor-save"));
 
-    // The error stays where the user is, AND the list stops holding a guess.
     await waitFor(() => expect(screen.getByTestId("role-editor-error")).toBeTruthy());
     await waitFor(() =>
       expect(useSettingsStore.getState().roles.map((r) => r.name)).toEqual([
@@ -267,8 +255,6 @@ describe("RolesTab — a failed write is ambiguous, so the list is re-read", () 
     );
   });
 });
-
-// ---- The unresolved role ----------------------------------------------------
 
 describe("RolesTab — a role that cannot run stays visible and editable", () => {
   const stranded = pinnedRole({
@@ -303,8 +289,7 @@ describe("RolesTab — a role that cannot run stays visible and editable", () =>
     render(<RolesTab agentList={agents} />);
 
     await userEvent.click(screen.getByTestId("role-open-gone"));
-    // The service and model the role actually holds — NOT DeepSeek, which is
-    // what a picker with no matching option would have silently shown.
+
     expect(screen.getByTestId("role-editor-service-trigger").textContent).toContain(
       "retired-service",
     );
@@ -333,8 +318,6 @@ describe("RolesTab — a role that cannot run stays visible and editable", () =>
   });
 });
 
-// ---- The editor (reqs 6, 8, 9, 17, 18) -------------------------------------
-
 describe("RoleEditor — one place editing the whole role (req 17)", () => {
   it("creates a role with its name, description, instructions and params in one write", async () => {
     const fetchMock = okFetch([REVIEWER]);
@@ -349,15 +332,14 @@ describe("RoleEditor — one place editing the whole role (req 17)", () => {
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalled());
     const { name, write } = writtenRole(fetchMock);
-    // Any name the user typed, spaces and all (req 18).
+
     expect(name).toBe("deep dive");
     expect(write).toMatchObject({
       description: "for the hard ones",
       prompt: "Read requirements.md first",
       params: { kind: "pinned", harnessId: "claude" },
     });
-    // A create carries no previousName — that is what lets the server refuse a
-    // name that is already taken instead of overwriting it.
+
     expect(write?.previousName).toBeUndefined();
   });
 
@@ -395,14 +377,6 @@ describe("RoleEditor — one place editing the whole role (req 17)", () => {
 
 });
 
-// ---- The harness reaches the wire (req 6) ----------------------------------
-
-/**
- * The harness *control* is `RoleEditor.test.tsx`'s subject — picker where a
- * model has a choice, readout where it has one, stored id where it has none.
- * What belongs here is the other half: that the harness the user picked is what
- * the settings write actually carries.
- */
 describe("RolesTab — the harness the user picked is what gets written", () => {
   it("writes the chosen harness, with a level that harness declares", async () => {
     const fetchMock = okFetch([REVIEWER]);
@@ -429,15 +403,12 @@ describe("RolesTab — the harness the user picked is what gets written", () => 
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalled());
     // `minimal` is Codex's level and not Claude Code's, so the draft cannot keep it.
-    // It drops to **Default** (omitted) rather than to an arbitrary Claude level
-    // — see the RoleEditor test of the same move for why.
+
     const params = writtenRole(fetchMock).write?.params;
     expect(params).toMatchObject({ harnessId: "claude" });
     expect(params).not.toHaveProperty("reasoningEffort");
   });
 });
-
-// ---- The reviewer's own editor (reqs 2, 8, 9) -------------------------------
 
 describe("RoleEditor — the reviewer", () => {
   it("edits its description and standing instructions and nothing else", async () => {
@@ -446,9 +417,9 @@ describe("RoleEditor — the reviewer", () => {
     render(<RolesTab agentList={agents} />);
 
     await userEvent.click(screen.getByTestId("reviewer-edit"));
-    // No name field at all — the reserved name is not a setting (req 2).
+
     expect(screen.queryByTestId("role-editor-name")).toBeNull();
-    // And no params: they are the two ranked slot cards behind the dialog.
+
     expect(screen.queryByTestId("role-editor-model-trigger")).toBeNull();
     expect(screen.getByTestId("role-editor-auto-note")).toBeTruthy();
 

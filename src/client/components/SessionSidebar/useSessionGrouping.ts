@@ -18,22 +18,14 @@ import { isResolvedForGrouping, resolvedAt } from "../../../server/shared/sessio
 export function computeRepoGroups(repos: RepoInfo[], sessions: SessionInfo[]) {
   const grouped = new Map<string, SessionInfo[]>();
 
-  // docs/128 — ops sessions are a distinct kind, not repo-backed. Pull them
-  // out before the repo/orphan distribution so they render in their own
-  // pinned "Host / Ops" group instead of falling into "Other sessions".
   const opsSessions = sessions.filter((s) => s.kind === "ops");
-  // docs/211 — sandbox sessions are likewise their own kind: repo-less and
-  // keyed on `kind === "sandbox"`, NOT on the `remoteUrl ?? ""` orphan bucket
-  // (which would lump unrelated no-remote sessions in with them). Pulled out
-  // here so they render in their own pinned "Sandbox" group.
+
   const sandboxSessions = sessions.filter((s) => s.kind === "sandbox");
 
-  // Initialize groups for all known repos
   for (const repo of repos) {
     grouped.set(repo.url, []);
   }
 
-  // Distribute sessions into groups
   for (const s of sessions) {
     if (s.kind === "ops" || s.kind === "sandbox") continue;
     const key = s.remoteUrl ?? "";
@@ -41,17 +33,9 @@ export function computeRepoGroups(repos: RepoInfo[], sessions: SessionInfo[]) {
     grouped.get(key)!.push(s);
   }
 
-  // Sort sessions within each group: archived sink to the very bottom, then
-  // active first (by createdAt desc), then recently-resolved (by resolve time
-  // desc, falling back to createdAt desc). docs/161 — "active" includes a
-  // *reopened* resolved session (worked in since the merge/close), so it
-  // bubbles back up out of the resolved tail; only `isRecentlyResolved` sinks.
-  //
   // `archived` is the PRIMARY key so a hidden/archived session never sits
   // above a live one. Because children are bucketed under their parent in this
-  // same sorted order (see the `childrenByParent` build in RepoGroup), making
-  // archived primary also sinks archived children below live siblings within a
-  // parent's brood.
+
   for (const [, group] of grouped) {
     const parentsWithChildren = new Set<string>();
     for (const s of group) {
@@ -98,8 +82,6 @@ export function computeRepoGroups(repos: RepoInfo[], sessions: SessionInfo[]) {
       return { kind: "orphan" as const, url, label, sessions: group };
     });
 
-  // docs/211 — pin the sandbox group at the very top, then docs/128's ops group,
-  // when each exists.
   const sandbox = sandboxSessions.length > 0
     ? [{ kind: "sandbox" as const, sessions: sandboxSessions }]
     : [];
@@ -107,7 +89,5 @@ export function computeRepoGroups(repos: RepoInfo[], sessions: SessionInfo[]) {
     ? [{ kind: "ops" as const, sessions: opsSessions }]
     : [];
 
-  // Sandbox + Ops first (pinned), then server-provided repo order, then non-empty
-  // unmatched groups.
   return [...sandbox, ...ops, ...known, ...orphan];
 }

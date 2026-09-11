@@ -45,7 +45,7 @@ describe("QueueIndicator", () => {
         onCancel={vi.fn()}
       />
     );
-    // Should show first 80 chars + ellipsis
+
     expect(screen.getByText(`${"A".repeat(80)}…`)).toBeInTheDocument();
   });
 
@@ -84,7 +84,7 @@ describe("QueueIndicator", () => {
     );
     const cancelButtons = screen.getAllByLabelText(/Cancel queued message/);
     fireEvent.click(cancelButtons[0]);
-    // position 1 → 0-indexed position 0
+
     expect(onCancel).toHaveBeenCalledWith(0);
   });
 
@@ -102,10 +102,6 @@ describe("QueueIndicator", () => {
     expect(screen.getByText("2")).toBeInTheDocument();
   });
 
-  // docs/140 Phase 6 — the queue path is unchanged when live steering is off.
-  // QueueIndicator is steering-agnostic: it renders whatever queued messages it
-  // is handed. With steering disabled, mid-turn messages still flow to the
-  // queue and this indicator still renders them exactly as before.
   it("still renders queued messages (queue path unchanged when steering is off)", () => {
     render(
       <QueueIndicator

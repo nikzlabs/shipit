@@ -9,14 +9,12 @@ import json, os, glob, sys
 
 OUT = "/persist/bench/runs"
 
-
 def load(p):
     try:
         with open(p) as fh:
             return json.load(fh)
     except Exception:
         return None
-
 
 ctrl = load(f"{OUT}/control.json")
 if not ctrl:

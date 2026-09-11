@@ -52,7 +52,7 @@ describe("handleCompactionStatus (docs/178)", () => {
     expect(useSessionStore.getState().compactingAnchor).toBe(1);
 
     // A message sent while the compaction runs must not move the anchor — it
-    // belongs below the spinner, not above it.
+
     useSessionStore.getState().setMessages((prev) => [...prev, userMsg("go ahead with phase 1")]);
     expect(useSessionStore.getState().compactingAnchor).toBe(1);
   });

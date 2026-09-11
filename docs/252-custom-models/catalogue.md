@@ -110,11 +110,11 @@ ESLint.)*
 ## Types
 
 ```ts
-/** An API wire format. Both services and harnesses hold a SET of these. */
+
 export type ApiStyle =
-  | "anthropic-messages"        // POST /v1/messages
-  | "openai-responses"          // POST /v1/responses
-  | "openai-chat-completions";  // POST /v1/chat/completions
+  | "anthropic-messages"
+  | "openai-responses"
+  | "openai-chat-completions";
 
 export type BillingMode = "sub" | "key";
 
@@ -131,32 +131,22 @@ export interface ModelSelection {
 export interface ModelDef {
   id: string;
   label: string;
-  /** Styles this model is usable under, at this service, under this mode (req 6).
+
    *  INVARIANT: every entry must also be a key of the owning mode's `endpoints`. The types
    *  cannot express that — `styles` and `endpoints` are independent — so a catalogue test
-   *  enforces it. Without it a row type-checks, joins, and appears in the picker, and then
+
    *  cannot be spawned because there is nowhere to send the request: a ShipIt-imposed
-   *  failure of exactly the kind reqs 1 and 6 exist to prevent.
+
    *  Three more the same test covers, because these are plain arrays and the selection
-   *  triple assumes otherwise: **at most one mode per `kind` per service**, **no duplicate
-   *  model id within a mode**, and **at least one entry in `credentials`**. The first two
-   *  would make one `ModelSelection` match two rows with no tie-break; the third would
-   *  declare a mode nothing can authenticate. */
+
   styles: ApiStyle[];
   /** ALWAYS the service's API rate. See Pricing — never the incremental cost. */
   price: ModelPrice;
-  /** ✅ what the repo shows: the table stores `272_000` for the GPT-5 family
-   *  (`model-windows.ts:47`), and runtime telemetry replaces it with whatever the app-server
-   *  reports (`codex-event-handler.ts:625`).
-   *  🔍 everything else, including both halves of the usual rationale: that this differs from
-   *  the model's advertised maximum, and that Codex is the cause. Both appear in that file as
-   *  a comment, not as anything the code demonstrates.
+
    *  So why key by harness at all? Because the value ShipIt reports is per-harness telemetry
-   *  by construction — it comes from the app-server that ran the turn — and a scalar could
-   *  not hold two harnesses' answers for one model. That argument needs neither 🔍 claim. `default` is required so a missing value is
-   *  a failure, not an empty object; `byHarness` carries the case above. Keyed by harness
+
    *  and not by style, because two harnesses can share a style and still impose different
-   *  windows — which an earlier draft got wrong. */
+
   contextWindow: { default: number; byHarness?: Partial<Record<HarnessId, number>> };
 }
 
@@ -164,44 +154,25 @@ interface ModeCommon {
   endpoints: Partial<Record<ApiStyle, string>>;
   models: ModelDef[];
   retired: RetiredModel[];
-  /** The credential shapes this mode ACCEPTS — not the user's credentials themselves. A list
+
    *  because one mode can accept several shapes: Anthropic's subscription takes both OAuth
-   *  accounts and an env-supplied token. The user's actual credentials are *instances* of
-   *  these shapes, and live in storage with their own route ids — see below. */
+
   credentials: ModeCredential[];
 }
 
-/** `kind` is the sole billing discriminator, and `quota` is required exactly where a quota
- *  exists — encoded in the union rather than as an optional field, so "a subscription with
  *  nowhere to read its quota from" (req 10) cannot be declared. */
 export type BillingModeDef =
   | (ModeCommon & { kind: "key" })
   | (ModeCommon & { kind: "sub"; quota: QuotaIntegrationId });
 
-/** These are NOT the same axis, and collapsing them is the mistake this shape exists to
- *  prevent: a **subscription** can be delivered as a **string in an environment variable**,
- *  with no login flow and no account root. This repository already contains one —
- *  `claude-env-oauth`, which is quota-bearing (`provider-account-reserved-route.test.ts:92`,
- *  `claude/limits-provider.ts:85` ✅) and ranked above the metered API-key route
  *  (`provider-account-manager.ts:619` ✅). Three citations because it is three claims.
- *
- *  Precision matters here: that token is an **OAuth token**, NOT an API key —
- *  `ANTHROPIC_AUTH_TOKEN` and `ANTHROPIC_API_KEY` are deliberately distinct routes at the
- *  same citation, and an earlier version of this comment called it a key. What the two have
- *  in common is only the delivery shape, which is exactly the axis `via` names. */
+
 /** `via` is about DELIVERY — what ShipIt holds and how it reaches the CLI. Never billing. */
 export type ModeCredential =
-  | { via: "account"; login: LoginIntegrationId }   // a login flow producing an account root
-  | { via: "string"; storageEnv: string;            // a secret: pasted, or supplied by env
+  | { via: "account"; login: LoginIntegrationId }
+  | { via: "string"; storageEnv: string;
       targetOverride?: Partial<Record<HarnessId, CredentialTarget>>;
-      /** The harnesses that can actually authenticate with this credential —
-       *  absent means "any harness with a string target". Added by docs/268
-       *  phase 10 (`types.ts:243` ✅): a string-delivered credential is not
-       *  always a neutral API key (`claude-env-oauth` is an Anthropic OAuth
-       *  token only Claude Code can carry; GLM's plan key is `carriers:
-       *  ["claude"]`), and with a second anthropic-messages harness the style
-       *  join alone would offer such credentials on harnesses whose every
-       *  turn 401s. */
+
       carriers?: HarnessId[] };
 
 export interface ServiceDef {
@@ -227,11 +198,11 @@ whose successor differs by style.
 export interface RetiredModel {
   id: string;
   /** The styles the retired model was declared under. Kept precisely because the model
-   *  itself is gone — this is the record the successor check compares against. */
+
   styles: ApiStyle[];
-  /** Successor per style. Usually one id repeated; occasionally not. Every style in
+
    *  `styles` must appear here, and each successor must be a current model of this
-   *  mode declared under that style. A catalogue test enforces both (req 13). */
+
   successors: Partial<Record<ApiStyle, string>>;
 }
 ```
@@ -268,24 +239,14 @@ Codex does. Neither declaration alone can say that, so both exist:
 ```ts
 export type CredentialTarget =
   | { kind: "env"; name: string }
-  | { kind: "config-file"; path: string; pointer: string };   // OpenCode-shaped
+  | { kind: "config-file"; path: string; pointer: string };
 
-/** SERVICE side, subscription modes: WHICH integration obtains and refreshes the account.
  *  A `sub` mode cannot be described by `kind: "sub"` alone — today's subscriptions are
- *  provider-specific all the way down (an `AgentAuthManager` implementation, a credential-root
- *  layout, a login method, a quota integration in the limits registry), and those are
- *  currently selected by `AgentId`. This field is what they get selected by instead, and it is
- *  the catalogue-side half of the per-service work req 5 keeps out of the mechanism.
+
  *  🔍 THROUGHOUT — these identifiers do not exist. Today the auth managers and limits
- *  providers are keyed by `AgentId` ("claude", "codex") in a `Map<AgentId, AgentAuthManager>`
- *  (`agents/index.ts:39`, `agent-auth-manager.ts:1`). The OAuth *implementations* are real;
- *  these names are this document's proposal for what replaces `AgentId` as their key. An
- *  earlier version of this block marked them ✅ on the strength of the implementations
- *  existing, which is the inference-as-verified-fact the rules above forbid. */
-/** Selects the login/refresh implementation. Only `via: "account"` modes need one. */
+
 export type LoginIntegrationId = "anthropic-oauth" | "openai-chatgpt";
 
-/** Selects the quota-reporting implementation — what fills req 10's indicator. Keyed
  *  separately from the login flow because the two do not always come together. */
 export type QuotaIntegrationId = "anthropic-oauth-usage" | "openai-chatgpt-usage" | "zai-plan-usage";
 ```
@@ -303,8 +264,7 @@ ordinary API key, which for Claude Code goes in `ANTHROPIC_AUTH_TOKEN` rather th
 shipping could not be declared at all.
 
 ```ts
-// GLM's coding plan: kind "sub" (an allowance), via "string" (a secret in a variable),
-// and a quota to report despite having no login flow.
+
 { kind: "sub", quota: "zai-plan-usage",
   credentials: [{ via: "string", storageEnv: "ZAI_CODING_PLAN_KEY",
                   targetOverride: { claude: { kind: "env",
@@ -340,40 +300,17 @@ So `storageEnv` is **the variable a credential is materialized into at spawn** a
 place it is stored. Storage is per *instance*, the way accounts already are:
 
 ```ts
-/** ONE type for every credential the user holds, replacing `ProviderAccount` rather than
- *  sitting beside it. An earlier draft declared a `via: "string"` twin, which left two
- *  questions unanswered — what `ProviderAccount` is re-keyed *to*, and which routing state the
- *  new type needs — and the answer to both is that there is only one type.
- *
- *  Two things change from `ProviderAccount` (`domain-types/provider.ts:16` ✅):
- *   - keyed by `(serviceId, billingMode)` instead of `provider: AgentId`, which is the
- *     conflation this whole feature removes;
- *   - `via` distinguishes a login-flow account from a supplied secret, so plural
- *     string-delivered subscriptions (GLM's plan) become expressible.
- *
- *  **Every other field is preserved, including the ones that look like clutter.** Selection
- *  filters on `status` and `exhaustedUntil` (`provider-account-manager.ts:648` ✅), balanced
- *  routing reads `lastUsedAt` (`:536` ✅), hard exhaustion is persisted precisely so a failed
- *  credential is not chosen again (`:788` ✅), and duplicate detection and label adoption use
- *  `externalId` and `labelIsGenerated` (`:443` ✅). An earlier draft dropped four of them while
- *  claiming to preserve everything; each omission is a silent behaviour change.
- *
- *  **No secret on this record.** A `via: "string"` credential's secret lives in the credential
- *  store keyed by route id, exactly as a `via: "account"` credential's root lives on disk
- *  keyed by account id — symmetric, and it keeps this type safe to return verbatim through
- *  Settings, which is what happens today (`services/settings.ts:384` ✅). Putting an optional
- *  `secret` here would have required a redaction boundary that did not exist, and would have
- *  typed two impossible states: an account with a secret, and a string route without one. */
+
 export interface CredentialRoute {
-  id: string;                    // the route id, as today
+  id: string;
   serviceId: ServiceId;
   billingMode: BillingMode;
   via: "account" | "string";
   label: string;
-  labelIsGenerated?: boolean;    // label adoption
-  externalId?: string;           // duplicate-account detection
-  isPrimary: boolean;            // derived on read from `priority`, but on the wire shape
-  priority: number;              // authoritative order
+  labelIsGenerated?: boolean;
+  externalId?: string;
+  isPrimary: boolean;
+  priority: number;
   status: "ready" | "authenticating" | "auth_failed" | "unavailable";
   capabilities?: ProviderAccountCapabilities;
   lastUsedAt?: number;
@@ -393,18 +330,13 @@ re-keying `agentEnv`, which is a single `Record<string, string>` whose named slo
 write overwrites (`credential-store.ts:34`, `:298` ✅). Phase 2 owns it.
 
 ```ts
-/** HARNESS side: where a credential of each kind lands for THIS CLI, by default.
- *  Keyed by `via`, NOT by billing `kind` — an earlier version named these `key`/`sub`, which
- *  read as billing and left the mapping to the implementer. */
-/** Both optional, and the narrowing runs both ways — an earlier version made `account`
- *  mandatory, which forced a key-only CLI (both survey candidates look like one) to invent a
- *  fake account destination and could make an account-backed service falsely eligible.
+
  *  INVARIANT: at least one is present, or the harness can authenticate nothing at all.
  *  Eligibility must read this: a mode whose credential shapes this harness cannot carry is
- *  not offered, rather than offered and failing at spawn. */
+
 export interface CredentialTargets {
-  string?: CredentialTarget;                          // absent ⇒ OAuth-only CLI
-  account?: { kind: "scoped-home" } | CredentialTarget; // absent ⇒ key-only CLI
+  string?: CredentialTarget;
+  account?: { kind: "scoped-home" } | CredentialTarget;
 }
 ```
 
@@ -474,20 +406,16 @@ with an implementer picking arbitrarily — is how a silent per-turn inconsisten
 export type SpawnShape = {
   /** Where a credential of each kind must land for this CLI. See "Credentials" above. */
   credential: CredentialTargets;
-  /** How the model id reaches the process. The two shipped harnesses differ. */
+
   model:
-    | { kind: "flag"; flag: string }                 // Claude: --model <id>
-    | { kind: "turn-payload"; field: string };       // Codex: JSON-RPC turn/start
-  // 🔍 NOT SETTLED: the survey records OpenCode taking `-m provider/model`, which neither
-  // variant expresses — the flag carries a bare model id, and nothing says how a `serviceId`
-  // becomes that CLI's provider namespace or what happens when the two names differ. Left
-  // undeclared rather than guessed; it is on the phase-1 checklist.
-  /** How the endpoint is overridden. `none` means the harness offers no way. */
+    | { kind: "flag"; flag: string }
+    | { kind: "turn-payload"; field: string };
+
   endpoint:
-    | { kind: "env"; name: string }                         // Claude: ANTHROPIC_BASE_URL
-    | { kind: "config"; key: string }                       // Codex: the base-URL field of a written provider block
-    | { kind: "config-file"; path: string; pointer: string } // OpenCode: a written file
-    | { kind: "none" };                                     // no override offered
+    | { kind: "env"; name: string }
+    | { kind: "config"; key: string }
+    | { kind: "config-file"; path: string; pointer: string }
+    | { kind: "none" };
 };
 
 export interface HarnessDef {
@@ -495,13 +423,9 @@ export interface HarnessDef {
   name: string;
   binary: string;
   /** The service this CLI's own vendor provides, when there is one. Declared because the
-   *  metered-spend column sources from the harness only on this service (see Pricing), and an
-   *  undeclared "everyone knows Claude Code means Anthropic" mapping is exactly the
-   *  harness/service conflation this feature removes. Absent for a harness whose vendor sells
-   *  no models. Note it does NOT decide the rule on its own — billing mode does; this only
-   *  narrows where the key-mode figure may come from. */
+
   nativeService?: ServiceId;
-  /** A SET, not a scalar — see the survey. The service×harness join is an intersection. */
+
   styles: ApiStyle[];
   spawn: SpawnShape;
   capabilities: Omit<AgentCapabilities, "models">;
@@ -587,28 +511,28 @@ export const HARNESSES = [
   {
     id: "claude",
     name: "Claude Code",
-    binary: "claude",                                       // ✅ agent-registry.ts:154
+    binary: "claude",
     nativeService: "anthropic",
-    styles: ["anthropic-messages"],                         // 🔍 see the survey note
+    styles: ["anthropic-messages"],
     spawn: {
-      credential: { string: { kind: "env", name: "ANTHROPIC_API_KEY" },  // ✅ pam.ts:619
-                    account: { kind: "scoped-home" } },                  // ✅ account roots
-      model: { kind: "flag", flag: "--model" },             // ✅ claude/process.ts:369
-      endpoint: { kind: "env", name: "ANTHROPIC_BASE_URL" }, // 🔍 no seam today
+      credential: { string: { kind: "env", name: "ANTHROPIC_API_KEY" },
+                    account: { kind: "scoped-home" } },
+      model: { kind: "flag", flag: "--model" },
+      endpoint: { kind: "env", name: "ANTHROPIC_BASE_URL" },
     },
     capabilities: { /* today's AGENT_DEFS entry, minus `models` */ },
   },
   {
     id: "codex",
     name: "Codex",
-    binary: "codex",                                        // ✅ agent-registry.ts:191
+    binary: "codex",
     nativeService: "openai",
-    styles: ["openai-responses"],                           // 🔍 see the survey note
+    styles: ["openai-responses"],
     spawn: {
-      credential: { string: { kind: "env", name: "OPENAI_API_KEY" },     // ✅ adapter.ts:259
-                    account: { kind: "scoped-home" } },                  // ✅ CODEX_HOME
-      model: { kind: "turn-payload", field: "model" },      // ✅ codex-event-handler.ts:787
-      endpoint: { kind: "config", key: "model_provider.base_url" }, // 🔍 no seam today
+      credential: { string: { kind: "env", name: "OPENAI_API_KEY" },
+                    account: { kind: "scoped-home" } },
+      model: { kind: "turn-payload", field: "model" },
+      endpoint: { kind: "config", key: "model_provider.base_url" },
     },
     capabilities: { /* today's AGENT_DEFS entry, minus `models` */ },
   },
@@ -652,11 +576,11 @@ export const SERVICES = [
     id: "anthropic",
     name: "Anthropic",
     modes: [
-      { kind: "sub",                                       // ✅ OAuth accounts exist today
+      { kind: "sub",
         endpoints: { [A_MSG]: "https://api.anthropic.com" },
-        quota: "anthropic-oauth-usage",            // 🔍 the id is new
-        credentials: [{ via: "account", login: "anthropic-oauth" },      // ✅ OAuth accounts
-                      { via: "string", storageEnv: "ANTHROPIC_AUTH_TOKEN" }], // ✅ env-oauth
+        quota: "anthropic-oauth-usage",
+        credentials: [{ via: "account", login: "anthropic-oauth" },
+                      { via: "string", storageEnv: "ANTHROPIC_AUTH_TOKEN" }],
         retired: [],
         models: [
           { id: "claude-opus-5",   label: "Opus 5",   styles: [A_MSG], contextWindow: { default: 1_000_000 }, price: PRICE_TODO },
@@ -665,7 +589,7 @@ export const SERVICES = [
         ] },
       { kind: "key",
         endpoints: { [A_MSG]: "https://api.anthropic.com" },
-        credentials: [{ via: "string", storageEnv: "ANTHROPIC_API_KEY" }], // ✅ name; 🔍 storage
+        credentials: [{ via: "string", storageEnv: "ANTHROPIC_API_KEY" }],
         retired: [],
         models: [
           { id: "claude-opus-5",   label: "Opus 5",   styles: [A_MSG], contextWindow: { default: 1_000_000 }, price: PRICE_TODO },
@@ -692,14 +616,12 @@ export const SERVICES = [
     id: "openai",
     name: "OpenAI",
     modes: [
-      { kind: "sub",                                       // ✅ ChatGPT account auth today
+      { kind: "sub",
         endpoints: { [O_RESP]: "https://api.openai.com" },
-        quota: "openai-chatgpt-usage",             // 🔍 the id is new
-        credentials: [{ via: "account", login: "openai-chatgpt" }],      // ✅ auth.json
+        quota: "openai-chatgpt-usage",
+        credentials: [{ via: "account", login: "openai-chatgpt" }],
         retired: [
-          // ✅ the id remap `gpt-5.6 → gpt-5.6-sol` is today's normalizeCodexModelId
-          // (agent-registry.ts:141). 🔍 the style and the placement under BOTH modes are
-          // this document's inference — the shim is mode-blind and style-blind.
+
           { id: "gpt-5.6", styles: [O_RESP], successors: { [O_RESP]: "gpt-5.6-sol" } },
         ],
         models: [
@@ -711,10 +633,10 @@ export const SERVICES = [
           { id: "gpt-5.5",       label: "GPT-5.5",       styles: [O_RESP], contextWindow: { default: 272_000 }, price: PRICE_TODO },
           { id: "gpt-5.3-codex", label: "GPT-5.3 Codex", styles: [O_RESP], contextWindow: { default: 272_000 }, price: PRICE_TODO },
           { id: "gpt-5.2",       label: "GPT-5.2",       styles: [O_RESP], contextWindow: { default: 272_000 }, price: PRICE_TODO },
-        ] },                                               // ✅ all eight, in CODEX_MODELS order
+        ] },
       { kind: "key",
         endpoints: { [O_RESP]: "https://api.openai.com", [O_CC]: "https://api.openai.com" },
-        credentials: [{ via: "string", storageEnv: "OPENAI_API_KEY" }],  // ✅ adapter.ts:259
+        credentials: [{ via: "string", storageEnv: "OPENAI_API_KEY" }],
         retired: [ /* the same gpt-5.6 entry */ ],
         models: [ /* the same eight; styles gain O_CC — 🔍 which of them the key serves */ ] },
     ],
@@ -728,45 +650,36 @@ export const SERVICES = [
 
 ```ts
   {
-    id: "deepseek", name: "DeepSeek",                      // 🔍 ENTIRE ROW
+    id: "deepseek", name: "DeepSeek",
     modes: [
-      { kind: "key",                                       // no subscription exists
+      { kind: "key",
         endpoints: { [O_CC]: "https://api.deepseek.com",
-                     // ✅ 2026-08-13 — Codex appends `/responses` to a provider's base
-                     // URL, so the Responses base carries the `/v1`.
+
                      [O_RESP]: "https://api.deepseek.com/v1",
                      [A_MSG]: "https://api.deepseek.com/anthropic" },
         credentials: [{ via: "string", storageEnv: "DEEPSEEK_API_KEY" }],
         retired: [],
         models: [
-          // ✅ 2026-08-13 — DeepSeek serves the Responses API NATIVELY (no proxy),
-          // specifically to support Codex: `deepseek-v4-flash` from 2026-07-31,
-          // `deepseek-v4-pro` (V4-Pro-0813) from 2026-08-13. Both verified through
-          // codex-cli 0.146.0 against the real endpoint, including the `apply_patch`
-          // tool loop. The founding example of why req 6 declares models per style
-          // rather than deriving them.
+
           { id: "deepseek-v4-flash", label: "V4 Flash", styles: [O_CC, O_RESP, A_MSG], contextWindow: CONTEXT_TODO, price: PRICE_TODO },
           { id: "deepseek-v4-pro",   label: "V4 Pro",   styles: [O_CC, O_RESP, A_MSG], contextWindow: CONTEXT_TODO, price: PRICE_TODO },
         ] },
     ],
   },
   {
-    id: "zai", name: "GLM (Z.ai)",                         // 🔍 ENTIRE ROW
+    id: "zai", name: "GLM (Z.ai)",
     modes: [
-      { kind: "sub",  // an allowance, authenticated by a key — see ModeCredential above
-        quota: "zai-plan-usage",  // a plan HAS a quota even with no login flow (req 10)
+      { kind: "sub",
+        quota: "zai-plan-usage",
         credentials: [{ via: "string", storageEnv: "ZAI_CODING_PLAN_KEY",
                         targetOverride: { claude: { kind: "env",
                                                     name: "ANTHROPIC_AUTH_TOKEN" } } }],
-        /* 🔍 endpoints, models, quota — phase 2 owns this integration */ },
+
       { kind: "key", credentials: [{ via: "string", storageEnv: "ZAI_API_KEY" }],
-        /* 🔍 offers more models than the plan — that asymmetry is the point */ },
+
     ],
   },
-  // 🔍 Both gateways: one `key` mode each, shape identical to DeepSeek's above. Endpoints,
-  // styles and the maintained subset (req 6) are authored per gateway against its current
-  // documentation — deliberately not guessed here, so these rows are elided rather than
-  // filled with plausible-looking values.
+
   { id: "openrouter", name: "OpenRouter",
     modes: [{ kind: "key", credentials: [{ via: "string", storageEnv: "OPENROUTER_API_KEY" }],
               endpoints: { /* 🔍 */ }, models: [ /* 🔍 */ ], retired: [] }] },
@@ -857,19 +770,14 @@ change for existing subscription users. Req 16 decides the *reporting* half — 
 
 ```ts
 export interface ModelPrice {
-  input: number;        // USD per million input tokens
+  input: number;
   output: number;
   /** Required, because ShipIt already records these token classes separately
-   *  (`usage.ts:45` ✅) and an absent rate would silently price them at zero — the
-   *  cache-heavy turn is exactly where that is most wrong. A service with no separate
-   *  cache pricing sets these equal to `input`; `cacheWrite` is ShipIt's `cache_create`. */
+
   cacheRead: number;
   cacheWrite: number;
 }
 
-/** Sentinels for values that have not been checked. Phase 1 replaces every one; a catalogue
- *  test asserts no shipped row still carries either. Negative rather than zero so a forgotten
- *  row is loud — zero is a value that reads as an answer. */
 export const PRICE_TODO: ModelPrice = { input: -1, output: -1, cacheRead: -1, cacheWrite: -1 };
 export const CONTEXT_TODO = { default: -1 };
 ```

@@ -5,8 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Hands-free phone app — Android frames (mock)</title>
 <style>
-  /* Self-contained mock. Lock-screen frames are dark by nature; app frames use the dark-theme tokens
-     from src/client/themes/dark.css (2026-08-23). */
+
   :root {
     --bg-primary:#030712; --bg-secondary:#111827; --bg-tertiary:#1f2937;
     --text-primary:#f3f4f6; --text-secondary:#9ca3af; --text-tertiary:#6b7280;
@@ -28,7 +27,6 @@
   .cap { margin:10px 4px 0; font-size:12px; color:var(--text-secondary); text-align:center; }
   .cap b { color:var(--text-primary); font-weight:600; display:block; }
 
-  /* ---------- frame 1: lock screen, speaking ---------- */
   .lock { background:linear-gradient(180deg,#0a1020 0%,#060913 70%); flex:1; display:flex; flex-direction:column;
           align-items:center; padding:34px 16px 22px; }
   .clock { font-size:52px; font-weight:200; letter-spacing:1px; }
@@ -51,7 +49,6 @@
   .lock .spacer { flex:1; }
   .lockfoot { color:var(--text-tertiary); font-size:11px; }
 
-  /* ---------- frame 2: native assistant reply ---------- */
   .dim { background:linear-gradient(180deg,#0a1020 0%,#060913 70%); flex:1; position:relative; }
   .dim .ghost { opacity:.28; padding:34px 16px; }
   .asst { position:absolute; left:0; right:0; bottom:0; border-radius:22px 22px 0 0; background:#101725;
@@ -63,7 +60,6 @@
   .heard { font-size:15px; }
   .heard em { color:var(--text-tertiary); font-style:normal; font-size:11px; display:block; margin-top:8px; }
 
-  /* ---------- frames 3+4: the app, on demand ---------- */
   .appscr { background:var(--bg-primary); flex:1; display:flex; flex-direction:column; }
   .appbar { display:flex; align-items:center; gap:8px; padding:12px 14px; border-bottom:1px solid var(--border-primary); }
   .appbar b { font-size:14px; }
@@ -103,7 +99,6 @@
 
   <div class="frames">
 
-    <!-- 1: lock screen, speaking -->
     <div class="slot">
       <div class="phone">
         <div class="lock">
@@ -122,7 +117,6 @@
       <div class="cap"><b>Delivery, locked (reqs 22–23)</b>The coordinator speaks the moment you are free — its own words, never session text (req 18). Next item waits until this topic ends.</div>
     </div>
 
-    <!-- 2: native assistant reply -->
     <div class="slot">
       <div class="phone">
         <div class="dim">
@@ -141,7 +135,6 @@
       <div class="cap"><b>Reply by voice (req 24)</b>The phone's own assistant controls carry your words to the coordinator. Ordinary language — there is no command vocabulary to learn (req 30).</div>
     </div>
 
-    <!-- 3: the app, opened on demand -->
     <div class="slot">
       <div class="phone">
         <div class="appscr">
@@ -161,7 +154,6 @@
       <div class="cap"><b>Visibility on demand (reqs 26, 35–37)</b>The same one conversation and the same standing queue, whenever you look. Reading costs nothing; each waiting item carries the coordinator's cold-context brief, and a tap takes it into the conversation.</div>
     </div>
 
-    <!-- 4: loud failure -->
     <div class="slot">
       <div class="phone">
         <div class="appscr">

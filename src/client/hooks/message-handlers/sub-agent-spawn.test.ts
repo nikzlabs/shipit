@@ -39,9 +39,9 @@ describe("handleSubAgentConsultCard (docs/144)", () => {
     handleSubAgentConsultCard(ctx, { type: "sub_agent_consult_card", sessionId: "s1", card });
 
     const state = useSessionStore.getState();
-    // spinner gone (the card is the terminal record)
+
     expect(state.subAgentSpawns.x1).toBeUndefined();
-    // card appended to the transcript as an empty-text carrier message
+
     expect(state.messages).toHaveLength(1);
     expect(state.messages[0]).toMatchObject({ role: "assistant", text: "", subAgentConsult: { cardId: "c1" } });
   });

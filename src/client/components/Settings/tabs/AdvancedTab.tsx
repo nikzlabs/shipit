@@ -7,7 +7,6 @@ import { useUiStore } from "../../../stores/ui-store.js";
 import { useSettingsStore } from "../../../stores/settings-store.js";
 import { ToggleSwitch } from "../ToggleSwitch.js";
 
-/** Shape of the /api/updates/check and /api/updates/channel responses. */
 interface UpdateStatusResult {
   available: boolean;
   behindBy: number;
@@ -19,7 +18,7 @@ interface UpdateStatusResult {
   isDowngrade: boolean;
   releaseUrl?: string;
   updateMode?: "managed" | "manual";
-  /** Present when the previous in-place update failed and hasn't been retried. */
+
   lastUpdateError?: {
     failedAt?: string;
     runningSha?: string;
@@ -113,11 +112,6 @@ function LiveSteeringSettings() {
   );
 }
 
-/**
- * docs/169 — both PR remediation automations (auto-fix CI, auto-resolve
- * conflicts) are global + persisted account-level toggles. They share one
- * settings group so a user manages "auto-fix my PR" switches in one place.
- */
 function PrAutomationsSettings() {
   const autoResolveConflicts = useSettingsStore((s) => s.autoResolveConflicts);
   const autoFixCi = useSettingsStore((s) => s.autoFixCi);
@@ -189,11 +183,6 @@ function PrAutomationsSettings() {
   );
 }
 
-/**
- * docs/144 — global gate for sub-agent spawning. When on, a pinned session's
- * agent can spawn another registered agent for a one-shot sub-task (e.g. a
- * second-opinion review) via `shipit agent run`. Default on.
- */
 function MultiAgentSettings() {
   const enableSubAgents = useSettingsStore((s) => s.enableSubAgents);
 
@@ -248,8 +237,7 @@ export function AdvancedTab({
   );
   const [memoryBudgetSaved, setMemoryBudgetSaved] = useState(false);
   // docs/284 req 13 — the default differs by deployment, so the field cannot
-  // just say "the whole machine". The orchestrator already resolves it onto
-  // every memory snapshot; show that rather than re-deriving it here.
+
   const dockerMemory = useUiStore((s) => s.dockerMemory);
   const effectiveBudgetGb = memoryBudgetMb === null && dockerMemory?.budgetBytes
     ? Math.round((dockerMemory.budgetBytes / 1024 ** 3) * 10) / 10
@@ -263,8 +251,7 @@ export function AdvancedTab({
   const version = useUiStore((s) => s.version);
   const updateMode = useUiStore((s) => s.updateMode);
   const effectiveUpdateMode = updateStatus?.updateMode ?? updateMode;
-  // Optimistic channel: the persisted preference reflected by either the
-  // ambient version (running instance) or the latest check/switch result.
+
   const selectedChannel = updateStatus?.channel ?? version?.channel ?? "edge";
 
   return (

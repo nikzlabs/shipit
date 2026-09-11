@@ -15,19 +15,14 @@
 
 import { ICON_SIZE } from "../design-tokens.js";
 
-/**
- * Twelve spokes. They carry no props: `.spinner > i:nth-child(n)` in `index.css`
- * gives each one its angle and its keyframes, so the count is fixed by that
- * stylesheet and changing it here alone would leave the extras unstyled.
- */
 const SPOKES = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11];
 
 interface SpinnerProps {
-  /** Diameter in px. Defaults to `ICON_SIZE.SM`, matching an inline icon. */
+
   size?: number;
-  /** Extra classes — colour (`text-(--color-*)`), margins, `shrink-0`. */
+
   className?: string;
-  /** Accessible label. Omitted by default: most spinners sit beside their own text. */
+
   label?: string;
 }
 

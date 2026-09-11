@@ -29,11 +29,11 @@ import type { TrackerId } from "../../server/shared/types.js";
 
 export interface TrackerIssueLink {
   tracker: TrackerId;
-  /** Display identifier, e.g. "SHI-28", "owner/repo#42", "planning#42". */
+
   identifier: string;
-  /** Tracker-native lookup id (Linear key, bare GitHub number). */
+
   issueId?: string;
-  /** Absolute URL to the issue — the external escape-hatch href. */
+
   url: string;
 }
 

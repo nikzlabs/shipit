@@ -18,7 +18,6 @@ import { usePrStore, type PrCardState } from "../stores/pr-store.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { useUiStore } from "../stores/ui-store.js";
 
-/** Reusable toggle switch for PR status actions. */
 function ToggleSwitch({
   label,
   enabled,
@@ -30,7 +29,7 @@ function ToggleSwitch({
   enabled: boolean;
   onToggle: () => void;
   title: string;
-  /** Extra classes for the button box — used to drop the leading padding when the toggle starts a left-aligned row. */
+
   className?: string;
 }) {
   return (
@@ -80,15 +79,6 @@ function ManagedWaitInfo({ label, body }: { label: string; body: ReactNode }) {
   );
 }
 
-/**
- * Hover tooltip explaining ShipIt-managed auto-merge.
- *
- * Three states share the `managed` flag (docs/266). The GitHub-refused fallback
- * names the missing repo precondition and links to settings. The other two are
- * not errors at all — ShipIt is deliberately holding the merge — so they get
- * their own wording and no settings link, which would otherwise tell the user to
- * go fix a repository that is configured perfectly well.
- */
 function ManagedMergeInfo({
   settingsUrl,
   reason,
@@ -166,18 +156,6 @@ function ManagedMergeInfo({
   );
 }
 
-// docs/169 — the per-card AutoFixToggle that controlled the on/off switch was
-// removed: auto-fix CI is now a global account-level setting (Settings → PR
-// automations). docs/186 reintroduces a DIFFERENT per-session control below — a
-// pause override on top of that global setting, not an independent on/off.
-
-/**
- * docs/186 — per-session pause toggle for the auto-fix-CI loop. Shown in the PR
- * overflow menu only when the global `autoFixCi` setting is on (the caller
- * gates visibility), since pausing a globally-disabled loop is meaningless. The
- * switch shows the *active* (not-paused) state: on ⇒ auto-fix runs for this
- * session, off ⇒ paused. Paused state lives on the session record.
- */
 export function AutoFixPauseToggle({ sessionId }: { sessionId: string }) {
   const paused = useSessionStore(
     (s) => s.sessions.find((sess) => sess.id === sessionId)?.autoFixCiPaused ?? false,
@@ -201,13 +179,7 @@ export function AutoMergeToggle({
 }: {
   sessionId: string;
   autoMerge?: PrCardState["autoMerge"];
-  /**
-   * Extra classes for the toggle's button box. The ghost button carries `px-2`,
-   * which insets the visible switch from its own left edge — invisible at rest
-   * but revealed by the hover background. Call sites that put this toggle at the
-   * left edge of a text-aligned column pass `pl-0` so the switch, not the box's
-   * padding, lands on the alignment line. See PrMergeActions.
-   */
+
   className?: string;
 }) {
   const toggleAutoMerge = usePrStore((s) => s.toggleAutoMerge);
@@ -254,8 +226,7 @@ const MERGE_METHOD_LABELS: Record<string, string> = {
 export function useClosePr(sessionId: string) {
   const closePr = usePrStore((s) => s.closePr);
   const setToast = useUiStore((s) => s.setToast);
-  // First click arms the confirm, the second commits — cheaper than a modal and
-  // contained to whichever dropdown hosts the item.
+
   const [confirmClose, setConfirmClose] = useState(false);
   const [closing, setClosing] = useState(false);
 
@@ -283,15 +254,10 @@ export function useClosePr(sessionId: string) {
   return { confirmClose, closing, handleClose, reset };
 }
 
-/** Shared label for the close item across its two visual treatments. */
 function closePrLabel(confirmClose: boolean, closing: boolean): string {
   return closing ? "Closing..." : confirmClose ? "Click again to confirm" : "Close pull request";
 }
 
-/**
- * Close item styled for MergeButton's bespoke (non-Radix) dropdown — a plain
- * button matching the merge-method rows above it.
- */
 function ClosePrMenuItem({
   confirmClose,
   closing,
@@ -313,13 +279,6 @@ function ClosePrMenuItem({
   );
 }
 
-/**
- * Close item for a Radix `OverflowMenu` (the card's existing ⋮ menu and the
- * detail panel's). Reuses the `useClosePr` state passed in by the menu's owner
- * so the owner can `reset()` the armed confirm from the menu's `onOpenChange`.
- * First select arms the confirm and keeps the menu open (`preventDefault`); the
- * second runs the close and lets Radix close the menu.
- */
 export function ClosePrDropdownItem({ state }: { state: ReturnType<typeof useClosePr> }) {
   const { confirmClose, closing, handleClose } = state;
   return (
@@ -382,7 +341,7 @@ export function MergeButton({ sessionId, autoMerge }: { sessionId: string; autoM
     : unsyncedReason;
 
   // Reset the armed-confirm state whenever the menu closes so it never reopens
-  // pre-armed.
+
   const closeDropdown = () => {
     setDropdownOpen(false);
     reset();
@@ -414,9 +373,7 @@ export function MergeButton({ sessionId, autoMerge }: { sessionId: string; autoM
       </button>
       <button
         onClick={() => (dropdownOpen ? closeDropdown() : setDropdownOpen(true))}
-        // Not `disabled` — an unsynced branch can stay unsynced (a push that
-        // keeps being rejected), and this menu is where "Close PR" and the
-        // merge-method choice live. Only the merge itself is held back.
+
         disabled={merging || isAgentRunning}
         title={title}
         className="h-6 px-1 text-xs font-medium bg-(--color-success) hover:opacity-90 text-(--color-text-inverse) rounded-r border-l border-black/20 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
@@ -459,9 +416,7 @@ export function MergeButton({ sessionId, autoMerge }: { sessionId: string; autoM
 export function FixCIButton({ sessionId }: { sessionId: string }) {
   const fixCI = usePrStore((s) => s.fixCI);
   const setToast = useUiStore((s) => s.setToast);
-  // A manual fix is a plain agent turn (it no longer drives the auto-fix card
-  // state), so the button stays mounted while the agent works. Disable it on
-  // agent-running to keep the user from dispatching a redundant second fix turn.
+
   const isAgentRunning = useSessionStore((s) => s.activeRunnerSessions.has(sessionId));
   const [fixingCI, setFixingCI] = useState(false);
 

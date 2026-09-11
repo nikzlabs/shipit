@@ -259,16 +259,14 @@ describe("buildDocIndex with a repeated path", () => {
  * seconds; the indexed one takes single-digit milliseconds.
  */
 describe("grouping cost over a repository-sized doc list", () => {
-  /** ~1,000 docs: feature dirs that are tracked, plus loose markdown that is not. */
+
   function repoSizedList(): DocEntry[] {
     const entries: DocEntry[] = [];
     for (let i = 0; i < 250; i++) {
       entries.push({ path: `docs/${i}-feature/plan.md`, title: "Plan" });
       entries.push({ path: `docs/${i}-feature/checklist.md`, title: "Checklist" });
     }
-    // The expensive half: docs that are NOT tracked and have no tracked
-    // sibling, so every "is there a tracked sibling?" question ran to the end
-    // of the list instead of short-circuiting.
+
     for (let i = 0; i < 500; i++) {
       entries.push({ path: `notes/${i}/README.md`, title: "Readme" });
     }
@@ -291,8 +289,6 @@ describe("grouping cost over a repository-sized doc list", () => {
     );
     const elapsed = performance.now() - started;
 
-    // Grouped correctly: each feature dir contributes its plan (its checklist
-    // is suppressed by the plan sibling), and every loose README is untracked.
     expect(tracked).toHaveLength(250);
     expect(untracked).toHaveLength(500);
     expect(elapsed).toBeLessThan(500);

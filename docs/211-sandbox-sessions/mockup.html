@@ -48,7 +48,6 @@
     overflow: hidden;
     box-shadow: 0 8px 40px rgba(0,0,0,.45);
   }
-  /* ---- sidebar ---- */
   .sidebar { width: 280px; padding: 10px 0; min-height: 460px; position: relative; }
   .side-top {
     display:flex; align-items:center; justify-content: space-between;
@@ -82,7 +81,6 @@
   .badge.sandbox { background: var(--sandbox-subtle); color: var(--sandbox); }
   .badge.ops { background: rgba(245,158,11,.15); color: var(--color-warning); }
   .repo-head { display:flex; align-items:center; gap:6px; padding: 8px 12px 6px 14px; font-size: 12px; font-weight:600; color: var(--color-text-secondary);}
-  /* ---- dropdown menu ---- */
   .menu {
     position: absolute; top: 40px; right: 12px; width: 230px;
     background: var(--color-bg-elevated); border: 1px solid var(--color-border-secondary);
@@ -96,7 +94,6 @@
   .mi-ic.ops { background: rgba(245,158,11,.15); color: var(--color-warning); }
   .mitem .mt { font-size: 13px; font-weight: 600; }
   .mitem .md { font-size: 11.5px; color: var(--color-text-secondary); }
-  /* ---- dialog ---- */
   .dialog { width: 460px; }
   .dlg-head { padding: 18px 20px 6px; display:flex; align-items:center; gap:10px; }
   .dlg-ic { width: 34px; height: 34px; border-radius: 9px; background: var(--sandbox-subtle); color: var(--sandbox); display:flex;align-items:center;justify-content:center; flex:none;}
@@ -112,7 +109,6 @@
   .tr-note { font-size: 11px; margin-top: 5px; padding: 5px 8px; border-radius: 6px; }
   .note-warn { background: rgba(245,158,11,.10); color: #fcd34d; border: 1px solid rgba(245,158,11,.25); }
   .note-ok { background: var(--success-subtle, rgba(34,197,94,.10)); color: #86efac; border: 1px solid rgba(34,197,94,.25); }
-  /* switch */
   .sw { width: 38px; height: 22px; border-radius: 999px; background: var(--color-bg-tertiary); position: relative; flex:none; cursor:pointer; transition: background .15s; border: 1px solid var(--color-border-secondary); }
   .sw .kn { position:absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: #d1d5db; transition: left .15s; }
   .sw.on { background: var(--sandbox); border-color: var(--sandbox); }
@@ -124,7 +120,6 @@
   .btn:hover { background: var(--color-bg-hover); }
   .btn.primary { background: var(--sandbox); color: #04201d; border-color: var(--sandbox); }
   .btn.primary:hover { filter: brightness(1.08); }
-  /* ---- session view ---- */
   .sv { width: 680px; min-height: 460px; display:flex; flex-direction: column; }
   .sv-head { display:flex; align-items:center; gap: 10px; padding: 12px 16px; border-bottom: 1px solid var(--color-border-primary); }
   .sv-head .nm { font-weight: 650; font-size: 14px; }
@@ -171,7 +166,6 @@
   Three states: (1) the creation menu, (2) the capability dialog, (3) the resulting session view with Preview/PR tabs removed.</p>
 
   <div class="row">
-    <!-- 1. SIDEBAR + MENU -->
     <div>
       <p class="cap">1 · Sidebar — “+” menu</p>
       <div class="frame sidebar">
@@ -184,8 +178,6 @@
             </button>
           </div>
         </div>
-
-        <!-- dropdown -->
         <div class="menu">
           <div class="mh">New session</div>
           <div class="mitem">
@@ -203,8 +195,6 @@
             </div>
           </div>
         </div>
-
-        <!-- groups -->
         <div style="margin-top: 92px;">
           <div class="grp-head">
             <svg width="12" height="12" viewBox="0 0 256 256" fill="currentColor"><path d="M216 40H40a16 16 0 0 0-16 16v144a16 16 0 0 0 16 16h176a16 16 0 0 0 16-16V56a16 16 0 0 0-16-16zM96 176H56v-40h40zm0-56H56V80h40zm104 56h-88v-40h88zm0-56h-88V80h88z"/></svg>
@@ -246,8 +236,6 @@
         </div>
       </div>
     </div>
-
-    <!-- 2. DIALOG -->
     <div>
       <p class="cap">2 · Capability dialog</p>
       <div class="frame dialog">
@@ -295,8 +283,6 @@
           </div>
         </div>
       </div>
-
-      <!-- 3. SESSION VIEW -->
       <p class="cap" style="margin-top:26px;">3 · Sandbox session view</p>
       <div class="frame sv">
         <div class="sv-head">
@@ -309,7 +295,6 @@
           <span class="chip on">Network</span>
         </div>
         <div class="sv-panes">
-          <!-- chat panel: banner sits in the PR-card slot -->
           <div class="chat-pane">
             <div class="slot-label"><span>Chat panel · PR-card slot</span><span class="ln"></span></div>
             <div style="padding: 6px 12px 4px;">
@@ -334,7 +319,6 @@
               </div>
             </div>
           </div>
-          <!-- side panel: its tabs (Chat is NOT a tab); Preview & PR removed -->
           <div class="side-pane">
             <div class="tabs">
               <div class="tab active">Files</div>

@@ -1,6 +1,6 @@
-/* Codex theme — inspired by Codex desktop: dark terminal with green accent */
+
 .codex {
-  /* Surfaces */
+
   --color-bg-primary: #0a0e0a;
   --color-bg-secondary: #111a11;
   --color-bg-tertiary: #1a261a;
@@ -9,25 +9,21 @@
   --color-bg-hover: rgba(0, 200, 100, 0.06);
   --color-bg-active: rgba(0, 200, 100, 0.12);
 
-  /* Text */
   --color-text-primary: #c8e0c8;
   --color-text-secondary: #80a880;
   --color-text-tertiary: #507850;
   --color-text-inverse: #0a0e0a;
   --color-text-link: #58d888;
 
-  /* Borders */
   --color-border-primary: #202f20;
   --color-border-secondary: #284028;
   --color-border-focus: #38c870;
 
-  /* Accent */
   --color-accent: #38c870;
   --color-accent-hover: #28b858;
   --color-accent-text: #0a0e0a;
   --color-accent-subtle: rgba(56, 200, 112, 0.12);
 
-  /* Status */
   --color-success: #50e080;
   --color-success-subtle: rgba(80, 224, 128, 0.15);
   --color-success-border: rgba(80, 224, 128, 0.3);
@@ -38,7 +34,6 @@
   --color-info: #58d888;
   --color-info-subtle: rgba(88, 216, 136, 0.15);
 
-  /* Domain-specific */
   --color-pr: #a888e0;
   --color-pr-subtle: rgba(168, 136, 224, 0.15);
   --color-pr-border: rgba(168, 136, 224, 0.3);
@@ -47,17 +42,14 @@
   --color-attention: #f59e0b;
   --color-attention-text: #f59e0b;
 
-  /* Context meter */
   --color-context-ok: #50e080;
   --color-context-mid: #d8b028;
   --color-context-high: #e08828;
   --color-context-full: #e04848;
 
-  /* Scrollbar */
   --color-scrollbar-thumb: rgba(80, 120, 80, 0.4);
   --color-scrollbar-thumb-hover: rgba(128, 168, 128, 0.5);
 
-  /* Syntax highlighting (terminal green tones) */
   --color-syntax-base: #b0d0b0;
   --color-syntax-bg: #0c120c;
   --color-syntax-keyword: #58d888;
@@ -75,6 +67,5 @@
   --color-syntax-deletion: #e04848;
   --color-syntax-deletion-bg: #200c0c;
 
-  /* Typography */
   --font-size-code: 13px;
 }

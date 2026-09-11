@@ -76,17 +76,14 @@ function channelLin(v: number): number {
   return c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
 }
 
-/** WCAG relative luminance of an sRGB triple. */
 function relLum(r: number, g: number, b: number): number {
   return 0.2126 * channelLin(r) + 0.7152 * channelLin(g) + 0.0722 * channelLin(b);
 }
 
-/** WCAG contrast ratio between two relative luminances. */
 function contrast(a: number, b: number): number {
   return (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05);
 }
 
-/** Relative luminance of a CSS color string (hex or `rgb()`); 1 (light) if unparseable. */
 export function luminanceOfCssColor(css: string): number {
   const s = css.trim();
   let rgb = hexToRgb(s);
@@ -102,11 +99,6 @@ export function luminanceOfCssColor(css: string): number {
 
 const cache = new Map<string, string>();
 
-/**
- * Adapt a status color so it reads against a surface of the given luminance.
- * Non-hex inputs (CSS-var tokens) are returned unchanged. Memoized by
- * (color, surface, target) — the set of distinct combinations is tiny.
- */
 export function adaptColorForSurface(color: string, surfaceLum: number, target = TARGET_CONTRAST): string {
   const rgb = hexToRgb(color);
   if (!rgb) return color;
@@ -116,7 +108,7 @@ export function adaptColorForSurface(color: string, surfaceLum: number, target =
 
   const [h, s] = rgbToHsl(rgb[0], rgb[1], rgb[2]);
   let [, , l] = rgbToHsl(rgb[0], rgb[1], rgb[2]);
-  const dir = surfaceLum > 0.4 ? -1 : 1; // light surface → darken; dark surface → lighten
+  const dir = surfaceLum > 0.4 ? -1 : 1;                                                  
   let cur = rgb;
   for (let i = 0; i < 60 && contrast(relLum(cur[0], cur[1], cur[2]), surfaceLum) < target; i++) {
     l = Math.min(1, Math.max(0, l + dir * 0.02));

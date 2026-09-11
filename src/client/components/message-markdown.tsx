@@ -20,13 +20,6 @@ import { toTrackerDestinations, trackerDestinations, useIssuesStore } from "../s
 import { resolveIssueRef } from "../../server/shared/issue-ref-resolution.js";
 import { useUiStore } from "../stores/ui-store.js";
 
-/**
- * Open an issue in the inline Issues viewer. Both the tracker-URL link branch
- * and the bare-key `IssueBadge` route through here so they share one behaviour:
- * select the Issues tab in the workspace panel AND — the part that matters on
- * mobile — flip the mobile layout from the chat column to the workspace
- * (`preview`) column, since on a phone the Issues tab is only visible there.
- */
 function openIssueInPanel(ref: OpenIssueRef): void {
   useUiStore.getState().setRightTab("issues");
   useUiStore.getState().setMobilePanel("preview");
@@ -80,9 +73,6 @@ function IssueBadge({ token, children }: { token: string; children?: React.React
     return ref;
   }, [token, trackers]);
 
-  // Unresolvable, ambiguous, or not connected — degrade to exactly the original
-  // text (`children` is the leaf the plugin split out, so an inline-code
-  // reference stays monospace and a prose one stays prose).
   if (!target) return <>{children}</>;
 
   return (
@@ -93,7 +83,7 @@ function IssueBadge({ token, children }: { token: string; children?: React.React
         openIssueInPanel({
           tracker: target.tracker,
           id: target.issueId,
-          // req 15 — the destination's name form, whatever form was written.
+
           identifier: target.identifier,
           ...(target.url ? { url: target.url } : {}),
         })
@@ -170,9 +160,7 @@ function ShipitPointer({ link, title, children }: {
   }
 
   if (link.render === "badge") {
-    // Same line-box discipline as `IssueBadge`: `text-[0.85em]` with
-    // `leading-none` and only horizontal padding, so a badge reads as a pill
-    // without pushing prose lines apart.
+
     return (
       <span
         {...shared}
@@ -183,8 +171,6 @@ function ShipitPointer({ link, title, children }: {
     );
   }
 
-  // The `a` element still picks up prose link styling without an href —
-  // Tailwind Typography targets the bare `a` selector.
   return (
     <a {...shared} className="cursor-pointer">
       {children}
@@ -241,13 +227,13 @@ function MarkdownLink({
   href?: string;
   title?: string;
   children?: React.ReactNode;
-  /** Whether this surface renders agent-authored ShipIt pointers (docs/258). */
+
   shipitLinks?: boolean;
 }) {
   if (isShipitLinkHref(href)) {
-    // Not an agent-authored surface — render the label as plain text. The
+
     // scheme reaches `urlTransform` intact (so this branch can see it) but never
-    // reaches the DOM: no href, no handler, provably inert.
+
     if (!shipitLinks) return <>{children}</>;
     const pointer = parseShipitLink(href);
     if (pointer) return <ShipitPointer link={pointer} title={title}>{children}</ShipitPointer>;
@@ -257,17 +243,13 @@ function MarkdownLink({
     return <IssueBadge token={href.slice(ISSUE_LINK_SCHEME.length)}>{children}</IssueBadge>;
   }
 
-  // docs/248 — the destinations are read at render time from the tracker list
-  // the store already holds, so an href only becomes an in-app link when it
-  // resolves to something this session's repository actually declares (req 11).
   const issueLink = parseTrackerIssueLink(href, trackerDestinations());
   if (issueLink) {
     const openIssueInApp = (e: React.MouseEvent) => {
       const connected =
         useIssuesStore.getState().trackers.find((t) => t.id === issueLink.tracker)?.configured ??
         false;
-      // Tracker not connected (or its config is still cold) — let the browser
-      // follow the absolute href to the upstream issue in a new tab.
+
       if (!connected) return;
       e.preventDefault();
       openIssueInPanel({
@@ -305,7 +287,7 @@ function MarkdownLink({
     };
     return (
       <a
-        // No `href` — see branch 3 in the doc comment above.
+
         role="button"
         tabIndex={0}
         title={title ?? `Open ${href}`}
@@ -324,13 +306,6 @@ function MarkdownLink({
   );
 }
 
-/**
- * Parse message text into alternating text and fenced code block segments.
- * Each segment tracks its character offset in the original text so that
- * search-match positions can be mapped back correctly. Used by `MessageList`
- * to split non-markdown messages (user messages with code blocks) so the
- * `CodeBlock` Copy affordance lines up with the surrounding `HighlightedText`.
- */
 export function parseMessageSegments(text: string): MessageSegment[] {
   const segments: MessageSegment[] = [];
   const codeBlockRegex = /```(\w*)\n([\s\S]*?)```/g;
@@ -369,12 +344,6 @@ export function parseMessageSegments(text: string): MessageSegment[] {
   return segments;
 }
 
-/**
- * Pull the raw fenced-code text out of the hast `<code>` child of a `<pre>`.
- * react-markdown turns ```lang … ``` into `pre > code(.language-lang) > text`;
- * we read the text node directly rather than stringifying React children so
- * whitespace, leading hashes, etc. survive verbatim.
- */
 function extractCodeFromPreNode(node: HastElement | undefined): { code: string; language: string } | null {
   if (node?.type !== "element" || node.tagName !== "pre") return null;
   const codeEl = node.children.find(
@@ -397,15 +366,6 @@ function extractCodeFromPreNode(node: HastElement | undefined): { code: string; 
   return { code: text, language };
 }
 
-/**
- * Component overrides shared by every markdown surface. They centralise:
- * - Fenced code blocks → React `CodeBlock` (Copy button + hljs styling). We
- *   intercept at `pre` so inline `<code>` keeps its lightweight inline render.
- * - Repo file links → open the in-app file preview modal (see `MarkdownLink`).
- * - External links → `target="_blank"` with `rel="noopener noreferrer"`.
- * `react-markdown`'s default `urlTransform` already filters dangerous protocols
- * (`javascript:`, `data:`, etc.), so we don't need to repeat that check here.
- */
 export const markdownComponents: Components = {
   pre({ node, children }) {
     const extracted = extractCodeFromPreNode(node);
@@ -421,10 +381,7 @@ export const markdownComponents: Components = {
       </MarkdownLink>
     );
   },
-  // Wide tables (often produced by code-analysis prompts) would otherwise push
-  // their containing message bubble past the viewport on mobile. The
-  // `w-0 min-w-full` pair pins the wrapper to its parent's width without
-  // letting the table expand it, and `overflow-x-auto` keeps the scroll local.
+
   table({ children }) {
     return (
       <div className="w-0 min-w-full overflow-x-auto my-2">
@@ -462,32 +419,12 @@ const shipitLinkComponents: Components = {
   },
 };
 
-// `remarkLinkifyPaths` / `remarkLinkifyIssues` run last so they see GFM's
-// autolinked URLs as `link` nodes (which they skip) and only touch remaining
-// plain text. The first turns bare `dir/file.ext` references into in-app
-// file-preview links; the second turns bare issue references (`SHI-43`,
-// `roadmap#SHI-43`, `planning#57`) into in-app issue badges (gated at render by
-// the declared-destination resolver — see `IssueBadge`).
 const remarkPlugins = [remarkGfm, remarkBreaks, remarkLinkifyPaths, remarkLinkifyIssues];
 
-// `remarkLinkifyIssues` mints `shipit-issue:TOKEN` hrefs and the agent authors
-// `shipit-preview:` / `shipit-present:` ones (docs/258); react-markdown's default
-// `urlTransform` would strip those unknown schemes to "" (losing the token, and
-// leaving a pointer indistinguishable from a broken link), so we pass them
-// through and delegate everything else to the default sanitiser (which still
-// filters `javascript:`, `data:`, etc.).
-//
-// Passing a ShipIt scheme through is NOT what enables it: `MarkdownLink` renders
 // one as plain text unless the surface opted in, so the scheme never reaches the
-// DOM on a surface that didn't ask for it. Recognising it here is what lets that
-// branch tell a pointer apart from an ordinary broken link at all.
-//
-// The pass-through is restricted to **`href`**, which is the only property
-// `MarkdownLink` guards. Without that check `![x](shipit-present:…)` would emit
-// a literal `<img src="shipit-present:…">` on every surface — inert (no handler,
+
 // and the browser cannot load it) but a direct contradiction of the invariant
-// above, and the sort of gap that grows into a real one later. An image keeps
-// the default sanitiser, which rewrites the unknown scheme to `""`.
+
 function urlTransform(url: string, key: string): string {
   if (url.startsWith(ISSUE_LINK_SCHEME)) return url;
   if (key === "href" && isShipitLinkHref(url)) return url;
@@ -550,18 +487,7 @@ export const MarkdownContent = memo(({ text, shipitLinks = false }: {
  * decision, and the cache stores the `null` like any other answer.
  */
 export const CodeBlock = memo(({ code, language }: { code: string; language: string }) => {
-  // `highlightCached` wraps `highlightCode` and decides nothing itself: an
-  // unlabeled fence is still guessed at over the registered subset, and an
-  // unknown one still renders plain (see syntax-highlight.ts, which stays the
-  // one place that policy lives). What the wrapper adds is that the answer
-  // survives a fiber that does not — a REMOUNT re-runs this `useMemo`, and
-  // before the cache it re-ran the auto-detection with it: every time a modal,
-  // tooltip or disclosure holding a code block reopens, and for the whole
-  // conversation if anything remounts transcript rows. See
-  // `utils/highlight-cache.ts` for the exact guarantee and for what is still
-  // unexplained about the trace that prompted it. The `useMemo` stays as the
-  // cheap first line: an unchanged render of a surviving fiber skips even the
-  // map lookup.
+
   const html = useMemo(() => highlightCached(code, language), [code, language]);
 
   return (

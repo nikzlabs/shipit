@@ -15,15 +15,14 @@ interface ServiceListProps {
   onStop: (name: string) => void;
   onRestart: (name: string) => void;
   onSelectPreview: (name: string, port: number) => void;
-  /** When provided, the per-service log button navigates to its log view. */
+
   onSelect?: (name: string) => void;
-  /** Prefill the composer with a fix request for a crashed service. */
+
   onAskFix?: (svc: ManagedServiceState) => void;
-  /** Build an external (new-tab) URL for a running service, or null if none. */
+
   externalUrlFor?: (svc: ManagedServiceState) => string | null;
 }
 
-/** Small square icon button used for per-service actions. */
 function IconAction({
   title,
   onClick,
@@ -54,10 +53,7 @@ function IconAction({
 
 function StatusIndicator({ status }: { status: ManagedServiceState["status"] }) {
   switch (status) {
-    // docs/265 — no animation on `running`. A service that is up is a STEADY
-    // state, and an always-on animation is what drags the main-thread rendering
-    // lifecycle through every vsync on a session where nothing is happening.
-    // `starting` keeps its spinner: that one is genuinely in flight.
+
     case "running":
       return (
         <span className="relative flex items-center justify-center w-2.5 h-2.5">
@@ -128,9 +124,7 @@ export function ServiceList({
         const isOom = !!svc.error && /oom/i.test(svc.error);
         const isError = svc.status === "error";
         const externalUrl = externalUrlFor?.(svc) ?? null;
-        // The name is the service itself, so it pivots the preview to it — the
-        // same action as its `:port` chip. Logs have their own button beside it.
-        // A service with nothing to show in the preview keeps a plain label.
+
         const previewable = svc.status === "running" && !!svc.port;
         return (
           <div

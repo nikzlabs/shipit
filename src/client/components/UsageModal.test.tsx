@@ -10,11 +10,6 @@ import { EMPTY_USAGE_TOTALS } from "../../server/shared/types/usage-types.js";
 
 afterEach(cleanup);
 
-/**
- * docs/252 req 16 — a scope's figures are the split, not one total. These
- * fixtures are METERED sessions unless a case says otherwise, so the
- * pre-existing assertions still describe money that left the account.
- */
 function totals(over: Partial<UsageTotals> = {}): UsageTotals {
   return { ...EMPTY_USAGE_TOTALS, ...over };
 }
@@ -28,7 +23,7 @@ const mockSessions: SessionInfo[] = [
 
 const mockCurrentUsage: SessionUsage = {
   sessionId: "sess-1",
-  totalDurationMs: 192000, // 3m 12s
+  totalDurationMs: 192000,          
   turnCount: 7,
   totals: metered(0.42, 7),
 };
@@ -41,9 +36,7 @@ const mockAllUsage: UsageStats = {
   totals: metered(1.35, 19),
   groups: [],
   totalTurns: 19,
-  // Values deliberately distinct from the session/total figures above so the
-  // chart's hover tooltips and avg label don't collide with exact-text queries.
-  // 2026-06-01 / -08 / -15 are consecutive Mondays.
+
   weekly: [
     { week: "2026-06-01", costUsd: 0.15, atApiRatesUsd: 1.15, tokens: 2000 },
     { week: "2026-06-08", costUsd: 0.55, atApiRatesUsd: 2.55, tokens: 4000 },
@@ -86,7 +79,7 @@ describe("UsageModal", () => {
       />
     );
     expect(screen.getByText("This session")).toBeInTheDocument();
-    // $0.42 appears in both "This session" and "Recent sessions" breakdown
+
     expect(screen.getAllByText("$0.42")).toHaveLength(2);
     expect(screen.getByText("7")).toBeInTheDocument();
     expect(screen.getByText("3m 12s")).toBeInTheDocument();
@@ -129,9 +122,9 @@ describe("UsageModal", () => {
     );
     expect(screen.getByText("Weekly trend")).toBeInTheDocument();
     const chart = screen.getByTestId("weekly-usage-chart");
-    // One column per week + the average baseline overlay (last child).
+
     expect(chart.querySelectorAll("[title]")).toHaveLength(mockAllUsage.weekly.length);
-    // X-axis labels are the week's Monday.
+
     expect(screen.getByText("Jun 1")).toBeInTheDocument();
     expect(screen.getByText("Jun 15")).toBeInTheDocument();
     expect(screen.getByTestId("weekly-usage-avg")).toBeInTheDocument();
@@ -178,21 +171,19 @@ describe("UsageModal", () => {
       />
     );
     const chart = screen.getByTestId("weekly-usage-chart");
-    // Metered mode (default): the most-recent bar's tooltip shows the Mon–Sun
-    // span and the formatted cost.
+
     expect(chart.querySelector('[title="Jun 15 – Jun 21: $0.65"]')).not.toBeNull();
     const section = screen.getByTestId("weekly-usage-section");
     // The estimate is prefixed `≈` so it can never read as money spent.
     await user.click(within(section).getByTestId("weekly-metric-atApiRates"));
     expect(chart.querySelector('[title="Jun 15 – Jun 21: ≈$3.65"]')).not.toBeNull();
-    // Volume is tokens, not turns (req 16).
+
     await user.click(within(section).getByTestId("weekly-metric-tokens"));
     expect(chart.querySelector('[title="Jun 15 – Jun 21: 5.0K"]')).not.toBeNull();
   });
 
   it("windows the weekly chart to the most recent 12 weeks by default", () => {
-    // 20 consecutive Mondays starting 2026-01-05. Without a ResizeObserver
-    // (jsdom) the chart falls back to its 12-week default window.
+
     const many: UsageStats = {
       sessions: [],
       totals: metered(10, 100),
@@ -212,7 +203,7 @@ describe("UsageModal", () => {
     );
     const chart = screen.getByTestId("weekly-usage-chart");
     expect(chart.querySelectorAll("[title]")).toHaveLength(12);
-    // The window keeps the NEWEST weeks: 2026-01-05 + 19 weeks = 2026-05-18.
+
     expect(screen.getByText("May 18")).toBeInTheDocument();
     expect(screen.getByTestId("weekly-usage-window")).toHaveTextContent("last 12 weeks");
   });
@@ -226,7 +217,7 @@ describe("UsageModal", () => {
         onClose={() => {}}
       />
     );
-    // $0.42 / 7 turns, $1.35 / 19 turns.
+
     expect(screen.getByTestId("usage-session-avg")).toHaveTextContent("$0.06");
     expect(screen.getByTestId("usage-all-avg")).toHaveTextContent("$0.07");
     expect(screen.getByTestId("usage-session-count")).toHaveTextContent("2");
@@ -335,7 +326,7 @@ describe("UsageModal", () => {
         onClose={onClose}
       />
     );
-    // Radix Dialog closes on Escape; use that instead of clicking the old aria-hidden backdrop
+
     await user.keyboard("{Escape}");
     expect(onClose).toHaveBeenCalledOnce();
   });
@@ -369,8 +360,7 @@ describe("UsageModal", () => {
         onClose={() => {}}
       />
     );
-    // req 16 — "Nothing", not `$0.00`: a zero reads as telemetry that came back
-    // empty, which is the wrong impression for a session that spent nothing.
+
     expect(screen.getByText("Nothing")).toBeInTheDocument();
     expect(screen.getByText("0s")).toBeInTheDocument();
   });
@@ -523,17 +513,13 @@ describe("UsageModal", () => {
     );
 
     expect(screen.getByText("This session")).toBeInTheDocument();
-    // Cost may appear multiple times (session + per-session breakdown)
+
     expect(screen.getAllByText("$0.42").length).toBeGreaterThanOrEqual(1);
     expect(screen.getByText("7")).toBeInTheDocument();
     expect(screen.getByText("3m 12s")).toBeInTheDocument();
   });
 });
 
-/**
- * docs/252 req 16 — the split, and the wording that keeps it honest. These
- * cases are about which figure appears where, not about layout.
- */
 describe("UsageModal — the usage split (docs/252 req 16)", () => {
   const planGroup = {
     key: "anthropic:sub", kind: "sub" as const, serviceId: "anthropic", billingMode: "sub" as const,
@@ -565,10 +551,10 @@ describe("UsageModal — the usage split (docs/252 req 16)", () => {
     );
     const headline = screen.getByTestId("usage-session-headline");
     // "Metered spend (est.)" — est. is load-bearing: the figure comes from four
-    // unit rates, so calling it "You paid" would assert a bank statement.
+
     expect(within(headline).getByText("Metered spend (est.)")).toBeInTheDocument();
     expect(screen.getByTestId("usage-session-headline-metered")).toHaveTextContent("$0.11");
-    // Plan usage is counted in TOKENS with its API-rate value beneath it.
+
     expect(screen.getByTestId("usage-session-headline-included")).toHaveTextContent("1.4M tokens");
     expect(screen.getByTestId("usage-session-headline-at-api-rates")).toHaveTextContent("≈$5.40 at API rates");
     // The sum $5.51 must appear nowhere.
@@ -613,14 +599,12 @@ describe("UsageModal — the usage split (docs/252 req 16)", () => {
     expect(within(plan).getByTestId("usage-group-quota")).toHaveStyle({ width: "62%" });
     expect(within(plan).getByText(/62% of 5h window/)).toBeInTheDocument();
     expect(within(plan).getByText("≈$5.40 at API rates")).toBeInTheDocument();
-    // req 10 — a metered mode has no allowance, so it renders no indicator at all.
+
     expect(within(metered).queryByTestId("usage-group-quota")).toBeNull();
     expect(within(metered).getByText("$0.11")).toBeInTheDocument();
     expect(within(metered).getByText("metered")).toBeInTheDocument();
   });
 
-  // planning#343 — the name says what is missing, not when the row was written:
-  // the bucket now takes forward-generated unattributed volume too. The money
   // label stays "earlier accounting" because those forward rows are unpriced.
   it("names the legacy group for its missing attribution, never for a mode", () => {
     render(
@@ -637,13 +621,10 @@ describe("UsageModal — the usage split (docs/252 req 16)", () => {
     expect(within(legacy).getByText("Unattributed")).toBeInTheDocument();
     expect(within(legacy).getByText("earlier accounting")).toBeInTheDocument();
     expect(within(legacy).getByText("$31.70")).toBeInTheDocument();
-    // Its total joins neither headline.
+
     expect(screen.getByTestId("usage-session-headline-metered")).toHaveTextContent("$0.11");
   });
 
-  // planning#343 — the forward rows are unpriced, so a bucket holding only them
-  // has no dollar figure. `formatCost(0)` would print "$0.00", which asserts the
-  // work was free: the one thing req 16 exists to stop the totals saying.
   it("says a legacy group carrying only unpriced volume has no figure", () => {
     render(
       <UsageModal
@@ -661,18 +642,17 @@ describe("UsageModal — the usage split (docs/252 req 16)", () => {
     expect(within(legacy).getByText("Unpriced")).toBeInTheDocument();
     expect(within(legacy).getByText("no rates recorded")).toBeInTheDocument();
     expect(within(legacy).queryByText("$0.00")).toBeNull();
-    // The volume is still reported — that is the whole point of the row.
+
     expect(within(legacy).getByText(/12\.4K tokens|12,400 tokens/)).toBeInTheDocument();
   });
 
   it("averages each figure over the turns that produced it", () => {
-    // The pre-split version divided metered spend by EVERY turn, including the
-    // subscription turns that contributed nothing to it.
+
     render(
       <UsageModal currentSessionUsage={mixed} allUsage={null} sessions={mockSessions} onClose={() => {}} />
     );
-    expect(screen.getByTestId("usage-session-avg")).toHaveTextContent("$0.03"); // 0.11 / 4
-    expect(screen.getByTestId("usage-session-avg-at-api-rates")).toHaveTextContent("≈$0.60"); // 5.4 / 9
+    expect(screen.getByTestId("usage-session-avg")).toHaveTextContent("$0.03");            
+    expect(screen.getByTestId("usage-session-avg-at-api-rates")).toHaveTextContent("≈$0.60");           
   });
 
   it("shows a subscription turn's at-API-rates value in the per-turn column", () => {
@@ -690,12 +670,10 @@ describe("UsageModal — the usage split (docs/252 req 16)", () => {
       />
     );
     const rows = screen.getAllByTestId("turn-breakdown-row");
-    // Newest first — the metered turn, then the subscription one, which reads
-    // as an estimate rather than as "this turn was free".
+
     expect(rows[0]).toHaveTextContent("$0.05");
     expect(rows[1]).toHaveTextContent("≈$0.02");
-    // `≈` stays reserved for the comparison — a metered turn is qualified by the
-    // column header ("Cost (est.)") rather than by borrowing that marker.
+
     expect(rows[0].textContent).not.toContain("≈");
     expect(screen.getByText("Cost (est.)")).toBeInTheDocument();
   });
@@ -719,7 +697,7 @@ describe("UsageModal — the usage split (docs/252 req 16)", () => {
       />
     );
     const rows = screen.getAllByTestId("usage-session-row");
-    expect(rows[0]).toHaveTextContent("Fix API routes"); // sess-2, the larger estimate
+    expect(rows[0]).toHaveTextContent("Fix API routes");                               
     expect(rows[0]).toHaveTextContent("≈$9.00");
     expect(rows[1]).toHaveTextContent("Build landing page");
   });

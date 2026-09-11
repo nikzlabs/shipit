@@ -2,24 +2,24 @@
 import { useState, useCallback, useRef, useEffect } from "react";
 
 export interface UseResizablePanelOptions {
-  /** Initial width of the left panel as a fraction (0–1). Default: 0.5 */
+
   initialFraction?: number;
-  /** Minimum width of either panel as a fraction. Default: 0.25 */
+
   minFraction?: number;
-  /** localStorage key for persisting the position. Omit to skip persistence. */
+
   storageKey?: string;
 }
 
 export interface UseResizablePanelReturn {
-  /** Current left-panel width as a fraction (0–1) */
+
   fraction: number;
-  /** Whether the user is currently dragging */
+
   isDragging: boolean;
-  /** Attach to the resize handle's onMouseDown */
+
   onMouseDown: (e: React.MouseEvent) => void;
-  /** Attach to the resize handle's onTouchStart for mobile/tablet drag */
+
   onTouchStart: (e: React.TouchEvent) => void;
-  /** Ref to attach to the container element that holds both panels */
+
   containerRef: React.RefObject<HTMLDivElement | null>;
 }
 
@@ -36,17 +36,6 @@ function loadFraction(key: string, fallback: number): number {
   return fallback;
 }
 
-/**
- * Hook that manages a draggable divider between two horizontal panels.
- *
- * Usage:
- *   const { fraction, isDragging, onMouseDown, containerRef } = useResizablePanel();
- *   <div ref={containerRef} style={{ display: "flex" }}>
- *     <div style={{ width: `${fraction * 100}%` }}>Left</div>
- *     <div onMouseDown={onMouseDown} className="resize-handle" />
- *     <div style={{ width: `${(1 - fraction) * 100}%` }}>Right</div>
- *   </div>
- */
 export function useResizablePanel(
   options: UseResizablePanelOptions = {}
 ): UseResizablePanelReturn {
@@ -62,7 +51,6 @@ export function useResizablePanel(
   const [isDragging, setIsDragging] = useState(false);
   const containerRef = useRef<HTMLDivElement | null>(null);
 
-  // Persist to localStorage on change (debounced by the drag end)
   const persistRef = useRef(fraction);
   persistRef.current = fraction;
 
@@ -76,7 +64,7 @@ export function useResizablePanel(
         if (!container) return;
         const rect = container.getBoundingClientRect();
         let newFraction = (moveEvent.clientX - rect.left) / rect.width;
-        // Clamp within bounds
+
         newFraction = Math.max(minFraction, Math.min(1 - minFraction, newFraction));
         setFraction(newFraction);
       };
@@ -85,7 +73,7 @@ export function useResizablePanel(
         setIsDragging(false);
         document.removeEventListener("mousemove", onMouseMove);
         document.removeEventListener("mouseup", onMouseUp);
-        // Persist final position
+
         if (storageKey) {
           try {
             localStorage.setItem(storageKey, persistRef.current.toString());
@@ -101,7 +89,6 @@ export function useResizablePanel(
     [minFraction, storageKey]
   );
 
-  // Touch support — mirrors mouse logic but uses touch events
   const onTouchStart = useCallback(
     (e: React.TouchEvent) => {
       if (e.touches.length !== 1) return;
@@ -137,10 +124,8 @@ export function useResizablePanel(
     [minFraction, storageKey]
   );
 
-  // Disable text selection while dragging.
-  // The cleanup runs on isDragging→false AND on unmount, so a mid-drag unmount
   // (session switch, mobile drawer close) cannot leave userSelect: none welded
-  // to <body> — which would block text selection across the entire app.
+
   // eslint-disable-next-line no-restricted-syntax -- DOM sync during drag
   useEffect(() => {
     if (!isDragging) return;

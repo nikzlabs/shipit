@@ -29,7 +29,7 @@ describe("RepoColorPicker", () => {
   });
 
   // The swatch must paint with the SAME custom property the sidebar edge uses,
-  // or the picker shows one color and the rail draws another.
+
   it("paints each swatch with its own palette custom property", () => {
     render(<RepoColorPicker repoUrl={url} />);
     const swatch = screen.getByTestId("repo-color-7");
@@ -56,7 +56,7 @@ describe("RepoColorPicker", () => {
   });
 
   // A repo written before the backfill migration has no color: the picker must
-  // still render, with nothing selected, rather than crashing or guessing.
+
   it("renders with no selection when the repo has no stored color", () => {
     useRepoStore.setState({ repos: [{ ...repo, colorIndex: undefined }] });
     render(<RepoColorPicker repoUrl={url} />);
@@ -64,9 +64,6 @@ describe("RepoColorPicker", () => {
     expect(screen.getAllByRole("radio")).toHaveLength(REPO_COLOR_COUNT);
   });
 
-  // req 5 — the no-collision guarantee covers AUTOMATIC assignment; a manual
-  // pick may duplicate. The marking is the safeguard that makes that safe, so
-  // it's a requirement in its own right, not a nicety.
   describe("colors taken by other repos", () => {
     const other = (u: string, colorIndex: number): RepoInfo =>
       ({ url: u, status: "ready", addedAt: now, lastUsedAt: now, colorIndex });
@@ -90,7 +87,6 @@ describe("RepoColorPicker", () => {
       expect(screen.getByTestId("repo-color-3").getAttribute("data-taken")).toBeNull();
     });
 
-    // A hidden repo still holds its color and can return at any time.
     it("counts hidden repos as holders", () => {
       useRepoStore.setState({
         repos: [repo, { ...other("https://github.com/owner/b.git", 9), hidden: true }],

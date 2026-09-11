@@ -8,20 +8,19 @@ import {
 
 describe("large-paste", () => {
   it("uses the value the user approved", () => {
-    // Every other case here is written against the constant, so it would stay
-    // green if the threshold were changed. This is the one that pins 2,000.
+
     expect(LARGE_PASTE_THRESHOLD_CHARS).toBe(2000);
     expect(PASTED_TEXT_FILENAME).toBe("pasted-text.txt");
   });
 
   describe("isLargePaste", () => {
     it("is false one character below the threshold", () => {
-      // docs/292 req 3 — a smaller paste still goes into the input as text.
+
       expect(isLargePaste("x".repeat(LARGE_PASTE_THRESHOLD_CHARS - 1))).toBe(false);
     });
 
     it("is true exactly at the threshold", () => {
-      // docs/292 req 1 — "2,000 characters or more", so the boundary converts.
+
       expect(isLargePaste("x".repeat(LARGE_PASTE_THRESHOLD_CHARS))).toBe(true);
     });
 
@@ -34,21 +33,19 @@ describe("large-paste", () => {
     });
 
     it("counts an astral character once, not as its two code units", () => {
-      // `"😀".length` is 2, so a naive length check converts this paste at half
-      // the characters req 1 names.
+
       expect(isLargePaste("😀".repeat(LARGE_PASTE_THRESHOLD_CHARS - 1))).toBe(false);
       expect(isLargePaste("😀".repeat(LARGE_PASTE_THRESHOLD_CHARS))).toBe(true);
     });
 
     it("counts a mixed astral and ASCII paste by character", () => {
-      const mixed = `${"😀".repeat(500)}${"x".repeat(1499)}`; // 1,999 characters, 2,499 code units
+      const mixed = `${"😀".repeat(500)}${"x".repeat(1499)}`;                                      
       expect(isLargePaste(mixed)).toBe(false);
       expect(isLargePaste(`${mixed}x`)).toBe(true);
     });
 
     it("stops counting at the threshold rather than walking the whole paste", () => {
-      // Counted, not timed: a wall-clock assertion would pass for a full scan
-      // that simply happened to be fast enough.
+
       const original = String.prototype.charCodeAt;
       let reads = 0;
       // eslint-disable-next-line no-extend-native -- restored in the finally below
@@ -62,7 +59,7 @@ describe("large-paste", () => {
         // eslint-disable-next-line no-extend-native -- restoring the original
         String.prototype.charCodeAt = original;
       }
-      // One read per character up to the threshold, and then it stops.
+
       expect(reads).toBe(LARGE_PASTE_THRESHOLD_CHARS);
     });
   });
@@ -77,7 +74,7 @@ describe("large-paste", () => {
     });
 
     it("sizes multi-byte text in bytes, not characters", () => {
-      // The upload quota is byte-based; a character count would understate it.
+
       const file = buildPastedTextFile("é".repeat(10));
       expect(file.size).toBe(20);
     });

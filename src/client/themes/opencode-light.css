@@ -1,6 +1,6 @@
-/* OpenCode Light theme — warm paper white with amber accent */
+
 .opencode-light {
-  /* Surfaces */
+
   --color-bg-primary: #faf8f2;
   --color-bg-secondary: #f1eee4;
   --color-bg-tertiary: #e6e2d4;
@@ -9,25 +9,21 @@
   --color-bg-hover: rgba(180, 110, 20, 0.06);
   --color-bg-active: rgba(180, 110, 20, 0.1);
 
-  /* Text */
   --color-text-primary: #262420;
   --color-text-secondary: #56524a;
   --color-text-tertiary: #8c867a;
   --color-text-inverse: #faf8f2;
   --color-text-link: #a6640f;
 
-  /* Borders */
   --color-border-primary: #dcd5c6;
   --color-border-secondary: #cec8b8;
   --color-border-focus: #b46e14;
 
-  /* Accent */
   --color-accent: #b46e14;
   --color-accent-hover: #9a5c0c;
   --color-accent-text: #ffffff;
   --color-accent-subtle: rgba(180, 110, 20, 0.1);
 
-  /* Status */
   --color-success: #1a8a40;
   --color-success-subtle: rgba(26, 138, 64, 0.12);
   --color-success-border: rgba(26, 138, 64, 0.3);
@@ -38,7 +34,6 @@
   --color-info: #2c6f9c;
   --color-info-subtle: rgba(44, 111, 156, 0.12);
 
-  /* Domain-specific */
   --color-pr: #7050a0;
   --color-pr-subtle: rgba(112, 80, 160, 0.12);
   --color-pr-border: rgba(112, 80, 160, 0.3);
@@ -47,17 +42,14 @@
   --color-attention: #b45309;
   --color-attention-text: #964307;
 
-  /* Context meter */
   --color-context-ok: #1a8a40;
   --color-context-mid: #9a7b0a;
   --color-context-high: #b45309;
   --color-context-full: #c0392b;
 
-  /* Scrollbar */
   --color-scrollbar-thumb: rgba(140, 134, 122, 0.4);
   --color-scrollbar-thumb-hover: rgba(86, 82, 74, 0.5);
 
-  /* Syntax highlighting (warm ink on paper) */
   --color-syntax-base: #33302a;
   --color-syntax-bg: #f4f1e8;
   --color-syntax-keyword: #a6640f;
@@ -75,6 +67,5 @@
   --color-syntax-deletion: #c0392b;
   --color-syntax-deletion-bg: #f6e6e2;
 
-  /* Typography */
   --font-size-code: 13px;
 }

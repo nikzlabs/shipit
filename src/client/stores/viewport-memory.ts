@@ -7,24 +7,12 @@ import {
   type DevicePreset,
 } from "../components/device-presets.js";
 
-/**
- * Per-session memory of the preview viewport choice (docs/278, req 6).
- *
- * Mirrors the `shipit:preview-paths` design: a localStorage-backed
- * `Record<sessionId, entry>` hydrated once into the preview store, written
- * through on every viewport mutation, LRU-capped, and validated on load so a
- * tampered or stale blob degrades to "no memory" rather than a broken frame.
- *
- * Responsive (fill the panel) is stored as **absence**: it is the default, so
- * an entry would say nothing, and deleting keeps the map small.
- */
 export type PersistedViewport =
-  /** A named preset, by id — dims resolve fresh on load so preset updates propagate. */
+
   | { preset: string; landscape?: boolean }
   /** A freeform size, stored as rendered (custom sizes never carry landscape). */
   | { custom: { width: number; height: number } };
 
-/** The live store fields a persisted entry expands back into. */
 export interface ViewportState {
   devicePreset: DevicePreset | null;
   isLandscape: boolean;
@@ -33,11 +21,6 @@ export interface ViewportState {
 
 export const VIEWPORT_MEMORY_KEY = "shipit:preview-viewport";
 
-/**
- * Cap on remembered sessions. Same order as `MAX_REMEMBERED_PATHS`: bounds
- * growth across a long-lived session list, evicting oldest-first (plain-object
- * key order is insertion order for these non-numeric keys; writes re-insert).
- */
 export const MAX_REMEMBERED_VIEWPORTS = 100;
 
 function isValidCustomDim(value: unknown): value is number {
@@ -80,8 +63,7 @@ export function loadViewportMemory(): Record<string, PersistedViewport> {
     (parsed) => {
       if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
       const out: Record<string, PersistedViewport> = {};
-      // Trailing entries are the most recent (writes re-insert at the end), so
-      // an oversized blob is truncated from the front rather than loaded whole.
+
       const entries = Object.entries(parsed as Record<string, unknown>).slice(
         -MAX_REMEMBERED_VIEWPORTS,
       );
@@ -121,7 +103,6 @@ export function viewportEntryFromState(state: ViewportState): PersistedViewport 
     : { preset: state.devicePreset.id };
 }
 
-/** Expand a persisted entry (or absence) back into live store fields. */
 export function viewportStateFromEntry(entry: PersistedViewport | undefined): ViewportState {
   if (entry && "preset" in entry) {
     const preset = findPresetById(entry.preset);
@@ -138,10 +119,6 @@ export function viewportStateFromEntry(entry: PersistedViewport | undefined): Vi
   return { devicePreset: null, isLandscape: false, customSize: null };
 }
 
-/**
- * The map with `sessionId`'s entry updated (re-inserted at the end so eviction
- * is LRU), deleted (null entry = Responsive), and capped.
- */
 export function withViewportEntry(
   map: Record<string, PersistedViewport>,
   sessionId: string,

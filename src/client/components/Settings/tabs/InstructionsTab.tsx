@@ -4,11 +4,6 @@ import { SettingsTabPane } from "../SettingsTabPane.js";
 
 const MAX_LENGTH = 50_000;
 
-/**
- * Instructions tab. `content` and the textarea ref are owned by the parent
- * `Settings` dialog so the dialog-level Cmd/Ctrl+Enter shortcut and the
- * focus-on-tab-switch behavior keep working; everything else is local.
- */
 export function InstructionsTab({
   content,
   onContentChange,

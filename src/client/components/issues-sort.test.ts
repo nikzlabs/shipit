@@ -13,7 +13,6 @@ import {
   type SortPrefs,
 } from "./issues-sort.js";
 
-/** Minimal issue factory — only the fields the sort/tree logic reads. */
 function issue(partial: Partial<TrackerIssue> & { id: string; identifier: string }): TrackerIssue {
   return {
     title: partial.identifier,
@@ -53,7 +52,7 @@ describe("compareIssues", () => {
   });
 
   it("breaks ties with the secondary key", () => {
-    // Same priority; secondary = status (started < completed by rank).
+
     const a = issue({ id: "a", identifier: "T-1", priority: PRI.high, status: { name: "Done", type: "completed" } });
     const b = issue({ id: "b", identifier: "T-2", priority: PRI.high, status: { name: "In Progress", type: "started" } });
     const sorted = [a, b].sort((x, y) =>
@@ -66,12 +65,12 @@ describe("compareIssues", () => {
     const a = issue({ id: "a", identifier: "T-10", priority: PRI.high });
     const b = issue({ id: "b", identifier: "T-2", priority: PRI.high });
     const sorted = [a, b].sort((x, y) => compareIssues(x, y, prefs({ primary: "priority", secondary: "none" })));
-    // "T-2" before "T-10" thanks to numeric collation, not lexical.
+
     expect(sorted.map((i) => i.id)).toEqual(["b", "a"]);
   });
 
   it("sorts unassigned last when sorting by assignee ascending", () => {
-    const a = issue({ id: "a", identifier: "T-1" }); // unassigned
+    const a = issue({ id: "a", identifier: "T-1" });              
     const b = issue({ id: "b", identifier: "T-2", assignee: { name: "Ava" } });
     const sorted = [a, b].sort((x, y) => compareIssues(x, y, prefs({ primary: "assignee", secondary: "none" })));
     expect(sorted.map((i) => i.id)).toEqual(["b", "a"]);
@@ -93,7 +92,7 @@ describe("buildIssueTree", () => {
     const tree = buildIssueTree([parent, childA, childB], prefs({ primary: "priority", secondary: "none" }));
     expect(tree).toHaveLength(1);
     expect(tree[0].issue.id).toBe("p");
-    // Children sorted by priority within the parent: urgent (cb) before low (ca).
+
     expect(tree[0].children.map((c) => c.issue.id)).toEqual(["cb", "ca"]);
     expect(tree[0].children[0].depth).toBe(1);
   });
@@ -103,8 +102,7 @@ describe("buildIssueTree", () => {
     const p2 = issue({ id: "p2", identifier: "T-2", priority: PRI.medium });
     const urgentChild = issue({ id: "c", identifier: "T-3", parentId: "p1", priority: PRI.urgent });
     const tree = buildIssueTree([p1, p2, urgentChild], prefs({ primary: "priority", secondary: "none" }));
-    // Top level ordered by the PARENTS only — p1(low) still sorts after p2(medium)?
-    // low=3 > medium=2, so p2 first. The urgent child does NOT lift p1.
+
     expect(tree.map((n) => n.issue.id)).toEqual(["p2", "p1"]);
   });
 
@@ -176,8 +174,7 @@ describe("groupRoots + buildSections", () => {
     const parent = issue({ id: "p", identifier: "T-1", status: { name: "Todo", type: "unstarted" } });
     const child = issue({ id: "c", identifier: "T-2", parentId: "p", status: { name: "Done", type: "completed" } });
     const sections = buildSections([parent, child], prefs({ group: "status" }), () => false);
-    // One section (Todo, the parent's status); the child rides along nested, not
-    // hoisted into a separate "Done" section.
+
     expect(sections.map((s) => s.label)).toEqual(["Todo"]);
     expect(sections[0].rows.map((r) => r.issue.id)).toEqual(["p", "c"]);
   });
@@ -195,9 +192,9 @@ describe("collapsePredicate (docs/206)", () => {
   });
 
   it("an explicit override beats the layout default, both ways", () => {
-    // Explicitly expanded → expanded even on narrow.
+
     expect(collapsePredicate({ p: false }, true)("p")).toBe(false);
-    // Explicitly collapsed → collapsed even on wide.
+
     expect(collapsePredicate({ p: true }, false)("p")).toBe(true);
   });
 

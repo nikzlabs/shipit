@@ -1,6 +1,6 @@
-/* Dark theme — applied via .dark class on <html> */
+
 .dark {
-  /* Surfaces */
+
   --color-bg-primary: #030712;
   --color-bg-secondary: #111827;
   --color-bg-tertiary: #1f2937;
@@ -9,25 +9,21 @@
   --color-bg-hover: rgba(255, 255, 255, 0.05);
   --color-bg-active: rgba(255, 255, 255, 0.1);
 
-  /* Text */
   --color-text-primary: #f3f4f6;
   --color-text-secondary: #9ca3af;
   --color-text-tertiary: #6b7280;
   --color-text-inverse: #030712;
   --color-text-link: #60a5fa;
 
-  /* Borders */
   --color-border-primary: #212c3b;
   --color-border-secondary: #374151;
   --color-border-focus: #3b82f6;
 
-  /* Accent */
   --color-accent: #3b82f6;
   --color-accent-hover: #2563eb;
   --color-accent-text: #ffffff;
   --color-accent-subtle: rgba(59, 130, 246, 0.15);
 
-  /* Status */
   --color-success: #22c55e;
   --color-success-subtle: rgba(34, 197, 94, 0.15);
   --color-success-border: rgba(34, 197, 94, 0.3);
@@ -38,7 +34,6 @@
   --color-info: #60a5fa;
   --color-info-subtle: rgba(96, 165, 250, 0.15);
 
-  /* Domain-specific */
   --color-pr: #a78bfa;
   --color-pr-subtle: rgba(167, 139, 250, 0.15);
   --color-pr-border: rgba(167, 139, 250, 0.3);
@@ -47,17 +42,14 @@
   --color-attention: #f59e0b;
   --color-attention-text: #f59e0b;
 
-  /* Context meter */
   --color-context-ok: #22c55e;
   --color-context-mid: #eab308;
   --color-context-high: #f97316;
   --color-context-full: #ef4444;
 
-  /* Scrollbar */
   --color-scrollbar-thumb: rgba(75, 85, 99, 0.5);
   --color-scrollbar-thumb-hover: rgba(107, 114, 128, 0.7);
 
-  /* Syntax highlighting (GitHub Dark) */
   --color-syntax-base: #c9d1d9;
   --color-syntax-bg: #0d1117;
   --color-syntax-keyword: #ff7b72;
@@ -75,6 +67,5 @@
   --color-syntax-deletion: #ffdcd7;
   --color-syntax-deletion-bg: #67060c;
 
-  /* Typography */
   --font-size-code: 13px;
 }

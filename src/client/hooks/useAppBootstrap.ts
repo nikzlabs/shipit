@@ -21,7 +21,7 @@ import { useSessionStore } from "../stores/session-store.js";
  */
 export function useAppBootstrap(params: {
   status: string;
-  /** Returns whether the frame reached the wire — see `useWebSocket.send`. */
+
   send: (msg: WsClientMessage) => boolean;
   lastMessage: MessageEvent | null;
   drainMessages: () => MessageEvent[];
@@ -33,18 +33,14 @@ export function useAppBootstrap(params: {
 
   useConnectionSync({ status, send, onSessionConnect: (sid: string) => {
     void useFileStore.getState().hydrateUploads(sid);
-    // Load user-invocable skills for the composer's `/` autocomplete (doc 138).
+
     void useFileStore.getState().fetchSkills(sid, useUiStore.getState().activeAgentId).catch(() => {});
-    // Re-fetch docs if the docs tab is currently active. loadSessionHistory()
-    // populates the file tree and commit log but not docs, so without this a
-    // session switch leaves the DocsViewer stuck on "No docs found" until the
-    // user clicks Refresh.
+
     if (useUiStore.getState().rightTab === "docs") {
       void useFileStore.getState().fetchDocs(sid).catch(() => {});
     }
   } });
 
-  // Delayed spinner for bootstrap loading gate — only show after 1s
   const [showBootstrapSpinner, setShowBootstrapSpinner] = useState(false);
   // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {

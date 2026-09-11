@@ -17,7 +17,7 @@ const codex: AgentOption = {
 };
 
 beforeEach(() => {
-  // Stub the draft-load fetch so the load effect doesn't hit the network.
+
   vi.spyOn(globalThis, "fetch").mockResolvedValue({
     ok: true, status: 200, json: async () => ({ id: "d1", comments: [], reviews: [] }),
   } as unknown as Response);
@@ -112,9 +112,6 @@ describe("useFileReviewControls — canSend", () => {
       useFileReviewControls({ filePath: "docs/x.md", kind: "markdown", content: "# x", onSendComments }),
     );
 
-    // Seed a draft comment so only the composing flag can hold Send back. The
-    // mount-time draft load resolves against the stubbed fetch (empty draft),
-    // so re-seed after any awaited flush.
     const seedDraft = () => {
       act(() => {
         useFileReviewStore.setState({
@@ -144,8 +141,6 @@ describe("useFileReviewControls — canSend", () => {
     expect(result.current.composing).toBe(true);
     expect(result.current.canSend).toBe(false);
 
-    // …and handleSend is a no-op while held, so a stray keyboard submit can't
-    // open the send dialog over the editor — nor send from it (docs/260).
     act(() => { result.current.handleSend(); });
     expect(result.current.sendDialogOpen).toBe(false);
     await act(async () => { await result.current.confirmSend(); });
@@ -159,8 +154,6 @@ describe("useFileReviewControls — canSend", () => {
   });
 });
 
-// docs/260 — Send is a two-step: it opens the confirmation dialog, and the
-// dialog's own Send is what reaches the agent.
 describe("useFileReviewControls — send dialog", () => {
   const seedDraft = () => {
     act(() => {
@@ -240,11 +233,9 @@ describe("useFileReviewControls — send dialog", () => {
     expect(result.current.note).toBe("");
   });
 
-  // Two send affordances (the button and ⌘⏎) over an async POST: without the
-  // in-flight guard the review is sent twice — two prompts, two agent turns.
   it("ignores a second confirm while the first send is in flight", async () => {
     const onSendComments = vi.fn();
-    // A send held open on purpose, so a second confirm lands mid-flight.
+
     let release: (v: unknown) => void = () => {};
     const pending = new Promise((r) => { release = r; });
     const sendDraft = vi.fn().mockImplementation(async () => {
@@ -260,7 +251,7 @@ describe("useFileReviewControls — send dialog", () => {
     act(() => { result.current.handleSend(); });
     act(() => { void result.current.confirmSend(); });
     expect(result.current.sending).toBe(true);
-    // …a second confirm lands while the first is still awaiting the server.
+
     await act(async () => { await result.current.confirmSend(); });
     expect(sendDraft).toHaveBeenCalledTimes(1);
 
@@ -270,8 +261,6 @@ describe("useFileReviewControls — send dialog", () => {
     expect(result.current.sending).toBe(false);
   });
 
-  // The hook follows the surface's active file (sibling tabs, Present
-  // carousel), so unkeyed dialog state would carry A's note into B's review.
   it("drops the dialog and the note when the file changes", () => {
     const { result, rerender } = renderHook(
       ({ filePath }) => useFileReviewControls({
@@ -301,7 +290,6 @@ describe("useFileReviewControls — send dialog", () => {
     act(() => { result.current.handleSend(); });
     await act(async () => { await result.current.confirmSend(); });
 
-    // Closing on failure looked exactly like success — no card, nothing sent.
     expect(result.current.sendDialogOpen).toBe(true);
     expect(result.current.sendError).toBeTruthy();
     expect(result.current.sending).toBe(false);
@@ -338,12 +326,9 @@ describe("useFileReviewControls — discardEmptyDraftNow", () => {
       useFileReviewControls({ filePath: "docs/x.md", kind: "markdown", content: "# x" }),
     );
 
-    // Capture the callback while there is no draft yet — the state the
-    // capturing effect sees when the async load is still in flight.
     act(() => { useFileReviewStore.setState({ draftByKey: {} }); });
     const captured = result.current.discardEmptyDraftNow;
 
-    // The load lands an empty draft afterwards.
     act(() => {
       useFileReviewStore.setState({
         draftByKey: {
@@ -356,7 +341,7 @@ describe("useFileReviewControls — discardEmptyDraftNow", () => {
     });
 
     // The stale-captured callback must still reach the store. Pre-checking its
-    // own captured `draft` here would leak the empty draft.
+
     act(() => { captured(); });
     expect(discardEmptyDraft).toHaveBeenCalledWith("sess_1", "docs/x.md");
   });
@@ -370,8 +355,6 @@ describe("useFileReviewControls — discardEmptyDraftNow", () => {
     );
     act(() => { result.current.discardEmptyDraftNow(); });
 
-    // Called unconditionally; `discardEmptyDraft` itself bails on a draft that
-    // is absent or has comments (file-review-store.ts).
     expect(discardEmptyDraft).toHaveBeenCalled();
   });
 

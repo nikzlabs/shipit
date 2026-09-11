@@ -58,7 +58,6 @@
   .dot { width: 9px; height: 9px; border-radius: 50%; }
   .body { padding: 16px 14px; display: flex; flex-direction: column; gap: 14px; }
 
-  /* chat rows */
   .row { display: flex; gap: 10px; }
   .av {
     width: 26px; height: 26px; border-radius: 7px; flex: none; display: grid; place-items: center;
@@ -70,7 +69,6 @@
   .name { font-size: 12px; color: var(--text-faint); margin-bottom: 3px; }
   .msg { color: var(--text); font-size: 13.5px; }
 
-  /* merged PR card (context) */
   .pr-card {
     border: 1px solid #2c2140; border-radius: 11px; overflow: hidden;
     background: linear-gradient(to bottom, rgba(168,85,247,0.06), rgba(168,85,247,0.02));
@@ -87,7 +85,6 @@
     background: rgba(168,85,247,0.16); color: #d8b4fe; border: 1px solid rgba(168,85,247,0.3);
   }
 
-  /* the "branch updated" transcript card (the deliverable) */
   .branch-card {
     border: 1px solid var(--border); border-radius: 11px; overflow: hidden;
     background: linear-gradient(to bottom, rgba(91,141,239,0.05), rgba(91,141,239,0.015));
@@ -109,7 +106,6 @@
   .bc-refline .sha { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: #9aa3b2; }
   .arrow { color: var(--text-faint); }
 
-  /* composer + the reset control */
   .composer-wrap { padding: 14px; display: flex; flex-direction: column; gap: 0; }
   .reset-ctl {
     display: flex; align-items: flex-start; gap: 10px;
@@ -156,7 +152,7 @@
   <p class="sub">docs/218 · mockup of the pre-send control (intent) and the persisted transcript card (record)</p>
 
   <div class="cols">
-    <!-- ───────────── BEFORE: composer control ───────────── -->
+
     <div>
       <p class="stage-label"><span class="num">1</span> Before you send · the opt-out control</p>
       <div class="panel">
@@ -165,7 +161,7 @@
           Fix login redirect · <span style="color:var(--text-faint)">merged</span>
         </div>
         <div class="body">
-          <!-- context: the merged PR card already in the transcript -->
+
           <div class="pr-card">
             <div class="pr-top">
               <div class="pr-icon">
@@ -179,7 +175,6 @@
             </div>
           </div>
 
-          <!-- composer with the reset control above the input -->
           <div class="composer-wrap" style="padding:0">
             <div class="reset-ctl">
               <div class="chk">
@@ -208,7 +203,6 @@
       </p>
     </div>
 
-    <!-- ───────────── AFTER: the transcript card ───────────── -->
     <div>
       <p class="stage-label"><span class="num">2</span> After sending · the persisted record</p>
       <div class="panel">
@@ -217,7 +211,7 @@
           Fix login redirect · <span style="color:var(--text-faint)">active</span>
         </div>
         <div class="body">
-          <!-- user message -->
+
           <div class="row">
             <div class="av user">N</div>
             <div class="bubble">
@@ -226,7 +220,6 @@
             </div>
           </div>
 
-          <!-- the deliverable: persisted branch-updated card -->
           <div class="branch-card">
             <div class="bc-top">
               <div class="bc-icon">
@@ -244,7 +237,6 @@
             </div>
           </div>
 
-          <!-- agent starts working -->
           <div class="row">
             <div class="av agent">◇</div>
             <div class="bubble">

@@ -31,7 +31,6 @@ Keep original message references and history unchanged for speech, copy/export, 
 
 Preserve the visible reading anchor on toggle or settlement; only follow the bottom when the reader was already there. Explicit collapse returns focus to its disclosure. Automatic settlement must not remove focused or selected content: defer that run's collapse until focus/selection leaves. This small guard remains because selection during a live turn is an established supported behavior.
 
-
 ## Implementation files
 
 - `src/client/stores/settings-store.ts`: local preference, safe default and storage failure handling.

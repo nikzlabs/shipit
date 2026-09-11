@@ -75,10 +75,7 @@ const agents: AgentOption[] = [
       },
     ],
     supportsReview: true,
-    // Deliberately a DIFFERENT level set from Claude Code's — `minimal` is
-    // Codex's and not Claude Code's, mirroring the shipped harnesses. This is what
-    // makes "the level is validated against the harness the role names" a real
-    // rule rather than a formality.
+
     reasoning: {
       label: "Reasoning effort",
       options: [
@@ -96,7 +93,7 @@ function roleOn(
     serviceId: string;
     billingMode: "sub" | "key";
     modelId: string;
-    /** Omitted for a role at **Default** (docs/264 req 1's resolved question). */
+
     reasoningEffort?: string;
   },
   over: Partial<RoleView> = {},
@@ -133,13 +130,10 @@ function open(role: RoleView | undefined) {
   return { onSave, onCancel };
 }
 
-/** The params of the single `onSave` call. */
 function savedParams(onSave: ReturnType<typeof vi.fn>): Record<string, unknown> {
   const [, write] = onSave.mock.calls[0] as [string, { params: Record<string, unknown> }];
   return write.params;
 }
-
-// ---- The harness control (req 6) -------------------------------------------
 
 describe("RoleEditor — the harness is a real control where the model has a choice", () => {
   it("offers a picker for a model both harnesses carry", async () => {
@@ -162,10 +156,7 @@ describe("RoleEditor — the harness is a real control where the model has a cho
     await userEvent.click(screen.getByTestId("role-editor-save"));
 
     // `minimal` is Codex's level and not Claude Code's, so the draft cannot keep it
-    // — it would show a tuple the server refuses. It drops to **Default**, not
-    // to Claude's first level: the user picked `minimal` on a harness that is going
-    // away, and Claude not declaring `minimal` says nothing about which of ITS levels
-    // they would have wanted. Default is the one answer that needs no guess.
+
     const saved = savedParams(onSave);
     expect(saved).toMatchObject({ harnessId: "claude", modelId: "deepseek-flash" });
     expect(saved).not.toHaveProperty("reasoningEffort");
@@ -194,11 +185,7 @@ describe("RoleEditor — the harness is a real control where the model has a cho
   });
 
   it("stays a PICKER when the stored harness is gone and one replacement is valid", async () => {
-    // A DeepSeek role pinned to Codex, on an install where Codex is no longer
-    // installed: `claude` is the only valid harness, and the stored value is not
-    // among the valid ones. Rendering a readout here — which the length-based
-    // rule alone would do — leaves the very field the row calls invalid with no
-    // way to fix it. Cross-agent review found it.
+
     const claudeOnly = [agents[0]];
     const onSave = vi.fn();
     render(
@@ -212,8 +199,7 @@ describe("RoleEditor — the harness is a real control where the model has a cho
       />,
     );
     const trigger = screen.getByTestId("role-editor-harness-trigger");
-    // Named as what it holds, not as the replacement — the stored tuple is what
-    // the role has until the user changes it.
+
     expect(trigger.textContent).toContain("codex");
     await userEvent.click(trigger);
     await userEvent.click(screen.getByTestId("role-editor-harness-option-claude"));
@@ -235,8 +221,6 @@ describe("RoleEditor — the harness is a real control where the model has a cho
     });
   });
 });
-
-// ---- The stranded role ------------------------------------------------------
 
 describe("RoleEditor — a role whose tuple no longer resolves", () => {
   const gone = roleOn({
@@ -279,8 +263,6 @@ describe("RoleEditor — a role whose tuple no longer resolves", () => {
   });
 });
 
-// ---- Name, description, standing instructions (reqs 8, 9, 17, 18) ----------
-
 describe("RoleEditor — the whole role in one place", () => {
   it("carries previousName when editing, so a rename is not a create", async () => {
     const { onSave } = open(roleOn(DUAL_HARNESS));
@@ -292,12 +274,6 @@ describe("RoleEditor — the whole role in one place", () => {
     expect(write.previousName).toBe("deep-dive");
   });
 
-  /**
-   * Req 19's last paragraph — the description field names its READER. Presented
-   * as the user's own label it attracts "The thorough one", which neither the
-   * role choice nor the prompt pitch can be made from, so the requirement would
-   * hold server-side and produce nothing.
-   */
   it("says the agent reads the description", () => {
     open(roleOn(DUAL_HARNESS));
     expect(screen.getByText(/agent reads it/i)).toBeTruthy();
@@ -313,8 +289,7 @@ describe("RoleEditor — the whole role in one place", () => {
     const { onSave } = open(undefined);
     await userEvent.type(screen.getByTestId("role-editor-name"), "new one");
     await userEvent.click(screen.getByTestId("role-editor-save"));
-    // A new role opens at **Default** (req 1's resolved question) — complete,
-    // and not an arbitrary pick from the harness's declared levels.
+
     const saved = savedParams(onSave);
     expect(saved).toMatchObject({
       kind: "pinned",
@@ -329,7 +304,7 @@ describe("RoleEditor — the whole role in one place", () => {
   it("offers Default alongside the harness's levels, as the composer does (req 1)", async () => {
     open(roleOn(DUAL_HARNESS));
     await userEvent.click(screen.getByTestId("role-editor-reasoning-trigger"));
-    // The same option set the composer shows for this harness, Default first.
+
     expect(screen.getByTestId("role-editor-reasoning-option-default")).toBeTruthy();
     expect(screen.getByTestId("role-editor-reasoning-option-max")).toBeTruthy();
   });
@@ -339,7 +314,7 @@ describe("RoleEditor — the whole role in one place", () => {
     await userEvent.click(screen.getByTestId("role-editor-reasoning-trigger"));
     await userEvent.click(screen.getByTestId("role-editor-reasoning-option-default"));
     await userEvent.click(screen.getByTestId("role-editor-save"));
-    // The ABSENCE is the value. `""` would be a level no harness declares, and
+
     // the server refuses it precisely so a client cannot mean Default that way.
     expect(savedParams(onSave)).not.toHaveProperty("reasoningEffort");
   });

@@ -3,14 +3,6 @@ import { render, screen, cleanup, fireEvent } from "@testing-library/react";
 import { SessionReportCard } from "./SessionReportCard.js";
 import { useSessionStore } from "../stores/session-store.js";
 
-/**
- * Tests for the read-only `SessionReportCard` (docs/233 / planning#243). The card
- * renders straight from its props (persisted on the message row — no store, no
- * lifecycle); the only store read is the reporting session's sidebar row, which
- * gates the "Open" button so a card for an archived/deleted session can't
- * navigate into nothing.
- */
-
 const props = {
   fromSessionId: "child-1",
   fromTitle: "Elementalist catalog",

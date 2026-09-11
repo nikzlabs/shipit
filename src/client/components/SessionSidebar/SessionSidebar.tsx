@@ -23,21 +23,20 @@ import { AttentionViewToggle } from "./AttentionViewToggle.js";
 interface SessionSidebarProps {
   sessions: SessionInfo[];
   currentSessionId: string | undefined;
-  /** Repo URL whose "New session" row should render as selected (user is on /{slug}/new). */
+
   activeNewSessionRepoUrl?: string;
   onResume: (sessionId: string) => void;
   onArchive: (sessionId: string) => void;
   onNewSessionForRepo: (repoUrl: string) => void;
   collapsed: boolean;
   onToggleCollapse: () => void;
-  // Repo actions
+
   repos: RepoInfo[];
   onAddRepo: () => void;
   onCreateNewRepo: () => void;
-  // Mobile drawer mode: full-width, no resize handle, no collapsed variant,
-  // and no top bar (toggled open/closed via the bottom tab bar's Sessions button).
+
   mobile?: boolean;
-  // Called to dismiss the mobile drawer — e.g. after selecting a session.
+
   onClose?: () => void;
 }
 
@@ -57,12 +56,9 @@ export function SessionSidebar({
   onClose,
 }: SessionSidebarProps) {
   const { width, isDragging, onMouseDown } = useSidebarResize();
-  // docs/156 — the row-level overflow menu hover-reveals on inactive desktop
-  // rows but stays always-visible on touch devices, where there's no hover.
+
   const isTouch = useMediaQuery("(pointer: coarse)");
-  // Desktop voice quick-session button only renders when voice input is on,
-  // mirroring how the mobile auto-mic flow is gated (avoids a redundant
-  // second lightning glyph for users who don't use voice).
+
   const voiceInputEnabled = useSettingsStore((s) => s.voiceInputEnabled);
 
   const collapsedRepos = useRepoStore((s) => s.collapsedRepos);
@@ -81,10 +77,6 @@ export function SessionSidebar({
   const toggleHiddenReposCollapsed = useRepoStore((s) => s.toggleHiddenReposCollapsed);
   const reorderRepos = useRepoStore((s) => s.reorderRepos);
 
-  // docs/211 — the capability dialog for a new Sandbox session is opened from the
-  // "+" advanced-session menu here, so its open-state lives in ui-store and the
-  // dialog itself is rendered once at the App level (the mobile sidebar unmounts
-  // when the drawer closes, so a sidebar-local dialog would no-op on mobile).
   const setSandboxDialogOpen = useUiStore((s) => s.setSandboxDialogOpen);
 
   const handleCreateOps = useCallback(async () => {
@@ -97,21 +89,11 @@ export function SessionSidebar({
     }
   }, [mobile, onClose, onResume]);
 
-  // Drag-and-drop reorder state. Lives at the sidebar level so all groups
-  // share a single drag context — only one group can be "over" at a time.
   const [draggedRepoUrl, setDraggedRepoUrl] = useState<string | null>(null);
   const [dropTarget, setDropTarget] = useState<{ url: string; position: "before" | "after" } | null>(null);
 
-  // Repo-removal confirmation dialog target (null = closed). Holds the repo URL,
-  // display name, and the count of sessions that will be archived so the dialog
-  // can spell out the consequences before the destructive action runs.
   const [removeRepoTarget, setRemoveRepoTarget] = useState<{ url: string; name: string; sessionCount: number } | null>(null);
 
-  // docs/222 — a hidden repo (and its sessions) leaves the sidebar entirely.
-  // Split visible vs hidden, and drop hidden repos' sessions from the grouping
-  // input so they don't resurface in the "orphan" bucket (which catches any
-  // session whose remoteUrl isn't a known/visible repo). Nothing is archived —
-  // the sessions are simply not rendered while the repo is hidden.
   const hiddenRepos = useMemo(() => repos.filter((r) => r.hidden), [repos]);
   const visibleRepos = useMemo(() => repos.filter((r) => !r.hidden), [repos]);
   const hiddenUrls = useMemo(() => new Set(hiddenRepos.map((r) => r.url)), [hiddenRepos]);
@@ -121,9 +103,6 @@ export function SessionSidebar({
   );
   const repoGroups = useMemo(() => computeRepoGroups(visibleRepos, visibleSessions), [visibleRepos, visibleSessions]);
 
-  // docs/260 — the sidebar's second view. Membership and the count both come
-  // from the shared attention derivation (req 9), over the SAME visible-session
-  // list the repo tree is built from, so a session hidden from one view can
   // never appear in the other.
   const sidebarView = useUiStore((s) => s.sidebarView);
   const toggleSidebarView = useUiStore((s) => s.toggleSidebarView);
@@ -131,54 +110,32 @@ export function SessionSidebar({
   const attentionIds = useAttentionSessions(visibleSessions);
   const attentionView = sidebarView === "attention";
 
-  // docs/260-attention-sidebar-view req 17 — in the "Needs you" view the header's
-  // leftmost button leaves the view; only a second press collapses. Overloading a
-  // control on a mode normally causes this class of mistake instead of curing it,
-  // so what makes it safe here is the label: it follows the press, so the state is
-  // visible rather than hidden. Collapsing from this view is also worse than a
-  // no-op — the rail carries no attention count (see the collapsed branch below),
-  // so it hides what the view exists to show and leaves the view on but invisible.
-  //
-  // The name is NOT the switch's own "Show all sessions": at a count of zero the
-  // switch reads exactly that, and two adjacent buttons sharing one name is
-  // ambiguous to a voice command ("click Show all sessions") and noise in
-  // screen-reader navigation. Distinct wording, same destination.
   const collapseLabel = attentionView ? "Back to all sessions" : "Collapse sidebar";
   const onCollapsePress = attentionView ? () => setSidebarView("all") : onToggleCollapse;
 
   const handleViewAll = useCallback((repoUrl: string) => {
-    // Open AllSessionsDialog filtered to the repo whose menu was clicked — NOT
-    // the current session's repo, which is a different repo whenever the user
-    // opens the menu on some other group. The scope travels with the open call;
-    // `activeRepoUrl` is deliberately left alone (it drives where a NEW session
+
     // lands and is persisted, so merely looking at a repo's sessions must not
-    // move it).
+
     useSessionStore.getState().setAllSessionsDialogOpen(true, repoUrl);
-    // Mobile drawer: close it so the dialog isn't stacked on top
+
     if (mobile) onClose?.();
   }, [mobile, onClose]);
 
   const handleProjectSettings = useCallback((repoUrl: string) => {
-    // Per-repo project settings (deployments, secrets) live in their own dialog,
-    // separate from the workspace-wide Settings. Scoped to the clicked repo.
+
     useUiStore.getState().setProjectSettingsRepoUrl(repoUrl);
     if (mobile) onClose?.();
   }, [mobile, onClose]);
 
   const handleRemoveRepo = useCallback((repoUrl: string) => {
-    // Backend semantics (api-routes-session.ts DELETE /api/repos/:url + docs/059):
-    // the repo entry and its warm session are removed, and every real session for
-    // the repo is archived — hidden from the sidebar, disk reclaimed, DB row kept.
-    // Removal is consequential enough (it can drop uncommitted working copies) to
-    // warrant an explicit deleted-vs-kept dialog rather than an inline confirm.
+
     const count = sessions.filter(
       (s) => s.remoteUrl === repoUrl && !s.userArchived && !s.warm,
     ).length;
     setRemoveRepoTarget({ url: repoUrl, name: parseRepoName(repoUrl), sessionCount: count });
   }, [sessions]);
 
-  // docs/222 — hide acts inline (no confirm dialog): it archives nothing and is
-  // instantly reversible via the "Hidden" section below or by re-adding.
   const handleHideRepo = useCallback((repoUrl: string) => {
     void useRepoStore.getState().setRepoHidden(repoUrl, true);
   }, []);
@@ -187,26 +144,16 @@ export function SessionSidebar({
     void useRepoStore.getState().setRepoHidden(repoUrl, false);
   }, []);
 
-  // Single repo mode: check if we only have one *visible* repo (a hidden repo
-  // shouldn't force the lone visible repo's group to stay expanded-and-uncollapsible).
   const isSingleRepo = visibleRepos.length === 1;
   const handleSelectCurrent = mobile ? onClose : undefined;
 
-  // Reordering is only meaningful when there's more than one visible repo to swap.
   const reorderEnabled = visibleRepos.length > 1;
 
-  // docs/254-repo-group-separation req 11 — draw the per-group identity edges only when there is more
-  // than one group to tell apart. Deliberately keyed off the rendered GROUP
-  // count, not `isSingleRepo`: one repo alongside an Ops or Sandbox group is
-  // still two groups the eye has to separate, and suppressing the treatment
-  // there would leave exactly the blending this feature exists to fix.
   const separated = repoGroups.length > 1;
 
   const handleDragStart = useCallback(
     (repoUrl: string) => (e: React.DragEvent) => {
-      // dataTransfer payload — we read it back on drop. Using a custom MIME
-      // type so a stray drag of plain text from the page can't accidentally
-      // look like a repo reorder.
+
       e.dataTransfer.setData("application/x-shipit-repo", repoUrl);
       e.dataTransfer.effectAllowed = "move";
       setDraggedRepoUrl(repoUrl);
@@ -216,23 +163,17 @@ export function SessionSidebar({
 
   const handleDragOver = useCallback(
     (repoUrl: string) => (e: React.DragEvent) => {
-      // Bail out early when not in a repo-reorder drag — lets file drops etc.
-      // bubble up naturally without preventDefault muting them.
+
       if (!draggedRepoUrl) return;
-      // Required so the drop actually fires; without preventDefault on
-      // dragover, the browser treats the element as a non-target and skips
-      // onDrop entirely.
+
       e.preventDefault();
       e.dataTransfer.dropEffect = "move";
       if (repoUrl === draggedRepoUrl) {
-        // Drop on self is a no-op — don't render an indicator either.
+
         setDropTarget(null);
         return;
       }
-      // Top half → "before", bottom half → "after". Uses the bounding rect of
-      // the currentTarget (the wrapper div on the group, not the header), so
-      // the indicator switches correctly when the user moves between the
-      // upper and lower halves of an expanded group's session list too.
+
       const rect = e.currentTarget.getBoundingClientRect();
       const midpoint = rect.top + rect.height / 2;
       const position: "before" | "after" = e.clientY < midpoint ? "before" : "after";
@@ -245,9 +186,7 @@ export function SessionSidebar({
 
   const handleDragLeave = useCallback(
     (repoUrl: string) => (e: React.DragEvent) => {
-      // Only clear when leaving the group entirely. Without the relatedTarget
-      // check, hovering over a child element fires dragleave and flickers the
-      // indicator off and on as the cursor moves.
+
       const next = e.relatedTarget as Node | null;
       if (next && e.currentTarget.contains(next)) return;
       setDropTarget((prev) => (prev?.url === repoUrl ? null : prev));
@@ -264,8 +203,6 @@ export function SessionSidebar({
       setDropTarget(null);
       if (!sourceUrl || sourceUrl === targetUrl || !position) return;
 
-      // Compute the new url order: remove the source from its current slot,
-      // then insert it relative to the target.
       const current = repos.map((r) => r.url);
       const sourceIdx = current.indexOf(sourceUrl);
       if (sourceIdx === -1) return;
@@ -275,7 +212,6 @@ export function SessionSidebar({
       if (position === "after") targetIdx += 1;
       current.splice(targetIdx, 0, sourceUrl);
 
-      // No-op when the order didn't change (drop landed back in place).
       const prevOrder = repos.map((r) => r.url).join("\n");
       const nextOrder = current.join("\n");
       if (prevOrder === nextOrder) return;
@@ -290,15 +226,6 @@ export function SessionSidebar({
     setDropTarget(null);
   }, []);
 
-  // Quick-session controls live in the sidebar's own toolbar (and collapsed
-  // rail) rather than the app header. The plain lightning opens the quick
-  // capture overlay; the lightning+mic variant opens it with auto-mic on and
-  // only renders when voice input is enabled. `side` lets the collapsed rail
-  // anchor its tooltips to the right.
-  // docs/211 — the "+" affordance above the session list opens a menu to create
-  // an "advanced" session. Today: Sandbox (capability dialog) and Ops. This
-  // centralizes the privileged-session story in one discoverable place and
-  // leaves the normal repo-claim "New session" rows untouched.
   const renderAdvancedSessionMenu = (_side?: "top" | "right") => (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
@@ -415,10 +342,7 @@ export function SessionSidebar({
           variant="ghost"
           size="sm"
           onClick={() => {
-            // Prefer the current session's repo over `activeRepoUrl` —
-            // `activeRepoUrl` doesn't get re-synced on URL-based navigation,
-            // so it can point at a different repo than the session the user
-            // is actually viewing.
+
             const session = useSessionStore.getState();
             const currentRepo = session.sessions.find((s) => s.id === session.sessionId)?.remoteUrl;
             const url = currentRepo ?? useRepoStore.getState().activeRepoUrl ?? repos[0]?.url;
@@ -497,10 +421,7 @@ export function SessionSidebar({
           needs-attention list. Both scroll in this same container — the second
           view adds no chrome of its own above the list (req 10). */}
       <div
-        // docs/254 — when the groups are separated the first header band should
-        // meet the sidebar header's bottom border directly, the way a table's
-        // first section header does; a leading 4px of padding made it look
-        // detached. The gap BELOW each group comes from the group's own margin.
+
         className={`flex-1 overflow-y-auto min-h-0 flex flex-col pb-1 ${!attentionView && separated ? "" : "pt-1"}`}
       >
         {attentionView ? (

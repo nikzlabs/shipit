@@ -32,14 +32,6 @@ import { useUiStore } from "../stores/ui-store.js";
  */
 export const NO_RUNNABLE_SERVICE_REASON = "Add a service to start chatting";
 
-/**
- * The composer's `disabledReason`, or `undefined` when the chat is live.
- *
- * `bootstrapLoaded` is not decoration: the store's pre-bootstrap default is
- * `false`, so without the gate a perfectly runnable install would paint one
- * frame of dead composer telling the user to add a service. Undefined until
- * the server has actually answered.
- */
 export function chatDisabledReason(state: {
   bootstrapLoaded: boolean;
   canRunTurns: boolean;
@@ -105,14 +97,12 @@ export function harnessOnboardingPanelVisible(state: {
   return state.harnessOnboardingCompletedAt === null;
 }
 
-/** Store-reading wrapper for {@link chatDisabledReason} — the composer's hook. */
 export function useChatDisabledReason(): string | undefined {
   const canRunTurns = useSettingsStore((s) => s.canRunTurns);
   const bootstrapLoaded = useUiStore((s) => s.bootstrapLoaded);
   return chatDisabledReason({ bootstrapLoaded, canRunTurns });
 }
 
-/** Store-reading wrapper for {@link harnessOnboardingPanelVisible}. */
 export function useHarnessOnboardingPanelVisible(githubGateUp: boolean): boolean {
   const harnessOnboardingCompletedAt = useSettingsStore((s) => s.harnessOnboardingCompletedAt);
   const bootstrapLoaded = useUiStore((s) => s.bootstrapLoaded);

@@ -48,7 +48,6 @@ code {
 
 .lede { max-width: 74ch; margin-bottom: 22px; }
 
-/* ---------- width control ---------- */
 .control {
   position: sticky; top: 0; z-index: 20;
   display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
@@ -75,7 +74,6 @@ code {
 }
 .presets button:hover { background: var(--color-bg-hover); color: var(--color-text-primary); }
 
-/* ---------- option cards ---------- */
 .card {
   border: 1px solid var(--color-border-primary);
   border-radius: 12px;
@@ -106,7 +104,6 @@ code {
 .notes .kv dd { margin: 0; color: var(--color-text-secondary); }
 .notes .kv dt.cost { color: var(--color-error); }
 
-/* ---------- the simulated panel ---------- */
 .stage { display: flex; justify-content: flex-start; }
 .panel {
   width: 390px;
@@ -121,7 +118,6 @@ code {
 .panel .page h3 { margin: 0 0 4px; font-size: 15px; }
 .panel .page span { font-size: 12px; color: #8f877c; }
 
-/* tab strip (context, baseline only) */
 .tabs {
   display: flex; align-items: center; gap: 4px;
   padding: 6px 8px 0; background: var(--color-bg-secondary);
@@ -131,14 +127,13 @@ code {
 .tabs .t.on { color: var(--color-text-primary); border-bottom-color: var(--color-accent); }
 .tabs .spacer { flex: 1; }
 
-/* THE TOOLBAR — mirrors PreviewToolbar.tsx */
 .tb {
   display: flex; align-items: center; justify-content: space-between; gap: 8px;
   padding: 6px 12px;
   background: var(--color-bg-secondary);
   border-bottom: 1px solid var(--color-border-secondary);
   font-size: 12px; color: var(--color-text-secondary);
-  overflow: hidden;                 /* the clip you see on the phone */
+  overflow: hidden;                                                    
 }
 .tb .grp { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; }
 .tb .sep { color: var(--color-border-secondary); }
@@ -156,7 +151,6 @@ code {
 .tb .iconbtn:hover { background: var(--color-bg-hover); color: var(--color-text-primary); }
 .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--color-success); flex: 0 0 auto; }
 
-/* path region — flex-1 min-w-0, collapses first (today's behaviour) */
 .path { flex: 1 1 auto; min-width: 0; overflow: hidden; display: flex; align-items: center; }
 .path .chip {
   flex: 1 1 auto; min-width: 0;
@@ -167,7 +161,6 @@ code {
 }
 .path .chip:hover { background: var(--color-bg-tertiary); border-color: var(--color-border-secondary); }
 
-/* route + query + copy, as PreviewPath.tsx actually builds it */
 .addr { display: flex; align-items: baseline; min-width: 0; overflow: hidden; }
 .route {
   min-width: 0; flex: 0 1 auto;
@@ -175,7 +168,7 @@ code {
   color: var(--color-text-primary);
 }
 .query {
-  min-width: 0; flex: 0 999 auto;      /* shrink-[999] — the query goes first */
+  min-width: 0; flex: 0 999 auto;                                               
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   color: var(--color-text-tertiary);
 }
@@ -184,8 +177,6 @@ code {
 .chip:hover .cp { color: var(--color-text-secondary); }
 .chip.copied .cp { color: var(--color-success); }
 
-/* the fixed options give the path a legibility floor, so collapse fires when
-   the address would be crushed rather than after it has already vanished */
 .tb.floor .path { min-width: 84px; }
 
 /* A — the address outranks the labels. The chip is content-sized and shrinks
@@ -196,7 +187,6 @@ code {
 .tb.addrfill .chip { flex: 0 1 auto; }
 .tb.addrfill .addr { min-width: 0; }
 
-/* auto-fix switch */
 .switch { display: flex; align-items: center; gap: 6px; cursor: pointer; white-space: nowrap; user-select: none; }
 .switch .track {
   position: relative; width: 28px; height: 16px; border-radius: 999px;
@@ -212,7 +202,6 @@ code {
 
 svg { display: block; flex: 0 0 auto; }
 
-/* overflow arrow marker on the baseline */
 .clipmark {
   position: relative;
 }
@@ -223,27 +212,21 @@ svg { display: block; flex: 0 0 auto; }
   pointer-events: none;
 }
 
-/* ---------- per-option collapse states ---------- */
-/* staged collapse — everything at or below the current stage is dropped */
 [data-stage="1"] .s1, [data-stage="2"] .s1, [data-stage="3"] .s1, [data-stage="4"] .s1,
 [data-stage="2"] .s2, [data-stage="3"] .s2, [data-stage="4"] .s2,
 [data-stage="3"] .s3, [data-stage="4"] .s3,
 [data-stage="4"] .s4 { display: none; }
 
-/* C / F: hidden until needed */
 .only-collapsed { display: none; }
 [data-stage="1"] .only-collapsed, [data-stage="2"] .only-collapsed, [data-stage="3"] .only-collapsed { display: inline-flex; }
 
-/* D: wrap to two rows */
 .tb.wrap-rows { flex-wrap: wrap; row-gap: 6px; overflow: visible; }
 .tb.wrap-rows .path { flex-basis: 100%; order: 9; }
 
-/* E: horizontal scroll */
 .tb.scroller { overflow-x: auto; overflow-y: hidden; scrollbar-width: none; }
 .tb.scroller::-webkit-scrollbar { display: none; }
 .tb.scroller .path { flex: 0 0 auto; min-width: 90px; }
 
-/* popovers */
 .pop-host { position: relative; }
 .pop {
   position: absolute; top: calc(100% + 6px); right: 0; z-index: 10;
@@ -315,7 +298,6 @@ svg { display: block; flex: 0 0 auto; }
   </span>
 </div>
 
-<!-- ══════════════ BASELINE ══════════════ -->
 <section class="card">
   <header>
     <span class="tag bad">Today</span>
@@ -361,7 +343,6 @@ svg { display: block; flex: 0 0 auto; }
   </div>
 </section>
 
-<!-- ══════════════ OPTION A ══════════════ -->
 <section class="card">
   <header>
     <span class="tag rec">Option A</span>
@@ -418,7 +399,6 @@ svg { display: block; flex: 0 0 auto; }
   </div>
 </section>
 
-<!-- ══════════════ OPTION B ══════════════ -->
 <section class="card">
   <header>
     <span class="tag">Option B</span>
@@ -470,7 +450,6 @@ svg { display: block; flex: 0 0 auto; }
   </div>
 </section>
 
-<!-- ══════════════ OPTION C ══════════════ -->
 <section class="card">
   <header>
     <span class="tag">Option C</span>
@@ -513,7 +492,6 @@ svg { display: block; flex: 0 0 auto; }
   </div>
 </section>
 
-<!-- ══════════════ OPTION D ══════════════ -->
 <section class="card">
   <header>
     <span class="tag">Option D</span>
@@ -555,7 +533,6 @@ svg { display: block; flex: 0 0 auto; }
   </div>
 </section>
 
-<!-- ══════════════ OPTION E ══════════════ -->
 <section class="card">
   <header>
     <span class="tag">Option E</span>
@@ -656,7 +633,7 @@ svg { display: block; flex: 0 0 auto; }
 </div>
 
 <script>
-/* ---- phosphor regular paths (256 viewBox) ---- */
+
 const P = {
   house:"M219.31,108.68l-80-80a16,16,0,0,0-22.62,0l-80,80A15.87,15.87,0,0,0,32,120v96a8,8,0,0,0,8,8h64a8,8,0,0,0,8-8V160h32v56a8,8,0,0,0,8,8h64a8,8,0,0,0,8-8V120A15.87,15.87,0,0,0,219.31,108.68ZM208,208H160V152a8,8,0,0,0-8-8H104a8,8,0,0,0-8,8v56H48V120l80-80,80,80Z",
   mobile:"M176,16H80A24,24,0,0,0,56,40V216a24,24,0,0,0,24,24h96a24,24,0,0,0,24-24V40A24,24,0,0,0,176,16ZM72,64H184V192H72Zm8-32h96a8,8,0,0,1,8,8v8H72V40A8,8,0,0,1,80,32Zm96,192H80a8,8,0,0,1-8-8v-8H184v8A8,8,0,0,1,176,224Z",
@@ -676,7 +653,6 @@ document.querySelectorAll("i[data-i]").forEach((el) => {
   el.outerHTML = `<svg${cls} width="${s}" height="${s}" viewBox="0 0 256 256" fill="currentColor"><path d="${P[k]}"/></svg>`;
 });
 
-/* ---- width slider ---- */
 const slider = document.getElementById("w"), readout = document.getElementById("wr");
 const panels = [...document.querySelectorAll(".panel")];
 function setWidth(px) {
@@ -690,7 +666,6 @@ document.querySelectorAll(".presets button").forEach((b) =>
   b.addEventListener("click", () => setWidth(+b.dataset.w))
 );
 
-/* ---- the measured collapse: same idea as useTabLabelCollapse ---- */
 const targetSlider = document.getElementById("t"), targetReadout = document.getElementById("tr");
 let ADDR_MIN = +targetSlider.value;
 
@@ -737,7 +712,6 @@ targetSlider.addEventListener("input", () => {
 const ro = new ResizeObserver(recalcAll);
 panels.forEach((p) => ro.observe(p));
 
-/* ---- popovers ---- */
 document.querySelectorAll("[data-pop]").forEach((btn) => {
   btn.addEventListener("click", (e) => {
     e.stopPropagation();
@@ -751,7 +725,6 @@ document.addEventListener("click", () =>
   document.querySelectorAll(".pop").forEach((p) => p.classList.remove("open"))
 );
 
-/* ---- copy chips confirm with a check, as PreviewPath.tsx does (1200ms) ---- */
 const COPY_SVG = document.querySelector(".cp").innerHTML;
 const CHECK_SVG = `<svg width="12" height="12" viewBox="0 0 256 256" fill="currentColor"><path d="${P.check}"/></svg>`;
 document.querySelectorAll(".path .chip").forEach((chip) => {
@@ -770,7 +743,6 @@ document.querySelectorAll(".path .chip").forEach((chip) => {
   });
 });
 
-/* ---- auto-fix toggles are live, so you can see the tinted-state argument ---- */
 document.querySelectorAll(".switch").forEach((s) =>
   s.addEventListener("click", (e) => { e.stopPropagation(); s.classList.toggle("on"); recalcAll(); })
 );

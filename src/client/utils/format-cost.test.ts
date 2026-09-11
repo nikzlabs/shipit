@@ -20,8 +20,7 @@ describe("formatCost / formatEstimate (docs/252 req 16)", () => {
 
 describe("turnCostDisplay (docs/252 req 16)", () => {
   it("prices a subscription turn at API rates rather than reporting it as free", () => {
-    // `costUsd` is zero by rule for a `sub` row. Printing it would say the turn
-    // cost nothing, when what is true is that it was included.
+
     expect(turnCostDisplay(turn({ billingMode: "sub", atApiRatesUsd: 0.02 })))
       .toEqual({ text: "≈$0.02", estimated: true });
   });
@@ -34,8 +33,7 @@ describe("turnCostDisplay (docs/252 req 16)", () => {
   it("prints money for a metered turn, and for a pre-feature one", () => {
     expect(turnCostDisplay(turn({ billingMode: "key", costUsd: 0.05 })))
       .toEqual({ text: "$0.05", estimated: false });
-    // A legacy row's figure is of unknown provenance but is still what the user
-    // has already been shown, so it is printed unqualified.
+
     expect(turnCostDisplay(turn({ costUsd: 2.64 })))
       .toEqual({ text: "$2.64", estimated: false });
   });

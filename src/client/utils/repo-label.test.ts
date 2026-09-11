@@ -105,9 +105,7 @@ describe("shouldAdoptClaimedSession", () => {
   });
 
   it("does NOT adopt after the user navigated to an existing session (the bug)", () => {
-    // The claim resolves late, but the user already switched to /session/abc.
-    // Adopting here would point the store at a warm session and graduate it
-    // into a brand-new session on the next message.
+
     expect(
       shouldAdoptClaimedSession({
         claimed: true,

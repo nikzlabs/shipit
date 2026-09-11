@@ -9,17 +9,13 @@ export interface AttentionInputs {
   card: PrCardState | undefined;
   status: PrStatusSummary | undefined;
   isAgentRunning: boolean;
-  /** docs/193 (Thread C) — the session is blocked awaiting a permission answer. */
+
   awaitingPermission: boolean;
-  /**
-   * docs/235 — the session has agent-initiated background work outstanding. It
-   * will speak again on its own when the task finishes, so it is not waiting on
-   * the user even though no turn is in flight.
-   */
+
   hasBackgroundTasks: boolean;
-  /** Global `autoFixCi` setting — when on, a CI failure has a fix loop coming. */
+
   autoFixEnabled: boolean;
-  /** Global `autoResolveConflicts` setting — when on, a conflict has a resolve loop coming. */
+
   autoResolveEnabled: boolean;
   /**
    * The session's PR has reached a terminal state — merged or
@@ -33,12 +29,7 @@ export interface AttentionInputs {
    * group that means "done".
    */
   resolved: boolean;
-  /**
-   * docs/277 — the user muted this session (`SessionInfo.mutedAt` is set). The
-   * mute is a deliberate "I am not picking this up soon", so it silences every
-   * attention surface at once (req 2) and is cleared server-side at the start of
-   * the session's next turn (req 4).
-   */
+
   muted: boolean;
 }
 
@@ -67,12 +58,9 @@ export function computeAttentionReason({
   resolved,
   muted,
 }: AttentionInputs): string | null {
-  // docs/277 (req 2) — a mute outranks every reason below, including the
-  // permission prompt: it is the user's own statement that this session is not
-  // theirs to look at right now. Placed here, in the one shared derivation,
-  // rather than at each surface — the row marker, the "Needs you" view and its
+
   // count, and the notification watcher all go quiet together precisely because
-  // there is nothing else to teach.
+
   if (muted) return null;
 
   const checks = card?.checks;
@@ -82,83 +70,45 @@ export function computeAttentionReason({
   const prState = status?.prState;
   const mergeable = status?.mergeable;
 
-  // A blocked permission prompt is the user's to answer and outranks every
   // other reason — including the `isAgentRunning` short-circuit below, because
-  // the agent IS "running" (held inside the gated tool call) while it waits.
-  // This is what makes a permission prompt visible from another session.
+
   if (awaitingPermission) return "Needs your approval to continue";
 
-  // docs/235 — outstanding background work is treated exactly like a running
-  // agent: the session will produce more output on its own, so nagging the user
-  // with "Waiting for your input" is wrong. Deliberately placed BELOW the
-  // `awaitingPermission` check above — a session that is both blocked on a
-  // permission prompt and holding a background task still needs the user, and
-  // that block is theirs to clear regardless of what else is pending.
   if (isAgentRunning || hasBackgroundTasks) return null;
 
-  // Terminal PR — merged or closed-without-merge, and not reopened since. There
-  // is nothing left for the user to do, so no stale CI/conflict/auto-merge state
-  // on the now-historical PR card should raise a flag. This short-circuits ABOVE
-  // those branches (a merged PR can still carry a `failure` checks state that
-  // would otherwise read as "CI checks failed") and uses the grouping's own
   // resolve signal, so a row in "Recently resolved" never wears the bar.
   if (resolved) return null;
 
-  // Same rule, read from the PR's own state rather than the sidebar grouping's
-  // `resolved` signal — the two are computed on different transports and a
   // merged PR whose row hasn't been regrouped yet must still be silent. This
-  // used to sit BELOW the auto-merge branch, so a merged PR carrying a stale
-  // auto-merge error kept flagging "Auto-merge needs repo configuration".
-  //
-  // Checks BOTH halves, in either order: the optimistic merge path flips the
-  // card to `merged` while the poller still reports the PR open, and the poller
-  // reports terminal before any card update on the other side.
+
   if (prState === "merged" || prState === "closed") return null;
   if (card?.phase === "merged" || card?.phase === "closed") return null;
 
-  // CI failure — stay silent while a fix is in flight or queued; speak only
-  // when the loop gives up (exhausted) or auto-fix is off entirely.
   if (checks?.state === "failure") {
     if (autoFix?.status === "exhausted") return "CI fix failed after 3 attempts";
     if (autoFix?.status === "running") return null;
-    if (autoFixEnabled) return null; // idle/deferred → a retry is coming
+    if (autoFixEnabled) return null;                                     
     return "CI checks failed";
   }
 
-  // Merge conflict — same shape for the auto-resolve loop.
   if (prState === "open" && mergeable === "conflicting") {
     if (autoResolve?.status === "exhausted") return "Conflict resolution failed after 3 attempts";
     if (autoResolve?.status === "running") return null;
-    if (autoResolveEnabled) return null; // idle/deferred → a retry is coming
+    if (autoResolveEnabled) return null;                                     
     return "PR has merge conflicts";
   }
 
-  // A config blocker auto-merge can't get past is genuinely the user's to fix.
   if (autoMerge?.error) {
     return "Auto-merge needs repo configuration";
   }
 
   if (checks?.state === "pending") return null;
 
-  // Agent idle on an open PR with nothing blocking: if auto-merge owns the
-  // merge, the user delegated it and has nothing to do until it merges (→
-  // closed, silent) or hits a blocker (→ the autoMerge.error branch above).
   if (autoMerge?.enabled) return null;
 
   return "Waiting for your input";
 }
 
-/**
- * Returns the highest-priority attention reason for a session, or null if no
- * attention needed.
- *
- * `muted` (docs/277) is passed in rather than looked up here on purpose: the
- * only caller is a session ROW, which already holds the `SessionInfo` it
- * renders. A row can come from `allSessions` (the All Sessions dialog) or from a
- * list the store has not caught up with, so a lookup by id would read `false`
- * for a session the row itself knows is muted — and the row would wear an amber
- * marker its own menu says is silenced.
- */
 export function useAttentionInfo(sessionId: string, muted = false): string | null {
   const card = usePrStore((s) => s.cardBySession[sessionId]);
   const status = usePrStore((s) => s.statusBySession[sessionId]);

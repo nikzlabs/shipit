@@ -55,13 +55,12 @@
     color: var(--color-text-tertiary); font-size: 11px; font-style: italic;
   }
 
-  /* ---- the toolbar itself: mirrors PreviewToolbar.tsx ---- */
   .bar {
     display: flex; align-items: center; justify-content: space-between; gap: 8px;
-    padding: 6px 12px;                      /* px-3 py-1.5 */
+    padding: 6px 12px;                                       
     background: var(--color-bg-secondary);
     border-bottom: 1px solid var(--color-border-secondary);
-    font-size: 12px;                        /* text-xs */
+    font-size: 12px;                                     
     color: var(--color-text-secondary);
     min-width: 0;
   }
@@ -82,14 +81,8 @@
   .track { width: 28px; height: 16px; border-radius: 999px; background: var(--color-border-secondary); position: relative; flex: none; }
   .knob { position: absolute; top: 2px; left: 2px; width: 12px; height: 12px; border-radius: 50%; background: #fff; }
 
-  /* ---- the new bit: the path chip ----
-     `.path` is the region that claims the space; `.chip` is the thing you can
-     see. Keeping them separate matters: if the hover background sat on the
-     full-width region it would read as a giant empty input box. */
   .path { display: flex; min-width: 0; align-items: center; gap: 4px; }
-  /* Its own flexible region — claims the slack between the two groups — but the
-     content is LEFT-aligned, so the path starts at a fixed, predictable x
-     position instead of drifting as its length changes. */
+
   .path.center { flex: 1 1 auto; margin: 0 4px 0 0; justify-content: flex-start; }
   .path.inline { flex: 0 1 auto; justify-content: flex-start; }
   .chip {
@@ -99,13 +92,12 @@
     padding: 2px 7px; border-radius: 5px;
     border: 1px solid transparent;
   }
-  /* query gives up space first, path keeps its ground */
+
   .chip .p { color: var(--color-text-primary); flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .chip .q { color: var(--color-text-tertiary); flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .chip.hov { background: var(--color-bg-tertiary); border-color: var(--color-border-secondary); cursor: pointer; }
   .chip.muted .p { color: var(--color-text-tertiary); }
 
-  /* naive alternative: one string, ellipsis at the tail */
   .chip.naive {
     display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
     color: var(--color-text-primary); min-width: 0;

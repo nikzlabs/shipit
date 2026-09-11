@@ -10,16 +10,6 @@ import { useEgressPromptStore } from "../stores/egress-prompt-store.js";
 import { useIssueWriteStore } from "../stores/issue-write-store.js";
 import type { IssueWriteCard } from "../../server/shared/types.js";
 
-/**
- * Repro for the bug where the cost/context dial disappeared from below the
- * input whenever the session agent wasn't actively running. The dial reads
- * `modelInfo` from `useUiStore`, and the server only emits `model_info` over
- * WS on `agent_init`, so any path that loads a session purely from HTTP
- * history (page reload, session switch) used to leave `modelInfo` null —
- * which made `ContextDial` return null and hid the dial entirely. The fix
- * seeds `modelInfo` from the most recent turn that recorded a `model` field
- * in `turnUsage`.
- */
 describe("loadSessionHistory — modelInfo seeding", () => {
   let fetchSpy: ReturnType<typeof vi.fn>;
 
@@ -30,8 +20,7 @@ describe("loadSessionHistory — modelInfo seeding", () => {
     useFileStore.getState().reset();
 
     fetchSpy = vi.fn();
-    // First call is /history, second is /preview-status — we only care about
-    // the former here, so return a benign 404 for everything else.
+
     fetchSpy.mockImplementation((url: string) => {
       if (url.includes("/history")) {
         return Promise.resolve({
@@ -73,7 +62,7 @@ describe("loadSessionHistory — modelInfo seeding", () => {
     const info = useUiStore.getState().modelInfo;
     expect(info).not.toBeNull();
     expect(info?.model).toBe("claude-sonnet-4-20250514");
-    // Sonnet substring → 200K window
+
     expect(info?.contextWindowTokens).toBe(200_000);
   });
 
@@ -89,8 +78,7 @@ describe("loadSessionHistory — modelInfo seeding", () => {
               commits: [],
               fileTree: [],
               agentRunning: false,
-              // Latest turn lacks a `model` (legacy data) — should fall back
-              // to the prior turn that did record one.
+
               turnUsage: [
                 {
                   inputTokens: 100,
@@ -117,7 +105,7 @@ describe("loadSessionHistory — modelInfo seeding", () => {
     await loadSessionHistory("sess-2");
     const info = useUiStore.getState().modelInfo;
     expect(info?.model).toBe("claude-opus-4-8");
-    // Opus 4.8 → 1M window
+
     expect(info?.contextWindowTokens).toBe(1_000_000);
   });
 
@@ -153,15 +141,6 @@ describe("loadSessionHistory — modelInfo seeding", () => {
     expect(useUiStore.getState().modelInfo).toBeNull();
   });
 
-  /**
-   * planning#482 — the reported symptom: "sometimes I open a new session and the
-   * context window is shown as already a third full".
-   *
-   * `contextTokens` is a session-less global and `ContextDialMount` falls back to
-   * it for a session with no turns of its own, so anything left there by the
-   * previously-viewed session WAS the fresh session's reading. The empty payload
-   * is the authoritative statement that this session has occupied nothing.
-   */
   it("clears a previous session's context reading when this session has no turns", async () => {
     useUiStore.getState().setContextTokens(64_000);
     useSessionStore.getState().setSessionId("fresh-session");
@@ -232,10 +211,6 @@ describe("loadSessionHistory — modelInfo seeding", () => {
     expect(useFileStore.getState().tree).toEqual([]);
   });
 
-  // docs/193 — guards the client/server key alignment: the persisted card uses
-  // `requestId` (the broker id, same key the store/render/resolve use). If it
-  // ever drifts back to `cardId`, this rehydrate seeds nothing and the card
-  // vanishes on reload.
   it("rehydrates the permission store from a persisted card on reload", async () => {
     usePermissionStore.getState().reset();
     useSessionStore.getState().setSessionId("perm-sess");
@@ -279,14 +254,6 @@ describe("loadSessionHistory — modelInfo seeding", () => {
   });
 });
 
-/**
- * docs/235 — switching into a session that is between turns with a background
- * job outstanding showed "Waiting for a background task to finish" for a beat
- * and then went blank, while the sidebar kept showing the session as working.
- * The status line came from a live/replayed `background_tasks` message and the
- * blank came from this hydration, which read only `agentRunning` and cleared
- * the bar unconditionally.
- */
 describe("loadSessionHistory — background-task hydration", () => {
   let fetchSpy: ReturnType<typeof vi.fn>;
 
@@ -330,14 +297,14 @@ describe("loadSessionHistory — background-task hydration", () => {
     const state = useSessionStore.getState();
     expect(state.isLoading).toBe(true);
     expect(state.activity?.label).toBe("Waiting for: npm test");
-    // No tool call is running, so the tool spinner would be a lie.
+
     expect(state.activity?.tool).toBeUndefined();
     expect(state.backgroundTaskSessions.get("bg-sess")).toEqual(["npm test"]);
   });
 
   it("upgrades the unnamed SSE-snapshot marker to the named label", async () => {
     useSessionStore.getState().setSessionId("bg-sess");
-    // The `session_attention` snapshot carries ids only — no descriptions.
+
     useSessionStore.getState().setBackgroundTaskSessions(() => new Map([["bg-sess", []]]));
     historyWith(["build the docs site"]);
 
@@ -377,7 +344,7 @@ describe("loadSessionHistory — background-task hydration", () => {
 
     const state = useSessionStore.getState();
     expect(state.isLoading).toBe(true);
-    // Not overwritten with a "Waiting for…" label: live tool activity owns it.
+
     expect(state.activity).toBeUndefined();
     expect(state.backgroundTaskSessions.get("bg-sess")).toEqual(["npm test"]);
   });
@@ -430,20 +397,19 @@ describe("loadSessionHistory — a superseded load must not clobber the transcri
   });
 
   it("ignores the older response when two loads for the same session overlap", async () => {
-    // Load A: issued for the socket the foreground handler is about to replace.
+
     const first = loadSessionHistory("s1");
-    // Load B: issued when the fresh socket opened, a moment later.
+
     const second = loadSessionHistory("s1");
     await vi.waitFor(() => expect(resolvers.length).toBe(2));
 
-    // B answers first — it read the DB after the turn's latest persist.
     resolvers[1](historyPayload(["GROUP-ONE", "GROUP-TWO"]));
     await second;
     expect(useSessionStore.getState().messages.map((m) => m.text))
       .toEqual(["GROUP-ONE", "GROUP-TWO"]);
 
     // A answers late, carrying the older snapshot. It must be discarded: this
-    // is the write that used to erase GROUP-TWO for the rest of the session.
+
     resolvers[0](historyPayload(["GROUP-ONE"]));
     await first;
     expect(useSessionStore.getState().messages.map((m) => m.text))
@@ -454,10 +420,6 @@ describe("loadSessionHistory — a superseded load must not clobber the transcri
     const first = loadSessionHistory("s1");
     await vi.waitFor(() => expect(resolvers.length).toBe(1));
 
-    // The socket dropped again: useConnectionSync clears the flag and issues a
-    // new load. `turn_snapshot` is queued behind this flag (useMessageHandler),
-    // so a stale load raising it would let the snapshot apply against an
-    // arbitrary transcript instead of on top of the history baseline.
     useSessionStore.getState().setHistoryLoaded(false);
     const second = loadSessionHistory("s1");
     await vi.waitFor(() => expect(resolvers.length).toBe(2));
@@ -472,13 +434,6 @@ describe("loadSessionHistory — a superseded load must not clobber the transcri
   });
 });
 
-/**
- * planning#375 — the seq guard makes a superseded load harmless, not free. A
- * DevTools trace of a foreground reconnect caught two `/history` requests
- * 480 ms apart at 2.67 MB each, the older one downloaded and `JSON.parse`d
- * purely to be discarded, on the main thread that was already the bottleneck.
- * Issuing a load now cancels the one it supersedes.
- */
 describe("loadSessionHistory — a superseded load is cancelled, not just discarded", () => {
   let calls: { url: string; signal: AbortSignal; resolve: (v: unknown) => void }[];
 
@@ -504,7 +459,7 @@ describe("loadSessionHistory — a superseded load is cancelled, not just discar
       const signal = init!.signal!;
       return new Promise((resolve, reject) => {
         calls.push({ url, signal, resolve });
-        // A real fetch rejects with an AbortError the moment the signal fires.
+
         signal.addEventListener("abort", () => {
           reject(Object.assign(new Error("aborted"), { name: "AbortError" }));
         });
@@ -526,8 +481,6 @@ describe("loadSessionHistory — a superseded load is cancelled, not just discar
     expect(calls[0].signal.aborted).toBe(true);
     expect(calls[1].signal.aborted).toBe(false);
 
-    // And the cancelled load resolves rather than throwing: `useConnectionSync`
-    // treats a throw as a real failure and suppresses its retry nudge.
     await expect(first).resolves.toBeUndefined();
 
     calls[1].resolve(historyPayload(["GROUP-ONE", "GROUP-TWO"]));
@@ -543,7 +496,7 @@ describe("loadSessionHistory — a superseded load is cancelled, not just discar
     await first;
 
     // The second load has nothing to supersede, so it must not fire an abort
-    // at a controller whose response is already applied.
+
     const second = loadSessionHistory("s1");
     await vi.waitFor(() => expect(calls.length).toBe(2));
     expect(calls[1].signal.aborted).toBe(false);
@@ -558,11 +511,6 @@ describe("loadSessionHistory — a superseded load is cancelled, not just discar
   });
 });
 
-/**
- * planning#375 — switching between sessions re-downloaded the whole
- * conversation every time (2.67 MB in the traced session). The response now
- * carries an ETag and the client revalidates instead.
- */
 describe("loadSessionHistory — revalidates instead of re-downloading", () => {
   let requests: { headers: Record<string, string>; cache?: string }[];
   let etag: string;
@@ -608,8 +556,7 @@ describe("loadSessionHistory — revalidates instead of re-downloading", () => {
 
     await loadSessionHistory("s1");
     expect(requests[1].headers["If-None-Match"]).toBe('"v1"');
-    // The 304 threw if `json()` was touched, so this transcript came from the
-    // cache — no transfer, no parse.
+
     expect(useSessionStore.getState().messages.map((m) => m.text)).toEqual(["ONE"]);
   });
 
@@ -622,7 +569,6 @@ describe("loadSessionHistory — revalidates instead of re-downloading", () => {
     await loadSessionHistory("s1");
     expect(useSessionStore.getState().messages.map((m) => m.text)).toEqual(["ONE", "TWO"]);
 
-    // …and the fresher body replaced the cached one.
     await loadSessionHistory("s1");
     expect(requests[2].headers["If-None-Match"]).toBe('"v2"');
     expect(useSessionStore.getState().messages.map((m) => m.text)).toEqual(["ONE", "TWO"]);
@@ -631,8 +577,7 @@ describe("loadSessionHistory — revalidates instead of re-downloading", () => {
   it("bypasses the browser's own HTTP cache so the 304 is visible to us", async () => {
     useSessionStore.getState().setSessionId("s1");
     await loadSessionHistory("s1");
-    // Left to the browser, `fetch` would resolve a revalidation as a 200 with
-    // the cached body — and we would re-parse the megabytes we are avoiding.
+
     expect(requests[0].cache).toBe("no-store");
   });
 
@@ -641,27 +586,27 @@ describe("loadSessionHistory — revalidates instead of re-downloading", () => {
       useSessionStore.getState().setSessionId(`s${i}`);
       await loadSessionHistory(`s${i}`);
     }
-    // The oldest sessions were evicted, so they revalidate from scratch.
+
     useSessionStore.getState().setSessionId("s0");
     await loadSessionHistory("s0");
     expect(requests[requests.length - 1].headers["If-None-Match"]).toBeUndefined();
-    // A recent one is still cached.
+
     useSessionStore.getState().setSessionId("s8");
     await loadSessionHistory("s8");
     expect(requests[requests.length - 1].headers["If-None-Match"]).toBe('"v1"');
   });
 
   it("does not evict the session the user keeps coming back to", async () => {
-    // LRU, not FIFO. A 304 has to count as a use — otherwise the ONE session
+
     // being revisited is the one that never gets re-inserted, and it ages out
-    // and is re-downloaded in full: exactly backwards.
+
     useSessionStore.getState().setSessionId("favourite");
     await loadSessionHistory("favourite");
 
     for (let i = 0; i < 5; i++) {
       useSessionStore.getState().setSessionId(`other${i}`);
       await loadSessionHistory(`other${i}`);
-      // Revisit the favourite between each, so it stays the most recently used.
+
       useSessionStore.getState().setSessionId("favourite");
       await loadSessionHistory("favourite");
     }
@@ -687,7 +632,7 @@ describe("loadSessionHistory — revalidates instead of re-downloading", () => {
  * `visual-elements.ts:reuseUnchanged` consume, and a test that counted renders
  * here would pass against a `messages` array rebuilt row-for-row.
  */
-/** Matches the canonical fixture in `issue-write-store.test.ts` (docs/177). */
+
 function issueWriteCard(cardId: string, undoState: IssueWriteCard["undoState"]): IssueWriteCard {
   return {
     cardId,
@@ -749,21 +694,15 @@ describe("loadSessionHistory — a validated 304 re-installs the same rows, not 
     const first = useSessionStore.getState().messages;
 
     await loadSessionHistory("s1");
-    // `useSessionStore((s) => s.messages)` compares with `Object.is`, so an
-    // identical array is not a render at all — the alt-tab reconnect case.
+
     expect(useSessionStore.getState().messages).toBe(first);
   });
 
-  // Only the per-row allocation is saved here, not the render: the clear
-  // unmounted the rows, so there is no memo left to bail out of. The identity
-  // still matters — it is what makes the reuse observable, and what the
-  // reconnect case above turns into a skipped render.
   it("restores a cleared transcript from the same row objects", async () => {
     useSessionStore.getState().setSessionId("s1");
     await loadSessionHistory("s1");
     const rows = [...useSessionStore.getState().messages];
 
-    // The switch-back shape: `resumeSessionInternal` cleared the array, so the
     // install genuinely has to run. It must still not rebuild the rows.
     useSessionStore.getState().setMessages([]);
     await loadSessionHistory("s1");
@@ -783,9 +722,6 @@ describe("loadSessionHistory — a validated 304 re-installs the same rows, not 
     body = { messages: [{ role: "assistant", text: "EDITED" }], commits: [], agentRunning: false };
     await loadSessionHistory("s1");
 
-    // The memoized rows are held on the cache entry, so a fresh body replaces
-    // them with it — reusing them here would pin the transcript to a payload
-    // the server has already superseded.
     expect(useSessionStore.getState().messages[0]).not.toBe(stale);
     expect(useSessionStore.getState().messages.map((m) => m.text)).toEqual(["EDITED"]);
   });
@@ -804,15 +740,9 @@ describe("loadSessionHistory — a validated 304 re-installs the same rows, not 
   });
 
   it("still seeds ALL FOUR card stores on a 304, over replay-created drafts", async () => {
-    // The one thing planning#467 rules out by name. The seeds are the
-    // correction for the attach-time buffer replay — a channel the transcript's
+
     // ETag says nothing about — so a cached body must not excuse them. PR #2536
-    // skipped them on exactly this reasoning and made a resolved permission
-    // re-offer Approve/Deny.
-    //
-    // All four stores, not just the permission one: they are four independent
-    // seed calls, so a test covering one would pass with any of the other three
-    // deleted (req 5 asks for the guarantee, not for a sample of it).
+
     etag = '"cards"';
     body = {
       messages: [{
@@ -833,13 +763,10 @@ describe("loadSessionHistory — a validated 304 re-installs the same rows, not 
     expect(useEgressPromptStore.getState().cards.e1?.phase).toBe("approved");
     expect(useIssueWriteStore.getState().cards.w1?.undoState).toBe("undone");
 
-    // The replay's `upsertCard` writes a card the store does not have in its
-    // fresh, actionable state — `pending` for permission and egress, `draft`
-    // for a bug report, and whatever the wire message carried for an issue
     // write. Reached here by clearing the stores first, because today's
     // `upsertCard` is deliberately non-clobbering and so cannot demote a card
     // that survived in memory. The seed must not depend on that: it is the
-    // authoritative source, and the replay's restraint is a second line.
+
     usePermissionStore.getState().reset();
     useBugReportStore.getState().reset();
     useEgressPromptStore.getState().reset();
@@ -900,7 +827,6 @@ describe("loadSessionHistory — the file tree is session-scoped", () => {
     const loadA = loadSessionHistory("A");
     await vi.waitFor(() => expect(treeResolvers.A).toBeDefined());
 
-    // The user switches before A's tree lands.
     useSessionStore.getState().setSessionId("B");
     const loadB = loadSessionHistory("B");
     await vi.waitFor(() => expect(treeResolvers.B).toBeDefined());

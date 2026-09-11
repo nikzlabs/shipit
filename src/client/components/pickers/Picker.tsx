@@ -52,23 +52,12 @@ const PICKER_TRIGGER_BASE =
 export const PICKER_TRIGGER_CLASS =
   `${PICKER_TRIGGER_BASE} disabled:opacity-50 disabled:cursor-not-allowed`;
 
-/**
- * The trigger when it is locked rather than disabled — same control, full
- * contrast.
- *
- * The two states look alike from inside the component (both end at
- * `disabled={true}`) and are opposites for the reader: `disabled` is transient
- * and says "not now", while `locked` is permanent and says "this is what this
- * session runs on". Halving the contrast of the permanent one made the fact it
- * exists to report the hardest thing on the row to read. The lock glyph already
- * carries the state, so the dimming was saying nothing the user could not see.
- */
 const PICKER_TRIGGER_LOCKED_CLASS = `${PICKER_TRIGGER_BASE} disabled:cursor-default`;
 
 interface PickerTriggerProps extends ComponentPropsWithoutRef<"button"> {
   /** What the control currently holds. Never empty — a blank trigger is unclickable-looking. */
   label: string;
-  /** An optional leading glyph, e.g. the reasoning control's brain. */
+
   icon?: ReactNode;
   /**
    * Not merely disabled — *cannot* change, ever, for a stated reason (the
@@ -89,8 +78,7 @@ interface PickerTriggerProps extends ComponentPropsWithoutRef<"button"> {
 export const PickerTrigger = forwardRef<HTMLButtonElement, PickerTriggerProps>(
   ({ label, icon, locked, disabled, className, ...rest }, ref) => {
     const inert = disabled || locked;
-    // Locked AND disabled is still disabled: the composer dims its whole row
-    // mid-turn, and one control opting out of that would read as the odd one.
+
     const lockedOnly = locked && !disabled;
     return (
       <button
@@ -158,13 +146,13 @@ export function Picker({
   label: string;
   icon?: ReactNode;
   locked?: boolean;
-  /** Why the control is locked. Shown on hover; ignored when not locked. */
+
   lockedTitle?: string;
   title?: string;
   ariaLabel: string;
   triggerTestId?: string;
   menuTestId?: string;
-  /** A heading over the options — the knob's own name, where it has one. */
+
   menuLabel?: string;
   menuWidth?: string;
   side?: "top" | "bottom";
@@ -288,21 +276,13 @@ export function PickerOption({
 }: {
   label: string;
   detail?: string;
-  /**
-   * A glyph at the left edge — the service rows' vendor mark.
-   *
-   * `shrink-0` and a fixed 12px box, so a row's text truncates and the column of
-   * glyphs stays a column: a mark that could shrink would make each row's label
-   * start at a slightly different place. It is the caller's job to keep it
-   * `aria-hidden` — the row's own `label` is what a screen reader reads, and a
-   * mark that announced itself would say the same thing twice.
-   */
+
   leading?: ReactNode;
   selected?: boolean;
   disabled?: boolean;
-  /** Rendered before the checkmark — the service rows' billing-mode pill. */
+
   trailing?: ReactNode;
-  /** Indented, for a row that sits under a group header. */
+
   indent?: boolean;
   onSelect: () => void;
   testId?: string;

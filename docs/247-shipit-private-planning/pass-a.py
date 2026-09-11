@@ -20,13 +20,11 @@ EXPORT = "/persist/linear-export/raw"
 MAPPING = "/persist/pilot/mapping.tsv"
 TRACKER = "planning"
 
-# Linear workflow state type -> GitHub open/closed. Req 8 lets these collapse.
 CLOSED_TYPES = {"completed", "canceled", "duplicate"}
 OPEN_TYPES = {"backlog", "unstarted", "started"}
 
 PRIORITY_LABEL = {"Urgent": "priority: urgent", "High": "priority: high",
                   "Medium": "priority: medium", "Low": "priority: low"}
-
 
 def sh(args, stdin=None):
     r = subprocess.run(args, capture_output=True, text=True, input=stdin)
@@ -34,11 +32,9 @@ def sh(args, stdin=None):
         raise RuntimeError(f"{' '.join(args)}\n{r.stdout}\n{r.stderr}")
     return r.stdout
 
-
 def issue_keys():
     ps = glob.glob(f"{EXPORT}/SHI-*.json")
     return sorted(ps, key=lambda p: int(re.search(r"SHI-(\d+)", os.path.basename(p)).group(1)))
-
 
 def render(d):
     """The gate-1 format: one header line, a rule, then the body verbatim."""
@@ -49,10 +45,8 @@ def render(d):
     if parent:
         header += f" Sub-issue of {parent.split('#')[-1]}."
     body = (d.get("description") or "").strip()
-    # 27 issues have no description at all. Emitting the rule anyway leaves a
-    # header followed by a dangling divider and nothing under it.
-    return f"{header}\n\n---\n\n{body}" if body else header
 
+    return f"{header}\n\n---\n\n{body}" if body else header
 
 def labels_for(d):
     out = [l["name"] for l in (d.get("labels") or [])]
@@ -62,12 +56,10 @@ def labels_for(d):
         out.append(lab)
     return out
 
-
 def valid_labels():
     j = json.loads(sh(["shipit", "issue", "labels", "--tracker", TRACKER, "--json"]))
     ls = j if isinstance(j, list) else j.get("labels", j)
     return {l["name"].lower() for l in ls}
-
 
 def main():
     dry = "--dry-run" in sys.argv
@@ -93,7 +85,6 @@ def main():
         labs = labels_for(d)
         st = d["status"]["type"]
 
-        # Validate before writing anything.
         if not d["title"].strip():
             problems.append(f"{key}: empty title")
         for l in labs:
@@ -137,7 +128,6 @@ def main():
             print("  ", x)
         sys.exit(1)
     print("no problems")
-
 
 if __name__ == "__main__":
     main()

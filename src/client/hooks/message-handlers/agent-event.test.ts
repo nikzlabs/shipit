@@ -28,13 +28,11 @@ beforeEach(() => {
 });
 
 describe("handleAgentEvent — card carrier message is never a merge target (planning#114)", () => {
-  // A permission card persisted in an in-progress turn comes back from
-  // loadSessionHistory with `streaming: true` (inProgress → streaming). A
+
   // buffered pre-card `agent_assistant` replayed on switch/reconnect must NOT
-  // merge into it — the merge rebuilds the message from a fixed field set and
-  // would drop `permissionPrompt`, erasing the card (it reappeared only after
+
   // the agent stopped). The card must survive, and the replayed event appends
-  // as its own message instead.
+
   it("does not drop permissionPrompt when a streaming agent_assistant follows the card", () => {
     const cardMsg: ChatMessage = {
       role: "assistant",
@@ -50,22 +48,10 @@ describe("handleAgentEvent — card carrier message is never a merge target (pla
     const card = messages.find((m) => m.permissionPrompt?.requestId === "p1");
     expect(card).toBeTruthy();
     expect(card?.permissionPrompt?.requestId).toBe("p1");
-    // The replayed assistant content landed in its own message, not folded into
-    // (and erasing) the card.
+
     expect(messages.some((m) => m.text === "running the command")).toBe(true);
   });
 
-  // Same bug class, one class of message wider. A system notice (docs/138 —
-  // account failover, guarded-mode warning, pre-turn-reset skip) is a
-  // `notice: true` flag rather than a card payload, so it was outside CARD_MESSAGE_FIELDS
-  // and the guard above missed it. Every `emitNoticeInTurn` fires at turn start
-  // with zero assistant groups recorded, so a viewer attaching before the
-  // agent's first token gets a `turn_snapshot` whose only row is the notice,
-  // marked `streaming`. The next `agent_assistant` merged into it: the muted
-  // panel became plain assistant text with the agent's first paragraph
-  // concatenated straight onto it, no separating space
-  // ("…continuing on Claude1.I agree — …"). Persistence was fine, so a reload
-  // repaired it — live, it stayed broken for the rest of the turn.
   it("does not fold agent text into a streaming notice row", () => {
     const noticeMsg = {
       role: "assistant",
@@ -80,7 +66,7 @@ describe("handleAgentEvent — card carrier message is never a merge target (pla
     handleAgentEvent(ctx, assistantEvent("I agree — 5b is the right one."));
 
     const { messages } = useSessionStore.getState();
-    // The regression signature is the two texts ending up in one `text` field.
+
     expect(messages).toHaveLength(2);
     expect(messages.some((m) => m.text.includes("Claude1.I agree"))).toBe(false);
 
@@ -95,7 +81,6 @@ describe("handleAgentEvent — card carrier message is never a merge target (pla
     expect(messages[1].notice).toBeUndefined();
   });
 
-  // The `forceMerge` branch has its own copy of the terminal-entry condition, so
   // a standalone tool arriving on the heels of a notice must not merge either.
   it("does not fold a standalone tool call into a streaming notice row", () => {
     useSessionStore.setState({
@@ -150,10 +135,6 @@ describe("the 1 MB client cap is fetchable, not a dead end (docs/244)", () => {
   const line = "x".repeat(49);
   const overCap = Array.from({ length: 30_000 }, () => line).join("\n");
 
-  // Results attach to the trailing assistant message, so the calling tool_use
-  // has to already be on screen — same order the real event stream produces.
-  // `tu-big` is a Bash call: an ORDINARY result, which is the capped-and-marked
-  // case. The subagent cases seed their own tool_use.
   beforeEach(() => {
     handleAgentEvent(ctx, assistantEvent("", [{ id: "tu-big", name: "Bash", input: { command: "ls" } }]));
   });
@@ -164,7 +145,7 @@ describe("the 1 MB client cap is fetchable, not a dead end (docs/244)", () => {
       .find((r) => r.toolUseId === id);
 
   it("marks a capped ordinary body truncated and reports the TRUE line count", () => {
-    // 1.5 M chars across 30k lines — over the cap either way you measure it.
+
     const huge = overCap;
     expect(huge.length).toBeGreaterThan(CLIENT_CONTENT_CAP);
 
@@ -174,7 +155,7 @@ describe("the 1 MB client cap is fetchable, not a dead end (docs/244)", () => {
     expect(result).toBeTruthy();
     expect(result!.truncated).toBe(true);
     // The label must describe the WHOLE body, not the clipped prefix — a count
-    // taken after clipping is exactly the lie this test exists to prevent.
+
     expect(result!.totalLines).toBe(30_000);
     expect(result!.content.length).toBeLessThanOrEqual(CLIENT_CONTENT_CAP);
     expect(huge.startsWith(result!.content)).toBe(true);
@@ -190,8 +171,7 @@ describe("the 1 MB client cap is fetchable, not a dead end (docs/244)", () => {
   });
 
   it("does not clip mid-surrogate", () => {
-    // An emoji straddling the cut would otherwise leave a lone high surrogate,
-    // which renders as a replacement character at the end of every preview.
+
     const huge = `${"a".repeat(CLIENT_CONTENT_CAP - 1)}😀${"b".repeat(100)}`;
     handleAgentEvent(ctx, resultEvent(huge));
 
@@ -203,7 +183,7 @@ describe("the 1 MB client cap is fetchable, not a dead end (docs/244)", () => {
 
   it("prefers the server's markers over the cap's when both are present", () => {
     // A server-sliced result arrives well under the cap, so the cap must not
-    // fire — but if it ever did, the server's true count wins.
+
     const event = {
       type: "agent_event",
       event: {
@@ -265,11 +245,6 @@ describe("what the cap must NOT do (docs/244 round-3)", () => {
     });
   }
 
-  /**
-   * planning#293 — the same no-recovery rule, arrived at from the other direction.
-   * The Ask branch of `MessageToolUse` returns before the output modal, so a
-   * capped answer has no click, no modal and no fetch to get its tail back.
-   */
   it("never caps an AskUserQuestion answer, however big", () => {
     handleAgentEvent(ctx, assistantEvent("", [
       { id: "tu-ask", name: "AskUserQuestion", input: { questions: [{ question: "which?" }] } },
@@ -281,12 +256,6 @@ describe("what the cap must NOT do (docs/244 round-3)", () => {
     expect(result.truncated).toBeUndefined();
   });
 
-  /**
-   * The counter-case, and a correction: this used to test `SUBAGENT_TOOLS`, the
-   * *layout* set, so `Skill` was spared here while `AskUserQuestion` was
-   * capped — wrong in both directions at once. `Skill` renders no report and is
-   * stripped server-side, so its body is fetchable and capping it is correct.
-   */
   it("DOES cap a Skill result, which renders no report and is fetchable", () => {
     handleAgentEvent(ctx, assistantEvent("", [{ id: "tu-skill", name: "Skill", input: { command: "x" } }]));
     handleAgentEvent(ctx, resultEvent("tu-skill", overCap));
@@ -297,10 +266,7 @@ describe("what the cap must NOT do (docs/244 round-3)", () => {
   });
 
   it("caps a nested subagent result but does not advertise a fetch for it", () => {
-    // A nested result takes the `parentToolUseId` branch server-side, which
-    // returns before `replaceInProgress` — so its row does not exist yet and
-    // `/tool-results/:id` would 404. Clipping is acceptable (memory bound);
-    // claiming the rest is one click away is not.
+
     handleAgentEvent(ctx, assistantEvent("", [{ id: "tu-task", name: "Task", input: { prompt: "go" } }]));
     handleAgentEvent(ctx, resultEvent("tu-nested", overCap, "tu-task"));
 
@@ -366,17 +332,13 @@ describe("the cap never breaks an MCP content-block array (docs/244)", () => {
     const parsed = parseContentForImages(findResult("shot")!.content);
     expect(parsed).toBeTruthy();
     expect(parsed!.images).toHaveLength(1);
-    // The image is kept WHOLE: there is no URL to substitute for a body whose
-    // row isn't committed, so a clipped payload would be an unrenderable image
-    // rather than a smaller one.
+
     expect(parsed!.images[0].data).toContain("iVBORw0KGgo");
   });
 
   it("does not advertise a fetch when nothing was actually removed", () => {
     seedSubagentScreenshot();
-    // Short text, image kept — the body is complete, so marking it truncated
-    // would send the modal after a body it already has (and, nested, would
-    // promise a row that isn't on disk).
+
     expect(findResult("shot")!.truncated).toBeUndefined();
   });
 
@@ -395,12 +357,12 @@ describe("the cap never breaks an MCP content-block array (docs/244)", () => {
     const parsed = parseContentForImages(result.content);
     expect(parsed!.text.length).toBeLessThanOrEqual(CLIENT_CONTENT_CAP);
     expect(parsed!.images).toHaveLength(1);
-    // Text WAS dropped and this one is top-level, so the modal is told to fetch.
+
     expect(result.truncated).toBe(true);
   });
 
   it("leaves a non-content-block JSON array on the raw cap", () => {
-    // A tool returning an ordinary JSON array has no text/image blocks to
+
     // shorten, so the structural path must decline and the byte bound stand.
     const data = JSON.stringify(Array.from({ length: 40_000 }, (_, i) => ({ id: i, value: "z".repeat(40) })));
     expect(data.length).toBeGreaterThan(CLIENT_CONTENT_CAP);
@@ -447,9 +409,9 @@ describe("a subagent's subagent (docs/244 round-4)", () => {
    * nested test never recorded an inner tool use, so it passed throughout.
    */
   it("never caps an inner Task's final report", () => {
-    // outer Task…
+
     handleAgentEvent(ctx, assistantEvent("", [{ id: "outer", name: "Task", input: { prompt: "audit" } }]));
-    // …which spawns an inner Task, recorded under the outer one's subagentEvents…
+
     handleAgentEvent(ctx, {
       type: "agent_event",
       event: {
@@ -458,7 +420,7 @@ describe("a subagent's subagent (docs/244 round-4)", () => {
         content: [{ type: "tool_use", id: "inner", name: "Task", input: { prompt: "sub-audit" } }],
       },
     } as unknown as WsAgentEvent);
-    // …whose own final report is over the cap.
+
     handleAgentEvent(ctx, {
       type: "agent_event",
       event: {
@@ -475,8 +437,7 @@ describe("a subagent's subagent (docs/244 round-4)", () => {
   });
 
   it("still caps an inner ordinary tool's result", () => {
-    // The counterpart: same nesting depth, but a Bash call — no final report to
-    // protect, so the nested rule applies (capped, and not marked fetchable).
+
     handleAgentEvent(ctx, assistantEvent("", [{ id: "outer", name: "Task", input: { prompt: "audit" } }]));
     handleAgentEvent(ctx, {
       type: "agent_event",
@@ -502,16 +463,9 @@ describe("a subagent's subagent (docs/244 round-4)", () => {
 });
 
 describe("a tool result routes to the message that issued the call", () => {
-  // A permission card is appended as its own `role: "assistant"` message, so it
-  // sits between the assistant message holding the gated `tool_use` and that
-  // tool's later `tool_result`. The result branch used to attach to
-  // `prev[prev.length - 1]` blindly — the card — while `buildVisualElements`
-  // pairs a tool with its result strictly WITHIN one message. The gated Bash
-  // row therefore resolved `result === undefined` and, once streaming ended,
-  // `isInspectable` was false: no onClick, no "Show output", the full command
-  // and its output unreachable behind the 80-char inline slice. The persisted
+
   // row was always right, so only a page RELOAD repaired it. It must be right
-  // live, with no reload.
+
   const resultEvent = (id: string, content: string): WsAgentEvent => ({
     type: "agent_event",
     event: {
@@ -523,9 +477,7 @@ describe("a tool result routes to the message that issued the call", () => {
   const pairedResult = (id: string) => {
     const messages = useSessionStore.getState().messages;
     const owner = messages.find((m) => m.toolUse?.some((t) => t.id === id));
-    // Deliberately scoped to the OWNER message: this is the same lookup
-    // `buildVisualElements` performs, so a result anywhere else reads as absent
-    // exactly as it does on screen.
+
     return owner?.toolResults?.find((r) => r.toolUseId === id);
   };
 
@@ -542,16 +494,13 @@ describe("a tool result routes to the message that issued the call", () => {
     handleAgentEvent(ctx, resultEvent("tu-sed", "done"));
 
     expect(pairedResult("tu-sed")?.content).toBe("done");
-    // ...and the card is still its own untouched row.
+
     const card = useSessionStore.getState().messages.find((m) => m.permissionPrompt?.requestId === "req-1");
     expect(card?.toolResults).toBeUndefined();
   });
 
   it("routes each result to its own caller when several messages are open", () => {
-    // Seeded directly rather than driven through two `agent_assistant` events:
-    // consecutive streaming events MERGE into one row, so that would have left
-    // both calls on a single message and the test would pass under the old
-    // last-message behaviour too. Two rows is the shape that pins the bucketing.
+
     useSessionStore.setState({
       messages: [
         { role: "assistant", text: "first", toolUse: [{ type: "tool_use", id: "tu-a", name: "Read", input: { file_path: "/a" } }] },

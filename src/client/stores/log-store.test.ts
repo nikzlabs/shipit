@@ -44,12 +44,12 @@ describe("log-store", () => {
 
   it("trims to a bounded buffer and bumps epoch on overflow", () => {
     const { append } = useLogStore.getState();
-    // Push well past the 5000 cap in one batch.
+
     const batch = Array.from({ length: 6000 }, (_, i) => ({ ts: "t", text: `line${i}` }));
     append("agent", batch);
     const ch = useLogStore.getState().channels.agent;
     expect(ch.records.length).toBeLessThanOrEqual(5000);
-    // Trim drops the head — newest survive.
+
     expect(ch.records[ch.records.length - 1].text).toBe("line5999");
     expect(ch.epoch).toBeGreaterThan(0);
   });

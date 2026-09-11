@@ -25,10 +25,10 @@ with a **non-bare** `git init`:
 
 ```js
 const repoDir = getSharedRepoDir(cloneUrl);
-await sharedGit.init();                       // git init --initial-branch=main  (NON-bare!)
+await sharedGit.init();
 await sharedGit.addRemote("origin", cloneUrl);
-githubAuthManager.configureGitCredentials(repoDir);  // local shipit-git-credential helper
-await applyTemplateFiles(template, repoDir);  // scaffolds files into a WORKING TREE
+githubAuthManager.configureGitCredentials(repoDir);
+await applyTemplateFiles(template, repoDir);
 await sharedGit.autoCommit(...);
 await sharedGit.push("origin", "main");
 ```

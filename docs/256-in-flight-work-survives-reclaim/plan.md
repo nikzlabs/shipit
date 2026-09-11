@@ -59,12 +59,12 @@ A hold is runner state, held in a Map on `ContainerSessionRunner`:
 
 ```ts
 interface KeepaliveHold { id: string; reason: string; takenAt: number; expiresAt: number }
-get keepaliveHoldCount(): number   // non-expired holds, computed on read
+get keepaliveHoldCount(): number
 get agentBusy(): boolean {
   return this._isRunning
     || this.backgroundTaskCount > 0
     || this.subAgentSpawnsInFlight > 0
-    || this.keepaliveHoldCount > 0;   // <- new
+    || this.keepaliveHoldCount > 0;
 }
 ```
 

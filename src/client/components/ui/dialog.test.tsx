@@ -3,8 +3,7 @@ import { render, screen, cleanup, fireEvent } from "@testing-library/react";
 import { Dialog, DialogContent, DialogTitle } from "./dialog.js";
 
 // history is mocked to no-ops so the back-dismiss machinery never mutates jsdom's
-// real session history (which would dispatch async popstate events and bleed
-// across tests). The only popstate events here are the ones we dispatch by hand.
+
 beforeEach(() => {
   vi.spyOn(window.history, "pushState").mockImplementation(() => {});
   vi.spyOn(window.history, "back").mockImplementation(() => {});
@@ -15,8 +14,6 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-// Runs FIRST on purpose: at this point the module-level dismiss stack is empty,
-// so the popstate assertions are deterministic.
 describe("Dialog back-button dismissal", () => {
   it("closes the dialog when the browser Back button fires popstate", () => {
     const onOpenChange = vi.fn();
@@ -27,8 +24,7 @@ describe("Dialog back-button dismissal", () => {
         </DialogContent>
       </Dialog>,
     );
-    // Opening pushes a dummy same-URL history entry so Back lands on the dialog
-    // instead of navigating a route.
+
     expect(window.history.pushState).toHaveBeenCalled();
 
     window.dispatchEvent(new PopStateEvent("popstate"));
@@ -54,23 +50,19 @@ describe("Dialog back-button dismissal", () => {
     );
 
     window.dispatchEvent(new PopStateEvent("popstate"));
-    // B opened last → it's on top → it closes; A is untouched.
+
     expect(onCloseB).toHaveBeenCalledWith(false);
     expect(onCloseA).not.toHaveBeenCalled();
   });
 
   // The dummy-entry cleanup on a non-Back close must be conditional on the
-  // dummy still being the TOP history entry. `history.state` carries the
-  // `__shipitDialog` stamp only while our dummy is on top; after an in-dialog
-  // navigation (e.g. "Create sandbox" → /session/{id}) the top entry is the
-  // new route and history.back() would erase it — the "created a sandbox but
-  // the UI stayed on the previous session" bug.
+
   describe("dummy-entry cleanup on non-Back close", () => {
     const setHistoryState = (value: unknown) => {
       Object.defineProperty(window.history, "state", { configurable: true, value });
     };
     afterEach(() => {
-      // Remove the instance shadow so the prototype getter is restored.
+
       delete (window.history as unknown as Record<string, unknown>).state;
     });
 
@@ -102,8 +94,7 @@ describe("Dialog back-button dismissal", () => {
           </DialogContent>
         </Dialog>,
       );
-      // Simulate react-router pushing /session/{id} from the dialog's action
-      // button: the top entry's state no longer carries the dialog stamp.
+
       setHistoryState({ usr: null, key: "abc123", idx: 2 });
       rerender(
         <Dialog open={false} onOpenChange={vi.fn()}>
@@ -118,15 +109,9 @@ describe("Dialog back-button dismissal", () => {
 });
 
 describe("DialogContent opening motion", () => {
-  // The panel is painted once, in its final form: the overlay's fade carries
-  // the entrance. Both a scale and a fade move the text of a panel this size —
-  // the scale geometrically (the fade lands first, so the last 1% of the scale
-  // drags each line into place after it is readable), the fade optically (a
-  // composited layer antialiases glyphs differently, and they re-render when it
-  // collapses on the final frame). Either one reads as "the label nudges up
+
   // when Settings opens". The guard is here because an entrance animation is
-  // easy to re-add by copying another surface, and the effect lasts a few
-  // frames: loud as a complaint, invisible in review.
+
   it("has no entrance animation of its own", () => {
     render(
       <Dialog open onOpenChange={vi.fn()}>
@@ -148,7 +133,7 @@ describe("DialogContent opening motion", () => {
         </DialogContent>
       </Dialog>,
     );
-    // The overlay is the open-state element that is not the dialog itself.
+
     const overlay = Array.from(document.querySelectorAll('[data-state="open"]')).find(
       (el) => el.getAttribute("role") !== "dialog",
     );

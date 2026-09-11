@@ -22,7 +22,6 @@ import type { ReviewerSlotView } from "../../server/shared/types/agent-types.js"
 
 type Listener = (event: MessageEvent) => void;
 
-/** The minimum of `EventSource` the hook touches, plus a way to emit into it. */
 class FakeEventSource {
   static last: FakeEventSource | undefined;
   readonly listeners = new Map<string, Listener[]>();
@@ -48,7 +47,6 @@ class FakeEventSource {
     this.readyState = 2;
   }
 
-  /** Deliver one server event, exactly as the browser would. */
   emit(type: string, data: unknown): void {
     for (const listener of this.listeners.get(type) ?? []) {
       listener(new MessageEvent(type, { data: JSON.stringify(data) }));
@@ -99,16 +97,9 @@ describe("useServerEvents — agent_list carries the reviewer resolution", () =>
       es?.emit("agent_list", { agents: AGENTS, canRunTurns: true, reviewers });
     });
 
-    // The whole point: a credential change fires this event, and the open
-    // Reviewer tab re-renders off the store rather than off a reload.
     expect(useSettingsStore.getState().reviewers).toEqual(reviewers);
   });
 
-  /**
-   * A newer server always sends the array, so absence means an OLDER server —
-   * and clearing the store on that would empty the Reviewer tab rather than say
-   * anything. "No news" has to leave the last good answer alone.
-   */
   it("leaves the last known resolution alone when the payload omits it", () => {
     useSettingsStore.getState().setReviewers(reviewers);
     renderHook(() => useServerEvents());

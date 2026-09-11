@@ -24,10 +24,7 @@ describe("buildSubdomainUrl", () => {
   });
 
   it("builds subdomains for dotless and Tailscale hosts (no auto/always mode anymore)", () => {
-    // The `auto`/`always` mode was removed (docs/175): subdomain routing is the
-    // only container-preview path, so these hosts always get a subdomain URL.
-    // Whether it resolves is the deployment's wildcard-DNS responsibility — e.g.
-    // Tailscale's `dns-subdomain-resolve` MagicDNS capability.
+
     expect(buildSubdomainUrl("session-a", 3000, "shipit:4123")).toBe(
       "http://session-a--3000.shipit:4123/",
     );
@@ -45,7 +42,7 @@ describe("buildSubdomainUrl", () => {
   });
 
   it("returns null for non-loopback IPv6 literal hosts (bracketed form)", () => {
-    // window.location.host gives IPv6 bracketed: "[2001:db8::1]:8080".
+
     // Must be null (not a mangled "[2001:db8…" hostname) so the empty-state fires.
     expect(buildSubdomainUrl("session-a", 3000, "[2001:db8::1]:8080")).toBeNull();
     expect(buildSubdomainUrl("session-a", 3000, "[fe80::1]")).toBeNull();
@@ -55,7 +52,7 @@ describe("buildSubdomainUrl", () => {
     expect(buildSubdomainUrl("session-a", 3000, "127.0.0.1:3001")).toBe(
       "http://session-a--3000.localhost:3001/",
     );
-    // IPv6 loopback, the bracketed form the browser actually reports.
+
     expect(buildSubdomainUrl("session-a", 3000, "[::1]:3000")).toBe(
       "http://session-a--3000.localhost:3000/",
     );
@@ -66,7 +63,7 @@ describe("buildSubdomainUrl", () => {
 
   it("uses the explicit protocol when provided (docs/216 sslip override forces http:)", () => {
     // The Tailscale sslip override passes "http:" so previews never inherit an
-    // https: app origin onto a host with no TLS cert.
+
     expect(buildSubdomainUrl("session-a", 3000, "100-64-1-2.sslip.io", "http:")).toBe(
       "http://session-a--3000.100-64-1-2.sslip.io/",
     );
@@ -85,8 +82,7 @@ describe("computePreviewUrl", () => {
   });
 
   it("returns null for a container preview when no subdomain can be built (raw-IP host)", () => {
-    // null = "no working preview URL for this host" → PreviewFrame shows the
-    // empty-state instead of rendering a broken iframe.
+
     expect(computePreviewUrl("session-a", 3000, preview, "192.168.1.5:4123")).toBeNull();
     expect(computePreviewUrl("session-a", 3000, preview, "[2001:db8::1]:8080")).toBeNull();
   });
@@ -104,11 +100,6 @@ describe("computePreviewUrl", () => {
   });
 });
 
-/**
- * docs/258 — which path a freshly created slot enters at. This is what makes a
- * pointer to a *stopped* service work: the slot is created after the boot,
- * already at the destination, rather than at the app's front page.
- */
 describe("desiredPathFor", () => {
   beforeEach(() => {
     usePreviewStore.setState({ previewPaths: {}, previewLinkIntent: null });
@@ -131,8 +122,7 @@ describe("desiredPathFor", () => {
   });
 
   it("prefers a live destination for this slot", () => {
-    // Where the user just asked to go beats where the previous page happened
-    // to be.
+
     usePreviewStore.setState({
       previewPaths: { "sess-1:5173": "/dashboard" },
       previewLinkIntent: intent,

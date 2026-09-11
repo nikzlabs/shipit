@@ -1,12 +1,4 @@
-/**
- * MediaRecorder wrapper (docs/144).
- *
- * Captures a single push-to-talk utterance: open the mic, record into
- * `audio/webm;opus` (or whatever the browser picks — Safari produces
- * `audio/mp4`), and on stop assemble the chunks into one Blob. No
- * streaming partials — the whole utterance is captured, then handed off
- * for transcription (see plan "Why no mid-utterance partials").
- */
+
 
 const PREFERRED_MIME_TYPES = [
   "audio/webm;codecs=opus",
@@ -31,11 +23,6 @@ export interface CaptureResult {
   durationMs: number;
 }
 
-/**
- * An in-progress recording. `stop()` resolves with the assembled audio;
- * `abort()` discards everything (used on session switch). Both release
- * the underlying mic track.
- */
 export interface ActiveCapture {
   stop: () => Promise<CaptureResult>;
   abort: () => void;

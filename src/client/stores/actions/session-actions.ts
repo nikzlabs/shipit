@@ -13,19 +13,6 @@ import { useIssuesStore } from "../issues-store.js";
 import { usePluginReposStore } from "../plugin-repos-store.js";
 import type { AgentId, SessionInfo } from "../../../server/shared/types.js";
 
-/**
- * The repository a session belongs to, as the Issues tab sees it: the session's
- * own remote. With no session at all (the `/{slug}/new` route) it's the
- * sidebar's active repo — the same fallback `IssuesPanel` uses to decide which
- * repo to offer starting a session on, so the tab is scoped to what it targets.
- *
- * A session the list doesn't know yet (a direct URL landing before the session
- * list loads) gets a per-session sentinel rather than that fallback: the honest
- * answer is "unknown", and the sidebar's active repo is only a guess, which
- * would keep an issue open across a repo change (observed with warm sessions,
- * which aren't in the list). A sentinel differs from every other scope, so an
- * unknown session always re-scopes — fail closed, per docs/248-declared-issue-trackers req 11.
- */
 function sessionRepoUrl(sessionId?: string): string | null {
   const session = useSessionStore.getState();
   const id = sessionId ?? session.sessionId;
@@ -34,24 +21,10 @@ function sessionRepoUrl(sessionId?: string): string | null {
   return found ? (found.remoteUrl ?? null) : `session:${id}`;
 }
 
-/**
- * planning#327 — re-scope the Issues tab to the repository we're moving to. Issue
- * trackers are declared per repository (`shipit.yaml`, docs/248), so an open
- * issue and the loaded lists belong to the repository they were opened from;
- * carrying them into a repository that doesn't declare that tracker leaves an
- * unreachable destination on screen, which req 11 forbids. No-ops when the
- * repository is unchanged, so switching between two sessions of one repository
- * leaves the open issue alone. `fetchTrackers` (fired on the session change by
- * `App`) then applies the authoritative check against the new declarations.
- */
 function scopeIssuesToSession(sessionId?: string) {
   useIssuesStore.getState().setRepoScope(sessionRepoUrl(sessionId));
 }
 
-/**
- * Resets all session-specific state across all stores.
- * Replaces the three duplicated reset blocks in the old codebase.
- */
 export function resetSessionState() {
   useSessionStore.getState().reset();
   useGitStore.getState().reset();
@@ -61,12 +34,9 @@ export function resetSessionState() {
   useUiStore.getState().reset();
   usePreviewStore.getState().reset();
   usePresentStore.getState().reset();
-  // docs/262 — the Plugins tab's snapshot is session-scoped; drop it so the
-  // incoming session doesn't briefly gate its tab on the outgoing session's
-  // declarations (App refetches on the sessionId change).
+
   usePluginReposStore.getState().reset();
-  // Not an unconditional reset: the issues store is repo-scoped, not
-  // session-scoped, and only drops its contents when the repo actually changes.
+
   scopeIssuesToSession();
 }
 
@@ -104,50 +74,14 @@ export function discardHeldFirstMessage(reason: string) {
   useUiStore.getState().setToast({ message: reason });
 }
 
-/**
- * Internal session resume — resets state, fetches history via HTTP.
- * WS connects automatically via the per-session WS URL; no activate_session needed.
- */
 export function resumeSessionInternal(sessionId: string) {
-  // Snapshot outgoing session's preview state before switching
+
   const outgoingSessionId = useSessionStore.getState().sessionId;
-  // Resuming the session already on screen is not a switch, and running the
-  // switch against it destroys state nothing will restore (planning#467).
-  //
-  // Everything below assumes the incoming session is a different one: it clears
-  // the transcript, the queue and the live status, and lowers `historyLoaded`
+
   // so hydration re-runs. On a real switch that is safe because the new session
-  // id gives `useSessionWebSocket` a new URL, so a socket is built, the server
-  // attaches, and a running turn's tail comes back in the attach's
-  // `turn_snapshot`. With the id unchanged the URL is unchanged, so there is no
-  // new socket and no attach — and the re-issued `GET /history` installs the
-  // persisted rows over a transcript whose unpersisted tail has already been
-  // thrown away, with nothing coming to repair it. The tail is gone until a
-  // genuine reconnect or a reload.
-  //
-  // Reachable in one click: `AllSessionsDialog` renders every row with
-  // `isCurrent={false}`, so the session you are looking at is selectable in the
-  // switcher like any other. Returning early costs nothing — every store this
-  // function resets is scoped to the session being resumed, which is the one
-  // already loaded.
+
   if (outgoingSessionId === sessionId) return;
-  /*
-    docs/291-composer-before-claim req 5 — a stashed message belongs to the session
-    it was composed for, and after this line that session is not the one we are
-    connected to any more.
 
-    The flush addresses a stashed frame from the STORE (`useConnectionSync`), so
-    leaving one here does not merely strand it — it delivers it into the session
-    being resumed. That was already true of the stash the
-    already-claimed-but-still-connecting path writes, in a window a few hundred
-    milliseconds wide; `/{repo}/new` now holds a message for a whole cold clone, so
-    the window is as long as the user's patience and the switch is an ordinary thing
-    to do inside it.
-
-    Placed after the early return above on purpose: a session resuming ITSELF is not
-    a switch, and the URL graduation this feature performs for a held message
-    (`/{repo}/new` → `/session/{id}`) lands on exactly that case.
-  */
   discardHeldFirstMessage(
     "Your message wasn't sent — you switched sessions before it was ready.",
   );
@@ -161,76 +95,46 @@ export function resumeSessionInternal(sessionId: string) {
   session.setActivity(undefined);
   session.setQueuedMessages([]);
   session.setContainerFreshness(null);
-  // The transcript we just cleared belonged to the outgoing session, so the
-  // incoming one has no baseline yet — and `historyLoaded` is what says so.
-  // `useMessageHandler` queues `turn_snapshot` / `agent_event` only while this
-  // is false, which is the ONLY thing that makes the attach snapshot land on
-  // top of the `GET /history` baseline instead of under it. Leaving it true
-  // (this reset was missing, unlike in the sibling `resetSessionState`) let the
-  // snapshot dispatch immediately and then be overwritten by the history
-  // response, erasing everything the running turn produced since its last
-  // tool-result boundary until a reload.
-  //
-  // `useConnectionSync` also clears it on a `closed`/`connecting` status
-  // transition, which covers most switches — but not one that starts while the
-  // socket is ALREADY connecting (a reconnect whose history load landed late),
+
   // because `setStatus("connecting")` is then a no-op and the effect never
-  // re-runs. Owning the flag here removes the dependence on that timing.
+
   session.setHistoryLoaded(false);
-  // docs/178 — the "Compacting…" spinner is a global, transient flag. Clear it
-  // on switch so a compaction in flight on the outgoing session doesn't bleed
+
   // its spinner into the incoming one (it's never persisted, so history reload
-  // won't bring it back).
+
   session.setCompacting(false);
-  // docs/144 — sub-agent spawn chips are transient + per-session; clear on switch.
+
   useSessionStore.setState({ subAgentSpawns: {} });
   useUiStore.getState().setShowTemplates(false);
 
-  // Reset session-specific UI state
   useFileStore.getState().reset();
   useGitStore.getState().reset();
   useTerminalStore.getState().reset();
   useLogStore.getState().reset();
   useUiStore.getState().reset();
   usePresentStore.getState().reset();
-  // docs/262 — session-scoped: drop the outgoing session's plugin declarations
+
   // so the incoming session never gates its tab (or warn dot) on them. The
-  // store also pairs every snapshot with its session id, so a missed reset
-  // can't leak state — this keeps the store from holding a dead session's
-  // data at all.
+
   usePluginReposStore.getState().reset();
-  // Repo-scoped, not session-scoped (planning#327): clears only when the incoming
-  // session belongs to a different repository than the outgoing one.
+
   scopeIssuesToSession(sessionId);
 
-  // Restore incoming session's preview state (or reset to defaults)
   preview.restoreSession(sessionId);
 
-  // Session data is loaded via HTTP by useConnectionSync when the per-session WS connects.
-  // Don't load here — it races with the WS connection and causes double-loading.
 }
 
-/**
- * Public session resume — also navigates to update the URL.
- * WS connects automatically when React re-renders with the new session ID.
- */
 export function handleSessionResume(
   sessionId: string,
   navigate: (path: string) => void,
 ) {
   // Move the route first. App chrome is intentionally keyed to the URL so a
   // late async store write cannot visually hijack the session being viewed.
-  // Updating the store first creates a transient split render: the selected
-  // session is new while the URL (and therefore the top chrome) still points
-  // at the previous session. This was visible when entering a Sandbox as the
-  // previous session's title bar flashing before the Sandbox banner.
+
   navigate(`/session/${sessionId}`);
   resumeSessionInternal(sessionId);
 }
 
-/**
- * Full reset of all stores (used when the server broadcasts full_reset_complete).
- */
 export function fullResetAllStores() {
   useSessionStore.getState().reset();
   useGitStore.getState().reset();
@@ -239,19 +143,18 @@ export function fullResetAllStores() {
   useLogStore.getState().reset();
   useUiStore.getState().reset();
   usePreviewStore.getState().reset();
-  // Every session is gone, so the slot keys these are keyed by are dead. The
-  // session-scoped `reset()` above deliberately keeps them (docs/089).
+
   usePreviewStore.getState().clearPreviewPaths();
-  // Same lifecycle for the remembered viewports (docs/278): keyed by dead sessions.
+
   usePreviewStore.getState().clearViewportMemory();
-  // Same again for the remembered preview targets (planning#478).
+
   usePreviewStore.getState().clearPreviewTargetMemory();
   usePresentStore.getState().reset();
   usePluginReposStore.getState().reset();
   usePrStore.getState().reset();
   useSettingsStore.getState().reset();
   useRepoStore.getState().reset();
-  // Every repo is gone, so nothing declares a tracker any more.
+
   useIssuesStore.setState({ repoScope: null, trackers: [], infoByTracker: {} });
   useIssuesStore.getState().reset();
 }
@@ -261,19 +164,9 @@ export async function createHeadlessSession(opts: {
   initialPrompt: string;
   agent?: AgentId;
   model?: string;
-  /**
-   * docs/217 — per-session reasoning effort (Control B) for the new session's
-   * first turn. Unlike the WS `?reasoning=` connect param (which only reaches
-   * WS-driven turns), this rides the creation request so the server-dispatched
-   * first turn runs with it. Persistence to localStorage stays in the picker.
-   */
+
   reasoning?: string;
-  /**
-   * docs/272-user-selectable-roles reqs 1, 11 — the role picked in the overlay. Resolved by
-   * the server and applied OVER `agent`/`model`/`reasoning`, which describe the
-   * controls a role replaces; a name rather than a tuple, so the role's
-   * parameters are resolved where they are stored.
-   */
+
   role?: string;
   /**
    * docs/175 — arm auto-merge for the new session at creation time. Per-session
@@ -288,32 +181,19 @@ export async function createHeadlessSession(opts: {
    * (req 8). Like `armAutoMerge`, never persisted.
    */
   networkMode?: boolean;
-  /**
-   * docs/144 — the prompt was dictated by voice. The server folds a
-   * `<dictated_input>` note into the first turn's prompt so the agent reads
-   * mis-heard terms and missing punctuation as transcription artifacts. Rides
-   * the JSON body, or the multipart form as the string "true".
-   */
+
   dictated?: boolean;
-  /**
-   * Raw files to attach to the new session. When present we POST as
-   * multipart/form-data so the orchestrator can save them into the new
-   * session's uploads dir before dispatching the prompt; otherwise we keep
-   * the simpler JSON path. See `docs/145-quick-capture-overlay/plan.md`.
-   */
+
   files?: File[];
 }): Promise<SessionInfo> {
   const { files, ...jsonBody } = opts;
   let res: Response;
   if (files && files.length > 0) {
     const form = new FormData();
-    // All current jsonBody fields are strings (or undefined). The multipart
-    // route reads each part's `value` as a string and parses agent/model/etc.
-    // itself, so we just pass values through without coercion.
+
     for (const [k, v] of Object.entries(jsonBody)) {
       if (v === undefined) continue;
-      // Booleans (armAutoMerge) and any non-string field are stringified; the
-      // multipart route reads each part's value as a string and parses it.
+
       form.append(k, typeof v === "string" ? v : String(v));
     }
     for (const f of files) {
@@ -345,15 +225,6 @@ export async function createHeadlessSession(opts: {
   return body.session;
 }
 
-/**
- * docs/205 — optimistic quick-session start. Called fire-and-forget from the
- * (synchronous) quick-capture submit *after* the overlay has closed, so the user
- * isn't blocked behind a modal spinner during the boot. Success is silent — the
- * new session appears in the sidebar via `createHeadlessSession`'s store update
- * (and the `session_list` SSE broadcast); `onCreated` lets the /{repo}/new route
- * graduate its URL. A failure surfaces as an error toast since the overlay is
- * gone. Living here (not in the component) means it survives the overlay unmount.
- */
 export function startQuickSessionInBackground(
   opts: Parameters<typeof createHeadlessSession>[0],
   onCreated?: (session: SessionInfo) => void,

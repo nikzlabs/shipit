@@ -2,15 +2,6 @@
 import { useState, useEffect } from "react";
 import { luminanceOfCssColor } from "../utils/status-color.js";
 
-/**
- * Relative luminance of a theme surface token (e.g. `--color-bg-primary` for
- * rows, `--color-bg-elevated` for popovers/menus). Feeds the contrast-adaptive
- * status colors ({@link adaptColorForSurface}) so a dot/checkbox knows whether
- * its background is light or dark — and exactly how light/dark — for the current
- * theme. Recomputes when the theme changes, which the app signals by swapping
- * the class on `<html>` (see `useTheme`), so this works for every theme without
- * a light/dark flag.
- */
 function readSurfaceLuminance(cssVar: string): number {
   if (typeof window === "undefined") return 1;
   const value = getComputedStyle(document.documentElement).getPropertyValue(cssVar);

@@ -18,7 +18,6 @@ import type {
   McpOAuthStatus,
 } from "../../server/shared/types.js";
 
-/** Provider info returned by `GET /api/mcp-servers/oauth/providers`. */
 export interface McpOAuthProviderInfo {
   id: string;
   label: string;
@@ -56,7 +55,6 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
   return res.json() as Promise<T>;
 }
 
-/** Per-server runtime status from `mcp_server_status` WS events. */
 export interface McpServerStatusEntry {
   state: McpServerState;
   reason?: string;
@@ -64,17 +62,15 @@ export interface McpServerStatusEntry {
 
 interface McpState {
   servers: McpServerConfig[];
-  /** Per-server runtime status keyed by server name. */
+
   statuses: Record<string, McpServerStatusEntry>;
   loading: boolean;
-  /** Last load/mutation error, surfaced in the Settings panel. */
+
   error: string | null;
 
-  // ---- Phase 2: OAuth providers ----
-  /** Available OAuth providers (Linear, Notion, …) with connection state. */
   oauthProviders: McpOAuthProviderInfo[];
   oauthLoading: boolean;
-  /** Last OAuth flow error (popup close / disconnect / start). */
+
   oauthError: string | null;
 
   fetchServers: () => Promise<void>;
@@ -90,27 +86,17 @@ interface McpState {
   ) => Promise<void>;
   removeServer: (id: string) => Promise<void>;
   testServer: (id: string) => Promise<McpTestResult>;
-  /** Apply a per-server status update from a `mcp_server_status` WS message. */
+
   applyStatus: (name: string, state: McpServerState, reason?: string) => void;
-  /**
-   * Drop the cached runtime status for a server. Used after a Reconnect of
-   * an OAuth-managed server so the stale `failed — authentication required`
-   * entry doesn't keep the UI red while we wait for the next CLI init event
-   * to re-emit the real status.
-   */
+
   clearStatus: (name: string) => void;
-  /** Reset store state (session switch / full reset). */
+
   reset: () => void;
 
-  // ---- OAuth actions ----
   fetchOAuthProviders: () => Promise<void>;
-  /**
-   * Begin an OAuth flow for a provider. Opens the authorize URL in a popup
-   * and resolves when the callback page postMessages a result back. Refreshes
-   * `oauthProviders` on success.
-   */
+
   startOAuthFlow: (source: string) => Promise<{ ok: boolean; message?: string }>;
-  /** Remove stored OAuth tokens for a provider. */
+
   disconnectOAuth: (source: string) => Promise<void>;
 }
 
@@ -195,10 +181,7 @@ export const useMcpStore = create<McpState>((set, get) => ({
       "POST",
       `/api/mcp-servers/${encodeURIComponent(id)}/test`,
     );
-    // The Test button is the user's "did I configure this right?" signal — its
-    // outcome should also update the badge, which would otherwise stay stale
-    // on whatever the last agent init reported (commonly `failed` from a prior
-    // bad config the user just fixed).
+
     if (result.ok) {
       get().applyStatus(id, "loaded");
     } else {
@@ -230,8 +213,6 @@ export const useMcpStore = create<McpState>((set, get) => ({
       oauthError: null,
     }),
 
-  // ---- OAuth ----
-
   fetchOAuthProviders: async () => {
     set({ oauthLoading: true, oauthError: null });
     try {
@@ -239,9 +220,7 @@ export const useMcpStore = create<McpState>((set, get) => ({
         "GET",
         "/api/mcp-servers/oauth/providers",
       );
-      // Defensive: a partial / unexpected response shouldn't crash the UI
-      // — fall back to an empty list so the existing servers section keeps
-      // working. Real server always returns { providers: [...] }.
+
       set({ oauthProviders: providers ?? [], oauthLoading: false });
     } catch (err) {
       set({
@@ -259,8 +238,7 @@ export const useMcpStore = create<McpState>((set, get) => ({
         "/api/mcp-servers/oauth/start",
         { source },
       );
-      // Open the consent screen in a popup so the user comes back to ShipIt
-      // automatically — no manual tab switching required.
+
       const popup = window.open(
         authorizeUrl,
         `shipit-mcp-oauth-${source}`,
@@ -272,7 +250,7 @@ export const useMcpStore = create<McpState>((set, get) => ({
         return { ok: false, message: msg };
       }
       const result = await waitForOAuthCallback(source, popup);
-      // Refresh provider list so the UI flips Connected/Disconnected.
+
       await get().fetchOAuthProviders();
       if (!result.ok && result.message) {
         set({ oauthError: result.message });
@@ -298,10 +276,6 @@ export const useMcpStore = create<McpState>((set, get) => ({
   },
 }));
 
-/**
- * Wait for the OAuth callback popup to postMessage a result. Resolves when
- * either the popup posts back or the user closes it without completing.
- */
 function waitForOAuthCallback(
   source: string,
   popup: Window,
@@ -335,7 +309,7 @@ function waitForOAuthCallback(
       });
     }
     window.addEventListener("message", onMessage);
-    // Poll for popup-closed too — the user might dismiss without completing.
+
     const poll = setInterval(() => {
       if (popup.closed) {
         cleanup();

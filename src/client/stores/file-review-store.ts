@@ -1,13 +1,4 @@
-/**
- * File-review store — server-persisted review drafts for the unified review
- * surface (docs/112-unified-review-surface).
- *
- * One draft per (session, filePath) lives on the server. This store mirrors
- * the active draft and the per-file history client-side, and exposes actions
- * that delegate to the HTTP API. Components read state via Zustand selectors;
- * mutations always round-trip through the server so reloads and reconnects
- * see the same data.
- */
+
 
 import { create } from "zustand";
 import type { FileReview, ReviewComment } from "../../server/shared/types.js";
@@ -16,9 +7,6 @@ function makeKey(sessionId: string, filePath: string): string {
   return `${sessionId}::${filePath}`;
 }
 
-/** Result of `sendDraft` — the constructed prompt plus structured metadata
- *  so the chat surface can render a "Sent comments" card without parsing
- *  the prompt body. */
 export interface SentDraftPayload {
   prompt: string;
   filePath: string;
@@ -52,11 +40,11 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
 }
 
 interface FileReviewState {
-  /** Current draft for each (session, file) we've opened. */
+
   draftByKey: Record<string, FileReview | null>;
-  /** Sent-review history for each (session, file). */
+
   historyByKey: Record<string, FileReview[]>;
-  /** True while the initial draft is being loaded for the given key. */
+
   loadingByKey: Record<string, boolean>;
   /**
    * True while an unsaved comment editor is open for the (session, file) —
@@ -70,13 +58,10 @@ interface FileReviewState {
    */
   composingByKey: Record<string, boolean>;
 
-  /** Load (or create) the draft + history for a (session, file). */
   load: (sessionId: string, filePath: string) => Promise<FileReview | null>;
 
-  /** Flag/clear an open (unsaved) comment editor for a (session, file). */
   setComposing: (sessionId: string, filePath: string, composing: boolean) => void;
 
-  /** Add a line-anchored comment. Only valid for code reviews. */
   addLineComment: (
     sessionId: string,
     filePath: string,
@@ -84,7 +69,6 @@ interface FileReviewState {
     text: string,
   ) => Promise<ReviewComment | null>;
 
-  /** Add a selection-anchored comment. Only valid for markdown reviews. */
   addSelectionComment: (
     sessionId: string,
     filePath: string,
@@ -94,7 +78,6 @@ interface FileReviewState {
     text: string,
   ) => Promise<ReviewComment | null>;
 
-  /** Update a comment's text. */
   editComment: (
     sessionId: string,
     filePath: string,
@@ -102,34 +85,21 @@ interface FileReviewState {
     text: string,
   ) => Promise<void>;
 
-  /** Delete a comment. */
   deleteComment: (
     sessionId: string,
     filePath: string,
     commentId: string,
   ) => Promise<void>;
 
-  /**
-   * Send the draft. Marks it sent, returns the constructed prompt + the
-   * sent review (so callers can render a structured "Sent comments" card
-   * with filePath + commentCount), moves the sent review into history, and
-   * clears the draft locally so the modal can fetch a fresh one on next
-   * open.
-   */
   sendDraft: (
     sessionId: string,
     filePath: string,
-    /** docs/260 — the send dialog's free-text note, stored with the sent review. */
+
     note?: string,
   ) => Promise<SentDraftPayload | null>;
 
-  /**
-   * Discard an empty draft. Called when the user closes the modal without
-   * leaving any comments — keeps the database tidy.
-   */
   discardEmptyDraft: (sessionId: string, filePath: string) => Promise<void>;
 
-  /** Read helpers used by selectors / tests. */
   getDraft: (sessionId: string, filePath: string) => FileReview | null;
   getHistory: (sessionId: string, filePath: string) => FileReview[];
   isComposing: (sessionId: string, filePath: string) => boolean;
@@ -143,8 +113,7 @@ export const useFileReviewStore = create<FileReviewState>((set, get) => ({
 
   setComposing: (sessionId, filePath, composing) => {
     const key = makeKey(sessionId, filePath);
-    // Bail when unchanged: the renderers re-assert the current value on every
-    // open/close transition, and a no-op `set` would re-render every subscriber.
+
     if ((get().composingByKey[key] ?? false) === composing) return;
     set((s) => ({ composingByKey: { ...s.composingByKey, [key]: composing } }));
   },
@@ -153,13 +122,13 @@ export const useFileReviewStore = create<FileReviewState>((set, get) => ({
     const key = makeKey(sessionId, filePath);
     set((s) => ({ loadingByKey: { ...s.loadingByKey, [key]: true } }));
     try {
-      // Ensure draft exists (creates one if not).
+
       const draft = await request<FileReview>(
         "POST",
         `/api/sessions/${sessionId}/file-reviews/draft`,
         { filePath },
       );
-      // Load history (all reviews — drafts + sent).
+
       const list = await request<{ reviews: FileReview[] }>(
         "GET",
         `/api/sessions/${sessionId}/file-reviews?filePath=${encodeURIComponent(filePath)}`,

@@ -3,7 +3,6 @@ import { computeAttentionReason, type AttentionInputs } from "./useAttentionInfo
 import type { PrCardState } from "../stores/pr-store.js";
 import type { PrStatusSummary } from "../../server/shared/types/github-types.js";
 
-/** Build inputs with sane defaults; override per case. */
 function inputs(overrides: Partial<AttentionInputs> = {}): AttentionInputs {
   return {
     card: undefined,
@@ -38,8 +37,7 @@ describe("computeAttentionReason", () => {
 
   describe("background tasks (docs/235)", () => {
     it("stays silent while background work is outstanding", () => {
-      // The session will speak again on its own when the task finishes, so
-      // "Waiting for your input" would be a lie.
+
       expect(computeAttentionReason(inputs({ hasBackgroundTasks: true }))).toBeNull();
     });
 
@@ -50,8 +48,7 @@ describe("computeAttentionReason", () => {
     });
 
     it("does NOT mask a blocked permission prompt", () => {
-      // The block is the user's to clear regardless of what else is pending —
-      // this is why the background-task short-circuit sits below it.
+
       expect(
         computeAttentionReason(inputs({ hasBackgroundTasks: true, awaitingPermission: true })),
       ).toBe("Needs your approval to continue");
@@ -180,8 +177,6 @@ describe("computeAttentionReason", () => {
       ).toBe("Auto-merge needs repo configuration");
     });
 
-    // The optimistic merge path flips the CARD to merged while the poller still
-    // reports the PR open, so the floor has to read both halves.
     it("stays silent on an optimistically-merged card whose poller status is still open", () => {
       expect(
         computeAttentionReason(
@@ -203,7 +198,7 @@ describe("computeAttentionReason", () => {
     it.each(["merged", "closed"] as const)(
       "stays silent on a %s PR still carrying an auto-merge error",
       (prState) => {
-        // The arming died with the PR (docs/077). A blocker that no longer has
+
         // anything to block must not keep the session flagged.
         expect(
           computeAttentionReason(
@@ -254,15 +249,12 @@ describe("computeAttentionReason", () => {
 
   describe("resolved session (matches the sidebar 'Recently resolved' grouping)", () => {
     it("stays silent for a resolved session even when its pr-store status still reads open", () => {
-      // The grouping demotes on SessionInfo.mergedAt/closedAt; the pr-store
-      // status lags and can still say "open" → would otherwise be "Waiting for
-      // your input" on a row already in "Recently resolved".
+
       expect(computeAttentionReason(inputs({ resolved: true, status: status({ prState: "open" }) }))).toBeNull();
     });
 
     it("stays silent for a resolved session carrying a stale CI failure", () => {
-      // A merged PR can still carry a `failure` checks state; without the
-      // resolved short-circuit this read as "CI checks failed".
+
       expect(computeAttentionReason(inputs({ resolved: true, card: card({ checks: FAILURE }) }))).toBeNull();
     });
 
@@ -279,9 +271,7 @@ describe("computeAttentionReason", () => {
     });
 
     it("silences a CI failure with auto-fix off", () => {
-      // Every surface reads this one function, so a mute that did not cover the
-      // CI branch would leave the row marker amber (req 2) on a row the user
-      // deliberately quieted.
+
       expect(
         computeAttentionReason(inputs({ muted: true, card: card({ checks: FAILURE }) })),
       ).toBeNull();
@@ -309,9 +299,7 @@ describe("computeAttentionReason", () => {
     });
 
     it("silences a blocked permission prompt too", () => {
-      // Unreachable in practice — a permission prompt means a turn is running,
-      // and a turn start clears the mute (req 4) — but the rule is "a mute wins"
-      // rather than "a mute wins except here", so no surface can disagree.
+
       expect(computeAttentionReason(inputs({ muted: true, awaitingPermission: true }))).toBeNull();
     });
 

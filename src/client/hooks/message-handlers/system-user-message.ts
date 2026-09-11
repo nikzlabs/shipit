@@ -33,9 +33,7 @@ export const handleSystemUserMessage: Handler<WsSystemUserMessage> = (_ctx, data
   const echoedRequestId = data.clientRequestId;
   if (echoedRequestId !== undefined
     && session.messages.some((m) => m.clientRequestId === echoedRequestId)) {
-    // Already on screen — as this tab's own optimistic bubble, or as the row a
-    // history load just rehydrated. Either way the text, the attachments and
-    // the position are already right.
+
     session.setIsLoading(true);
     if (data.activity) session.setActivity({ label: data.activity });
     return;
@@ -49,24 +47,18 @@ export const handleSystemUserMessage: Handler<WsSystemUserMessage> = (_ctx, data
     ...(data.files ? { files: data.files } : {}),
     ...(data.uploadPaths ? { uploadPaths: data.uploadPaths } : {}),
     ...(data.userReview ? { userReview: data.userReview } : {}),
-    // Kept on the bubble so a second delivery of the same echo — a mid-turn
-    // reconnect replays the turn buffer — reconciles instead of duplicating.
+
     ...(echoedRequestId !== undefined ? { clientRequestId: echoedRequestId } : {}),
   };
   session.setMessages((prev) => {
-    // A typed message that got this far is on a viewer that has neither sent nor
+
     // loaded it, so it is always new — skip the text comparison, which cannot
-    // tell a second "continue" from the first.
+
     if (echoedRequestId !== undefined) return [...prev, appended];
     const tail = prev[prev.length - 1];
     if (tail?.role === "user" && tail.text === data.text) {
       const next = prev.slice();
-      // Replace the tail bubble with a copy that drops `pendingDispatch` so a
-      // later identical-text dispatch can still be deduped against its own
-      // optimistic append, not this one. The broader same-tail dedupe also
-      // covers queued/replayed system turns where HTTP history or
-      // queue_updated already restored the user bubble before the replayed
-      // system_user_message arrives.
+
       const replaced = { ...tail };
       delete replaced.pendingDispatch;
       if (data.agentInterface) replaced.agentInterface = data.agentInterface;

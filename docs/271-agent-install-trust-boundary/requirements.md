@@ -177,7 +177,6 @@ Nothing here promotes a mechanism into a requirement. "Read the install marker"
 and "check for the session's plugin data directory" are how requirements get
 satisfied, and they live in `plan.md`.
 
-
 ### Retired (2026-08-21) — because they were never about plugins
 
 Both were documentation conventions carried from docs/266, which set them for the

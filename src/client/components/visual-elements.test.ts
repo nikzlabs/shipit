@@ -2,12 +2,10 @@ import { describe, it, expect } from "vitest";
 import { buildVisualElements, STANDALONE_TOOLS, SUBAGENT_TOOLS, CARD_MESSAGE_FIELDS } from "./visual-elements.js";
 import type { ChatMessage, ToolUseBlock, ToolResultBlock } from "./MessageList.js";
 
-// Helper to build a minimal tool use block
 function tool(id: string, name: string, input: Record<string, unknown> = {}): ToolUseBlock {
   return { type: "tool_use", id, name, input };
 }
 
-// Helper to build a minimal assistant message with tools
 function toolMsg(tools: ToolUseBlock[], opts: { text?: string; results?: ToolResultBlock[]; streaming?: boolean } = {}): ChatMessage {
   return { role: "assistant", text: opts.text ?? "", toolUse: tools, toolResults: opts.results, streaming: opts.streaming };
 }
@@ -38,8 +36,7 @@ describe("buildVisualElements", () => {
   });
 
   describe("inline cards on empty-text messages", () => {
-    // Cards (review, voice note, bug report, session spawn, fork child) ride on
-    // an assistant message whose `text` is empty and which carries no tools —
+
     // the card field IS the content. The grouping layer must still emit a
     // `message` element for them, or the card silently never renders.
     const card = (over: Partial<ChatMessage>): ChatMessage => ({
@@ -102,13 +99,10 @@ describe("buildVisualElements", () => {
       });
     }
 
-    // docs/188 — the render-side guard: EVERY field in the single
     // CARD_MESSAGE_FIELDS source of truth must keep its empty-text carrier
-    // message (hasCardContent is derived from this list). A new card added to
-    // the list but not rendering would fail here; a card NOT added to the list
-    // won't render on an empty-text message at all, which the author hits in dev.
+
     it.each([...CARD_MESSAGE_FIELDS])("emits a message element for an empty-text %s card (CARD_MESSAGE_FIELDS guard)", (field) => {
-      // hasCardContent only checks `!== undefined`, so a stub value suffices.
+
       const msg = { role: "assistant", text: "", [field]: {} } as unknown as ChatMessage;
       const elements = buildVisualElements([msg]);
       expect(elements).toEqual([{ kind: "message", index: 0, hideTools: false }]);
@@ -154,7 +148,7 @@ describe("buildVisualElements", () => {
         toolMsg([tool("t3", "Grep", { pattern: "x" })]),
       ];
       const elements = buildVisualElements(messages);
-      expect(elements).toHaveLength(2); // user msg + one tool-group
+      expect(elements).toHaveLength(2);                             
       expect(elements[0].kind).toBe("message");
       expect(elements[1].kind).toBe("tool-group");
       if (elements[1].kind === "tool-group") {
@@ -183,7 +177,7 @@ describe("buildVisualElements", () => {
         toolMsg([tool("t2", "AskUserQuestion", { questions: [] })]),
         toolMsg([tool("t3", "Grep")]),
       ]);
-      // tool-group(t1), standalone-tool(AskUserQuestion), tool-group(t3)
+
       expect(elements).toHaveLength(3);
       expect(elements[0].kind).toBe("tool-group");
       expect(elements[1]).toMatchObject({ kind: "standalone-tool", messageIndex: 1 });
@@ -221,7 +215,7 @@ describe("buildVisualElements", () => {
         "EnterPlanMode",
         "ExitPlanMode",
         // Never groupable: the panel draws them, so a clipped tool group would
-        // scroll away calls that already render as nothing.
+
         "TodoWrite",
         "TaskCreate",
         "TaskUpdate",
@@ -231,8 +225,7 @@ describe("buildVisualElements", () => {
     });
 
     it("leaves the background-task tools groupable — they are not to-do list tools", () => {
-      // TaskStop / TaskOutput share the prefix and act on a running shell or
-      // agent, so they stay ordinary tool lines.
+
       expect(STANDALONE_TOOLS.has("TaskStop")).toBe(false);
       expect(STANDALONE_TOOLS.has("TaskOutput")).toBe(false);
     });
@@ -251,9 +244,7 @@ describe("buildVisualElements", () => {
     });
 
     it("emits the panel even when the anchoring message also carries an ordinary tool", () => {
-      // The regression this element kind exists for: with the panel anchored to
-      // a message bubble, a TaskCreate sharing its message with a Bash produced
-      // a tool-group and no bubble — so the panel disappeared.
+
       const elements = buildVisualElements([
         toolMsg([tool("t1", "Bash", { command: "ls" }), tool("t2", "TaskCreate", { subject: "Do it" })]),
       ]);
@@ -272,7 +263,7 @@ describe("buildVisualElements", () => {
     });
 
     it("hides the bubble's tools when a task call shares its message with a subagent", () => {
-      // Otherwise the subagent draws twice — a generic tool line in the bubble
+
       // plus its own card — because the task call kept the bubble's tools visible.
       const elements = buildVisualElements([
         toolMsg([
@@ -360,7 +351,7 @@ describe("buildVisualElements", () => {
       const elements = buildVisualElements([
         toolMsg([tool("t1", "Task", { description: "plan" })], { text: "Let me plan this." }),
       ]);
-      // message bubble for text, then subagent for Task
+
       expect(elements).toHaveLength(2);
       expect(elements[0]).toMatchObject({ kind: "message", index: 0, hideTools: true });
       expect(elements[1]).toMatchObject({ kind: "subagent" });
@@ -370,7 +361,7 @@ describe("buildVisualElements", () => {
       const elements = buildVisualElements([
         toolMsg([tool("t1", "Bash"), tool("t2", "TodoWrite", { todos: [] })]),
       ]);
-      // Bash goes into tool-group; TodoWrite is standalone but excluded from extraction (not AskUserQuestion/ExitPlanMode)
+
       expect(elements).toHaveLength(1);
       expect(elements[0].kind).toBe("tool-group");
       if (elements[0].kind === "tool-group") {
@@ -380,14 +371,12 @@ describe("buildVisualElements", () => {
     });
 
     it("splits mixed groupable + ExitPlanMode into tool-group + standalone (no dialog jump)", () => {
-      // This simulates the force-merge scenario: Read tool followed by ExitPlanMode
-      // merged into the same message. Previously this caused the tool-group to
-      // disappear and be replaced by a message bubble (dialog jump).
+
       const elements = buildVisualElements([
         assistantMsg("Here is my plan."),
         toolMsg([tool("t1", "Read"), tool("t2", "ExitPlanMode")]),
       ]);
-      // message(text), tool-group(Read), standalone-tool(ExitPlanMode)
+
       expect(elements).toHaveLength(3);
       expect(elements[0]).toMatchObject({ kind: "message", index: 0 });
       expect(elements[1].kind).toBe("tool-group");
@@ -405,7 +394,7 @@ describe("buildVisualElements", () => {
       const elements = buildVisualElements([
         toolMsg([tool("t1", "Grep"), tool("t2", "AskUserQuestion", { questions: [] })]),
       ]);
-      // tool-group(Grep), standalone-tool(AskUserQuestion)
+
       expect(elements).toHaveLength(2);
       expect(elements[0].kind).toBe("tool-group");
       if (elements[0].kind === "tool-group") {
@@ -420,21 +409,16 @@ describe("buildVisualElements", () => {
   });
 
   // A present card must never land in the clipped `ToolCallGroup` container
-  // (`max-h-30 overflow-y-hidden`) where a stack of Read/Edit/Bash lines would
-  // scroll it out of view. It's matched by predicate (not the STANDALONE_TOOLS
+
   // set) because its tool name is MCP-prefixed and varies.
-  //
-  // These cases also pin the post-reload / post-restart guarantee: each builds
-  // the message in the exact shape `chat-history.fromRow` rehydrates (toolUse +
+
   // toolResults, where the `presentId` rides in the result content). Because the
-  // present card is a normal tool in the agent-event stream — persisted via the
-  // standard `tool_use`/`tool_results` columns, not a side-channel card — it
-  // re-derives the same standalone element after a page reload or server restart.
+
   describe("present card extraction", () => {
     const presentNames = [
       "present",
       "mcp__shipit__present",
-      "mcp__shipit-present__present", // legacy per-tool server (pre-planning#130)
+      "mcp__shipit-present__present",                                             
     ];
 
     for (const name of presentNames) {
@@ -460,8 +444,7 @@ describe("buildVisualElements", () => {
           results: [{ toolUseId: "t3", content: '{"presentId":"pres_xyz"}' }],
         }),
       ]);
-      // Read+Edit accumulate into ONE tool-group; the present card breaks out
-      // into its own standalone element instead of being appended to that group.
+
       expect(elements).toHaveLength(2);
       expect(elements[0].kind).toBe("tool-group");
       if (elements[0].kind === "tool-group") {
@@ -498,8 +481,7 @@ describe("buildVisualElements", () => {
           results: [{ toolUseId: "t1", content: '{"presentId":"pres_2"}' }],
         }),
       ]);
-      // Text + present render in the message bubble (full-height, not the clipped
-      // tool-group), so the card stays visible. No tool-group element is emitted.
+
       expect(elements).toHaveLength(1);
       expect(elements[0]).toMatchObject({ kind: "message", index: 0, hideTools: false });
     });
@@ -511,7 +493,7 @@ describe("buildVisualElements", () => {
         toolMsg([tool("t1", "Read")], { text: "Let me read the file" }),
         toolMsg([tool("t2", "Edit")], { text: "Now editing" }),
       ]);
-      // message(text), tool-group(t1), message(text), tool-group(t2)
+
       expect(elements).toHaveLength(4);
       expect(elements[0]).toMatchObject({ kind: "message", index: 0, hideTools: true });
       expect(elements[1].kind).toBe("tool-group");
@@ -528,12 +510,12 @@ describe("buildVisualElements", () => {
     });
 
     it("flushes accumulated tools before a text+tool message", () => {
-      // tool-only msg, then text+tool msg → should NOT merge into one group
+
       const elements = buildVisualElements([
         toolMsg([tool("t1", "Bash")]),
         toolMsg([tool("t2", "Read")], { text: "Now reading" }),
       ]);
-      // tool-group(t1), message(text), tool-group(t2)
+
       expect(elements).toHaveLength(3);
       expect(elements[0].kind).toBe("tool-group");
       if (elements[0].kind === "tool-group") {
@@ -554,7 +536,7 @@ describe("buildVisualElements", () => {
         toolMsg([tool("t2", "Grep")]),
         toolMsg([tool("t3", "Bash")]),
       ]);
-      // message(text), tool-group(t1, t2, t3)
+
       expect(elements).toHaveLength(2);
       expect(elements[0]).toMatchObject({ kind: "message", index: 0, hideTools: true });
       expect(elements[1].kind).toBe("tool-group");
@@ -623,7 +605,7 @@ describe("buildVisualElements", () => {
       const elements = buildVisualElements([
         toolMsg([tool("t1", "Bash")], { text: "   " }),
       ]);
-      // No visible content → just the tool group, no message bubble
+
       expect(elements).toHaveLength(1);
       expect(elements[0].kind).toBe("tool-group");
     });
@@ -640,7 +622,7 @@ describe("buildVisualElements", () => {
       const elements = buildVisualElements([
         { role: "assistant", text: "", toolUse: [tool("t1", "Bash")], images: [{ data: "abc", mediaType: "image/png" }] },
       ]);
-      // image counts as visible content → message + tool-group
+
       expect(elements).toHaveLength(2);
       expect(elements[0]).toMatchObject({ kind: "message", index: 0, hideTools: true });
       expect(elements[1].kind).toBe("tool-group");
@@ -703,7 +685,7 @@ describe("buildVisualElements", () => {
         toolMsg([tool("t1", "Read")], { text: "Reading", streaming: true }),
         toolMsg([tool("t2", "Edit")], { text: "Editing", streaming: true }),
       ]);
-      // message(0), tool-group(t1), message(1), tool-group(t2)
+
       expect(elements).toHaveLength(4);
       expect(elements[1].kind).toBe("tool-group");
       if (elements[1].kind === "tool-group") {
@@ -721,7 +703,7 @@ describe("buildVisualElements", () => {
         toolMsg([tool("t2", "Read")], { text: "checking", streaming: true }),
         toolMsg([tool("t3", "Grep")], { streaming: true }),
       ]);
-      // tool-group(t1), message(1), tool-group(t2, t3)
+
       expect(elements[0].kind).toBe("tool-group");
       if (elements[0].kind === "tool-group") {
         expect(elements[0].streaming).toBe(false);
@@ -768,7 +750,7 @@ describe("buildVisualElements", () => {
         toolMsg([tool("t1", "Read")], { text: "Reading" }),
         toolMsg([tool("t2", "Grep")]),
       ]);
-      // message(0), tool-group(t1, t2)
+
       if (elements[1].kind === "tool-group") {
         expect(elements[1].messageIndices).toEqual([0, 1]);
       }
@@ -798,7 +780,7 @@ describe("buildVisualElements", () => {
         assistantMsg("All tests pass! The refactoring is complete."),
       ];
       const elements = buildVisualElements(messages);
-      // user, tool-group(t1,t2), message("I see the issue..."), tool-group(t3,t4), message("All tests pass!")
+
       expect(elements).toHaveLength(5);
       expect(elements[0]).toMatchObject({ kind: "message", index: 0 });
       expect(elements[1].kind).toBe("tool-group");
@@ -826,7 +808,7 @@ describe("buildVisualElements", () => {
         toolMsg([tool("t5", "Grep")]),
       ];
       const elements = buildVisualElements(messages);
-      // tool-group(t1,t2), standalone(TodoWrite), tool-group(t4,t5)
+
       expect(elements).toHaveLength(3);
       expect(elements[0].kind).toBe("tool-group");
       if (elements[0].kind === "tool-group") {
@@ -847,7 +829,7 @@ describe("buildVisualElements", () => {
         toolMsg([tool("t4", "Bash")]),
       ];
       const elements = buildVisualElements(messages);
-      // message("Reading"), tool-group(t1,t2), message("Editing"), tool-group(t3,t4)
+
       expect(elements).toHaveLength(4);
       expect(elements[0]).toMatchObject({ kind: "message", index: 0, hideTools: true });
       expect(elements[1].kind).toBe("tool-group");
@@ -899,21 +881,21 @@ describe("buildVisualElements — reuses unchanged elements (stable identity)", 
     const second = buildVisualElements(grown, first);
 
     expect(second).toHaveLength(first.length + 1);
-    // Every pre-existing row is the SAME object — those rows bail out.
+
     first.forEach((el, i) => expect(second[i]).toBe(el));
-    // The new row is genuinely new.
+
     expect(second[second.length - 1]).not.toBe(first[first.length - 1]);
   });
 
   it("gives a fresh object to the row whose message changed, and keeps the rest", () => {
     const base = [userMsg("one"), assistantMsg("partial")];
     const first = buildVisualElements(base);
-    // The streaming bubble grows: a new ChatMessage object at the same index.
+
     const updated = [base[0], { ...base[1], text: "partial text now longer" }];
     const second = buildVisualElements(updated, first);
 
     expect(second[0]).toBe(first[0]);
-    // The element for the changed message is positionally identical, so it is
+
     // reused too — the ROW re-renders because it takes `messages[index]` as its
     // own prop, not because this element changed. That split is deliberate.
     expect(second).toHaveLength(first.length);
@@ -937,9 +919,7 @@ describe("buildVisualElements — reuses unchanged elements (stable identity)", 
   });
 
   it("never mutates an element the previous render still holds", () => {
-    // Two streaming tool messages: the post-process clears `streaming` on all
-    // but the last. If the reuse pass ran before that mutation, it would
-    // rewrite an object the previous render is still rendering.
+
     const a = tool("a", "Read");
     const b = tool("b", "Bash");
     const first = buildVisualElements([toolMsg([a], { streaming: true })]);

@@ -40,13 +40,7 @@ export function MobileTabBar({
 }: {
   activePanel: MobilePanel;
   sidebarOpen: boolean;
-  /**
-   * When true (the home screen, where no session is open) the Chat/Workspace
-   * content tabs are disabled — there's no session content to switch between —
-   * but the Sessions tab and the creation actions stay live so the drawer is
-   * still reachable. Keeps the bar present everywhere instead of hiding it as a
-   * home-screen special case.
-   */
+
   contentTabsDisabled?: boolean;
   onChangePanel: (panel: MobilePanel) => void;
   onOpenSessions: () => void;
@@ -55,17 +49,14 @@ export function MobileTabBar({
   onVoiceSession: () => void;
   newSessionDisabled?: boolean;
 }) {
-  // The drawer, when open, owns the active state — so neither content tab is
+
   // highlighted while Sessions is selected. Disabled content tabs are never
-  // highlighted either.
+
   const chatActive = !contentTabsDisabled && !sidebarOpen && activePanel === "chat";
   const workspaceActive = !contentTabsDisabled && !sidebarOpen && activePanel === "preview";
-  // `shrink-0` on the bar: this is the app's primary navigation, so if the
-  // shell's flex children ever ask for more height than the shell has, the bar
+
   // must not be the one that gives it up — the content region above it is
-  // already `min-h-0` and is what should absorb the squeeze. (This is flex
-  // hardening only; it does nothing for a shell that is itself taller than the
-  // viewport, which is `useAppViewportHeight`'s job.)
+
   return (
     <nav
       className="grid shrink-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-3 border-t border-(--color-border-primary) bg-(--color-bg-primary) px-3 py-1.5 pb-[max(0.375rem,env(safe-area-inset-bottom))]"

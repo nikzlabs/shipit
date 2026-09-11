@@ -24,7 +24,7 @@ import { useRef, useState } from "react";
  */
 export function useGitHubGateLatch(githubNeeded: boolean): {
   showGitHubGate: boolean;
-  /** Close the gate. Called when GitHub connects — there is no other exit. */
+
   dismiss: () => void;
 } {
   const triggeredRef = useRef(false);

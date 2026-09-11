@@ -90,8 +90,7 @@ const themeFiles = fs
 
 describe("theme border contrast", () => {
   it("finds the theme stylesheets", () => {
-    // Guards the glob itself: a renamed directory would otherwise turn every
-    // it.each below into zero silently-passing cases.
+
     expect(themeFiles.length).toBeGreaterThanOrEqual(18);
   });
 
@@ -108,9 +107,6 @@ describe("theme border contrast", () => {
     const againstPrimary = contrastRatio(border!, bgPrimary!);
     const againstSecondary = contrastRatio(border!, bgSecondary!);
 
-    // Compared raw, NOT rounded to 2dp. Rounding first admits anything from
-    // 1.395 up as "1.40", and several themes clear the floor by as little as
-    // 0.0001, so that slack is the whole margin rather than a rounding detail.
     expect(
       againstPrimary,
       `${file}: divider on --color-bg-primary`,
@@ -145,8 +141,7 @@ describe("theme border contrast", () => {
   });
 
   it.each(themeFiles)("%s keeps the divider distinct from the panel", (file) => {
-    // The specific defect that started this: a divider token equal to the
-    // surface beside it is not a faint line, it is no line.
+
     const css = fs.readFileSync(path.join(THEME_DIR, file), "utf8");
     expect(readToken(css, "border-primary")).not.toBe(readToken(css, "bg-secondary"));
     expect(readToken(css, "border-primary")).not.toBe(readToken(css, "bg-primary"));

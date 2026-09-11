@@ -173,14 +173,14 @@ First-version working API:
 
 ```ts
 interface ShipItSdk {
-  /** False until the parent completes the ShipIt host handshake. */
+
   readonly embedded: boolean;
-  /** Resolves after the host handshake; rejects after a documented timeout. */
+
   readonly ready: Promise<void>;
   readonly visibility: {
-    /** Unknown until ShipIt supplies the authoritative initial state. */
+
     readonly current: boolean | null;
-    /** Immediately reports the current value when it is already known. */
+
     subscribe(listener: (visible: boolean) => void): () => void;
   };
   readonly agent: {
@@ -240,7 +240,7 @@ detect the host:
 ```js
 await window.shipit?.ready;
 if (window.shipit?.embedded) {
-  // The registered ShipIt parent completed the handshake.
+
 }
 ```
 

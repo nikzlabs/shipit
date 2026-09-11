@@ -43,9 +43,6 @@ export function useSidebarResize() {
     document.addEventListener("mouseup", onMouseUp);
   }, []);
 
-  // Disable text selection while dragging the sidebar handle.
-  // Cleanup runs on isDragging→false AND on unmount, so a mid-drag unmount
-  // can't leave userSelect: none stuck on <body> and block selection app-wide.
   // eslint-disable-next-line no-restricted-syntax -- DOM sync during drag
   useEffect(() => {
     if (!isDragging) return;

@@ -10,25 +10,20 @@ function doneTitle(sessionName?: string): string {
 }
 
 export interface NotifyContext {
-  /** Session display name / title. */
+
   sessionName?: string;
-  /** Repo label, e.g. "owner/repo". */
+
   repoLabel?: string;
 }
 
-/**
- * Attempt to play a short notification sound using the Web Audio API.
- * Falls back silently if AudioContext is unavailable.
- */
 function playNotificationSound(): void {
   try {
     const ctx = new AudioContext();
     const now = ctx.currentTime;
 
-    // A pleasant two-tone chime (C5 → E5)
     const notes = [
-      { freq: 523.25, start: 0, duration: 0.15 },   // C5
-      { freq: 659.25, start: 0.15, duration: 0.25 }, // E5
+      { freq: 523.25, start: 0, duration: 0.15 },        
+      { freq: 659.25, start: 0.15, duration: 0.25 },      
     ];
 
     for (const note of notes) {
@@ -44,31 +39,20 @@ function playNotificationSound(): void {
       osc.stop(now + note.start + note.duration);
     }
 
-    // Close audio context after the sound finishes
     setTimeout(() => void ctx.close(), 600);
   } catch {
     // AudioContext may be unavailable or blocked
   }
 }
 
-/**
- * Tracks tab visibility and provides a `notify` function that:
- * 1. Changes the document title when the tab is hidden
- * 2. Sends a browser Notification (if permission was granted and setting is on)
- * 3. Plays a notification sound (if setting is on)
- *
- * The title reverts when the user returns to the tab.
- */
 export function useNotification() {
   const hiddenRef = useRef(document.hidden);
   const titleChangedRef = useRef(false);
   const batchRef = useRef<{ count: number; timer: ReturnType<typeof setTimeout> | null }>({ count: 0, timer: null });
 
-  // Track tab visibility
   useEventListener(document, "visibilitychange", () => {
     hiddenRef.current = document.hidden;
 
-    // Restore title when user returns to the tab
     if (!document.hidden && titleChangedRef.current) {
       document.title = DEFAULT_TITLE;
       titleChangedRef.current = false;
@@ -78,24 +62,20 @@ export function useNotification() {
   const emitNotification = useCallback((body: string, context?: NotifyContext) => {
     const { notifyOnFinish, soundOnFinish } = useSettingsStore.getState();
 
-    // Sound plays regardless of tab visibility
     if (soundOnFinish) {
       playNotificationSound();
     }
 
     if (!hiddenRef.current) return;
 
-    // Tab title change (always, when hidden)
     document.title = doneTitle(context?.sessionName);
     titleChangedRef.current = true;
 
-    // Browser notification — include repo and session context
     if (notifyOnFinish && typeof Notification !== "undefined" && Notification.permission === "granted") {
       const title = context?.repoLabel ? `ShipIt · ${context.repoLabel}` : "ShipIt";
       const fullBody = context?.sessionName ? `[${context.sessionName}] ${body}` : body;
       // Mobile Chrome throws "Illegal constructor" — there `Notification` must
-      // be shown via ServiceWorkerRegistration.showNotification(). We don't
-      // register a SW, so swallow the error and rely on the tab title change.
+
       try {
         const n = new Notification(title, { body: fullBody });
         n.onclick = () => {

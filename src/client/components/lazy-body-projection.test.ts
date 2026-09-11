@@ -43,7 +43,7 @@ describe("an image-bearing result still parses after substitution", () => {
     expect(parsed!.images[0]!.src).toBe(imageUrl("s1", imageHash(png)));
     expect(parsed!.images[0]!.mediaType).toBe("image/png");
     // The render path prefers `src`, but `data` must be genuinely gone rather
-    // than merely unused — the whole point is that it left the wire.
+
     expect(parsed!.images[0]!.data).toBeUndefined();
   });
 
@@ -75,8 +75,7 @@ describe("the constraint consumers still resolve from a projected result (req 4)
 
   it("leaves an ExitPlanMode result present and intact", () => {
     // The consumer only reads `!!result`, so what must survive is the entry
-    // itself — a projection that dropped empty results would silently unresolve
-    // every plan on reload.
+
     const result: ToolResultBlock = { toolUseId: "t1", content: "" };
     expect(projectToolResult("s1", result, "ExitPlanMode")).toBe(result);
   });
@@ -110,7 +109,7 @@ describe("the constraint consumers still resolve from a projected result (req 4)
       expect(projected.truncated).toBe(true);
       expect(projected.totalLines).toBe(5_000);
       // What the card renders inline must be the real head of the report, not
-      // an empty body the way a modal-only result gets.
+
       expect(parseSubagentReport(projected.content).text.startsWith("finding 0")).toBe(true);
       expect(report.startsWith(parseSubagentReport(projected.content).text)).toBe(true);
     }
@@ -118,24 +117,13 @@ describe("the constraint consumers still resolve from a projected result (req 4)
 });
 
 describe("diff stats survive the body being stripped", () => {
-  /**
-   * Once the file body is off the wire, `DiffBlock` draws `+N -M` from the
-   * server's stats instead of recomputing them. The two `countLines`
-   * implementations are separate functions in separate layers, so this pins
-   * them together — if either drifts, the summary silently changes on reload.
-   */
-  // Padded past `INPUT_STRIP_FLOOR_BYTES`: below the floor the projection
-  // deliberately leaves a body in place (the markers would cost more than the
-  // text), so a two-line fixture would exercise nothing. The padding is inside
-  // one line of each body, so the line counts under test are unchanged.
+
   const wide = (label: string) => `${label}${"-".repeat(300)}`;
   const cases: { name: string; input: Record<string, unknown> }[] = [
     { name: "Write", input: { file_path: "/a.ts", content: `${wide("a")}\nb\nc` } },
     { name: "Edit", input: { file_path: "/a.ts", old_string: `${wide("x")}\ny`, new_string: `${wide("x")}\ny\nz\nw` } },
     { name: "Write", input: { file_path: "/a.ts", content: `${wide("trailing newline")}\n` } },
-    // An empty `new_string` is the deletion case, and it also pins the floor's
-    // edge: a zero-byte value is left on the wire (there is nothing to save),
-    // so only `old_string` disappears here.
+
     { name: "Edit", input: { file_path: "/a.ts", old_string: wide("only-old"), new_string: "" } },
   ];
 
@@ -147,7 +135,7 @@ describe("diff stats survive the body being stripped", () => {
         added: countLines((input.new_string ?? input.content ?? "") as string),
         removed: countLines((input.old_string ?? "") as string),
       });
-      // …and every body it computed them from that was worth removing is gone.
+
       expect(projected.bodyTruncated).toBe(true);
       for (const key of ["content", "old_string", "new_string"]) {
         const value = input[key];
@@ -156,7 +144,7 @@ describe("diff stats survive the body being stripped", () => {
           expect(projected.inputChars?.[key]).toBe(value.length);
         }
       }
-      // The path stays: it is what the one-line summary draws.
+
       expect(projected.input.file_path).toBe("/a.ts");
     });
   }

@@ -11,7 +11,6 @@
  * saturation/lightness keep the dots vivid-but-muted in both light and dark.
  */
 
-/** FNV-1a-ish hash of the label name, folded to a 0–359 hue. */
 export function labelHue(name: string): number {
   let hash = 0;
   for (let i = 0; i < name.length; i++) {
@@ -20,7 +19,6 @@ export function labelHue(name: string): number {
   return Math.abs(hash) % 360;
 }
 
-/** A theme-stable dot color for a label, as an `hsl()` string. */
 export function labelDotColor(name: string): string {
   return `hsl(${labelHue(name)} 60% 55%)`;
 }

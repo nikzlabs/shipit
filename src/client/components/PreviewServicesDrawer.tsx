@@ -23,13 +23,12 @@ import { resolvePreviewHost } from "../utils/preview-host.js";
 import { useLogStore } from "../stores/log-store.js";
 import type { WsClientMessage } from "../../server/shared/types.js";
 
-/** Maximum number of plain-text lines kept for "Send to Agent". */
 const MAX_PLAIN_LINES = 200;
 
 const HEIGHT_KEY = "shipit:preview-services:height";
 const DEFAULT_HEIGHT = 260;
 const MIN_HEIGHT = 120;
-/** Leave at least this much room for the preview above the drawer. */
+
 const MIN_PREVIEW_PX = 120;
 
 function loadHeight(): number {
@@ -47,8 +46,7 @@ function saveHeight(v: number): void {
 }
 
 function StatusDot({ status }: { status: ManagedServiceState["status"] }) {
-  // docs/265 — `running` is a steady state and does not animate; see the same
-  // switch in ServiceList.tsx for why an always-on animation is expensive here.
+
   if (status === "running") {
     return (
       <span className="relative flex items-center justify-center w-2 h-2 shrink-0">
@@ -70,7 +68,6 @@ const segColor: Record<ManagedServiceState["status"], string> = {
   stopped: "bg-(--color-border-secondary)",
 };
 
-/** Compact one-segment-per-service health bar shown in the expanded header. */
 function HealthBar({ services }: { services: ManagedServiceState[] }) {
   return (
     <span className="flex gap-[3px]">
@@ -81,7 +78,6 @@ function HealthBar({ services }: { services: ManagedServiceState[] }) {
   );
 }
 
-/** Pill button for the header's bulk actions (Start/Stop/Restart all). */
 function ToolbarButton({ onClick, title, children }: { onClick: () => void; title: string; children: React.ReactNode }) {
   return (
     <button
@@ -108,14 +104,6 @@ const statusTextColor: Record<ManagedServiceState["status"], string> = {
   stopped: "text-(--color-text-tertiary)",
 };
 
-/**
- * Single-service view: a full-width card whose live log is shown *directly*
- * beneath a compact identity+controls row. A lone service is the focus, not a
- * list-of-one, so it fills the drawer with the one genuinely useful thing — its
- * log — instead of stranding a narrow chip against a wide void (the original
- * complaint). All controls are grouped on the LEFT, next to the name, so they
- * don't drift to the far edge on wide monitors.
- */
 function FocusServiceCard({
   svc,
   active,
@@ -228,8 +216,7 @@ function FocusServiceCard({
         )}
 
         {isStopped ? (
-          // A stopped service has no live log worth showing — surface a purposeful
-          // empty state with a clear Start action instead of a blank terminal.
+
           <div className="flex-1 flex flex-col items-center justify-center gap-3 p-6 text-center">
             <StackIcon size={ICON_SIZE.LG} className="text-(--color-text-tertiary)" />
             <span className="text-sm text-(--color-text-secondary)">This service isn’t running.</span>
@@ -239,16 +226,9 @@ function FocusServiceCard({
             </Button>
           </div>
         ) : active ? (
-          // The live log, shown directly — the reason the focus card fills the space.
-          // The `flex-1 min-h-0` wrapper is what makes it take the LEFTOVER space,
-          // the same way its two sibling branches and TerminalPanel's log do.
-          // `<LogView>`'s own root is `h-full`, whose flex base is the full column
-          // height and whose min-content height (search row + xterm rows) is a
+
           // floor it cannot shrink past — so as a bare child it overflowed the
-          // card's `overflow-hidden` and had its last rows clipped even with no
-          // banner above it (measured: 41px clipped on a healthy service). That
-          // is also why a tall error row squeezed it to nothing rather than
-          // sharing the column with it.
+
           <div className="flex-1 min-h-0" data-testid="service-log-slot">
             <LogView channel={`service:${svc.name}`} send={send} />
           </div>
@@ -262,35 +242,19 @@ function FocusServiceCard({
 
 interface PreviewServicesDrawerProps {
   services: ManagedServiceState[];
-  /** Active session id — used to build per-service external (new-tab) URLs. */
+
   sessionId?: string;
   /** Whether the Preview tab is currently visible — gates xterm mount so the
    *  log viewer never opens against a zero-size (hidden) container. */
   active: boolean;
   send: (msg: WsClientMessage) => void;
   onSendToAgent: (serviceName: string, status: string, logs: string) => void;
-  /** Pivot the preview iframe to a service's port (clicking its `:port` chip). */
+
   onSelectPreviewPort: (port: number) => void;
-  /**
-   * Whether a preview is live above the drawer. With none, the drawer opens
-   * itself — see {@link isServicesDrawerOpen}. Passed in rather than read from
-   * the store so it is the same *derived* status the PreviewFrame shows
-   * (`deriveEffectivePreviewStatus`), which `preview_status` alone can lag.
-   */
+
   previewRunning: boolean;
 }
 
-/**
- * Collapsible, resizable Services panel docked at the bottom of the Preview
- * tab. Replaces the former standalone "Services" right-panel tab (docs/175):
- * services now live *inside* the preview so a user can tail a service log while
- * the live render stays visible above. Collapsed it is a thin status strip;
- * expanded it shows the service list, or a single service's xterm log view.
- *
- * Open/closed state and drawer height persist to localStorage so the layout
- * survives reloads and session switches — except while no preview is running,
- * where the drawer opens regardless (`isServicesDrawerOpen`).
- */
 export function PreviewServicesDrawer({
   services,
   sessionId,
@@ -310,32 +274,21 @@ export function PreviewServicesDrawer({
   const [selectedService, setSelectedService] = useState<string | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
 
-  // Derive effective selection — if the service disappeared, treat as
-  // deselected. A lone service always renders the focus card (below), so a stale
   // selection from a multi-service moment never traps us in the drill-in view.
   const effectiveService =
     services.length > 1 && selectedService && services.some((s) => s.name === selectedService) ? selectedService : null;
   const selectedSvc = effectiveService ? services.find((s) => s.name === effectiveService) ?? null : null;
 
-  // A toggle still states the saved preference, as it always did. It also ends
-  // (or begins) the current no-preview dismissal, so pressing the caret twice
-  // leaves the drawer where the user put it instead of springing back open.
   const toggleExpanded = useCallback(() => {
     setSavedExpanded(!expanded);
     setIdleCollapsed(expanded);
   }, [expanded, setSavedExpanded, setIdleCollapsed]);
 
-  // A preview coming up closes that episode: the next time one stops, the
-  // drawer opens again even though the user collapsed it earlier.
   // eslint-disable-next-line no-restricted-syntax -- reacts to the async preview-status stream
   useEffect(() => {
     if (previewRunning && idleCollapsed) setIdleCollapsed(false);
   }, [previewRunning, idleCollapsed, setIdleCollapsed]);
 
-  // Pull a service's recent lines straight from the log-store (docs/192) — the
-  // same model `<LogView>` renders, so "Send to Agent" ships exactly what's on
-  // screen, no separate accumulation. Used by both the selected-service toolbar
-  // and the single-service focus card.
   const sendLogsToAgent = useCallback((name: string, status: string) => {
     const recs = useLogStore.getState().channels[`service:${name}`]?.records ?? [];
     const text = recs.map((r) => r.text).join("").split("\n").slice(-MAX_PLAIN_LINES).join("\n").trim();
@@ -348,9 +301,8 @@ export function PreviewServicesDrawer({
     sendLogsToAgent(effectiveService, svc?.status ?? "unknown");
   }, [effectiveService, services, sendLogsToAgent]);
 
-  // --- Restart = client-orchestrated stop → start. Sending both at once would
   //     let `start` race the still-running container, so we stop now and start
-  //     again only once the service reports "stopped" on the status stream. ---
+
   const restartPendingRef = useRef<Set<string>>(new Set());
   const handleRestart = useCallback((name: string) => {
     restartPendingRef.current.add(name);
@@ -378,7 +330,6 @@ export function PreviewServicesDrawer({
     return buildSubdomainUrl(sessionId, svc.port, host, protocol);
   }, [sessionId, tailnetPreviewHost]);
 
-  // --- Bulk actions over the whole stack ---
   const startable = services.filter((s) => s.status === "stopped" || s.status === "error");
   const stoppable = services.filter((s) => s.status === "running" || s.status === "starting");
   const restartable = services.filter((s) => s.status === "running");
@@ -386,16 +337,15 @@ export function PreviewServicesDrawer({
   const stopAll = () => stoppable.forEach((s) => send({ type: "stop_service", name: s.name }));
   const restartAll = () => restartable.forEach((s) => handleRestart(s.name));
 
-  // --- Vertical drag-resize ---
   const onResizeStart = useCallback((e: React.MouseEvent | React.TouchEvent) => {
     const startY = "touches" in e ? e.touches[0]?.clientY ?? 0 : e.clientY;
     const startH = height;
-    // Cap the height so the preview above keeps a minimum slice.
+
     const parentH = rootRef.current?.parentElement?.clientHeight ?? window.innerHeight;
     const maxH = Math.max(MIN_HEIGHT, parentH - MIN_PREVIEW_PX);
 
     const move = (clientY: number) => {
-      const dy = startY - clientY; // drag up → taller
+      const dy = startY - clientY;                    
       setHeight(Math.max(MIN_HEIGHT, Math.min(maxH, startH + dy)));
     };
     const onMouseMove = (ev: MouseEvent) => move(ev.clientY);
@@ -418,7 +368,7 @@ export function PreviewServicesDrawer({
   }, [height]);
 
   // Belt-and-suspenders: never leave the body styles welded on if the drawer
-  // unmounts mid-drag (tab switch, session change).
+
   // eslint-disable-next-line no-restricted-syntax -- DOM cleanup on unmount
   useEffect(() => () => {
     document.body.style.userSelect = "";
@@ -429,10 +379,7 @@ export function PreviewServicesDrawer({
 
   const runningCount = services.filter((s) => s.status === "running").length;
   const showToolbar = expanded && !!selectedSvc;
-  // A lone service isn't "a list of one" — it's the focus. Render it as a
-  // full-width card with its live log shown directly, instead of a stranded
-  // chip in a wide drawer. Bulk controls are hidden in this mode since the
-  // card carries the per-service controls. (Explicit drill-in still wins.)
+
   const singleSvc = expanded && !effectiveService && services.length === 1 ? services[0] : null;
 
   return (
@@ -467,7 +414,7 @@ export function PreviewServicesDrawer({
         </button>
 
         {showToolbar && selectedSvc ? (
-          // Expanded + a service is selected: header doubles as the log toolbar.
+
           <>
             <button
               onClick={() => setSelectedService(null)}
@@ -508,9 +455,7 @@ export function PreviewServicesDrawer({
             </div>
           </>
         ) : expanded ? (
-          // Expanded list view: health bar + bulk controls. For a single
-          // service the focus card below carries the controls, so the header
-          // stays minimal (just the count) to avoid duplicate affordances.
+
           <>
             <div className="flex items-center gap-2 min-w-0">
               {!singleSvc && <HealthBar services={services} />}
@@ -538,7 +483,7 @@ export function PreviewServicesDrawer({
             )}
           </>
         ) : (
-          // Collapsed: compact count + status dots.
+
           <>
             <span className="text-(--color-text-tertiary) tabular-nums">{runningCount}/{services.length}</span>
             <span className="ml-auto flex items-center gap-1.5">

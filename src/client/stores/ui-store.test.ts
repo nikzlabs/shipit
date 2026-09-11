@@ -46,7 +46,7 @@ describe("useUiStore.reset", () => {
 
   it("does NOT write the seed back to localStorage", () => {
     // `setActiveAgentId`'s contract: an internal sync must never move the global
-    // "new session default", or a session's own harness would become it.
+
     useUiStore.setState({ activeAgentId: "codex" });
     localStorage.setItem("vibe-agent-id", "claude");
 

@@ -48,21 +48,11 @@ describe("inline previews fit inside the server slice", () => {
 });
 
 describe("subagent tool set", () => {
-  /**
-   * Layout set: one definition shared by the renderer's element extraction and
-   * anything server-side that reasons about subagent calls.
-   */
+
   it("is the same object the client extracts standalone elements from", () => {
     expect(SUBAGENT_TOOLS).toBe(SUBAGENT_TOOL_NAMES);
   });
 
-  /**
-   * docs/109 — the report set is what `MessageToolUse` routes to `SubagentCall`
-   * AND what the projection exempts from slicing. Those two jobs read the same
-   * constant on purpose: a name that renders a full report but gets sliced
-   * loses text irrecoverably, and a name that is exempted but renders nothing
-   * ships an unbounded body for no reason (which is what `Skill` did).
-   */
   it("is a subset of the tools that render as standalone elements", () => {
     for (const name of SUBAGENT_REPORT_TOOL_NAMES) {
       expect(SUBAGENT_TOOLS.has(name)).toBe(true);
@@ -70,7 +60,7 @@ describe("subagent tool set", () => {
   });
 
   it("covers the tool name the Claude CLI actually emits for a subagent", () => {
-    // Verified against Claude Code CLI 2.1.219: the tool arrives as `Agent`,
+
     // never `Task`. `Task` stays for transcripts persisted before docs/109.
     expect(SUBAGENT_REPORT_TOOL_NAMES.has("Agent")).toBe(true);
     expect(SUBAGENT_REPORT_TOOL_NAMES.has("Task")).toBe(true);
@@ -81,16 +71,6 @@ describe("subagent tool set", () => {
   });
 });
 
-/**
- * The drift guard for the requirement-1 fix. `rendersResultContentInline` is the
- * projection's answer to "does anything draw this result's content without a
- * click?" — and getting it wrong is silent in both directions: a `false` for a
- * tool the transcript renders blanks a card with no fetch path behind it, and a
- * `true` for one it doesn't ships bytes nobody ever sees.
- *
- * Each case below is pinned to the call site that reads the content, so a
- * renderer that stops reading it (or starts) shows up here.
- */
 describe("rendersResultContentInline matches what the transcript actually reads", () => {
   it("is true for the subagent report tools — SubagentCall renders it in full", () => {
     for (const name of SUBAGENT_REPORT_TOOL_NAMES) {
@@ -115,7 +95,7 @@ describe("rendersResultContentInline matches what the transcript actually reads"
   });
 
   it("is false for ExitPlanMode, which reads result EXISTENCE and not content", () => {
-    // `resolved={!!result}` survives an emptied body, so there is nothing to keep.
+
     expect(rendersResultContentInline("ExitPlanMode")).toBe(false);
   });
 
@@ -124,50 +104,28 @@ describe("rendersResultContentInline matches what the transcript actually reads"
   });
 
   it("is false for Skill, which renders no result content at all", () => {
-    // Skill sits in the layout set but renders neither a report nor a preview.
+
     expect(SUBAGENT_TOOL_NAMES.has("Skill")).toBe(true);
     expect(rendersResultContentInline("Skill")).toBe(false);
   });
 });
 
-/**
- * planning#293 — the set every size bound in this feature has to agree on.
- *
- * `rendersResultContentInline` answers "does anything draw this without a
- * click"; this one answers the sharper question "and if we cut it, can the user
- * ever get the rest back?". Where the answer is no, the body ships whole — a
- * larger payload beats destroying text.
- */
 describe("shipsResultBodyWhole is the no-recovery set", () => {
-  /**
-   * docs/109 req 7/8 — the report tools were the other member and left when the
-   * card grew a *Show the full report* modal. Membership is "cutting it destroys
-   * text with no way back", and the modal IS the way back: the report is clamped
-   * by `sliceSubagentReport` and the rest fetched from
-   * `/tool-results/:toolUseId`. If that modal is ever removed, this is where the
-   * report has to come back.
-   */
+
   it("excludes the subagent report tools, which now have a modal to recover from", () => {
     for (const name of SUBAGENT_REPORT_TOOL_NAMES) {
       expect(shipsResultBodyWhole(name)).toBe(false);
-      // Still drawn without a click — the clamped head — so the body may be
+
       // bounded but must not be emptied the way a modal-only result is.
       expect(rendersResultContentInline(name)).toBe(true);
     }
   });
 
   it("covers AskUserQuestion — the Ask branch returns before the output modal", () => {
-    // The regression itself: a >16 KB free-form answer lost its tail with no
-    // click, no modal and no fetch to recover it.
+
     expect(shipsResultBodyWhole("AskUserQuestion")).toBe(true);
   });
 
-  /**
-   * The counter-case that keeps the set narrow. `present` reads result content
-   * inline too, but only an artifact id from the head of a compact payload its
-   * own producer controls — a slice preserves that, so exempting it would ship
-   * bytes for nothing.
-   */
   it("excludes the present tool, whose id survives a slice", () => {
     for (const name of ["present", "mcp__shipit__present"]) {
       expect(rendersResultContentInline(name)).toBe(true);
@@ -193,14 +151,12 @@ describe("shipsResultBodyWhole is the no-recovery set", () => {
   });
 
   it("is false for an unresolvable tool name", () => {
-    // Unlike `rendersResultContentInline`, whose safe direction is to ship, the
-    // safe direction here is to bound: an unknown name gets the ordinary slice,
-    // which the unknown-name fallback already keeps generous.
+
     expect(shipsResultBodyWhole(undefined)).toBe(false);
   });
 
   it("is a subset of what the transcript reads inline", () => {
-    // A body that ships whole but that nothing renders would be pure waste.
+
     for (const name of WHOLE_RESULT_TOOL_NAMES) {
       expect(rendersResultContentInline(name)).toBe(true);
     }

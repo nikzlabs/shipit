@@ -33,8 +33,6 @@ const openCard: PrCardState = {
   },
 };
 
-// `useGitStore.reset()` only clears data, not actions — capture the real
-// `startRebase` so a test that stubs it can't leak the stub into the next one.
 const realStartRebase = useGitStore.getState().startRebase;
 const realResetBranchToBase = useGitStore.getState().resetBranchToBase;
 
@@ -59,7 +57,7 @@ describe("PrActionsMenu", () => {
     const trigger = screen.getByLabelText("Pull request actions");
     expect(trigger).toBeInTheDocument();
     await user.click(trigger);
-    // No remote, no branch, no PR → no PR-scoped items.
+
     expect(screen.queryByRole("menuitem", { name: /^Sync with/ })).toBeNull();
     expect(screen.queryByRole("menuitem", { name: "Copy branch name" })).toBeNull();
     expect(screen.queryByRole("menuitem", { name: "Close pull request" })).toBeNull();
@@ -85,7 +83,7 @@ describe("PrActionsMenu", () => {
 
     await user.click(screen.getByLabelText("Pull request actions"));
     expect(screen.queryByRole("menuitem", { name: /^Sync with/ })).toBeNull();
-    // Copy + Close still available (not remote-gated).
+
     expect(screen.getByRole("menuitem", { name: "Copy branch name" })).toBeInTheDocument();
     expect(screen.getByRole("menuitem", { name: "Close pull request" })).toBeInTheDocument();
   });
@@ -111,7 +109,7 @@ describe("PrActionsMenu", () => {
     await user.click(screen.getByLabelText("Pull request actions"));
     const toggle = screen.getByRole("button", { name: /Auto-fix CI/ });
     expect(toggle).toBeInTheDocument();
-    // Not paused → titled to offer pausing.
+
     expect(toggle).toHaveAttribute("title", "Pause CI auto-fixing for this session");
   });
 
@@ -148,10 +146,8 @@ describe("PrActionsMenu", () => {
     expect(screen.queryByRole("menuitem", { name: "Close pull request" })).toBeNull();
   });
 
-  // docs/077 — the arming belongs to one pull request. The toggle STAYS on a
   // terminal card (that is where a reused session arms its next PR), but it must
-  // not wear the dead PR's arming: `useActiveAutoMerge` retires an arming
-  // stamped for a PR that is no longer live, even when the store still holds it
+
   // because the terminal `pr_status` update was never observed.
   it.each(["merged", "closed"] as const)(
     "offers the Auto-merge toggle on a %s PR, reading OFF despite a stale arming",
@@ -175,7 +171,7 @@ describe("PrActionsMenu", () => {
     useSessionStore.setState({ sessions: [makeSession({ id: "s1" })] });
     usePrStore.setState({
       cardBySession: { s1: { ...openCard, phase: "merged" } },
-      // No `armedForPrNumber` — armed for the NEXT PR, not the merged one.
+
       autoMergeBySession: { s1: { enabled: true, mergeMethod: "squash" } },
     });
     render(<PrActionsMenu sessionId="s1" />);
@@ -215,7 +211,7 @@ describe("PrActionsMenu", () => {
       const user = userEvent.setup();
       useSessionStore.setState({ sessions: [makeSession({ id: "s1" })] });
       useRepoStore.setState({ repos: [masterRepo] });
-      // Ready phase — no `pr.baseBranch` to read, which is where "main" was assumed.
+
       usePrStore.setState({ cardBySession: { s1: { cardId: "c1", phase: "ready" } } });
       const startRebase = vi.fn();
       useGitStore.setState({ startRebase });

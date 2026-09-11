@@ -41,10 +41,9 @@ import type { ModelInfo } from "../utils/model-info.js";
  * asserting something untrue.
  */
 
-/** One `(service, billing mode)` block in the model menu. */
 interface ModelGroup {
   key: string;
-  /** Which service this is — what the header's vendor mark is drawn from. */
+
   serviceId: string;
   serviceName: string;
   billingMode: "sub" | "key";
@@ -92,7 +91,6 @@ export function ModelGroupHeader({
   );
 }
 
-/** Group rows by `(service, billing mode)`, preserving catalogue order. */
 function groupRows(rows: ModelRow[]): ModelGroup[] {
   const groups: ModelGroup[] = [];
   for (const row of rows) {
@@ -150,8 +148,7 @@ export function useBoundModelSelection(seedFromHistory: boolean): ModelSelection
   if (session?.serviceId && session.billingMode && session.model) {
     return { serviceId: session.serviceId, billingMode: session.billingMode, modelId: session.model };
   }
-  // No session of its own (Quick Capture, the new-session route): the seed is
-  // what the next session is actually created with, so it is what the levels
+
   // must be honest about.
   return getSavedModelSelection() ?? undefined;
 }
@@ -165,26 +162,6 @@ function boundSession(
   return sessions.find((s) => s.id === storeSessionId);
 }
 
-/**
- * Which harness the picker is describing — and therefore which model list it
- * shows, since the harness is the axis that selects the list.
- *
- * Two different questions, deliberately answered differently:
- *
- * - **Bound to a session** — that session's own persisted harness, falling back
- *   to the ui-store's active id while its row is still loading. The session is
- *   authoritative about what it runs (req 11).
- * - **No session yet** — the persisted seed, via {@link newSessionAgentId},
- *   which is the exact rule the connect URL and Quick Capture go on to create
- *   the session with. Deliberately NOT the ui-store's `activeAgentId`, which
- *   `useConnectionSync` syncs to whichever session is connected: with no session
- *   of its own the picker inherited an unrelated session's harness and named one
- *   the new session would not be created on.
- *
- * Same shape as {@link ReasoningSelector}'s `seedFromHistory`, for the same
- * reason: a per-install seed *previews* what a new session will inherit, and is
- * not a display fallback for a session that has its own answer.
- */
 function displayedHarness(
   agents: AgentOption[],
   activeAgentId: AgentId,
@@ -195,15 +172,13 @@ function displayedHarness(
   return session?.agentId ?? activeAgentId;
 }
 
-// ---- Harness selector ------------------------------------------------------
-
 interface HarnessSelectorProps {
   agents: AgentOption[];
   activeAgentId: AgentId;
   onAgentChange: (agentId: AgentId) => void;
-  /** See {@link ModelSelectorProps.hasActiveSession}. */
+
   hasActiveSession?: boolean;
-  /** See {@link ModelSelectorProps.seedFromHistory}. */
+
   seedFromHistory?: boolean;
   disabled?: boolean;
 }
@@ -231,8 +206,6 @@ export function useHarnessPickerState({
   const pinnedAgentId =
     hasActiveSession && currentSession?.agentPinned ? currentSession.agentId : undefined;
 
-  // docs/252 phase 9 (req 14) — a harness this deployment did not install offers
-  // no models and appears nowhere. An installed-but-unauthenticated one stays
   // visible, because that is actionable.
   const installed = agents.filter((a) => a.installed);
   const currentAgentId = displayedHarness(agents, activeAgentId, currentSession, seedFromHistory);
@@ -252,16 +225,6 @@ export function lockedHarnessReason(harnessName: string): string {
   return `${harnessName}: fixed for this session after the first message. Models stay switchable.`;
 }
 
-/**
- * Which CLI runs this session. Disabled with the reason on it once the session
- * has pinned one — the irreversibility is the whole point of splitting it out,
- * so it is stated on the control rather than inside a menu.
- *
- * docs/260 — this renders in the composer's WIDE row only. Below 700px of
- * composer width the harness moves into `ComposerSettingsMenu`, which is why the
- * old `compactTrigger` (an icon-only mobile variant) no longer exists: there is
- * no width at which this control is shown but too narrow for its own name.
- */
 export function HarnessSelector({
   agents,
   activeAgentId,
@@ -287,8 +250,7 @@ export function HarnessSelector({
         triggerTestId="harness-trigger"
         menuTestId="harness-dropdown"
         menuWidth="w-56"
-        // Same as the model trigger: the composer row names what it would run
-        // even when this deployment installed no harness to choose between.
+
         whenEmpty="readout"
         side="top"
         align="end"
@@ -297,20 +259,7 @@ export function HarnessSelector({
         {installed.map((agent) => {
           const rows = modelRowsFor(agent);
           return (
-            /*
-              Two lines, name over count: the count is a property OF the
-              harness, and right-aligning it on the same line made it read as a
-              second column the eye compares across rows — which is precisely
-              the "how many models am I giving up" comparison the control is not
-              for. `PickerOption`'s `detail` slot is that second line, and the
-              composer's settings menu says the same thing through `ChoiceRow`.
 
-              The model count lands on the control that would act on it, which
-              is why there is no "N more models on Codex" footer in the MODEL
-              menu: that footer grows with every installed harness and is
-              useless the moment the harness is pinned, which is most of a
-              session's life.
-            */
             <PickerOption
               key={agent.id}
               label={agent.name}
@@ -331,31 +280,15 @@ export function HarnessSelector({
   );
 }
 
-// ---- Model selector --------------------------------------------------------
-
 interface ModelSelectorProps {
   agents: AgentOption[];
   activeAgentId: AgentId;
   /** Called with the whole selection — a bare id cannot say who is billing you. */
   onModelChange?: (selection: ModelChoice) => void;
   modelInfo: ModelInfo | null;
-  /**
-   * Whether the picker is bound to an active session (the in-session composer)
-   * rather than composing a brand-new session (the quick-capture overlay). In a
-   * new-session context the picker reads the same global session store, so
-   * without this gate it would inherit a background session's state.
-   */
+
   hasActiveSession?: boolean;
-  /**
-   * True when this composer is bound to **no session at all** — Quick Capture,
-   * and the new-session route before its warm session has been claimed. There
-   * the picker previews what the session about to be created will inherit
-   * (see {@link displayedHarness}) instead of describing the store's session,
-   * which belongs to someone else.
-   *
-   * A narrower question than `hasActiveSession`: the new-session route is
-   * `hasActiveSession: false` and yet bound to the warm session it claimed.
-   */
+
   seedFromHistory?: boolean;
   disabled?: boolean;
 }
@@ -385,13 +318,7 @@ export function useModelPickerState({
   hasActiveSession?: boolean;
   seedFromHistory?: boolean;
 }) {
-  // docs/252 phase 4 — the optimistic pick is the whole TRIPLE, not a model id.
-  // A mid-session switch across services routinely keeps the id (the same model
-  // is reachable direct and through a gateway), so an id-keyed pending pick
-  // showed no change at all: the trigger label and the checkmark both stayed on
-  // the service the user had just moved away from, until an unrelated
-  // session-list refresh happened to arrive. The server's
-  // `model_selection_changed` confirmation is what clears it.
+
   const [pendingSelection, setPendingSelection] = useState<ModelChoice | undefined>(
     undefined,
   );
@@ -404,9 +331,6 @@ export function useModelPickerState({
   const currentSession = boundSession(sessions, sessionId, seedFromHistory);
   const sessionModel = currentSession?.model;
 
-  // The harness decides which list this is, so it is resolved exactly as
-  // `HarnessSelector` resolves its own label — otherwise the two controls
-  // sitting side by side could name different harnesses.
   const displayAgent = agents.find(
     (a) => a.id === displayedHarness(agents, activeAgentId, currentSession, seedFromHistory),
   );
@@ -414,19 +338,11 @@ export function useModelPickerState({
   const rows = modelRowsFor(displayAgent);
   const groups = groupRows(rows);
 
-  // The saved slot holds a TRIPLE, and reading only its id would let the trigger
-  // and checkmark land on a different `(service, mode)` from the one Quick
-  // Capture goes on to send — with the same id under a subscription and a key,
-  // the picker would show the subscription row while the session billed the key.
   const savedSelection = getSavedModelSelection();
   const savedModel = savedSelection?.modelId ?? getSavedModelId();
-  // docs/252 phase 4 — the seed is honoured only when the harness on display
-  // actually offers it. The slot is global and the harness is not, so switching
-  // harness on the new-session composer left the trigger naming the PREVIOUS
+
   // harness's model: a model that harness cannot run, and — once the server
-  // reports what it moved the selection to — a trigger that contradicts its own
-  // notice. Dropping it falls through to the first eligible row, which is what
-  // the server chose.
+
   const seededRow =
     !hasActiveSession && savedSelection
       ? rows.find(
@@ -446,17 +362,6 @@ export function useModelPickerState({
     pendingSessionRef.current === sessionId ? pendingSelection : undefined;
   const pendingModelForCurrentSession = pendingForCurrentSession?.modelId;
 
-  // The raw model id the CLI reported running this turn. `modelInfo` is global
-  // UI state, so it is trusted only when the reported model belongs to the
-  // active session's agent; otherwise a session switch could show the previous
-  // session's model.
-  //
-  // Scoping by AGENT is not enough for a composer with no session of its own:
-  // Quick Capture is handed the *background* session's `modelInfo`, and when
-  // that session happens to run the seeded harness the id passes the agent check
-  // and outranks the seed below — so the overlay showed the background session's
-  // model while creating with the saved one. There is no live model for a
-  // session that does not exist yet, so drop it outright.
   const liveModel = seedFromHistory ? undefined : (modelInfo?.model ?? undefined);
   const liveModelAlias = liveModel ? resolveModelAlias(liveModel) : undefined;
   const knownIds = rows.map((r) => r.modelId);
@@ -470,31 +375,15 @@ export function useModelPickerState({
       : undefined;
   const scopedLiveModel = liveModelRow ? liveModel : undefined;
 
-  // ONE precedence, shared by the trigger label and the checkmark, so the two
   // can never contradict each other:
-  //
-  //   1. the optimistic pending pick — instant feedback before the next turn
-  //   2. the session's persisted model — the authoritative answer to "what will
-  //      this session run next", surviving reloads and session switches
-  //   3. the model the CLI last reported — only meaningful for a session that
+
   //      never had a model explicitly picked
-  //   4. localStorage's last pick, for the new-session view only, then the
-  //      first eligible model
-  //
-  // The persisted selection deliberately outranks the live model. It used to be
-  // the other way round, which made the picker contradict itself whenever the
-  // two disagreed. The live model is still surfaced verbatim in the usage modal,
-  // which is the right home for "what actually ran".
+
   const displayedModel =
     pendingModelForCurrentSession ?? sessionModel ?? scopedLiveModel ?? seededModel ?? rows[0]?.modelId;
   const selectedModel =
     pendingModelForCurrentSession ?? sessionModel ?? liveModelRow ?? seededModel ?? rows[0]?.modelId;
 
-  // The service/mode the session actually persisted, so a duplicated model id
-  // highlights the row it was chosen from rather than every row sharing the id.
-  // The optimistic pick outranks it for the same reason it outranks the model:
-  // a same-id cross-service switch changes ONLY this, so reading the session row
-  // first would leave the checkmark on the group the user just left.
   const chosenGroupKey =
     pendingForCurrentSession?.serviceId
       ? `${pendingForCurrentSession.serviceId}:${pendingForCurrentSession.billingMode}`
@@ -504,11 +393,8 @@ export function useModelPickerState({
           ? seededRow.groupKey
           : undefined;
 
-  // Nothing has pinned a group yet — a brand-new session with no saved pick, so
-  // the model itself fell back to `rows[0]`. Resolve the group the same way, to
   // the FIRST row offering that id, because the alternative is what the live UI
-  // showed: the trigger's pill naming one service while a checkmark sat on
-  // every row sharing the id. One answer, read by both.
+
   const selectedGroupKey =
     chosenGroupKey ?? rows.find((r) => r.modelId === selectedModel)?.groupKey;
 
@@ -546,20 +432,8 @@ export function useModelPickerState({
     [onModelChange, sessionId, selectionEcho],
   );
 
-  // Drop the optimistic pending pick once the server has ANSWERED — which is a
-  // different question from "the row now matches", and the difference is the
-  // whole point: a REFUSED pick leaves the row exactly as it was, so a
-  // match-only rule would leave the trigger and the checkmark claiming a service
-  // the session is not on, indefinitely and invisibly (a same-id cross-service
-  // pick changes nothing else on screen). The echo counter says the server
-  // answered, whichever way it answered.
-  //
-  // The row-match clear stays as the fast path for a confirmation that arrives
-  // as a session-list refresh rather than as our own echo, and it compares the
-  // whole triple: a same-id cross-service pick would otherwise clear on the
-  // model alone and snap the checkmark back to the old group. The
   // CLI-confirmation clear stays as the escape hatch for a pick the server never
-  // answered at all, so a stale pending pick can't outlive a turn.
+
   const prevLiveRef = useRef(liveModel);
   const sessionMatchesPending =
     !!pendingSelection
@@ -580,21 +454,13 @@ export function useModelPickerState({
     groups,
     /** The name on the trigger / anchor. Never empty — see its definition above. */
     displayName,
-    /** The row the checkmark belongs on, as a `(model, group)` pair. */
+
     selectedModel,
     selectedGroupKey,
     handleModelSelect,
   };
 }
 
-/**
- * Which model this session runs, grouped by `(service, billing mode)` — the
- * identity a model is actually selected by (req 5), and the grouping the
- * credential, the price and the billing kind all hang off.
- *
- * docs/260 — the composer's WIDE row only; below 700px of composer width the
- * model moves into `ComposerSettingsMenu`, which renders the same state.
- */
 export function ModelSelector({
   agents,
   activeAgentId,
@@ -627,9 +493,7 @@ export function ModelSelector({
         triggerTestId="model-trigger"
         menuTestId="model-dropdown"
         menuWidth="w-60"
-        // `displayName` answers the empty install with "No model" (and "Loading"
-        // for the one frame before the agent list arrives), so the trigger stays
-        // as that readout rather than vanishing from the composer row.
+
         whenEmpty="readout"
         side="top"
         align="end"

@@ -10,11 +10,6 @@ import { usePresentStore } from "../stores/present-store.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { useUiStore } from "../stores/ui-store.js";
 
-// PresentPane → FileContentView → CodeEditor does `import("monaco-editor")`.
-// Unstubbed, that dynamic import keeps resolving Monaco's module graph after
-// this file's environment is torn down, which Vitest reports as an unhandled
-// EnvironmentTeardownError and fails the run even with every test green. Same
-// stub the other Monaco-adjacent suites use.
 vi.mock("monaco-editor", () => ({
   editor: {
     create: () => ({
@@ -22,8 +17,7 @@ vi.mock("monaco-editor", () => ({
       onMouseDown: () => ({ dispose: vi.fn() }),
       onMouseMove: () => ({ dispose: vi.fn() }),
       onMouseLeave: () => ({ dispose: vi.fn() }),
-      // The comment widget keeps its cards sized to, and aligned with, the
-      // visible content area, so it subscribes to scroll and layout too.
+
       onDidScrollChange: () => ({ dispose: vi.fn() }),
       onDidLayoutChange: () => ({ dispose: vi.fn() }),
       getLayoutInfo: () => ({ contentWidth: 800 }),
@@ -53,10 +47,6 @@ function seedPresentations() {
   ]);
 }
 
-/**
- * Stub the lazy content fetch (`GET …/present/:id/content`). `bytes` maps a
- * presentId to the artifact text returned; an unknown id yields a 404.
- */
 function mockContentFetch(bytes: Record<string, string>, mimeType = "text/html") {
   return vi.spyOn(globalThis, "fetch").mockImplementation((input: RequestInfo | URL) => {
     const url = input instanceof Request ? input.url : input.toString();
@@ -98,23 +88,21 @@ describe("PresentPane", () => {
 
     render(<PresentPane isActiveTab />);
 
-    // Header is immediate; bytes arrive after the fetch resolves.
     expect(screen.getByText("One")).toBeInTheDocument();
     const iframe = await screen.findByTitle("Rendered content");
     expect(iframe).toHaveAttribute("sandbox", "allow-scripts");
-    // The shared frame injects a best-effort CSP and wraps bare fragments, so
-    // assert the content is present rather than an exact srcdoc (docs/219).
+
     const srcdoc = iframe.getAttribute("srcdoc") ?? "";
     expect(srcdoc).toContain("<h1>One</h1>");
     expect(srcdoc).toContain("connect-src 'none'");
-    // Cached back onto the entry so re-selecting doesn't refetch.
+
     expect(usePresentStore.getState().presentations[0].content).toBe("<h1>One</h1>");
     expect(screen.queryByLabelText("Previous presentation")).toBeNull();
   });
 
   it("shows a fetch error and a recovery hint when content can't be loaded", async () => {
     useSessionStore.getState().setSessionId("sess_1");
-    mockContentFetch({}); // every id 404s
+    mockContentFetch({});                 
     usePresentStore.getState().hydrate([meta({ presentId: "pres_gone", title: "Gone" })]);
 
     render(<PresentPane isActiveTab />);
@@ -172,8 +160,7 @@ describe("PresentPane", () => {
   });
 
   it("ignores arrow keys originating from a text field (chat-typing must not move the carousel)", () => {
-    // The keydown listener is on window and the chat composer is on screen at
-    // the same time as the Present tab, so pressing ◀/▶ to move the text cursor
+
     // while typing must NOT step the carousel.
     seedPresentations();
     render(<PresentPane isActiveTab />);
@@ -184,7 +171,7 @@ describe("PresentPane", () => {
     const textarea = document.createElement("textarea");
     document.body.appendChild(textarea);
     fireEvent.keyDown(textarea, { key: "ArrowLeft" });
-    expect(usePresentStore.getState().activePresentIndex).toBe(1); // unchanged
+    expect(usePresentStore.getState().activePresentIndex).toBe(1);             
     textarea.remove();
   });
 
@@ -195,7 +182,6 @@ describe("PresentPane", () => {
     fireEvent.click(screen.getByLabelText("View all presentations"));
     expect(usePresentStore.getState().galleryOpen).toBe(true);
 
-    // Selecting a tile jumps to it and collapses back to the single view.
     fireEvent.click(screen.getByLabelText("View Two"));
     expect(usePresentStore.getState().galleryOpen).toBe(false);
     expect(usePresentStore.getState().activePresentIndex).toBe(1);
@@ -214,7 +200,7 @@ describe("PresentPane", () => {
     render(<PresentPane isActiveTab />);
 
     fireEvent.click(screen.getByLabelText("View all presentations"));
-    // The markdown renderer turns the source into prose — the heading text shows.
+
     expect(await screen.findByText("Hello heading")).toBeInTheDocument();
   });
 
@@ -222,15 +208,13 @@ describe("PresentPane", () => {
     seedPresentations();
     render(<PresentPane isActiveTab />);
     expect(screen.queryByLabelText("Save presentation to project")).toBeNull();
-    // Download stays — it targets the user's local machine, not the workspace.
+
     expect(screen.getByLabelText("Download presentation")).toBeInTheDocument();
   });
 
   it("offers no way to destroy a presentation from the pane", () => {
     // The pane must never let the user delete an artifact: closing it would
-    // leave the chat card's "View" button pointing at a presentation that no
-    // longer exists, with no way to get it back. Navigating away from the
-    // Present tab (desktop tabs / mobile tab bar) leaves the store intact.
+
     seedPresentations();
     render(<PresentPane isActiveTab />);
     expect(screen.queryByLabelText("Dismiss presentation")).not.toBeInTheDocument();
@@ -299,7 +283,7 @@ describe("presentationToBlob", () => {
   });
 
   it("decodes a base64 data URI back to its bytes", async () => {
-    // "hello" base64-encoded.
+
     const blob = presentationToBlob("data:image/png;base64,aGVsbG8=", "image/png");
     expect(blob.type).toBe("image/png");
     expect(await blob.text()).toBe("hello");
@@ -315,15 +299,9 @@ describe("presentationToBlob", () => {
   });
 });
 
-/**
- * docs/258 — a pointer addressing a place inside a presented artifact. Markdown
- * renders in ShipIt's own DOM, so the pane scrolls it itself; rendered HTML is
- * handled by a script injected into its `srcDoc` (see `RenderedFrame.test.tsx`).
- */
 describe("PresentPane — agent-authored pointers", () => {
   const MD = "# First heading\n\nbody\n\n## Open questions?\n\nmore\n";
 
-  /** Seed one markdown artifact, mock its bytes, and render the pane. */
   async function renderMarkdownArtifact() {
     useSessionStore.getState().setSessionId("sess-1");
     usePresentStore.getState().hydrate([
@@ -341,8 +319,6 @@ describe("PresentPane — agent-authored pointers", () => {
       (h as HTMLElement).scrollIntoView = scrollIntoView;
     }
 
-    // The slug contract the agent authors against: lowercase, punctuation
-    // dropped, whitespace to hyphens.
     usePresentStore.getState().setLinkTarget({ presentId: "p1", fragment: "open-questions", clickId: 1 });
     await screen.findByText("Open questions?");
     await vi.waitFor(() => expect(scrollIntoView).toHaveBeenCalled());
@@ -377,7 +353,7 @@ describe("PresentPane — agent-authored pointers", () => {
     expect(screen.queryByTitle("Rendered content")).toBeNull();
 
     usePresentStore.getState().setLinkTarget({ presentId: "p1", fragment: "top", clickId: 4 });
-    // Honouring the view mode would silently drop the request.
+
     await screen.findByTitle("Rendered content");
   });
 });
@@ -386,15 +362,13 @@ describe("PresentPane — pointer lifecycle", () => {
   const html = (id: string) => `<html><body><h1 id="${id}">x</h1></body></html>`;
 
   it("does not blame a new artifact for the previous one's failed fetch", () => {
-    // The fetch error is keyed to the artifact that produced it. Unkeyed, it
-    // outlives that artifact for one render — long enough for the pointer
-    // effect to toast about A while pointing at B, and mark B's click handled.
+
     useSessionStore.getState().setSessionId("sess-1");
     usePresentStore.getState().hydrate([
       meta({ presentId: "bad", filePath: "/persist/bad.html" }),
       meta({ presentId: "good", filePath: "/persist/good.html" }),
     ]);
-    mockContentFetch({ good: html("top") }); // "bad" 404s
+    mockContentFetch({ good: html("top") });              
     render(<PresentPane isActiveTab />);
 
     return vi.waitFor(async () => {
@@ -407,8 +381,7 @@ describe("PresentPane — pointer lifecycle", () => {
   });
 
   it("releases a handled markdown target, so reopening the tab does not replay it", async () => {
-    // `PresentPane` is only mounted while its tab is selected, so the local
-    // "already handled" ref dies on every switch away.
+
     useSessionStore.getState().setSessionId("sess-1");
     usePresentStore.getState().hydrate([
       meta({ presentId: "p1", filePath: "/persist/a.md", mimeType: "text/markdown" }),
@@ -429,8 +402,7 @@ describe("PresentPane — pointer lifecycle", () => {
   });
 
   it("keeps an HTML target, which is what the injected scroll is built from", async () => {
-    // Clearing it would rebuild the `srcDoc` and remount the frame, undoing the
-    // scroll it just performed.
+
     useSessionStore.getState().setSessionId("sess-1");
     usePresentStore.getState().hydrate([meta({ presentId: "p1", filePath: "/persist/a.html" })]);
     mockContentFetch({ p1: html("req-7") });

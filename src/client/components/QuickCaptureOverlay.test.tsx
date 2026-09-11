@@ -72,11 +72,7 @@ const LAST_QUICK_SESSION_REPO_KEY = "shipit-last-quick-session-repo";
 
 describe("QuickCaptureOverlay", () => {
   beforeEach(() => {
-    // Sending now records the target repo, so clear it between tests to keep
-    // the "no remembered repo" default path deterministic. The harness/model
-    // seeds are cleared for the same reason: a test that picks a harness writes
-    // both, and the overlay reads them on every render, so a leak would decide
-    // the next test's answer.
+
     localStorage.removeItem(LAST_QUICK_SESSION_REPO_KEY);
     localStorage.removeItem("vibe-agent-id");
     localStorage.removeItem("vibe-model-id");
@@ -119,11 +115,8 @@ describe("QuickCaptureOverlay", () => {
     useSessionStore.setState({ sessionId: undefined, sessions: [] });
   });
 
-  // docs/293 req 4 — `onSend` reports whether the send happened, so a composer
   // never clears for a message that did not go out. This overlay's refusal is
-  // not reachable from the UI today (no ready repo disables the whole composer,
-  // so `sendBlocked` bars the send first); the test pins the ANSWER, not a
-  // demonstrated loss. It would still pass if `MessageInput` stopped reading it.
+
   it("refuses a capture with no repo, and reports the refusal", () => {
     openOverlay();
     render(<QuickCaptureOverlay onAddRepo={vi.fn()} />);
@@ -144,7 +137,7 @@ describe("QuickCaptureOverlay", () => {
   });
 
   it("accepts one once a repo is there", () => {
-    // Non-vacuous control for the refusal above.
+
     useRepoStore.setState({
       repos: [repo("https://github.com/acme/a.git")],
       activeRepoUrl: "https://github.com/acme/a.git",
@@ -191,9 +184,7 @@ describe("QuickCaptureOverlay", () => {
   });
 
   it("defaults to the last quick session's repo, not the repo of the current session", () => {
-    // The motivating case: the user is working in a product repo but keeps
-    // firing quick captures at a different repo (a gap they noticed in the tool
-    // itself). The remembered target wins over the current context.
+
     const currentUrl = "https://github.com/acme/product.git";
     const lastQuickUrl = "https://github.com/acme/shipit.git";
     localStorage.setItem(LAST_QUICK_SESSION_REPO_KEY, lastQuickUrl);
@@ -236,7 +227,6 @@ describe("QuickCaptureOverlay", () => {
 
     expect(localStorage.getItem(LAST_QUICK_SESSION_REPO_KEY)).toBe(otherUrl);
 
-    // Reopening (no reload) picks the remembered target up immediately.
     openOverlay();
     rerender(<QuickCaptureOverlay onAddRepo={vi.fn()} />);
     expect(screen.getByRole("combobox")).toHaveValue(otherUrl);
@@ -298,8 +288,6 @@ describe("QuickCaptureOverlay", () => {
     render(<QuickCaptureOverlay onAddRepo={vi.fn()} />);
     fireEvent.click(screen.getByRole("button", { name: "Send mock" }));
 
-    // Optimistic start: the overlay closes synchronously on submit — it does not
-    // await the create — and stays on the user's current session.
     expect(useUiStore.getState().quickCaptureOpen).toBe(false);
     expect(useSessionStore.getState().sessionId).toBe("current");
     expect(startQuickSessionMock).toHaveBeenCalledWith(
@@ -324,17 +312,15 @@ describe("QuickCaptureOverlay", () => {
     render(<QuickCaptureOverlay onAddRepo={vi.fn()} onSessionCreated={onSessionCreated} />);
     fireEvent.click(screen.getByRole("button", { name: "Send mock" }));
 
-    // Drive the callback the overlay handed to the helper — it should forward to onSessionCreated.
     const onCreated = startQuickSessionMock.mock.calls[0][1] as (s: SessionInfo) => void;
     onCreated(created);
     expect(onSessionCreated).toHaveBeenCalledWith(created);
   });
 
   it("derives the sent agent from the saved model, ignoring a stale vibe-agent-id", async () => {
-    // Regression for docs/166: a user who used Codex once "a while ago" keeps a
-    // stale `vibe-agent-id="codex"` while their saved/selected model is a Claude
+
     // model. The overlay must send the model-derived agent ("claude"), not the
-    // stale key, so the new quick session isn't pinned to Codex.
+
     localStorage.setItem("vibe-agent-id", "codex");
     localStorage.setItem("vibe-model-id", "claude-opus-4-8");
     useUiStore.setState({
@@ -361,7 +347,7 @@ describe("QuickCaptureOverlay", () => {
       },
       expect.any(Function),
     );
-    // The picker also shows the derived agent, so display and send agree.
+
     expect(lastMessageInputProps?.activeAgentId).toBe("claude");
 
     localStorage.removeItem("vibe-agent-id");
@@ -369,10 +355,7 @@ describe("QuickCaptureOverlay", () => {
   });
 
   it("moves the model onto a picked harness, so the pick is not a no-op", () => {
-    // The reported bug: on a quick session, tapping Codex changed nothing at
-    // all. The harness here is DERIVED from the model, so persisting the agent
-    // key alone left the previous harness's model in place and the derivation
-    // handed back the harness the user had just moved away from.
+
     localStorage.setItem("vibe-agent-id", "claude");
     localStorage.setItem("vibe-model-id", "claude-opus-4-8");
     useUiStore.setState({
@@ -392,8 +375,6 @@ describe("QuickCaptureOverlay", () => {
 
     act(() => lastMessageInputProps?.onAgentChange?.("codex"));
 
-    // The picker now names Codex — and names Codex's first model, which is what
-    // the model picker itself falls back to, so anchor and Model row agree.
     expect(lastMessageInputProps?.activeAgentId).toBe("codex");
     fireEvent.click(screen.getByRole("button", { name: "Send mock" }));
     expect(startQuickSessionMock).toHaveBeenCalledWith(
@@ -406,10 +387,7 @@ describe("QuickCaptureOverlay", () => {
   });
 
   it("keeps the model across a harness switch when the new harness runs it", () => {
-    // A harness switch is not a model switch. The shared models (DeepSeek, GLM,
-    // anything through a gateway) are precisely the ones both harnesses offer,
-    // and they are also where deriving the harness from the model is a coin
-    // flip — so this is the case the pick has to survive intact.
+
     localStorage.setItem("vibe-agent-id", "claude");
     localStorage.setItem("vibe-model-id", "deepseek-v4-flash");
     useUiStore.setState({
@@ -498,10 +476,9 @@ describe("QuickCaptureOverlay", () => {
   });
 
   it("forwards the active agent's saved reasoning seed as the creation param (docs/217)", () => {
-    // The quick session's first turn is dispatched server-side, so the chosen
+
     // reasoning must ride the creation request (the `?reasoning=` WS connect
-    // param can't reach turn 1). The ReasoningSelector persists every pick to
-    // the per-agent seed; the overlay reads it back at send for the active agent.
+
     localStorage.setItem("shipit-reasoning-by-agent", JSON.stringify({ claude: "high" }));
     useRepoStore.setState({
       repos: [repo("https://github.com/acme/app.git")],

@@ -15,31 +15,12 @@ import { VoiceTab } from "./tabs/VoiceTab.js";
 import { AdvancedTab } from "./tabs/AdvancedTab.js";
 import { RolesTab } from "./tabs/RolesTab.js";
 
-// On mobile the tab list collapses from a vertical sidebar into a horizontal
-// scrollable strip — each trigger sizes to its label and gets pill-like styling
-// so it reads as a tab bar rather than a stretched menu row.
 const mobileTabClass = "max-md:w-auto max-md:whitespace-nowrap max-md:rounded-md max-md:px-3 max-md:py-1.5 max-md:text-xs";
 
-/**
- * docs/252 — there is no per-vendor tab, and Services leads.
- *
- * Settings used to open on an **Agent** group whose two tabs (`Claude`,
- * `Codex`) each held a copy of the accounts card plus the sub-agent defaults.
- * Both halves were wrong for this feature: a credential belongs to a *service*,
- * not to the harness that happens to drive it, so listing them per harness is
- * the conflation docs/252 exists to remove — and the accounts card is now one
- * of the Services cards, so the tab was a second editor for one fact. The tabs
- * are gone, Services is first, and Services is where Settings opens.
- */
 type Tab = "services" | "roles" | "integrations" | "git" | "instructions" | "skills" | "keyboard" | "voice" | "network" | "advanced";
 
 // docs/261 phase 3 — this tab sits directly after `services`, because it is the
-// one setting that reads entirely off the credentials that tab configures: an
-// auto-configured reviewer changes the moment a service is added, and a role
-// reports itself disconnected the moment its service loses its credential.
-// Services stays first and stays the default (docs/252 D1); nothing here
-// reorders it. docs/264 phase 2 renamed it `reviewer` → `roles`, since the
-// reviewer is now one role among many rather than the only one.
+
 const TABS = ["services", "roles", "integrations", "git", "instructions", "skills", "keyboard", "voice", "network", "advanced"] as const;
 
 export interface SettingsProps {
@@ -121,10 +102,7 @@ export function Settings({
       case "advanced": return "Advanced";
     }
   };
-  // Skills tab renders a two-pane layout (catalog list + Monaco preview when
-  // the install sheet opens) and wants more horizontal room than the existing
-  // form-shaped tabs. Swap the dialog class per active tab so other tabs keep
-  // their tight 672 px width.
+
   const dialogClass = activeTab === "skills"
     ? "rounded-lg border-(--color-border-secondary) max-w-5xl w-full md:mx-4 flex flex-col md:h-[80vh] max-md:h-full"
     : "rounded-lg border-(--color-border-secondary) max-w-2xl w-full md:mx-4 flex flex-col md:h-120 max-md:h-full";

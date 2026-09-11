@@ -54,7 +54,7 @@ self-contained block, and it is driven under a real pty by a test.
 
 ```bash
 shipit_pick "<preselected,csv>" "key|Label|one-line hint" ...
-# -> SHIPIT_PICK_RESULT holds the chosen keys, comma-separated ("" when none)
+
 ```
 
 - **Four functions.** `shipit_pick` (setup + read loop), `shipit_pick_key` (the

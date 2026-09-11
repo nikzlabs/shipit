@@ -16,13 +16,13 @@ import type { EgressHostGrantOutcome, EgressHostReach } from "../../server/share
  */
 
 export type EgressGrantKind =
-  /** Every surface has it; nothing is waiting on a restart. */
+
   | "live-everywhere"
-  /** Only containers started from now on have it, and nothing running is stale. */
+
   | "next-start"
-  /** Fresh containers have it; something already running does not, until it restarts. */
+
   | "partly-live"
-  /** Saved, but nothing here can act on it — a restart won't help (`blocked-*`). */
+
   | "excluded";
 
 /**
@@ -54,11 +54,11 @@ export function egressBlockedReason(reach: EgressHostReach): { headline: string;
 
 export interface EgressGrantSummary {
   kind: EgressGrantKind;
-  /** What happened, naming the scope it happened at. */
+
   headline: string;
-  /** What is live now and what waits — the answer the tooltip used to guess. */
+
   detail: string;
-  /** Session whose container restart would bring the rest in step; null = offer none. */
+
   restartSessionId: string | null;
 }
 
@@ -80,10 +80,6 @@ export function summarizeEgressGrant(outcome: EgressHostGrantOutcome): EgressGra
       ? `${host} is allowed for this session.`
       : `${host} is allowed for every session on this ShipIt.`;
 
-  // The entry saved and still reaches nothing here — this session carries no
-  // user hosts (a sandbox with network access off), or this deployment installs
-  // nothing that could act on the entry at all. Saying "allowed" would be the
-  // flattest wrong claim of the set.
   const blocked = egressBlockedReason(outcome.reach);
   if (blocked) {
     return {

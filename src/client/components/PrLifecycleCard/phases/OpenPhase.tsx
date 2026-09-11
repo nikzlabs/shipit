@@ -25,13 +25,10 @@ export function OpenPhase({
   const pr = card.pr;
   const deployments = usePrStore((s) => s.statusBySession[sessionId]?.deployments);
   const ciDisplay = useCiDisplay(card.checks);
-  // The status chips and action controls live in this column on desktop, but
-  // are hoisted to a full-width row below the header on mobile — see
-  // PrStatusActions for why (the card's icon cluster narrows every row here).
+
   const isMobile = useIsMobile();
   // The arming that can still act on THIS pull request — never the raw card
-  // value, which can carry an arming the PR already outlived (docs/077). Read
-  // above the early return below: hooks run unconditionally.
+
   const autoMerge = useActiveAutoMerge(sessionId);
   if (!pr) return null;
 
@@ -40,19 +37,11 @@ export function OpenPhase({
   const isAutoFixExhausted = autoFix?.status === "exhausted";
   const isCiFailed = ciDisplay.kind === "failure";
   // "none" must come from the poller explicitly — `"unknown"` means we haven't
-  // heard from the poller yet, so we don't know whether CI exists. See
-  // PrStatusActions, which gates the merge button on the same distinction.
+
   const isCiNone = ciDisplay.kind === "none";
 
-  // Two-column layout so additional rows (auto-merge text, failed checks,
-  // deploys) and the wrapped badges row all align under the PR title rather
-  // than getting offset by ad-hoc `pl-5` padding under the icon. Each first-row
-  // anchor (left badge box, title line) is `h-6` and the parent is
-  // `items-start`, so when the block grows multiple rows tall the badge and
-  // title stay centered on the first line — matching the right-side action
-  // cluster (also `h-6`, top-anchored). The card's own `py-2` then provides
   // symmetric top/bottom padding so the last wrapped row never touches the
-  // bottom border.
+
   return (
     <div className="min-w-0 flex-1 flex items-start gap-x-3">
       <div className="h-6 flex items-center shrink-0">
@@ -131,43 +120,15 @@ export function OpenPhase({
   );
 }
 
-/**
- * docs/146 — failure banner for auto-resolve. Renders ONLY for
- * `outcome: "exhausted"` (the manager-terminal state). Per-attempt
- * `error` / `deferred` outcomes are transient and shouldn't flash the
- * banner up and down between retries — only the actionable terminal state
- * gets a UI surface.
- *
- * Gated on `settings.autoResolveConflicts === true` as well, so a user who
- * disabled the feature mid-loop doesn't see a stale banner. The server-side
- * `attachAutomationState` omits the block when disabled, but belt-and-
- * suspenders this on the client.
- *
- * `lastError` is unbounded: most values are short labels ("timeout",
- * "force_push_failed"), but the error paths carry `getErrorMessage(err)` from a
- * failed git command, which can be a screenful of stderr. The banner therefore
- * caps the message at a few lines and scrolls the rest, and carries a dismiss
- * button — otherwise a long error pushes the whole conversation out of view
- * with no way to close it.
- */
 function AutoResolveFailureBanner({ sessionId, card }: { sessionId: string; card: PrCardState }) {
   const enabled = useSettingsStore((s) => s.autoResolveConflicts);
   const setToast = useUiStore((s) => s.setToast);
-  // The failure on show, or null when there is none. Both re-arm conditions read
-  // off this one value.
+
   const lastError =
     card.autoResolve?.status === "exhausted" ? (card.autoResolve.lastError ?? "unknown error") : null;
-  // Dismissal hides ONE failure, not the feature, so it is keyed on the failure
-  // it dismissed. That re-arms the banner on BOTH transitions that mean "this is
-  // a different failure": the status leaving "exhausted" (lastError → null), and
-  // a fresh exhaustion carrying a different error. Keying on the status alone
-  // would miss `exhausted A → exhausted B` — which a viewer that reconnected
+
   // across the intervening reset genuinely sees, since it never rendered the
-  // non-exhausted snapshots in between.
-  //
-  // The re-arm is a render-phase adjustment rather than an effect: it is derived
-  // from the state this render already has, and it self-terminates (once
-  // cleared, the condition is false).
+
   const [dismissedError, setDismissedError] = useState<string | null>(null);
   if (dismissedError !== null && dismissedError !== lastError) setDismissedError(null);
   if (!enabled) return null;

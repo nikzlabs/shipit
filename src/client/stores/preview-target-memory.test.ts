@@ -10,7 +10,6 @@ import {
 } from "./preview-target-memory.js";
 import type { ManagedServiceState } from "./preview-store.js";
 
-/** A compose service row as `service_list` / `service_status` deliver it. */
 function svc(
   name: string,
   port: number,
@@ -19,10 +18,6 @@ function svc(
   return { name, port, status, preview: "auto" };
 }
 
-/**
- * The `preview_status` a container runner builds: `port` is the FIRST running
- * preview service, which is exactly the value that used to move under the pane.
- */
 function statusFor(...running: ManagedServiceState[]) {
   const ports = running.map((s) => s.port!);
   return {
@@ -111,7 +106,6 @@ describe("preview target memory (planning#478)", () => {
       usePreviewStore.getState().setStatus(statusFor(svc("web", 3000)));
       expect(usePreviewStore.getState().previewTargetMemory["session-a"]).toBeUndefined();
 
-      // …and pins by NAME once the list lands.
       usePreviewStore.getState().setServices([svc("web", 3000)]);
       expect(usePreviewStore.getState().previewTargetMemory["session-a"]).toEqual({
         service: "web",
@@ -120,10 +114,9 @@ describe("preview target memory (planning#478)", () => {
     });
 
     it("pins from the effective status when preview_status lags service_status", () => {
-      // The dogfood case: a `manual` service reports running while
-      // `preview_status` still says nothing is up. The pane renders from the
+
       // synthetic status (`deriveEffectivePreviewStatus`), so the pin must come
-      // from the same place or it would name a different port.
+
       usePreviewStore.getState().setServices([svc("dev", 3000)]);
       expect(usePreviewStore.getState().previewTargetMemory["session-a"]).toEqual({
         service: "dev",
@@ -155,7 +148,7 @@ describe("preview target memory (planning#478)", () => {
 
   describe("another service starting or restarting", () => {
     it("does not move the pane when a second service comes up first in the list", () => {
-      // `api` sorts ahead of `web` in the compose file, so the server's default
+
       // port flips to it the moment it is running. The pane must not follow.
       const web = svc("web", 3000);
       usePreviewStore.getState().setServices([svc("api", 4000, "stopped"), web]);
@@ -177,8 +170,6 @@ describe("preview target memory (planning#478)", () => {
       usePreviewStore.getState().setSelectedPort(3000);
       expect(usePreviewStore.getState().selectedPort).toBe(3000);
 
-      // `web` goes down. The pane does NOT move to `api`: it holds `web`'s port
-      // and waits, which is what `PreviewFrame` renders the waiting state over.
       usePreviewStore.getState().updateService(svc("web", 3000, "starting"));
       usePreviewStore.getState().setStatus(statusFor(api));
       expect(usePreviewStore.getState().selectedPort).toBe(3000);
@@ -216,9 +207,7 @@ describe("preview target memory (planning#478)", () => {
     });
 
     it("holds the recorded port through a service-list gap", () => {
-      // `service_list` has not landed (a restore, a reconnect). The list is
-      // explicitly non-authoritative there, so surrendering the port would let
-      // `status.port` take the pane — the rejected fallback by the back door.
+
       const web = svc("web", 3000);
       usePreviewStore.getState().setServices([web, svc("api", 4000)]);
       usePreviewStore.getState().setSelectedPort(4000);
@@ -233,9 +222,9 @@ describe("preview target memory (planning#478)", () => {
     });
 
     it("falls back only when the remembered service has no port to wait on", () => {
-      // Defensive: a worker declares no ports, so there is nothing for the pane
+
       // to show. It cannot be reached by pinning (which resolves a service FROM
-      // a port), so the memory is written directly.
+
       usePreviewStore.getState().setServices([
         svc("web", 3000),
         { name: "worker", status: "running", preview: "manual" },
@@ -250,7 +239,7 @@ describe("preview target memory (planning#478)", () => {
 
   describe("session switching", () => {
     it("keeps each session on its own service", () => {
-      // Session A is looking at `api`.
+
       const web = svc("web", 3000);
       const api = svc("api", 4000);
       usePreviewStore.getState().setServices([web, api]);
@@ -265,15 +254,12 @@ describe("preview target memory (planning#478)", () => {
       expect(usePreviewStore.getState().selectedPort).toBe(3000);
       usePreviewStore.getState().snapshotSession("session-b");
 
-      // Back to A. Its container was reclaimed while away, so the services
-      // report in one at a time and `web` is up first — the exact sequence that
-      // used to leave the pane on `web`.
       useSessionStore.setState({ sessionId: "session-a" });
       usePreviewStore.getState().restoreSession("session-a");
       usePreviewStore.getState().setServices([web, svc("api", 4000, "starting")]);
       usePreviewStore.getState().setStatus(statusFor(web));
       // Still A's own service, waiting — never `web`, which is the one that
-      // happened to boot first.
+
       expect(usePreviewStore.getState().selectedPort).toBe(4000);
 
       usePreviewStore.getState().updateService(api);
@@ -291,7 +277,6 @@ describe("preview target memory (planning#478)", () => {
         "session-a": { service: "api", port: 4000 },
       });
 
-      // A reload has no snapshot at all: the memory alone has to answer.
       usePreviewStore.setState({ sessionSnapshots: {} });
       usePreviewStore.getState().restoreSession("session-a");
       usePreviewStore.getState().setServices([web, api]);
@@ -327,7 +312,6 @@ describe("preview target memory (planning#478)", () => {
       usePreviewStore.getState().setServices([web, api]);
       usePreviewStore.getState().setSelectedPort(4000);
 
-      // `api` was renamed away; the authoritative list no longer declares it.
       usePreviewStore.getState().setServices([web]);
       usePreviewStore.getState().setStatus(statusFor(web));
       expect(usePreviewStore.getState().previewTargetMemory["session-a"]).toEqual({
@@ -349,9 +333,7 @@ describe("preview target memory (planning#478)", () => {
         service: "api",
         port: 4000,
       });
-      // Asserting the port too, not just the memory: the pane reads
-      // `selectedPort`, so a memory that survives while the port is surrendered
-      // still puts the other service on screen.
+
       expect(usePreviewStore.getState().selectedPort).toBe(4000);
     });
 

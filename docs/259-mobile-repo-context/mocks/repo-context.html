@@ -5,8 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Mobile new-session — where does the repo go?</title>
 <style>
-  /* Token values copied from src/client/themes/dark.css + the docs/254 repo
-     palette in src/client/index.css, so the mock is honest about contrast. */
+
   :root {
     --bg-primary: #030712;
     --bg-secondary: #111827;
@@ -21,8 +20,8 @@
     --border-secondary: #374151;
     --accent: #3b82f6;
     --accent-subtle: rgba(59, 130, 246, 0.15);
-    --repo-cyan: #63c8dc;   /* --repo-color-6  */
-    --repo-brick: #de8484;  /* --repo-color-12 */
+    --repo-cyan: #63c8dc;                        
+    --repo-brick: #de8484;                       
     --page: #06070d;
   }
 
@@ -68,7 +67,6 @@
   .note { color: var(--text-tertiary); font-size: 12px; margin: 6px 2px 12px; min-height: 54px; }
   .note b { color: var(--text-secondary); font-weight: 600; }
 
-  /* ── Phone frame ─────────────────────────────────────────────── */
   .phone {
     width: 344px;
     height: 620px;
@@ -111,7 +109,6 @@
     opacity: 0.32;
   }
 
-  /* ── Composer ────────────────────────────────────────────────── */
   .composer { padding: 8px 10px 6px; flex-shrink: 0; }
   .inputbox {
     border: 1px solid var(--border-secondary);
@@ -151,7 +148,6 @@
     color: #fff;
   }
 
-  /* ── Tab bar ─────────────────────────────────────────────────── */
   .tabbar {
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto;
@@ -175,21 +171,18 @@
     color: var(--text-secondary);
   }
 
-  /* ── Option-specific bits ────────────────────────────────────── */
   .swatch {
     width: 8px; height: 8px; border-radius: 999px;
     background: var(--repo-cyan);
     flex-shrink: 0;
   }
 
-  /* A — header title */
   .hdr-repo {
     display: flex; align-items: center; gap: 6px;
     min-width: 0; font-size: 13px; color: var(--text-primary);
   }
   .hdr-repo .owner { color: var(--text-tertiary); }
 
-  /* B — context bar */
   .ctxbar {
     display: flex; align-items: center; gap: 8px;
     padding: 8px 12px;
@@ -203,13 +196,11 @@
   .ctxbar .name { font-weight: 600; }
   .ctxbar .chev { margin-left: auto; color: var(--text-tertiary); }
 
-  /* C — composer chip */
   .repo-chip {
     background: color-mix(in srgb, var(--repo-cyan) 16%, var(--bg-tertiary));
     color: var(--text-primary);
   }
 
-  /* D — empty-state headline */
   .headline {
     position: absolute;
     inset: 0;
@@ -231,10 +222,8 @@
     margin-top: 4px;
   }
 
-  /* E — ambient edge */
   .edge-top { height: 3px; background: var(--repo-cyan); flex-shrink: 0; }
 
-  /* Repo picker sheet (shown over option C) */
   .scrim { position: absolute; inset: 0; background: rgba(0,0,0,0.55); }
   .sheet {
     position: absolute; left: 0; right: 0; bottom: 0;
@@ -283,7 +272,6 @@
 
 <div class="grid">
 
-  <!-- ══════════════ TODAY ══════════════ -->
   <div class="option">
     <h2><span class="key">0</span> Today</h2>
     <div class="note">The screen as it ships now. <b>No repo anywhere</b> — header, empty state, composer and tab bar are all repo-agnostic. The only clue is the URL, which mobile browsers hide.</div>
@@ -329,7 +317,6 @@
     </div>
   </div>
 
-  <!-- ══════════════ A — HEADER ══════════════ -->
   <div class="option">
     <h2><span class="key">A</span> Repo in the app header</h2>
     <div class="note">The header carries <b>⟨repo⟩</b> beside the wordmark while on the new-session route. Cheapest change, always in view, never steals vertical space — but the header is narrow, so a long <code>owner/repo</code> truncates, and it offers no way to switch.</div>
@@ -373,7 +360,6 @@
     </div>
   </div>
 
-  <!-- ══════════════ B — CONTEXT BAR ══════════════ -->
   <div class="option pick">
     <h2><span class="key">B</span> Context bar in the PR-card slot</h2>
     <div class="note">A strip in the slot the <b>PR lifecycle card</b> occupies once the session graduates — empty on <code>/new</code>, so this costs no new vertical space in the steady state. Carries the docs/254 repo colour edge, the repo name, and a tap target to switch repo.</div>
@@ -420,7 +406,6 @@
     </div>
   </div>
 
-  <!-- ══════════════ C — COMPOSER CHIP ══════════════ -->
   <div class="option">
     <h2><span class="key">C</span> Repo chip in the composer</h2>
     <div class="note">A repo chip joins the toolbar row; tapping it opens a repo sheet. Closest to the point of action and mirrors quick capture — but the mobile toolbar already holds mode, dial, model, reasoning, mic and send, so this is <b>the most crowded place on the screen</b>.</div>
@@ -471,7 +456,6 @@
     </div>
   </div>
 
-  <!-- ══════════════ D — EMPTY-STATE HEADLINE ══════════════ -->
   <div class="option">
     <h2><span class="key">D</span> Empty-state headline</h2>
     <div class="note">The empty state that already holds the rocket says what this session is <em>for</em>. Costs <b>zero permanent chrome</b> — it is gone the moment the first message lands, which is also the moment the answer stops mattering. The “Switch repo” pill makes a wrong default correctable.</div>
@@ -520,7 +504,6 @@
     </div>
   </div>
 
-  <!-- ══════════════ E — AMBIENT ══════════════ -->
   <div class="option">
     <h2><span class="key">E</span> Ambient colour + placeholder</h2>
     <div class="note">The docs/254 repo colour becomes a 3&nbsp;px rail under the header, and the composer placeholder names the repo. <b>No new rows at all.</b> But colour alone is learned, not read, and the placeholder disappears as soon as the user types — exactly when they might want to re-check.</div>

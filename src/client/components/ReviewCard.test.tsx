@@ -3,13 +3,6 @@ import { render, screen, cleanup, fireEvent } from "@testing-library/react";
 import { ReviewCard } from "./ReviewCard.js";
 import type { AiReviewCard } from "../../server/shared/types.js";
 
-/**
- * Tests for the plain-text `ReviewCard` (docs/203). Renders straight from its
- * props — no store, no lifecycle. Covers the header (file + reviewer label),
- * the collapse toggle, the clean-review short-circuit, and the degraded legacy
- * render.
- */
-
 function card(over: Partial<AiReviewCard> = {}): AiReviewCard {
   return {
     reviewId: "rev-1",

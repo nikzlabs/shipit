@@ -1,12 +1,4 @@
-/**
- * DiagnosticsPanel — the diagnostic/notice output region rendered below the
- * SessionHealthStrip's top row: the OOM circuit-breaker banner, the idle /
- * memory-pressure pause notice, the interrupt-error toast, the phased
- * recovery-failure banner, the inline container-creation error, and the
- * mount point for the full SessionDiagnosticsPanel modal.
- *
- * See docs/124-session-rescue-and-diagnostics.
- */
+
 
 import { SessionDiagnosticsPanel } from "../SessionDiagnosticsPanel.js";
 import { useSessionStore } from "../../stores/session-store.js";
@@ -38,9 +30,6 @@ export function DiagnosticsPanel({
   const memoryExhausted = useSessionStore((s) => s.memoryExhausted);
   const setMemoryExhausted = useSessionStore((s) => s.setMemoryExhausted);
 
-  // Surface a creation error from the server alongside any client-side
-  // action error. The server-side error is the primary signal when the
-  // factory's async create failed (Docker error, image missing, etc.).
   const createError = health?.lastCreateError ?? null;
 
   return (
