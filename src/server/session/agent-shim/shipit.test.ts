@@ -1438,7 +1438,9 @@ describe("shipit session archive", () => {
           status: 200,
           body: {
             archived: true,
-            checkoutRetained: { sessionId: "ses_a", message: "its files were kept: shipit/x has commits that are not on the remote" },
+            checkoutsRetained: [
+              { sessionId: "ses_a", message: "its files were kept: shipit/x has commits that are not on the remote" },
+            ],
           },
         },
       },

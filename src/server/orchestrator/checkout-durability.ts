@@ -1,3 +1,4 @@
+import { lstat } from "node:fs/promises";
 import type { GitManager, UnreadableWorkspace } from "../shared/git.js";
 import type { SecretFinding } from "../shared/secret-scan.js";
 import type { EvictBlockReason } from "./services/evict-blocked-notice.js";
@@ -38,6 +39,36 @@ async function tipIsOnOrigin(git: GitManager, branch: string): Promise<boolean> 
   const remoteTip = await git.getRefHash(`refs/remotes/origin/${branch}`);
   if (!remoteTip) return false;
   return remoteTip === head || await git.isAncestor(head, remoteTip);
+}
+
+// Permission/I/O failures are not absence; a broken .git symlink still needs protection.
+export async function pathState(p: string): Promise<"present" | "absent" | "unknown"> {
+  try {
+    await lstat(p);
+    return "present";
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    return code === "ENOENT" || code === "ENOTDIR" ? "absent" : "unknown";
+  }
+}
+
+async function ensureBranchTipOnOrigin(git: GitManager): Promise<CheckoutDurability> {
+  // Check the actual branch, even on a clean tree: an earlier push may have failed.
+  const branch = await git.currentBranchOrNull();
+  if (!branch) return { state: "blocked-by-push", cause: "detached-head" };
+
+  if (!(await tipIsOnOrigin(git, branch))) {
+    try {
+      await git.push("origin", branch);
+    } catch (pushErr) {
+      return {
+        state: "blocked-by-push",
+        cause: "push-failed",
+        message: pushErr instanceof Error ? pushErr.message : String(pushErr),
+      };
+    }
+  }
+  return { state: "durable" };
 }
 
 /**
@@ -85,21 +116,5 @@ export async function ensureCheckoutDurable(
     };
   }
 
-  // Check the actual branch, even on a clean tree: an earlier push may have failed.
-  const branch = await git.currentBranchOrNull();
-  if (!branch) return { state: "blocked-by-push", cause: "detached-head" };
-
-  if (!(await tipIsOnOrigin(git, branch))) {
-    try {
-      await git.push("origin", branch);
-    } catch (pushErr) {
-      return {
-        state: "blocked-by-push",
-        cause: "push-failed",
-        message: pushErr instanceof Error ? pushErr.message : String(pushErr),
-      };
-    }
-  }
-
-  return { state: "durable" };
+  return await ensureBranchTipOnOrigin(git);
 }

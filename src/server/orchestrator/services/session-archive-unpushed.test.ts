@@ -28,6 +28,17 @@ function commit(dir: string, file: string, body: string): void {
   execSync(`git add -A && git commit -m "add ${file}"`, { cwd: dir, stdio: "pipe" });
 }
 
+/** Leave the checkout in an unresolved merge, which git refuses to auto-commit. */
+function conflict(dir: string): void {
+  execSync("git checkout -b side", { cwd: dir, stdio: "pipe" });
+  fs.writeFileSync(path.join(dir, "clash.txt"), "side");
+  execSync("git add -A && git commit -m side", { cwd: dir, stdio: "pipe" });
+  execSync("git checkout shipit/test-branch", { cwd: dir, stdio: "pipe" });
+  fs.writeFileSync(path.join(dir, "clash.txt"), "branch");
+  execSync("git add -A && git commit -m branch", { cwd: dir, stdio: "pipe" });
+  execSync("git merge side || true", { cwd: dir, stdio: "pipe" });
+}
+
 /** A session workspace that is a real clone of a real (bare) remote. */
 function makeClonedSession(id: string, remoteDir: string): { workspaceDir: string } {
   const sessionRoot = path.join(tmpDir, id);
@@ -91,7 +102,7 @@ describe("archiveSession: commits that are on no remote", () => {
       .toString().trim();
     expect(onRemote).toBe(head);
     expect(fs.existsSync(workspaceDir)).toBe(false);
-    expect(result.checkoutRetained).toBeUndefined();
+    expect(result.checkoutsRetained).toBeUndefined();
     expect(sessionManager.get("sess-push")?.diskTier).toBe("evicted");
   });
 
@@ -108,8 +119,8 @@ describe("archiveSession: commits that are on no remote", () => {
     );
 
     expect(fs.existsSync(path.join(workspaceDir, "work.txt"))).toBe(true);
-    expect(result.checkoutRetained?.sessionId).toBe("sess-keep");
-    expect(result.checkoutRetained?.message).toContain("shipit/test-branch");
+    expect(result.checkoutsRetained?.[0].sessionId).toBe("sess-keep");
+    expect(result.checkoutsRetained?.[0].message).toContain("shipit/test-branch");
     // The session is still archived, and the tier says a checkout is there so the disk
     // janitor comes back and retries the push.
     expect(sessionManager.get("sess-keep")?.archived).toBe(true);
@@ -146,7 +157,7 @@ describe("archiveSession: commits that are on no remote", () => {
     );
 
     expect(fs.existsSync(workspaceDir)).toBe(false);
-    expect(result.checkoutRetained).toBeUndefined();
+    expect(result.checkoutsRetained).toBeUndefined();
   });
 
   it("still removes an Ops session's checkout — archiving is the only way it is reclaimed", async () => {
@@ -162,7 +173,64 @@ describe("archiveSession: commits that are on no remote", () => {
     );
 
     expect(fs.existsSync(workspaceDir)).toBe(false);
-    expect(result.checkoutRetained).toBeUndefined();
+    expect(result.checkoutsRetained).toBeUndefined();
+  });
+
+  it("keeps a checkout whose tree git refuses to commit, even when the remote is reachable", async () => {
+    // An unresolved merge is not just uncommittable edits: MERGE_HEAD names the other
+    // side, whose commits are routinely local-only. Pushing the current branch saves
+    // none of them, so the checkout cannot be deleted on the strength of that push.
+    const remoteDir = makeRemote("remote-g");
+    const { workspaceDir } = makeClonedSession("sess-conflicted", remoteDir);
+    conflict(workspaceDir);
+    const sideCommit = execSync("git rev-parse side", { cwd: workspaceDir }).toString().trim();
+
+    const result = await archiveSession(
+      sessionManager, runnerRegistry, (_url: string) => path.join(tmpDir, "cache"),
+      "sess-conflicted", undefined, undefined, undefined, createGitManager,
+    );
+
+    expect(result.checkoutsRetained?.[0].sessionId).toBe("sess-conflicted");
+    // The side of the merge that exists nowhere else is still reachable.
+    const stillHere = execSync(`git cat-file -e ${sideCommit} && echo yes`, { cwd: workspaceDir })
+      .toString().trim();
+    expect(stillHere).toBe("yes");
+    expect(sessionManager.get("sess-conflicted")?.diskTier).toBe("light");
+  });
+
+  it("keeps a checkout it cannot even read — 'cannot tell' is not permission to delete", async () => {
+    // A workspace path that stats with an error rather than an absence. The point is the
+    // error, not this particular errno: an unreadable workspace says nothing about what
+    // is inside it.
+    const unreadable = path.join(tmpDir, "x".repeat(400));
+    sessionManager.track("sess-unreadable", "Unreadable", unreadable);
+    sessionManager.setRemoteUrl("sess-unreadable", path.join(tmpDir, "nowhere.git"));
+
+    const result = await archiveSession(
+      sessionManager, runnerRegistry, (_url: string) => path.join(tmpDir, "cache"),
+      "sess-unreadable", undefined, undefined, undefined, createGitManager,
+    );
+
+    expect(result.checkoutsRetained?.[0].sessionId).toBe("sess-unreadable");
+    expect(sessionManager.get("sess-unreadable")?.diskTier).toBe("light");
+  });
+
+  it("reports a CHILD's retained checkout to the caller that archived the parent", async () => {
+    const parentRemote = makeRemote("remote-parent");
+    makeClonedSession("sess-parent", parentRemote);
+    const childRemote = makeRemote("remote-child");
+    const { workspaceDir: childWs } = makeClonedSession("sess-child", childRemote);
+    sessionManager.setParentSession("sess-child", "sess-parent");
+    commit(childWs, "work.txt", "unpushed work");
+    fs.rmSync(childRemote, { recursive: true, force: true });
+
+    const result = await archiveSession(
+      sessionManager, runnerRegistry, (_url: string) => path.join(tmpDir, "cache"),
+      "sess-parent", undefined, undefined, undefined, createGitManager,
+    );
+
+    expect(result.checkoutsRetained?.map((r) => r.sessionId)).toEqual(["sess-child"]);
+    expect(fs.existsSync(path.join(childWs, "work.txt"))).toBe(true);
   });
 
   it("archives an already-evicted session whose workspace is gone", async () => {
@@ -175,7 +243,7 @@ describe("archiveSession: commits that are on no remote", () => {
       "sess-evicted", undefined, undefined, undefined, createGitManager,
     );
 
-    expect(result.checkoutRetained).toBeUndefined();
+    expect(result.checkoutsRetained).toBeUndefined();
     expect(sessionManager.get("sess-evicted")?.diskTier).toBe("evicted");
   });
 });

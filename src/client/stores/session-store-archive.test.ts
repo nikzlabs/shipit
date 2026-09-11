@@ -31,7 +31,7 @@ describe("archiveSession: retained checkout", () => {
   it("shows the server's explanation and keeps the row at the light tier", async () => {
     mockArchiveResponse({
       sessions: [],
-      checkoutRetained: { sessionId: "s1", message: "Session archived, but its files were kept" },
+      checkoutsRetained: [{ sessionId: "s1", message: "Session archived, but its files were kept" }],
     });
 
     await useSessionStore.getState().archiveSession("s1");

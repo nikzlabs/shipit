@@ -806,18 +806,25 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     }
     const result = await res.json() as {
       sessions: SessionInfo[];
-      checkoutRetained?: { message: string };
+      checkoutsRetained?: { sessionId: string; message: string }[];
     };
-    // The server keeps the checkout when its commits are on no remote; say so, or the
-    // session quietly keeps using disk with nothing to explain it.
-    if (result.checkoutRetained) {
+    // The server keeps a checkout when its commits are on no remote; say so, or the
+    // session quietly keeps using disk with nothing to explain it. Archiving a parent
+    // archives its children too, so more than one can come back.
+    const retained = result.checkoutsRetained ?? [];
+    if (retained.length > 0) {
+      const others = retained.length - 1;
       useUiStore.getState().setToast({
-        message: result.checkoutRetained.message,
+        message: others > 0
+          ? `${retained[0].message} (and ${others} other archived session${others > 1 ? "s" : ""})`
+          : retained[0].message,
         variant: "error",
         duration: 15000,
       });
     }
-    const archivedTier = result.checkoutRetained ? "light" as const : "evicted" as const;
+    const archivedTier = retained.some((r) => r.sessionId === sessionId)
+      ? "light" as const
+      : "evicted" as const;
     set((state) => {
       // Destructure-and-rest to drop the entry without dynamic delete.
       const { [sessionId]: _omit, ...rest } = state.turnUsage;

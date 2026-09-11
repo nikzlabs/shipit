@@ -1,4 +1,4 @@
-import { lstat, readdir } from "node:fs/promises";
+import { readdir } from "node:fs/promises";
 import { join } from "node:path";
 import type { SessionManager } from "./sessions.js";
 import type { SessionInfo } from "../shared/types.js";
@@ -16,7 +16,7 @@ import {
 import { emitNoticePostTurn } from "./chat-card-persistence.js";
 import { formatEvictBlockedNotice, type EvictBlockReason } from "./services/evict-blocked-notice.js";
 import { autoCommitAllowed } from "./services/auto-commit-gate.js";
-import { ensureCheckoutDurable } from "./checkout-durability.js";
+import { ensureCheckoutDurable, pathState } from "./checkout-durability.js";
 
 export interface TierEscalationDeps {
   sessionManager: SessionManager;
@@ -163,17 +163,6 @@ async function blockedEvict<T extends "blocked-by-push" | "blocked-by-dirty">(
     }
   }
   return outcome;
-}
-
-// Permission/I/O failures are not absence; a broken .git symlink still needs protection.
-async function pathState(p: string): Promise<"present" | "absent" | "unknown"> {
-  try {
-    await lstat(p);
-    return "present";
-  } catch (err) {
-    const code = (err as NodeJS.ErrnoException).code;
-    return code === "ENOENT" || code === "ENOTDIR" ? "absent" : "unknown";
-  }
 }
 
 async function isEmptyDir(dir: string): Promise<boolean> {

@@ -15,7 +15,7 @@ import { bareCacheRoot } from "./session-dir-factory.js";
 import { getCatalogCacheRoot } from "./services/marketplace.js";
 import { reclaimSharedTreesUnder } from "./shared-tree-ownership.js";
 import { getMessage, sleep, defaultRunDocker, reclaimRegenerableSessionDirs } from "./disk-utils.js";
-import { ensureCheckoutDurable } from "./checkout-durability.js";
+import { ensureCheckoutDurable, pathState } from "./checkout-durability.js";
 import { autoCommitAllowed } from "./services/auto-commit-gate.js";
 import type { GitManager } from "../shared/git.js";
 import type { SessionInfo } from "../shared/types.js";
@@ -380,10 +380,15 @@ async function archivedWorkspaceIsDurable(
 ): Promise<boolean> {
   if (!createGitManager || !session.workspaceDir) return true;
   if (!autoCommitAllowed(session)) return true;
-  try {
-    await fs.stat(path.join(session.workspaceDir, ".git"));
-  } catch {
-    return true;
+  // Absence means there is no repository to ask; an I/O error means we could not ask,
+  // which is not permission to delete.
+  const repo = await pathState(path.join(session.workspaceDir, ".git"));
+  if (repo === "absent") return true;
+  if (repo === "unknown") {
+    console.warn(
+      `[disk-janitor] kept archived workspace for ${session.id} — its .git could not be read`,
+    );
+    return false;
   }
   try {
     const durability = await ensureCheckoutDurable(

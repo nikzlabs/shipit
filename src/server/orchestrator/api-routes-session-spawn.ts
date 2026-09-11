@@ -480,7 +480,7 @@ export async function registerSessionSpawnRoutes(
         return {
           archived: true,
           sessions: result.sessions,
-          ...(result.checkoutRetained ? { checkoutRetained: result.checkoutRetained } : {}),
+          ...(result.checkoutsRetained ? { checkoutsRetained: result.checkoutsRetained } : {}),
         };
       } catch (err) {
         if (err instanceof ServiceError) {
