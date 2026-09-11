@@ -43,14 +43,10 @@ Send the prompt through the existing `claudeProcess.run()` and capture the resul
 Add a new WS message type that spawns a short-lived Claude process specifically for PR description generation. This keeps the summary out of the main conversation.
 
 ```typescript
-// src/server/types.ts — additions
-
-// Client → Server
 export interface WsGeneratePRDescription {
   type: "generate_pr_description";
 }
 
-// Server → Client
 export interface WsGeneratedPRDescription {
   type: "generated_pr_description";
   description: string;
@@ -63,8 +59,8 @@ export interface WsGeneratedPRDescription {
 if (msg.type === "generate_pr_description") {
   try {
     const git = getActiveGitManager();
-    const log = await git.log(20); // Recent commits
-    const diff = await git.diffSummary(); // Files changed
+    const log = await git.log(20);
+    const diff = await git.diffSummary();
 
     const prompt = [
       "Write a pull request description summarizing these changes.",
@@ -78,7 +74,6 @@ if (msg.type === "generate_pr_description") {
       ...diff.map(f => `- ${f.file} (+${f.insertions} -${f.deletions})`),
     ].join("\n");
 
-    // Spawn a short-lived Claude process for the summary
     const result = await deps.generateText(prompt);
 
     send({ type: "generated_pr_description", description: result });
@@ -114,7 +109,6 @@ const handleGenerateDescription = () => {
   send({ type: "generate_pr_description" });
 };
 
-// In message handler:
 if (data.type === "generated_pr_description") {
   setBody(data.description);
   setIsGenerating(false);

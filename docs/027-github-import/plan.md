@@ -52,21 +52,12 @@ The current workflow requires a manual "Push" button click after code changes. T
 #### New GitManager Methods
 
 ```typescript
-// src/server/git.ts — additions
-
-/**
- * Clone a remote repository into this workspace directory.
- * The workspace dir must be empty or non-existent.
- */
 async clone(url: string, branch?: string): Promise<void> {
   const args = ["clone", url, "."];
   if (branch) args.push("--branch", branch);
   await this.git.raw(args);
 }
 
-/**
- * Get the default branch name from a remote (e.g., "main" or "master").
- */
 async getDefaultBranch(remote = "origin"): Promise<string> {
   const result = await this.git.remote(["show", remote]);
   const match = result.match(/HEAD branch:\s*(\S+)/);
@@ -77,11 +68,6 @@ async getDefaultBranch(remote = "origin"): Promise<string> {
 #### GitHub Repo Listing (for Search)
 
 ```typescript
-// src/server/github-auth.ts — addition
-
-/**
- * Search the user's accessible repos by name.
- */
 async searchRepos(query: string): Promise<Array<{
   fullName: string;
   description: string | null;
@@ -118,14 +104,9 @@ async searchRepos(query: string): Promise<Array<{
 #### New Message Types
 
 ```typescript
-// src/server/types.ts — additions
-
-// Client → Server
 export interface WsGitHubImportRepo {
   type: "github_import_repo";
-  /** Full clone URL or "owner/repo" shorthand. */
   url: string;
-  /** Optional branch to check out. Defaults to repo's default branch. */
   branch?: string;
 }
 
@@ -134,7 +115,6 @@ export interface WsGitHubSearchRepos {
   query: string;
 }
 
-// Server → Client
 export interface WsGitHubImportProgress {
   type: "github_import_progress";
   stage: "cloning" | "installing" | "ready";
@@ -175,43 +155,34 @@ if (msg.type === "github_import_repo") {
     return;
   }
 
-  // Support "owner/repo" shorthand → full HTTPS URL
   if (/^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/.test(url)) {
     url = `https://github.com/${url}.git`;
   }
 
-  // Validate URL format
   if (!url.startsWith("https://") && !url.startsWith("git@")) {
     send({ type: "error", message: "Invalid repository URL" });
     return;
   }
 
   try {
-    // 1. Create a new session
     send({ type: "github_import_progress", stage: "cloning", message: "Creating session..." });
     const sessionId = crypto.randomUUID();
     const sessionDir = path.join(WORKSPACE_BASE, "sessions", sessionId);
     await fs.mkdir(sessionDir, { recursive: true });
 
-    // 2. Clone the repo
     send({ type: "github_import_progress", stage: "cloning", message: "Cloning repository..." });
     const git = deps.createGitManager(sessionDir);
     await git.clone(url, msg.branch || undefined);
 
-    // 3. Configure credentials for push
     await githubAuthManager.configureGitCredentials(sessionDir);
 
-    // 4. Register session
     const repoName = url.split("/").pop()?.replace(".git", "") ?? "imported-repo";
     sessionManager.track(sessionId, repoName, sessionDir);
 
-    // 5. Detect and install dependencies
     const pkgJsonPath = path.join(sessionDir, "package.json");
     const hasPkg = await fs.access(pkgJsonPath).then(() => true).catch(() => false);
     if (hasPkg) {
       send({ type: "github_import_progress", stage: "installing", message: "Installing dependencies..." });
-      // Run npm install in background — don't block the response
-      // (ViteManager or user can trigger this)
     }
 
     send({
@@ -312,7 +283,6 @@ Claude turn completes
 Hook into the existing auto-commit flow in `src/server/index.ts`. After `git.autoCommit()` succeeds, if conditions are met, push automatically:
 
 ```typescript
-// After auto-commit in the Claude turn handler:
 if (commitHash && autoPushEnabled) {
   try {
     const branch = await git.getCurrentBranch();
@@ -324,7 +294,6 @@ if (commitHash && autoPushEnabled) {
       branch,
     });
   } catch (err) {
-    // Auto-push failure is non-fatal — log it, don't block the user
     send({
       type: "log_entry",
       source: "server",
@@ -379,10 +348,8 @@ This means: after the last commit in a burst, wait 5 seconds, then push once wit
 Auto-push is **on by default** when a remote is configured. Users can disable it via a setting toggle in the GitHub section of the UI. This is a per-session preference stored in session metadata.
 
 ```typescript
-// New session metadata field:
 export interface SessionMetadata {
-  // ... existing fields ...
-  autoPush?: boolean;  // default: true
+  autoPush?: boolean;
 }
 ```
 
@@ -465,11 +432,6 @@ The selected method is remembered per session.
 #### Server-Side: Merge and Auto-Merge
 
 ```typescript
-// src/server/github-auth.ts — additions
-
-/**
- * Merge a pull request.
- */
 async mergePullRequest(
   owner: string,
   repo: string,
@@ -494,7 +456,6 @@ async mergePullRequest(
 
   if (!res.ok) {
     const err = await res.json();
-    // 405 = not mergeable (checks pending/failed, conflicts, etc.)
     if (res.status === 405) {
       return { success: false, message: err.message || "PR is not mergeable" };
     }
@@ -504,11 +465,6 @@ async mergePullRequest(
   return { success: true, message: "Pull request merged" };
 }
 
-/**
- * Enable auto-merge on a pull request.
- * Uses the GraphQL API since REST doesn't support auto-merge.
- * Requires the repo to have "Allow auto-merge" enabled in settings.
- */
 async enableAutoMerge(
   owner: string,
   repo: string,
@@ -517,7 +473,6 @@ async enableAutoMerge(
 ): Promise<{ success: boolean; message: string }> {
   if (!this._token) return { success: false, message: "Not authenticated" };
 
-  // First, get the PR's node ID (needed for GraphQL)
   const prRes = await fetch(
     `https://api.github.com/repos/${owner}/${repo}/pulls/${pullNumber}`,
     {
@@ -533,7 +488,6 @@ async enableAutoMerge(
   const prData = await prRes.json();
   const nodeId = prData.node_id;
 
-  // Enable auto-merge via GraphQL
   const graphqlRes = await fetch("https://api.github.com/graphql", {
     method: "POST",
     headers: {
@@ -556,7 +510,6 @@ async enableAutoMerge(
 
   if (graphqlData.errors) {
     const errMsg = graphqlData.errors[0]?.message ?? "Unknown error";
-    // Common case: repo doesn't have auto-merge enabled
     if (errMsg.includes("auto-merge")) {
       return { success: false, message: "Auto-merge is not enabled for this repository. Enable it in repo Settings → General." };
     }
@@ -566,9 +519,6 @@ async enableAutoMerge(
   return { success: true, message: "Auto-merge enabled — PR will merge when checks pass" };
 }
 
-/**
- * Get CI check status for a PR's head commit.
- */
 async getCheckStatus(
   owner: string,
   repo: string,
@@ -576,7 +526,6 @@ async getCheckStatus(
 ): Promise<{ state: "pending" | "success" | "failure" | "none"; total: number; passed: number; failed: number; pending: number }> {
   if (!this._token) return { state: "none", total: 0, passed: 0, failed: 0, pending: 0 };
 
-  // Get combined status (legacy status API)
   const statusRes = await fetch(
     `https://api.github.com/repos/${owner}/${repo}/commits/${ref}/status`,
     {
@@ -588,7 +537,6 @@ async getCheckStatus(
     }
   );
 
-  // Also get check runs (GitHub Actions uses this API)
   const checksRes = await fetch(
     `https://api.github.com/repos/${owner}/${repo}/commits/${ref}/check-runs`,
     {
@@ -630,20 +578,15 @@ async getCheckStatus(
 #### New Message Types for Merge
 
 ```typescript
-// src/server/types.ts — additions
-
-// Client → Server
 export interface WsMergePr {
   type: "merge_pr";
   method?: "merge" | "squash" | "rebase";
 }
 
-// Server → Client
 export interface WsMergePrResult {
   type: "merge_pr_result";
   success: boolean;
   message: string;
-  /** If checks are pending, auto-merge was enabled instead of immediate merge. */
   autoMergeEnabled?: boolean;
 }
 ```
@@ -660,17 +603,14 @@ if (msg.type === "merge_pr") {
   const method = msg.method || "merge";
   const { owner, repo } = parsedRemote;  // cached from PR status lookup
 
-  // First, try direct merge
   const result = await githubAuthManager.mergePullRequest(owner, repo, prStatus.number, method);
 
   if (result.success) {
     send({ type: "merge_pr_result", success: true, message: "Pull request merged" });
-    // Clear PR status — it's merged
     send({ type: "pr_status", pr: null });
     return;
   }
 
-  // If merge failed because checks are pending, enable auto-merge
   const checks = await githubAuthManager.getCheckStatus(owner, repo, prStatus.headBranch);
   if (checks.state === "pending") {
     const graphqlMethod = method === "merge" ? "MERGE" : method === "squash" ? "SQUASH" : "REBASE";
@@ -684,7 +624,6 @@ if (msg.type === "merge_pr") {
     return;
   }
 
-  // Checks failed or other issue
   send({ type: "merge_pr_result", success: false, message: result.message });
 }
 ```
@@ -694,7 +633,6 @@ if (msg.type === "merge_pr") {
 The PR status bar includes a CI check indicator that polls periodically:
 
 ```typescript
-// Extended pr_status response
 export interface WsPrStatus {
   type: "pr_status";
   pr: {
@@ -705,7 +643,6 @@ export interface WsPrStatus {
     headBranch: string;
     insertions: number;
     deletions: number;
-    /** CI check status. */
     checks: {
       state: "pending" | "success" | "failure" | "none";
       total: number;
@@ -713,9 +650,7 @@ export interface WsPrStatus {
       failed: number;
       pending: number;
     };
-    /** Whether auto-merge is currently enabled. */
     autoMergeEnabled: boolean;
-    /** Whether the PR is mergeable (no conflicts). */
     mergeable: boolean;
   } | null;
 }
@@ -724,7 +659,6 @@ export interface WsPrStatus {
 **Polling**: When `checks.state === "pending"`, the client polls `get_pr_status` every 30 seconds until checks resolve. This catches the auto-merge completion and updates the UI.
 
 ```typescript
-// In App.tsx:
 useEffect(() => {
   if (prStatus?.checks.state === "pending") {
     const interval = setInterval(() => {
@@ -738,12 +672,6 @@ useEffect(() => {
 #### New Server-Side Method
 
 ```typescript
-// src/server/github-auth.ts — addition
-
-/**
- * Check if an open PR exists for the given head branch.
- * Returns PR metadata if found, null otherwise.
- */
 async findPullRequest(
   owner: string,
   repo: string,
@@ -779,12 +707,6 @@ async findPullRequest(
 #### Diff Stats Computation
 
 ```typescript
-// src/server/git.ts — addition
-
-/**
- * Get total insertions/deletions between the current branch and a base branch.
- * Used for the PR status bar diff stats.
- */
 async diffStatVsBranch(baseBranch: string): Promise<{ insertions: number; deletions: number }> {
   try {
     const result = await this.git.diffSummary([`origin/${baseBranch}...HEAD`]);
@@ -801,17 +723,12 @@ async diffStatVsBranch(baseBranch: string): Promise<{ insertions: number; deleti
 #### New Message Types
 
 ```typescript
-// src/server/types.ts — additions
-
-// Client → Server
 export interface WsGetPrStatus {
   type: "get_pr_status";
 }
 
-// Server → Client
 export interface WsPrStatus {
   type: "pr_status";
-  /** Null if no PR exists for the current branch. */
   pr: {
     url: string;
     number: number;
@@ -910,7 +827,6 @@ export function PrStatusBar(props: PrStatusBarProps) {
     setTimeout(() => setCopied(false), 2000);
   };
 
-  // Merge button state
   const mergeDisabled = checks.state === "failure" || !mergeable;
   const mergeLabel = autoMergeEnabled
     ? "Auto-merge enabled"
@@ -920,28 +836,23 @@ export function PrStatusBar(props: PrStatusBarProps) {
 
   return (
     <div className="flex items-center gap-3 px-3 py-1.5 bg-gray-900 border-b border-gray-800 text-xs">
-      {/* Git merge icon */}
-      <svg className="w-4 h-4 text-gray-400" ...>{/* branch/merge icon */}</svg>
+      <svg className="w-4 h-4 text-gray-400" ...>…</svg>
 
-      {/* Branch flow */}
       <span className="text-gray-400">
         <span className="text-gray-300 font-medium">{baseBranch}</span>
         {" ← "}
         <span className="text-blue-400 font-medium">{headBranch}</span>
       </span>
 
-      {/* Copy branch name */}
       <button onClick={copyBranch} className="text-gray-500 hover:text-gray-300 transition-colors" title="Copy branch name">
         {copied ? "✓" : "📋"}
       </button>
 
-      {/* Diff stats */}
       <span className="flex items-center gap-1.5 text-xs">
         <span className="text-green-400">+{insertions}</span>
         <span className="text-red-400">-{deletions}</span>
       </span>
 
-      {/* CI status indicator */}
       {checks.state !== "none" && (
         <span className="flex items-center gap-1" title={`${checks.passed}/${checks.total} checks passed`}>
           {checks.state === "success" && <span className="text-green-400">✓ CI passed</span>}
@@ -951,13 +862,11 @@ export function PrStatusBar(props: PrStatusBarProps) {
       )}
 
       <div className="ml-auto flex items-center gap-2">
-        {/* View PR */}
         <a href={prUrl} target="_blank" rel="noopener noreferrer"
           className="px-2.5 py-1 bg-gray-800 hover:bg-gray-700 text-gray-200 rounded text-xs font-medium transition-colors">
           View PR
         </a>
 
-        {/* Merge button with dropdown */}
         <div className="relative">
           <div className="flex">
             <button
@@ -989,7 +898,6 @@ export function PrStatusBar(props: PrStatusBarProps) {
             </button>
           </div>
 
-          {/* Merge method dropdown */}
           {showDropdown && (
             <div className="absolute right-0 top-full mt-1 bg-gray-800 rounded shadow-lg border border-gray-700 py-1 z-50">
               {(["merge", "squash", "rebase"] as const).map((m) => (
@@ -1018,7 +926,6 @@ export function PrStatusBar(props: PrStatusBarProps) {
 The PR status bar renders **below the main header** and **above the workspace panels**, spanning the full width. It only appears when `prStatus` is non-null:
 
 ```tsx
-// In App.tsx layout:
 <header>...</header>
 {prStatus && (
   <PrStatusBar
@@ -1036,54 +943,43 @@ The PR status bar renders **below the main header** and **above the workspace pa
 #### State Management
 
 ```typescript
-// In App.tsx:
 const [prStatus, setPrStatus] = useState<PrStatusData | null>(null);
 
-// Fetch PR status on session load and after push/PR creation
 useEffect(() => {
   if (activeSessionId && githubAuthenticated) {
     send({ type: "get_pr_status" });
   }
 }, [activeSessionId, githubAuthenticated]);
 
-// Update after successful auto-push
 if (data.type === "github_push_result" && data.success) {
   send({ type: "get_pr_status" });
 }
 
-// Update after PR creation
 if (data.type === "github_pr_created" && data.success) {
   send({ type: "get_pr_status" });
 }
 
-// Handle PR status response
 if (data.type === "pr_status") {
   setPrStatus(data.pr);
 }
 
-// Handle merge result
 if (data.type === "merge_pr_result") {
   if (data.success && !data.autoMergeEnabled) {
-    // PR was merged — clear status
     setPrStatus(null);
-    // Show success toast
   } else if (data.autoMergeEnabled) {
-    // Auto-merge enabled — refresh to show new state
     send({ type: "get_pr_status" });
   }
 }
 
-// Merge handler
 const handleMergePr = useCallback((method: "merge" | "squash" | "rebase") => {
   send({ type: "merge_pr", method });
 }, [send]);
 
-// Poll while CI is pending (for auto-merge completion detection)
 useEffect(() => {
   if (prStatus?.checks.state === "pending") {
     const interval = setInterval(() => {
       send({ type: "get_pr_status" });
-    }, 30_000); // every 30 seconds
+    }, 30_000);
     return () => clearInterval(interval);
   }
 }, [prStatus?.checks.state]);

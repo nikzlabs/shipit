@@ -27,25 +27,19 @@ All three result in the same outcome: a `FileAttachment` added to the message be
 ### Data Model
 
 ```typescript
-// src/server/types.ts — additions
-
 export interface FileAttachment {
-  /** Relative path within the workspace (e.g., "src/utils/format.ts"). */
   path: string;
-  /** Full file content at the time of attachment. */
   content: string;
-  /** Optional line range — if the user selected specific lines. */
   startLine?: number;
   endLine?: number;
 }
 
-// Extend the existing WsSendMessage:
 export interface WsSendMessage {
   type: "send_message";
   text: string;
   sessionId?: string;
   images?: ImageAttachment[];
-  files?: FileAttachment[];  // ← NEW
+  files?: FileAttachment[];
 }
 ```
 
@@ -79,7 +73,6 @@ function formatFileContext(files: FileAttachment[]): string {
 3. **Prepends the context** to the user's message before sending to Claude CLI:
 
 ```typescript
-// In the send_message handler:
 let prompt = msg.text;
 
 if (msg.files && msg.files.length > 0) {
@@ -93,7 +86,6 @@ if (msg.files && msg.files.length > 0) {
   prompt = `${context}\n\n${prompt}`;
 }
 
-// Then pass `prompt` to claudeProcess.run(...)
 ```
 
 This approach is simple and robust: the file content becomes part of the prompt text. Claude sees the files in `<file>` tags with the path, making it easy to reference and edit them. No changes to the Claude CLI interface are needed.
@@ -122,7 +114,6 @@ function validateFileAttachments(
       return { files: [], error: "File path is required" };
     }
 
-    // Path traversal check
     const resolved = path.resolve(sessionDir, filePath);
     if (!resolved.startsWith(sessionDir)) {
       return { files: [], error: `Invalid file path: ${filePath}` };
@@ -157,13 +148,12 @@ function validateFileAttachments(
 File attachments are persisted in chat history alongside images:
 
 ```typescript
-// In chat-history.ts — extend WsChatHistoryMessage:
 export interface WsChatHistoryMessage {
   role: "user" | "assistant";
   text: string;
   toolUse?: ToolUseEntry[];
   images?: Array<{ data: string; mediaType: string }>;
-  files?: Array<{ path: string; contentPreview: string }>;  // ← NEW (store path + first 200 chars, not full content)
+  files?: Array<{ path: string; contentPreview: string }>;
   isError?: boolean;
 }
 ```
@@ -220,7 +210,6 @@ Each chip shows:
 The `FileTree` component already renders file items. Add drag support:
 
 ```typescript
-// In FileTree's file item:
 <div
   draggable
   onDragStart={(e) => {
@@ -237,7 +226,6 @@ The `FileTree` component already renders file items. Add drag support:
 The `MessageInput` component listens for drop events:
 
 ```typescript
-// In MessageInput:
 const handleDrop = (e: DragEvent) => {
   e.preventDefault();
   const fileData = e.dataTransfer?.getData("application/x-shipit-file");
@@ -253,7 +241,6 @@ const handleDrop = (e: DragEvent) => {
 Add a context action to files in the file tree:
 
 ```typescript
-// In FileTree — on file right-click or via a "+" button:
 <button
   onClick={() => onAddToChat(file.path)}
   title="Add to chat context"
@@ -274,7 +261,6 @@ And in the code editor (doc 025), a button in the toolbar:
 When a user selects lines in the code editor and clicks "Add to Chat", only the selected range is attached:
 
 ```typescript
-// In FileEditor:
 const handleAddToChat = () => {
   const selection = editorView.state.selection.main;
   const startLine = editorView.state.doc.lineAt(selection.from).number;
@@ -296,16 +282,12 @@ This allows precise context: "refactor these specific lines" instead of sending 
 #### State in App.tsx
 
 ```typescript
-// New state for pending file attachments
 const [pendingFiles, setPendingFiles] = useState<FileAttachment[]>([]);
 
 const addFileAttachment = useCallback(async (filePath: string, range?: { startLine: number; endLine: number; content: string }) => {
-  // Check for duplicates
   if (pendingFiles.some(f => f.path === filePath && f.startLine === range?.startLine)) return;
 
-  // Check limit
   if (pendingFiles.length >= 10) {
-    // Show error toast
     return;
   }
 
@@ -317,8 +299,6 @@ const addFileAttachment = useCallback(async (filePath: string, range?: { startLi
       endLine: range.endLine,
     }]);
   } else {
-    // Fetch full file content
-    // Use existing get_file_content mechanism or read from cached file tree
     const content = await fetchFileContent(filePath);
     setPendingFiles(prev => [...prev, { path: filePath, content }]);
   }
@@ -328,7 +308,6 @@ const removeFileAttachment = useCallback((filePath: string) => {
   setPendingFiles(prev => prev.filter(f => f.path !== filePath));
 }, []);
 
-// When sending a message, include pending files
 const handleSend = useCallback((text: string, images?: ImageAttachment[]) => {
   send({
     type: "send_message",
@@ -337,7 +316,7 @@ const handleSend = useCallback((text: string, images?: ImageAttachment[]) => {
     images,
     files: pendingFiles.length > 0 ? pendingFiles : undefined,
   });
-  setPendingFiles([]);  // Clear after send
+  setPendingFiles([]);
 }, [pendingFiles, activeSessionId]);
 ```
 

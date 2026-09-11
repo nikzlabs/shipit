@@ -33,10 +33,8 @@ Feature 034 (Phase 2) added a `CodexAdapter` that speaks the Codex App Server JS
 Both `Dockerfile.dev` and `Dockerfile.prod` install the Codex CLI alongside Claude Code:
 
 ```dockerfile
-# Current (Claude only)
 RUN npm install -g @anthropic-ai/claude-code
 
-# New (Claude + Codex)
 RUN npm install -g @anthropic-ai/claude-code @openai/codex
 ```
 
@@ -51,33 +49,26 @@ The `@openai/codex` package provides the `codex` binary, which includes the `app
 Add an `AgentRegistry` that checks which agent CLIs are installed at server startup. This replaces the hard-coded `validAgentIds` list in the `set_agent` handler.
 
 ```typescript
-// src/server/agents/agent-registry.ts
-
 export interface AgentInfo {
   id: AgentId;
-  name: string;                // "Claude Code", "Codex", "Gemini"
-  binary: string;              // "claude", "codex", "gemini"
-  installed: boolean;          // detected at startup via `which`
-  authConfigured: boolean;     // env var or OAuth token present
+  name: string;
+  binary: string;
+  installed: boolean;
+  authConfigured: boolean;
   capabilities: AgentCapabilities;
 }
 
 export class AgentRegistry {
   private agents: Map<AgentId, AgentInfo>;
 
-  /** Probe the system for installed agent CLIs. */
   async detect(): Promise<void>;
 
-  /** Get info for a specific agent. */
   get(id: AgentId): AgentInfo | undefined;
 
-  /** List all agents with their availability status. */
   list(): AgentInfo[];
 
-  /** List only agents that are installed and auth-configured. */
   available(): AgentInfo[];
 
-  /** Re-check auth status (e.g. after user sets an API key). */
   refreshAuth(id: AgentId): void;
 }
 ```
@@ -93,12 +84,10 @@ Detection uses `which <binary>` (or `command -v`) to check if the binary is on `
 #### `list_agents` — client requests available agents
 
 ```typescript
-// Client → Server
 interface WsListAgentsMessage {
   type: "list_agents";
 }
 
-// Server → Client
 interface WsAgentListMessage {
   type: "agent_list";
   agents: Array<{
@@ -150,15 +139,13 @@ The existing Project Settings panel (Agent tab, added in commit `cadd94d`) is ex
 #### `set_agent_env` — client sets an env var for an agent
 
 ```typescript
-// Client → Server
 interface WsSetAgentEnvMessage {
   type: "set_agent_env";
   agentId: AgentId;
-  key: string;     // "OPENAI_API_KEY"
+  key: string;
   value: string;
 }
 
-// Server → Client (after setting)
 interface WsAgentEnvSetMessage {
   type: "agent_env_set";
   agentId: AgentId;
@@ -181,11 +168,8 @@ The server sets the env var in `process.env` (effective for all subsequent child
 The `CodexAdapter.run()` already checks for `OPENAI_API_KEY` and emits `auth_required` if missing. Add a parallel check for the binary itself:
 
 ```typescript
-// codex-adapter.ts — at the top of run()
-
 import { execFileSync } from "node:child_process";
 
-// Check binary exists before attempting spawn
 try {
   execFileSync("which", ["codex"], { stdio: "ignore" });
 } catch {
