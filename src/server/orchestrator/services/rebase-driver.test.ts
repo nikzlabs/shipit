@@ -1273,6 +1273,39 @@ describe("rebase-driver: planning#369 up-to-date branch with unpushed commits", 
     expect(order.indexOf("restore")).toBeLessThan(order.indexOf("drain"));
   });
 
+  it("reports the TIMEOUT even when the interrupted flow settles first", async () => {
+    // The deadline's `rebaseAbort` runs against a tree the flow is still rebasing, so
+    // the flow falls over with git's complaint about the wreckage. It settles while the
+    // abort is still running, so it can win the race — and, being pre-spawn, it answers
+    // `deferred`, which costs no attempt and retries straight back into the timeout.
+    // Stubbed rather than timed: real git under CI load is what made this intermittent.
+    const workDir = fs.mkdtempSync(path.join(tmpDir, "timeout-race-"));
+    const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+    let abortCalls = 0;
+    const git = {
+      isClean: () => Promise.resolve(true),
+      isRebaseInProgress: () => Promise.resolve(false),
+      inspectWorkingTree: () => Promise.resolve({ clean: true, unreadable: null }),
+      // Outlives the deadline, then fails the way an aborted-from-under-it rebase does.
+      fetch: async () => {
+        await sleep(40);
+        throw new Error("error: Your local changes to the following files would be overwritten by merge:\n\tshared.txt");
+      },
+      // The abort is the slow half: it is doing real work on the tree.
+      rebaseAbort: async () => { abortCalls++; await sleep(150); },
+    } as unknown as GitManager;
+    const runner = new SessionRunner({ sessionId: "s1", sessionDir: workDir, defaultAgentId: "claude" });
+
+    const result = await runAutoResolveAttempt(
+      { ...deps(git, runner, true), timeoutMs: 20 },
+      "main",
+    );
+
+    expect(result).toMatchObject({ outcome: "error", lastError: "timeout", didWork: true });
+    // Proves the flow really did lose its rebase to the abort, i.e. the race happened.
+    expect(abortCalls).toBeGreaterThan(0);
+  });
+
   it("auto-resolve: a genuine no-op stays a suppressed deferral", async () => {
     const { workDir, git } = setupRepoWithRemote(tmpDir);
     execSync("git checkout -b feature", { cwd: workDir, stdio: "pipe" });
