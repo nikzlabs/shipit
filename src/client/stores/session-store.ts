@@ -804,7 +804,20 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       const err = await res.json().catch(() => ({ error: "Unknown error" })) as { error?: string };
       throw new Error(err.error ?? `Failed to archive session (${res.status})`);
     }
-    const result = await res.json() as { sessions: SessionInfo[] };
+    const result = await res.json() as {
+      sessions: SessionInfo[];
+      checkoutRetained?: { message: string };
+    };
+    // The server keeps the checkout when its commits are on no remote; say so, or the
+    // session quietly keeps using disk with nothing to explain it.
+    if (result.checkoutRetained) {
+      useUiStore.getState().setToast({
+        message: result.checkoutRetained.message,
+        variant: "error",
+        duration: 15000,
+      });
+    }
+    const archivedTier = result.checkoutRetained ? "light" as const : "evicted" as const;
     set((state) => {
       // Destructure-and-rest to drop the entry without dynamic delete.
       const { [sessionId]: _omit, ...rest } = state.turnUsage;
@@ -816,7 +829,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
             // docs/241 — mirror the server's release of the reservation
             // (`SessionManager.archive`), or this cached row keeps claiming an
             // always-on preview the deployment has already handed back.
-            ? { ...s, archived: true, userArchived: true, diskTier: "evicted" as const, keepPreviewRunning: undefined }
+            ? { ...s, archived: true, userArchived: true, diskTier: archivedTier, keepPreviewRunning: undefined }
             : s,
         ),
         turnUsage: rest,

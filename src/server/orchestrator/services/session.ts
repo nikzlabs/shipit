@@ -16,7 +16,9 @@ import type { GitHubAuthManager } from "../github-auth.js";
 import { generateBranchPrefix } from "../git-utils.js";
 import { handWorkspaceBackToWorker } from "../session-worker-uid.js";
 import { materializeLfsWithWarning } from "../git-lfs.js";
-import { reclaimRegenerableSessionDirs } from "../disk-utils.js";
+import { reclaimRegenerableSessionDirs, reclaimBlockedSessionCaches } from "../disk-utils.js";
+import { ensureCheckoutDurable, type CheckoutDurability } from "../checkout-durability.js";
+import { autoCommitAllowed } from "./auto-commit-gate.js";
 import { ServiceError } from "./types.js";
 import { validateString, validateStringArray } from "./validation.js";
 
@@ -136,6 +138,33 @@ export interface UnarchivePrStatusPoller {
   clearPersisted(sessionId: string): void;
 }
 
+// Best effort by design: the user asked to restore, and refusing here would leave a
+// session that can be neither opened nor cleaned up. Failure is loud, not silent.
+async function rescueBeforeWipe(
+  session: SessionInfo,
+  createGitManager?: (dir: string) => GitManager,
+): Promise<void> {
+  const dir = session.workspaceDir;
+  if (!dir || !createGitManager || !autoCommitAllowed(session)) return;
+  if ((await checkoutState(dir)) !== "repository") return;
+  try {
+    const durability = await ensureCheckoutDurable(
+      createGitManager(dir), "Auto-commit before restoring the session",
+    );
+    if (durability.state !== "durable") {
+      console.warn(
+        `[unarchiveSession] ${session.id}: branch ${session.branch ?? "(unknown)"} is not on the `
+        + `remote (${durability.state}) and restore replaces the checkout; those commits are lost`,
+      );
+    }
+  } catch (err) {
+    console.warn(
+      `[unarchiveSession] ${session.id}: could not check the old checkout before replacing it:`,
+      err instanceof Error ? err.message : String(err),
+    );
+  }
+}
+
 export async function unarchiveSession(
   sessionManager: SessionManager,
   createRepoGit: (dir: string) => RepoGit,
@@ -144,6 +173,7 @@ export async function unarchiveSession(
   repoStore: RepoStore,
   sessionId: string,
   prStatusPoller?: UnarchivePrStatusPoller,
+  createGitManager?: (dir: string) => GitManager,
 ): Promise<{ session: SessionInfo; sessions: SessionInfo[] }> {
   const session = sessionManager.get(sessionId);
   if (!session || (session.diskTier !== "evicted" && !session.userArchived)) {
@@ -166,6 +196,11 @@ export async function unarchiveSession(
     if (githubAuthManager.authenticated) {
       await cacheGit.setRemoteUrl(session.remoteUrl);
     }
+
+    // Restoring starts a new branch, so this clone is about to go. An archive that
+    // could not push kept it deliberately; give that branch one more chance to reach
+    // the remote before the directory is removed.
+    await rescueBeforeWipe(session, createGitManager);
 
     await fs.rm(session.workspaceDir, { recursive: true, force: true });
 
@@ -462,6 +497,104 @@ export function reorderSessionPins(
   return { sessions: sessionManager.reorderPins(remoteUrl, ids) };
 }
 
+/** Why a user-initiated archive left the session's checkout on disk. */
+export interface CheckoutRetained {
+  sessionId: string;
+  branch?: string;
+  message: string;
+}
+
+async function checkoutState(dir: string): Promise<"absent" | "no-repository" | "repository"> {
+  const exists = async (p: string) => {
+    try {
+      await fs.stat(p);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  if (!(await exists(dir))) return "absent";
+  if (await exists(path.join(dir, ".git"))) return "repository";
+  const entries = await fs.readdir(dir).catch(() => []);
+  return entries.length === 0 ? "absent" : "no-repository";
+}
+
+/**
+ * Archiving deletes a repo-backed checkout because the bare cache plus the unarchive
+ * flow re-create it — but that only recovers what reached the REMOTE. Commits that were
+ * never pushed exist nowhere else, which is why the disk janitor's eviction pass refuses
+ * to evict on them (`blocked-by-push`). Run the same check here, from the same helper.
+ *
+ * Returns `undefined` when the checkout may be deleted, or the reason it was kept.
+ * Retention is deliberately limited to commits that a later push can still rescue: the
+ * archived session keeps its checkout at disk tier `light`, so the janitor retries the
+ * push on every pass and reclaims the space itself once the branch is safe.
+ *
+ * Work that git REFUSES to commit (a secret in the diff, an unresolved merge, an
+ * unreadable path) is still deleted, as before. That case cannot be resolved from an
+ * archived session — the janitor's own notice names archiving as the way to free the
+ * space — so blocking on it would trade a recoverable loss for a permanent leak.
+ */
+async function retainOrReclaimCheckout(
+  session: SessionInfo,
+  createGitManager?: (dir: string) => GitManager,
+): Promise<CheckoutRetained | undefined> {
+  const dir = session.workspaceDir;
+  if (!dir || !createGitManager) return undefined;
+
+  // Ops/sandbox sessions are held out of every automatic commit sweep and are never
+  // evicted, so archiving is the only path that ever reclaims their disk.
+  if (!autoCommitAllowed(session)) return undefined;
+
+  // An already-evicted checkout has nothing to protect, and constructing a GitManager
+  // on an absent directory throws.
+  if ((await checkoutState(dir)) !== "repository") return undefined;
+
+  let durability: CheckoutDurability;
+  try {
+    durability = await ensureCheckoutDurable(createGitManager(dir), "Auto-commit before archiving");
+  } catch (err) {
+    // Git could not answer. Deleting on an unreadable answer is what this whole guard
+    // exists to prevent, so keep the checkout and let the janitor try again.
+    const message = err instanceof Error ? err.message : String(err);
+    console.warn(`[server] archive: durability check failed for ${session.id}:`, message);
+    return {
+      sessionId: session.id,
+      branch: session.branch,
+      message:
+        "Session archived, but its files were kept: ShipIt could not check whether its "
+        + "commits are on the remote. It retries in the background and frees the space "
+        + "once the check succeeds.",
+    };
+  }
+
+  if (durability.state !== "blocked-by-push") {
+    if (durability.state === "blocked-by-dirty") {
+      console.warn(
+        `[server] archive: ${session.id} has changes git refused to commit `
+        + `(${durability.reason.kind}); removing the checkout as archiving has always done`,
+      );
+    }
+    return undefined;
+  }
+
+  const why = durability.cause === "detached-head"
+    ? "its HEAD is detached, so its commits belong to no branch that could be pushed"
+    : `its branch could not be pushed (${durability.message})`;
+  console.warn(
+    `[server] archive: keeping the checkout for ${session.id} — ${why}. `
+    + "Deleting it would destroy commits that are on no remote.",
+  );
+  return {
+    sessionId: session.id,
+    branch: session.branch,
+    message:
+      `Session archived, but its files were kept: ${session.branch ?? "its branch"} has commits `
+      + "that are not on the remote, and deleting the checkout would lose them. ShipIt retries "
+      + "the push in the background and frees the space once it succeeds.",
+  };
+}
+
 export async function archiveSession(
   sessionManager: SessionManager,
   runnerRegistry: SessionRunnerRegistry,
@@ -470,8 +603,9 @@ export async function archiveSession(
   pruneVolumes?: (sessionId: string) => Promise<void>,
   containerManager?: { destroy(sessionId: string): Promise<void> } | null,
   removeSessionLogs?: (sessionId: string) => void,
+  createGitManager?: (dir: string) => GitManager,
   inProgress = new Set<string>(),
-): Promise<{ sessions: SessionInfo[] }> {
+): Promise<{ sessions: SessionInfo[]; checkoutRetained?: CheckoutRetained }> {
   inProgress.add(sessionId);
   const session = sessionManager.get(sessionId);
 
@@ -487,6 +621,7 @@ export async function archiveSession(
         pruneVolumes,
         containerManager,
         removeSessionLogs,
+        createGitManager,
         inProgress,
       );
     }
@@ -515,19 +650,30 @@ export async function archiveSession(
   }
 
   // Preserve local-only workspaces: they have no remote recovery source.
+  let retained: CheckoutRetained | undefined;
   if (session?.remoteUrl && session?.workspaceDir) {
-    const { removed, failed } = await reclaimRegenerableSessionDirs(session.workspaceDir);
-    if (removed.length > 0) {
-      console.log("[server] Removed session dirs:", removed.join(", "));
-    }
-    for (const f of failed) {
-      console.warn(`[server] Session dir cleanup failed (${f.dir}):`, f.message);
+    retained = await retainOrReclaimCheckout(session, createGitManager);
+    if (retained) {
+      // Keep only what cannot be regenerated: dependency caches are not work.
+      const { removed, message } = await reclaimBlockedSessionCaches(session.workspaceDir);
+      if (message) console.warn(`[server] archive: cache reclaim failed for ${sessionId}:`, message);
+      if (removed.length > 0) {
+        console.log("[server] archive: kept the checkout, reclaimed dep caches:", removed.join(", "));
+      }
+    } else {
+      const { removed, failed } = await reclaimRegenerableSessionDirs(session.workspaceDir);
+      if (removed.length > 0) {
+        console.log("[server] Removed session dirs:", removed.join(", "));
+      }
+      for (const f of failed) {
+        console.warn(`[server] Session dir cleanup failed (${f.dir}):`, f.message);
+      }
     }
   }
 
   removeSessionLogs?.(sessionId);
 
-  sessionManager.archive(sessionId);
+  sessionManager.archive(sessionId, { keepCheckout: retained !== undefined });
 
   if (session?.remoteUrl) {
     const remaining = sessionManager.findAllByRemoteUrl(session.remoteUrl);
@@ -542,7 +688,7 @@ export async function archiveSession(
     }
   }
 
-  return { sessions: sessionManager.list() };
+  return { sessions: sessionManager.list(), ...(retained ? { checkoutRetained: retained } : {}) };
 }
 
 // Sidebar visibility handles excess merged sessions; this does not archive them.

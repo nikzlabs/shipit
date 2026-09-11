@@ -474,9 +474,14 @@ export async function registerSessionSpawnRoutes(
           deps.pruneSessionVolumes,
           deps.containerManager,
           deps.removeSessionLogs,
+          createGitManager,
         );
         deps.sseBroadcast("session_list", { sessions: result.sessions });
-        return { archived: true, sessions: result.sessions };
+        return {
+          archived: true,
+          sessions: result.sessions,
+          ...(result.checkoutRetained ? { checkoutRetained: result.checkoutRetained } : {}),
+        };
       } catch (err) {
         if (err instanceof ServiceError) {
           reply.code(err.statusCode).send({ error: err.message });

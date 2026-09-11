@@ -7,6 +7,7 @@ import { DatabaseManager } from "../shared/database.js";
 import { SessionManager } from "./sessions.js";
 import { RepoStore } from "./repo-store.js";
 import { runDiskJanitor } from "./startup-janitor.js";
+import { GitManager } from "../shared/git.js";
 import { repoUrlToHash } from "./git-utils.js";
 import type { GitRemoteCredential } from "./repo-git.js";
 import { EGRESS_RESOLVER_LABEL } from "./egress-dns-install.js";
@@ -384,6 +385,43 @@ describe("runDiskJanitor", () => {
     expect(result.workspacesRemoved).toBe(1);
     expect(fs.existsSync(oldDir)).toBe(false);
     expect(fs.existsSync(recentDir)).toBe(true);
+  });
+
+  it("keeps an archived workspace whose commits never reached the remote", async () => {
+    // Archiving keeps such a checkout on purpose; age must not undo that. The commits
+    // exist nowhere else, so re-cloning from the remote cannot bring them back.
+    setup();
+    const { execSync } = await import("node:child_process");
+    const sessionManager = new SessionManager(dbManager!);
+    const repoStore = new RepoStore(dbManager!);
+
+    const workspaceDir = path.join(tmpDir, "sessions", "unpushed-session", "workspace");
+    fs.mkdirSync(workspaceDir, { recursive: true });
+    const deadRemote = path.join(tmpDir, "gone.git");
+    const git = "git -c user.email=t@t.t -c user.name=T -c commit.gpgsign=false";
+    execSync(`git init -b shipit/x`, { cwd: workspaceDir, stdio: "pipe" });
+    fs.writeFileSync(path.join(workspaceDir, "work.txt"), "local only");
+    execSync(`${git} add -A && ${git} commit -m local`, { cwd: workspaceDir, stdio: "pipe" });
+    execSync(`git remote add origin ${deadRemote}`, { cwd: workspaceDir, stdio: "pipe" });
+
+    const old = new Date(Date.now() - 40 * 86_400_000).toISOString();
+    underlyingDb!.prepare(
+      // 'evicted' is what this sweep selects: the shape is an archive whose checkout
+      // removal failed, leaving the tier saying gone and the commits still on disk.
+      "INSERT INTO sessions (id, title, created_at, last_used_at, workspace_dir, remote_url, branch, archived, user_archived, disk_tier) VALUES (?, ?, ?, ?, ?, ?, ?, 1, 1, 'evicted')",
+    ).run("unpushed-session", "Unpushed", old, old, workspaceDir, deadRemote, "shipit/x");
+
+    const result = await runDiskJanitor({
+      sessionManager,
+      repoStore,
+      stateDir: tmpDir,
+      coldArtifactRetentionDays: 30,
+      runDocker: () => Promise.resolve(""),
+      createGitManager: (dir: string) => new GitManager(dir),
+    });
+
+    expect(result.workspacesRemoved).toBe(0);
+    expect(fs.existsSync(path.join(workspaceDir, "work.txt"))).toBe(true);
   });
 
   it("planning#194: archive sweep reclaims overlay/ sibling but preserves uploads/", async () => {

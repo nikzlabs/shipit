@@ -97,6 +97,7 @@ export async function registerSessionCrudRoutes(
           deps.repoStore,
           request.params.id,
           deps.prStatusPoller,
+          createGitManager,
         );
         deps.sseBroadcast("session_list", { sessions: result.sessions });
         return result;
@@ -302,6 +303,7 @@ export async function registerSessionCrudRoutes(
           deps.pruneSessionVolumes,
           deps.containerManager,
           deps.removeSessionLogs,
+          createGitManager,
         );
         return result;
       } catch (err) {

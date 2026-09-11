@@ -442,6 +442,7 @@ export async function handleRewindRestoreRequest(ctx: RewindCtx, msg: WsRewindRe
       undefined,
       undefined,
       ctx.removeSessionLogs,
+      ctx.createGitManager,
     );
     ctx.chatHistoryManager.deleteMessageById(targetSessionId, snapshot.breadcrumbMessageId);
     ctx.sseBroadcast("session_list", { sessions: result.sessions });
