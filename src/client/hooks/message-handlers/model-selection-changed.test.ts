@@ -1,6 +1,7 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { useSessionStore } from "../../stores/session-store.js";
 import { useUiStore } from "../../stores/ui-store.js";
+import { useFileStore } from "../../stores/file-store.js";
 import { handleModelSelectionChanged } from "./model-selection-changed.js";
 import type { HandlerContext } from "./types.js";
 import type { SessionInfo, WsModelSelectionChanged } from "../../../server/shared/types.js";
@@ -132,6 +133,24 @@ describe("handleModelSelectionChanged", () => {
       useSessionStore.setState({ sessions: [session({ agentPinned: true }), session({ id: "s2" })] });
       handleModelSelectionChanged(ctx, message({ roleName: "triage" }));
       expect(localStorage.getItem("shipit-role-name")).toBe("deep dive");
+    });
+  });
+
+  // On `/{repo}/new` the warm session has no row, so this is what the pickers read.
+  describe("the ui store's active harness", () => {
+    it("follows the answer for the session on screen", () => {
+      useUiStore.setState({ activeAgentId: "claude" });
+      handleModelSelectionChanged(ctx, message({ agentId: "codex", roleName: "triage" }));
+      expect(useUiStore.getState().activeAgentId).toBe("codex");
+    });
+
+    it("refetches the skills when the harness actually moved", () => {
+      // Skills are per-backend; an explicit harness pick already refetches.
+      useUiStore.setState({ activeAgentId: "claude" });
+      const fetchSkills = vi.fn().mockResolvedValue(undefined);
+      useFileStore.setState({ fetchSkills } as never);
+      handleModelSelectionChanged(ctx, message({ agentId: "codex", roleName: "triage" }));
+      expect(fetchSkills).toHaveBeenCalledWith("s1", "codex");
     });
   });
 

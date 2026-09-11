@@ -46,7 +46,6 @@ export const MODEL_IDENTITIES = {
   gpt52: identity("gpt-5.2", "gpt"),
 
   deepseekV4Flash: identity("deepseek-v4-flash", "deepseek"),
-  deepseekV4Pro: identity("deepseek-v4-pro", "deepseek"),
   // V4.1 Flash is a DISTINCT canonical model, not a spelling of V4 Flash — the
   // same reasoning as the GLM-5.2/5.3 pair. Both stay declared: DeepSeek retired
   // V4 Flash at its own endpoint (`services.ts`) while the gateways still serve

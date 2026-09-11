@@ -503,3 +503,12 @@ the first of these. All six are fixed.
       "say nothing rather than claim" case. Not exercised by any test, and said
       here rather than left implied: the per-credential-shape union in
       `buildSupport`, since no shipped mode disagrees between its shapes today.
+- [x] **Curation (reqs 6, 13): DeepSeek V4 Pro retired, 2026-09-10.** Removed from all five
+      `(service, mode)` blocks that listed it, as a retirement rather than a deletion. The successor
+      is whichever DeepSeek row is current on that service: V4.1 Flash at DeepSeek's own endpoint
+      (where V4 Flash is itself retired), V4 Flash at the gateways and the two OpenCode products.
+      The exception is **Vercel's `openai-responses`**, where Pro's third style is a measurement and
+      Flash carries only two — that style takes `zai/glm-5.2`, the one cross-vendor successor here.
+      The identity, vision and price entries went with it. Two of the five records were missed at
+      first (Zen and Go kept `retired: []`), which no invariant test could see, since they iterate
+      `mode.retired`; the guard added for it names the five pairs by hand.

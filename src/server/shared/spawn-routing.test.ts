@@ -10,7 +10,7 @@ describe("claudeModelArg", () => {
   });
 
   it("appends [1m] to every other 1M model on this harness, not just Anthropic's", () => {
-    expect(claudeModelArg("deepseek-v4-pro")).toBe("deepseek-v4-pro[1m]");
+    expect(claudeModelArg("deepseek-v4-flash")).toBe("deepseek-v4-flash[1m]");
     expect(claudeModelArg("anthropic/claude-fable-5.1")).toBe("anthropic/claude-fable-5.1[1m]");
   });
 
@@ -31,7 +31,7 @@ describe("claudeModelArg", () => {
 describe("unshapeClaudeModelId", () => {
   it("undoes the suffix this module appended", () => {
     expect(unshapeClaudeModelId("claude-fable-5-1[1m]", "claude-fable-5-1")).toBe("claude-fable-5-1");
-    expect(unshapeClaudeModelId("deepseek-v4-pro[1m]", "deepseek-v4-pro")).toBe("deepseek-v4-pro");
+    expect(unshapeClaudeModelId("deepseek-v4-flash[1m]", "deepseek-v4-flash")).toBe("deepseek-v4-flash");
   });
 
   it("tells the two GLM rows apart, which the reported string alone cannot", () => {

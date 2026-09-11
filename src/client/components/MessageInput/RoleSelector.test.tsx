@@ -1,11 +1,13 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
-import { render, screen, cleanup, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, cleanup, fireEvent, waitFor, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ROLE_PILL_CLASS, RoleSelector, useRolePickerState } from "./RoleSelector.js";
 import { ComposerSettingsMenu } from "./ComposerSettingsMenu.js";
 import { MessageInput } from "./MessageInput.js";
 import { useSettingsStore } from "../../stores/settings-store.js";
 import { useSessionStore } from "../../stores/session-store.js";
+import { useUiStore } from "../../stores/ui-store.js";
+import { handleModelSelectionChanged } from "../../hooks/message-handlers/model-selection-changed.js";
 import type { AgentOption } from "../../agent-types.js";
 import type { RoleView } from "../../../server/shared/types/agent-types.js";
 
@@ -323,6 +325,49 @@ const claude: AgentOption = {
   reasoning: { label: "Reasoning", options: [{ value: "high", label: "High" }] },
 };
 
+const codex: AgentOption = {
+  id: "codex",
+  name: "Codex",
+  installed: true,
+  hasRunnableModels: true,
+  models: ["gpt-6-astra"],
+  eligibleModels: [
+    {
+      serviceId: "openai",
+      serviceName: "OpenAI",
+      billingMode: "sub",
+      modelId: "gpt-6-astra",
+      label: "GPT-6 Astra",
+      canonicalModelKey: "gpt-6-astra",
+    },
+  ],
+  supportsReview: true,
+  supportedPermissionModes: [],
+  reasoning: { label: "Reasoning effort", options: [{ value: "low", label: "Low" }] },
+};
+
+const TRIAGE: RoleView = pinnedRole({
+  name: "triage",
+  params: {
+    kind: "pinned",
+    harnessId: "codex",
+    serviceId: "openai",
+    billingMode: "sub",
+    modelId: "gpt-6-astra",
+    reasoningEffort: "low",
+  },
+  resolved: {
+    harnessId: "codex",
+    harnessName: "Codex",
+    serviceId: "openai",
+    billingMode: "sub",
+    serviceName: "OpenAI",
+    modelId: "gpt-6-astra",
+    label: "GPT-6 Astra",
+    reasoningEffort: "low",
+  },
+});
+
 const SESSION_ID = "11111111-1111-1111-1111-111111111111";
 
 function renderMenu(props: Partial<React.ComponentProps<typeof ComposerSettingsMenu>> = {}) {
@@ -481,6 +526,96 @@ describe("the composer before a session is active (docs/272 reqs 5, 12)", () => 
     await userEvent.click(screen.getByTestId("reasoning-option-high"));
     expect(screen.getByTestId("role-selector-trigger").textContent).toBe("");
   });
+
+  it("shows the parameters of the role JUST PICKED, not the one before it", async () => {
+    // `/{repo}/new`: a warm session is bound but has no row. The wrapper reads
+    // `activeAgentId` from the store the way `App.tsx` does, so the fix can move it.
+    localStorage.setItem("shipit-role-name", "deep dive");
+    localStorage.setItem("vibe-agent-id", "claude");
+    localStorage.setItem(
+      "vibe-model-id",
+      JSON.stringify({ serviceId: "anthropic", billingMode: "sub", modelId: "claude-opus-5" }),
+    );
+    useUiStore.setState({ activeAgentId: "claude" });
+    useSessionStore.setState({ sessionId: SESSION_ID, sessions: [] });
+    setRoles([DEEP_DIVE, TRIAGE]);
+
+    function Composer() {
+      const activeAgentId = useUiStore((s) => s.activeAgentId);
+      return (
+        <MessageInput
+          onSend={vi.fn().mockReturnValue(true)}
+          disabled={false}
+          agents={[claude, codex]}
+          activeAgentId={activeAgentId}
+          onAgentChange={vi.fn()}
+          onModelChange={vi.fn()}
+          onReasoningChange={vi.fn()}
+          onRoleChange={vi.fn()}
+          hasActiveSession={false}
+          sessionId={SESSION_ID}
+        />
+      );
+    }
+    render(<Composer />);
+
+    await openRoleMenu();
+    await userEvent.click(screen.getByTestId("role-option-triage"));
+    act(() => {
+      handleModelSelectionChanged(undefined as never, {
+        type: "model_selection_changed",
+        sessionId: SESSION_ID,
+        agentId: "codex",
+        selection: { serviceId: "openai", billingMode: "sub", modelId: "gpt-6-astra" },
+        modelId: "gpt-6-astra",
+        reasoningEffort: "low",
+        roleName: "triage",
+      });
+    });
+
+    await userEvent.click(screen.getByTestId("role-selector-trigger"));
+    await userEvent.click(screen.getByTestId("role-adjust-parameters"));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("harness-trigger")).toHaveTextContent("Codex");
+    });
+    expect(screen.getByTestId("model-trigger")).toHaveTextContent("GPT-6 Astra");
+    expect(screen.getByTestId("reasoning-trigger")).toHaveTextContent("Low");
+  });
+
+  it("takes the level from the harness the row NAMES, not from the store's active one", async () => {
+    // No session bound, so no echo can reach it: this isolates the harness rule.
+    localStorage.setItem("shipit-role-name", "triage");
+    localStorage.setItem("shipit-reasoning-by-agent", JSON.stringify({ claude: "high" }));
+    setRoles([DEEP_DIVE, TRIAGE]);
+    useSessionStore.setState({ sessionId: undefined, sessions: [] });
+    render(
+      <MessageInput
+        onSend={vi.fn().mockReturnValue(true)}
+        disabled={false}
+        agents={[claude, codex]}
+        // The background session's harness — what Quick Capture is handed.
+        activeAgentId="claude"
+        onAgentChange={vi.fn()}
+        onModelChange={vi.fn()}
+        onReasoningChange={vi.fn()}
+        onRoleChange={vi.fn()}
+        hasActiveSession={false}
+      />,
+    );
+
+    await userEvent.click(screen.getByTestId("role-selector-trigger"));
+    await userEvent.click(screen.getByTestId("role-adjust-parameters"));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("harness-trigger")).toHaveTextContent("Codex");
+    });
+    const reasoning = screen.getByTestId("reasoning-trigger");
+    // The knob's name too: each harness calls it something different.
+    expect(reasoning).toHaveTextContent("Low");
+    expect(reasoning.getAttribute("aria-label")).toBe("Reasoning effort selector");
+  });
+
 });
 
 describe("a locked role keeps the ROUTE to the parameters (docs/272 reqs 4, 5, 15)", () => {
@@ -818,5 +953,72 @@ describe("ComposerSettingsMenu — the role row (docs/272 req 15)", () => {
     expect(screen.getByTestId("composer-settings-row-role")).toHaveAttribute("aria-disabled", "true");
     expect(screen.getByTestId("composer-settings-row-model")).toBeInTheDocument();
     expect(screen.getByTestId("composer-settings-row-reasoning")).toBeInTheDocument();
+  });
+});
+
+// `useNarrowContainer` reports `false` without `ResizeObserver` (jsdom), so this
+// block stubs it to opt in to the narrow row.
+describe("a role folds away hand-picked parameters in the narrow menu too", () => {
+  class ResizeObserverStub {
+    observe(): void {}
+    unobserve(): void {}
+    disconnect(): void {}
+  }
+
+  beforeEach(() => {
+    vi.stubGlobal("ResizeObserver", ResizeObserverStub);
+    Object.defineProperty(HTMLElement.prototype, "clientWidth", {
+      configurable: true,
+      get: () => 400,
+    });
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    // @ts-expect-error -- restoring the jsdom default (always 0)
+    delete HTMLElement.prototype.clientWidth;
+    localStorage.removeItem("shipit-role-name");
+    localStorage.removeItem("vibe-model-id");
+    localStorage.removeItem("vibe-agent-id");
+    localStorage.removeItem("shipit-reasoning-by-agent");
+  });
+
+  it("shows the role's level, not the one picked by hand before it", async () => {
+    setRoles([DEEP_DIVE, TRIAGE]);
+    useSessionStore.setState({ sessionId: undefined, sessions: [] });
+    render(
+      <MessageInput
+        onSend={vi.fn().mockReturnValue(true)}
+        disabled={false}
+        agents={[claude, codex]}
+        activeAgentId="claude"
+        onAgentChange={vi.fn()}
+        onModelChange={vi.fn()}
+        onReasoningChange={vi.fn()}
+        onRoleChange={vi.fn()}
+        hasActiveSession={false}
+      />,
+    );
+    expect(screen.getByTestId("composer-settings-trigger")).toBeInTheDocument();
+
+    // A model and a level by hand: two different hooks, both must be cleared.
+    await userEvent.click(screen.getByTestId("composer-settings-trigger"));
+    await userEvent.click(screen.getByTestId("composer-settings-row-model"));
+    await userEvent.click(screen.getByTestId("composer-settings-model-claude-opus-5"));
+    await userEvent.click(screen.getByTestId("composer-settings-trigger"));
+    await userEvent.click(screen.getByTestId("composer-settings-row-reasoning"));
+    await userEvent.click(screen.getByTestId("composer-settings-reasoning-max"));
+
+    await userEvent.click(screen.getByTestId("composer-settings-trigger"));
+    await userEvent.click(screen.getByTestId("composer-settings-row-role"));
+    await userEvent.click(screen.getByTestId("composer-settings-role-triage"));
+    await userEvent.click(screen.getByTestId("composer-settings-trigger"));
+    await userEvent.click(screen.getByTestId("composer-settings-role-adjust"));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("composer-settings-row-reasoning")).toHaveTextContent("Low");
+    });
+    expect(screen.getByTestId("composer-settings-row-harness")).toHaveTextContent("Codex");
+    expect(screen.getByTestId("composer-settings-row-model")).toHaveTextContent("GPT-6 Astra");
   });
 });

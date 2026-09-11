@@ -117,10 +117,10 @@ describe("SubAgentConsultCardRow run-on attribution (docs/261 req 9)", () => {
   it("distinguishes the harness from the model when they disagree", () => {
     render(<SubAgentConsultCardRow card={card({
       subAgentId: "claude",
-      runOn: { serviceId: "openrouter", billingMode: "key", modelId: "deepseek/deepseek-v4-pro", reasoningEffort: "high" },
+      runOn: { serviceId: "openrouter", billingMode: "key", modelId: "deepseek/deepseek-v4-flash", reasoningEffort: "high" },
     })} />);
     const row = screen.getByTestId("sub-agent-consult-card");
-    expect(row.textContent).toContain("Consulted DeepSeek V4 Pro");
+    expect(row.textContent).toContain("Consulted DeepSeek V4 Flash");
     expect(screen.getByTestId("sub-agent-consult-run-on").textContent)
       .toBe("OpenRouter · API key · Claude · High reasoning");
   });

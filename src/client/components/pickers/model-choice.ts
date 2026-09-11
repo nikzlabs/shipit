@@ -92,9 +92,9 @@ export interface HarnessChoice {
  *
  * A role names its harness and never derives it, so the editor has to offer the
  * set rather than pick from it. Most models have exactly one member here and the
- * field is a readout; `deepseek-flash` and `deepseek-v4-pro` have two
- * (`services.ts` declares all three API styles on them, so both harnesses share
- * one with each), and there the harness is a real choice only the user can make.
+ * field is a readout; `deepseek-flash` has two (`services.ts` declares all three
+ * API styles on it, so both harnesses share it), and there the harness is a real
+ * choice only the user can make.
  *
  * **Read from the server's own per-harness eligibility, not re-derived.** Each
  * `AgentOption.eligibleModels` is the credential-filtered join the server

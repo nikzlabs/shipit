@@ -466,8 +466,13 @@ export function QuickCaptureOverlay({
               // "No role" has none to apply: it drops the name and the standing
               // instructions, and the parameters stay where the role left them.
               if (roleName !== undefined) {
-                applyRoleSeeds(useSettingsStore.getState().roles.find((r) => r.name === roleName));
+                const role = useSettingsStore.getState().roles.find((r) => r.name === roleName);
+                applyRoleSeeds(role);
                 clearParkedHarness();
+                // The creation params read this state, not the seed. The level is
+                // cleared, not set: `send` falls back to the per-harness seed.
+                if (role?.resolved) setSelectedModel(role.resolved.modelId);
+                setSelectedReasoning(undefined);
               }
               seedWritten();
             }}

@@ -1,5 +1,6 @@
 import type { WsModelSelectionChanged } from "../../../server/shared/types.js";
 import { useSessionStore } from "../../stores/session-store.js";
+import { useFileStore } from "../../stores/file-store.js";
 import { useUiStore } from "../../stores/ui-store.js";
 import { saveRoleName } from "../../utils/local-storage.js";
 import type { Handler } from "./types.js";
@@ -86,6 +87,20 @@ export const handleModelSelectionChanged: Handler<WsModelSelectionChanged> = (_c
     .sessions.find((s) => s.id === data.sessionId)?.agentPinned;
   if (session.sessionId === data.sessionId && !started) {
     saveRoleName(data.roleName ?? undefined);
+  }
+  // docs/272 — on `/{repo}/new` the warm session has no row, so the pickers read
+  // `activeAgentId`, which `useConnectionSync` only syncs FROM a row. Not
+  // persisted: an internal sync must not move the new-session default. Skills are
+  // per-backend, so a harness that moved invalidates them.
+  if (session.sessionId === data.sessionId) {
+    const ui = useUiStore.getState();
+    if (ui.activeAgentId !== data.agentId) {
+      ui.setActiveAgentId(data.agentId);
+      void useFileStore
+        .getState()
+        .fetchSkills(data.sessionId, data.agentId)
+        .catch(() => {});
+    }
   }
   // The server has answered. Say so unconditionally — the composer's optimistic
   // pick has to be dropped whether the answer was "yes" or "no", and a REFUSED

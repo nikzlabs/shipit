@@ -28,6 +28,12 @@ Implementation to-do for this branch. See [`plan.md`](./plan.md).
       "Adjust parameters…" and no roles, and the row stays short until the user asks (reqs 5, 15)
 - [x] Parameter reveal is scoped to the current session, so expanding a role does not expand the
       same role in other sessions while the composer remains mounted
+- [x] `model_selection_changed` moves the ui store's `activeAgentId` for the session on screen —
+      on `/{repo}/new` that field is what the pickers read, and nothing moved it after arrival, so
+      "Adjust parameters…" showed the PREVIOUS role's harness, model and level (reported 2026-09-09)
+- [x] The wide row's reasoning control resolves its harness the way the harness picker beside it
+      does, instead of reading `activeAgentId` by a second rule
+- [x] A role that changes the harness refetches the skills, as an explicit harness pick already did
 
 ## Verification
 

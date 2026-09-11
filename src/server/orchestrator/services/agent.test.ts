@@ -56,7 +56,7 @@ describe("dispatchAgentMessage image admission (planning#460)", () => {
   const PNG = [{ data: "aGk=", mediaType: "image/png", filename: "shot.png" }];
 
   it("refuses an image dispatched at a session pinned to a text-only model", async () => {
-    const deps = depsFor({ warm: false, serviceId: "deepseek", billingMode: "key", model: "deepseek-v4-pro" });
+    const deps = depsFor({ warm: false, serviceId: "openrouter", billingMode: "key", model: "deepseek/deepseek-v4-flash" });
     await expect(dispatchAgentMessage(deps as never, "session", { text: "what is this?", images: PNG }))
       .rejects.toThrow(/cannot read images/s);
   });

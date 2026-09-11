@@ -12,7 +12,7 @@ import {
   PermissionModeSelector,
   type NetworkSectionProps,
 } from "../PermissionModeSelector.js";
-import { HarnessSelector, ModelSelector } from "../ModelPicker.js";
+import { HarnessSelector, ModelSelector, useHarnessPickerState } from "../ModelPicker.js";
 import { ReasoningSelector } from "../ReasoningSelector.js";
 import { FileAutoComplete } from "../FileAutoComplete.js";
 import { SkillAutoComplete, type SlashCommand } from "../SkillAutoComplete.js";
@@ -405,6 +405,14 @@ export function MessageInput({
     });
   };
   const showRoleControl = !!onRoleChange && (hasRoles || !!roleInForce);
+  // The harness the picker beside it names: `activeAgentId` was a second rule,
+  // and the two disagree wherever no session is bound.
+  const displayedHarnessAgent = useHarnessPickerState({
+    agents,
+    activeAgentId,
+    hasActiveSession,
+    seedFromHistory: !sessionId,
+  }).displayAgent;
   const [isDragging, setIsDragging] = useState(false);
   const [showAutoComplete, setShowAutoComplete] = useState(false);
   const [autoCompleteQuery, setAutoCompleteQuery] = useState("");
@@ -1239,9 +1247,9 @@ export function MessageInput({
                 )}
 
                 <ComposerSettingsMenu
-                  // Keyed on the session so an optimistic pick can't linger across a switch,
-                  // for the same reason `ReasoningSelector` is keyed in the wide row.
-                  key={sessionId ?? "__new__"}
+                  // Keyed on the role too: this menu keeps its picker hooks mounted
+                  // where the wide row unmounts them, so a pick outlived the role.
+                  key={`${sessionId ?? "__new__"}:${roleInForce ?? ""}`}
                   agents={agents}
                   activeAgentId={activeAgentId}
                   onAgentChange={onAgentChange}
@@ -1553,7 +1561,7 @@ export function MessageInput({
                 <ReasoningSelector
                   // Key on the session so the optimistic pick never lingers across a switch.
                   key={sessionId ?? "__new__"}
-                  agent={agents.find((a) => a.id === activeAgentId)}
+                  agent={displayedHarnessAgent}
                   sessionReasoning={sessionReasoning}
                   onChange={(effort) => { leavePendingRole(); onReasoningChange(effort); }}
                   disabled={settingsLocked || inert}

@@ -180,8 +180,8 @@ describe("Integration: quick-capture headless sessions", () => {
         repoUrl: REPO_URL,
         initialPrompt: "Match this design",
         agent: "claude",
-        model: "deepseek-v4-pro",
-        serviceId: "deepseek",
+        model: "deepseek/deepseek-v4-flash",
+        serviceId: "openrouter",
         billingMode: "key",
       },
       [{ name: "file", filename: "screenshot.png", content: png }],
@@ -203,7 +203,7 @@ describe("Integration: quick-capture headless sessions", () => {
 
     const history = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/history` });
     expect(history.body).toContain("cannot read images");
-    expect(history.body).toContain("V4 Pro");
+    expect(history.body).toContain("V4 Flash");
   });
 
   it("references an attached image in the dispatched first-turn prompt", { timeout: 15_000 }, async () => {
@@ -327,14 +327,14 @@ describe("Integration: quick-capture headless sessions", () => {
         repoUrl: REPO_URL,
         initialPrompt: "Run this on Codex",
         agent: "codex",
-        model: "deepseek-v4-pro",
+        model: "deepseek-flash",
       },
     });
 
     expect(res.statusCode, res.body).toBe(200);
     const body = res.json() as { sessionId: string };
     expect(sessionManager.get(body.sessionId)).toMatchObject({
-      model: "deepseek-v4-pro",
+      model: "deepseek-flash",
       agentId: "codex",
       agentPinned: true,
     });

@@ -59,7 +59,7 @@ describe("context windows survive the catalogue derivation unchanged", () => {
   });
 
   it("newly-known models are ones no install can run yet", () => {
-    for (const model of ["deepseek-flash", "deepseek-v4-pro", "glm-5.2"]) {
+    for (const model of ["deepseek-flash", "glm-5.2"]) {
       expect(preCatalogueLookup(model)).toBe(200_000);
       expect(getContextWindowForModel(model)).toBe(1_000_000);
     }

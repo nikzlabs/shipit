@@ -235,6 +235,29 @@ Two consequences fell out of fixing it, and both are simplifications:
   anything, which is what stops the write → re-render → write loop that reconciliation from an
   effect would otherwise be.
 
+### …and the harness the pickers read has to follow the server's answer
+
+Writing the seeds was necessary and not sufficient: the gap showed up as *"the parameters are from
+the previous role"*.
+
+`/{repo}/new` is a **third** case, distinct from both the ones `seedFromHistory` names. It claims a
+warm session, so a session IS bound — and that session has no row (`warm = 0`), so there is nothing
+to describe either. `displayedHarness` falls through to the ui store's `activeAgentId`, which
+`useUiStore.reset()` seeds once on arrival and `useConnectionSync` only ever syncs **from a session
+row**. Choosing a role rewrote the seeds and not that field, and the stale harness took the model
+list and the per-harness reasoning seed with it.
+
+So **`model_selection_changed` moves `activeAgentId` too**, for the session on screen. The seed
+would be the wrong source: it is *global*, so any other surface that writes it — Quick Capture
+choosing a role for the **next** session — would repaint this composer to describe a session it is
+not connected to. This message is per-connection. It is never written back to localStorage, which is
+`setActiveAgentId`'s standing contract.
+
+Two things were fixed alongside it, both a role changing the harness by a route nothing else watched:
+the wide row's reasoning control resolved its harness by a second rule (`activeAgentId` rather than
+`displayedHarness`, which disagree wherever no session is bound), and the skills were not refetched,
+though they are per-backend and only an explicit harness pick refreshed them.
+
 ## What the composer shows
 
 **Three states in the wide row**, and the row never grows: a selected role shows *fewer* controls

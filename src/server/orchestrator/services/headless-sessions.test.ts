@@ -385,7 +385,7 @@ describe("createHeadlessSession", () => {
           repoUrl: "https://github.com/acme/app.git",
           prompt: "shared model",
           agent: "codex",
-          model: "deepseek-v4-pro",
+          model: "deepseek-flash",
         },
         "claude",
         undefined,
