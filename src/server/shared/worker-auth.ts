@@ -19,6 +19,7 @@ export const LIFECYCLE_PATHS: ReadonlySet<string> = new Set([
   "/agent/message",
   "/agent/permission-mode",
   "/agent/compact",
+  "/agent/goal",
   "/agent/permission/resolve",
 ]);
 
