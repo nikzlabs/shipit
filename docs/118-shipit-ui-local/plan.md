@@ -51,25 +51,21 @@ The ShipIt repo gains a `docker-compose.yml` with a single `dev` service that th
 ```yaml
 services:
   dev:
-    build: { context: ., dockerfile: docker/Dockerfile.dogfood }  # node:24 + agent CLIs
-    # No `npm install` — the dev service shares the agent container's
-    # /workspace/node_modules (populated by agent.install) and just waits for it.
+    build: { context: ., dockerfile: docker/Dockerfile.dogfood }
     command: sh -c "... while [ ! -x node_modules/.bin/vite ]; do sleep 1; done && npm run dev ..."
     working_dir: /workspace
-    init: true              # so orphaned agent subprocesses are reapable
+    init: true
     environment:
       RUNTIME_MODE: local
       PORT: 3000
-      # Inner-orch state dirs must NOT collide with outer's. See
-      # "Workspace path collision" hardening note below.
       WORKSPACE_DIR: /workspace
       SHIPIT_STATE_DIR: /workspace/.inner-shipit
     volumes:
-      - .:/workspace        # required — also shares node_modules with the agent
+      - .:/workspace
     ports:
       - "3000:3000"
-    x-shipit-preview: manual  # heavy boot — user starts on demand
-    x-shipit-secrets:       # see "Credential injection" hardening note
+    x-shipit-preview: manual
+    x-shipit-secrets:
       - { name: ANTHROPIC_API_KEY,        source: platform:claude_oauth }
       - { name: ANTHROPIC_AUTH_TOKEN,     source: platform:claude_oauth }
       - { name: GITHUB_TOKEN,             source: platform:github_token }

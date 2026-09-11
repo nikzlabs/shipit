@@ -12,7 +12,6 @@ The current `RunnerCtx` interface exposes ~15 setters/getters that delegate to a
 setIsClaudeRunning: (v: boolean) => void;
 setTurnSummary: (s: string) => void;
 setAccumulatedText: (s: string) => void;
-// ... etc
 ```
 
 Each implementation is `(v) => { if (attachedRunner) runner.X = v; }`. When the WebSocket disconnects, `attachedRunner` becomes `null` and every setter silently no-ops. Any code in an async closure (`agent.on("done", ...)`, recursive turn drains, post-turn commits) that tried to update runner state would have its update vanish. We've now seen at least four production bugs of exactly this shape:
@@ -35,23 +34,16 @@ The right long-term fix is to remove the setters entirely. If the only way to mu
 
 ```ts
 export interface RunnerCtx {
-  // Agent factory (delegates to runner.createAgent if available)
   agentFactory: (agentId: AgentId) => AgentProcess;
 
-  // Per-connection identifiers — these don't depend on runner state
   getActiveAgentId: () => AgentId;
   setActiveAgentId: (id: AgentId) => void;
   getSelectedModel: () => string | undefined;
   setSelectedModel: (m: string | undefined) => void;
 
-  // Runner lookup — the ONLY supported way to access runner state
-  /** Get the runner attached to this connection (if any). Prefer registry lookup. */
   getRunner: () => SessionRunnerInterface | null;
-  /** Get the app-level runner registry. THE preferred resolver. */
   getRunnerRegistry: () => SessionRunnerRegistry;
-  /** Attach this connection to a runner (detaches previous). */
   attachToRunner: (runner: SessionRunnerInterface) => void;
-  /** Detach this connection from its current runner. */
   detachFromRunner: () => void;
 }
 ```
@@ -69,10 +61,8 @@ export async function handleSendMessage(ctx: FullCtx, msg: WsSendMessage) {
   const runner = ctx.getRunnerRegistry().get(sessionId) ?? ctx.getRunner();
   if (!runner) { ctx.send({ type: "error", message: "Session not found" }); return; }
 
-  // From here on, every state mutation is `runner.X = ...`.
   runner.running = true;
   runner.turnSummary = "";
-  // ...
 }
 ```
 
@@ -80,10 +70,9 @@ For long-running async closures, the runner reference is captured at the OUTER f
 
 ```ts
 runClaudeWithMessage(ctx, opts) {
-  const runner = /* registry-resolved at top */;
+  const runner = resolveRunner(ctx);
 
   currentAgent.on("done", () => {
-    // Use the captured `runner` directly — no ctx access.
     if (runner) runner.running = false;
   });
 }

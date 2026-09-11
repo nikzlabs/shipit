@@ -272,24 +272,22 @@ Exit codes:
 
 ```ts
 {
-  prompt: string;            // required, the child's first user message (≤ 50,000 chars)
-  title: string;             // required — the spawning agent names the session (no AI-naming fallback). 400 if empty.
-  agent?: AgentId;           // child's agent id; defaults to `defaultAgentId`
-  model?: string;            // child's model; defaults to the parent's model
-  spawnedByTurn?: string;    // free-form id of the parent turn — used by `list --turn` and the per-turn quota
+  prompt: string;
+  title: string;
+  agent?: AgentId;
+  model?: string;
+  spawnedByTurn?: string;
 }
-// The branch name is always auto-generated server-side under the
-// `shipit/<slug>` namespace — agents cannot pick it.
 ```
 
 Successful response (HTTP 200):
 
 ```ts
 {
-  sessionId: string;         // the child's new session id
-  branch: string;            // the branch the child was created on
-  status: "running";         // always "running" — the runner has the prompt enqueued
-  session: SessionInfo;      // full child session row (sidebar render data)
+  sessionId: string;
+  branch: string;
+  status: "running";
+  session: SessionInfo;
 }
 ```
 
@@ -362,9 +360,8 @@ Add a single optional field to `SessionInfo`:
 
 ```ts
 interface SessionInfo {
-  // ... existing fields ...
-  parentSessionId?: string;   // NEW — set when spawned via shipit session create
-  spawnedByTurn?: string;     // NEW — message group id of the parent turn that spawned it
+  parentSessionId?: string;
+  spawnedByTurn?: string;
 }
 ```
 

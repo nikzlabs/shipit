@@ -29,7 +29,6 @@ The block that motivated this doc is in **Layer A**. It has nothing to do with S
 
 ```ts
 const AUTO_TOOLS = "Write,Read,Edit,Bash,Glob,Grep,WebFetch,WebSearch,AskUserQuestion,mcp__playwright__*";
-// ...
 "--allowedTools", tools,
 ```
 
@@ -128,10 +127,10 @@ Claude Code has a built-in guard that prompts before `Edit`/`Write`/`MultiEdit` 
 The Edit/Write tools report (and the harness matches) the target as an **absolute** path — the denial message even quotes it: `…/workspace/.claude/skills/client-architecture/SKILL.md`. The permission glob is gitignore/picomatch-style. A pattern anchored at a relative segment (`.claude/skills/**`) does **not** match an absolute path:
 
 ```
-picomatch(".claude/skills/**")("/workspace/.claude/skills/client-architecture/SKILL.md")  // → false
-picomatch(".claude/skills/**")(".claude/skills/client-architecture/SKILL.md")             // → true (relative only)
-picomatch("**/.claude/skills/**")("/workspace/.claude/skills/client-architecture/SKILL.md") // → true
-picomatch("**/.claude/skills/**")(".claude/skills/client-architecture/SKILL.md")            // → true (both forms)
+picomatch(".claude/skills/**")("/workspace/.claude/skills/client-architecture/SKILL.md")
+picomatch(".claude/skills/**")(".claude/skills/client-architecture/SKILL.md")
+picomatch("**/.claude/skills/**")("/workspace/.claude/skills/client-architecture/SKILL.md")
+picomatch("**/.claude/skills/**")(".claude/skills/client-architecture/SKILL.md")
 ```
 
 So the rule matched only the (never-supplied) relative form. The guard saw no matching allow rule and prompted. This is **accidental misconfiguration, not a deliberate protection** — doc 096 exists specifically to *grant* skill-edit access, and Fix 2 intended to suppress the prompt.
@@ -175,9 +174,8 @@ So the rule matched only the (never-supplied) relative form. The guard saw no ma
 - **`WORKSPACE_HIDDEN_FILES`** (new, replaces `WORKSPACE_HIDDEN_ALLOWLIST`) is a *minimal* deny-list for pure junk and ShipIt-internal session data the user never edits: `.DS_Store`, `.shipit-usage.json`, `.vibe-sessions.json` (the latter two mirror `IGNORE_FILES` in `file-watcher.ts`).
 
 ```ts
-// file-tree.ts, in scanFileTree()
 if (WORKSPACE_SKIP_DIRS.has(entry.name)) continue;
-if (WORKSPACE_HIDDEN_FILES.has(entry.name)) continue;   // was: skip-all-dotfiles-unless-allowlisted
+if (WORKSPACE_HIDDEN_FILES.has(entry.name)) continue;
 ```
 
 ### Shared-consumer audit

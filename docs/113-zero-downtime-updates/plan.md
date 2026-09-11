@@ -307,12 +307,8 @@ docker rm -f $(docker ps -aq --filter "label=shipit-parent-session") 2>/dev/null
 only:
 
 ```bash
-# Build new images (session-worker rebuild produces a new image;
-# existing containers are not affected — Docker images are immutable).
 docker compose -f "$COMPOSE_FILE" build --no-cache --pull session-worker shipit
 
-# Restart ONLY the orchestrator. Session-worker containers and
-# Compose service containers (shipit-parent-session) keep running.
 docker compose -f "$COMPOSE_FILE" up -d --force-recreate --no-deps shipit
 ```
 
@@ -332,7 +328,6 @@ Add a process-wide `updateState` to the orchestrator: `idle` |
 `draining` | `updating`.
 
 ```ts
-// In app-di.ts or a new services/update-state.ts
 type UpdateState =
   | { phase: "idle" }
   | { phase: "draining"; deadline: number; reason: "user-update" }

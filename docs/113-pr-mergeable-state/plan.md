@@ -30,9 +30,7 @@ Today the data flow is:
 
 ```typescript
 export interface PrStatusSummary {
-  // ... existing fields ...
   mergeable: "mergeable" | "conflicting" | "unknown";
-  // ... existing fields ...
 }
 ```
 
@@ -101,7 +99,7 @@ function ResolveConflictsButton({ sessionId, baseBranch }: Props) {
   );
 
   const handleClick = () => {
-    if (isAgentRunning) return; // disabled state — see below
+    if (isAgentRunning) return;
     startRebase(sessionId, baseBranch);
   };
 
