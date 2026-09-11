@@ -39,6 +39,37 @@ export function stampToolDurations(
   return changed ? ({ ...event, content: stamped } as AgentEvent) : event;
 }
 
+/**
+ * Stamps each `tool_use` block with the wall-clock time the orchestrator first
+ * saw it, so the tool-call dialog can say when the call happened. It shares
+ * `startTimes` with `stampToolDurations`, which makes the stamp idempotent: a
+ * block re-emitted by a streaming delta keeps the first observation, and the
+ * shown time and the shown duration always describe the same instant.
+ */
+export function stampToolUseStartTimes(
+  event: AgentEvent,
+  startTimes: Map<string, number>,
+  now: number,
+): AgentEvent {
+  const content = (event as { content?: unknown[] }).content;
+  if (!Array.isArray(content)) return event;
+  let changed = false;
+  const stamped = content.map((b) => {
+    if (typeof b !== "object" || b === null) return b;
+    const block = b as Record<string, unknown>;
+    if (block.type !== "tool_use" || typeof block.id !== "string") return b;
+    if (typeof block.startedAt === "string") return b;
+    let start = startTimes.get(block.id);
+    if (start === undefined) {
+      start = now;
+      startTimes.set(block.id, start);
+    }
+    changed = true;
+    return { ...block, startedAt: new Date(start).toISOString() };
+  });
+  return changed ? ({ ...event, content: stamped } as AgentEvent) : event;
+}
+
 export const MCP_TOOL_NAME_RE = /^mcp__([a-z][a-z0-9]*)__/;
 
 // Let malformed calls reach CLI validation instead of interrupting the turn.

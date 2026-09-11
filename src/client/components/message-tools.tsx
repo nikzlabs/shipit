@@ -288,6 +288,7 @@ export function ToolUseItem({ tool, result, isLast, isStreaming, onAnswerQuestio
           input={tool.input}
           toolUseId={tool.id}
           bodyTruncated={tool.bodyTruncated}
+          startedAt={tool.startedAt}
           result={result}
           onClose={() => setShowModal(false)}
         />
@@ -475,6 +476,27 @@ export function formatToolDuration(ms: number): string {
 }
 
 /**
+ * Wall-clock time the tool call was made, for the tool-call dialog's header.
+ *
+ * A transcript is usually read on the day it was written, so the common case
+ * shows the time alone; a call from another day carries its date too, because
+ * "14:32:05" with no date is worse than no time at all once a session spans
+ * days. Returns "" for an absent or unparseable stamp — rows persisted before
+ * the stamp existed simply show no time.
+ */
+export function formatToolCallTime(iso: string | undefined, now: Date = new Date()): string {
+  if (!iso) return "";
+  const at = new Date(iso);
+  if (Number.isNaN(at.getTime())) return "";
+  const time = at.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  const sameDay = at.getFullYear() === now.getFullYear()
+    && at.getMonth() === now.getMonth()
+    && at.getDate() === now.getDate();
+  if (sameDay) return time;
+  return `${at.toLocaleDateString([], { month: "short", day: "numeric" })}, ${time}`;
+}
+
+/**
  * Full-screen modal showing the agent's tool input and the tool's output.
  *
  * `result` is optional: the modal can be opened while the tool is still pending
@@ -488,16 +510,18 @@ export function formatToolDuration(ms: number): string {
  * the stored input is authoritative and preserves the original key order the
  * fields are laid out in.
  */
-function ToolOutputModal({ toolName, input, toolUseId, bodyTruncated, result, onClose }: {
+function ToolOutputModal({ toolName, input, toolUseId, bodyTruncated, startedAt, result, onClose }: {
   toolName: string;
   input: Record<string, unknown>;
   toolUseId?: string;
   bodyTruncated?: true;
+  startedAt?: string;
   result?: ToolResultBlock;
   onClose: () => void;
 }) {
   const lazy = useLazyToolInput(toolUseId, !!bodyTruncated);
   const duration = typeof result?.durationMs === "number" ? formatToolDuration(result.durationMs) : "";
+  const calledAt = formatToolCallTime(startedAt);
   // The tool input is right here, so the output panel never has to guess the
   // language of a file it is already naming one section above.
   const resolvedInput = lazy.input ?? input;
@@ -505,8 +529,17 @@ function ToolOutputModal({ toolName, input, toolUseId, bodyTruncated, result, on
   return (
     <Dialog open onOpenChange={(isOpen) => { if (!isOpen) onClose(); }}>
     <DialogContent className="w-[min(90vw,56rem)] max-h-[80vh] flex flex-col" aria-label="Tool output">
-      <div className="flex items-center px-4 py-3 border-b border-(--color-border-primary)">
+      <div className="flex items-center gap-2 px-4 py-3 border-b border-(--color-border-primary)">
         <span className="text-xs font-semibold text-(--color-text-primary) shrink-0">Tool Call</span>
+        {calledAt ? (
+          <span
+            data-testid="tool-call-time"
+            className="ml-auto text-[11px] font-mono text-(--color-text-tertiary) shrink-0"
+            title={`Called at ${new Date(startedAt!).toLocaleString()}`}
+          >
+            {calledAt}
+          </span>
+        ) : null}
       </div>
       <div className="flex-1 overflow-auto p-4">
         <ToolInput

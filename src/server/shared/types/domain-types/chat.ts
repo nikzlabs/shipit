@@ -138,6 +138,8 @@ export type WsSubagentEvent =
         id: string;
         name: string;
         input: Record<string, unknown>;
+        /** ISO time the orchestrator first saw the call; absent on older rows. */
+        startedAt?: string;
       }[];
     }
   | {
@@ -158,6 +160,8 @@ export interface WsChatHistoryMessage {
     id: string;
     name: string;
     input: Record<string, unknown>;
+    /** ISO time the orchestrator first saw the call; absent on older rows. */
+    startedAt?: string;
   }[];
   images?: {
     /** Stored base64 is replaced by src on the serve path. */

@@ -38,6 +38,12 @@ export interface ToolUseBlock {
    * `Prompt (N chars)` label keeps working once the prompt itself is gone.
    */
   inputChars?: Record<string, number>;
+  /**
+   * ISO time the orchestrator first observed this call — shown in the tool-call
+   * detail modal next to the duration. Absent on messages persisted before the
+   * stamp existed, in which case the modal simply omits the time.
+   */
+  startedAt?: string;
 }
 
 export interface ToolResultBlock {

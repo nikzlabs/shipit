@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
 import { render, screen, cleanup, fireEvent, waitFor } from "@testing-library/react";
-import { ToolUseItem, formatToolDuration } from "./message-tools.js";
+import { ToolUseItem, formatToolDuration, formatToolCallTime } from "./message-tools.js";
 import { useSessionStore } from "../stores/session-store.js";
 import type { ToolUseBlock } from "./MessageList.js";
 import { highlightCode } from "../syntax-highlight.js";
@@ -161,6 +161,68 @@ describe("ToolUseItem output modal input", () => {
     );
     fireEvent.click(screen.getByLabelText("Show output"));
     expect(screen.queryByText(/\d+\s?(ms|s)$/)).not.toBeInTheDocument();
+  });
+
+  it("shows when the call happened in the dialog header", () => {
+    const startedAt = new Date("2026-09-11T14:32:05Z").toISOString();
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-11T15:00:00Z"));
+    try {
+      render(
+        <ToolUseItem
+          tool={{ ...tool("Bash", { command: "ls" }), startedAt }}
+          result={{ toolUseId: "t1", content: "out" }}
+          isLast={false}
+          isStreaming={false}
+          isQuestionDisabled
+        />,
+      );
+      fireEvent.click(screen.getByLabelText("Show output"));
+      expect(screen.getByTestId("tool-call-time")).toHaveTextContent(
+        formatToolCallTime(startedAt, new Date("2026-09-11T15:00:00Z")),
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("omits the time on a row persisted before the stamp existed", () => {
+    render(
+      <ToolUseItem
+        tool={tool("Bash", { command: "ls" })}
+        result={{ toolUseId: "t1", content: "out" }}
+        isLast={false}
+        isStreaming={false}
+        isQuestionDisabled
+      />,
+    );
+    fireEvent.click(screen.getByLabelText("Show output"));
+    expect(screen.queryByTestId("tool-call-time")).not.toBeInTheDocument();
+  });
+});
+
+describe("formatToolCallTime", () => {
+  it("shows the time alone for a call made today", () => {
+    const now = new Date("2026-09-11T15:00:00Z");
+    const at = new Date("2026-09-11T14:32:05Z");
+    expect(formatToolCallTime(at.toISOString(), now)).toBe(
+      at.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }),
+    );
+  });
+
+  it("adds the date once the call is from another day", () => {
+    const now = new Date("2026-09-11T15:00:00Z");
+    const at = new Date("2026-09-08T14:32:05Z");
+    const formatted = formatToolCallTime(at.toISOString(), now);
+    expect(formatted).toContain(at.toLocaleDateString([], { month: "short", day: "numeric" }));
+    expect(formatted).toContain(
+      at.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }),
+    );
+  });
+
+  it("returns an empty string for an absent or unparseable stamp", () => {
+    expect(formatToolCallTime(undefined)).toBe("");
+    expect(formatToolCallTime("not a date")).toBe("");
   });
 });
 

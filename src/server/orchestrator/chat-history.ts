@@ -85,6 +85,8 @@ export interface PersistedMessage {
     id: string;
     name: string;
     input: Record<string, unknown>;
+    /** ISO time the orchestrator first saw the call; absent on older rows. */
+    startedAt?: string;
   }[];
   images?: {
     /** Stored as base64; served as a URL in `src`. */

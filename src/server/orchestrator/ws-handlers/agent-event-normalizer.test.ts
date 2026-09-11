@@ -5,6 +5,7 @@ import {
   extractToolResults,
   isWellFormedAskUserQuestion,
   stampToolDurations,
+  stampToolUseStartTimes,
   summarizeCrashReason,
 } from "./agent-event-normalizer.js";
 import type { AgentEvent, ClaudeContentBlockToolUse, WsServerMessage } from "../../shared/types.js";
@@ -50,6 +51,52 @@ describe("per-tool timing derivation (docs/185)", () => {
     it("is a no-op for non-tool-result events", () => {
       const event = { type: "agent_assistant", content: [{ type: "text", text: "hi" }] } as unknown as AgentEvent;
       expect(stampToolDurations(event, new Map(), 1)).toBe(event);
+    });
+  });
+
+  describe("stampToolUseStartTimes", () => {
+    const assistantEvent = (
+      blocks: { id: string; startedAt?: string }[],
+    ): AgentEvent =>
+      ({
+        type: "agent_assistant",
+        content: blocks.map((b) => ({ type: "tool_use", name: "Bash", input: {}, ...b })),
+      }) as unknown as AgentEvent;
+
+    it("stamps the observation time as an ISO string", () => {
+      const out = stampToolUseStartTimes(assistantEvent([{ id: "t1" }]), new Map(), 1_700_000_000_000);
+      const block = (out as unknown as { content: Record<string, unknown>[] }).content[0];
+      expect(block.startedAt).toBe(new Date(1_700_000_000_000).toISOString());
+    });
+
+    it("records the start so the matching duration is measured from the same instant", () => {
+      const starts = new Map<string, number>();
+      stampToolUseStartTimes(assistantEvent([{ id: "t1" }]), starts, 1000);
+      const out = stampToolDurations(toolResultEvent([{ tool_use_id: "t1" }]), starts, 1450);
+      const block = (out as unknown as { content: Record<string, unknown>[] }).content[0];
+      expect(block.duration_ms).toBe(450);
+    });
+
+    it("keeps the first observation when a streaming delta re-emits the block", () => {
+      const starts = new Map<string, number>();
+      stampToolUseStartTimes(assistantEvent([{ id: "t1" }]), starts, 1000);
+      const out = stampToolUseStartTimes(assistantEvent([{ id: "t1" }]), starts, 9999);
+      const block = (out as unknown as { content: Record<string, unknown>[] }).content[0];
+      expect(block.startedAt).toBe(new Date(1000).toISOString());
+    });
+
+    it("does not overwrite a stamp the block already carries", () => {
+      const already = new Date(5000).toISOString();
+      const out = stampToolUseStartTimes(assistantEvent([{ id: "t1", startedAt: already }]), new Map(), 9999);
+      const block = (out as unknown as { content: Record<string, unknown>[] }).content[0];
+      expect(block.startedAt).toBe(already);
+    });
+
+    it("leaves text-only and non-array content alone (returns same reference)", () => {
+      const textOnly = { type: "agent_assistant", content: [{ type: "text", text: "hi" }] } as unknown as AgentEvent;
+      expect(stampToolUseStartTimes(textOnly, new Map(), 1)).toBe(textOnly);
+      const bare = { type: "agent_assistant", content: "oops" } as unknown as AgentEvent;
+      expect(stampToolUseStartTimes(bare, new Map(), 1)).toBe(bare);
     });
   });
 
