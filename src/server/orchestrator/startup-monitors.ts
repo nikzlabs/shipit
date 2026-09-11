@@ -146,6 +146,7 @@ export async function startStartupMonitors(
       paceMs: Number.isFinite(janitorPaceMs) ? janitorPaceMs : 500,
       githubAuthManager,
       createRepoGit,
+      createGitManager,
       getBareCacheDir,
       sweepOrphanBranches: process.env.DISK_JANITOR_ORPHAN_BRANCHES !== "false",
       ...(containerManager ? { docker: containerManager.dockerClient } : {}),

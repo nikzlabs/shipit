@@ -1,12 +1,11 @@
-import { lstat, readdir } from "node:fs/promises";
+import { readdir } from "node:fs/promises";
 import { join } from "node:path";
 import type { SessionManager } from "./sessions.js";
 import type { SessionInfo } from "../shared/types.js";
 import type { SessionRunnerRegistry } from "./session-runner.js";
 import type { ServiceManager } from "./service-manager.js";
-import type { GitManager, UnreadableWorkspace } from "../shared/git.js";
+import type { GitManager } from "../shared/git.js";
 import type { PersistedMessage } from "./chat-history.js";
-import type { SecretFinding } from "../shared/secret-scan.js";
 import { DEFAULT_DISK_LADDER, holdsActiveReservation, type DiskLadderThresholds } from "./sessions.js";
 import {
   getMessage,
@@ -17,6 +16,7 @@ import {
 import { emitNoticePostTurn } from "./chat-card-persistence.js";
 import { formatEvictBlockedNotice, type EvictBlockReason } from "./services/evict-blocked-notice.js";
 import { autoCommitAllowed } from "./services/auto-commit-gate.js";
+import { ensureCheckoutDurable, pathState } from "./checkout-durability.js";
 
 export interface TierEscalationDeps {
   sessionManager: SessionManager;
@@ -119,20 +119,6 @@ async function reclaimToLight(
   return true;
 }
 
-function describeBlock(r: {
-  secretFindings: SecretFinding[];
-  conflictedFiles: string[];
-  rebaseInProgress: boolean;
-  unreadable?: UnreadableWorkspace | null;
-}): EvictBlockReason {
-  if (r.secretFindings.length > 0) return { kind: "secret", findings: r.secretFindings };
-  if (r.conflictedFiles.length > 0 || r.rebaseInProgress) {
-    return { kind: "conflict", conflictedFiles: r.conflictedFiles, rebaseInProgress: r.rebaseInProgress };
-  }
-  if (r.unreadable) return { kind: "unreadable", unreadable: r.unreadable };
-  return { kind: "unknown" };
-}
-
 // Keep uncommittable work outside git, including rescue refs, which could expose secrets.
 async function blockedEvict<T extends "blocked-by-push" | "blocked-by-dirty">(
   session: SessionInfo,
@@ -177,26 +163,6 @@ async function blockedEvict<T extends "blocked-by-push" | "blocked-by-dirty">(
     }
   }
   return outcome;
-}
-
-// Use the tracking ref: merged branches may be deleted remotely after a successful push.
-async function tipIsOnOrigin(git: GitManager, branch: string): Promise<boolean> {
-  const head = await git.getHeadHash();
-  if (!head) return true;
-  const remoteTip = await git.getRefHash(`refs/remotes/origin/${branch}`);
-  if (!remoteTip) return false;
-  return remoteTip === head || await git.isAncestor(head, remoteTip);
-}
-
-// Permission/I/O failures are not absence; a broken .git symlink still needs protection.
-async function pathState(p: string): Promise<"present" | "absent" | "unknown"> {
-  try {
-    await lstat(p);
-    return "present";
-  } catch (err) {
-    const code = (err as NodeJS.ErrnoException).code;
-    return code === "ENOENT" || code === "ENOTDIR" ? "absent" : "unknown";
-  }
 }
 
 async function isEmptyDir(dir: string): Promise<boolean> {
@@ -262,57 +228,26 @@ async function reclaimToEvicted(
     try {
       const git = createGitManager(session.workspaceDir);
 
-      // A null commit can mean refusal. Recheck work, including paths git cannot read.
-      const before = await git.inspectWorkingTree();
-      if (!before.clean) {
-        const { secretFindings, conflictedFiles, rebaseInProgress, unreadable } =
-          await git.autoCommit("Auto-commit before disk eviction (docs/161)");
-        const after = await git.inspectWorkingTree();
-        if (!after.clean || after.unreadable || unreadable) {
-          return await blockedEvict(
-            session, deps, "blocked-by-dirty",
-            describeBlock({
-              secretFindings, conflictedFiles, rebaseInProgress,
-              unreadable: unreadable ?? after.unreadable,
-            }),
+      const durability = await ensureCheckoutDurable(
+        git, "Auto-commit before disk eviction (docs/161)",
+      );
+      if (durability.state === "blocked-by-dirty") {
+        return await blockedEvict(session, deps, "blocked-by-dirty", durability.reason);
+      }
+      if (durability.state === "blocked-by-push") {
+        if (durability.cause === "detached-head") {
+          console.warn(
+            `[disk-janitor] evict blocked for ${session.id} — HEAD is detached, so its commits `
+            + "belong to no branch that could be pushed; keeping at light",
           );
-        }
-      } else if (before.unreadable) {
-        return await blockedEvict(
-          session, deps, "blocked-by-dirty",
-          { kind: "unreadable", unreadable: before.unreadable },
-        );
-      }
-
-      // A clean working tree can still have uncommitted merge/rebase state inside .git.
-      const rebasing = await git.isRebaseInProgress();
-      if (rebasing || await git.isMergeOrSequencerInProgress()) {
-        return await blockedEvict(
-          session, deps, "blocked-by-dirty",
-          { kind: "conflict", conflictedFiles: [], rebaseInProgress: rebasing },
-        );
-      }
-
-      // Check the actual branch, even on a clean tree: an earlier push may have failed.
-      const branch = await git.currentBranchOrNull();
-      if (!branch) {
-        console.warn(
-          `[disk-janitor] evict blocked for ${session.id} — HEAD is detached, so its commits `
-          + "belong to no branch that could be pushed; keeping at light",
-        );
-        return await blockedEvict(session, deps, "blocked-by-push");
-      }
-      if (!(await tipIsOnOrigin(git, branch))) {
-        try {
-          await git.push("origin", branch);
-        } catch (pushErr) {
+        } else {
           console.warn(
             `[disk-janitor] evict blocked for ${session.id} — the branch tip is not on origin `
             + "and the push failed (offline / no auth / no remote), keeping at light:",
-            getMessage(pushErr),
+            durability.message,
           );
-          return await blockedEvict(session, deps, "blocked-by-push");
         }
+        return await blockedEvict(session, deps, "blocked-by-push");
       }
     } catch (err) {
       const message = getMessage(err);

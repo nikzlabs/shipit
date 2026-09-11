@@ -16,7 +16,13 @@ import type { GitHubAuthManager } from "../github-auth.js";
 import { generateBranchPrefix } from "../git-utils.js";
 import { handWorkspaceBackToWorker } from "../session-worker-uid.js";
 import { materializeLfsWithWarning } from "../git-lfs.js";
-import { reclaimRegenerableSessionDirs } from "../disk-utils.js";
+import { reclaimRegenerableSessionDirs, reclaimBlockedSessionCaches } from "../disk-utils.js";
+import {
+  ensureCheckoutDurable,
+  pathState,
+  type CheckoutDurability,
+} from "../checkout-durability.js";
+import { autoCommitAllowed } from "./auto-commit-gate.js";
 import { ServiceError } from "./types.js";
 import { validateString, validateStringArray } from "./validation.js";
 
@@ -136,6 +142,69 @@ export interface UnarchivePrStatusPoller {
   clearPersisted(sessionId: string): void;
 }
 
+/**
+ * Restoring replaces the checkout with a fresh clone on a new branch, which is fine
+ * when everything is on the remote and destroys the session's work when it is not —
+ * and "not" is exactly the state archiving keeps a checkout for.
+ *
+ * So: push what can be pushed, and answer whether the clone may be replaced. A `false`
+ * sends the caller down the in-place path instead, which keeps the existing checkout
+ * and every commit in it. Refusing the restore outright is not an option — it would
+ * leave a session that can be neither opened nor cleaned up.
+ */
+async function checkoutIsReplaceable(
+  session: SessionInfo,
+  createGitManager?: (dir: string) => GitManager,
+): Promise<boolean> {
+  const dir = session.workspaceDir;
+  if (!dir || !createGitManager || !autoCommitAllowed(session)) return true;
+  const state = await checkoutState(dir);
+  if (state === "absent" || state === "no-repository") return true;
+  if (state === "unknown") {
+    console.warn(`[unarchiveSession] ${session.id}: workspace unreadable; restoring in place`);
+    return false;
+  }
+  try {
+    const durability = await withTimeout(
+      ensureCheckoutDurable(createGitManager(dir), "Auto-commit before restoring the session"),
+      DURABILITY_TIMEOUT_MS,
+    );
+    if (durability.state === "durable") return true;
+    console.warn(
+      `[unarchiveSession] ${session.id}: ${session.branch ?? "its branch"} is not on the remote `
+      + `(${durability.state}); restoring in place so those commits survive`,
+    );
+    return false;
+  } catch (err) {
+    console.warn(
+      `[unarchiveSession] ${session.id}: could not check the old checkout before replacing it:`,
+      err instanceof Error ? err.message : String(err),
+    );
+    return false;
+  }
+}
+
+/**
+ * Restore onto the checkout that is already there, and touch nothing in git.
+ *
+ * The reason this path exists is that the repository holds state nothing else does, so
+ * "helpfully" starting a new branch here is the one move guaranteed to damage it:
+ * `git checkout -b` clears `MERGE_HEAD` and the rest of the branch state, which turns
+ * an unfinished merge into an unabortable tree of conflicted files, and a branch
+ * created mid-rebase abandons the rebase. The session opens exactly as it was left;
+ * finishing or discarding that work is the user's call, not ours.
+ */
+async function restoreInPlace(
+  workspaceDir: string,
+  githubAuthManager: GitHubAuthManager,
+  remoteUrl: string,
+): Promise<void> {
+  if (githubAuthManager.authenticated) {
+    githubAuthManager.configureGitCredentials(workspaceDir);
+  }
+  await materializeLfsAndChown(workspaceDir, remoteUrl);
+}
+
 export async function unarchiveSession(
   sessionManager: SessionManager,
   createRepoGit: (dir: string) => RepoGit,
@@ -144,6 +213,7 @@ export async function unarchiveSession(
   repoStore: RepoStore,
   sessionId: string,
   prStatusPoller?: UnarchivePrStatusPoller,
+  createGitManager?: (dir: string) => GitManager,
 ): Promise<{ session: SessionInfo; sessions: SessionInfo[] }> {
   const session = sessionManager.get(sessionId);
   if (!session || (session.diskTier !== "evicted" && !session.userArchived)) {
@@ -151,6 +221,23 @@ export async function unarchiveSession(
   }
 
   if (session.remoteUrl && session.workspaceDir) {
+    // Ask before touching the bare cache: a checkout holding work that is on no remote
+    // is restored where it stands, and re-cloning it would be the deletion archiving
+    // just refused to do.
+    if (!(await checkoutIsReplaceable(session, createGitManager))) {
+      // Unarchive FIRST. A retained checkout sits at tier `light`, which is exactly the
+      // tier the eviction pass acts on, and that pass knows about runners, viewers and
+      // pins — not about an HTTP restore in flight. `hot` puts it out of reach before
+      // any slow work starts; the worst a concurrent pass can then do is drop dep
+      // caches, which are not work.
+      sessionManager.unarchive(sessionId);
+      clearPriorPrState(sessionManager, prStatusPoller, sessionId);
+      await restoreInPlace(session.workspaceDir, githubAuthManager, session.remoteUrl);
+      const restored = sessionManager.get(sessionId);
+      if (!restored) throw new ServiceError(404, "Session not found");
+      return { session: restored, sessions: sessionManager.list() };
+    }
+
     const cacheDir = getBareCacheDir(session.remoteUrl);
 
     const { git: cacheGit, recovered } = await ensureBareCache(
@@ -462,6 +549,145 @@ export function reorderSessionPins(
   return { sessions: sessionManager.reorderPins(remoteUrl, ids) };
 }
 
+/** Why a user-initiated archive left the session's checkout on disk. */
+export interface CheckoutRetained {
+  sessionId: string;
+  branch?: string;
+  message: string;
+}
+
+/**
+ * "unknown" is not "absent": an I/O or permission error on the workspace says nothing
+ * about whether work is in there, and the caller must treat it as protected. Uses the
+ * same `pathState` the eviction pass does, for the same reason.
+ */
+async function checkoutState(
+  dir: string,
+): Promise<"absent" | "no-repository" | "repository" | "unknown"> {
+  const workspace = await pathState(dir);
+  if (workspace === "absent") return "absent";
+  if (workspace === "unknown") return "unknown";
+  const repo = await pathState(path.join(dir, ".git"));
+  if (repo === "present") return "repository";
+  if (repo === "unknown") return "unknown";
+  const entries = await fs.readdir(dir).catch(() => null);
+  if (entries === null) return "unknown";
+  return entries.length === 0 ? "absent" : "no-repository";
+}
+
+/**
+ * Archiving and restoring are user actions waiting on an HTTP response, so the git work
+ * they do is bounded. Work still running when this expires is not cancelled — git has
+ * no cancellation to offer here — but it is bounded in its own right: the checkout is
+ * kept either way, so nothing is deleted underneath it, and git's own `index.lock`
+ * serializes the only step that writes (a straggler auto-commit fails rather than
+ * interleaving with a later one).
+ */
+const DURABILITY_TIMEOUT_MS = 20_000;
+
+// Bounds the wait without cancelling the git work, which has no cancellation to offer.
+// The loser is left with a handler so a later rejection is not unhandled.
+function withTimeout<T>(work: Promise<T>, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const expiry = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => reject(new Error(`timed out after ${ms}ms`)), ms);
+    timer.unref?.();
+  });
+  work.catch(() => undefined);
+  return Promise.race([work, expiry]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
+}
+
+function retained(session: SessionInfo, message: string): CheckoutRetained {
+  return { sessionId: session.id, branch: session.branch, message };
+}
+
+const RETAINED_SUFFIX =
+  "Restore the session to get them back and push from there; until then ShipIt keeps "
+  + "the files rather than deleting work that is on no remote.";
+
+/**
+ * Archiving deletes a repo-backed checkout because the bare cache plus the unarchive
+ * flow re-create it — but that only recovers what reached the REMOTE. Commits that were
+ * never pushed exist nowhere else, which is why the disk janitor's eviction pass refuses
+ * to evict on them (`blocked-by-push`). Run the same check here, from the same helper.
+ *
+ * Returns `undefined` when the checkout may be deleted, or the reason it was kept. The
+ * retained checkout stays at disk tier `light`, so the janitor's eviction pass revisits
+ * it and reclaims the space on its own once the branch can be pushed.
+ *
+ * "Cannot be made durable" is read exactly as the eviction pass reads it, with no
+ * exception for a tree git refuses to commit. It is tempting to treat uncommittable
+ * changes as the user's to lose — but that state is rarely only working-tree changes:
+ * an unresolved merge holds `MERGE_HEAD`, whose side of the merge is routinely local
+ * commits that pushing the current branch would not save. The safe reading is the
+ * simple one, and it is resolvable now: restoring the session hands the checkout back
+ * untouched, so the user can finish or discard the work and archive again.
+ */
+async function retainOrReclaimCheckout(
+  session: SessionInfo,
+  createGitManager?: (dir: string) => GitManager,
+): Promise<CheckoutRetained | undefined> {
+  const dir = session.workspaceDir;
+  if (!dir || !createGitManager) return undefined;
+
+  // Ops/sandbox sessions are held out of every automatic commit sweep and are never
+  // evicted, so archiving is the only path that ever reclaims their disk.
+  if (!autoCommitAllowed(session)) return undefined;
+
+  const state = await checkoutState(dir);
+  // An already-evicted checkout has nothing to protect, and constructing a GitManager
+  // on an absent directory throws.
+  if (state === "absent" || state === "no-repository") return undefined;
+  if (state === "unknown") {
+    console.warn(`[server] archive: keeping the checkout for ${session.id} — its workspace could not be read`);
+    return retained(
+      session,
+      `Session archived, but its files were kept: ShipIt could not read the workspace, so it `
+      + `cannot tell whether anything there is unsaved. ${RETAINED_SUFFIX}`,
+    );
+  }
+
+  let durability: CheckoutDurability;
+  try {
+    durability = await withTimeout(
+      ensureCheckoutDurable(createGitManager(dir), "Auto-commit before archiving"),
+      DURABILITY_TIMEOUT_MS,
+    );
+  } catch (err) {
+    // Git could not answer, or took too long to. Deleting on an unreadable answer is
+    // what this whole guard exists to prevent, so keep the checkout.
+    const message = err instanceof Error ? err.message : String(err);
+    console.warn(`[server] archive: durability check failed for ${session.id}:`, message);
+    return retained(
+      session,
+      "Session archived, but its files were kept: ShipIt could not confirm that its commits "
+      + `are on the remote. ${RETAINED_SUFFIX}`,
+    );
+  }
+
+  if (durability.state === "durable") return undefined;
+
+  const why = durability.state === "blocked-by-dirty"
+    ? `it holds changes git refused to commit (${durability.reason.kind})`
+    : durability.cause === "detached-head"
+      ? "its HEAD is detached, so its commits belong to no branch that could be pushed"
+      : `its branch could not be pushed (${durability.message})`;
+  console.warn(
+    `[server] archive: keeping the checkout for ${session.id} — ${why}. `
+    + "Deleting it could destroy work that is on no remote.",
+  );
+  return retained(
+    session,
+    durability.state === "blocked-by-dirty"
+      ? `Session archived, but its files were kept: it holds changes ShipIt could not commit `
+        + `(${durability.reason.kind}), so it cannot tell what is only here. ${RETAINED_SUFFIX}`
+      : `Session archived, but its files were kept: ${session.branch ?? "its branch"} has commits `
+        + `that are not on the remote. ${RETAINED_SUFFIX}`,
+  );
+}
+
 export async function archiveSession(
   sessionManager: SessionManager,
   runnerRegistry: SessionRunnerRegistry,
@@ -470,16 +696,21 @@ export async function archiveSession(
   pruneVolumes?: (sessionId: string) => Promise<void>,
   containerManager?: { destroy(sessionId: string): Promise<void> } | null,
   removeSessionLogs?: (sessionId: string) => void,
+  createGitManager?: (dir: string) => GitManager,
   inProgress = new Set<string>(),
-): Promise<{ sessions: SessionInfo[] }> {
+): Promise<{ sessions: SessionInfo[]; checkoutsRetained?: CheckoutRetained[] }> {
   inProgress.add(sessionId);
   const session = sessionManager.get(sessionId);
+
+  // A child that kept its checkout has to reach the caller too: archiving a parent is
+  // one user action, and a notice that stops at the recursion is a notice nobody sees.
+  const fromChildren: CheckoutRetained[] = [];
 
   // Ops children are independent fixes from separate incidents; keep them alive.
   if (session?.kind !== "ops") {
     for (const child of sessionManager.findChildren(sessionId)) {
       if (inProgress.has(child.id)) continue;
-      await archiveSession(
+      const childResult = await archiveSession(
         sessionManager,
         runnerRegistry,
         getBareCacheDir,
@@ -487,8 +718,10 @@ export async function archiveSession(
         pruneVolumes,
         containerManager,
         removeSessionLogs,
+        createGitManager,
         inProgress,
       );
+      if (childResult.checkoutsRetained) fromChildren.push(...childResult.checkoutsRetained);
     }
   }
 
@@ -515,19 +748,30 @@ export async function archiveSession(
   }
 
   // Preserve local-only workspaces: they have no remote recovery source.
+  let ownRetained: CheckoutRetained | undefined;
   if (session?.remoteUrl && session?.workspaceDir) {
-    const { removed, failed } = await reclaimRegenerableSessionDirs(session.workspaceDir);
-    if (removed.length > 0) {
-      console.log("[server] Removed session dirs:", removed.join(", "));
-    }
-    for (const f of failed) {
-      console.warn(`[server] Session dir cleanup failed (${f.dir}):`, f.message);
+    ownRetained = await retainOrReclaimCheckout(session, createGitManager);
+    if (ownRetained) {
+      // Keep only what cannot be regenerated: dependency caches are not work.
+      const { removed, message } = await reclaimBlockedSessionCaches(session.workspaceDir);
+      if (message) console.warn(`[server] archive: cache reclaim failed for ${sessionId}:`, message);
+      if (removed.length > 0) {
+        console.log("[server] archive: kept the checkout, reclaimed dep caches:", removed.join(", "));
+      }
+    } else {
+      const { removed, failed } = await reclaimRegenerableSessionDirs(session.workspaceDir);
+      if (removed.length > 0) {
+        console.log("[server] Removed session dirs:", removed.join(", "));
+      }
+      for (const f of failed) {
+        console.warn(`[server] Session dir cleanup failed (${f.dir}):`, f.message);
+      }
     }
   }
 
   removeSessionLogs?.(sessionId);
 
-  sessionManager.archive(sessionId);
+  sessionManager.archive(sessionId, { keepCheckout: ownRetained !== undefined });
 
   if (session?.remoteUrl) {
     const remaining = sessionManager.findAllByRemoteUrl(session.remoteUrl);
@@ -542,7 +786,11 @@ export async function archiveSession(
     }
   }
 
-  return { sessions: sessionManager.list() };
+  const checkoutsRetained = [...(ownRetained ? [ownRetained] : []), ...fromChildren];
+  return {
+    sessions: sessionManager.list(),
+    ...(checkoutsRetained.length > 0 ? { checkoutsRetained } : {}),
+  };
 }
 
 // Sidebar visibility handles excess merged sessions; this does not archive them.

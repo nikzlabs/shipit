@@ -690,6 +690,53 @@ separate the two: a failed fetch is caught and downgraded to "serve cached
 `main` + warn," while clone failures keep their retry. Same principle as 157's
 "surface staleness in bootstrap."
 
+## Part 5 — User-initiated archiving clears the same durability check (2026-09)
+
+The ladder's `light → evicted` step has always refused to wipe a checkout whose
+work is on no remote (`blocked-by-push` / `blocked-by-dirty`). Archiving — the
+*user's* route to the same irreversible deletion — did not ask at all: it called
+`reclaimRegenerableSessionDirs` for any session with a `remoteUrl`, on the
+reasoning that the bare cache plus the unarchive flow re-create the checkout.
+They re-create what reached the **remote**. Unpushed commits were gone.
+
+The rule now lives once, in `checkout-durability.ts` (`ensureCheckoutDurable`,
+plus `ensureBranchTipOnOrigin` for the committed half alone), and both the
+eviction pass and `archiveSession` run it:
+
+- **Archive pushes first.** Auto-commit, then push; almost every session is
+  durable by the time anyone archives it, so nothing changes for them.
+- **A checkout that cannot be pushed is kept, and the session is archived at
+  tier `light`, not `evicted`.** The tier is not a new state — it says exactly
+  what is true (checkout present, dep caches dropped) — and it is what keeps the
+  session in `escalateDiskTiers`' candidate set, so the pass revisits it and
+  reclaims the space itself once the branch is safe.
+- **A tree git refuses to commit is retained too**, with no "those are only
+  working-tree changes" exception. An unresolved merge holds `MERGE_HEAD`, whose
+  side of the merge is routinely local-only commits that pushing the current
+  branch would not save — so the simple reading is also the safe one. The
+  `unreadable` evict-blocked notice, which used to offer archiving as the way to
+  free that space, says so now.
+- **"Cannot tell" never authorises deletion**: an unreadable workspace, a git
+  call that throws, or a check past its 20 s budget all keep the checkout.
+- **Restore no longer undoes this.** `unarchiveSession` replaces the checkout
+  with a fresh clone on a new branch; when the existing one cannot be made
+  durable it now restores **in place** instead, touching *nothing* in git. Not
+  even a new branch: `git checkout -b` clears `MERGE_HEAD` and the rest of the
+  branch state, turning an unfinished merge into conflicted files that can no
+  longer be aborted or completed as one, and a branch created mid-rebase
+  abandons the rebase. The session opens as it was left, on its own branch, and
+  finishing or discarding that work is the user's call. It is unarchived to
+  `hot` *before* the slow work starts, so the eviction pass — which knows about
+  runners, viewers and pins, not about an HTTP restore — cannot act on the
+  `light` row underneath it.
+- The boot-only `sweepArchivedWorkspaces` runs the same check, since age does
+  not make unpushed commits recoverable.
+
+Why this mattered beyond the lost bytes: `pr-status-poller` deliberately
+re-admits an archived session that still has a managed auto-merge armed, and
+with the checkout absent every sync gate reads "cannot tell" as permission — so
+ShipIt could merge a remote branch short of the session's last commits.
+
 ## Part 4 — Collapsible "Recently resolved" sub-section
 
 The "Recently resolved" sub-section sinks merged/closed sessions to the bottom of
@@ -807,6 +854,8 @@ If we land this in slices, the highest-value, lowest-risk first step is
   `listMergedNotArchivedByRemoteUrl()`, schema/migration.
 - `src/server/orchestrator/services/session.ts` — `archiveSession`,
   `unarchiveSession`, `markMergedAndPruneExcess`; new tier transitions + guards.
+- `src/server/orchestrator/checkout-durability.ts` — the one rule every path
+  that deletes a checkout must clear (Part 5).
 - `src/server/orchestrator/repo-git.ts` — `fetchCache` (TTL bypass on restore),
   `cloneFromCache`, `getDefaultBranch`, `readHead`.
 - `src/server/orchestrator/disk-janitor.ts` — backstop sweep; align with tiers.

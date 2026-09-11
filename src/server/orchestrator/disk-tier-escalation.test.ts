@@ -581,6 +581,35 @@ describe("escalateDiskTiers", () => {
     expect(fs.existsSync(uploadFile)).toBe(true);
   });
 
+  it("still evicts a USER-ARCHIVED session left at light (the retry archiving relies on)", async () => {
+    // Archiving a session whose commits are on no remote keeps the checkout and leaves
+    // the tier at 'light' instead of 'evicted', precisely so this pass comes back for
+    // it. If archived rows dropped out of the candidate set, that checkout would be
+    // kept forever and the promise of a background retry would be empty.
+    setup();
+    const sm = new SessionManager(dbManager!);
+    const wsDir = path.join(tmpDir, "ws-archived");
+    await initRepo(wsDir, {});
+    insertSession({
+      id: "archived-light",
+      lastUsedAt: daysAgo(DEFAULT_DISK_LADDER.evictUnmergedAfterMs / 86_400_000 + 1),
+      diskTier: "light",
+      workspaceDir: wsDir,
+      branch: "main",
+    });
+    underlyingDb!.prepare("UPDATE sessions SET user_archived = 1, archived = 1 WHERE id = ?")
+      .run("archived-light");
+
+    const { registry } = fakeRegistry();
+    const result = await escalateDiskTiers({
+      ...baseDeps(sm, registry),
+      createGitManager: (dir) => new GitManager(dir),
+    });
+
+    expect(result.toEvicted).toBe(1);
+    expect(fs.existsSync(wsDir)).toBe(false);
+  });
+
   it("blocks light → evicted when a dirty tree can't be pushed (keeps at light)", async () => {
     setup();
     const sm = new SessionManager(dbManager!);

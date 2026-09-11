@@ -886,7 +886,12 @@ export async function handleSessionArchive(args: string[], deps: RunDeps): Promi
     deps.io.exit(0);
     return;
   }
-  success(deps.io, `session-id: ${id}\narchived:   true`);
+  // A checkout survives an archive when its commits are on no remote. Say so: pushing
+  // that branch is the one thing the agent can still do about it. Archiving a child
+  // archives its own children, so there can be several.
+  const retained = (res.body as { checkoutsRetained?: { message?: unknown }[] }).checkoutsRetained ?? [];
+  const notes = retained.map((r) => `\nnote:       ${asString(r.message)}`).join("");
+  success(deps.io, `session-id: ${id}\narchived:   true${notes}`);
 }
 
 export async function handleSessionNotifyOnMerge(args: string[], deps: RunDeps): Promise<void> {

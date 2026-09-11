@@ -61,8 +61,9 @@ export function formatEvictBlockedNotice(reason: EvictBlockReason): string {
       + "the session may reinstall them.\n\n"
       + "A service in your `docker-compose.yml` running as its own `user:` is the usual cause. "
       + "Fix that path's permissions — or gitignore it, if it is throwaway data like a database "
-      + "volume — and a later cleanup pass will reclaim the space on its own. If you no longer "
-      + "need this session, archiving it frees the space now."
+      + "volume — and a later cleanup pass will reclaim the space on its own. Archiving the "
+      + "session does not free it: the same check runs there, so the checkout is kept until "
+      + "the path can be read."
     );
   }
 

@@ -1429,6 +1429,26 @@ describe("shipit session archive", () => {
     expect(out.stdout).toContain("archived:   true");
   });
 
+  it("reports a checkout the archive kept, so the agent can push that branch", async () => {
+    const { run } = makeRunner();
+    const out = await run(
+      ["session", "archive", "ses_a"],
+      {
+        "POST /agent-ops/session/archive/ses_a": {
+          status: 200,
+          body: {
+            archived: true,
+            checkoutsRetained: [
+              { sessionId: "ses_a", message: "its files were kept: shipit/x has commits that are not on the remote" },
+            ],
+          },
+        },
+      },
+    );
+    expect(out.exitCode).toBe(0);
+    expect(out.stdout).toContain("not on the remote");
+  });
+
   it("--json prints the broker response verbatim", async () => {
     const { run } = makeRunner();
     const out = await run(

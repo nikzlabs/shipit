@@ -403,10 +403,14 @@ export class SessionManager {
   }
 
   // The caller removes the workspace; hidden sessions release pins and preview capacity.
-  archive(id: string): boolean {
+  // `keepCheckout` is for the caller that could NOT remove it — work that is on no
+  // remote keeps the checkout, and the tier has to say so or the disk janitor (which
+  // skips 'evicted') never comes back to finish the job.
+  archive(id: string, opts: { keepCheckout?: boolean } = {}): boolean {
+    const tier = opts.keepCheckout ? "light" : "evicted";
     const result = this.db.prepare(
-      "UPDATE sessions SET user_archived = 1, disk_tier = 'evicted', pinned_at = NULL, keep_preview_running = 0 WHERE id = ?",
-    ).run(id);
+      "UPDATE sessions SET user_archived = 1, disk_tier = ?, pinned_at = NULL, keep_preview_running = 0 WHERE id = ?",
+    ).run(tier, id);
     return result.changes > 0;
   }
 

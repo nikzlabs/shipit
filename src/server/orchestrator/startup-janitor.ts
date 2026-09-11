@@ -15,6 +15,10 @@ import { bareCacheRoot } from "./session-dir-factory.js";
 import { getCatalogCacheRoot } from "./services/marketplace.js";
 import { reclaimSharedTreesUnder } from "./shared-tree-ownership.js";
 import { getMessage, sleep, defaultRunDocker, reclaimRegenerableSessionDirs } from "./disk-utils.js";
+import { ensureCheckoutDurable, pathState } from "./checkout-durability.js";
+import { autoCommitAllowed } from "./services/auto-commit-gate.js";
+import type { GitManager } from "../shared/git.js";
+import type { SessionInfo } from "../shared/types.js";
 
 export interface DiskJanitorDeps {
   sessionManager: SessionManager;
@@ -27,6 +31,7 @@ export interface DiskJanitorDeps {
   githubAuthManager?: GitHubAuthManager;
   // The factory must forward the explicit credential to remote operations.
   createRepoGit?: (dir: string, credential?: GitRemoteCredential) => RepoGit;
+  createGitManager?: (dir: string) => GitManager;
   getBareCacheDir?: (repoUrl: string) => string;
   sweepOrphanBranches?: boolean;
   docker?: Docker;
@@ -94,7 +99,7 @@ export async function runDiskJanitor(deps: DiskJanitorDeps): Promise<DiskJanitor
 
   try {
     result.workspacesRemoved = await sweepArchivedWorkspaces(
-      deps.sessionManager, coldDays, paceMs,
+      deps.sessionManager, coldDays, paceMs, deps.createGitManager,
     );
   } catch (err) {
     console.warn("[disk-janitor] archived-workspace sweep failed:", getMessage(err));
@@ -366,10 +371,46 @@ async function sweepOrphanSessionNetworks(
   return removed;
 }
 
+// Same rule as the eviction pass and as archiving: a checkout whose commits are on no
+// remote is not deletable, however old it is. Without a factory this cannot be asked,
+// and the sweep behaves as it always did.
+async function archivedWorkspaceIsDurable(
+  session: SessionInfo,
+  createGitManager?: (dir: string) => GitManager,
+): Promise<boolean> {
+  if (!createGitManager || !session.workspaceDir) return true;
+  if (!autoCommitAllowed(session)) return true;
+  // Absence means there is no repository to ask; an I/O error means we could not ask,
+  // which is not permission to delete.
+  const repo = await pathState(path.join(session.workspaceDir, ".git"));
+  if (repo === "absent") return true;
+  if (repo === "unknown") {
+    console.warn(
+      `[disk-janitor] kept archived workspace for ${session.id} — its .git could not be read`,
+    );
+    return false;
+  }
+  try {
+    const durability = await ensureCheckoutDurable(
+      createGitManager(session.workspaceDir), "Auto-commit before archived-workspace cleanup",
+    );
+    if (durability.state === "durable") return true;
+    console.warn(
+      `[disk-janitor] kept archived workspace for ${session.id} — ${durability.state}; `
+      + "deleting it would destroy commits that are on no remote",
+    );
+    return false;
+  } catch (err) {
+    console.warn(`[disk-janitor] archived-workspace durability check failed for ${session.id}:`, getMessage(err));
+    return false;
+  }
+}
+
 async function sweepArchivedWorkspaces(
   sessionManager: SessionManager,
   days: number,
   paceMs: number,
+  createGitManager?: (dir: string) => GitManager,
 ): Promise<number> {
   if (days <= 0) return 0;
   const cutoffMs = Date.now() - days * 86_400_000;
@@ -384,6 +425,9 @@ async function sweepArchivedWorkspaces(
     if (!session.remoteUrl) continue;
     const lastUsedMs = Date.parse(session.lastUsedAt);
     if (!Number.isFinite(lastUsedMs) || lastUsedMs >= cutoffMs) continue;
+    // Nor is a remote enough on its own: archiving keeps the checkout when the branch
+    // never reached it, and age does not make those commits recoverable.
+    if (!(await archivedWorkspaceIsDurable(session, createGitManager))) continue;
     // Include orphaned overlay siblings while preserving uploads.
     const { removed: removedDirs, failed } = await reclaimRegenerableSessionDirs(
       session.workspaceDir,

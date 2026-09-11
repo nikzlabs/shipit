@@ -313,6 +313,7 @@ export async function registerSessionReposRoutes(
             deps.pruneSessionVolumes,
             deps.containerManager,
             deps.removeSessionLogs,
+            createGitManager,
           );
         }
         removeRepo(deps.repoStore, url);
