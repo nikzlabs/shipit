@@ -30,6 +30,51 @@ import { ensureCodexProjectTrusted } from "./project-trust.js";
 
 export { unwrapShellCommand, buildCodexPermissionInput } from "./codex-tool-normalizer.js";
 
+/**
+ * Keep Codex's own sandbox out of the way — the session container IS the
+ * sandbox (CLAUDE.md §5). Until now the only thing saying so was
+ * `sandboxPolicy: { type: "dangerFullAccess" }` on each `turn/start`, and when
+ * codex-cli 0.153.2 fell back past that single point of failure, every tool
+ * call in the session died on `bwrap: No permissions to create new namespace`.
+ * Bubblewrap can NEVER work here: containers run `CapDrop: ALL` plus five
+ * narrow adds (`container-lifecycle.ts`), so the kernel refuses the user
+ * namespace.
+ *
+ * Measured against the pinned 0.153.2, where bubblewrap is the DEFAULT sandbox
+ * and Landlock the legacy fallback (the vendored helper's own `--help`):
+ *
+ *  - `sandbox_mode` is the primary defence. `codex debug prompt-input` flips
+ *    from `<permission_profile type="managed"><file_system type="restricted">`
+ *    to `type="disabled"`/`unrestricted`, and a disabled profile runs no
+ *    sandbox helper at all. `approval_policy` is its required pair — the CLI
+ *    refuses `never` while danger-full-access is disallowed.
+ *  - `features.use_legacy_landlock` is the defence in depth. NOTHING ShipIt
+ *    writes can overrule a managed-policy veto (`/etc/codex/requirements.toml`
+ *    or enterprise policy — outside ShipIt, changeable with no ShipIt deploy),
+ *    and this does not try to: it opts the fallback sandbox into Landlock,
+ *    which needs no capabilities, where bubblewrap cannot start at all.
+ *
+ * **What is measured stops there.** That the key parses and that the profile
+ * flips are both measured; that a vetoed turn then runs its commands under
+ * Landlock rather than failing is NOT — reproducing it needs a policy file at
+ * a path a session container cannot write (`$CODEX_HOME/requirements.toml` is
+ * ignored outright by 0.153.2: invalid TOML there raises no error). Treat the
+ * fallback as the best available mitigation, not as a guarantee; the primary
+ * defence is `sandbox_mode`, where a disabled profile runs no helper at all.
+ *
+ * `-c`, not a `config.toml` block like `project-trust.ts`: trust needs the file
+ * because its override was measured not to take, and these keys were measured
+ * to take (`-c features.use_legacy_landlock="notabool"` fails the spawn with
+ * `invalid type: string "notabool", expected a boolean`). Merging into TOML the
+ * user may also own risks a duplicate key, which makes Codex fail to START —
+ * a worse failure than the one being fixed.
+ */
+export const CODEX_SANDBOX_ARGS: readonly string[] = [
+  "-c", `sandbox_mode="danger-full-access"`,
+  "-c", `approval_policy="never"`,
+  "-c", "features.use_legacy_landlock=true",
+];
+
 interface JsonRpcRequest {
   method: string;
   id: number;
@@ -220,6 +265,7 @@ export class CodexAdapter
 
     // Global config overrides must precede the subcommand.
     const args = [
+      ...CODEX_SANDBOX_ARGS,
       ...(params.reasoningEffort ? ["-c", `model_reasoning_effort=${params.reasoningEffort}`] : []),
       ...providerArgs,
       "app-server",
