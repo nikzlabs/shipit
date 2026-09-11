@@ -1199,6 +1199,72 @@ describe("PrStatusPoller", () => {
     }));
   });
 
+  it("keeps polling a repo's other sessions when one session's checkout has been disk-evicted", async () => {
+    // The disk janitor reclaims an idle session's tree (`diskTier: "evicted"`),
+    // and `new GitManager(<absent dir>)` throws GitConstructError SYNCHRONOUSLY.
+    // Unguarded, that throw escaped `pollRepo`'s per-session loop: every session
+    // after the evicted one on the same repo lost its broadcast, on every tick.
+    githubAuth = makeGitHubAuth({
+      data: {
+        repository: {
+          pullRequests: {
+            nodes: [
+              makeGraphQLPrNode({ number: 1, headRefName: "shipit/evicted" }),
+              makeGraphQLPrNode({ number: 2, headRefName: "shipit/live" }),
+            ],
+          },
+        },
+      },
+    });
+    // Evicted session FIRST in list order, so the throw lands before "live".
+    sessionManager = makeSessionManager([
+      { id: "evicted", branch: "shipit/evicted", remoteUrl: "https://github.com/owner/repo", workspaceDir: "/sessions/evicted/workspace" },
+      { id: "live", branch: "shipit/live", remoteUrl: "https://github.com/owner/repo", workspaceDir: "/sessions/live/workspace" },
+    ]);
+
+    let evictedDirPresent = false;
+    const diffStatVsBranch = vi.fn().mockResolvedValue({ insertions: 250, deletions: 50 });
+    const createGitManager = vi.fn((dir: string) => {
+      if (dir === "/sessions/evicted/workspace" && !evictedDirPresent) {
+        throw new Error("Cannot use simple-git on a directory that does not exist");
+      }
+      return { diffStatVsBranch } as unknown as GitManager;
+    });
+
+    poller = new PrStatusPoller({ githubAuth, sessionManager, sseBroadcast, createGitManager });
+    poller.trackSession("evicted", "https://github.com/owner/repo");
+    poller.trackSession("live", "https://github.com/owner/repo");
+    await vi.advanceTimersByTimeAsync(0);
+
+    // The poll completed: both sessions broadcast. The evicted one falls back to
+    // GitHub's numbers; its live sibling still gets the local override.
+    expect(sseBroadcast).toHaveBeenCalledWith("pr_status", expect.objectContaining({
+      updates: expect.arrayContaining([
+        expect.objectContaining({ sessionId: "evicted", insertions: 100, deletions: 20 }),
+        expect.objectContaining({ sessionId: "live", insertions: 250, deletions: 50 }),
+      ]),
+    }));
+
+    // A forced refresh triggered BY the live session must not reject either —
+    // that rejection is what printed `Error on session-activated refresh <live>`
+    // while carrying the *evicted* session's baseDir, and sent debugging after
+    // the wrong session.
+    await expect(poller.forceRefreshSession("live")).resolves.toBeUndefined();
+
+    // Self-heals: once the checkout is back, the next poll picks the local
+    // numbers up again with no restart and no manual intervention.
+    sseBroadcast.mockClear();
+    evictedDirPresent = true;
+    await poller.forceRefreshSession("evicted");
+
+    expect(createGitManager).toHaveBeenCalledWith("/sessions/evicted/workspace");
+    expect(sseBroadcast).toHaveBeenCalledWith("pr_status", expect.objectContaining({
+      updates: expect.arrayContaining([
+        expect.objectContaining({ sessionId: "evicted", insertions: 250, deletions: 50 }),
+      ]),
+    }));
+  });
+
   it("promotes to merged via REST verify when PR disappears from OPEN results", async () => {
     const withPr = {
       data: { repository: { pullRequests: { nodes: [makeGraphQLPrNode()] } } },
@@ -1541,6 +1607,40 @@ describe("PrStatusPoller", () => {
       await vi.advanceTimersByTimeAsync(0);
 
       expect(githubAuth.mergePullRequest).toHaveBeenCalledTimes(1);
+      poller.destroy();
+      vi.useRealTimers();
+    });
+
+    it("holds an armed merge when the archived session's checkout is gone from disk", async () => {
+      // Archive deletes a repo-backed checkout while leaving the managed merge
+      // armed, so the poller has no local branch reading to check the remote
+      // against. Merging on that silence can ship a branch short of the
+      // session's last commits.
+      vi.useFakeTimers();
+      const githubAuth = makeGitHubAuth({
+        data: { repository: { pullRequests: { nodes: [makeGraphQLPrNode()] } } },
+      });
+      const sessionManager = makeSessionManager([
+        { id: "s1", branch: "shipit/abc-feature", remoteUrl: "https://github.com/owner/repo", workspaceDir: "/sessions/s1/workspace", archived: true },
+      ]);
+      const registry = makeFakeRegistry();
+      registry.setViewers("s1", 1);
+      const poller = new PrStatusPoller({
+        githubAuth,
+        sessionManager,
+        sseBroadcast: vi.fn(),
+        runnerRegistry: registry,
+        createGitManager: () => {
+          throw new Error("Cannot use simple-git on a directory that does not exist");
+        },
+      });
+      poller.setAutoMergeEnabled("s1", true);
+      poller.setAutoMergeManaged("s1", true, { managedReason: "session-live" });
+      poller.trackSession("s1", "https://github.com/owner/repo");
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(githubAuth.mergePullRequest).not.toHaveBeenCalled();
       poller.destroy();
       vi.useRealTimers();
     });

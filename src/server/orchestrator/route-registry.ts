@@ -781,7 +781,9 @@ export async function registerRoutes(
         if (s?.remoteUrl) {
           prStatusPoller.trackSession(sid, s.remoteUrl);
           void prStatusPoller.forceRefreshSession(sid).catch((err: unknown) => {
-            console.error(`[pr-poller] Error on session-activated refresh ${sid}:`, err);
+            // `sid` activated the refresh; the refresh itself is repo-wide, so
+            // a `baseDir` on the error may name a different session on the repo.
+            console.error(`[pr-poller] Error on session-activated repo-wide refresh for ${sid}:`, err);
           });
           if (dir) {
             const seedDir = dir;
