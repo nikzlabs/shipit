@@ -1146,8 +1146,8 @@ export function MessageInput({
                   >
                     {compactChecked && <CheckIcon size={12} weight="bold" />}
                   </span>
-                  <span className="flex items-center gap-1.5 text-[11px] text-(--color-text-tertiary)">
-                    <BroomIcon size={ICON_SIZE.XS} /> Compact the context first, so the shipped work stops filling it
+                  <span className="flex items-center gap-1.5 text-xs font-medium text-(--color-text-primary)">
+                    <BroomIcon size={ICON_SIZE.XS} /> Compact the context
                   </span>
                 </button>
               )}
