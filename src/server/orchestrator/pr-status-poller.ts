@@ -157,9 +157,11 @@ export class PrStatusPoller {
       onSessionChange,
       (sessionId) => opts.runnerRegistry?.get(sessionId),
       // Fetch at merge time: poll-time tracking refs can miss a remote force-push.
+      // `requireFetch` is what makes that true — without it a failed fetch falls
+      // back to the very refs this reading exists to replace.
       async (sessionId, headBranch) => {
         const git = this.openSessionGit(this.sessionManager.get(sessionId)?.workspaceDir);
-        return git ? resolveMergeSync(git, headBranch) : undefined;
+        return git ? resolveMergeSync(git, headBranch, "origin", { requireFetch: true }) : undefined;
       },
     );
     this.graceTracker = new CiGraceTracker(opts.getSharedRepoDir);

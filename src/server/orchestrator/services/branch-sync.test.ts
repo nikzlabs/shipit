@@ -144,6 +144,25 @@ describe("branch-sync against a real repository", () => {
     expect(verdict.action === "hold" && verdict.message).toContain("failed");
     expect(verdict.action === "hold" && verdict.pushed).toBe(false);
   });
+
+  it("answers nothing under `requireFetch` when the remote is unreachable, even though local refs agree", async () => {
+    // The whole point of the merge-time reading is that it is fresher than the
+    // tracking ref. A failed fetch is silent, so without `requireFetch` this
+    // returns a confident "in-sync" computed from refs that predate the
+    // outage — the one answer the unattended merge path must not act on.
+    run(`git remote set-url origin ${path.join(root, "nowhere.git")}`, workDir);
+    const git = new GitManager(workDir);
+
+    expect(await resolveMergeSync(git, "feature")).toEqual({ state: "in-sync", ahead: 0, behind: 0 });
+    expect(await resolveMergeSync(git, "feature", "origin", { requireFetch: true })).toBeUndefined();
+  });
+
+  it("still answers under `requireFetch` when the fetch succeeds", async () => {
+    const git = new GitManager(workDir);
+
+    expect(await resolveMergeSync(git, "feature", "origin", { requireFetch: true }))
+      .toEqual({ state: "in-sync", ahead: 0, behind: 0 });
+  });
 });
 
 describe("classifyBranchSync", () => {

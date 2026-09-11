@@ -193,11 +193,14 @@ export class AutoMergeManager {
       const fresh = await this.resolveSync(sessionId, summary.headBranch)
         .catch(() => undefined);
       // No answer holds here, unlike the poll-time gate above. Most causes are
-      // ordinary and self-healing (no checkout, a different branch or a detached
-      // HEAD checked out, no tracking ref yet), so the cost is one poll interval.
-      // The one cause that is not ordinary — the fetch failed — is correlated
-      // with the outage that leaves commits unpushed in the first place, and
-      // merging then ships the branch without them, which nothing can undo.
+      // ordinary (no checkout, a different branch or a detached HEAD checked
+      // out, no tracking ref yet) and the hold clears on the poll after the
+      // cause does — no user action, and nothing terminal is recorded. The
+      // cause that is NOT ordinary is a failed fetch, which is correlated with
+      // the outage that leaves commits unpushed in the first place; merging on
+      // it ships the branch without them, and nothing can undo that. Reaching
+      // this on a failed fetch takes `requireFetch` at the resolver: the shared
+      // helper otherwise answers from the stale refs this reading replaces.
       if (!fresh) {
         console.log(
           `[auto-merge] Holding merge of PR #${summary.prNumber} (${owner}/${repo}) for ${sessionId}:`

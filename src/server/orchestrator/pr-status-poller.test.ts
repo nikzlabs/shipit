@@ -1704,6 +1704,47 @@ describe("PrStatusPoller", () => {
       vi.useRealTimers();
     });
 
+    it("holds an armed merge when the pre-merge fetch fails, though local refs say in-sync", async () => {
+      // The merge-time reading exists because a tracking ref can be stale. A
+      // failed fetch is silent, so without `requireFetch` the helper answers
+      // "in-sync" from exactly those stale refs and the gate waves it through —
+      // and the fetch tends to fail for the same reason a push did, which is
+      // how a branch reaches GitHub short of its last commits.
+      vi.useFakeTimers();
+      const githubAuth = makeGitHubAuth({
+        data: { repository: { pullRequests: { nodes: [makeGraphQLPrNode()] } } },
+      });
+      const sessionManager = makeSessionManager([
+        {
+          id: "s1", branch: "shipit/abc-feature", remoteUrl: "https://github.com/owner/repo",
+          workspaceDir: "/sessions/s1/workspace",
+        },
+      ]);
+      const registry = makeFakeRegistry();
+      registry.setViewers("s1", 1);
+      const poller = new PrStatusPoller({
+        githubAuth,
+        sessionManager,
+        sseBroadcast: vi.fn(),
+        runnerRegistry: registry,
+        createGitManager: () => ({
+          diffStatVsBranch: vi.fn().mockResolvedValue({ insertions: 1, deletions: 0 }),
+          currentBranchOrNull: vi.fn().mockResolvedValue("shipit/abc-feature"),
+          aheadBehind: vi.fn().mockResolvedValue({ ahead: 0, behind: 0 }),
+          fetchBranch: vi.fn().mockRejectedValue(new Error("could not read from remote repository")),
+        }) as unknown as GitManager,
+      });
+      poller.setAutoMergeEnabled("s1", true);
+      poller.setAutoMergeManaged("s1", true, { managedReason: "session-live" });
+      poller.trackSession("s1", "https://github.com/owner/repo");
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(githubAuth.mergePullRequest).not.toHaveBeenCalled();
+      poller.destroy();
+      vi.useRealTimers();
+    });
+
     it("does not merge while the session is busy, and merges once it is idle", async () => {
       vi.useFakeTimers();
       const { poller, registry, mergePullRequest } = await pollGreenPr({ busy: true });
