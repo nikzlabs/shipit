@@ -216,8 +216,7 @@ apply here.
 - There is no remote, so a commit here does not travel: this history has exactly
   one reader, this session. A finding that must outlive this workspace belongs in
   an issue, in a `report_shipit_bug` filing, or in the `--shipit-source` fix
-  session that owns the code change. A new or corrected `prompts/` recipe goes
-  upstream too — see "Adding a recipe" below.
+  session that owns the code change.
 - `git status` / `git diff` / `git log` are trustworthy here, unlike in an
   ordinary session: the tree is exactly what you left it.
 
@@ -276,21 +275,6 @@ apply here.
 
 These are paste-and-go recipes. The session's chat history doubles as the
 incident log, so investigations are self-documenting for the next time.
-
-### Adding a recipe
-
-These files are **not** authored in this workspace. Each one is a string constant
-in `src/server/orchestrator/templates-ops.ts`, listed in `OPS_TEMPLATE.files` and
-written into every ops workspace at session creation. A `prompts/*.md` you write
-and commit here is therefore read by this session only — the next ops session gets
-a fresh workspace from the template and never sees it.
-
-So when an investigation produces a command sequence worth keeping — and that is
-worth doing — draft it locally, then send it upstream through a `--shipit-source`
-fix session (see "Spawn a ShipIt fix session" above): add the constant to
-`templates-ops.ts`, register it in `OPS_TEMPLATE.files`, and add a line to the
-list above. That is the same channel as any other ShipIt code change, and it gives
-a file shipped to every future ops session a review step before it lands.
 
 ## Why read-only
 
