@@ -48,12 +48,19 @@ export { unwrapShellCommand, buildCodexPermissionInput } from "./codex-tool-norm
  *    to `type="disabled"`/`unrestricted`, and a disabled profile runs no
  *    sandbox helper at all. `approval_policy` is its required pair — the CLI
  *    refuses `never` while danger-full-access is disallowed.
- *  - `features.use_legacy_landlock` is the load-bearing one. NOTHING ShipIt
- *    writes can overrule a requirements veto (`requirements.toml`, managed
- *    policy — outside ShipIt, changeable with no ShipIt deploy), and this does
- *    not try to: it makes the FALLBACK sandbox Landlock, which needs no
- *    capabilities, so a vetoed turn degrades to a restricted filesystem
- *    instead of failing every command.
+ *  - `features.use_legacy_landlock` is the defence in depth. NOTHING ShipIt
+ *    writes can overrule a managed-policy veto (`/etc/codex/requirements.toml`
+ *    or enterprise policy — outside ShipIt, changeable with no ShipIt deploy),
+ *    and this does not try to: it opts the fallback sandbox into Landlock,
+ *    which needs no capabilities, where bubblewrap cannot start at all.
+ *
+ * **What is measured stops there.** That the key parses and that the profile
+ * flips are both measured; that a vetoed turn then runs its commands under
+ * Landlock rather than failing is NOT — reproducing it needs a policy file at
+ * a path a session container cannot write (`$CODEX_HOME/requirements.toml` is
+ * ignored outright by 0.153.2: invalid TOML there raises no error). Treat the
+ * fallback as the best available mitigation, not as a guarantee; the primary
+ * defence is `sandbox_mode`, where a disabled profile runs no helper at all.
  *
  * `-c`, not a `config.toml` block like `project-trust.ts`: trust needs the file
  * because its override was measured not to take, and these keys were measured

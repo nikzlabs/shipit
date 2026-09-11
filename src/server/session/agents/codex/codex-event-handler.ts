@@ -23,8 +23,8 @@ import {
 import {
   BUBBLEWRAP_NOTICE,
   isBubblewrapFailure,
-  isRequirementVeto,
-  requirementVetoNotice,
+  isSandboxVeto,
+  sandboxVetoNotice,
 } from "./sandbox-diagnostics.js";
 
 interface JsonRpcServerRequest {
@@ -213,12 +213,15 @@ export class CodexEventHandler {
       case "configWarning": {
         const text = formatCodexConfigWarning(params);
         if (!text) break;
-        // A veto is a different class from the rest: the others report a
-        // condition the user can read and fix in their own config, this one
-        // says a policy layer ShipIt cannot reach has switched Codex's
-        // unusable-in-container sandbox back on. So it gets the transcript.
-        if (isRequirementVeto(text)) this.noticeOnce("veto", requirementVetoNotice(text));
-        else this.ctx.emitLog("server", text);
+        // Logged unconditionally, so a second veto naming a DIFFERENT setting
+        // survives the once-per-process transcript notice below.
+        this.ctx.emitLog("server", text);
+        // A veto of one of the sandbox settings is a different class from the
+        // rest: the others report a condition the user can read and fix in
+        // their own config, this one says a policy layer ShipIt cannot reach
+        // overruled the setting that keeps Codex's sandbox off. So it also gets
+        // the transcript.
+        if (isSandboxVeto(text)) this.noticeOnce("veto", sandboxVetoNotice(text));
         break;
       }
 
@@ -350,9 +353,10 @@ export class CodexEventHandler {
           this.emitToolUseOnce(id, "shell", { command: unwrapShellCommand(item.command ?? ""), cwd: item.cwd }, parentToolUseId);
           const out = item.aggregatedOutput ?? "";
           const exit = item.exitCode;
-          const content =
-            exit !== null && exit !== undefined && exit !== 0 ? `${out}\n[exit code: ${exit}]` : out;
+          const failed = exit !== null && exit !== undefined && exit !== 0;
+          const content = failed ? `${out}\n[exit code: ${exit}]` : out;
           this.emitToolResult(id, content, parentToolUseId);
+          if (failed) this.checkBubblewrap(out, parentToolUseId);
         }
         return;
       }
@@ -402,7 +406,9 @@ export class CodexEventHandler {
         } else {
           this.emitToolUseOnce(id, toolName, input, parentToolUseId);
           const payload = item.result ?? item.error ?? "";
-          this.emitToolResult(id, typeof payload === "string" ? payload : JSON.stringify(payload), parentToolUseId);
+          const text = typeof payload === "string" ? payload : JSON.stringify(payload);
+          this.emitToolResult(id, text, parentToolUseId);
+          if (item.error !== undefined && item.error !== null) this.checkBubblewrap(text, parentToolUseId);
         }
         break;
       }
@@ -521,17 +527,28 @@ export class CodexEventHandler {
       content: [block],
       ...(parentToolUseId ? { parentToolUseId } : {}),
     });
-    // Every tool result, not just commandExecution's: the sandbox wraps
-    // whatever Codex runs, and the incident's turn produced 61 assistant events
-    // and exactly one tool result. After the event, so the notice reads as a
-    // follow-up to the failure the user just saw.
-    if (isBubblewrapFailure(content)) this.noticeOnce("bwrap", BUBBLEWRAP_NOTICE, parentToolUseId);
   }
 
   /**
-   * Surface a sandbox diagnosis at most once per key per process — the
-   * condition holds for the whole session, so restating it on every tool call
-   * adds noise to an already repetitive failure.
+   * Diagnose output from a tool call that FAILED. Only from a failed one: the
+   * agent reads and greps files for a living, so scanning every result would
+   * have fired on any turn that so much as `cat`s this repo's own source — and
+   * burnt the once-only notice while doing it.
+   */
+  private checkBubblewrap(output: string, parentToolUseId?: string): void {
+    if (!isBubblewrapFailure(output)) return;
+    if (this.sandboxNotices.has("bwrap")) return;
+    this.ctx.emitLog("server", BUBBLEWRAP_NOTICE);
+    this.noticeOnce("bwrap", BUBBLEWRAP_NOTICE, parentToolUseId);
+  }
+
+  /**
+   * Put a sandbox diagnosis in the TRANSCRIPT, at most once per key per
+   * process — the condition holds for the whole session, so restating it on
+   * every tool call adds noise to an already repetitive failure. Logging is the
+   * caller's, precisely so this deduplication cannot swallow a log line: two
+   * vetoes naming different settings are two distinct facts that both belong
+   * in the log, however many explanations they warrant.
    *
    * An `agent_assistant` text block, not just a log: a log is what this session
    * already had and nobody could connect to the symptom. It is also the
@@ -542,7 +559,6 @@ export class CodexEventHandler {
   private noticeOnce(key: string, text: string, parentToolUseId?: string): void {
     if (this.sandboxNotices.has(key)) return;
     this.sandboxNotices.add(key);
-    this.ctx.emitLog("server", text);
     this.emitAssistant([{ type: "text", text: `\n\n${text}` }], parentToolUseId);
   }
 

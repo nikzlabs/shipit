@@ -34,11 +34,11 @@ function assistantText(events: AgentEvent[]): string {
     .join("");
 }
 
-/** A completed shell item whose output is `output`. */
-function shellResult(id: string, output: string): { method: string; params: Record<string, unknown> } {
+/** A completed shell item whose output is `output`, failing unless told otherwise. */
+function shellResult(id: string, output: string, exitCode = 1): { method: string; params: Record<string, unknown> } {
   return {
     method: "item/completed",
-    params: { item: { id, type: "commandExecution", command: "ls", exitCode: 1, aggregatedOutput: output } },
+    params: { item: { id, type: "commandExecution", command: "ls", exitCode, aggregatedOutput: output } },
   };
 }
 
@@ -138,7 +138,7 @@ describe("sandbox diagnostics", () => {
     handler.handleNotification(shellResult("c1", BWRAP));
 
     const text = assistantText(events);
-    expect(text).toContain("Codex's sandbox cannot run in this container");
+    expect(text).toContain("Codex's sandbox could not start in this container");
     expect(text).toContain("CAP_SYS_ADMIN");
     // Names the knobs, so the reader can tell an overridden setting from an
     // unset one without going to read ShipIt's source.
@@ -163,13 +163,27 @@ describe("sandbox diagnostics", () => {
     handler.handleNotification(shellResult("c2", BWRAP));
     handler.handleNotification(shellResult("c3", BWRAP));
 
-    const occurrences = assistantText(events).split("Codex's sandbox cannot run").length - 1;
+    const occurrences = assistantText(events).split("Codex's sandbox could not start").length - 1;
     expect(occurrences).toBe(1);
   });
 
   it("leaves ordinary tool failures alone", () => {
     const { handler, logs, events } = makeHandler();
     handler.handleNotification(shellResult("c1", "ls: cannot access 'nope': No such file or directory"));
+
+    expect(assistantText(events)).toBe("");
+    expect(logs).toHaveLength(0);
+  });
+
+  /**
+   * The agent reads and greps files for a living, and this repo's own source
+   * quotes the bubblewrap failure. Scanning results regardless of outcome
+   * diagnosed a broken sandbox off a successful `cat` — and consumed the
+   * once-only notice, so the real failure afterwards would have said nothing.
+   */
+  it("says nothing when the command that printed it SUCCEEDED", () => {
+    const { handler, logs, events } = makeHandler();
+    handler.handleNotification(shellResult("c1", `$ cat notes.txt\n${BWRAP}`, 0));
 
     expect(assistantText(events)).toBe("");
     expect(logs).toHaveLength(0);
@@ -186,11 +200,38 @@ describe("sandbox diagnostics", () => {
     });
 
     const text = assistantText(events);
-    expect(text).toContain("Codex refused a ShipIt setting");
+    expect(text).toContain("Codex refused a ShipIt sandbox setting");
     // The warning's own wording carries through — it names the vetoed key,
     // which is the part that says which policy line to go and change.
     expect(text).toContain("`sandbox_mode` is disallowed by requirements");
     expect(text).toContain("requirements.toml");
+  });
+
+  it("keeps a second, differently-worded veto in the log", () => {
+    const { handler, logs } = makeHandler();
+    handler.handleNotification({
+      method: "configWarning",
+      params: { summary: "`web_search_mode` is disallowed by requirements." },
+    });
+    handler.handleNotification({
+      method: "configWarning",
+      params: { summary: "`permission_profile` is disallowed by requirements." },
+    });
+
+    // Two distinct facts. Deduplicating the transcript notice must not
+    // deduplicate these out of existence — the second one names the sandbox.
+    expect(logs.filter((l) => l.text.includes("web_search_mode"))).toHaveLength(1);
+    expect(logs.filter((l) => l.text.includes("permission_profile"))).toHaveLength(1);
+  });
+
+  it("does not raise a sandbox alarm for a veto of an unrelated setting", () => {
+    const { handler, events } = makeHandler();
+    handler.handleNotification({
+      method: "configWarning",
+      params: { summary: "`web_search_mode` is disallowed by requirements; falling back." },
+    });
+
+    expect(assistantText(events)).toBe("");
   });
 
   it("recognizes the veto phrased with the verb after `requirements`", () => {
@@ -203,7 +244,7 @@ describe("sandbox diagnostics", () => {
       },
     });
 
-    expect(assistantText(events)).toContain("Codex refused a ShipIt setting");
+    expect(assistantText(events)).toContain("Codex refused a ShipIt sandbox setting");
   });
 
   it("keeps a non-veto warning as a log line only", () => {
