@@ -96,6 +96,13 @@ vi.mock("../../../shared/kill-child.js", async (importOriginal) => {
 });
 import { killProcessTree } from "../../../shared/kill-child.js";
 
+/** Answer the latest request with this method, by its own id (a resume now follows a goal read). */
+async function respondTo(method: string, result: unknown): Promise<void> {
+  await vi.waitFor(() => { expect(fakeProc.getRequests().some((r) => r.method === method)).toBe(true); });
+  const req = fakeProc.getRequests().filter((r) => r.method === method).at(-1)!;
+  fakeProc.sendResponse(req.id!, result);
+}
+
 describe("CodexAdapter", () => {
   let adapter: CodexAdapter;
   let events: AgentEvent[];
@@ -125,25 +132,10 @@ describe("CodexAdapter", () => {
       ...(model !== undefined ? { model } : {}),
     });
 
-    await vi.waitFor(() => {
-      expect(fakeProc.getRequests().length).toBeGreaterThanOrEqual(1);
-    });
-
-    fakeProc.sendResponse(1, { serverInfo: { name: "codex-app-server" } });
-
-    await vi.waitFor(() => {
-      const reqs = fakeProc.getRequests();
-      expect(reqs.length).toBeGreaterThanOrEqual(3);
-    });
-
-    fakeProc.sendResponse(2, { threadId: "thread-abc-123" });
-
-    await vi.waitFor(() => {
-      const reqs = fakeProc.getRequests();
-      expect(reqs.length).toBeGreaterThanOrEqual(4);
-    });
-
-    fakeProc.sendResponse(3, { turnId: "turn-001" });
+    await respondTo("initialize", { serverInfo: { name: "codex-app-server" } });
+    if (sessionId) await respondTo("thread/goal/get", { goal: null });
+    await respondTo(sessionId ? "thread/resume" : "thread/start", { threadId: "thread-abc-123" });
+    await respondTo("turn/start", { turnId: "turn-001" });
 
     await vi.waitFor(() => {
       expect(events.some((e) => e.type === "agent_init")).toBe(true);
@@ -298,11 +290,13 @@ describe("CodexAdapter", () => {
 
     await vi.waitFor(() => expect(fakeProc.getRequests().length).toBeGreaterThanOrEqual(1));
     fakeProc.sendResponse(1, { serverInfo: { name: "codex-app-server" } });
+    await respondTo("thread/goal/get", { goal: null });
     await vi.waitFor(() => {
       expect(fakeProc.getRequests().some((request) => request.method === "thread/resume")).toBe(true);
     });
 
-    fakeProc.sendErrorResponse(2, -32600, "thread rollout not found");
+    const resume = fakeProc.getRequests().find((request) => request.method === "thread/resume")!;
+    fakeProc.sendErrorResponse(resume.id!, -32600, "thread rollout not found");
 
     await vi.waitFor(() => expect(errors).toHaveLength(1));
     expect(errors[0].message).toContain("Couldn't resume the previous Codex conversation");
@@ -347,7 +341,10 @@ describe("CodexAdapter", () => {
 
     await vi.waitFor(() => expect(fakeProc.getRequests().length).toBeGreaterThanOrEqual(1));
     fakeProc.sendResponse(1, { serverInfo: { name: "codex-app-server" } });
-    await vi.waitFor(() => expect(fakeProc.getRequests().length).toBeGreaterThanOrEqual(3));
+    await respondTo("thread/goal/get", { goal: null });
+    await vi.waitFor(() => {
+      expect(fakeProc.getRequests().some((r) => r.method === "thread/resume")).toBe(true);
+    });
 
     const threadResume = fakeProc.getRequests().find((r) => r.method === "thread/resume");
     expect(threadResume).toBeDefined();
@@ -1834,6 +1831,39 @@ describe("CodexAdapter", () => {
       expect(fakeProc).toBe(live);
     });
 
+    it("restores a held goal through a control process when the process exits before turn/start answers", async () => {
+      adapter = new CodexAdapter(() => false);
+      const errors: Error[] = [];
+      adapter.on("event", (e) => events.push(e));
+      adapter.on("error", (e) => errors.push(e));
+      adapter.run({ prompt: "Hello", cwd: "/workspace", sessionId: "thread-abc-123" });
+
+      await respondTo("initialize", {});
+      await respondTo("thread/goal/get", { goal: GOAL });
+      await respondTo("thread/goal/set", { goal: { ...GOAL, status: "paused" } });
+      await respondTo("thread/resume", { threadId: "thread-abc-123" });
+      await vi.waitFor(() => { expect(fakeProc.getLastRequest()?.method).toBe("turn/start"); });
+      const live = fakeProc;
+      live.emit("close", 1);
+
+      await vi.waitFor(() => { expect(fakeProc).not.toBe(live); });
+      const control = fakeProc;
+      const answer = async (method: string, result: unknown): Promise<void> => {
+        await vi.waitFor(() => { expect(control.getLastRequest()?.method).toBe(method); });
+        control.sendResponse(control.getLastRequest()!.id!, result);
+      };
+      await answer("initialize", {});
+      await answer("thread/goal/get", { goal: { ...GOAL, status: "paused" } });
+      await answer("thread/goal/set", { goal: GOAL });
+
+      expect(control.getLastRequest()?.params).toEqual({ threadId: "thread-abc-123", status: "active" });
+      await vi.waitFor(() => {
+        expect(events.filter((e) => e.type === "agent_goal_updated").at(-1)).toMatchObject({ goal: { status: "active" } });
+      });
+      // The exit already ended the run through done; a second, error, report would duplicate it.
+      expect(errors).toEqual([]);
+    });
+
     it("finishes a pause in a control process when the turn ends between its two requests", async () => {
       await createAndInit();
       const live = fakeProc;
@@ -1912,8 +1942,8 @@ describe("CodexAdapter", () => {
 
       await vi.waitFor(() => expect(fakeProc.getRequests().length).toBeGreaterThanOrEqual(1));
       fakeProc.sendResponse(1, { serverInfo: {} });
-      await vi.waitFor(() => expect(fakeProc.getRequests().length).toBeGreaterThanOrEqual(3));
-      fakeProc.sendResponse(2, { threadId: "thread-xyz" });
+      await respondTo("thread/goal/get", { goal: null });
+      await respondTo("thread/resume", { threadId: "thread-xyz" });
 
       await vi.waitFor(() => {
         expect(fakeProc.getRequests().some((r) => r.method === "thread/compact/start")).toBe(true);
@@ -1935,8 +1965,8 @@ describe("CodexAdapter", () => {
 
       await vi.waitFor(() => expect(fakeProc.getRequests().length).toBeGreaterThanOrEqual(1));
       fakeProc.sendResponse(1, { serverInfo: {} });
-      await vi.waitFor(() => expect(fakeProc.getRequests().length).toBeGreaterThanOrEqual(3));
-      fakeProc.sendResponse(2, { threadId: "thread-xyz" });
+      await respondTo("thread/goal/get", { goal: null });
+      await respondTo("thread/resume", { threadId: "thread-xyz" });
       await vi.waitFor(() => {
         expect(fakeProc.getRequests().some((r) => r.method === "thread/compact/start")).toBe(true);
       });

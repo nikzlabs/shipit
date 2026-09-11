@@ -95,6 +95,9 @@ describe("describeGoalResult", () => {
       .toBe("Goal (stopped at its token budget): Ship it");
     expect(describeGoalResult({ action: "set", objective: "Ship it" }, GOAL)).toBe("Goal set: Ship it");
     expect(describeGoalResult({ action: "pause" }, GOAL)).toBe("Goal paused: Ship it");
+    // Measured: a pause does not interrupt the turn in progress, so the notice says so.
+    expect(describeGoalResult({ action: "pause" }, GOAL, { turnRunning: true }))
+      .toBe("Goal paused: Ship it. The running turn continues; the pause applies from the next turn.");
     expect(describeGoalResult({ action: "resume" }, GOAL)).toBe("Goal resumed: Ship it");
     expect(describeGoalResult({ action: "clear" }, null)).toBe("Goal cleared.");
   });

@@ -170,6 +170,8 @@ export class CodexAdapter
         sendErrorResponse: (id, code, message) => { this.sendErrorResponse(id, code, message); },
         sendNotification: (method, params) => { this.sendNotification(method, params); },
         kill: () => { this.kill(); },
+        goalRequest: (method, params) => this.liveGoalRequest(method, params),
+        restoreGoalOutOfProcess: (threadId) => this.runGoalControl(threadId, { action: "resume" }),
       },
       this.rateLimits,
       [...CODEX_TOOL_NAMES],
@@ -338,14 +340,22 @@ export class CodexAdapter
       this.emit("error", err);
     });
 
+    let exited = false;
     this.proc.on("close", (code) => {
+      exited = true;
       this.drainLines(true);
       this.emit("done", code ?? 1);
       this.proc = null;
+      // A request still waiting would hang forever — and with it the goal restore in initializeAndRun's finally.
+      this.pendingRequests.forEach(({ reject }) => reject(new Error("Codex process exited")));
+      this.pendingRequests.clear();
     });
 
     this.eventHandler.initializeAndRun(params).catch((err: unknown) => {
-      this.emit("error", err instanceof Error ? err : new Error(String(err)));
+      const error = err instanceof Error ? err : new Error(String(err));
+      // The exit already reported this run's end through done.
+      if (exited) this.emit("log", "codex", `startup ended by process exit: ${error.message}`);
+      else this.emit("error", error);
     });
   }
 
@@ -406,6 +416,10 @@ export class CodexAdapter
         if (this.proc) throw err;
       }
     }
+    return this.runGoalControl(threadId, command);
+  }
+
+  private runGoalControl(threadId: string, command: AgentGoalCommand): Promise<AgentGoalCommandResult> {
     const scopedHome = this.spawnHomeOverride ?? this.resolveHome?.();
     return runCodexGoalControl({
       threadId,

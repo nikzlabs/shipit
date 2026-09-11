@@ -49,7 +49,7 @@ export async function handleGoalCommand(
       recordGoalForThread(ctx, sessionId, threadId, result.goal);
       return result.goal;
     });
-    notice(describeGoalResult(command, goal));
+    notice(describeGoalResult(command, goal, { turnRunning: runner?.running ?? false }));
   } catch (err) {
     notice(`Couldn't ${GOAL_ACTION_VERBS[command.action]} the goal: ${getErrorMessage(err)}`, "warn");
   }

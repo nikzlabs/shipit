@@ -56,7 +56,9 @@ builds; these supersede them.
 | `set` with `status: active` on a **loaded, idle** thread | Codex starts a continuation turn at once |
 | `thread/resume` of a thread with an **active** goal | Codex re-emits `thread/goal/updated`, then starts a continuation turn by itself |
 | `thread/resume` with a **paused** goal | Re-emits `thread/goal/updated`; no turn |
-| `turn/start` sent right after such a resume | Accepted; it becomes the turn (same id as `turn/started`), no collision |
+| `turn/start` sent right after such a resume | Returns the id of Codex's **self-started continuation turn**. Sent at once (ShipIt's order), the user's message is added into that turn; sent 300 ms later, it did not appear in it |
+| Same resume under `-c features.goals=false` | No self-started turn — but every `thread/goal/*` request fails with `goals feature is disabled` |
+| Pause on the unloaded thread → resume → `turn/start` → set `active` while the turn runs | No self-started turn; the user's message gets its own turn; re-activating starts no extra turn |
 | `set status: paused` while a turn runs | Accepted; the running turn is not interrupted |
 | Unknown thread id | JSON-RPC error `-32600 thread not found: <id>` |
 
@@ -83,12 +85,28 @@ builds; these supersede them.
 - `CodexEventHandler` — `thread/goal/updated` and `thread/goal/cleared` on the
   parent thread become an `agent_goal_updated` event (`goal: null` for
   cleared). Subagent threads are ignored.
-- Rehydrate (req 6) — after `thread/resume` Codex re-announces an existing
-  goal but says nothing when there is none, so the handler also runs
-  `thread/goal/get` and reports the answer. It asks **after** `turn/start`: a
-  request between resume and `turn/start` leaves room for Codex's own
-  continuation turn to start first. A new thread reports `goal: null` without
-  asking.
+- **Resume hold.** Resuming a thread whose goal is `active` makes Codex
+  start its own continuation turn before ShipIt's `turn/start`, and the
+  user's message is folded into it (measured). So before `thread/resume` the
+  handler reads the goal on the still-unloaded thread (no turn starts) and,
+  **only if it is `active`**, pauses it; after `turn/start` (or
+  `thread/compact/start`) it sets it active again. A goal the user paused,
+  or one that is complete or limited, is never touched, so ShipIt never
+  re-activates a goal the user paused. Codex's own notifications during the
+  hold are not reported, so the chip never flickers to "paused".
+- **Failure between the two steps: restore.** The restore runs in a
+  `finally`, so a failed `turn/start` restores the goal too. If the process
+  died in between, the live request is refused and the restore runs in a
+  control process (setting a goal active on an unloaded thread starts no
+  turn). For that, the adapter now rejects requests still pending when its
+  process exits; the start-up error is only logged, because the exit already
+  reported the run's end. If the whole container dies inside the window of a
+  few milliseconds, the goal stays paused; the next turn's read reports it
+  as paused, so the chip and `sessions.agent_goal` show it and `/goal resume`
+  restores it.
+- Rehydrate (req 6) — the same pre-resume read is reported, including "no
+  goal", so the chip is right from the start of every resumed turn. A new
+  thread reports `goal: null` without asking.
 
 ### Transport
 
@@ -170,16 +188,28 @@ own. What the goal still does:
 - It is always visible and always clearable (reqs 1–2), which was the
   production gap.
 
+**Resume continuation (measured 2026-09-11).** Resuming a thread whose goal
+is active makes Codex start its own continuation turn before ShipIt's
+`turn/start`, which folds the user's message into a goal-continuation turn —
+the loop in the incident. The resume hold (see "Adapter") prevents it. A
+`features.goals=false` override also prevents it, but it disables every
+`thread/goal/*` request, so it cannot coexist with this feature.
+
+A pause sent during a running turn does not interrupt that turn (measured);
+the notice says so ("The running turn continues; the pause applies from the
+next turn").
+
 Automatic continuation needs the process to outlive the turn, and that
 touches the post-turn flow (auto-commit, push, queue drain run on `done`),
 between-turn message delivery (`turn/start` instead of `turn/steer`), idle
 disposal and crash recovery. docs/153 "Process lifetime" is the analysis of
 that work. It is a follow-up, not part of this change.
 
-Req 7 (goal mode on only when ShipIt can show and control it) is met by this
-change: Codex goal mode stays on, and it is now both shown and controllable.
-A short-term `features.goals=false` override was being prepared in a separate
-session; with this change in place it is not needed.
+Req 7 (goal mode on only when ShipIt can show and control it) and merge
+order: PR #2725 turns goal mode off (`features.goals=false`) as the immediate
+stop and merges first. This change removes that override once #2725 is on
+`main`, which turns goal mode back on with the goal shown, controllable, and
+held across every resume.
 
 ## Relationship to docs/153
 

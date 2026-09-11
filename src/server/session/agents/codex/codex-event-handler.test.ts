@@ -20,6 +20,8 @@ function makeHandler(): {
     sendErrorResponse: vi.fn(),
     sendNotification: vi.fn(),
     kill: vi.fn(),
+    goalRequest: vi.fn(async () => ({})),
+    restoreGoalOutOfProcess: vi.fn(async () => ({ goal: null })),
   };
   return { handler: new CodexEventHandler(ctx, new CodexRateLimits(), []), logs, events };
 }
@@ -73,50 +75,97 @@ describe("goal notifications (docs/154 req 1)", () => {
   });
 });
 
-describe("goal rehydrate (docs/154 req 6)", () => {
-  function makeRunHandler(goalResponse: unknown) {
+describe("goal across a resume (docs/154)", () => {
+  // Codex, as measured on 0.154.0: a resume re-announces the goal it holds.
+  function makeRunHandler(opts: { goal: typeof GOAL | null; turnStartFails?: boolean; liveRestoreFails?: boolean }) {
     const events: AgentEvent[] = [];
-    const methods: string[] = [];
+    const calls: string[] = [];
+    let current = opts.goal ? { ...opts.goal } : null;
     const ctx: CodexTransport = {
       emitEvent: (event) => events.push(event),
       emitLog: () => {},
       sendRequest: vi.fn(async (method: string) => {
-        methods.push(method);
-        if (method === "thread/resume" || method === "thread/start") return { thread: { id: "t1" } };
-        if (method === "turn/start") return { turn: { id: "turn-1" } };
-        if (method === "thread/goal/get") return goalResponse;
+        if (method !== "initialize") calls.push(method);
+        if (method === "thread/resume") {
+          if (current) handler.handleNotification({ method: "thread/goal/updated", params: { threadId: "t1", goal: current } });
+          return { thread: { id: "t1" } };
+        }
+        if (method === "thread/start") return { thread: { id: "t1" } };
+        if (method === "turn/start") {
+          if (opts.turnStartFails) throw new Error("turn/start refused");
+          return { turn: { id: "turn-1" } };
+        }
         return {};
       }),
       sendResponse: vi.fn(),
       sendErrorResponse: vi.fn(),
       sendNotification: vi.fn(),
       kill: vi.fn(),
+      goalRequest: vi.fn(async (method: string, params: Record<string, unknown>) => {
+        const status = typeof params.status === "string" ? params.status : undefined;
+        calls.push(status ? `${method}:${status}` : method);
+        if (method === "thread/goal/get") return { goal: current };
+        if (opts.liveRestoreFails && status === "active") throw new Error("Codex process ended");
+        if (current && status) current = { ...current, status };
+        return { goal: current };
+      }),
+      restoreGoalOutOfProcess: vi.fn(async () => {
+        if (current) current = { ...current, status: "active" };
+        return { goal: current && { ...SHOWN_GOAL, status: "active" } };
+      }),
     };
-    return { handler: new CodexEventHandler(ctx, new CodexRateLimits(), []), events, methods };
+    // The ctx closures read `handler` only when called, which is after this line.
+    const handler = new CodexEventHandler(ctx, new CodexRateLimits(), []);
+    const goalEvents = () => events.filter((e) => e.type === "agent_goal_updated");
+    return { handler, ctx, calls, goalEvents, finalStatus: () => current?.status };
   }
 
-  it("reads the goal after a resumed thread's turn has started", async () => {
-    const { handler, events, methods } = makeRunHandler({ goal: GOAL });
-    await handler.initializeAndRun({ prompt: "hi", cwd: "/w", sessionId: "t1" });
-    await vi.waitFor(() => { expect(events.some((e) => e.type === "agent_goal_updated")).toBe(true); });
-    expect(events.find((e) => e.type === "agent_goal_updated")).toEqual({ type: "agent_goal_updated", goal: SHOWN_GOAL });
-    // A request between resume and turn/start would give Codex's continuation turn room to start first.
-    expect(methods.indexOf("thread/goal/get")).toBeGreaterThan(methods.indexOf("turn/start"));
+  it("pauses an active goal across the resume and restores it after turn/start", async () => {
+    const run = makeRunHandler({ goal: GOAL });
+    await run.handler.initializeAndRun({ prompt: "hi", cwd: "/w", sessionId: "t1" });
+    // No active goal at resume, so Codex starts no continuation turn of its own.
+    expect(run.calls).toEqual([
+      "thread/goal/get", "thread/goal/set:paused", "thread/resume", "turn/start", "thread/goal/set:active",
+    ]);
+    // The hold is not news: the chip only ever sees the goal as active.
+    expect(run.goalEvents()).toEqual([{ type: "agent_goal_updated", goal: SHOWN_GOAL }]);
+    expect(run.finalStatus()).toBe("active");
+  });
+
+  it.each(["paused", "complete", "budgetLimited"])("never re-activates a %s goal", async (status) => {
+    const run = makeRunHandler({ goal: { ...GOAL, status } });
+    await run.handler.initializeAndRun({ prompt: "hi", cwd: "/w", sessionId: "t1" });
+    expect(run.calls).toEqual(["thread/goal/get", "thread/resume", "turn/start"]);
+    expect(run.finalStatus()).toBe(status);
+    expect(run.goalEvents()[0]).toEqual({ type: "agent_goal_updated", goal: { ...SHOWN_GOAL, status } });
+  });
+
+  it("restores the goal when turn/start fails", async () => {
+    const run = makeRunHandler({ goal: GOAL, turnStartFails: true });
+    await expect(run.handler.initializeAndRun({ prompt: "hi", cwd: "/w", sessionId: "t1" })).rejects.toThrow("turn/start refused");
+    expect(run.calls.at(-1)).toBe("thread/goal/set:active");
+    expect(run.finalStatus()).toBe("active");
+  });
+
+  it("restores the goal through a control process when the process died", async () => {
+    const run = makeRunHandler({ goal: GOAL, liveRestoreFails: true });
+    await run.handler.initializeAndRun({ prompt: "hi", cwd: "/w", sessionId: "t1" });
+    expect(run.ctx.restoreGoalOutOfProcess).toHaveBeenCalledWith("t1");
+    expect(run.finalStatus()).toBe("active");
+    expect(run.goalEvents().at(-1)).toEqual({ type: "agent_goal_updated", goal: SHOWN_GOAL });
   });
 
   it("clears a stale goal when the resumed thread has none", async () => {
-    const { handler, events } = makeRunHandler({ goal: null });
-    await handler.initializeAndRun({ prompt: "hi", cwd: "/w", sessionId: "t1" });
-    await vi.waitFor(() => {
-      expect(events).toContainEqual({ type: "agent_goal_updated", goal: null });
-    });
+    const run = makeRunHandler({ goal: null });
+    await run.handler.initializeAndRun({ prompt: "hi", cwd: "/w", sessionId: "t1" });
+    expect(run.goalEvents()).toEqual([{ type: "agent_goal_updated", goal: null }]);
   });
 
   it("reports no goal for a new thread without asking", async () => {
-    const { handler, events, methods } = makeRunHandler({ goal: GOAL });
-    await handler.initializeAndRun({ prompt: "hi", cwd: "/w" });
-    expect(events).toContainEqual({ type: "agent_goal_updated", goal: null });
-    expect(methods).not.toContain("thread/goal/get");
+    const run = makeRunHandler({ goal: GOAL });
+    await run.handler.initializeAndRun({ prompt: "hi", cwd: "/w" });
+    expect(run.goalEvents()).toEqual([{ type: "agent_goal_updated", goal: null }]);
+    expect(run.calls).not.toContain("thread/goal/get");
   });
 });
 

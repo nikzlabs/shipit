@@ -80,13 +80,20 @@ export function goalStatusLabel(status: string): string {
   return STATUS_LABELS[status] ?? status;
 }
 
-export function describeGoalResult(command: AgentGoalCommand, goal: AgentGoal | null): string {
+export function describeGoalResult(
+  command: AgentGoalCommand,
+  goal: AgentGoal | null,
+  opts: { turnRunning?: boolean } = {},
+): string {
   if (!goal) return command.action === "clear" ? "Goal cleared." : "No goal is set.";
   switch (command.action) {
     case "set":
       return `Goal set: ${goal.objective}`;
     case "pause":
-      return `Goal paused: ${goal.objective}`;
+      // Measured on 0.154.0: a pause does not interrupt the turn in progress.
+      return opts.turnRunning
+        ? `Goal paused: ${goal.objective}. The running turn continues; the pause applies from the next turn.`
+        : `Goal paused: ${goal.objective}`;
     case "resume":
       return `Goal resumed: ${goal.objective}`;
     default: {
