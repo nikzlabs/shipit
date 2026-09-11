@@ -99,24 +99,22 @@ The worker is a thin Node process that exposes the same operations `SessionRunne
 New class that replaces direct process spawning in `SessionRunnerRegistry`. Uses [dockerode](https://github.com/apocas/dockerode) to manage container lifecycle.
 
 ```typescript
-// src/server/session-container.ts
-
 import Docker from "dockerode";
 
 interface ContainerConfig {
   sessionId: string;
-  sessionDir: string;       // host path: /workspace/sessions/{uuid}
-  sharedRepoDir?: string;   // host path: /workspace/repos/{hash} (for worktree sessions)
-  credentialsDir: string;   // host path: /credentials (read-only)
-  imageName: string;        // e.g. "shipit-session-worker:latest"
-  memoryLimit: number;      // bytes, default 512MB
-  cpuQuota: number;         // microseconds per 100ms period, default 50000 (0.5 CPU)
+  sessionDir: string;
+  sharedRepoDir?: string;
+  credentialsDir: string;
+  imageName: string;
+  memoryLimit: number;
+  cpuQuota: number;
 }
 
 interface SessionContainer {
-  id: string;              // Docker container ID
+  id: string;
   sessionId: string;
-  containerIp: string;     // bridge network IP (e.g. 172.17.0.3)
+  containerIp: string;
   status: "starting" | "running" | "stopping" | "stopped";
 }
 
@@ -126,11 +124,11 @@ export class SessionContainerManager {
   private networkName: string;
 
   constructor(opts: {
-    socketPath?: string;           // default: /var/run/docker.sock (works on Linux, macOS, WSL2)
-    imageName?: string;            // default: shipit-session-worker:latest
-    networkName?: string;          // default: "shipit"
-    memoryLimit?: number;          // default: 512MB
-    cpuQuota?: number;             // default: 50000
+    socketPath?: string;
+    imageName?: string;
+    networkName?: string;
+    memoryLimit?: number;
+    cpuQuota?: number;
   }) { /* ... */ }
 
   async create(config: ContainerConfig): Promise<SessionContainer> {
@@ -144,21 +142,16 @@ export class SessionContainerManager {
       HostConfig: {
         Binds: [
           `${config.sessionDir}:/workspace:rw`,
-          `${config.credentialsDir}:/credentials:rw`,  // rw: Claude CLI writes conversation cache on --resume
-          // For worktree sessions: mount shared repo read-only so git can
-          // resolve objects without allowing writes to shared state
+          `${config.credentialsDir}:/credentials:rw`,
           ...(config.sharedRepoDir ? [`${config.sharedRepoDir}:/repo:ro`] : []),
         ],
-        // No PortBindings — orchestrator reaches containers directly via
-        // bridge network IP. Preview traffic is proxied through Fastify
-        // using /preview/{sessionId}/{port}/ routes.
         Memory: config.memoryLimit,
         CpuQuota: config.cpuQuota,
         CpuPeriod: 100_000,
         PidsLimit: 256,
-        NetworkMode: "shipit",  // custom bridge network for orchestrator ↔ container
+        NetworkMode: "shipit",
         SecurityOpt: ["no-new-privileges"],
-        ReadonlyRootfs: false,  // needs write for node_modules, tmp
+        ReadonlyRootfs: false,
       },
       Env: [
         `SESSION_ID=${config.sessionId}`,
@@ -169,7 +162,6 @@ export class SessionContainerManager {
 
     await container.start();
 
-    // Get the container's IP on the bridge network
     const info = await container.inspect();
     const containerIp = info.NetworkSettings.Networks["shipit"].IPAddress;
 
@@ -183,7 +175,7 @@ export class SessionContainerManager {
     if (!sc) return;
     try {
       const container = this.docker.getContainer(sc.id);
-      await container.stop({ t: 5 });  // 5s grace period
+      await container.stop({ t: 5 });
       await container.remove();
     } catch { /* already stopped */ }
     this.containers.delete(sessionId);
@@ -202,7 +194,6 @@ export class SessionContainerManager {
 All session containers and the orchestrator join a custom bridge network (`shipit`). The orchestrator reaches containers by their bridge IP (e.g. `172.18.0.3`) — no host port mappings needed for either IPC or preview traffic.
 
 ```bash
-# Created once at startup (or via docker-compose)
 docker network create shipit
 ```
 
@@ -217,51 +208,38 @@ The orchestrator container itself must also be on this network. With 10 max cont
 New lightweight Node process that runs inside each container. Exposes operations over a local HTTP server on port 9100.
 
 ```typescript
-// src/server/session-worker.ts
-
 import Fastify from "fastify";
 
 const app = Fastify();
 const sessionId = process.env.SESSION_ID!;
 const workspaceDir = process.env.WORKSPACE_DIR!;
 
-// Each worker owns exactly one session's resources:
 let agent: AgentProcess | null = null;
 let terminal: TerminalProcess | null = null;
 let preview: PreviewManager | null = null;
 let fileWatcher: FileWatcher | null = null;
 let gitManager: GitManager;
 
-// --- IPC endpoints ---
-
-// Start/stop agent
 app.post("/agent/start", async (req) => { /* spawn Claude CLI */ });
 app.post("/agent/interrupt", async () => { /* kill -SIGINT */ });
 app.post("/agent/kill", async () => { /* kill -SIGTERM */ });
 
-// Terminal
 app.post("/terminal/start", async () => { /* spawn PTY */ });
 app.post("/terminal/input", async (req) => { /* write to PTY */ });
 app.post("/terminal/resize", async (req) => { /* resize PTY */ });
 
-// Preview
 app.post("/preview/start", async () => { /* start PreviewManager */ });
 app.post("/preview/stop", async () => { /* stop */ });
 app.get("/preview/status", async () => { /* return ports, running */ });
 
-// File operations
 app.get("/files/tree", async () => { /* scanFileTree */ });
 app.get("/files/read", async (req) => { /* read file */ });
 
-// Git operations
 app.post("/git/commit", async (req) => { /* auto-commit */ });
 app.get("/git/log", async () => { /* git log */ });
 app.get("/git/diff", async () => { /* git diff */ });
 
-// Event stream (SSE or WebSocket) for real-time output
 app.get("/events", async (req, reply) => {
-  // SSE stream: agent events, terminal output, file changes, preview status
-  // Orchestrator connects here and forwards to client WebSocket
 });
 
 await app.listen({ port: 9100, host: "0.0.0.0" });
@@ -298,14 +276,10 @@ Orchestrator (172.18.0.2)             Container Worker (172.18.0.3)
 `SessionRunner` becomes a **proxy** that delegates to the container worker instead of spawning processes directly. The public API stays identical — `HandlerContext` and WebSocket handlers don't change.
 
 ```typescript
-// src/server/container-session-runner.ts
-// Implements the same interface as SessionRunner but delegates to a container worker.
-
 export class ContainerSessionRunner extends EventEmitter {
   private container: SessionContainer | null = null;
-  private eventSource: EventSource | null = null;  // SSE connection to worker
+  private eventSource: EventSource | null = null;
 
-  // Instead of spawning a local ClaudeAdapter, POST to the container worker
   async startAgent(opts: AgentStartOpts): Promise<void> {
     if (!this.container) {
       this.container = await containerManager.create({ ... });
@@ -318,13 +292,8 @@ export class ContainerSessionRunner extends EventEmitter {
   }
 
   private connectEventStream(): void {
-    // Connect to container's SSE endpoint
-    // Parse events and emit via this.emitMessage() — same as SessionRunner
-    // Handles reconnection if connection drops
   }
 
-  // Terminal, preview, etc. follow the same pattern:
-  // method call → HTTP request to container worker
 }
 ```
 
@@ -376,7 +345,6 @@ app.all("/preview/:sessionId/:port/*", async (request, reply) => {
   const targetPort = Number(port);
   const target = request.url.replace(`/preview/${sessionId}/${port}`, "") || "/";
 
-  // Forward to container's bridge IP — no host port mapping needed
   const proxyReq = http.request({
     hostname: sc.containerIp,
     port: targetPort,
@@ -404,8 +372,6 @@ The current `SessionRunner.buildPreviewStatus()` returns `url: "http://localhost
 
 ```typescript
 buildPreviewStatus(): WsServerMessage {
-  // Worker reports: { running: true, ports: [5173, 8080] }
-  // Orchestrator constructs proxy URL for the client:
   return {
     type: "preview_status",
     running: true,
@@ -424,10 +390,8 @@ The client receives a relative URL and iframes it directly — same-origin, no C
 With containers, Claude CLI runs with `cwd: /workspace` (the container's mount point). File paths in tool calls become `/workspace/src/App.tsx` instead of `/workspace/sessions/{uuid}/src/App.tsx`. The client-side `sessionRelativePath()` utility (`src/client/path-utils.ts`) simplifies from stripping a UUID-containing prefix to just stripping `/workspace/`:
 
 ```typescript
-// Before (current): "/workspace/sessions/28e2fa34-.../src/App.tsx" → "src/App.tsx"
 const SESSION_PREFIX_RE = /^\/workspace\/sessions\/[^/]+\//;
 
-// After (containerized): "/workspace/src/App.tsx" → "src/App.tsx"
 const SESSION_PREFIX_RE = /^\/workspace\//;
 ```
 
@@ -526,16 +490,16 @@ These operations stay on the **orchestrator**, which has full read-write access 
 **Regular session** (standalone git repo):
 ```typescript
 Binds: [
-  `${sessionDir}:/workspace:rw`,          // session's project files
-  `${credentialsDir}:/credentials:ro`,     // Claude CLI auth, GitHub token
+  `${sessionDir}:/workspace:rw`,
+  `${credentialsDir}:/credentials:ro`,
 ]
 ```
 
 **Worktree session** (references shared repo):
 ```typescript
 Binds: [
-  `${sessionDir}:/workspace:rw`,          // worktree checkout
-  `${sharedRepoDir}:/repo:ro`,            // shared git object store (read-only)
+  `${sessionDir}:/workspace:rw`,
+  `${sharedRepoDir}:/repo:ro`,
   `${credentialsDir}:/credentials:ro`,
 ]
 ```
@@ -571,14 +535,7 @@ These files/directories are orchestrator-owned and never mounted into session co
 The session worker needs a way to request cross-session git operations from the orchestrator. The worker exposes these as "please do this on my behalf" requests over the IPC channel:
 
 ```typescript
-// In session-worker.ts — when Claude CLI runs `git push`:
-// The worker intercepts git operations that need shared repo access
-// and proxies them to the orchestrator.
-
-// Worker → Orchestrator (reverse IPC call)
 app.post("/git-proxy/push", async (req) => {
-  // Worker cannot push directly (shared repo is read-only mount).
-  // Forward to orchestrator, which has rw access.
   return { proxy: true, operation: "push", args: req.body };
 });
 ```
@@ -594,19 +551,14 @@ Separate dev and prod Dockerfiles build the session worker image (`Dockerfile.se
 ```dockerfile
 FROM node:22-slim
 
-# Install git, common build tools
 RUN apt-get update && apt-get install -y git build-essential python3 && rm -rf /var/lib/apt/lists/*
 
-# Install Claude CLI
 RUN npm install -g @anthropic-ai/claude-code
 
-# Copy session worker code
 COPY dist/session-worker.js /app/
 COPY node_modules /app/node_modules/
 
 WORKDIR /workspace
-# IPC server port — no EXPOSE needed since we use bridge networking,
-# but documented here for clarity. Preview ports are dynamic.
 EXPOSE 9100
 
 CMD ["node", "/app/session-worker.js"]
@@ -635,18 +587,15 @@ Container startup adds ~1-2s latency vs the current ~10ms process spawn. This is
 For development and environments without Docker:
 
 ```typescript
-// In buildApp() / AppDeps:
 interface AppDeps {
-  // ... existing fields ...
-  useContainers?: boolean;  // default: false (auto-detect Docker availability)
+  useContainers?: boolean;
 }
 
-// In SessionRunnerRegistry:
 getOrCreate(sessionId, sessionDir, agentId) {
   if (this.useContainers) {
-    return new ContainerSessionRunner({ ... });  // proxy to Docker container
+    return new ContainerSessionRunner({ ... });
   }
-  return new SessionRunner({ ... });  // current behavior, direct process spawn
+  return new SessionRunner({ ... });
 }
 ```
 
@@ -890,13 +839,10 @@ Containerization unlocks the ability to run Claude CLI with `--dangerously-skip-
 **Implementation:** Add `--dangerously-skip-permissions` as a per-session option, gated on `useContainers: true`. When the orchestrator creates a container, it passes a `skipPermissions` flag in the `ContainerConfig`. The session worker includes the flag when spawning Claude CLI. In fallback mode (`useContainers: false`), the flag is never set — Claude's built-in permission system remains active.
 
 ```typescript
-// In ContainerConfig:
 interface ContainerConfig {
-  // ... existing fields ...
-  skipPermissions?: boolean;  // default: true when useContainers is true
+  skipPermissions?: boolean;
 }
 
-// In session-worker.ts, when spawning Claude CLI:
 const args = ["--output-format", "stream-json"];
 if (process.env.SKIP_PERMISSIONS === "true") {
   args.push("--dangerously-skip-permissions");

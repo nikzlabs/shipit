@@ -96,7 +96,6 @@ Each store follows the same pattern: state + actions, created with `create`:
 import { create } from "zustand";
 
 interface DeployState {
-  // ── State ──
   showModal: boolean;
   targets: DeployTargetInfo[];
   configStatus: Record<string, { configured: boolean; projectName?: string }>;
@@ -105,7 +104,6 @@ interface DeployState {
   lastError: string | null;
   history: DeploymentRecord[];
 
-  // ── Actions ──
   openModal: () => void;
   closeModal: () => void;
   setStatus: (phase: DeployPhase | null) => void;
@@ -116,7 +114,6 @@ interface DeployState {
   setHistory: (history: DeploymentRecord[]) => void;
   reset: () => void;
 
-  // ── Async actions (API calls) ──
   fetchSetup: (sessionId: string) => Promise<void>;
   configure: (sessionId: string, targetId: string, credentials: Record<string, string>, projectName?: string) => Promise<void>;
   deleteConfig: (sessionId: string, targetId: string) => Promise<void>;
@@ -195,7 +192,6 @@ export const useDeployStore = create<DeployState>((set, get) => ({
 Some actions span multiple stores (e.g., `handleSessionNew` resets session, git, file, thread, and terminal state). These are handled by **orchestration functions** — plain functions that call actions on multiple stores:
 
 ```ts
-// src/client/stores/actions/session-actions.ts
 import { useSessionStore } from "../session-store.js";
 import { useGitStore } from "../git-store.js";
 import { useFileStore } from "../file-store.js";
@@ -251,7 +247,6 @@ The `send` function (from `useWebSocket`) and `navigate` (from React Router) can
 **Option B: Register at connect time.** The WS hook registers `send` into a shared ref on connect:
 
 ```ts
-// src/client/stores/ws-bridge.ts
 let sendFn: ((msg: WsClientMessage) => void) | null = null;
 export function registerSend(fn: (msg: WsClientMessage) => void) { sendFn = fn; }
 export function getSend() { return sendFn!; }
@@ -266,7 +261,6 @@ Store actions call `getSend()` instead of receiving `send` as a parameter. This 
 `useMessageHandler` becomes a thin dispatcher that routes incoming WS messages to store actions:
 
 ```ts
-// src/client/hooks/useMessageHandler.ts (after migration)
 export function useMessageHandler(lastMessage: MessageEvent | null) {
   useEffect(() => {
     if (!lastMessage) return;
@@ -285,7 +279,6 @@ export function useMessageHandler(lastMessage: MessageEvent | null) {
       case "agent_event":
         useSessionStore.getState().handleAgentEvent(data.event);
         break;
-      // ... each case is 1-3 lines calling a store action
     }
   }, [lastMessage]);
 }
@@ -620,7 +613,6 @@ Each store gets a `*.test.ts` file testing:
 Example:
 
 ```ts
-// src/client/stores/deploy-store.test.ts
 import { useDeployStore } from "./deploy-store.js";
 
 beforeEach(() => {

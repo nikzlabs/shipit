@@ -134,7 +134,7 @@ Phase 1's GraphQL query for the PR status poller returns `CheckRun { name, statu
 commits(last: 1) {
   nodes {
     commit {
-      oid             # NEW — head SHA for attempt reset detection
+      oid
       additions
       deletions
       statusCheckRollup { ... }
@@ -153,8 +153,8 @@ commits(last: 1) {
   name
   status
   conclusion
-  title           # one-line summary (e.g. "3 tests failed")
-  detailsUrl      # link to the check run on GitHub
+  title
+  detailsUrl
 }
 ```
 
@@ -208,12 +208,10 @@ async function fetchCIFailureLogs(
   const logs: CIFailureLog[] = [];
 
   for (const check of failedChecks) {
-    // Try annotations first
     const annotations = await githubAuth.getCheckRunAnnotations(owner, repo, check.databaseId);
 
     let logExcerpt = "";
     if (annotations.length === 0) {
-      // Fall back to raw job logs (last 100 lines)
       logExcerpt = await githubAuth.getJobLogs(owner, repo, check.databaseId);
     }
 
@@ -235,8 +233,8 @@ async function fetchCIFailureLogs(
 ```typescript
 interface CIFailureLog {
   checkName: string;
-  conclusion: string;         // "failure", "cancelled", "timed_out"
-  summary: string;            // one-line from CheckRun.title
+  conclusion: string;
+  summary: string;
   annotations: Array<{
     path: string;
     startLine: number;
@@ -244,7 +242,7 @@ interface CIFailureLog {
     message: string;
     annotationLevel: "failure" | "warning" | "notice";
   }>;
-  logExcerpt: string;         // last 100 lines of raw log (fallback)
+  logExcerpt: string;
 }
 ```
 
@@ -284,8 +282,8 @@ On the `PrStatusPoller`, keyed by session ID:
 ```typescript
 interface AutoFixState {
   enabled: boolean;
-  attemptCount: number;       // resets when head SHA changes
-  lastHeadSha: string;        // tracks which commit's CI we're fixing
+  attemptCount: number;
+  lastHeadSha: string;
   status: "idle" | "running" | "exhausted";
 }
 ```
@@ -351,20 +349,19 @@ The existing `pr_status` SSE event is extended with auto-fix state:
 
 ```typescript
 interface PrStatusSummary {
-  // ... existing fields from phase 1 ...
   checks: {
     state: "pending" | "success" | "failure" | "none";
     total: number;
     passed: number;
     failed: number;
     pending: number;
-    failedChecks: Array<{ name: string; summary: string }>;  // NEW
+    failedChecks: Array<{ name: string; summary: string }>;
   };
-  autoFix: {                                                   // NEW
+  autoFix: {
     enabled: boolean;
     status: "idle" | "running" | "exhausted";
     attemptCount: number;
-    maxAttempts: number;       // always 3
+    maxAttempts: number;
   };
 }
 ```
@@ -394,9 +391,8 @@ Add to the Zustand store:
 
 ```typescript
 interface PrStoreActions {
-  // ... existing ...
-  fixCI: (sessionId: string) => Promise<void>;          // POST /api/sessions/:id/pr/fix-ci
-  toggleAutoFix: (sessionId: string, enabled: boolean) => Promise<void>;  // POST /api/sessions/:id/pr/auto-fix
+  fixCI: (sessionId: string) => Promise<void>;
+  toggleAutoFix: (sessionId: string, enabled: boolean) => Promise<void>;
 }
 ```
 

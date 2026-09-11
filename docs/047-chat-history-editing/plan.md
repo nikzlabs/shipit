@@ -171,14 +171,12 @@ When forking, the handler checks `agent.capabilities.supportsResume` (both retur
 Delete specific messages from persisted chat history by index.
 
 ```typescript
-// Request body
 {
-  messageIndices: number[];  // 0-based indices into the messages array
+  messageIndices: number[];
 }
 
-// Response
 {
-  remainingCount: number;    // messages remaining after deletion
+  remainingCount: number;
 }
 ```
 
@@ -187,12 +185,10 @@ Delete specific messages from persisted chat history by index.
 Generate a summary of the current chat history and create a forked thread.
 
 ```typescript
-// Request body
 {
-  threadId?: string;  // optional: fork from specific thread
+  threadId?: string;
 }
 
-// Response
 {
   newThreadId: string;
   summary: string;
@@ -211,9 +207,6 @@ The compact endpoint:
 #### ChatHistoryManager additions
 
 ```typescript
-// New methods on ChatHistoryManager
-
-/** Remove messages at the given indices. Returns updated message list. */
 deleteMessages(sessionId: string, indices: number[]): PersistedMessage[] {
   const messages = this.load(sessionId);
   const updated = messages.filter((_, i) => !indices.includes(i));
@@ -221,7 +214,6 @@ deleteMessages(sessionId: string, indices: number[]): PersistedMessage[] {
   return updated;
 }
 
-/** Replace the entire history (used after compact/fork). */
 replace(sessionId: string, messages: PersistedMessage[]): void {
   this.save(sessionId, messages);
 }
@@ -230,14 +222,11 @@ replace(sessionId: string, messages: PersistedMessage[]): void {
 #### Service layer
 
 ```typescript
-// src/server/services/chat-history-editing.ts
-
 import type { ChatHistoryManager } from "../chat-history.js";
 import type { ThreadManager } from "../threads.js";
 import type { PersistedMessage } from "../chat-history.js";
 import { ServiceError } from "./types.js";
 
-/** Delete messages by index from a session's chat history. */
 export function deleteMessages(
   chatHistoryManager: ChatHistoryManager,
   sessionId: string,
@@ -256,7 +245,6 @@ export function deleteMessages(
   return { remaining, removedCount: indices.length };
 }
 
-/** Generate a summary and fork to a new thread with compacted context. */
 export async function compactAndFork(
   chatHistoryManager: ChatHistoryManager,
   threadManager: ThreadManager,
@@ -274,7 +262,6 @@ export async function compactAndFork(
     throw new ServiceError(400, "Not enough messages to compact");
   }
 
-  // Format messages for summarization
   const formatted = messages
     .map((m) => `${m.role}: ${m.text}`)
     .join("\n\n");
@@ -283,23 +270,19 @@ export async function compactAndFork(
 
   const summary = await generateText(prompt);
 
-  // Estimate tokens (rough: ~4 chars per token)
   const originalTokenEstimate = Math.ceil(formatted.length / 4);
   const compactedTokenEstimate = Math.ceil(summary.length / 4);
 
-  // Create checkpoint and fork thread
   const threads = threadManager.listThreads(sessionId);
   const activeThread = threads.find((t) => t.id === threads[0]?.id);
   const messageIndex = messages.length - 1;
 
-  // Fork via thread manager
   const newThreadId = threadManager.forkThread(sessionId, {
     messageIndex,
-    commitHash: "", // Will be filled by the handler with actual git state
+    commitHash: "",
     label: "Compacted context",
   });
 
-  // Replace new thread's chat history with summary
   const compactedHistory: PersistedMessage[] = [
     {
       role: "user",
@@ -335,7 +318,7 @@ interface ChatHistoryEditorProps {
   onDelete: (indices: number[]) => void;
   onCompact: () => void;
   onCancel: () => void;
-  isCompacting: boolean;  // loading state during compact API call
+  isCompacting: boolean;
 }
 ```
 
