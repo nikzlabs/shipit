@@ -457,12 +457,9 @@ describe("resolving a retired model (req 13, phase 8)", () => {
   });
 
   it("leaves NO mode that offered a retired model without a record for it", () => {
-    // The invariant loops above iterate `mode.retired`, so a mode that dropped a
-    // model and declared nothing has nothing to iterate and passes in silence —
-    // which is how two of these five shipped missing. Named by hand for that
-    // reason: a derived list would come from the records whose absence is the bug.
-    // Vercel's two rows are also the per-style split (Flash for Claude Code,
-    // GLM-5.2 for Codex, which speaks only `openai-responses`).
+    // The invariant loops iterate `mode.retired`, so an omitted record passes in
+    // silence — two of these five did. Named by hand for that reason; Vercel's
+    // pair is also the per-style split.
     const RETIRED_V4_PRO: { serviceId: string; billingMode: BillingMode; harness: HarnessId; to: string }[] = [
       { serviceId: "deepseek", billingMode: "key", harness: "claude", to: "deepseek-flash" },
       { serviceId: "deepseek", billingMode: "key", harness: "codex", to: "deepseek-flash" },
@@ -470,8 +467,7 @@ describe("resolving a retired model (req 13, phase 8)", () => {
       { serviceId: "openrouter", billingMode: "key", harness: "codex", to: "deepseek/deepseek-v4-flash" },
       { serviceId: "vercel", billingMode: "key", harness: "claude", to: "deepseek/deepseek-v4-flash" },
       { serviceId: "vercel", billingMode: "key", harness: "codex", to: "zai/glm-5.2" },
-      // OpenCode's two products declare `openai-chat-completions` only, which
-      // Claude Code does not speak — so `opencode` is the harness there.
+      // OpenCode is `openai-chat-completions` only, which Claude Code does not speak.
       { serviceId: "opencode", billingMode: "key", harness: "opencode", to: "deepseek-v4-flash" },
       { serviceId: "opencode", billingMode: "sub", harness: "opencode", to: "deepseek-v4-flash" },
     ];

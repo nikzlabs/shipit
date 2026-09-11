@@ -325,7 +325,6 @@ const claude: AgentOption = {
   reasoning: { label: "Reasoning", options: [{ value: "high", label: "High" }] },
 };
 
-/** A second harness, so "which role am I looking at" has a visible answer. */
 const codex: AgentOption = {
   id: "codex",
   name: "Codex",
@@ -347,7 +346,6 @@ const codex: AgentOption = {
   reasoning: { label: "Reasoning effort", options: [{ value: "low", label: "Low" }] },
 };
 
-/** …and a role that runs on it, so switching roles switches all three parameters. */
 const TRIAGE: RoleView = pinnedRole({
   name: "triage",
   params: {
@@ -530,9 +528,8 @@ describe("the composer before a session is active (docs/272 reqs 5, 12)", () => 
   });
 
   it("shows the parameters of the role JUST PICKED, not the one before it", async () => {
-    // `/{repo}/new`: a warm session is bound but has no row, so the pickers read
-    // `activeAgentId`. The wrapper reads it from the store the way `App.tsx` does,
-    // or the fix would have nothing to move.
+    // `/{repo}/new`: a warm session is bound but has no row. The wrapper reads
+    // `activeAgentId` from the store the way `App.tsx` does, so the fix can move it.
     localStorage.setItem("shipit-role-name", "deep dive");
     localStorage.setItem("vibe-agent-id", "claude");
     localStorage.setItem(
@@ -587,9 +584,7 @@ describe("the composer before a session is active (docs/272 reqs 5, 12)", () => 
   });
 
   it("takes the level from the harness the row NAMES, not from the store's active one", async () => {
-    // With no session bound (Quick Capture), the harness picker previews the seed
-    // while `activeAgentId` belongs to the session behind the overlay. No echo can
-    // reach this case, so it isolates the reasoning control's own harness rule.
+    // No session bound, so no echo can reach it: this isolates the harness rule.
     localStorage.setItem("shipit-role-name", "triage");
     localStorage.setItem("shipit-reasoning-by-agent", JSON.stringify({ claude: "high" }));
     setRoles([DEEP_DIVE, TRIAGE]);
@@ -616,8 +611,7 @@ describe("the composer before a session is active (docs/272 reqs 5, 12)", () => 
       expect(screen.getByTestId("harness-trigger")).toHaveTextContent("Codex");
     });
     const reasoning = screen.getByTestId("reasoning-trigger");
-    // Both halves: the level itself, and the knob's NAME — each harness calls it
-    // something different, so the label alone says which one is being described.
+    // The knob's name too: each harness calls it something different.
     expect(reasoning).toHaveTextContent("Low");
     expect(reasoning.getAttribute("aria-label")).toBe("Reasoning effort selector");
   });
@@ -962,12 +956,8 @@ describe("ComposerSettingsMenu — the role row (docs/272 req 15)", () => {
   });
 });
 
-/**
- * docs/272 req 15 in the NARROW layout, where a role's parameters are reached
- * without unmounting anything — so an optimistic pick outlived the role that
- * replaced it. `useNarrowContainer` reports `false` without `ResizeObserver`
- * (jsdom), so this block stubs it to opt in to the narrow row.
- */
+// `useNarrowContainer` reports `false` without `ResizeObserver` (jsdom), so this
+// block stubs it to opt in to the narrow row.
 describe("a role folds away hand-picked parameters in the narrow menu too", () => {
   class ResizeObserverStub {
     observe(): void {}

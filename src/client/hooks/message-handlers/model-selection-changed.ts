@@ -88,14 +88,10 @@ export const handleModelSelectionChanged: Handler<WsModelSelectionChanged> = (_c
   if (session.sessionId === data.sessionId && !started) {
     saveRoleName(data.roleName ?? undefined);
   }
-  // docs/272 — on `/{repo}/new` the warm session has no row, so `displayedHarness`
-  // reads `activeAgentId` instead; `useConnectionSync` only ever syncs that FROM a
-  // row, so nothing moved it there and a role pick left the pickers on the
-  // previous role's harness. Not written to localStorage: `setActiveAgentId`'s
-  // contract is that an internal sync never moves the new-session default.
-  //
-  // Skills are per-backend, so a harness that actually moved invalidates them —
-  // the same refetch `handleAgentChange` does for an explicit pick.
+  // docs/272 — on `/{repo}/new` the warm session has no row, so the pickers read
+  // `activeAgentId`, which `useConnectionSync` only syncs FROM a row. Not
+  // persisted: an internal sync must not move the new-session default. Skills are
+  // per-backend, so a harness that moved invalidates them.
   if (session.sessionId === data.sessionId) {
     const ui = useUiStore.getState();
     if (ui.activeAgentId !== data.agentId) {

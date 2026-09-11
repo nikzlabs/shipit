@@ -59,9 +59,7 @@ describe("formatFileContext", () => {
 
 describe("imageAttachmentRefusal (planning#460)", () => {
   const PNG: ImageAttachment[] = [{ data: "aGk=", mediaType: "image/png", filename: "shot.png" }];
-  // V4 Pro was retired on 2026-09-10. This row is the other text-only DeepSeek
-  // the vision map names, and it declares `anthropic-messages`, so a Claude
-  // session can still be pinned to it — which is what these cases need.
+  // Text-only, and declares `anthropic-messages`, so Claude can be pinned to it.
   const TEXT_ONLY = { serviceId: "openrouter", billingMode: "key" as const, modelId: "deepseek/deepseek-v4-flash" };
   const VISION = { serviceId: "anthropic", billingMode: "sub" as const, modelId: "claude-sonnet-5" };
 

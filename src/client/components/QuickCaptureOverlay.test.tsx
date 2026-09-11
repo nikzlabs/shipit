@@ -439,10 +439,8 @@ describe("QuickCaptureOverlay", () => {
   });
 
   it("creates with the ROLE's model and level, even after the role is taken back off", () => {
-    // docs/272 — the creation params read this component's state, and a role pick
-    // used to move only the seeds. The server hid it while the role was in force
-    // (it writes the role's parameters over what was sent); "No role" removes that
-    // cover. The level is the same defect through the other field.
+    // The creation params read this component's state, which a role pick used not
+    // to move. The server hid it until "No role" removed the override.
     localStorage.setItem("vibe-agent-id", "claude");
     localStorage.setItem("vibe-model-id", "claude-opus-4-8");
     useSettingsStore.setState({

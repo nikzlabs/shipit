@@ -250,10 +250,8 @@ export const SERVICES = [
         // not simply be left alone — a pin on it kept taking turns while ShipIt
         // named the wrong model, priced it at a retired rate and refused images
         // V4.1 can read. A retirement record fixes all three (req 13).
-        //
-        // V4 Pro left the same day, so both records point at V4.1 Flash — the only
-        // row that remains here. The vendor's own table agrees: from 2026-09-14 it
-        // routes `deepseek-v4-pro` to V4.1 Flash and bills it at that rate.
+        // V4 Pro left the same day; both point at V4.1 Flash, the only row left.
+        // The vendor routes `deepseek-v4-pro` there itself from 2026-09-14.
         retired: [
           {
             id: "deepseek-v4-flash",
@@ -343,8 +341,7 @@ export const SERVICES = [
             styles: [A_MSG, O_CC],
             successors: { [A_MSG]: "anthropic/claude-fable-5.1", [O_CC]: "anthropic/claude-fable-5.1" },
           },
-          // V4 Pro left the catalogue on 2026-09-10; Flash carries all three of
-          // its styles here.
+          // V4 Pro left on 2026-09-10; Flash carries all three of its styles here.
           {
             id: "deepseek/deepseek-v4-pro",
             styles: [A_MSG, O_CC, O_RESP],
@@ -448,8 +445,7 @@ export const SERVICES = [
             carriers: ["opencode", "codex"],
           },
         ],
-        // V4 Pro left on 2026-09-10; both rows here are `openai-chat-completions`
-        // only, so Flash succeeds it under that one style.
+        // V4 Pro left on 2026-09-10; these rows are `openai-chat-completions` only.
         retired: [
           {
             id: "deepseek-v4-pro",
@@ -489,8 +485,7 @@ export const SERVICES = [
             carriers: ["opencode", "codex"],
           },
         ],
-        // V4 Pro left on 2026-09-10; both rows here are `openai-chat-completions`
-        // only, so Flash succeeds it under that one style.
+        // V4 Pro left on 2026-09-10; these rows are `openai-chat-completions` only.
         retired: [
           {
             id: "deepseek-v4-pro",

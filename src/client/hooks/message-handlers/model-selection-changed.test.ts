@@ -136,8 +136,7 @@ describe("handleModelSelectionChanged", () => {
     });
   });
 
-  // docs/272 — on `/{repo}/new` the warm session has no row, so this field is what
-  // the composer's pickers read; nothing else moved it there.
+  // On `/{repo}/new` the warm session has no row, so this is what the pickers read.
   describe("the ui store's active harness", () => {
     it("follows the answer for the session on screen", () => {
       useUiStore.setState({ activeAgentId: "claude" });

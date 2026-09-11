@@ -405,9 +405,8 @@ export function MessageInput({
     });
   };
   const showRoleControl = !!onRoleChange && (hasRoles || !!roleInForce);
-  // The harness the reasoning control describes: the one the harness picker
-  // beside it names. Reading `activeAgentId` here was a second rule, and the two
-  // disagree wherever no session is bound (Quick Capture previews the seed).
+  // The harness the picker beside it names: `activeAgentId` was a second rule,
+  // and the two disagree wherever no session is bound.
   const displayedHarnessAgent = useHarnessPickerState({
     agents,
     activeAgentId,
@@ -1248,11 +1247,8 @@ export function MessageInput({
                 )}
 
                 <ComposerSettingsMenu
-                  // Keyed on the session so an optimistic pick can't linger
-                  // across a switch — and on the role, which the wide row does
-                  // not need: a role pick unmounts its selectors, while this menu
-                  // keeps its hooks and only hides their rows, so the picks
-                  // outlived the role that replaced them.
+                  // Keyed on the role too: this menu keeps its picker hooks mounted
+                  // where the wide row unmounts them, so a pick outlived the role.
                   key={`${sessionId ?? "__new__"}:${roleInForce ?? ""}`}
                   agents={agents}
                   activeAgentId={activeAgentId}

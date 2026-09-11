@@ -469,11 +469,8 @@ export function QuickCaptureOverlay({
                 const role = useSettingsStore.getState().roles.find((r) => r.name === roleName);
                 applyRoleSeeds(role);
                 clearParkedHarness();
-                // The creation params read this state, not the seed, so the role
-                // has to move it too — `selectedAgentId` is derived per render and
-                // followed already, these two did not. The level is cleared rather
-                // than set, as the harness handler clears it: `send` falls back to
-                // the per-harness seed `applyRoleSeeds` has just written.
+                // The creation params read this state, not the seed. The level is
+                // cleared, not set: `send` falls back to the per-harness seed.
                 if (role?.resolved) setSelectedModel(role.resolved.modelId);
                 setSelectedReasoning(undefined);
               }
