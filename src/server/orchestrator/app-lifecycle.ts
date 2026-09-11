@@ -763,7 +763,23 @@ export function createPrStatusPoller(
       if (!runner) {
         return { outcome: "deferred", lastError: "no_runner", didWork: false };
       }
-      const git = createGitManager(runner.sessionDir);
+      // `new GitManager(dir)` throws SYNCHRONOUSLY from simple-git's
+      // gitInstanceFactory when the directory is absent, and the disk janitor
+      // reclaims an idle session's tree routinely (docs/161). Outside this
+      // guard the rejection reached the manager's catch-all, which records an
+      // "error" and SPENDS one of the three attempts — so a checkout that was
+      // merely evicted burnt the session's whole auto-resolve budget. Deferred
+      // costs no attempt and retries after the shorter cooldown.
+      let git: GitManager;
+      try {
+        git = createGitManager(runner.sessionDir);
+      } catch (err) {
+        console.log(
+          `[auto-resolve] ${sessionId}: skipping — checkout unavailable at ${runner.sessionDir}:`,
+          getErrorMessage(err),
+        );
+        return { outcome: "deferred", lastError: "no_checkout", didWork: false };
+      }
       return await runAutoResolveAttempt(
         {
           git,

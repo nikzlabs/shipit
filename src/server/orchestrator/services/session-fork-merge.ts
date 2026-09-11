@@ -211,6 +211,20 @@ export async function forkSession(
   };
 }
 
+/** The source session's checkout, or undefined when it is not on disk. */
+function openSourceCheckout(
+  createGitManager: (dir: string) => GitManager,
+  dir: string | undefined,
+): GitManager | undefined {
+  if (!dir) return undefined;
+  try {
+    return createGitManager(dir);
+  } catch (err) {
+    console.log(`[fork-merge] Source checkout unavailable at ${dir}; merging from origin:`, String(err));
+    return undefined;
+  }
+}
+
 export async function mergeSession(
   sessionManager: SessionManager,
   createGitManager: (dir: string) => GitManager,
@@ -231,8 +245,17 @@ export async function mergeSession(
   let mergeRef = `origin/${sourceSession.branch}`;
   let fetched = false;
 
-  if (sourceSession.workspaceDir) {
-    const sourceGit = createGitManager(sourceSession.workspaceDir);
+  // The source session's checkout is an OPTIMIZATION here: it lets the merge pick up
+  // commits that have not reached the remote. `new GitManager(dir)` throws
+  // SYNCHRONOUSLY from simple-git's gitInstanceFactory on an absent directory, and the
+  // disk janitor reclaims an idle session's tree routinely (docs/161) — so outside this
+  // guard an evicted source turned the whole merge into an HTTP 500, even when
+  // `origin/<branch>` held everything the merge needed. Without the checkout, skip the
+  // local fallbacks too and merge from origin.
+  const sourceDir = sourceSession.workspaceDir;
+  const sourceGit = openSourceCheckout(createGitManager, sourceDir);
+
+  if (sourceDir && sourceGit) {
     try {
       await sourceGit.push("origin", sourceSession.branch);
       const credential = await resolveTreeRemoteCredential(activeSessionDir, "origin", resolveRemoteCredential);
@@ -246,7 +269,7 @@ export async function mergeSession(
     if (!fetched) {
       const remoteName = `merge-source-${trimmedId.slice(0, 8)}`;
       try {
-        await sg.addRemote(remoteName, sourceSession.workspaceDir);
+        await sg.addRemote(remoteName, sourceDir);
       } catch {
         // A previous attempt may have left the remote.
       }
@@ -257,6 +280,17 @@ export async function mergeSession(
       } catch {
         // Let merge report whether an existing ref is usable.
       }
+    }
+  } else {
+    // No checkout to push from — but a checkout is only ever deleted once its branch
+    // is on the remote (`ensureCheckoutDurable`), so origin holds the work. Refresh
+    // the tracking ref, which the push branch above would otherwise have done.
+    try {
+      const credential = await resolveTreeRemoteCredential(activeSessionDir, "origin", resolveRemoteCredential);
+      const originGit = credential ? credentialledGit(activeSessionDir, credential) : sg;
+      await originGit.fetch("origin", sourceSession.branch);
+    } catch {
+      // Let merge report whether an existing ref is usable.
     }
   }
 
