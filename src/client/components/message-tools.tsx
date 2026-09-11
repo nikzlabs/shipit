@@ -528,10 +528,16 @@ function ToolOutputModal({ toolName, input, toolUseId, bodyTruncated, startedAt,
   const filePath = typeof resolvedInput.file_path === "string" ? resolvedInput.file_path : undefined;
   return (
     <Dialog open onOpenChange={(isOpen) => { if (!isOpen) onClose(); }}>
-    <DialogContent className="w-[min(90vw,56rem)] max-h-[80vh] flex flex-col" aria-label="Tool output">
-      {/* `pr-10` keeps the time clear of `DialogContent`'s own close button,
-          which is absolutely positioned over this row at `right-3`. */}
-      <div className="flex items-center gap-2 pl-4 pr-10 py-3 border-b border-(--color-border-primary)">
+    {/* The header row below is 40px tall, so the close button — a 28px box —
+        centres on it at (40 - 28) / 2 = 6px rather than the 12px default, which
+        left it 6px low and grazing the row's bottom border. */}
+    <DialogContent
+      className="w-[min(90vw,56rem)] max-h-[80vh] flex flex-col [--dialog-close-top:0.375rem]"
+      aria-label="Tool output"
+    >
+      {/* `pr-12` keeps the time clear of that close button (12px inset + a 28px
+          box = 40px), with the row's own 8px gap left between the two. */}
+      <div className="flex items-center gap-2 pl-4 pr-12 py-3 border-b border-(--color-border-primary)">
         <span className="text-xs font-semibold text-(--color-text-primary) shrink-0">Tool Call</span>
         {calledAt ? (
           <span
