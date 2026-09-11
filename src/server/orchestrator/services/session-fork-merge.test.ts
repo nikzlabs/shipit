@@ -100,6 +100,30 @@ describe("session-fork-merge: mergeSession ownership handoff (planning#146 analo
     );
   });
 
+  it("merges from origin when the source session's checkout has been evicted", async () => {
+    // The disk janitor reclaims an idle session's tree, and only ever after its branch
+    // reached the remote. `new GitManager(<absent dir>)` throws synchronously, so an
+    // unguarded construction turned this whole merge into an HTTP 500.
+    const { bareDir, workDir: activeDir } = setupRepoWithRemote(tmpDir, "active");
+    const sourceDir = path.join(tmpDir, "source");
+    execSync(`git clone ${bareDir} ${sourceDir}`, { stdio: "pipe" });
+    execSync("git checkout -b feature", { cwd: sourceDir, stdio: "pipe" });
+    fs.writeFileSync(path.join(sourceDir, "feature.txt"), "feature\n");
+    execSync("git add -A && git commit -m Feature", { cwd: sourceDir, stdio: "pipe" });
+    execSync("git push -u origin feature", { cwd: sourceDir, stdio: "pipe" });
+    fs.rmSync(sourceDir, { recursive: true, force: true });
+
+    const result = await mergeSession(
+      makeStubSessionManager({ branch: "feature", workspaceDir: sourceDir }),
+      (dir) => new GitManager(dir),
+      activeDir,
+      "source-id",
+    );
+
+    expect(result.success).toBe(true);
+    expect(fs.readFileSync(path.join(activeDir, "feature.txt"), "utf8")).toBe("feature\n");
+  });
+
   it("hands ownership back even when the merge throws (finally runs)", async () => {
     const { bareDir, workDir: activeDir } = setupRepoWithRemote(tmpDir, "active");
     const sourceDir = path.join(tmpDir, "source");

@@ -650,11 +650,13 @@ export async function runAutoResolveAttempt(
   const timeoutMs = deps.timeoutMs ?? AUTO_RESOLVE_ATTEMPT_TIMEOUT_MS;
 
   let settled = false;
+  let timedOut = false;
   let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
   const timeoutPromise = new Promise<AutoResolveResult>((resolve) => {
     timeoutHandle = setTimeout(() => {
       if (settled) return;
       settled = true;
+      timedOut = true;
       void (async () => {
         try { runner.getAgent()?.kill(); } catch { /* defensive */ }
         runner.setAgent(null);
@@ -689,7 +691,14 @@ export async function runAutoResolveAttempt(
     }
   })();
 
-  const winner = await Promise.race([flowPromise, timeoutPromise]);
+  // Once the deadline fires, the attempt IS a timeout. The abort it performs runs
+  // against a tree the flow may still be rebasing, so the interrupted flow reports
+  // the wreckage ("your local changes would be overwritten by merge") and, being
+  // pre-spawn, reports it as `deferred` — which costs no attempt and retries into
+  // the same timeout every minute. Whoever wins the race, the timeout's verdict is
+  // the true one; awaiting it also waits for its abort to finish.
+  let winner = await Promise.race([flowPromise, timeoutPromise]);
+  if (timedOut) winner = await timeoutPromise;
   settled = true;
   if (timeoutHandle) clearTimeout(timeoutHandle);
   handWorkspaceBackToWorker(runner.sessionDir);
