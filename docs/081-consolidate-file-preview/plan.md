@@ -39,10 +39,10 @@ FilePreviewModal
 ```ts
 interface FilePreviewModalProps {
   filePath: string;
-  content: string | null;       // text content or base64 data URI for images
+  content: string | null;
   fileType: "markdown" | "code" | "image" | "binary";
   isLoading?: boolean;
-  actions?: Array<{             // optional header action buttons
+  actions?: Array<{
     label: string;
     onClick: () => void;
     variant?: "primary" | "default";
@@ -72,16 +72,12 @@ Add a single `openPreview` action that any UI context calls:
 
 ```ts
 interface FileState {
-  // ... existing state ...
-
-  // New unified preview state
   previewFile: string | null;
   previewContent: string | null;
   previewType: "markdown" | "code" | "image" | "binary" | null;
   previewLoading: boolean;
   previewActions: Array<{ label: string; onClick: () => void; variant?: string }>;
 
-  // New unified actions
   openPreview: (sessionId: string, filePath: string, opts?: {
     actions?: Array<{ label: string; onClick: () => void; variant?: string }>;
   }) => Promise<void>;
@@ -102,8 +98,6 @@ Update `getFileContent()` in `services/files.ts` to return base64-encoded conten
 const IMAGE_EXTENSIONS = new Set(["png", "jpg", "jpeg", "gif", "webp", "svg"]);
 
 export async function getFileContent(dir: string, filePath: string) {
-  // ... existing path safety and size checks ...
-
   const ext = path.extname(filePath).slice(1).toLowerCase();
   if (IMAGE_EXTENSIONS.has(ext)) {
     const buf = await fs.readFile(safePath);
@@ -113,8 +107,6 @@ export async function getFileContent(dir: string, filePath: string) {
       isImage: true,
     };
   }
-
-  // ... existing text/binary detection ...
 }
 ```
 

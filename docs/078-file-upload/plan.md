@@ -16,11 +16,11 @@ Users often have local assets they want the agent to work with — design mockup
 ### Directory layout inside the container
 
 ```
-/user/                          # Git repo / session workspace (existing, unchanged)
+/user/
   src/
   package.json
   ...
-/uploads/                       # Uploaded files — outside the repo entirely
+/uploads/
   screenshot.png
   data.csv
   starter-kit.zip
@@ -212,7 +212,7 @@ Uploaded files use a new `UploadRef` type, distinct from `FileContextRef`:
 
 ```typescript
 interface UploadRef {
-  path: string;       // absolute container path, e.g. "/uploads/data.csv"
+  path: string;
   type: "upload";
 }
 ```
