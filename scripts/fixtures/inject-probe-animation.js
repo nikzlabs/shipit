@@ -1,22 +1,4 @@
-// `--eval` script for scripts/trace-idle-frames.mjs — puts a real page into the
-// "something is animating" condition without needing an agent turn to be running.
-//
-// It appends a 12x12 rotating square to <html>, i.e. outside the app's React root
-// and with no app ancestor, so nothing about the app's own layout can be blamed
-// for what the animation does. `transform: rotate()` is the same property
-// `.tool-spinner` animates.
-//
-// Two knobs, both from the URL fragment, so one file covers every condition:
-//
-//   #no-cv     also force `content-visibility: visible` everywhere, removing the
-//              internal observers Chrome keeps for `content-visibility: auto`
-//   #no-anim   skip the probe entirely (the idle control)
-//
-// Combine with `--init=scripts/fixtures/neuter-intersection-observer.js` to
-// remove the *other* observer source. The reason the probe must be visible:
-// an offscreen animating element still drives main-thread frames at display rate
-// but produces no compositor frames, so an accidentally-offscreen probe measures
-// a different thing than the one under test.
+// Inject a visible animation outside the React root for idle-frame tracing.
 (async () => {
   const hash = location.hash;
 

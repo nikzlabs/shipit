@@ -14,11 +14,6 @@
   <img src="docs/assets/hero.png" alt="ShipIt: chat, live preview, and the inline PR card in one screen" width="900">
 </p>
 
-<!-- TODO: 60-second demo video / live demo link. Installing means building Docker images, so a video
-     lets people evaluate ShipIt before they spend that. Host it
-     (YouTube/Loom/asciinema or an mp4 in docs/assets/) and link it here as a "▶ Watch the demo" line
-     or a clickable thumbnail right under the hero image. -->
-
 ShipIt is a browser-based, chat-driven IDE for running coding agents through your
 **real engineering loop**.
 

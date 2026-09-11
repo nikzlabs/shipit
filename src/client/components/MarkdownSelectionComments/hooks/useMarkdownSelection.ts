@@ -18,16 +18,6 @@ function blockIndexForNode(node: Node, container: HTMLElement): number | null {
   return Number.isFinite(index) ? index : null;
 }
 
-/**
- * Track the user's live text selection inside the markdown body and keep the
- * pending-comment highlight painted.
- *
- * Floating "Comment" button positioning. Tracks the live selection inside
- * the markdown body and surfaces a tiny button near it. The selection data
- * (quoted text + context + rects) is resolved eagerly on every change so
- * the click handler doesn't have to re-read `window.getSelection()` — see
- * the `SelectionSnapshot` doc for why that matters.
- */
 export function useMarkdownSelection(
   containerRef: RefObject<HTMLDivElement | null>,
   pendingSelection: PendingSelection | null,
@@ -99,11 +89,7 @@ export function useMarkdownSelection(
     return () => document.removeEventListener("selectionchange", handler);
   }, [pendingSelection, containerRef]);
 
-  // Paint a CSS Custom Highlight over the pending range while the comment
-  // input is open. The native selection is dimmed/cleared by browsers once
-  // focus moves to the textarea, so without this the user loses sight of
-  // what they're commenting on. Falls back silently on browsers that don't
-  // support the Highlight API (Chrome 105+, Safari 17.2+, Firefox 140+).
+  // Keep the range visible after focus moves to the comment input.
   // eslint-disable-next-line no-restricted-syntax -- not a data effect; registers a side-effecting CSS highlight
   useEffect(() => {
     if (!pendingSelection) return;

@@ -4,11 +4,6 @@ import { McpTypeSelector } from "./McpTypeSelector.js";
 import { KvEditor } from "./KvEditor.js";
 import type { FormState } from "./utils/payload.js";
 
-/**
- * Add/edit form for a single MCP server. Switches between stdio (command /
- * args / npm package) and http (URL) fields, and embeds the env/header
- * key-value editor. Purely controlled — all state lives in `useMcpFormState`.
- */
 export function McpServerForm({
   form,
   formError,

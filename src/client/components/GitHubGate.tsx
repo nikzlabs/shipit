@@ -11,29 +11,16 @@ import { Logo } from "./Logo.js";
 
 export interface GitHubGateProps {
   onGitHubTokenSubmit: (token: string) => Promise<boolean>;
-  /**
-   * Called once GitHub is connected. This is the gate's dismissal, and it is
-   * the substitution docs/257 makes for the deleted "Get Started" button: the
-   * old wizard's step 1 advanced to step 2 rather than closing only because a
-   * second step was waiting behind it.
-   */
   onComplete: () => void;
 }
 
 interface HeroFeature {
   Icon: ComponentType<IconProps>;
-  /** Tailwind tint classes for the icon tile (subtle bg + matching fg). */
   tint: string;
   lead: string;
   rest: string;
 }
 
-/**
- * Left panel of the split layout. Pitches the product so a first-time user
- * understands what ShipIt is — and why the step they're on matters — before
- * they act. Hidden below `md` (the gate is desktop-first; the right pane stands
- * alone on narrow screens).
- */
 function GateHero({
   title,
   lede,
@@ -81,23 +68,6 @@ const FEATURES: HeroFeature[] = [
   { Icon: RocketLaunchIcon, tint: "bg-(--color-accent-subtle) text-(--color-accent)", lead: "Merge & ship from chat", rest: "— no context-switch." },
 ];
 
-/**
- * docs/257 — the GitHub half of first-run setup, and **only** that half.
- *
- * This is the old `OnboardingWizard` with its second step removed. The two
- * halves of first-run setup separate rather than merge: connecting GitHub keeps
- * today's behaviour **in full, including that it blocks** (docs/257
- * requirements → *Out of scope*), while connecting a harness credential leaves
- * the overlay entirely and becomes {@link HarnessOnboardingPanel}, an inline
- * panel in the conversation view that covers nothing.
- *
- * So there are no step dots, no `initialStep`, and no agent props: one step
- * cannot be a sequence, and the sequence req 4 asks for now lives in the
- * panel's "Add a service" dialog. A revoked token re-gates on the next load
- * exactly as it does now — `App.tsx` keeps the trigger latch that governs that,
- * which is load-bearing for the one case where today it deliberately does *not*
- * re-gate (a user who completed the gate in this same page load).
- */
 export function GitHubGate({ onGitHubTokenSubmit, onComplete }: GitHubGateProps) {
   const handleGitHubTokenSubmit = async (token: string): Promise<boolean | undefined> => {
     const success = await onGitHubTokenSubmit(token);
@@ -110,10 +80,6 @@ export function GitHubGate({ onGitHubTokenSubmit, onComplete }: GitHubGateProps)
       className="fixed inset-0 z-50 flex items-center justify-center bg-(--color-bg-overlay) backdrop-blur-sm p-4 pb-[max(1rem,env(safe-area-inset-bottom))]"
       data-testid="github-gate"
     >
-      {/* Fixed height on desktop so the panel never resizes when the token
-          form's error or help text expands — the right pane scrolls internally
-          instead (see its overflow-y-auto + min-h-0). Height is auto on mobile
-          (single column), capped by max-h-[92vh]. */}
       <div className="w-full max-w-3xl md:h-[520px] max-h-[92vh] overflow-hidden rounded-xl bg-(--color-bg-elevated) border border-(--color-border-secondary) grid md:grid-cols-2">
         <GateHero
           title={
@@ -125,8 +91,6 @@ export function GitHubGate({ onGitHubTokenSubmit, onComplete }: GitHubGateProps)
           features={FEATURES}
         />
 
-        {/* Right pane — min-h-0 lets overflow-y-auto actually scroll inside the
-            fixed-height grid cell instead of stretching the panel. */}
         <div className="p-8 overflow-y-auto min-h-0 flex flex-col gap-6">
           <div className="space-y-2">
             <h2 className="text-xl font-semibold text-(--color-text-primary)">

@@ -4,14 +4,6 @@ import { IssueWriteCard } from "./IssueWriteCard.js";
 import { useIssueWriteStore } from "../stores/issue-write-store.js";
 import type { IssueWriteCard as IssueWriteCardData } from "../../server/shared/types.js";
 
-/**
- * Tests for the redesigned issue-write provenance card (docs/189). The card
- * reads its payload + undo lifecycle from the issue-write store keyed by cardId.
- * These cover: the content-led layout (explicit verb + bold identifier, faint
- * title, verb-specific line 2), the dropped attribution line, and the undone
- * terminal state.
- */
-
 const CARD_ID = "iw-1";
 
 const base: IssueWriteCardData = {
@@ -58,7 +50,6 @@ describe("IssueWriteCard (docs/189)", () => {
     seed({ verb: "comment", content: { comment: "Confirmed on staging." } });
     render(<IssueWriteCard cardId={CARD_ID} />);
     expect(screen.getByText("Commented on")).toBeInTheDocument();
-    // Identifier appears exactly once (no duplicate chip).
     expect(screen.getAllByText("SHI-48")).toHaveLength(1);
     expect(screen.getByText("Rewind handle hugs long user bubbles")).toBeInTheDocument();
     expect(screen.getByText("Confirmed on staging.")).toBeInTheDocument();
@@ -69,13 +60,10 @@ describe("IssueWriteCard (docs/189)", () => {
     seed({
       verb: "comment-edit",
       summary: "edited a comment on SHI-48",
-      // Line 2 is the NEW body — the prior text is one Undo click away, and two
-      // clamped blockquotes would not fit the card.
       content: { comment: "Corrected: it clamps the offset, not the height." },
       undo: { kind: "comment-edit", commentId: "c-1", previousBody: "it clamps the height" },
     });
     render(<IssueWriteCard cardId={CARD_ID} onOpen={onOpen} />);
-    // Distinct from "Commented on" — a rewrite is not a new comment.
     expect(screen.getByText("Edited a comment on")).toBeInTheDocument();
     expect(screen.getByText("Corrected: it clamps the offset, not the height.")).toBeInTheDocument();
     fireEvent.click(screen.getByTestId("issue-write-card"));
@@ -101,8 +89,6 @@ describe("IssueWriteCard (docs/189)", () => {
     const onOpen = vi.fn();
     seed({
       verb: "label-edit",
-      // A label write records tracker CONFIG: the identifier is the label's
-      // name as it now stands, and there is no issue behind it.
       issueId: "",
       identifier: "Bug",
       title: "",
@@ -112,7 +98,6 @@ describe("IssueWriteCard (docs/189)", () => {
     });
     render(<IssueWriteCard cardId={CARD_ID} onOpen={onOpen} />);
     expect(screen.getByText("Edited label")).toBeInTheDocument();
-    // Line 1 shows the name it has NOW, so line 2 has to carry the prior one.
     expect(screen.getByText("bug")).toBeInTheDocument();
     expect(screen.getByText("color → #d73a4a")).toBeInTheDocument();
     fireEvent.click(screen.getByTestId("issue-write-card"));
@@ -159,7 +144,6 @@ describe("IssueWriteCard (docs/189)", () => {
     render(<IssueWriteCard cardId={CARD_ID} onUndo={onUndo} onOpen={onOpen} />);
     fireEvent.click(screen.getByRole("button", { name: /^undo$/i }));
     expect(onUndo).toHaveBeenCalledWith(CARD_ID);
-    // Undo stops propagation so it doesn't also open the issue.
     expect(onOpen).not.toHaveBeenCalled();
   });
 
@@ -167,15 +151,12 @@ describe("IssueWriteCard (docs/189)", () => {
     const onOpen = vi.fn();
     seed();
     render(<IssueWriteCard cardId={CARD_ID} onOpen={onOpen} />);
-    // The whole card is the open affordance — no separate glyph.
     fireEvent.click(screen.getByTestId("issue-write-card"));
     expect(onOpen).toHaveBeenCalledWith({
       tracker: "linear",
       identifier: "SHI-48",
       title: "Rewind handle hugs long user bubbles",
       url: "https://linear.app/x/issue/SHI-48",
-      // A comment write threads the created comment's id so the detail view
-      // lands on that exact comment (planning#105).
       anchorCommentId: "c-1",
     });
   });
@@ -208,7 +189,6 @@ describe("IssueWriteCard (docs/189)", () => {
     expect(screen.getByText(/Commented on SHI-48/)).toBeInTheDocument();
     expect(screen.getByText(/undone/)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /undo/i })).not.toBeInTheDocument();
-    // Line 2 (comment preview) is suppressed in the terminal state.
     expect(screen.queryByText("Confirmed on staging.")).not.toBeInTheDocument();
   });
 

@@ -1,19 +1,11 @@
-# docs/128 — canonical hardened docker-socket-proxy definition for ops sessions.
-#
-# This is the reference/source-of-truth for the read-only Docker proxy. The ops
-# session template (src/server/orchestrator/templates-ops.ts) scaffolds an
-# equivalent docker-compose.yml into the workspace; keep the two in sync.
-#
-# The real /var/run/docker.sock is mounted ONLY into this proxy, never the agent
-# container. The agent reaches it over TCP via DOCKER_HOST=tcp://docker-socket-proxy:2375
-# (set by the orchestrator for kind="ops" sessions). Every mutating or sensitive
-# Docker API endpoint is denied; only read-only inspection is allowed.
+# Keep synchronized with the ops session template in templates-ops.ts.
+# Only this read-only proxy can access the Docker socket.
 services:
   docker-socket-proxy:
     image: tecnativa/docker-socket-proxy:0.3.0
     restart: unless-stopped
     environment:
-      # --- allowed (read-only) ---
+      # Read-only endpoints
       CONTAINERS: 1
       EVENTS: 1
       IMAGES: 1
@@ -22,7 +14,7 @@ services:
       VOLUMES: 1
       VERSION: 1
       PING: 1
-      # --- denied (mutating / sensitive) ---
+      # Mutating or sensitive endpoints
       POST: 0
       BUILD: 0
       COMMIT: 0

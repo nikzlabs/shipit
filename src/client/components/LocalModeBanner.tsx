@@ -1,21 +1,3 @@
-/**
- * LocalModeBanner — shown when the orchestrator runs in `RUNTIME_MODE=local`
- * (the dogfooding ShipIt-in-ShipIt path; see docs/118-shipit-ui-local).
- *
- * Local mode is "production behavior minus the container layer," so several
- * container-backed inner-UI features silently no-op. Rather than let the
- * developer think they're testing functionality they aren't, this banner
- * states plainly what's disabled. The outer ShipIt session container is
- * intact, so the escape hatch for each disabled feature is "use the outer
- * panel" (outer terminal, outer preview, outer file watcher).
- *
- * Dismissible — the dismissal is remembered in localStorage so it doesn't nag
- * across reloads. It re-appears only if the user clears storage.
- *
- * Style: neutral/info (blue), not a warning — local mode is an intentional
- * configuration, not an error state.
- */
-
 import { useState } from "react";
 import { InfoIcon, XIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
@@ -41,7 +23,6 @@ export function LocalModeBanner() {
     try {
       localStorage.setItem(DISMISS_KEY, "1");
     } catch {
-      // Non-critical — dismissal just won't persist across reloads.
     }
     setDismissed(true);
   };

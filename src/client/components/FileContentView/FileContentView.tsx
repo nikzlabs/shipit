@@ -1,15 +1,3 @@
-/**
- * FileContentView — the single content renderer shared by the file-viewer dialog
- * (`FilePreviewModal`) and the Present tab (`PresentPane`), per docs/219.
- *
- * Pure renderer: it dispatches on `ContentKind` + `viewMode` and owns per-kind
- * scroll/padding, but holds NO review/store state of its own — the surface's
- * `useFileReviewControls` hook owns the `file-review-store` and feeds the comment
- * arrays in as props. Each surface keeps its own chrome (header/toggle/footer)
- * and renders `<FileContentView key={filePath|presentId} />` so Monaco/iframe
- * remount cleanly on navigation.
- */
-
 import { MarkdownReviewView } from "./MarkdownReviewView.js";
 import { CodeEditor } from "./CodeEditor.js";
 import { RenderedFrame, svgToMarkup } from "./RenderedFrame.js";
@@ -23,23 +11,12 @@ export interface FileContentViewProps {
   content: string;
   kind: ContentKind;
   sessionId: string;
-  /** "rendered" | "source" — only consulted for html/svg; other kinds ignore it. */
   viewMode: ViewMode;
-  /** When false the content renders read-only (no comment mutation). */
   reviewable: boolean;
-  /** 1-based line to reveal in the code view (e.g. from a `path:line` link). */
   revealLine?: number;
-  /** Selection comments for markdown review (from `useFileReviewControls`). */
   markdownComments: SelectionCommentData[];
-  /** Line comments for the code/source view (from `useFileReviewControls`). */
   codeComments: { id: string; kind: "line"; line: number; text: string }[];
   agentInterfaceFrameRef?: Ref<HTMLIFrameElement>;
-  /**
-   * docs/258 — the element id in a rendered HTML artifact that an agent-authored
-   * pointer named. Only the Present tab passes this; other kinds ignore it
-   * (markdown scrolls in ShipIt's own DOM, and there is no place inside an image
-   * to address).
-   */
   scrollTo?: string;
 }
 
@@ -94,8 +71,6 @@ export function FileContentView({
   }
 
   if (kind === "svg") {
-    // Normalize a `data:` URI to raw markup so source mode shows XML (not the
-    // data-URI string) and the rendered frame hosts the actual SVG.
     const markup = svgToMarkup(content);
     return viewMode === "source" ? (
       <CodeEditor
@@ -131,7 +106,6 @@ export function FileContentView({
     );
   }
 
-  // kind === "code"
   return (
     <CodeEditor
       filePath={filePath}

@@ -1,17 +1,3 @@
-/**
- * GitHubRateLimitBanner — surfaces when the orchestrator's GitHub GraphQL
- * polling is paused because of an upstream rate limit (primary or secondary
- * abuse). Without this banner the symptom of being limited is "PR / CI
- * status just stops updating" with no UI signal as to why.
- *
- * Server-side: `pr-status-poller.ts` skips its tick while limited and
- * pushes `gh_rate_limited` / `gh_rate_limited_cleared` SSE events.
- * `useServerEvents` writes those into `useSettingsStore.githubRateLimit`.
- *
- * Style: yellow/orange (warning), not red — the limit is transient and
- * self-healing once the window resets.
- */
-
 // eslint-disable-next-line no-restricted-imports -- useEffect: interval-based tick for live countdown (external system sync)
 import { useEffect, useState } from "react";
 import { WarningCircleIcon } from "@phosphor-icons/react";

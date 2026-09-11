@@ -36,10 +36,6 @@ afterEach(() => {
 });
 
 describe("IssuesPanel", () => {
-  // Regression for React error #185 (Maximum update depth exceeded): selecting
-  // `issuesByTracker[active] ?? []` with a fresh `[]` literal made
-  // useSyncExternalStore see a new snapshot every render and loop forever — the
-  // exact state on tab open, before the first fetch populates the store.
   it("renders with an empty store without an infinite render loop", () => {
     expect(() =>
       render(
@@ -65,9 +61,6 @@ describe("IssuesPanel", () => {
     ).not.toThrow();
   });
 
-  // Stable-reference regression with filters active: derived arrays
-  // (filteredIssues, distinct statuses/assignees) must be memoized, not freshly
-  // computed each render, or the panel loops into React #185.
   it("renders without a loop when filters are active", () => {
     useIssuesStore.setState({
       trackers: [{ id: "linear", kind: "linear" as const, label: "Linear", configured: true }],
@@ -89,9 +82,6 @@ describe("IssuesPanel", () => {
   });
 });
 
-// docs/236: Linear issues are workspace-wide, so the issue you want to work on
-// often belongs to a repo other than the one your current session is checked
-// out on. The panel offers every registered repo as a start target.
 describe("IssuesPanel repo picker (docs/236)", () => {
   afterEach(() => {
     useRepoStore.setState({ repos: [], activeRepoUrl: undefined });
@@ -126,7 +116,6 @@ describe("IssuesPanel repo picker (docs/236)", () => {
 
     expect(onStartSession).toHaveBeenCalledTimes(1);
     expect(onStartSession.mock.calls[0]![0]).toMatchObject({ identifier: "SHI-1" });
-    // planning#322 — the tracker rides along so App can build a resolvable IssueRef.
     expect(onStartSession.mock.calls[0]![1]).toBe("linear");
     expect(onStartSession.mock.calls[0]![2]).toBe(website.url);
   });
@@ -140,10 +129,8 @@ describe("IssuesPanel repo picker (docs/236)", () => {
     await userEvent.click(
       screen.getByRole("button", { name: /start session in another repository/i }),
     );
-    // The active repo survives the hidden filter so the checkmark has a home…
     expect(await screen.findByRole("menuitem", { name: /legacy/i })).toBeInTheDocument();
     expect(screen.getByRole("menuitem", { name: /website/i })).toBeInTheDocument();
-    // …but a repo the user hid and isn't working in stays out of the way.
     expect(screen.queryByRole("menuitem", { name: /archive/i })).toBeNull();
   });
 
@@ -155,16 +142,10 @@ describe("IssuesPanel repo picker (docs/236)", () => {
 
     expect(onStartSession).toHaveBeenCalledTimes(1);
     expect(onStartSession.mock.calls[0]![1]).toBe("linear");
-    // No explicit repo — App resolves the session's own repo, as it always has.
     expect(onStartSession.mock.calls[0]![2]).toBeUndefined();
   });
 });
 
-/**
- * planning#327 — an issue opened in the tab must not stay on screen after switching
- * to a repository that doesn't declare its tracker (docs/248-declared-issue-trackers req 11). Panel-level
- * because the observable behaviour is "the detail is gone and the list is back".
- */
 describe("IssuesPanel repo switch (planning#327)", () => {
   const roadmap: TrackerInfo = {
     id: "linear:SHI",
@@ -194,7 +175,6 @@ describe("IssuesPanel repo switch (planning#327)", () => {
         <IssuesPanel onStartSession={() => {}} onConnect={() => {}} />
       </MemoryRouter>,
     );
-    // The detail view is what's on screen: it has a back control, the list doesn't.
     expect(screen.getByTitle("Back to issues")).toBeInTheDocument();
   }
 
@@ -204,8 +184,6 @@ describe("IssuesPanel repo switch (planning#327)", () => {
     act(() => useIssuesStore.getState().setRepoScope("https://github.com/acme/website.git"));
 
     expect(screen.queryByTitle("Back to issues")).toBeNull();
-    // The async gap: declarations aren't known yet, so the list says so rather
-    // than claiming "not connected" or showing the old repo's trackers.
     expect(screen.getByText(/loading issues/i)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /roadmap/i })).toBeNull();
   });
@@ -251,18 +229,18 @@ describe("issues-store filter pruning", () => {
     const store = useIssuesStore.getState();
     store.setQuery("auth");
     store.togglePriority("high");
-    store.toggleStatus("In Review"); // exists on linear, not github
-    store.toggleAssignee("Ana"); // exists on linear, not github
-    store.toggleAssignee(UNASSIGNED); // synthetic — must always survive
+    store.toggleStatus("In Review");
+    store.toggleAssignee("Ana");
+    store.toggleAssignee(UNASSIGNED);
 
     useIssuesStore.getState().setActiveTracker("github");
 
     const { filters } = useIssuesStore.getState();
-    expect(filters.query).toBe("auth"); // universal — persists
-    expect([...filters.priorities]).toEqual(["high"]); // universal — persists
-    expect([...filters.statuses]).toEqual([]); // "In Review" not in github list — pruned
-    expect(filters.assignees.has("Ana")).toBe(false); // pruned
-    expect(filters.assignees.has(UNASSIGNED)).toBe(true); // synthetic — survives
+    expect(filters.query).toBe("auth");
+    expect([...filters.priorities]).toEqual(["high"]);
+    expect([...filters.statuses]).toEqual([]);
+    expect(filters.assignees.has("Ana")).toBe(false);
+    expect(filters.assignees.has(UNASSIGNED)).toBe(true);
   });
 });
 

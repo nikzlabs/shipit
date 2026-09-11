@@ -2,11 +2,6 @@ import { Button } from "../ui/button.js";
 import { inputClass } from "./shared.js";
 import type { KvRow } from "./utils/payload.js";
 
-/**
- * Key-value editor for a server's stdio env vars / http headers. Values are
- * raw secrets (password inputs); when editing, the value placeholder reads
- * "(unchanged)" because secrets are never echoed back from the server.
- */
 export function KvEditor({
   type,
   editingId,

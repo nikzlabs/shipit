@@ -8,15 +8,6 @@ import { useFileStore } from "../../stores/file-store.js";
 import { resolveUiIssueRef, useIssuesStore } from "../../stores/issues-store.js";
 import { useUiStore } from "../../stores/ui-store.js";
 
-/**
- * Jump-to-issue chip for the doc's `issue:` pointer. A pointer that resolves to a
- * **declared** destination (docs/248-declared-issue-trackers req 11) opens ShipIt's inline issue detail
- * view — inline beats link-out (CLAUDE.md §1/§2), and the deep link to the
- * upstream tracker lives inside that view. Mirrors the docs-list chip
- * (`DocsViewer.IssueChip`) and the changed-docs strip; an unresolvable pointer
- * has no inline view to open, so it keeps the external-link escape hatch (or a
- * plain badge with no URL) rather than becoming a broken in-app link.
- */
 function IssueChip({ issueRef, resolved }: { issueRef: ParsedIssueRef; resolved: ResolvedIssueRef | null }) {
   if (resolved) {
     const tracker = resolved.tracker;
@@ -25,12 +16,8 @@ function IssueChip({ issueRef, resolved }: { issueRef: ParsedIssueRef; resolved:
         type="button"
         title={`Open ${resolved.identifier} in ShipIt`}
         onClick={() => {
-          // The doc is often being read in the file-preview modal, which would
-          // sit on top of the Issues tab — dismiss it so the issue is actually
-          // visible. No-op when the doc is rendered in the panel instead.
+          // Dismiss a file preview that would cover the Issues tab.
           useFileStore.getState().closePreview();
-          // Select the Issues tab (and surface the workspace column on mobile)
-          // before opening the detail — mirrors handleOpenIssue in App.tsx.
           useUiStore.getState().setRightTab("issues");
           useUiStore.getState().setMobilePanel("preview");
           void useIssuesStore.getState().openIssue({
@@ -67,12 +54,6 @@ function IssueChip({ issueRef, resolved }: { issueRef: ParsedIssueRef; resolved:
   );
 }
 
-/**
- * Frontmatter header. docs/168 removed the status/priority badges — priority
- * and work-status now live in the issue tracker, not the doc. What remains is
- * the optional `issue:` pointer, rendered as a jump-to-issue chip, plus the
- * description and any other extras.
- */
 export function FrontmatterHeader({ fm }: { fm: ParsedFrontmatter }) {
   const issueRef = fm.issue ? parseIssueRef(fm.issue) : null;
   const resolution = fm.issue ? resolveUiIssueRef(fm.issue) : null;

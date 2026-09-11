@@ -17,20 +17,14 @@ export interface FileUploadChipsProps {
   onRetry: (index: number) => void;
 }
 
-/** Render an image upload as a thumbnail with overlay controls. */
 function ImageThumbnail({ u, index, onRemove, onRetry }: { u: UploadItem; index: number; onRemove: (i: number) => void; onRetry: (i: number) => void }) {
   const openImagePreview = () => {
     const store = useFileStore.getState();
     const sid = useSessionStore.getState().sessionId;
-    // The uploaded copy is the better source wherever it exists: it carries the
-    // real path in the dialog header, and the dialog renders an `.svg` as
-    // markup — which a blob URL cannot supply.
     if (u.status === "ready" && u.path && sid) {
       void store.openPreview(sid, u.path);
       return;
     }
-    // No server copy yet — a pasted image, or one still uploading, previews
-    // from the bytes the browser already holds, so the click works right away.
     const local = u.dataUrl ?? u.previewUrl;
     if (local) store.openPreviewWithContent(u.name, local, "image");
   };
@@ -50,16 +44,11 @@ function ImageThumbnail({ u, index, onRemove, onRetry }: { u: UploadItem; index:
         />
       </button>
       {u.status === "uploading" && (
-        // pointer-events-none: the overlay covers the button, and a pasted
-        // image is previewable from local bytes before the POST finishes.
+        // Keep the local preview clickable while upload is in progress.
         <div className="absolute inset-0 flex items-center justify-center bg-black/40 rounded-md pointer-events-none">
           <Spinner size={ICON_SIZE.SM} className="text-white" />
         </div>
       )}
-      {/* docs/293 req 2 — a failed image blocks Send, so it has to LOOK failed
-          and offer the same retry a failed file chip does. Without this it drew
-          as an ordinary thumbnail and the user could not tell which attachment
-          was holding the message. */}
       {u.status === "error" && (
         <button
           onClick={() => onRetry(index)}
@@ -71,14 +60,7 @@ function ImageThumbnail({ u, index, onRemove, onRetry }: { u: UploadItem; index:
           <ArrowClockwiseIcon size={ICON_SIZE.XS} />
         </button>
       )}
-      {/* Removable in every state, including mid-upload: req 1 bars Send while
-          an attachment uploads, so a chip with no way off the screen would
-          strand the composer.
-
-          `pointer-coarse` and `focus-visible` are part of that, not polish: a
-          hover-only reveal is a control that does not exist on a touch device or
-          to the keyboard, and req 7 is about there being a way out rather than
-          about the DOM containing a button. */}
+      {/* Keep removal visible for touch and keyboard users. */}
       <button
         onClick={() => onRemove(index)}
         className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-(--color-error) text-white text-xs flex items-center justify-center opacity-0 group-hover:opacity-100 focus-visible:opacity-100 pointer-coarse:opacity-100 transition-opacity"
@@ -91,7 +73,6 @@ function ImageThumbnail({ u, index, onRemove, onRetry }: { u: UploadItem; index:
   );
 }
 
-/** Render a non-image upload as a text chip. */
 function FileChip({ u, index, onRemove, onRetry }: { u: UploadItem; index: number; onRemove: (i: number) => void; onRetry: (i: number) => void }) {
   return (
     <span
@@ -144,7 +125,6 @@ function FileChip({ u, index, onRemove, onRetry }: { u: UploadItem; index: numbe
           <ArrowClockwiseIcon size={ICON_SIZE.XS} />
         </button>
       )}
-      {/* Removable in every state, including mid-upload — see ImageThumbnail. */}
       <button
         onClick={() => onRemove(index)}
         className="ml-0.5 text-(--color-text-tertiary) hover:text-(--color-text-primary) shrink-0"

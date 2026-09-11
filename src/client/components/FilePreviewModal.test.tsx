@@ -7,8 +7,6 @@ import { useSessionStore } from "../stores/session-store.js";
 import { useFileStore } from "../stores/file-store.js";
 import type { AgentOption } from "../agent-types.js";
 
-// Monaco editor uses dynamic import("monaco-editor") and won't work in jsdom.
-// Mock the module so the CodeEditor sub-component renders a simple div.
 vi.mock("monaco-editor", () => ({
   editor: {
     create: () => ({
@@ -16,8 +14,6 @@ vi.mock("monaco-editor", () => ({
       onMouseDown: () => ({ dispose: vi.fn() }),
       onMouseMove: () => ({ dispose: vi.fn() }),
       onMouseLeave: () => ({ dispose: vi.fn() }),
-      // The comment widget keeps its cards sized to, and aligned with, the
-      // visible content area, so it subscribes to scroll and layout too.
       onDidScrollChange: () => ({ dispose: vi.fn() }),
       onDidLayoutChange: () => ({ dispose: vi.fn() }),
       getLayoutInfo: () => ({ contentWidth: 800 }),
@@ -35,7 +31,6 @@ afterEach(() => {
   cleanup();
   useFileStore.setState({ openEditor: realOpenEditor });
   useSessionStore.setState({ sessions: [] });
-  // Reset stores so per-test state doesn't bleed across cases.
   useSessionStore.getState().setSessionId(undefined);
   useUiStore.getState().setAgentList([]);
   useUiStore.getState().setActiveAgentId("claude");
@@ -92,8 +87,6 @@ describe("FilePreviewModal", () => {
     render(
       <FilePreviewModal filePath="hello.js" content="const x = 1;" fileType="code" onClose={() => {}} />
     );
-    // CodeEditor renders a div with h-full w-full for the Monaco editor mount point
-    // Content is portaled by Radix Dialog, so query the full document
     const editorDiv = document.querySelector(".h-full.w-full");
     expect(editorDiv).not.toBeNull();
   });
@@ -107,7 +100,6 @@ describe("FilePreviewModal", () => {
         onClose={() => {}}
       />
     );
-    // MarkdownSelectionComments renders the heading text
     expect(screen.getByText("Hello World")).toBeInTheDocument();
   });
 
@@ -154,9 +146,6 @@ describe("FilePreviewModal", () => {
     expect(onAction).toHaveBeenCalledOnce();
   });
 
-  // The download control belongs to the preview, not to the surface that
-  // opened it — a doc opened from the PR card used to arrive without one
-  // because only the file tree passed a Download action in.
   describe("download control", () => {
     it("renders a download link for a file on disk, whatever opened the preview", () => {
       useSessionStore.getState().setSessionId("session-1");
@@ -208,8 +197,6 @@ describe("FilePreviewModal", () => {
     });
   });
 
-  // Edit had the same defect as Download: only the file tree passed it in, so
-  // the same file was editable from one surface and read-only from the others.
   describe("edit control", () => {
     function graduatedSession() {
       useSessionStore.getState().setSessionId("session-1");
@@ -309,10 +296,6 @@ describe("FilePreviewModal", () => {
     expect(pathEl).toBeInTheDocument();
   });
 
-  // 125 — chat-native review. The "Ask agent to review" affordance only shows
-  // when the active agent's capability flag says it can run the flow (Claude
-  // only today). Codex sessions get no button (not a disabled one) because the
-  // silent prod no-op the old button produced is strictly worse than nothing.
   describe("Ask agent to review gating (125)", () => {
     it("shows the button when active agent has supportsReview=true", () => {
       setupSessionAndAgents("claude");
@@ -391,8 +374,6 @@ describe("FilePreviewModal", () => {
     });
   });
 
-  // 114 — Sibling tabs let a user jump between a plan and its checklist (and
-  // any other sibling .md files) without leaving the modal.
   describe("sibling tabs (114)", () => {
     const siblings = [
       { path: "docs/114-feature/plan.md", label: "Plan" },

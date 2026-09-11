@@ -23,7 +23,6 @@ export interface IssuesFilterBarProps {
   statusOptions: StatusOption[];
   assigneeOptions: AssigneeOption[];
   labelOptions: LabelOption[];
-  /** Per-priority-level counts in the loaded list, for the priority popover. */
   priorityCounts: Record<IssuePriorityLevel, number>;
   onSetQuery: (query: string) => void;
   onTogglePriority: (level: IssuePriorityLevel) => void;
@@ -32,17 +31,14 @@ export interface IssuesFilterBarProps {
   onToggleLabel: (name: string) => void;
 }
 
-/** Debounced (~150ms) search box, kept in sync when `query` changes externally. */
 function SearchBox({ query, onSetQuery }: { query: string; onSetQuery: (q: string) => void }) {
   const [text, setText] = useState(query);
 
-  // Mirror external resets (e.g. Clear filters) back into the local input.
   // eslint-disable-next-line no-restricted-syntax -- sync local input state when the store query is reset externally
   useEffect(() => {
     setText(query);
   }, [query]);
 
-  // Debounce local edits before they reach the store.
   // eslint-disable-next-line no-restricted-syntax -- debounce timer with cleanup; commits keystrokes to the store after a pause
   useEffect(() => {
     if (text === query) return;
@@ -78,7 +74,6 @@ function SearchBox({ query, onSetQuery }: { query: string; onSetQuery: (q: strin
   );
 }
 
-/** Shared trigger styling — a button with an active-count pill + caret. */
 function FacetTrigger({
   label,
   count,
@@ -110,13 +105,6 @@ function FacetTrigger({
   );
 }
 
-/**
- * A single checkbox option row inside a facet popover. When `color` is given
- * (priority / status), the CHECKBOX itself carries that color — a colored border
- * always, filled with the color + a check when selected — so the option's color
- * lives in the control instead of a separate dot. Without a color (assignee), it
- * falls back to the neutral accent checkbox.
- */
 function OptionRow({
   checked,
   onToggle,
@@ -146,10 +134,6 @@ function OptionRow({
               ? "bg-(--color-accent) border-(--color-accent) text-(--color-accent-text)"
               : "border-(--color-border-secondary)"
         }`}
-        // The checkbox carries the option's color: a colored border + colored
-        // check on a subtle same-color tint when selected. A colored check (vs a
-        // white one on a solid fill) stays legible on light colors too — e.g.
-        // Linear's yellow "In Progress" or a pale-gray "Todo".
         style={
           color
             ? {
@@ -196,13 +180,6 @@ function initials(name: string): string {
   return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
 }
 
-/**
- * The Issues-tab filter bar (docs/173): a debounced search box plus three
- * multi-select facet popovers (Priority / Status / Assignee). Presentational —
- * all state lives in the store and arrives via props. Renders as a single row
- * on desktop; below the `md` breakpoint the search box gets its own full-width
- * row and the facets become a horizontally-scrollable chip row.
- */
 export function IssuesFilterBar({
   filters,
   statusOptions,
@@ -215,9 +192,6 @@ export function IssuesFilterBar({
   onToggleAssignee,
   onToggleLabel,
 }: IssuesFilterBarProps) {
-  // The facet popovers sit on the elevated surface; adapt status colors to it so
-  // the colored checkboxes stay legible on light themes (priority colors are
-  // theme-tuned tokens and pass through unchanged).
   const popoverSurfaceLum = useSurfaceLuminance("--color-bg-elevated");
 
   const priorityFacet = (variant: "button" | "chip") => (
@@ -326,7 +300,6 @@ export function IssuesFilterBar({
 
   return (
     <div className="border-b border-(--color-border-secondary) bg-(--color-bg-primary)">
-      {/* Desktop: single row. */}
       <div className="hidden md:flex items-center gap-2 px-3 py-2">
         <SearchBox query={filters.query} onSetQuery={onSetQuery} />
         {priorityFacet("button")}
@@ -335,7 +308,6 @@ export function IssuesFilterBar({
         {labelFacet("button")}
       </div>
 
-      {/* Mobile: search row + scrollable chip row. */}
       <div className="md:hidden flex flex-col gap-2 px-3 py-2">
         <SearchBox query={filters.query} onSetQuery={onSetQuery} />
         <div className="flex items-center gap-2 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">

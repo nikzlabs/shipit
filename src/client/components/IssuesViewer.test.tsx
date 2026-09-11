@@ -12,9 +12,7 @@ import {
 import { DEFAULT_SORT_PREFS, buildSections, collapsePredicate } from "./issues-sort.js";
 import type { IssuePriorityLevel, RepoInfo, TrackerInfo, TrackerIssue } from "../../server/shared/types.js";
 
-// Force the container-width signal so we can exercise both layouts deterministically
-// (jsdom has no layout, so the real ResizeObserver path always reads 0/desktop).
-// Defaults to wide/desktop; individual tests flip `mockNarrow.value` to true.
+// jsdom has no layout, so tests control the container-width signal.
 const mockNarrow = vi.hoisted(() => ({ value: false }));
 vi.mock("../hooks/useNarrowContainer.js", () => ({ useNarrowContainer: () => mockNarrow.value }));
 
@@ -101,8 +99,6 @@ function defaultProps(overrides?: Partial<IssuesViewerProps>): IssuesViewerProps
     onToggleLabel: vi.fn(),
     onClearFilters: vi.fn(),
   };
-  // `filteredIssues` derives from issues+filters unless explicitly overridden;
-  // the section sets follow whichever filtered list wins so rows render to match.
   const finalFiltered = overrides?.filteredIssues ?? base.filteredIssues;
   const finalPrefs = overrides?.sortPrefs ?? DEFAULT_SORT_PREFS;
   return {
@@ -125,9 +121,6 @@ describe("IssuesViewer", () => {
     expect(props.onConnect).toHaveBeenCalledOnce();
   });
 
-  // The tab is the label alone — the backend binding (`owner/repo`, a Linear
-  // team key) used to be appended after a `·` and made the bar overflow the
-  // panel. It survives only as the hover title.
   it("renders each tracker tab as its label alone, with the binding on hover", () => {
     const planning: TrackerInfo = {
       id: "github:nikzlabs/shipit-planning",
@@ -155,7 +148,6 @@ describe("IssuesViewer", () => {
     expect(screen.getByText("Urgent thing")).toBeInTheDocument();
     expect(screen.getByText("Low thing")).toBeInTheDocument();
     expect(screen.getByText("SHI-1")).toBeInTheDocument();
-    // Priority badge for urgent renders its label.
     expect(screen.getByText("Urgent")).toBeInTheDocument();
   });
 
@@ -169,7 +161,6 @@ describe("IssuesViewer", () => {
     render(<IssuesViewer {...props} />);
     expect(screen.getByText("Parent task")).toBeInTheDocument();
     expect(screen.getByText("Child task")).toBeInTheDocument();
-    // The parent carries a collapse control (only parents do).
     expect(screen.getByRole("button", { name: /Collapse SHI-1/ })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Collapse SHI-2/ })).toBeNull();
   });
@@ -182,10 +173,8 @@ describe("IssuesViewer", () => {
       ],
     });
     render(<IssuesViewer {...props} />);
-    // Default (desktop/wide) is expanded, so the disclosure collapses it.
     fireEvent.click(screen.getByRole("button", { name: /Collapse SHI-1/ }));
     expect(props.onSetCollapsed).toHaveBeenCalledWith("p", true);
-    // The disclosure's stopPropagation keeps the row from also opening detail.
     expect(props.onOpenIssue).not.toHaveBeenCalled();
   });
 
@@ -199,10 +188,8 @@ describe("IssuesViewer", () => {
         ],
       });
       render(<IssuesViewer {...props} />);
-      // Parent shows; the child is folded away behind the collapsed default.
       expect(screen.getByText("Parent")).toBeInTheDocument();
       expect(screen.queryByText("Child")).toBeNull();
-      // Tapping the nested-issues row expands it (records an explicit expand).
       fireEvent.click(screen.getByRole("button", { name: /Show 1 nested issue in SHI-1/ }));
       expect(props.onSetCollapsed).toHaveBeenCalledWith("p", false);
     } finally {
@@ -215,7 +202,6 @@ describe("IssuesViewer", () => {
       issues: [makeIssue({ id: "o", identifier: "SHI-9", title: "Orphan", parentId: "gone", parentIdentifier: "SHI-1" })],
     });
     render(<IssuesViewer {...props} />);
-    // Promoted to the top level with a hint at the missing parent.
     expect(screen.getByText("Orphan")).toBeInTheDocument();
     expect(screen.getByText("SHI-1")).toBeInTheDocument();
   });
@@ -236,11 +222,8 @@ describe("IssuesViewer", () => {
       issues: [makeIssue({ identifier: "nikzlabs/shipit#1047", title: "Self-updater" })],
     });
     render(<IssuesViewer {...props} />);
-    // The narrow ID column shows the bare issue number, not the full repo path.
     expect(screen.getByText("1047")).toBeInTheDocument();
     expect(screen.queryByText("nikzlabs/shipit#1047")).not.toBeInTheDocument();
-    // The row no longer links out to the tracker (docs/189) — the deep link
-    // now lives only inside the inline detail view.
     expect(screen.queryByRole("link")).not.toBeInTheDocument();
   });
 
@@ -260,7 +243,6 @@ describe("IssuesViewer", () => {
     await user.click(screen.getByLabelText(/Change priority of SHI-1/));
     await user.click(screen.getByRole("menuitem", { name: "Urgent" }));
     expect(props.onSetPriority).toHaveBeenCalledWith(issue, "urgent");
-    // The editor's stopPropagation keeps the row click from also firing.
     expect(props.onOpenIssue).not.toHaveBeenCalled();
   });
 
@@ -295,7 +277,6 @@ describe("IssuesViewer", () => {
     });
     const props = defaultProps({ issues: [issue] });
     render(<IssuesViewer {...props} />);
-    // First MAX_LABELS (4) render as chips; the rest collapse into "+N".
     expect(screen.getByText("bug")).toBeInTheDocument();
     expect(screen.getByText("ui")).toBeInTheDocument();
     expect(screen.queryByText("git")).toBeNull();
@@ -328,7 +309,6 @@ describe("IssuesViewer", () => {
   it("renders one sub-tab per configured tracker and switches on click", () => {
     const props = defaultProps();
     render(<IssuesViewer {...props} />);
-    // The sub-tab carries the bound team key ("Linear · SHI").
     const tab = screen.getByRole("button", { name: /Linear/i });
     fireEvent.click(tab);
     expect(props.onSelectTracker).toHaveBeenCalledWith("linear");
@@ -362,12 +342,9 @@ describe("IssuesViewer", () => {
     expect(screen.queryByText(/No open issues/i)).not.toBeInTheDocument();
   });
 
-  // ---- docs/173: filters & search ----
-
   it("renders the filter bar with the three facets once issues are loaded", () => {
     const props = defaultProps({ issues: [makeIssue()] });
     render(<IssuesViewer {...props} />);
-    // Desktop + mobile each render a trigger, hence getAllByText.
     expect(screen.getAllByText("Priority").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Status").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Assignee").length).toBeGreaterThan(0);
@@ -407,8 +384,6 @@ describe("IssuesViewer", () => {
     expect(props.onClearFilters).toHaveBeenCalledOnce();
   });
 
-  // ---- docs/189: scroll restoration across the detail round-trip ----
-
   it("restores the saved scroll offset on mount and persists it on unmount", () => {
     const onPersistScroll = vi.fn();
     const props = defaultProps({
@@ -418,9 +393,7 @@ describe("IssuesViewer", () => {
     });
     const { container, unmount } = render(<IssuesViewer {...props} />);
     const scroller = container.querySelector<HTMLElement>(".overflow-auto")!;
-    // The layout effect restored the parent's stashed offset before paint.
     expect(scroller.scrollTop).toBe(120);
-    // User scrolls further, then opens an issue (which unmounts the list).
     scroller.scrollTop = 340;
     unmount();
     expect(onPersistScroll).toHaveBeenCalledWith(340);
@@ -430,7 +403,6 @@ describe("IssuesViewer", () => {
     const issues = [makeIssue({ status: { name: "In Progress" } })];
     const props = defaultProps({ issues });
     render(<IssuesViewer {...props} />);
-    // Open the desktop Priority/Status popover by clicking the first Status trigger.
     fireEvent.click(screen.getAllByText("Status")[0]);
     const option = screen.getByRole("menuitemcheckbox", { name: /In Progress/i });
     fireEvent.click(option);

@@ -1,27 +1,12 @@
 #!/usr/bin/env bash
 #
-# Egress firewall installer — docs/172-agent-containment Gap 1 (planning#92), Tier A.
-#
-# Runs in a SHORT-LIVED PRIVILEGED SIDECAR that shares the agent container's
-# network namespace:
-#
-#   docker run --network container:<agentId> --cap-add NET_ADMIN egress-sidecar
-#
-# It installs a default-deny `iptables OUTPUT` policy plus an `ipset` allow-set
-# INTO THE AGENT'S NETNS, then exits. The rules persist for the life of the
-# netns (i.e. the agent container); the agent itself has CapDrop:ALL / no
-# NET_ADMIN and runs non-root (planning#33), so it cannot flush or alter them.
+# Install the default-deny egress policy in the agent network namespace.
 #
 # Inputs (env, space-separated):
 #   EGRESS_ALLOWED_HOSTS  FQDNs to resolve (in the agent's own DNS view) and allow
 #   EGRESS_ALLOWED_CIDRS  CIDRs / IPs to allow (e.g. GitHub `meta` ranges)
 #
-# Ordering matters: we resolve names + add members BEFORE switching OUTPUT to
-# DROP (once default-deny is up we could no longer resolve anything).
-#
-# This script is verified on a live Docker host (the planning#92 checklist), not in
-# unit tests — the orchestrator-side logic that feeds it is unit-tested in
-# egress-firewall.test.ts / egress-firewall-install.test.ts.
+# Resolve names before OUTPUT changes to DROP.
 
 set -euo pipefail
 
@@ -76,11 +61,8 @@ log "resolved ${#ips[@]} IP(s) from ${EGRESS_ALLOWED_HOSTS:-<none>}"
 # Test seam for the bounded resolver. Production never sets this value.
 [[ "${EGRESS_RESOLVE_ONLY:-0}" == "1" ]] && exit 0
 
-# --- 2. Build the ipsets (hash:net holds bare IPs and CIDRs) ----------------
-# A service container can be stopped and started with the same id but a fresh
-# network namespace, and allowlist refresh also reinstalls in-place. Remove the
-# old filter references before replacing the sets so this operation is
-# idempotent (`ipset destroy` returns EBUSY while a rule still references it).
+# --- 2. Build the ipsets ----------------------------------------------------
+# Remove filter references before replacing their sets.
 iptables -F OUTPUT 2>/dev/null || true
 ip6tables -F OUTPUT 2>/dev/null || true
 ipset destroy "$SET4" 2>/dev/null || true
@@ -97,18 +79,8 @@ add_member() {
 for ip in "${ips[@]:-}"; do add_member "$ip"; done
 for cidr in ${EGRESS_ALLOWED_CIDRS:-}; do add_member "$cidr"; done
 
-# --- 3. Allow the local bridge subnet (orchestrator API, docker proxy) ------
-# The agent reaches the orchestrator (SHIPIT_HOST) and, for docker sessions, the
-# docker proxy by their bridge IPs. Blocking the local subnet would sever the
-# session's own control channel, so allow it explicitly (mirrors Anthropic's
-# init-firewall.sh HOST_NETWORK rule). Cross-session isolation is handled
-# separately (per-session networks / source-IP id with NET_RAW dropped).
-#
-# NOTE: this allows ONLY the agent's *default-gateway* subnet. A session's
-# compose/preview network is attached to the agent LATER (after `docker compose
-# up`), so its subnet is opened separately, at join time, by the companion
-# allow-subnet.sh sidecar (planning#92, GH #1495) — that's how the agent's browser
-# reaches the live preview.
+# --- 3. Allow the control-plane bridge subnet -------------------------------
+# Later Compose subnets are added by allow-subnet.sh.
 default_gw="$(ip route 2>/dev/null | awk '/^default/ {print $3; exit}')"
 local_subnet=""
 if [[ -n "$default_gw" ]]; then
@@ -116,29 +88,11 @@ if [[ -n "$default_gw" ]]; then
   log "local bridge subnet: $local_subnet (gw $default_gw)"
 fi
 
-# --- 4. Install OUTPUT rules (INPUT is left untouched — egress is the threat) -
-#
-# DNS handling depends on the tier:
-#   Tier A (EGRESS_DNS_RESOLVER_UID unset): port 53 open broadly (resolution
-#     works; DNS-tunneling exfil is still possible — closed by Tier B).
-#   Tier B (EGRESS_DNS_RESOLVER_UID set): DNS is locked to the in-netns resolver.
-#     The agent reaches it at 127.0.0.1:53 (via the `lo` ACCEPT); only the
-#     resolver's uid may send DNS UPSTREAM; the agent is blocked from Docker's
-#     embedded DNS (127.0.0.11) directly (else it could resolve arbitrary names).
-#
-# NOTE(Tier B / Bug-1 fix): on a user-defined Docker network the agent's
-# /etc/resolv.conf is `nameserver 127.0.0.11` (Docker's embedded resolver)
-# REGARDLESS of the container `--dns` setting — Docker demotes `--dns` to a mere
-# *upstream* of 127.0.0.11, it does not replace the nameserver. Since the filter
-# rule below drops the agent → 127.0.0.11, the agent would have NO working
-# resolver. So we transparently REDIRECT the agent's DNS to the in-netns dnsmasq
-# (see install_dns_redirect). We still keep matching 127.0.0.11 by destination IP
-# (no --dport) in the filter table as a backstop for non-DNS traffic.
+# --- 4. Install OUTPUT rules ------------------------------------------------
+# Tier B redirects Docker DNS to the controlled in-netns resolver.
 DNS_UID="${EGRESS_DNS_RESOLVER_UID:-}"
 DOCKER_DNS=127.0.0.11
-# Tier C: when set, the agent's outbound :443 is REDIRECTed to the in-netns SNI
-# proxy listening on 127.0.0.1:$PROXY_PORT, owned by $PROXY_UID (excluded so the
-# proxy's own upstream dials aren't re-redirected).
+# Tier C excludes the proxy UID from its own HTTPS redirect.
 PROXY_UID="${EGRESS_PROXY_UID:-}"
 PROXY_PORT="${EGRESS_PROXY_PORT:-8443}"
 install_v4() {
@@ -148,11 +102,7 @@ install_v4() {
   fi
   iptables -A OUTPUT -o lo -j ACCEPT
   iptables -A OUTPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
-  # Tier C: the nat/OUTPUT REDIRECT rewrites the agent's :443 dst to
-  # 127.0.0.1:$PROXY_PORT, but the packet's oif is NOT `lo` at filter/OUTPUT time,
-  # so the `-o lo` ACCEPT above misses it and it would hit the DROP policy. Accept
-  # the redirected-to-proxy destination explicitly (host-verified: without this the
-  # redirected :443 times out under `-P OUTPUT DROP`).
+  # Redirected packets do not have loopback as their output interface yet.
   if [[ -n "$PROXY_UID" ]]; then
     iptables -A OUTPUT -p tcp -d 127.0.0.1 --dport "$PROXY_PORT" -j ACCEPT
   fi
@@ -185,19 +135,8 @@ install_v4
 install_v6
 log "default-deny OUTPUT policy installed"
 
-# --- 4b. Tier B: force agent DNS through the in-netns controlled resolver ----
-# Bug-1 fix (see the NOTE above): the agent always sends DNS to Docker's embedded
-# resolver at $DOCKER_DNS, which the filter table drops. Rather than fight
-# resolv.conf, intercept those packets in nat/OUTPUT and REDIRECT them to the
-# local dnsmasq on 127.0.0.1:53 (REDIRECT in OUTPUT maps the destination to
-# localhost). This is robust to whatever resolv.conf says, and conntrack un-NATs
-# the reply so the agent sees an answer from 127.0.0.11 as usual.
-#
-# Scoped to $DOCKER_DNS (the only DNS dest the agent actually uses): any other DNS
-# destination is already dropped by the filter OUTPUT policy, so there's nothing
-# to redirect. The resolver's OWN upstream queries run as uid $DNS_UID and are
-# excluded here (they egress via the uid-:53 filter allow). Inserted at the TOP of
-# nat/OUTPUT so it precedes Docker's own 127.0.0.11 DNAT rules.
+# --- 4b. Force Docker DNS through the controlled resolver ------------------
+# Insert before Docker's 127.0.0.11 DNAT rules and exclude the resolver UID.
 install_dns_redirect() {
   while iptables -t nat -D OUTPUT -d "$DOCKER_DNS" -p udp --dport 53 -m owner ! --uid-owner "$DNS_UID" -j REDIRECT --to-ports 53 2>/dev/null; do :; done
   while iptables -t nat -D OUTPUT -d "$DOCKER_DNS" -p tcp --dport 53 -m owner ! --uid-owner "$DNS_UID" -j REDIRECT --to-ports 53 2>/dev/null; do :; done
@@ -209,19 +148,8 @@ if [[ -n "$DNS_UID" ]]; then
   log "Tier B DNS redirect installed ($DOCKER_DNS:53 → in-netns resolver 127.0.0.1:53)"
 fi
 
-# --- 4c. Tier C: REDIRECT agent HTTPS to the in-netns SNI proxy --------------
-# Hostname-level HTTPS policy: send the agent's outbound :443 to the SNI proxy on
-# loopback, which peeks the ClientHello SNI and splices-or-rejects (closing the
-# CDN co-tenancy gap that an IP-only ipset can't). The proxy's OWN upstream dials
-# (uid $PROXY_UID) are excluded so we don't loop. Unlike the DNS redirect (which
-# targets the already-loopback 127.0.0.11), the original :443 destination is
-# EXTERNAL, so redirecting it to a loopback listener requires route_localnet —
-# otherwise the kernel drops the rewritten packet (non-loopback source → 127/8) as
-# a martian. route_localnet is network-namespaced, so this only affects the agent.
-# route_localnet is enabled on the AGENT CONTAINER at creation (HostConfig.Sysctls,
-# gated on Tier C) — this NET_ADMIN-only installer can't write the read-only
-# /proc/sys here (EROFS). We only verify it's on and warn (non-fatal) if not, so a
-# misconfig is visible in the installer logs rather than silently mis-routing.
+# --- 4c. Redirect HTTPS to the SNI proxy -----------------------------------
+# External-to-loopback redirects require route_localnet in the agent netns.
 install_sni_redirect() {
   local rl
   rl="$(cat /proc/sys/net/ipv4/conf/all/route_localnet 2>/dev/null || echo '?')"
@@ -234,14 +162,8 @@ if [[ -n "$PROXY_UID" ]]; then
   log "Tier C SNI redirect installed (:443 → in-netns proxy 127.0.0.1:$PROXY_PORT)"
 fi
 
-# --- 5. Self-test (fail-closed, DNS-independent) ---------------------------
-# A non-allowlisted destination MUST be blocked. We hit a literal TEST-NET-1 IP
-# (RFC 5737, 192.0.2.0/24 — guaranteed non-routable and never allowlisted) so
-# the check needs NO DNS — it works identically in Tier A and Tier B (where the
-# resolver may not be up yet). If it's reachable, the OUTPUT policy isn't taking
-# effect: exit non-zero so the orchestrator tears the container down rather than
-# run it with open egress. (Positive/allowed-host + DNS checks live in the
-# post-create planning#92 verification, once the resolver is running.)
+# --- 5. Fail-closed self-test ----------------------------------------------
+# TEST-NET-1 checks the deny rule without DNS.
 if curl -sS --max-time 5 https://192.0.2.1/ >/dev/null 2>&1; then
   log "SELF-TEST FAILED: 192.0.2.1 reachable — egress NOT contained"
   exit 1

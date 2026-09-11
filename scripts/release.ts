@@ -1,28 +1,5 @@
 #!/usr/bin/env tsx
-/**
- * Release version bump.
- *
- * Bumps package.json (and the lockfile) to the requested version, then creates
- * the `Release vX.Y.Z` commit and the annotated `vX.Y.Z` tag in lockstep. It
- * deliberately does NOT push: pushing the tag is what triggers
- * `.github/workflows/release.yml`, so that stays a separate, deliberate human
- * act (see RELEASING.md).
- *
- * Keeping the tag and package.json version in lockstep here is what makes the
- * release workflow's `version-guard` job pass — that job re-checks the two
- * match and fails the release if a tag is ever pushed without a matching bump.
- *
- * Usage:
- *   npm run release -- 0.2.0          # normal release
- *   npm run release -- v0.2.0         # leading "v" is tolerated
- *   npm run release -- 0.2.0-rc.1     # prerelease (published as a GitHub prerelease)
- *
- * (The former android/ WebView wrapper had its own versionCode/versionName that
- * this script deliberately did not sync; that project was removed — the PWA
- * superseded it — so there is nothing Android-side to bump here.)
- *
- * Exits non-zero on any precondition failure so a botched bump never half-applies.
- */
+/** Bump package versions and create the matching release commit and tag. */
 import { readFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -32,8 +9,6 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, "..");
 const pkgPath = resolve(repoRoot, "package.json");
 
-// Matches a semver core with optional prerelease/build metadata — same shape
-// the dependency-age check accepts for pinned versions.
 const SEMVER = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
 
 function fail(message: string): never {
@@ -49,20 +24,17 @@ function git(args: string[], opts: { capture?: boolean } = {}): string {
   });
 }
 
-/** [major, minor, patch] of a version's core, ignoring prerelease/build. */
 function core(version: string): [number, number, number] {
   const [maj, min, patch] = version.split("+")[0].split("-")[0].split(".").map(Number);
   return [maj, min, patch];
 }
 
-/** True if `next` is strictly older than `current` (a downgrade we refuse). */
 function isDowngrade(current: string, next: string): boolean {
   const [a, b, c] = core(current);
   const [x, y, z] = core(next);
   if (x !== a) return x < a;
   if (y !== b) return y < b;
   if (z !== c) return z < c;
-  // Same core: a prerelease (e.g. 0.2.0-rc.1) is older than the final (0.2.0).
   const curPre = current.includes("-");
   const nextPre = next.includes("-");
   return !curPre && nextPre;
@@ -90,13 +62,11 @@ if (isDowngrade(current, version)) {
   fail(`${version} is older than the current ${current} — refusing to downgrade.`);
 }
 
-// Working tree must be clean so the release commit contains only the bump.
 const dirty = git(["status", "--porcelain"], { capture: true }).trim();
 if (dirty) {
   fail("working tree is not clean — commit or stash changes before bumping.");
 }
 
-// Tag must not already exist.
 try {
   execFileSync("git", ["rev-parse", "-q", "--verify", `refs/tags/${tag}`], {
     cwd: repoRoot,
@@ -104,15 +74,12 @@ try {
   });
   fail(`tag ${tag} already exists.`);
 } catch {
-  // Expected: rev-parse exits non-zero when the tag is absent.
 }
 
 const prerelease = version.includes("-");
 
 console.log(`Bumping ${current} → ${version}${prerelease ? " (prerelease)" : ""}`);
 
-// `npm version --no-git-tag-version` rewrites package.json AND package-lock.json
-// without doing any git work, so we own the commit/tag below.
 execFileSync("npm", ["version", version, "--no-git-tag-version", "--allow-same-version"], {
   cwd: repoRoot,
   stdio: "inherit",

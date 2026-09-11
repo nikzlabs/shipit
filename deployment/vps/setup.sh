@@ -1,47 +1,17 @@
 #!/bin/bash
-# One-time server provisioning for ShipIt on a fresh Ubuntu VPS.
-# Safe to re-run - skips steps that are already done.
-# Run as root: bash setup.sh
-#
-# --dry-run   ask the questions, print what a real run would do, change nothing.
-# --describe  print the questions as JSON and exit, so an agent can ask the
-#             person instead of a terminal picker asking them (docs/276).
-# Both need no root and write nothing.
+# Idempotent VPS provisioner. Use --dry-run or --describe before setup.
 set -euo pipefail
 
 CONFIG_FILE="/etc/shipit/setup.conf"
 
+# Keep this self-contained block byte-identical in both installers.
 # --- BEGIN shipit-installer-common (docs/276) ------------------------------
-# Everything the LOCAL installer needs too, kept byte-identical between
-# deployment/vps/setup.sh and deployment/local/setup.sh. Both scripts are
-# curl|bash'd as a string, so neither has a library file to source at the moment
-# it asks — or DESCRIBES — its questions; docs/271 records the same constraint
-# for the picker alone. installer-describe.test.ts compares the two blocks byte
-# for byte, so a fix applied to one and not the other fails the build.
-#
-# Nothing in here may reference a variable defined outside the markers.
 
 # --- BEGIN shipit-picker (docs/271) ----------------------------------------
-# A checkbox prompt: arrow keys (or j/k) move, space toggles, Enter confirms.
-#
-# Bash and ANSI escapes only — no whiptail, dialog, ncurses, `tput`, or even
-# `stty`. This script is curl|bash'd onto a bare Ubuntu box BEFORE anything is
-# installed (req 9), so the prompt cannot depend on a package the install has not
-# reached yet.
-#
 # Usage:
 #   shipit_pick "<preselected,csv>" "key|Label|one-line hint" ...
 #   -> SHIPIT_PICK_RESULT holds the chosen keys, comma-separated ("" when none).
-#
-# Returns non-zero WITHOUT prompting when there is no terminal to draw on,
-# leaving the caller's preselection in SHIPIT_PICK_RESULT — so a non-interactive
-# install keeps today's defaults rather than hanging on a read (req 7).
-#
-# The block between these markers is extracted verbatim and driven under a pty by
-# src/server/orchestrator/services/installer-picker.test.ts. Keep it
-# self-contained: nothing in here may call a helper defined outside the markers.
 
-# Join the selected keys into the comma-separated answer.
 shipit_pick_selected() {
   local i out=""
   for ((i = 0; i < SHIPIT_PICK_COUNT; i++)); do
@@ -53,8 +23,6 @@ shipit_pick_selected() {
   printf '%s' "$out"
 }
 
-# Apply one keystroke to the picker state. Split out from the read loop so the
-# whole key map is exercisable without a terminal.
 shipit_pick_key() {
   case "$1" in
     # $'\eOA'/$'\eOB' are the same arrows in application-cursor mode, which some
@@ -75,7 +43,6 @@ shipit_pick_key() {
   esac
 }
 
-# Draw the list, one line per row, leaving the cursor on the line after the last.
 shipit_pick_render() {
   local i box
   for ((i = 0; i < SHIPIT_PICK_COUNT; i++)); do
@@ -95,16 +62,7 @@ shipit_pick_render() {
   done
 }
 
-# Undo what the loop did to the terminal. Runs on the normal exit path AND from
-# the SIGINT trap — a Ctrl-C that left the cursor hidden would hand the operator
-# a shell with no visible cursor.
-#
-# Echo is deliberately NOT managed here. The obvious `stty -echo` around the loop
-# is a trap: `read` saves the terminal state as it finds it and re-applies that
-# state when an interrupt tears it down, which happens AFTER this trap runs — so
-# a hand-set `-echo` is restored *back* on Ctrl-C, leaving the operator typing
-# blind. `read -s` on both reads below suppresses echo for the window that
-# matters and leaves the saved state echoing, which is what makes Ctrl-C safe.
+# Restore the cursor on exit. read -s avoids stty races on interruption.
 shipit_pick_restore() {
   printf '\033[?25h' > "${SHIPIT_PICK_DRAW:-/dev/stdout}"
 }
@@ -142,23 +100,13 @@ shipit_pick() {
       if [ "${SHIPIT_PICK_KEYS[i]}" = "$pre" ]; then SHIPIT_PICK_MARKS[i]=1; fi
     done
   done
-  # Set the answer to the preselection BEFORE the terminal checks, so the
-  # non-interactive return still hands the caller a usable value.
+  # Preserve defaults when no terminal is available.
   SHIPIT_PICK_RESULT="$(shipit_pick_selected)"
   if [ ! -t 0 ]; then return 1; fi
 
-  # WHERE TO DRAW. Not blindly stdout: `sudo bash setup.sh | tee install.log` is
-  # a normal way to run an installer, and the typed prompts this replaced stayed
-  # usable under it because `read -p` prompts on stderr and reads stdin. Drawing
-  # only on a stdout that is a terminal would silently skip a question the
-  # operator is sitting there waiting to answer — and, worse, hand the caller a
-  # preselection it would then record as a deliberate choice. So when stdout is
-  # redirected, draw on the controlling terminal instead. Only when there is no
-  # terminal at all does this give up and return non-zero.
+  # Draw on the controlling terminal when stdout is redirected.
   SHIPIT_PICK_DRAW="/dev/stdout"
   if [ ! -t 1 ]; then
-    # An open-for-write, not `[ -w ]`: a process with no controlling terminal
-    # can pass the permission check and still fail to open /dev/tty (ENXIO).
     if { : > /dev/tty; } 2>/dev/null; then
       SHIPIT_PICK_DRAW="/dev/tty"
     else
@@ -166,13 +114,7 @@ shipit_pick() {
     fi
   fi
 
-  # Bash 3.2 — /bin/bash on macOS, and so the shell the LOCAL installer most
-  # often runs under — rejects a fractional read timeout outright ("invalid
-  # timeout specification"). That breaks arrow keys, because the rest of the
-  # escape sequence is never read, AND prints an error line into the middle of
-  # the list being drawn. A whole second costs nothing here: the timeout bounds
-  # only a LONE Escape keypress, since an arrow key's remaining bytes are
-  # already waiting to be read.
+  # Bash 3.2 rejects fractional read timeouts.
   SHIPIT_PICK_ESC_T="0.05"
   if [ "${BASH_VERSINFO[0]:-0}" -lt 4 ]; then SHIPIT_PICK_ESC_T="1"; fi
 
@@ -186,17 +128,13 @@ shipit_pick() {
   trap 'shipit_pick_restore; exit 130' INT
   trap 'shipit_pick_restore; exit 143' TERM HUP
 
-  # Everything the loop draws goes to the terminal; `read` still takes stdin.
   {
     printf '\033[?25l'
     shipit_pick_render
     while [ "$SHIPIT_PICK_DONE" -eq 0 ]; do
       key=""
-      # A closed stdin (EOF) confirms the current state rather than spinning.
       if ! IFS= read -rsn1 key; then break; fi
       if [ "$key" = $'\e' ]; then
-        # An arrow key arrives as three bytes at once, so this returns
-        # immediately; the timeout only bounds a lone Escape keypress.
         rest_seq=""
         IFS= read -rsn2 -t "$SHIPIT_PICK_ESC_T" rest_seq || true
         key="$key$rest_seq"
@@ -215,17 +153,10 @@ shipit_pick() {
 # --- END shipit-picker -----------------------------------------------------
 
 # --- Machine-readable questions (docs/276) ---------------------------------
-# `--describe` prints this installer's questions as JSON, so an agent can ask
-# the person instead of a terminal picker asking them. There is no jq on a bare
-# box and no repo to source a helper from, so the two characters that can appear
-# in a label, a hint or a path are escaped here.
 shipit_json_str() {
   printf '"%s"' "$(printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g')"
 }
 
-# Emit a question's "options" array from "key|Label|hint" rows — the SAME rows
-# the picker draws. A harness added to the list is therefore offered to an agent
-# in the same commit, rather than in a second place that is forgotten.
 shipit_json_options() {
   local row first=1 key label hint
   printf '['
@@ -243,9 +174,6 @@ shipit_json_options() {
   printf ']'
 }
 
-# The harnesses this installer OFFERS, as "key|Label|hint" picker rows. Their keys
-# are also what validates a scripted SHIPIT_HARNESSES, so adding a row here makes
-# a harness both visible and accepted — one edit, no second list to remember.
 HARNESS_ROWS=(
   "claude|Claude Code|Anthropic's CLI"
   "codex|Codex|OpenAI's CLI"
@@ -258,25 +186,13 @@ for _row in "${HARNESS_ROWS[@]}"; do
 done
 unset _row
 
-# The harnesses PRESELECTED in that list. Deliberately its own list rather than
-# "every row" (docs/271): adding a harness above offers it to the operator right
-# away, but turning it on for everyone who accepts the defaults is a product
-# decision that happens here, on purpose. A newly added harness therefore appears
-# unchecked until this line names it.
-#
-# Mirrors DEFAULT_HARNESSES in docker/agent-cli/install-agent-clis.sh, which is
-# what an install that never sees this prompt gets; agent-cli-install.test.ts
-# fails if the two disagree. They are separate files because this question is
-# asked before the repo is cloned.
+# Keep synchronized with DEFAULT_HARNESSES in install-agent-clis.sh.
 HARNESS_DEFAULT="claude,codex,opencode"
 
 HARNESS_CHOICE=""
 HARNESS_PERSIST=0
 HARNESS_SOURCE=""
 
-# A list of recognized names with at least one entry. Counting the
-# entries rather than testing the raw string is what rejects "," and " ", which
-# name no harness and would otherwise fail much later in the image build.
 harnesses_valid() {
   local candidate count=0
   for candidate in $(printf '%s' "$1" | tr ',' ' '); do
@@ -288,26 +204,10 @@ harnesses_valid() {
   [ "$count" -gt 0 ]
 }
 
-# Set HARNESS_CHOICE, plus HARNESS_PERSIST (write it to the env file?) and
-# HARNESS_SOURCE (where the answer came from, for the log line).
-#
-# Which agent CLIs this install has is chosen HERE, at install time, and is a
-# property of the deployment rather than a setting: it is a build arg for both
-# the orchestrator and the session-worker images, so changing it later means
-# editing SHIPIT_HARNESSES in the operator env file and re-running the deploy.
-#
-# HARNESS_PERSIST stays 0 for an UNANSWERED question, so the variable is left
-# unset and the image build's own DEFAULT_HARNESSES keeps applying. Two reasons,
-# and both matter: writing the default out would freeze this install against a
-# later change to that list, and a non-interactive RE-RUN of the installer would
-# overwrite an operator's earlier narrower choice, since neither installer reads
-# the env file it writes.
+# Do not persist unanswered defaults; future approved defaults must still apply.
 resolve_harnesses() {
   HARNESS_PERSIST=0
   if [ -n "${SHIPIT_HARNESSES:-}" ]; then
-    # Normalized FIRST, exactly as docker/agent-cli/install-agent-clis.sh does
-    # before its own check: it accepts "Claude, Codex", so rejecting that here
-    # would break scripted installs that work today.
     HARNESS_CHOICE="$(printf '%s' "$SHIPIT_HARNESSES" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')"
     if ! harnesses_valid "$HARNESS_CHOICE"; then
       echo "Error: SHIPIT_HARNESSES must be a comma-separated list of: $(echo "$SUPPORTED_HARNESSES" | tr ' ' ',') (got '$SHIPIT_HARNESSES')" >&2
@@ -329,10 +229,7 @@ resolve_harnesses() {
   echo ""
   echo "    [up/down] move    [space] select    [enter] confirm"
   echo ""
-  # Branch on the RETURN CODE, never on the answer. A picker that could not draw
-  # hands back the preselection, which is indistinguishable from an operator who
-  # ticked exactly those boxes — and recording it as a choice is what freezes the
-  # set and clobbers a narrower one on the next run.
+  # A failed picker returns defaults that must remain unpersisted.
   if ! shipit_pick "$HARNESS_DEFAULT" "${HARNESS_ROWS[@]}"; then
     HARNESS_CHOICE="$HARNESS_DEFAULT"
     HARNESS_SOURCE="default — no terminal to ask on"
@@ -341,8 +238,6 @@ resolve_harnesses() {
   HARNESS_CHOICE="$SHIPIT_PICK_RESULT"
   echo ""
   if [ -z "$HARNESS_CHOICE" ]; then
-    # An image with no harness fails the build, so an empty selection cannot be
-    # honoured.
     HARNESS_CHOICE="$HARNESS_DEFAULT"
     HARNESS_SOURCE="default — nothing selected, and an install needs at least one"
   else
@@ -351,11 +246,7 @@ resolve_harnesses() {
   fi
 }
 
-# The egress-containment answer, when one was given (docs/276). "off" accepts the
-# security downgrade on a host that cannot run the containment sidecar; "on"
-# refuses it. UNSET is not "off": with no answer the installer keeps containment
-# on, so an agent can never disable it by omission — only by passing the answer
-# the person actually gave.
+# An omitted egress answer keeps containment enabled.
 EGRESS_ANSWER=""
 egress_answer_valid() {
   case "$1" in
@@ -374,17 +265,8 @@ resolve_egress_answer() {
 
 # --- END shipit-installer-common -------------------------------------------
 
-# --- The access question (docs/271) -----------------------------------------
-# It lives in a function here, ahead of every step that touches the host, so
-# `--dry-run` and `--describe` can use it and exit. That is the whole reason it
-# is a function: a separate preview script would be a second copy of the rows and
-# the defaults to keep in step with these.
-
 SHIPIT_ENV_FILE="/etc/shipit/shipit.env"
 
-# Tailscale is the default access path: it exposes ShipIt to your own devices and
-# nothing else, with no domain to own and no public URL to protect. Cloudflare is
-# the deliberate choice, since a public hostname is the bigger commitment.
 ACCESS_DEFAULT="tailscale"
 ACCESS_ROWS=(
   "cloudflare|Cloudflare Tunnel|public HTTPS domain, Zero Trust protected"
@@ -395,9 +277,6 @@ ACCESS=""
 INSTALL_CLOUDFLARE=false
 INSTALL_TAILSCALE=false
 
-# True only for a list of recognized names with at least one entry, so that a
-# value made of nothing but separators (",") is rejected rather than quietly
-# meaning "expose nothing" — that is what `none` is for.
 access_valid() {
   local candidate count=0
   for candidate in $(printf '%s' "$1" | tr ',' ' '); do
@@ -409,17 +288,9 @@ access_valid() {
   [ "$count" -gt 0 ]
 }
 
-# Set ACCESS and the two INSTALL_* flags it drives.
-#
-# Cloudflare and Tailscale are independent, so they are two checkboxes rather
-# than a four-item menu: both selected installs both, neither selected installs
-# ShipIt without exposing it. SHIPIT_ACCESS pre-answers the question for a
-# scripted install, the same way SHIPIT_HARNESSES does.
 resolve_access() {
   if [ -n "${SHIPIT_ACCESS:-}" ]; then
     ACCESS="$(printf '%s' "$SHIPIT_ACCESS" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')"
-    # "none" is the spelling for "expose nothing"; an empty variable is
-    # indistinguishable from unset, so it cannot carry that meaning.
     if [ "$ACCESS" = "none" ]; then
       ACCESS=""
     elif ! access_valid "$ACCESS"; then
@@ -457,15 +328,6 @@ resolve_access() {
   case ",$ACCESS," in *,tailscale,*) INSTALL_TAILSCALE=true ;; esac
 }
 
-# --- Describe: the questions as JSON, for an agent (docs/276) ---------------
-# Printed from the SAME row arrays the pickers draw, so a question added to this
-# installer reaches an agent in the same commit. Needs no root, writes nothing,
-# and clones nothing — an agent may run this before the person has decided to
-# install at all (req 6).
-#
-# askedWhen carries the conditional questions honestly instead of hiding them:
-# an agent that reads it collects the Cloudflare answers up front and is never
-# stopped by a question it could not have predicted (req 7).
 shipit_describe() {
   cat <<JSON
 {
@@ -603,14 +465,6 @@ shipit_describe() {
 JSON
 }
 
-# --- Arguments (docs/271, docs/276) -----------------------------------------
-# Both branches run before the saved config is even read, so they need no root
-# and touch no file. Everything they print comes from the same functions the real
-# install uses.
-# --help is here for discovery, not for politeness: an agent told "install
-# ShipIt" reaches for --help far sooner than it reads a README, and --describe is
-# useless to it if it never learns the flag exists. The unknown-argument error
-# names the same options for the same reason.
 shipit_help() {
   cat <<'HELP'
 ShipIt — VPS provisioning (Ubuntu 24.04, run as root)
@@ -659,7 +513,7 @@ for arg in "$@"; do
   esac
 done
 if [ "${SHIPIT_DRY_RUN:-}" = "1" ]; then DRY_RUN=1; fi
-# The env form exists for `bash -c "$(curl …)"`, which cannot pass an argument.
+# The curl-through-bash form cannot pass an argument.
 if [ "${SHIPIT_DESCRIBE:-}" = "1" ]; then DESCRIBE=1; fi
 
 if [ "$DESCRIBE" = "1" ]; then
@@ -667,10 +521,6 @@ if [ "$DESCRIBE" = "1" ]; then
   exit 0
 fi
 
-# --- Validate the pre-answers BEFORE anything on the host changes -----------
-# A mistyped answer used to fail where it was consumed — for the harnesses, that
-# is after Docker is installed and the repo is cloned. An agent that mistypes an
-# option id gets the error in a second, on a host it has not yet changed.
 resolve_egress_answer
 if [ -n "${SHIPIT_HARNESSES:-}" ] &&
   ! harnesses_valid "$(printf '%s' "$SHIPIT_HARNESSES" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')"; then
@@ -727,11 +577,6 @@ if [ "$DRY_RUN" = "1" ]; then
   exit 0
 fi
 
-# --- Running blind? Say so, before anything changes (docs/276) --------------
-# The one case where the questions are about to be skipped without anyone having
-# seen them: no terminal to draw a picker on, and no answers supplied. That is
-# exactly what an agent's shell looks like, so this is where --describe is named
-# for a reader who never opened the README.
 if [ ! -t 0 ] && [ -z "${SHIPIT_ACCESS:-}" ] && [ -z "${SHIPIT_HARNESSES:-}" ]; then
   echo "==> No terminal to ask on, so every question will use its default."
   echo "    Installing this for someone else? Nothing has changed yet — stop,"
@@ -740,7 +585,6 @@ if [ ! -t 0 ] && [ -z "${SHIPIT_ACCESS:-}" ] && [ -z "${SHIPIT_HARNESSES:-}" ]; 
   echo ""
 fi
 
-# --- Load saved config from previous run, if any ---
 DOMAIN=""
 REPO_URL=""
 ZERO_TRUST_DONE=""
@@ -749,10 +593,7 @@ if [ -f "$CONFIG_FILE" ]; then
   source "$CONFIG_FILE"
 fi
 
-# --- Resolve repo URL ---
-# Precedence: SHIPIT_REPO_URL env (lets a fork override on the one-liner) >
-# saved config from a previous run > the origin of an existing /opt/shipit
-# clone > the public repo default. This keeps the curl|bash install prompt-free.
+# Precedence: environment, saved config, existing origin, public default.
 DEFAULT_REPO_URL="https://github.com/nikzlabs/shipit.git"
 REPO_URL="${SHIPIT_REPO_URL:-$REPO_URL}"
 if [ -z "$REPO_URL" ] && [ -d /opt/shipit/.git ]; then
@@ -768,7 +609,6 @@ echo "==========================================="
 echo ""
 resolve_access
 
-# --- Save config for future re-runs (no secrets stored) ---
 mkdir -p "$(dirname "$CONFIG_FILE")"
 cat > "$CONFIG_FILE" <<EOC
 DOMAIN="$DOMAIN"
@@ -777,15 +617,9 @@ ZERO_TRUST_DONE="${ZERO_TRUST_DONE:-}"
 EOC
 chmod 600 "$CONFIG_FILE"
 
-# --- Clone or update repo (channel-aware, feature 162) ---
-# The release channel lives in an untracked file so it survives git resets and
-# rebuilds. Default to edge when absent so existing installs keep tracking main;
-# fresh installs are pinned to stable below.
 CHANNEL_FILE="/opt/shipit/.release-channel"
 
 channel_ref() {
-  # Echo the remote ref for a channel, falling back to main when the stable
-  # branch does not yet exist on the remote (first-release bootstrap).
   local ch="$1"
   if [ "$ch" = "stable" ] && git -C /opt/shipit ls-remote --exit-code --heads origin stable >/dev/null 2>&1; then
     echo "origin/stable"
@@ -799,8 +633,6 @@ if [ -d /opt/shipit/.git ]; then
   CHANNEL="$(cat "$CHANNEL_FILE" 2>/dev/null || echo edge)"
   REF="$(channel_ref "$CHANNEL")"
   echo "    channel=$CHANNEL ref=$REF"
-  # Mirror update.sh: never `git pull` (that would advance a stable box to the
-  # upstream tip and silently un-pin it). Fetch + hard-reset to the channel ref.
   git -C /opt/shipit fetch origin --tags --prune
   git -C /opt/shipit fetch origin "${REF#origin/}"
   git -C /opt/shipit reset --hard "$REF"
@@ -809,8 +641,6 @@ else
   apt-get update -qq
   apt-get install -y -qq git
   git clone "$REPO_URL" /opt/shipit
-  # Fresh installs default to the stable channel and boot on the latest release
-  # rather than the tip of main (falls back to main until the first stable cut).
   echo "stable" > "$CHANNEL_FILE"
   git -C /opt/shipit fetch origin --tags --prune
   REF="$(channel_ref stable)"
@@ -818,7 +648,6 @@ else
   git -C /opt/shipit reset --hard "$REF"
 fi
 
-# --- Install Docker ---
 if command -v docker &>/dev/null; then
   echo "==> Docker already installed, skipping."
 else
@@ -851,10 +680,7 @@ if [ -z "$docker_api_version" ] || [ "$(printf '%s\n%s\n' "$minimum_docker_api" 
   exit 1
 fi
 
-# --- Configure Docker network address pools ---
-# ShipIt creates two Docker networks per contained Compose session. The default pool (~30 /16 subnets)
-# is easily exhausted, causing "all predefined address pools have been fully subnetted".
-# Expand to use the full 172.16.0.0/12 range with /24 subnets (~4000 networks).
+# Expand Docker's pool for two networks per contained session.
 DAEMON_JSON="/etc/docker/daemon.json"
 DESIRED_POOL='172.16.0.0/12'
 if [ -f "$DAEMON_JSON" ] && grep -q "$DESIRED_POOL" "$DAEMON_JSON" 2>/dev/null; then
@@ -862,7 +688,6 @@ if [ -f "$DAEMON_JSON" ] && grep -q "$DESIRED_POOL" "$DAEMON_JSON" 2>/dev/null; 
 else
   echo "==> Expanding Docker network address pools..."
   if [ -f "$DAEMON_JSON" ]; then
-    # Merge into existing config
     jq '. + {"default-address-pools": [{"base": "172.16.0.0/12", "size": 24}]}' "$DAEMON_JSON" > "${DAEMON_JSON}.tmp"
     mv "${DAEMON_JSON}.tmp" "$DAEMON_JSON"
   else
@@ -877,14 +702,7 @@ EODJ
   systemctl restart docker
 fi
 
-# --- Raise inotify watcher limits ---
-# inotify limits are enforced per host UID across the whole kernel, NOT
-# per container. Every session container (file-watcher) and every preview
-# dev server (e.g. Vite/chokidar) registers watches against the same host
-# UID 0 pool. The Ubuntu defaults (~65k watches / 128 instances) fall over
-# fast with multiple active sessions - Node's `fs.watch({ recursive: true })`
-# on Linux registers one inotify watch per subdirectory, and node_modules
-# trees can be tens of thousands of dirs each. Bump generously.
+# Increase host-wide inotify limits for concurrent sessions.
 INOTIFY_CONF="/etc/sysctl.d/99-shipit-inotify.conf"
 if [ -f "$INOTIFY_CONF" ]; then
   echo "==> inotify limits already configured, skipping."
@@ -897,12 +715,6 @@ EOI
   sysctl --system >/dev/null
 fi
 
-# --- Self-updater + restarter systemd units ---
-# Both are installed together: the updater handles "Update Now" (git pull +
-# rebuild) and the restarter handles "Just Restart" (force-recreate the
-# orchestrator container without rebuilding). Each is a path unit that
-# watches for a trigger file written by the orchestrator from inside its
-# container.
 echo "==> Installing self-updater and restarter services..."
 cp /opt/shipit/deployment/vps/shipit-updater.service /etc/systemd/system/
 cp /opt/shipit/deployment/vps/shipit-updater.path /etc/systemd/system/
@@ -912,25 +724,11 @@ systemctl daemon-reload
 systemctl enable --now shipit-updater.path
 systemctl enable --now shipit-restarter.path
 
-# --- Agent egress containment preflight (docs/172, planning#92) ---
-# Egress containment is ON by default for all ShipIt instances (fail-closed):
-# the orchestrator runs a privileged NET_ADMIN sidecar in each agent container's
-# network namespace to apply a default-deny egress allowlist. If this host can't
-# run that sidecar (NET_ADMIN denied, rootless Docker, locked-down kernel),
-# ShipIt would fail closed and refuse to start sessions. Detect that here and
-# offer the opt-out, persisted where deploy.sh reads it. SHIPIT_ENV_FILE is set
-# with the questions above, since resolve_harnesses names it too.
-
-# Probe whether a NET_ADMIN container can manipulate its network namespace — the
-# capability the egress sidecar needs to install iptables rules. Bringing
-# loopback down requires CAP_NET_ADMIN and touches only the throwaway container's
-# own netns, so it's a safe, dependency-light proxy for "can run the sidecar".
+# Probe NET_ADMIN inside a disposable network namespace.
 egress_host_capable() {
   docker run --rm --cap-add NET_ADMIN alpine sh -c 'ip link set lo down' >/dev/null 2>&1
 }
 
-# Persist SESSION_EGRESS_ENFORCE into the env file deploy.sh loads (replace any
-# existing line, else append). The file is created 0600 since it tunes runtime.
 persist_egress_enforce() {
   local value="$1"
   mkdir -p "$(dirname "$SHIPIT_ENV_FILE")"
@@ -959,15 +757,7 @@ else
   echo "  containment to let sessions run with UNRESTRICTED outbound network"
   echo "  (a prompt-injected agent could then exfiltrate credentials)."
   echo ""
-  # docs/276 req 12 — the answer can arrive in SHIPIT_EGRESS, so an agent can pass
-  # on the decision the PERSON made. Three states, not two: "off" accepts the
-  # downgrade, "on" refuses it, and UNSET keeps containment on. An unanswered
-  # question therefore never disables containment, whoever is running the install.
-  #
-  # The `read` was unconditional until now, so on the hosts that reach this branch
-  # a `curl | bash` install died right here at `set -e` — the same defect docs/271
-  # req 8 fixed for the access question, in the one branch that runs only where the
-  # operator can least afford it.
+  # An unanswered prompt keeps containment enabled.
   EGRESS_DISABLE="N"
   if [ -n "$EGRESS_ANSWER" ]; then
     if [ "$EGRESS_ANSWER" = "off" ]; then EGRESS_DISABLE="y"; fi
@@ -992,10 +782,6 @@ else
   esac
 fi
 
-# --- Agent harness selection (docs/252 req 14) ---
-# The question itself is resolve_harnesses, defined with the other question near
-# the top so `--dry-run` can ask it. All that is left here is to act on it: the
-# answer is a build arg for the images deploy.sh is about to build.
 persist_shipit_env() {
   local key="$1" value="$2"
   mkdir -p "$(dirname "$SHIPIT_ENV_FILE")"
@@ -1013,11 +799,9 @@ if [ "$HARNESS_PERSIST" = "1" ]; then
   persist_shipit_env SHIPIT_HARNESSES "$HARNESS_CHOICE"
   echo "==> Agent harnesses: $HARNESS_CHOICE ($HARNESS_SOURCE; persisted in $SHIPIT_ENV_FILE)."
 else
-  # Left unset on purpose — see resolve_harnesses.
   echo "==> Agent harnesses: $HARNESS_CHOICE ($HARNESS_SOURCE)."
 fi
 
-# --- Build and start ShipIt (always run - this is the deploy step) ---
 echo "==> Building and starting ShipIt..."
 bash /opt/shipit/deployment/vps/deploy.sh
 
@@ -1028,18 +812,7 @@ fi
 TAILSCALE_FAILED=false
 TAILSCALE_URL=""
 if [ "$INSTALL_TAILSCALE" = "true" ]; then
-  # Do not let a failed access step abort the whole install under `set -e`:
-  # ShipIt is already built and running by this point, so aborting here would
-  # replace the summary — the one place that says what DID work and what to do
-  # next — with a bare non-zero exit. tailscale.sh prints its own diagnosis
-  # (a taken port is the common one); the summary below repeats the headline so
-  # it is not scrolled past.
-  #
-  # It also hands back the access URL it printed, so this summary can END with
-  # that URL. Without it the last thing on screen would be an instruction to
-  # scroll back up past the whole summary to find the URL — and the URL is the
-  # one thing the reader is here for. A temp file, not a fixed path: the value
-  # is stale the moment the tailnet IP or the port changes.
+  # Preserve setup success when the optional access step fails.
   TAILSCALE_URL_FILE="$(mktemp)"
   if SHIPIT_ACCESS_URL_FILE="$TAILSCALE_URL_FILE" bash /opt/shipit/deployment/vps/tailscale.sh; then
     TAILSCALE_URL="$(cat "$TAILSCALE_URL_FILE" 2>/dev/null || true)"
@@ -1054,11 +827,6 @@ if [ -f "$CONFIG_FILE" ]; then
   source "$CONFIG_FILE"
 fi
 
-# The summary is deliberately short, and it ENDS with the URL to open: a reader
-# who has just watched several minutes of build output wants one address, not a
-# reference card. Everything conditional here is a warning or a failure — those
-# stay. The routine reference material (log commands, the update path) is one
-# line each, and the rest lives in deployment/README.md.
 echo ""
 echo "==========================================="
 echo "  Setup complete"
@@ -1081,8 +849,6 @@ echo "  Updates: Settings -> Advanced -> Software Updates (in the ShipIt UI)"
 echo "  More:    /opt/shipit/deployment/README.md"
 echo ""
 
-# The closing address. Cloudflare wins when both are set up: it is the public,
-# HTTPS one, and the tailnet URL was printed by tailscale.sh moments ago.
 if [ -n "${DOMAIN:-}" ] && [ "$INSTALL_CLOUDFLARE" = "true" ]; then
   ACCESS_URL="https://$DOMAIN"
 elif [ -n "$TAILSCALE_URL" ]; then

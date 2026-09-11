@@ -1,21 +1,3 @@
-/**
- * IssueRefCard — inline read-only navigation card for an agent issue view
- * (docs/188).
- *
- * Rendered at the chat position where the agent ran `shipit issue view`. It is
- * the read-path sibling of `IssueWriteCard`: any agent issue interaction — not
- * just edits — leaves a quick jump-to-issue affordance in the transcript. Unlike
- * the write card it has NO lifecycle (no undo), so the full payload arrives on
- * the chat message and the component **renders** straight from props. The one
- * store read is in the click handler, where docs/248-declared-issue-trackers req 16 re-resolves the
- * recorded tracker name against today's declarations — so the card still holds
- * no subscription and never re-renders on store changes.
- *
- * docs/189 — clicking the card opens ShipIt's inline single-issue view (the
- * Issues tab's detail pane), NOT the external tracker. The deep link to Linear/
- * GitHub now lives only inside that view (CLAUDE.md §2: inline beats link-out).
- */
-
 import { CaretRightIcon, EyeIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import type { IssueRefCard as IssueRefCardData } from "../../server/shared/types.js";
@@ -23,11 +5,9 @@ import { useIssuesStore } from "../stores/issues-store.js";
 
 export interface IssueRefCardProps {
   card: IssueRefCardData;
-  /** Open the inline detail view for this issue (docs/189). */
   onOpen?: (ref: { tracker: IssueRefCardData["tracker"]; identifier: string; title?: string; url?: string }) => void;
 }
 
-/** A done issue (closed / completed / canceled) reads as muted, not active. */
 function isDone(statusType?: string): boolean {
   return statusType === "completed" || statusType === "canceled";
 }
@@ -36,12 +16,7 @@ export function IssueRefCard({ card, onOpen }: IssueRefCardProps) {
   const done = isDone(card.statusType);
 
   const open = () => {
-    // docs/248-declared-issue-trackers req 16 — resolve at USE, not at write. The card records the name
-    // it was addressed through; if that name now points somewhere else, the card
-    // opens the new destination. `card.tracker` is the fallback for a card
-    // written without a name (the session's own repository) and for a name that
-    // is no longer declared at all. Read in the click handler rather than at
-    // render so the card keeps its no-subscription property.
+    // Resolve the recorded name at use time so tracker re-points take effect.
     const repointed = card.trackerName
       ? useIssuesStore.getState().trackers.find((t) => t.name === card.trackerName)
       : undefined;

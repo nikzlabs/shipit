@@ -1,9 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
-    <!-- MainActivity makes this module launchable on the emulator (docs/213
-         running-app tier) in addition to being rendered headlessly by Paparazzi.
-         The Material3 theme comes from the Compose dependency, so no XML theme
-         resource is needed. -->
     <application android:label="ShipIt Test App">
         <activity
             android:name=".MainActivity"

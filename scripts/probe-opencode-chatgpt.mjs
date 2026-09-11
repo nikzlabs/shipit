@@ -13,8 +13,7 @@ import {
 } from "../src/server/shared/opencode-spawn-shaping.ts";
 import { ensureManagedOpenCodeData } from "../src/server/shared/opencode-account.ts";
 import { compactOpencodeSession } from "../src/server/session/agents/opencode/compaction.ts";
-// Run with: node --import tsx scripts/probe-opencode-chatgpt.mjs
-// All credentials are synthetic. The local proxy NEVER forwards requests.
+// All credentials are synthetic; the local proxy does not forward requests.
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "opencode-chatgpt-probe-"));
 execFileSync(
   "openssl",
@@ -117,7 +116,7 @@ const upstream = https.createServer(
         image: String(JSON.stringify(parsed?.input)).includes("input_image"),
         tools: parsed?.tools?.map((x) => x.name),
       });
-      // token strings include stable expiry within this short probe; record only the synthetic tag as a robust comparison.
+      // Record only the stable synthetic tag.
       if (req.headers.authorization) {
         try {
           records.at(-1).tokenTag = JSON.parse(
@@ -309,7 +308,6 @@ try {
     .map((line) => JSON.parse(line))
     .find((e) => e.sessionID)?.sessionID;
   assert.ok(session);
-  // Migrate the real CLI database, then resume from the managed XDG root.
   data = ensureManagedOpenCodeData(home);
   auth("second");
   env.XDG_DATA_HOME = data;
