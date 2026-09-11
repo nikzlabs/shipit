@@ -5,6 +5,7 @@ import type { SessionRunnerRegistry } from "./session-runner.js";
 import type { GitManager } from "../shared/git.js";
 import type { PrStatusSummary, AutoFixState, AutoMergeManagedReason, AutoMergeState, PrAutoMergeError } from "../shared/types/github-types.js";
 import { parseGitHubRemote } from "./git-utils.js";
+import { getErrorMessage } from "./validation.js";
 import { readBranchSync, resolveMergeSync } from "./services/branch-sync.js";
 import { logMergeObserved } from "./services/merge-attribution.js";
 import {
@@ -72,6 +73,41 @@ export class PrStatusPoller {
   private onPrTerminalState?: (info: PrTerminalStateInfo) => Promise<void>;
   private createGitManager?: (dir: string) => GitManager;
 
+  /**
+   * A session's checkout as a GitManager, or `undefined` when it is not on
+   * disk. The local clone only ever *enriches* GitHub's answer here, so its
+   * absence must degrade — and the absence is routine: the disk janitor
+   * reclaims an idle session's tree (`diskTier: "evicted"`, docs/183).
+   *
+   * The guard has to sit at construction rather than around the callers'
+   * awaits, because `new GitManager(dir)` reaches simple-git's
+   * `gitInstanceFactory`, which throws `GitConstructError` SYNCHRONOUSLY on an
+   * absent baseDir. Unguarded, one evicted checkout threw past `pollRepo`'s
+   * per-session loop and killed the whole repo's poll — no PR-state broadcast,
+   * auto-fix, auto-merge or missing-PR verify for any session on it — on every
+   * tick, forever. try/catch and not an `existsSync` precheck: the janitor can
+   * reclaim the tree in between.
+   */
+  private openSessionGit(dir: string | undefined): GitManager | undefined {
+    if (!dir || !this.createGitManager) return undefined;
+    try {
+      const git = this.createGitManager(dir);
+      this.absentCheckoutLogged.delete(dir);
+      return git;
+    } catch (err: unknown) {
+      // Deduplicated, not silent: an evicted checkout is expected, but an
+      // unexpected factory failure would otherwise vanish. Per-tick logging is
+      // the noise this replaces.
+      if (!this.absentCheckoutLogged.has(dir)) {
+        this.absentCheckoutLogged.add(dir);
+        console.log(`[pr-poller] Skipping local git for ${dir} (checkout unavailable):`, getErrorMessage(err));
+      }
+      return undefined;
+    }
+  }
+
+  private readonly absentCheckoutLogged = new Set<string>();
+
   private isAutoResolveEnabled: () => boolean;
 
   private isAutoFixEnabled: () => boolean;
@@ -122,9 +158,8 @@ export class PrStatusPoller {
       (sessionId) => opts.runnerRegistry?.get(sessionId),
       // Fetch at merge time: poll-time tracking refs can miss a remote force-push.
       async (sessionId, headBranch) => {
-        const dir = this.sessionManager.get(sessionId)?.workspaceDir;
-        if (!dir || !this.createGitManager) return undefined;
-        return resolveMergeSync(this.createGitManager(dir), headBranch);
+        const git = this.openSessionGit(this.sessionManager.get(sessionId)?.workspaceDir);
+        return git ? resolveMergeSync(git, headBranch) : undefined;
       },
     );
     this.graceTracker = new CiGraceTracker(opts.getSharedRepoDir);
@@ -621,8 +656,11 @@ export class PrStatusPoller {
         }
 
         // Match the local diff dialog while GitHub's diff indexing catches up.
-        if (this.createGitManager && session.workspaceDir) {
-          const localGit = this.createGitManager(session.workspaceDir);
+        const localGit = this.openSessionGit(session.workspaceDir);
+        // Distinguish "no clone on disk" from "no factory wired" — only the
+        // former is evidence, and it is what holds the managed merge below.
+        const checkoutMissing = Boolean(this.createGitManager && session.workspaceDir && !localGit);
+        if (localGit) {
           try {
             const local = await localGit.diffStatVsBranch(summary.baseBranch);
             summary.insertions = local.insertions;
@@ -652,7 +690,7 @@ export class PrStatusPoller {
           });
 
         if (!this.remediationArbiter.isClaimed(session.id)) {
-          this.autoMerge.handleManaged(session.id, summary, owner, repo).catch((err: unknown) => {
+          this.autoMerge.handleManaged(session.id, summary, owner, repo, { checkoutMissing }).catch((err: unknown) => {
             console.error(`[pr-poller] Managed auto-merge error for ${session.id}:`, err);
           });
         }

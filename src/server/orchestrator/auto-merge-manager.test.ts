@@ -74,6 +74,28 @@ describe("AutoMergeManager.handleManaged", () => {
     expect(state?.error).toBeUndefined();
   });
 
+  it("holds a merge when the session's checkout is not on disk (evicted or archived)", async () => {
+    // Without a clone there is no local branch reading at all, and the sync
+    // gates read a missing one as "cannot tell, don't block" — so an `ahead`
+    // session would merge a remote branch short of its own last commits. An
+    // archived session keeps a managed merge armed and has its checkout
+    // deleted, so this is reachable.
+    const { manager, mergePullRequest } = makeManager();
+    manager.setEnabled("s1", true);
+    manager.setManaged("s1", true);
+
+    await manager.handleManaged("s1", makeSummary("success", "mergeable"), "o", "r", {
+      checkoutMissing: true,
+    });
+
+    expect(mergePullRequest).not.toHaveBeenCalled();
+    expect(manager.get("s1")?.completed).toBeUndefined();
+
+    // The hold is not terminal: once the checkout is back, the merge proceeds.
+    await manager.handleManaged("s1", makeSummary("success", "mergeable"), "o", "r");
+    expect(mergePullRequest).toHaveBeenCalledTimes(1);
+  });
+
   it("keeps auto-merge owning the session after a successful merge and does not re-merge", async () => {
     const { manager, mergePullRequest, onChange } = makeManager();
     manager.setEnabled("s1", true);

@@ -109,16 +109,39 @@ export class AutoMergeManager {
     this.onChange(sessionId);
   }
 
+  /**
+   * `opts.checkoutMissing` — the session's clone is known to be gone from disk
+   * (disk-evicted, or archived, which deletes a repo-backed checkout outright).
+   * Hold: the sync gates below read `undefined` as "cannot tell, don't block",
+   * which is right when a live clone declines to answer, but here there is no
+   * clone at all — so an `ahead`/`diverged` block that WOULD have fired is
+   * indistinguishable from `in-sync`, and ShipIt would merge a remote branch
+   * that may be missing the session's last commits. Until the crash in
+   * `pollRepo` was fixed this was unreachable: the throw aborted the poll before
+   * any merge. Fixing the crash is what exposes it.
+   */
   async handleManaged(
     sessionId: string,
     summary: PrStatusSummary,
     owner: string,
     repo: string,
+    opts: { checkoutMissing?: boolean } = {},
   ): Promise<void> {
     const mergeState = this.states.get(sessionId);
     if (!mergeState?.enabled || !mergeState.managed) return;
 
     if (mergeState.completed) return;
+
+    if (opts.checkoutMissing) {
+      if (!this.syncLogged.has(sessionId)) {
+        this.syncLogged.add(sessionId);
+        console.log(
+          `[auto-merge] Holding merge of PR #${summary.prNumber} (${owner}/${repo}) for ${sessionId}:`
+          + " the session's checkout is not on disk, so its branch cannot be verified against GitHub",
+        );
+      }
+      return;
+    }
 
     if (summary.checks.state !== "success" && summary.checks.state !== "none") return;
 
