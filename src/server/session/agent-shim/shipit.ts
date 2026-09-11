@@ -219,11 +219,14 @@ Compose services (docs/238 — start the services declared in docker-compose.yml
   \`url\` (the container IP — the address for your own curl / browser_navigate,
   not the user's preview origin).
 
-  A manual service is manual because it's HEAVY: the first start may pull a
-  large image or run a \`build:\`, taking minutes. \`start\`/\`restart\` wait up to
-  10 minutes, so run them in the BACKGROUND if your shell caps foreground
-  commands below that. If a start does time out it is still running — re-check
-  with \`list\` and follow progress with \`logs\`.
+  A service is manual because it isn't needed on every boot, not because
+  starting it is a big decision. If a change can be VERIFIED against a running
+  service, start it and verify — minutes of start time never justify shipping
+  unverified work. The first start may pull a large image or run a \`build:\`,
+  taking minutes. \`start\`/\`restart\` wait up to 10 minutes, so run them in the
+  BACKGROUND if your shell caps foreground commands below that. If a start does
+  time out it is still running — re-check with \`list\` and follow progress with
+  \`logs\`.
 
   The stack's SHAPE is declared in docker-compose.yml, not issued imperatively:
   there is no \`service create\`/\`delete\`/\`build\`/\`exec\`/\`up\`/\`down\`. Edit the
