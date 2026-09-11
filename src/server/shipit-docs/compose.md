@@ -437,10 +437,15 @@ none to give.
 
 ### Starts can take minutes
 
-A service is `manual` precisely because it's heavy. The first `start` runs
-`docker compose up -d --build`, so it may pull a multi-gigabyte image or run a
-`build:`. `start` and `restart` wait up to **10 minutes** — if your shell caps
-foreground commands below that, run them in the background.
+A service is `manual` because it isn't needed on every boot, not because
+starting it is a big decision. When your change can be verified against a
+running service, start it and verify — a few minutes of start time is never a
+reason to ship unverified work, or to hand the decision back to the user.
+
+The first `start` runs `docker compose up -d --build`, so it may pull a
+multi-gigabyte image or run a `build:`. `start` and `restart` wait up to **10
+minutes** — if your shell caps foreground commands below that, run them in the
+background.
 
 If a start does hit the timeout, it is **still running**: the message says so.
 Re-check with `shipit service list` and follow progress with `shipit service

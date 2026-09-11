@@ -6,9 +6,11 @@ user-invocable: true
 
 # Dogfooding ShipIt in ShipIt
 
-Opening the ShipIt repo in production ShipIt surfaces the `dev` Compose service as a **manual** preview — heavy enough (a whole second orchestrator, plus a `Dockerfile.dogfood` build) that it starts on demand rather than every boot. It shares the agent container's `/workspace/node_modules` (populated by `agent.install` at session boot) and runs Vite's **dev server** on the exposed port 3000, proxying `/api`, `/ws`, and `/preview` to the inner orchestrator on internal port 4000. It does **not** run its own `npm install` or a production `vite build` — the Compose file explains why that would be redundant and unsafe.
+Opening the ShipIt repo in production ShipIt surfaces the `dev` Compose service as a **manual** preview — a whole second orchestrator, plus a `Dockerfile.dogfood` build, so it starts on demand rather than every boot. It shares the agent container's `/workspace/node_modules` (populated by `agent.install` at session boot) and runs Vite's **dev server** on the exposed port 3000, proxying `/api`, `/ws`, and `/preview` to the inner orchestrator on internal port 4000. It does **not** run its own `npm install` or a production `vite build` — the Compose file explains why that would be redundant and unsafe.
 
-Start it with `shipit service start dev`. A first start may take minutes; a `start` that times out is still running — re-check with `shipit service list`.
+Start it with `shipit service start dev`. A first start may take minutes; a `start` that times out is still running — re-check with `shipit service list`. **Start it whenever your change can be seen in the inner UI.** A few minutes of start time buys a check unit tests cannot make, so "that needs the dogfood instance" is never a reason to ship a UI change unverified, or to hand the decision back to the user. If the container is *paused*, `start` fails with `cannot start a paused container, try unpause instead`; `shipit service restart dev` recovers it.
+
+**Leave it running when you are done — never `shipit service stop dev`.** Stopping it by hand buys nothing: archiving the session stops the service anyway. And the user often opens the inner UI after you report, so a stopped service only makes them wait through another start. Say that it is running and point at it with a `[the inner UI](shipit-preview://dev)` chat link — the `url` from `shipit service list` is the container IP, which is yours to curl and not an address their browser can reach.
 
 ## Local mode is a real exception to "ShipIt always runs in Docker"
 
