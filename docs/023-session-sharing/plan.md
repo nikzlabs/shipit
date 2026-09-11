@@ -35,7 +35,7 @@ A single self-contained HTML file that includes:
 <head>
   <meta charset="UTF-8">
   <title>ShipIt Session: Build JWT Auth</title>
-  <style>/* Inlined Tailwind subset + ShipIt styles */</style>
+  <style>…</style>
 </head>
 <body>
   <header>
@@ -54,7 +54,7 @@ A single self-contained HTML file that includes:
         </div>
       </div>
     </div>
-    <!-- ... more messages ... -->
+    …
   </div>
 </body>
 </html>
@@ -116,11 +116,8 @@ A structured JSON file containing the raw session data, useful for:
 ```typescript
 export interface ExportOptions {
   format: "html" | "json";
-  /** Include tool use details (file diffs, bash commands). Default: true. */
   includeToolUse?: boolean;
-  /** Include full file contents (not just diffs). Default: false. */
   includeFileContents?: boolean;
-  /** Redact sensitive data (API keys, tokens in bash output). Default: true. */
   redactSecrets?: boolean;
 }
 
@@ -130,9 +127,6 @@ export interface ExportResult {
   mimeType: string;
 }
 
-/**
- * Export a session as a self-contained artifact.
- */
 export async function exportSession(
   sessionId: string,
   chatHistoryManager: ChatHistoryManager,
@@ -159,9 +153,6 @@ export async function exportSession(
 #### New Types
 
 ```typescript
-// src/server/types.ts — additions
-
-// Client → Server
 export interface WsExportSession {
   type: "export_session";
   sessionId: string;
@@ -170,10 +161,8 @@ export interface WsExportSession {
   redactSecrets?: boolean;
 }
 
-// Server → Client
 export interface WsSessionExported {
   type: "session_exported";
-  /** Base64-encoded content of the exported file. */
   content: string;
   filename: string;
   mimeType: string;
@@ -191,7 +180,6 @@ GET /api/export/{sessionId}?format=html&redact=true
 Returns the file directly with appropriate `Content-Type` and `Content-Disposition` headers. This allows the browser to download the file natively.
 
 ```typescript
-// In buildApp():
 app.get("/api/export/:sessionId", async (request, reply) => {
   const { sessionId } = request.params as { sessionId: string };
   const format = (request.query as { format?: string }).format || "html";

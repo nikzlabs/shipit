@@ -23,6 +23,7 @@ export function LocalModeBanner() {
     try {
       localStorage.setItem(DISMISS_KEY, "1");
     } catch {
+      // Dismissal still works when storage is unavailable.
     }
     setDismissed(true);
   };

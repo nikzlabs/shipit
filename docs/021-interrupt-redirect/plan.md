@@ -19,12 +19,8 @@ The Claude Code App supports interruption on every surface: click stop, type a c
 The `ClaudeProcess` class already has a `kill()` method that terminates the PTY process. We need a gentler `interrupt()` method and a new WebSocket message to trigger it.
 
 ```typescript
-// src/server/claude.ts — additions
-
-/** Send SIGINT to the running process (Ctrl+C equivalent). */
 interrupt(): void {
   if (this.proc) {
-    // Send Ctrl+C character to the PTY
     this.proc.write("\x03");
   }
 }
@@ -38,14 +34,11 @@ Using `\x03` (ETX / Ctrl+C) through the PTY is the correct approach because:
 If the gentle interrupt doesn't work (process doesn't exit within a timeout), fall back to `kill()`:
 
 ```typescript
-/** Interrupt the running process. Falls back to kill after timeout. */
 interrupt(): void {
   if (!this.proc) return;
 
-  // Send Ctrl+C
   this.proc.write("\x03");
 
-  // If process doesn't exit within 5 seconds, force kill
   const forceKillTimer = setTimeout(() => {
     if (this.proc) {
       console.warn("[claude] Force killing process after interrupt timeout");
@@ -53,7 +46,6 @@ interrupt(): void {
     }
   }, 5000);
 
-  // Clear the force-kill timer when the process exits normally
   this.proc.onExit(() => {
     clearTimeout(forceKillTimer);
   });
@@ -63,17 +55,12 @@ interrupt(): void {
 #### New Types
 
 ```typescript
-// src/server/types.ts — additions
-
-// Client → Server
 export interface WsInterruptClaude {
   type: "interrupt_claude";
 }
 
-// Server → Client
 export interface WsClaudeInterrupted {
   type: "claude_interrupted";
-  /** Partial output captured before interruption. */
   partialText?: string;
 }
 ```
@@ -87,10 +74,6 @@ if (msg.type === "interrupt_claude") {
   if (claude) {
     claude.interrupt();
     broadcastLog("server", "Claude process interrupted by user");
-    // Note: The 'done' handler will fire when the process exits,
-    // which handles auto-commit, queue dequeue, etc.
-    // We send claude_interrupted immediately so the client can
-    // update UI before the process fully exits.
     send({ type: "claude_interrupted" });
   } else {
     send({ type: "error", message: "No active Claude process to interrupt" });
@@ -111,9 +94,6 @@ After an interrupt, the `done` handler fires with a non-zero exit code. The exis
 
 ```typescript
 currentClaude.on("done", async (code: number | null) => {
-  // ... existing code ...
-
-  // Don't show error for user-initiated interrupts
   if (!receivedResult && !wasInterrupted) {
     send({ type: "error", message: reason });
   }
@@ -140,7 +120,6 @@ For simplicity, the recommended behavior: interrupt clears the queue. The user i
 A prominent "Stop" button that appears when Claude is processing:
 
 ```typescript
-// In App.tsx, add to the chat area (below MessageList, above MessageInput):
 {isLoading && (
   <StopButton onClick={handleInterrupt} />
 )}
@@ -172,14 +151,11 @@ This is the more common pattern (VS Code, Claude.ai, ChatGPT all do this). The i
 ```typescript
 const handleInterrupt = useCallback(() => {
   send({ type: "interrupt_claude" });
-  // Don't set isLoading = false yet — wait for server confirmation
 }, [send]);
 
-// In lastMessage handler:
 if (data.type === "claude_interrupted") {
   setIsLoading(false);
   setActivity(undefined);
-  // Mark any streaming assistant message as complete (but partial)
   setMessages((prev) => {
     const last = prev[prev.length - 1];
     if (last?.role === "assistant" && last.streaming) {

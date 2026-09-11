@@ -106,9 +106,6 @@ When Claude asks for approval via AskUserQuestion, the existing approval UI in t
 ### New Types
 
 ```typescript
-// src/server/types.ts — additions
-
-// Extend WsSendMessage
 export interface WsSendMessage {
   type: "send_message";
   text: string;

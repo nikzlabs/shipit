@@ -9,7 +9,7 @@ ShipIt manages three child processes: Claude CLI, Vite dev server, and git. All 
 ```typescript
 interface AppDeps {
   gitManager?: GitManager;
-  createGitManager?: (dir: string) => GitManager;  // Per-session factory
+  createGitManager?: (dir: string) => GitManager;
   viteManager?: ViteManager;
   sessionManager?: SessionManager;
   usageManager?: UsageManager;
@@ -20,7 +20,7 @@ interface AppDeps {
   workspaceDir?: string;
   serveStatic?: boolean;
   startVite?: boolean;
-  portScanIntervalMs?: number;  // 0 to disable in tests
+  portScanIntervalMs?: number;
 }
 ```
 
