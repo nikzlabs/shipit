@@ -60,7 +60,6 @@ Thread the stack name (`process.env.DOCKER_STACK`) through to the compose overri
 **Step 2: Filter by stack in shell scripts.**
 
 ```bash
-# Kill stale compose service containers from previous runs
 docker rm -f $(docker ps -aq --filter "label=shipit-stack=shipit-dev") 2>/dev/null || true
 ```
 

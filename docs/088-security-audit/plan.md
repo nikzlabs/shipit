@@ -56,9 +56,9 @@ ShipIt's architecture is the coupled shape the article warns about — **the age
   That `.gitconfig` is in `SHARED_CREDENTIAL_PATHS` and is copied into every session's `/credentials` subtree, which is mounted into the container with `GIT_CONFIG_GLOBAL=/credentials/.gitconfig`. So a prompt-injected agent can read the token directly:
 
   ```sh
-  cat /credentials/.gitconfig                       # token is in plaintext
-  git config --global --get credential.helper       # ditto
-  printf 'protocol=https\nhost=github.com\n\n' | git credential fill   # prints it
+  cat /credentials/.gitconfig
+  git config --global --get credential.helper
+  printf 'protocol=https\nhost=github.com\n\n' | git credential fill
   ```
 
 - **Why it matters**: This is precisely the failure the article calls out — *"a prompt injection only had to convince Claude to read its own environment."* The `gh` shim closes the *API-surface* hole but not this one: the underlying PAT is still physically present in the sandbox. With no egress controls (finding #6), exfiltration is a one-liner. The article's stated goal is that *"git push and pull work from inside the sandbox without the agent ever handling the token itself"* — ShipIt does not yet meet that bar for raw git transport.
