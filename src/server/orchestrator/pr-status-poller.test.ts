@@ -1558,12 +1558,25 @@ describe("PrStatusPoller", () => {
   });
 
   describe("managed auto-merge and a busy session", () => {
+    // Production always wires a git factory, and the merge gate holds when the
+    // branch cannot be compared with the remote — so a fixture that asserts a
+    // merge HAPPENS has to supply a readable checkout, or it proves nothing.
+    const inSyncGit = () => ({
+      diffStatVsBranch: vi.fn().mockResolvedValue({ insertions: 1, deletions: 0 }),
+      currentBranchOrNull: vi.fn().mockResolvedValue("shipit/abc-feature"),
+      aheadBehind: vi.fn().mockResolvedValue({ ahead: 0, behind: 0 }),
+      fetchBranch: vi.fn().mockResolvedValue(undefined),
+    }) as unknown as GitManager;
+
     async function pollGreenPr(opts: { busy: boolean }) {
       const githubAuth = makeGitHubAuth({
         data: { repository: { pullRequests: { nodes: [makeGraphQLPrNode()] } } },
       });
       const sessionManager = makeSessionManager([
-        { id: "s1", branch: "shipit/abc-feature", remoteUrl: "https://github.com/owner/repo" },
+        {
+          id: "s1", branch: "shipit/abc-feature", remoteUrl: "https://github.com/owner/repo",
+          workspaceDir: "/sessions/s1/workspace",
+        },
       ]);
       const registry = makeFakeRegistry();
       registry.setViewers("s1", 1);
@@ -1575,6 +1588,7 @@ describe("PrStatusPoller", () => {
         sessionManager,
         sseBroadcast: vi.fn(),
         runnerRegistry: registry,
+        createGitManager: inSyncGit,
       });
       poller.setAutoMergeEnabled("s1", true);
       poller.setAutoMergeManaged("s1", true, { managedReason: "session-live" });
@@ -1590,7 +1604,10 @@ describe("PrStatusPoller", () => {
         data: { repository: { pullRequests: { nodes: [makeGraphQLPrNode()] } } },
       });
       const sessionManager = makeSessionManager([
-        { id: "s1", branch: "shipit/abc-feature", remoteUrl: "https://github.com/owner/repo", archived: true },
+        {
+          id: "s1", branch: "shipit/abc-feature", remoteUrl: "https://github.com/owner/repo",
+          workspaceDir: "/sessions/s1/workspace", archived: true,
+        },
       ]);
       const registry = makeFakeRegistry();
       registry.setViewers("s1", 1);
@@ -1599,6 +1616,7 @@ describe("PrStatusPoller", () => {
         sessionManager,
         sseBroadcast: vi.fn(),
         runnerRegistry: registry,
+        createGitManager: inSyncGit,
       });
       poller.setAutoMergeEnabled("s1", true);
       poller.setAutoMergeManaged("s1", true, { managedReason: "session-live" });
@@ -1633,6 +1651,47 @@ describe("PrStatusPoller", () => {
         createGitManager: () => {
           throw new Error("Cannot use simple-git on a directory that does not exist");
         },
+      });
+      poller.setAutoMergeEnabled("s1", true);
+      poller.setAutoMergeManaged("s1", true, { managedReason: "session-live" });
+      poller.trackSession("s1", "https://github.com/owner/repo");
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(githubAuth.mergePullRequest).not.toHaveBeenCalled();
+      poller.destroy();
+      vi.useRealTimers();
+    });
+
+    it("holds an armed merge when a live checkout cannot answer for the branch", async () => {
+      // The clone is on disk and git works — it just cannot compare the branch
+      // with the remote: HEAD is detached here, and a different branch checked
+      // out or a missing tracking ref reads the same way. All of them clear on a
+      // later poll, so holding costs one interval; merging on the silence can
+      // ship the branch without its last commits, which nothing undoes.
+      vi.useFakeTimers();
+      const githubAuth = makeGitHubAuth({
+        data: { repository: { pullRequests: { nodes: [makeGraphQLPrNode()] } } },
+      });
+      const sessionManager = makeSessionManager([
+        {
+          id: "s1", branch: "shipit/abc-feature", remoteUrl: "https://github.com/owner/repo",
+          workspaceDir: "/sessions/s1/workspace",
+        },
+      ]);
+      const registry = makeFakeRegistry();
+      registry.setViewers("s1", 1);
+      const poller = new PrStatusPoller({
+        githubAuth,
+        sessionManager,
+        sseBroadcast: vi.fn(),
+        runnerRegistry: registry,
+        createGitManager: () => ({
+          diffStatVsBranch: vi.fn().mockResolvedValue({ insertions: 1, deletions: 0 }),
+          currentBranchOrNull: vi.fn().mockResolvedValue(null),
+          aheadBehind: vi.fn().mockResolvedValue({ ahead: 0, behind: 0 }),
+          fetchBranch: vi.fn().mockResolvedValue(undefined),
+        }) as unknown as GitManager,
       });
       poller.setAutoMergeEnabled("s1", true);
       poller.setAutoMergeManaged("s1", true, { managedReason: "session-live" });
