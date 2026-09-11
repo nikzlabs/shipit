@@ -198,14 +198,14 @@ final tag reachable from `origin/stable` and resets to *its commit* (fail closed
 if none):
 
 ```sh
-export GIT_TERMINAL_PROMPT=0        # a refusal must fail, not hang on a prompt
+export GIT_TERMINAL_PROMPT=0
 CHANNEL="$(cat "$SHIPIT_DIR/.release-channel" 2>/dev/null || echo edge)"
-fetch_origin                        # ONE `git fetch origin --tags --prune`, retried
+fetch_origin
 if [ "$CHANNEL" = "stable" ]; then
   LATEST_TAG="$(git tag --merged origin/stable \
     | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' \
     | sort -V | tail -n1)"
-  [ -z "$LATEST_TAG" ] && { echo "no stable release yet"; exit 1; }   # fail closed
+  [ -z "$LATEST_TAG" ] && { echo "no stable release yet"; exit 1; }
   TARGET_SHA="$(git rev-parse "${LATEST_TAG}^{commit}")"
 else
   TARGET_SHA="$(git rev-parse origin/main)"

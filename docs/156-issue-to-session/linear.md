@@ -66,14 +66,14 @@ Handler shape:
 
 ```
 on POST /api/webhooks/linear:
-  verifyHmac(payload, secret)         // reject if invalid
+  verifyHmac(payload, secret)
   if dedupe.seen(eventId): return 200
   enqueueBackgroundJob(payload)
-  return 200                          // <5s deadline met
+  return 200
 
 background job:
   parse payload → resolve repo
-  emit "thought" activity              // <10s deadline met
+  emit "thought" activity
   spawn ShipIt session (slow)
   emit "action" with session URL once created
 ```

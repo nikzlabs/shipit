@@ -1,15 +1,3 @@
-/**
- * PROTOTYPE harness — exercises rolling-base.ts against a REAL git repo and
- * prints both correctness results and timings for the cheap-path operations
- * the plan claims are negligible (commit-ancestry CAS + per-scope lock).
- *
- * Run:  npx tsx docs/183-overlay-dep-store/prototype/run-rolling-base.ts
- *
- * Settles (logic, on the copy substrate — open question #3 + several checklist
- * items): the publish CAS, marker skip, eligibility gates, ordering by commit
- * ancestry (not wall-clock), force-push divergence handling, and the depth-cap
- * flatten. Does NOT settle the host overlay mount (see host-overlay-spike.sh).
- */
 
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
@@ -28,7 +16,6 @@ import {
   withScopeLock,
 } from "./rolling-base.ts";
 
-// --- tiny test harness ------------------------------------------------------
 let pass = 0;
 let fail = 0;
 function check(name: string, cond: boolean, detail = ""): void {
@@ -44,7 +31,6 @@ function section(title: string): void {
   console.log(`\n\x1b[1m${title}\x1b[0m`);
 }
 
-// --- real git repo fixture --------------------------------------------------
 function git(dir: string, ...args: string[]): string {
   return execFileSync("git", ["-C", dir, ...args], { encoding: "utf8" }).trim();
 }
@@ -65,7 +51,6 @@ function makeRepo(): { dir: string; commit: (msg: string) => string } {
   return { dir, commit };
 }
 
-// --- env ---------------------------------------------------------------------
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "ob-state-"));
 const stateRoot = path.join(root, "state");
 const lockRoot = path.join(root, "locks");
@@ -74,8 +59,6 @@ fs.mkdirSync(stateRoot, { recursive: true });
 fs.mkdirSync(lockRoot, { recursive: true });
 fs.mkdirSync(baseRoot, { recursive: true });
 
-// Substrate hook — copy today, overlay later. Trivial here; this prototype
-// validates the *decision* logic, not copy speed (host spike measures that).
 let baseSeq = 0;
 function materializeBase(_srcDir: string, fromEmpty: boolean): string {
   const dir = path.join(baseRoot, `base-${++baseSeq}-${fromEmpty ? "empty" : "incr"}`);
@@ -142,10 +125,8 @@ async function main(): Promise<void> {
 
   section("4. CAS ordering — a LATE but OLDER install can't clobber a newer base");
   {
-    // base is at t2. First advance forward to t3...
     const fwd = await publishBase({ ...opts, candidate: candidate({ commit: t3 }) });
     check("advanced to t3", fwd.pointer?.commit === t3, fwd.outcome);
-    // ...then an install that *recorded an older commit* (t2) grabs the lock LATE.
     const stale = await publishBase({ ...opts, candidate: candidate({ commit: t2 }) });
     check(
       "older candidate -> skipped-not-forward (ancestry, not wall-clock)",
@@ -157,7 +138,6 @@ async function main(): Promise<void> {
 
   section("5. Force-push divergence — diverged main is NOT forward, so skip");
   {
-    // Rewrite main onto a sibling that does not descend t3.
     git(gitDir, "checkout", "-q", t1);
     git(gitDir, "checkout", "-q", "-b", "rewrite");
     fs.writeFileSync(path.join(gitDir, "forced.txt"), "forced");
@@ -174,7 +154,7 @@ async function main(): Promise<void> {
   section("6. Ineligible publishers run on the base but never publish");
   let t4 = "";
   {
-    t4 = commit("t4"); // genuinely forward, so only eligibility blocks it
+    t4 = commit("t4");
     const nonzero = await publishBase({ ...opts, candidate: candidate({ commit: t4, exitCode: 1 }) });
     check("exit!=0 -> skipped-ineligible", nonzero.outcome === "skipped-ineligible", nonzero.outcome);
     const userEdited = await publishBase({ ...opts, candidate: candidate({ commit: t4, preUserInstall: false }) });
@@ -182,15 +162,12 @@ async function main(): Promise<void> {
     const pinned = await publishBase({ ...opts, candidate: candidate({ commit: t4, sourceIsDefaultBranch: false }) });
     check("Ops source-pinned (non-default) -> skipped-ineligible", pinned.outcome === "skipped-ineligible", pinned.outcome);
     check("base STILL at t3 — none of the three published", readPointer(stateRoot, scope)?.commit === t3);
-    // and a clean eligible one DOES advance to t4
     const ok = await publishBase({ ...opts, candidate: candidate({ commit: t4 }) });
     check("clean eligible advances to t4", ok.pointer?.commit === t4, ok.outcome);
   }
 
   section("6b. Marker invalidation for non-default checkout");
   {
-    // A source-pinned session's marker stamped at a historical commit must not
-    // let it skip install against the default-branch base.
     const defaultMarker = { sourceCommit: t4, runtime, installCommand: "npm ci" };
     check(
       "pinned checkout (different commit) cannot skip",
@@ -208,7 +185,6 @@ async function main(): Promise<void> {
 
   section(`7. Depth cap (${DEFAULT_DEPTH_CAP}) -> clean reinstall from empty (flatten == reset)`);
   {
-    // Fresh scope to count depth cleanly from v0.
     const s2: Scope = { repo: "github.com/acme/depth", runtime };
     const cand = (commitId: string): PublishCandidate => ({
       scope: s2,
@@ -218,7 +194,6 @@ async function main(): Promise<void> {
       sourceIsDefaultBranch: true,
       mergedDir: "/tmp/merged",
     });
-    // Build a long linear chain.
     const chain: string[] = [];
     const r2 = makeRepo();
     for (let i = 0; i < DEFAULT_DEPTH_CAP + 2; i++) chain.push(r2.commit(`c${i}`));
@@ -248,8 +223,6 @@ async function main(): Promise<void> {
     const chain: string[] = [];
     for (let i = 0; i < 12; i++) chain.push(r3.commit(`r${i}`));
     const opts3 = { stateRoot, lockRoot, gitDir: r3.dir, materializeBase };
-    // Fire all forward candidates concurrently and in SHUFFLED order — the
-    // final base must be the newest commit regardless of arrival order.
     const order = [...chain.keys()].sort((a, b) => ((a * 7 + 3) % 12) - ((b * 7 + 3) % 12));
     const results = await Promise.all(
       order.map((i) =>
@@ -272,7 +245,6 @@ async function main(): Promise<void> {
     console.log(`     (${advances} of ${results.length} concurrent publishers actually advanced; rest correctly skipped)`);
   }
 
-  // --- timings: the operations the plan claims are negligible ---------------
   section("9. Timings — is the publish CAS actually cheap?");
   {
     const N = 2000;

@@ -58,10 +58,10 @@ only writes `FETCH_HEAD` — it never updates `refs/heads/main`:
 ```
 $ git -C cache.git fetch --all --force --prune
  * branch HEAD -> FETCH_HEAD
-$ git -C cache.git rev-parse HEAD          # ShipIt reads this as "latest main"
-4a0cbbe…   # frozen at the commit the cache was first cloned at
+$ git -C cache.git rev-parse HEAD
+4a0cbbe…
 $ git -C cache.git rev-parse refs/heads/main
-4a0cbbe…   # never moved
+4a0cbbe…
 ```
 
 So the bare cache's `HEAD` (a symbolic ref to its default branch) is **frozen at

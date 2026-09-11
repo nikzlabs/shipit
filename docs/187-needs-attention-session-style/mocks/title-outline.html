@@ -25,7 +25,7 @@
     background: #ffffff; border-color: #e5e7eb;
     --sel: #f9fafb; --txt: #111827; --txt2: #4b5563; --txt3: #9ca3af;
     --pr: #7c3aed; --ok: #16a34a;
-    --attn: #d97706;   /* existing light token, unchanged */
+    --attn: #d97706;
   }
   .light h2 { color:#111827; } .light .ph { color:#9ca3af; }
 
@@ -33,7 +33,7 @@
     background: #030712; border-color: #1f2937;
     --sel: #111827; --txt: #f3f4f6; --txt2: #9ca3af; --txt3: #6b7280;
     --pr: #a78bfa; --ok: #22c55e;
-    --attn: #f59e0b;   /* existing dark token, unchanged */
+    --attn: #f59e0b;
   }
   .dark h2 { color:#f3f4f6; } .dark .ph { color:#6b7280; }
 
@@ -53,13 +53,11 @@
     flex: none; align-self: center; font-size: 9px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em;
     color: var(--txt3); border: 1px solid currentColor; border-radius: 999px; padding: 1px 6px; opacity:.55;
   }
-
-  /* the outline primitive: border in attention color, text + bg untouched */
   .ol {
     display: inline-block; max-width: 100%; vertical-align: bottom;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-    color: var(--txt);            /* title color unchanged */
-    background: transparent;       /* title background unchanged */
+    color: var(--txt);
+    background: transparent;
     border: 1.5px solid var(--attn);
     padding: 0px 6px; border-radius: 5px;
   }
@@ -69,8 +67,6 @@
   .dark .tokbox { background:#111827; border:1px solid #1f2937; color:#9ca3af; }
   .tokbox b { font-weight:600; }
   .sw { display:inline-block; width:11px; height:11px; border-radius:3px; vertical-align:-1px; margin-right:4px; }
-
-  /* shape options strip */
   .opts { max-width: 1040px; margin: 30px 0 0; }
   .opts h3 { font-size: 13px; font-weight: 650; margin: 0 0 10px; }
   .chips { display:flex; flex-wrap:wrap; gap:18px; align-items:center; background:#fff; border:1px solid #e5e7eb; border-radius:12px; padding:16px; }
@@ -93,8 +89,6 @@
   </p>
 
   <div class="cols">
-
-    <!-- LIGHT -->
     <div class="panel light">
       <h2>Light themes</h2>
       <p class="ph">border = <code>--color-attention</code> #d97706</p>
@@ -109,8 +103,6 @@
         <span class="sw" style="background:transparent;border:1px dashed #9ca3af"></span><b>title color / background:</b> unchanged
       </div>
     </div>
-
-    <!-- DARK -->
     <div class="panel dark">
       <h2>Dark themes</h2>
       <p class="ph">border = <code>--color-attention</code> #f59e0b</p>

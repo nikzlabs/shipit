@@ -60,7 +60,6 @@ Pick an `AgentId` slug. Use lowercase, no punctuation: `cursor`, `gemini`.
        supportedPermissionModes: ["auto"],
        skillsDirName: ".cursor",
        skillInvocationPrefix: "/",
-       // …other capability flags
      },
    }
    ```
@@ -188,7 +187,6 @@ export function buildAgentRuntime(deps): AgentRuntime {
     ["codex", new codex.CodexLimitsProvider(…)],
     ["cursor", new cursor.CursorLimitsProvider(…)],
   ]);
-  // …same for runParamsPreps and parallelSessionsSections
 }
 ```
 

@@ -343,13 +343,13 @@ detection.
 
 ```yaml
 release:
-  version-source: package.json   # package.json | Cargo.toml | pyproject.toml | VERSION | tag
-  tag-pattern: "v{version}"      # how the tag name is derived; {version} is required
-  prerelease-pattern: "v{version}-rc.{n}"   # rc lane; {n} auto-increments
-  notes: github-generated        # github-generated | changelog:CHANGELOG.md | commits
-  gate: "npm test"               # optional local gate the agent runs before tagging
-  mechanism: tag-triggered       # tag-triggered (a) | brokered (b, later phase)
-  workflow: .github/workflows/release.yml   # path checked for existence / scaffolding
+  version-source: package.json
+  tag-pattern: "v{version}"
+  prerelease-pattern: "v{version}-rc.{n}"
+  notes: github-generated
+  gate: "npm test"
+  mechanism: tag-triggered
+  workflow: .github/workflows/release.yml
 ```
 
 ### Monorepo / ambiguity → agent-guided setup

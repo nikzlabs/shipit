@@ -31,7 +31,6 @@ const repoGroups = useMemo(() => {
     if (!grouped.has(key)) grouped.set(key, []);
     grouped.get(key)!.push(s);
   }
-  // …sort…
   return repos.map((repo) => ({ repo, sessions: grouped.get(repo.url) ?? [] }));
 }, [repos, sessions]);
 ```

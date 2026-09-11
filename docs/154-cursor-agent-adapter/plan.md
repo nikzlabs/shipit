@@ -183,7 +183,7 @@ The registry can still expose each CLI as a logical agent id, but adapters shoul
 prefer absolute binary paths from a shared resolver:
 
 ```ts
-resolveAgentBinary("cursor") // /opt/shipit/agents/cursor/bin/cursor-agent
+resolveAgentBinary("cursor")
 ```
 
 Using absolute paths avoids accidental coupling to whatever happens to be on
@@ -301,15 +301,15 @@ Initial Cursor capabilities should be conservative:
 
 ```ts
 {
-  supportsResume: true,          // if verified against cursor-agent resume
-  supportsImages: false,         // until prompt/image attachment behavior is proven
-  supportsSystemPrompt: false,   // unless Cursor exposes a stable flag/config path
+  supportsResume: true,
+  supportsImages: false,
+  supportsSystemPrompt: false,
   supportsPermissionModes: false,
   supportedPermissionModes: [],
   toolNames: ["shell", "file_read", "file_write", "file_edit"],
-  models: ["auto"],              // replace with verified Cursor model ids
-  supportsReview: false,         // until a shell tool + subagent primitive are proven (docs/266 item 15 — NOT an MCP bridge; that requirement died with docs/220)
-  supportsSteering: false,       // keep off until mid-turn input behavior is proven
+  models: ["auto"],
+  supportsReview: false,
+  supportsSteering: false,
 }
 ```
 

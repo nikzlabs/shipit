@@ -319,7 +319,6 @@ for (let i = 0; i < comments.length; i++) {
       `Comment at index ${i} has empty or missing "text".`,
     );
   }
-  // …existing length and per-kind anchor checks…
 }
 ```
 

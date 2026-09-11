@@ -156,9 +156,9 @@ visibleInSidebar(s) =
       !s.userArchived
   AND !s.warm
   AND (
-        s.mergedAt == null                       // active, never merged
-     OR reopenedAfterMerge(s)                     // merged but worked-in since
-     OR isAmongTopMergedForRepo(s, N = 3)         // recent merged, view cap
+        s.mergedAt == null
+     OR reopenedAfterMerge(s)
+     OR isAmongTopMergedForRepo(s, N = 3)
      )
 ```
 

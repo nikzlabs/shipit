@@ -127,8 +127,8 @@ that setting, so the settings file is now passed **unconditionally** for the
 
 ```
 agent-execution.ts
-  settingsPath = agentId === "claude" ? "/etc/shipit/managed-settings.json" : undefined   // always
-  autoCreatePr = autoCreatePrActive                                                       // gates the Stop hook
+  settingsPath = agentId === "claude" ? "/etc/shipit/managed-settings.json" : undefined
+  autoCreatePr = autoCreatePrActive
         │
         ▼
 claude.ts → claude CLI

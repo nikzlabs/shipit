@@ -37,7 +37,6 @@
   .variant > .note { font-size: 11px; color: var(--color-text-tertiary); line-height: 1.45; min-height: 30px; }
   .recommend { color: var(--color-success); }
 
-  /* Sidebar shell */
   .sidebar {
     width: 280px;
     background: var(--color-bg-primary);
@@ -47,7 +46,6 @@
     overflow: hidden;
   }
 
-  /* Repo header row */
   .repo-header {
     display: flex; align-items: center; gap: 6px;
     padding: 6px 12px 6px 14px;
@@ -57,7 +55,6 @@
   .gh { color: var(--color-text-secondary); flex: 0 0 auto; display: flex; }
   .overflow { margin-left: auto; color: var(--color-text-tertiary); display: flex; }
 
-  /* Session rows */
   .row {
     display: flex; align-items: center; gap: 8px;
     padding: 6px 12px 6px 20px;
@@ -79,7 +76,6 @@
   }
   .newrow .plus { width: 20px; height: 20px; display: flex; align-items: center; justify-content: center; flex: 0 0 auto; }
 
-  /* Recently-resolved sub-header — base */
   .resolved-head {
     display: flex; align-items: center; gap: 6px;
     padding: 8px 8px 2px 8px;
@@ -114,7 +110,6 @@
 
   <div class="grid">
 
-    <!-- VARIANT A: left caret (the blend risk) -->
     <div class="variant">
       <div class="caption">A · Caret on the left</div>
       <div class="note">Mirrors the repo header's left caret one level down. Reads as "a second repo" — the blend you were worried about.</div>
@@ -144,7 +139,6 @@
       </div>
     </div>
 
-    <!-- VARIANT B: caret on the right (user's idea) -->
     <div class="variant">
       <div class="caption recommend">B · Caret on the right ★</div>
       <div class="note">Keeps the git-merge glyph on the left (identity), pushes the collapse caret to the far right. No left-caret echo of the repo header.</div>
@@ -174,7 +168,6 @@
       </div>
     </div>
 
-    <!-- VARIANT C: right caret + count -->
     <div class="variant">
       <div class="caption recommend">C · Right caret, with count ★</div>
       <div class="note">Same as B but surfaces the hidden count. Most useful in the collapsed state — see the collapsed row below — where the number is the "there's more here" cue.</div>
@@ -202,7 +195,6 @@
         <div class="row resolved"><span class="merge"><svg width="11" height="11" viewBox="0 0 256 256" fill="currentColor"><path d="M224 64a32 32 0 1 0-40 31v9a16 16 0 0 1-16 16h-40a31.8 31.8 0 0 0-16 4.31V95a32 32 0 1 0-16 0v66a32 32 0 1 0 16 0v-9a16 16 0 0 1 16-16h40a32 32 0 0 0 32-32v-9a32.06 32.06 0 0 0 24-31Z"/></svg></span><span class="label">Sub-agent defaults</span></div>
 
         <div class="divider"></div>
-        <!-- collapsed state preview -->
         <div class="resolved-head clickable" title="collapsed state">
           <span class="ico"><svg width="11" height="11" viewBox="0 0 256 256" fill="currentColor"><path d="M224 64a32 32 0 1 0-40 31v9a16 16 0 0 1-16 16h-40a31.8 31.8 0 0 0-16 4.31V95a32 32 0 1 0-16 0v66a32 32 0 1 0 16 0v-9a16 16 0 0 1 16-16h40a32 32 0 0 0 32-32v-9a32.06 32.06 0 0 0 24-31Z"/></svg></span>
           <span class="text">Recently resolved</span>
@@ -214,7 +206,6 @@
       </div>
     </div>
 
-    <!-- VARIANT D: count as the only affordance (text-link style) -->
     <div class="variant">
       <div class="caption">D · No caret — count toggles</div>
       <div class="note">Drops the caret entirely; the whole row is the hit target and the count carries state ("5 ▸" collapsed / "Hide" expanded). Cleanest, but the affordance is less obvious.</div>
@@ -239,7 +230,6 @@
         <div class="row resolved"><span class="merge"><svg width="11" height="11" viewBox="0 0 256 256" fill="currentColor"><path d="M224 64a32 32 0 1 0-40 31v9a16 16 0 0 1-16 16h-40a31.8 31.8 0 0 0-16 4.31V95a32 32 0 1 0-16 0v66a32 32 0 1 0 16 0v-9a16 16 0 0 1 16-16h40a32 32 0 0 0 32-32v-9a32.06 32.06 0 0 0 24-31Z"/></svg></span><span class="label">Sub-agent defaults</span></div>
 
         <div class="divider"></div>
-        <!-- collapsed state preview -->
         <div class="resolved-head clickable" title="collapsed state">
           <span class="ico"><svg width="11" height="11" viewBox="0 0 256 256" fill="currentColor"><path d="M224 64a32 32 0 1 0-40 31v9a16 16 0 0 1-16 16h-40a31.8 31.8 0 0 0-16 4.31V95a32 32 0 1 0-16 0v66a32 32 0 1 0 16 0v-9a16 16 0 0 1 16-16h40a32 32 0 0 0 32-32v-9a32.06 32.06 0 0 0 24-31Z"/></svg></span>
           <span class="text">Recently resolved</span>
@@ -248,7 +238,6 @@
       </div>
     </div>
 
-    <!-- VARIANT E: caret immediately after the text (not far-right) -->
     <div class="variant">
       <div class="caption recommend">E · Caret next to the text ★</div>
       <div class="note">Caret sits right after "Recently resolved" with a small gap — no count, not pushed to the far edge. The collapse affordance reads as part of the label, and the trailing space stays clear.</div>
@@ -276,7 +265,6 @@
         <div class="row resolved"><span class="merge"><svg width="11" height="11" viewBox="0 0 256 256" fill="currentColor"><path d="M224 64a32 32 0 1 0-40 31v9a16 16 0 0 1-16 16h-40a31.8 31.8 0 0 0-16 4.31V95a32 32 0 1 0-16 0v66a32 32 0 1 0 16 0v-9a16 16 0 0 1 16-16h40a32 32 0 0 0 32-32v-9a32.06 32.06 0 0 0 24-31Z"/></svg></span><span class="label">Sub-agent defaults</span></div>
 
         <div class="divider"></div>
-        <!-- collapsed state preview -->
         <div class="resolved-head clickable" style="display:inline-flex" title="collapsed state">
           <span class="ico"><svg width="11" height="11" viewBox="0 0 256 256" fill="currentColor"><path d="M224 64a32 32 0 1 0-40 31v9a16 16 0 0 1-16 16h-40a31.8 31.8 0 0 0-16 4.31V95a32 32 0 1 0-16 0v66a32 32 0 1 0 16 0v-9a16 16 0 0 1 16-16h40a32 32 0 0 0 32-32v-9a32.06 32.06 0 0 0 24-31Z"/></svg></span>
           <span class="text">Recently resolved</span>

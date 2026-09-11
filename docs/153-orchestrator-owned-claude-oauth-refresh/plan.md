@@ -118,17 +118,14 @@ on scheduled tick (single-flight via in-process mutex):
   after   := readSourceTokenState()
 
   if after.expiresAt > before.expiresAt:
-    # Tier 1 rotated. Propagate and reschedule.
     repushTokenToPinnedSessions("claude", accountId)
     schedule next at after.expiresAt - safetyMargin
     return SUCCESS_TIER1
 
   if before.expiresAt > now + safetyMargin:
-    # Token's fine; status was just read-only. No-op tick.
     schedule next at before.expiresAt - safetyMargin
     return NOOP
 
-  # Tier 1 didn't rotate, token is expired or expiring. Fall through.
   spawn `claude --print "ok" --model claude-haiku-4-5-20251001 ...` with HOME=<source-dir>, timeout 60s
   after2 := readSourceTokenState()
 
@@ -137,7 +134,6 @@ on scheduled tick (single-flight via in-process mutex):
     schedule next at after2.expiresAt - safetyMargin
     return SUCCESS_TIER2
 
-  # Neither tier rotated. Either rate-limited or refresh token revoked.
   if recentExit had 429-shaped signal:
     schedule next with exponential backoff (60s → 2m → 5m → 10m → 30m, cap 30m)
     return RATE_LIMITED
@@ -145,7 +141,6 @@ on scheduled tick (single-flight via in-process mutex):
     emit "auth_required"
     stop scheduling until next auth_complete
     return REVOKED
-  # Unknown failure mode; treat as transient.
   schedule next with short backoff, log loudly
   return UNKNOWN_FAILURE
 ```
@@ -463,16 +458,13 @@ export interface ClaudeOAuthRefresherDeps {
   providerAccountManager: ProviderAccountManager;
   repushTokenToPinnedSessions: (agentId: AgentId, accountId?: string) => void;
   sseBroadcast: (event: string, data: unknown) => void;
-  /** Injected for tests; defaults to real `child_process.spawn`. */
   spawn?: typeof spawn;
-  /** Injected for tests; defaults to `Date.now`. */
   now?: () => number;
 }
 
 export class ClaudeOAuthRefresher {
   start(): void;
   stop(): void;
-  /** Trigger an immediate refresh for an account (or all, if accountId is omitted). */
   refreshNow(accountId?: string): Promise<RefreshResult>;
 }
 ```
@@ -493,9 +485,6 @@ const refresher = new ClaudeOAuthRefresher({
 refresher.start();
 
 authManager.on("auth_complete", () => {
-  // Existing handler still fires. The refresher rearms itself on the
-  // file-write event via its watcher, but we explicitly nudge it here
-  // so the schedule updates immediately on fresh sign-in.
   void refresher.refreshNow().catch(() => {});
 });
 ```

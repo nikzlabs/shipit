@@ -209,7 +209,7 @@ underlying CLI runs and how it's invoked.
 
 ```
 shipit agent run --agent <agentId> --prompt-file - [--model M] [--json]
-shipit agent result [RUN-ID] [--json]                 # planning#247, see §9
+shipit agent result [RUN-ID] [--json]
 ```
 
 - **`--agent <agentId>`** — the agent to spawn (`claude`, `codex`, …). May

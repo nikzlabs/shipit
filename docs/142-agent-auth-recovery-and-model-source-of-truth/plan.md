@@ -34,7 +34,7 @@ Diagnostic from inside a failing session container (`/root/.claude` →
 `/credentials/.claude` subpath mount):
 
 ```
-{ "expiresAt": 1779304803371,  // ~May 21 2026 — a SHORT-LIVED access token, expired
+{ "expiresAt": 1779304803371,
   "expiredNow": true, "hasAccess": true, "hasRefresh": true, "tokenTail": "Ds9AAA" }
 ```
 

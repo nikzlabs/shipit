@@ -861,12 +861,11 @@ voice/
 ```ts
 {
   state: "idle" | "recording" | "transcribing" | "error",
-  elapsedMs: number,                          // for the timer UI
+  elapsedMs: number,
   errorMessage: string | null,
   startRecording: () => void,
   stopRecording: () => void,
   onTranscript: (cb: (text: string) => void) => () => void,
-  //          ^ Locked to text-only. The hook has no concept of "send".
 }
 ```
 
@@ -882,7 +881,7 @@ state — MicButton and any other UI just read from it.
   state: "idle" | "loading" | "playing" | "paused" | "error",
   playingTurnId: string | null,
   positionMs: number,
-  durationMs: number,                 // 0 until the first `loadedmetadata`
+  durationMs: number,
   errorMessage: string | null,
   play: (turnId: string, text: string) => Promise<void>,
   pause: () => void,

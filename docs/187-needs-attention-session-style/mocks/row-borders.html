@@ -15,7 +15,7 @@
     --color-text-tertiary: #9ca3af;
     --color-border-primary: #e5e7eb;
     --color-border-secondary: #d1d5db;
-    --color-attention: #d97706;       /* amber-600 */
+    --color-attention: #d97706;
     --color-attention-subtle: rgba(217,119,6,0.10);
     --color-pr: #7c3aed;
     --color-success: #16a34a;
@@ -73,17 +73,9 @@
   .repo { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .dots { color: var(--color-text-tertiary); margin-top: -2px; font-size: 14px; letter-spacing: 1px; opacity: .0; transition: opacity .12s; }
   .row:hover .dots { opacity: .6; }
-
-  /* 0 — current: both-side borders */
   .v-current .row.attn { border-left-color: var(--color-attention); border-right-color: var(--color-attention); }
-
-  /* 1 — left rail only */
   .v-rail .row.attn { border-left: 3px solid var(--color-attention); border-radius: 6px; }
-
-  /* 2 — full outline ring */
   .v-ring .row.attn { border: 1.5px solid var(--color-attention); border-radius: 8px; }
-
-  /* 3 — left rail + pulse dot */
   .v-pulse .row.attn { border-left: 3px solid var(--color-attention); }
   .v-pulse .row.attn .title-line { display: flex; align-items: center; gap: 6px; }
   .pulse {
@@ -97,18 +89,12 @@
     70% { box-shadow: 0 0 0 6px rgba(217,119,6,0); }
     100% { box-shadow: 0 0 0 0 rgba(217,119,6,0); }
   }
-
-  /* 4 — soft amber glow */
   .v-glow .row.attn { border-radius: 8px; box-shadow: 0 0 0 1px rgba(217,119,6,0.45), 0 0 12px -2px rgba(217,119,6,0.55); }
-
-  /* 5 — rail + trailing edge dot */
   .v-edge .row.attn { border-left: 3px solid var(--color-attention); }
   .v-edge .row.attn::after {
     content: ""; position: absolute; right: 6px; top: 50%; transform: translateY(-50%);
     width: 6px; height: 6px; border-radius: 999px; background: var(--color-attention);
   }
-
-  /* 6 — continuous rail w/ gap collapse: adjacent attn rows share one bar */
   .v-group .row.attn { border-left: 3px solid var(--color-attention); }
   .v-group .row.attn + .row.attn { border-top-left-radius: 0; }
   .v-group .row.attn:has(+ .row.attn) { border-bottom-left-radius: 0; }
@@ -128,8 +114,6 @@
   </p>
 
   <div class="grid">
-
-    <!-- 0 CURRENT -->
     <div class="card v-current">
       <div class="label"><span class="name">0 · Current</span></div>
       <div class="desc-row">Both-side borders. Stacked, the right-hand bars create a busy double-edge column.</div>
@@ -142,8 +126,6 @@
         <div class="row"><span class="prdot"></span><div class="body"><div class="title">Disk janitor sweep</div><div class="meta"><span class="statusdot"></span><span class="repo">shipit</span><span>·</span><span>1d</span></div></div><div class="dots">⋯</div></div>
       </div>
     </div>
-
-    <!-- 1 LEFT RAIL -->
     <div class="card v-rail featured">
       <div class="label"><span class="name">1 · Left rail</span><span class="tag">recommended</span></div>
       <div class="desc-row">One bar each. Adjacent rows show two short rails with a small gap — still scans as a flagged cluster.</div>
@@ -156,8 +138,6 @@
         <div class="row"><span class="prdot"></span><div class="body"><div class="title">Disk janitor sweep</div><div class="meta"><span class="statusdot"></span><span class="repo">shipit</span><span>·</span><span>1d</span></div></div><div class="dots">⋯</div></div>
       </div>
     </div>
-
-    <!-- 6 GROUPED RAIL -->
     <div class="card v-group featured">
       <div class="label"><span class="name">6 · Grouped rail</span><span class="tag">new</span></div>
       <div class="desc-row">Like #1, but adjacent flagged rows fuse into <strong>one continuous bar</strong> — reads the whole cluster as a single "needs you" zone.</div>
@@ -170,8 +150,6 @@
         <div class="row"><span class="prdot"></span><div class="body"><div class="title">Disk janitor sweep</div><div class="meta"><span class="statusdot"></span><span class="repo">shipit</span><span>·</span><span>1d</span></div></div><div class="dots">⋯</div></div>
       </div>
     </div>
-
-    <!-- 2 OUTLINE RING -->
     <div class="card v-ring">
       <div class="label"><span class="name">2 · Outline ring</span></div>
       <div class="desc-row">Three full rings get visually heavy when stacked — strong, but can feel noisy with many flags.</div>
@@ -184,8 +162,6 @@
         <div class="row"><span class="prdot"></span><div class="body"><div class="title">Disk janitor sweep</div><div class="meta"><span class="statusdot"></span><span class="repo">shipit</span><span>·</span><span>1d</span></div></div><div class="dots">⋯</div></div>
       </div>
     </div>
-
-    <!-- 3 RAIL + PULSE -->
     <div class="card v-pulse">
       <div class="label"><span class="name">3 · Rail + pulse dot</span></div>
       <div class="desc-row">Multiple pulses animating at once can get busy — most effective when flags are rare.</div>
@@ -198,8 +174,6 @@
         <div class="row"><span class="prdot"></span><div class="body"><div class="title">Disk janitor sweep</div><div class="meta"><span class="statusdot"></span><span class="repo">shipit</span><span>·</span><span>1d</span></div></div><div class="dots">⋯</div></div>
       </div>
     </div>
-
-    <!-- 5 RAIL + EDGE DOT -->
     <div class="card v-edge">
       <div class="label"><span class="name">5 · Rail + edge dot</span></div>
       <div class="desc-row">Rail plus a trailing dot — the dots line up in a column on the right, a tidy secondary signal.</div>
