@@ -3,13 +3,13 @@ import { EventEmitter } from "node:events";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { CodexAdapter, CODEX_SANDBOX_ARGS } from "./adapter.js";
+import { CodexAdapter, CODEX_GOALS_OFF_ARGS, CODEX_SANDBOX_ARGS } from "./adapter.js";
 import type { AgentEvent } from "../agent-process.js";
 import { CODEX_TOOL_NAMES } from "../../../shared/agent-registry.js";
 
 // Prefix for assertions about what ELSE rides the pre-subcommand `-c` position.
-// The contents are pinned literally in "sandbox overrides", not here.
-const SANDBOX = CODEX_SANDBOX_ARGS;
+// The contents are pinned literally in "sandbox overrides" and "goal mode", not here.
+const SANDBOX = [...CODEX_SANDBOX_ARGS, ...CODEX_GOALS_OFF_ARGS];
 
 class FakeStdio extends EventEmitter {
   writable = true;
@@ -192,6 +192,18 @@ describe("CodexAdapter", () => {
       ]);
       // Global overrides only work ahead of the subcommand.
       expect(lastSpawnArgs?.indexOf("app-server")).toBe(lastSpawnArgs!.length - 1);
+    });
+  });
+
+  // Literal for the same reason as the sandbox keys; goes away with docs/154.
+  describe("goal mode", () => {
+    it("turns Codex's native goal mode off before `app-server`", () => {
+      adapter = new CodexAdapter(() => false);
+      adapter.run({ prompt: "hi", cwd: "/workspace" });
+      const at = lastSpawnArgs!.indexOf("features.goals=false");
+      expect(at).toBeGreaterThan(0);
+      expect(lastSpawnArgs![at - 1]).toBe("-c");
+      expect(at).toBeLessThan(lastSpawnArgs!.indexOf("app-server"));
     });
   });
 

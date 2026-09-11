@@ -42,6 +42,13 @@ Because Codex persists the goal and drives the cross-turn loop itself,
 ShipIt's adapter is thin: forward set/get/clear/pause/resume, subscribe to
 the `updated`/`cleared` notifications, and render the goal inline in chat.
 
+**Until this lands, goal mode is off.** The pinned 0.154.0 ships it on, so
+the model could create a goal ShipIt cannot show or clear, and each
+`thread/resume` restarted it. `CodexAdapter` therefore spawns `app-server`
+with `-c features.goals=false` (`CODEX_GOALS_OFF_ARGS` in
+`src/server/session/agents/codex/adapter.ts`, which records what was
+measured). Removing that override is part of this work.
+
 ### Claude
 
 Claude Code's `/goal` is a session-scoped, Stop-hook-backed slash command
