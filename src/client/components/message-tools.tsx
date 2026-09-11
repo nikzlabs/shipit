@@ -529,7 +529,9 @@ function ToolOutputModal({ toolName, input, toolUseId, bodyTruncated, startedAt,
   return (
     <Dialog open onOpenChange={(isOpen) => { if (!isOpen) onClose(); }}>
     <DialogContent className="w-[min(90vw,56rem)] max-h-[80vh] flex flex-col" aria-label="Tool output">
-      <div className="flex items-center gap-2 px-4 py-3 border-b border-(--color-border-primary)">
+      {/* `pr-10` keeps the time clear of `DialogContent`'s own close button,
+          which is absolutely positioned over this row at `right-3`. */}
+      <div className="flex items-center gap-2 pl-4 pr-10 py-3 border-b border-(--color-border-primary)">
         <span className="text-xs font-semibold text-(--color-text-primary) shrink-0">Tool Call</span>
         {calledAt ? (
           <span

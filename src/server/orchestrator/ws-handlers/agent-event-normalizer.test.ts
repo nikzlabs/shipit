@@ -92,6 +92,25 @@ describe("per-tool timing derivation (docs/185)", () => {
       expect(block.startedAt).toBe(already);
     });
 
+    it("measures the duration from a stamp the block already carried", () => {
+      const starts = new Map<string, number>();
+      stampToolUseStartTimes(assistantEvent([{ id: "t1", startedAt: new Date(5000).toISOString() }]), starts, 9999);
+      // A later unstamped repeat must not move the start out from under the
+      // time the dialog is already showing.
+      const repeated = stampToolUseStartTimes(assistantEvent([{ id: "t1" }]), starts, 9999);
+      const block = (repeated as unknown as { content: Record<string, unknown>[] }).content[0];
+      expect(block.startedAt).toBe(new Date(5000).toISOString());
+      const out = stampToolDurations(toolResultEvent([{ tool_use_id: "t1" }]), starts, 5400);
+      const result = (out as unknown as { content: Record<string, unknown>[] }).content[0];
+      expect(result.duration_ms).toBe(400);
+    });
+
+    it("ignores an unparseable stamp rather than seeding the duration map with NaN", () => {
+      const starts = new Map<string, number>();
+      stampToolUseStartTimes(assistantEvent([{ id: "t1", startedAt: "not a date" }]), starts, 1000);
+      expect(starts.has("t1")).toBe(false);
+    });
+
     it("leaves text-only and non-array content alone (returns same reference)", () => {
       const textOnly = { type: "agent_assistant", content: [{ type: "text", text: "hi" }] } as unknown as AgentEvent;
       expect(stampToolUseStartTimes(textOnly, new Map(), 1)).toBe(textOnly);

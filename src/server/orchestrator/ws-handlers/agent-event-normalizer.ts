@@ -58,7 +58,15 @@ export function stampToolUseStartTimes(
     if (typeof b !== "object" || b === null) return b;
     const block = b as Record<string, unknown>;
     if (block.type !== "tool_use" || typeof block.id !== "string") return b;
-    if (typeof block.startedAt === "string") return b;
+    if (typeof block.startedAt === "string") {
+      // An adapter that stamps its own time owns the instant, so seed the
+      // duration map from it — otherwise a later unstamped repeat of the same
+      // block would record a different start and the dialog would show a
+      // duration measured from an instant its own time field contradicts.
+      const parsed = Date.parse(block.startedAt);
+      if (!Number.isNaN(parsed) && !startTimes.has(block.id)) startTimes.set(block.id, parsed);
+      return b;
+    }
     let start = startTimes.get(block.id);
     if (start === undefined) {
       start = now;

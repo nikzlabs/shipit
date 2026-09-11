@@ -1482,3 +1482,75 @@ describe("wireAgentListeners — a CLI-started turn announces itself cross-sessi
     expect(started()).toEqual([]);
   });
 });
+
+describe("wireAgentListeners — tool-call time", () => {
+  it("stamps an unstamped tool_use with one time that reaches both the wire and the persisted row", () => {
+    const agent = new FakeAgent();
+    const runner = new SessionRunner({
+      sessionId: "session-1",
+      sessionDir: "/tmp/session-1",
+      defaultAgentId: "codex",
+    });
+    wireAgentListeners(agent as unknown as AgentProcess, runner, deps(), {
+      capturedSessionId: "session-1",
+      isNewSession: false,
+      persistUserMessage: vi.fn(),
+    });
+
+    const before = Date.now();
+    agent.emit("event", {
+      type: "agent_assistant",
+      content: [{ type: "tool_use", id: "t1", name: "Bash", input: { command: "ls" } }],
+    } as unknown as AgentEvent);
+    const after = Date.now();
+
+    // What a live viewer receives.
+    const emitted = runner.getTurnEventBuffer()
+      .find((m): m is Extract<typeof m, { type: "agent_event" }> => m.type === "agent_event");
+    const wireBlock = (emitted?.event as unknown as { content: Record<string, unknown>[] }).content[0];
+    expect(typeof wireBlock.startedAt).toBe("string");
+    const stampedMs = Date.parse(wireBlock.startedAt as string);
+    expect(stampedMs).toBeGreaterThanOrEqual(before);
+    expect(stampedMs).toBeLessThanOrEqual(after);
+
+    // What a reload rehydrates. Same instant — the dialog must not show one
+    // time live and another after a refresh.
+    const persisted = buildTurnMessages(runner.chatMessageGroups, [], [], { inProgress: false });
+    expect(persisted[0].toolUse?.[0].startedAt).toBe(wireBlock.startedAt);
+
+    runner.dispose({ force: true });
+  });
+
+  it("measures the shown duration from the shown time", () => {
+    const agent = new FakeAgent();
+    const runner = new SessionRunner({
+      sessionId: "session-1",
+      sessionDir: "/tmp/session-1",
+      defaultAgentId: "codex",
+    });
+    wireAgentListeners(agent as unknown as AgentProcess, runner, deps(), {
+      capturedSessionId: "session-1",
+      isNewSession: false,
+      persistUserMessage: vi.fn(),
+    });
+
+    agent.emit("event", {
+      type: "agent_assistant",
+      content: [{ type: "tool_use", id: "t1", name: "Bash", input: { command: "ls" } }],
+    } as unknown as AgentEvent);
+    agent.emit("event", {
+      type: "agent_tool_result",
+      content: [{ type: "tool_result", tool_use_id: "t1", content: "ok" }],
+    } as unknown as AgentEvent);
+
+    const events = runner.getTurnEventBuffer()
+      .filter((m): m is Extract<typeof m, { type: "agent_event" }> => m.type === "agent_event");
+    const useBlock = (events[0].event as unknown as { content: Record<string, unknown>[] }).content[0];
+    const resultBlock = (events[1].event as unknown as { content: Record<string, unknown>[] }).content[0];
+    const startedAtMs = Date.parse(useBlock.startedAt as string);
+    const elapsed = Date.now() - startedAtMs;
+    expect(resultBlock.duration_ms).toBeLessThanOrEqual(elapsed);
+
+    runner.dispose({ force: true });
+  });
+});
