@@ -3,9 +3,13 @@ import { EventEmitter } from "node:events";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { CodexAdapter } from "./adapter.js";
+import { CodexAdapter, CODEX_SANDBOX_ARGS } from "./adapter.js";
 import type { AgentEvent } from "../agent-process.js";
 import { CODEX_TOOL_NAMES } from "../../../shared/agent-registry.js";
+
+// Prefix for assertions about what ELSE rides the pre-subcommand `-c` position.
+// The contents are pinned literally in "sandbox overrides", not here.
+const SANDBOX = CODEX_SANDBOX_ARGS;
 
 class FakeStdio extends EventEmitter {
   writable = true;
@@ -155,13 +159,39 @@ describe("CodexAdapter", () => {
     it("passes -c model_reasoning_effort= when reasoningEffort is set", () => {
       adapter = new CodexAdapter(() => false);
       adapter.run({ prompt: "hi", cwd: "/workspace", reasoningEffort: "high" });
-      expect(lastSpawnArgs).toEqual(["-c", "model_reasoning_effort=high", "app-server"]);
+      expect(lastSpawnArgs).toEqual([...SANDBOX, "-c", "model_reasoning_effort=high", "app-server"]);
     });
 
     it("omits the override (default) when reasoningEffort is unset", () => {
       adapter = new CodexAdapter(() => false);
       adapter.run({ prompt: "hi", cwd: "/workspace" });
-      expect(lastSpawnArgs).toEqual(["app-server"]);
+      expect(lastSpawnArgs).toEqual([...SANDBOX, "app-server"]);
+    });
+  });
+
+  /**
+   * `sandboxPolicy: { type: "dangerFullAccess" }` on `turn/start` was the ONLY
+   * thing disabling Codex's sandbox, and when codex-cli 0.153.2 fell back past
+   * it every tool call died on `bwrap: No permissions to create new namespace`.
+   * `features.use_legacy_landlock` is the one that survives a requirements
+   * veto — it swaps the fallback sandbox for Landlock, which needs no
+   * capabilities, rather than one that cannot start.
+   *
+   * Asserted at SPAWN time and by literal value: this is a wire contract with
+   * the pinned CLI (each key was measured to parse at this argv position), so
+   * comparing against the exported constant would pass whatever it said.
+   */
+  describe("sandbox overrides", () => {
+    it("disables the sandbox and forces Landlock before `app-server`", () => {
+      adapter = new CodexAdapter(() => false);
+      adapter.run({ prompt: "hi", cwd: "/workspace" });
+      expect(lastSpawnArgs?.slice(0, 6)).toEqual([
+        "-c", `sandbox_mode="danger-full-access"`,
+        "-c", `approval_policy="never"`,
+        "-c", "features.use_legacy_landlock=true",
+      ]);
+      // Global overrides only work ahead of the subcommand.
+      expect(lastSpawnArgs?.indexOf("app-server")).toBe(lastSpawnArgs!.length - 1);
     });
   });
 
