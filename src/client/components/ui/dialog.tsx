@@ -197,12 +197,18 @@ const DialogContent = forwardRef<
           through onOpenChange, the same path Esc / backdrop / Back already use. */}
       <DialogPrimitive.Close
         className={cn(
-          "absolute right-3 top-3 z-10 rounded-md p-1 transition-colors",
+          // The vertical inset is a variable because the button is a fixed 28px
+          // box (20px icon + p-1) while header rows are not: at the default
+          // 0.75rem it centres on a ~52px row, so on a SHORTER header it sits
+          // low and grazes the bottom border. A dialog with a compact header
+          // row sets `--dialog-close-top` on its DialogContent to
+          // `(rowHeight - 28px) / 2` and the button centres on that row's text.
+          "absolute right-3 top-[var(--dialog-close-top,0.75rem)] z-10 rounded-md p-1 transition-colors",
           "text-(--color-text-secondary) hover:bg-(--color-bg-hover) hover:text-(--color-text-primary)",
           "focus:outline-none focus-visible:ring-2 focus-visible:ring-(--color-border-focus)",
           // Keep it clear of the status bar / notch when the dialog is fullscreen
-          // on mobile. env() is 0 off-mobile, so this is the plain top-3 there.
-          "max-md:top-[max(0.75rem,env(safe-area-inset-top))]",
+          // on mobile. env() is 0 off-mobile, so this is the plain inset there.
+          "max-md:top-[max(var(--dialog-close-top,0.75rem),env(safe-area-inset-top))]",
         )}
         aria-label="Close"
         data-testid="dialog-close"

@@ -1872,8 +1872,12 @@ export default function App() {
               if (!isOpen) useGitStore.getState().closeDiffDialog();
             }}
           >
+            {/* `DiffPanel`'s header strip is 32px tall, so the close button —
+                a 28px box — centres on it at (32 - 28) / 2 = 2px. At the 12px
+                default it sat 10px low and hung 7px past the strip's bottom
+                border, over the file header below. */}
             <DialogContent
-              className="w-[90vw] h-[85vh] max-h-[85vh]! overflow-hidden! flex flex-col"
+              className="w-[90vw] h-[85vh] max-h-[85vh]! overflow-hidden! flex flex-col [--dialog-close-top:0.125rem]"
               aria-label="Diff view"
             >
               <Suspense
