@@ -6,6 +6,7 @@ import type { GitHubAuthManager } from "./github-auth.js";
 import type { SessionRunnerInterface } from "./session-runner.js";
 import type {
   BranchSyncState,
+  BranchSyncStatus,
   PrMergeableState,
   PrReviewDecision,
   PrStatusSummary,
@@ -240,7 +241,7 @@ describe("AutoMergeManager.handleManaged", () => {
       expect(mergePullRequest).toHaveBeenCalledTimes(1);
     });
 
-    it("merges when the sync state is unknown — absence is never a verdict", async () => {
+    it("merges when the POLL-TIME sync state is unknown — that reading is stale by design", async () => {
       const { manager, mergePullRequest } = makeManager();
       manager.setEnabled("s1", true);
       manager.setManaged("s1", true);
@@ -284,19 +285,49 @@ describe("AutoMergeManager.handleManaged", () => {
       expect(resolveSync).toHaveBeenCalledWith("s1", "feature");
     });
 
-    it("still merges when the fresh read cannot be taken (it throws)", async () => {
+    // The live gate is the last reading before an irreversible merge, and every
+    // cause of "cannot tell" clears on a later poll — a hold costs one poll
+    // interval. The one non-ordinary cause, a failed fetch, is correlated with
+    // the very outage that leaves commits unpushed.
+    it.each([
+      ["it throws (the fetch failed)", async () => { throw new Error("remote unreachable"); }],
+      ["it answers nothing (no clone, detached HEAD, no tracking ref)", async () => undefined],
+    ])("holds when the fresh read cannot be taken: %s", async (_why, resolveSync) => {
       const mergePullRequest = vi.fn().mockResolvedValue({ success: true, message: "merged" });
       const manager = new AutoMergeManager(
         { mergePullRequest } as unknown as GitHubAuthManager,
         vi.fn(),
         undefined,
-        async () => { throw new Error("remote unreachable"); },
+        resolveSync,
+      );
+      manager.setEnabled("s1", true);
+      manager.setManaged("s1", true);
+
+      // The poll-time reading says the branch is current: only the live gate can hold this.
+      await manager.handleManaged("s1", withSync("in-sync", 0, 0), "o", "r");
+
+      expect(mergePullRequest).not.toHaveBeenCalled();
+      expect(manager.get("s1")?.completed).toBeUndefined();
+      expect(manager.get("s1")?.error).toBeUndefined();
+    });
+
+    it("merges on a later poll once the live read answers again — the hold is not terminal", async () => {
+      const mergePullRequest = vi.fn().mockResolvedValue({ success: true, message: "merged" });
+      const answer: { value: BranchSyncStatus | undefined } = { value: undefined };
+      const manager = new AutoMergeManager(
+        { mergePullRequest } as unknown as GitHubAuthManager,
+        vi.fn(),
+        undefined,
+        async () => answer.value,
       );
       manager.setEnabled("s1", true);
       manager.setManaged("s1", true);
 
       await manager.handleManaged("s1", withSync("in-sync", 0, 0), "o", "r");
+      expect(mergePullRequest).not.toHaveBeenCalled();
 
+      answer.value = { state: "in-sync", ahead: 0, behind: 0 };
+      await manager.handleManaged("s1", withSync("in-sync", 0, 0), "o", "r");
       expect(mergePullRequest).toHaveBeenCalledTimes(1);
     });
 

@@ -33,15 +33,25 @@ export async function readBranchSync(
   }
 }
 
+/**
+ * `requireFetch` — answer `undefined` rather than reading stale refs when the
+ * fetch fails. Only the unattended auto-merge asks for it: a fetch failure is
+ * silent, so the fallback reading below is indistinguishable from a verified
+ * one, and "in-sync" against a tracking ref that predates the outage reads as
+ * permission to merge. A user-initiated merge keeps the fallback — it still
+ * catches `ahead` from local refs, and a person is there to see the result.
+ */
 export async function resolveMergeSync(
   git: BranchSyncGit,
   branch: string,
   remote = "origin",
+  opts: { requireFetch?: boolean } = {},
 ): Promise<BranchSyncStatus | undefined> {
   try {
     await git.fetchBranch(remote, branch);
   } catch {
     // Fall back to local refs when the remote cannot be read.
+    if (opts.requireFetch) return undefined;
   }
   return readBranchSync(git, branch, remote);
 }

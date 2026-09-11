@@ -112,13 +112,12 @@ export class AutoMergeManager {
   /**
    * `opts.checkoutMissing` — the session's clone is known to be gone from disk
    * (disk-evicted, or archived, which deletes a repo-backed checkout outright).
-   * Hold: the sync gates below read `undefined` as "cannot tell, don't block",
-   * which is right when a live clone declines to answer, but here there is no
-   * clone at all — so an `ahead`/`diverged` block that WOULD have fired is
-   * indistinguishable from `in-sync`, and ShipIt would merge a remote branch
-   * that may be missing the session's last commits. Until the crash in
-   * `pollRepo` was fixed this was unreachable: the throw aborted the poll before
-   * any merge. Fixing the crash is what exposes it.
+   * Hold: the poll-time gate below reads `undefined` as "cannot tell, don't
+   * block", because that reading is stale by design — so an `ahead`/`diverged`
+   * block that WOULD have fired is indistinguishable from `in-sync`, and ShipIt
+   * would merge a remote branch that may be missing the session's last commits.
+   * Until the crash in `pollRepo` was fixed this was unreachable: the throw
+   * aborted the poll before any merge. Fixing the crash is what exposes it.
    */
   async handleManaged(
     sessionId: string,
@@ -193,7 +192,23 @@ export class AutoMergeManager {
     if (this.resolveSync) {
       const fresh = await this.resolveSync(sessionId, summary.headBranch)
         .catch(() => undefined);
-      if (fresh && fresh.state !== "in-sync" && fresh.state !== "behind") {
+      // No answer holds here, unlike the poll-time gate above. Most causes are
+      // ordinary (no checkout, a different branch or a detached HEAD checked
+      // out, no tracking ref yet) and the hold clears on the poll after the
+      // cause does — no user action, and nothing terminal is recorded. The
+      // cause that is NOT ordinary is a failed fetch, which is correlated with
+      // the outage that leaves commits unpushed in the first place; merging on
+      // it ships the branch without them, and nothing can undo that. Reaching
+      // this on a failed fetch takes `requireFetch` at the resolver: the shared
+      // helper otherwise answers from the stale refs this reading replaces.
+      if (!fresh) {
+        console.log(
+          `[auto-merge] Holding merge of PR #${summary.prNumber} (${owner}/${repo}) for ${sessionId}:`
+          + ` the branch could not be compared with ${summary.headBranch} on GitHub`,
+        );
+        return;
+      }
+      if (fresh.state !== "in-sync" && fresh.state !== "behind") {
         console.log(
           `[auto-merge] Holding merge of PR #${summary.prNumber} (${owner}/${repo}) for ${sessionId}:`
           + ` the branch is ${fresh.state} of ${summary.headBranch} on GitHub (verified against the remote)`,
