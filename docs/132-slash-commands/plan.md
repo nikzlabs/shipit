@@ -163,6 +163,11 @@ Before `runAgentWithMessage`:
 
 ### `/goal` as a native feature
 
+> **Superseded.** `/goal` is implemented by adapting the CLI's own goal
+> engine rather than a ShipIt-owned construct — see
+> [docs/154](../154-native-goal-command/plan.md). The design below (also
+> [docs/153](../153-goal-command/plan.md)) was rejected.
+
 The one genuinely new capability:
 - Stored on session metadata (`sessions.ts`).
 - Injected into the agent's context each turn via

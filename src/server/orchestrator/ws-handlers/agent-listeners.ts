@@ -43,6 +43,7 @@ import {
   normalizeAgentUsageLimitError,
 } from "./agent-rate-limits.js";
 import { ProviderRouteUnavailableError } from "../provider-route-preflight.js";
+import { recordAgentGoal } from "../services/agent-goal.js";
 
 export { buildTurnMessages, persistTurnInProgress } from "../chat-card-persistence.js";
 
@@ -221,6 +222,11 @@ export function wireAgentListeners(
         opts.capturedSessionId,
         opts.getCapturedRouteId?.(),
       );
+      return;
+    }
+
+    if (event.type === "agent_goal_updated") {
+      if (opts.capturedSessionId) recordAgentGoal(deps, opts.capturedSessionId, event.goal);
       return;
     }
 

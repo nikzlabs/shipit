@@ -825,6 +825,10 @@ const MIGRATIONS: Migration[] = [
       db.exec("ALTER TABLE agent_merge_claims ADD COLUMN method TEXT NOT NULL DEFAULT 'merge'");
     }
   },
+  // docs/154 — last goal the CLI reported for the session's thread, as JSON.
+  (db) => {
+    addSessionColumnIfMissing(db, "agent_goal");
+  },
 ];
 
 /** Guard tests that rewind user_version and replay later migrations. */

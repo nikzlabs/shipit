@@ -3,6 +3,8 @@ import type { WsClientMessage, ImageAttachment, FileAttachment, FileContextRef, 
 import type { ConnectionCtx, RunnerCtx, AppCtx } from "./types.js";
 import { validateImages, imageAttachmentRefusal, resolveFileAttachments, resolveUploadRefs, formatFileContext } from "../validation.js";
 import { parseCompactCommand } from "../../shared/compact-command.js";
+import { parseGoalCommand } from "../../shared/goal-command.js";
+import { handleGoalCommand } from "./goal-command.js";
 import { modelSelectionOf } from "../session-agent-env.js";
 import { graduateSession } from "../services/graduate-session.js";
 import { pinIssueSeededSession } from "../services/issue-seeded-session.js";
@@ -42,6 +44,13 @@ export async function handleSendMessage(
   ctx: FullCtx,
   msg: WsSendMessage,
 ): Promise<void> {
+  // docs/154 — before the auth gate: reading or clearing a goal starts no turn.
+  const goalCommand = parseGoalCommand(msg.text);
+  if (goalCommand && (ctx.agentRegistry.get(ctx.getActiveAgentId())?.capabilities.supportsGoals ?? false)) {
+    await handleGoalCommand(ctx, goalCommand, msg.sessionId ?? ctx.getActiveAppSessionId() ?? undefined);
+    return;
+  }
+
   if (!ensureActiveAgentAuthenticated(ctx)) return;
 
   const compactCapable =

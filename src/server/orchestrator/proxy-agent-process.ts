@@ -1,6 +1,7 @@
 import { EventEmitter } from "node:events";
 import { randomUUID } from "node:crypto";
 import type { AgentProcess, AgentId, AgentEvent, AgentMcpWriteContext, AgentMcpWriteResult, AgentRunParams, PermissionMode, PermissionDecision } from "../shared/types.js";
+import type { AgentGoalCommand, AgentGoalCommandResult } from "../shared/types/agent-types.js";
 import { WorkerTimeoutError } from "./worker-http.js";
 
 function describeWorkerError(err: unknown, op: "start" | "stdin" | "interrupt"): Error {
@@ -25,6 +26,7 @@ export interface ProxyAgentRunner {
   killAgentOnWorker(opts?: { victimRunToken?: string }): Promise<void>;
   setAgentPermissionModeOnWorker(mode: PermissionMode | undefined): Promise<void>;
   compactAgentOnWorker(instructions?: string): Promise<void>;
+  goalCommandOnWorker(agentId: AgentId, threadId: string, command: AgentGoalCommand): Promise<AgentGoalCommandResult>;
   resolvePermissionOnWorker(requestId: string, decision: PermissionDecision): Promise<void>;
 }
 
@@ -130,6 +132,11 @@ export class ProxyAgentProcess extends EventEmitter<{
       const msgText = err instanceof Error ? err.message : String(err);
       this.emit("log", "server", `Failed to compact agent on worker: ${msgText}`);
     });
+  }
+
+  // The worker answers with or without a live turn, so the caller owns the error.
+  goalCommand(threadId: string, command: AgentGoalCommand): Promise<AgentGoalCommandResult> {
+    return this.runner.goalCommandOnWorker(this.agentId, threadId, command);
   }
 
   // Target this spawn so a delayed kill cannot terminate its replacement.

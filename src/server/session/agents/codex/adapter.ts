@@ -7,6 +7,8 @@ import { killProcessTree } from "../../../shared/kill-child.js";
 import type {
   AgentId,
   AgentCapabilities,
+  AgentGoalCommand,
+  AgentGoalCommandResult,
   AgentMcpWriteContext,
   AgentMcpWriteResult,
   AgentProcess,
@@ -27,6 +29,7 @@ import { codexHome, resolveAgentHome } from "../../../shared/agent-home.js";
 import { CodexRateLimits } from "./codex-rate-limits.js";
 import { CodexEventHandler } from "./codex-event-handler.js";
 import { ensureCodexProjectTrusted } from "./project-trust.js";
+import { executeGoalCommand, runCodexGoalControl } from "./codex-goal.js";
 
 export { unwrapShellCommand, buildCodexPermissionInput } from "./codex-tool-normalizer.js";
 
@@ -186,6 +189,7 @@ export class CodexAdapter
     supportsReview: true,
     supportsSteering: true,
     supportsCompaction: true,
+    supportsGoals: true,
     skillsDirName: ".codex",
     skillInvocationPrefix: "$",
   };
@@ -390,6 +394,20 @@ export class CodexAdapter
     console.warn(
       "[codex-adapter] compact() called with no live thread — the orchestrator should have spawned a compaction run instead",
     );
+  }
+
+  // docs/154 — between turns the process is gone, so a control process answers instead.
+  async goalCommand(threadId: string, command: AgentGoalCommand): Promise<AgentGoalCommandResult> {
+    if (this.proc && this.eventHandler.getThreadId() === threadId) {
+      return executeGoalCommand((method, params) => this.sendRequest(method, params), threadId, command);
+    }
+    const scopedHome = this.spawnHomeOverride ?? this.resolveHome?.();
+    return runCodexGoalControl({
+      threadId,
+      command,
+      cwd: process.cwd(),
+      env: { ...process.env, HOME: resolveAgentHome(scopedHome), CODEX_HOME: this.codexConfigDir() },
+    });
   }
 
   interrupt(): void {

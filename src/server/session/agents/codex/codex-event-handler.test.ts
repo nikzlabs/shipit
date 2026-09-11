@@ -42,6 +42,84 @@ function shellResult(id: string, output: string, exitCode = 1): { method: string
   };
 }
 
+// Recorded from codex-cli 0.154.0 (docs/154 plan.md, "Measured").
+const GOAL = {
+  threadId: "t1", objective: "Ship it", status: "active", tokenBudget: null,
+  tokensUsed: 0, timeUsedSeconds: 0, createdAt: 1789140440, updatedAt: 1789140441,
+};
+const SHOWN_GOAL = {
+  objective: "Ship it", status: "active", tokenBudget: null, tokensUsed: 0, timeUsedSeconds: 0, updatedAt: 1789140441,
+};
+
+describe("goal notifications (docs/154 req 1)", () => {
+  it("reports a goal the model created with create_goal", () => {
+    const { handler, events } = makeHandler();
+    handler.handleNotification({ method: "thread/goal/updated", params: { threadId: "t1", turnId: "turn-1", goal: GOAL } });
+    expect(events).toEqual([{ type: "agent_goal_updated", goal: SHOWN_GOAL }]);
+  });
+
+  it("reports a cleared goal as no goal", () => {
+    const { handler, events } = makeHandler();
+    handler.handleNotification({ method: "thread/goal/cleared", params: { threadId: "t1" } });
+    expect(events).toEqual([{ type: "agent_goal_updated", goal: null }]);
+  });
+
+  it("ignores a subagent thread's goal", () => {
+    const { handler, events } = makeHandler();
+    handler.handleNotification({ method: "thread/started", params: { thread: { id: "parent" } } });
+    handler.handleNotification({ method: "thread/goal/updated", params: { threadId: "child", goal: { ...GOAL, threadId: "child" } } });
+    handler.handleNotification({ method: "thread/goal/cleared", params: { threadId: "child" } });
+    expect(events).toEqual([]);
+  });
+});
+
+describe("goal rehydrate (docs/154 req 6)", () => {
+  function makeRunHandler(goalResponse: unknown) {
+    const events: AgentEvent[] = [];
+    const methods: string[] = [];
+    const ctx: CodexTransport = {
+      emitEvent: (event) => events.push(event),
+      emitLog: () => {},
+      sendRequest: vi.fn(async (method: string) => {
+        methods.push(method);
+        if (method === "thread/resume" || method === "thread/start") return { thread: { id: "t1" } };
+        if (method === "turn/start") return { turn: { id: "turn-1" } };
+        if (method === "thread/goal/get") return goalResponse;
+        return {};
+      }),
+      sendResponse: vi.fn(),
+      sendErrorResponse: vi.fn(),
+      sendNotification: vi.fn(),
+      kill: vi.fn(),
+    };
+    return { handler: new CodexEventHandler(ctx, new CodexRateLimits(), []), events, methods };
+  }
+
+  it("reads the goal after a resumed thread's turn has started", async () => {
+    const { handler, events, methods } = makeRunHandler({ goal: GOAL });
+    await handler.initializeAndRun({ prompt: "hi", cwd: "/w", sessionId: "t1" });
+    await vi.waitFor(() => { expect(events.some((e) => e.type === "agent_goal_updated")).toBe(true); });
+    expect(events.find((e) => e.type === "agent_goal_updated")).toEqual({ type: "agent_goal_updated", goal: SHOWN_GOAL });
+    // A request between resume and turn/start would give Codex's continuation turn room to start first.
+    expect(methods.indexOf("thread/goal/get")).toBeGreaterThan(methods.indexOf("turn/start"));
+  });
+
+  it("clears a stale goal when the resumed thread has none", async () => {
+    const { handler, events } = makeRunHandler({ goal: null });
+    await handler.initializeAndRun({ prompt: "hi", cwd: "/w", sessionId: "t1" });
+    await vi.waitFor(() => {
+      expect(events).toContainEqual({ type: "agent_goal_updated", goal: null });
+    });
+  });
+
+  it("reports no goal for a new thread without asking", async () => {
+    const { handler, events, methods } = makeRunHandler({ goal: GOAL });
+    await handler.initializeAndRun({ prompt: "hi", cwd: "/w" });
+    expect(events).toContainEqual({ type: "agent_goal_updated", goal: null });
+    expect(methods).not.toContain("thread/goal/get");
+  });
+});
+
 describe("configWarning", () => {
   it("logs an invalid config as a server-level problem, naming the file and position", () => {
     const { handler, logs } = makeHandler();

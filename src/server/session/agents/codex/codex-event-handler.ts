@@ -26,6 +26,7 @@ import {
   isSandboxVeto,
   sandboxVetoNotice,
 } from "./sandbox-diagnostics.js";
+import { executeGoalCommand, normalizeCodexGoal } from "./codex-goal.js";
 
 interface JsonRpcServerRequest {
   id: number;
@@ -231,6 +232,19 @@ export class CodexEventHandler {
           params.tokenUsage as CodexTokenUsage | undefined,
           params.turnId as string | undefined,
         );
+        break;
+      }
+
+      case "thread/goal/updated": {
+        if (!this.isParentThread(params)) break;
+        const goal = normalizeCodexGoal(params.goal);
+        if (goal) this.ctx.emitEvent({ type: "agent_goal_updated", goal });
+        break;
+      }
+
+      case "thread/goal/cleared": {
+        if (!this.isParentThread(params)) break;
+        this.ctx.emitEvent({ type: "agent_goal_updated", goal: null });
         break;
       }
 
@@ -711,5 +725,26 @@ export class CodexEventHandler {
     const turnResult = await this.ctx.sendRequest("turn/start", turnParams);
     const turnData = turnResult as { turnId?: string; turn?: { id?: string } } | undefined;
     this.currentTurnId = turnData?.turn?.id ?? turnData?.turnId ?? this.currentTurnId;
+
+    // docs/154 — resume re-announces an existing goal but says nothing when there
+    // is none. Ask after turn/start: a request between resume and turn/start
+    // leaves room for Codex's own continuation turn to start first.
+    if (params.sessionId) void this.refreshGoal();
+    else this.ctx.emitEvent({ type: "agent_goal_updated", goal: null });
+  }
+
+  private async refreshGoal(): Promise<void> {
+    const threadId = this.threadId;
+    if (!threadId) return;
+    try {
+      const { goal } = await executeGoalCommand(
+        (method, params) => this.ctx.sendRequest(method, params),
+        threadId,
+        { action: "get" },
+      );
+      this.ctx.emitEvent({ type: "agent_goal_updated", goal });
+    } catch (err: unknown) {
+      this.ctx.emitLog("codex", `thread/goal/get failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 }

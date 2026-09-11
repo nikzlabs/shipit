@@ -15,6 +15,7 @@ export interface AgentInfo {
   supportsReview: boolean;
   supportsSteering: boolean;
   supportsCompaction: boolean;
+  supportsGoals: boolean;
   supportedPermissionModes: PermissionMode[];
   skillInvocationPrefix: string;
   reasoning?: AgentReasoningCapability;

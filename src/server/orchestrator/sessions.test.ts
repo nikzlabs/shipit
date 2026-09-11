@@ -1257,3 +1257,30 @@ describe("SessionManager — model selection (docs/252)", () => {
     expect(mgr.get("s1")?.billingMode).toBe("key");
   });
 });
+
+describe("setAgentGoal (docs/154 req 6)", () => {
+  let dbManager: DatabaseManager;
+  beforeEach(() => { dbManager = new DatabaseManager(":memory:"); });
+  afterEach(() => { dbManager.close(); });
+
+  const goal = { objective: "Ship it", status: "active", tokenBudget: null, tokensUsed: 0, timeUsedSeconds: 0, updatedAt: 1 };
+
+  it("persists the goal and reports only changes the chip shows", () => {
+    const mgr = new SessionManager(dbManager);
+    mgr.track("g1");
+    expect(mgr.setAgentGoal("g1", goal)).toBe(true);
+    expect(new SessionManager(dbManager).get("g1")?.agentGoal).toEqual(goal);
+    expect(mgr.setAgentGoal("g1", { ...goal, tokensUsed: 500, updatedAt: 2 })).toBe(false);
+    expect(mgr.setAgentGoal("g1", { ...goal, status: "paused" })).toBe(true);
+    expect(mgr.get("g1")?.agentGoal?.status).toBe("paused");
+  });
+
+  it("clears the goal", () => {
+    const mgr = new SessionManager(dbManager);
+    mgr.track("g1");
+    mgr.setAgentGoal("g1", goal);
+    expect(mgr.setAgentGoal("g1", null)).toBe(true);
+    expect(mgr.get("g1")?.agentGoal).toBeUndefined();
+    expect(mgr.setAgentGoal("g1", null)).toBe(false);
+  });
+});

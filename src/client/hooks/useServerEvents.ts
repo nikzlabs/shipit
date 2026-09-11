@@ -465,6 +465,7 @@ export function useServerEvents(): void {
           supportsReview?: boolean;
 
           supportsCompaction?: boolean;
+          supportsGoals?: boolean;
 
           supportedPermissionModes?: PermissionMode[];
 
@@ -520,6 +521,7 @@ export function useServerEvents(): void {
         models: a.models ?? [],
         supportsReview: a.supportsReview ?? false,
         supportsCompaction: a.supportsCompaction ?? false,
+        supportsGoals: a.supportsGoals ?? false,
         supportedPermissionModes: a.supportedPermissionModes,
       }));
       useUiStore.getState().setAgentList(agents);

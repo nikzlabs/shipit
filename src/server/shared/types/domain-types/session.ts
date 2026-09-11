@@ -1,4 +1,4 @@
-import type { AgentId } from "../agent-types.js";
+import type { AgentGoal, AgentId } from "../agent-types.js";
 import type { ProviderRouteKind } from "./provider.js";
 import type { BillingMode } from "../../catalogue/types.js";
 import type { SecretFinding } from "../../secret-scan.js";
@@ -106,6 +106,8 @@ export interface SessionInfo {
   /** Pair witnessed by ShipIt opening the PR; never derive from general PR status. */
   prNumber?: number;
   prRepoId?: string;
+  /** docs/154 — last goal the agent CLI reported for this session's thread. */
+  agentGoal?: AgentGoal;
 }
 
 export interface PreviousMergedPr {

@@ -45,6 +45,37 @@ beforeEach(() => {
   useUiStore.setState({ toast: null });
 });
 
+describe("a /goal command starts no turn (docs/154 req 4)", () => {
+  const codex = {
+    id: "codex" as const,
+    name: "Codex",
+    installed: true,
+    hasRunnableModels: true,
+    models: [],
+    supportsReview: true,
+    supportsGoals: true,
+  };
+
+  it("sends a bare frame with no bubble and no spinner", () => {
+    useUiStore.setState({ agentList: [codex], activeAgentId: "codex" });
+    const d = deps();
+
+    expect(runSend(d, payload({ text: "/goal clear" }))).toBe(true);
+    expect(framesFrom(d)).toEqual([{ type: "send_message", text: "/goal clear", sessionId: "s1" }]);
+    expect(useSessionStore.getState().messages).toEqual([]);
+    expect(useSessionStore.getState().isLoading).toBe(false);
+  });
+
+  it("is an ordinary message when the agent has no goals", () => {
+    useUiStore.setState({ agentList: [{ ...codex, id: "claude", supportsGoals: false }], activeAgentId: "claude" });
+    const d = deps();
+
+    runSend(d, payload({ text: "/goal clear" }));
+    expect(useSessionStore.getState().messages).toHaveLength(1);
+    expect(useSessionStore.getState().isLoading).toBe(true);
+  });
+});
+
 describe("a refused /review dispatches nothing and says so (docs/293 req 4)", () => {
 
   // a message that was never sent. `resolveReviewRequest` can prove the DECISION
