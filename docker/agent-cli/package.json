@@ -4,10 +4,10 @@
   "private": true,
   "description": "Pinned, lockfile-driven install of the agent CLIs baked into ShipIt images. See docs/141-cli-version-strategy. Versions are bumped by the Renovate GitHub App (cooldown via minimumReleaseAge) and gated on the CLI contract test; do not edit by hand without regenerating package-lock.json.",
   "dependencies": {
-    "@anthropic-ai/claude-code": "2.1.252",
+    "@anthropic-ai/claude-code": "2.1.260",
     "@openai/codex": "0.154.0",
-    "opencode-ai": "1.18.25",
-    "@xai-official/grok": "1.0.13",
-    "@playwright/mcp": "0.0.79"
+    "opencode-ai": "1.18.27",
+    "@xai-official/grok": "1.0.18",
+    "@playwright/mcp": "0.0.80"
   }
 }
