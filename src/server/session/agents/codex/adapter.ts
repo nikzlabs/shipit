@@ -75,6 +75,25 @@ export const CODEX_SANDBOX_ARGS: readonly string[] = [
   "-c", "features.use_legacy_landlock=true",
 ];
 
+/**
+ * Turn off Codex's native goal mode (`goals`, stable and on by default since
+ * 0.133.0) until ShipIt renders and clears goals — docs/154-native-goal-command.
+ * ShipIt shows no goal and has no `/goal clear`, yet the model can create one
+ * itself, and every `thread/resume` restarts it: a session got stuck on a goal
+ * the user could neither see nor clear. Delete this when docs/154 lands.
+ *
+ * Measured against the pinned 0.154.0: `codex features list` flips `goals` from
+ * `true` to `false`; `-c features.goals="notabool"` fails the `app-server`
+ * spawn with `invalid type: string "notabool", expected a boolean`;
+ * `thread/goal/get` answers `goals feature is disabled`; `create_goal` /
+ * `update_goal` / `get_goal` leave the model request; and resuming a thread
+ * with an active goal no longer starts a continuation turn by itself. What
+ * stays is the goal text already in that thread's history — no config removes it.
+ */
+export const CODEX_GOALS_OFF_ARGS: readonly string[] = [
+  "-c", "features.goals=false",
+];
+
 interface JsonRpcRequest {
   method: string;
   id: number;
@@ -266,6 +285,7 @@ export class CodexAdapter
     // Global config overrides must precede the subcommand.
     const args = [
       ...CODEX_SANDBOX_ARGS,
+      ...CODEX_GOALS_OFF_ARGS,
       ...(params.reasoningEffort ? ["-c", `model_reasoning_effort=${params.reasoningEffort}`] : []),
       ...providerArgs,
       "app-server",
