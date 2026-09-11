@@ -399,7 +399,12 @@ export class CodexAdapter
   // docs/154 — between turns the process is gone, so a control process answers instead.
   async goalCommand(threadId: string, command: AgentGoalCommand): Promise<AgentGoalCommandResult> {
     if (this.proc && this.eventHandler.getThreadId() === threadId) {
-      return executeGoalCommand((method, params) => this.sendRequest(method, params), threadId, command);
+      try {
+        return await executeGoalCommand((method, params) => this.liveGoalRequest(method, params), threadId, command);
+      } catch (err) {
+        // Alive means a real refusal. Gone means the turn ended mid-command; every command is safe to repeat.
+        if (this.proc) throw err;
+      }
     }
     const scopedHome = this.spawnHomeOverride ?? this.resolveHome?.();
     return runCodexGoalControl({
@@ -408,6 +413,13 @@ export class CodexAdapter
       cwd: process.cwd(),
       env: { ...process.env, HOME: resolveAgentHome(scopedHome), CODEX_HOME: this.codexConfigDir() },
     });
+  }
+
+  // kill() rejects what is pending, but a request written after it would wait forever.
+  private liveGoalRequest(method: string, params: Record<string, unknown>): Promise<unknown> {
+    return this.proc?.stdin?.writable
+      ? this.sendRequest(method, params)
+      : Promise.reject(new Error("Codex process ended"));
   }
 
   interrupt(): void {

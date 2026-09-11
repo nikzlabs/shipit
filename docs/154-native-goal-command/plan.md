@@ -68,15 +68,18 @@ builds; these supersede them.
   above: `get` → `thread/goal/get`; `set` → `thread/goal/set` with
   `status: "active"`; `clear` → `thread/goal/clear`; `pause`/`resume` →
   `get` first (a status-only set has nothing to update without a goal), then
-  `thread/goal/set {status}`. Responses are read as `{goal}` or a bare goal,
-  the same defensive double-read the adapter uses for thread and turn ids.
+  `thread/goal/set {status}`.
 - `CodexAdapter.goalCommand(threadId, command)` — during a turn it uses the
   live app-server. Between turns there is no process (ShipIt ends it at
   `turn/completed`), so `runCodexGoalControl` starts a short-lived
   `codex app-server` with the same `HOME`/`CODEX_HOME` a turn would use,
-  runs `initialize` and the goal request, and ends the process tree. It never
-  calls `thread/resume`, because that would start a continuation turn; goal
-  requests on an unloaded thread start nothing.
+  runs `initialize` and the goal request, and ends the process tree (15 s
+  limit). It never calls `thread/resume`, because that would start a
+  continuation turn; goal requests on an unloaded thread start nothing.
+- If the turn ends in the middle of a live command (pause and resume are two
+  requests), a request written after the process is gone is refused rather
+  than left waiting, and the whole command runs again in a control process.
+  Every command is safe to repeat.
 - `CodexEventHandler` — `thread/goal/updated` and `thread/goal/cleared` on the
   parent thread become an `agent_goal_updated` event (`goal: null` for
   cleared). Subagent threads are ignored.
@@ -96,8 +99,17 @@ builds; these supersede them.
   `ContainerSessionRunner.goalCommandOnWorker` → worker `POST /agent/goal
   {agentId, threadId, command}`. The worker uses the live agent when it is
   the same agent and otherwise builds a fresh adapter from its factory, whose
-  `goalCommand` runs the control process. The route is additive; an older
-  worker answers 404, which the user sees as a "Couldn't … the goal" notice.
+  `goalCommand` runs the control process. The route is in `LIFECYCLE_PATHS`,
+  so it needs the worker token even on loopback — the agent in the container
+  cannot clear its own goal through it. The orchestrator waits 30 s, longer
+  than the control process's 15 s, so a late success is never reported as a
+  failure.
+- **Older workers.** The route is additive. A container still on an image
+  from before this change answers 404; the user sees "this session's
+  container predates goal support", and goals behave as before (not shown)
+  until ShipIt replaces the container, which it does for containers left on
+  an old image. No capability negotiation: the window is transient and no
+  worse than today.
 - Local mode: the orchestrator's own adapter (from `runner.createAgent`)
   does the same in-process.
 
@@ -110,13 +122,25 @@ builds; these supersede them.
   no prompt (req 4). The check runs before the auth gate — reading or
   clearing a goal must not need a runnable credential. The thread is the
   session's `agentSessionId`; with none yet, the user is told to send a first
-  message.
-- The answer is a `system_notice` (e.g. "Goal cleared.", "Goal (active): …").
+  message. A frame whose `sessionId` is not the socket's own session is
+  ignored: the runner, agent and home all belong to the socket's session.
+- The answer is a persisted `system_notice` (`emitNoticeInTurn` /
+  `emitNoticePostTurn`), e.g. "Goal cleared.", "Goal (active): …". The
+  command has no bubble, so the notice is its trace in the transcript.
+- Goal operations on one session run one at a time (`runGoalExclusive`), so a
+  slow answer cannot overwrite a newer one, and an answer about a thread the
+  session no longer uses (conversation reset meanwhile) is dropped.
 - Every goal the CLI reports — from a command, from a notification during a
   turn (the `create_goal` case, req 1), or from rehydrate — goes through
   `recordAgentGoal`, which stores it in the new `sessions.agent_goal` column
   and broadcasts `session_list` when what the chip shows (objective, status,
-  budget) changed. Usage-only updates are not written.
+  budget) changed. Usage-only updates are not written. A stored JSON `null`
+  means "read, no goal"; SQL NULL means "never read". Clearing the
+  conversation (`clearAgentSessionId`) also clears the goal.
+- **Read on open (req 6).** When a session is opened and its goal was never
+  read — a session from before this feature, like the incident's — the goal
+  is read once through the same `goalCommand` path, without a turn. Best
+  effort: if the container is not up yet, the next open or turn does it.
 
 ### Client
 

@@ -1283,4 +1283,23 @@ describe("setAgentGoal (docs/154 req 6)", () => {
     expect(mgr.get("g1")?.agentGoal).toBeUndefined();
     expect(mgr.setAgentGoal("g1", null)).toBe(false);
   });
+
+  it("tells a never-read goal from a read absence of one", () => {
+    const mgr = new SessionManager(dbManager);
+    mgr.track("g1");
+    expect(mgr.agentGoalChecked("g1")).toBe(false);
+    // The first read is written even when it finds nothing, so it is not repeated.
+    expect(mgr.setAgentGoal("g1", null)).toBe(true);
+    expect(mgr.agentGoalChecked("g1")).toBe(true);
+  });
+
+  it("forgets the goal with the conversation", () => {
+    const mgr = new SessionManager(dbManager);
+    mgr.track("g1");
+    mgr.setAgentSessionId("g1", "thread-1");
+    mgr.setAgentGoal("g1", goal);
+    mgr.clearAgentSessionId("g1");
+    expect(mgr.get("g1")?.agentGoal).toBeUndefined();
+    expect(mgr.agentGoalChecked("g1")).toBe(false);
+  });
 });

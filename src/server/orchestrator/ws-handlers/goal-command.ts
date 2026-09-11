@@ -2,7 +2,13 @@ import type { AgentGoalCommand } from "../../shared/types/agent-types.js";
 import type { ConnectionCtx, RunnerCtx, AppCtx } from "./types.js";
 import { resolveRunner } from "./resolve-runner.js";
 import { getErrorMessage } from "../../shared/utils.js";
-import { describeGoalResult, GOAL_ACTION_VERBS, recordAgentGoal } from "../services/agent-goal.js";
+import { emitNoticeInTurn, emitNoticePostTurn } from "../chat-card-persistence.js";
+import {
+  describeGoalResult,
+  GOAL_ACTION_VERBS,
+  recordGoalForThread,
+  runGoalExclusive,
+} from "../services/agent-goal.js";
 
 type FullCtx = ConnectionCtx & RunnerCtx & AppCtx;
 
@@ -14,10 +20,10 @@ export async function handleGoalCommand(
 ): Promise<void> {
   if (!sessionId) return;
   const runner = resolveRunner(ctx);
+  // Persisted: the command has no bubble, so the notice is its only trace in the transcript.
   const notice = (message: string, level: "info" | "warn" = "info"): void => {
-    const frame = { type: "system_notice" as const, sessionId, message, level };
-    if (runner) runner.emitMessage(frame);
-    else ctx.send(frame);
+    if (runner) emitNoticeInTurn(runner, sessionId, message, ctx.chatHistoryManager, level);
+    else emitNoticePostTurn((m) => { ctx.send(m); }, ctx.chatHistoryManager, sessionId, message, level);
   };
 
   const threadId = ctx.sessionManager.get(sessionId)?.agentSessionId;
@@ -35,10 +41,14 @@ export async function handleGoalCommand(
     notice("This agent does not support goals.", "warn");
     return;
   }
+  const goalCommand = agent.goalCommand.bind(agent);
 
   try {
-    const { goal } = await agent.goalCommand(threadId, command);
-    recordAgentGoal(ctx, sessionId, goal);
+    const goal = await runGoalExclusive(sessionId, async () => {
+      const result = await goalCommand(threadId, command);
+      recordGoalForThread(ctx, sessionId, threadId, result.goal);
+      return result.goal;
+    });
     notice(describeGoalResult(command, goal));
   } catch (err) {
     notice(`Couldn't ${GOAL_ACTION_VERBS[command.action]} the goal: ${getErrorMessage(err)}`, "warn");

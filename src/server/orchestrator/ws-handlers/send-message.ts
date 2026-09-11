@@ -47,7 +47,13 @@ export async function handleSendMessage(
   // docs/154 — before the auth gate: reading or clearing a goal starts no turn.
   const goalCommand = parseGoalCommand(msg.text);
   if (goalCommand && (ctx.agentRegistry.get(ctx.getActiveAgentId())?.capabilities.supportsGoals ?? false)) {
-    await handleGoalCommand(ctx, goalCommand, msg.sessionId ?? ctx.getActiveAppSessionId() ?? undefined);
+    // The runner, agent and home all belong to this socket's session; a frame for another session would reach the wrong thread.
+    const activeSessionId = ctx.getActiveAppSessionId() ?? undefined;
+    if (msg.sessionId && msg.sessionId !== activeSessionId) {
+      console.warn(`[goal] ignored a /goal for ${msg.sessionId} on the connection for ${activeSessionId ?? "no session"}`);
+      return;
+    }
+    await handleGoalCommand(ctx, goalCommand, activeSessionId);
     return;
   }
 

@@ -23,10 +23,8 @@ export function normalizeCodexGoal(raw: unknown): AgentGoal | null {
   };
 }
 
-// Read `{ goal }` or a bare goal, as the adapter already does for thread and turn ids.
 function goalFrom(result: unknown): AgentGoal | null {
-  const r = result as { goal?: unknown } | null | undefined;
-  return normalizeCodexGoal(r?.goal ?? r);
+  return normalizeCodexGoal((result as { goal?: unknown } | null | undefined)?.goal);
 }
 
 /** Shapes measured on codex-cli 0.154.0 — see docs/154 plan.md. */

@@ -1817,6 +1817,48 @@ describe("CodexAdapter", () => {
     expect((turnStart!.params as any).sandboxPolicy).toEqual({ type: "dangerFullAccess" });
   });
 
+  describe("goals (docs/154)", () => {
+    const GOAL = {
+      threadId: "thread-abc-123", objective: "Ship it", status: "active", tokenBudget: null,
+      tokensUsed: 0, timeUsedSeconds: 0, createdAt: 1, updatedAt: 2,
+    };
+
+    it("uses the live app-server for its own thread", async () => {
+      await createAndInit();
+      const live = fakeProc;
+      const pending = adapter.goalCommand("thread-abc-123", { action: "get" });
+      await vi.waitFor(() => { expect(live.getLastRequest()?.method).toBe("thread/goal/get"); });
+      expect(live.getLastRequest()?.params).toEqual({ threadId: "thread-abc-123" });
+      live.sendResponse(live.getLastRequest()!.id!, { goal: null });
+      await expect(pending).resolves.toEqual({ goal: null });
+      expect(fakeProc).toBe(live);
+    });
+
+    it("finishes a pause in a control process when the turn ends between its two requests", async () => {
+      await createAndInit();
+      const live = fakeProc;
+      const pending = adapter.goalCommand("thread-abc-123", { action: "pause" });
+      await vi.waitFor(() => { expect(live.getLastRequest()?.method).toBe("thread/goal/get"); });
+      live.sendResponse(live.getLastRequest()!.id!, { goal: GOAL });
+      // turn/completed ends the process in the same tick as the answer.
+      adapter.kill();
+
+      await vi.waitFor(() => { expect(fakeProc).not.toBe(live); });
+      const control = fakeProc;
+      expect(lastSpawnArgs).toEqual(["app-server"]);
+      const answer = async (method: string, result: unknown): Promise<void> => {
+        await vi.waitFor(() => { expect(control.getLastRequest()?.method).toBe(method); });
+        control.sendResponse(control.getLastRequest()!.id!, result);
+      };
+      await answer("initialize", {});
+      await answer("thread/goal/get", { goal: GOAL });
+      await answer("thread/goal/set", { goal: { ...GOAL, status: "paused" } });
+
+      await expect(pending).resolves.toMatchObject({ goal: { status: "paused" } });
+      expect(live.getRequests().some((r) => r.method === "thread/goal/set")).toBe(false);
+    });
+  });
+
   describe("compaction (docs/178)", () => {
     it("advertises supportsCompaction", () => {
       adapter = new CodexAdapter();

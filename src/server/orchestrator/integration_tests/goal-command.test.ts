@@ -107,6 +107,7 @@ describe("Integration: /goal (docs/154)", () => {
   let tmpDir: string;
   let dbManager: DatabaseManager;
   let sessions: SessionManager;
+  let chatHistory: ChatHistoryManager;
   let codexes: FakeGoalCodex[];
   let lastClaude: FakeClaudeProcess | null;
   let savedOpenAIKey: string | undefined;
@@ -119,6 +120,7 @@ describe("Integration: /goal (docs/154)", () => {
     savedOpenAIKey = process.env.OPENAI_API_KEY;
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-goal-"));
     sessions = new SessionManager(dbManager);
+    chatHistory = new ChatHistoryManager(dbManager);
 
     const registry = new AgentRegistry({
       checkBinary: async (binary) => binary === "claude" || binary === "codex",
@@ -132,7 +134,7 @@ describe("Integration: /goal (docs/154)", () => {
       credentialStore: createTestCredentialStore(tmpDir),
       createGitManager: (dir: string) => new GitManager(dir),
       sessionManager: sessions,
-      chatHistoryManager: new ChatHistoryManager(dbManager),
+      chatHistoryManager: chatHistory,
       authManager: new StubAuthManager() as unknown as AuthManager,
       agentRegistry: registry,
       agentFactory: (agentId: AgentId) => {
@@ -185,7 +187,32 @@ describe("Integration: /goal (docs/154)", () => {
     expect(answered[0].goalCalls).toEqual([{ threadId: "thread-1", command: { action: "clear" } }]);
     expect(codexes.filter((c) => c.runCalled)).toHaveLength(1);
     expect(sessions.get(client.sessionId)?.agentGoal).toBeUndefined();
+    // The command has no bubble; its notice is what a reload shows.
+    await waitUntil(() => chatHistory.load(client.sessionId).some((m) => m.notice && m.text === "Goal cleared."));
     client.close();
+  });
+
+  it("reads a never-read goal when the session is opened, once, without a turn (req 6)", async () => {
+    // A session from before this feature: it has a Codex thread but its goal was never read.
+    const first = await TestClient.connect(port);
+    await first.receive();
+    const sessionId = first.sessionId;
+    first.close();
+    sessions.setAgentSessionId(sessionId, "thread-old");
+    goalAnswer = { goal: GOAL };
+
+    const client = await TestClient.connect(port, sessionId);
+    await client.receive();
+    await waitUntil(() => sessions.get(sessionId)?.agentGoal?.objective === GOAL.objective);
+    expect(codexes.flatMap((c) => c.goalCalls)).toEqual([{ threadId: "thread-old", command: { action: "get" } }]);
+    expect(codexes.some((c) => c.runCalled)).toBe(false);
+    client.close();
+
+    const again = await TestClient.connect(port, sessionId);
+    await again.receive();
+    await new Promise((r) => setTimeout(r, 100));
+    expect(codexes.flatMap((c) => c.goalCalls)).toHaveLength(1);
+    again.close();
   });
 
   it("sets a goal and keeps it on the session (reqs 3, 6)", async () => {

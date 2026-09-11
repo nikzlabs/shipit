@@ -334,12 +334,20 @@ export class SessionManager {
     this.db.prepare("UPDATE sessions SET agent_session_id = ? WHERE id = ?").run(agentSessionId, id);
   }
 
-  /** docs/154 — returns whether the shown goal changed, so callers broadcast only then. */
+  /**
+   * docs/154 — returns whether the shown goal changed, so callers broadcast only then.
+   * A stored JSON `null` means "read, no goal"; SQL NULL means "never read".
+   */
   setAgentGoal(id: string, goal: AgentGoal | null): boolean {
-    if (sameShownGoal(this.get(id)?.agentGoal ?? null, goal)) return false;
-    this.db.prepare("UPDATE sessions SET agent_goal = ? WHERE id = ?")
-      .run(goal ? JSON.stringify(goal) : null, id);
+    if (this.agentGoalChecked(id) && sameShownGoal(this.get(id)?.agentGoal ?? null, goal)) return false;
+    this.db.prepare("UPDATE sessions SET agent_goal = ? WHERE id = ?").run(JSON.stringify(goal), id);
     return true;
+  }
+
+  agentGoalChecked(id: string): boolean {
+    const row = this.db.prepare("SELECT agent_goal FROM sessions WHERE id = ?").get(id) as
+      { agent_goal: string | null } | undefined;
+    return typeof row?.agent_goal === "string";
   }
 
   setConversationReplay(id: string, replay: string): void {
@@ -393,7 +401,8 @@ export class SessionManager {
   }
 
   clearAgentSessionId(id: string): void {
-    this.db.prepare("UPDATE sessions SET agent_session_id = NULL WHERE id = ?").run(id);
+    // The goal belonged to the old conversation's thread.
+    this.db.prepare("UPDATE sessions SET agent_session_id = NULL, agent_goal = NULL WHERE id = ?").run(id);
   }
 
   // This URL is later written into agent-readable clone configs.

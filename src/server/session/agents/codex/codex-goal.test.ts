@@ -3,6 +3,13 @@ import { EventEmitter } from "node:events";
 import type { ChildProcess, SpawnOptions } from "node:child_process";
 import { executeGoalCommand, normalizeCodexGoal, runCodexGoalControl } from "./codex-goal.js";
 
+vi.mock("../../../shared/kill-child.js", async (importOriginal) => {
+  // eslint-disable-next-line no-restricted-syntax -- the mock factory's signature requires the inline import type
+  const real = await importOriginal<typeof import("../../../shared/kill-child.js")>();
+  return { ...real, killProcessTree: vi.fn(real.killProcessTree) };
+});
+import { killProcessTree } from "../../../shared/kill-child.js";
+
 // Recorded from codex-cli 0.154.0 (docs/154 plan.md, "Measured").
 const GOAL = {
   threadId: "t1",
@@ -152,6 +159,7 @@ describe("runCodexGoalControl", () => {
     expect(spawned[0].args).toEqual(["app-server"]);
     expect(spawned[0].opts.env?.CODEX_HOME).toBe("/home/x/.codex");
     expect(spawned[0].proc.stdin.lines.map((l) => l.method)).toEqual(["initialize", "initialized", "thread/goal/clear"]);
+    expect(killProcessTree).toHaveBeenCalledWith(spawned[0].proc, "SIGTERM", { label: "codex-goal" });
   });
 
   it("ignores notifications while it waits for its answer", async () => {
@@ -181,10 +189,11 @@ describe("runCodexGoalControl", () => {
       .rejects.toThrow("exited (1)");
   });
 
-  it("rejects when the app-server never answers", async () => {
-    const { spawnProcess } = spawnWith(() => { /* silent */ });
+  it("rejects when the app-server never answers, and still ends it", async () => {
+    const { spawned, spawnProcess } = spawnWith(() => { /* silent */ });
     await expect(runCodexGoalControl({
       threadId: "t1", command: { action: "get" }, cwd: "/tmp", env: {}, spawnProcess, timeoutMs: 20,
     })).rejects.toThrow("did not answer");
+    expect(killProcessTree).toHaveBeenCalledWith(spawned[0].proc, "SIGTERM", { label: "codex-goal" });
   });
 });
