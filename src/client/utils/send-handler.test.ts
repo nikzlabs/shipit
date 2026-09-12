@@ -4,6 +4,7 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 import { runSend, type SendDeps } from "./send-handler.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { useSettingsStore } from "../stores/settings-store.js";
+import { usePrStore } from "../stores/pr-store.js";
 import { useFileStore } from "../stores/file-store.js";
 import { useUiStore } from "../stores/ui-store.js";
 import type { SendPayload } from "../components/MessageInput/MessageInput.js";
@@ -190,19 +191,25 @@ describe("an accepted /review carries its attachments and cleans up after itself
     expect(useFileStore.getState().previewFile).toBeNull();
   });
 
-  it("carries the composer's per-send tick boxes (docs/218, docs/295)", () => {
-
+  it("carries the user's post-merge untick (docs/218, docs/295)", () => {
+    // Read from the store, not from the payload: the composer and the sender
+    // share one authority, so the control cannot display one thing and the
+    // frame carry another.
+    usePrStore.getState().setMergeContinueOptOut("s1", "reset", true);
+    usePrStore.getState().setMergeContinueOptOut("s1", "compact", true);
     useFileStore.setState({ previewFile: "src/a.ts" });
     const d = deps();
 
-    runSend(d, payload({ text: "/review", resetMergedBranch: false, compactContext: false }));
+    runSend(d, payload({ text: "/review" }));
 
     const [frame] = framesFrom(d);
     expect(frame.resetMergedBranch).toBe(false);
     expect(frame.compactContext).toBe(false);
+    // …and spent, so it governs that message only (req 5).
+    expect(usePrStore.getState().mergeContinueOptOutBySession.s1).toEqual({});
   });
 
-  it("leaves the tick boxes off the frame when the controls were not shown", () => {
+  it("leaves the tick boxes off the frame when the user unticked nothing", () => {
 
     // never saw would silently disable both actions.
     useFileStore.setState({ previewFile: "src/a.ts" });

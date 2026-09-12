@@ -48,7 +48,9 @@ export async function dispatchAgentMessage(opts: DispatchAgentMessageOptions): P
       { text, activity, ...(agentInterface ? { agentInterface } : {}), ...intent },
     );
     // Only a dispatch the server accepted spends the untick.
-    if (userInitiated) consumeMergeContinueIntent(sessionId);
+    // Spend exactly what this request carried: the user may have unticked again
+    // while it was in flight, and that choice belongs to their next message.
+    if (userInitiated) consumeMergeContinueIntent(sessionId, intent);
   } catch (err) {
 
     useSessionStore.getState().setMessages((prev) =>

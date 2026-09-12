@@ -16,16 +16,12 @@
  *
  * So: `sendUserTurn` owns the frame, the intent and its consumption, and a
  * guard test fails the build if the frame literal appears anywhere else. A
- * producer cannot opt out by forgetting; it opts out by calling
- * `sendControlFrame` instead, which says in its name that it starts no turn.
+ * producer cannot opt out by forgetting; the only frame that starts no turn has
+ * its own narrow export below, which cannot send an ordinary message.
  */
 
 import { sendUserMessage } from "./send-user-message.js";
-import {
-  consumeMergeContinueIntent,
-  mergeContinueFrameFields,
-  type MergeContinueFrameFields,
-} from "./merge-continue-intent.js";
+import { consumeMergeContinueIntent, mergeContinueFrameFields } from "./merge-continue-intent.js";
 import type { ChatMessage } from "../components/MessageList.js";
 
 /** Everything a producer supplies; `type`, `requestId` and the intent are ours. */
@@ -42,12 +38,6 @@ export interface SendUserTurnOptions {
   bubble: ChatMessage;
   activity: string;
   /**
-   * The composer's own answer, when it has one. Only it knows whether it
-   * actually SHOWED the controls, so only it can say `true` rather than leave
-   * the field off. Every other producer omits this and gets the stored opt-out.
-   */
-  intent?: MergeContinueFrameFields;
-  /**
    * Put the finished frame on the wire, reporting whether it was accepted.
    * Defaults to a plain `send`; the composer passes one that stashes an
    * undeliverable frame for flush on reconnect.
@@ -56,47 +46,50 @@ export interface SendUserTurnOptions {
 }
 
 export function sendUserTurn(opts: SendUserTurnOptions): boolean {
-  const { sessionId, frame, bubble, activity, intent, dispatch } = opts;
+  const { sessionId, frame, bubble, activity, dispatch } = opts;
+  const carried = mergeContinueFrameFields(sessionId);
   const sent = sendUserMessage({
     bubble,
     activity,
-    dispatch: (requestId) =>
-      dispatch({
-        type: "send_message",
-        requestId,
-        ...frame,
-        ...mergeContinueFrameFields(sessionId, intent),
-      }),
+    dispatch: (requestId) => dispatch({ type: "send_message", requestId, ...frame, ...carried }),
   });
-  // Only a send that reached the wire spends the untick. A refused or dropped
-  // one leaves the user's choice where it was, for the retry they can see.
-  if (sent) consumeMergeContinueIntent(sessionId);
+  // The boundary is the FRAME LEAVING THE BROWSER, and only what this frame
+  // carried is spent. A dispatch that reports failure changes nothing, so the
+  // user's choice is still on screen for the retry.
+  //
+  // Two edges the boundary does not cover, stated rather than papered over. A
+  // frame stashed for reconnect counts as gone, because it carries the flags
+  // with it — but a session switch discards the stash (`session-actions.ts`),
+  // and then the untick is spent for a message that never ran. And a server
+  // that accepts the frame and then refuses the turn has already spent it. Both
+  // lose the user's whole message too, which is the larger bug in each.
+  if (sent) consumeMergeContinueIntent(sessionId, carried);
   return sent;
 }
 
 /**
- * A `send_message` frame that starts NO turn, so no reset and no compaction can
- * apply to it and there is no intent to carry or spend.
+ * The one frame that starts NO turn: a control-mode `/goal`. Nothing to carry,
+ * nothing to spend.
  *
- * The only case today is a control-mode `/goal`. Verify it at
- * `src/server/orchestrator/ws-handlers/send-message.ts:54` (docs/154, on `main`
- * since 35719d01 — absent from older builds, so check the branch you are
+ * Deliberately narrow — it takes a goal command and a session, not an arbitrary
+ * prompt. A general "send without the intent" helper is a bypass wearing a
+ * name; this one cannot send an ordinary message at all, so the guard's single
+ * exemption is enforced by its signature rather than by its documentation.
+ *
+ * Verify the server side at `ws-handlers/send-message.ts:54` (docs/154, on
+ * `main` since 35719d01 — absent from older builds, so check the branch you are
  * reading): `handleSendMessage` opens with
  *
  *     if (goalCommand && (caps?.supportsGoals ?? false) && mode !== "turn")
  *
  * which calls `handleGoalCommand` and returns, ahead of the queue, the branch
  * reset and `decideCompactBeforeTurn`. A `/goal` whose action IS a "turn" falls
- * through that branch and takes the ordinary path above, which carries the
- * intent.
- *
- * Deliberately a separate export rather than a flag or a comment: a reviewer
- * can enumerate its call sites, and a new producer that reaches for it has to
- * name it.
+ * through that branch and takes `sendUserTurn` above, which carries the intent.
  */
-export function sendControlFrame(
-  frame: UserTurnFrame,
+export function sendGoalControlFrame(
+  goalText: string,
+  sessionId: string,
   dispatch: (frame: Record<string, unknown>) => boolean,
 ): boolean {
-  return dispatch({ type: "send_message", ...frame });
+  return dispatch({ type: "send_message", text: goalText, sessionId });
 }

@@ -595,17 +595,6 @@ export function MessageInput({
       uploadRefs,
       uploads: isCompact ? [] : displayUploads,
       deferredFiles: isCompact || !isOverlay ? [] : localFiles,
-      // docs/218 — carried when the control is shown, and docs/295 — also
-      // whenever an untick is outstanding for this session, even with the
-      // control off screen. An OMITTED field falls back to the global setting
-      // (and the server's own eligibility gates), so gating on visibility alone
-      // dropped the untick in the acting direction whenever eligibility went
-      // momentarily false. An opt-out can only say `false`, and `false` can
-      // only skip, so carrying it is safe.
-      ...(showResetControl || mergeOptOut.reset ? { resetMergedBranch: resetChecked } : {}),
-      // Read independently of its sibling (req 6).
-      ...(showCompactControl || mergeOptOut.compact ? { compactContext: compactChecked } : {}),
-      // docs/144 — omitted entirely when the draft was typed.
       ...(draftDictated ? { dictated: true } : {}),
     };
     // docs/293 req 4 — the parent may refuse a send it never dispatched:
@@ -617,8 +606,10 @@ export function MessageInput({
     if (showResetControl && resetChecked && sessionId) {
       usePrStore.getState().setResetEligible(sessionId, false);
     }
-    // The untick applied to that one message (req 5), and it has now gone.
-    if (sessionId) usePrStore.getState().clearMergeContinueOptOut(sessionId);
+    // NOT cleared here. `sendUserTurn` spends the untick when the frame goes,
+    // and only then — a `/goal` submitted from this composer starts no turn and
+    // carries no intent, so clearing on every accepted submit spent a choice
+    // the user had made for their next real message.
     setText("");
     setDraftDictated(false);
 

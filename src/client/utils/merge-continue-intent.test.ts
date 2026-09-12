@@ -44,16 +44,11 @@ describe("mergeContinueFrameFields (docs/218 + docs/295)", () => {
     expect(mergeContinueFrameFields(undefined)).toEqual({});
   });
 
-  it("lets the composer state its own answer, including an explicit `true`", () => {
-    // Only the composer knows whether it actually SHOWED the control, so it
-    // passes its own values; every other producer passes nothing.
-    expect(mergeContinueFrameFields("s1", { compactContext: true, resetMergedBranch: true }))
-      .toEqual({ compactContext: true, resetMergedBranch: true });
-  });
-
-  it("prefers an explicit `false` over a store that has nothing", () => {
-    expect(mergeContinueFrameFields("s1", { compactContext: false }))
-      .toEqual({ compactContext: false });
+  it("has one authority — the store — and no second opinion to disagree with it", () => {
+    // The composer used to pass its own `true` here. With the control shown and
+    // ticked that says exactly what an omitted field says, so it was a second
+    // reader of shared state and nothing more.
+    expect(mergeContinueFrameFields.length).toBe(1);
   });
 });
 
@@ -109,9 +104,11 @@ describe("cross-tab sync", () => {
  * So the rule is now structural rather than textual: the frame literal may
  * exist in exactly ONE non-test file, `send-user-turn.ts`, which owns the frame,
  * the intent and its consumption together. A producer that starts no turn calls
- * `sendControlFrame` — a named export a reviewer can enumerate, not a comment
- * anyone can copy. Escaping this needs a deliberate second frame builder, which
- * is the diff nobody merges by accident.
+ * `sendGoalControlFrame`, whose signature takes a goal command and cannot send
+ * an ordinary message — so the single exemption is enforced by a type, not by a
+ * comment anyone can copy. It matches construction (`type:` + the discriminant)
+ * and not comparisons. A frame assembled through a variable still escapes it;
+ * that is a deliberate diff, not the accident this guards.
  */
 const FRAME_OWNER = "utils/send-user-turn.ts";
 
@@ -141,9 +138,12 @@ describe("only one file builds a `send_message` frame", () => {
   });
 
   it("has no other file building one", () => {
-    // Any spelling of the discriminant, not just the one we happen to use.
+    // CONSTRUCTION only — `type:` followed by the discriminant. A comparison
+    // (`msg.type === "send_message"`) reads a frame rather than building one and
+    // is none of this guard's business; flagging it would make the guard a
+    // nuisance, and a nuisance guard gets deleted or worked around.
     const builders = sources
-      .filter((f) => /["'`]send_message["'`]/.test(code(f)))
+      .filter((f) => /type\s*:\s*["'`]send_message["'`]/.test(code(f)))
       .map((f) => path.relative(clientDir, f))
       .filter((rel) => rel !== FRAME_OWNER);
     expect(

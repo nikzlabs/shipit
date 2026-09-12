@@ -79,6 +79,17 @@ export async function dispatchAgentMessage(
   if (text.length > MAX_TEXT_LEN) {
     throw new ServiceError(400, `Message text exceeds ${MAX_TEXT_LEN} characters`);
   }
+  for (const [name, value] of [
+    ["resetMergedBranch", input.resetMergedBranch],
+    ["compactContext", input.compactContext],
+  ] as const) {
+    // A malformed value must be refused, not silently read as the default:
+    // `"false"` is truthy, and quietly acting is the failure this whole feature
+    // is about.
+    if (value !== undefined && typeof value !== "boolean") {
+      throw new ServiceError(400, `${name} must be a boolean`);
+    }
+  }
   if (input.activity !== undefined) {
     if (typeof input.activity !== "string") {
       throw new ServiceError(400, "Activity must be a string");

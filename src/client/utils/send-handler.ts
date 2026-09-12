@@ -5,7 +5,7 @@ import { useSessionStore } from "../stores/session-store.js";
 import { useSettingsStore } from "../stores/settings-store.js";
 import { useFileStore } from "../stores/file-store.js";
 import { useUiStore } from "../stores/ui-store.js";
-import { sendControlFrame, sendUserTurn } from "./send-user-turn.js";
+import { sendGoalControlFrame, sendUserTurn } from "./send-user-turn.js";
 import { buildAttachmentPlan } from "./attachment-plan.js";
 import { isReviewCommand, resolveReviewRequest } from "./review-command.js";
 import { composeReviewMessage, resolveReviewer } from "./compose-review-body.js";
@@ -27,8 +27,6 @@ export function runSend(deps: SendDeps, payload: SendPayload): boolean {
     text,
     uploadRefs,
     uploads: payloadUploads,
-    resetMergedBranch,
-    compactContext,
     dictated,
   } = payload;
 
@@ -62,14 +60,13 @@ export function runSend(deps: SendDeps, payload: SendPayload): boolean {
       }),
     );
 
-    // docs/218 + docs/295 — `/review` is still a composer send, so it carries
-    // the per-send tick boxes, and spends them when it goes.
+    // docs/218 + docs/295 — `/review` is still a composer send, so `sendUserTurn`
+    // carries the per-send tick boxes and spends them when it goes.
     const reviewSent = sendUserTurn({
       sessionId: sid,
       frame: { text: prompt, sessionId: sid, ...plan.frame },
       bubble: { role: "user", text: prompt, ...plan.bubble },
       activity: "Reviewing...",
-      intent: { resetMergedBranch, compactContext },
       dispatch: (frame) => send(frame),
     });
     // docs/293 req 4 — the frame never left the browser. `sendUserMessage` has
@@ -100,8 +97,8 @@ export function runSend(deps: SendDeps, payload: SendPayload): boolean {
     const mode = goalAgent.goalActions ? goalAgent.goalActions[goalCommand.action] : "control";
     if (mode !== "turn") {
       // Starts no turn, so there is nothing for a reset or a compaction to
-      // apply to — see `sendControlFrame` for the server branch that proves it.
-      return sendControlFrame({ text: trimmed, sessionId: goalSessionId }, send);
+      // apply to — see `sendGoalControlFrame` for the server branch proving it.
+      return sendGoalControlFrame(trimmed, goalSessionId, send);
     }
   }
 
@@ -148,9 +145,6 @@ export function runSend(deps: SendDeps, payload: SendPayload): boolean {
         uploadPaths: uploadPathsForMessage,
       },
       activity: "Thinking...",
-      // docs/218 + docs/295 — the composer knows whether it SHOWED the
-      // controls, so it states its own answer rather than taking the stored one.
-      intent: { resetMergedBranch, compactContext },
       dispatch: (frame) => {
         if (send(frame)) return true;
         // Dropped — e.g. the socket is still connecting after a claim on

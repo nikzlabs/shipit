@@ -48,7 +48,11 @@ import { useApi } from "./hooks/useApi.js";
 import { formatErrorForMessage, PREVIEW_SETUP_PROMPT } from "./components/PreviewFrame.js";
 import { MessageInput, type SendPayload } from "./components/MessageInput.js";
 import { sendUserTurn } from "./utils/send-user-turn.js";
-import { syncMergeContinueOptOutAcrossTabs } from "./utils/merge-continue-intent.js";
+import {
+  consumeMergeContinueIntent,
+  mergeContinueFrameFields,
+  syncMergeContinueOptOutAcrossTabs,
+} from "./utils/merge-continue-intent.js";
 import { MessageList } from "./components/MessageList.js";
 import type { RewindGapAction } from "./components/RewindPoint.js";
 import { RocketLaunch } from "./components/RocketLaunch.js";
@@ -640,7 +644,12 @@ export default function App() {
       const pm = useSettingsStore
         .getState()
         .getPermissionMode(session.sessionId);
-      return sendUserMessage({
+      // docs/218 + docs/295 — an answer starts a turn, so it is the user's next
+      // message and carries (and spends) their post-merge untick, exactly as a
+      // typed message does. It is not a `send_message`, so it cannot go through
+      // `sendUserTurn`; the intent is read and consumed the same way.
+      const carried = mergeContinueFrameFields(session.sessionId);
+      const sent = sendUserMessage({
         bubble: { role: "user", text },
         activity: "Thinking...",
         dispatch: (requestId) =>
@@ -652,8 +661,11 @@ export default function App() {
             text,
             ...(pm !== "auto" ? { permissionMode: pm } : {}),
             ...(dictated ? { dictated: true } : {}),
+            ...carried,
           }),
       });
+      if (sent) consumeMergeContinueIntent(session.sessionId, carried);
+      return sent;
     },
     [send],
   );

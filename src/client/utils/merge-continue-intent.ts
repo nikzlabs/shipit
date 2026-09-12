@@ -29,8 +29,10 @@ import { getSavedMergeContinueOptOut, readOptOutSessionKey } from "./local-stora
  *
  * Only an opt-out is carried. A ticked control needs no field: absent and
  * `true` both mean "do it", and the server's own eligibility gates still apply.
- * `explicit` lets the composer, which knows whether it actually *showed* the
- * control, state its own answer; every other producer passes nothing.
+ * The composer used to pass its own answer here as well. That was a second
+ * authority over state the composer and the sender now share: with the control
+ * shown and ticked it said `true`, and an omitted field means the same thing to
+ * the server. One reader, one rule.
  */
 export interface MergeContinueFrameFields {
   resetMergedBranch?: boolean;
@@ -39,17 +41,14 @@ export interface MergeContinueFrameFields {
 
 export function mergeContinueFrameFields(
   sessionId: string | undefined,
-  explicit?: MergeContinueFrameFields,
 ): MergeContinueFrameFields {
   const optOut = sessionId
     ? usePrStore.getState().mergeContinueOptOutBySession[sessionId]
       ?? getSavedMergeContinueOptOut(sessionId)
     : {};
-  const reset = explicit?.resetMergedBranch ?? (optOut.reset ? false : undefined);
-  const compact = explicit?.compactContext ?? (optOut.compact ? false : undefined);
   return {
-    ...(reset !== undefined ? { resetMergedBranch: reset } : {}),
-    ...(compact !== undefined ? { compactContext: compact } : {}),
+    ...(optOut.reset ? { resetMergedBranch: false } : {}),
+    ...(optOut.compact ? { compactContext: false } : {}),
   };
 }
 
@@ -64,9 +63,18 @@ export function mergeContinueFrameFields(
  * first shape of this fix and it was wrong — the action-card path read the
  * opt-out, sent it, and left it in place to govern every later message.
  */
-export function consumeMergeContinueIntent(sessionId: string | undefined): void {
+export function consumeMergeContinueIntent(
+  sessionId: string | undefined,
+  carried: MergeContinueFrameFields,
+): void {
   if (!sessionId) return;
-  usePrStore.getState().clearMergeContinueOptOut(sessionId);
+  // Spend exactly what this send took, never "whatever is stored now". The HTTP
+  // path snapshots the intent, awaits a response, and would otherwise delete an
+  // untick the user made WHILE the request was in flight — a choice that send
+  // never carried, for a message that has not gone yet.
+  const store = usePrStore.getState();
+  if (carried.resetMergedBranch === false) store.setMergeContinueOptOut(sessionId, "reset", false);
+  if (carried.compactContext === false) store.setMergeContinueOptOut(sessionId, "compact", false);
 }
 
 /**

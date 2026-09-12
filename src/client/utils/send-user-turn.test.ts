@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 import { usePrStore } from "../stores/pr-store.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { saveMergeContinueOptOut, getSavedMergeContinueOptOut } from "./local-storage.js";
-import { sendControlFrame, sendUserTurn } from "./send-user-turn.js";
+import { sendGoalControlFrame, sendUserTurn } from "./send-user-turn.js";
 
 const untick = (sessionId: string) => {
   usePrStore.getState().setMergeContinueOptOut(sessionId, "compact", true);
@@ -77,32 +77,17 @@ describe("sendUserTurn (docs/218 + docs/295)", () => {
     expect(getSavedMergeContinueOptOut("s1")).toEqual({});
   });
 
-  it("lets the composer state an explicit answer, and still spends it", () => {
+  it("carries nothing when the user unticked nothing", () => {
     const frames: Record<string, unknown>[] = [];
     sendUserTurn({
       sessionId: "s1",
       frame: { text: "go", sessionId: "s1" },
       bubble: { role: "user", text: "go" },
       activity: "Thinking...",
-      intent: { compactContext: true, resetMergedBranch: true },
       dispatch: (f) => { frames.push(f); return true; },
     });
-    expect(frames[0]).toMatchObject({ compactContext: true, resetMergedBranch: true });
-  });
-
-  it("an explicit answer beats a stored opt-out (the composer is what is on screen)", () => {
-    untick("s1");
-    const frames: Record<string, unknown>[] = [];
-    sendUserTurn({
-      sessionId: "s1",
-      frame: { text: "go", sessionId: "s1" },
-      bubble: { role: "user", text: "go" },
-      activity: "Thinking...",
-      intent: { compactContext: true },
-      dispatch: (f) => { frames.push(f); return true; },
-    });
-    // `reset` had no explicit answer, so the stored opt-out stands for it.
-    expect(frames[0]).toMatchObject({ compactContext: true, resetMergedBranch: false });
+    expect(frames[0]).not.toHaveProperty("compactContext");
+    expect(frames[0]).not.toHaveProperty("resetMergedBranch");
   });
 
   it("builds a frame with the type and a request id", () => {
@@ -119,11 +104,11 @@ describe("sendUserTurn (docs/218 + docs/295)", () => {
   });
 });
 
-describe("sendControlFrame", () => {
+describe("sendGoalControlFrame", () => {
   it("carries no intent and spends none — it starts no turn", () => {
     untick("s1");
     const frames: Record<string, unknown>[] = [];
-    sendControlFrame({ text: "/goal clear", sessionId: "s1" }, (f) => {
+    sendGoalControlFrame("/goal clear", "s1", (f: Record<string, unknown>) => {
       frames.push(f);
       return true;
     });
@@ -135,7 +120,7 @@ describe("sendControlFrame", () => {
   });
 
   it("does not post an optimistic bubble", () => {
-    sendControlFrame({ text: "/goal clear", sessionId: "s1" }, () => true);
+    sendGoalControlFrame("/goal clear", "s1", () => true);
     expect(useSessionStore.getState().messages).toEqual([]);
     expect(useSessionStore.getState().isLoading).toBe(false);
   });
@@ -170,6 +155,25 @@ describe("the HTTP dispatch path carries and spends it too", () => {
     await dispatchAgentMessage({ sessionId: "s1", text: "auto", activity: "Fixing…", apiPost });
     expect(bodies[0]).not.toHaveProperty("compactContext");
     expect(usePrStore.getState().mergeContinueOptOutBySession.s1).toMatchObject({ compact: true });
+  });
+
+  it("does not spend an untick made WHILE the request was in flight", async () => {
+    const { dispatchAgentMessage } = await import("./dispatch-agent-message.js");
+    // Sent with both ticked; the user unticks while the POST is pending. That
+    // choice belongs to their NEXT message and the response must not eat it.
+    let release: () => void = () => {};
+    const gate = new Promise<void>((r) => { release = r; });
+    const apiPost = vi.fn(async () => { await gate; return { ok: true, queued: false } as never; });
+    const inFlight = dispatchAgentMessage({
+      sessionId: "s1", text: "fix it", activity: "Fixing…",
+      apiPost: apiPost as never, userInitiated: true,
+    });
+    untick("s1");
+    release();
+    await inFlight;
+    expect(usePrStore.getState().mergeContinueOptOutBySession.s1).toMatchObject({
+      compact: true, reset: true,
+    });
   });
 
   it("keeps the untick when the dispatch failed", async () => {
