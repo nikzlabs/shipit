@@ -1040,6 +1040,21 @@ describe("MessageInput", () => {
      * back to blue with no signal at all. The reported incident was on a phone,
      * where backgrounded-tab churn makes this routine.
      */
+    it("does not spend the untick on a `/goal`, which starts no turn", () => {
+      // The composer used to clear on every accepted submit. A control command
+      // carries no intent and starts no turn, so spending the user's choice
+      // there handed their NEXT real message to the global setting. Reported by
+      // review as reachable only through the composer, not the helper.
+      usePrStore.setState({ resetEligibleBySession: { s1: true } });
+      useSettingsStore.setState({ autoResetMergedBranch: true });
+      renderComposer(vi.fn().mockReturnValue(true));
+      fireEvent.click(screen.getByTestId("compact-context-control")); // untick
+      const textarea = screen.getByPlaceholderText("Describe what to build... (type @ to attach files)");
+      fireEvent.change(textarea, { target: { value: "/goal clear" } });
+      fireEvent.click(screen.getByLabelText("Send message"));
+      expect(optOut()).toMatchObject({ compact: true });
+    });
+
     it("keeps the untick when the composer is remounted under a restored draft", () => {
       usePrStore.setState({ resetEligibleBySession: { s1: true } });
       useSettingsStore.setState({ autoResetMergedBranch: true });
