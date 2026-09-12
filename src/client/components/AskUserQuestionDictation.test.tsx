@@ -111,6 +111,7 @@ describe("AskUserQuestion dictation provenance (docs/144)", () => {
     fireEvent.click(screen.getByTestId("option-other"));
     dictate("use red is");
     fireEvent.click(screen.getByText("Redis"));
+    fireEvent.click(screen.getByTestId("submit-answer"));
     expect(onAnswer).toHaveBeenCalledWith("t1", { "0": "Redis" }, "Redis");
   });
 
@@ -122,6 +123,7 @@ describe("AskUserQuestion dictation provenance (docs/144)", () => {
     fireEvent.click(screen.getByTestId("option-other"));
     dictate("Redis");
     fireEvent.click(screen.getByTestId("option-Redis"));
+    fireEvent.click(screen.getByTestId("submit-answer"));
     expect(onAnswer).toHaveBeenCalledWith("t1", { "0": "Redis" }, "Redis");
   });
 
