@@ -1,6 +1,11 @@
 import { EventEmitter } from "node:events";
 import fs from "node:fs";
-import { ClaudeProcess, StreamingClaudeProcess } from "./process.js";
+import {
+  ClaudeProcess,
+  StreamingClaudeProcess,
+  frameUserMessage,
+  scrubEnvAuthForScopedHome,
+} from "./process.js";
 import type {
   ClaudeEvent,
   ClaudeMcpServerInit,
@@ -14,13 +19,24 @@ import type {
   AgentId,
   AgentCapabilities,
   AgentEvent,
+  AgentGoalCommand,
+  AgentGoalCommandResult,
   AgentMcpWriteContext,
   AgentMcpWriteResult,
   AgentProcess,
   AgentProcessEvents,
   AgentRunParams,
 } from "../agent-process.js";
+import {
+  GOAL_CONTROL_TIMEOUT_MS,
+  goalCommandText,
+  goalFromAnswer,
+  goalSetFromEvent,
+  localGoalAnswer,
+  runClaudeGoalControl,
+} from "./claude-goal.js";
 import type { AgentHomeResolver } from "../../../shared/agent-home.js";
+import { resolveAgentHome } from "../../../shared/agent-home.js";
 import type { McpServerStatus } from "../../../shared/types/mcp-types.js";
 import type { SubscriptionLimitsWindow } from "../../../shared/types/usage-limits-types.js";
 import { resolveMcpServer } from "../../mcp-resolve.js";
@@ -42,6 +58,17 @@ function textFromUserContent(content: unknown[]): string {
     .map((b) => b.text)
     .join("");
 }
+
+interface PendingGoal {
+  resolve: (result: AgentGoalCommandResult) => void;
+  reject: (err: Error) => void;
+  /** The answer has been read; the `result` event that follows it is ours too. */
+  answered: boolean;
+  timer: NodeJS.Timeout;
+}
+
+/** The answer and its result arrive together; this only bounds a CLI that stops short. */
+const GOAL_RESULT_TAIL_MS = 5_000;
 
 export class ClaudeAdapter
   extends EventEmitter<AgentProcessEvents>
@@ -70,6 +97,10 @@ export class ClaudeAdapter
     supportsReview: true,
     supportsSteering: true,
     supportsCompaction: true,
+    // docs/297 — the CLI's own `/goal`: no pause, no resume, and a set that
+    // starts work at once, so it has to ride the turn.
+    supportsGoals: true,
+    goalActions: { get: "control", clear: "control", set: "turn" },
     skillsDirName: ".claude",
     skillInvocationPrefix: "/",
   };
@@ -78,11 +109,23 @@ export class ClaudeAdapter
   private _isStreaming = false;
   private _permissionPromptTool: string | undefined;
 
-  private readonly resolveHome: AgentHomeResolver | undefined;
+  // docs/297 — a goal control process resumes the live session id, so it must
+  // not run beside a turn; and it runs where the turn ran.
+  private turnLive = false;
+  private lastCwd: string | undefined;
+  private spawnHomeOverride: string | undefined;
+  private pendingGoal: PendingGoal | null = null;
 
-  constructor(inner?: ClaudeProcess, opts?: { resolveHome?: AgentHomeResolver }) {
+  private readonly resolveHome: AgentHomeResolver | undefined;
+  private readonly runGoalControl: typeof runClaudeGoalControl;
+
+  constructor(
+    inner?: ClaudeProcess,
+    opts?: { resolveHome?: AgentHomeResolver; runGoalControl?: typeof runClaudeGoalControl },
+  ) {
     super();
     this.resolveHome = opts?.resolveHome;
+    this.runGoalControl = opts?.runGoalControl ?? runClaudeGoalControl;
     this.inner = inner ?? new ClaudeProcess(this.resolveHome);
     this.wireEvents(this.inner);
   }
@@ -93,12 +136,20 @@ export class ClaudeAdapter
 
   private wireEvents(proc: ClaudeProcess | StreamingClaudeProcess): void {
     proc.on("event", (raw: ClaudeEvent) => {
+      // An answer to a command ShipIt injected belongs to that command, not the
+      // transcript: the user typed no message and no turn ran.
+      if (this.consumeGoalAnswer(raw)) return;
+
       if (raw.type === "system" && raw.subtype === "init" && raw.mcp_servers) {
         const statuses = raw.mcp_servers.map(mapCliMcpStatus);
         if (statuses.length > 0) {
           this.emit("mcp_status", statuses);
         }
       }
+
+      // docs/297 — the set acknowledgement is the only goal signal the stream carries.
+      const setGoal = goalSetFromEvent(raw);
+      if (setGoal) this.emit("event", { type: "agent_goal_updated", goal: setGoal });
 
       const mapped = this.mapEvent(raw);
       if (mapped) {
@@ -107,6 +158,8 @@ export class ClaudeAdapter
     });
 
     proc.on("done", (code: number) => {
+      this.turnLive = false;
+      this.failPendingGoal(new Error("the Claude CLI ended before answering the goal command"));
       this.emit("done", code);
     });
 
@@ -224,6 +277,7 @@ export class ClaudeAdapter
         };
 
       case "result": {
+        this.turnLive = false;
         const u = raw.usage;
         // Context uses the last call's input, not the turn's summed usage.
         let contextTokens: number | undefined;
@@ -305,6 +359,9 @@ export class ClaudeAdapter
   run(params: AgentRunParams): void {
     // An abnormal prior turn may have left usage without a result to clear it.
     this.latestCallContextTokens = undefined;
+    this.turnLive = true;
+    this.lastCwd = params.cwd;
+    this.spawnHomeOverride = params.homeDir;
     if (params.useStreaming) {
       if (this._isStreaming) {
         this.sendUserMessage(params.prompt);
@@ -343,6 +400,7 @@ export class ClaudeAdapter
 
   sendUserMessage(text: string, _opts?: { images?: unknown[] }): void {
     this.latestCallContextTokens = undefined;
+    this.turnLive = true;
     if (this.inner instanceof StreamingClaudeProcess) {
       console.log(
         `[claude-adapter] sendUserMessage → streaming (bytes=${text.length}, text=${JSON.stringify(text.slice(0, 80))})`,
@@ -370,12 +428,103 @@ export class ClaudeAdapter
     this.inner.writeStdin(data);
   }
 
+  /**
+   * docs/297 — Claude Code has no goal API, so the command is text for the CLI.
+   * A resident CLI (live steering, the default) keeps the goal in its own memory:
+   * measured, a second process cannot see or change it, so a clear run beside one
+   * would leave the goal in force with no chip — the docs/154 incident. Hence: the
+   * resident process when there is one, a short-lived CLI when there is not, and a
+   * refusal while a turn runs, where a second process replays the live session's
+   * pending notifications and both append to one session file.
+   */
+  async goalCommand(threadId: string, command: AgentGoalCommand): Promise<AgentGoalCommandResult> {
+    if (this.turnLive) {
+      throw new Error(
+        "Claude Code answers a goal command only between turns — try again once this turn finishes",
+      );
+    }
+    const text = goalCommandText(command);
+    if (this.inner instanceof StreamingClaudeProcess && this.inner.alive) {
+      return await this.askResidentProcess(this.inner, text);
+    }
+    const scopedHome = this.spawnHomeOverride ?? this.resolveHome?.();
+    const env: Record<string, string> = {
+      ...process.env as Record<string, string>,
+      HOME: resolveAgentHome(scopedHome),
+    };
+    scrubEnvAuthForScopedHome(env, scopedHome);
+    return await this.runGoalControl({
+      threadId,
+      command,
+      cwd: this.lastCwd ?? process.cwd(),
+      env,
+    });
+  }
+
+  private askResidentProcess(
+    proc: StreamingClaudeProcess,
+    text: string,
+  ): Promise<AgentGoalCommandResult> {
+    if (this.pendingGoal) throw new Error("A goal command is already in flight");
+    return new Promise<AgentGoalCommandResult>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingGoal = null;
+        reject(new Error("Claude Code did not answer the goal command in time"));
+      }, GOAL_CONTROL_TIMEOUT_MS);
+      this.pendingGoal = { resolve, reject, answered: false, timer };
+      proc.writeStdin(frameUserMessage(text));
+    });
+  }
+
+  /**
+   * Measured on 2.1.260: a local `/goal` on a resident CLI emits a repeated init,
+   * the answer, and a zero-turn `result`. The result must not reach the turn
+   * machinery, which would read it as a CLI-started turn (`startsOwnTurns`).
+   */
+  private consumeGoalAnswer(raw: ClaudeEvent): boolean {
+    const pending = this.pendingGoal;
+    if (!pending) return false;
+    if (pending.answered) {
+      // Only the command's own result, never a model turn's: the CLI reports 0
+      // turns for a command it answered itself (measured), and the resident CLI
+      // can be running a turn of its own beside this one.
+      if (raw.type !== "result" || raw.num_turns !== 0) return false;
+      clearTimeout(pending.timer);
+      this.pendingGoal = null;
+      return true;
+    }
+    const answer = localGoalAnswer(raw);
+    if (!answer) return false;
+
+    // The caller has its answer; the slot stays open only to swallow the result,
+    // on a short timer so a CLI that stops short cannot eat a later turn's.
+    clearTimeout(pending.timer);
+    pending.answered = true;
+    pending.timer = setTimeout(() => { this.pendingGoal = null; }, GOAL_RESULT_TAIL_MS);
+    try {
+      pending.resolve({ goal: goalFromAnswer(answer) });
+    } catch (err) {
+      pending.reject(err instanceof Error ? err : new Error(String(err)));
+    }
+    return true;
+  }
+
   interrupt(): void {
     this.inner.interrupt();
   }
 
   kill(): void {
+    this.turnLive = false;
+    this.failPendingGoal(new Error("the Claude CLI was stopped before answering the goal command"));
     this.inner.kill();
+  }
+
+  private failPendingGoal(err: Error): void {
+    const pending = this.pendingGoal;
+    if (!pending) return;
+    clearTimeout(pending.timer);
+    this.pendingGoal = null;
+    if (!pending.answered) pending.reject(err);
   }
 
   setPermissionMode(mode: PermissionMode | undefined): void {
@@ -387,6 +536,8 @@ export class ClaudeAdapter
 
   compact(instructions?: string): void {
     if (this.inner instanceof StreamingClaudeProcess) {
+      // Compaction is work on the resident process: no goal command beside it.
+      this.turnLive = true;
       const trimmed = instructions?.trim();
       this.inner.sendUserMessage(trimmed ? `/compact ${trimmed}` : "/compact");
       return;

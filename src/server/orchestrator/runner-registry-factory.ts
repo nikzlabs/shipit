@@ -47,6 +47,8 @@ import { takeRoleStandingInstructions } from "./services/session-role.js";
 import { routeVoiceNote } from "./voice/voice-note-router.js";
 import type { VoiceNotePayload, VoiceNoteSource } from "../shared/types/voice-note-types.js";
 import { getAgentCapabilities } from "../shared/agent-registry.js";
+import { getErrorMessage } from "../shared/utils.js";
+import { goalAgentFor, refreshAgentGoalAfterTurn } from "./services/agent-goal.js";
 import { residentRouteNeedsRelease} from "./service-routing.js";
 import type { GenerateText } from "./non-turn-model.js";
 
@@ -173,6 +175,18 @@ export function createRunnerRegistry(
         runner.mergeHold = true;
         runner.beginPostTurnWork();
       }
+      // docs/297 — idle is last of all, so the agent process is gone and a goal
+      // control process cannot race the turn that just ended.
+      runner.on("idle", () => {
+        void refreshAgentGoalAfterTurn(
+          { sessionManager, sseBroadcast },
+          runner.sessionId,
+          runner.agentId,
+          () => goalAgentFor(runner, runner.agentId, agentFactory),
+        ).catch((err: unknown) => {
+          console.warn(`[goal] post-turn read for ${runner.sessionId} failed: ${getErrorMessage(err)}`);
+        });
+      });
       runner.on("background_work", () => {
         sseBroadcast("session_attention", {
           sessionId: runner.sessionId,

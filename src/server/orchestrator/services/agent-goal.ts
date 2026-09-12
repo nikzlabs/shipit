@@ -45,6 +45,25 @@ export function runGoalExclusive<T>(sessionId: string, fn: () => Promise<T>): Pr
 }
 
 /**
+ * The agent to run a goal command on, without disturbing the session.
+ *
+ * docs/297 — building one when the slot is occupied displaces the installed
+ * proxy and settles its turn a second time (`supersedeDisplacedAgent`), so an
+ * occupied slot is either used as it is or left alone. An empty slot cannot
+ * supersede anything, which is the case a container that just started is in.
+ */
+export function goalAgentFor(
+  runner: { getAgent(): AgentProcess | null; createAgent?: (agentId: AgentId) => AgentProcess },
+  agentId: AgentId,
+  agentFactory?: (agentId: AgentId) => AgentProcess,
+): AgentProcess | null {
+  const live = runner.getAgent();
+  if (live) return live.agentId === agentId && live.goalCommand ? live : null;
+  // The runner's own builder routes to the worker; the bare factory is local mode.
+  return runner.createAgent?.(agentId) ?? agentFactory?.(agentId) ?? null;
+}
+
+/**
  * docs/154 req 6 — read a goal that was never read, without a turn. Best
  * effort: a container that is not up yet leaves it for the next turn.
  */
@@ -52,13 +71,40 @@ export async function reconcileAgentGoal(
   deps: AgentGoalDeps & { sessionManager: Pick<SessionManager, "agentGoalChecked"> },
   sessionId: string,
   agentId: AgentId,
-  createAgent: (agentId: AgentId) => AgentProcess,
+  resolveAgent: () => AgentProcess | null,
 ): Promise<void> {
   if (!(getAgentCapabilities(agentId)?.supportsGoals ?? false)) return;
   const threadId = deps.sessionManager.get(sessionId)?.agentSessionId;
   if (!threadId || deps.sessionManager.agentGoalChecked(sessionId)) return;
-  const agent = createAgent(agentId);
-  if (!agent.goalCommand) return;
+  // Resolved last: it can install an agent, which must not happen for a session
+  // that was never going to run a goal command.
+  const agent = resolveAgent();
+  if (!agent?.goalCommand) return;
+  const goalCommand = agent.goalCommand.bind(agent);
+  await runGoalExclusive(sessionId, async () => {
+    const { goal } = await goalCommand(threadId, { action: "get" });
+    recordGoalForThread(deps, sessionId, threadId, goal);
+  });
+}
+
+/**
+ * docs/297 req 2 — a goal can end inside the turn that set it with nothing on the
+ * event stream to say so (Claude Code evaluates its condition in a Stop hook and
+ * clears the goal silently). Re-read once the turn is over, and only while a goal
+ * is on show: a session without one costs nothing.
+ */
+export async function refreshAgentGoalAfterTurn(
+  deps: AgentGoalDeps,
+  sessionId: string,
+  agentId: AgentId,
+  resolveAgent: () => AgentProcess | null,
+): Promise<void> {
+  if (!(getAgentCapabilities(agentId)?.supportsGoals ?? false)) return;
+  const session = deps.sessionManager.get(sessionId);
+  const threadId = session?.agentSessionId;
+  if (!threadId || !session.agentGoal) return;
+  const agent = resolveAgent();
+  if (!agent?.goalCommand) return;
   const goalCommand = agent.goalCommand.bind(agent);
   await runGoalExclusive(sessionId, async () => {
     const { goal } = await goalCommand(threadId, { action: "get" });

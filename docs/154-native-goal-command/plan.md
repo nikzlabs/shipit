@@ -1,6 +1,6 @@
 ---
 title: Native goal command (CLI-backed)
-description: "`/goal` in chat, backed by Codex's own `thread/goal/*` JSON-RPC API: set, show, pause, resume and clear a goal, with an always-visible goal chip. Claude has no programmatic surface yet."
+description: "`/goal` in chat, backed by Codex's own `thread/goal/*` JSON-RPC API: set, show, pause, resume and clear a goal, with an always-visible goal chip."
 issue: planning#31
 ---
 
@@ -27,15 +27,23 @@ resumed the same thread (and so the same goal) every turn, and sent a typed
 
 ## Backend support
 
-| Backend | Native goal API | ShipIt |
+| Backend | Native goal surface | ShipIt |
 |---|---|---|
-| **Codex CLI** (pinned 0.154.0) | Yes — `thread/goal/*` JSON-RPC, on by default | Supported (`supportsGoals: true`) |
-| **Claude Code CLI** | No programmatic surface (TUI-only, Stop-hook-backed) | Not offered |
-| **OpenCode, Grok** | None used | Not offered |
+| **Codex CLI** (pinned 0.154.0) | `thread/goal/*` JSON-RPC, on by default | Supported — the full vocabulary |
+| **Claude Code CLI** (pinned 2.1.260) | `/goal`, handled locally by the CLI (Stop-hook-backed). `/goal <condition>`, `/goal clear` and a status read; no pause, no resume | Supported — [docs/297](../297-goal-on-claude/plan.md) |
+| **Grok** (Build 1.0.18) | `/goal <objective>\|status\|pause\|resume\|clear`, handled locally by the CLI | Not offered yet — being added alongside docs/297 |
+| **OpenCode** (1.18.27) | None | Not offered |
 
-On an agent without `supportsGoals`, `/goal …` is not intercepted and is sent
-as an ordinary prompt, exactly as before (req 5). If Claude later ships an
-API, it needs only a `goalCommand` implementation on its adapter.
+"Handled locally by the CLI" means the command never becomes a model call: it
+works in ShipIt's own transport, and the goal it sets persists in the CLI's
+store across ShipIt's per-turn spawns exactly as Codex's thread goal does.
+
+Interception is capability-gated, so on a harness ShipIt does not support
+`/goal …` is not intercepted and is sent as an ordinary prompt (req 5) — which,
+on a CLI that has its own `/goal`, sets a real goal that steers every later turn
+while ShipIt shows no chip. That was the state of every Claude session before
+docs/297. `AgentCapabilities.goalActions` refines the gate per action, because a
+harness can support an action the CLI must run inside a turn (docs/297).
 
 ## Measured on codex-cli 0.154.0
 
@@ -110,9 +118,9 @@ builds; these supersede them.
 
 ### Transport
 
-- `AgentProcess.goalCommand?` (optional; only Codex has it) and
-  `AgentCapabilities.supportsGoals?` (absent is false), published to the
-  client on `agent_list`.
+- `AgentProcess.goalCommand?` (optional) and `AgentCapabilities.supportsGoals?`
+  (absent is false), published to the client on `agent_list`, alongside
+  `goalActions` (docs/297).
 - Container mode: `ProxyAgentProcess.goalCommand` →
   `ContainerSessionRunner.goalCommandOnWorker` → worker `POST /agent/goal
   {agentId, threadId, command}`. The worker uses the live agent when it is

@@ -9,7 +9,7 @@ import { sendUserMessage } from "./send-user-message.js";
 import { buildAttachmentPlan } from "./attachment-plan.js";
 import { isReviewCommand, resolveReviewRequest } from "./review-command.js";
 import { composeReviewMessage, resolveReviewer } from "./compose-review-body.js";
-import { isGoalCommand } from "../../server/shared/goal-command.js";
+import { parseGoalCommand } from "../../server/shared/goal-command.js";
 
 export interface SendDeps {
   /** Put a frame on the wire. `false` means the bytes never left the browser. */
@@ -94,15 +94,18 @@ export function runSend(deps: SendDeps, payload: SendPayload): boolean {
     return true;
   }
 
-  // docs/154 — a goal command starts no turn, so no bubble and no spinner; the
-  // server answers with an inline notice.
+  // docs/154 — a goal command the server answers out of band starts no turn, so
+  // no bubble and no spinner. docs/297 — an action marked "turn" is an ordinary
+  // message: on Claude Code `/goal <objective>` makes the CLI start working.
   const goalSessionId = useSessionStore.getState().sessionId;
   const ui = useUiStore.getState();
-  if (
-    goalSessionId && isGoalCommand(trimmed)
-    && ui.agentList.find((a) => a.id === ui.activeAgentId)?.supportsGoals
-  ) {
-    return send({ type: "send_message", text: trimmed, sessionId: goalSessionId });
+  const goalCommand = parseGoalCommand(trimmed);
+  const goalAgent = ui.agentList.find((a) => a.id === ui.activeAgentId);
+  if (goalSessionId && goalCommand && goalAgent?.supportsGoals) {
+    const mode = goalAgent.goalActions ? goalAgent.goalActions[goalCommand.action] : "control";
+    if (mode !== "turn") {
+      return send({ type: "send_message", text: trimmed, sessionId: goalSessionId });
+    }
   }
 
   requestPermission();

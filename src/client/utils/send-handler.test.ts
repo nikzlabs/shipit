@@ -74,6 +74,28 @@ describe("a /goal command starts no turn (docs/154 req 4)", () => {
     expect(useSessionStore.getState().messages).toHaveLength(1);
     expect(useSessionStore.getState().isLoading).toBe(true);
   });
+
+  // docs/297 — on Claude Code `/goal <objective>` makes the CLI start working, so
+  // it is a turn and needs the bubble and the spinner.
+  it("keeps the bubble for an action the harness answers with a turn", () => {
+    const claude = {
+      ...codex,
+      id: "claude",
+      goalActions: { get: "control", clear: "control", set: "turn" } as const,
+    };
+    useUiStore.setState({ agentList: [claude], activeAgentId: "claude" });
+
+    const setSend = deps();
+    runSend(setSend, payload({ text: "/goal the suite is green" }));
+    expect(useSessionStore.getState().messages).toHaveLength(1);
+    expect(useSessionStore.getState().isLoading).toBe(true);
+
+    useSessionStore.setState({ messages: [], isLoading: false });
+    const clearSend = deps();
+    expect(runSend(clearSend, payload({ text: "/goal clear" }))).toBe(true);
+    expect(useSessionStore.getState().messages).toEqual([]);
+    expect(useSessionStore.getState().isLoading).toBe(false);
+  });
 });
 
 describe("a refused /review dispatches nothing and says so (docs/293 req 4)", () => {

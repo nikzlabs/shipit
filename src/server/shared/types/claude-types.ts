@@ -144,6 +144,10 @@ export interface ClaudeAssistantEvent {
   is_api_error_message?: boolean;
   /** Stable failure code; synthetic error text varies. */
   error?: string;
+  /** The CLI answering a local slash command, not the model. */
+  is_meta?: boolean;
+  /** docs/297 — `<local-command-stdout>…</local-command-stdout>`; CLI-only. */
+  local_command_source?: string;
 }
 
 export interface ClaudeUserEvent {
@@ -179,6 +183,8 @@ export interface ClaudeResultEvent {
   type: "result";
   /** "success" can include API failure: use is_error. */
   subtype: "success" | "error" | "error_max_turns" | "error_during_execution";
+  /** docs/297 — 0 for a command the CLI answered itself; a model turn is >= 1. */
+  num_turns?: number;
   is_error?: boolean;
   terminal_reason?: string;
   session_id: string;

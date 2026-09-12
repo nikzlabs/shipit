@@ -42,6 +42,10 @@ export const HARNESSES = [
       supportsSteering: true,
       startsOwnTurns: true,
       supportsCompaction: true,
+      // docs/297 — the CLI's own `/goal`: no pause, no resume, and a set that
+      // starts work at once, so it has to ride the turn.
+      supportsGoals: true,
+      goalActions: { get: "control", clear: "control", set: "turn" },
       skillsDirName: ".claude",
       skillInvocationPrefix: "/",
     },

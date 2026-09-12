@@ -10,7 +10,7 @@ import type { AgentHomeResolver } from "../../../shared/agent-home.js";
 import { resolveAgentHome } from "../../../shared/agent-home.js";
 
 // Environment credentials override disk login; unscoped routes still need them.
-function scrubEnvAuthForScopedHome(env: Record<string, string>, scopedHome: string | undefined): void {
+export function scrubEnvAuthForScopedHome(env: Record<string, string>, scopedHome: string | undefined): void {
   if (!scopedHome) return;
   delete env.ANTHROPIC_API_KEY;
   delete env.ANTHROPIC_AUTH_TOKEN;
@@ -106,7 +106,7 @@ function removeFileQuietly(path: string | null): void {
   try { fs.unlinkSync(path); } catch { /* already gone */ }
 }
 
-function frameUserMessage(text: string): string {
+export function frameUserMessage(text: string): string {
   const msg = {
     type: "user",
     message: { role: "user", content: [{ type: "text", text }] },
@@ -407,6 +407,11 @@ export class ClaudeProcess extends EventEmitter {
 // Open stdin keeps the CLI alive across turns; result ends a turn, done ends the process.
 export class StreamingClaudeProcess extends EventEmitter {
   private proc: ChildProcess | null = null;
+
+  /** docs/297 — a resident CLI owns the goal state; a second process cannot change it. */
+  get alive(): boolean {
+    return this.proc?.stdin?.writable === true;
+  }
   private buffer = "";
   private systemPromptFile: string | null = null;
   private watchdog: ReturnType<typeof setTimeout> | null = null;

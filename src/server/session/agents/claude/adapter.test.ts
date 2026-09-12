@@ -1,6 +1,7 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { EventEmitter } from "node:events";
 import { ClaudeAdapter, mapCliMcpStatus } from "./adapter.js";
+import { StreamingClaudeProcess, type ClaudeProcess } from "./process.js";
 import type { ClaudeEvent } from "../../../shared/types.js";
 import type { McpServerStatus } from "../../../shared/types/mcp-types.js";
 import type { AgentRunParams } from "../agent-process.js";
@@ -1295,6 +1296,138 @@ describe("ClaudeAdapter", () => {
       expect(events).toHaveLength(1);
       expect((events[0] as { type: string }).type).toBe("agent_init");
       expect(batches).toHaveLength(1);
+    });
+  });
+
+  describe("goals (docs/297)", () => {
+    const metaSet = (objective: string): ClaudeEvent => ({
+      type: "assistant",
+      message: { content: [{ type: "text", text: `Goal set: ${objective}` }] },
+      is_meta: true,
+      local_command_source: `<local-command-stdout>Goal set: ${objective}</local-command-stdout>`,
+    });
+
+    it("declares the CLI's own goal vocabulary: no pause, no resume, and a set that rides the turn", () => {
+      const adapter = new ClaudeAdapter(new FakeInnerProcess() as any);
+      expect(adapter.capabilities.supportsGoals).toBe(true);
+      expect(adapter.capabilities.goalActions).toEqual({ get: "control", clear: "control", set: "turn" });
+    });
+
+    it("reports the goal the CLI acknowledges setting, and still renders the message", () => {
+      const inner = new FakeInnerProcess();
+      const adapter = new ClaudeAdapter(inner as any);
+      const events: unknown[] = [];
+      adapter.on("event", (e) => events.push(e));
+
+      inner.emit("event", metaSet("ship it"));
+
+      expect(events).toContainEqual(
+        expect.objectContaining({
+          type: "agent_goal_updated",
+          goal: expect.objectContaining({ objective: "ship it", status: "active" }),
+        }),
+      );
+      expect(events.some((e) => (e as { type: string }).type === "agent_assistant")).toBe(true);
+    });
+
+    it("asks the resident CLI, whose in-memory goal a second process cannot change", async () => {
+      const runGoalControl = vi.fn(async () => ({ goal: null }));
+      const streaming = new StreamingClaudeProcess();
+      const writes: string[] = [];
+      vi.spyOn(streaming, "writeStdin").mockImplementation((d: string) => { writes.push(d); });
+      vi.spyOn(streaming, "alive", "get").mockReturnValue(true);
+      const adapter = new ClaudeAdapter(streaming as unknown as ClaudeProcess, { runGoalControl });
+      const events: unknown[] = [];
+      adapter.on("event", (e) => events.push(e));
+
+      const answered = adapter.goalCommand!("thread-1", { action: "clear" });
+      await Promise.resolve();
+      expect(writes.join("")).toContain("/goal clear");
+      expect(runGoalControl).not.toHaveBeenCalled();
+
+      streaming.emit("event", {
+        type: "assistant",
+        message: { content: [{ type: "text", text: "Goal cleared: ship it" }] },
+        is_meta: true,
+        local_command_source: "<local-command-stdout>Goal cleared: ship it</local-command-stdout>",
+      } as ClaudeEvent);
+      streaming.emit("event", {
+        type: "result", subtype: "success", session_id: "thread-1", num_turns: 0,
+      } as ClaudeEvent);
+
+      await expect(answered).resolves.toEqual({ goal: null });
+      // The user typed no message and no turn ran: neither event belongs in the transcript.
+      expect(events).toEqual([]);
+    });
+
+    it("stops swallowing once its own result arrives, so the next turn still ends", async () => {
+      const streaming = new StreamingClaudeProcess();
+      vi.spyOn(streaming, "writeStdin").mockImplementation(() => undefined);
+      vi.spyOn(streaming, "alive", "get").mockReturnValue(true);
+      const adapter = new ClaudeAdapter(streaming as unknown as ClaudeProcess);
+      const events: any[] = [];
+      adapter.on("event", (e) => events.push(e));
+
+      const answered = adapter.goalCommand!("thread-1", { action: "get" });
+      streaming.emit("event", {
+        type: "assistant",
+        message: { content: [{ type: "text", text: "No goal set" }] },
+        is_meta: true,
+        local_command_source: "<local-command-stdout>No goal set</local-command-stdout>",
+      } as ClaudeEvent);
+      streaming.emit("event", {
+        type: "result", subtype: "success", session_id: "thread-1", num_turns: 0,
+      } as ClaudeEvent);
+      await expect(answered).resolves.toEqual({ goal: null });
+
+      streaming.emit("event", {
+        type: "result", subtype: "success", session_id: "thread-1", num_turns: 2,
+      } as ClaudeEvent);
+      expect(events.map((e) => e.type)).toEqual(["agent_result"]);
+    });
+
+    it("never swallows a model turn's result, which the CLI can emit beside the answer", async () => {
+      const streaming = new StreamingClaudeProcess();
+      vi.spyOn(streaming, "writeStdin").mockImplementation(() => undefined);
+      vi.spyOn(streaming, "alive", "get").mockReturnValue(true);
+      const adapter = new ClaudeAdapter(streaming as unknown as ClaudeProcess);
+      const events: any[] = [];
+      adapter.on("event", (e) => events.push(e));
+
+      const answered = adapter.goalCommand!("thread-1", { action: "get" });
+      streaming.emit("event", {
+        type: "assistant",
+        message: { content: [{ type: "text", text: "No goal set" }] },
+        is_meta: true,
+        local_command_source: "<local-command-stdout>No goal set</local-command-stdout>",
+      } as ClaudeEvent);
+      await expect(answered).resolves.toEqual({ goal: null });
+
+      // The CLI starts its own turns, so a real one can finish while the slot is
+      // still open for the command's own zero-turn result.
+      streaming.emit("event", {
+        type: "result", subtype: "success", session_id: "thread-1", num_turns: 3,
+      } as ClaudeEvent);
+      expect(events.map((e) => e.type)).toEqual(["agent_result"]);
+    });
+
+    it("refuses a goal command while a turn runs, because a second CLI would share the session file", async () => {
+      const inner = new FakeInnerProcess();
+      const runGoalControl = vi.fn(async () => ({ goal: null }));
+      const adapter = new ClaudeAdapter(inner as any, { runGoalControl });
+      adapter.run({ prompt: "hi", cwd: "/session-dir" } as AgentRunParams);
+
+      await expect(adapter.goalCommand!("thread-1", { action: "get" }))
+        .rejects.toThrow(/only between turns/);
+      expect(runGoalControl).not.toHaveBeenCalled();
+
+      inner.emit("event", { type: "result", subtype: "success", session_id: "thread-1" } as ClaudeEvent);
+
+      await expect(adapter.goalCommand!("thread-1", { action: "get" })).resolves.toEqual({ goal: null });
+      // The control CLI runs where the turn ran, so it resumes against the same project.
+      expect(runGoalControl).toHaveBeenCalledWith(
+        expect.objectContaining({ threadId: "thread-1", command: { action: "get" }, cwd: "/session-dir" }),
+      );
     });
   });
 

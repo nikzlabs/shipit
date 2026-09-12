@@ -4,7 +4,7 @@ import type { ConnectionCtx, RunnerCtx, AppCtx } from "./types.js";
 import { validateImages, imageAttachmentRefusal, resolveFileAttachments, resolveUploadRefs, formatFileContext } from "../validation.js";
 import { parseCompactCommand } from "../../shared/compact-command.js";
 import { parseGoalCommand } from "../../shared/goal-command.js";
-import { handleGoalCommand } from "./goal-command.js";
+import { emitGoalNotice, handleGoalCommand } from "./goal-command.js";
 import { modelSelectionOf } from "../session-agent-env.js";
 import { graduateSession } from "../services/graduate-session.js";
 import { pinIssueSeededSession } from "../services/issue-seeded-session.js";
@@ -46,7 +46,12 @@ export async function handleSendMessage(
 ): Promise<void> {
   // docs/154 — before the auth gate: reading or clearing a goal starts no turn.
   const goalCommand = parseGoalCommand(msg.text);
-  if (goalCommand && (ctx.agentRegistry.get(ctx.getActiveAgentId())?.capabilities.supportsGoals ?? false)) {
+  const caps = ctx.agentRegistry.get(ctx.getActiveAgentId())?.capabilities;
+  const mode = goalCommand
+    ? (caps?.goalActions ? caps.goalActions[goalCommand.action] : "control")
+    : undefined;
+  // undefined -> intercept and refuse; "control" -> intercept and execute; "turn" -> do not intercept
+  if (goalCommand && (caps?.supportsGoals ?? false) && mode !== "turn") {
     // The runner and agent belong to this socket's session; another session's frame would reach the wrong thread.
     const activeSessionId = ctx.getActiveAppSessionId() ?? undefined;
     if (msg.sessionId && msg.sessionId !== activeSessionId) {
@@ -54,6 +59,23 @@ export async function handleSendMessage(
       return;
     }
     await handleGoalCommand(ctx, goalCommand, activeSessionId);
+    return;
+  }
+
+  // docs/297 — a "turn" action rides the turn path, and the CLI reads it as its
+  // own command only when the prompt is exactly the command (measured: a prefix
+  // sets no goal at all, a suffix lands inside the objective). Attachments have
+  // nowhere to go, so the message is refused rather than silently mangled.
+  if (goalCommand && mode === "turn" && (msg.images?.length || msg.files?.length)) {
+    const sessionId = ctx.getActiveAppSessionId() ?? undefined;
+    if (sessionId) {
+      emitGoalNotice(
+        ctx,
+        sessionId,
+        "A `/goal` command cannot carry attachments. Send them in a separate message.",
+        "warn",
+      );
+    }
     return;
   }
 
