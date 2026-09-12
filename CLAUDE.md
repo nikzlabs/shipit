@@ -165,6 +165,15 @@ Two browser channels: per-session **WebSocket** (`/ws/sessions/{id}`) and global
 
 `TestClient` buffers WS messages from connect (no send-before-listen races); `isTestMode` in `buildApp()` enables `POST /api/_test/sessions` (no Docker); fakes expose injection methods. Detail: **testing-and-quality**.
 
+## Code comments
+
+- **Default to no comment.** Add one only when removing it would hide a constraint, a non-obvious reason, or a failure mode needed to change the code safely. Prefer clear names and simple code.
+- **Keep it short.** Usually one sentence; use more only when needed for correctness. Put detailed rationale in the relevant feature doc and link to it.
+- **Do not narrate the code.** Omit comments that repeat names, types, branches, test titles, or assertions. Avoid section banners, change histories, and routine file/function summaries.
+- **Keep essential information.** Preserve license notices, tool directives, required API documentation, and explanations of subtle invariants or workarounds. Keep directive reasons concise.
+- **Read before trimming.** Read each file and its relevant context. Remove redundant comments; shorten useful ones. Do not bulk-strip comments or target a deletion percentage.
+- **Review comments before finishing.** Check every added or changed comment against these rules. Remove stale text and incomplete fragments; do not restore verbosity removed by earlier cleanup.
+
 ## Workflow
 
 - **Read before coding** — before changing a feature, read its `docs/NNN-feature/requirements.md` (if present) and `plan.md`, plus the source files listed under "Key files". Trace the data flow for similar features to understand existing patterns. A new feature starts at `requirements.md`, not at `plan.md` — see [Every new feature is under requirements discipline](#every-new-feature-is-under-requirements-discipline).
