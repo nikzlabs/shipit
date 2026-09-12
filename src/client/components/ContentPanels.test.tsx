@@ -51,14 +51,16 @@ describe("ContentPanels", () => {
     expect(screen.getByText("Workspace").parentElement).toHaveClass("hidden");
   });
 
-  it("keeps the chat column's DOM node across the mobile/desktop breakpoint", () => {
-    const { rerender } = render(panels({ isMobile: false }));
+  // The home screen is the case where the desktop tree drops the workspace
+  // column, so the two layouts disagree about which child slots are occupied.
+  it.each([false, true])("keeps the chat column's DOM node across the mobile/desktop breakpoint (home %s)", (showHomeScreen) => {
+    const { rerender } = render(panels({ isMobile: false, showHomeScreen }));
 
     const chat = screen.getByText("Chat transcript");
     const chatContainer = chat.parentElement;
     if (chatContainer) chatContainer.scrollTop = 240;
 
-    rerender(panels({ isMobile: true }));
+    rerender(panels({ isMobile: true, showHomeScreen }));
 
     expect(screen.getByText("Chat transcript")).toBe(chat);
     expect(chatContainer?.scrollTop).toBe(240);
@@ -66,11 +68,11 @@ describe("ContentPanels", () => {
     expect(chatContainer).toHaveClass("flex-1");
     expect(chatContainer?.style.width).toBe("");
 
-    rerender(panels({ isMobile: false }));
+    rerender(panels({ isMobile: false, showHomeScreen }));
 
     expect(screen.getByText("Chat transcript")).toBe(chat);
     expect(chatContainer?.scrollTop).toBe(240);
-    expect(chatContainer?.style.width).toBe("50%");
+    expect(chatContainer?.style.width).toBe(showHomeScreen ? "100%" : "50%");
   });
 
   it("releases the resize container ref on mobile", () => {

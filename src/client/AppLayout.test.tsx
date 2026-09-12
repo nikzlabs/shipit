@@ -112,29 +112,49 @@ function layoutProps(over: Partial<Parameters<typeof AppLayout>[0]>): Parameters
   };
 }
 
+/**
+ * Every route the breakpoint can be crossed on. `showHomeScreen` decides whether
+ * the desktop tree carries a workspace column at all, and the other two decide
+ * which mobile column is in front — so each combination is a different set of
+ * occupied child slots for reconciliation to walk.
+ */
+const breakpointStates = [false, true].flatMap((showHomeScreen) =>
+  [false, true].flatMap((showNewSessionView) =>
+    (["chat", "preview"] as const).map((mobilePanel) => ({
+      showHomeScreen,
+      showNewSessionView,
+      mobilePanel,
+    })),
+  ),
+);
+
 describe("AppLayout across the mobile breakpoint", () => {
   // `isMobile` is a media query, so it flips several times during one drag of a
   // window edge. A Fragment against a div here rebuilt the chat column each time.
-  it("reuses the chat column instead of remounting it", () => {
-    const mounts = { count: 0 };
-    const chatPanel = <CountingChatPanel mounts={mounts} />;
-    const { rerender } = render(<AppLayout {...layoutProps({ isMobile: false, chatPanel })} />);
+  it.each(breakpointStates)(
+    "reuses the chat column instead of remounting it (home $showHomeScreen, new $showNewSessionView, panel $mobilePanel)",
+    (state) => {
+      const mounts = { count: 0 };
+      const chatPanel = <CountingChatPanel mounts={mounts} />;
+      const at = (isMobile: boolean) => <AppLayout {...layoutProps({ ...state, isMobile, chatPanel })} />;
+      const { rerender } = render(at(false));
 
-    // A counter that can never report a mount reports zero for free.
-    expect(mounts.count).toBe(1);
-    const scroller = screen.getByTestId("transcript-scroller");
-    scroller.scrollTop = 240;
+      // A counter that can never report a mount reports zero for free.
+      expect(mounts.count).toBe(1);
+      const scroller = screen.getByTestId("transcript-scroller");
+      scroller.scrollTop = 240;
 
-    rerender(<AppLayout {...layoutProps({ isMobile: true, chatPanel })} />);
-    expect(mounts.count).toBe(1);
-    expect(screen.getByTestId("transcript-scroller")).toBe(scroller);
-    expect(scroller.scrollTop).toBe(240);
+      rerender(at(true));
+      expect(mounts.count).toBe(1);
+      expect(screen.getByTestId("transcript-scroller")).toBe(scroller);
+      expect(scroller.scrollTop).toBe(240);
 
-    rerender(<AppLayout {...layoutProps({ isMobile: false, chatPanel })} />);
-    expect(mounts.count).toBe(1);
-    expect(screen.getByTestId("transcript-scroller")).toBe(scroller);
-    expect(scroller.scrollTop).toBe(240);
-  });
+      rerender(at(false));
+      expect(mounts.count).toBe(1);
+      expect(screen.getByTestId("transcript-scroller")).toBe(scroller);
+      expect(scroller.scrollTop).toBe(240);
+    },
+  );
 
   it("still swaps the mobile chrome in and out around it", () => {
     const drawer = '[role="dialog"][aria-label="Sessions"]';
