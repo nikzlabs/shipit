@@ -103,11 +103,133 @@ the shipped work — which is why req 7 is a requirement, not a nicety.
 ## The per-send intent (req 5, req 6)
 
 The wire path mirrors `resetMergedBranch` field for field:
-`WsSendMessage.compactContext?: boolean`, set only when the control was shown,
-non-sticky, never persisted, read independently of its sibling. Both flags ride
-the queue (`QueuedMessage`, `AgentDispatchOptions`), so an untick made while a
-turn was running still applies when the entry drains — including on the
-`/review` frame, which composes its own prompt.
+`WsSendMessage.compactContext?: boolean`, non-sticky, never persisted, read
+independently of its sibling. Both flags ride the queue (`QueuedMessage`,
+`AgentDispatchOptions`), so an untick made while a turn was running still
+applies when the entry drains — including on the `/review` frame, which composes
+its own prompt.
+
+**The untick belongs to the message, and only that message leaving clears it.**
+It shipped as two `useState(true)` flags re-armed by an effect keyed on the
+control becoming visible, and carried on the wire only while the control was
+visible. Both halves discarded a deliberate untick, silently and in the
+compacting direction, because an **omitted** `compactContext` means "follow the
+global setting" and the setting is on:
+
+- Eligibility is recomputed between turns by several server paths — the
+  activation, post-turn and merge-detected emitters, the debounced file-change
+  recompute in `reset-eligible-watch.ts` (which requires `mergedAt` and skips
+  while a turn runs), the dispatched post-turn path in
+  `runner-registry-factory.ts`, and the direct emitters in
+  `pre-turn-reset-hook.ts` and `api-routes-git.ts`. `computeResetEligibility`
+  **fails closed**: a git read that throws answers `false` for a session that is
+  perfectly eligible. One such `false`, for a reason that never reaches the
+  user, re-ticks the box on the way back to `true`; and a send made while the
+  control is still away carries no intent at all, which falls back to the global
+  setting.
+- **Component state does not outlive the composer, and the untick was the only
+  thing on it that did not.** `AppLayout` renders the chat panel into a Fragment
+  on mobile and a `div` on desktop, so any `isMobile` flip destroys and rebuilds
+  the subtree; App's `{(showHarnessOnboarding || !showHomeScreen ||
+  showNewSessionView) && …}` wrapper drops the composer whenever `showHomeScreen`
+  turns true; and a page reload remounts it outright. (A WebSocket reconnect does
+  **not** — `App.tsx` keeps the composer mounted and only changes its `disabled`
+  prop.) Through all of those the draft text and the attachment chips came back
+  from their own stores, so the composer looked untouched while a checkbox had
+  quietly gone back to blue, with no signal at all.
+
+**The root cause: a `send_message` frame that carried neither flag.** The user's
+report was that it only happened when they pressed a button on an **action
+card**; a typed message respected the tick. `App.tsx`'s `handleSendFollowUp` —
+the `onSubmit` behind `ActionChecklistCard` — builds its own frame and never
+read the composer's controls, so it reached `handleSendMessage` with
+`compactContext: undefined`, which falls back to the global setting. Four
+siblings had the identical omission: both release-card buttons, the
+review-comments submit, and "ask the agent to review this file". `runSend` was
+the only producer that carried the flags, and docs/293 had already closed
+exactly this omission for the `/review` branch *inside* it — closing the class
+one site at a time is what let the rest drift.
+
+It fits every fact: **zero** `false` intents on the wire (matching the LFS
+evidence that the reset ran and the compaction ran, since neither intent was
+ever expressed); the send reaching `handleSendMessage` (matching the
+`(activation)` echo 8 ms before the turn); and the user's untick still visibly
+unticked, because the composer was never submitted and so never cleared.
+
+**Reading the intent and spending it are one act, in one place.** A shared
+*builder* was the first fix and it was not enough: the action-card path then
+carried the untick and never consumed it, so one untick governed every later
+message — req 5 says it applies to that one message. So `sendUserTurn`
+(`client/utils/send-user-turn.ts`) owns the frame, the intent and its
+consumption together, and is the **only** place a `send_message` frame is built;
+a guard test fails the build if that literal appears in any other client file.
+A producer that starts no turn calls `sendControlFrame` — a named export a
+reviewer can enumerate, not a comment anyone can copy. The consumption happens
+only on a send that reached the wire, so a refused one leaves the user's choice
+where they can still see it. Only an opt-out is carried: absent and `true` both
+mean "do it".
+
+**The transport does not decide it; the interaction does.** The same omission
+existed on the HTTP dispatch (`POST /agent/dispatch`), which four ShipIt buttons
+use — preview errors, Create PR, and the two compose-error actions. They now
+pass `userInitiated`, which carries the intent and spends it; a CI auto-fix and
+an agent-interface continuation do not, and keep req 13. The server route and
+`services/agent.ts` forward the two fields onto the dispatch shape, which
+already carried them.
+
+**One snapshot for display and wire.** The composer memoises what it read while
+a send reads afresh, so another tab could display an unticked box and send
+nothing. `syncMergeContinueOptOutAcrossTabs` pulls a `storage` write into the
+store, which both sides read.
+
+**A click is not a programmatic continuation** (req 13 vs req 5). Req 13 sends a
+continuation "the user did not type" to the setting alone, and its stated reason
+is that such a continuation "has no checkbox, so the setting alone decides". A
+card button is pressed by the user, in the view the checkbox is in, often in the
+same breath as unticking it — the checkbox is right there, and req 5 says an
+untick applies to the user's next message. These frames therefore honour it. A
+continuation with genuinely no checkbox — a wake turn, a `shipit session
+message`, a click inside an agent-built page — never reaches that builder and is
+unaffected. This is a requirements judgement, recorded here rather than as a new
+numbered requirement.
+
+**The other four defects.** Each is real, each is fixed here, and the host log
+rules each out for the observed incident. The remount is what the log positively
+supported before the action-card path was known. A remount
+is the one candidate that predicts **zero** `false` intents on the wire — both
+tick states re-initialise to `true` — and zero is what the server received on a
+turn where the user had unticked a box. The pre-turn LFS restore fired on both
+post-merge turns, which only `autoResetMergedBranchOnContinue`'s `moved: true`
+path can produce, and no `opted-out` skip line exists anywhere in the retained
+log; so the branch reset ran and `resetMergedBranch` was not `false` either.
+
+The eligibility-flicker mechanism above is a real defect of the same class and is
+fixed here, but it did not fire in that incident: the log holds only
+`reset_eligible=true` across both merge windows, and `emitResetEligible` logs on
+every path where `merged` is true, so a `false` could not have been silent. The
+same goes for the control's hit target — the two buttons abutted and the compact
+row had no top padding, so the apparent breathing room above its checkbox was a
+live hit target for the reset control; a near-miss would have shown as exactly
+one `false` on the wire, and none was sent. Both are fixed; neither is the cause.
+
+So the tick state is `mergeContinueOptOutBySession` in the PR store, mirrored to
+`shipit-merge-continue-optout:{sessionId}` in localStorage — the third durable
+half of a draft, beside its text and its upload chips — and it holds only what
+the user turned **off**. Nothing keys on a visibility transition. The payload
+carries the intent whenever the control is shown **or** an opt-out is
+outstanding; an opt-out can only say `false`, and `false` can only skip an
+action, so carrying it is safe whatever the server thinks eligibility is by the
+time the frame lands. The sibling `resetMergedBranch` control had the identical
+shape and the identical defect, and takes the same fix.
+
+**A send does not echo eligibility back at the composer.** `handleSendMessage`
+activates the session on every send, and activation pushed a freshly computed
+`reset_eligible`. That answer is a pre-turn one the same message is about to
+invalidate, and it landed ~10 ms after the send — cancelling the composer's
+optimistic hide and putting both controls back on screen, re-ticked, while the
+turn they belonged to ran. The send now passes
+`skipResetEligibleSignal`; a viewer arriving still gets the signal, and the
+post-turn recompute is the authoritative answer for the turn.
 
 ## A typed `/compact` is still one compaction (req 12)
 
@@ -190,8 +312,8 @@ Offered whenever the reset control is, so req 11's single setting governs both
 with no second gate. Nothing gates on context size (req 3). Placed as a
 subordinate second line inside the existing control block — one line, no
 description — so the block that appears at the moment the user wants to type
-does not double in weight. Both tick states re-tick on send and on a session
-switch, so an untick never rides a later message or another session.
+does not double in weight. Both tick states re-tick on send, and are keyed by
+session, so an untick never rides a later message or another session.
 
 ## The shared setting (req 11)
 
@@ -210,7 +332,11 @@ Advanced description names both.
 | `orchestrator/turn-executor.ts` | `TurnInput.compact`, passed to `buildRunParams` for the dispatched path. |
 | `shared/types/ws-client-messages.ts` | `compactContext?: boolean`. |
 | `client/components/MessageInput/MessageInput.tsx` | The control, its tick state, the payload flag. |
-| `client/utils/send-handler.ts` | Carries the flag, on the `/review` frame too. |
+| `client/stores/pr-store.ts`, `client/utils/local-storage.ts` | `mergeContinueOptOutBySession` and its durable mirror: the untick outlives the composer. |
+| `client/utils/send-user-turn.ts` | `sendUserTurn` / `sendControlFrame` — the ONLY place a `send_message` frame is built. |
+| `client/utils/merge-continue-intent.ts` | Read, consume, and the cross-tab sync. |
+| `client/utils/dispatch-agent-message.ts`, `orchestrator/services/agent.ts`, `api-routes-agent.ts` | The HTTP dispatch carries it for a user-clicked send. |
+| `client/utils/send-handler.ts`, `client/App.tsx` | Every producer, through that one boundary. |
 | `client/components/Settings/tabs/AdvancedTab.tsx` | Description names both actions. |
 
 ## Risks

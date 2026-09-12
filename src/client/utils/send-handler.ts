@@ -5,7 +5,7 @@ import { useSessionStore } from "../stores/session-store.js";
 import { useSettingsStore } from "../stores/settings-store.js";
 import { useFileStore } from "../stores/file-store.js";
 import { useUiStore } from "../stores/ui-store.js";
-import { sendUserMessage } from "./send-user-message.js";
+import { sendGoalControlFrame, sendUserTurn } from "./send-user-turn.js";
 import { buildAttachmentPlan } from "./attachment-plan.js";
 import { isReviewCommand, resolveReviewRequest } from "./review-command.js";
 import { composeReviewMessage, resolveReviewer } from "./compose-review-body.js";
@@ -27,8 +27,6 @@ export function runSend(deps: SendDeps, payload: SendPayload): boolean {
     text,
     uploadRefs,
     uploads: payloadUploads,
-    resetMergedBranch,
-    compactContext,
     dictated,
   } = payload;
 
@@ -62,20 +60,14 @@ export function runSend(deps: SendDeps, payload: SendPayload): boolean {
       }),
     );
 
-    const reviewSent = sendUserMessage({
+    // docs/218 + docs/295 — `/review` is still a composer send, so `sendUserTurn`
+    // carries the per-send tick boxes and spends them when it goes.
+    const reviewSent = sendUserTurn({
+      sessionId: sid,
+      frame: { text: prompt, sessionId: sid, ...plan.frame },
       bubble: { role: "user", text: prompt, ...plan.bubble },
       activity: "Reviewing...",
-      dispatch: (requestId) =>
-        send({
-          type: "send_message",
-          requestId,
-          text: prompt,
-          sessionId: sid,
-          ...plan.frame,
-
-          ...(resetMergedBranch !== undefined ? { resetMergedBranch } : {}),
-          ...(compactContext !== undefined ? { compactContext } : {}),
-        }),
+      dispatch: (frame) => send(frame),
     });
     // docs/293 req 4 — the frame never left the browser. `sendUserMessage` has
 
@@ -104,7 +96,9 @@ export function runSend(deps: SendDeps, payload: SendPayload): boolean {
   if (goalSessionId && goalCommand && goalAgent?.supportsGoals) {
     const mode = goalAgent.goalActions ? goalAgent.goalActions[goalCommand.action] : "control";
     if (mode !== "turn") {
-      return send({ type: "send_message", text: trimmed, sessionId: goalSessionId });
+      // Starts no turn, so there is nothing for a reset or a compaction to
+      // apply to — see `sendGoalControlFrame` for the server branch proving it.
+      return sendGoalControlFrame(trimmed, goalSessionId, send);
     }
   }
 
@@ -130,25 +124,19 @@ export function runSend(deps: SendDeps, payload: SendPayload): boolean {
     const issueRef =
       pendingIssue?.sessionId === currentSessionId ? pendingIssue.ref : undefined;
 
-    const message = {
-      type: "send_message" as const,
-      text,
+    const sent = sendUserTurn({
       sessionId: currentSessionId,
-      ...(issueRef ? { issueRef } : {}),
-      ...plan.frame,
-      permissionMode: (() => {
-        const pm = settings.getPermissionMode(currentSessionId);
-        return pm !== "auto" ? pm : undefined;
-      })(),
-
-      ...(resetMergedBranch !== undefined ? { resetMergedBranch } : {}),
-
-      ...(compactContext !== undefined ? { compactContext } : {}),
-
-      ...(dictated ? { dictated: true } : {}),
-    };
-
-    const sent = sendUserMessage({
+      frame: {
+        text,
+        sessionId: currentSessionId,
+        ...(issueRef ? { issueRef } : {}),
+        ...plan.frame,
+        permissionMode: (() => {
+          const pm = settings.getPermissionMode(currentSessionId);
+          return pm !== "auto" ? pm : undefined;
+        })(),
+        ...(dictated ? { dictated: true } : {}),
+      },
       bubble: {
         role: "user",
         text,
@@ -157,10 +145,11 @@ export function runSend(deps: SendDeps, payload: SendPayload): boolean {
         uploadPaths: uploadPathsForMessage,
       },
       activity: "Thinking...",
-      dispatch: (requestId) => {
-        const frame = { ...message, requestId };
+      dispatch: (frame) => {
         if (send(frame)) return true;
-
+        // Dropped — e.g. the socket is still connecting after a claim on
+        // /{slug}/new. Stash for `useConnectionSync` to flush, and report
+        // accepted: the frame is not lost, so the intent is spent with it.
         useSessionStore.getState().setPendingWsMessage(frame);
         return true;
       },

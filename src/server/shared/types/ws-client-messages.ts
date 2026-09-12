@@ -33,6 +33,14 @@ export interface WsAnswerQuestion {
   /** Preserve plan mode when the answer resumes the CLI. */
   permissionMode?: PermissionMode;
   dictated?: boolean;
+  /**
+   * docs/218 + docs/295 — an answer STARTS A TURN, so it is the user's next
+   * message and their post-merge untick applies to it (req 5). Carried for the
+   * same reason `send_message` carries it, and omitted when they unticked
+   * nothing.
+   */
+  resetMergedBranch?: boolean;
+  compactContext?: boolean;
 }
 
 export interface WsSetAgentMessage {

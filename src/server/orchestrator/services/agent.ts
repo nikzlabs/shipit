@@ -41,6 +41,15 @@ export interface DispatchAgentMessageInput {
   images?: ImageAttachment[];
   files?: FileContextRef[];
   uploads?: UploadRef[];
+  /**
+   * docs/218 + docs/295 — the composer's per-send tick boxes, carried when the
+   * USER clicked the thing that dispatched this (a ShipIt button beside that
+   * composer). Absent for an automatic dispatch — a CI auto-fix, an
+   * agent-interface continuation — which follow the global setting (req 13),
+   * and `false` only ever SKIPS an action.
+   */
+  resetMergedBranch?: boolean;
+  compactContext?: boolean;
 }
 
 export interface DispatchAgentMessageResult {
@@ -69,6 +78,17 @@ export async function dispatchAgentMessage(
   if (!text) throw new ServiceError(400, "Message text is required");
   if (text.length > MAX_TEXT_LEN) {
     throw new ServiceError(400, `Message text exceeds ${MAX_TEXT_LEN} characters`);
+  }
+  for (const [name, value] of [
+    ["resetMergedBranch", input.resetMergedBranch],
+    ["compactContext", input.compactContext],
+  ] as const) {
+    // A malformed value must be refused, not silently read as the default:
+    // `"false"` is truthy, and quietly acting is the failure this whole feature
+    // is about.
+    if (value !== undefined && typeof value !== "boolean") {
+      throw new ServiceError(400, `${name} must be a boolean`);
+    }
   }
   if (input.activity !== undefined) {
     if (typeof input.activity !== "string") {
@@ -167,8 +187,10 @@ export async function dispatchAgentMessage(
     onTurnComplete: undefined,
     deliveryId: undefined,
     dictated: undefined,
-    resetMergedBranch: undefined,
-    compactContext: undefined,
+    // docs/218 + docs/295 — a user-clicked dispatch carries the composer's tick
+    // boxes; an automatic one omits them and follows the setting (req 13).
+    resetMergedBranch: input.resetMergedBranch,
+    compactContext: input.compactContext,
     silent: undefined,
   }));
 

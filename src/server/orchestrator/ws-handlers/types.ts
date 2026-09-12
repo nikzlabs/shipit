@@ -24,6 +24,22 @@ import type { GenerateText } from "../non-turn-model.js";
 
 export type { QueuedMessage };
 
+export interface ActivateSessionOptions {
+  /**
+   * docs/295 — leave the composer's merge-continue controls alone.
+   *
+   * Activation normally pushes a freshly computed `reset_eligible` because a
+   * viewer has just arrived and has nothing. A SEND also activates the session,
+   * as bookkeeping, and there the same push is wrong twice over: the answer is
+   * a PRE-turn one that the very message triggering it is about to invalidate,
+   * and it reaches the browser about 10 ms later — cancelling the composer's
+   * optimistic hide and putting the controls back on screen, re-ticked, while
+   * the turn they belonged to is still running. The post-turn recompute is the
+   * authoritative answer for that turn, and it already runs.
+   */
+  skipResetEligibleSignal?: boolean;
+}
+
 export interface ConnectionCtx {
   send: (msg: WsServerMessage) => void;
   broadcastLog: (source: LogSource, text: string) => void;
@@ -35,7 +51,7 @@ export interface ConnectionCtx {
   setActiveAppSessionId: (id: string | undefined) => void;
   getActiveSessionDir: () => string | null;
   setActiveSessionDir: (dir: string | null) => void;
-  activateSession: (sessionId: string) => void | Promise<void>;
+  activateSession: (sessionId: string, opts?: ActivateSessionOptions) => void | Promise<void>;
 
   checkGitIdentity: (dir: string) => void;
   readSystemPrompt: () => Promise<string | undefined>;

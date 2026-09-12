@@ -320,7 +320,15 @@ export async function handleSendMessage(
     }
     // Another viewer can change network mode and rebuild the container before this send.
     await settleNetworkModeWrites(effectiveSessionId);
-    await ctx.activateSession(effectiveSessionId);
+    // docs/295 — for the SAME session this is bookkeeping, not a viewer
+    // arrival: the eligibility answer it would push is about to be invalidated
+    // by this very message, and it lands on the composer while the turn runs.
+    // A send that MOVES this socket to another session is a genuine arrival at
+    // that session — suppressing there would leave the destination's controls
+    // unseeded until some other emitter ran.
+    await ctx.activateSession(effectiveSessionId, {
+      skipResetEligibleSignal: effectiveSessionId === previousSessionId,
+    });
     const session = ctx.sessionManager.get(effectiveSessionId);
     agentSessionId = session?.agentSessionId;
 
@@ -492,8 +500,10 @@ export async function handleAnswerQuestion(ctx: FullCtx, msg: WsAnswerQuestion):
     runnerEarly.dispatch(prepareDispatch({
       text: answerText,
       agentInterface: undefined,
-      resetMergedBranch: undefined,
-      compactContext: undefined,
+      // docs/295 — an answer is the user's next message; a merge hold must not
+      // eat the untick they made for it.
+      resetMergedBranch: msg.resetMergedBranch,
+      compactContext: msg.compactContext,
       silent: undefined,
       execution: "interactive",
       images: undefined,
@@ -579,6 +589,7 @@ export async function handleAnswerQuestion(ctx: FullCtx, msg: WsAnswerQuestion):
     validatedFiles: [],
     ...(agentSessionId !== undefined ? { agentSessionId } : {}),
     ...(capturedPermissionMode !== undefined ? { permissionMode: capturedPermissionMode } : {}),
+    ...(msg.resetMergedBranch !== undefined ? { resetMergedBranch: msg.resetMergedBranch } : {}),
     ...(msg.dictated ? { dictated: true } : {}),
     isNewSession: false,
     userEcho: { ...(msg.requestId ? { clientRequestId: msg.requestId } : {}) },

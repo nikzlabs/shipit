@@ -42,9 +42,38 @@ Design: [plan.md](./plan.md). Requirements: [requirements.md](./requirements.md)
 
 - [x] `showCompactControl = showResetControl && supportsCompaction` in
       `MessageInput.tsx`; no occupancy state (req 3, req 10).
-- [x] Checked by default, re-ticked on send and on a session switch (req 2,
-      req 5); rendered as a subordinate line in the existing control block.
+- [x] Checked by default, re-ticked on send, keyed by session (req 2, req 5);
+      rendered as a subordinate line in the existing control block.
 - [x] The Settings → Advanced description names both actions (req 11).
+
+## The untick survives until its message is sent (req 5)
+
+- [x] The tick state is `mergeContinueOptOutBySession` in the PR store, mirrored
+      to localStorage per session, and nothing keys on the control's visibility
+      transition — so an eligibility answer arriving between the untick and the
+      send cannot re-tick it, and neither can a remount.
+- [x] The payload carries the intent when the control is shown **or** an opt-out
+      is outstanding: an omitted field means "follow the setting", so the
+      previous rule discarded the untick in the compacting direction.
+- [x] `handleSendMessage` activates with `skipResetEligibleSignal`, so a send no
+      longer echoes a pre-turn eligibility answer that cancels the composer's
+      optimistic hide.
+- [x] The sibling `resetMergedBranch` control takes the same fix.
+- [x] **Every** `send_message` producer carries the intent, from the single
+      `mergeContinueFrameFields` builder — the five `App.tsx` frames (action
+      card, both release-card buttons, review comments, ask-for-review) sent
+      neither flag, which is what made a card click ignore the checkbox.
+- [x] Reading the intent and SPENDING it are one act: `sendUserTurn` consumes on
+      a send that reached the wire, and only then (req 5). A builder alone let
+      the action-card path carry an untick and never clear it.
+- [x] `send-user-turn.ts` is the only file that builds a `send_message` frame; a
+      guard fails the build on any other. A non-turn frame calls
+      `sendControlFrame`, a named export rather than a comment.
+- [x] The HTTP dispatch path (`POST /agent/dispatch`) carries and spends it for
+      the four ShipIt buttons that use it; a CI auto-fix and an agent-interface
+      continuation keep req 13.
+- [x] Display and wire read one snapshot — a `storage` listener syncs another
+      tab's write into the store.
 
 ## Tests
 

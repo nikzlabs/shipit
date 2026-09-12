@@ -29,7 +29,12 @@ import { useKeybinding } from "../../keybindings/use-keybinding.js";
 import { ContextDialMount } from "./ContextDialMount.js";
 import { ComposerSettingsMenu } from "./ComposerSettingsMenu.js";
 import { RoleSelector, useRolePickerState } from "./RoleSelector.js";
-import { getSavedRoleName, saveRoleName } from "../../utils/local-storage.js";
+import {
+  getSavedRoleName,
+  saveRoleName,
+  getSavedMergeContinueOptOut,
+  type MergeContinueControl,
+} from "../../utils/local-storage.js";
 import { applyRoleSeeds } from "../../utils/role-seed.js";
 import { useTextareaSizing } from "./hooks/useTextareaSizing.js";
 import { useMessageDraft } from "./hooks/useMessageDraft.js";
@@ -300,25 +305,53 @@ export function MessageInput({
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const dragCountRef = useRef(0);
 
+  // docs/218 — shown only when the session is reset-eligible (merged + branch
+  // untouched since the merge + clean tree) AND the global setting is on.
+  // Correctness is server-side; the checkbox is intent.
   const autoResetMergedBranch = useSettingsStore((s) => s.autoResetMergedBranch);
   const resetEligible = usePrStore((s) => (sessionId ? s.resetEligibleBySession[sessionId] ?? false : false));
   const showResetControl = resetEligible && autoResetMergedBranch;
-  const [resetChecked, setResetChecked] = useState(true);
-  // eslint-disable-next-line no-restricted-syntax -- syncs local opt-out to the external (WS-driven) eligibility signal: re-check whenever the control reappears so the untick is non-sticky
-  useEffect(() => {
 
-    if (showResetControl) setResetChecked(true);
-
-  }, [showResetControl, sessionId]);
-
+  // docs/295 — offered whenever the reset control is (reqs 1, 3, 11), if the
+  // backend can compact (req 10). No occupancy threshold (req 3).
   const agentSupportsCompaction =
     agents.find((a) => a.id === activeAgentId)?.supportsCompaction ?? false;
   const showCompactControl = showResetControl && agentSupportsCompaction;
-  const [compactChecked, setCompactChecked] = useState(true);
-  // eslint-disable-next-line no-restricted-syntax -- same non-sticky sync as the reset control above: re-check whenever the control reappears
-  useEffect(() => {
-    if (showCompactControl) setCompactChecked(true);
-  }, [showCompactControl, sessionId]);
+
+  /**
+   * Both controls' tick state, and why it is not component state.
+   *
+   * It was two `useState(true)` flags re-armed by an effect keyed on the
+   * control becoming visible, and each half could silently discard an untick
+   * the user was still looking at. The visibility is not an episode boundary
+   * and is not under the user's control: several server paths recompute
+   * eligibility between turns (including a debounced file-change recompute),
+   * and `computeResetEligibility` fails closed, so a git read that throws
+   * answers `false` for an eligible session. One such `false` re-ticks the box
+   * on the way back to `true`, and a send made while the control is away used
+   * to omit the field entirely. And the composer is remounted by more than a
+   * reload — `AppLayout` swaps a Fragment for a `div` across the mobile
+   * breakpoint, and App drops the composer whenever `showHomeScreen` turns
+   * true — through all of which the draft text and the chips came back from
+   * their stores while this one checkbox silently did not.
+   *
+   * So the untick belongs to the message being drafted and lives as long as
+   * that draft does — in the store, mirrored to localStorage, keyed by session
+   * — and only the send it was made for clears it (req 5). Nothing keys on a
+   * transition. Read through the store, falling back to the durable mirror for
+   * the reload case where localStorage is the only record.
+   */
+  const storedOptOut = usePrStore((s) => (sessionId ? s.mergeContinueOptOutBySession[sessionId] : undefined));
+  const mergeOptOut = useMemo(
+    () => storedOptOut ?? (sessionId ? getSavedMergeContinueOptOut(sessionId) : {}),
+    [storedOptOut, sessionId],
+  );
+  const resetChecked = !mergeOptOut.reset;
+  const compactChecked = !mergeOptOut.compact;
+  const toggleMergeControl = (control: MergeContinueControl, currentlyChecked: boolean) => {
+    if (!sessionId) return;
+    usePrStore.getState().setMergeContinueOptOut(sessionId, control, currentlyChecked);
+  };
 
   const {
     isOverlay,
@@ -562,11 +595,6 @@ export function MessageInput({
       uploadRefs,
       uploads: isCompact ? [] : displayUploads,
       deferredFiles: isCompact || !isOverlay ? [] : localFiles,
-
-      ...(showResetControl ? { resetMergedBranch: resetChecked } : {}),
-
-      ...(showCompactControl ? { compactContext: compactChecked } : {}),
-
       ...(draftDictated ? { dictated: true } : {}),
     };
     // docs/293 req 4 — the parent may refuse a send it never dispatched:
@@ -578,10 +606,10 @@ export function MessageInput({
     if (showResetControl && resetChecked && sessionId) {
       usePrStore.getState().setResetEligible(sessionId, false);
     }
-
-    // session eligible, so the control stays and must re-tick itself here.
-    setResetChecked(true);
-    setCompactChecked(true);
+    // NOT cleared here. `sendUserTurn` spends the untick when the frame goes,
+    // and only then — a `/goal` submitted from this composer starts no turn and
+    // carries no intent, so clearing on every accepted submit spent a choice
+    // the user had made for their next real message.
     setText("");
     setDraftDictated(false);
 
@@ -845,8 +873,8 @@ export function MessageInput({
                 type="button"
                 data-testid="reset-merged-branch-control"
                 aria-pressed={resetChecked}
-                onClick={() => setResetChecked((v) => !v)}
-                className="w-full flex items-start gap-2.5 px-3 py-2.5 text-left"
+                onClick={() => toggleMergeControl("reset", resetChecked)}
+                className="w-full flex items-start gap-2.5 px-3 pt-2.5 pb-1 text-left"
               >
                 <span
                   className={`shrink-0 mt-0.5 grid place-items-center w-4 h-4 rounded ${
@@ -866,14 +894,20 @@ export function MessageInput({
                   </span>
                 </span>
               </button>
-              {/* docs/295 — subordinate to the row above: one line, no description. */}
+              {/* docs/295 — subordinate to the row above: one line, no description.
+                  Its own top padding, not the reset row's bottom padding: the two
+                  buttons abut, so the apparent breathing room above this checkbox
+                  used to be a live hit target for the OTHER control, and a
+                  near-miss silently unticked the branch reset while the tick the
+                  user was aiming at stayed on. Same total gap, split between the
+                  rows it looks like. */}
               {showCompactControl && (
                 <button
                   type="button"
                   data-testid="compact-context-control"
                   aria-pressed={compactChecked}
-                  onClick={() => setCompactChecked((v) => !v)}
-                  className="w-full flex items-center gap-2.5 pl-3 pr-3 pb-2.5 text-left"
+                  onClick={() => toggleMergeControl("compact", compactChecked)}
+                  className="w-full flex items-center gap-2.5 px-3 pt-1.5 pb-2.5 text-left"
                 >
                   <span
                     className={`shrink-0 grid place-items-center w-4 h-4 rounded ${

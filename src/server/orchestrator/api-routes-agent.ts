@@ -39,6 +39,14 @@ export async function registerAgentRoutes(
       images?: ImageAttachment[];
       files?: FileContextRef[];
       uploads?: UploadRef[];
+      /**
+       * docs/218 + docs/295 — the composer's post-merge tick boxes, for a
+       * dispatch the USER clicked (a ShipIt button beside that composer).
+       * Absent for an automatic dispatch and for an agent-interface
+       * continuation, which follow the global setting (req 13).
+       */
+      resetMergedBranch?: boolean;
+      compactContext?: boolean;
     };
   }>(
     "/api/sessions/:id/agent/dispatch",
@@ -83,6 +91,8 @@ export async function registerAgentRoutes(
             ...(body.images !== undefined ? { images: body.images } : {}),
             ...(body.files !== undefined ? { files: body.files } : {}),
             ...(body.uploads !== undefined ? { uploads: body.uploads } : {}),
+            ...(body.resetMergedBranch !== undefined ? { resetMergedBranch: body.resetMergedBranch } : {}),
+            ...(body.compactContext !== undefined ? { compactContext: body.compactContext } : {}),
           },
         );
         reply.send(result);
