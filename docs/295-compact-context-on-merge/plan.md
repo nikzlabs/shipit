@@ -138,7 +138,44 @@ global setting" and the setting is on:
   from their own stores, so the composer looked untouched while a checkbox had
   quietly gone back to blue, with no signal at all.
 
-**Attribution.** The remount is what the host log positively supports. A remount
+**The root cause: a `send_message` frame that carried neither flag.** The user's
+report was that it only happened when they pressed a button on an **action
+card**; a typed message respected the tick. `App.tsx`'s `handleSendFollowUp` —
+the `onSubmit` behind `ActionChecklistCard` — builds its own frame and never
+read the composer's controls, so it reached `handleSendMessage` with
+`compactContext: undefined`, which falls back to the global setting. Four
+siblings had the identical omission: both release-card buttons, the
+review-comments submit, and "ask the agent to review this file". `runSend` was
+the only producer that carried the flags, and docs/293 had already closed
+exactly this omission for the `/review` branch *inside* it — closing the class
+one site at a time is what let the rest drift.
+
+It fits every fact: **zero** `false` intents on the wire (matching the LFS
+evidence that the reset ran and the compaction ran, since neither intent was
+ever expressed); the send reaching `handleSendMessage` (matching the
+`(activation)` echo 8 ms before the turn); and the user's untick still visibly
+unticked, because the composer was never submitted and so never cleared.
+
+So the per-send intent is built in **one** place — `mergeContinueFrameFields`
+(`client/utils/merge-continue-intent.ts`) — which every producer of a
+`send_message` frame calls, and a source-scanning guard in its test file fails
+the build on a frame that neither calls it nor says at the frame why it cannot.
+Only an opt-out is carried: absent and `true` both mean "do it".
+
+**A click is not a programmatic continuation** (req 13 vs req 5). Req 13 sends a
+continuation "the user did not type" to the setting alone, and its stated reason
+is that such a continuation "has no checkbox, so the setting alone decides". A
+card button is pressed by the user, in the view the checkbox is in, often in the
+same breath as unticking it — the checkbox is right there, and req 5 says an
+untick applies to the user's next message. These frames therefore honour it. A
+continuation with genuinely no checkbox — a wake turn, a `shipit session
+message`, a click inside an agent-built page — never reaches that builder and is
+unaffected. This is a requirements judgement, recorded here rather than as a new
+numbered requirement.
+
+**The other four defects.** Each is real, each is fixed here, and the host log
+rules each out for the observed incident. The remount is what the log positively
+supported before the action-card path was known. A remount
 is the one candidate that predicts **zero** `false` intents on the wire — both
 tick states re-initialise to `true` — and zero is what the server received on a
 turn where the user had unticked a box. The pre-turn LFS restore fired on both
@@ -276,7 +313,8 @@ Advanced description names both.
 | `shared/types/ws-client-messages.ts` | `compactContext?: boolean`. |
 | `client/components/MessageInput/MessageInput.tsx` | The control, its tick state, the payload flag. |
 | `client/stores/pr-store.ts`, `client/utils/local-storage.ts` | `mergeContinueOptOutBySession` and its durable mirror: the untick outlives the composer. |
-| `client/utils/send-handler.ts` | Carries the flag, on the `/review` frame too. |
+| `client/utils/merge-continue-intent.ts` | `mergeContinueFrameFields` — the ONE builder every `send_message` producer calls. |
+| `client/utils/send-handler.ts`, `client/App.tsx` | The six producers, all through that builder. |
 | `client/components/Settings/tabs/AdvancedTab.tsx` | Description names both actions. |
 
 ## Risks

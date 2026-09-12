@@ -9,6 +9,7 @@ import { sendUserMessage } from "./send-user-message.js";
 import { buildAttachmentPlan } from "./attachment-plan.js";
 import { isReviewCommand, resolveReviewRequest } from "./review-command.js";
 import { composeReviewMessage, resolveReviewer } from "./compose-review-body.js";
+import { mergeContinueFrameFields } from "./merge-continue-intent.js";
 import { parseGoalCommand } from "../../server/shared/goal-command.js";
 
 export interface SendDeps {
@@ -72,9 +73,10 @@ export function runSend(deps: SendDeps, payload: SendPayload): boolean {
           text: prompt,
           sessionId: sid,
           ...plan.frame,
-
-          ...(resetMergedBranch !== undefined ? { resetMergedBranch } : {}),
-          ...(compactContext !== undefined ? { compactContext } : {}),
+          // docs/218 + docs/295 — `/review` is still a composer send, so it
+          // carries the per-send tick boxes. From the one builder every
+          // `send_message` producer uses; never spread by hand here.
+          ...mergeContinueFrameFields(sid, { resetMergedBranch, compactContext }),
         }),
     });
     // docs/293 req 4 — the frame never left the browser. `sendUserMessage` has
@@ -104,6 +106,10 @@ export function runSend(deps: SendDeps, payload: SendPayload): boolean {
   if (goalSessionId && goalCommand && goalAgent?.supportsGoals) {
     const mode = goalAgent.goalActions ? goalAgent.goalActions[goalCommand.action] : "control";
     if (mode !== "turn") {
+      // merge-continue-intent: not-applicable — `handleSendMessage` answers a
+      // control-mode `/goal` and returns before the reset/compaction decision
+      // (`ws-handlers/send-message.ts`, the `mode !== "turn"` branch), so this
+      // frame starts no turn for either of them to apply to.
       return send({ type: "send_message", text: trimmed, sessionId: goalSessionId });
     }
   }
@@ -141,9 +147,9 @@ export function runSend(deps: SendDeps, payload: SendPayload): boolean {
         return pm !== "auto" ? pm : undefined;
       })(),
 
-      ...(resetMergedBranch !== undefined ? { resetMergedBranch } : {}),
-
-      ...(compactContext !== undefined ? { compactContext } : {}),
+      // docs/218 + docs/295 — the per-send opt-outs for the two post-merge
+      // controls, from the one builder every `send_message` producer uses.
+      ...mergeContinueFrameFields(currentSessionId, { resetMergedBranch, compactContext }),
 
       ...(dictated ? { dictated: true } : {}),
     };

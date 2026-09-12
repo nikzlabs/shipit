@@ -59,6 +59,12 @@ Design: [plan.md](./plan.md). Requirements: [requirements.md](./requirements.md)
       longer echoes a pre-turn eligibility answer that cancels the composer's
       optimistic hide.
 - [x] The sibling `resetMergedBranch` control takes the same fix.
+- [x] **Every** `send_message` producer carries the intent, from the single
+      `mergeContinueFrameFields` builder — the five `App.tsx` frames (action
+      card, both release-card buttons, review comments, ask-for-review) sent
+      neither flag, which is what made a card click ignore the checkbox.
+- [x] A source-scanning guard fails the build on a frame that neither calls the
+      builder nor declares itself exempt at the frame.
 
 ## Tests
 

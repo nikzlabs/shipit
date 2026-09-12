@@ -47,6 +47,7 @@ import { useTabLabelCollapse } from "./hooks/useTabLabelCollapse.js";
 import { useApi } from "./hooks/useApi.js";
 import { formatErrorForMessage, PREVIEW_SETUP_PROMPT } from "./components/PreviewFrame.js";
 import { MessageInput, type SendPayload } from "./components/MessageInput.js";
+import { mergeContinueFrameFields } from "./utils/merge-continue-intent.js";
 import { MessageList } from "./components/MessageList.js";
 import type { RewindGapAction } from "./components/RewindPoint.js";
 import { RocketLaunch } from "./components/RocketLaunch.js";
@@ -660,6 +661,10 @@ export default function App() {
             text,
             sessionId: session.sessionId,
             permissionMode: pm !== "auto" ? pm : undefined,
+            // docs/295 — a card button is the user's own click, in the view the
+            // post-merge checkboxes are in. This frame carried neither flag, so
+            // an untick the user was still looking at was ignored.
+            ...mergeContinueFrameFields(session.sessionId),
           }),
       });
     },
@@ -683,6 +688,7 @@ export default function App() {
             text,
             sessionId: session.sessionId,
             permissionMode: pm !== "auto" ? pm : undefined,
+            ...mergeContinueFrameFields(session.sessionId),
           }),
       });
     },
@@ -702,6 +708,7 @@ export default function App() {
             requestId,
             text,
             sessionId: session.sessionId ?? undefined,
+            ...mergeContinueFrameFields(session.sessionId ?? undefined),
           }),
       });
     },
@@ -1055,6 +1062,7 @@ export default function App() {
             text: prompt,
             sessionId: sid ?? undefined,
             userReview: { filePaths, commentCount },
+            ...mergeContinueFrameFields(sid ?? undefined),
           }),
       });
     },
@@ -1080,7 +1088,13 @@ export default function App() {
         bubble: { role: "user", text: prompt },
         activity: "Reviewing...",
         dispatch: (requestId) =>
-          send({ type: "send_message", requestId, text: prompt, sessionId: sid }),
+          send({
+            type: "send_message",
+            requestId,
+            text: prompt,
+            sessionId: sid,
+            ...mergeContinueFrameFields(sid),
+          }),
       });
     },
     [send, navigate, isNewSessionRoute],
