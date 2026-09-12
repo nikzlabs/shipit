@@ -11,7 +11,6 @@ const STATUS_LABELS: Record<string, string> = {
   complete: "Complete",
 };
 
-/** docs/154 (req 1) — the session's goal, shown for as long as the CLI holds one. */
 export function GoalChip({ goal }: { goal: AgentGoal }) {
   return (
     <div className="mx-4 last:mb-2" data-testid="goal-chip">

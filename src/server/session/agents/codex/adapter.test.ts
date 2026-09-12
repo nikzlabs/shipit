@@ -96,7 +96,7 @@ vi.mock("../../../shared/kill-child.js", async (importOriginal) => {
 });
 import { killProcessTree } from "../../../shared/kill-child.js";
 
-/** Answer the latest request with this method, by its own id (a resume now follows a goal read). */
+/** Answer by the request's own id: a resume now follows a goal read. */
 async function respondTo(method: string, result: unknown): Promise<void> {
   await vi.waitFor(() => { expect(fakeProc.getRequests().some((r) => r.method === method)).toBe(true); });
   const req = fakeProc.getRequests().filter((r) => r.method === method).at(-1)!;

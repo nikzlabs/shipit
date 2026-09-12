@@ -183,7 +183,7 @@ export interface AgentCapabilities {
   skillInvocationPrefix: string;
 }
 
-/** docs/154 — Codex `ThreadGoal`. `status` is kept as the CLI's string (0.154.0: active, paused, blocked, usageLimited, budgetLimited, complete). */
+/** docs/154 — Codex `ThreadGoal`; `status` stays the CLI's own string. */
 export interface AgentGoal {
   objective: string;
   status: string;

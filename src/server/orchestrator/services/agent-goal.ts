@@ -45,9 +45,8 @@ export function runGoalExclusive<T>(sessionId: string, fn: () => Promise<T>): Pr
 }
 
 /**
- * docs/154 req 6 — read the goal of a session that has never had it read (one
- * from before this feature), without a turn. Best effort: a container that is
- * not up yet simply leaves it for the next activation or turn.
+ * docs/154 req 6 — read a goal that was never read, without a turn. Best
+ * effort: a container that is not up yet leaves it for the next turn.
  */
 export async function reconcileAgentGoal(
   deps: AgentGoalDeps & { sessionManager: Pick<SessionManager, "agentGoalChecked"> },

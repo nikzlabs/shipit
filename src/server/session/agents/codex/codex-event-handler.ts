@@ -748,11 +748,9 @@ export class CodexEventHandler {
 
   /**
    * docs/154 — on 0.154.0, resuming a thread whose goal is active makes Codex
-   * start its own continuation turn before ours, and the user's message is
-   * folded into it. Read the goal on the still-unloaded thread (no turn starts)
-   * and, only if it is active, pause it across the resume. A goal the user
-   * paused, or one that is complete or limited, is left as it is. The read
-   * doubles as the rehydrate: it answers even when the thread has no goal.
+   * start its own continuation turn before ours and fold the user's message
+   * into it. Reading on the still-unloaded thread starts no turn; pause only an
+   * active goal. The read doubles as the rehydrate.
    */
   private async holdActiveGoal(threadId: string): Promise<boolean> {
     let goal: AgentGoal | null;
@@ -785,7 +783,7 @@ export class CodexEventHandler {
         ((await this.ctx.goalRequest("thread/goal/set", { threadId, status: "active" })) as { goal?: unknown } | null)?.goal,
       );
     } catch (err: unknown) {
-      // The process died between the pause and here; the thread is unloaded again, so a control process can restore it without a turn.
+      // The process died, so the thread is unloaded: a control process restores it without a turn.
       this.ctx.emitLog("codex", `restoring the goal through a control process: ${err instanceof Error ? err.message : String(err)}`);
       try {
         ({ goal } = await this.ctx.restoreGoalOutOfProcess(threadId));
