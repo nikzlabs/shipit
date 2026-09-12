@@ -42,6 +42,18 @@ const GOAL: AgentGoal = {
 
 let goalAnswer: AgentGoalCommandResult = { goal: null };
 
+// docs/297 — Claude Code answers `get` and `clear` from a control process; a
+// `set` never reaches the adapter, so this fake would record one if it did.
+let claudeGoalAnswer: AgentGoalCommandResult = { goal: null };
+let claudeGoalCalls: { threadId: string; command: AgentGoalCommand }[] = [];
+
+class FakeGoalClaude extends FakeClaudeProcess {
+  goalCommand(threadId: string, command: AgentGoalCommand): Promise<AgentGoalCommandResult> {
+    claudeGoalCalls.push({ threadId, command });
+    return Promise.resolve(claudeGoalAnswer);
+  }
+}
+
 class FakeGoalCodex extends EventEmitter<AgentProcessEvents> implements AgentProcess {
   readonly agentId: AgentId = "codex";
   readonly capabilities: AgentCapabilities = {
@@ -117,6 +129,8 @@ describe("Integration: /goal (docs/154)", () => {
     codexes = [];
     lastClaude = null;
     goalAnswer = { goal: null };
+    claudeGoalAnswer = { goal: null };
+    claudeGoalCalls = [];
     savedOpenAIKey = process.env.OPENAI_API_KEY;
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-goal-"));
     sessions = new SessionManager(dbManager);
@@ -143,7 +157,7 @@ describe("Integration: /goal (docs/154)", () => {
           codexes.push(codex);
           return codex;
         }
-        lastClaude = new FakeClaudeProcess();
+        lastClaude = new FakeGoalClaude();
         return lastClaude as unknown as AgentProcess;
       },
       defaultAgentId: "codex" as AgentId,
@@ -240,14 +254,127 @@ describe("Integration: /goal (docs/154)", () => {
     client.close();
   });
 
-  it("sends /goal to an agent without goals as an ordinary prompt (req 5)", async () => {
-    const client = await TestClient.connect(port, undefined, { model: "claude-opus-5" });
+  it("keeps the full vocabulary for Codex (docs/297 req 8)", async () => {
+    const client = await TestClient.connect(port);
     await client.receive();
+    await runTurn(client);
 
-    client.send({ type: "send_message", text: "/goal clear" });
-    const claude = await waitForClaude(() => lastClaude!);
-    expect(claude.lastPrompt).toContain("/goal clear");
-    expect(codexes).toHaveLength(0);
+    goalAnswer = { goal: GOAL };
+    for (const text of ["/goal", "/goal pause", "/goal resume"]) {
+      client.send({ type: "send_message", text });
+      await receiveNotice(client);
+    }
+    expect(codexes.flatMap((c) => c.goalCalls).map((c) => c.command.action))
+      .toEqual(["get", "pause", "resume"]);
+    // Every one was answered out of band; none became a turn.
+    expect(codexes.filter((c) => c.runCalled)).toHaveLength(1);
     client.close();
+  });
+
+  describe("Claude Code (docs/297)", () => {
+    /** Give the session a Claude thread, the way a first turn does. */
+    async function claudeSession(): Promise<TestClient> {
+      const client = await TestClient.connect(port, undefined, { model: "claude-opus-5" });
+      await client.receive();
+      client.send({ type: "send_message", text: "Work on it" });
+      const claude = await waitForClaude(() => lastClaude);
+      claude.emit("event", { type: "result", subtype: "success", session_id: "claude-thread" });
+      claude.emit("done", 0);
+      await waitUntil(() => sessions.get(client.sessionId)?.agentSessionId === "claude-thread");
+      return client;
+    }
+
+    it("lets /goal <objective> ride the turn, verbatim (reqs 1, 7)", async () => {
+      const client = await claudeSession();
+      const first = lastClaude;
+      // A notice would otherwise be prepended, which stops the CLI reading the
+      // line as a command at all; context appended would become the objective.
+      sessions.setPendingAgentNotice(client.sessionId, "A previous PR was merged.");
+
+      client.send({ type: "send_message", text: "/goal the suite is green" });
+      const claude = await waitForClaude(() => lastClaude, first);
+
+      expect(claude.lastPrompt).toBe("/goal the suite is green");
+      // The notice was not eaten by the command; it rides the next ordinary turn.
+      expect(sessions.consumePendingAgentNotice(client.sessionId)).toBe("A previous PR was merged.");
+      // Only the read-on-open reached the adapter; a set out of band would be CLI
+      // work with no ShipIt turn behind it.
+      expect(claudeGoalCalls.map((c) => c.command.action)).not.toContain("set");
+      client.close();
+    });
+
+    it("re-reads the goal after the turn, so one the CLI met silently disappears (req 2)", async () => {
+      const client = await claudeSession();
+      const first = lastClaude;
+      claudeGoalCalls = [];
+
+      client.send({ type: "send_message", text: "/goal the suite is green" });
+      const claude = await waitForClaude(() => lastClaude, first);
+      // What the adapter reports from the CLI's set acknowledgement (unit-tested
+      // in claude/adapter.test.ts); ShipIt shows the goal from that alone.
+      claude.emit("event", {
+        type: "agent_goal_updated",
+        goal: { ...GOAL, objective: "the suite is green" },
+      });
+      await waitUntil(() => sessions.get(client.sessionId)?.agentGoal?.objective === "the suite is green");
+
+      // The turn ends with the condition met, which the CLI clears without a word.
+      claudeGoalAnswer = { goal: null };
+      claude.emit("event", { type: "result", subtype: "success", session_id: "claude-thread" });
+      claude.emit("done", 0);
+
+      await waitUntil(() => sessions.get(client.sessionId)?.agentGoal === undefined, 8000);
+      expect(claudeGoalCalls.map((c) => c.command.action)).toContain("get");
+      client.close();
+    });
+
+    it("answers /goal and /goal clear out of band (req 3)", async () => {
+      const client = await claudeSession();
+      claudeGoalAnswer = { goal: GOAL };
+
+      client.send({ type: "send_message", text: "/goal" });
+      expect(await receiveNotice(client)).toBe("Goal (active): Make the suite green");
+
+      claudeGoalAnswer = { goal: null };
+      client.send({ type: "send_message", text: "/goal clear" });
+      expect(await receiveNotice(client)).toBe("Goal cleared.");
+
+      expect(claudeGoalCalls.map((c) => c.command)).toEqual([{ action: "get" }, { action: "clear" }]);
+      client.close();
+    });
+
+    it("refuses a /goal that carries attachments rather than folding them into the objective", async () => {
+      const client = await claudeSession();
+      const first = lastClaude;
+
+      client.send({
+        type: "send_message",
+        text: "/goal the suite is green",
+        images: [{ data: "aGk=", mediaType: "image/png" }],
+      });
+      expect(await receiveNotice(client)).toMatch(/cannot carry attachments/);
+
+      // Measured: an appended context block lands inside the condition, so the
+      // message must not reach the CLI at all.
+      expect(lastClaude).toBe(first);
+      client.close();
+    });
+
+    it("refuses an action Claude Code does not have, and never sends the keyword on (req 4)", async () => {
+      const client = await claudeSession();
+      const first = lastClaude;
+
+      client.send({ type: "send_message", text: "/goal pause" });
+      expect(await receiveNotice(client)).toBe(
+        "Claude Code has no goal pause. Use `/goal clear` to remove the goal.",
+      );
+
+      // Measured: the CLI's clear keywords are `clear stop off reset none cancel`,
+      // so an un-refused `/goal pause` sets a goal literally named "pause".
+      expect(claudeGoalCalls).toEqual([]);
+      expect(lastClaude).toBe(first);
+      client.close();
+    });
+
   });
 });

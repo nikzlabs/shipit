@@ -1,5 +1,5 @@
 import type { AgentId, PermissionMode } from "../../shared/types.js";
-import type { AgentReasoningCapability, ReviewerSlotView, RoleView } from "../../shared/types/agent-types.js";
+import type { AgentGoalCommand, AgentReasoningCapability, ReviewerSlotView, RoleView } from "../../shared/types/agent-types.js";
 import type { EligibleModel } from "../../shared/agent-registry.js";
 import type { AccountSelectionMode, CredentialRoute, FailoverCutoffs, SessionInfo, ProjectTemplate, RepoInfo, RuntimeMode } from "../../shared/types.js";
 import type { VoiceDeliveryMode } from "../../shared/types/voice-note-types.js";
@@ -16,6 +16,7 @@ export interface AgentInfo {
   supportsSteering: boolean;
   supportsCompaction: boolean;
   supportsGoals: boolean;
+  goalActions?: Readonly<Partial<Record<AgentGoalCommand["action"], "control" | "turn">>>;
   supportedPermissionModes: PermissionMode[];
   skillInvocationPrefix: string;
   reasoning?: AgentReasoningCapability;

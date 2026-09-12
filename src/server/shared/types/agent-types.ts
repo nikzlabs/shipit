@@ -179,6 +179,10 @@ export interface AgentCapabilities {
   supportsCompaction: boolean;
   /** docs/154 — the CLI owns a goal ShipIt can read and change. Absent is false. */
   supportsGoals?: boolean;
+  /** docs/154 — how ShipIt handles each `/goal` action for this harness: "control"
+   *  = answered out of band, "turn" = the user's text rides the turn. An absent
+   *  action is refused; an absent field means every action is "control". */
+  goalActions?: Readonly<Partial<Record<AgentGoalCommand["action"], "control" | "turn">>>;
   skillsDirName: string;
   skillInvocationPrefix: string;
 }

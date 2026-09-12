@@ -17,4 +17,10 @@ Plan: [plan.md](plan.md). Tracked in planning#31.
 
 ## Resolved questions
 
+- 2026-09-12 — Req 5's list of agents that do not offer `/goal` was a statement
+  of what had a goal surface in 2026-09, not a requirement that they never
+  would. Claude Code and Grok both turned out to have one; they are added in
+  [docs/297](../297-goal-on-claude/requirements.md) and its Grok sibling. The
+  requirement itself is unchanged: the menu offers `/goal` only where the active
+  agent supports it.
 - 2026-09-11 — Must Codex continue a goal by itself between user turns in this change? The Ops spawn brief (from a production incident: a model-created goal the user could not see or clear) set the minimum: the goal must be visible and clearable; auto-continuation across turns can be a follow-up if it is large. It delegated the decision to the implementing session. Recorded as req 8; the decision is in plan.md "Continuation".

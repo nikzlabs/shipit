@@ -3,7 +3,9 @@ import {
   describeGoalResult,
   recordAgentGoal,
   recordGoalForThread,
+  goalAgentFor,
   reconcileAgentGoal,
+  refreshAgentGoalAfterTurn,
   runGoalExclusive,
 } from "./agent-goal.js";
 import type { AgentProcess } from "../../shared/types.js";
@@ -83,8 +85,73 @@ describe("reconcileAgentGoal (docs/154 req 6)", () => {
     const deps = (over: Record<string, unknown>) => ({ sessionManager: fakeSessions(over) as never, sseBroadcast: vi.fn() });
     await reconcileAgentGoal(deps({ agentGoalChecked: vi.fn(() => true) }), "s1", "codex", createAgent);
     await reconcileAgentGoal(deps({ get: vi.fn(() => ({})) }), "s1", "codex", createAgent);
-    await reconcileAgentGoal(deps({}), "s1", "claude", createAgent);
+    await reconcileAgentGoal(deps({}), "s1", "opencode", createAgent);
     expect(createAgent).not.toHaveBeenCalled();
+  });
+});
+
+describe("refreshAgentGoalAfterTurn (docs/297 req 2)", () => {
+  const goalAgent = (goal: typeof GOAL | null = GOAL, agentId = "claude") =>
+    ({ agentId, goalCommand: vi.fn(async () => ({ goal })) }) as unknown as AgentProcess;
+
+  it("re-reads while a goal is on show, so a goal the CLI cleared silently disappears", async () => {
+    const sessionManager = fakeSessions({ get: vi.fn(() => ({ agentSessionId: "thread-1", agentGoal: GOAL })) });
+    const agent = goalAgent(null);
+    await refreshAgentGoalAfterTurn(
+      { sessionManager: sessionManager as never, sseBroadcast: vi.fn() }, "s1", "claude", () => agent,
+    );
+    expect(agent.goalCommand).toHaveBeenCalledWith("thread-1", { action: "get" });
+    expect(sessionManager.setAgentGoal).toHaveBeenCalledWith("s1", null);
+  });
+
+  it("costs nothing for a session showing no goal, or an agent without goals", async () => {
+    const agent = goalAgent();
+    const deps = (over: Record<string, unknown>) => ({ sessionManager: fakeSessions(over) as never, sseBroadcast: vi.fn() });
+    // No goal on show; no thread; a harness with no goal store.
+    await refreshAgentGoalAfterTurn(deps({}), "s1", "claude", () => agent);
+    await refreshAgentGoalAfterTurn(deps({ get: vi.fn(() => ({ agentGoal: GOAL })) }), "s1", "claude", () => agent);
+    await refreshAgentGoalAfterTurn(
+      deps({ get: vi.fn(() => ({ agentSessionId: "thread-1", agentGoal: GOAL })) }), "s1", "opencode", () => agent,
+    );
+    expect(agent.goalCommand).not.toHaveBeenCalled();
+  });
+
+  it("does nothing when nothing can answer", async () => {
+    const deps = {
+      sessionManager: fakeSessions({ get: vi.fn(() => ({ agentSessionId: "thread-1", agentGoal: GOAL })) }) as never,
+      sseBroadcast: vi.fn(),
+    };
+    await expect(refreshAgentGoalAfterTurn(deps, "s1", "claude", () => null)).resolves.toBeUndefined();
+  });
+});
+
+describe("goalAgentFor (docs/297)", () => {
+  const agent = (agentId: string, withGoals = true) => ({
+    agentId,
+    ...(withGoals ? { goalCommand: vi.fn() } : {}),
+  }) as unknown as AgentProcess;
+
+  it("uses the agent the session already has", () => {
+    const live = agent("claude");
+    const createAgent = vi.fn(() => agent("claude"));
+    expect(goalAgentFor({ getAgent: () => live, createAgent }, "claude")).toBe(live);
+    expect(createAgent).not.toHaveBeenCalled();
+  });
+
+  // Building one would displace the installed proxy and settle its turn again.
+  it("leaves an occupied slot alone rather than displacing it", () => {
+    const createAgent = vi.fn(() => agent("claude"));
+    expect(goalAgentFor({ getAgent: () => agent("codex"), createAgent }, "claude")).toBeNull();
+    expect(goalAgentFor({ getAgent: () => agent("claude", false), createAgent }, "claude")).toBeNull();
+    expect(createAgent).not.toHaveBeenCalled();
+  });
+
+  // A one-shot turn clears the slot before idle, so the read needs a fresh agent.
+  it("builds one when the slot is empty, where nothing can be superseded", () => {
+    const built = agent("claude");
+    const createAgent = vi.fn(() => built);
+    expect(goalAgentFor({ getAgent: () => null, createAgent }, "claude")).toBe(built);
+    expect(goalAgentFor({ getAgent: () => null }, "claude")).toBeNull();
   });
 });
 

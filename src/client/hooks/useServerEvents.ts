@@ -466,6 +466,7 @@ export function useServerEvents(): void {
 
           supportsCompaction?: boolean;
           supportsGoals?: boolean;
+          goalActions?: Partial<Record<"get" | "set" | "clear" | "pause" | "resume", "control" | "turn">>;
 
           supportedPermissionModes?: PermissionMode[];
 

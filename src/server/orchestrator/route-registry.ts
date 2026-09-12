@@ -1,5 +1,5 @@
 import { reconcileAgentMergeClaims } from "./services/agent-merge-settlement.js";
-import { reconcileAgentGoal } from "./services/agent-goal.js";
+import { goalAgentFor, reconcileAgentGoal } from "./services/agent-goal.js";
 import type { FastifyInstance } from "fastify";
 import { nativeServiceForHarness, selectionExists, selectionHonoursEffort } from "../shared/catalogue/index.js";
 import { applyModelRetirement } from "./model-retirement.js";
@@ -750,11 +750,10 @@ export async function registerRoutes(
         if (outcome.status === "ready") {
           attachToRunner(outcome.runner);
           const goalRunner = outcome.runner;
-          void reconcileAgentGoal({ sessionManager, sseBroadcast }, sid, goalRunner.agentId, (agentId) => {
-            if (goalRunner.createAgent) return goalRunner.createAgent(agentId);
-            if (agentFactory) return agentFactory(agentId);
-            throw new Error("No agent factory available");
-          }).catch((err: unknown) => {
+          void reconcileAgentGoal(
+            { sessionManager, sseBroadcast }, sid, goalRunner.agentId,
+            () => goalAgentFor(goalRunner, goalRunner.agentId, agentFactory),
+          ).catch((err: unknown) => {
             console.warn(`[goal] activation read for ${sid} failed: ${getErrorMessage(err)}`);
           });
         } else if (outcome.status === "restore-failed") {

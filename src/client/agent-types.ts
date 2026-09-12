@@ -25,6 +25,8 @@ export interface AgentOption {
   supportsSteering?: boolean;
   supportsCompaction?: boolean;
   supportsGoals?: boolean;
+  /** docs/297 — actions ShipIt offers for this harness; absent means all of them. */
+  goalActions?: Partial<Record<"get" | "set" | "clear" | "pause" | "resume", "control" | "turn">>;
   skillInvocationPrefix?: string;
   reasoning?: {
     label: string;

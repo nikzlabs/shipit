@@ -50,6 +50,25 @@ import type { ModelInfo } from "../../utils/model-info.js";
  */
 const COMPOSER_NARROW_PX = 700;
 
+/** docs/297 — offer only the goal actions the active harness has; absent means all. */
+export function goalSlashCommands(actions: AgentOption["goalActions"]): SlashCommand[] {
+  const offers = (action: "get" | "set" | "clear" | "pause" | "resume"): boolean =>
+    !actions || actions[action] !== undefined;
+  return [
+    ...(offers("get")
+      ? [{
+          name: "goal",
+          description: offers("set")
+            ? "Show the goal — or type /goal <objective> to set one"
+            : "Show the goal",
+        }]
+      : []),
+    ...(offers("clear") ? [{ name: "goal clear", description: "Remove the goal" }] : []),
+    ...(offers("pause") ? [{ name: "goal pause", description: "Pause the goal" }] : []),
+    ...(offers("resume") ? [{ name: "goal resume", description: "Resume a paused goal" }] : []),
+  ];
+}
+
 function formatHotkeyLabel(hotkey: string): string {
   return hotkey
     .split("+")
@@ -622,14 +641,7 @@ export function MessageInput({
       ...(active?.supportsCompaction
         ? [{ name: "compact", description: "Summarize the conversation to free up context" }]
         : []),
-      ...(active?.supportsGoals
-        ? [
-            { name: "goal", description: "Show the goal — or type /goal <objective> to set one" },
-            { name: "goal clear", description: "Remove the goal" },
-            { name: "goal pause", description: "Pause the goal" },
-            { name: "goal resume", description: "Resume a paused goal" },
-          ]
-        : []),
+      ...(active?.supportsGoals ? goalSlashCommands(active.goalActions) : []),
     ];
   }, [agents, activeAgentId]);
 
