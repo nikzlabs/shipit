@@ -10,7 +10,7 @@ import {
 } from "react";
 /* eslint-enable no-restricted-imports */
 import { Dialog, DialogContent } from "./components/ui/dialog.js";
-import { mobileChatInFront } from "./components/MobileContentPanels.js";
+import { mobileChatInFront } from "./components/ContentPanels.js";
 import { TooltipProvider } from "./components/ui/tooltip.js";
 import { useParams, useNavigate, useLocation } from "react-router-dom";
 import { useSessionWebSocket } from "./hooks/useSessionWebSocket.js";
