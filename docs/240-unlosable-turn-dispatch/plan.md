@@ -362,6 +362,63 @@ handlers drop foreign ones — `useGitStore` is a global client store fed by a
 per-session socket, and `auto_resolve_started`, which interleaves with them,
 already had that guard.
 
+## Fix E — a dispatch that cannot survive the queue refuses it (planning#297)
+
+Production, 2026-09-12 12:42 UTC. A user clicked "Sync with main" on an idle
+session; the session then accepted messages and ran none for ten minutes, until
+they clicked Abort.
+
+Same family, reached from the other side. Fix B made completion an owned signal
+and Fix D made an abandoned turn settle — but an **enqueued** dispatch is not
+abandoned. It is pending, correctly, for ever: `runRebaseFlow` holds
+`runner.systemTurnInProgress` across the whole rebase, and every queue-drain path
+(`queue-drain.ts`, `ws-handlers/agent-execution.ts`, `turn-adoption.ts`) returns
+early while that flag is set. So the resolution turn's queued entry could only
+drain after the hold the turn itself must release. The driver's promise never
+settled, the flag stayed true, and the session froze.
+
+The driver did guard this — `if (runner.running) reject(409)`, with a comment
+naming the exact hazard. `dispatchOnRunner` had **four more** enqueue paths it
+did not know about, and the one that fired was the newest: the session had opened
+its PR "while the suite and review finish", so a system turn met a resident agent
+with background work in flight. That is the docs/240 pattern exactly — a guard
+enumerating the call sites that existed when it was written.
+
+So the property moves to the dispatch itself:
+
+- `DispatchAdmission` (`{ whenBusy: "queue" | "refuse" }`), an optional second
+  argument to `dispatch` / `dispatchOnRunner`. A `"refuse"` caller cannot be
+  queued by **any** gate, including one added later: every path that does not
+  start a turn now returns through one `enqueueOrRefuse(reason)` helper, and
+  refusal settles synchronously as a new outcome status, `"refused"`.
+- The reason names the gate, and refusal logs. A stranded dispatch was invisible
+  in the orchestrator log — the incident had to be proved from *missing* lines.
+- `runRebaseResolutionTurn` passes `{ whenBusy: "refuse" }` and its ad-hoc
+  `runner.running` pre-check is **deleted**. Refusal rejects as `ServiceError`
+  409, which the flow's existing catch turns into a rebase abort plus a persisted
+  notice, and which `runAutoResolveAttempt` already reads as "deferred" — every
+  refusal condition is transient, so the automatic retry costs no attempt.
+- Refusal also skips steering: a caller that wants its own turn or nothing must
+  not be delivered into someone else's.
+
+Nothing enters the queue on refusal, which is the point beyond settling: a
+stranded resolution prompt would drain later and ask the agent to resolve
+conflicts that the abort had already removed.
+
+**A restart strands the same flow durably**, and that half is only reported, not
+fixed. `abandoned-rebase-sweep.ts` runs at boot, finds session checkouts left
+mid-rebase, and records a `pendingAgentNotice` telling the next turn to finish or
+abort it — last-write-wins, so it cannot accumulate across restarts. Resuming the
+rebase, and a Resume/Abort card, are planning#531.
+
+Guards: `services/rebase-driver.test.ts` drives the real flow into each gate
+(`!deps`, `mergeHold`, resident agent with background work) and asserts it fails
+fast with the rebase aborted, `systemTurnInProgress` cleared and an empty queue.
+Each one hangs to the test timeout without the fix. One existing test's fixture
+was corrected in the same change: the auto-resolve timeout test never wired
+system-turn deps, so its "hanging agent" never ran and the deadline it asserted
+was a deadline on a queued prompt.
+
 ## Key files
 
 | Area | File | Change |
@@ -384,6 +441,11 @@ already had that guard.
 | **Fix D** — recovery | `src/server/orchestrator/container-session-runner.ts` | `verifyRunningState` clears `activeDeliveryId`, emits `turn_abandoned`, releases the queue, and emits `idle` only when nothing was released |
 | Fix D — settlement | `src/server/orchestrator/session-runner.ts` | `turn_abandoned` on `SessionRunnerEvents`; `dispatchOnRunner` settles it as `dropped` via the same `settleAsDropped` path as `disposed` |
 | Fix D — one drain | `src/server/orchestrator/queue-drain.ts`, `bootstrap-managers.ts` | `releaseQueuedTurn` — `drainQueueForSession`'s body lifted into the module that owns the drain rule, shared by both no-turn-of-its-own paths |
+| **Fix E** — admission | `src/server/orchestrator/session-runner.ts` | `DispatchAdmission`; one `enqueueOrRefuse(reason)` exit for every non-starting gate; `dispatch` takes it on both runners |
+| Fix E — outcome | `src/server/orchestrator/turn-settlement.ts` | `"refused"` status + `turnRefused()` |
+| Fix E — the caller | `src/server/orchestrator/services/rebase-driver.ts` | Resolution turn dispatches `{ whenBusy: "refuse" }`; the `runner.running` pre-check deleted; refusal rejects as 409 |
+| Fix E — the log | `src/server/shared/git.ts` | `rebase` / `rebaseContinue` log the conflict stop and its file count |
+| Fix E — restart half | `src/server/orchestrator/abandoned-rebase-sweep.ts` *(new)*, `bootstrap-managers.ts` | Boot sweep for checkouts left mid-rebase; records a pending agent notice |
 | Fix D — the race | `src/server/orchestrator/ws-handlers/send-message.ts` | Re-reads `runner.running` after `verifyRunningState`, so a released entry isn't raced for the `_agent` slot |
 | Fix D — banner scope | `src/server/shared/types/ws-server-messages/git.ts`, `services/rebase-driver.ts`, `api-routes-git.ts`, `client/hooks/message-handlers/rebase-*.ts` | `sessionId` on the four rebase lifecycle messages; handlers drop foreign ones (the guard `auto_resolve_started` already had) |
 

@@ -720,6 +720,10 @@ export class GitManager {
           path: file,
           content: fs.readFileSync(path.join(dir.trim(), file), "utf-8"),
         }));
+        console.log(
+          `[git] Rebase onto ${onto} stopped with ${conflicts.length} conflicted file(s):`,
+          status.conflicted.join(", "),
+        );
         return { status: "conflicts", conflicts };
       }
       try {
@@ -744,6 +748,10 @@ export class GitManager {
           path: file,
           content: fs.readFileSync(path.join(dir.trim(), file), "utf-8"),
         }));
+        console.log(
+          `[git] Rebase continue stopped with ${conflicts.length} conflicted file(s):`,
+          status.conflicted.join(", "),
+        );
         return { status: "conflicts", conflicts };
       }
       throw err;

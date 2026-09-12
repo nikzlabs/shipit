@@ -6,7 +6,8 @@ export type TurnOutcomeStatus =
   | "no-result"
   | "steered"
   | "dropped"
-  | "interrupted";
+  | "interrupted"
+  | "refused";
 
 export interface TurnOutcome {
   readonly status: TurnOutcomeStatus;
@@ -42,6 +43,11 @@ export function turnDropped(detail?: string): TurnOutcome {
 
 export function turnInterrupted(detail?: string): TurnOutcome {
   return { status: "interrupted", errored: false, ...(detail ? { detail } : {}) };
+}
+
+/** Never admitted: the dispatch asked to fail rather than wait in the queue. */
+export function turnRefused(detail: string): TurnOutcome {
+  return { status: "refused", errored: true, detail };
 }
 
 /** Failures resolve with an outcome; the promise never rejects. */

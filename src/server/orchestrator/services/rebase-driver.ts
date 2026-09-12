@@ -562,14 +562,12 @@ function runRebaseResolutionTurn(
 
   return new Promise<void>((resolve, reject) => {
     let turnSettled = false;
-    // A queued dispatch would never settle this callback; abort if another turn owns the runner.
-    if (runner.running) {
-      reject(new ServiceError(409, "Cannot resolve conflicts while an agent turn is in progress"));
-      return;
-    }
 
     deps.onAgentSpawned?.();
 
+    // Unqueueable by construction: this flow holds systemTurnInProgress across the whole
+    // rebase, so a queued entry could only drain after the hold this turn must release —
+    // it would never settle, and the driver would own the session for ever (planning#297).
     runner.dispatch(prepareDispatch({
       text: prompt,
       agentInterface: undefined,
@@ -597,13 +595,21 @@ function runRebaseResolutionTurn(
           resolve();
           return;
         }
+        if (outcome.status === "refused") {
+          // Transient in every case: 409 defers the automatic retry without spending an attempt.
+          reject(new ServiceError(
+            409,
+            `Cannot resolve conflicts right now — ${outcome.detail ?? "the turn could not be started"}`,
+          ));
+          return;
+        }
         reject(new Error(
           outcome.status === "errored"
             ? "Agent error during rebase conflict resolution"
             : `the conflict-resolution turn ended as "${outcome.status}"${outcome.detail ? ` — ${outcome.detail}` : ""}`,
         ));
       },
-    }));
+    }), { whenBusy: "refuse" });
   });
 }
 

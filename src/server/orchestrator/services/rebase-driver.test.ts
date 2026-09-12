@@ -174,10 +174,8 @@ function makeStubUsageManager(): UsageManager {
 }
 
 
-async function runFlow(
-  deps: Parameters<typeof runRebaseFlow>[0],
-  baseBranch: string,
-): ReturnType<typeof runRebaseFlow> {
+// Without this the runner has no system-turn deps, and a dispatch never starts a turn.
+function wireSystemTurnDeps(deps: Parameters<typeof runRebaseFlow>[0]): void {
   deps.runner.setSystemTurnDeps({
     agentFactory: deps.agentFactory!,
     autoCommit: async () => ({ commitHash: null, parentHash: null, conflictedFiles: [], rebaseInProgress: false, secretFindings: [], unreadable: null }),
@@ -196,6 +194,13 @@ async function runFlow(
       return { prompt, sessionId: agentSessionId, cwd: deps.runner.sessionDir } as AgentRunParams;
     },
   });
+}
+
+async function runFlow(
+  deps: Parameters<typeof runRebaseFlow>[0],
+  baseBranch: string,
+): ReturnType<typeof runRebaseFlow> {
+  wireSystemTurnDeps(deps);
   return runRebaseFlow(deps, baseBranch);
 }
 
@@ -1261,12 +1266,16 @@ describe("rebase-driver: planning#369 up-to-date branch with unpushed commits", 
       kill: () => {},
     }) as unknown as AgentProcess;
 
-    const result = await runAutoResolveAttempt({
+    const attemptDeps = {
       ...deps(git, runner, true),
       agentFactory: hangingAgent,
       timeoutMs: 250,
       drainQueue: () => { order.push("drain"); },
-    }, "main");
+    };
+    // Wire the deps: without them the resolution turn is refused rather than started,
+    // and the deadline this test is about would never be the thing that fires.
+    wireSystemTurnDeps(attemptDeps);
+    const result = await runAutoResolveAttempt(attemptDeps, "main");
 
     expect(result).toMatchObject({ outcome: "error", lastError: "timeout" });
     expect(order.indexOf("restore")).toBeGreaterThanOrEqual(0);
@@ -1849,6 +1858,126 @@ describe("rebase-driver: planning#338 displacement + queue hold", () => {
     await handle.settled;
     await ciHandle.settled;
     expect(runner.queueLength).toBe(0);
+  });
+
+  // The resolution turn holds systemTurnInProgress for the whole flow, so a queued
+  // entry of its own could only drain after the hold it is itself waiting to release.
+  // Every gate in dispatchOnRunner that does not start a turn NOW must therefore
+  // refuse it rather than enqueue it (planning#297).
+  describe("a resolution turn that cannot start now fails fast instead of stranding the driver", () => {
+    // Must hold on any gate, including ones added after this test was written.
+    async function expectStrandFreeFailure(
+      run: () => Promise<unknown>,
+      opts: { runner: SessionRunner; git: GitManager; captured: { role: string; text: string }[] },
+    ): Promise<void> {
+      await expect(run()).rejects.toMatchObject({ statusCode: 409 });
+      expect(opts.runner.systemTurnInProgress).toBe(false);
+      // A stranded prompt would drain later and ask the agent to resolve conflicts that are gone.
+      expect(opts.runner.queueLength).toBe(0);
+      expect(await opts.git.isRebaseInProgress()).toBe(false);
+      const notice = opts.captured.find((m) => m.text.includes("was interrupted before the conflicts"));
+      expect(notice?.text).toContain("the branch is unchanged");
+    }
+
+    it("refuses when the runner has no system-turn dependencies wired", async () => {
+      const { workDir, bareDir, git } = setupRepoWithRemote(tmpDir);
+      createConflictingDivergence(bareDir, workDir);
+      const runner = new SessionRunner({ sessionId: "s1", sessionDir: workDir, defaultAgentId: "claude" });
+      const captured: { role: string; text: string }[] = [];
+      const headBefore = execSync("git rev-parse HEAD", { cwd: workDir }).toString().trim();
+
+      // runRebaseFlow directly: runFlow() would wire the deps this case is about.
+      await expectStrandFreeFailure(() => runRebaseFlow({
+        git,
+        githubAuthManager: makeStubAuth(false),
+        runner,
+        sessionManager: makeStubSessionManager(),
+        chatHistoryManager: makeStubHistory(captured),
+        usageManager: makeStubUsageManager(),
+        sseBroadcast: () => {},
+        recordSyncCard: true,
+      }, "main"), { runner, git, captured });
+
+      expect(execSync("git rev-parse HEAD", { cwd: workDir }).toString().trim()).toBe(headBefore);
+    });
+
+    it("refuses while a merge is held for the session", async () => {
+      const { workDir, bareDir, git } = setupRepoWithRemote(tmpDir);
+      createConflictingDivergence(bareDir, workDir);
+      const runner = new SessionRunner({ sessionId: "s1", sessionDir: workDir, defaultAgentId: "claude" });
+      const captured: { role: string; text: string }[] = [];
+      runner.mergeHold = true;
+
+      await expectStrandFreeFailure(() => runFlow({
+        git,
+        githubAuthManager: makeStubAuth(false),
+        runner,
+        sessionManager: makeStubSessionManager(),
+        chatHistoryManager: makeStubHistory(captured),
+        agentFactory: () => new FakeRebaseAgent(() => "should not run") as unknown as AgentProcess,
+        usageManager: makeStubUsageManager(),
+        sseBroadcast: () => {},
+        recordSyncCard: true,
+      }, "main"), { runner, git, captured });
+
+      expect(runner.mergeHold).toBe(true);
+    });
+
+    it("refuses while the resident agent has background work a system turn would destroy", async () => {
+      const { workDir, bareDir, git } = setupRepoWithRemote(tmpDir);
+      createConflictingDivergence(bareDir, workDir);
+      const runner = new SessionRunner({ sessionId: "s1", sessionDir: workDir, defaultAgentId: "claude" });
+      const captured: { role: string; text: string }[] = [];
+
+      // The observed trigger: the session opened its PR "while the suite and review finish".
+      runner.setAgent(new FakeRebaseAgent(() => "resident") as unknown as AgentProcess);
+      runner.isStreamingActive = true;
+      runner.setBackgroundTasks([{ id: "bg-1", description: "npm test" }]);
+      expect(runner.backgroundWorkDescriptions).toEqual(["npm test"]);
+
+      await expectStrandFreeFailure(() => runFlow({
+        git,
+        githubAuthManager: makeStubAuth(false),
+        runner,
+        sessionManager: makeStubSessionManager(),
+        chatHistoryManager: makeStubHistory(captured),
+        agentFactory: () => new FakeRebaseAgent(() => "should not run") as unknown as AgentProcess,
+        usageManager: makeStubUsageManager(),
+        sseBroadcast: () => {},
+        recordSyncCard: true,
+      }, "main"), { runner, git, captured });
+    });
+
+    it("is never steered into another turn, and never enters the queue", async () => {
+      const { workDir } = setupRepoWithRemote(tmpDir);
+      const runner = new SessionRunner({ sessionId: "s1", sessionDir: workDir, defaultAgentId: "claude" });
+      runner.setSystemTurnDeps({
+        agentFactory: () => new FakeRebaseAgent(() => "ok") as unknown as AgentProcess,
+        autoCommit: async () => ({ commitHash: null, parentHash: null, conflictedFiles: [], rebaseInProgress: false, secretFindings: [], unreadable: null }),
+        scheduleAutoPush: () => {},
+        listenerDeps: {
+          sessionManager: makeStubSessionManager(),
+          chatHistoryManager: makeStubHistory([]),
+          usageManager: makeStubUsageManager(),
+          sseBroadcast: () => {},
+          broadcastLog: () => {},
+          getSelectedModel: () => undefined,
+        },
+        buildRunParams: async (sessionId, _agentId, prompt) =>
+          ({ prompt, sessionId, cwd: workDir }) as AgentRunParams,
+        steerInputs: () => ({ liveSteering: true, steeringCapable: true }),
+      });
+
+      runner.running = true;
+      runner.setAgent(new FakeRebaseAgent(() => "resident") as unknown as AgentProcess);
+      runner.isStreamingActive = true;
+
+      const handle = runner.dispatch(testDispatch({ text: "resolve conflicts" }), { whenBusy: "refuse" });
+
+      expect(runner.queueLength).toBe(0);
+      expect(runner.steeredMessages).toHaveLength(0);
+      await expect(handle.settled).resolves.toMatchObject({ status: "refused", errored: true });
+    });
   });
 });
 

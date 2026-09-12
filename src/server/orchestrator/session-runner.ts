@@ -41,6 +41,7 @@ import {
   turnDropped,
   turnErrored,
   turnInterrupted,
+  turnRefused,
   TURN_STEERED,
   type TurnHandle,
   type TurnOutcome,
@@ -166,37 +167,63 @@ export class AgentTurnAdmissionError extends Error {
   }
 }
 
+/**
+ * What a dispatch that cannot start a turn *now* should do. `"refuse"` is for a driver
+ * that holds the session between turns: its own hold is what keeps the queue from
+ * draining, so a queued entry of its own would settle only after the thing it is
+ * waiting to release, and the session freezes for ever (planning#297).
+ */
+export interface DispatchAdmission {
+  whenBusy: "queue" | "refuse";
+}
+
 export function dispatchOnRunner(
   runner: SessionRunnerInterface,
   deps: SystemTurnDeps | null,
   opts: PreparedDispatch,
+  admission?: DispatchAdmission,
 ): TurnHandle {
   // Admission must precede all state changes, persistence, preparation and process creation.
   runner.assertCanDispatch();
   const settlement = createTurnSettlement();
 
-  const enqueueAndReport = (): TurnHandle => {
+  // The single exit for every gate below, so a refusing caller cannot be queued by one
+  // of them — including a gate added later.
+  const enqueueOrRefuse = (reason: string): TurnHandle => {
+    if (admission?.whenBusy === "refuse") {
+      console.warn(`[dispatch] refused the dispatch for ${runner.sessionId} — ${reason}`);
+      // Settles either way: the throw is the consumer's, not a failure of the dispatch.
+      try {
+        withSettlement(opts, settlement).onTurnComplete?.(turnRefused(reason));
+      } catch (err) {
+        console.error(`[dispatch] the refusal callback for ${runner.sessionId} threw:`, err);
+      }
+      return settlement;
+    }
     const position = runner.enqueue(toQueuedMessage(withSettlement(opts, settlement)));
     runner.emitMessage({ type: "message_queued", text: opts.text, position });
     return settlement;
   };
 
   if (runner.running) {
-    // Test steering before attaching settlement: a completion callback makes a dispatch unsteerable.
-    if (deps && trySteerDispatch(runner, opts, deps)) {
-      settlement.settle(TURN_STEERED);
-      return settlement;
+    // A refusing caller wants its own turn or nothing; steering delivers into someone else's.
+    if (admission?.whenBusy !== "refuse") {
+      // Test steering before attaching settlement: a completion callback makes a dispatch unsteerable.
+      if (deps && trySteerDispatch(runner, opts, deps)) {
+        settlement.settle(TURN_STEERED);
+        return settlement;
+      }
     }
-    return enqueueAndReport();
+    return enqueueOrRefuse("another turn is already running on this session");
   }
-  if (!deps) return enqueueAndReport();
+  if (!deps) return enqueueOrRefuse("this session's runner has no system-turn dependencies wired");
 
   // A system driver can own the tree between turns; only its own resolution step may enter.
   if (runner.systemTurnInProgress && !(opts.systemTurn && opts.postTurn === "none")) {
-    return enqueueAndReport();
+    return enqueueOrRefuse("a system turn is in progress on this session");
   }
 
-  if (runner.mergeHold) return enqueueAndReport();
+  if (runner.mergeHold) return enqueueOrRefuse("a merge is being held for this session");
 
   // System turns replace the resident process, which would destroy its background work.
   if (
@@ -204,7 +231,10 @@ export function dispatchOnRunner(
     && runner.getAgent() !== null
     && runner.backgroundWorkDescriptions.length > 0
   ) {
-    return enqueueAndReport();
+    return enqueueOrRefuse(
+      "the resident agent has background work in flight "
+      + `(${runner.backgroundWorkDescriptions.join(", ")}), which a system turn would destroy`,
+    );
   }
 
   // Claim synchronously so another message or delivery retry cannot enter during async setup.
@@ -558,7 +588,8 @@ export interface SessionRunnerInterface extends EventEmitter<SessionRunnerEvents
 
   setSystemTurnDeps(deps: SystemTurnDeps): void;
   assertCanDispatch(): void;
-  dispatch(opts: PreparedDispatch): TurnHandle;
+  /** Pass `{ whenBusy: "refuse" }` when a queued entry could never settle for this caller. */
+  dispatch(opts: PreparedDispatch, admission?: DispatchAdmission): TurnHandle;
   /** Bypasses queue admission; requires canRunDispatchedTurn. */
   runDispatchedTurn(opts: PreparedDispatch): Promise<void>;
   readonly canRunDispatchedTurn: boolean;
@@ -838,8 +869,8 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
     authorize(this.sessionId);
   }
 
-  dispatch(opts: PreparedDispatch): TurnHandle {
-    return dispatchOnRunner(this, this._systemTurnDeps, opts);
+  dispatch(opts: PreparedDispatch, admission?: DispatchAdmission): TurnHandle {
+    return dispatchOnRunner(this, this._systemTurnDeps, opts, admission);
   }
 
   get canRunDispatchedTurn(): boolean { return this._systemTurnDeps !== null; }
