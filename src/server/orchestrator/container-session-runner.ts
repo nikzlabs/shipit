@@ -6,7 +6,7 @@ import type { PresentStateEntry } from "../shared/types/ws-server-messages.js";
 import type { AgentGoalCommand, AgentGoalCommandResult, WorkerAgentGoalBody } from "../shared/types/agent-types.js";
 import type { PresentStore } from "./present-store.js";
 import { emitChatCard, type InProgressPersister } from "./chat-card-persistence.js";
-import type { SessionRunnerInterface, SessionRunnerEvents, QueuedMessage, SystemTurnDeps, ChatMessageGroup, SteeredMessage, RecordedChatCard } from "./session-runner.js";
+import type { SessionRunnerInterface, SessionRunnerEvents, QueuedMessage, SystemTurnDeps, ChatMessageGroup, SteeredMessage, RecordedChatCard, DispatchAdmission } from "./session-runner.js";
 import type { SubAgentSpawnRequest, SubAgentRunResult } from "../shared/sub-agent-run.js";
 import { SUB_AGENT_TRANSPORT_TIMEOUT_MS } from "../shared/sub-agent-run.js";
 import { AgentTurnAdmissionError, runDispatchedTurn, dispatchOnRunner } from "./session-runner.js";
@@ -1782,8 +1782,8 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     authorize(this.sessionId);
   }
 
-  dispatch(opts: PreparedDispatch): TurnHandle {
-    return dispatchOnRunner(this, this._systemTurnDeps, opts);
+  dispatch(opts: PreparedDispatch, admission?: DispatchAdmission): TurnHandle {
+    return dispatchOnRunner(this, this._systemTurnDeps, opts, admission);
   }
 
   get canRunDispatchedTurn(): boolean { return this._systemTurnDeps !== null; }

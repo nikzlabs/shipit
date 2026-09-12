@@ -56,6 +56,7 @@ import { refreshAllRepoDefaultBranches } from "./services/repo-default-branch.js
 import { repoMemoryDir } from "./repo-memory-manager.js";
 import { restoreSessionWorkspace } from "./services/session.js";
 import { reattachInFlightTurns } from "./restart-turn-reattach.js";
+import { reportAbandonedRebases } from "./abandoned-rebase-sweep.js";
 import { reconcileOrphanedConsultCards } from "./consult-card-reconcile.js";
 import { createOomCircuitBreaker } from "./oom-circuit-breaker.js";
 import { MergeWatchManager } from "./merge-watch.js";
@@ -910,6 +911,13 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
       console.error("[merge-watch] startup reconcile failed:", err);
     }
   })();
+
+  // A restart drops the rebase driver but not the half-applied rebase on disk.
+  void reportAbandonedRebases({
+    sessionManager, runnerRegistry, createGitManager,
+  }).catch((err: unknown) => {
+    console.error("[abandoned-rebase] startup sweep failed:", err);
+  });
 
   void refreshAllRepoDefaultBranches({
     repoStore, createRepoGit, getBareCacheDir, sseBroadcast,
