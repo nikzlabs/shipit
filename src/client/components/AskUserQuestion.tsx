@@ -220,35 +220,22 @@ export function AskUserQuestion({ toolUseId, questions, onAnswer, disabled, reso
       clearDictated(qIndex);
     }
 
-    if (multiSelect) {
-      setSelections((prev) => {
-        const next = new Map(prev);
-        const selected = new Set(next.get(qIndex) ?? []);
-        if (selected.has(label)) {
-          selected.delete(label);
-        } else {
-          selected.add(label);
-        }
-        next.set(qIndex, selected);
+    setSelections((prev) => {
+      const next = new Map(prev);
+      if (!multiSelect) {
+        next.set(qIndex, new Set([label]));
         return next;
-      });
-    } else {
-      const built = buildAnswers();
-      const answers = { ...built.answers, [String(qIndex)]: label };
-      const freeText = new Set(built.freeTextQuestions);
-      freeText.delete(qIndex);
-
-      if (questions.length > 1) {
-        setSelections((prev) => {
-          const next = new Map(prev);
-          next.set(qIndex, new Set([label]));
-          return next;
-        });
-      } else {
-        submitAnswers(answers, freeText);
       }
-    }
-  }, [disabled, submittedAnswers, buildAnswers, questions, submitAnswers, clearDictated]);
+      const selected = new Set(next.get(qIndex) ?? []);
+      if (selected.has(label)) {
+        selected.delete(label);
+      } else {
+        selected.add(label);
+      }
+      next.set(qIndex, selected);
+      return next;
+    });
+  }, [disabled, submittedAnswers, clearDictated]);
 
   const handleOtherClick = useCallback((qIndex: number) => {
     if (disabled || submittedAnswers) return;
@@ -295,8 +282,8 @@ export function AskUserQuestion({ toolUseId, questions, onAnswer, disabled, reso
     submitAnswers(answers, freeTextQuestions);
   }, [disabled, submittedAnswers, buildAnswers, submitAnswers]);
 
-  const needsSubmitButton = questions.length > 1 || questions.some((q) => q.multiSelect);
-  const showSubmitButton = needsSubmitButton || usingOther.size > 0;
+  // Every question confirms explicitly, so an option click never steals a text selection.
+  const allowEnterSubmit = questions.length === 1 && !questions[0].multiSelect;
   const hasAnyAnswer = Object.keys(buildAnswers().answers).length > 0;
 
   const isAnswered = !!submittedAnswers;
@@ -394,7 +381,7 @@ export function AskUserQuestion({ toolUseId, questions, onAnswer, disabled, reso
                       value={otherTexts.get(qIndex) ?? ""}
                       onChange={(text) => handleOtherTextChange(qIndex, text)}
                       onDictated={() => markDictated(qIndex)}
-                      allowEnterSubmit={!needsSubmitButton}
+                      allowEnterSubmit={allowEnterSubmit}
                       onEnterSubmit={() => submitOther(qIndex)}
                     />
                   )}
@@ -416,7 +403,7 @@ export function AskUserQuestion({ toolUseId, questions, onAnswer, disabled, reso
         );
       })}
 
-      {showSubmitButton && !isAnswered && (
+      {!isAnswered && (
         <div className="px-3 pb-3">
           <Button
             variant="primary"
