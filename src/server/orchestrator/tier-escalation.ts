@@ -16,6 +16,7 @@ import {
 import { emitNoticePostTurn } from "./chat-card-persistence.js";
 import { formatEvictBlockedNotice, type EvictBlockReason } from "./services/evict-blocked-notice.js";
 import { autoCommitAllowed } from "./services/auto-commit-gate.js";
+import { recordWorkspaceBlock } from "./services/workspace-block.js";
 import { ensureCheckoutDurable, pathState } from "./checkout-durability.js";
 
 export interface TierEscalationDeps {
@@ -121,23 +122,12 @@ async function reclaimToLight(
   return true;
 }
 
-/**
- * docs/298 — publish (or withdraw) the session's broken-workspace state. Only a
- * real change broadcasts, so a session stuck for weeks does not re-push the
- * whole session list on every janitor tick.
- */
-function recordWorkspaceBlock(
+function markWorkspaceBlock(
   session: SessionInfo,
   deps: TierEscalationDeps,
   kind: WorkspaceBlockKind | null,
 ): void {
-  if (!deps.sessionManager.setWorkspaceBlock(session.id, kind)) return;
-  console.log(
-    kind === null
-      ? `[disk-janitor] ${session.id}: workspace no longer blocked`
-      : `[disk-janitor] ${session.id}: workspace blocked (${kind}) — keeping it in the sidebar`,
-  );
-  deps.onSessionsChanged?.();
+  recordWorkspaceBlock(deps, session.id, kind, "disk-janitor");
 }
 
 // Keep uncommittable work outside git, including rescue refs, which could expose secrets.
@@ -150,7 +140,7 @@ async function blockedEvict<T extends "blocked-by-push" | "blocked-by-dirty">(
   clearStuck(session, deps);
   // A push that failed leaves a committable tree: that is not the user's to repair,
   // so only a reason the durability check could name raises the marker.
-  recordWorkspaceBlock(session, deps, reason?.kind ?? null);
+  markWorkspaceBlock(session, deps, reason?.kind ?? null);
   if (reason) {
     console.warn(
       `[disk-janitor] evict blocked for ${session.id} — the checkout can't be made durable `
@@ -285,7 +275,7 @@ async function reclaimToEvicted(
     clearStuck(session, deps);
     // Durable now, so whatever blocked it earlier is gone: req 6 of
     // docs/298-broken-workspace-visibility.
-    recordWorkspaceBlock(session, deps, null);
+    markWorkspaceBlock(session, deps, null);
   }
 
   const fresh = sessionManager.get(session.id);
@@ -349,7 +339,7 @@ async function reclaimToEvicted(
   clearStuck(session, deps);
   // An evicted session is excluded from every later pass, so a marker not cleared
   // here is permanent — and the wiped-workspace paths above never ran the git check.
-  recordWorkspaceBlock(session, deps, null);
+  markWorkspaceBlock(session, deps, null);
   console.log(`[disk-janitor] ${session.id}: light → evicted (workspace + overlay wiped)`);
   return "evicted";
 }

@@ -15,4 +15,7 @@
 - [x] Each new guard proven red with its production change reverted
 - [x] Independent review; the four clearing/visibility gaps it found are fixed and guarded
 - [x] `npm run typecheck`, `npm run lint:dev`, `npm test`
+- [x] Open-session check: `inspectCheckoutBlock` (read-only — never `ensureCheckoutDurable`, which commits and pushes), shared with `ensureCheckoutDurable`
+- [x] `recordWorkspaceBlock` moved to `services/workspace-block.ts` so both writers share the change-only write and the broadcast
+- [x] Activation clearing bounded by `READ_ONLY_BLOCK_KINDS` — a `secret` marker survives a clean open-time inspection
 - [ ] Follow-up: a click-to-repair action on the surfaced state — planning#533

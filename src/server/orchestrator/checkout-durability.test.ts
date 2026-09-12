@@ -8,7 +8,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { execSync } from "node:child_process";
-import { ensureCheckoutDurable } from "./checkout-durability.js";
+import { ensureCheckoutDurable, inspectCheckoutBlock } from "./checkout-durability.js";
 import { GitManager } from "../shared/git.js";
 import { initGlobalGitConfig, setGitIdentity } from "./git-config.js";
 
@@ -91,5 +91,97 @@ describe("ensureCheckoutDurable", () => {
     const result = await ensureCheckoutDurable(new GitManager(workDir), "test");
 
     expect(result.state).toBe("blocked-by-dirty");
+  });
+});
+
+/**
+ * docs/298-broken-workspace-visibility — the same question asked without repairing
+ * anything, so session activation can ask it about a checkout the user is sitting in.
+ */
+describe("inspectCheckoutBlock", () => {
+  it("reports nothing for a clean, readable tree", async () => {
+    expect(await inspectCheckoutBlock(new GitManager(workDir))).toBeNull();
+  });
+
+  it("reports nothing for an ordinary dirty tree — uncommitted work is not a block", async () => {
+    fs.writeFileSync(path.join(workDir, "new.txt"), "work");
+
+    expect(await inspectCheckoutBlock(new GitManager(workDir))).toBeNull();
+  });
+
+  it("reports conflict for the incident's shape: a tree stopped mid-rebase", async () => {
+    execSync("git checkout -b side", { cwd: workDir, stdio: "pipe" });
+    fs.writeFileSync(path.join(workDir, "README.md"), "side");
+    execSync("git commit -am side", { cwd: workDir, stdio: "pipe" });
+    execSync("git checkout main", { cwd: workDir, stdio: "pipe" });
+    fs.writeFileSync(path.join(workDir, "README.md"), "main");
+    execSync("git commit -am main", { cwd: workDir, stdio: "pipe" });
+    execSync("git rebase side || true", { cwd: workDir, stdio: "pipe", shell: "/bin/bash" });
+
+    expect(await inspectCheckoutBlock(new GitManager(workDir))).toMatchObject({
+      kind: "conflict",
+      rebaseInProgress: true,
+    });
+  });
+
+  it("reports conflict, naming the unmerged paths, for an unresolved merge", async () => {
+    execSync("git checkout -b side", { cwd: workDir, stdio: "pipe" });
+    fs.writeFileSync(path.join(workDir, "README.md"), "side");
+    execSync("git commit -am side", { cwd: workDir, stdio: "pipe" });
+    execSync("git checkout main", { cwd: workDir, stdio: "pipe" });
+    fs.writeFileSync(path.join(workDir, "README.md"), "main");
+    execSync("git commit -am main", { cwd: workDir, stdio: "pipe" });
+    execSync("git merge side || true", { cwd: workDir, stdio: "pipe", shell: "/bin/bash" });
+
+    expect(await inspectCheckoutBlock(new GitManager(workDir))).toEqual({
+      kind: "conflict",
+      conflictedFiles: ["README.md"],
+      rebaseInProgress: false,
+    });
+  });
+
+  it("reports unreadable for a tree git cannot read in full", async () => {
+    const hidden = path.join(workDir, "pgdata");
+    fs.mkdirSync(hidden);
+    fs.writeFileSync(path.join(hidden, "PG_VERSION"), "14\n");
+    execSync("git add -A && git commit -m pgdata", { cwd: workDir, stdio: "pipe" });
+    fs.writeFileSync(path.join(hidden, "PG_VERSION"), "15\n");
+    fs.chmodSync(hidden, 0o000);
+    try {
+      expect(await inspectCheckoutBlock(new GitManager(workDir))).toEqual({
+        kind: "unreadable",
+        unreadable: { kind: "omitted", detail: "pgdata/" },
+      });
+    } finally {
+      fs.chmodSync(hidden, 0o755);
+    }
+  });
+
+  /**
+   * The constraint that matters most: activation runs this merely because the user
+   * opened a tab, so committing or pushing their work here would be a data-handling
+   * bug, not a slow path.
+   */
+  it("never commits and never pushes", async () => {
+    const calls: string[] = [];
+    const record = (name: string) => () => {
+      calls.push(name);
+      return Promise.resolve();
+    };
+    const git = {
+      inspectWorkingTree: () =>
+        Promise.resolve({ clean: false, conflictedFiles: ["a.txt"], unreadable: null }),
+      isRebaseInProgress: () => Promise.resolve(false),
+      isMergeOrSequencerInProgress: () => Promise.resolve(false),
+      autoCommit: record("autoCommit"),
+      commit: record("commit"),
+      add: record("add"),
+      push: record("push"),
+    } as unknown as GitManager;
+
+    const result = await inspectCheckoutBlock(git);
+
+    expect(result).toMatchObject({ kind: "conflict", conflictedFiles: ["a.txt"] });
+    expect(calls).toEqual([]);
   });
 });
