@@ -427,7 +427,11 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
   ]
     .filter(Boolean)
     .join("\n\n");
-  const roleContext = capturedSessionId
+  // takeRoleStandingInstructions is a take: reading it on a verbatim turn, which
+  // cannot carry it, would destroy the role's brief for good.
+  // takeRoleStandingInstructions is a take, so reading it on a turn that cannot
+  // carry it would destroy the role's brief for good.
+  const roleContext = capturedSessionId && !ridesTurnAsCommand
     ? takeRoleStandingInstructions(capturedSessionId, {
         sessionManager: ctx.sessionManager,
         credentialStore: ctx.credentialStore,

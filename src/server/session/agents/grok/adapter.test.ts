@@ -1152,7 +1152,8 @@ describe("GrokAdapter — goals", () => {
     expect(g.controlPrompts).toEqual(["/goal status"]);
     const args = g.controlArgs[0];
     expect(args[args.indexOf("-r") + 1]).toBe("thread-1");
-    // A local slash command needs no tools, and a CLI that stopped recognising one must not get every permission.
+    // Measured: a plan-mode run asked to write a file wrote nothing, so a command the
+    // CLI stops recognising reaches the model without the means to act on it.
     expect(args[args.indexOf("--permission-mode") + 1]).toBe("plan");
     expect(args).not.toContain("--always-approve");
   });
@@ -1165,19 +1166,98 @@ describe("GrokAdapter — goals", () => {
     h.child.close(0);
   });
 
-  it("reports the goal a /goal turn left behind, before it reports the turn done", async () => {
+  // The orchestrator drains its queue on agent_result, so holding the result until the
+  // read has finished is what stops the next turn spawning while the read runs.
+  it("holds the turn's result until the goal it left behind has been read", async () => {
     const g = goalHarness([REPORT]);
     const order: string[] = [];
-    g.adapter.on("event", (e) => { if (e.type === "agent_goal_updated") order.push(`goal:${e.goal?.objective ?? "none"}`); });
+    g.adapter.on("event", (e) => {
+      if (e.type === "agent_goal_updated") order.push(`goal:${e.goal?.objective ?? "none"}`);
+      if (e.type === "agent_result") order.push("result");
+    });
     const done = new Promise<void>((resolve) => g.adapter.on("done", () => { order.push("done"); resolve(); }));
     g.adapter.run({ prompt: "/goal ship it", cwd: "/workspace", sessionId: "thread-9" });
+    g.turnChildren[0].emitStdout([JSON.stringify({
+      type: "result", subtype: "success", is_error: false, session_id: "thread-9", result: "done",
+    })]);
+    expect(order).toEqual([]);
     g.turnChildren[0].close(0);
     await done;
-    expect(order).toEqual(["goal:ship it", "done"]);
+    expect(order).toEqual(["goal:ship it", "result", "done"]);
     expect(g.controlPrompts).toEqual(["/goal status"]);
   });
 
+  // The result gates the commit, the queue drain and every viewer's "finished", so the
+  // hold must end even when the read never answers.
+  it("releases the turn's result when the goal read never answers", async () => {
+    vi.useFakeTimers();
+    try {
+      const home = fs.mkdtempSync(path.join(os.tmpdir(), "grok-goal-test-"));
+      homes.push(home);
+      const order: string[] = [];
+      const adapter = new GrokAdapter({
+        resolveHome: () => home,
+        // The control child never emits and never closes.
+        spawnFn: () => new FakeChild() as unknown as ChildProcess,
+      });
+      adapter.on("event", (e) => { if (e.type === "agent_result") order.push("result"); });
+      const done = new Promise<void>((resolve) => adapter.on("done", () => { order.push("done"); resolve(); }));
+      adapter.run({ prompt: "/goal ship it", cwd: "/workspace", sessionId: "thread-9" });
+      const turnChild = (adapter as unknown as { proc: FakeChild }).proc;
+      turnChild.emitStdout([JSON.stringify({
+        type: "result", subtype: "success", is_error: false, session_id: "thread-9", result: "done",
+      })]);
+      turnChild.close(0);
+      expect(order).toEqual([]);
+
+      await vi.advanceTimersByTimeAsync(30_000);
+      await done;
+      expect(order).toEqual(["result", "done"]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not hold an ordinary turn's result", () => {
+    const g = goalHarness([REPORT]);
+    const order: string[] = [];
+    g.adapter.on("event", (e) => { if (e.type === "agent_result") order.push("result"); });
+    g.adapter.run({ prompt: "fix the build", cwd: "/workspace", sessionId: "thread-9" });
+    g.turnChildren[0].emitStdout([JSON.stringify({
+      type: "result", subtype: "success", is_error: false, session_id: "thread-9", result: "done",
+    })]);
+    expect(order).toEqual(["result"]);
+  });
+
   // The prompt carries file context and any pre-turn prefix, so an exact match would miss this.
+  // WS frames are not serialised, so a user can send a turn while a control spawn runs.
+  it("refuses to start a turn while a goal command is still running on that session", async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "grok-goal-test-"));
+    homes.push(home);
+    const errors: Error[] = [];
+    let spawns = 0;
+    const control = new FakeChild();
+    const adapter = new GrokAdapter({
+      resolveHome: () => home,
+      spawnFn: () => { spawns++; return control as unknown as ChildProcess; },
+    });
+    adapter.on("error", (e) => errors.push(e));
+
+    const pending = adapter.goalCommand("thread-1", { action: "get" });
+    adapter.run({ prompt: "fix the build", cwd: "/workspace", sessionId: "thread-1" });
+    expect(spawns).toBe(1);
+    expect(errors.map((e) => e.message)).toEqual([expect.stringMatching(/still running on this session/) as unknown as string]);
+
+    control.emitStdout([resultLine("No goal is currently set.")]);
+    control.close(0);
+    await expect(pending).resolves.toEqual({ goal: null });
+
+    // Once it has finished, the same turn starts.
+    adapter.run({ prompt: "fix the build", cwd: "/workspace", sessionId: "thread-1" });
+    expect(spawns).toBe(2);
+    (adapter as unknown as { proc: FakeChild }).proc.close(0);
+  });
+
   it("reads the goal when the /goal command arrives inside an assembled prompt", async () => {
     const g = goalHarness([REPORT]);
     const goals: string[] = [];

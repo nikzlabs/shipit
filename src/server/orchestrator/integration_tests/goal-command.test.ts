@@ -338,6 +338,50 @@ describe("Integration: /goal (docs/154)", () => {
     },
   );
 
+  // docs/298 — measured: text after the command stops Grok reading it as a command at all.
+  it("refuses a /goal that carries attachments rather than breaking the command", async () => {
+    const client = await TestClient.connect(port, undefined, { agent: "grok" });
+    await client.receive();
+
+    client.send({
+      type: "send_message",
+      text: "/goal ship it",
+      files: [{ path: "src/a.ts" }],
+    });
+    expect(await receiveNotice(client)).toMatch(/cannot carry attachments/);
+    expect(groks.flatMap((g) => (g.lastPrompt === null ? [] : [g.lastPrompt]))).toEqual([]);
+    client.close();
+  });
+
+  // docs/298 — a pending notice would otherwise be prepended, and Grok then reads the
+  // whole message as a prompt instead of its own command. It is left pending rather
+  // than eaten, so the next ordinary turn still carries it.
+  it("sends a /goal turn verbatim even with a pending notice, and leaves the notice pending", async () => {
+    const client = await TestClient.connect(port, undefined, { agent: "grok" });
+    await client.receive();
+    sessions.setPendingAgentNotice(client.sessionId, "The branch was reset.");
+
+    client.send({ type: "send_message", text: "/goal Make the suite green" });
+    await waitUntil(() => groks.some((g) => g.lastPrompt !== null));
+    expect(groks.find((g) => g.lastPrompt !== null)?.lastPrompt).toBe("/goal Make the suite green");
+    expect(sessions.consumePendingAgentNotice(client.sessionId)).toBe("The branch was reset.");
+    client.close();
+  });
+
+  // takeRoleStandingInstructions is a take: reading it on a verbatim turn would
+  // destroy the role's brief, since the verbatim prompt cannot carry it.
+  it("leaves a role's standing instructions unconsumed by a verbatim /goal turn", async () => {
+    const client = await TestClient.connect(port, undefined, { agent: "grok" });
+    await client.receive();
+    sessions.setRoleName(client.sessionId, "GrokSub");
+
+    client.send({ type: "send_message", text: "/goal Make the suite green" });
+    await waitUntil(() => groks.some((g) => g.lastPrompt !== null));
+    expect(groks.find((g) => g.lastPrompt !== null)?.lastPrompt).toBe("/goal Make the suite green");
+    expect(sessions.get(client.sessionId)?.originRoleName).toBeUndefined();
+    client.close();
+  });
+
   it("answers Grok's /goal status out of band, with no turn (docs/298)", async () => {
     const client = await TestClient.connect(port, undefined, { agent: "grok" });
     await client.receive();

@@ -65,8 +65,9 @@ export async function handleSendMessage(
   // docs/297 — a "turn" action rides the turn path, and the CLI reads it as its
   // own command only when the prompt is exactly the command (measured: a prefix
   // sets no goal at all, a suffix lands inside the objective). Attachments have
-  // nowhere to go, so the message is refused rather than silently mangled.
-  if (goalCommand && mode === "turn" && (msg.images?.length || msg.files?.length)) {
+  // nowhere to go, so the message is refused rather than silently mangled. An
+  // upload becomes a validated file below, so it appends context like the rest.
+  if (goalCommand && mode === "turn" && (msg.images?.length || msg.files?.length || msg.uploads?.length)) {
     const sessionId = ctx.getActiveAppSessionId() ?? undefined;
     if (sessionId) {
       emitGoalNotice(

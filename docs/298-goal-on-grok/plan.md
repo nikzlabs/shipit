@@ -50,6 +50,11 @@ the environment.
 | …and the goal afterwards | `user_paused`. Any `grok -r` process leaves an active goal paused |
 | A control spawn during a running turn | Answers correctly, but two processes then write one session directory: a read taken mid-run wrote `user_paused` into `state.json` while the running loop still drove the goal, and the loop later overwrote it |
 | `/goal stop` (an unsupported keyword) | Sets a goal literally named `stop` and starts the loop |
+| `/goal status` with text **before** it (`The branch was reset.\n\n/goal status`) | **Not a command.** 8 turns, $0.035, no goal written — an ordinary model turn |
+| `/goal status` with text **after** it (`/goal status\n\nAttached files:\n- src/foo.ts`) | **Worse than not a command.** 4 turns, $0.031, and it **set a goal** whose objective is literally `status\n\nAttached files:\n- src/foo.ts`. Even the keyword `status` became an objective |
+| `--permission-mode plan` on a prompt asking for a file write | The model called `run_terminal_command`, the run ended `error_during_execution` after 1 turn, and **no file was created** |
+| `-r` with a session id the CLI does not know | The process **hangs**, so the control spawn's timeout is load-bearing |
+| `-r` with a known id but a different `--cwd` | Resolves the session anyway ("found locally (originally in …)") and reports the right goal, creating no second session directory |
 | Rich goal events | `updates.jsonl` carries a `goal_updated` ACP update (69 in one run) with `goal_id, objective, status, phase, tokens_used, elapsed_ms, total_deliverables, completed_deliverables, total_worker_rounds, total_verify_rounds, last_event, last_event_detail`. It reaches stdout only under `--output-format streaming-json` |
 
 ### Two measured negatives worth keeping
@@ -58,6 +63,21 @@ the environment.
 because resuming a Codex thread with an active goal makes Codex start its own
 continuation turn and fold the user's message into it. Grok does the opposite: it
 pauses the goal and answers the user. A future reader should not port the hold.
+
+**Grok holds no goal in process memory, so a control spawn is never reading a
+copy.** Grok runs one process per turn (`isStreaming: false`; it refuses
+steering), and the goal is a file — `<session>/goal/state.json`. A control read
+taken while a `grok -r` turn drove the goal reported that turn's live values, not
+a stale snapshot. A harness that kept the goal in a resident process would instead
+let a control spawn clear a copy while the real goal kept steering the next turn,
+which is the failure this design would otherwise have to defend against.
+
+What a control spawn cannot do during a live turn is **change** the goal: a read
+taken mid-run wrote `user_paused` into `state.json`, and the running loop
+overwrote it back to `active`. That is why goal commands are refused while a turn
+is running, and why a turn is refused while a control spawn is in flight. The
+`clear` case specifically was not measured mid-run — with the refusal on both
+sides it is unreachable — but it is the same class of write.
 
 **The stream ShipIt reads cannot report the goal.** `streaming-messages-json`
 carries only `system`, `assistant`, `user` and `result` lines; the whole
@@ -88,6 +108,42 @@ transcript, and needs no ShipIt notice for those two.
 menu and in `send-handler.ts`, where a `"turn"` action must keep its message
 bubble and spinner because a turn really does follow.
 
+### A `"turn"` action is only native when the prompt is exactly the command
+
+Measured: text **before** `/goal …` stops Grok treating it as a command at all,
+and text **after** it is worse — the command still runs, with the trailing context
+folded into the objective, so the session ends up with a goal nobody asked for.
+A test that only asserts "a goal was set" would pass on that. ShipIt assembles a
+turn's prompt as
+`agentPrefix + assembleAgentPrompt(...)` (`agent-execution.ts`,
+`prompt-assembly.ts`), which places a slash invocation first but appends file,
+image, dictation and role context after it, and prepends any pending notice.
+
+So a `"turn"` goal action runs as a **verbatim** turn, which
+[docs/297](../297-goal-on-claude/plan.md) built for the same measurement on Claude
+Code and this feature shares: `ridesTurnGoalCommand(text, capabilities)` decides it
+from the message and the harness's own map, and the prompt becomes the user's text
+and nothing else. Derived rather than threaded, the way compaction derives
+`compact`, so a `/goal` queued while another turn ran is still verbatim when it
+drains. The adapter needs no change — it already writes `params.prompt` byte for
+byte to its prompt file.
+
+Skipping the context must not lose it, so two things go with it:
+
+- **Nothing that would have ridden the prompt is consumed.** The role's standing
+  instructions (`takeRoleStandingInstructions` is a *take*), the pending-agent
+  notice, the bug-outcome notice and the pre-turn reset are all skipped on a
+  verbatim turn, so they are still pending for the next ordinary one rather than
+  eaten by a message that could not carry them.
+- **A `/goal` message carrying images, files or uploads is refused** with a
+  persisted notice telling the user to send them separately. Those the user can act
+  on, so saying so beats a silent drop. Uploads count: they become validated files,
+  so they append context like the rest.
+
+The same prefix would stop a `/skill` invocation being recognised on any harness.
+That is a wider pre-existing defect, filed separately; `assembleAgentPrompt`'s
+existing branches are deliberately untouched here.
+
 ### Adapter (session side)
 
 - `grok/grok-goal.ts`
@@ -104,12 +160,32 @@ bubble and spinner because a turn really does follow.
   (`this.proc`), since two processes then share one session directory, and
   otherwise runs the control spawn. It refuses `set` and `resume` defensively:
   they are `"turn"` actions and should never reach it.
+- **`run()` refuses the mirror case**, while a control spawn is in flight for that
+  session. WS frames are not serialised, so `/goal clear` immediately followed by
+  `/goal <objective>` would otherwise put the clear's confirming read and the new
+  goal's loop on one session directory — and the clear could land after the new
+  goal was set. Whichever starts first, the other waits; the refusal names the
+  reason, and the window is about a second.
 - **Learning a goal a turn created.** `set` and `resume` ride a turn, so ShipIt
-  has to find out what the turn left behind. When a turn's prompt was a `/goal`
-  command, the adapter runs one `/goal status` read as the process closes and
-  emits `agent_goal_updated` before `done`. That is one extra 5 ms, zero-token
-  spawn on goal turns only; ordinary turns spawn nothing. `agent_goal_updated`
-  already exists and is handled agent-agnostically.
+  has to find out what the turn left behind. When a turn's prompt carried a
+  `/goal` command, the adapter runs one `/goal status` read as the process closes
+  and emits `agent_goal_updated`. That is one extra 5 ms, zero-token spawn on goal
+  turns only; ordinary turns spawn nothing. `agent_goal_updated` already exists
+  and is handled agent-agnostically.
+- **The goal turn holds its `agent_result` until that read finishes.** The
+  orchestrator drains its queue on `agent_result`, not on `done`
+  (`turn-executor.ts`), so emitting the result first would let a queued message
+  spawn a second `grok -r` on the same session while the read ran — the concurrent
+  writer the measurements warn about. Holding one event is the whole mechanism;
+  an ordinary turn's result is never held. Because that event gates the commit, the
+  queue drain and every viewer's "finished", the hold is bounded twice — the control
+  spawn's own budget, and a hard grace past it — and the result is released in a
+  `finally`, so a read that throws, times out or never settles still ends the turn.
+  A read that lands after its deadline is dropped rather than reported late.
+- The control spawn carries the turn's `COMPAT_TOGGLES`, so it cannot run a
+  compatibility hook (`GROK_CLAUDE_HOOKS_ENABLED` and friends) that an ordinary
+  Grok turn disables — otherwise a `/goal status` read could execute a repository
+  hook outside a turn.
 
 ### Orchestrator and client
 
@@ -120,8 +196,11 @@ bubble and spinner because a turn really does follow.
   continue` beside `/goal clear to remove`. That is where the user meets the
   paused state, and there is no post-`set` notice to carry it, because `set`
   rides the turn.
-- `reconcileAgentGoal` (docs/154's read-on-open) needs no change: it calls the
-  same `goalCommand`.
+- `reconcileAgentGoal` (docs/154's read-on-open) calls the same `goalCommand`, now
+  through docs/297's `goalAgentFor`: `createAgent` supersedes whatever holds the
+  agent slot and settles a live turn a second time, so the read uses an installed
+  agent as it is, fills only an empty slot, and returns null while a foreign agent
+  holds it. Returning null records nothing, so the next activation tries again.
 
 ### What ShipIt does not do
 
@@ -149,5 +228,6 @@ fields it would unlock are in the measurement table above.
 - `src/server/shared/catalogue/harnesses.ts` — the `grok` block's `goalActions`.
 - `src/server/shared/types/agent-types.ts` — `goalActions`.
 - `src/server/orchestrator/ws-handlers/send-message.ts`, `goal-command.ts` — the gate and the refusal.
+- `src/server/orchestrator/ws-handlers/agent-execution.ts` — `ridesTurnGoalCommand`, shared with docs/297.
 - `src/server/orchestrator/services/agent-goal.ts` — `user_paused`'s label.
 - `src/client/components/GoalChip.tsx`, `MessageInput/MessageInput.tsx`, `utils/send-handler.ts`.

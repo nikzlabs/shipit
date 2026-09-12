@@ -37,6 +37,16 @@ Plan: [plan.md](plan.md). Remaining work: [checklist.md](checklist.md).
   `--output-format streaming-messages-json`, which drops it. Ops confirmed that
   changing the output format is out of scope, so a zero-cost `/goal status` read
   after a goal turn is the mechanism.
+- 2026-09-12 — Measured: text **before** `/goal …` stops Grok reading it as its own
+  command, so the turn becomes an ordinary model call and no goal is set; text
+  **after** it is worse, folding the trailing context into the objective. May ShipIt
+  leave that as a limitation? No — a path where the goal silently does not get set is
+  the incident class docs/154 exists for, so req 1 is not met until it is fixed. The
+  prompt for a `"turn"` goal action is the user's text and nothing else. Two
+  conditions came with it — consume nothing that could not ride the prompt (the
+  role's standing instructions above all, since reading them is a *take*), and refuse a
+  `/goal` that carries attachments. The same defect for `/skill` on any harness is
+  wider than this feature and is filed separately.
 - 2026-09-12 — What happens to a `/goal` command sent while a turn is running?
   It is refused with a notice telling the user to wait. A control spawn during a
   live turn puts two processes on one session directory, and the goal state file

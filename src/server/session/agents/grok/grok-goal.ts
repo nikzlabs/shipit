@@ -123,14 +123,17 @@ export interface GrokGoalControlOptions {
   home: string;
   configRoot: string;
   binary: string;
+  /** The turn's compatibility toggles, so a control spawn cannot run hooks a turn disables. */
+  compatToggles: Record<string, string>;
   timeoutMs?: number;
   spawnFn?: (cmd: string, args: string[], opts: SpawnOptions) => ChildProcess;
 }
 
 /**
- * One short-lived `grok` per prompt. `plan` rather than `--always-approve`: the
- * prompts are local slash commands that run no tools, and a future CLI that stops
- * recognising one would otherwise send it to the model with every permission.
+ * One short-lived `grok` per prompt. `plan` rather than `--always-approve`: measured,
+ * a plan-mode run asked to write a file called its tool, ended `error_during_execution`
+ * and wrote nothing. So a future CLI that stops recognising one of these local
+ * commands sends it to the model without the means to act on it.
  */
 function runOneGoalPrompt(opts: GrokGoalControlOptions, prompt: string, deadline: number): Promise<string> {
   const spawnFn = opts.spawnFn ?? nodeSpawn;
@@ -154,6 +157,7 @@ function runOneGoalPrompt(opts: GrokGoalControlOptions, prompt: string, deadline
       GROK_DISABLE_AUTOUPDATER: "1",
       GROK_TELEMETRY_ENABLED: "0",
       DISABLE_TELEMETRY: "1",
+      ...opts.compatToggles,
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -196,8 +200,21 @@ function runOneGoalPrompt(opts: GrokGoalControlOptions, prompt: string, deadline
   });
 }
 
+// One worker process per session, so a module-level set covers every adapter instance.
+const controlInFlight = new Set<string>();
+
+/** docs/298 — a turn started now would share the session files the control spawn is writing. */
+export function isGoalControlInFlight(threadId: string): boolean {
+  return controlInFlight.has(threadId);
+}
+
 /** One budget for the whole command, so a two-prompt clear cannot outlast the orchestrator's wait. */
-export function runGrokGoalControl(opts: GrokGoalControlOptions): Promise<AgentGoalCommandResult> {
+export async function runGrokGoalControl(opts: GrokGoalControlOptions): Promise<AgentGoalCommandResult> {
   const deadline = Date.now() + (opts.timeoutMs ?? GOAL_CONTROL_TIMEOUT_MS);
-  return executeGrokGoalCommand((prompt) => runOneGoalPrompt(opts, prompt, deadline), opts.command);
+  controlInFlight.add(opts.threadId);
+  try {
+    return await executeGrokGoalCommand((prompt) => runOneGoalPrompt(opts, prompt, deadline), opts.command);
+  } finally {
+    controlInFlight.delete(opts.threadId);
+  }
 }

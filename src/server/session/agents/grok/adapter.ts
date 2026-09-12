@@ -15,6 +15,11 @@ import { GROK_PERMISSION_MODES } from "../../../shared/types/agent-types.js";
  * command always begins a line. A false positive costs one zero-token read.
  */
 const GOAL_TURN = /^\/goal\b/m;
+
+// The turn's result waits on the post-turn goal read, so it is bounded twice: the
+// control spawn's own budget, and a hard grace past it for a promise that never settles.
+const POST_TURN_GOAL_READ_MS = 5_000;
+const GOAL_READ_GRACE_MS = 2_000;
 import type {
   AgentGoalCommand,
   AgentGoalCommandResult,
@@ -37,7 +42,7 @@ import { PLAYWRIGHT_MCP_ARGS, PLAYWRIGHT_MCP_COMMAND } from "../playwright-mcp.j
 import { grokResultErrorText, parseGrokLine, type GrokEvent } from "./stream.js";
 import { normalizeGrokToolCall, normalizeGrokToolResult } from "./grok-tool-normalizer.js";
 import { renderGrokConfigToml, type GrokMcpServer } from "./config-toml.js";
-import { runGrokGoalControl } from "./grok-goal.js";
+import { isGoalControlInFlight, runGrokGoalControl } from "./grok-goal.js";
 
 const GROK_CAPS = HARNESSES.find((h) => h.id === "grok")?.capabilities;
 const GROK_REASONING = GROK_CAPS?.reasoning;
@@ -161,6 +166,8 @@ export class GrokAdapter
   private lastTurnCwd: string | null = null;
   // A turn's homeDir overrides the resolver, and the goal lives under whichever one it used.
   private lastTurnHome: string | null = null;
+  private heldResult: AgentEvent | null = null;
+  private goalReadToken = 0;
   private sawResult = false;
   private sawAnyEvent = false;
   // Fatal errors have no result event; preserve their quota wording for close.
@@ -187,6 +194,7 @@ export class GrokAdapter
       return;
     }
     this.sawResult = false;
+    this.heldResult = null;
     this.sawAnyEvent = false;
     this.fatalErrorText = null;
     this.latestCallContextTokens = undefined;
@@ -195,6 +203,14 @@ export class GrokAdapter
     if (this.compactionRequested) {
       // Grok emits no compaction progress event.
       this.emit("event", { type: "agent_compaction_started", trigger: "manual" });
+    }
+
+    // The mirror of goalCommand's refusal: whichever starts first, the other waits.
+    if (params.sessionId && isGoalControlInFlight(params.sessionId)) {
+      this.emit("error", new Error(
+        "A /goal command is still running on this session. Grok's goal commands share its session files, so this turn was not started — send it again in a moment.",
+      ));
+      return;
     }
 
     this.turnSessionId = params.sessionId ?? randomUUID();
@@ -351,10 +367,14 @@ export class GrokAdapter
       this.cleanupTurnFiles();
       if (!this.sawResult) this.emitSynthesizedResult(exitCode);
       this.proc = null;
-      const done = (): void => { this.emit("done", exitCode ?? 0); };
-      // Before `done`, so the post-turn flow never races the read's own spawn.
-      if (this.turnWasGoalCommand) void this.reportGoalAfterTurn().finally(done);
-      else done();
+      const finish = (): void => {
+        const held = this.heldResult;
+        this.heldResult = null;
+        if (held) this.emit("event", held);
+        this.emit("done", exitCode ?? 0);
+      };
+      if (this.turnWasGoalCommand) void this.reportGoalAfterTurn().finally(finish);
+      else finish();
     });
   }
 
@@ -463,7 +483,10 @@ export class GrokAdapter
     }
 
     const mapped = this.mapEvent(raw);
-    if (mapped) this.emit("event", mapped);
+    // The orchestrator drains its queue on agent_result, so a goal turn holds its
+    // result until the goal read has finished; two processes must not share a session.
+    if (mapped?.type === "agent_result" && this.turnWasGoalCommand) this.heldResult = mapped;
+    else if (mapped) this.emit("event", mapped);
 
     if (raw.type === "result") {
       this.sawResult = true;
@@ -616,13 +639,27 @@ export class GrokAdapter
    * from one zero-cost `/goal status` read at the turn's end. `streaming-messages-json`
    * drops Grok's own `goal_updated` update, so the stream cannot report it.
    */
-  private async reportGoalAfterTurn(): Promise<void> {
-    try {
-      const { goal } = await this.runGoalControl(this.turnSessionId, { action: "get" });
-      this.emit("event", { type: "agent_goal_updated", goal });
-    } catch (err) {
-      console.warn(`[grok] could not read the goal after a /goal turn: ${err instanceof Error ? err.message : String(err)}`);
-    }
+  private reportGoalAfterTurn(): Promise<void> {
+    const turn = ++this.goalReadToken;
+    const read = (async () => {
+      try {
+        const { goal } = await this.runGoalControl(this.turnSessionId, { action: "get" }, POST_TURN_GOAL_READ_MS);
+        // A read that lands after its deadline belongs to a turn the orchestrator has finished.
+        if (turn === this.goalReadToken) this.emit("event", { type: "agent_goal_updated", goal });
+      } catch (err) {
+        console.warn(`[grok] could not read the goal after a /goal turn: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    })();
+    // The turn's result waits on this, so it is bounded whatever the read does.
+    let timer: NodeJS.Timeout | undefined;
+    const deadline = new Promise<void>((resolve) => {
+      timer = setTimeout(() => {
+        this.goalReadToken++;
+        console.warn("[grok] the goal read outlived its deadline — finishing the turn without it");
+        resolve();
+      }, POST_TURN_GOAL_READ_MS + GOAL_READ_GRACE_MS);
+    });
+    return Promise.race([read, deadline]).finally(() => { clearTimeout(timer); });
   }
 
   /** docs/298 — between turns only; a second process on one session writes the same goal files. */
@@ -633,9 +670,14 @@ export class GrokAdapter
     return this.runGoalControl(threadId, command);
   }
 
-  private runGoalControl(threadId: string, command: AgentGoalCommand): Promise<AgentGoalCommandResult> {
+  private runGoalControl(
+    threadId: string,
+    command: AgentGoalCommand,
+    timeoutMs?: number,
+  ): Promise<AgentGoalCommandResult> {
     const home = this.lastTurnHome ?? resolveAgentHome(this.resolveHome?.());
     return runGrokGoalControl({
+      ...(timeoutMs !== undefined ? { timeoutMs } : {}),
       threadId,
       command,
       // `-r` resolves a session by id whatever the cwd, so this only sets the trusted folder.
@@ -643,6 +685,7 @@ export class GrokAdapter
       home,
       configRoot: grokHome(home),
       binary: resolveGrokBinary(),
+      compatToggles: COMPAT_TOGGLES,
       spawnFn: this.spawnFn,
     });
   }
