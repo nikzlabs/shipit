@@ -363,10 +363,12 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
   // the command, so it is delivered alone and every notice that would have ridden
   // it is left pending for the next turn rather than eaten. Attachments are refused
   // at the entry point, so one still present here came from a machine sender —
-  // keeping its context beats dropping it silently.
+  // keeping its context beats dropping it silently. `opts.compact` is deliberately
+  // NOT an exclusion: the Claude adapter never reads that run-param, so both a
+  // user-typed `/compact` and ShipIt's own POST_MERGE_COMPACT_PROMPT (also a
+  // `/compact` invocation) compact only if the prompt is the command alone.
   const ridesTurnAsCommand =
-    !opts.compact
-    && validatedFiles.length === 0
+    validatedFiles.length === 0
     && !(images && images.length > 0)
     && isCommandInvocation(userText, agentInfo?.capabilities.skillInvocationPrefix);
 

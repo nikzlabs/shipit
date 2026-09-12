@@ -2,7 +2,7 @@ import type { AgentGoalCommand } from "../../shared/types/agent-types.js";
 import type { ConnectionCtx, RunnerCtx, AppCtx } from "./types.js";
 import { resolveRunner } from "./resolve-runner.js";
 import { getErrorMessage } from "../../shared/utils.js";
-import { emitSessionNotice } from "./session-notice.js";
+import { emitNoticeInTurn, emitNoticePostTurn } from "../chat-card-persistence.js";
 import {
   describeGoalResult,
   GOAL_ACTION_VERBS,
@@ -11,6 +11,18 @@ import {
 } from "../services/agent-goal.js";
 
 type FullCtx = ConnectionCtx & RunnerCtx & AppCtx;
+
+/** Persisted: a goal command has no bubble, so the notice is its only trace. */
+export function emitGoalNotice(
+  ctx: FullCtx,
+  sessionId: string,
+  message: string,
+  level: "info" | "warn" = "info",
+): void {
+  const runner = resolveRunner(ctx);
+  if (runner) emitNoticeInTurn(runner, sessionId, message, ctx.chatHistoryManager, level);
+  else emitNoticePostTurn((m) => { ctx.send(m); }, ctx.chatHistoryManager, sessionId, message, level);
+}
 
 /** docs/154 (req 4) — answer `/goal …` from the CLI's goal store; no turn starts. */
 export async function handleGoalCommand(
@@ -21,7 +33,7 @@ export async function handleGoalCommand(
   if (!sessionId) return;
   const runner = resolveRunner(ctx);
   const notice = (message: string, level: "info" | "warn" = "info"): void => {
-    emitSessionNotice(ctx, sessionId, message, level);
+    emitGoalNotice(ctx, sessionId, message, level);
   };
 
   const agentId = ctx.getActiveAgentId();

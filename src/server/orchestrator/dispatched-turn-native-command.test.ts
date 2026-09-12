@@ -22,12 +22,14 @@ function setup(): {
   resetCalls: () => number;
   noticeTaken: () => number;
   roleTaken: () => number;
+  bugOutcomesTaken: () => number;
 } {
   const agents: FakeAgent[] = [];
   const { deps } = makeDispatchTurnDeps(agents, []);
   let resets = 0;
   let notices = 0;
   let roles = 0;
+  let bugOutcomes = 0;
   let seen = "";
   deps.preTurnReset = async () => {
     resets += 1;
@@ -35,6 +37,19 @@ function setup(): {
   };
   deps.consumePendingAgentNotice = () => { notices += 1; return "The branch was reset."; };
   deps.takeRoleInstructions = () => { roles += 1; return "<role_instructions>Read first.</role_instructions>"; };
+  deps.consumeBugOutcomes = () => {
+    bugOutcomes += 1;
+    return [{
+      cardId: "card-1",
+      phase: "filed" as const,
+      title: "Preview never reloads",
+      body: "steps to reproduce",
+      stage2Ran: true,
+      producer: "session" as const,
+      issueNumber: 7,
+      issueUrl: "https://example.test/7",
+    }];
+  };
   deps.buildRunParams = vi.fn(async (_sid, _agentId, prompt: string) => {
     seen = prompt;
     return { prompt, cwd: "/tmp/s1" } as never;
@@ -46,6 +61,7 @@ function setup(): {
     resetCalls: () => resets,
     noticeTaken: () => notices,
     roleTaken: () => roles,
+    bugOutcomesTaken: () => bugOutcomes,
   };
 }
 
@@ -65,6 +81,7 @@ describe("dispatched turn — a command invocation arrives alone (docs/299)", ()
     // Each of these is a take or an action with no second chance this turn.
     expect(t.noticeTaken()).toBe(0);
     expect(t.roleTaken()).toBe(0);
+    expect(t.bugOutcomesTaken()).toBe(0);
     expect(t.resetCalls()).toBe(0);
   });
 
@@ -81,6 +98,7 @@ describe("dispatched turn — a command invocation arrives alone (docs/299)", ()
     expect(t.prompt()).toContain("review the auth module");
     expect(t.noticeTaken()).toBe(1);
     expect(t.roleTaken()).toBe(1);
+    expect(t.bugOutcomesTaken()).toBe(1);
   });
 
   it("keeps the origin wrapper on a sibling session's message rather than running it as a command", async () => {

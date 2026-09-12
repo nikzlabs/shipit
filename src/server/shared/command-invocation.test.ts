@@ -35,4 +35,9 @@ describe("isCommandInvocation (docs/299)", () => {
     expect(isCommandInvocation("$HOME is unset in the container", "$")).toBe(false);
     expect(isCommandInvocation("$PATH", "$")).toBe(false);
   });
+
+  it("is false for a token with no letter, so an amount is not a command", () => {
+    expect(isCommandInvocation("$100 is the budget", "$")).toBe(false);
+    expect(isCommandInvocation("/404 pages are broken", "/")).toBe(false);
+  });
 });

@@ -77,18 +77,31 @@ classifier. The prefix is the harness's existing `skillInvocationPrefix`
 capability — `/` for Claude Code, Grok and OpenCode, `$` for Codex — so the
 answer is harness-correct without a new capability field, and a `/foo` message on
 Codex (whose own commands are not `/`-prefixed in ShipIt's headless path) is
-left alone.
+left alone. Only Claude Code and Grok were measured; for Codex and OpenCode the
+declared prefix is taken at its word, and the cost of it being wrong there is a
+notice deferred by one turn, never a lost command.
 
-A command name is `[a-z0-9][a-z0-9._:-]*` up to the first whitespace. Two
-false positives are worth excluding and this excludes both: a path-first message
-(`/tmp/foo.ts is broken`) keeps a `/` inside the token, and a shell-variable
-mention (`$HOME is unset`) is uppercase. Every command in Claude Code's own
-`slash_commands` list, and every skill name in this repo, is lowercase.
+A command name is `[a-z0-9][a-z0-9._:-]*` up to the first whitespace, and must
+contain a letter. That excludes the realistic false positives: a path-first
+message (`/tmp/foo.ts is broken`) keeps a `/` inside the token, a shell-variable
+mention (`$HOME is unset`) is uppercase, and an amount (`$100 is the budget`) has
+no letter. Every command in Claude Code's own `slash_commands` list, and every
+skill name in this repo, is lowercase.
 
 ShipIt deliberately does **not** keep a list of real command names: the CLI
 reports its list in the `init` event, which arrives after the prompt has been
-assembled, and skills change per workspace. Over-matching costs a visible,
-recoverable refusal; under-matching is the silent bug being fixed.
+assembled, and skills change per workspace.
+
+**What a remaining false positive costs.** A message like `/tmp is missing` is
+still classified as a command. Nothing is destroyed — the notices and the brief
+stay pending and ride the next message, and the reset is re-evaluated then — but
+the cost is silent for that turn, not a visible refusal (only a message that
+*also* carries attachments is refused out loud). Under-matching, by contrast, is
+the silent bug being fixed. The asymmetry is why the classifier stays syntactic.
+
+**Whitespace.** All three sites deliver `text.trim()`, not the raw bytes: leading
+whitespace is exactly what stops a CLI recognising the command, so trimming is
+what makes requirement 1 true rather than a departure from it.
 
 ### What happens to everything that cannot ride
 
@@ -100,12 +113,17 @@ Nothing is consumed, so nothing is destroyed:
 | bug-outcome notice | not consumed | same |
 | role standing instructions | not taken | `takeRoleStandingInstructions` is a take; taking it here would destroy the brief |
 | dependency-gap notice | skipped | a pure function of `runner.dependencyGap`, re-derived every turn |
-| pre-turn branch reset | **not attempted** | re-evaluated at the start of every turn; its own preconditions refuse over a dirty tree, so a later attempt can never discard the command turn's work |
+| pre-turn branch reset | **not attempted** | re-evaluated at the start of every turn, and gated so a later attempt cannot discard this turn's work — see below |
 | file / image / upload context | the message is refused | req 3 — the user can resend, so saying so beats folding it into the argument |
+| `/compact` | **not** an exclusion | the Claude adapter never reads the `compact` run-param, so the CLI compacts only when the prompt is the command alone — and that covers ShipIt's own `POST_MERGE_COMPACT_PROMPT`, which is itself `/compact <instructions>`. Before this change a role brief pending on a compaction turn was taken and appended *into* those instructions |
 | dictation hint | dropped | a per-message hint, not stored state; a message that is exactly a command has no prose for the model to read for intent |
 
 The reset is the one that trades something real: a command turn runs on the
-un-reset branch. That is docs/297's shipped choice and it is kept deliberately.
+un-reset branch, and if that turn edits files the post-turn auto-commit puts them
+on it. Nothing is discarded even then — the later reset is gated on
+`computeResetBlocker`, whose ancestry and merged-head checks refuse a branch
+carrying unshipped commits (`head-moved`) exactly as they refuse a dirty tree.
+Deferring is docs/297's shipped choice and it is kept deliberately.
 The alternative — reset, then park the agent-facing prefix with
 `appendPendingAgentNotice` — would rewrite the working tree under a possibly
 resident CLI while telling it nothing this turn, which is the hazard
@@ -141,8 +159,22 @@ command delivered alone, the branch had no reachable job left.
 The refusal lives in `handleSendMessage`, before the goal interception and
 before anything is queued — so a queued or steered command can never carry
 attachments either, and the check exists once. It replaces docs/298's
-goal-specific refusal, and it also closes a smaller hole that refusal left: a
-`/goal clear` answered out of band ignored its attachment silently.
+goal-specific refusal.
+
+It is delivered as a WS **`error`**, the same channel as the auth and vision
+refusals beside it, and not as a persisted notice. The reason is client state,
+not taste: the browser has already added an optimistic user bubble and set
+`isLoading` for this send (`send-user-message.ts`), and only `handleError` clears
+them. docs/298's persisted notice was correct for a goal command the *client*
+intercepts — that path creates no bubble — but a `"turn"` goal action and every
+skill take the ordinary send path, where a notice alone leaves the session
+"Thinking…" for ever. That was a live defect in the shipped goal refusal, fixed
+here.
+
+A control-mode `/goal` still cannot be refused this way, because the client
+intercepts it and sends no attachments with it (`send-handler.ts`). Nothing is
+lost there: the early return also skips `clearPendingFiles`, so the attachments
+stay in the composer for the user's next message.
 
 ## Rejected
 
@@ -166,4 +198,3 @@ goal-specific refusal, and it also closes a smaller hole that refusal left: a
 - `src/server/orchestrator/ws-handlers/agent-execution.ts` — the interactive turn's decision.
 - `src/server/orchestrator/dispatched-turn.ts` — the dispatched turn's decision.
 - `src/server/orchestrator/ws-handlers/send-message.ts` — the attachment refusal and the steered prompt.
-- `src/server/orchestrator/ws-handlers/session-notice.ts` — `emitSessionNotice`, generalized out of `emitGoalNotice`.

@@ -5,7 +5,6 @@ import { validateImages, imageAttachmentRefusal, resolveFileAttachments, resolve
 import { parseCompactCommand } from "../../shared/compact-command.js";
 import { parseGoalCommand } from "../../shared/goal-command.js";
 import { handleGoalCommand } from "./goal-command.js";
-import { emitSessionNotice } from "./session-notice.js";
 import { isCommandInvocation } from "../../shared/command-invocation.js";
 import { modelSelectionOf } from "../session-agent-env.js";
 import { graduateSession } from "../services/graduate-session.js";
@@ -55,21 +54,19 @@ export async function handleSendMessage(
   // argument). Attachments have nowhere to go, so refuse here, before the message
   // can be queued, steered or answered out of band. An upload becomes a validated
   // file downstream, so it would append context like the rest.
+  //
+  // Refused as an `error`, not as a notice: the browser has already added an
+  // optimistic bubble and a spinner for this send, and only the error handler
+  // settles them. A notice alone leaves the session "Thinking…" for ever.
   const nativeCommand = isCommandInvocation(msg.text, caps?.skillInvocationPrefix);
-  const activeSessionForCommand = ctx.getActiveAppSessionId() ?? undefined;
-  if (
-    nativeCommand
-    && (msg.images?.length || msg.files?.length || msg.uploads?.length)
-    && activeSessionForCommand
-    && (!msg.sessionId || msg.sessionId === activeSessionForCommand)
-  ) {
-    emitSessionNotice(
-      ctx,
-      activeSessionForCommand,
-      `\`${msg.text.trimStart().split(/\s/, 1)[0]}\` reaches the agent's CLI as a command, so it `
+  if (nativeCommand && (msg.images?.length || msg.files?.length || msg.uploads?.length)) {
+    ctx.send({
+      type: "error",
+      message:
+        `\`${msg.text.trimStart().split(/\s/, 1)[0]}\` reaches the agent's CLI as a command, so it `
         + "cannot carry attachments. Send them in a separate message.",
-      "warn",
-    );
+      ...(msg.requestId ? { requestId: msg.requestId } : {}),
+    });
     return;
   }
   const mode = goalCommand

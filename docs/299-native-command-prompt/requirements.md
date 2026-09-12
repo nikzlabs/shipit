@@ -17,9 +17,10 @@ Design: [plan.md](plan.md). Remaining work: [checklist.md](checklist.md).
    standing instructions — is still pending after the command turn, and is
    delivered with the next ordinary message.
 3. A command invocation that carries attachments (files, images, uploads) is
-   refused, with a notice in the transcript telling the user to send the
-   attachments in a separate message. It is not delivered with the attachment
-   list folded into the command's argument.
+   refused, and the conversation says so, telling the user to send the
+   attachments in a separate message. The message is not delivered with the
+   attachment list folded into the command's argument, and the composer does not
+   sit waiting for a turn that never starts.
 4. Requirement 1 holds on **every** path that delivers a user's message to the
    harness: a fresh turn, a message queued while another turn runs, and a
    message steered into a running turn.
@@ -46,6 +47,13 @@ Design: [plan.md](plan.md). Remaining work: [checklist.md](checklist.md).
   loss is confined to the harness's **own** commands (`/goal`, `/context`,
   `/compact`, …), which have no tool to fall back to. Recorded here because it
   changes the size of the claim, not the fix.
+
+- 2026-09-12 — *Which surface carries the refusal?* Requirement 3 first said "a
+  notice in the transcript", copied from docs/298's goal refusal. That is wrong
+  for this feature and was wrong there: the browser adds an optimistic bubble and
+  a spinner for an ordinary send, and only the WS `error` handler settles them, so
+  a notice alone left the session "Thinking…" for ever. The requirement now states
+  the observable outcome and leaves the channel to [plan.md](plan.md).
 
 ## Requirement provenance
 

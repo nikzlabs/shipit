@@ -189,9 +189,11 @@ async function runDispatchedTurnInner(
   // the command, so it is delivered alone and nothing that would have ridden it is
   // consumed. A message wrapped with its origin is excluded: that wrapper is the
   // message's provenance, and a sibling agent's command is not the user's own text.
+  // Compaction is not an exclusion: a user's `/compact` and ShipIt's own
+  // POST_MERGE_COMPACT_PROMPT are both `/compact` invocations, and the Claude
+  // adapter compacts from the prompt rather than from the run-param.
   const nativeCommand =
-    !isCompactRequest
-    && !opts.messageOrigin
+    !opts.messageOrigin
     && !opts.agentInterface
     && validatedFiles.length === 0
     && !(images && images.length > 0)
