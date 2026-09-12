@@ -17,13 +17,12 @@ describe("settings-store permission mode", () => {
   });
 
   it("scopes per-session toggles so they do not leak between sessions", () => {
-    // Both sessions inherit the default ("auto"), then session A is flipped
+
     // into plan mode. Session B must remain on "auto".
     useSettingsStore.getState().setPermissionMode("session-a", "plan");
     expect(useSettingsStore.getState().getPermissionMode("session-a")).toBe("plan");
     expect(useSettingsStore.getState().getPermissionMode("session-b")).toBe("auto");
 
-    // Toggling session B off does NOT clobber session A.
     useSettingsStore.getState().setPermissionMode("session-b", "auto");
     expect(useSettingsStore.getState().getPermissionMode("session-a")).toBe("plan");
   });
@@ -32,15 +31,14 @@ describe("settings-store permission mode", () => {
     useSettingsStore.getState().setPermissionMode(undefined, "plan");
     expect(useSettingsStore.getState().permissionMode).toBe("plan");
 
-    // Existing per-session entries override the default.
     useSettingsStore.getState().setPermissionMode("session-a", "auto");
     expect(useSettingsStore.getState().getPermissionMode("session-a")).toBe("auto");
-    // …but a fresh session still inherits the updated default.
+
     expect(useSettingsStore.getState().getPermissionMode("session-fresh")).toBe("plan");
   });
 
   it("does not persist the GLOBAL default across reloads", () => {
-    // The pre-session default is per-conversation transient state — toggling it
+
     // (sessionId=undefined) must NOT touch the persisted per-session map.
     useSettingsStore.getState().setPermissionMode(undefined, "plan");
     expect(localStorage.getItem("vibe-permission-mode")).toBeNull();
@@ -49,16 +47,11 @@ describe("settings-store permission mode", () => {
 
   it("persists per-session mode so it survives a reload", () => {
     // Regression (plan-mode desync): a per-session toggle must be persisted so a
-    // page reload restores the session's true mode instead of falling back to
-    // the global "auto" default — the silent drift that wedged plan-pinned
-    // streaming sessions ("can't exit plan mode").
+
     useSettingsStore.getState().setPermissionMode("session-a", "plan");
 
-    // The write reached localStorage…
     expect(getSavedPermissionModeBySession()).toEqual({ "session-a": "plan" });
 
-    // …and a "reload" (store re-hydrated from localStorage, in-memory state
-    // wiped) restores the per-session mode rather than the "auto" default.
     useSettingsStore.setState({
       permissionMode: "auto",
       permissionModeBySession: getSavedPermissionModeBySession(),

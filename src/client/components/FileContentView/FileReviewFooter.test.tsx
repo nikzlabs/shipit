@@ -24,17 +24,12 @@ describe("FileReviewFooter — send gating", () => {
   });
 
   it("puts the reason in the status slot instead of adding a third element", () => {
-    // The footer is already at its width budget on a phone (Cancel + Send are
-    // ~220px of a ~289px content box), so the composing state has to reuse the
-    // draft-count slot rather than claim new horizontal space.
     const { container } = render(<FileReviewFooter {...base} canSend={false} composing />);
     expect(screen.queryByText(/comments — draft/)).not.toBeInTheDocument();
     expect(container.querySelectorAll("span.text-xs")).toHaveLength(1);
   });
 });
 
-// docs/260 — the note that framed a past review is stored with it, so it is
-// still next to the comments it explains.
 describe("FileReviewFooter — past reviews", () => {
   const sentReview = {
     id: "r1",

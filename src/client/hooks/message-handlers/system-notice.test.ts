@@ -54,7 +54,7 @@ describe("handleSystemNotice (docs/138)", () => {
     };
     handleSystemNotice(ctx, event);
     handleSystemNotice(ctx, event);
-    // No id → no dedup; both append (they live only for the rewind interaction).
+
     expect(useSessionStore.getState().messages).toHaveLength(2);
   });
 });

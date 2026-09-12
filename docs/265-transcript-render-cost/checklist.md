@@ -716,7 +716,6 @@ the spinner shows **3 distinct transforms in 300 ms** — 10 Hz, not 60.
   so whatever drives that number varies threefold across production recordings rather than being
   a fixed property of the app.
 
-
 ### Decision: no code change, and what would justify one
 
 *(Superseded by the section above, which fixes it. Kept because it is the record of what was

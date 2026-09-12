@@ -8,15 +8,6 @@ import {
 } from "./model-choice.js";
 import type { AgentOption, EligibleModelOption } from "../../agent-types.js";
 
-/**
- * docs/261 phase 6 (reqs 11, 12) — the rules behind the two Settings controls,
- * as pure functions.
- *
- * The one worth reading is {@link modelAfterServiceChange}: it is the only place
- * in the client that asks "are these the same model", and the answer is the
- * catalogue's authored key rather than a string comparison of ids.
- */
-
 const opusAnthropic: EligibleModelOption = {
   serviceId: "anthropic",
   serviceName: "Anthropic",
@@ -29,7 +20,7 @@ const opusGateway: EligibleModelOption = {
   serviceId: "openrouter",
   serviceName: "OpenRouter",
   billingMode: "key",
-  // A different STRING for the same weights — the pair the key exists for.
+
   modelId: "anthropic/claude-opus-5",
   label: "Opus 5",
   canonicalModelKey: "claude-opus-5",
@@ -65,9 +56,7 @@ function agent(id: string, eligibleModels: EligibleModelOption[], installed = tr
 
 describe("serviceKeyOf", () => {
   it("keys on the PAIR, so two modes of one service are two choices", () => {
-    // docs/252 req 5: a subscription and a key are not interchangeable, and a
-    // subscription may offer fewer models. Keying on the service alone would
-    // merge them and lose the answer to "who is paying".
+
     expect(serviceKeyOf({ serviceId: "glm", billingMode: "sub" })).not.toBe(
       serviceKeyOf({ serviceId: "glm", billingMode: "key" }),
     );
@@ -76,14 +65,14 @@ describe("serviceKeyOf", () => {
 
 describe("eligibleModelsOf", () => {
   it("counts a model reachable on two harnesses once", () => {
-    // The harness is derived (req 3), so it is not a second decision — and the
+
     // model must not appear twice as though it were.
     const models = eligibleModelsOf([agent("claude", [deepseek]), agent("codex", [deepseek])]);
     expect(models).toHaveLength(1);
   });
 
   it("ignores a harness this deployment did not install", () => {
-    // docs/252 req 14 — an uninstalled harness offers no models anywhere.
+
     const models = eligibleModelsOf([agent("codex", [deepseek], false)]);
     expect(models).toEqual([]);
   });
@@ -118,11 +107,7 @@ describe("modelsOfService", () => {
 });
 
 describe("modelAfterServiceChange", () => {
-  /**
-   * The whole reason this function is not a one-liner. An id comparison gets
-   * this exact pair wrong, and the pair is the one docs/252 built the catalogue
-   * around: a user changing only who pays would silently lose their model.
-   */
+
   it("keeps the same model across services that spell its id differently", () => {
     expect(modelAfterServiceChange(opusAnthropic, [sonnetGateway, opusGateway])).toBe(opusGateway);
   });
@@ -135,12 +120,6 @@ describe("modelAfterServiceChange", () => {
     expect(modelAfterServiceChange(undefined, [deepseek, opusGateway])).toBe(deepseek);
   });
 
-  /**
-   * The identity does not have to come from the row. A pin whose credential
-   * went away has no eligible row at all — and that is exactly when a user
-   * re-points the slot at a service that survived. The catalogue still knows
-   * what the pinned model is, so the retention rule still applies.
-   */
   it("recovers identity from the catalogue when the current model has no row", () => {
     const pinWithNoRow = {
       serviceId: "anthropic",
@@ -151,7 +130,7 @@ describe("modelAfterServiceChange", () => {
       { ...sonnetGateway },
       { ...opusGateway },
     ];
-    // Sonnet is first; Opus is the same model as the pin, so Opus wins.
+
     expect(modelAfterServiceChange(pinWithNoRow, candidates)).toBe(candidates[1]);
   });
 

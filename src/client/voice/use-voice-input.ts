@@ -31,7 +31,6 @@ function normalizeKey(key: string): string {
   return k;
 }
 
-/** Whether a held-down keyboard event matches the push-to-talk hotkey. */
 export function eventMatchesPtt(e: KeyboardEvent, hotkey: string): boolean {
   const parts = hotkey.toLowerCase().split("+").map((p) => p.trim()).filter(Boolean);
   const key = parts.find((p) => !PTT_MODIFIERS.includes(p));
@@ -54,20 +53,17 @@ export function eventMatchesPtt(e: KeyboardEvent, hotkey: string): boolean {
 }
 
 export interface UseVoiceInputOptions {
-  /** Master enable — when false the hook is fully inert (no listeners). */
+
   enabled: boolean;
-  /** Push-to-talk hotkey, e.g. "ctrl+shift+space". Empty disables the key path (button still works). */
+
   hotkey?: string;
-  /** Whether to run the server-side LLM cleanup pass. Mirrors the settings toggle. */
+
   cleanup?: boolean;
-  /** Optional language hint passed to STT + cleanup. */
+
   language?: string;
-  /** STT provider id (e.g. "openai", "deepgram"). Defaults server-side to "openai". */
+
   sttProvider?: string;
-  /**
-   * Current session id. A change aborts an in-flight recording and
-   * discards the audio (the user switched sessions mid-press).
-   */
+
   sessionId?: string;
 }
 
@@ -75,7 +71,7 @@ export interface VoiceInputApi {
   state: VoiceInputState;
   elapsedMs: number;
   errorMessage: string | null;
-  /** Non-fatal warning surfaced when cleanup fell through to the raw transcript. */
+
   cleanupWarning: string | null;
   /**
    * True only in the error state, when the failure happened *after* the audio
@@ -87,27 +83,14 @@ export interface VoiceInputApi {
   canRetryTranscription: boolean;
   startRecording: () => void;
   stopRecording: () => void;
-  /**
-   * Discard the in-flight recording without transcribing (the "Cancel"
-   * gesture). No-op once transcription has begun — the audio is already
-   * captured and on its way to the server.
-   */
+
   cancelRecording: () => void;
-  /**
-   * Re-send the last captured audio to the STT endpoint without re-recording.
-   * The robust retry for a transient transcription failure (network blip,
-   * provider hiccup) — the user doesn't repeat themselves. No-op when there is
-   * no retained audio (see `canRetryTranscription`).
-   */
+
   retryTranscription: () => void;
-  /** Subscribe to cleaned transcripts. Returns an unsubscribe fn. Text-only by design. */
+
   onTranscript: (cb: (text: string) => void) => () => void;
   dismissError: () => void;
-  /**
-   * Clear the cleanup warning. Called once the warned-about transcript has left
-   * the input (the user sent it to the agent) so the notice doesn't linger on a
-   * now-empty composer.
-   */
+
   dismissCleanupWarning: () => void;
 }
 
@@ -132,20 +115,16 @@ export function useVoiceInput(options: UseVoiceInputOptions): VoiceInputApi {
   const [cleanupWarning, setCleanupWarning] = useState<string | null>(null);
   const [canRetryTranscription, setCanRetryTranscription] = useState(false);
 
-  // The last captured audio, retained when a transcription fails so it can be
-  // resent without re-recording. Cleared on success, on a fresh recording, and
   // on dismiss/abort so we never resend stale audio into the wrong session.
   const pendingAudioRef = useRef<{ blob: Blob; mimeType: string } | null>(null);
   const captureRef = useRef<ActiveCapture | null>(null);
   const subscribersRef = useRef<Set<(text: string) => void>>(new Set());
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const startedAtRef = useRef(0);
-  // Latest config for use inside event listeners without re-binding them.
+
   const cfgRef = useRef({ cleanup, language, sttProvider });
   cfgRef.current = { cleanup, language, sttProvider };
-  // Live session id so a startCapture() that resolves AFTER a session switch
-  // can discard its recording — the abort effect can't catch a capture that
-  // wasn't assigned to captureRef yet (plan: switch mid-record → insert nothing).
+
   const sessionIdRef = useRef(sessionId);
   sessionIdRef.current = sessionId;
 
@@ -159,8 +138,7 @@ export function useVoiceInput(options: UseVoiceInputOptions): VoiceInputApi {
 
   const transcribe = useCallback(async (blob: Blob, mimeType: string) => {
     setState("transcribing");
-    // Retain the audio for the duration of the round-trip so a failure can be
-    // resent verbatim. Cleared again on success below.
+
     pendingAudioRef.current = { blob, mimeType };
     try {
       const form = new FormData();
@@ -168,7 +146,7 @@ export function useVoiceInput(options: UseVoiceInputOptions): VoiceInputApi {
       form.append("cleanup", String(cfgRef.current.cleanup));
       if (cfgRef.current.language) form.append("language", cfgRef.current.language);
       if (cfgRef.current.sttProvider) form.append("sttProvider", cfgRef.current.sttProvider);
-      // mimeType travels with the blob; included as a field for servers that prefer it.
+
       form.append("mimeType", mimeType);
 
       const res = await fetch("/api/voice/transcribe", { method: "POST", body: form });
@@ -237,16 +215,16 @@ export function useVoiceInput(options: UseVoiceInputOptions): VoiceInputApi {
     if (state === "transcribing") return;
     setErrorMessage(null);
     setCleanupWarning(null);
-    // Starting fresh: drop any audio retained from a previous failed attempt.
+
     pendingAudioRef.current = null;
     setCanRetryTranscription(false);
-    // Mark intent synchronously so a fast keyup still finds an active recording.
+
     startedAtRef.current = Date.now();
     const startedSessionId = sessionIdRef.current;
     void (async () => {
       try {
         const capture = await startCapture();
-        // A session switch or stop may have happened during getUserMedia.
+
         if (!enabled || sessionIdRef.current !== startedSessionId) { capture.abort(); return; }
         captureRef.current = capture;
         setState("recording");
@@ -294,12 +272,9 @@ export function useVoiceInput(options: UseVoiceInputOptions): VoiceInputApi {
     setCleanupWarning(null);
   }, []);
 
-  // Hotkey push-to-talk listeners. A null target while disabled / hotkey-less
-  // reproduces the old `if (!enabled || !hotkey) return` gate; the latest
-  // `hotkey` / `startRecording` / `stopRecording` fire via the latest-callback ref.
   const pttTarget = enabled && hotkey ? window : null;
   useEventListener(pttTarget, "keydown", (e) => {
-    if (e.repeat) return; // autorepeat — first keydown already started
+    if (e.repeat) return;                                              
     if (!hotkey || !eventMatchesPtt(e, hotkey)) return;
     e.preventDefault();
     startRecording();
@@ -310,23 +285,13 @@ export function useVoiceInput(options: UseVoiceInputOptions): VoiceInputApi {
     stopRecording();
   });
 
-  // Stop (and transcribe) when the user tabs away mid-press — keyup is
-  // unreliable once focus leaves the window.
   useEventListeners([
     {
       target: enabled ? window : null,
       type: "blur",
       handler: () => {
         if (!captureRef.current) return;
-        // A window blur also fires when focus moves *into* an embedded iframe —
-        // e.g. ShipIt's preview pane hot-reloading after the active session's
-        // agent edits files, then autofocusing an input inside the reloaded
-        // page. That is NOT the user tabbing away, and finalizing here cuts a
-        // dictation short at a moment the user can't predict (the bug: voice
-        // "randomly stops" while another session's agent is working). On a real
-        // tab/app switch `activeElement` stays on `<body>`; an iframe focus-steal
-        // makes it the `<iframe>` element. Skip the latter — an actual tab *hide*
-        // is still caught by the visibilitychange handler below.
+
         if (document.activeElement instanceof HTMLIFrameElement) return;
         void finishRecording();
       },
@@ -340,16 +305,12 @@ export function useVoiceInput(options: UseVoiceInputOptions): VoiceInputApi {
     },
   ]);
 
-  // Session switch mid-recording → discard audio, insert nothing. Also drop a
-  // lingering cleanup warning: it described the previous session's transcript
-  // and is no longer relevant on the session the user just moved to.
   // eslint-disable-next-line no-restricted-syntax -- abort capture when the active session changes
   useEffect(() => {
     abortRecording();
     setCleanupWarning(null);
   }, [sessionId, abortRecording]);
 
-  // Unmount cleanup.
   // eslint-disable-next-line no-restricted-syntax -- release MediaRecorder/timers on unmount
   useEffect(() => () => {
     clearTimers();

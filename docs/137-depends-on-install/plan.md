@@ -62,7 +62,7 @@ services:
     image: node:24-slim
     command: npm run dev -- --host 0.0.0.0 --port 3000
     x-shipit-preview: auto
-    x-shipit-depends-on-install: true   # default — gate on install
+    x-shipit-depends-on-install: true
 ```
 
 **Default: opt-out (`true`).** Every `preview: auto` service waits for

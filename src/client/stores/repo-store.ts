@@ -2,7 +2,6 @@ import { create } from "zustand";
 import type { RepoInfo } from "../../server/shared/types.js";
 import { getSavedActiveRepo, saveActiveRepo, getSavedCollapsedRepos, saveCollapsedRepos, getSavedCollapsedParents, saveCollapsedParents, getSavedCollapsedResolved, saveCollapsedResolved, getSavedExpandedResolvedChildren, saveExpandedResolvedChildren, getSavedOpsCollapsed, saveOpsCollapsed, getSavedSandboxCollapsed, saveSandboxCollapsed, getSavedHiddenReposCollapsed, saveHiddenReposCollapsed } from "../utils/local-storage.js";
 
-/** Buffers SSE status updates that arrive before addRepo stores the repo. */
 const pendingStatusUpdates = new Map<string, "cloning" | "ready">();
 
 interface RepoState {
@@ -11,18 +10,9 @@ interface RepoState {
   addRepoDialogOpen: boolean;
   newRepoDialogOpen: boolean;
   collapsedRepos: Set<string>;
-  /**
-   * Parent session IDs whose agent-spawned children are hidden in the sidebar.
-   * Per-parent so a user can collapse one busy parent's brood without affecting
-   * the rest. Persisted to localStorage — see [[collapse-spawned-sessions]].
-   */
+
   collapsedParents: Set<string>;
-  /**
-   * docs/161 — repo URLs whose "Recently resolved" sub-section is collapsed.
-   * Per-repo (like {@link collapsedRepos}) so the multi-repo user can tuck away
-   * the resolved list on a noisy repo while keeping it open on the one they're
-   * actively shipping. Absence = expanded (the default). Persisted to localStorage.
-   */
+
   collapsedResolved: Set<string>;
   /**
    * Root session IDs whose RESOLVED spawned children are shown. Note the
@@ -32,14 +22,13 @@ interface RepoState {
    * for a merged child is dead weight. Persisted to localStorage.
    */
   expandedResolvedChildren: Set<string>;
-  /** Whether the "Host / Ops" sidebar group is collapsed. Persisted to localStorage. */
+
   opsCollapsed: boolean;
-  /** docs/211 — whether the "Sandbox" sidebar group is collapsed. Persisted to localStorage. */
+
   sandboxCollapsed: boolean;
-  /** docs/222 — whether the "Hidden" repos sidebar section is collapsed. Persisted; defaults collapsed. */
+
   hiddenReposCollapsed: boolean;
 
-  // Actions
   setRepos: (repos: RepoInfo[]) => void;
   setActiveRepoUrl: (url: string | undefined) => void;
   setAddRepoDialogOpen: (open: boolean) => void;
@@ -55,42 +44,17 @@ interface RepoState {
   toggleHiddenReposCollapsed: () => void;
   reset: () => void;
 
-  // Async actions
   addRepo: (url: string) => Promise<RepoInfo | null>;
   removeRepo: (url: string) => Promise<boolean>;
-  /**
-   * docs/222 — hide/show a repo in the sidebar. Pure visibility toggle (no
-   * sessions archived, no disk reclaimed). Flips the repo's `hidden` flag
-   * optimistically so the sidebar updates instantly, then PATCHes. The server
-   * broadcasts `repo_list`, which re-sets the authoritative list (a no-op when
-   * the optimistic update was correct). Reverts on failure.
-   */
+
   setRepoHidden: (url: string, hidden: boolean) => Promise<boolean>;
-  /**
-   * docs/287 — may agents merge their own pull requests in this repository?
-   * Same optimistic-then-PATCH shape as `setRepoHidden`; the server is the
-   * authority and a failed write rolls the toggle back.
-   */
+
   setRepoAllowAgentMerge: (url: string, allow: boolean) => Promise<boolean>;
-  /**
-   * docs/254 — set a repo's identity color (palette index) for the sidebar's
-   * per-repo group edge. Same optimistic-then-PATCH shape as `setRepoHidden`,
-   * so the edge and the picker's selected swatch both change on click.
-   */
+
   setRepoColorIndex: (url: string, colorIndex: number) => Promise<boolean>;
-  /**
-   * Reorder repos in the sidebar. Applies the new order optimistically to
-   * the local list (so the drop feels instant) and persists to the server.
-   * Server then broadcasts `repo_list` over SSE — that re-sets the list
-   * from the authoritative source, which is a no-op when our optimistic
-   * update was correct.
-   */
+
   reorderRepos: (urls: string[]) => Promise<boolean>;
-  /**
-   * docs/178 — grant trust to a remote (trust-on-first-use). Flips the repo's
-   * `trusted` flag only after the server accepts consent. The response and
-   * subsequent `repo_list` SSE are authoritative (docs/243).
-   */
+
   trustRepo: (url: string) => Promise<boolean>;
   claimSession: (url: string, signal?: AbortSignal) => Promise<{ sessionId: string; sessionDir: string } | null>;
 }
@@ -111,7 +75,7 @@ export const useRepoStore = create<RepoState>((set, get) => ({
   setRepos: (repos) => {
     const { activeRepoUrl } = get();
     const urls = new Set(repos.map((r) => r.url));
-    // If active repo was removed, fall back to first repo
+
     const nextActive = activeRepoUrl && urls.has(activeRepoUrl)
       ? activeRepoUrl
       : repos[0]?.url;
@@ -132,7 +96,7 @@ export const useRepoStore = create<RepoState>((set, get) => ({
     set((state) => {
       const found = state.repos.some((r) => r.url === url);
       if (!found) {
-        // Repo not in store yet (addRepo POST still in-flight) — buffer for later
+
         pendingStatusUpdates.set(url, status);
         return state;
       }
@@ -220,7 +184,7 @@ export const useRepoStore = create<RepoState>((set, get) => ({
       const data = await res.json() as { repo?: RepoInfo };
       if (data.repo) {
         const repo = data.repo;
-        // Apply any SSE status update that arrived before this response
+
         const buffered = pendingStatusUpdates.get(repo.url);
         if (buffered) {
           repo.status = buffered;
@@ -229,7 +193,7 @@ export const useRepoStore = create<RepoState>((set, get) => ({
         set((state) => {
           const existing = state.repos.findIndex((r) => r.url === repo.url);
           if (existing >= 0) {
-            // Don't downgrade status from "ready" to "cloning"
+
             const merged = state.repos[existing].status === "ready" && repo.status === "cloning"
               ? { ...repo, status: "ready" as const }
               : repo;
@@ -250,11 +214,7 @@ export const useRepoStore = create<RepoState>((set, get) => ({
 
   reorderRepos: async (urls) => {
     const prevRepos = get().repos;
-    // Optimistic update: reorder the list locally so the drop feels instant.
-    // We rebuild the array by mapping urls → existing RepoInfo (skipping any
-    // unknown urls), then appending any repos that weren't in the urls list
-    // (defensive: a concurrent add could land an extra repo locally before
-    // the drop completes).
+
     const byUrl = new Map(prevRepos.map((r) => [r.url, r]));
     const reordered: RepoInfo[] = [];
     const seen = new Set<string>();
@@ -280,7 +240,7 @@ export const useRepoStore = create<RepoState>((set, get) => ({
         body: JSON.stringify({ urls }),
       });
       if (!res.ok) {
-        // Revert optimistic update on failure
+
         set({ repos: prevRepos });
         return false;
       }
@@ -312,7 +272,7 @@ export const useRepoStore = create<RepoState>((set, get) => ({
   setRepoHidden: async (url, hidden) => {
     const apply = (h: boolean) =>
       set((state) => ({ repos: state.repos.map((r) => (r.url === url ? { ...r, hidden: h } : r)) }));
-    // Optimistic — the repo leaves/returns to the sidebar immediately.
+
     apply(hidden);
     try {
       const res = await fetch(`/api/repos/${encodeURIComponent(url)}`, {
@@ -394,7 +354,7 @@ export const useRepoStore = create<RepoState>((set, get) => ({
       if (get().repos.find((r) => r.url === url)?.colorIndex !== colorIndex) return;
       apply(previous);
     };
-    // Optimistic — the sidebar edge and the picker's tick move on click.
+
     apply(colorIndex);
     try {
       const res = await fetch(`/api/repos/${encodeURIComponent(url)}`, {
@@ -440,7 +400,7 @@ export const useRepoStore = create<RepoState>((set, get) => ({
   claimSession: async (url, signal) => {
     const { usePreviewStore } = await import("./preview-store.js");
     try {
-      // Show startup steps immediately — fetch is "running" while the HTTP call is in flight
+
       usePreviewStore.getState().initStartupSteps();
       const res = await fetch(`/api/repos/${encodeURIComponent(url)}/claim-session`, {
         method: "POST",
@@ -452,7 +412,7 @@ export const useRepoStore = create<RepoState>((set, get) => ({
         return null;
       }
       const data = await res.json() as { sessionId: string; sessionDir: string; fetchDurationMs?: number };
-      // Mark fetch step complete with server-reported duration
+
       usePreviewStore.getState().setStartupStep({
         stepId: "fetch",
         status: "complete",

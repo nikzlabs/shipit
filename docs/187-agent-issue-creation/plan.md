@@ -66,7 +66,6 @@ Add creation to the unified `Tracker` interface, next to docs/177's write method
 
 ```ts
 interface Tracker {
-  // …existing read (docs/175) + write (docs/177) methods…
   createIssue(input: { title: string; body: string }): Promise<TrackerIssue>;
 }
 ```

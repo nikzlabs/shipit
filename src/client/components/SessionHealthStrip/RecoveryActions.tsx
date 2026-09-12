@@ -1,13 +1,4 @@
-/**
- * RecoveryActions — the right side of the SessionHealthStrip top row: the
- * details toggle, the Diagnostics button, and the three recovery actions
- * (Kill agent, Restart agent, Rescue session). Owns the recovery handler
- * logic and the local "killing" spinner state.
- *
- * The recovery actions let the user recover from a hung session without
- * opening a terminal outside ShipIt. See docs/112-container-recovery,
- * docs/124-session-rescue-and-diagnostics, and docs/127-restart-agent.
- */
+
 
 import { useState, useCallback } from "react";
 import { Spinner } from "../Spinner.js";
@@ -26,17 +17,13 @@ import type { RestartContainerResult } from "./utils/healthState.js";
 
 export interface RecoveryActionsProps {
   sessionId: string;
-  /** Whether a restart is in flight (disables actions, shows spinners). */
+
   isRestarting: boolean;
-  /** Whether the agent can be killed (worker reachable + agent running). */
+
   canKillAgent: boolean;
-  /** Re-poll container health. Called after kill/restart. */
+
   poll: () => Promise<void>;
-  /**
-   * Called after a successful container restart to force the per-session
-   * WebSocket to reconnect. Reconnection triggers session activation,
-   * which causes the runner factory to create a fresh container.
-   */
+
   onReconnectWs: () => void;
   showDetails: boolean;
   onToggleDetails: () => void;
@@ -81,13 +68,9 @@ export function RecoveryActions({
       const result = await api.post<RestartContainerResult>(
         `/api/sessions/${sessionId}/container/restart`,
       );
-      // Triggering a fresh WS handshake makes the session worker reattach
-      // to the new container the recovery service just kicked off.
+
       onReconnectWs();
-      // If the server already saw a definitive outcome inside its readiness
-      // window, surface it without waiting for the next poll. We re-read
-      // rescueState from the live store so a concurrent poll that flipped
-      // it to "ready" doesn't get clobbered here.
+
       if (result.newContainerState === "running") {
         const rs = useSessionStore.getState().rescueState;
         if (rs && rs.phase !== "ready" && rs.phase !== "failed") {
@@ -120,16 +103,6 @@ export function RecoveryActions({
     }
   }, [api, sessionId, onReconnectWs, poll, setRescueState, setActionError]);
 
-  /**
-   * Restart the agent container only — leaves the compose stack running.
-   * Lighter-weight than Rescue session; intended for "the agent is wedged
-   * but the compose preview is fine." See docs/127-restart-agent.
-   *
-   * Uses the same overlay state machine as `onRestart` (the new container
-   * goes through `destroying_container` → `creating_container` → `ready`
-   * server-side) so the strip's existing poll-driven finalize logic
-   * applies unchanged.
-   */
   const onRestartAgent = useCallback(async () => {
     if (!sessionId) return;
     const startedAt = Date.now();

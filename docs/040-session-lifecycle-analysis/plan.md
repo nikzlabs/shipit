@@ -19,16 +19,16 @@ Each session has **two IDs**:
 
 ```typescript
 {
-  id: string;                                    // App session UUID
-  title: string;                                 // Display name (auto-generated from first message)
-  createdAt: string;                             // ISO timestamp
-  lastUsedAt: string;                            // ISO timestamp (updated on every access)
-  workspaceDir?: string;                         // /workspace/sessions/{uuid}/
-  agentSessionId?: string;                       // Claude CLI session ID (for --resume)
-  remoteUrl?: string;                            // Cached git origin URL
-  archived?: boolean;                            // Soft-delete flag
-  branch?: string;                               // Branch name (worktree sessions)
-  sessionType?: "standalone" | "worktree";       // Type indicator
+  id: string;
+  title: string;
+  createdAt: string;
+  lastUsedAt: string;
+  workspaceDir?: string;
+  agentSessionId?: string;
+  remoteUrl?: string;
+  archived?: boolean;
+  branch?: string;
+  sessionType?: "standalone" | "worktree";
 }
 ```
 

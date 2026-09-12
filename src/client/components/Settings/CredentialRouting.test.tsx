@@ -43,7 +43,6 @@ function account(id: string, isPrimary = false): CredentialRoute {
   };
 }
 
-/** Records every PUT /api/settings body; resolves ok unless `fail` is set. */
 function installFetch(options: { fail?: boolean } = {}) {
   const calls: { url: string; method: string; body: unknown }[] = [];
   const fetchMock = vi.fn((input: string | URL, init?: RequestInit) => {
@@ -58,10 +57,6 @@ function installFetch(options: { fail?: boolean } = {}) {
   return calls;
 }
 
-/**
- * docs/252 — the routing settings for Claude's accounts live under Anthropic's
- * SUBSCRIPTION mode, not under the agent id. Same key the server writes.
- */
 const ROUTING_KEY = "anthropic:sub";
 
 const CUTOFF_PROPS = {
@@ -71,7 +66,6 @@ const CUTOFF_PROPS = {
   provider: "claude",
 } as const;
 
-/** The rows render alongside so a failed save has its notice slot on screen. */
 function renderCutoffs() {
   return render(
     <>
@@ -220,22 +214,14 @@ describe("failover cutoffs", () => {
       expect(useSettingsStore.getState().failoverCutoffs[ROUTING_KEY]).toEqual({ session: 90, weekly: 90 }),
     );
     await waitFor(() => expect(input.value).toBe("90"));
-    // docs/257 req 5 — the rollback reports itself on the card, not as a global
+
     // toast. The notice lives in the store precisely because this save can be
-    // flushed from an unmount cleanup, after the component's state is gone.
+
     expect(screen.getByTestId("provider-accounts-notice-claude")).toHaveTextContent("failover cutoff");
     expect(useUiStore.getState().toast).toBeNull();
   });
 });
 
-/**
- * docs/252 — one selection-mode control, keyed by `(service, billing mode)`.
- *
- * There used to be two: a per-harness one on the accounts card and a
- * per-`(service, mode)` one on the string-delivered card, both writing
- * `accountSelectionMode["anthropic:sub"]` for Anthropic. Only one could ever be
- * on screen, so the duplication was invisible until the two cards became one.
- */
 describe("credential selection mode", () => {
   const SELECTION_PROPS = {
     serviceId: "anthropic",
@@ -311,7 +297,7 @@ describe("the routing band keeps all four of its strings (docs/252 req 19)", () 
     expect(
       screen.getByRole("radiogroup", { name: "How ShipIt picks between these accounts" }),
     ).toBeInTheDocument();
-    // …and NOT as a tooltip, which would have no trigger of its own.
+
     expect(screen.queryByText("How ShipIt picks between these accounts")).toBeNull();
   });
 
@@ -327,8 +313,7 @@ describe("the routing band keeps all four of its strings (docs/252 req 19)", () 
 
     await user.unhover(screen.getByTestId(`credential-selection-mode-${ROUTING_KEY}-strict`));
     await user.hover(screen.getByTestId(`credential-selection-mode-${ROUTING_KEY}-balanced`));
-    // The only label that shortens on screen — its full name leads its tooltip,
-    // so nothing is available only in the short form.
+
     expect(await screen.findAllByText("Spread across accounts")).not.toHaveLength(0);
     expect(await screen.findAllByText(
       "New sessions go to whichever account has been used least, so quota drains evenly. "

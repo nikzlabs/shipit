@@ -50,8 +50,6 @@
     margin: 34px 0 14px; display: flex; align-items: center; gap: 8px;
   }
   h2.section .count { color: var(--text-3); font-weight: 600; }
-
-  /* Cards */
   .card {
     background: var(--card); border: 1px solid var(--border);
     border-radius: 14px; padding: 16px 16px 14px; margin-bottom: 14px;
@@ -78,8 +76,6 @@
   }
   .gate .k { font-size: 14px; line-height: 1.3; }
   .gate b { color: var(--text); font-weight: 600; }
-
-  /* Chip preview — mirrors the actual UI pill */
   .chip {
     display: inline-flex; align-items: center; gap: 7px;
     border: 1px solid var(--border); background: var(--card-2);
@@ -108,8 +104,6 @@
     border-top: 1px solid var(--border); padding-top: 9px;
   }
   .src span { color: var(--text-2); }
-
-  /* Ruled-out list */
   .out { background: var(--card); border: 1px solid var(--border); border-radius: 14px; overflow: hidden; }
   .out-row { padding: 13px 16px; border-bottom: 1px solid var(--border); }
   .out-row:last-child { border-bottom: 0; }
@@ -120,8 +114,6 @@
   .out-row .t .x { color: var(--red); font-weight: 700; }
   .out-row .r { font-size: 13.5px; color: var(--text-3); }
   .out-row .r b { color: var(--text-2); font-weight: 600; }
-
-  /* Open questions */
   .q { background: var(--card); border: 1px solid var(--border); border-radius: 14px; padding: 6px 18px; }
   .q li { margin: 12px 0; font-size: 14.5px; color: var(--text-2); }
   .q li b { color: var(--text); font-weight: 600; }
@@ -147,8 +139,6 @@
     <br><br>
     <strong>Scope from your feedback:</strong> sandbox sessions get <strong>no</strong> launchpad (power users). Dropped <strong>“Open a PR”</strong> (automatic, not a discovery) and <strong>“Write tests”</strong> (not ShipIt-specific).
   </div>
-
-  <!-- ===================== RECOMMENDED ===================== -->
   <h2 class="section">✅ Recommended set <span class="count">· 3 always-on + 1 conditional</span></h2>
 
   <div class="bar" style="border-left-color: var(--green); margin-top: 0;">
@@ -202,8 +192,6 @@
     <p class="why">The one you flagged: file a <b>redacted, consent-gated</b> ShipIt bug straight from chat. Works at any time, and turns a frustrated moment into a filed issue.</p>
     <div class="src">README: <span>“bug-report secret redaction” (Security)</span></div>
   </div>
-
-  <!-- ===================== MAYBE ===================== -->
   <h2 class="section">🤔 Also possible <span class="count">· weaker on one axis</span></h2>
 
   <div class="card">
@@ -249,8 +237,6 @@
     <p class="why">The most natural first action in an unfamiliar repo — but it's a <b>generic LLM ability, not ShipIt-specific</b>. Great onboarding, weak on the “ShipIt-specific” axis. Best candidate for a 5th, soft on-ramp.</p>
     <div class="src">Capability: <span>generic</span></div>
   </div>
-
-  <!-- ===================== RULED OUT ===================== -->
   <h2 class="section">❌ Ruled out <span class="count">· with reasons</span></h2>
   <div class="out">
     <div class="out-row">
@@ -270,8 +256,6 @@
       <div class="r">A real ShipIt capability, but <b>never a first-message task</b> — it presupposes shippable work.</div>
     </div>
   </div>
-
-  <!-- ===================== QUESTIONS ===================== -->
   <h2 class="section">Your call</h2>
   <ul class="q">
     <li><b>Decided:</b> cross-agent chip is in, gated to two-agent users; same-agent review chip dropped (overlap).</li>

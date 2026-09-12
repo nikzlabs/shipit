@@ -39,7 +39,7 @@ describe("PermissionModeSelector", () => {
     render(
       <PermissionModeSelector mode="guarded" onChange={vi.fn()} agents={claudeAll} activeAgentId="claude" modelInfo={sonnet} />,
     );
-    // docs/260-composer-toolbar-layout req 17 — the badge names the mode alone; "mode" was 34px of nothing.
+
     expect(screen.getByTestId("permission-mode-selector")).toHaveTextContent("Guarded");
     expect(screen.getByTestId("permission-mode-selector")).not.toHaveTextContent("Guarded mode");
   });
@@ -93,10 +93,6 @@ describe("PermissionModeSelector", () => {
   });
 });
 
-/**
- * docs/285 — the control's second job. Network containment shares this menu
- * rather than taking a pill of its own in the composer row (reqs 5, 6).
- */
 describe("PermissionModeSelector — the Network section (docs/285)", () => {
   const network = (over: Partial<NetworkSectionProps> = {}): NetworkSectionProps => ({
     mode: "inherit",
@@ -125,8 +121,7 @@ describe("PermissionModeSelector — the Network section (docs/285)", () => {
     const user = userEvent.setup();
     renderWith(network());
     await user.click(screen.getByTestId("permission-mode-selector"));
-    // Both sections are reachable in a single open, which is the whole shape:
-    // a setting reached this rarely should not also cost a navigation step.
+
     expect(screen.getByTestId("permission-mode-option-plan")).toBeInTheDocument();
     expect(screen.getByTestId("network-mode-option-contained")).toBeInTheDocument();
   });
@@ -135,9 +130,9 @@ describe("PermissionModeSelector — the Network section (docs/285)", () => {
     const codex: AgentOption[] = [
       { id: "codex", name: "Codex", installed: true, hasRunnableModels: true, models: ["gpt-5"], supportsReview: false, supportedPermissionModes: [] },
     ];
-    // Without a network section this control hides for Codex (asserted above).
+
     // With one it must not, or picking the harness would take the session's
-    // network setting away as a side effect.
+
     renderWith(network(), codex, "codex");
     expect(screen.getByTestId("permission-mode-selector")).toBeInTheDocument();
   });
@@ -150,8 +145,7 @@ describe("PermissionModeSelector — the Network section (docs/285)", () => {
   });
 
   it("states the effective mode on the trigger in BOTH states, and says an explicit pick overrides (req 10)", () => {
-    // The common state has to be readable too, and there is no hover on touch —
-    // so the accessible name carries it rather than a tint.
+
     const { unmount } = renderWith(network());
     expect(screen.getByTestId("permission-mode-selector")).toHaveAccessibleName(
       /inheriting the workspace setting \(currently Contained\)/i,
@@ -160,7 +154,7 @@ describe("PermissionModeSelector — the Network section (docs/285)", () => {
 
     renderWith(network({ mode: "open" }));
     const trigger = screen.getByTestId("permission-mode-selector");
-    // "Open" alone would not say the choice is PINNED, which is the part req 10
+
     // asks to be stated and exactly what a colour cannot carry.
     expect(trigger).toHaveAccessibleName(/Open, overriding the workspace setting/i);
     expect(trigger).toHaveTextContent("Open");
@@ -177,8 +171,7 @@ describe("PermissionModeSelector — the Network section (docs/285)", () => {
     renderWith(network({ mode: "contained", enforcementStatus: "disabled" }));
     await user.click(screen.getByTestId("permission-mode-selector"));
     const warning = screen.getByTestId("network-enforcement-warning");
-    // The two inactive deployments have OPPOSITE consequences. This one starts
-    // the session and runs it open; saying it "will not start" is the other case.
+
     expect(warning).toHaveTextContent(/still runs with open network access/i);
     expect(warning).toHaveTextContent(/SESSION_EGRESS_ENFORCE=0/);
     expect(warning).not.toHaveTextContent(/will not start/i);
@@ -195,7 +188,7 @@ describe("PermissionModeSelector — the Network section (docs/285)", () => {
 
   it("says nothing about enforcement while the session resolves to Open", async () => {
     const user = userEvent.setup();
-    // Open is not claiming protection, so there is no gap between claim and
+
     // reality to report — even on a deployment that cannot enforce.
     renderWith(network({ mode: "open", enforcementStatus: "disabled" }));
     await user.click(screen.getByTestId("permission-mode-selector"));
@@ -208,8 +201,7 @@ describe("PermissionModeSelector — the Network section (docs/285)", () => {
     await user.click(screen.getByTestId("permission-mode-selector"));
     const note = screen.getByTestId("network-mode-first-turn-note");
     expect(note).toHaveTextContent(/In force from this session.s first turn/i);
-    // A trusted repo's `agent.install` may already have run in the warm
-    // container under the workspace default — stated rather than left implied.
+
     expect(note).toHaveTextContent(/Setup that has already run/i);
   });
 
@@ -220,9 +212,6 @@ describe("PermissionModeSelector — the Network section (docs/285)", () => {
     expect(screen.getByTestId("network-mode-pending-note")).toBeInTheDocument();
     unmount();
 
-    // `pendingRestart` is the server's verdict about the LIVE container, not a
-    // re-derivation from "the mode is non-default": a session already started in
-    // the resolved containment has nothing pending.
     renderWith(network({ beforeFirstTurn: false, pendingRestart: false, mode: "contained" }));
     await user.click(screen.getByTestId("permission-mode-selector"));
     expect(screen.queryByTestId("network-mode-pending-note")).not.toBeInTheDocument();

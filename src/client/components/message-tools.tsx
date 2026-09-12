@@ -29,14 +29,12 @@ import { isTaskListTool } from "../../server/shared/task-list-tools.js";
 import { useLazyToolInput } from "../hooks/useLazyToolInput.js";
 import type { ToolUseBlock, ToolResultBlock } from "./MessageList.js";
 
-/** Scrollable container for consecutive tool calls. Max 5 lines, auto-scrolls during streaming. */
 export function ToolCallGroup({ items, isStreaming }: {
   items: { tool: ToolUseBlock; result?: ToolResultBlock; isLast: boolean }[];
   isStreaming: boolean;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
 
-  // Auto-scroll to bottom when new tools are added during streaming
   // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {
     if (isStreaming && scrollRef.current) {
@@ -67,17 +65,12 @@ export function ToolCallGroup({ items, isStreaming }: {
 
 export function ToolUseItem({ tool, result, isLast, isStreaming, onAnswerQuestion, onSendFollowUp, isQuestionDisabled, grouped: _grouped, planContent }: { tool: ToolUseBlock; result?: ToolResultBlock; isLast: boolean; isStreaming: boolean; onAnswerQuestion?: AnswerQuestionFn; onSendFollowUp?: (text: string) => void; isQuestionDisabled: boolean; grouped?: boolean; planContent?: string }) {
   // IMPORTANT: all hooks must be called before any conditional `return` below.
-  // `tool.name` and `tool.input` can change between renders while a tool is
-  // streaming in (e.g. `AskUserQuestion` only matches once `input.questions`
-  // arrives as an array), and any branch that returns early before this hook
-  // would change the hook count across renders → React error #310.
+
   const [showModal, setShowModal] = useState(false);
 
-  // Show a spinner on the last tool when the message is still streaming
   const inProgress = isLast && isStreaming && !result;
   const hasResult = !!result;
 
-  // Render file-modifying tools as diff blocks
   if (tool.name === "Edit") {
     const filePath = (tool.input.file_path as string) ?? "unknown";
     const oldString = tool.input.old_string !== null && tool.input.old_string !== undefined ? (tool.input.old_string as string) : undefined;
@@ -113,9 +106,6 @@ export function ToolUseItem({ tool, result, isLast, isStreaming, onAnswerQuestio
     );
   }
 
-  // Codex's apply_patch — render one diff block per changed file, mirroring
-  // how Claude's Edit/Write render. `changes` carries { path, kind, diff };
-  // older payloads only have `files` (paths, no diff) — render those as bare lines.
   if (tool.name === "apply_patch") {
     const changes = Array.isArray(tool.input.changes)
       ? (tool.input.changes as { path: string; kind?: string; diff?: string }[])
@@ -143,14 +133,10 @@ export function ToolUseItem({ tool, result, isLast, isStreaming, onAnswerQuestio
       <AskUserQuestion
         toolUseId={tool.id}
         questions={questions}
-        // No handler wired ⇒ nothing can reach the agent, so report undelivered
-        // and leave the card answerable rather than locking it.
+
         onAnswer={onAnswerQuestion ?? (() => false)}
         disabled={isQuestionDisabled}
-        // `result` (when present) is the agent's tool_result for this
-        // question — its content carries the answer text. Passing it lets
-        // the component render the answered state on reload (where the
-        // component's own `submittedAnswers` state has been lost).
+
         resolvedAnswer={result?.content}
       />
     );
@@ -173,17 +159,12 @@ export function ToolUseItem({ tool, result, isLast, isStreaming, onAnswerQuestio
         onSend={onSendFollowUp ?? (() => {})}
         disabled={isQuestionDisabled}
         planContent={planContent}
-        // Same purpose as above — when a tool_result exists for the
-        // ExitPlanMode tool the plan has already been responded to, so
-        // render the read-only confirmation rather than the action buttons.
+
         resolved={!!result}
       />
     );
   }
 
-  // The to-do list tools (TodoWrite, TaskCreate, TaskUpdate, TaskList, TaskGet)
-  // are drawn by the task panel outside the bubble, folded across all of them —
-  // so each individual call renders nothing here.
   if (isTaskListTool(tool.name)) {
     return null;
   }
@@ -199,18 +180,8 @@ export function ToolUseItem({ tool, result, isLast, isStreaming, onAnswerQuestio
     );
   }
 
-  // Fallback: compact one-liner for non-file tools. The line is clickable both
-  // while the tool is pending (opens the dialog showing just the input) and once
-  // it has a result (input + output). The dialog updates in place when the
-  // result arrives — `result` is a prop, so the open modal re-renders with it.
-  // (showModal state is hoisted to the top of the component — see comment there)
   const isInspectable = inProgress || hasResult;
 
-  // Build a summary of the command/input for the tool line.
-  //
-  // The slice length is imported, not literal: docs/244's projection ships only
-  // this many characters of `command`, so the two have to be the same number or
-  // the transcript starts showing less than it used to (planning#298).
   const commandText = "command" in tool.input && tool.input.command
     ? (tool.input.command as string).slice(0, COMMAND_SUMMARY_CHARS)
     : null;
@@ -227,9 +198,6 @@ export function ToolUseItem({ tool, result, isLast, isStreaming, onAnswerQuestio
     ? (tool.input.url as string)
     : null;
 
-  // Experiment: for shell/Bash, drop the tool icon entirely and show the
-  // command flush — the command itself already reads as the tool, so the glyph
-  // is redundant and the leading space it occupied is removed too.
   const isCommandTool = tool.name === "Bash" || tool.name === "shell";
 
   return (
@@ -270,10 +238,9 @@ export function ToolUseItem({ tool, result, isLast, isStreaming, onAnswerQuestio
             variant="ghost"
             size="icon"
             onClick={() => setShowModal(true)}
-            // Pin to the row's text line-height (text-xs => 16px) with zero
+
             // vertical padding so revealing it on hover never grows the row.
-            // Without this the icon button renders taller than the line and the
-            // whole row jumps when the cursor enters/leaves.
+
             className="hidden group-hover/tool:inline-flex ml-1 cursor-pointer h-4 py-0"
             aria-label={hasResult ? "Show output" : "Show input"}
           >
@@ -297,7 +264,6 @@ export function ToolUseItem({ tool, result, isLast, isStreaming, onAnswerQuestio
   );
 }
 
-/** Maps a Codex file-change kind to a verb in Claude's vocabulary for visual parity. */
 function patchKindVerb(kind?: string): string {
   switch (kind) {
     case "add": return "Write";
@@ -335,11 +301,6 @@ const TOOL_ICONS: Record<string, { Icon: Icon; label: string }> = {
   NotebookEdit: { Icon: NotebookIcon, label: "Notebook" },
 };
 
-/**
- * Renders a tool as an icon (with the tool name as its accessible label/tooltip),
- * an MCP server chip for `mcp__*` tools, or a plain text fallback for anything
- * we don't have a glyph for.
- */
 function FormattedToolName({ name, highlight }: { name: string; highlight: boolean }) {
   const parsed = parseMcpToolName(name);
   if (parsed) {
@@ -369,19 +330,13 @@ interface PresentToolResult {
 }
 
 // Exported for the docs/244 req-4 guard: the projection must never slice a
-// result these consumers read from, so the test drives the real parser rather
-// than a copy of its rules.
+
 export function parsePresentToolResult(tool: ToolUseBlock, result: ToolResultBlock | undefined): PresentToolResult | null {
   if (!isPresentTool(tool.name)) return null;
   if (!result) return null;
 
   const fallbackTitle = typeof tool.input.title === "string" ? tool.input.title : undefined;
 
-  // The bridge returns `{ presentId, title? }`, but the agent's tool_result
-  // wraps it: MCP results arrive as a content-block array
-  // (`[{ type: "text", text: "<json>" }]`) which agent-event.ts JSON-stringifies
-  // into `result.content`. So the raw string is usually the stringified array,
-  // not the bare object — unwrap it before reading `presentId`.
   const payload = extractPresentPayload(result.content);
   if (payload && typeof payload.presentId === "string" && payload.presentId.length > 0) {
     return {
@@ -390,18 +345,11 @@ export function parsePresentToolResult(tool: ToolUseBlock, result: ToolResultBlo
     };
   }
 
-  // Last resort: scan for a bare presentId token (e.g. inner text wasn't valid
-  // JSON, or the content was a plain string).
   const match = /\bpres_[A-Za-z0-9_-]+\b/.exec(result.content);
   if (match) return { presentId: match[0], title: fallbackTitle };
   return null;
 }
 
-/**
- * Pull the `{ presentId, title? }` payload out of a tool_result content string,
- * tolerating both the bare-object shape and the MCP content-block-array shape
- * (`[{ type: "text", text: "<json>" }]`) that the real agent pipeline produces.
- */
 function extractPresentPayload(raw: string): { presentId?: unknown; title?: unknown } | null {
   let value: unknown;
   try {
@@ -463,11 +411,6 @@ function PresentToolChip({
   );
 }
 
-/**
- * Format a derived per-tool duration (docs/185) for the detail modal. Sub-second
- * shows whole milliseconds; under 10s shows one decimal; beyond that, whole
- * seconds — enough precision to be useful without false exactness.
- */
 export function formatToolDuration(ms: number): string {
   if (!Number.isFinite(ms) || ms < 0) return "";
   if (ms < 1000) return `${Math.round(ms)} ms`;
@@ -475,15 +418,7 @@ export function formatToolDuration(ms: number): string {
   return s < 10 ? `${s.toFixed(1)} s` : `${Math.round(s)} s`;
 }
 
-/**
- * Wall-clock time the tool call was made, for the tool-call dialog's header.
- *
- * A transcript is usually read on the day it was written, so the common case
- * shows the time alone; a call from another day carries its date too, because
- * "14:32:05" with no date is worse than no time at all once a session spans
- * days. Returns "" for an absent or unparseable stamp — rows persisted before
- * the stamp existed simply show no time.
- */
+/** Adds the date for tool calls from another day; invalid timestamps render nothing. */
 export function formatToolCallTime(iso: string | undefined, now: Date = new Date()): string {
   if (!iso) return "";
   const at = new Date(iso);
@@ -496,20 +431,7 @@ export function formatToolCallTime(iso: string | undefined, now: Date = new Date
   return `${at.toLocaleDateString([], { month: "short", day: "numeric" })}, ${time}`;
 }
 
-/**
- * Full-screen modal showing the agent's tool input and the tool's output.
- *
- * `result` is optional: the modal can be opened while the tool is still pending
- * (input known, no output yet), in which case the Output section shows a running
- * indicator. When the result arrives the parent re-renders this modal with the
- * `result` prop populated and the output replaces the indicator in place.
- *
- * This modal is the only view that draws a tool's *whole* input, so it is where
- * the keys docs/244 removed come back (planning#298). Opening it is the click, and
- * the fetched input replaces the projected one wholesale rather than merging:
- * the stored input is authoritative and preserves the original key order the
- * fields are laid out in.
- */
+/** Shows complete stored input and supports a pending result. */
 function ToolOutputModal({ toolName, input, toolUseId, bodyTruncated, startedAt, result, onClose }: {
   toolName: string;
   input: Record<string, unknown>;
@@ -522,8 +444,6 @@ function ToolOutputModal({ toolName, input, toolUseId, bodyTruncated, startedAt,
   const lazy = useLazyToolInput(toolUseId, !!bodyTruncated);
   const duration = typeof result?.durationMs === "number" ? formatToolDuration(result.durationMs) : "";
   const calledAt = formatToolCallTime(startedAt);
-  // The tool input is right here, so the output panel never has to guess the
-  // language of a file it is already naming one section above.
   const resolvedInput = lazy.input ?? input;
   const filePath = typeof resolvedInput.file_path === "string" ? resolvedInput.file_path : undefined;
   return (
@@ -581,15 +501,6 @@ function ToolOutputModal({ toolName, input, toolUseId, bodyTruncated, startedAt,
   );
 }
 
-/**
- * Renders the agent's tool-call input as labeled fields above the output.
- *
- * `loading`/`error` describe the docs/244 fetch for the keys the projection
- * removed. While it is in flight the fields already on the wire render — a
- * `Bash` call still shows its first 80 characters of `command` — with a status
- * line saying more is coming, rather than a blank panel that would read as "this
- * call had no input".
- */
 function ToolInput({ toolName, input, loading, error }: {
   toolName: string;
   input: Record<string, unknown>;
@@ -619,9 +530,8 @@ function ToolInput({ toolName, input, loading, error }: {
   );
 }
 
-/** Renders one input field: bash-highlighted command, add/remove-tinted diff strings, or plain/JSON value. */
 function ToolInputField({ toolName, fieldKey, value }: { toolName: string; fieldKey: string; value: unknown }) {
-  // Codex's "shell" is bash too — give its command the same highlighted treatment as Claude's Bash.
+
   const isBash = toolName === "Bash" || toolName === "shell";
   const isCommand = fieldKey === "command" && typeof value === "string";
   const highlighted = useMemo(() => {
@@ -676,7 +586,6 @@ function ToolInputTag({ label }: { label: string }) {
   );
 }
 
-/** Shows a small progress bar under file-modifying tools while they're running. */
 export function ToolProgressBar({ tool }: { tool: string }) {
   return (
     <div className="flex items-center gap-1.5 mt-1 text-xs text-(--color-accent)">

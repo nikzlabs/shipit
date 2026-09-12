@@ -1,13 +1,3 @@
-/**
- * Settings → MCP Servers panel (docs/088-mcp-integration).
- *
- * Account-level CRUD for user-configured MCP servers. Server config blobs
- * carry `$secret:` placeholders; the form collects raw secret values
- * separately and the store sends them as a `secrets` map that the server
- * stores in `CredentialStore.agentEnv` (never echoed back). Per-server
- * runtime status arrives via `mcp_server_status` WS messages.
- */
-
 // eslint-disable-next-line no-restricted-imports -- useEffect: one-shot fetch of account-level MCP servers on panel mount (external system sync)
 import { useEffect, useState } from "react";
 import { Button } from "../ui/button.js";
@@ -25,9 +15,6 @@ export function McpServerSettings({
   embedded = false,
 }: {
   hasActiveSession: boolean;
-  /** When rendered inside the Integrations tab (docs/201), the parent owns the
-   * scroll container and section heading, so drop our own to avoid double
-   * padding and a redundant title. */
   embedded?: boolean;
 }) {
   const servers = useMcpStore((s) => s.servers);
@@ -40,10 +27,6 @@ export function McpServerSettings({
   const oauthProviders = useMcpStore((s) => s.oauthProviders);
   const oauthError = useMcpStore((s) => s.oauthError);
   const fetchOAuthProviders = useMcpStore((s) => s.fetchOAuthProviders);
-  // Pulled in so the provider cards re-render when a `mcp_server_status`
-  // event flips an OAuth-managed server to/from auth-required (used by
-  // `isAuthRequired` below to decide whether "Connected" needs downgrading
-  // to a Reconnect CTA).
   const statuses = useMcpStore((s) => s.statuses);
 
   const { form, formError, saving, startAdd, startEdit, cancel, updateForm, save } =
@@ -51,11 +34,6 @@ export function McpServerSettings({
   const { oauthInFlight, connectProvider, disconnectProvider } = useMcpOAuthFlow();
 
   const [testResults, setTestResults] = useState<Record<string, McpTestResult | "loading">>({});
-  /**
-   * Per-server in-flight tracking for the row action buttons (Enable/Disable,
-   * Delete). Prevents fast double-clicks from firing duplicate
-   * updateServer/removeServer requests against the orchestrator.
-   */
   const [toggleInFlight, setToggleInFlight] = useState<Record<string, boolean>>({});
   const [deleteInFlight, setDeleteInFlight] = useState<Record<string, boolean>>({});
 
@@ -151,11 +129,7 @@ export function McpServerSettings({
       />
 
       {(() => {
-        // Hide OAuth-managed servers from the standalone list — their
-        // controls (Test / Enable / Disable / status) are now folded into
-        // the connection card above. We still render the row if the
-        // provider isn't connected (e.g. tokens revoked at provider side)
-        // so the user can still see/delete the orphan entry.
+        // Disconnected provider entries remain visible so they can be deleted.
         const connectedSources = new Set(
           oauthProviders.filter((p) => p.status.connected).map((p) => p.id),
         );

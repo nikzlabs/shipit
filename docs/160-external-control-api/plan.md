@@ -62,13 +62,12 @@ Storage shape, extending `CredentialData` in `src/server/orchestrator/credential
 
 ```typescript
 interface CredentialData {
-  // ... existing fields
   apiTokens?: Array<{
-    id: string;            // ulid-style, used for revocation
-    label: string;         // human-readable, set by user
-    hash: string;          // sha256 of the token bytes, hex
+    id: string;
+    label: string;
+    hash: string;
     createdAt: number;
-    lastUsedAt?: number;   // updated on successful auth, eventually-consistent
+    lastUsedAt?: number;
   }>;
 }
 ```

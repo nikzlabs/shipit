@@ -4,7 +4,6 @@ import { usePreviewStore } from "../../stores/preview-store.js";
 import { useSessionStore } from "../../stores/session-store.js";
 import { CUSTOM_SIZE_MIN, CUSTOM_SIZE_MAX } from "../device-presets.js";
 
-/** Which axes a grabbed handle resizes. */
 export type ViewportDragAxis = "x" | "y" | "xy";
 
 /**
@@ -34,7 +33,6 @@ export function computeViewportResize(
   return Math.min(Math.max(next, CUSTOM_SIZE_MIN), upper);
 }
 
-/** Viewport px one arrow-key press moves a handle by. */
 export const KEYBOARD_RESIZE_STEP = 10;
 
 /**
@@ -84,23 +82,17 @@ interface DragGesture {
   scale: number;
   availableWidth: number;
   availableHeight: number;
-  /**
-   * The session the gesture belongs to. `PreviewFrame` stays mounted across
-   * session switches, so an unmount is not guaranteed to end a gesture — and a
-   * move that lands after a switch would resize A's geometry into B's viewport
-   * memory (`setFreeformSize` keys persistence by the *current* session). A
-   * mismatch ends the gesture instead.
-   */
+
   sessionId: string | undefined;
 }
 
 export interface ViewportResizeHandlesProps {
-  /** Effective (orientation-applied) viewport dims, from `useDeviceFrame`. */
+
   deviceWidth: number;
   deviceHeight: number;
-  /** Scale-to-fit factor for the rendered surface. */
+
   deviceScale: number;
-  /** The box a 100%-scale surface can occupy (panel minus frame padding). */
+
   availableWidth: number;
   availableHeight: number;
 }
@@ -139,9 +131,7 @@ export function ViewportResizeHandles({
   const [dragAxis, setDragAxis] = useState<ViewportDragAxis | null>(null);
 
   const beginDrag = (axis: ViewportDragAxis) => (e: React.PointerEvent) => {
-    // Primary button/contact only (0 for left mouse AND first touch); a
-    // degenerate scale (unmeasured or sliver panel) would divide the gesture
-    // math by ~0, so refuse to start instead.
+
     if (e.button !== 0) return;
     if (deviceScale <= 0) return;
     e.preventDefault();
@@ -159,9 +149,6 @@ export function ViewportResizeHandles({
     setDragAxis(axis);
   };
 
-  // The active gesture: document-level listeners so the pointer can leave the
-  // handle, body cursor/user-select pinned. Owned by an effect keyed on the
-  // gesture so cleanup runs on pointerup AND on a mid-drag unmount (session
   // switch) — the same unmount-safety `useResizablePanel` documents.
   // eslint-disable-next-line no-restricted-syntax -- document listeners + body style for the live drag gesture (DOM sync)
   useEffect(() => {
@@ -173,8 +160,7 @@ export function ViewportResizeHandles({
     const onMove = (e: PointerEvent) => {
       const drag = dragRef.current;
       if (!drag) return;
-      // The session changed under a live gesture (see DragGesture.sessionId):
-      // end it rather than resize the incoming session's viewport.
+
       if (drag.sessionId !== useSessionStore.getState().sessionId) {
         onUp();
         return;
@@ -203,11 +189,10 @@ export function ViewportResizeHandles({
     };
   }, [dragAxis]);
 
-  // A key press asks for the size relative to what is on screen now.
   const onArrowKey = (axis: Exclude<ViewportDragAxis, "xy">) => (e: React.KeyboardEvent) => {
     const next = computeKeyboardResize(axis, { width: deviceWidth, height: deviceHeight }, e.key);
     if (!next) return;
-    // Otherwise the arrow scrolls the panel out from under the handle.
+
     e.preventDefault();
     usePreviewStore.getState().setFreeformSize(next.width, next.height);
   };
@@ -215,9 +200,7 @@ export function ViewportResizeHandles({
   const renderedWidth = deviceWidth * deviceScale;
   const renderedHeight = deviceHeight * deviceScale;
   // Full literal class strings (Tailwind's scanner cannot see interpolations).
-  // The grip is the focus indicator too: the handle itself drops the outline
-  // (a box around an invisible hit area reads as a rendering artifact) and the
-  // pill goes accent on keyboard focus instead, the same signal hover gives.
+
   const grip = (active: boolean) =>
     `rounded-full transition-[background-color] duration-(--duration-fast) ${
       active

@@ -26,24 +26,15 @@ import { deriveEffectivePreviewStatus } from "../utils/preview-status.js";
 import type { SecretRequirement } from "../../server/shared/types/domain-types.js";
 import type { PluginCredentialGroup } from "../../server/shared/plugin-credentials.js";
 
-// ---- Compose service state ----
-
 export interface ManagedServiceState {
   name: string;
   status: ComposeServiceStatus;
   port?: number;
   preview: ComposeServicePreviewMode;
   error?: string;
-  /**
-   * docs/262 req 3 — the plugin a service came from, absent for the project's
-   * own. Services are otherwise first-class and indistinguishable, which is the
-   * requirement; this is the one thing that says where one came from, and the
-   * server sends it on both the live and the replayed message.
-   */
+
   origin?: ComposeServiceOriginView;
 }
-
-// ---- Agent-authored preview links (docs/258) ----
 
 /**
  * A destination a `shipit-preview://` pointer asked for, held until the panel
@@ -57,15 +48,15 @@ export interface ManagedServiceState {
  * location are two different facts and must not share a slot.
  */
 export interface PreviewLinkIntent {
-  /** The session the click happened in. An intent means nothing in another one. */
+
   sessionId: string;
-  /** The Compose service the pointer named, matched exactly against `services`. */
+
   service: string;
-  /** The service's declared port — known even while it is stopped. */
+
   port: number;
-  /** `sessionId:port`, the iframe-pool slot this destination belongs to. */
+
   slotKey: string;
-  /** Absolute path with query and fragment. The page's reaction *is* this URL (req 11). */
+
   targetPath: string;
   /** Fresh per click, and **last click wins** — an incomplete earlier intent is dropped, never queued. */
   clickId: number;
@@ -80,8 +71,6 @@ export interface PreviewLinkIntent {
  * yanked to a destination they no longer remember asking for.
  */
 export const PREVIEW_LINK_INTENT_TTL_MS = 120_000;
-
-// ---- Secrets state (087-reusable-preview-secrets, Phase 2) ----
 
 /**
  * A declared secret aggregated across every claimant that referenced it:
@@ -100,21 +89,11 @@ export type DeclaredSecretState = SecretRequirement & {
   pluginRequired?: boolean;
 };
 
-/**
- * Snapshot of declared secrets for the current session — driven by the
- * `secrets_status` WS message. The Settings panel uses `declared` to render
- * descriptions / required indicators / consumer chips. The preview panel
- * uses `missingRequired` to show a "Configure secrets" banner.
- */
 export interface SecretsState {
   declared: DeclaredSecretState[];
   missingByService: Record<string, string[]>;
   missingRequired: string[];
-  /**
-   * docs/262 req 23 — plugin-declared credentials, grouped per activated
-   * plugin. Optional so a client restored from an older snapshot (or a
-   * pre-plugin server) reads as "no plugin needs" rather than crashing.
-   */
+
   plugins?: PluginCredentialGroup[];
 }
 
@@ -145,18 +124,10 @@ export interface PreviewError {
   timestamp: string;
 }
 
-/** Maximum number of errors to keep in the rolling buffer. */
 const MAX_ERRORS = 50;
 
-/**
- * Cap on how many trailing log lines we retain per startup step. The overlay
- * only renders ~5 lines (`max-h-[5lh]` in `StartupSteps.tsx`); 50 is enough
- * to give us a comfortable buffer for the rendered tail without unbounded
- * growth on chatty installs (npm install can emit thousands of log lines).
- */
 const MAX_STARTUP_STEP_LOG_LINES = 50;
 
-/** Time window in ms for deduplication — same error within this window is dropped. */
 const DEDUP_WINDOW_MS = 1000;
 
 /**
@@ -190,74 +161,30 @@ interface PreviewState {
   autoFixRetries: number;
   startupSteps: StartupStep[];
 
-  /** Compose services for the current session (keyed by service name). */
   services: ManagedServiceState[];
-  /** Error message when Docker Compose stack fails to start. */
+
   composeError: string | null;
-  /** True when no compose file is configured in shipit.yaml. */
+
   composeNotConfigured: boolean;
-  /**
-   * Declared secrets + missing-required snapshot (from `secrets_status` WS
-   * message). Drives the secrets banner in the preview panel and the
-   * declared-secrets section in the Settings → Secrets tab.
-   */
+
   secrets: SecretsState;
 
-  /** Active device preset for viewport sizing. null = "Responsive" (fill panel). */
   devicePreset: DevicePreset | null;
-  /** True when the active preset is rotated to landscape (swap width/height). */
+
   isLandscape: boolean;
-  /** Custom viewport size, always stored as rendered (docs/278). */
+
   customSize: { width: number; height: number } | null;
 
-  /**
-   * Remembered viewport choice per session (docs/278 req 6). The single source
-   * of truth for restoring the viewport: hydrated from localStorage at load,
-   * written through (against the *current* session) by every viewport setter,
-   * and read back by `restoreSession` — on switches and on cold loads alike.
-   * Like `previewPaths`, it deliberately outlives the session-scoped `reset()`.
-   */
   viewportMemory: Record<string, PersistedViewport>;
 
-  /**
-   * Which preview each session is on, by Compose service name (planning#478).
-   * localStorage-backed like `viewportMemory`, and the single source of truth
-   * for `selectedPort`, which is derived from it. Written on an explicit
-   * selection AND pinned to whatever the pane first shows, so nothing but a
-   * user action can move the pane to a different service. Like `previewPaths`,
-   * it outlives the session-scoped `reset()`.
-   */
   previewTargetMemory: Record<string, PersistedPreviewTarget>;
 
-  /** Saved preview state per session, keyed by sessionId. */
   sessionSnapshots: Record<string, SessionPreviewSnapshot>;
 
-  /**
-   * Last path each preview was on, keyed by iframe-pool slot (`sessionId:port`).
-   * Reported by the injected preview script (`preview-proxy.ts`) on load and on
-   * every history change, so it tracks client-side routing too.
-   *
-   * Deliberately global and NOT part of `SessionPreviewSnapshot`: the key
-   * already carries the session, and the whole point is to outlive everything
-   * that can drop an iframe — a session switch, a `PreviewFrame` unmount, LRU
-   * eviction past `MAX_IFRAME_SLOTS`, a container restart, a page reload
-   * (hence the localStorage mirror). A recreated slot re-enters at this path
-   * instead of the app's front page.
-   */
   previewPaths: Record<string, string>;
 
-  /**
-   * The destination a `shipit-preview://` pointer is waiting to reach, or `null`
-   * (docs/258). At most one: last click wins. See {@link PreviewLinkIntent}.
-   */
   previewLinkIntent: PreviewLinkIntent | null;
 
-  /**
-   * Whether the Services drawer at the bottom of the Preview tab is expanded
-   * (docs/175). A global UI preference (not per-session), persisted to
-   * localStorage. Lifted into the store so the PreviewFrame's "View logs"
-   * overlay button can open the drawer that's rendered as its sibling.
-   */
   servicesDrawerExpanded: boolean;
 
   /**
@@ -269,20 +196,9 @@ interface PreviewState {
   servicesDrawerIdleCollapsed: boolean;
 
   setStatus: (status: PreviewStatus | null) => void;
-  /**
-   * Record an explicit choice of which preview to look at (planning#478). The
-   * owning service is resolved from `services` and remembered for the session,
-   * so the choice survives the service restarting, the session being switched
-   * away from, and a page reload. `null` forgets the choice, returning the
-   * session to "whatever the pane shows next" — which is then pinned in turn.
-   */
+
   setSelectedPort: (port: number | null) => void;
-  /**
-   * Re-derive `selectedPort` from the session's remembered target. Called by
-   * every action that can change the answer (`setStatus`, `setServices`,
-   * `updateService`, `restoreSession`); exposed for tests and for any future
-   * call site that mutates services outside those.
-   */
+
   reconcilePreviewTarget: (forSessionId?: string) => void;
   setServicesDrawerExpanded: (expanded: boolean) => void;
   setServicesDrawerIdleCollapsed: (collapsed: boolean) => void;
@@ -294,29 +210,20 @@ interface PreviewState {
   toggleAutoFix: () => void;
   initStartupSteps: () => void;
   setStartupStep: (update: Partial<StartupStep> & { stepId: string }) => void;
-  /**
-   * Append a log line (or text chunk that may contain newlines) to the
-   * specified startup step, retaining only the trailing
-   * {@link MAX_STARTUP_STEP_LOG_LINES} so the in-overlay tail stays bounded.
-   * No-op when the step doesn't exist (e.g. startup steps were cleared).
-   */
+
   appendStartupStepLog: (stepId: StartupStep["stepId"], text: string) => void;
   clearStartupSteps: () => void;
-  /** Replace the full service list (from service_list WS message). */
+
   setServices: (services: ManagedServiceState[]) => void;
-  /** Update a single service status (from service_status WS message). */
+
   updateService: (update: ManagedServiceState) => void;
   setComposeError: (error: string | null) => void;
   setComposeNotConfigured: (value: boolean) => void;
-  /** Replace the secrets snapshot (from `secrets_status` WS message). */
+
   setSecrets: (secrets: SecretsState) => void;
-  /** Set the active device preset (or null to return to "Responsive"). */
+
   setDevicePreset: (preset: DevicePreset | null) => void;
-  /**
-   * Swap the rendered width and height. On a named preset this flips
-   * `isLandscape`; on a custom size it swaps the stored dims instead, so a
-   * custom size is always stored as rendered (docs/278).
-   */
+
   toggleLandscape: () => void;
   /**
    * Activate a freeform/custom viewport at `width`×`height` — one atomic set of
@@ -325,50 +232,34 @@ interface PreviewState {
    * persist) partial states.
    */
   setFreeformSize: (width: number, height: number) => void;
-  /** Forget every remembered viewport. Full reset only — see `reset`. */
+
   clearViewportMemory: () => void;
-  /** Forget every remembered preview target. Full reset only — see `reset`. */
+
   clearPreviewTargetMemory: () => void;
-  /** Save current top-level state into sessionSnapshots[sessionId]. */
+
   snapshotSession: (sessionId: string) => void;
-  /** Restore from snapshot if exists, otherwise reset to defaults. */
+
   restoreSession: (sessionId: string) => void;
-  /** Read-only access to a session's snapshot. */
+
   getSnapshot: (sessionId: string) => SessionPreviewSnapshot | undefined;
-  /**
-   * Remember where an iframe-pool slot currently is. `path` is untrusted (the
-   * previewed page authors it) and is sanitized here; an unusable value is
-   * dropped rather than stored.
-   */
+
   setPreviewPath: (slotKey: string, path: unknown) => void;
-  /** Forget every remembered path. Full reset only — see `reset`. */
+
   clearPreviewPaths: () => void;
-  /** Record where an agent-authored pointer wants the preview to go (docs/258). */
+
   setPreviewLinkIntent: (intent: PreviewLinkIntent) => void;
-  /**
-   * Drop the intent. With a `clickId`, only when it still owns the intent — so a
-   * late resolution of a superseded click can't cancel the current one.
-   */
+
   clearPreviewLinkIntent: (clickId?: number) => void;
   reset: () => void;
 }
 
-/**
- * Dedup state lives outside Zustand to avoid triggering renders on every
- * dedup-map mutation. Only the actual errors array is reactive.
- */
 let idCounter = 0;
 const recentKeys = new Map<string, number>();
 
-/** Build a dedup key from an error's core fields. */
 function dedupKey(type: string, message: string, source?: string, line?: number): string {
   return `${type}:${message}:${source ?? ""}:${line ?? ""}`;
 }
 
-/**
- * Check dedup and return true if the error should be suppressed.
- * Mutates the recentKeys map as a side-effect.
- */
 function isDuplicate(key: string): boolean {
   const now = Date.now();
   const lastSeen = recentKeys.get(key);
@@ -392,20 +283,10 @@ export function resetDedupState(): void {
   idCounter = 0;
 }
 
-// ---- Viewport write-through (docs/278) ----
-
-/**
- * Debounce for flushing `viewportMemory` to localStorage. A drag emits ~60
- * viewport mutations per second; the state map is updated synchronously in the
- * same `set()` (so it is always correct at mutation time, whatever session the
- * flush later fires under) and only the serialization is deferred.
- */
 export const VIEWPORT_FLUSH_DEBOUNCE_MS = 300;
 
 let viewportFlushTimer: ReturnType<typeof setTimeout> | null = null;
 
-/** Flush the pending write, if any. A no-op when nothing is unsaved, so the
- * page-hide listeners below don't serialize on every tab switch. */
 function flushViewportMemoryNow(): void {
   if (!viewportFlushTimer) return;
   clearTimeout(viewportFlushTimer);
@@ -418,13 +299,6 @@ function scheduleViewportFlush(): void {
   viewportFlushTimer = setTimeout(flushViewportMemoryNow, VIEWPORT_FLUSH_DEBOUNCE_MS);
 }
 
-/**
- * The `viewportMemory` update for the viewport fields about to be set, keyed by
- * the session the user is making the choice in — read from the session store at
- * mutation time, which is what keeps a debounced flush from ever attributing a
- * choice to whatever session is on screen when the timer fires. No session
- * (home screen) means nothing to remember.
- */
 function viewportMemoryUpdate(
   current: Record<string, PersistedViewport>,
   viewport: {
@@ -438,9 +312,6 @@ function viewportMemoryUpdate(
   return { viewportMemory: withViewportEntry(current, sessionId, viewportEntryFromState(viewport)) };
 }
 
-// ---- Which preview the pane is on (planning#478) ----
-
-/** Every port the current `status` says is previewable, in the server's order. */
 function availablePreviewPorts(status: PreviewStatus | null): number[] {
   if (!status?.running) return [];
   const ports = [...(status.detectedPorts ?? [])];
@@ -450,7 +321,6 @@ function availablePreviewPorts(status: PreviewStatus | null): number[] {
   return ports;
 }
 
-/** The subset of store state {@link resolvePreviewTarget} reads. */
 interface PreviewTargetInputs {
   previewTargetMemory: Record<string, PersistedPreviewTarget>;
   services: ManagedServiceState[];
@@ -484,17 +354,12 @@ function resolvePreviewTarget(
   state: PreviewTargetInputs,
   sessionId: string | undefined,
 ): { selectedPort: number | null; write?: PersistedPreviewTarget | null } {
-  // The SAME status the pane renders from, synthetic fallback included: the
-  // pane pins what it is showing, and `preview_status` can lag `service_status`
-  // by long enough for the two to disagree about which port that is.
+
   const status = deriveEffectivePreviewStatus(state.status, state.services, sessionId);
   let entry = sessionId ? state.previewTargetMemory[sessionId] : undefined;
 
-  // A remembered service that an authoritative list no longer declares is dead
-  // memory — the compose file renamed or dropped it. Forget it and pin afresh,
   // rather than falling back forever to a name that will never come back. An
-  // empty list is not authoritative: it is also what the store holds in the
-  // moment before `service_list` arrives.
+
   const forget =
     !!entry?.service &&
     state.services.length > 0 &&
@@ -503,37 +368,23 @@ function resolvePreviewTarget(
 
   if (entry?.service) {
     const svc = state.services.find((s) => s.name === entry?.service);
-    // The port is held whatever the service's status is — a declared service
-    // keeps its port while stopped, so the pane can WAIT for it. Handing the
-    // user a different app for the duration is the replacement this exists to
-    // stop; `PreviewFrame` renders a waiting state over the dormant slot
-    // instead.
-    //
-    // With NO row at all, the recorded port is held rather than surrendered.
-    // The list is empty in the gap before `service_list` lands (and `forget`
-    // above deliberately treats that as non-authoritative), and returning null
-    // there would drop the pane onto `status.port` — the rejected fallback,
-    // arriving through the back door. A service with no port at all (a worker)
+
     // is the one case with nothing to wait on; it cannot be pinned in the first
-    // place, since pinning resolves a service FROM a port.
+
     return { selectedPort: svc ? svc.port ?? null : entry.port };
   }
   if (entry) {
-    // Port-only memory: a preview no Compose service owns (Vite / `managed`).
+
     const ports = availablePreviewPorts(status);
     return { selectedPort: ports.includes(entry.port) ? entry.port : null };
   }
 
-  // Nothing remembered — pin what the pane is showing right now.
   if (!sessionId || !status?.running || !status.port) {
     return { selectedPort: null, write: forget ? null : undefined };
   }
   const svc = state.services.find((s) => s.port === status.port);
   if (!svc && status.source === "detected") {
-    // Every `detected` port comes from a Compose service, so no row for it
-    // means `service_list` has not landed yet. Pinning by port here would
-    // record the weaker handle for something that HAS a name — wait for the
-    // list, which reconciles again the moment it arrives.
+
     return { selectedPort: null, write: forget ? null : undefined };
   }
   return {
@@ -553,7 +404,6 @@ const initialSessionState: SessionPreviewSnapshot = {
   secrets: emptySecretsState,
 };
 
-/** Live viewport fields at their defaults — the "Responsive" state. */
 const initialViewportState = {
   devicePreset: null as DevicePreset | null,
   isLandscape: false,
@@ -586,12 +436,6 @@ export function isServicesDrawerOpen(opts: {
 
 const PREVIEW_PATHS_KEY = "shipit:preview-paths";
 
-/**
- * Cap on how many slot→path entries we remember. Keys are `sessionId:port`,
- * so this bounds growth across a long-lived session list. Eviction is by
- * insertion order (oldest first) — plain-object key order is insertion order
- * for these non-numeric keys.
- */
 const MAX_REMEMBERED_PATHS = 100;
 
 /**
@@ -627,9 +471,7 @@ function loadPreviewPaths(): Record<string, string> {
   return getLocalStorageObject<Record<string, string>>(PREVIEW_PATHS_KEY, {}, (parsed) => {
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
     const out: Record<string, string> = {};
-    // Trailing entries are the most recent (writes re-insert at the end), so an
-    // oversized blob — a tampered one, or one written before the cap existed —
-    // is truncated from the front rather than loaded whole.
+
     const entries = Object.entries(parsed as Record<string, unknown>).slice(-MAX_REMEMBERED_PATHS);
     for (const [key, value] of entries) {
       const path = sanitizePreviewPath(value);
@@ -653,8 +495,7 @@ const initialState = {
   viewportMemory: loadViewportMemory(),
   previewTargetMemory: loadPreviewTargetMemory(),
   // Ephemeral state — never persisted into a session snapshot.
-  // `selectedPort` is derived, not owned: `reconcilePreviewTarget` recomputes it
-  // from `previewTargetMemory` whenever the status or the service list moves.
+
   selectedPort: null as number | null,
   servicesDrawerIdleCollapsed: false,
   previewLinkIntent: null as PreviewLinkIntent | null,
@@ -679,14 +520,12 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
     } else {
       set({ selectedPort: port });
     }
-    // A cleared choice re-pins to whatever the pane shows now; an explicit one
-    // already agrees with the memory just written, so this would be a no-op.
+
     if (port === null) get().reconcilePreviewTarget();
   },
 
   reconcilePreviewTarget: (forSessionId) => {
-    // The argument exists for `restoreSession`, which knows the incoming
-    // session id first-hand; everywhere else the store is the authority.
+
     const sessionId = forSessionId ?? useSessionStore.getState().sessionId;
     const state = get();
     const { selectedPort, write } = resolvePreviewTarget(state, sessionId);
@@ -747,9 +586,7 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
     set((state) => {
       const idx = state.startupSteps.findIndex((s) => s.stepId === stepId);
       if (idx < 0) return state;
-      // Split incoming chunk on \n and drop empty trailing lines that result
-      // from a chunk that happens to end with a newline. Keep blank
-      // intermediate lines (npm install renders progress with them).
+
       const incoming = text.replace(/\n+$/, "").split("\n");
       if (incoming.length === 0) return state;
       const step = state.startupSteps[idx];
@@ -783,9 +620,7 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
   toggleLandscape: () => {
     set((state) => {
       if (state.devicePreset?.category === "custom") {
-        // Custom sizes are stored as rendered (docs/278): swap the stored dims
-        // instead of flipping a flag the label and persistence would then have
-        // to reconcile against.
+
         const current = state.customSize ?? {
           width: state.devicePreset.width,
           height: state.devicePreset.height,
@@ -830,9 +665,9 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
 
   setServices: (services) => {
     set({ services, composeError: null, composeNotConfigured: false });
-    // The list is what says whether the remembered service is running, exists,
+
     // or has come back — so the pane's target is re-derived here, never left to
-    // a caller to remember (planning#478).
+
     get().reconcilePreviewTarget();
   },
 
@@ -873,28 +708,19 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
   restoreSession: (sessionId) => {
     const snap = get().sessionSnapshots[sessionId];
     // The viewport is resolved from `viewportMemory` in BOTH branches, never
-    // from the snapshot (docs/278). Two reasons: the memory is what survives a
-    // page reload (req 6), and on a cold load the URL→store sync effect runs
-    // resumeSessionInternal against a half-initialized store, so an accidental
-    // defaults-snapshot exists by the time this runs — a fallback-only read
+
     // would never fire.
     const viewport = viewportStateFromEntry(get().viewportMemory[sessionId]);
-    // A pointer's destination describes one session and is cancelled by leaving
+
     // it (docs/258) — it is never part of the restored snapshot.
-    // `selectedPort` is cleared rather than carried: it belongs to the outgoing
-    // session until the reconcile below re-derives it for this one, and a frame
-    // rendered in between would route the pane at the wrong session's port.
+
     if (snap) {
       set({ ...snap, ...viewport, selectedPort: null, previewLinkIntent: null });
     } else {
       resetDedupState();
       set({ ...initialSessionState, ...viewport, selectedPort: null, previewLinkIntent: null });
     }
-    // Same reasoning as the viewport, and the whole point of planning#478: the
-    // snapshot's `selectedPort` is a port that may have changed hands (or gone)
-    // while this session was off screen, so the pane's target is re-derived
-    // from the remembered SERVICE — on switches and cold loads alike. The
-    // incoming session's `service_list` reconciles again when it lands.
+
     get().reconcilePreviewTarget(sessionId);
   },
 
@@ -905,8 +731,7 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
     if (!value) return;
     set((state) => {
       if (state.previewPaths[slotKey] === value) return state;
-      // Re-insert at the end so the entry counts as most-recently-used: the
-      // cap below evicts from the front, and a slot the user keeps navigating
+
       // must not age out while an untouched one survives.
       const { [slotKey]: _dropped, ...rest } = state.previewPaths;
       const entries = Object.entries(rest);
@@ -924,21 +749,12 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
     set((state) => ({
       ...initialState,
       sessionSnapshots: {},
-      // NOT cleared. `reset()` is the session-scoped reset — `resetSessionState`
-      // calls it when the route leaves a session for home or `/{slug}/new`, and
-      // on desktop that is also the moment `AppLayout` unmounts the right panel
-      // and with it the whole iframe pool. Wiping the remembered paths there
-      // would erase them at precisely the moment they have to be read back,
-      // which is the one job this map has. Clearing belongs to
-      // `clearPreviewPaths`, called only from the full reset.
+
       previewPaths: state.previewPaths,
-      // Same reasoning, same lifecycle: cross-session memory survives the
-      // session-scoped reset; `clearViewportMemory` (full reset) clears it.
-      // Spreading `initialState` would otherwise resurrect the load-time map.
+
       viewportMemory: state.viewportMemory,
       // Ditto — and load-bearing for planning#478: `reset()` runs on the way to
-      // the home screen, and forgetting here would mean the next visit to a
-      // session re-pins the pane to whatever service happens to be up.
+
       previewTargetMemory: state.previewTargetMemory,
     }));
   },
@@ -963,11 +779,6 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
     )),
 }));
 
-// Flush a pending viewport write when the page goes away or is backgrounded.
-// The debounce trades a ≤300ms loss window for not serializing on every drag
-// frame; these are the last-chance hooks that close that window for the common
-// "pick a viewport, then immediately reload" sequence. `pagehide` covers
-// reload/close/navigate; `visibilitychange`→hidden covers mobile background
 // kills, where `pagehide` may never fire. Flushing twice is idempotent.
 if (typeof window !== "undefined") {
   window.addEventListener("pagehide", flushViewportMemoryNow);
@@ -976,5 +787,4 @@ if (typeof window !== "undefined") {
   });
 }
 
-// Re-export DevicePreset type for convenience so consumers don't need to know the source.
 export type { DevicePreset } from "../components/device-presets.js";

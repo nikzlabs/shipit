@@ -65,15 +65,15 @@ This placement is deliberate:
 A new `LogStore` (`src/server/orchestrator/log-store.ts`) owns these files behind a single API consumed identically by the agent path and the service path:
 
 ```ts
-type LogChannel = string; // "agent" | `service:${name}`
+type LogChannel = string;
 
 class LogStore {
   constructor(sessionsRoot: string);
-  append(sessionId, channel, line): void;                   // O(1) append to the channel's fd
-  snapshotEntries(sessionId, channel, maxLines): WsLogEntry[]; // structured replay (agent / JSONL)
-  snapshotText(sessionId, channel, maxBytes): string;          // concatenated replay (service / raw)
-  clear(sessionId, channel): void;                          // truncate the channel file(s)
-  remove(sessionId): void;                                  // rm -rf sessions/{id}/logs
+  append(sessionId, channel, line): void;
+  snapshotEntries(sessionId, channel, maxLines): WsLogEntry[];
+  snapshotText(sessionId, channel, maxBytes): string;
+  clear(sessionId, channel): void;
+  remove(sessionId): void;
 }
 ```
 
@@ -100,13 +100,11 @@ Today there are two parallel WS vocabularies — `log_entry` + `clear_logs` (age
 type LogSource = "stderr" | "stdout" | "server" | "preview" | "install";
 interface WsLogRecord { ts: string; source?: LogSource; text: string }
 
-// client → server
-{ type: "subscribe_logs", channel: string }           // replaces subscribe_service_logs + (implicit) agent attach
-{ type: "log_clear",      channel: string }            // replaces clear_logs
+{ type: "subscribe_logs", channel: string }
+{ type: "log_clear",      channel: string }
 
-// server → client
-{ type: "log_snapshot", channel: string, records: WsLogRecord[] }  // replaces service_log_buffer + the connect-time replay
-{ type: "log_append",   channel: string, records: WsLogRecord[] }  // replaces log_entry + service_log
+{ type: "log_snapshot", channel: string, records: WsLogRecord[] }
+{ type: "log_append",   channel: string, records: WsLogRecord[] }
 ```
 
 A record is the common denominator: **agent** records carry `source` (so the client can filter and color them); **service** records omit `source` and carry a raw `-f` chunk verbatim in `text` (ANSI preserved). One envelope, one append path, one clear path — the only per-channel difference is whether `source` is populated.
@@ -118,8 +116,8 @@ The store's two snapshot accessors map cleanly: `snapshotEntries` → `WsLogReco
 Both surfaces render through a single read-only xterm component, replacing **both** `ServiceLogViewer` and the bespoke DOM list inside `TerminalPanel`:
 
 ```tsx
-<LogView channel="agent" showSource />        // bottom terminal "Logs" tab
-<LogView channel={`service:${name}`} />       // preview-services drawer
+<LogView channel="agent" showSource />
+<LogView channel={`service:${name}`} />
 ```
 
 `LogView` owns the xterm instance (the existing `ServiceLogViewer` theme + fit + web-links logic, lifted verbatim) plus the `@xterm/addon-search` `SearchAddon`, and an in-memory `records[]` **model**:

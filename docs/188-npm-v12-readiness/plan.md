@@ -67,8 +67,8 @@ The orchestrator/client build installs the root `package.json` **without**
 `--ignore-scripts`:
 
 ```dockerfile
-RUN --mount=type=cache,target=/root/.npm npm ci --prefer-offline   # Dockerfile.prod:11, .session-worker.prod:9
-RUN --mount=type=cache,target=/root/.npm npm ci --prefer-offline --loglevel=verbose  # .dev:29, .session-worker.dev:48
+RUN --mount=type=cache,target=/root/.npm npm ci --prefer-offline
+RUN --mount=type=cache,target=/root/.npm npm ci --prefer-offline --loglevel=verbose
 ```
 
 GitHub Actions does the same: `.github/workflows/ci.yml` (`npm ci`) and

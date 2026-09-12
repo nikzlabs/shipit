@@ -149,7 +149,7 @@ describe("resumeSessionInternal", () => {
   });
 
   it("clears the transient compacting flag so it doesn't bleed into the switched-to session", () => {
-    // Outgoing session has a compaction in flight.
+
     useSessionStore.setState({ sessionId: "session-a", compacting: true });
 
     resumeSessionInternal("session-b");
@@ -175,7 +175,7 @@ describe("resumeSessionInternal", () => {
   });
 
   it("resets the mobile panel to chat so a switch never lands on the previous session's workspace tab", () => {
-    // Outgoing session was parked on the workspace/preview tab on mobile.
+
     useSessionStore.setState({ sessionId: "session-a" });
     useUiStore.getState().setMobilePanel("preview");
 
@@ -184,8 +184,6 @@ describe("resumeSessionInternal", () => {
     expect(useUiStore.getState().mobilePanel).toBe("chat");
   });
 
-  // docs/262 — the plugin snapshot IS session-scoped: it gates the Plugins tab
-  // and its warn dot, so carrying it into another session would show that
   // session a tab its repository never declared.
   it("drops the plugin declarations on switch", () => {
     useSessionStore.setState({ sessionId: "session-a" });
@@ -200,11 +198,6 @@ describe("resumeSessionInternal", () => {
     expect(usePluginReposStore.getState().forSessionId).toBeNull();
   });
 
-  /**
-   * planning#327 — the issues store is repo-scoped, not session-scoped: it's dropped
-   * when the incoming session belongs to another repository (whose `shipit.yaml`
-   * declares a different tracker set), and left alone within one repository.
-   */
   describe("issues-tab repo scope", () => {
     const openIssue: Partial<ReturnType<typeof useIssuesStore.getState>> = {
       repoScope: "https://github.com/acme/app.git",
@@ -245,9 +238,6 @@ describe("resumeSessionInternal", () => {
       expect(useIssuesStore.getState().trackers).toHaveLength(1);
     });
 
-    // The sidebar's active repo is only a guess for a session the list doesn't
-    // know (it doesn't move on a URL-driven switch), so "unknown" fails closed
-    // instead of borrowing it — otherwise the issue survives a repo change.
     it("drops the open issue when the incoming session isn't in the list yet", () => {
       useSessionStore.setState({ sessionId: "session-a", sessions: [session("session-a")] });
       useRepoStore.setState({ activeRepoUrl: "https://github.com/acme/app.git" });
@@ -320,9 +310,9 @@ describe("discardHeldFirstMessage", () => {
   });
 
   it("leaves everything alone when nothing is held", () => {
-    // It runs on every session switch, so the common case is that there is nothing
+
     // to give back. It must not clear a spinner belonging to a turn that is
-    // genuinely running.
+
     useSessionStore.setState({ pendingWsMessage: undefined } as never);
     discardHeldFirstMessage("Your message wasn't sent.");
     const state = useSessionStore.getState();
@@ -332,12 +322,6 @@ describe("discardHeldFirstMessage", () => {
   });
 });
 
-/**
- * docs/291-composer-before-claim — switching sessions with a message still stashed.
- * `resumeSessionInternal` cleared the transcript, the spinner and the queue but not
- * `pendingWsMessage`, so the next socket to open sent the old prompt into the
- * session the user had switched to.
- */
 describe("resumeSessionInternal — a first message still held for delivery", () => {
   beforeEach(() => {
     useSessionStore.setState({
@@ -372,9 +356,7 @@ describe("resumeSessionInternal — a first message still held for delivery", ()
   });
 
   it("keeps the message when the session resumes ITSELF", () => {
-    // The URL graduation this feature performs (`/{repo}/new` → `/session/{id}`)
-    // lands on exactly this case, and discarding there would drop the message a
-    // moment before the flush sends it.
+
     useSessionStore.setState({ sessionId: "s1" } as never);
     resumeSessionInternal("s1");
     expect(useSessionStore.getState().pendingWsMessage).toBeDefined();

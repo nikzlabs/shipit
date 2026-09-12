@@ -1,59 +1,20 @@
 name: CI
 
-# One CI workflow for every code path into the repo — PRs and the branches they
-# land on. There used to be a second workflow (`main-ci.yml`) that existed only
-# because PRs ran on self-hosted runners while post-merge validation ran on
-# GitHub-hosted ones. This repository is public, so GitHub-hosted runners are
-# free and unmetered; the self-hosted fleet bought nothing and cost a second
-# copy of the gates that could silently drift from this one. Everything now runs
-# on `ubuntu-24.04`, so one workflow covers both triggers.
 on:
   pull_request:
-    # `main` is the integration branch; `stable` is the release maintenance
-    # branch (docs/162/214). Run the gates on PRs into either so a release-bump
-    # PR into `stable` gets a green check before merge — the same gates the
-    # post-merge release.yml run re-runs to gate the publish.
     branches: [main, stable]
-    # NOTE: deliberately NO `paths-ignore` here. These jobs are *required* status
-    # checks in branch protection, and GitHub treats a trigger-level path skip
-    # (paths-ignore) as a check that never reports — it sits "Expected / pending"
-    # and blocks the PR from merging forever. A *job-level* `if:` skip, by
-    # contrast, reports "success" and satisfies the requirement. So docs-only
-    # changes are short-circuited at the job level (see the `changes` job +
-    # `needs: changes` gating below), not by filtering the trigger.
-  # Post-merge validation for every commit that lands on the integration branch.
-  # A PR is tested against its merge base; this catches semantic conflicts
-  # between two PRs that were each green on their own.
+    # Required checks must use job-level skips; paths-ignore leaves them pending.
   push:
     branches: [main]
 
-# Cancel superseded runs. When a PR branch is pushed again before its CI
-# finishes, the in-flight run is now wasted work — every new push used to start
-# a fresh full run while the old one kept burning minutes to completion. Keying
-# the group on the PR ref (head_ref on a pull_request, the branch ref on a push)
-# and cancelling in progress means only the latest commit's run survives. The
-# release/tag workflow has no such group — a published tag's run must never be
-# cancelled.
 concurrency:
   group: ci-${{ github.head_ref || github.ref }}
   cancel-in-progress: true
 
-# Belt-and-suspenders: force any JavaScript actions still on Node.js 20 to
-# run on Node.js 24. Our actions are pinned at v5 (which already use Node 24),
-# but this guards against transitive uses by composite actions.
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
-  # Cheap gate that decides whether the build-affecting jobs need to run. Lists
-  # the files a PR changes vs its base; if every one is a doc/markdown file, the
-  # heavy jobs below skip (and a skipped *job* reports "success", keeping a
-  # docs-only PR mergeable under branch protection). A release-bump PR touches
-  # package.json / package-lock.json (not docs), so it always runs the gates.
-  # Pure git — no third-party action — to keep the dependency surface pinned.
-  #
-  # On a `push` (post-merge) there is no PR base to diff against and the run is
-  # the last word on what landed, so the gates always run.
   changes:
     name: Detect code changes
     runs-on: ubuntu-24.04
@@ -75,10 +36,7 @@ jobs:
             echo "egress=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          # pull_request workflows check out GitHub's synthetic merge commit.
-          # Diffing against HEAD therefore includes changes that landed on the
-          # base branch after this PR branched. Compare the two PR endpoints so
-          # only files introduced by the PR influence this gate.
+          # Compare PR endpoints, not GitHub's synthetic merge commit.
           changed=$(git diff --name-only "$BASE_SHA"..."$HEAD_SHA")
           echo "Changed files:"
           echo "$changed"
@@ -89,17 +47,7 @@ jobs:
           else
             echo "code=false" >> "$GITHUB_OUTPUT"
           fi
-          # The egress sidecar image is built by no other job, so it needs its own
-          # narrow gate: the Dockerfile plus everything that goes into it (the tier
-          # scripts, the Go proxy source, these checks). Kept separate from `code`
-          # because a normal TypeScript PR should not pay for a Docker build.
-          #
-          # The two egress-*.ts files are in here because the job reads the expected
-          # uids OUT of them. Without them, a PR that deliberately changes a uid — the
-          # one PR that can actually cause the image/orchestrator drift this job exists
-          # to catch — would be exactly the PR that skips the job, and would merge with
-          # the image still on the old uid. ci.yml is in here so a change to the job
-          # exercises the job.
+          # Include UID sources because the image contract reads them below.
           if printf '%s\n' "$changed" | grep -qE '^(docker/Dockerfile\.egress-sidecar|src/server/orchestrator/egress-dns\.ts|src/server/orchestrator/egress-proxy-install\.ts|\.github/workflows/ci\.yml)$|^docker/egress-sidecar/'; then
             echo "egress=true" >> "$GITHUB_OUTPUT"
           else
@@ -109,7 +57,6 @@ jobs:
   check:
     name: Lint, Type Check & Build
     needs: changes
-    # Only when the change touches build-affecting files (docs-only PRs skip).
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04
     steps:
@@ -118,12 +65,6 @@ jobs:
         with:
           node-version: 24
           cache: npm
-      # Cache node_modules itself, keyed on the lockfile. On a hit we skip the
-      # extract/link work `npm ci` does even with a warm ~/.npm download cache
-      # (setup-node's `cache: npm` only caches the tarballs, not the installed
-      # tree). The key includes the runner image and the Node major so either
-      # bump busts it — installed trees contain native binaries and platform
-      # specific optional deps, so they are only portable within one image.
       - uses: actions/cache@v5
         id: node-modules-cache
         with:
@@ -131,10 +72,6 @@ jobs:
           key: node-modules-ubuntu24-node24-${{ hashFiles('package-lock.json') }}
       - if: steps.node-modules-cache.outputs.cache-hit != 'true'
         run: npm ci
-      # The production images install this nested manifest with npm ci. Run its
-      # lockfile validation here too, but skip extraction of the large platform
-      # binaries: a split upstream publish can otherwise leave Renovate's lock
-      # missing optional platform records and fail only during deployment.
       - name: Validate agent CLI lockfile
         working-directory: docker/agent-cli
         run: |
@@ -174,48 +111,20 @@ jobs:
         run: npm ci
       - run: npm test
 
-  # The egress firewall sidecar (docs/172-agent-containment, egress-control.md) is a
-  # containment control: it runs privileged in the agent container's network namespace
-  # with NET_ADMIN. Until this job existed, NOTHING in CI built a Docker image — so its
-  # Dockerfile was never built by CI even once. That is not hypothetical: PR #2392
-  # (Renovate, alpine 3.20 -> 3.24 and golang 1.23.5 -> 1.24.3) merged green with the
-  # image unbuilt, and whether it still worked was found out afterwards, by hand.
-  #
-  # The interesting failure mode is not a broken build — that one is loud, and the build
-  # step catches it. It is an image that builds perfectly and no longer *contains*: if
-  # `adduser` picks a different uid, the firewall's owner-match rules stop matching the
-  # process they were written for and the sidecar fails open, silently, with a green
-  # build. So image-checks.sh asserts the image's contract with the orchestrator, and
-  # the expected uids are read from the server source rather than restated here.
-  #
-  # Deliberately NOT covered: the Tier A self-test inside init-firewall.sh. It installs
-  # an iptables policy, so it needs NET_ADMIN and a shared network namespace, neither of
-  # which a stock runner has. That stays in the host-level planning#92 verification.
+  # Assert the privileged egress image contract, including orchestrator UIDs.
   egress-sidecar-image:
     name: Egress Sidecar Image
     needs: changes
-    # Job-level skip, not `paths` on the trigger — see the NOTE on `on:` above: a
-    # trigger-level path filter never reports and would block PRs forever, while a
-    # skipped job reports success.
     if: needs.changes.outputs.egress == 'true'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
-      # Build context is `docker/`, matching the Dockerfile's own header and deploy.sh.
       - name: Build the sidecar image
         run: docker build -f docker/Dockerfile.egress-sidecar -t shipit-egress-sidecar:ci docker/
-      # Asserted here rather than in image-checks.sh because that script runs with the
-      # entrypoint overridden to `sh`, so from inside the container it cannot observe
-      # what the default actually is.
       - name: Verify the image's default entrypoint and user
         run: |
           set -euo pipefail
-          # Tier A runs on the image DEFAULT entrypoint: installEgressFirewall() in
-          # src/server/orchestrator/egress-firewall-install.ts creates its container
-          # with no Entrypoint override, so whatever the image defaults to is what
-          # installs containment. A default that silently became a *successful* no-op
-          # — say allow-subnet.sh, which is right there in the same image — would exit
-          # zero, install nothing, and be indistinguishable from success to the caller.
+          # Tier A depends on the image's default entrypoint to install containment.
           entrypoint=$(docker image inspect shipit-egress-sidecar:ci --format '{{json .Config.Entrypoint}}')
           echo "default entrypoint: $entrypoint"
           if [ "$entrypoint" != '["/usr/local/bin/init-firewall.sh"]' ]; then
@@ -223,9 +132,7 @@ jobs:
             echo "See installEgressFirewall() in src/server/orchestrator/egress-firewall-install.ts." >&2
             exit 1
           fi
-          # Tier A needs root to exercise NET_ADMIN. The non-root uids in this image are
-          # applied per-container by the orchestrator (the resolver and proxy sidecars),
-          # never as an image-wide default, so a default USER here would break Tier A.
+          # Tier A needs root for NET_ADMIN.
           user=$(docker image inspect shipit-egress-sidecar:ci --format '{{.Config.User}}')
           if [ -n "$user" ]; then
             echo "Image sets a default USER ('$user'); Tier A's installer expects root." >&2
@@ -235,9 +142,7 @@ jobs:
       - name: Verify the image's contract with the orchestrator
         run: |
           set -euo pipefail
-          # Read the expected uids from the server source instead of hardcoding them,
-          # so this fails when the image and the orchestrator disagree — whichever side
-          # moved. Hardcoding here would just create a third copy to drift.
+          # Read expected UIDs from their source of truth.
           resolver_uid=$(sed -n 's/^export const EGRESS_RESOLVER_UID = \([0-9]*\);.*/\1/p' src/server/orchestrator/egress-dns.ts)
           proxy_uid=$(sed -n 's/^export const EGRESS_PROXY_UID = \([0-9]*\);.*/\1/p' src/server/orchestrator/egress-proxy-install.ts)
           if [ -z "$resolver_uid" ] || [ -z "$proxy_uid" ]; then
@@ -246,7 +151,6 @@ jobs:
             exit 1
           fi
           echo "orchestrator expects: resolver uid=$resolver_uid, proxy uid=$proxy_uid"
-          # Bind-mounted, not COPYed: test code stays out of a privileged image.
           docker run --rm \
             -v "$PWD/docker/egress-sidecar/image-checks.sh:/image-checks.sh:ro" \
             --entrypoint sh shipit-egress-sidecar:ci \

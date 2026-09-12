@@ -31,7 +31,6 @@ Radix primitives are unstyled, accessible, and composable. We wrap them in thin 
 Also install `tailwind-merge` and `clsx` for the `cn()` utility (standard shadcn pattern used by all wrappers):
 
 ```ts
-// src/client/utils/cn.ts
 import { clsx, type ClassValue } from "clsx";
 import { twMerge } from "tailwind-merge";
 export function cn(...inputs: ClassValue[]) { return twMerge(clsx(inputs)); }
@@ -47,7 +46,6 @@ Each Radix primitive gets a thin wrapper in `src/client/components/ui/` that:
 
 Example for dropdown-menu:
 ```tsx
-// src/client/components/ui/dropdown-menu.tsx
 import * as DropdownMenuPrimitive from "@radix-ui/react-dropdown-menu";
 
 const DropdownMenuContent = forwardRef(({ className, ...props }, ref) => (
@@ -201,9 +199,6 @@ Example — `SessionTopBar` before:
 const [menuOpen, setMenuOpen] = useState(false);
 const menuRef = useRef<HTMLDivElement>(null);
 useClickOutside(menuRef, () => setMenuOpen(false), menuOpen);
-// ... <div ref={menuRef} className="relative">
-//       <button onClick={() => setMenuOpen(!menuOpen)}>
-//       {menuOpen && <div className="absolute ...">}
 ```
 
 After:

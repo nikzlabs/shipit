@@ -1,12 +1,4 @@
-/**
- * Per-turn Play/Pause control (docs/144).
- *
- * Lives on the assistant turn footer. Reads playback state from the shared
- * store, so only the turn that is actually playing shows the playing/paused
- * UI — every other button reads as idle. Includes a thin progress bar and a
- * speed dropdown (persisted in settings; applied to the next synthesis, since
- * OpenAI bakes speed into the audio).
- */
+
 
 import { PlayIcon, PauseIcon, StopIcon, WarningCircleIcon } from "@phosphor-icons/react";
 import { Spinner } from "./Spinner.js";
@@ -35,7 +27,7 @@ export function PlayTurnButton({ turnId, text }: { turnId: string; text: string 
     } else if (state === "paused") {
       playback.resume();
     } else {
-      // idle, loading (ignored below), or error → (re)start this turn
+
       if (state !== "loading") void playback.play(turnId, text);
     }
   };

@@ -3,13 +3,6 @@ import type { LineComment } from "../../server/shared/types.js";
 import { getLocalStorageObject } from "../utils/local-storage.js";
 import { randomId } from "../utils/random-id.js";
 
-/**
- * Legacy file-comment store used by DiffPanel for per-staged-change line
- * comments. Markdown comments live in `file-review-store.ts` and are
- * server-persisted; this store is local-to-the-browser and only handles line
- * comments on staged diffs.
- */
-
 const STORAGE_KEY = "shipit-file-comments";
 
 function loadFromStorage(): Record<string, LineComment[]> {

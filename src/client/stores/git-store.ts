@@ -18,12 +18,7 @@ interface GitState {
   diffDialogTitle: string | undefined;
   rebaseStatus: RebaseStatus;
   rebaseConflicts: RebaseConflict[];
-  /**
-   * Last server-reported rebase failure reason. Shown in the RebaseBanner
-   * with a dismiss button so a backed-out rebase doesn't disappear
-   * silently. Cleared when the user dismisses, starts another rebase, or a
-   * rebase completes successfully.
-   */
+
   rebaseError: string | null;
   pushRejected: boolean;
 
@@ -112,9 +107,6 @@ export const useGitStore = create<GitState>((set) => ({
     set({ turnDiff: data });
   },
 
-  // Omitting `baseBranch` lets the server resolve the repo's own default branch
-  // (main / master / trunk / …). The old client-side `= "main"` default silently
-  // produced an unresolvable base — and a 400 — on any non-`main` repo.
   fetchDiffVsBranch: async (sessionId, baseBranch) => {
     const query = baseBranch ? `?base=${encodeURIComponent(baseBranch)}` : "";
     const res = await fetch(`/api/sessions/${sessionId}/git/diff-vs-branch${query}`);
@@ -139,13 +131,7 @@ export const useGitStore = create<GitState>((set) => ({
   },
 
   startRebase: async (sessionId, baseBranch) => {
-    // Optimistically transition to in_progress; WS events drive subsequent
-    // state changes (rebase_started, rebase_conflicts, rebase_complete,
-    // rebase_aborted). The HTTP response only signals that the flow has
-    // started server-side — the actual rebase + agent resolution loop runs
-    // asynchronously and reports progress via WS.
-    //
-    // Clear any prior error so a retry starts from a clean slate.
+
     set({ rebaseStatus: "in_progress", pushRejected: false, rebaseError: null });
     try {
       const res = await fetch(`/api/sessions/${sessionId}/git/rebase`, {
@@ -157,11 +143,9 @@ export const useGitStore = create<GitState>((set) => ({
         const data = await res.json().catch(() => ({ error: "Rebase failed" })) as { error: string };
         throw new Error(data.error);
       }
-      // Response is { status: "started" }; WS events take over from here.
+
     } catch (err) {
-      // Surface the HTTP-level failure so the banner can show why instead
-      // of silently bouncing back to idle. Async server-side failures
-      // (post-200) come through the `rebase_aborted` WS event's `reason`.
+
       const message = err instanceof Error ? err.message : "Rebase failed";
       set({ rebaseStatus: "idle", rebaseError: message });
     }
@@ -169,9 +153,9 @@ export const useGitStore = create<GitState>((set) => ({
 
   resetBranchToBase: async (sessionId) => {
     // A merged branch must be reset, not rebased: squash and merge commits make
-    // the merged branch's old commits unsafe to replay. The server applies the
+
     // same safety gate as the agent-driven reset and synchronously settles the
-    // durable branch-updated card + PR re-arm before this request completes.
+
     set({ rebaseStatus: "in_progress", pushRejected: false, rebaseError: null });
     try {
       const res = await fetch(`/api/sessions/${sessionId}/branch/reset-to-base`, {

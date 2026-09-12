@@ -6,7 +6,6 @@ import {
 } from "./MonacoCommentWidgets.js";
 import type { LineComment } from "../../server/shared/types.js";
 
-/** The mouse events the widget's Monaco listeners read, as far as tests care. */
 interface FakeMouseEvent {
   target: {
     type: number;
@@ -15,7 +14,6 @@ interface FakeMouseEvent {
   };
 }
 
-/** Shape of the decorations the widget hands to Monaco, as far as tests care. */
 interface FakeDecoration {
   range: { startLineNumber: number };
   options: {
@@ -24,11 +22,6 @@ interface FakeDecoration {
   };
 }
 
-/**
- * Minimal stub of the bits of monaco.editor.ICodeEditor that
- * MonacoCommentWidgets actually touches. Captures changeViewZones calls
- * and lets us drive onMouseDown/decorations to assert behavior.
- */
 function makeFakeEditor() {
   const zones = new Map<string, {
     afterLineNumber: number;
@@ -36,7 +29,7 @@ function makeFakeEditor() {
     heightInPx: number;
     suppressMouseDown?: boolean;
   }>();
-  /** Zone ids passed to `layoutZone`, in order. */
+
   const layoutCalls: string[] = [];
   let nextId = 0;
   const mouseDownHandlers: ((e: FakeMouseEvent) => void)[] = [];
@@ -44,11 +37,6 @@ function makeFakeEditor() {
   const mouseLeaveHandlers: (() => void)[] = [];
   const scrollHandlers: (() => void)[] = [];
 
-  /**
-   * Mirrors Monaco: `dispose()` unregisters the handler. Without this the
-   * tests could not tell a torn-down listener from a live one, so dropping
-   * disposal in production would still pass.
-   */
   function subscribe<T>(list: T[], handler: T) {
     list.push(handler);
     return {
@@ -59,7 +47,7 @@ function makeFakeEditor() {
     };
   }
   const decorationCollections: { clear: ReturnType<typeof vi.fn> }[] = [];
-  /** Every decoration currently live, across all collections. */
+
   const liveDecorations = new Map<number, FakeDecoration[]>();
   let nextCollectionId = 0;
   const updateOptions = vi.fn();
@@ -78,17 +66,14 @@ function makeFakeEditor() {
     removeZone(id: string): void {
       zones.delete(id);
     },
-    /**
-     * Monaco re-reads the zone object's `heightInPx` here, which is how the
-     * widget grows a zone to fit a measured card.
-     */
+
     layoutZone(id: string): void {
       layoutCalls.push(id);
     },
   };
 
   const layoutHandlers: (() => void)[] = [];
-  /** Drives the widget's zone-node pinning: content width and scroll offset. */
+
   let contentWidth = 800;
   let scrollLeft = 0;
 
@@ -116,10 +101,6 @@ function makeFakeEditor() {
     }),
   };
 
-  /**
-   * Decorations across all collections carrying the given glyph class.
-   * Monaco takes a space-separated class list, so match a member of it.
-   */
   const decorationsWithClass = (className: string): FakeDecoration[] =>
     [...liveDecorations.values()]
       .flat()
@@ -158,7 +139,7 @@ function makeFakeEditor() {
     fireScroll: () => {
       for (const h of [...scrollHandlers]) h();
     },
-    /** Scroll sideways, as a non-wrapping editor with long lines does. */
+
     scrollRightTo: (left: number) => {
       scrollLeft = left;
       for (const h of [...scrollHandlers]) h();
@@ -169,7 +150,7 @@ function makeFakeEditor() {
     },
     hasMouseMoveHandler: () => mouseMoveHandlers.length > 0,
     decorationsWithClass,
-    /** Lines currently showing the hover `+`. */
+
     addGlyphLines: () =>
       decorationsWithClass("monaco-comment-add-glyph").map((d) => d.range.startLineNumber),
     getDecorationCount: () => [...liveDecorations.values()].flat().length,
@@ -253,9 +234,7 @@ describe("MonacoCommentWidgets", () => {
         onDeleteComment: vi.fn(),
       },
     );
-    // Selection-kind entries are filtered out by the widget regardless of
-    // any extra fields. We pass a minimal selection shape that satisfies
-    // the LineCommentLike supertype.
+
     manager.setComments([
       {
         id: "s1",
@@ -324,10 +303,8 @@ describe("MonacoCommentWidgets", () => {
         onDeleteComment: vi.fn(),
       },
     );
-    // Monaco still reports the last line here, so an unguarded click opens an
-    // input on a line the pointer is nowhere near — and one the `+` refuses
-    // to mark, which would make the affordance a lie.
-    fake.fireMouseDown(8, 2, /* isAfterLines */ true);
+
+    fake.fireMouseDown(8, 2,                    true);
     expect(fake.zones.size).toBe(0);
   });
 
@@ -341,7 +318,7 @@ describe("MonacoCommentWidgets", () => {
         onDeleteComment: vi.fn(),
       },
     );
-    fake.fireMouseDown(15, /* type=content */ 6);
+    fake.fireMouseDown(15,                    6);
     expect(fake.zones.size).toBe(0);
   });
 
@@ -397,7 +374,7 @@ describe("MonacoCommentWidgets", () => {
     addBtn.click();
 
     expect(onAdd).toHaveBeenCalledWith(7, "looks wrong");
-    // Input is removed after submit
+
     expect(fake.zones.size).toBe(0);
   });
 
@@ -419,7 +396,7 @@ describe("MonacoCommentWidgets", () => {
     const addBtn = [...zone.domNode.querySelectorAll("button")].find((b) => b.textContent === "Add")!;
     addBtn.click();
     expect(onAdd).not.toHaveBeenCalled();
-    // Empty input should not be removed (still showing for the user)
+
     expect(fake.zones.size).toBe(1);
   });
 
@@ -560,7 +537,6 @@ describe("MonacoCommentWidgets", () => {
     const editBtn = [...zone.domNode.querySelectorAll("button")].find((b) => b.textContent === "Edit")!;
     editBtn.click();
 
-    // After edit, the card replaces itself with a textarea and Save button
     const textarea = zone.domNode.querySelector("textarea")!;
     expect(textarea).toBeTruthy();
     expect(textarea.value).toBe("old");
@@ -609,7 +585,6 @@ describe("MonacoCommentWidgets", () => {
       [...zone.domNode.querySelectorAll("button")].find((b) => b.textContent === "Edit")!.click();
       expect(onInputOpenChange).toHaveBeenLastCalledWith(true);
 
-      // Cancelling re-renders the cards, which tears the edit form down.
       manager.setComments([lineComment({ id: "c1", line: 7, text: "old" })]);
       expect(onInputOpenChange).toHaveBeenLastCalledWith(false);
     });
@@ -633,11 +608,6 @@ describe("MonacoCommentWidgets", () => {
     });
   });
 
-  /**
-   * The glyph-margin click is the only way to add a line comment, and before
-   * this the margin drew nothing at all — so the hover `+` is the feature's
-   * entire discoverability.
-   */
   describe("hover affordance", () => {
     function makeManager(readOnly = false) {
       return createCommentWidgetManager(
@@ -675,8 +645,7 @@ describe("MonacoCommentWidgets", () => {
 
     it("tracks the glyph margin, the line numbers and the code itself", () => {
       makeManager();
-      // GUTTER_GLYPH_MARGIN, GUTTER_LINE_NUMBERS, GUTTER_LINE_DECORATIONS,
-      // CONTENT_TEXT, CONTENT_EMPTY — the pointer is on the line in all five.
+
       for (const type of [2, 3, 4, 6, 7]) {
         fake.fireMouseMove(null);
         fake.fireMouseMove(3, type);
@@ -686,7 +655,7 @@ describe("MonacoCommentWidgets", () => {
 
     it("ignores hovers over a view zone, so a comment card marks nothing", () => {
       makeManager();
-      // CONTENT_VIEW_ZONE — the pointer is over a comment card, not a line.
+
       fake.fireMouseMove(4, 8);
       expect(fake.addGlyphLines()).toEqual([]);
     });
@@ -701,7 +670,7 @@ describe("MonacoCommentWidgets", () => {
     it("clears the glyph when the pointer moves off any line", () => {
       makeManager();
       fake.fireMouseMove(6);
-      fake.fireMouseMove(null, /* OUTSIDE_EDITOR */ 13);
+      fake.fireMouseMove(null,                      13);
       expect(fake.addGlyphLines()).toEqual([]);
     });
 
@@ -733,7 +702,7 @@ describe("MonacoCommentWidgets", () => {
     it("shows no `+` in readOnly mode, which also suppresses the click", () => {
       makeManager(true);
       // readOnly must not even subscribe — a marker with no working click
-      // would be a lie.
+
       expect(fake.hasMouseMoveHandler()).toBe(false);
       fake.fireMouseMove(6);
       expect(fake.addGlyphLines()).toEqual([]);
@@ -744,8 +713,7 @@ describe("MonacoCommentWidgets", () => {
       manager.setComments([lineComment({ line: 5 })]);
       const [decoration] = fake.decorationsWithClass("monaco-comment-glyph");
       expect(decoration.options.glyphMarginHoverMessage?.value).toBe(HAS_COMMENT_TOOLTIP);
-      // ...but flagged static, so the CSS drops the pointer cursor — readOnly
-      // suppresses the click the cursor would be advertising.
+
       expect(decoration.options.glyphMarginClassName)
         .toContain("monaco-comment-glyph--static");
     });
@@ -758,12 +726,9 @@ describe("MonacoCommentWidgets", () => {
         .not.toContain("monaco-comment-glyph--static");
     });
 
-    // Monaco reports the last line's position for the blank space past the
-    // end of a short file, so an unguarded handler marks a line the pointer
-    // is hundreds of pixels away from.
     it("draws nothing in the blank space past the end of the file", () => {
       makeManager();
-      fake.fireMouseMove(8, /* CONTENT_EMPTY */ 7, /* isAfterLines */ true);
+      fake.fireMouseMove(8,                     7,                    true);
       expect(fake.addGlyphLines()).toEqual([]);
     });
 
@@ -778,8 +743,7 @@ describe("MonacoCommentWidgets", () => {
       makeManager();
       fake.fireMouseMove(6);
       fake.fireScroll();
-      // Decorations are model-anchored, so a kept marker would ride line 6
-      // away from the stationary pointer.
+
       expect(fake.addGlyphLines()).toEqual([]);
     });
 
@@ -844,7 +808,6 @@ describe("MonacoCommentWidgets", () => {
       vi.unstubAllGlobals();
     });
 
-    /** jsdom has no layout, so the measured height is supplied. */
     function setMeasuredHeight(el: Element, px: number): void {
       Object.defineProperty(el, "offsetHeight", { value: px, configurable: true });
     }
@@ -867,27 +830,22 @@ describe("MonacoCommentWidgets", () => {
       expect(domNode.style.marginLeft).toBe("");
       expect(domNode.style.margin).toBe("");
       expect(domNode.style.paddingLeft).toBe("56px");
-      // Without border-box the padding is added to Monaco's forced 100%.
+
       expect(domNode.style.boxSizing).toBe("border-box");
-      // `.view-lines` is a later sibling covering the same rows, so without a
-      // z-index it wins every hit test over the panel underneath it.
+
       expect(domNode.style.zIndex).toBe("10");
     });
 
     it("never asks Monaco to handle a press on the zone", () => {
       makeManager().openCommentInput(4);
-      // `suppressMouseDown: true` reads like "Monaco, keep off" and means the
-      // opposite: Monaco answers it by focusing its own textarea, starting a
-      // cursor operation and calling preventDefault() on the press.
+
       expect([...fake.zones.values()][0].suppressMouseDown).toBe(false);
     });
 
     it("keeps a press on the panel away from the editor's mouse handler", () => {
       makeManager().openCommentInput(4);
       const { domNode } = [...fake.zones.values()][0];
-      // The zone lives inside the editor, so an unstopped press makes Monaco
-      // focus itself and reveal its cursor — which scrolls the panel out from
-      // under the pointer before the button ever sees a mouseup.
+
       const parent = document.createElement("div");
       const reachedEditor = vi.fn();
       parent.addEventListener("mousedown", reachedEditor);
@@ -897,8 +855,7 @@ describe("MonacoCommentWidgets", () => {
       domNode.querySelector("textarea")!.dispatchEvent(press);
 
       expect(reachedEditor).not.toHaveBeenCalled();
-      // ...but not swallowed outright: the textarea still needs the press to
-      // take focus.
+
       expect(press.defaultPrevented).toBe(false);
     });
 
@@ -917,7 +874,6 @@ describe("MonacoCommentWidgets", () => {
       setMeasuredHeight(panel, 140);
       observers.find((o) => o.el === panel)!.cb();
 
-      // Measured card + the zone's own vertical insets (8px top and bottom).
       expect(zone.heightInPx).toBe(156);
       expect(fake.layoutCalls).toContain(id);
     });
@@ -939,8 +895,7 @@ describe("MonacoCommentWidgets", () => {
       makeManager().openCommentInput(4);
       const zone = [...fake.zones.values()][0];
       const before = zone.heightInPx;
-      // offsetHeight is 0 before layout — collapsing to the insets would hide
-      // the panel entirely.
+
       observers[0].cb();
       expect(zone.heightInPx).toBe(before);
       expect(before).toBeGreaterThan(50);
@@ -949,8 +904,7 @@ describe("MonacoCommentWidgets", () => {
     it("sizes the panel to the visible content, not to the longest line", () => {
       makeManager().openCommentInput(4);
       const { domNode } = [...fake.zones.values()][0];
-      // Monaco's own `width: 100%` is 100% of the *scroll* width, so in a
-      // non-wrapping file the buttons end up a screen or two to the right.
+
       expect(domNode.style.width).toBe("800px");
       fake.setContentWidth(500);
       expect(domNode.style.width).toBe("500px");
@@ -962,8 +916,7 @@ describe("MonacoCommentWidgets", () => {
       manager.openCommentInput(4);
       fake.scrollRightTo(320);
       for (const { domNode } of fake.zones.values()) {
-        // The zone container is translated by the scroll offset; cancelling it
-        // pins the card to the viewport instead of dragging it out of sight.
+
         expect(domNode.style.transform).toBe("translateX(320px)");
       }
     });
@@ -1028,7 +981,6 @@ describe("MonacoCommentWidgets — diff editor (modified side)", () => {
     expect(fake.updateOptions).toHaveBeenCalledWith({ glyphMargin: true });
   });
 
-  // DiffPanel gets the affordance from the same shared widget, so the hover
   // must land on the modified editor rather than the diff wrapper.
   it("shows the hover glyph on the modified editor", () => {
     const fake = makeFakeEditor();

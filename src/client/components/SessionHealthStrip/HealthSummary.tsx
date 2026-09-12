@@ -1,8 +1,4 @@
-/**
- * HealthSummary — the left side of the SessionHealthStrip top row: the
- * status dot + label, the inline container/worker/agent/last-event metrics,
- * and any poll / action error text. Pure rendering of derived health state.
- */
+
 
 import { StatusDot } from "../ui/status-dot.js";
 import {

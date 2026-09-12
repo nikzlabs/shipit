@@ -32,11 +32,6 @@
 // eslint-disable-next-line no-restricted-imports -- the one sanctioned addEventListener/cleanup useEffect wrapper (browser API subscription); see module docstring
 import { useEffect, useRef } from "react";
 
-/**
- * Targets we bind to. `null`/`undefined` is allowed so a caller can pass a
- * not-yet-resolved ref or a conditionally-disabled target and get a clean no-op
- * (no listener attached, nothing to clean up) without branching at the call site.
- */
 export type EventTargetLike = Window | Document | HTMLElement | EventTarget | null | undefined;
 
 /**
@@ -89,7 +84,7 @@ export function useEventListener(
   handler: (event: Event) => void,
   options?: boolean | AddEventListenerOptions,
 ): void {
-  // Latest handler, refreshed every render. Read inside the stable wrapper so a
+
   // non-memoized handler never forces the effect to re-run.
   const handlerRef = useRef(handler);
   handlerRef.current = handler;
@@ -99,30 +94,20 @@ export function useEventListener(
   // eslint-disable-next-line no-restricted-syntax -- the one sanctioned addEventListener/cleanup useEffect wrapper; see module docstring
   useEffect(() => {
     if (!target) return undefined;
-    // `listener` is created ONCE per effect run and captured by both the add and
-    // the cleanup below — that shared reference is what makes removal correct.
+
     const listener = (event: Event) => handlerRef.current(event);
-    // Pass every supported option through to the native add so `once`/`passive`/
-    // `signal` are actually honored — not silently dropped.
+
     const addOpts: AddEventListenerOptions = { capture, once, passive, ...(signal ? { signal } : {}) };
     target.addEventListener(type, listener, addOpts);
     return () => {
-      // `capture` is the only option that participates in matching; pass it back
-      // so the remove targets the same listener slot the add created.
+
       target.removeEventListener(type, listener, { capture });
     };
     // handler is intentionally NOT a dep — it lives in handlerRef. Rebind only
-    // when the subscription identity (target/type/options) actually changes.
+
   }, [target, type, capture, once, passive, signal]);
 }
 
-/**
- * One stable spec in a `useEventListeners` batch.
- *
- * Targets may differ per spec (e.g. visibilitychange on `document` but
- * pageshow/focus on `window` — the exact shape in useConnectionSync), which is
- * why the target lives on the spec rather than being a single shared argument.
- */
 export interface EventListenerSpec {
   target: EventTargetLike;
   type: string;
@@ -130,28 +115,10 @@ export interface EventListenerSpec {
   options?: boolean | AddEventListenerOptions;
 }
 
-/**
- * Bind several listeners — possibly across different targets — under one effect
- * with one shared cleanup. The multi-event sibling of {@link useEventListener},
- * for the "several events, same lifetime" sites (useConnectionSync,
- * use-voice-input's focus/visibility effect).
- *
- * `specs` may be a fresh array literal each render: the handlers are read
- * through a ref (no rebind on handler identity), and the effect rebinds only
- * when the derived target/type/capture key changes. The array length may vary
- * between renders — this is ONE hook call with an internal loop, so the rules of
- * hooks are not violated.
- */
 export function useEventListeners(specs: EventListenerSpec[]): void {
   const specsRef = useRef(specs);
   specsRef.current = specs;
 
-  // Derived key over the binding-identity fields only (NOT the handlers). When
-  // this string is unchanged the effect does not re-run, so swapping handlers
-  // each render is free; adding/removing a spec, changing a target/signal by
-  // identity, or flipping any boolean option rebinds. Identity (not a label) is
-  // used for `target` and `signal` via a stable per-object id, so two different
-  // same-tag elements — or a fresh `AbortSignal` — are distinguished correctly.
   const key = specs
     .map((s) => {
       const o = normalizeOptions(s.options);
@@ -168,12 +135,10 @@ export function useEventListeners(specs: EventListenerSpec[]): void {
 
   // eslint-disable-next-line no-restricted-syntax -- the one sanctioned addEventListener/cleanup useEffect wrapper; see module docstring
   useEffect(() => {
-    // Snapshot the specs for THIS bind so each cleanup removes exactly what it
-    // added, even if specsRef is later refreshed with a different array.
+
     const bound = specsRef.current.map((spec, i) => {
       const { capture, once, passive, signal } = normalizeOptions(spec.options);
-      // Read the latest handler for this index at fire time, by index into the
-      // live ref — so handler swaps without a rebind still call the new one.
+
       const listener = (event: Event) => specsRef.current[i]?.handler(event);
       spec.target?.addEventListener(spec.type, listener, { capture, once, passive, ...(signal ? { signal } : {}) });
       return { spec, listener, capture };
@@ -183,12 +148,11 @@ export function useEventListeners(specs: EventListenerSpec[]): void {
         spec.target?.removeEventListener(spec.type, listener, { capture });
       }
     };
-    // Deps: `key` encodes the binding identity of `specs` (targets/types/capture);
+
     // handlers ride `specsRef`, so a handler swap intentionally does not re-bind.
   }, [key]);
 }
 
-/** Normalize the boolean|object options form into the fields we care about. */
 function normalizeOptions(options?: boolean | AddEventListenerOptions): {
   capture: boolean;
   once: boolean;
@@ -206,11 +170,8 @@ function normalizeOptions(options?: boolean | AddEventListenerOptions): {
   };
 }
 
-// Stable per-object id for the multi-form rebind key. A WeakMap keeps it
-// identity-based (two distinct same-tag elements get distinct ids, so a target
-// swap rebinds) without retaining the objects. `window`/`document` get one fixed
 // id each on first use, so the common ambient-target case never spuriously
-// rebinds. The counter only ever increments, so ids are stable for a session.
+
 const objectIds = new WeakMap<object, number>();
 let nextObjectId = 0;
 function identityKey(obj: EventTargetLike | AbortSignal): string {

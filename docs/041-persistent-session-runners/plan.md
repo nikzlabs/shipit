@@ -62,21 +62,10 @@ interface QueuedMessage {
   permissionMode?: PermissionMode;
 }
 
-/**
- * Per-session container for runtime state. Owns the agent process,
- * terminal, message queue, and accumulated turn data. Survives
- * connection drops and session switches.
- *
- * Emits:
- * - "message" (WsServerMessage) — any message that should be forwarded to attached viewers
- * - "idle" — agent finished and no queued messages remain
- * - "disposed" — runner has been cleaned up
- */
 export class SessionRunner extends EventEmitter {
   readonly sessionId: string;
   readonly sessionDir: string;
 
-  // Agent state
   private agent: AgentProcess | null = null;
   private agentId: AgentId;
   private isRunning = false;
@@ -85,20 +74,14 @@ export class SessionRunner extends EventEmitter {
   private accumulatedToolUse: Array<{ type: "tool_use"; id: string; name: string; input: Record<string, unknown> }> = [];
   private turnSummary = "";
 
-  // Message queue
   private messageQueue: QueuedMessage[] = [];
 
-  // Terminal
   private terminal: TerminalProcess | null = null;
 
-  // Auto-push timer
   private pushTimer: ReturnType<typeof setTimeout> | null = null;
 
-  // Event buffer — stores messages from the current turn so that
-  // a reconnecting client can catch up without re-running the agent.
   private turnEventBuffer: WsServerMessage[] = [];
 
-  // Idle cleanup timer
   private idleTimer: ReturnType<typeof setTimeout> | null = null;
   private idleTimeoutMs: number;
 
@@ -106,7 +89,7 @@ export class SessionRunner extends EventEmitter {
     sessionId: string;
     sessionDir: string;
     defaultAgentId: AgentId;
-    idleTimeoutMs?: number; // default: 10 minutes
+    idleTimeoutMs?: number;
   }) {
     super();
     this.sessionId = opts.sessionId;
@@ -116,27 +99,14 @@ export class SessionRunner extends EventEmitter {
     this.resetIdleTimer();
   }
 
-  // --- Public API ---
-
-  /** Whether the agent is currently processing a message. */
   get running(): boolean { return this.isRunning; }
 
-  /** Get the current turn's buffered events for reconnection replay. */
   getTurnEventBuffer(): WsServerMessage[] { return [...this.turnEventBuffer]; }
 
-  /** Get a snapshot of the queue for UI display. */
   getQueueSnapshot(): Array<{ text: string; position: number }> {
     return this.messageQueue.map((item, idx) => ({ text: item.text, position: idx + 1 }));
   }
 
-  // ... agent lifecycle methods (run, interrupt, kill) ...
-  // ... terminal lifecycle methods ...
-  // ... queue management ...
-
-  /**
-   * Emit a message to all attached viewers and buffer it for reconnection.
-   * This replaces the per-connection `send()` call.
-   */
   private emitMessage(msg: WsServerMessage): void {
     this.turnEventBuffer.push(msg);
     this.emit("message", msg);
@@ -169,10 +139,6 @@ export class SessionRunner extends EventEmitter {
 New addition in `src/server/session-runner.ts` (or separate file):
 
 ```typescript
-/**
- * App-level registry of active SessionRunners. One runner per session.
- * Manages lifecycle (create, get, dispose) and enforces resource limits.
- */
 export class SessionRunnerRegistry {
   private runners = new Map<string, SessionRunner>();
   private maxConcurrentRunners: number;
@@ -181,7 +147,6 @@ export class SessionRunnerRegistry {
     this.maxConcurrentRunners = opts?.maxConcurrentRunners ?? 10;
   }
 
-  /** Get or create a runner for the given session. */
   getOrCreate(sessionId: string, sessionDir: string, defaultAgentId: AgentId): SessionRunner {
     let runner = this.runners.get(sessionId);
     if (!runner) {
@@ -192,24 +157,20 @@ export class SessionRunnerRegistry {
     return runner;
   }
 
-  /** Get existing runner (if any). */
   get(sessionId: string): SessionRunner | undefined {
     return this.runners.get(sessionId);
   }
 
-  /** List all sessions with active (running) agents. */
   listActive(): string[] {
     return [...this.runners.entries()]
       .filter(([, r]) => r.running)
       .map(([id]) => id);
   }
 
-  /** Dispose a specific runner. */
   dispose(sessionId: string): void {
     this.runners.get(sessionId)?.dispose();
   }
 
-  /** Dispose all runners (for full_reset / shutdown). */
   disposeAll(): void {
     for (const runner of this.runners.values()) {
       runner.dispose();
@@ -227,33 +188,25 @@ The WebSocket connection no longer owns runtime state. Instead it:
 3. **Detaches** when switching sessions or disconnecting (but the runner keeps going)
 
 ```typescript
-// In the WebSocket route handler (index.ts):
-
 let attachedRunner: SessionRunner | null = null;
 let messageListener: ((msg: WsServerMessage) => void) | null = null;
 
 const attachToRunner = (runner: SessionRunner) => {
-  // Detach from previous runner
   detachFromRunner();
 
   attachedRunner = runner;
   messageListener = (msg: WsServerMessage) => send(msg);
   runner.on("message", messageListener);
 
-  // Replay only buffered events that are not already in HTTP chat history.
-  // The client queues early agent_event messages until loadSessionHistory()
-  // completes, then applies them on top of that persisted baseline.
   for (const buffered of runner.getTurnEventBuffer().slice(runner.lastPersistedBufferIndex)) {
     if (buffered.type === "log_entry") continue;
     send(buffered);
   }
 
-  // Send current queue state
   if (runner.getQueueSnapshot().length > 0) {
     send({ type: "queue_updated", queue: runner.getQueueSnapshot() });
   }
 
-  // Send running status so client shows the right UI state
   send({ type: "session_status", sessionId: runner.sessionId, running: runner.running });
 };
 
@@ -265,11 +218,9 @@ const detachFromRunner = () => {
   messageListener = null;
 };
 
-// On disconnect — just detach, don't kill anything
 socket.on("close", () => {
   detachFromRunner();
   clients.delete(socket);
-  // Runner keeps going!
 });
 ```
 
@@ -325,7 +276,6 @@ class SessionRunner {
   attachViewer(): void {
     this.viewerCount++;
     if (this.viewerCount === 1) {
-      // First viewer — start preview and file watcher
       this.preview = new PreviewManager();
       this.preview.start(this.sessionDir);
       this.fileWatcher = new FileWatcher();
@@ -336,7 +286,6 @@ class SessionRunner {
   detachViewer(): void {
     this.viewerCount = Math.max(0, this.viewerCount - 1);
     if (this.viewerCount === 0) {
-      // Last viewer left — stop preview and file watcher
       this.preview?.stop();
       this.preview = null;
       this.fileWatcher?.stop();
@@ -365,15 +314,13 @@ The terminal's PTY output is buffered in SessionRunner (rolling buffer of recent
 The HandlerContext currently exposes per-connection state via getters/setters. With SessionRunners, most of these move into the runner:
 
 ```typescript
-// Before (per-connection):
-ctx.getAgent()           // → runner.agent
-ctx.getIsClaudeRunning() // → runner.running
-ctx.getMessageQueue()    // → runner.messageQueue
-ctx.getAccumulatedText() // → runner.accumulatedText
+ctx.getAgent()
+ctx.getIsClaudeRunning()
+ctx.getMessageQueue()
+ctx.getAccumulatedText()
 
-// After:
-ctx.getRunner()          // → SessionRunner (or null if no session active)
-ctx.getRunnerRegistry()  // → SessionRunnerRegistry (app-level)
+ctx.getRunner()
+ctx.getRunnerRegistry()
 ```
 
 The `send()` function on HandlerContext needs to be split:
@@ -383,10 +330,8 @@ The `send()` function on HandlerContext needs to be split:
 ### 9. Changes to `activateSession()`
 
 ```typescript
-// Current behavior:
 activateSession(sessionId) → stops preview, clears logs, restarts file watcher
 
-// New behavior:
 activateSession(sessionId) → attaches connection to session's runner,
                               switches preview/file-watcher to session dir (phase 1),
                               sends turn buffer replay + session status
@@ -397,12 +342,9 @@ Critically: `activateSession` no longer kills the previous session's agent. It j
 ### 10. Changes to `socket.on("close")`
 
 ```typescript
-// Current:
 socket.on("close") → kill claude, kill terminal, clear queue
 
-// New:
 socket.on("close") → detach from runner, remove from clients set
-// Runner and all its processes keep running
 ```
 
 ### 11. Changes to `send_message` / `runClaudeWithMessage`
@@ -411,17 +353,13 @@ Instead of creating an `AgentProcess` in the connection closure, `handleSendMess
 
 ```typescript
 export async function handleSendMessage(ctx, msg) {
-  // ... auth check, image validation ...
-
   const runner = ctx.getRunnerRegistry().getOrCreate(
     msg.sessionId, sessionDir, ctx.defaultAgentId
   );
 
-  // Attach viewer if not already attached
   ctx.attachToRunner(runner);
 
   if (runner.running) {
-    // Queue message on the runner (not the connection)
     runner.enqueue({ text: msg.text, images, files, permissionMode });
     ctx.send({ type: "message_queued", position: runner.queueLength, text: msg.text });
     return;

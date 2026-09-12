@@ -30,13 +30,12 @@ describe("ToolUseItem apply_patch", () => {
       />,
     );
 
-    // Paths render (workspace prefix stripped), kind mapped to Claude verbs.
     expect(screen.getByText("src/game/Game.js")).toBeInTheDocument();
     expect(screen.getByText("src/new.js")).toBeInTheDocument();
-    // Kind verbs render as icons labeled with the verb (update → Edit, add → Write).
+
     expect(screen.getByLabelText("Edit")).toBeInTheDocument();
     expect(screen.getByLabelText("Write")).toBeInTheDocument();
-    // Line stats from the unified diff (update: +1/-1, add: +2).
+
     expect(screen.getByText("+1")).toBeInTheDocument();
     expect(screen.getByText("-1")).toBeInTheDocument();
     expect(screen.getByText("+2")).toBeInTheDocument();
@@ -71,9 +70,9 @@ describe("ToolUseItem inline tool icon", () => {
         isQuestionDisabled
       />,
     );
-    // The verb is shown as visible text (not hover-only) next to the glyph…
+
     expect(screen.getByText("Read")).toBeInTheDocument();
-    // …followed by the argument summary (file path).
+
     expect(screen.getByText("src/foo.ts")).toBeInTheDocument();
   });
 
@@ -86,7 +85,7 @@ describe("ToolUseItem inline tool icon", () => {
         isQuestionDisabled
       />,
     );
-    // No tool word at all (no icon, no "shell"); the command stands in for the tool.
+
     expect(screen.queryByText("shell")).toBeNull();
     expect(screen.getByText("ls -la")).toBeInTheDocument();
   });
@@ -122,16 +121,15 @@ describe("ToolUseItem output modal input", () => {
 
     fireEvent.click(screen.getByLabelText("Show output"));
 
-    // Field labels for the raw input keys are rendered in the modal.
     expect(screen.getByText("file_path")).toBeInTheDocument();
     expect(screen.getByText("offset")).toBeInTheDocument();
     expect(screen.getByText("limit")).toBeInTheDocument();
-    // Non-string args that used to be dropped are now shown.
+
     expect(screen.getByText("10")).toBeInTheDocument();
     expect(screen.getByText("50")).toBeInTheDocument();
-    // file_path is shown workspace-relative (one-liner + modal field).
+
     expect(screen.getAllByText("src/foo.ts").length).toBeGreaterThan(0);
-    // The output section still renders below the input.
+
     expect(screen.getByText("Output")).toBeInTheDocument();
   });
 
@@ -231,19 +229,17 @@ describe("ToolUseItem pending tool calls", () => {
     render(
       <ToolUseItem
         tool={tool("Bash", { command: "sleep 5" })}
-        // No result — the tool is the last one in a still-streaming message.
+
         isLast
         isStreaming
         isQuestionDisabled
       />,
     );
 
-    // Pending tools expose a "Show input" affordance (vs "Show output" once done).
     fireEvent.click(screen.getByLabelText("Show input"));
 
-    // Input is shown.
     expect(screen.getByText("command")).toBeInTheDocument();
-    // Output section renders a running indicator instead of a tool result.
+
     expect(screen.getByText("Output")).toBeInTheDocument();
     expect(screen.getByText("Running…")).toBeInTheDocument();
   });
@@ -254,11 +250,9 @@ describe("ToolUseItem pending tool calls", () => {
       <ToolUseItem tool={t} isLast isStreaming isQuestionDisabled />,
     );
 
-    // Open the dialog while pending.
     fireEvent.click(screen.getByLabelText("Show input"));
     expect(screen.getByText("Running…")).toBeInTheDocument();
 
-    // Result arrives — same component instance (stable position) re-renders with it.
     rerender(
       <ToolUseItem
         tool={t}
@@ -269,7 +263,6 @@ describe("ToolUseItem pending tool calls", () => {
       />,
     );
 
-    // The running indicator is replaced in place by the output, no re-click needed.
     expect(screen.queryByText("Running…")).toBeNull();
     expect(screen.getByText("1.2 s")).toBeInTheDocument();
     expect(screen.getByText("job complete")).toBeInTheDocument();
@@ -361,7 +354,7 @@ describe("ToolUseItem lazy tool input (docs/244)", () => {
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
     expect(fetchMock.mock.calls[0]![0]).toBe("/api/sessions/session-1/tool-inputs/t1");
-    // `description` was dropped on the wire entirely — its field only exists
+
     // because the fetch brought it back.
     await waitFor(() => expect(screen.getByText("description")).toBeInTheDocument());
     expect(screen.getByLabelText("Tool output")).toHaveTextContent("echo one two three");
@@ -382,7 +375,7 @@ describe("ToolUseItem lazy tool input (docs/244)", () => {
     fireEvent.click(screen.getByLabelText("Show output"));
 
     await waitFor(() => expect(screen.getByText("Loading input…")).toBeInTheDocument());
-    // The prefix already on the wire is still shown while the rest is in flight.
+
     expect(screen.getByLabelText("Tool output")).toHaveTextContent("echo one");
   });
 
@@ -423,18 +416,8 @@ describe("ToolUseItem lazy tool input (docs/244)", () => {
   });
 });
 
-/**
- * The modal draws the tool's input directly above its output, so for a `Read`
- * it is holding the very `file_path` the output panel would otherwise have to
- * guess at. Auto-detection re-highlights the body once per registered grammar
- * — a production trace measured ~274 ms per call, synchronously in a render —
- * so this wiring is the point of the change, not a convenience.
- */
 describe("ToolUseItem read-output highlighting", () => {
-  /**
-   * highlight.js escapes `"` as `&quot;`; the DOM serializes it back to a bare
-   * quote. Round-trip the expectation so both sides match on markup.
-   */
+
   function asRendered(html: string | null): string | null {
     if (html === null) return null;
     const el = document.createElement("code");
@@ -442,8 +425,6 @@ describe("ToolUseItem read-output highlighting", () => {
     return el.innerHTML;
   }
 
-  // Ambiguous on purpose: JSON object vs Python dict literal highlight
-  // differently, so the assertion can tell "used the path" from "guessed".
   const content = '{"a": 1, "b": [2, 3]}';
 
   it("highlights a Read result as the language of the file_path it was given", () => {

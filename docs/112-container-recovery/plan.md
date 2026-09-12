@@ -85,10 +85,10 @@ use, not a recovery action).
 
 ```
 POST /api/sessions/:id/container/restart
-  → runner.emitMessage({ type: "container_restarting" })   // notify viewers
-  → runner.killAgentOnWorker()                              // best-effort SIGKILL
-  → runnerRegistry.dispose(sessionId, { force: true })      // tear down runner
-  → containerManager.destroy(sessionId)                     // stop + remove
+  → runner.emitMessage({ type: "container_restarting" })
+  → runner.killAgentOnWorker()
+  → runnerRegistry.dispose(sessionId, { force: true })
+  → containerManager.destroy(sessionId)
   → 200 { ok: true }
 
 Client:
@@ -110,7 +110,7 @@ recover from.
 ```
 POST /api/sessions/:id/agent/kill
   → runner.wasInterrupted = true
-  → runner.killAgentOnWorker()    // POST /agent/kill on worker → SIGKILL
+  → runner.killAgentOnWorker()
   → runner.emitMessage({ type: "claude_interrupted" })
   → 200 { ok: true }
 ```

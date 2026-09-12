@@ -17,14 +17,7 @@ interface PlanApprovalProps {
   onSend: (text: string) => void;
   disabled: boolean;
   planContent?: string;
-  /**
-   * True when the agent has already emitted a tool_result for this
-   * ExitPlanMode call (i.e. the plan has been accepted or feedback was
-   * already sent in a prior turn). Used to render the read-only
-   * confirmation after a page reload, where the component's local
-   * `submitted` state is gone but the tool_result is persisted in chat
-   * history.
-   */
+
   resolved?: boolean;
 }
 
@@ -32,15 +25,9 @@ export function PlanApproval({ onSend, disabled, planContent, resolved }: PlanAp
   const [submitted, setSubmitted] = useState<"accepted" | "feedback" | null>(null);
   const [showFeedback, setShowFeedback] = useState(false);
   const [feedbackText, setFeedbackText] = useState("");
-  // On a phone the inline plan card is a tiny scroll box. The expand button
-  // opens a fullscreen dialog (the shared Dialog is fullscreen on mobile, see
-  // ui/dialog.tsx) showing the whole plan with the action buttons pinned to
-  // the bottom so they're always reachable.
+
   const [expanded, setExpanded] = useState(false);
 
-  // docs/138 — offer "Approve in guarded mode" alongside the plain approve when
-  // the active agent supports guarded. This mirrors Claude's own plan-approval
-  // menu (a variant of the existing approve choice, not a new shell affordance).
   const agentList = useUiStore((s) => s.agentList);
   const activeAgentId = useUiStore((s) => s.activeAgentId);
   const guardedSupported = !!agentList
@@ -50,8 +37,7 @@ export function PlanApproval({ onSend, disabled, planContent, resolved }: PlanAp
   const acceptInMode = useCallback(
     (mode: "auto" | "guarded") => {
       if (disabled || submitted) return;
-      // Switch this session out of plan mode so the follow-up message runs in
-      // the chosen execution mode. Scope to the current session only — toggling
+
       // mode here must not affect other sessions.
       const sid = useSessionStore.getState().sessionId;
       useSettingsStore.getState().setPermissionMode(sid, mode);
@@ -70,16 +56,8 @@ export function PlanApproval({ onSend, disabled, planContent, resolved }: PlanAp
     onSend(feedbackText.trim());
   }, [disabled, submitted, feedbackText, onSend]);
 
-  // Treat the plan as answered if the user just submitted, OR if the
-  // server-persisted tool_result indicates it's already resolved. Without
-  // the latter case, a reloaded chat would show the action buttons for a
-  // plan that's already been accepted, inviting a duplicate response.
   const isAnswered = !!submitted || !!resolved;
 
-  // Read-only state after submission. When the local `submitted` state is
-  // set we know which path the user took; on a reload we only know the
-  // plan was resolved (via `resolved`), so we show a generic "Plan
-  // resolved" line instead of guessing accept-vs-feedback.
   if (isAnswered) {
     return (
       <div className="mt-2 rounded-lg border border-(--color-border-secondary) bg-(--color-bg-secondary)/80 overflow-hidden p-3" data-testid="plan-approval">
@@ -103,8 +81,6 @@ export function PlanApproval({ onSend, disabled, planContent, resolved }: PlanAp
     );
   }
 
-  // The accept / guarded / suggest-changes controls plus the feedback input.
-  // Shared verbatim between the inline card and the fullscreen dialog footer so
   // the two surfaces never drift. Only one of the two renders at a time (the
   // dialog mounts only while `expanded`), so there are never duplicate testids.
   const actionControls = (

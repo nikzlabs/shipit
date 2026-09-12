@@ -1,7 +1,4 @@
-/**
- * Shared primitives for the PR lifecycle card — small presentational pieces and
- * the diff-open hook reused across the phase renderers (ready/open/terminal).
- */
+
 
 import { useCallback } from "react";
 import { useGitStore } from "../../stores/git-store.js";
@@ -11,19 +8,9 @@ import type { PrCardState } from "../../stores/pr-store.js";
 import { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider } from "../ui/tooltip.js";
 import { MarkdownContent } from "../message-markdown.js";
 
-// NB: block-level `flex` (not `inline-flex`) so the chip renders at exactly
-// h-6 regardless of its parent. As an inline-flex element it would be
-// baseline-aligned inside a non-flex parent's line box, rounding the line up
-// to 25px and making any containing row 1px taller (the merged PR card bug).
 export const linkClass = "h-6 flex items-center gap-1 text-xs text-(--color-text-tertiary) hover:text-(--color-text-secondary) transition-colors border border-(--color-border-secondary) rounded px-1.5";
 export const MAX_VISIBLE_FAILURES = 5;
 
-/**
- * Conventional default-branch names, used only when the repo's *actual* default
- * branch isn't known (no session, repo list not hydrated yet). Prefer passing
- * `repoDefault` — a repo can perfectly well default to `trunk` or `develop`,
- * and one that does should still get the "just show the head branch" treatment.
- */
 const CONVENTIONAL_DEFAULT_BRANCHES = new Set(["main", "master"]);
 export function isDefaultBranch(branch: string, repoDefault?: string): boolean {
   if (repoDefault) return branch === repoDefault;
@@ -47,12 +34,9 @@ export function DiffStats({ ins, del, onClick }: { ins: number; del: number; onC
   );
 }
 
-/** Fetch diff of HEAD vs a base branch and open it in the diff dialog. */
 export function useOpenPrDiff(baseBranch?: string) {
   const sessionId = useSessionStore((s) => s.sessionId);
-  // Pre-PR (and on the ready card) there's no PR base to pass in, so fall back
-  // to the repo's real default branch. Diffing against a hard-coded "main" on a
-  // `master` repo fails outright — the server can't resolve the base ref.
+
   const repoDefault = useSessionDefaultBranch(sessionId ?? undefined);
   return useCallback(async () => {
     if (!sessionId) return;
@@ -66,19 +50,6 @@ export function useOpenPrDiff(baseBranch?: string) {
   }, [sessionId, baseBranch, repoDefault]);
 }
 
-/**
- * PR title (with rich-tooltip PR body) for the open phase. The branch name
- * itself is no longer surfaced here — pre-PR it's replaced by the session
- * title in ReadyPhase, and the copy affordance has moved to the overflow
- * menu's "Copy branch name" item.
- *
- * Rendering rules:
- *   - `prTitle` unset, non-default base → "base ← head".
- *   - `prTitle` unset, default base     → just `headBranch`.
- *   - `prTitle` set                     → render `prTitle`; tooltip shows
- *                                          full `prBody` as markdown (or a
- *                                          fallback when there's no body).
- */
 export function BranchLabel({
   baseBranch,
   headBranch,
@@ -90,9 +61,7 @@ export function BranchLabel({
   prTitle?: string;
   prBody?: string;
 }) {
-  // Hook before the early return — "is this the default branch?" is answered by
-  // the repo's actual default, so a `trunk`-based repo doesn't render a
-  // redundant "trunk ← shipit/xyz".
+
   const sessionId = useSessionStore((s) => s.sessionId);
   const repoDefault = useSessionDefaultBranch(sessionId ?? undefined);
 

@@ -51,8 +51,8 @@ my-plugin/
 ```markdown
 ---
 description: Test-driven development workflow
-disable-model-invocation: false   # Claude can auto-invoke
-user-invocable: true              # User can /invoke manually
+disable-model-invocation: false
+user-invocable: true
 ---
 
 # TDD Skill
@@ -124,8 +124,6 @@ Plugins live in a shared directory outside session workspaces:
 A new `PluginManager` class handles:
 
 ```typescript
-// src/server/plugin-manager.ts
-
 export interface PluginManifest {
   name: string;
   version: string;
@@ -135,9 +133,9 @@ export interface PluginManifest {
 }
 
 export interface PluginInfo {
-  id: string;               // directory name
+  id: string;
   manifest: PluginManifest;
-  path: string;             // absolute path on disk
+  path: string;
   skills: SkillInfo[];
   agents: AgentInfo[];
   hooks: HookConfig | null;
@@ -146,8 +144,8 @@ export interface PluginInfo {
 }
 
 export interface SkillInfo {
-  name: string;             // directory name under skills/
-  description: string;      // from SKILL.md frontmatter
+  name: string;
+  description: string;
   userInvocable: boolean;
   modelInvocable: boolean;
 }
@@ -155,19 +153,10 @@ export interface SkillInfo {
 export class PluginManager {
   constructor(private pluginsDir: string) {}
 
-  /** Scan pluginsDir and parse all plugin manifests + components */
   async discoverPlugins(): Promise<PluginInfo[]> { ... }
-
-  /** Get a single plugin by ID */
   async getPlugin(id: string): Promise<PluginInfo | null> { ... }
-
-  /** Install a plugin from a Git URL (clone into pluginsDir) */
   async installPlugin(repoUrl: string): Promise<PluginInfo> { ... }
-
-  /** Update a plugin (git pull) */
   async updatePlugin(id: string): Promise<PluginInfo> { ... }
-
-  /** Remove a plugin from disk */
   async removePlugin(id: string): Promise<void> { ... }
 }
 ```
@@ -180,20 +169,17 @@ Session metadata gains a `plugins` field:
 // Addition to SessionMetadata in src/server/types/domain-types.ts
 
 interface SessionMetadata {
-  // ... existing fields ...
   plugins?: SessionPluginConfig;
 }
 
 interface SessionPluginConfig {
-  /** Plugin IDs enabled for this session. null = use defaults. */
   enabled: string[] | null;
-  /** Per-plugin overrides (e.g., disable specific skills). */
   overrides?: Record<string, PluginOverride>;
 }
 
 interface PluginOverride {
-  disabledSkills?: string[];   // skill names to suppress
-  disabledHooks?: string[];    // hook event names to suppress
+  disabledSkills?: string[];
+  disabledHooks?: string[];
 }
 ```
 
@@ -204,9 +190,6 @@ When `enabled` is `null`, the system uses the global default (Superpowers enable
 The `ClaudeAdapter` already constructs CLI arguments in its `run()` method. Plugin integration adds the `--plugin-dir` flag:
 
 ```typescript
-// In src/server/agents/claude-adapter.ts, within buildArgs()
-
-// For each enabled plugin, add --plugin-dir
 for (const pluginPath of resolvedPluginPaths) {
   args.push("--plugin-dir", pluginPath);
 }
@@ -233,9 +216,6 @@ When Superpowers skills activate, Claude's behavior changes visibly (it asks bra
 2. **System prompt markers** — Superpowers skills include distinctive preambles ("## Brainstorming Phase", "## TDD: RED step") in Claude's output. A lightweight regex matcher in the message renderer can detect these and display a skill badge.
 
 ```typescript
-// Addition to src/client/components/StreamingIndicator.tsx
-
-// Detect superpowers skill invocations in tool activity
 case "superpowers:brainstorm":
   return { label: "Brainstorming", icon: "lightbulb" };
 case "superpowers:execute-plan":
@@ -290,8 +270,6 @@ Plugin management uses HTTP (stateless reads and mutations — no streaming or p
 ### 7. Service layer
 
 ```typescript
-// src/server/services/plugins.ts
-
 import type { PluginManager, PluginInfo } from "../plugin-manager.js";
 import type { SessionManager } from "../sessions.js";
 
@@ -305,7 +283,6 @@ export async function installPlugin(
   pluginManager: PluginManager,
   repoUrl: string
 ): Promise<PluginInfo> {
-  // Validate URL, clone, parse manifest
   return pluginManager.installPlugin(repoUrl);
 }
 
@@ -314,20 +291,17 @@ export async function updateSessionPlugins(
   sessionId: string,
   config: SessionPluginConfig
 ): Promise<void> {
-  // Update session metadata with new plugin config
   const session = await sessionManager.getSession(sessionId);
   if (!session) throw new ServiceError("Session not found", 404);
   await sessionManager.updateSession(sessionId, { plugins: config });
 }
 
-/** Resolve the final list of plugin directories for a session */
 export function resolvePluginPaths(
   pluginManager: PluginManager,
   sessionPlugins: SessionPluginConfig | undefined,
   allPlugins: PluginInfo[]
 ): string[] {
   if (!sessionPlugins || sessionPlugins.enabled === null) {
-    // Default: return all plugins marked as default-enabled
     return allPlugins.map(p => p.path);
   }
   return sessionPlugins.enabled
@@ -342,10 +316,7 @@ export function resolvePluginPaths(
 `PluginManager` is added to `AppDeps` so tests can inject a stub:
 
 ```typescript
-// Addition to AppDeps in src/server/index.ts
-
 interface AppDeps {
-  // ... existing deps ...
   pluginManager: PluginManager;
 }
 ```
@@ -362,8 +333,7 @@ The `ClaudeAdapter.run()` method currently builds CLI args from `AgentRunParams`
 
 ```typescript
 export interface AgentRunParams {
-  // ... existing fields ...
-  pluginDirs?: string[];   // absolute paths to plugin directories
+  pluginDirs?: string[];
 }
 ```
 

@@ -26,19 +26,7 @@ export interface MarkdownSelectionCommentsProps {
   ) => AddCommentResult | Promise<AddCommentResult>;
   onEditComment: (commentId: string, text: string) => void;
   onDeleteComment: (commentId: string) => void;
-  /**
-   * docs/151 — when true, hides the floating add-comment button and passes
-   * no-op edit/delete callbacks so the comments render but the user can't
-   * mutate them. Used by `FilePreviewModal` in agent-review snapshot mode.
-   */
   readOnly?: boolean;
-  /**
-   * Fires whenever an unsaved comment editor opens or closes — the
-   * add-comment input, or an in-place edit of an existing comment. The review
-   * surface uses it to disable "Send comments" so a half-typed comment can't
-   * be dropped by an accidental submit. Always fires `false` on unmount, so a
-   * viewer closed mid-compose can't strand the flag.
-   */
   onComposingChange?: (composing: boolean) => void;
 }
 
@@ -53,20 +41,16 @@ export function MarkdownSelectionComments({
 }: MarkdownSelectionCommentsProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [pendingSelection, setPendingSelection] = useState<PendingSelection | null>(null);
-  // Ids of comments currently open in their in-place edit form. A Set (rather
-  // than a single id) because nothing stops the user opening two cards.
+  // More than one comment card can be edited at once.
   const [editingIds, setEditingIds] = useState<ReadonlySet<string>>(() => new Set());
 
   const composing = pendingSelection !== null || editingIds.size > 0;
 
-  // Keep the callback in a ref so the sync effect below depends only on
-  // `composing` — a parent re-creating the handler must not re-fire it.
+  // Parent callback identity must not re-fire the state notification.
   const onComposingChangeRef = useRef(onComposingChange);
   onComposingChangeRef.current = onComposingChange;
 
-  // Mirror the open-editor state out to the review surface. The cleanup is what
-  // makes "close the viewer mid-compose" safe: it clears the flag on unmount as
-  // well as on the transition back to idle.
+  // Clear the external composing flag on unmount.
   // eslint-disable-next-line no-restricted-syntax -- external sync: transient composing state → review store, with unmount cleanup
   useEffect(() => {
     onComposingChangeRef.current?.(composing);
@@ -92,9 +76,7 @@ export function MarkdownSelectionComments({
 
   const { snapshot, setSnapshot } = useMarkdownSelection(containerRef, pendingSelection);
 
-  // Promote the latest snapshot to a pending input. We deliberately use the
-  // captured snapshot rather than re-reading `window.getSelection()` — see
-  // the `SelectionSnapshot` doc.
+  // Use the captured selection because focus changes can clear the live one.
   const handleStartComment = useCallback((snap: SelectionSnapshot) => {
     setPendingSelection({
       quotedText: snap.quotedText,
@@ -135,10 +117,6 @@ export function MarkdownSelectionComments({
 
       {blocks.map((block, idx) => {
         const blockComments = commentsByBlock.get(idx) ?? [];
-        // Suppress the top margin on the very first block so the doc doesn't
-        // start with a gap; from the second block onward, the kind-specific
-        // top margin restores the section/paragraph rhythm that prose-sm
-        // would have given inside a single container.
         const topMargin = idx === 0 ? "" : TOP_MARGIN_CLASS[block.topSpacing];
         return (
           <div key={idx} className={topMargin} data-markdown-block-index={idx}>

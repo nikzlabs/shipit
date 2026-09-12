@@ -3,12 +3,6 @@ import { render, screen, cleanup, fireEvent } from "@testing-library/react";
 import { ReleaseLifecycleCard } from "./ReleaseLifecycleCard.js";
 import type { ReleaseStatusSummary } from "../../server/shared/types.js";
 
-/**
- * Tests for the persisted release transcript card (docs/171). The card renders
- * straight from its `card` snapshot: `proposed` is the expanded interactive form
- * (Confirm/Cancel); every later phase collapses to a compact row. A one-shot
- * guard prevents a double confirm while the agent's follow-up turn is in flight.
- */
 function card(over: Partial<ReleaseStatusSummary> = {}): ReleaseStatusSummary {
   return {
     sessionId: "s1",
@@ -40,7 +34,7 @@ describe("ReleaseLifecycleCard — proposed", () => {
     fireEvent.click(btn);
     fireEvent.click(btn);
     expect(onConfirm).toHaveBeenCalledTimes(1);
-    // No mechanism on the card → defaults to tag-triggered (platform default).
+
     expect(onConfirm).toHaveBeenCalledWith("0.3.0", "tag-triggered");
   });
 

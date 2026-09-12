@@ -103,7 +103,7 @@ describe("ProjectSettings - Secrets tab", () => {
       expect(screen.getByTestId("secret-key-0")).toHaveValue("API_KEY");
     });
     // The value field is blank (the browser never received the value) and
-    // signals a stored value via its placeholder.
+
     expect(screen.getByTestId("secret-value-0")).toHaveValue("");
     expect(screen.getByTestId("secret-value-0")).toHaveAttribute(
       "placeholder",
@@ -156,11 +156,7 @@ describe("ProjectSettings - Secrets tab", () => {
   });
 
   it("cancels the pending 'Saved' confirmation when the tab unmounts", async () => {
-    // Save schedules a 500ms timer that flips the button to "Saved". Left
-    // dangling it fires after the test file's jsdom is torn down, and React's
-    // scheduler dereferences a `window` that no longer exists — a worker crash
-    // that turns a fully green run red with `UNHANDLED ERRORS`. The user-facing
-    // half is the same bug: state set on an unmounted component.
+
     const onSecretsLoad = vi.fn().mockResolvedValue(["API_KEY"]);
     const { unmount } = renderOnSecretsTab({ onSecretsSave: vi.fn(), onSecretsLoad });
     await waitFor(() => {
@@ -168,10 +164,7 @@ describe("ProjectSettings - Secrets tab", () => {
     });
 
     // Fake timers from here so a regression cannot leak a real timer into the
-    // worker — which is exactly the failure being guarded against. The
-    // assertion matches the specific timer id rather than counting pending
-    // timers: unmount itself schedules two of React's own, so a count says
-    // nothing about this one.
+
     vi.useFakeTimers();
     try {
       const setSpy = vi.spyOn(globalThis, "setTimeout");
@@ -275,17 +268,14 @@ describe("ProjectSettings - Secrets tab", () => {
     );
   });
 
-  // A stored key renders under "Custom variables" only until `secrets_status`
-  // says a compose service declared it. The snapshot is live, so it can arrive
-  // after the tab mounted — and after the user pinned `customRows` by touching
   // a row. The key must still move into the declared section rather than
-  // rendering in both.
+
   it("moves a stored key out of Custom variables when it becomes declared", async () => {
     renderOnSecretsTab({ onSecretsLoad: async () => ["STRIPE_KEY", "OTHER"] });
     await waitFor(() => {
       expect(screen.getByTestId("secret-key-0")).toHaveValue("STRIPE_KEY");
     });
-    // Pin `customRows` the way any edit would.
+
     await userEvent.click(screen.getByTestId("secret-add"));
 
     usePreviewStore.getState().setSecrets({
@@ -305,15 +295,13 @@ describe("ProjectSettings - Secrets tab", () => {
   });
 
   // The rendered custom list is filtered, so row handlers must index the
-  // FILTERED list. Indexing the pinned `customRows` state instead is off by
-  // however many keys have since moved into the declared section — the click
-  // would remove the wrong row.
+
   it("removes the clicked custom row after a key moved to the declared section", async () => {
     renderOnSecretsTab({ onSecretsLoad: async () => ["STRIPE_KEY", "KEEP_ME", "DROP_ME"] });
     await waitFor(() => {
       expect(screen.getByTestId("secret-key-0")).toHaveValue("STRIPE_KEY");
     });
-    // Pin `customRows` while STRIPE_KEY is still in it.
+
     await userEvent.click(screen.getByTestId("secret-add"));
 
     usePreviewStore.getState().setSecrets({
@@ -325,7 +313,6 @@ describe("ProjectSettings - Secrets tab", () => {
       expect(screen.getByTestId("secret-key-0")).toHaveValue("KEEP_ME");
     });
 
-    // Rendered: [KEEP_ME, DROP_ME, ""] — index 1 is DROP_ME.
     await userEvent.click(screen.getByTestId("secret-remove-1"));
     const customKeys = screen
       .getAllByTestId(/^secret-key-\d+$/)
@@ -333,10 +320,6 @@ describe("ProjectSettings - Secrets tab", () => {
     expect(customKeys).toEqual(["KEEP_ME", ""]);
   });
 
-  // A key hidden from the custom section is hidden, not dropped: `declared` can
-  // go back to empty (compose file edited again), and a row removed from state
-  // would then be in neither section — so Save would put it in neither `set`
-  // nor `keep` and the server would delete the stored secret.
   it("does not drop a stored key that was hidden while declared and then undeclared", async () => {
     const onSecretsSave = vi.fn();
     renderOnSecretsTab({ onSecretsSave, onSecretsLoad: async () => ["STRIPE_KEY"] });
@@ -352,10 +335,9 @@ describe("ProjectSettings - Secrets tab", () => {
     await waitFor(() => {
       expect(screen.getByTestId("secret-declared-STRIPE_KEY")).toBeInTheDocument();
     });
-    // Pin `customRows` while STRIPE_KEY is filtered out of the rendered list.
+
     await userEvent.click(screen.getByTestId("secret-add"));
 
-    // The compose file drops `x-shipit-secrets` again.
     usePreviewStore.getState().setSecrets({
       declared: [],
       missingByService: {},
@@ -379,7 +361,7 @@ describe("ProjectSettings - Secrets tab", () => {
       missingByService: {},
       missingRequired: [],
     });
-    // STRIPE_KEY already has a stored value (name returned by load).
+
     renderOnSecretsTab({ onSecretsSave, onSecretsLoad: async () => ["STRIPE_KEY"] });
     await waitFor(() => {
       expect(screen.getByTestId("secret-clear-STRIPE_KEY")).toBeInTheDocument();
@@ -387,7 +369,7 @@ describe("ProjectSettings - Secrets tab", () => {
 
     await userEvent.click(screen.getByTestId("secret-clear-STRIPE_KEY"));
     await userEvent.click(screen.getByTestId("secrets-save"));
-    // Cleared → neither set nor kept → server deletes it.
+
     expect(onSecretsSave).toHaveBeenCalledWith(
       "https://github.com/org/repo",
       { set: {}, keep: [] },

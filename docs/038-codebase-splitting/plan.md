@@ -54,8 +54,7 @@ src/server/types/
    export * from "./claude-types.js";
    export * from "./agent-types.js";
    export * from "./domain-types.js";
-   // ... etc.
-   ```
+```
 4. Replace the original `src/server/types.ts` with:
    ```ts
    export * from "./types/index.js";
@@ -106,14 +105,11 @@ src/server/
 Each handler function receives a `HandlerContext` — a bag of the per-connection and per-app state that handlers need. This avoids passing 20+ individual arguments:
 
 ```ts
-// src/server/ws-handlers/types.ts
 export interface HandlerContext {
-  // Per-connection send
   send: (msg: WsServerMessage) => void;
   broadcast: (msg: WsServerMessage) => void;
   broadcastLog: (source: string, text: string) => void;
 
-  // Per-connection mutable state
   getActiveDir: () => string;
   getActiveGitManager: () => GitManager;
   getActiveAppSessionId: () => string | undefined;
@@ -122,7 +118,6 @@ export interface HandlerContext {
   setActiveSessionDir: (dir: string | null) => void;
   activateSession: (sessionId: string) => void;
 
-  // App-level managers (readonly references)
   sessionManager: SessionManager;
   chatHistoryManager: ChatHistoryManager;
   createGitManager: (dir: string) => GitManager;
@@ -138,13 +133,11 @@ export interface HandlerContext {
   agentRegistry: AgentRegistry;
   gitIdentityStore: GitIdentityStore;
 
-  // Factories
   agentFactory: (agentId: AgentId) => AgentProcess;
   createSessionDir: (title: string, opts?: { skipGitInit?: boolean }) => Promise<{ appSessionId: string; sessionDir: string }>;
   generateText: (prompt: string, cwd?: string) => Promise<string>;
   getSharedRepoDir: (repoUrl: string) => string;
 
-  // Config
   workspaceDir: string;
   sessionsRoot: string;
   defaultAgentId: AgentId;
@@ -156,13 +149,10 @@ export interface HandlerContext {
 Each handler file exports one function per message type:
 
 ```ts
-// src/server/ws-handlers/git-handlers.ts
 export async function handleGetGitLog(ctx: HandlerContext): Promise<void> {
-  // ... body moved verbatim from index.ts
 }
 
 export async function handleRollback(ctx: HandlerContext, msg: WsRollback): Promise<void> {
-  // ...
 }
 ```
 
@@ -184,7 +174,6 @@ socket.on("message", async (raw: Buffer) => {
     case "get_git_log": return handleGetGitLog(ctx);
     case "rollback": return handleRollback(ctx, msg);
     case "send_message": return handleSendMessage(ctx, msg);
-    // ... etc.
   }
 });
 ```
@@ -258,14 +247,10 @@ The refactor to useReducer/Context is valuable but belongs in a separate follow-
 export function useMessageHandler(params: {
   lastMessage: MessageEvent | null;
   send: (msg: WsClientMessage) => void;
-  // State setters — every setX used in the current useEffect
   setPreview: Dispatch<SetStateAction<PreviewStatus | null>>;
   setMessages: Dispatch<SetStateAction<ChatMessage[]>>;
   setIsLoading: Dispatch<SetStateAction<boolean>>;
-  // ... all other setters ...
-  // Refs
   prDescGeneratingRef: MutableRefObject<boolean>;
-  // Dependencies from other hooks
   rightTab: RightTab;
   viewingFile: string | null;
   notify: (msg: string) => void;
@@ -273,8 +258,7 @@ export function useMessageHandler(params: {
   handleSessionResume: (sessionId: string) => void;
 }): void {
   useEffect(() => {
-    // ... body moved verbatim from App.tsx lines 393-1094
-  }, [params.lastMessage, params.send, /* ... */]);
+  }, [params.lastMessage, params.send]);
 }
 ```
 
@@ -283,20 +267,16 @@ export function useMessageHandler(params: {
 ```ts
 export function useAppCallbacks(params: {
   send: (msg: WsClientMessage) => void;
-  // State + setters needed by callbacks
   sessionIdRef: MutableRefObject<string | undefined>;
   permissionMode: PermissionMode;
   pendingFiles: FileContextRef[];
-  // ... etc.
 }): {
   handleSend: (text: string, images?: ImageData[]) => void;
   handleInterrupt: () => void;
   handleEditMessage: (idx: number, newText: string) => void;
   handleSessionResume: (sessionId: string) => void;
   handleSessionNew: () => void;
-  // ... all other callbacks
 } {
-  // ... each useCallback moved verbatim
 }
 ```
 

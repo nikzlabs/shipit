@@ -45,8 +45,7 @@ No session depends on another session. All sessions reference the shared clone i
 
 ```typescript
 export interface SessionInfo {
-  // ... existing fields ...
-  branch?: string;                   // Worktree branch name
+  branch?: string;
   sessionType?: "standalone" | "worktree";
 }
 ```
@@ -56,7 +55,6 @@ Note: `parentSessionId` was removed. Sessions are independent — they all point
 ### GitManager Methods
 
 ```typescript
-// Already implemented in git.ts:
 async createWorktree(worktreePath, branchName, startPoint?): Promise<void>
 async removeWorktree(worktreePath): Promise<void>
 async listWorktrees(): Promise<Array<{ path, branch, head }>>

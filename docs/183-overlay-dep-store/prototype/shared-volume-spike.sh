@@ -1,42 +1,10 @@
 #!/usr/bin/env bash
-# PROTOTYPE — ONE `type=overlay` volume shared across MANY containers (docs/183, Open Q #4).
-#
-# WHY THIS EXISTS — the gap volume-driver-overlay-spike.sh does NOT cover.
-# That spike's concurrency test uses TWO DIFFERENT overlay volumes that share one
-# read-only lowerdir (each its own upper). The compose/preview solution needs the
-# OPPOSITE: ONE per-session overlay volume mounted into N containers (the agent
-# container + every compose dev-server service). Compose services mount the
-# workspace as a Subpath of one `external` named volume today (compose-generator.ts:
-# 651-655) — for an overlay session that volume becomes `type=overlay`, shared.
-#
-# The unproven question this answers:
-#   When N containers reference ONE `local` `type=overlay` volume and their FIRST
-#   use races, does Docker perform `mount -t overlay` exactly ONCE (then bind-mount
-#   the volume's _data into the rest), with NO EBUSY / "upperdir is in-use"?
-#   Docker's per-volume store lock SHOULD serialize this (it does for every local
-#   volume), but `type=overlay` under concurrent first-use must be shown empirically
-#   on every target, since EBUSY is kernel/storage-driver-dependent.
-#
-# GREEN = exactly ONE overlay superblock for the upper while N containers attach
-#         + ZERO errors across COLD_TRIALS cold-race iterations
-#         + cross-container write coherence + inotify in a NON-triggering container
-#         + teardown<->startup overlap leaves the merged view intact.
-# Record the per-host summary in ../FINDINGS.md next to the other verdicts.
-#
-# Run on a Docker host:  bash shared-volume-spike.sh
-#   Same script on Linux/VPS, Docker Desktop/Mac, Docker Desktop/Windows-WSL2.
-#   Tunable:  COLD_TRIALS=50 bash shared-volume-spike.sh   (default 25)
-#
-# The consumer containers are UNPRIVILEGED (the daemon does the mount), matching
-# ShipIt's orchestrator model. The only privileged container is the mount-table
-# probe (`--pid=host` to read the daemon namespace's /proc/1/mountinfo) — a
-# diagnostic, not part of the production path.
 set -u
 
 IMG="ubuntu:24.04"
-ALPINE="alpine:3.20"          # busybox inotifyd, dependency-free
-STORE="ob-shared-store"       # scratch named volume holding base/upper/work
-OVL="ob-shared-ovl"           # the ONE shared type=overlay volume under test
+ALPINE="alpine:3.20"
+STORE="ob-shared-store"
+OVL="ob-shared-ovl"
 LOWER_MARK="HELLO_FROM_LOWER"
 COLD_TRIALS="${COLD_TRIALS:-25}"
 
@@ -64,11 +32,10 @@ hdr "0. Environment"
 echo "    docker: $(docker version -f '{{.Server.Version}}' 2>/dev/null)  os/arch: $(docker version -f '{{.Server.Os}}/{{.Server.Arch}}' 2>/dev/null)"
 echo "    daemon: $(docker info -f '{{.Name}}' 2>/dev/null)  ($(docker info -f '{{.OperatingSystem}}' 2>/dev/null))  cold-trials=$COLD_TRIALS"
 
-# --- Seed the production layout in one workspace-like volume -----------------
 docker volume create "$STORE" >/dev/null
 MP="$(docker volume inspect -f '{{.Mountpoint}}' "$STORE")"
-BASE="overlay-base/h1/base"          # lowerdir subtree (never mounted into a session)
-SESS="sessions/sessA"                # ONE session's upper/work — shared by all consumers
+BASE="overlay-base/h1/base"
+SESS="sessions/sessA"
 UPPER="$MP/$SESS/upper"
 hdr "1. Seed prod layout — base in $BASE, one upper in $SESS (vol _data: $MP)"
 seed_out="$(docker run --rm -v "$STORE":/vol "$IMG" bash -c "
@@ -79,26 +46,18 @@ seed_out="$(docker run --rm -v "$STORE":/vol "$IMG" bash -c "
 [ "$seed_out" = "seeded" ] && pass "seeded prod layout (base + one session upper)" \
                            || { fail "seed failed: $seed_out"; echo "Summary: PASS=$PASS FAIL=$FAIL"; exit 1; }
 
-# Create the ONE shared overlay volume (absolute daemon-host paths, like prod).
 make_shared_overlay() {
   docker volume create "$OVL" --driver local \
     --opt type=overlay --opt device=overlay \
     --opt "o=lowerdir=$MP/$BASE,upperdir=$UPPER,workdir=$MP/$SESS/work" >/dev/null
 }
 
-# Probe the DAEMON namespace's mount table and count DISTINCT overlay superblocks
-# (mountinfo field 3 = major:minor) that use our upperdir. Bind-mounts of an
-# already-overlay-mounted _data SHARE the superblock (count stays 1); a second
-# independent `mount -t overlay` over the same upper would be a NEW superblock
-# (count >= 2) — which is exactly the failure mode. `--pid=host` reads PID 1's
-# mountinfo: the real host on Linux, the daemon VM on Docker Desktop.
 count_overlay_superblocks() {
   docker run --rm --privileged --pid=host "$ALPINE" sh -c \
     "grep -F 'upperdir=$UPPER' /proc/1/mountinfo 2>/dev/null | awk '{print \$3}' | sort -u | wc -l" \
     2>/dev/null | tr -d '[:space:]'
 }
 
-# === A. ONE volume, THREE concurrent containers (agent + 2 services) =========
 hdr "A. One shared overlay volume mounted into 3 concurrent containers"
 if ! make_shared_overlay 2>err.txt; then
   fail "shared overlay volume create rejected: $(cat err.txt 2>/dev/null)"
@@ -172,7 +131,6 @@ else
   docker rm -f ob-shared-agent ob-shared-svc1 ob-shared-svc2 >/dev/null 2>&1 || true
 fi
 
-# === B. Cold-race stress: COLD_TRIALS iterations from a fresh volume each time =
 hdr "B. Cold-race stress — $COLD_TRIALS trials, fresh volume each, racing first-use"
 race_fail=0
 for i in $(seq 1 "$COLD_TRIALS"); do
@@ -196,13 +154,11 @@ done
   && pass "$COLD_TRIALS cold-race trials, 0 EBUSY/upperdir-in-use across all concurrent first-mounts" \
   || fail "$race_fail/$COLD_TRIALS cold-race trials hit a mount error (see warnings above)"
 
-# === C. Teardown <-> startup overlap =========================================
 hdr "C. Teardown<->startup overlap — drop one consumer while adding another"
 docker volume rm "$OVL" >/dev/null 2>&1 || true
 make_shared_overlay 2>/dev/null
 docker run -d --name ob-shared-agent -v "$OVL":/workspace "$IMG" sleep 60 >/dev/null 2>&1
 docker run -d --name ob-shared-svc1  -v "$OVL":/workspace "$IMG" sleep 60 >/dev/null 2>&1
-# Stop one consumer and start a new one in the same instant.
 docker stop -t 0 ob-shared-svc1 >/dev/null 2>&1 &
 new_err="$(docker run -d --name ob-shared-new -v "$OVL":/workspace "$IMG" sleep 60 2>&1)" && new_ok=1 || new_ok=0
 wait

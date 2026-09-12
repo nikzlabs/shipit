@@ -45,15 +45,13 @@ beforeEach(() => {
 
 describe("modelRowAfterHarnessPick", () => {
   it("keeps the model when the new harness offers it", () => {
-    // A harness switch is not a model switch — and the models that make this
-    // matter are exactly the ones both harnesses run.
+    // A harness switch must preserve a model shared by both harnesses.
     const picked = modelRowAfterHarnessPick(codex.eligibleModels!, { modelId: "deepseek-v4-flash" });
     expect(picked?.modelId).toBe("deepseek-v4-flash");
   });
 
   it("prefers the same (service, billing mode) over the same id elsewhere", () => {
-    // Otherwise a switch silently re-bills an identical id through another
-    // service (docs/252 req 11).
+
     const rows = [
       row({ modelId: "shared", serviceId: "openrouter", serviceName: "OpenRouter", billingMode: "key" }),
       row({ modelId: "shared", serviceId: "vercel", serviceName: "Vercel", billingMode: "key" }),
@@ -94,8 +92,7 @@ describe("persistHarnessPick", () => {
   });
 
   it("prefers an explicit current model over the saved seed", () => {
-    // The composer passes the LIVE session model, so the switch keeps what the
-    // user is looking at rather than whatever the slot last held.
+
     localStorage.setItem("vibe-model-id", "claude-opus-5");
     persistHarnessPick({ agentId: "codex", agents, current: { modelId: "deepseek-v4-flash" } });
     expect(getSavedModelId()).toBe("deepseek-v4-flash");
@@ -116,11 +113,7 @@ describe("persistHarnessPick", () => {
 });
 
 describe("a harness pick survives the store reset", () => {
-  // THE regression. `useUiStore.reset()` runs on every new session and every
-  // session switch, and re-derives the harness from the SAVED MODEL
-  // (`newSessionAgentId`). A pick that wrote only `vibe-agent-id` was therefore
-  // discarded the moment the user started their next session — the dropdown
-  // "switched back on its own" — while looking like it had worked.
+
   it("still names the picked harness after useUiStore.reset()", () => {
     localStorage.setItem("vibe-model-id", "gpt-5.6-sol");
     localStorage.setItem("vibe-agent-id", "codex");

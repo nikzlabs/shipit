@@ -28,12 +28,6 @@ import subprocess
 import sys
 import time
 
-# tiktoken fetches its BPE table from openaipublic.blob.core.windows.net, which a
-# ShipIt session container's egress allowlist does not resolve. TIKTOKEN_CACHE_DIR
-# points at a pre-built cache (see prepare_tokenizer.mjs in this folder, which
-# reconstructs the exact same o200k_base ranks from the js-tiktoken npm package).
-# LemonCrow's own MCP server needs cl100k_base from the same host, so the same
-# directory is handed to it below.
 TIKTOKEN_CACHE_DIR = os.environ.setdefault("TIKTOKEN_CACHE_DIR", "/persist/tkcache")
 
 import tiktoken  # noqa: E402
@@ -48,10 +42,8 @@ RIPWIRE = "/persist/rw/ripwire-0.4.0-linux-x64/ripwire"
 
 ENC = tiktoken.get_encoding("o200k_base")
 
-
 def toks(s: str) -> int:
     return len(ENC.encode(s))
-
 
 TASKS = [
     dict(phrase="post-turn auto-push scheduler lease", keyword="autoPush",
@@ -68,10 +60,8 @@ TASKS = [
          gold=["orchestrator/turn-executor.ts"]),
 ]
 
-
 def run(cmd, **kw):
     return subprocess.run(cmd, capture_output=True, text=True, **kw)
-
 
 def result_text(msg) -> str:
     """Flatten an MCP tools/call result into the text an agent would receive."""
@@ -82,14 +72,7 @@ def result_text(msg) -> str:
         )
     return json.dumps(res)
 
-
-# LemonCrow compresses sibling paths into shell brace notation --
-# `src/server/orchestrator/{a.ts,b.ts}`. A plain substring test for
-# `orchestrator/b.ts` misses those and scores a real hit as a miss; the first
-# version of this harness did exactly that and reported two false zeroes.
-# Expanded on BOTH arms so the treatment stays symmetric.
 _BRACE = re.compile(r"([\w./+-]*/)\{([^{}]*)\}")
-
 
 def expand_braces(text: str) -> str:
     def sub(m: "re.Match[str]") -> str:
@@ -97,43 +80,13 @@ def expand_braces(text: str) -> str:
         return " ".join(prefix + part.strip() for part in inner.split(","))
     return _BRACE.sub(sub, text)
 
-
-# --------------------------------------------------------------------------- #
-# Scoring
-#
-# Two questions per gold file, asked identically of both arms:
-#
-#   surfaced  — is the path named anywhere in the answer? This is the check
-#               docs/291's harness applied, so it is the number comparable with
-#               its published table.
-#   positioned — does the answer give a LINE NUMBER for that path? A bare path
-#               is a pointer: the agent still has to open the file. The gap
-#               between the two is deferred work, and hiding it inside one
-#               "recall" number flatters whichever tool defers more.
-#
 # The criterion is identical; the extraction has to be per-format, because the
-# two tools mark the distinction differently and BOTH of them do mark it:
-#
-#   ripwire  <sigs><d l="902" … p="orchestrator/preview-proxy.ts">  ← positioned
-#            <tail><t p="orchestrator/session-namer.ts"/>            ← pointer,
-#            and ripwire's own header calls the tail "WEAKER evidence … paths
-#            only".
-#   LemonCrow  "## src/…/foo.ts" + numbered source, or "…/foo.ts:L128"  ← positioned
-#              "candidate_files: src/…/{a.ts,b.ts}"                     ← pointer
-#
-# An earlier version tested only "does the path appear before the
-# candidate_files: marker". That gave ripwire positioned credit for its tail
-# (no marker to cut at) and would score an ERROR STRING containing a gold
-# filename as 100% positioned. Both are fixed here. What remains untestable by
-# construction is stated in plan.md: this measures FILE-level retrieval, and
-# never whether the line it points at is the right line.
-# --------------------------------------------------------------------------- #
 
-# A ripwire ranked/hop row: an element carrying both a line and a path.
+# never whether the line it points at is the right line.
+
 _RW_ROW = re.compile(r"<[dh]\b[^>]*>")
 _RW_LINE = re.compile(r'\bl="\d+"')
 _RW_PATH = re.compile(r'\bp="([^"]+)"')
-
 
 def rw_positioned_paths(out: str) -> set[str]:
     found = set()
@@ -144,7 +97,6 @@ def rw_positioned_paths(out: str) -> set[str]:
         if m:
             found.add(m.group(1))
     return found
-
 
 def lc_positioned_region(out: str) -> str:
     """The part of a LemonCrow answer that carries positions.
@@ -160,7 +112,6 @@ def lc_positioned_region(out: str) -> str:
             keep.append(line)
     return "\n".join(keep)
 
-
 def score(out: str, gold: list[str], arm: str) -> tuple[float, float]:
     """Return (surfaced, positioned) recall for one arm's answer."""
     full = expand_braces(out)
@@ -172,14 +123,11 @@ def score(out: str, gold: list[str], arm: str) -> tuple[float, float]:
     return (sum(1 for g in gold if g in full) / n,
             sum(1 for g in gold if g in positioned) / n)
 
-
 client, _init = connect(WORKSPACE)
 tools = client.call("tools/list")["result"]["tools"]
 schema_tokens = toks(json.dumps(tools))
 tool_names = [t["name"] for t in tools]
 
-# Warm the index once so the per-task timings measure search, not first-run
-# indexing. The warm-up call itself is excluded from every number below.
 t0 = time.time()
 client.call("tools/call", {"name": "code_search",
                            "arguments": {"query": "warm up the index", "paths": SCOPE}},
@@ -188,7 +136,7 @@ index_warm_s = time.time() - t0
 
 rows = []
 for t in TASKS:
-    # --- Arm A: ripwire --------------------------------------------------
+
     ta = time.time()
     a = run([RIPWIRE, ROOT, f"--for={t['phrase']}"])
     rw_s = time.time() - ta
@@ -196,7 +144,6 @@ for t in TASKS:
     rw_tokens = toks(rw_out)
     rw_recall, rw_located = score(rw_out, t["gold"], "rw")
 
-    # --- Arm B: LemonCrow code_search ------------------------------------
     tb = time.time()
     msg = client.call("tools/call", {"name": "code_search",
                                      "arguments": {"query": t["phrase"], "paths": SCOPE}},
@@ -206,35 +153,18 @@ for t in TASKS:
     lc_tokens = toks(lc_out)
     lc_recall, lc_located = score(lc_out, t["gold"], "lc")
 
-    # --- The follow-up each arm's own pointers imply ----------------------
-    #
-    # Both tools separate positioned answers from path-only pointers, and a
-    # pointer is unfinished work. So charge each arm for opening the files IT
-    # surfaced but did not position — and NOTHING else.
-    #
     # The "and nothing else" is the load-bearing part. An earlier version chose
-    # follow-up files from the gold set, which meant it read a file LemonCrow
+
     # had never mentioned (`post-turn-hold.ts` on the auto-push task) using
-    # knowledge no agent could have, and repaired LemonCrow's miss while
-    # leaving ripwire's identical miss unrepaired. That flattered LemonCrow
-    # twice over. `followup_targets` can only ever return paths the arm's own
-    # answer named.
-    #
-    # Each arm follows up with the tool it actually has: LemonCrow with its own
-    # bounded `read` at `:outline`; ripwire with a plain whole-file read,
+
     # because ripwire ships no reader and a Claude agent's next move is `Read`.
-    # The recall of each follow-up is SCORED, not assumed.
+
     def followup_targets(out: str, positioned_region: str) -> list[str]:
         full = expand_braces(out)
         return [g for g in t["gold"] if g in full and g not in positioned_region]
 
-    # One call PER target rather than one batched call. The tool description
-    # prefers a batch, so this over-charges LemonCrow slightly — deliberately,
     # because a batched response does not say which file each part came from
-    # and success would have to be assumed. Erring against the tool under test
-    # is the safe direction. (A first attempt DID assume it, by looking for the
-    # path in the response; `read` does not echo the path, so every follow-up
-    # scored as failed. Both failure modes are the same mistake, opposite sign.)
+
     lc_fu_targets = followup_targets(lc_out, lc_positioned_region(lc_out))
     lc_followup, lc_landed = 0, 0
     for g in lc_fu_targets:
@@ -244,8 +174,7 @@ for t in TASKS:
         }, timeout=900)
         fu_text = result_text(fu)
         lc_followup += toks(fu_text)
-        # Landed = a non-error response carrying more than the bare
-        # "(outline; :full = source)" header, i.e. actual structure.
+
         if not fu.get("result", {}).get("isError") and len(fu_text.strip()) > 80:
             lc_landed += 1
     lc_after = lc_located + lc_landed / len(t["gold"])
@@ -258,7 +187,6 @@ for t in TASKS:
     if rw_fu_targets:
         rw_after = rw_located + len(rw_fu_targets) / len(t["gold"])
 
-    # --- Arm C: one grep, then read the gold files -----------------------
     b = run(["grep", "-rni", t["keyword"], ROOT, "--include=*.ts"])
     grep_out = b.stdout
     grep_tokens = toks(grep_out)

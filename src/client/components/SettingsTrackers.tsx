@@ -55,7 +55,7 @@ export function SettingsTrackers({ embedded = false, logo }: { embedded?: boolea
     try {
       const res = await fetch("/api/trackers/linear/teams", { headers: { Accept: "application/json" } });
       if (!res.ok) {
-        // 400 "Connect Linear first" is the no-credential case, not an error to show.
+
         setConnected(false);
         setTeams(null);
         return;
@@ -90,8 +90,7 @@ export function SettingsTrackers({ embedded = false, logo }: { embedded?: boolea
       setTeams(data.teams ?? []);
       setConnected(true);
       setToken("");
-      // A repository that already declares a `kind: linear` tracker becomes
-      // reachable the moment the credential lands, so refresh the sub-tabs.
+
       void useIssuesStore.getState().fetchTrackers();
     } finally {
       setBusy(false);
@@ -111,8 +110,6 @@ export function SettingsTrackers({ embedded = false, logo }: { embedded?: boolea
     }
   };
 
-  // Disconnect is an integration-level action, so it sits in the card header
-  // (top-right) — the same place GitHub's Disconnect lives.
   const headerActions = connected ? (
     <div className="ml-auto shrink-0">
       <Button variant="ghost" size="md" disabled={busy} onClick={handleDisconnect} data-testid="trackers-disconnect">

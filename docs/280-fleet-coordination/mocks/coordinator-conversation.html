@@ -5,8 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Coordinator mode — desktop conversation (interactive mock)</title>
 <style>
-  /* Self-contained interactive mock (second feedback round). Token values copied from
-     src/client/themes/{dark,light}.css (2026-08-23). Fake data; clicks are scripted. */
+
   .dark {
     --bg-primary:#030712; --bg-secondary:#111827; --bg-tertiary:#1f2937; --bg-elevated:#1f2937;
     --bg-hover:rgba(255,255,255,.05); --bg-active:rgba(255,255,255,.1);
@@ -39,8 +38,6 @@
   }
   .app { display:flex; height:100vh; min-height:640px; }
 
-  /* ---------- the queue panel: coordinator mode's left rail (reqs 35–37).
-       It REPLACES the session sidebar in this mode — one rail, attention only. ---------- */
   .qpanel { width:304px; flex:none; background:var(--bg-secondary); border-right:1px solid var(--border-primary);
             overflow-y:auto; display:flex; flex-direction:column; }
   .qback { font-size:11.5px; color:var(--text-tertiary); padding:10px 14px 0; cursor:pointer; }
@@ -72,7 +69,6 @@
            border-top:1px solid var(--border-primary); position:relative; }
   .qfoot .rest { color:var(--text-secondary); margin-bottom:5px; }
 
-  /* ---------- main column ---------- */
   .main { flex:1; display:flex; flex-direction:column; min-width:0; }
   .topbar { display:flex; align-items:center; gap:12px; padding:10px 16px;
             border-bottom:1px solid var(--border-primary); background:var(--bg-primary); }
@@ -92,7 +88,6 @@
   .toggle.on .sw::after { left:auto; right:2px; }
   .avail { font-size:12px; color:var(--text-tertiary); }
 
-  /* ---------- transcript ---------- */
   .scroll { flex:1; overflow-y:auto; padding:20px 0 12px; }
   .col { max-width:760px; margin:0 auto; padding:0 20px; display:flex; flex-direction:column; gap:14px; }
   .daysep { text-align:center; font-size:11px; color:var(--text-tertiary); }
@@ -107,7 +102,6 @@
   .coord .body { color:var(--text-primary); }
   .coord .body p + p { margin-top:8px; }
 
-  /* thin relay line (plan §4: destination, the user's words, receipt) */
   .relay { display:flex; align-items:center; gap:8px; font-size:12px; color:var(--text-secondary);
            padding:5px 12px; border-left:2px solid var(--border-secondary); }
   .relay .arrow { color:var(--text-tertiary); }
@@ -115,7 +109,6 @@
   .relay .rc { margin-left:auto; font-size:11px; color:var(--success); white-space:nowrap; }
   .relay .rc.res { color:var(--pr); }
 
-  /* verbatim frame: visually distinct, untrusted, attributed, collapsed when long */
   .verb { border:1px dashed var(--border-secondary); border-radius:10px; background:var(--bg-secondary); overflow:hidden; }
   .verb .head { display:flex; align-items:center; gap:8px; padding:7px 12px; font-size:12px; color:var(--text-secondary); }
   .verb .src { font-weight:600; color:var(--text-primary); }
@@ -130,14 +123,12 @@
   .clarif { font-size:11px; color:var(--text-tertiary); padding:2px 12px 0; }
   .clarif b { color:var(--text-secondary); font-weight:500; }
 
-  /* spawn receipts */
   .receipts { display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; }
   .rcpt { font-size:11px; padding:3px 9px; border-radius:6px; background:var(--bg-tertiary);
           border:1px solid var(--border-primary); color:var(--text-secondary); }
   .rcpt b { color:var(--text-primary); font-weight:500; }
   .rcpt .tick { color:var(--success); }
 
-  /* option chips on a presented ask (req 35): a click becomes your message */
   .opts { display:flex; flex-wrap:wrap; gap:8px; margin-top:8px; align-items:center; }
   .opt { font-size:12px; padding:5px 12px; border-radius:999px; border:1px solid var(--border-secondary);
          background:var(--bg-secondary); color:var(--text-primary); cursor:pointer; }
@@ -145,7 +136,6 @@
   .opts .or { font-size:11px; color:var(--text-tertiary); }
   .opts.done .opt { opacity:.45; pointer-events:none; }
 
-  /* composer */
   .composer { border-top:1px solid var(--border-primary); background:var(--bg-primary); }
   .composer .inner { max-width:760px; margin:0 auto; padding:12px 20px 14px; }
   .box { display:flex; align-items:center; gap:10px; border:1px solid var(--border-secondary); border-radius:10px;
@@ -157,7 +147,6 @@
          border-radius:4px; padding:0 5px; color:var(--text-secondary); background:var(--bg-tertiary); }
   .hint { font-size:11px; color:var(--text-tertiary); margin-top:6px; text-align:left; }
 
-  /* mock chrome */
   .mockbar { position:fixed; bottom:10px; right:12px; display:flex; gap:8px; z-index:9; }
   .mockbar button { font-size:11px; padding:4px 10px; border-radius:999px; border:1px solid var(--border-secondary);
                     background:var(--bg-elevated); color:var(--text-secondary); cursor:pointer; }
@@ -167,7 +156,6 @@
            padding:7px 14px; border-radius:999px; opacity:0; transition:opacity .25s ease; pointer-events:none; z-index:10; }
   .toast.show { opacity:1; }
 
-  /* requirement pins (hidden unless notes mode) */
   .pin { display:none; position:absolute; top:-7px; right:-6px; font-size:10px; padding:1px 7px; border-radius:999px;
          background:var(--info-subtle); color:var(--info); border:1px solid var(--border-primary); white-space:nowrap; }
   .notes .pin { display:inline-block; }
@@ -185,8 +173,6 @@
 
 <div class="app">
 
-  <!-- Coordinator mode's left rail IS the queue (reqs 35–37, second feedback round):
-       it replaces the session sidebar — one rail, only what needs you. Clicks are scripted fake data. -->
   <aside class="qpanel">
     <div class="qback" onclick="toast('Mock: back to the ordinary session sidebar (outside coordinator mode).')">‹ All sessions</div>
     <div class="qtitle">
@@ -353,10 +339,7 @@ full table and captures in the session transcript…</div>
 </div>
 
 <script>
-/* Scripted interactivity, fake data. The flow it demonstrates (reqs 35–38, plan §4):
-   click a queue item OR answer a presented ask by chip → your message enters the chat →
-   relay + confirmation — and the confirmation flows straight into the NEXT waiting item's
-   presentation (req 38): after a decision, the next item pops up in the chat by itself. */
+
 var ITEMS = {
   gen12: {
     session: "Character generation #12", take: "Take: Character generation #12 — failed.",
@@ -444,7 +427,7 @@ function answer(id, i) {
     '<span>"' + esc(c.words) + '"</span><span class="rc res">✓ answered · item resolved</span></div>');
   var card = document.getElementById("qi-" + id);
   card.classList.add("resolved");
-  /* req 38: the confirmation flows straight into the next waiting item's presentation */
+
   var nxt = nextWaitingId();
   var body = c.confirm, pin = "";
   if (nxt) {
@@ -465,7 +448,7 @@ function refreshFoot() {
   document.getElementById("qrest").textContent = open === 0
     ? "Queue empty — nothing needs you. 11 sessions running clean · shipit and hermes-tools quiet."
     : "Nothing else needs you — 11 sessions running clean · shipit and hermes-tools quiet.";
-  /* one repo group in this mock — hide its header with its last item */
+
   document.querySelectorAll(".qgroup").forEach(function(g){ g.style.display = open === 0 ? "none" : ""; });
 }
 
@@ -476,8 +459,6 @@ function hfFlip() {
     : "Hands-free off — this surface carries arrivals ambiently (req 22).");
 }
 
-/* The fresh → briefed transition (plan §4): a new item lands as ShipIt's own line,
-   then the coordinator's arrival brief replaces it (§6 wake cause 5). */
 setTimeout(function() {
   var g = document.getElementById("qlist");
   g.appendChild(el('<div class="qitem fresh" id="qi-kraken" role="button" onclick="takeItem(\'kraken\')">' +

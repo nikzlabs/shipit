@@ -130,23 +130,23 @@ axis (loop shape, no state) — it doesn't belong.
 
 ```ts
 interface UsePollingOptions<T> {
-  poll: () => Promise<T>;        // one poll; may have side effects; returns the value
-  intervalMs: number;           // changing it re-arms the loop (variable cadence)
-  scopeKey?: string | number | boolean | null; // identity of the polled resource;
-                                // change re-arms the loop + bumps the stale-guard epoch
-  enabled?: boolean;            // default true — app-level gate
-  immediate?: boolean;         // default true — fire once on (re)start
-  pauseWhenHidden?: boolean;   // default false — also pause on document.hidden
-  resetOnDisable?: boolean;    // default false — clear data/error when disabled
-  onSuccess?: (data: T) => void; // runs after a non-stale success (store side-effects)
-  onError?: (error: unknown) => void; // runs after a non-stale failure
+  poll: () => Promise<T>;
+  intervalMs: number;
+  scopeKey?: string | number | boolean | null;
+
+  enabled?: boolean;
+  immediate?: boolean;
+  pauseWhenHidden?: boolean;
+  resetOnDisable?: boolean;
+  onSuccess?: (data: T) => void;
+  onError?: (error: unknown) => void;
 }
 
 interface UsePollingResult<T> {
   data: T | null;
-  error: string | null;        // err.message, stringified
+  error: string | null;
   loading: boolean;
-  refresh: () => Promise<void>; // off-cycle manual poll, stale-guarded
+  refresh: () => Promise<void>;
 }
 
 function usePolling<T>(options: UsePollingOptions<T>): UsePollingResult<T>;
@@ -232,7 +232,7 @@ per-site disables.
 ```ts
 const { data, error, loading, refresh } = usePolling<HostOverview>({
   enabled: isActiveTab,
-  intervalMs: POLL_MS,                       // 5000
+  intervalMs: POLL_MS,
   poll: async () => {
     const res = await fetch("/api/host/overview");
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -249,8 +249,8 @@ the refresh button. The separate `refreshSource` one-shot stays untouched.
 ```ts
 const { data, error } = usePolling<DiagnosticsPayload>({
   enabled: open && !!sessionId,
-  intervalMs: POLL_INTERVAL_MS,              // 2000
-  resetOnDisable: true,                       // clean reopen (replaces the manual reset)
+  intervalMs: POLL_INTERVAL_MS,
+  resetOnDisable: true,
   poll: () => api.get<DiagnosticsPayload>(`/api/sessions/${sessionId}/diagnostics`),
 });
 ```
@@ -263,7 +263,7 @@ The hand-rolled `setData(null)/setError(null)` on close becomes
 ```ts
 const { data: health, error, refresh } = usePolling<ContainerHealth>({
   enabled: !!sessionId,
-  scopeKey: sessionId,                         // re-arm + drop stale on session switch
+  scopeKey: sessionId,
   intervalMs: isRestarting ? RESTART_POLL_INTERVAL_MS : POLL_INTERVAL_MS,
   poll: () => api.get<ContainerHealth>(`/api/sessions/${sessionId}/container/health`),
   onSuccess: (data) => { /* rescue-finalize: setRescueState / setPauseNotice / … */ },

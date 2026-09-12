@@ -25,45 +25,31 @@ import { ICON_SIZE } from "../design-tokens.js";
 import { Button } from "./ui/button.js";
 import { useSessionStore } from "../stores/session-store.js";
 
-/**
- * docs/162 — Ops remediation metadata. Present only when the child was spawned
- * via `shipit session create --shipit-source` from an Ops session. Flips the
- * card into its "ShipIt fix" variant: a wrench header, the exact commit the
- * child branched from (with an exact/approximate badge), the target repo the
- * fix PR opens against, and a one-line diagnosis summary.
- */
 export interface SpawnedSessionShipitFix {
-  /** Commit the child branched from (the inspected source ref). */
+
   sourceRef: string;
-  /** True only when `sourceRef` is the exact deployed build commit. */
+
   sourceExact: boolean;
-  /** Where `sourceRef` came from — exact build id vs. checkout HEAD. */
+
   refSource?: "build-id" | "checkout-head";
-  /** `owner/repo` the fix PR will open against. */
+
   targetRepo?: string;
-  /** First line of the Ops diagnosis. */
+
   diagnosis?: string;
 }
 
 export interface SpawnedSessionCardProps {
-  /** The child session id. */
+
   childSessionId: string;
-  /** Child title, baked in by the spawn event so the card stays stable if the session row vanishes. */
+
   title: string;
-  /** Child branch (matches the sidebar). May be omitted for very old events. */
+
   branch?: string;
-  /** ISO8601 timestamp the child was spawned at. Currently unused in the rendering but kept for parity with the WS payload + future "spawned 2m ago" affordance. */
+
   spawnedAt?: string;
-  /** docs/162 — Ops ShipIt-fix metadata; when set, renders the fix variant. */
+
   shipitFix?: SpawnedSessionShipitFix;
-  /**
-   * Optional click handler — when supplied, the card invokes this instead of
-   * pulling the session-store directly. Lets the parent component decide how
-   * to handle navigation (e.g. AppLayout's `onResumeSession` wraps the
-   * router's `navigate`). When omitted, the card falls back to
-   * `useSessionStore.getState().setSessionId(childSessionId)`, which works in
-   * test renderings without router setup.
-   */
+
   onOpen?: (childSessionId: string) => void;
 }
 
@@ -74,10 +60,7 @@ export function SpawnedSessionCard({
   shipitFix,
   onOpen,
 }: SpawnedSessionCardProps) {
-  // Existence check: a session row may have been archived/deleted since the
-  // spawn happened. We don't refuse to render — the title/branch in the event
-  // payload still tell the user what was spawned — but the status pill flips
-  // to "session not found" and the Open button is disabled.
+
   const childRow = useSessionStore((s) =>
     s.sessions.find((row) => row.id === childSessionId),
   );

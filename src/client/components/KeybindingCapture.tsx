@@ -22,12 +22,6 @@ function KeyTokens({ chord }: { chord: string }) {
   );
 }
 
-/**
- * Press-keys capture field for a single keybinding (docs/180). Clicking
- * "Change" arms a one-shot global keydown listener; the next non-modifier key
- * (plus any modifiers held) becomes the new chord, normalized via
- * `chordFromEvent`. Esc cancels recording without changing anything.
- */
 export function KeybindingCapture({
   value,
   onCapture,
@@ -39,7 +33,7 @@ export function KeybindingCapture({
 }) {
   const [recording, setRecording] = useState(false);
 
-  // Capture phase so we intercept before app-level shortcut handlers fire.
+  // Intercept before app shortcut handlers.
   useEventListener(recording ? window : null, "keydown", (e) => {
     e.preventDefault();
     e.stopPropagation();
@@ -48,7 +42,7 @@ export function KeybindingCapture({
       return;
     }
     const chord = chordFromEvent(e);
-    if (!chord) return; // modifier-only press — keep waiting
+    if (!chord) return;
     onCapture(chord);
     setRecording(false);
   }, true);

@@ -7,7 +7,6 @@ import { useSessionStore } from "../stores/session-store.js";
 import { useUiStore } from "../stores/ui-store.js";
 import type { ManagedServiceState } from "../stores/preview-store.js";
 
-/** Parse an href the way the renderer does, failing loudly if it isn't a pointer. */
 function link(href: string): ShipitLink {
   const parsed = parseShipitLink(href);
   if (!parsed) throw new Error(`not a ShipIt link: ${href}`);
@@ -49,21 +48,18 @@ describe("openShipitLink — preview (req 2, req 8)", () => {
     usePreviewStore.setState({ services: [WEB_RUNNING] });
     openShipitLink(link("shipit-preview://web/x"));
     expect(useUiStore.getState().rightTab).toBe("preview");
-    // On a phone the workspace is a separate column from the chat.
+
     expect(useUiStore.getState().mobilePanel).toBe("preview");
   });
 
   it("leaves a stopped service's port unselected until it is running (req 12)", () => {
-    // `selectedPort` is derived from the session's remembered target and holds
-    // a port only while its service is running (planning#478), so selecting up
-    // front would be undone. The intent reselects when the service reports
-    // `running`.
+
     usePreviewStore.setState({ services: [WEB_STOPPED] });
     openShipitLink(link("shipit-preview://web/x"));
 
     expect(usePreviewStore.getState().previewLinkIntent?.service).toBe("web");
     expect(usePreviewStore.getState().selectedPort).toBeNull();
-    // Still revealed — that is how the user watches it boot.
+
     expect(useUiStore.getState().rightTab).toBe("preview");
   });
 
@@ -91,7 +87,7 @@ describe("openShipitLink — preview (req 2, req 8)", () => {
     usePreviewStore.setState({ services: [] });
     openShipitLink(link("shipit-preview://web/x"));
     // Resolve first, then reveal: a failure must not replace what the user was
-    // looking at and *then* apologise.
+
     expect(useUiStore.getState().rightTab).toBe("files");
   });
 

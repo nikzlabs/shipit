@@ -24,7 +24,6 @@ import type {
   EgressHostGrantOutcome,
 } from "../../server/shared/types.js";
 
-/** Provenance chip metadata per source — label + Badge variant. */
 const SOURCE_META: Record<EgressAllowlistSource, { label: string; variant: "default" | "info" | "success" }> = {
   builtin: { label: "Default", variant: "default" },
   operator: { label: "Operator", variant: "default" },
@@ -33,7 +32,6 @@ const SOURCE_META: Record<EgressAllowlistSource, { label: string; variant: "defa
   "user-session": { label: "This session", variant: "success" },
 };
 
-/** Toggle switch matching the Settings dialog style. */
 function ToggleSwitch({ enabled, onToggle, testId }: { enabled: boolean; onToggle: (v: boolean) => void; testId?: string }) {
   return (
     <button
@@ -54,7 +52,6 @@ function ToggleSwitch({ enabled, onToggle, testId }: { enabled: boolean; onToggl
   );
 }
 
-/** One editable allowlist row (user-added: removable + editable). */
 function AllowlistRow({
   entry,
   onRemove,
@@ -147,15 +144,6 @@ function AllowlistRow({
   );
 }
 
-/**
- * planning#376 — what the add that just happened took effect on, reported by
- * the route that performed it and rendered through the wording the Plugins
- * card's host row shares (`egress-grant-summary.ts`).
- *
- * No restart is offered here: this dialog is app-wide, so no single session is
- * in scope and the sentence names running sessions in general. A user who wants
- * one now restarts the session from its own Network access dialog.
- */
 function GrantOutcome({
   grant,
   onDismiss,
@@ -224,16 +212,14 @@ export function SettingsEgress() {
 
   const [hostInput, setHostInput] = useState("");
   const [busy, setBusy] = useState(false);
-  // planning#376 — what the last add took effect on, straight from the route
-  // that performed it. The editor used to say nothing at all after a successful
-  // add, so the user could not tell whether anything had to restart.
+
   const [grant, setGrant] = useState<EgressHostGrantOutcome | null>(null);
 
   // eslint-disable-next-line no-restricted-syntax -- external system sync: fetch the GLOBAL effective allowlist when the panel opens
   useEffect(() => {
-    // Load with no session in scope: Settings → Network is global-only, so the
+
     // effective list must exclude per-session ("This session") entries. The
-    // per-session containment override lives on the session's own menu instead.
+
     void useEgressStore.getState().load(null).catch((err: unknown) => {
       console.error("[settings] failed to load egress allowlist:", err);
     });
@@ -242,7 +228,7 @@ export function SettingsEgress() {
   const toast = (message: string) => useUiStore.getState().setToast({ message });
 
   const handleToggle = async (v: boolean) => {
-    // Flipping containment changes what the notice's claim even means.
+
     setGrant(null);
     try {
       await useEgressStore.getState().setGlobalEnabled(v);
@@ -258,11 +244,7 @@ export function SettingsEgress() {
     setBusy(true);
     setGrant(null);
     try {
-      // Adds from the global Settings dialog always land at global scope;
-      // per-session adds happen on the blocked-egress card instead.
-      // No session is in scope here (this dialog is app-wide by design), so the
-      // outcome speaks about running sessions in general and offers no restart —
-      // "restart" would have no unambiguous subject.
+
       setGrant(await useEgressStore.getState().addHost(host, "global"));
       setHostInput("");
     } catch (err) {
@@ -274,9 +256,7 @@ export function SettingsEgress() {
   };
 
   const handleRemove = async (entry: EgressAllowlistEntry) => {
-    // Global-only view, so every editable entry is global-scoped.
-    // The notice is present-tense about one host ("is allowed for every
-    // session"), so any edit that could invalidate it retires it first.
+
     setGrant(null);
     try {
       await useEgressStore.getState().removeHost(entry.host, "global");
@@ -306,16 +286,9 @@ export function SettingsEgress() {
     }
   };
 
-  // Built-in defaults are overridable, so they live in the editable list
-  // alongside user-added hosts. Operator (deployment env) + MCP (connected
-  // servers) hosts are derived live and shown read-only.
   const editableEntries = entries.filter((e) => e.removable);
   const derivedEntries = entries.filter((e) => !e.removable);
 
-  // Containment POLICY says "contain" but the deployment can't ENFORCE it
-  // (enforcement off, or no NET_ADMIN sidecar image). Warn rather than show a
-  // reassuring "Contained" — a contained session would fail closed / run open.
-  // Global-only view, so the policy is the global switch.
   const showEnforcementWarning = loaded && globalEnabled && !enforcementActive;
 
   return (

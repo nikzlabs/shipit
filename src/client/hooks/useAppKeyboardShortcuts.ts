@@ -32,17 +32,10 @@ export function useAppKeyboardShortcuts(params: {
     useUiStore.getState().setQuickCaptureOpen(true);
   });
 
-  // docs/144 Mode B — voice hotkey opens the overlay *and* auto-starts mic.
-  // Only active when voice input is enabled; reuses the same conflict-checked
-  // matcher as the text-only quick-capture hotkey.
   useQuickCaptureHotkey(voiceInputEnabled ? voiceHotkeyModeB : "", () => {
     useUiStore.getState().setQuickCaptureOpen(true, true);
   });
 
-  // docs/260-attention-sidebar-view req 14 — flip the sidebar between its two views. Registered in the
-  // keybinding registry (docs/180), so it appears in the ? overlay and the
-  // Keyboard settings tab and is rebindable like every other chord; this hook
-  // only binds whatever the registry currently resolves to. Reuses the
   // second-modifier matcher because it must fire while the user is typing.
   const attentionViewChord = useKeybinding("toggle-attention-view");
   useQuickCaptureHotkey(attentionViewChord, () => {

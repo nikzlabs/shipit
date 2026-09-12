@@ -261,12 +261,12 @@ Each tool result gains three fields:
 ```ts
 {
   toolUseId: string;
-  content: string;      // "" when nothing draws it inline; a head slice for the
-                        // unknown-tool fallback; else the whole body
+  content: string;
+
   isError?: boolean;
   durationMs?: number;
-  truncated?: true;     // content is a prefix; full body available on demand
-  totalLines?: number;  // true line count, for the "Show all N lines" label
+  truncated?: true;
+  totalLines?: number;
   totalBytes?: number;
 }
 ```
@@ -452,7 +452,6 @@ nothing. That split landed separately: `SUBAGENT_REPORT_TOOL_NAMES` (`Task`,
 `Skill` — which emits a ~33-character acknowledgement and no report — now goes
 through the ordinary bound. With this change it goes further and ships no body
 at all, since nothing renders its result content either.
-
 
 ## The five browser-facing paths (planning#299)
 

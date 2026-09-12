@@ -172,9 +172,6 @@ describe("FileUploadChips — recovery affordances (docs/293)", () => {
   } as UploadItem);
 
   it("offers Retry on a failed image, not only on a failed file", () => {
-    // req 2 blocks Send on a failed attachment and tells the user to "retry or
-    // remove it". An image thumbnail offered neither, and drew as an ordinary
-    // one, so the user could not even tell which chip was holding the message.
     const onRetry = vi.fn();
     render(
       <FileUploadChips
@@ -195,8 +192,6 @@ describe("FileUploadChips — recovery affordances (docs/293)", () => {
   });
 
   it("lets an in-flight upload be removed", () => {
-    // req 1 bars Send while anything is uploading, so a chip with no way off the
-    // screen would strand the composer.
     const onRemove = vi.fn();
     const uploading: UploadItem = { id: "1", name: "data.csv", status: "uploading", progress: 10 };
     render(<FileUploadChips uploads={[uploading]} onRemove={onRemove} onRetry={vi.fn()} />);
@@ -220,11 +215,7 @@ describe("FileUploadChips — recovery affordances (docs/293)", () => {
 
 describe("FileUploadChips — the way out is actually reachable (docs/293 req 7)", () => {
   it("reveals an image's Remove without hover on touch and keyboard", () => {
-    // A class assertion, deliberately: jsdom computes no styles and a synthetic
-    // click cannot tell a visible control from an invisible one. What can be
-    // checked is that the reveal is not hover-only — which is the defect: on a
-    // touch device the control did not exist, and req 1 bars Send while an
-    // attachment uploads.
+    // jsdom cannot compute visibility, so assert every reveal selector.
     render(
       <FileUploadChips
         uploads={[{

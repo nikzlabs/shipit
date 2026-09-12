@@ -4,7 +4,6 @@ import { DiffPanel, githubReviewThreadsToLineComments, type TurnDiffData } from 
 import type { FileDiff } from "../../server/shared/types.js";
 import type { PrReviewThread } from "../../server/shared/types/github-types.js";
 
-// Mock Monaco DiffEditor — it doesn't work in jsdom
 vi.mock("@monaco-editor/react", () => ({
   DiffEditor: (props: { original: string; modified: string; language: string; options?: unknown }) => (
     <div
@@ -18,7 +17,6 @@ vi.mock("@monaco-editor/react", () => ({
   ),
 }));
 
-/** Stub window.matchMedia so useIsMobile() returns the desired value. */
 function mockMatchMedia(isMobile: boolean) {
   Object.defineProperty(window, "matchMedia", {
     writable: true,
@@ -32,7 +30,6 @@ function mockMatchMedia(isMobile: boolean) {
 }
 
 beforeEach(() => {
-  // Default to desktop so the bulk of tests exercise the side-by-side layout.
   mockMatchMedia(false);
 });
 
@@ -70,7 +67,6 @@ describe("DiffPanel", () => {
   describe("rendering", () => {
     it("shows stats in the header", () => {
       render(<DiffPanel {...defaultProps()} />);
-      // Stats appear in both header and file sidebar, so use getAllByText
       expect(screen.getAllByText("+5").length).toBeGreaterThanOrEqual(1);
       expect(screen.getAllByText("-2").length).toBeGreaterThanOrEqual(1);
       expect(screen.getByText("(1 file)")).toBeInTheDocument();
@@ -134,11 +130,7 @@ describe("DiffPanel", () => {
         screen.getByTestId("mock-diff-editor").getAttribute("data-options") ?? "{}",
       );
       expect(options.wordWrap).toBe("on");
-      // The diff-specific override has to agree with wordWrap, or the original
-      // and modified panes wrap differently and their rows stop lining up.
       expect(options.diffWordWrap).toBe("on");
-      // Wrap points are a function of width, so a stale layout is now a wrong
-      // rendering rather than just a clipped viewport.
       expect(options.automaticLayout).toBe(true);
     });
 
@@ -164,7 +156,6 @@ describe("DiffPanel", () => {
         })],
       });
       render(<DiffPanel {...props} />);
-      // No "binary" placeholder for a renderable image.
       expect(screen.queryByText(/Binary file/)).not.toBeInTheDocument();
       expect(screen.getByText("Before")).toBeInTheDocument();
       expect(screen.getByText("After")).toBeInTheDocument();
@@ -193,9 +184,7 @@ describe("DiffPanel", () => {
     });
 
     it("renders an LFS-tracked image as images, not as its pointer text", () => {
-      // The server resolves the pointer, so `binary` is false here — git calls an
-      // LFS diff textual because the committed blob is an ASCII stub. The panel
-      // must key off `image`, not `binary`, or the checksum comes back.
+      // Resolved LFS pointers are images even though git reports text blobs.
       const props = defaultProps();
       props.diff = makeDiff({
         files: [makeFile({
@@ -245,13 +234,11 @@ describe("DiffPanel", () => {
         })],
       });
       render(<DiffPanel {...props} />);
-      // Source (text diff) by default.
       expect(screen.getByTestId("mock-diff-editor")).toBeInTheDocument();
       expect(screen.queryByTitle("Rendered content")).not.toBeInTheDocument();
 
       fireEvent.click(screen.getByRole("button", { name: "rendered" }));
 
-      // Now two rendered frames (before/after), no Monaco.
       expect(screen.queryByTestId("mock-diff-editor")).not.toBeInTheDocument();
       expect(screen.getAllByTitle("Rendered content")).toHaveLength(2);
     });
@@ -269,7 +256,6 @@ describe("DiffPanel", () => {
       });
       render(<DiffPanel {...props} />);
 
-      // Both files are rendered simultaneously in the stacked view
       const editors = screen.getAllByTestId("mock-diff-editor");
       expect(editors).toHaveLength(2);
 
@@ -364,7 +350,6 @@ describe("DiffPanel", () => {
       });
       render(<DiffPanel {...props} />);
 
-      // File list visible, no diff editors rendered yet.
       expect(screen.getByText("foo.ts")).toBeInTheDocument();
       expect(screen.getByText("bar.ts")).toBeInTheDocument();
       expect(screen.queryAllByTestId("mock-diff-editor")).toHaveLength(0);
@@ -388,7 +373,6 @@ describe("DiffPanel", () => {
       expect(editors).toHaveLength(1);
       expect(screen.getByTestId("original")).toHaveTextContent("old-bar");
       expect(screen.getByTestId("modified")).toHaveTextContent("new-bar");
-      // List items themselves are hidden once we switched to detail view.
       expect(screen.queryByText("foo.ts")).not.toBeInTheDocument();
       expect(screen.getByLabelText("Back to file list")).toBeInTheDocument();
     });

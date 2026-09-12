@@ -61,13 +61,6 @@ import typescript from "highlight.js/lib/languages/typescript";
 import xml from "highlight.js/lib/languages/xml";
 import yaml from "highlight.js/lib/languages/yaml";
 
-/**
- * The registered grammars, keyed by the name they register under.
- *
- * Each grammar also brings its own aliases (`xml` answers to `html` and `svg`,
- * `bash` to `sh` and `zsh`, `ini` to `toml`), so the key list understates what a
- * fence can be labeled.
- */
 const LANGUAGE_DEFINITIONS = {
   bash,
   c,
@@ -104,40 +97,8 @@ for (const [name, definition] of Object.entries(LANGUAGE_DEFINITIONS)) {
 
 export const HIGHLIGHT_LANGUAGES: readonly string[] = Object.keys(LANGUAGE_DEFINITIONS);
 
-/**
- * A language ShipIt registered. Typing the two maps below with this is what
- * keeps them from naming a grammar that is not in the bundle: such a mapping
- * makes `hljs.highlight` throw and drops the block to plain text — worse than
- * the auto-detection it replaced — and here it simply does not compile.
- */
 type RegisteredLanguage = keyof typeof LANGUAGE_DEFINITIONS;
 
-/**
- * The grammars to *guess* across — the registered set minus `c`, `cpp` and
- * `csharp`. They stay registered, so a ```c fence still highlights normally;
- * only guessing changes.
- *
- * **Why those three.** All three are quadratic in input length on prose whose
- * words are not broken up by sentence punctuation, which their declaration
- * matchers backtrack across. On 15.6 KB of it: c 1,574 ms, cpp 1,539 ms,
- * csharp 1,327 ms — **all 24 below combined are 138 ms.** A production trace
- * caught that as one 8,264 ms synchronous highlight that froze the UI. Full
- * measurements, and why this predates bounding the registered set rather than
- * being caused by it, are in `docs/265-transcript-render-cost/plan.md`.
- *
- * **The trade, stated precisely.** An *unlabelled* fence containing C, C++ or C#
- * is no longer detected *as such*. It does not render plain — `highlightAuto`
- * still returns the best of the 24 below, so it is colored as whatever comes
- * closest (measured: ordinary C is claimed by `scss`). Only a block over
- * {@link AUTO_DETECT_MAX_CHARS} renders plain. That is a mild, easy trade: these
- * three are also the grammars most prone to claiming prose that is not code at
- * all, so what is lost on unlabelled C is partly won back everywhere else.
- *
- * Kept as an explicit list rather than a filter over
- * {@link LANGUAGE_DEFINITIONS}, so a grammar added there is a deliberate
- * decision here too — the test asserting the two differ by exactly these three
- * names is what makes the omission loud.
- */
 const AUTO_DETECT_SUBSET: RegisteredLanguage[] = [
   "bash", "css", "dart", "diff", "dockerfile", "go", "ini", "java",
   "javascript", "json", "kotlin", "markdown", "php", "plaintext", "python",
@@ -181,7 +142,6 @@ export const AUTO_DETECT = {
   MAX_CHARS: AUTO_DETECT_MAX_CHARS,
 } as const;
 
-/** Extension → registered language name. */
 const EXTENSION_LANGUAGES: Record<string, RegisteredLanguage> = {
   ts: "typescript", tsx: "typescript", mts: "typescript", cts: "typescript",
   js: "javascript", jsx: "javascript", mjs: "javascript", cjs: "javascript",
@@ -200,7 +160,6 @@ const EXTENSION_LANGUAGES: Record<string, RegisteredLanguage> = {
   txt: "plaintext",
 };
 
-/** Filenames with no useful extension that still identify a language. */
 const FILENAME_LANGUAGES: Record<string, RegisteredLanguage> = {
   dockerfile: "dockerfile",
   ".bashrc": "bash",
@@ -221,15 +180,11 @@ export function languageFromPath(filePath: string): RegisteredLanguage | null {
   const byName = FILENAME_LANGUAGES[fileName];
   if (byName) return byName;
 
-  // `.gitignore` is a name, not an extension — only split on a dot that has
-  // something before it, or a dotfile would map on its own leading segment.
   const dot = fileName.lastIndexOf(".");
   const ext = dot > 0 ? fileName.slice(dot + 1) : "";
   const byExtension = EXTENSION_LANGUAGES[ext];
   if (byExtension) return byExtension;
 
-  // Only now the suffixed variants — `.env.local`, `Dockerfile.prod`. Trying
-  // the stem before the extension would make `Dockerfile.md` a Dockerfile.
   const stem = fileName.startsWith(".")
     ? `.${fileName.slice(1).split(".")[0]}`
     : (fileName.split(".")[0] ?? "");
@@ -259,16 +214,13 @@ export function languageFromPath(filePath: string): RegisteredLanguage | null {
 export function highlightCode(code: string, language?: string | null): string | null {
   try {
     if (language) {
-      // No size cap here on purpose — see AUTO_DETECT_MAX_CHARS above for why.
+
       // NOT because a named grammar is a linear pass: it is the same
-      // `_highlight` routine, and on prose-shaped text `c`/`cpp`/`csharp` are
-      // quadratic whether or not the caller named them. What makes this path
-      // safe is the content real callers pass, not the call.
+
       return hljs.getLanguage(language) ? hljs.highlight(code, { language }).value : null;
     }
     if (code.length > AUTO_DETECT_MAX_CHARS) return null;
-    // The same array every call: this runs inside a React render, and the
-    // allocation a spread would add is on exactly the path being made cheaper.
+
     // `highlightAuto` only filters and maps it, never mutates.
     return hljs.highlightAuto(code, AUTO_DETECT_SUBSET).value;
   } catch {

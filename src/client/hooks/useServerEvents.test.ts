@@ -7,11 +7,6 @@ import { useUiStore } from "../stores/ui-store.js";
 import { getParkedHarness, getSavedModelId } from "../utils/local-storage.js";
 import { persistHarnessPick } from "../utils/harness-seed.js";
 
-/**
- * Minimal fake EventSource: captures `addEventListener` handlers so a test can
- * synchronously dispatch a named SSE event with a JSON payload. Only the surface
- * `useServerEvents` touches is implemented.
- */
 class FakeEventSource {
   static CONNECTING = 0;
   static OPEN = 1;
@@ -43,11 +38,7 @@ class FakeEventSource {
       cb({ data: JSON.stringify(data) } as MessageEvent);
     }
   }
-  /**
-   * Simulate the spec's "fail the connection" path — the response was not
-   * `200 text/event-stream` (e.g. the ingress's 502 page while the orchestrator
-   * restarts), so readyState lands on CLOSED and the browser will NOT retry.
-   */
+
   failConnection(): void {
     this.readyState = FakeEventSource.CLOSED;
     this.onerror?.();
@@ -102,18 +93,11 @@ describe("useServerEvents — session_agent_started", () => {
     const store = useSessionStore.getState();
     expect(store.isLoading).toBe(false);
     expect(store.activity).toBeUndefined();
-    // The sidebar "running" dot still tracks the background session.
+
     expect(store.activeRunnerSessions.has("other")).toBe(true);
   });
 });
 
-/**
- * docs/235 — the sidebar's background-work marker is cross-session state, so it
- * has to arrive on the SSE. The connect snapshot alone only covers work that was
- * already outstanding when the stream opened; a `shipit agent run` consult
- * backgrounded afterwards reached only the viewers attached to that session's
- * WebSocket, so the session read as idle in the sidebar until it was opened.
- */
 describe("useServerEvents — session_attention background work", () => {
   beforeEach(() => {
     vi.stubGlobal("EventSource", FakeEventSource as unknown as typeof EventSource);
@@ -159,8 +143,7 @@ describe("useServerEvents — session_attention background work", () => {
   });
 
   // The two live forms share one event name, so each must apply only its own
-  // axis — a background-task transition that read a missing `awaitingPermission`
-  // as `false` would silently drop an outstanding prompt's sidebar signal.
+
   it("leaves the awaiting-permission set alone", () => {
     renderHook(() => useServerEvents());
     const es = FakeEventSource.last!;
@@ -173,9 +156,6 @@ describe("useServerEvents — session_attention background work", () => {
     expect(useSessionStore.getState().awaitingPermissionSessions.has("other")).toBe(true);
   });
 
-  // A reaped container can hold nothing outstanding, and the disposal paths
-  // clear the runner's trackers directly with no draining event of their own —
-  // so the marker would otherwise pulse on a dead session until the next connect.
   it("clears the marker when the session's container is reaped", () => {
     renderHook(() => useServerEvents());
     const es = FakeEventSource.last!;
@@ -188,8 +168,6 @@ describe("useServerEvents — session_attention background work", () => {
     expect(useSessionStore.getState().backgroundTaskSessions.has("other")).toBe(false);
   });
 
-  // The connect snapshot stays authoritative: it reconciles both sets wholesale
-  // so a reconnect converges rather than merging onto stale entries.
   it("still reconciles both sets wholesale from the connect snapshot", () => {
     renderHook(() => useServerEvents());
     const es = FakeEventSource.last!;
@@ -267,15 +245,12 @@ describe("useServerEvents — Claude auth diagnostics", () => {
       message: "Claude sign-in failed.",
     });
     expect(diagnostics["acct-a"]?.entries).toHaveLength(1);
-    // docs/150 — the buffer is keyed by account, so nothing leaks into a
-    // sibling row's slot.
+
     expect(Object.keys(diagnostics)).toEqual(["acct-a"]);
   });
 
   // docs/150 — a second account's attempt gets its own buffer. It cannot happen
-  // concurrently today (`startAccountAuth` refuses a second per-provider
-  // sign-in with a 409), which is exactly why the scoping has to live in the
-  // data rather than depend on that guard holding.
+
   it("keeps two accounts' diagnostics apart", () => {
     renderHook(() => useServerEvents());
     const es = FakeEventSource.last!;
@@ -310,7 +285,7 @@ describe("useServerEvents — Claude auth diagnostics", () => {
     const diagnostics = useSettingsStore.getState().claudeAuthDiagnostics;
     expect(diagnostics["acct-a"]?.entries.map((e) => e.message)).toEqual(["A's output."]);
     expect(diagnostics["acct-b"]?.entries.map((e) => e.message)).toEqual(["B's output."]);
-    // Only B's attempt ended.
+
     expect(diagnostics["acct-a"]?.phase).toBeNull();
     expect(diagnostics["acct-b"]?.phase).toBe("failed");
   });
@@ -332,9 +307,6 @@ describe("useServerEvents — Claude auth diagnostics", () => {
     expect(useUiStore.getState().toast?.message).toBe("Claude credentials are missing. Sign in again.");
   });
 
-  // Every sign-in flow is account-scoped since docs/150-multiple-provider-subscriptions req 19, so an unscoped
-  // payload names no row that could render it. Dropping it is what keeps the
-  // buffer's key meaningful.
   it("drops an unscoped diagnostics payload rather than pooling it", () => {
     renderHook(() => useServerEvents());
     const es = FakeEventSource.last!;
@@ -357,7 +329,7 @@ describe("useServerEvents — Claude auth diagnostics", () => {
     });
 
     expect(useSettingsStore.getState().claudeAuthDiagnostics).toEqual({});
-    // docs/150-multiple-provider-subscriptions req 19 — nowhere for an account-less challenge to go either.
+
     expect(useSettingsStore.getState().providerAccountAuths).toEqual({});
   });
 
@@ -386,14 +358,6 @@ describe("useServerEvents — Claude auth diagnostics", () => {
   });
 });
 
-/**
- * The post-update page reload (`system_info.buildId` vs the baked client build
- * id) only ever fires on an SSE *connect*. So it depends entirely on the stream
- * coming back after the orchestrator is replaced — which native EventSource
- * does NOT guarantee: a non-200 response (the ingress's 502 page during the
- * restart window) *fails* the connection permanently. These cover our own
- * retry loop and the reload it enables.
- */
 describe("useServerEvents — SSE reconnect after a failed connection", () => {
   beforeEach(() => {
     vi.useFakeTimers();
@@ -416,7 +380,7 @@ describe("useServerEvents — SSE reconnect after a failed connection", () => {
     act(() => {
       first.failConnection();
     });
-    // Nothing yet — the retry is scheduled, not immediate.
+
     expect(FakeEventSource.created).toBe(1);
 
     act(() => {
@@ -426,7 +390,6 @@ describe("useServerEvents — SSE reconnect after a failed connection", () => {
     expect(FakeEventSource.last).not.toBe(first);
     expect(first.closed).toBe(true);
 
-    // Still down: the ladder backs off (1s, then 2s) rather than giving up.
     act(() => {
       FakeEventSource.last!.failConnection();
       vi.advanceTimersByTime(1000);
@@ -466,7 +429,7 @@ describe("useServerEvents — SSE reconnect after a failed connection", () => {
   });
 
   // Must stay last: the reload guard in the hook is module-level and latches
-  // once fired, so any later test in this file would see it already set.
+
   it("reloads the page when the reconnected orchestrator advertises a new build id", () => {
     vi.stubGlobal("__SHIPIT_CLIENT_BUILD_ID__", "old-build");
     const reload = vi.fn();
@@ -478,14 +441,12 @@ describe("useServerEvents — SSE reconnect after a failed connection", () => {
     renderHook(() => useServerEvents());
     const stranded = FakeEventSource.last!;
 
-    // Orchestrator container is replaced: the stream is failed by the 502, then
-    // our retry lands on the new process, which sends its build id on connect.
     act(() => {
       stranded.failConnection();
       vi.advanceTimersByTime(1000);
     });
     const reconnected = FakeEventSource.last!;
-    // The reload can only come from a *new* connect — without the retry loop
+
     // there is no second stream and `system_info` is never re-delivered.
     expect(reconnected).not.toBe(stranded);
 
@@ -501,14 +462,6 @@ describe("useServerEvents — SSE reconnect after a failed connection", () => {
   });
 });
 
-/**
- * Cross-session state — the sidebar's PR / CI indicators above all — is fed
- * ONLY by this stream: `/api/bootstrap` carries no PR state, so nothing but an
- * SSE (re)connect refreshes it. A mobile resume that reconnects the WebSocket
- * but not the SSE therefore looks healthy while every session's status is
- * frozen at its pre-background value until a full page reload. So the SSE has
- * to listen for the same foreground signals the WebSocket does.
- */
 describe("useServerEvents — foreground reconnect", () => {
   beforeEach(() => {
     vi.useFakeTimers();
@@ -524,12 +477,10 @@ describe("useServerEvents — foreground reconnect", () => {
     vi.useRealTimers();
   });
 
-  /** jsdom's `document.hidden` is read-only; redefine it per test. */
   function setHidden(hidden: boolean): void {
     Object.defineProperty(document, "hidden", { value: hidden, configurable: true });
   }
 
-  /** The hidden→visible round trip a real app-switch performs. */
   function backgroundAndReturn(): void {
     setHidden(true);
     document.dispatchEvent(new Event("visibilitychange"));
@@ -538,8 +489,7 @@ describe("useServerEvents — foreground reconnect", () => {
 
   it.each([
     ["visibilitychange", () => document.dispatchEvent(new Event("visibilitychange"))],
-    // A standalone-PWA app-switch / bfcache restore surfaces as pageshow — a
-    // resume path a visibility-only trigger misses.
+
     ["pageshow", () => window.dispatchEvent(new Event("pageshow"))],
     ["online", () => window.dispatchEvent(new Event("online"))],
   ])("reopens the stream on %s", (_name, fire) => {
@@ -564,7 +514,6 @@ describe("useServerEvents — foreground reconnect", () => {
 
     expect(FakeEventSource.created).toBe(2);
 
-    // A later, genuinely separate resume is not swallowed by the coalesce window.
     act(() => {
       vi.advanceTimersByTime(1000);
       window.dispatchEvent(new Event("pageshow"));
@@ -585,18 +534,16 @@ describe("useServerEvents — foreground reconnect", () => {
   });
 
   // The two channels must agree on what a resume is, or they drift back apart:
-  // the WebSocket and this stream share `useForegroundSignal` precisely so a
+
   // bare window `focus` — which the preview iframe fires on every load — cannot
-  // tear down a live stream here either. Each teardown re-sends the whole
-  // connect snapshot (sessions, repos, PR statuses), so the storm was visible
-  // across the sidebar as well as in the chat.
+
   it("does not tear down a live stream on an iframe focus steal", () => {
     const hasFocus = vi.spyOn(document, "hasFocus").mockReturnValue(true);
     renderHook(() => useServerEvents());
 
     for (let i = 0; i < 5; i++) {
       act(() => {
-        vi.advanceTimersByTime(1000); // clear the coalesce window
+        vi.advanceTimersByTime(1000);                             
         window.dispatchEvent(new Event("blur"));
         window.dispatchEvent(new Event("focus"));
       });
@@ -606,9 +553,6 @@ describe("useServerEvents — foreground reconnect", () => {
     hasFocus.mockRestore();
   });
 
-  // The window itself losing and regaining system focus is a genuine resume —
-  // and the SSE has to agree with the WebSocket about that, or the sidebar's
-  // PR / CI indicators stay frozen while the chat looks healthy.
   it("reopens when focus returns from another window", () => {
     const hasFocus = vi.spyOn(document, "hasFocus").mockReturnValue(false);
     renderHook(() => useServerEvents());
@@ -644,9 +588,6 @@ describe("useServerEvents — foreground reconnect", () => {
     expect(FakeEventSource.created).toBe(2);
   });
 
-  // Nothing healthy to protect — the spec's "fail the connection" path left
-  // this stream CLOSED with only our own backoff behind it, so returning to the
-  // window is a good moment to short-circuit that wait.
   it("reopens on focus when the stream is already closed", () => {
     renderHook(() => useServerEvents());
 
@@ -768,7 +709,7 @@ describe("useServerEvents — agent_list auth redirect and its undo", () => {
 
   it("leaves a deliberate pick made while the harness was down alone", () => {
     // Choosing Codex while Claude is unreachable means it — the restore must not
-    // yank the user back when Claude recovers. The pick clears the park.
+
     localStorage.setItem("vibe-agent-id", "claude");
     localStorage.setItem("vibe-model-id", "claude-opus-5");
     renderHook(() => useServerEvents());
@@ -839,11 +780,7 @@ describe("useServerEvents — the redirect acts on the seed, not the viewed sess
   });
 
   it("parks nothing when the viewed session's harness dies but the seed is untouched", () => {
-    // Seed is Claude/Opus; the user is looking at an older Codex session, so
-    // `activeAgentId` is codex. Codex's credential fails. The redirect writes
-    // Claude/Opus back over Claude/Opus — it took nothing away — so parking
-    // `{codex, Opus}` here would later restore an incoherent pair and replace
-    // the user's Claude seed with Codex's first model.
+
     localStorage.setItem("vibe-agent-id", "claude");
     localStorage.setItem("vibe-model-id", "claude-opus-5");
     useUiStore.setState({ activeAgentId: "codex" });
@@ -857,11 +794,7 @@ describe("useServerEvents — the redirect acts on the seed, not the viewed sess
   });
 
   it("does not re-announce the redirect when a reconnect re-syncs the dead harness", () => {
-    // After the redirect the seed is Codex. A WS reconnect sets `activeAgentId`
-    // back to the viewed Claude session's harness, and the SSE reconnect's own
-    // `agent_list` re-runs the same redirect — which used to raise the same
-    // 12-second toast again, for the whole outage, every time the app was
-    // foregrounded.
+
     localStorage.setItem("vibe-agent-id", "claude");
     localStorage.setItem("vibe-model-id", "claude-opus-5");
     renderHook(() => useServerEvents());

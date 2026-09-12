@@ -1,15 +1,9 @@
-/**
- * Device viewport presets for the Mobile Preview feature.
- *
- * The preview pane can constrain the iframe to one of these widths/heights so
- * users can verify responsive layouts without leaving ShipIt.
- */
+
 
 export type DeviceCategory = "phone" | "tablet" | "custom";
 
-/** Minimum allowed value for a custom viewport dimension (px). */
 export const CUSTOM_SIZE_MIN = 100;
-/** Maximum allowed value for a custom viewport dimension (px). */
+
 export const CUSTOM_SIZE_MAX = 2560;
 
 /**

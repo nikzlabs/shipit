@@ -25,19 +25,6 @@ import type { EgressHostGrantOutcome, EgressHostReach } from "../../server/share
 import { egressBlockedReason, summarizeEgressGrant } from "./egress-grant-summary.js";
 import { RichErrorText } from "./PrLifecycleCard/RichErrorText.js";
 
-/**
- * docs/262 — the Plugins tab pane (plan §3, mockup-plugins-tab.html): one card
- * per declared repo, with the full repo identity always visible (req 19).
- * Renders declarations, self-use, per-repo issues, parse warnings, and each
- * plugin's credential needs (req 23) — an unset key named beside the plugin
- * that needs it, with the one action that closes it. Collision, settings and
- * install problems arrive as ordinary issue rows on the repository's card
- * (verified live in the dogfood instance for all three).
- *
- * req 12's USER half lives here too: a tracked repository's card carries the
- * Refresh action, on the same route and the same round `shipit plugin refresh`
- * runs. A pinned one deliberately does not (req 8).
- */
 export function PluginReposPanel() {
   const snapshot = usePluginReposStore((s) => s.snapshot);
 
@@ -81,9 +68,8 @@ export function PluginReposPanel() {
   );
 }
 
-/** The status chip's words — the card's one-line answer to "is this live?". */
 const STATUS_LABEL: Record<PluginRepoCardView["status"], string | null> = {
-  // Healthy states carry no chip: the absence of one means "fine" (mock §3).
+
   self: null,
   active: null,
   activating: "activating…",
@@ -102,66 +88,46 @@ function PluginRepoCard({
 }) {
   const isSelf = repo.status === "self";
   const statusLabel = STATUS_LABEL[repo.status];
-  // reqs 23, 24 — every declared credential and host, kept with the plugin
-  // alias that declares it so each row can name the claimant.
+
   const keys = repo.uses.flatMap((u) => (u.credentials ?? []).map((c) => ({ alias: u.alias, ...c })));
   const hosts = repo.uses.flatMap((u) => (u.hosts ?? []).map((h) => ({ alias: u.alias, ...h })));
   // Every declared credential this repo's plugins LACK and cannot work without.
   const missingKeys = keys.filter((c) => !c.satisfied && !c.optional);
-  // A key the plugin can use and does not need. Shown — a silent omission would
-  // leave "why is this plugin not doing the thing?" unanswerable — but not as a
+
   // need: the project may have decided never to set it, and an alarm that
   // cannot be cleared is one the reader learns to ignore.
   const optionalKeys = keys.filter((c) => !c.satisfied && c.optional);
-  // req 23 asks the session to show which credentials a plugin requires AND
-  // whether they are satisfied — so a set key is stated too, quietly. Only the
-  // unsatisfied ones get an action row. A set key reads the same either way:
-  // optionality is about the unsatisfied state alone.
+
   const setKeys = keys.filter((c) => c.satisfied);
-  // req 24 — the same lists for declared external hosts. A host the session may
+
   // reach is stated quietly, because the requirement asks the session to SHOW
-  // what a plugin needs, not only what is broken.
+
   const allowedHosts = hosts.filter((h) => h.reach === "allowed");
-  // A gap the user closes deliberately — the only one that may carry a button.
+
   const grantableHosts = hosts.filter((h) => h.reach === "grantable" && !h.optional);
-  // planning#383 — and a gap NO user act closes: this deployment installs no
-  // resolver, or this session admits no user hosts at all. Both buttons would
-  // write a durable entry that changes nothing, so the card states the fact
+
   // instead of offering one. Collapsed into a single row because the reason is a
-  // property of the session or the deployment, not of each host: repeating it
-  // per host would read as several different problems.
+
   const ungrantableHosts = hosts.filter(
     (h) => !h.optional && (h.reach === "blocked-by-session" || h.reach === "blocked-by-deployment"),
   );
-  // The optional half of both, in one list: a host the plugin can use and the
-  // session does not reach. It keeps its grant affordance where a grant would
-  // work — the user may still want it — and states the blocking reason where
-  // one would not, for the same reason the required row does.
+
   const optionalHosts = hosts.filter((h) => h.optional && h.reach !== "allowed");
   const blockedReason = ungrantableHosts[0] ? egressBlockedReason(ungrantableHosts[0].reach) : null;
-  // Optional gaps are deliberately NOT counted: the chip means "something to go
+
   // and set", and a count that never reaches zero however much the user sets is
-  // a chip that stops meaning anything.
+
   const needCount = missingKeys.length + grantableHosts.length + ungrantableHosts.length;
-  // planning#376 — what the last grant on THIS card took effect on, and the
-  // failure if it had one. Both live here rather than in the row that made the
+
   // grant because the row unmounts on the way out: a success removes the gap the
-  // snapshot reported, and so does the 503 "saved, but the live refresh failed
-  // closed" — the host is durably allowed there too. An account left on the row
-  // goes with it, which is exactly the silence the issue records.
+
   const [grant, setGrant] = useState<EgressHostGrantOutcome | null>(null);
   const [failedHost, setFailedHost] = useState<string | null>(null);
-  // req 12 — the user's half of the refresh verb. The outcome lives on the CARD
-  // for the reason the grant outcome does: `unchanged` changes nothing visible,
-  // so without a reported answer the button would look broken exactly when it
-  // worked.
+
   const refreshRepo = usePluginReposStore((s) => s.refreshRepo);
   const [refreshing, setRefreshing] = useState(false);
   const [refreshed, setRefreshed] = useState<PluginRepoRefreshOutcome | null>(null);
-  // req 8 — a pinned repository has no refresh action: it stays at its exact
-  // revision until the declaration changes, so the button could only ever
-  // report "already at". `self` has no tracked version to move at all (req 27),
-  // which the mockup ratified before the tab was built.
+
   const canRefresh = !isSelf && !repo.pinned;
   const runRefresh = async () => {
     setRefreshing(true);
@@ -179,10 +145,7 @@ function PluginRepoCard({
         {/* req 19 — the repo identity stays visible in every card state. */}
         <Chip mono>{isSelf ? "self · live working tree" : repo.source}</Chip>
         {!isSelf && (
-          // A live generation always has a commit; it has a ref unless its
-          // record predates ShipIt recording one, and then the commit stands
-          // alone rather than borrowing the declared ref (req 19 — the pair has
-          // to be one a round produced).
+
           <Chip mono>
             {repo.ref
               ? `${repo.ref} @ ${repo.commit ? repo.commit.slice(0, 9) : "—"}`
@@ -192,9 +155,7 @@ function PluginRepoCard({
         {statusLabel ? (
           <Chip tone={repo.status === "unavailable" ? "error" : "warn"}>{statusLabel}</Chip>
         ) : (
-          // A healthy status still needs a marker when the repo has problems of
-          // its own (a selector that names no exported plugin, say) — otherwise
-          // the header reads "fine" over a card full of issue rows.
+
           repo.issues.length > 0 && (
             <Chip tone="warn">{`${repo.issues.length} problem${repo.issues.length > 1 ? "s" : ""}`}</Chip>
           )
@@ -492,9 +453,7 @@ function PluginRepoCard({
         </div>
       )}
       {repo.pinned && (
-        // req 8 — the answer to "why has this card no Refresh?", said on the
-        // card rather than left as a difference between two cards for the user
-        // to work out. It names the one thing that DOES move a pinned version.
+
         <div className="border-t border-(--color-border-primary) px-3 py-2 text-xs text-(--color-text-tertiary)">
           {/* Names the ONE edit that moves it, not "shipit.yaml changes":
               editing a service, a setting or another plugin in the same file
@@ -556,8 +515,7 @@ function RefreshOutcomeRow({
     : outcome.kind === "activated"
       ? `Updated to \`${short ?? "a new commit"}\`.`
       : outcome.kind === "reinstalled"
-        // Neither "updated" nor "already at": the commit did not move and the
-        // plugin was installed again anyway (docs/273).
+
         ? `Re-installed \`${short ?? "the live commit"}\`.`
         : `Already at \`${short ?? "the declared version"}\` — nothing to update.`;
   return (
@@ -644,10 +602,7 @@ function HostNeedRow({
       const outcome = await allowHost(host, scope);
       if (outcome) onGranted(outcome);
     } catch {
-      // Reported to the CARD, not kept here: the snapshot is refetched either
-      // way, and on the 503 "saved, but the live refresh failed closed" the host
-      // is durably allowed — so this row unmounts and a message on it would go
-      // with it, silently (planning#376).
+
       onFailed(host);
     } finally {
       setBusy(false);
@@ -668,13 +623,7 @@ function HostNeedRow({
       />
       <div className="min-w-0 flex-1 space-y-0.5 break-words">
         {optional ? (
-          // The second clause is worded from the VERDICT, not from one sentence
-          // that happens to be true of the grantable case. `blocked-by-deployment`
-          // is decided before the allowlist is consulted at all
-          // (`egress-host-reach.ts`), so an already-allowlisted host can carry
-          // it — and "not in this session's egress allowlist" would then be a
-          // plain falsehood, in the row whose whole job is to be quietly
-          // accurate. `blocked.headline` below says which limit it is.
+
           <p>
             <span className="font-medium">{alias}</span> can use{" "}
             <code className="font-mono text-xs">{host}</code> — optional, and{" "}
@@ -750,8 +699,7 @@ function HostGrantOutcomeRow({
     setRestarting(true);
     try {
       await api.post(`/api/sessions/${encodeURIComponent(sessionId)}/container/restart`);
-      // Re-handshake the WS so the worker reattaches to the freshly-restarted
-      // container — the same bridge the session's own network dialog uses.
+
       window.dispatchEvent(new CustomEvent("shipit:reconnect-ws"));
       useUiStore.getState().setToast({ message: "Restarting the container to apply the allowlist" });
       onDismiss();
@@ -814,7 +762,6 @@ function HostGrantOutcomeRow({
   );
 }
 
-/** The card's small secondary action — one spelling for every row on it. */
 function CardAction({
   children,
   onClick,

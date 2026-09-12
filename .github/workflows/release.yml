@@ -1,19 +1,6 @@
 name: Release
 
-# Auto-publish releases. Two triggers, one self-publishing workflow (docs/214):
-#
-#   - push to `stable` (the maintenance branch) — a release is cut by MERGING a
-#     version-bump PR into `stable`. CI derives the tag `v<package.json version>`
-#     from the merged commit, gates on a green build, creates + pushes the tag,
-#     and publishes the GitHub Release. The agent never hand-pushes a tag.
-#   - push of a `v*` tag — the rc / manual path. CI gates the existing tag and
-#     publishes it (prereleases as GitHub prereleases).
-#
-# A tag pushed by THIS workflow (using GITHUB_TOKEN) does NOT re-trigger the
-# `on: push: tags` path — so the branch path must gate, tag, AND publish in the
-# same run. It does. `stable` is never *moved* by CI: CI only reads HEAD's
-# version, tags that commit, and publishes. See docs/214-release-auto-publish and
-# docs/162-release-channels, and RELEASING.md.
+# Stable pushes create final releases; v* tag pushes publish manual or RC releases.
 
 on:
   push:
@@ -29,15 +16,6 @@ permissions:
   contents: write
 
 jobs:
-  # 0. Resolve the release tag + whether to proceed. Two ref shapes:
-  #   - tag path  (`github.ref_type == tag`): tag = ref_name; never create a tag.
-  #   - branch path (`stable` push): tag = v<version-from-package.json>. Decide:
-  #       tag absent                       → new release, proceed.
-  #       tag exists but Release missing   → repair (a prior run pushed the tag
-  #                                          but `gh release create` failed) — proceed.
-  #       tag exists AND Release present   → no-op (nothing new).
-  #     A `-rc.N` version on the branch path is rejected — `stable` is for final
-  #     releases; rc's use the tag path.
   resolve:
     name: Resolve release tag
     runs-on: ubuntu-24.04
@@ -49,7 +27,6 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
-          # Full history + tags so we can check tag existence and diff notes.
           fetch-depth: 0
       - uses: actions/setup-node@v5
         with:
@@ -64,7 +41,6 @@ jobs:
           set -euo pipefail
 
           if [ "$REF_TYPE" = "tag" ]; then
-            # Tag path — gate + publish the pushed tag, never create one.
             TAG="$REF_NAME"
             if [[ "$TAG" == *-* ]]; then PRERELEASE=true; else PRERELEASE=false; fi
             {
@@ -77,13 +53,11 @@ jobs:
             exit 0
           fi
 
-          # Branch path (`stable`) — derive the tag from the version source.
           VERSION="$(node -p "require('./package.json').version")"
           TAG="v$VERSION"
           echo "is_branch=true" >> "$GITHUB_OUTPUT"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
-          # `stable` carries final releases only; rc's go through the tag path.
           if [[ "$VERSION" == *-* ]]; then
             echo "::error::package.json version ($VERSION) is a prerelease. The release branch is for final releases — cut release candidates via the tag path (a vX.Y.Z-rc.N tag)."
             exit 1
@@ -91,7 +65,6 @@ jobs:
           echo "prerelease=false" >> "$GITHUB_OUTPUT"
 
           if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
-            # Tag already exists — proceed ONLY to repair a missing Release.
             if gh release view "$TAG" >/dev/null 2>&1; then
               echo "Tag $TAG and its GitHub Release already exist — nothing to do."
               echo "proceed=false" >> "$GITHUB_OUTPUT"
@@ -104,16 +77,10 @@ jobs:
             echo "proceed=true" >> "$GITHUB_OUTPUT"
           fi
 
-  # 1. The tag must match package.json. Tag path ONLY: a manual / rc tag is the
-  # one case where the version source and the tag can drift, so we guard it. On
-  # the branch path the tag is DERIVED from package.json (they can't drift), and
-  # `github.ref_name` is `stable` (not vX.Y.Z), so this guard is skipped.
   version-guard:
     name: Tag matches package.json
     needs: [resolve]
     if: needs.resolve.outputs.proceed == 'true' && needs.resolve.outputs.is_branch != 'true'
-    # Trivial job (one `node -p`). GitHub-hosted standard runner (free for
-    # public repos).
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
@@ -132,7 +99,6 @@ jobs:
           fi
           echo "OK: package.json $PKG matches tag $TAG"
 
-  # 2. A release must be green — reuse the same gates as ci.yml.
   check:
     name: Lint, Type Check & Build
     needs: [resolve]
@@ -145,9 +111,6 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
-      # Keep the nested production-image lock validation in sync with ci.yml.
-      # Missing platform records: see docs/141-cli-version-strategy/plan.md,
-      # Axis 2, for the cooldown-safe repair command and rebase warning.
       - run: npm ci --ignore-scripts --dry-run
         working-directory: docker/agent-cli
       - run: npm run lint
@@ -170,24 +133,16 @@ jobs:
       - run: npm ci
       - run: npm test
 
-  # 3. On green: (branch path) create the annotated tag on $GITHUB_SHA and push
-  # it, then publish the GitHub Release. The publish step checks RELEASE existence
-  # (not just tag existence) so a prior run that pushed the tag but failed to
-  # publish self-repairs. Serialized per resolved tag so a `stable` push and a
-  # manual `vX.Y.Z` tag push for the same version can't both create the tag.
   publish:
     name: Publish GitHub Release
     needs: [resolve, version-guard, check, test]
-    # version-guard is skipped on the branch path; `always()` + explicit result
-    # checks let publish run when it was skipped (not failed). check/test must
-    # have passed; resolve must have said proceed.
+    # Accept a skipped tag guard only on the branch path.
     if: >-
       always() &&
       needs.resolve.outputs.proceed == 'true' &&
       (needs.version-guard.result == 'success' || needs.version-guard.result == 'skipped') &&
       needs.check.result == 'success' &&
       needs.test.result == 'success'
-    # Pure git + gh I/O, no compute.
     runs-on: ubuntu-24.04
     concurrency:
       group: release-${{ needs.resolve.outputs.tag }}
@@ -195,12 +150,8 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
-          # Full history so --generate-notes can diff against the previous tag.
           fetch-depth: 0
 
-      # Branch path: create the annotated tag on the merged commit (only if it
-      # doesn't already exist — a repair run reuses the prior tag). CI uses a
-      # bot identity; the tag is the canonical release artifact.
       - name: Create and push the release tag
         if: needs.resolve.outputs.is_branch == 'true'
         env:
@@ -217,15 +168,9 @@ jobs:
             echo "Created and pushed $TAG on $GITHUB_SHA."
           fi
 
-      # Re-fetch tags so `--verify-tag` sees a tag this run just pushed (and any
-      # tag from a racing run on the tag path).
       - name: Re-fetch tags
         run: git fetch origin --tags --force
 
-      # Publish a GitHub Release with auto-generated, label-grouped notes (PR
-      # titles since the previous tag). These notes are the inline changelog.
-      # Skip if a Release already exists (idempotent repair / no-op). Prereleases
-      # get the `--prerelease` flag.
       - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -247,16 +192,7 @@ jobs:
             --verify-tag \
             $PRERELEASE_FLAG
 
-  # 4. Forward-port the released version onto `main` (planning#174 follow-up). The
-  # release bump lands ONLY on `stable` (the `release/<version>` PR), so without
-  # this `main`'s package.json drifts behind every release — `main` keeps showing
-  # the pre-release version forever. After a successful publish on the BRANCH path,
-  # open (or leave) a small chore PR that bumps `main`'s package.json + lockfile to
-  # the just-released version. A PR (not a direct push) respects `main`'s branch
-  # protection and surfaces inline in ShipIt as a PR card; the user merges it to
-  # bring `main` in sync. Idempotent: no-op when `main` already carries the version
-  # (repair re-runs) or when the sync branch already exists. rc's (tag path) never
-  # touch `main`, so this is gated to the branch path.
+  # Final releases forward-port their version to main through a PR.
   sync-main:
     name: Sync version to main
     needs: [resolve, publish]
@@ -293,11 +229,7 @@ jobs:
 
           SYNC_BRANCH="release-sync/$TAG"
 
-          # Idempotency keys on the PR, not the branch. A prior run can push the
-          # branch and then fail to open the PR (e.g. GitHub blocks Actions from
-          # creating PRs) — so "branch exists" does NOT imply "PR exists". Keying
-          # on an open PR lets a re-run recover by (re)opening the PR for a branch
-          # an earlier run already pushed.
+          # A pushed branch may exist without a PR after a partial failure.
           if [ -n "$(gh pr list --head "$SYNC_BRANCH" --base main --state open \
                        --json number --jq '.[0].number' 2>/dev/null)" ]; then
             echo "Open sync PR for $SYNC_BRANCH already exists — nothing to do."
@@ -307,10 +239,6 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          # Reuse the branch if a prior run already pushed it (PR-create failed);
-          # otherwise create it with the version bump. Same bump the local script +
-          # the release PR use: rewrites package.json AND package-lock.json with no
-          # git side effects, so the commit is ours.
           if git ls-remote --exit-code --heads origin "$SYNC_BRANCH" >/dev/null 2>&1; then
             echo "Reusing existing sync branch $SYNC_BRANCH (prior run pushed it but could not open the PR)."
             git fetch origin "$SYNC_BRANCH"
@@ -323,8 +251,6 @@ jobs:
             git push origin "$SYNC_BRANCH"
           fi
 
-          # Build the body with printf so no YAML/bash indentation leaks in as
-          # leading whitespace (which markdown would render as a code block).
           BODY="$(printf '%s\n' \
             "Forward-ports the released version \`$VERSION\` (\`$TAG\`) onto \`main\`." \
             "" \
@@ -332,18 +258,7 @@ jobs:
             "" \
             "Safe to merge as-is — it only touches \`package.json\` + \`package-lock.json\`.")"
 
-          # `ignore-for-release` keeps this version-bump PR out of the NEXT
-          # release's auto-generated notes (it merges into main). A PR opened with
-          # the default GITHUB_TOKEN does not re-trigger `on: pull_request`
-          # workflows, so ci.yml won't run on it — acceptable for a version-only
-          # bump that CI already vetted on the release commit.
-          #
-          # `gh pr create` fails closed if the repo/org has not enabled
-          # "Allow GitHub Actions to create and approve pull requests"
-          # (Settings → Actions → General → Workflow permissions). The branch is
-          # already pushed, so surface an actionable message + a one-click compare
-          # URL rather than a bare GraphQL error, and keep the job red so the
-          # version drift is never silent.
+          # Keep this sync bump out of the next release notes.
           if ! gh pr create \
                  --base main \
                  --head "$SYNC_BRANCH" \

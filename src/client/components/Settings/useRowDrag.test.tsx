@@ -1,11 +1,4 @@
-/**
- * docs/252 req 21 — the fallback order is changed by dragging a row.
- *
- * The order is not cosmetic: the FIRST credential of a group is the one
- * delivered, so a drop that reports the wrong order changes which key sessions
- * authenticate with. That is what these assert — the array handed back, not the
- * CSS.
- */
+
 
 import { describe, it, expect, afterEach, vi } from "vitest";
 import { render, screen, cleanup, fireEvent } from "@testing-library/react";
@@ -13,7 +6,6 @@ import { useRowDrag } from "./useRowDrag.js";
 
 afterEach(() => cleanup());
 
-/** A list of grips and rows, wired exactly as a credential row wires them. */
 function Rows({ ids, onReorder, disabled }: { ids: string[]; onReorder: (next: string[]) => void; disabled?: boolean }) {
   const dragFor = useRowDrag(ids, onReorder, disabled);
   return (
@@ -30,8 +22,6 @@ function Rows({ ids, onReorder, disabled }: { ids: string[]; onReorder: (next: s
   );
 }
 
-// jsdom fires no drag sequence of its own, so the three events the hook listens
-// for are dispatched by hand. `dragOver` is not ceremony: without its
 // `preventDefault` a real browser refuses the drop and never fires `drop` at
 // all, so a test that skipped it would pass over a control that cannot work.
 function drag(sourceId: string, targetId: string) {
@@ -44,8 +34,7 @@ function drag(sourceId: string, targetId: string) {
 
 describe("useRowDrag", () => {
   it("hands back the complete new order, not a move-one verb", () => {
-    // The reorder endpoint rejects a partial list on purpose (docs/150-multiple-provider-subscriptions req 2):
-    // a stale client — one whose list predates a credential added in another
+
     // tab — must fail loudly instead of silently demoting it to the end.
     const onReorder = vi.fn();
     render(<Rows ids={["a", "b", "c"]} onReorder={onReorder} />);

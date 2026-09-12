@@ -49,10 +49,10 @@ workspace operation.
 ```yaml
 agent:
   install: npm ci
-  dep-dirs:            # default: [node_modules]
+  dep-dirs:
     - node_modules
-    - packages/web/node_modules   # monorepo: list each explicitly
-    - services/worker/.venv        # polyglot: just more literals
+    - packages/web/node_modules
+    - services/worker/.venv
 ```
 
 - **Literal relative paths only — no globs, no detection.** Each entry is a relative directory path

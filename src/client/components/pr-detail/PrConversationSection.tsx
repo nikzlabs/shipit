@@ -1,15 +1,4 @@
-/**
- * PrConversationSection — the "Conversation" block of the PR detail tab
- * (docs/133 Phase 4 + docs/102).
- *
- * Renders PR-level (issue) comments and review threads inline so the user
- * doesn't leave ShipIt to read or reply to PR discussion. Issue comments are
- * read + post (docs/133); review threads support reply and resolve / reopen
- * write-back via the docs/102 thread mutation routes.
- *
- * Data arrives on the pr-store card via the poller, which only fetches it
- * while this tab is the active right-panel tab (the `pr_tab_active` gate).
- */
+
 
 import { useState } from "react";
 import {
@@ -219,8 +208,7 @@ export function PrConversationSection({
 
   const comments = issueComments ?? [];
   const threads = reviewThreads ?? [];
-  // `undefined` means the conversation hasn't been fetched yet (the poller only
-  // fetches it once this tab is active); show a loading hint rather than "none".
+
   const loading = issueComments === undefined && reviewThreads === undefined;
   const isEmpty = comments.length === 0 && threads.length === 0;
 

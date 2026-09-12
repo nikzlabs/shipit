@@ -22,7 +22,7 @@ import type { AgentInterfaceProvenance } from "../../../server/shared/agent-inte
 export interface RowHandlers {
   /** The live transcript. Rows read siblings from it; they never take it as a prop. */
   messages: ChatMessage[];
-  /** Walks back for the plan body an ExitPlanMode card draws. */
+
   findPlanContent: (exitPlanMsgIndex: number) => string | undefined;
   onAnswerQuestion?: AnswerQuestionFn;
   onSendFollowUp?: (text: string) => boolean;
@@ -42,13 +42,12 @@ export interface RowHandlers {
   onResumeSession?: (sessionId: string) => void;
   onReleaseConfirm?: (version: string, mechanism: ReleaseMechanism) => void;
   onReleaseCancel?: (version: string) => void;
-  /** docs/280 — dispatch a message an inline presentation composed via the SDK. */
+
   onAgentInterfaceMessage?: (text: string, provenance: AgentInterfaceProvenance) => Promise<void>;
   onRequestRewindPreview?: (gapPosition: number, action: RewindGapAction) => void;
   onRewindAtGap?: (gapPosition: number, action: RewindGapAction, sessionName?: string) => void;
 }
 
-/** Every optional callback on `RowHandlers`. */
 type CallbackKey = Exclude<keyof RowHandlers, "messages" | "findPlanContent">;
 
 const CALLBACK_KEYS = [
@@ -109,9 +108,7 @@ export function RowHandlersProvider({ value, children }: { value: RowHandlers; c
       };
       Object.defineProperty(target, key, {
         enumerable: true,
-        // Same wrapper every time it exists, so a child's prop identity is
-        // stable; `undefined` when the parent passed nothing, so a card that
-        // gates a control on presence still sees the truth.
+
         get: () => (ref.current[key] ? wrappers[key] : undefined),
       });
     }

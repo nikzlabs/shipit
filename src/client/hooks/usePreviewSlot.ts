@@ -22,15 +22,10 @@ function buildSubdomainUrl(
   // Protocol for the preview origin. Defaults to the page's protocol, but the
   // Tailscale sslip override (docs/216) passes "http:" explicitly because the
   // sslip host has no TLS cert. Must not blindly inherit window.location.protocol
-  // or an HTTPS app would emit an https://…sslip… URL with no cert.
+
   protocol: string = window.location.protocol,
 ): string | null {
-  // IPv6 literal hosts arrive bracketed from `window.location.host`
-  // ("[::1]:3000", "[2001:db8::1]:8080"). Handle them before the ":"-split
-  // below, which would otherwise shred the literal into a garbage hostname
-  // (e.g. "[") and emit a non-null but unresolvable subdomain URL — defeating
-  // the empty-state. Loopback (`::1`) normalizes to `localhost` like 127.x;
-  // any other IPv6 literal can't carry a wildcard subdomain, so return null.
+
   const v6 = /^\[([0-9a-fA-F:]+)\](?::(\d+))?$/.exec(apiHost);
   if (v6) {
     if (v6[1] === "::1") {
@@ -79,7 +74,6 @@ function computePreviewUrl(
   return { url: withPath(base, path), containerMode: isContainer };
 }
 
-/** Resolve `path` against `base`, keeping the result on `base`'s origin. */
 function withPath(base: string, path?: string | null): string {
   if (!path) return base;
   try {
@@ -111,15 +105,15 @@ export interface UsePreviewSlotParams {
   apiHost: string;
   /** Protocol for preview origins — `http:` for the Tailscale sslip override (docs/216), else the page protocol. */
   apiProtocol: string;
-  /** Shared with `useIframePool` — tracks slots that have already been created. */
+
   createdSlotsRef: React.RefObject<Set<string>>;
-  /** Promote the slot in the LRU pool. */
+
   promoteSlot: (key: string) => void;
-  /** Add/update a slot in the iframe pool. */
+
   setSlot: (key: string, slot: IframeSlot) => void;
-  /** Read a slot from the pool (stable identity — not the reactive `slots`). */
+
   getSlot: (key: string) => IframeSlot | undefined;
-  /** Drop a slot whose port changed owner (the pool's one non-LRU drop). */
+
   dropSlot: (key: string) => void;
   /**
    * The Compose service that currently owns `activePort`, or `undefined`
@@ -172,21 +166,11 @@ export function usePreviewSlot(params: UsePreviewSlotParams): void {
   // eslint-disable-next-line no-restricted-syntax -- external system sync: the iframe pool is DOM-backed state outside React's tree, and the slot must exist before the iframe it owns is rendered
   useEffect(() => {
     if (!activeSlotKey || !activePort || !preview?.running) return;
-    // Wait. When the service comes back this effect re-runs and either promotes
-    // the retained slot (which `PreviewFrame` reloads) or creates a new one.
+
     if (waitingForService) return;
 
-    // If slot already exists (previously visited), just promote it — unless
-    // the port has been taken over by a different service since the slot was
-    // created. The key is `${sessionId}:${port}`, so a port that moves to a
-    // new owner reuses the key, and the retained iframe would keep serving
-    // the previous owner's document under the new owner's row (planning#394).
-    // Dropping falls through to the creation below, which recreates the slot
-    // with the new owner's app.
-    //
     // Both owners must be known: `undefined` on either side is a transient
-    // service-list state (or a preview with no service rows at all), and
-    // evicting on it would drop slots during ordinary list updates.
+
     const existing = getSlot(activeSlotKey);
     if (
       existing?.service !== undefined &&
@@ -201,15 +185,6 @@ export function usePreviewSlot(params: UsePreviewSlotParams): void {
 
     const key = activeSlotKey;
 
-    // Compute the URL and add the slot. The remembered path is read here rather
-    // than through a dep, so this effect doesn't re-run on every navigation
-    // inside an already-created slot.
-    //
-    // An agent-authored pointer waiting on this slot wins over the remembered
-    // path (docs/258): it is where the user just asked to go, and the
-    // remembered path is only where the previous page happened to be. Entering
-    // at the destination is also what makes a pointer to a stopped service
-    // work — the slot is created after the boot, already at the right place.
     const result = computePreviewUrl(
       sessionId ?? "_",
       activePort,
@@ -220,15 +195,11 @@ export function usePreviewSlot(params: UsePreviewSlotParams): void {
     );
     if (result) {
       createdSlotsRef.current.add(key);
-      // The owner recorded at creation is this effect's `activeService`: if
-      // it changes, the effect re-runs and the promote branch above decides
-      // whether a retained slot's recorded owner still matches the port's.
+
       setSlot(key, { url: result.url, containerMode: result.containerMode, service: activeService });
       promoteSlot(key);
     }
   }, [activeSlotKey, activePort, sessionId, preview?.running, preview?.url, apiHost, apiProtocol, promoteSlot, setSlot, getSlot, dropSlot, activeService, waitingForService, preview, createdSlotsRef]);
 }
 
-// Re-export internal helpers for the consuming component, which also needs
-// `buildSubdomainUrl` for the auth-blocked detection logic.
 export { buildSubdomainUrl, computePreviewUrl };

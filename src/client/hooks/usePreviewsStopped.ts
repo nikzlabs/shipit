@@ -25,10 +25,6 @@ type Listener = (sessionId: string) => void;
 
 const listeners = new Set<Listener>();
 
-/**
- * Announce that a session's previews stopped. Called by the SSE handler for
- * `session_previews_stopped`.
- */
 export function notifyPreviewsStopped(sessionId: string): void {
   for (const listener of listeners) listener(sessionId);
 }

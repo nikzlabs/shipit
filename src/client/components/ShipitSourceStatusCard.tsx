@@ -1,26 +1,8 @@
-/**
- * ShipitSourceStatusCard — read-only "running ShipIt source" status for the
- * Ops Host tab (docs/162).
- *
- * Surfaces the source ref the Ops agent's `shipit source *` reads run against:
- * the exact deployed commit when the orchestrator can resolve it from the build
- * id, or the source checkout's HEAD (flagged "approximate") otherwise. This is
- * the inline counterpart to `shipit source status` — the operator can see at a
- * glance which commit a fix session would branch from without asking the agent.
- *
- * Informational only, in keeping with the Host tab contract (§1/§5): no buttons
- * that run commands or mutate state. To inspect source or spawn a fix session,
- * the operator asks the agent in chat.
- */
+
 
 import { CheckCircleIcon, GitCommitIcon, WarningIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 
-/**
- * Mirror of the orchestrator's `ShipitSourceStatus` DTO
- * (services/shipit-source.ts). Kept local so the client doesn't reach into
- * orchestrator service internals — only the read-only fields the card renders.
- */
 interface SourceStatus {
   available: boolean;
   ref?: string;
@@ -32,9 +14,9 @@ interface SourceStatus {
 }
 
 export interface ShipitSourceStatusCardProps {
-  /** Resolved status, or null while loading / before first fetch. */
+
   status: SourceStatus | null;
-  /** Error message from the fetch, if any. */
+
   error?: string | null;
 }
 

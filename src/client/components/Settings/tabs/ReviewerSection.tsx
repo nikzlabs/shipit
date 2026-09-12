@@ -92,20 +92,6 @@ async function refetchReviewers(): Promise<void> {
   }
 }
 
-/**
- * planning#352 — say it when the level the server stored is not the level this
- * tab asked for.
- *
- * A pinned level the newly derived selection does not offer is **re-derived
- * rather than refused**, so a service change that carries the level along
- * succeeds now instead of failing until the user lowered the level first. The
- * cost of that is a change the user did not ask for, and this is what stops it
- * being a silent one (req 5).
- *
- * A COMPARISON, not a derivation: the tab knows what it sent and what came back,
- * and that is all it needs to know — which harness offers which level is still
- * the server's rule, and re-deriving it here is what req 8 rules out.
- */
 function reportEffortChange(
   slot: string,
   requested: ReviewerPinPatch | null,
@@ -131,7 +117,6 @@ const SLOT_TITLE: Record<string, string> = {
   second: "Reviewer 2",
 };
 
-/** The reasoning levels the slot's *derived* harness offers, or none. */
 function reasoningFor(agents: AgentOption[], harnessId: string | undefined) {
   if (!harnessId) return undefined;
   return agents.find((a) => a.id === harnessId)?.reasoning;
@@ -166,16 +151,9 @@ export function ReviewerSection({
    * it. The two slots are independently editable, so busy is per slot.
    */
   const [saving, setSaving] = useState<ReadonlySet<string>>(() => new Set());
-  /**
-   * Which write is the newest. Every response replaces BOTH slots (slot 2 ranks
-   * against slot 1), so an older response landing last would overwrite a newer
-   * snapshot with a stale one — the classic last-response-wins, and here it
-   * silently un-does an edit the user watched succeed. A response is applied
-   * only if no later write has started since it was issued.
-   */
+
   const latestWrite = useRef(0);
-  // One list, split by the two controls that read it (reqs 11, 12): the services
-  // fill the first menu, and the second shows only what the chosen one offers.
+
   const models = eligibleModelsOf(agentList);
   const services = servicesOf(models);
 
@@ -212,9 +190,7 @@ export function ReviewerSection({
         message: err instanceof Error ? err.message : "Failed to update the reviewer",
       });
       console.error("[settings] set reviewer failed:", err);
-      // A failure is AMBIGUOUS — the connection can drop after the server
-      // committed — so the store is not left holding a guess. Re-read what the
-      // server actually has rather than assuming the write did or did not land.
+
       if (write === latestWrite.current) void refetchReviewers();
     } finally {
       setSaving((prev) => {
@@ -298,37 +274,12 @@ function ReviewerSlotCard({
           modelId: resolved.modelId,
         })
       : [];
-  // Req 12's bound: the model menu shows one service's models, not the whole
-  // catalogue. An unresolved slot has no service, so it offers no models either
-  // — the service control is the one to use first, which is the order the
-  // controls sit in.
+
   const serviceModels = modelsOfService(models, resolved);
-  // What the slot holds now, for the service switch to preserve. The eligible
-  // row when there is one; otherwise the resolution or the pin itself, whose
-  // identity `canonicalKeyOf` recovers from the catalogue. That fallback is the
-  // unavailable-pin case, which is precisely when a user re-points the slot at a
-  // service that survived — cross-backend review found it silently taking the
-  // new service's first model there.
+
   const currentModel =
     serviceModels.find((m) => m.modelId === resolved?.modelId) ?? resolved ?? view.pin;
 
-  /**
-   * Changing the service pins the whole tuple, like every other edit here.
-   *
-   * The level rides along only when the model stayed the same. A different
-   * model may resolve on a different harness with a different level set, and
-   * deriving that in the browser is the re-derivation req 8 rules out — so the
-   * patch omits it and the server completes the tuple from the harness it
-   * derives.
-   *
-   * "The same model" is the canonical key, not the id: moving Opus 5 from
-   * Anthropic to a gateway changes the id and nothing else, and dropping the
-   * level there would silently downgrade a level the user pinned deliberately —
-   * which is the one thing req 5 rules out. Where the level does not survive the
-   * newly derived selection the server re-derives it instead of refusing the
-   * service change (planning#352), and `reportEffortChange` names both levels —
-   * so the edit lands and the one thing that changed under it is said out loud.
-   */
   const changeService = (service: ServiceChoice) => {
     const next = modelAfterServiceChange(currentModel, modelsOfService(models, service));
     if (!next) return;
@@ -344,22 +295,14 @@ function ReviewerSlotCard({
     });
   };
 
-  /**
-   * The pinned level as the resolution line above spells it, where this view's
-   * own harness offers it — a raw `max` sitting beside "at Max" reads as a
-   * second, different setting. A level this harness does not offer has no label
-   * here at all, so the stored value is the honest thing to name.
-   */
   const pinnedEffortLabel =
     view.pin?.reasoningEffort !== undefined
     && resolved?.reasoningEffort === view.pin.reasoningEffort
       ? (resolved?.reasoningLabel ?? view.pin.reasoningEffort)
       : view.pin?.reasoningEffort;
 
-  // The derived answer, named. Rendered even on a pinned slot — as the *Reset
   // to auto* affordance's subject — because "what would happen if I un-pinned
-  // this" is not otherwise visible, and req 8's promise is that the state is
-  // legible.
+
   const autoDetail = pinned
     ? "follow this install again"
     : resolved
@@ -522,11 +465,7 @@ function ReviewerSlotCard({
                   serviceId: model.serviceId,
                   billingMode: model.billingMode,
                   modelId: model.modelId,
-                  // The level is deliberately OMITTED. The model may resolve on a
-                  // different harness with a different level set, and which
-                  // harness that is (req 3) is the server's derivation — guessing
-                  // it here is the re-derivation req 8 rules out. The server
-                  // completes the tuple from the harness it derives, so the pin
+
                   // stays atomic either way.
                 })
               }
@@ -548,9 +487,7 @@ function ReviewerSlotCard({
               disabled={busy || !resolved}
               onPick={(effort) => {
                 if (!resolved) return;
-                // Editing the level pins the WHOLE tuple (req 8), which is why
-                // the model triple rides along rather than being left to a
-                // partial patch.
+
                 onSave({
                   serviceId: resolved.serviceId,
                   billingMode: resolved.billingMode,
@@ -579,15 +516,6 @@ function ReviewerSlotCard({
   );
 }
 
-/**
- * planning#352 — one harness the pinned level does not reach, and what a review
- * there runs at instead.
- *
- * Warning-toned rather than neutral, and for the same reason the unavailable-pin
- * line is: the slot is not doing what its pin says. It is not an *error* — the
- * review still happens, on the pinned model — so it sits inside the resolution
- * line rather than replacing it.
- */
 function EffortSubstitutionNote({
   slot,
   pinnedEffort,
@@ -609,13 +537,6 @@ function EffortSubstitutionNote({
   );
 }
 
-/**
- * The model, bounded by the chosen service (req 12).
- *
- * No group headers any more: with the service chosen on its own control, every
- * row here belongs to it, and a header repeating the service on each row would
- * be stating the answer to a question the user has already been asked.
- */
 function ModelMenu({
   slot,
   models,
@@ -632,7 +553,7 @@ function ModelMenu({
   autoDetail: string;
   pinned: boolean;
   triggerLabel: string;
-  /** The pinned model id, or undefined on an auto-configured slot. */
+
   selected: string | undefined;
   disabled: boolean;
   onPick: (model: EligibleModelOption) => void;
@@ -675,18 +596,6 @@ function ModelMenu({
   );
 }
 
-/**
- * The reviewer's reasoning level (req 5).
- *
- * **No "Default" entry**, unlike the composer's `ReasoningSelector`. There the
- * absence of a level means "pass no flag and let the CLI decide"; here req 5
- * makes the level part of the reviewer, so a reviewer with no level is exactly
- * the state the requirement rules out. Every option is a real level, and an
- * auto-configured slot already carries the one ShipIt authored for its harness.
- *
- * That difference is in the OPTIONS, not in the control (req 13): same trigger,
- * same rows, same brain glyph the composer's level carries.
- */
 function ReasoningMenu({
   slot,
   label,

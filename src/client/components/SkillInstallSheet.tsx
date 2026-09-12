@@ -1,15 +1,4 @@
-/**
- * Install sheet for a single plugin (docs/149).
- *
- * Renders inline Monaco preview of the plugin's `SKILL.md` by default — the
- * headline GUI lift over the upstream `/plugin` TUI (which can only show the
- * description). Showing the body means the user has actually had the chance
- * to read what they're installing before clicking Install.
- *
- * When a plugin contains multiple skills, a left-side picker lets the user
- * page between them; the Monaco panel stays mounted between switches so we
- * don't pay the editor-init cost more than once per open.
- */
+
 
 // eslint-disable-next-line no-restricted-imports -- useEffect: dynamic Monaco editor lifecycle + per-skill SKILL.md fetch
 import { useEffect, useRef, useState } from "react";
@@ -18,29 +7,28 @@ import { Dialog, DialogContent, DialogTitle } from "./ui/dialog.js";
 import { Button } from "./ui/button.js";
 import type { PluginInfo, SkillRef } from "../../server/shared/types.js";
 
-/** A repo the user can install into (docs/149 v1c repo picker). */
 export interface InstallRepoOption {
   url: string;
-  /** Display label (e.g. `owner/repo`). */
+
   label: string;
-  /** False while the repo is still cloning — can't install into it yet. */
+
   ready: boolean;
 }
 
 interface SkillInstallSheetProps {
   plugin: PluginInfo;
-  /** Where the install will write to (e.g. `.claude/skills`). */
+
   installPathLabel: string;
-  /** True while the install request is in flight. */
+
   installing: boolean;
-  /** Repos the user can install into. The install lands as a PR to the chosen repo. */
+
   repos: InstallRepoOption[];
-  /** Currently-selected destination repo url, or null. */
+
   selectedRepoUrl: string | null;
   onSelectRepo: (url: string) => void;
   onCancel: () => void;
   onInstall: () => void;
-  /** Async loader for a single SKILL.md body. */
+
   fetchSkillBody: (plugin: string, skill: string) => Promise<string>;
 }
 
@@ -59,8 +47,6 @@ export function SkillInstallSheet({
   const [bodyByName, setBodyByName] = useState<Record<string, string | null>>({});
   const [bodyError, setBodyError] = useState<string | null>(null);
 
-  // Fetch the SKILL.md body for the selected skill, caching by name so
-  // switching back doesn't re-hit the network.
   // eslint-disable-next-line no-restricted-syntax -- per-selection async fetch into local cache; effects are the canonical place for "when the input changes, kick off an async load"
   useEffect(() => {
     if (!selectedSkill) return;
@@ -294,5 +280,4 @@ function formatBytes(bytes: number): string {
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
-// Tests import this for snapshot stability on the byte formatter.
 export const _internals = { formatBytes };

@@ -13,7 +13,7 @@ describe("Avatar", () => {
     expect(img).toHaveProperty("src", "https://example.com/a.png");
     expect(img.className).toContain("rounded-full");
     expect(img.getAttribute("loading")).toBe("lazy");
-    // No initials text is rendered on the image branch.
+
     expect(screen.queryByText("A")).toBeNull();
   });
 
@@ -47,7 +47,7 @@ describe("Avatar", () => {
   it("merges className overrides onto the fallback circle", () => {
     render(<Avatar name="Ada" className="bg-(--color-bg-hover)" />);
     const circle = screen.getByText("A");
-    // twMerge keeps the override and drops the conflicting default bg.
+
     expect(circle.className).toContain("bg-(--color-bg-hover)");
     expect(circle.className).not.toContain("bg-(--color-bg-tertiary)");
   });

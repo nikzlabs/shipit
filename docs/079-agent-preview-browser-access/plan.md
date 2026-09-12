@@ -154,10 +154,8 @@ const NORMAL_TOOLS = "Read,Glob,Grep,WebFetch,WebSearch,AskUserQuestion,mcp__pla
 `ClaudeProcess.run()` currently takes 6 positional parameters. Rather than adding a 7th, refactor to an options object:
 
 ```typescript
-// Before:
 run(prompt, sessionId, systemPrompt, images, cwd, permissionMode)
 
-// After:
 interface ClaudeRunOptions {
   prompt: string;
   sessionId?: string;
@@ -165,7 +163,7 @@ interface ClaudeRunOptions {
   images?: ImageAttachment[];
   cwd?: string;
   permissionMode?: PermissionMode;
-  mcpConfigPath?: string;  // NEW
+  mcpConfigPath?: string;
 }
 run(opts: ClaudeRunOptions)
 ```
@@ -183,9 +181,7 @@ Browser tool calls appear in the UI's activity stream. The `activityFromTool()` 
 
 ```typescript
 default: {
-  // Generic MCP tool handling — works for any MCP server
   if (toolName.startsWith("mcp__")) {
-    // Known Playwright browser tool labels
     const BROWSER_LABELS: Record<string, string> = {
       "mcp__playwright__browser_navigate": "Navigating to page",
       "mcp__playwright__browser_snapshot": "Reading page content",
@@ -217,8 +213,6 @@ Additionally, add a `"browser"` variant to the `CanonicalTool` union in `tool-ma
 export type CanonicalTool = /* existing */ | "browser";
 
 const CLAUDE_TOOL_MAP: Record<string, CanonicalTool> = {
-  // ...existing mappings...
-  // MCP browser tools (prefixed by CLI)
   "mcp__playwright__browser_navigate": "browser",
   "mcp__playwright__browser_snapshot": "browser",
   "mcp__playwright__browser_click": "browser",

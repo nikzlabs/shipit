@@ -55,17 +55,6 @@ import type { RoleView } from "../../../server/shared/types/agent-types.js";
 /** The reserved reviewer, which is never offered to a user (req 10). */
 const RESERVED_ROLE_NAME = "reviewer";
 
-/**
- * Why the control is locked (req 4) — the one wording, worn by trigger and
- * wrapper alike.
- *
- * **It names what is still changeable, not only what is not**, in the shape
- * `lockedHarnessReason` already uses ("Models stay switchable"). The first
- * sentence alone was read as "this session's settings are frozen", which the
- * menu-less pill of the first cut appeared to confirm. It no longer does: the
- * locked pill opens, and this line is what the menu behind it leads with. A lock
- * that states only a prohibition makes the user guess how far it reaches.
- */
 export const ROLE_LOCKED_REASON =
   "A role can only be chosen before the session's first message. "
   + "The model and reasoning level it set stay changeable.";
@@ -112,10 +101,6 @@ export const ROLE_PILL_CLASS =
  */
 export const ROLE_PILL_LOCKED_CLASS = `${ROLE_PILL_BASE} cursor-default`;
 
-/**
- * …and its counterpart when no role is chosen: the mark alone, quiet, in the
- * same tertiary weight the row's other icons use (req 16).
- */
 export const ROLE_MARK_CLASS =
   `items-center gap-1.5 rounded-lg p-1.5 text-xs font-medium text-(--color-text-tertiary) `
   + `transition-colors hover:bg-(--color-bg-hover) hover:text-(--color-text-secondary) `
@@ -141,7 +126,6 @@ export function roleUnavailableDetail(role: RoleView): string | undefined {
   }
 }
 
-/** What a role's row says about itself when it CAN run: its description, else what it runs. */
 function roleDetail(role: RoleView): string | undefined {
   const unavailable = roleUnavailableDetail(role);
   if (unavailable) return unavailable;
@@ -187,7 +171,7 @@ export function RoleSelector({
   roles: RoleView[];
   /** The role in force, or undefined. Never derived from the parameters (req 13). */
   selectedRole?: string | undefined;
-  /** A role by name, or `undefined` for "No role" (req 18). */
+
   onSelectRole: (roleName: string | undefined) => void;
   /**
    * "Adjust parameters…" — bring the three controls the role replaced back into
@@ -208,8 +192,7 @@ export function RoleSelector({
    */
   locked?: boolean;
 }) {
-  // Nothing to offer and nothing in force: the row is exactly as it is today,
-  // not even an icon (req 16).
+
   if (roles.length === 0 && !selectedRole) return null;
 
   /*
@@ -316,19 +299,7 @@ export function RoleSelector({
           aria-label={selectedRole ? `Role: ${selectedRole}` : "Choose a role"}
           title={selectedRole ? `Role: ${selectedRole}` : "Choose a role"}
           data-testid="role-selector-trigger"
-          /*
-            **Not the shared `PickerTrigger`, and the difference is the point.**
-            The other three controls in this row each report ONE value; this one
-            reports that the session is running a named configuration, and when
-            it does it stands where all three of them were. Rendering it as a
-            fourth identical trigger would say "here is a fourth setting", which
-            is the reading req 5 exists to prevent. So the selected state is a
-            tinted pill and the empty state is the mark alone.
 
-            What IS shared is the menu below it — the same `PickerOption` rows
-            every other picker uses — which is where docs/261 req 13's "learn one,
-            learn all" actually lives: the thing the user operates.
-          */
           className={`flex shrink-0 ${selectedRole ? ROLE_PILL_CLASS : ROLE_MARK_CLASS}`}
         >
           <BaseballCapIcon size={ICON_SIZE.SM} className="shrink-0" />
@@ -364,9 +335,9 @@ export function RoleSelector({
               label={role.name}
               {...(detail ? { detail } : {})}
               selected={role.name === selectedRole}
-              // req 9 — shown, not hidden. A role the user configured vanishing
+
               // reads as a fault in ShipIt; a role that says why it cannot run
-              // reads as the truth it is.
+
               disabled={Boolean(unavailable)}
               onSelect={() => onSelectRole(role.name)}
               testId={`role-option-${role.name}`}

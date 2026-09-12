@@ -50,22 +50,10 @@ function pillOrder(): string[] {
     .map((id) => `${id}:sub`);
 }
 
-/**
- * A known percentage older than this reads as "stale": the number is shown
- * dimmed and the tooltip carries its age. Claude's event numbers refresh on
- * every turn near the limit; the `/api/oauth/usage` number only refreshes on
- * the manual button, so at low usage it can legitimately age.
- */
 const STALE_AFTER_MS = 15 * 60_000;
 
-/**
- * Fixed window lengths backing the time marker. Claude's short window is 5h
- * and the weekly window is 7d (see `SubscriptionLimitsWindow`). The provider
- * only ever gives us `resetAt`, so the elapsed fraction is derived against
- * these constants — no extra data is fetched.
- */
-const SESSION_WINDOW_MS = 5 * 60 * 60_000; // 5h
-const WEEKLY_WINDOW_MS = 7 * 24 * 60 * 60_000; // 7d
+const SESSION_WINDOW_MS = 5 * 60 * 60_000;      
+const WEEKLY_WINDOW_MS = 7 * 24 * 60 * 60_000;      
 
 /**
  * Minimum gap between two **automatic** refreshes (`autoRefresh`, i.e. opening
@@ -90,43 +78,16 @@ export const AUTO_REFRESH_MIN_INTERVAL_MS = 5 * 60_000;
  */
 const lastRefreshAttemptAt = new Map<string, number>();
 
-/** Test seam — clears the module-level auto-refresh throttle between cases. */
 export function resetAutoRefreshThrottle(): void {
   lastRefreshAttemptAt.clear();
 }
 
 interface SubscriptionLimitsBadgeProps {
   limits: SubscriptionLimitsMap;
-  /**
-   * Fetch fresh usage once when this badge mounts (throttled by
-   * `AUTO_REFRESH_MIN_INTERVAL_MS`). Set by the mobile status dropdown, whose
-   * `PopoverContent` mounts on open — opening it *is* the user asking for the
-   * number, so it spends a call the same way the refresh button does, without
-   * requiring a second tap on a surface that has no hover tooltip.
-   */
+
   autoRefresh?: boolean;
 }
 
-/**
- * Header badge group rendering one **pill per connected subscription** plus a
- * refresh button, on the services whose quota can be re-read on demand
- * (`subQuotaRefreshable`). See docs/161 and
- * docs/135-subscription-limits-badge/plan.md.
- *
- * docs/150-multiple-provider-subscriptions req 10 — quota is per account, so a provider with two connected
- * subscriptions gets two pills, each labelled with that account's name.
- *
- * The name is shown whenever the route IS an account, unconditionally. An
- * earlier version suppressed it for the single-pill case, on the theory that a
- * name only earns its space when it disambiguates. That was wrong twice over:
- * req 10 asks for the account name outright, and — worse — the condition
- * counted *snapshots*, not accounts. Routes with no snapshot are omitted from
- * the map, so a user with two connected accounts where only one had ever
- * reported quota saw a single pill labelled "Claude", indistinguishable from
- * the one-account case and silent about which subscription it described.
- *
- * Reserved env / API-key routes are not accounts and keep the provider label.
- */
 export function SubscriptionLimitsBadge({ limits, autoRefresh }: SubscriptionLimitsBadgeProps) {
   const accounts = useSettingsStore((s) => s.providerAccounts);
   const routes = useSettingsStore((s) => s.credentialRoutes);
@@ -143,12 +104,7 @@ export function SubscriptionLimitsBadge({ limits, autoRefresh }: SubscriptionLim
           label={label}
           snapshot={snapshot}
           {...(attention ? { attention } : {})}
-          // Only a service whose quota can be re-read on demand gets a button
-          // (planning#339). Codex's numbers are pushed during a turn and can
-          // only be received, so a button there would spin and change nothing.
-          // Asked of the catalogue rather than written out as `=== "anthropic"`,
-          // which is what left this and the two Settings rows to be found and
-          // changed by hand when GLM's reader landed.
+
           showRefresh={subQuotaRefreshable(serviceId)}
           autoRefresh={autoRefresh}
         />
@@ -213,30 +169,20 @@ function buildPills(
       below.
     */
     const reportsQuota = modeReportsQuota(serviceId, "sub");
-    // planning#342 — an account row IS a credential of its service now, so
-    // the pill matches on the service directly instead of mapping the row's
-    // harness back to one.
+
     // A row that has never been anything but a sign-in attempt is not a
     // credential yet ({@link isUnconnectedAttempt}), and the header must ask
-    // the same question Settings asks — a row exists from the instant *Sign
-    // in* is pressed and is deleted again if the user backs out. Without the
-    // test, starting a sign-in put a pill in the header saying the account
+
     // needs reconnecting, about an account that was never connected.
     const modeAccounts = accounts.filter(
       (account) => account.serviceId === serviceId && !isUnconnectedAttempt(account),
     );
 
-    // Among the modes that report a quota at all, connected accounts define
-    // pill presence, not cached snapshots. A quiet account may have no quota
     // event yet, but its pill must remain available so the user can request a
-    // refresh and see that usage is still unknown. That argument is what the
-    // gate above bounds: it holds only where a refresh can produce a number.
+
     for (const account of modeAccounts) {
       // ...and the second job: a credential that cannot run a turn says so
-      // here, which is a statement about the SIGN-IN and not about quota. So a
-      // no-reader subscription keeps that pill and loses only the meters — an
-      // xAI account needing reconnection is exactly as worth saying as an
-      // Anthropic one, and this is the only place the header says it.
+
       if (!reportsQuota && !credentialStatusWord(account)) continue;
       pills.push({
         key: `${modeKey}:${account.id}`,
@@ -245,38 +191,26 @@ function buildPills(
         label: account.label,
         snapshot: byRoute?.[account.id],
         // A credential that cannot authenticate a turn has no quota worth
-        // reading, and the pill is the only place the header says anything
-        // about an account at all — so the state travels with it.
+
         ...(credentialStatusWord(account) ? { attention: credentialStatusWord(account) } : {}),
       });
     }
 
-    // A supplied secret of this same subscription — `ANTHROPIC_AUTH_TOKEN`,
-    // GLM's coding-plan key. Not an account, so `accounts` does not hold it and
-    // the label stays the service's rather than inventing a name for something
     // the user never named; but it IS a credential with a state, and planning#358
-    // records a provider refusing one exactly as it records a failed login.
+
     const modeSecrets = new Map(
       routes
         .filter((r) => r.serviceId === serviceId && r.billingMode === "sub" && r.via === "string")
         .map((r) => [r.id, r] as const),
     );
 
-    // Reserved routes are not provider-account rows, so a snapshot is normally
-    // the only evidence that they exist. Append them after the user's account
-    // order.
     const fromSnapshot = new Set<string>();
     for (const snapshot of Object.values(byRoute ?? {})) {
       if (modeAccounts.some((account) => account.id === snapshot.routeId)) continue;
       fromSnapshot.add(snapshot.routeId);
       const secret = modeSecrets.get(snapshot.routeId);
       const secretAttention = secret ? credentialStatusWord(secret) : undefined;
-      // Unreachable today and still worth writing: a mode with no reader has no
-      // `LimitsProvider`, so no snapshot of it can exist. But this loop derives
-      // a pill FROM a snapshot, so it would render one on nothing but the map's
-      // say-so — and a stale entry, or a service that loses a reader, would put
-      // the blank meters straight back. The rule is "no reader, no meters", and
-      // the code says it in every loop rather than in one loop and a doc.
+
       if (!reportsQuota && !secretAttention) continue;
       pills.push({
         key: `${modeKey}:${snapshot.routeId}`,
@@ -288,10 +222,6 @@ function buildPills(
       });
     }
 
-    // ...and "normally" is the hole: a refused secret whose turns all failed may
-    // have no snapshot at all, and then the header said nothing whatsoever about
-    // the credential every turn was dying on. A supplied secret is `ready` from
-    // the moment it is stored, so this adds a pill only for one the provider has
     // actually refused — never a second pill for a healthy one.
     for (const secret of modeSecrets.values()) {
       if (fromSnapshot.has(secret.id)) continue;
@@ -311,11 +241,7 @@ function buildPills(
 
 interface SubscriptionLimitPillProps {
   serviceId?: string;
-  /**
-   * The subscription this pill describes — a provider-account id or a reserved
-   * route id. Scopes the refresh to this account so one press costs one
-   * upstream call instead of one per connected account.
-   */
+
   routeId?: string;
   /**
    * Whose quota this is — omitted where the surrounding row already says so.
@@ -330,17 +256,9 @@ interface SubscriptionLimitPillProps {
   label?: string;
   snapshot?: SubscriptionLimits;
   showRefresh?: boolean;
-  /** See `SubscriptionLimitsBadgeProps.autoRefresh`. Only acts with `showRefresh`. */
+
   autoRefresh?: boolean;
-  /**
-   * This credential needs the user before it can run a turn — from
-   * {@link credentialStatusWord}. Present ⇒ the pill says so **instead of**
-   * showing meters (see {@link CredentialAttention}).
-   *
-   * Omitted by the Settings credential row, which prints the same word itself
-   * one element to the left and hides the pill entirely for a non-ready
-   * credential. The header has no such row, so there the pill carries it.
-   */
+
   attention?: CredentialStatusWord;
 }
 
@@ -386,13 +304,6 @@ export function SubscriptionLimitPill({ serviceId, routeId, label, snapshot, sho
   const resolvedRouteId = routeId ?? snapshot?.routeId;
   const shows = windowsShown(snapshot);
 
-  // A broken credential's meters are worse than nothing: the numbers are real
-  // but frozen at whatever the account last reported, so the pill reads
-  // "healthy, 30% used" while every turn on that account is being refused. The
-  // user's report was exactly this — the pills worked, the commands did not,
-  // and only Settings knew why. So the state replaces the numbers rather than
-  // sitting beside them, and the refresh button goes with them: there is
-  // nothing to fetch until the sign-in is redone.
   if (attention) {
     return (
       <Badge numeric className="gap-2 pl-2 pr-2 pt-0 pb-0.5 bg-(--color-bg-hover) min-w-0">
@@ -406,17 +317,8 @@ export function SubscriptionLimitPill({ serviceId, routeId, label, snapshot, sho
     );
   }
 
-  // The pill carries inline meters with underline gauges, so it overrides
-  // Badge's symmetric padding with the asymmetric `pl-2 pr-* pt-0 pb-0.5` it
-  // needs (tighter right edge when the refresh button is tucked in) and adds
-  // the `gap-2` flex spacing between label / meters / button.
   return (
-    // `min-w-0` is what lets a header row of pills give ground instead of
-    // overflowing (docs/150): a flex item defaults to `min-width: auto`, so
-    // without it three account pills refused to shrink and pushed the header's
-    // trailing controls off-screen. The meters and refresh button stay at their
-    // natural width — the account label is the only part that yields, and it
-    // truncates with its full value still in the tooltip.
+
     <Badge
       numeric
       className={`gap-2 pl-2 ${showRefresh ? "pr-1" : "pr-2"} pt-0 pb-0.5 bg-(--color-bg-hover) min-w-0`}
@@ -493,24 +395,12 @@ interface MeterProps {
   shortLabel: string;
   longLabel: string;
   window: SubscriptionLimitsWindow | null;
-  /** Fixed length of this window in ms (5h / 7d) — drives the time marker. */
+
   windowMs: number;
   fetchedAt?: number;
   now: number;
 }
 
-/**
- * Fraction of the window already elapsed (0–100), derived from the fixed
- * window length: the window started at `resetAt − windowMs`, so elapsed =
- * `now − start`. Returns `null` when `resetAt` is unparseable so the marker
- * is simply omitted rather than drawn at a bogus position.
- *
- * This is the second dimension the pill was missing: "48% used" reads very
- * differently on day 1 of the week than on day 6. The marker shows where the
- * clock is, so quota-vs-time pace is legible at a glance — fill short of the
- * marker means you're under pace, fill past it means you're burning quota
- * faster than the window is elapsing.
- */
 export function timeElapsedPct(
   resetAt: string,
   windowMs: number,
@@ -548,15 +438,6 @@ export function meterDisplay(
   return { kind: "known", pct: window.usedPct, stale: now - fetchedAt > STALE_AFTER_MS };
 }
 
-/**
- * A single 5h / 7d meter. Known windows render the tier-colored `"5h NN%"`
- * with a thin underline gauge (dimmed when stale). Reset and unknown windows
- * render an explicit muted label instead of a percentage so the user can tell
- * "ShipIt doesn't know this number" from "it's 42%" at a glance — the old
- * behavior of showing a bare reset countdown looked like real data when it
- * wasn't (docs/161). The reset time itself moves to the tooltip in those
- * states.
- */
 function Meter({ shortLabel, longLabel, window, windowMs, fetchedAt, now }: MeterProps) {
   const title = window
     ? `${formatWindowLine(longLabel, window, now)}${fetchedAt === undefined ? "" : `\nUpdated ${formatAge(fetchedAt, now)}`}`
@@ -605,9 +486,7 @@ function Meter({ shortLabel, longLabel, window, windowMs, fetchedAt, now }: Mete
   const color = tierColor(pct);
   const countdown = pct > 90 ? formatResetCountdown(window.resetAt, now) : null;
   const elapsedPct = timeElapsedPct(window.resetAt, windowMs, now, window.startedAt);
-  // The marker lives INSIDE this wrapper, so the `opacity-50` stale dimming
-  // above cascades to it automatically — a stale meter fades the time marker
-  // along with its number and fill.
+
   return (
     <span
       className={`inline-flex items-center whitespace-nowrap${display.stale ? " opacity-50" : ""}`}
@@ -727,13 +606,10 @@ function LimitsRefreshButton({
     try {
       const res = await api.post<{ ok: boolean; results?: LimitsRefreshResult[] }>(
         "/api/limits/refresh",
-        // Only a subscription reports a quota (req 10), so the pill can only
-        // ever be asking about the `sub` mode.
+
         routeId ? { serviceId, billingMode: "sub", routeId } : { serviceId, billingMode: "sub" },
       );
-      // Report on this pill's own route when the response names it; a fan-out
-      // response (no routeId sent) has no single owner, so fall back to the
-      // first result rather than attributing another account's failure here.
+
       const mine = res.results?.find((r) => r.routeId === routeId) ?? res.results?.[0];
       setProblem(mine ? outcomeMessage(mine.outcome, serviceName) : null);
     } catch (err) {
@@ -743,10 +619,6 @@ function LimitsRefreshButton({
     }
   }, [api, routeId, serviceId, serviceName, throttleKey]);
 
-  // Fire-once-on-mount auto refresh. The ref (not the throttle map) is what
-  // makes it once-per-mount: the map only bounds how often *any* mount is
-  // allowed to spend a call, and a locked-out route is skipped entirely
-  // rather than firing a request the server would no-op.
   const autoFired = useRef(false);
   // eslint-disable-next-line no-restricted-syntax -- mount IS the event here: Radix unmounts PopoverContent on close, so this component mounting is the dropdown opening, and the fetch is an external-system sync with no event-handler equivalent.
   useEffect(() => {
@@ -758,9 +630,6 @@ function LimitsRefreshButton({
     void refresh();
   }, [autoRefresh, locked, refresh, throttleKey]);
 
-  // The lockout countdown is the more specific message when both are present:
-  // it carries a retry time, and it is broadcast state rather than the result
-  // of one press, so it survives a remount.
   const title = locked
     ? `Usage refresh rate-limited — retry in ${lockCountdown}`
     : problem ?? `Refresh usage from ${serviceName}`;
@@ -790,13 +659,6 @@ function LimitsRefreshButton({
   );
 }
 
-/**
- * Tier color for a usage percentage: neutral → mid → high → full at
- * 60 / 75 / 90 percent. Returns a `var(--color-context-*)` string so
- * the same value drives both the meter text and its fill bar; below
- * 60% the meter stays at the neutral `--color-text-secondary` so it
- * reads the same as the provider label.
- */
 export function tierColor(pct: number): string {
   if (pct >= 90) return "var(--color-context-full)";
   if (pct >= 75) return "var(--color-context-high)";
@@ -804,7 +666,6 @@ export function tierColor(pct: number): string {
   return "var(--color-text-secondary)";
 }
 
-/** Format 0–100 → `"96%"`, rounded to whole-number percent. */
 export function formatPct(pct: number): string {
   return `${Math.round(pct)}%`;
 }
@@ -827,7 +688,6 @@ export function formatResetCountdown(iso: string, nowMs = Date.now()): string {
   return `${days}d ${hours}h`;
 }
 
-/** Compact "N min ago" / "just now" for a snapshot age. */
 export function formatAge(fetchedAt: number, nowMs = Date.now()): string {
   const diffMs = nowMs - fetchedAt;
   if (!Number.isFinite(diffMs) || diffMs < 60_000) return "just now";

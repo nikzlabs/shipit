@@ -1,66 +1,18 @@
-/**
- * compose-review-body — builds the chat message that kicks off an AI review
- * (docs/203, docs/220, docs/261).
- *
- * **This file used to choose the reviewer, and no longer does** (docs/261 req 6).
- * It picked the first *other* installed backend and wrote `--agent <other>` into
- * the prompt — ShipIt naming a reviewer by harness, in the product's own words,
- * which is the exact thing the role replaces. What survives here is the one
- * question the client can still answer: whether the brokered path is available
- * at all.
- *
- *   - Multi-agent sessions on → **role**: the parent runs
- *     `shipit agent run --role reviewer --prompt-file -`, and ShipIt resolves who
- *     reviews from its own settings — ranked to be as far from the implementer as
- *     the install allows (docs/261 req 4). ShipIt surfaces that reviewer's
- *     verbatim output inline, in the consult card (docs/220) — so the parent
- *     records nothing and calls no tool; it reads the markdown from stdout only
- *     to apply fixes.
- *   - off → **subagent**: `shipit agent run` is refused outright, so the parent
- *     spawns one fresh same-model `Task` and **presents its findings to the user
- *     as prose**. A same-model review is the agent's own internal work — ShipIt
- *     only renders what it *brokers*, so there is no card here (docs/220).
- *
- * The mode is resolved **on the client at button-press time**, so the prompt is
- * concrete rather than self-correcting; the *reviewer* is resolved on the server
- * at spawn admission, which is why nothing here names one.
- *
- * In both modes the reviewer READS the file with its own read-only tools (it runs
- * in the same workspace) and returns **markdown only** — it calls no MCP tool.
- * There is no `submit_review` tool: the role's output is shown by the consult
- * card, same-model output is narrated by the parent.
- *
- * No draft-comment embedding — that belongs to the user-comment system, which is
- * fully decoupled from AI review.
- */
 
 
 export type ReviewerMode = "role" | "subagent";
 
 export interface ReviewComposition {
   mode: ReviewerMode;
-  /** Display name for the current/parent agent, e.g. "Claude". */
+
   selfName: string;
 }
 
-/** Short, user-facing agent name for the card attribution ("claude" → "Claude"). */
 export function displayAgentName(agentId: string): string {
   if (!agentId) return "the agent";
   return agentId.charAt(0).toUpperCase() + agentId.slice(1);
 }
 
-/**
- * Resolve the review MODE from a settings snapshot taken at click time. Pure, so
- * the one remaining branch is directly testable.
- *
- * The registry is deliberately no longer consulted (docs/261 req 6). "Is a
- * *different* backend installed and authed?" was the client deciding who
- * reviews; ShipIt now decides that on the server, from the reviewer settings,
- * and it can pick a distant *model* on the same harness — an answer this check
- * would have thrown away. What is left is the availability gate that genuinely
- * belongs to the caller: `shipit agent run` is refused outright when Multi-agent
- * sessions is off, so that case still composes a same-model `Task` review.
- */
 export function resolveReviewer(args: {
   enableSubAgents: boolean;
   activeAgentId: string;

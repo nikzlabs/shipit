@@ -4,23 +4,12 @@ import { useRepoStore } from "../stores/repo-store.js";
 import { parseRepoName } from "../utils/repo-label.js";
 import { REPO_COLOR_COUNT, REPO_COLOR_NAMES, repoColorVar } from "../../server/shared/repo-colors.js";
 
-/**
- * docs/254 — pick the identity color for a repo's sidebar group.
- *
- * The swatches render the same `--repo-color-N` custom properties the sidebar
- * edge uses, so what you pick here is literally what the rail draws — including
- * the theme's own light/dark mapping. Selection writes through the store's
- * optimistic `setRepoColorIndex`, so the edge in the sidebar behind this dialog
- * changes on click rather than on save; there is no separate save step.
- */
 export function RepoColorPicker({ repoUrl }: { repoUrl: string }) {
   const repos = useRepoStore((s) => s.repos);
   const setRepoColorIndex = useRepoStore((s) => s.setRepoColorIndex);
   const selected = repos.find((r) => r.url === repoUrl)?.colorIndex;
   // Colors another repo is already using. Assignment never hands out a duplicate
-  // while free colors remain, but a manual pick can — so the picker says which
-  // are taken (and by whom) rather than letting a collision happen silently.
-  // Hidden repos count: they hold their color and can come back at any time.
+
   const takenBy = new Map<number, string[]>();
   for (const r of repos) {
     if (r.url === repoUrl || r.colorIndex === undefined) continue;

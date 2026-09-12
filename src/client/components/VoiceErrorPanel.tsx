@@ -1,17 +1,4 @@
-/**
- * Desktop voice-error panel (docs/144).
- *
- * The inline mic icon can show a warning glyph, but a ~16px icon + tooltip is
- * too thin to recover from a failure. This panel — rendered in a popover
- * anchored to the mic button on desktop — surfaces the error message and the
- * recovery actions. The mobile equivalent lives in `MobileRecordingOverlay`;
- * both share the same decision: if the audio was captured before the failure
- * (`canRetryTranscription`), the primary action is **Resend** (re-submit the
- * same recording — no re-speaking), with **Re-record** as the fallback;
- * otherwise the only recovery is **Try again** (record afresh).
- *
- * Purely presentational over `useVoiceInput`.
- */
+
 
 import { WarningCircleIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";

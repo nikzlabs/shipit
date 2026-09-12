@@ -48,8 +48,6 @@ describe("handleNonTurnFailureCard (docs/252 req 9)", () => {
     });
   });
 
-  // The card is BOTH persisted and buffered into the turn-event log, so a
-  // reconnect delivers it twice.
   it("is idempotent by cardId", () => {
     handleNonTurnFailureCard(ctx, message());
     handleNonTurnFailureCard(ctx, message());
@@ -70,7 +68,6 @@ describe("handleNonTurnFailureCard (docs/252 req 9)", () => {
     expect("detail" in card).toBe(false);
   });
 
-  // Dismissal patches the row. Removing it would make a recurring failure look
   // like it never happened once the user acknowledged one instance.
   it("marks a card dismissed without removing it", () => {
     handleNonTurnFailureCard(ctx, message());
@@ -85,9 +82,6 @@ describe("handleNonTurnFailureCard (docs/252 req 9)", () => {
     expect(messages[0].nonTurnFailure?.dismissedAt).toBe("2026-08-09T00:05:00.000Z");
   });
 
-  // CLAUDE.md — the browser holds exactly ONE transcript, so a card carrying a
-  // foreign `sessionId` has to be dropped by the dispatcher rather than landing
-  // in whichever session happens to be active.
   it("is registered as transcript-scoped so a foreign card is dropped", () => {
     useSessionStore.setState({ sessionId: "other", messages: [] });
     dispatchMessage(ctx, message());

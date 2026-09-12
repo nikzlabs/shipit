@@ -2,18 +2,6 @@ import { describe, it, expect, afterEach } from "vitest";
 import { render, screen, cleanup } from "@testing-library/react";
 import { SpawnFailedCard } from "./SpawnFailedCard.js";
 
-/**
- * Tests for the in-chat `SpawnFailedCard` (docs/117 cross-cutting follow-up).
- *
- * Counterpart to `SpawnedSessionCard.test.tsx`. The card is informational —
- * no clickable affordances — so the tests focus on:
- *
- *   - Each `reason` bucket maps to a distinct headline.
- *   - The orchestrator error message is rendered verbatim.
- *   - The status code is surfaced.
- *   - Title / promptPreview are optional.
- */
-
 const BASE_PROPS = {
   reason: "quota_per_turn" as const,
   message: "Per-turn spawn limit reached (4).",
@@ -75,7 +63,6 @@ describe("SpawnFailedCard", () => {
     expect(screen.queryByTestId("spawn-failed-prompt")).not.toBeInTheDocument();
   });
 
-  // docs/162 — Ops `--shipit-source` failures get tailored copy.
   describe("shipitSource variant", () => {
     it("shows a write-access headline and incident hint on a 403", () => {
       render(

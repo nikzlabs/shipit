@@ -35,11 +35,6 @@ beforeEach(() => {
   });
 });
 
-/**
- * docs/235 — a turn can end with background work still outstanding. The session
- * is not idle then: it will wake itself when the task finishes, so the UI has to
- * keep saying something is happening.
- */
 describe("handleBackgroundTasks (docs/235)", () => {
   it("marks the session as holding background tasks", () => {
     handleBackgroundTasks(ctx, tasks());
@@ -113,17 +108,12 @@ describe("handleBackgroundTasks (docs/235)", () => {
     handleBackgroundTasks(ctx, tasks({ sessionId: "other", count: 2, descriptions: ["a", "b"] }));
     const s = useSessionStore.getState();
     expect(s.backgroundTaskSessions.has("other")).toBe(true);
-    // The chat surfaces belong to the active session only.
+
     expect(s.isLoading).toBe(false);
     expect(s.activity).toBeUndefined();
   });
 });
 
-/**
- * The turn-end `session_status` says nothing about background work, so it reads
- * the standing marker from the store. Without that, a turn that ended with a job
- * still running would clear the indicator and look finished.
- */
 describe("handleSessionStatus — standing background work", () => {
   it("keeps the status bar up, named, when a turn ends with a task outstanding", () => {
     useSessionStore.setState({ activeRunnerSessions: new Set(["s1"]) });
@@ -146,7 +136,7 @@ describe("handleSessionStatus — standing background work", () => {
   });
 
   it("falls back to the unnamed label when only the reconnect snapshot is known", () => {
-    // The SSE `session_attention` snapshot carries ids without descriptions.
+
     useSessionStore.setState({ backgroundTaskSessions: new Map([["s1", []]]) });
     handleSessionStatus(ctx, status({ running: false }));
 

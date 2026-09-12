@@ -52,9 +52,9 @@ Sort preference (primary/secondary key + direction, group on/off) should persist
 `TrackerIssue` (`src/server/shared/types/domain-types.ts`) gains:
 
 ```ts
-parentId?: string;         // tracker-internal id of the parent issue, when nested
-parentIdentifier?: string; // human id ("planning#92") — for the orphan hint without a second fetch
-updatedAt?: string;        // ISO-8601 last-updated, for the "Last updated" sort key
+parentId?: string;
+parentIdentifier?: string;
+updatedAt?: string;
 ```
 
 (`hasChildren` was considered but dropped — the tree is built from the loaded

@@ -10,11 +10,8 @@
     font-family: ui-sans-serif, system-ui, -apple-system, sans-serif;
   }
   .wrap { max-width: 680px; }
-  /* Mirror Tailwind `prose-sm`: ~14px / line-height 1.714 */
   .prose { font-size: 14px; line-height: 1.7142857; }
   .prose p { margin: 0 0 1.14em; }
-  /* Ruled background: each stripe is exactly one line-height tall, so any badge
-     that pushes its line taller than a normal line is immediately visible. */
   .ruled {
     background-image: repeating-linear-gradient(
       to bottom,
@@ -22,7 +19,6 @@
       transparent 24px, transparent 48px
     );
   }
-  /* Exactly the classes IssueBadge renders. */
   .badge {
     display: inline-flex; align-items: center; vertical-align: middle;
     border-radius: 4px; padding: 0 4px;

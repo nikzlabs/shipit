@@ -69,9 +69,9 @@ is carried entirely by the port's presence, with nothing to keep in step.
 
 ```ts
 const override = use.overrides.services[source.name]?.autostart;
-if (override !== undefined) return override ? "auto" : "manual";   // req 16, unchanged
-if (source.preview !== undefined) return source.preview;           // the author's answer
-return port !== undefined ? "auto" : "manual";                     // the new default
+if (override !== undefined) return override ? "auto" : "manual";
+if (source.preview !== undefined) return source.preview;
+return port !== undefined ? "auto" : "manual";
 ```
 
 Keeping those two questions apart matters, and it took two goes. A portless

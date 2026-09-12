@@ -66,20 +66,13 @@ The two error/auto-fix callsites are explicitly **included** to avoid a worse mi
 Generalize the existing `sendSystemMessage` → `dispatch`:
 
 ```ts
-// session-runner.ts
 export interface AgentDispatchOptions {
   text: string;
-  /** Spinner label shown in the chat bubble (e.g. "Creating PR…", "Auto-fixing CI…"). */
   activity?: string;
-  /** Optional inline image attachments. */
   images?: ImageAttachment[];
-  /** File context references resolved against the session workspace. */
   files?: FileContextRef[];
-  /** Upload refs (resolved to ImageAttachment[] after resolution). */
   uploads?: UploadRef[];
-  /** Per-turn permission mode override. */
   permissionMode?: PermissionMode;
-  /** docs/125 — chat-native review turn marker. */
   reviewFilePath?: string;
 }
 
@@ -106,7 +99,6 @@ Three follow-on edits this forces:
 New file `src/server/orchestrator/api-routes-agent.ts`:
 
 ```ts
-// POST /api/sessions/:id/agent/dispatch
 app.post<{
   Params: { id: string };
   Body: {
@@ -129,7 +121,7 @@ app.post<{
         request.params.id,
         request.body,
       );
-      reply.send(result); // { ok: true, queued: boolean }
+      reply.send(result);
     } catch (err) {
       if (err instanceof ServiceError) {
         reply.code(err.statusCode).send({ error: err.message });
@@ -164,15 +156,10 @@ The service exists as a function in `services/agent.ts`, not inlined in the rout
 `ws-handlers/send-message.ts:138` (the queue branch) becomes:
 
 ```ts
-// before:
 runnerForQueue.messageQueue.push({ text: msg.text, images, files, uploads, permissionMode, reviewFilePath });
 ctx.send({ type: "message_queued", position: runnerForQueue.messageQueue.length, text: msg.text });
 
-// after:
 runnerForQueue.dispatch({ text: msg.text, images, files: validatedFiles, uploads, permissionMode, reviewFilePath });
-// dispatch() routes through the same enqueue branch and broadcasts message_queued
-// via runner.emitMessage so all attached viewers (and any other HTTP-originated
-// caller in the same session) see the queue update.
 ```
 
 Same change in `send_review_message` (it builds a `reviewFilePath`, then today pushes inline to the queue — replace with `runner.dispatch(...)` carrying `reviewFilePath`).
@@ -200,7 +187,6 @@ The two mechanisms (`message_queued` + the new `system_user_message` dedupe) cov
 A shared helper centralizes the pattern:
 
 ```ts
-// src/client/utils/dispatch-agent-message.ts
 export function dispatchAgentMessage(opts: {
   sessionId: string;
   text: string;
@@ -208,7 +194,6 @@ export function dispatchAgentMessage(opts: {
   apiPost: <T>(path: string, body: unknown) => Promise<T>;
 }): Promise<void> {
   const { sessionId, text, activity, apiPost } = opts;
-  // Optimistic append — mirrors what handleCreatePr does inline today.
   const session = useSessionStore.getState();
   session.setMessages((prev) => [...prev, { role: "user", text }]);
   session.setIsLoading(true);

@@ -8,15 +8,9 @@ import {
 } from "../utils/payload.js";
 import type { McpServerConfig } from "../../../../server/shared/types.js";
 
-// Hyphens are disallowed — the name becomes part of the `mcp__<name>__<KEY>`
-// env-var identifier (see services/mcp.ts).
+// The name becomes part of an environment-variable identifier.
 const NAME_RE = /^[a-z][a-z0-9]*$/;
 
-/**
- * Owns the add/edit form lifecycle: which server is being edited, validation
- * messages, the in-flight save guard, and the create/update round-trip
- * (serializing the form to a config + secrets payload via `buildPayload`).
- */
 export function useMcpFormState() {
   const addServer = useMcpStore((s) => s.addServer);
   const updateServer = useMcpStore((s) => s.updateServer);

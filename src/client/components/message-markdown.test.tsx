@@ -14,9 +14,6 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-// docs/248 — Linear is a declared tracker bound to a team, so the destination id
-// carries the team key and the declaration carries the name every reference
-// resolves through.
 const LINEAR_CONNECTED: TrackerInfo = {
   id: "linear:SHI",
   kind: "linear",
@@ -26,7 +23,7 @@ const LINEAR_CONNECTED: TrackerInfo = {
   binding: { key: "SHI", name: "SHI" },
 };
 const LINEAR_DISCONNECTED: TrackerInfo = { ...LINEAR_CONNECTED, configured: false };
-/** A declared GitHub tracker — the destination `planning#57` addresses. */
+
 const GITHUB_PLANNING: TrackerInfo = {
   id: "github:acme/planning",
   kind: "github",
@@ -66,12 +63,9 @@ describe("MarkdownContent links", () => {
     render(<MarkdownContent text="See [the file](src/server/foo.ts:42) here." />);
     const link = screen.getByText("the file").closest("a")!;
 
-    // A relative href would resolve against the session route — the browser
-    // would show `/session/src/server/foo.ts` on hover and 404 on
-    // middle-click / ⌘-click / "Open link in new tab".
     expect(link).not.toHaveAttribute("href");
     expect(link).not.toHaveAttribute("target");
-    // Still reachable by keyboard, and the tooltip names the file.
+
     expect(link).toHaveAttribute("role", "button");
     expect(link).toHaveAttribute("tabindex", "0");
     expect(link).toHaveAttribute("title", "Open src/server/foo.ts:42");
@@ -121,7 +115,7 @@ describe("MarkdownContent tracker-issue links", () => {
       <MarkdownContent text="See [SHI-137](https://linear.app/shipit-ai/issue/SHI-137) for details." />,
     );
     const link = screen.getByText("SHI-137").closest("a")!;
-    // The anchor still carries the external href + target as the escape hatch.
+
     expect(link).toHaveAttribute("href", "https://linear.app/shipit-ai/issue/SHI-137");
     expect(link).toHaveAttribute("target", "_blank");
 
@@ -130,7 +124,7 @@ describe("MarkdownContent tracker-issue links", () => {
     expect(openIssue).toHaveBeenCalledWith({
       tracker: "linear:SHI",
       id: "SHI-137",
-      // req 15 — the destination's name form.
+
       identifier: "roadmap#SHI-137",
       url: "https://linear.app/shipit-ai/issue/SHI-137",
     });
@@ -155,10 +149,6 @@ describe("MarkdownContent tracker-issue links", () => {
     expect(setRightTab).not.toHaveBeenCalled();
   });
 
-  // docs/248-declared-issue-trackers req 11 — a bare key is a NAME-less reference, so it identifies a
-  // destination only if exactly one declaration binds that team. Two make it
-  // ambiguous, and picking the first would route the click at a destination the
-  // key does not identify. Ambiguous falls back to plain text, like undeclared.
   it("renders a bare key as plain text when two declarations bind the same team", async () => {
     const openIssue = vi.fn().mockResolvedValue(undefined);
     useIssuesStore.setState({
@@ -185,18 +175,13 @@ describe("MarkdownContent tracker-issue links", () => {
     );
   });
 
-  // planning#325 — docs/248-declared-issue-trackers req 10's name form in prose. Before this, the matcher
-  // caught only the `planning#321` half of `planning#321` and nothing at all of
-  // `planning#57`, and the gate was a Linear-team-prefix comparison with no
-  // answer for either.
   it("badges a whole name form carrying a Linear key", async () => {
     const openIssue = vi.fn().mockResolvedValue(undefined);
     useIssuesStore.setState({ trackers: [LINEAR_CONNECTED], openIssue });
     useUiStore.setState({ setRightTab: vi.fn(), setMobilePanel: vi.fn() });
 
     render(<MarkdownContent text="Fixed in roadmap#SHI-319 today." />);
-    // The badge covers the WHOLE token — `roadmap#` is inside the pill, not
-    // stranded next to it as plain text.
+
     const badge = screen.getByRole("button", { name: "roadmap#SHI-319" });
     await userEvent.click(badge);
 
@@ -226,8 +211,6 @@ describe("MarkdownContent tracker-issue links", () => {
     );
   });
 
-  // docs/248-declared-issue-trackers req 11 — an undeclared name has no destination to open, so it
-  // degrades to exactly its original text rather than guessing one.
   it("renders an undeclared name form as plain text", () => {
     useIssuesStore.setState({ trackers: [LINEAR_CONNECTED], openIssue: vi.fn() });
 
@@ -238,7 +221,7 @@ describe("MarkdownContent tracker-issue links", () => {
   });
 
   it("renders an ambiguous name form as plain text", () => {
-    // Two declarations under the same name — the resolver refuses to pick one.
+
     useIssuesStore.setState({
       trackers: [GITHUB_PLANNING, { ...GITHUB_PLANNING, id: "github:acme/other" }],
       openIssue: vi.fn(),
@@ -250,9 +233,6 @@ describe("MarkdownContent tracker-issue links", () => {
     expect(screen.getByText(/Tracked as/).textContent).toContain("planning#57");
   });
 
-  // The name form's shape (`<word>#<digits>`) is far more collision-prone than
-  // an uppercase key, so the render-time gate is the only thing keeping ordinary
-  // prose out of a badge.
   it("renders name-shaped prose noise as plain text", () => {
     useIssuesStore.setState({ trackers: [GITHUB_PLANNING], openIssue: vi.fn() });
 
@@ -265,8 +245,7 @@ describe("MarkdownContent tracker-issue links", () => {
   });
 
   it("renders a declared-but-disconnected tracker's reference as plain text", () => {
-    // A badge has no external escape hatch, so a click would open the panel onto
-    // an error. Plain text, same as undeclared.
+
     useIssuesStore.setState({ trackers: [LINEAR_DISCONNECTED], openIssue: vi.fn() });
 
     render(<MarkdownContent text="Fixed in roadmap#SHI-319 today." />);
@@ -282,7 +261,6 @@ describe("MarkdownContent tracker-issue links", () => {
 
     render(<MarkdownContent text="See https://linear.app/shipit-ai/issue/SHI-137 for details." />);
 
-    // One anchor for the whole URL, and no badge minted from the key inside it.
     expect(screen.queryByRole("button")).toBeNull();
     const link = screen.getByRole("link");
     expect(link).toHaveAttribute("href", "https://linear.app/shipit-ai/issue/SHI-137");
@@ -306,17 +284,8 @@ describe("MarkdownContent tracker-issue links", () => {
   });
 });
 
-/**
- * A fenced block is the one place ShipIt still has to guess: a fence carries a
- * label or it carries nothing. The guess is now bounded to the registered
- * subset rather than every grammar highlight.js ships — see
- * `src/client/syntax-highlight.ts` for why that mattered.
- */
 describe("MarkdownContent code blocks", () => {
-  /**
-   * highlight.js escapes `"` as `&quot;`; the DOM serializes it back to a bare
-   * quote. Round-trip the expectation so both sides match on markup.
-   */
+
   function asRendered(html: string | null): string | null {
     if (html === null) return null;
     const el = document.createElement("code");
@@ -338,8 +307,7 @@ describe("MarkdownContent code blocks", () => {
   });
 
   it("renders a fence whose language is outside the subset as plain text", () => {
-    // The deliberate behaviour change: nothing answers to `haskell` any more,
-    // so the block renders uncolored rather than being guessed at as some other
+
     // language. The code itself must survive intact.
     const code = 'main = putStrLn "hi"';
     const { container } = render(<MarkdownContent text={`\`\`\`haskell\n${code}\n\`\`\``} />);

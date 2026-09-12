@@ -55,10 +55,8 @@ import type { ModelInfo } from "../../utils/model-info.js";
  * is therefore moot rather than upheld: there is no mode here to react to.
  */
 
-
 type Panel = "root" | "harness" | "model" | "reasoning" | "role";
 
-/** One root row: an icon, a label, the current value, and a chevron when it drills down. */
 function RootRow({
   icon,
   label,
@@ -71,7 +69,7 @@ function RootRow({
   icon: React.ReactNode;
   label: string;
   value: string;
-  /** Tint the value when it is not the default — currently only a non-auto mode. */
+
   valueAccent?: boolean;
   onSelect?: () => void;
   trailing?: React.ReactNode;
@@ -79,19 +77,13 @@ function RootRow({
 }) {
   return (
     <DropdownMenuItem
-      // ALWAYS prevent default, including on a row with nothing to open. Radix
-      // closes the menu on select, so an inert row (a pinned harness) would
-      // otherwise dismiss the whole thing on a tap that changed nothing — which
-      // reads as a misfire. Rows here navigate or do nothing; none of them commit.
+
       onSelect={(e) => {
         e.preventDefault();
         onSelect?.();
       }}
       // A row with nothing to open is inert, and must SAY so: without this it
-      // keeps enabled menu-item semantics and a screen reader announces a
-      // pinned harness (or a picker locked mid-turn) as actionable, where
-      // activating it silently does nothing. `aria-disabled` rather than
-      // `disabled` so the row stays focusable and its value is still readable.
+
       aria-disabled={onSelect ? undefined : true}
       className={`px-3 py-2 text-sm ${onSelect ? "" : "cursor-default opacity-60"}`}
       data-testid={testId}
@@ -110,7 +102,6 @@ function RootRow({
   );
 }
 
-/** A panel's back header. Returns to the root without closing the menu. */
 function PanelHeader({ title, onBack }: { title: string; onBack: () => void }) {
   return (
     <DropdownMenuItem
@@ -127,7 +118,6 @@ function PanelHeader({ title, onBack }: { title: string; onBack: () => void }) {
   );
 }
 
-/** A leaf choice: label, optional description, and a checkmark when it is current. */
 function ChoiceRow({
   icon,
   label,
@@ -208,17 +198,9 @@ export function ComposerSettingsMenu({
   sessionReasoning?: string;
   modelInfo: ModelInfo | null;
   hasActiveSession?: boolean;
-  /**
-   * "This composer is bound to no session" — Quick Capture, and the new-session
-   * composer before it claims one. Deliberately NOT the same question as
-   * `hasActiveSession`, and the wide row answers them separately for the same
-   * reason: the harness and model pickers take `!sessionId` (a session store the
-   * composer may not own) while reasoning takes `!hasActiveSession`. Reading the
-   * store unconditionally is what made Quick Capture describe whichever session
-   * happened to be active behind it.
-   */
+
   seedFromHistory?: boolean;
-  /** The composer is dead as a whole (docs/257 `disabledReason`) — the anchor does not open. */
+
   disabled?: boolean;
   /**
    * A turn is running, so the harness, model and reasoning cannot change until
@@ -230,47 +212,28 @@ export function ComposerSettingsMenu({
    * rows that must not move are inert.
    */
   pickersLocked?: boolean;
-  /**
-   * docs/272-user-selectable-roles reqs 1, 18 — start this session on the named
-   * role, or take the role off it with `undefined`.
-   */
+
   onRoleChange?: (roleName: string | undefined) => void;
-  /** docs/272 req 5 — the role IN FORCE, which replaces the three rows below it. */
+
   sessionRoleName?: string;
-  /** docs/272 req 15 — "Adjust parameters…" was chosen, so the three rows are back. */
+
   roleParamsRevealed?: boolean;
   onAdjustRoleParameters?: () => void;
-  /** Told when a role is picked, so the caller can fold the parameters away again. */
+
   onRoleSelected?: () => void;
-  /**
-   * docs/272 req 15 — told when one of the three controls a role set was moved
-   * from inside this menu, so a composer with no session bound (which has no
-   * server answer to follow) stops naming the role.
-   */
+
   onLeaveRole?: () => void;
-  /**
-   * docs/272 req 4 — the first turn has run, so no role can be CHOSEN any more.
-   * Not "no role applies": the Role row still names the role in force, and still
-   * opens onto the parameters it set until those have been asked for
-   * (`roleRowOpens`).
-   */
+
   roleLocked?: boolean;
 }) {
-  // Initialised below the row-shape computation, which decides whether a root
-  // exists worth showing at all (req 9).
+
   const [panel, setPanel] = useState<Panel>("root");
   const { roles, hasRoles } = useRolePickerState();
-  // docs/272 req 16 — offered only once the user has a role of their own; a role
-  // still in force keeps its row even if the list has since emptied, or the row
-  // naming the session would vanish while the session still runs as it.
+
   const showRole = !!onRoleChange && (hasRoles || !!sessionRoleName);
-  // req 5 — the three rows the role replaced, folded away until asked for. The
-  // lock is deliberately not in this: it takes the choice of role, not the route
-  // to what the role set (req 4), and it does not put the rows back unasked.
+
   const showParams = !sessionRoleName || roleParamsRevealed;
-  // …which is why the Role row still opens once locked. What is behind it there
-  // is "Adjust parameters…" and no roles; once those have been asked for there is
-  // nothing left, and the row goes inert rather than opening onto an empty panel.
+
   const roleRowOpens =
     !pickersLocked && (!roleLocked || (!!sessionRoleName && !roleParamsRevealed));
   /**
@@ -309,33 +272,22 @@ export function ComposerSettingsMenu({
     agent: harness.displayAgent,
     sessionReasoning,
     onChange: onReasoningChange ?? (() => {}),
-    // `hasActiveSession`, not `seedFromHistory` — the two selectors answer
-    // different questions and the wide row splits them the same way.
+
     seedFromHistory: !hasActiveSession,
   });
 
   // `displayName` is never empty — it answers "loading" and "nothing to pick"
   // itself, so this layout cannot label the second one as the first.
   const modelName = model.displayName;
-  // docs/272-user-selectable-roles req 5, in docs/260's layout — **the anchor carries the ROLE's
-  // name while one is in force**, not the model's.
-  //
+
   // docs/260 req 4 gave the anchor the model name because the model was the most
-  // consequential of the four things behind it. A role outranks it on exactly
-  // that test: it IS the harness, the model and the level, and it is what the
-  // user chose. Leaving the model there put a role's name inside the menu and a
-  // model beside it on the row — two answers to "what does this session run on",
-  // and under a role the model is the less true of the two, since the row it
-  // comes from may not even be readable yet (a warm session's is not).
+
   const anchorName = sessionRoleName ?? modelName;
 
   return (
     <DropdownMenu
       onOpenChange={(open) => {
-        // Always reopen at the menu's OWN starting point — a panel left behind
-        // from last time reads as the menu having lost its place. That start is
-        // the role list rather than the root when the root would hold nothing
-        // but the row leading to it (req 9).
+
         if (!open) setPanel("root");
       }}
     >
@@ -343,8 +295,7 @@ export function ComposerSettingsMenu({
         <button
           type="button"
           disabled={disabled}
-          // req 9 — the anchor shows one name but stands for four settings, so it
-          // says so out loud rather than relying on the icon.
+
           aria-label={
             sessionRoleName
               ? `Settings — role: ${sessionRoleName}`
@@ -356,15 +307,7 @@ export function ComposerSettingsMenu({
               : `Model: ${modelName}. Opens harness, model and reasoning.`
           }
           data-testid="composer-settings-trigger"
-          // `flex-[0_1_auto] min-w-0` is what makes the name the elastic thing in
-          // the row: it is the only item allowed to shrink, so it truncates
-          // before anything else is clipped (req 8). That stays true in both
-          // appearances below — it is layout, and layout is this call site's,
-          // which is exactly why `ROLE_PILL_CLASS` carries none of it.
-          //
-          // docs/272 — under a role the anchor wears the SAME pill the wide row's
-          // control wears. The two had drifted into two faces for one state, on
-          // nothing but the composer's width.
+
           className={`flex flex-[0_1_auto] min-w-0 overflow-hidden ${
             sessionRoleName
               ? ROLE_PILL_CLASS
@@ -374,8 +317,7 @@ export function ComposerSettingsMenu({
           {/* The mark follows the name: under a role the anchor is the role's,
               so it wears the mark that means "role" everywhere else (req 16). */}
           {sessionRoleName ? (
-            // No tertiary tint here: inside the pill the mark takes the pill's
-            // own colour, exactly as it does in the wide row.
+
             <BaseballCapIcon size={ICON_SIZE.SM} className="shrink-0" />
           ) : (
             <SlidersHorizontalIcon
@@ -524,7 +466,7 @@ export function ComposerSettingsMenu({
                     ? { description: unavailable ?? role.description! }
                     : {})}
                   isCurrent={role.name === sessionRoleName}
-                  // req 9 — shown with its reason rather than hidden.
+
                   disabled={Boolean(unavailable)}
                   onSelect={() => {
                     onRoleSelected?.();
@@ -539,9 +481,7 @@ export function ComposerSettingsMenu({
                 <ChoiceRow
                   testId="composer-settings-role-adjust"
                   label="Adjust parameters…"
-                  // req 15 — and the harness is named here deliberately. It pins
-                  // irreversibly at the first message and switching role can
-                  // switch it, so a panel that listed only the model and the
+
                   // level would hide the one consequence the user cannot undo.
                   description="Show the harness, model and level this role set"
                   isCurrent={false}

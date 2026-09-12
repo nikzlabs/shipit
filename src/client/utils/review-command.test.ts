@@ -22,8 +22,6 @@ describe("resolveReviewRequest", () => {
     previewFile: "src/a.ts",
   };
 
-  // docs/293 req 4 — each refusal below used to return from `App.handleSend`
-  // while `MessageInput` cleared the composer anyway, so the attachment went
   // with a message that was never sent. None of the three had a test.
   it("refuses with no session", () => {
     expect(resolveReviewRequest({ ...ready, sessionId: null })).toEqual({

@@ -35,7 +35,6 @@ production worker image refreshes them, by busting a Docker cache layer on every
 deploy:
 
 ```dockerfile
-# docker/Dockerfile.session-worker.prod (lines 31-34) — the ONLY image with the cache-bust
 ARG NPM_GLOBALS_REBUILD=0
 RUN --mount=type=cache,target=/root/.npm \
     echo "rebuild=${NPM_GLOBALS_REBUILD}" \
@@ -43,7 +42,6 @@ RUN --mount=type=cache,target=/root/.npm \
 ```
 
 ```bash
-# deployment/vps/deploy.sh (line 25)
 BUILD_ARGS=("--pull" "--build-arg" "NPM_GLOBALS_REBUILD=$(date +%s)")
 ```
 
@@ -187,7 +185,7 @@ it as a session/repo setting and/or a `shipit.yaml` field, e.g.:
 
 ```yaml
 agent:
-  channel: stable   # stable | latest
+  channel: stable
 ```
 
 This threads through to the adapter spawn (env var picking the binary path).

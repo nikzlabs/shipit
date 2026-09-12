@@ -59,9 +59,9 @@ describe("MobileContentPanels", () => {
 });
 
 describe("mobileChatInFront", () => {
-  // One definition, used by the component here AND by App to decide whether the
+
   // preview pane is on screen. Pinned because a drift between the two would
-  // leave a hidden preview rendering with nothing to show for it.
+
   const base = { showHomeScreen: false, showNewSessionView: false, activePanel: "preview" as const };
 
   it("puts the workspace in front when the preview panel is selected in a session", () => {

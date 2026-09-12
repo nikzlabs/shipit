@@ -14,11 +14,7 @@ export const handleServiceStatus: Handler<WsServiceStatus> = (_ctx, data) => {
     error: data.error,
     ...(data.origin ? { origin: data.origin } : {}),
   });
-  // Drive the dev_server startup step from real service state. This is
-  // what un-sticks the "Installing dependencies..." overlay for compose-
-  // backed previews — the install step finishing alone isn't enough,
-  // since the overlay stays visible until either a step completes or all
-  // steps are cleared.
+
   const steps = usePreviewStore.getState().startupSteps;
   const devStep = steps.find((s) => s.stepId === "dev_server");
   if (devStep) {
@@ -26,15 +22,9 @@ export const handleServiceStatus: Handler<WsServiceStatus> = (_ctx, data) => {
       preview.setStartupStep({ stepId: "dev_server", status: "running" });
     } else if (data.status === "running" && devStep.status !== "complete") {
       preview.setStartupStep({ stepId: "dev_server", status: "complete" });
-      // Clear startup steps shortly after the dev server is up so the
-      // overlay yields the surface to the live preview / services panel
-      // instead of camping out with a row of green checks.
-      //
-      // Re-checked when it FIRES, not only when it was scheduled: 800ms is long
-      // enough to switch sessions, and this would then clear the incoming
-      // session's install overlay on the strength of the outgoing session's dev
+
       // server (review finding). The dispatch-time guard cannot cover a delayed
-      // callback — only the callback can.
+
       setTimeout(() => {
         if (isForeignSession(data.sessionId)) return;
         usePreviewStore.getState().clearStartupSteps();

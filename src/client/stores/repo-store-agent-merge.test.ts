@@ -52,9 +52,7 @@ describe("setRepoAllowAgentMerge", () => {
   });
 
   it("re-reads the server when the request throws, rather than guessing", async () => {
-    // The dangerous sequence: the PATCH commits, the response is lost, `fetch`
-    // rejects. An unconditional revert would show "off" over a granted
-    // repository (cross-agent review finding).
+
     globalThis.fetch = vi.fn(async (url: string, init?: RequestInit) => {
       if ((init?.method ?? "GET") === "PATCH") throw new Error("network");
       return { ok: true, status: 200, json: async () => ({ repos: [repo({ allowAgentMerge: true })] }) } as Response;
@@ -62,7 +60,7 @@ describe("setRepoAllowAgentMerge", () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
 
     await expect(useRepoStore.getState().setRepoAllowAgentMerge(URL, true)).resolves.toBe(false);
-    // The authoritative list wins: the write DID land, and the switch says so.
+
     expect(grant()).toBe(true);
   });
 

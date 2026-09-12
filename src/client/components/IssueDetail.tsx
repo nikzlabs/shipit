@@ -1,22 +1,3 @@
-/**
- * IssueDetail — the inline single-issue view (docs/189).
- *
- * The detail half of the Issues tab's master-detail layout. It renders a
- * fully-hydrated tracker issue — title, status, priority, labels, assignee, and
- * the markdown body — entirely inside ShipIt, so reading an issue never bounces
- * the user to Linear/GitHub. Reached three ways, all routed through
- * `issues-store.openIssue`: a list row, the agent's read card (`IssueRefCard`),
- * and the agent's write card (`IssueWriteCard`).
- *
- * Per the ShipIt product principles (CLAUDE.md §2), the deep link to the tracker
- * is an *escape hatch* that lives ONLY here, in the header — it's no longer the
- * primary affordance on the list rows or the chat cards.
- *
- * Presentational: the connected `IssuesPanel` selects the store state and wires
- * the callbacks. While the fresh fetch is in flight the view paints from the
- * seed fields the opener already had (`selection`), so a click feels instant.
- */
-
 // eslint-disable-next-line no-restricted-imports -- useEffect: scroll-to + highlight an anchored comment once the async thread lands (browser API sync + fade timer)
 import { useEffect, useRef, useState } from "react";
 import {
@@ -62,62 +43,32 @@ import { Spinner } from "./Spinner.js";
 
 export interface IssueDetailProps {
   selection: IssueSelection;
-  /** Fully-hydrated issue from `GET /api/issue`; null until the fetch lands. */
   detail: TrackerIssue | null;
   loading: boolean;
   error: string | null;
-  /** Active tracker info, for the "Open in {label}" deep link. */
   info?: TrackerInfo;
-  /** Whether a repo is available to seed a session on. */
   canStart: boolean;
-  /**
-   * Repos offered by the Start-session repo picker (docs/236). Two or more
-   * turns the footer button into a split control.
-   */
   repos: RepoInfo[];
-  /** Repo a plain Start-session click lands in — checkmarked in the picker. */
   targetRepoUrl?: string;
-  /** The open issue's comment thread; null until the fetch lands. */
   comments: TrackerComment[] | null;
   commentsLoading: boolean;
   commentsError: string | null;
-  /**
-   * Tracker-native id of a comment to scroll to + highlight once the thread
-   * lands (planning#105) — e.g. the comment the agent just posted, opened from its
-   * provenance card. Consumed (cleared via `onAnchorConsumed`) after anchoring.
-   */
   anchorCommentId?: string;
-  /** Called once the anchored comment has been scrolled to, to clear the anchor. */
   onAnchorConsumed?: () => void;
-  /**
-   * The tracker's assignable statuses, as a fallback for the inline status
-   * editor when the hydrated issue hasn't supplied its own `availableStatuses`
-   * yet (docs/191).
-   */
   availableStatuses: IssueStatusRef[];
-  /** Whether priority is editable for this tracker (Linear yes, GitHub no). */
   canEditPriority: boolean;
-  /** The tracker's full pickable label set, for the on-page label editor. */
   availableLabels: IssueLabel[];
-  /** Whether labels are editable for this tracker (both Linear and GitHub). */
   canEditLabels: boolean;
   onBack: () => void;
   onRefresh: () => void;
-  /** Seed a session from this issue; `repoUrl` overrides the default target repo. */
   onStartSession: (issue: TrackerIssue, repoUrl?: string) => void;
-  /** Post a user comment; resolves to an error message, or null on success. */
   onPostComment: (body: string) => Promise<string | null>;
-  /** Set the open issue's status; resolves to an error message, or null. */
   onSetStatus: (status: string) => Promise<string | null>;
-  /** Set the open issue's priority; resolves to an error message, or null. */
   onSetPriority: (level: IssuePriorityLevel) => Promise<string | null>;
-  /** Lazily fetch the tracker's pickable label set (on editor open). */
   onFetchLabels: () => void;
-  /** Replace the open issue's full label set; resolves to an error, or null. */
   onSetLabels: (names: string[]) => Promise<string | null>;
 }
 
-/** Status-NAME text color by workflow-state type (the dot uses the tracker color). */
 function statusTextClass(type?: string): string {
   switch (type) {
     case "completed":
@@ -171,20 +122,14 @@ export function IssueDetail({
   onFetchLabels,
   onSetLabels,
 }: IssueDetailProps) {
-  // Prefer the hydrated issue; fall back to the seed fields the opener supplied
-  // so the header/title paint before the fetch resolves.
   const title = detail?.title ?? selection.title ?? selection.identifier;
   const url = detail?.url ?? selection.url;
   const trackerLabel = info?.label ?? (isGitHubTracker(selection.tracker) ? "GitHub" : "Linear");
-  // Detail body sits on the primary surface; adapt status/priority colors to it.
   const surfaceLum = useSurfaceLuminance("--color-bg-primary");
-  // A card-opened issue with no seed and no detail yet has nothing to show but
-  // the identifier — render the skeleton until the first fetch lands.
   const showSkeleton = loading && !detail;
 
   return (
     <div className="flex flex-col h-full animate-in fade-in-0 duration-200">
-      {/* Header: back · identifier · external escape hatch. */}
       <div className="flex items-center gap-2 px-3 h-11 shrink-0 border-b border-(--color-border-secondary) bg-(--color-bg-secondary)">
         <Button
           variant="ghost"
@@ -243,7 +188,6 @@ export function IssueDetail({
           <IssueDetailSkeleton />
         ) : (
           <article className="px-5 py-5">
-            {/* Status · priority strip — both inline-editable (docs/191). */}
             <div className="flex items-center flex-wrap gap-3 mb-3">
               {detail?.status && (
                 <IssueStatusEditor
@@ -267,15 +211,10 @@ export function IssueDetail({
                 ))}
             </div>
 
-            {/* Title. */}
             <h1 className="text-xl font-semibold leading-snug text-(--color-text-primary) mb-4">
               {title}
             </h1>
 
-            {/* Assignee + labels meta. The labels row is editable (pick from the
-                tracker's existing set): chips carry a remove ✕, and an inline
-                editor adds/removes against the pickable set. The row shows even
-                with no labels when editing is allowed, so the user can add one. */}
             {detail && (Boolean(detail.assignee) || canEditLabels || (detail.labels?.length ?? 0) > 0) && (
               <div className="flex flex-col gap-2.5 pb-4 mb-4 border-b border-(--color-border-secondary)">
                 {detail.assignee && (
@@ -340,14 +279,12 @@ export function IssueDetail({
               </div>
             )}
 
-            {/* Body. */}
             {detail?.description?.trim() ? (
               <MarkdownContent text={detail.description} />
             ) : (
               <p className="text-sm text-(--color-text-tertiary) italic">No description.</p>
             )}
 
-            {/* Comment thread + composer (docs/189 follow-up). */}
             <IssueComments
               comments={comments}
               loading={commentsLoading}
@@ -360,7 +297,6 @@ export function IssueDetail({
         )}
       </div>
 
-      {/* Footer action — seed a session from this issue (mirrors the list row). */}
       {detail && (
         <div className="shrink-0 flex justify-end border-t border-(--color-border-secondary) bg-(--color-bg-secondary) px-4 py-2.5">
           <StartSessionButton
@@ -379,7 +315,6 @@ export function IssueDetail({
   );
 }
 
-/** Round avatar with a single-letter fallback when the tracker omits an image. */
 function CommentAvatar({ name, avatarUrl }: { name: string; avatarUrl?: string }) {
   return <Avatar name={name} avatarUrl={avatarUrl} alt="" />;
 }
@@ -390,9 +325,7 @@ function IssueCommentItem({
   registerRef,
 }: {
   comment: TrackerComment;
-  /** Briefly flash the row when it's the anchored comment (planning#105). */
   highlighted?: boolean;
-  /** Register the row element so the thread can scroll it into view. */
   registerRef?: (el: HTMLLIElement | null) => void;
 }) {
   const name = comment.author?.name ?? "Unknown";
@@ -420,12 +353,6 @@ function IssueCommentItem({
   );
 }
 
-/**
- * The issue's comment thread + a composer to post one inline (docs/189
- * follow-up). Mirrors the PR detail tab's Conversation section: the user reads
- * and replies without leaving ShipIt. A posted comment is the user's own action,
- * so it lands in the thread directly (no chat provenance card).
- */
 function IssueComments({
   comments,
   loading,
@@ -444,14 +371,10 @@ function IssueComments({
   const [draft, setDraft] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [postError, setPostError] = useState<string | null>(null);
-  // Per-comment row elements, so an anchored comment can be scrolled into view.
   const itemRefs = useRef(new Map<string, HTMLLIElement>());
   const [highlightedId, setHighlightedId] = useState<string | null>(null);
 
-  // Anchor to a specific comment once the thread lands (planning#105). Fires when
-  // the anchor and the fetched thread are both present; scrolls the row into
-  // view, flashes it, and consumes the anchor (whether or not the comment is in
-  // the list — a stale/paged id mustn't keep re-firing on every thread update).
+  // Consume stale anchors too, or each thread update retries them forever.
   // eslint-disable-next-line no-restricted-syntax -- browser API sync: scrollIntoView, keyed on the async-arriving thread
   useEffect(() => {
     if (!anchorCommentId || comments === null) return;
@@ -462,9 +385,7 @@ function IssueComments({
     setHighlightedId(anchorCommentId);
   }, [anchorCommentId, comments, onAnchorConsumed]);
 
-  // Fade the highlight after a beat. Separate from the scroll effect so
-  // consuming the anchor (which flips `anchorCommentId` to undefined) doesn't
-  // tear down the timer before it fires.
+  // Keep this separate so consuming the anchor does not cancel the fade timer.
   // eslint-disable-next-line no-restricted-syntax -- browser API: highlight-fade timer with cleanup
   useEffect(() => {
     if (!highlightedId) return;
@@ -486,7 +407,6 @@ function IssueComments({
     setDraft("");
   };
 
-  // null = not fetched yet (show a hint); [] = genuinely empty.
   const loadingThread = comments === null && loading;
   const list = comments ?? [];
 
@@ -553,7 +473,6 @@ function IssueComments({
   );
 }
 
-/** Loading placeholder for a card-opened issue we have no seed for yet. */
 function IssueDetailSkeleton() {
   return (
     <div className="px-5 py-5 animate-pulse" data-testid="issue-detail-skeleton">

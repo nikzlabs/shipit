@@ -5,7 +5,6 @@ import { useSettingsStore } from "../stores/settings-store.js";
 import { resetAutoRefreshThrottle } from "./SubscriptionLimitsBadge.js";
 import type { SubscriptionLimits } from "../../server/shared/types.js";
 
-/** docs/150 — wrap snapshots into the provider → route → limits wire shape. */
 function routed(...snaps: SubscriptionLimits[]): Record<string, SubscriptionLimits> {
   return Object.fromEntries(snaps.map((snap) => [snap.routeId, snap]));
 }
@@ -65,8 +64,7 @@ describe("MobileStatusPanel", () => {
   });
 
   it("refreshes subscription usage as soon as the dropdown opens", async () => {
-    // The panel is the popover's content, so mounting it *is* the open gesture
-    // — the user shouldn't need a second tap on the refresh glyph.
+
     render(
       <MobileStatusPanel
         subscriptionLimits={{ "anthropic:sub": routed(makeSnap()) }}
@@ -114,14 +112,6 @@ describe("MobileStatusPanel", () => {
   });
 });
 
-/**
- * docs/274 req 16 — the heading has to follow the pill, not the account list.
- *
- * A subscription ShipIt can read no quota for renders no pill (xAI publishes no
- * usage API), so a panel that asked "any connected account?" put a
- * "Subscription" heading above an empty box — the same empty-affordance failure
- * as the blank pill, one level up.
- */
 describe("MobileStatusPanel with a no-quota subscription", () => {
   const now = Date.now();
 
@@ -137,7 +127,7 @@ describe("MobileStatusPanel with a no-quota subscription", () => {
       />,
     );
     expect(screen.queryByText("Subscription")).toBeNull();
-    // The panel is not empty — it still has the section it does have data for.
+
     expect(screen.getByText("Uptime")).toBeInTheDocument();
   });
 

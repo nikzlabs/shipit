@@ -1,8 +1,4 @@
-/**
- * docs/211 — sandbox sessions form their own pinned sidebar group, keyed on
- * `kind === "sandbox"` and kept OUT of the `remoteUrl ?? ""` orphan bucket so
- * unrelated no-remote sessions aren't lumped in with them.
- */
+
 
 import { describe, it, expect } from "vitest";
 import { computeRepoGroups } from "./useSessionGrouping.js";
@@ -32,21 +28,21 @@ describe("computeRepoGroups — sandbox group", () => {
     const sandbox = groups.find((g) => g.kind === "sandbox");
     expect(sandbox).toBeDefined();
     expect(sandbox?.sessions.map((s) => s.id)).toEqual(["sb1"]);
-    // Sandbox group is pinned first.
+
     expect(groups[0].kind).toBe("sandbox");
   });
 
   it("does NOT lump an ordinary no-remote (orphan) session into the sandbox group", () => {
     const sessions = [
       session({ id: "sb1", kind: "sandbox" }),
-      // A repo-less standalone session — empty remoteUrl, but NOT a sandbox.
+
       session({ id: "orphan1", remoteUrl: "" }),
     ];
     const groups = computeRepoGroups([], sessions);
     const sandbox = groups.find((g) => g.kind === "sandbox");
     const orphan = groups.find((g) => g.kind === "orphan");
     expect(sandbox?.sessions.map((s) => s.id)).toEqual(["sb1"]);
-    // The orphan session lands in its own "Local sessions" bucket, not sandbox.
+
     expect(orphan?.sessions.map((s) => s.id)).toEqual(["orphan1"]);
   });
 

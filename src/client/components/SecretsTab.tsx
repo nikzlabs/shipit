@@ -24,42 +24,19 @@ export interface SecretsTabProps {
   onSecretsLoad?: (repoUrl: string) => Promise<string[]>;
 }
 
-/**
- * Settings → Secrets tab. Renders three sections:
- *
- *   1. **Declared secrets** — from `x-shipit-secrets` in the active repo's
- *      compose file (live via the `secrets_status` WS message). Shows the
- *      description, required indicator, consumer-service chips, and an
- *      `agent`/`platform` badge when applicable. Platform-sourced rows are
- *      read-only.
- *   2. **Custom secrets** — env vars the user has saved but no compose
- *      service declared. They aren't injected anywhere (declaring them is
- *      the wiring), but we keep them visible so the user can clean up
- *      stale leftovers.
- *   3. A "+ Add custom variable" affordance for ad-hoc env vars.
- *
- * The Save button writes the union of declared values + custom entries
- * back to the repo's secret store via `PUT /api/secrets`.
- */
 export function SecretsTab({ repoUrl, onSecretsSave, onSecretsLoad }: SecretsTabProps) {
-  // Live snapshot of declared secrets from the running compose stack.
+
   const declared = usePreviewStore((s) => s.secrets.declared);
   const missingByService = usePreviewStore((s) => s.secrets.missingByService);
 
-  // Names of secrets that already have a stored value. Loaded once when the
   // tab opens. The browser NEVER receives the values themselves — set secrets
-  // render as a masked "saved" placeholder, and we only send back the values
-  // the user actually types (see `save`).
+
   const [existingKeys, setExistingKeys] = useState<string[]>([]);
-  // Values the user typed this session, keyed by env var name. Empty on load;
-  // a key present here (non-empty) means "overwrite with this new value".
+
   const [values, setValues] = useState<Record<string, string>>({});
-  // Declared keys the user explicitly cleared (the declared rows have no
-  // remove button — Clear marks a set value for deletion).
+
   const [cleared, setCleared] = useState<Set<string>>(new Set());
-  // Custom (user-added or undeclared-but-stored) entries. `existing` marks a
-  // row backed by a stored value so a blank input means "keep" rather than
-  // "empty". `null` until first edit, then the editable source of truth.
+
   const [customRows, setCustomRows] = useState<
     { key: string; value: string; existing: boolean }[] | null
   >(null);
@@ -67,16 +44,7 @@ export function SecretsTab({ repoUrl, onSecretsSave, onSecretsLoad }: SecretsTab
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const loadedRef = useRef(false);
-  /**
-   * The pending "Saved" confirmation timer.
-   *
-   * Held in a ref so it can be cancelled. Left dangling, its callback runs
-   * `setSaving`/`setSaved` on an unmounted component — harmless in a browser,
-   * fatal in a test worker, where the timer outlives the jsdom teardown and
-   * React's scheduler dereferences a `window` that no longer exists. That
-   * surfaced as a red CI run whose every test had passed
-   * (`ReferenceError: window is not defined`, UNHANDLED ERRORS).
-   */
+
   const savedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // eslint-disable-next-line no-restricted-syntax -- cancel the confirmation timer when the tab goes away
@@ -84,7 +52,6 @@ export function SecretsTab({ repoUrl, onSecretsSave, onSecretsLoad }: SecretsTab
     if (savedTimerRef.current) clearTimeout(savedTimerRef.current);
   }, []);
 
-  // Lazy-load on first render. Subsequent re-renders skip.
   if (!loadedRef.current && repoUrl && onSecretsLoad) {
     loadedRef.current = true;
     // eslint-disable-next-line no-restricted-syntax -- fire-and-forget in render
@@ -98,28 +65,13 @@ export function SecretsTab({ repoUrl, onSecretsSave, onSecretsLoad }: SecretsTab
 
   const declaredNames = new Set(declared.map((d) => d.name));
   const existingSet = new Set(existingKeys);
-  // Every stored key becomes a candidate custom row. Values are unknown to the
-  // browser, hence blank with `existing: true`. Declared keys are filtered out
-  // below at RENDER time, not here — see the note on `pinnedCustomRows`.
+
   const inferredCustomRows = existingKeys.map((key) => ({ key, value: "", existing: true }));
-  // A stored key belongs in the custom section only while no compose service
-  // declares it — and `declared` is live, so that can change under an open
-  // panel in both directions (a late `secrets_status`, or the compose file
-  // gaining/losing an `x-shipit-secrets` entry).
-  //
-  // So the declared filter is applied at RENDER time and nowhere else. State
-  // (`customRows`, and the inferred list it's seeded from) always holds every
+
   // stored key. That's load-bearing rather than tidy: the first edit pins
-  // `customRows`, and a key omitted from that pin is gone for good — if
-  // `declared` later drops it, it's in neither section, so Save puts it in
-  // neither `set` nor `keep` and the server DELETES the stored secret. Kept in
-  // state, it just reappears.
-  //
-  // Only rows backed by a stored value (`existing`) are hidden. A blank row the
-  // user is still filling in stays put whatever they name it.
+
   const pinnedCustomRows = customRows ?? inferredCustomRows;
-  // Rendered position → index into `pinnedCustomRows`, so the row handlers
-  // (which receive the rendered index) can write the right element back.
+
   const visibleCustomIdx = pinnedCustomRows
     .map((_, i) => i)
     .filter((i) => !(pinnedCustomRows[i].existing && declaredNames.has(pinnedCustomRows[i].key)));
@@ -127,7 +79,7 @@ export function SecretsTab({ repoUrl, onSecretsSave, onSecretsLoad }: SecretsTab
 
   function setDeclaredValue(name: string, value: string) {
     setValues((v) => ({ ...v, [name]: value }));
-    // Typing a value supersedes a prior Clear.
+
     setCleared((c) => {
       if (!c.has(name)) return c;
       const next = new Set(c);
@@ -142,11 +94,6 @@ export function SecretsTab({ repoUrl, onSecretsSave, onSecretsLoad }: SecretsTab
     setCleared((c) => new Set(c).add(name));
     setSaved(false);
   }
-
-  // `idx` on all three row handlers is a RENDERED position, and the rendered
-  // list is filtered — so each maps through `visibleCustomIdx` before touching
-  // state. Indexing `pinnedCustomRows` directly would edit or remove the wrong
-  // row by however many keys have moved into the declared section.
 
   function setCustomKey(idx: number, key: string) {
     const next = [...pinnedCustomRows];
@@ -178,15 +125,12 @@ export function SecretsTab({ repoUrl, onSecretsSave, onSecretsLoad }: SecretsTab
   function save() {
     if (!repoUrl || !onSecretsSave) return;
     setSaving(true);
-    // `set` = values the user typed; `keep` = existing keys to preserve as-is.
-    // Anything stored but in neither list is deleted server-side.
+
     const set: Record<string, string> = {};
     const keep: string[] = [];
 
-    // Declared rows (guaranteed-unique names).
     for (const d of declared) {
-      // Skip platform-sourced rows — they're not user-configurable. A row a
-      // plugin also claims is NOT one of them (docs/262 req 23): it needs a
+
       // real value, and the row is editable, so it must save like any other.
       if (isPlatformProvided(d)) continue;
       const typed = values[d.name];
@@ -198,7 +142,6 @@ export function SecretsTab({ repoUrl, onSecretsSave, onSecretsLoad }: SecretsTab
       // else: never set, or explicitly cleared → omit → deleted.
     }
 
-    // Custom rows (user-keyed), with empty-key guard.
     for (const row of customRowsToShow) {
       const k = row.key.trim();
       if (!k) continue;
@@ -207,12 +150,12 @@ export function SecretsTab({ repoUrl, onSecretsSave, onSecretsLoad }: SecretsTab
       } else if (row.existing && existingSet.has(k)) {
         keep.push(k);
       }
-      // else: new blank row → omit.
+
     }
 
     onSecretsSave(repoUrl, { set, keep });
     // Replace any in-flight confirmation so two quick saves can't race to
-    // decide whether the button reads "Saving..." or "Saved".
+
     if (savedTimerRef.current) clearTimeout(savedTimerRef.current);
     savedTimerRef.current = setTimeout(() => {
       savedTimerRef.current = null;

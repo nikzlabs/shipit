@@ -12,7 +12,6 @@ describe("useMediaQuery", () => {
     listeners = new Map();
     matchesMap = new Map();
 
-    // Mock window.matchMedia
     Object.defineProperty(window, "matchMedia", {
       writable: true,
       value: vi.fn().mockImplementation((query: string) => {
@@ -33,7 +32,6 @@ describe("useMediaQuery", () => {
     });
   });
 
-  /** Simulate a media query change by calling all registered listeners. */
   function fireChange(query: string, matches: boolean) {
     matchesMap.set(query, matches);
     for (const handler of listeners.get(query) ?? []) {

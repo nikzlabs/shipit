@@ -6,30 +6,22 @@ import { RepoColorPicker } from "./RepoColorPicker.js";
 import { AgentPermissions } from "./AgentPermissions.js";
 import type { SecretsSavePayload } from "./SecretsTab.js";
 
-// On mobile the tab list collapses from a vertical sidebar into a horizontal
-// scrollable strip — mirrors Settings.tsx so the two dialogs read alike.
 const mobileTabClass = "max-md:w-auto max-md:whitespace-nowrap max-md:rounded-md max-md:px-3 max-md:py-1.5 max-md:text-xs";
 
 type Tab = "deployments" | "secrets" | "appearance";
 
 export interface ProjectSettingsProps {
-  /** Repo these settings apply to. Drives the per-repo secret store. */
+
   repoUrl: string;
-  /** Human-readable repo name shown in the dialog title. */
+
   repoName: string;
-  /** Which tab to open on. Defaults to Secrets — the actionable tab. */
+
   initialTab?: Tab;
   onSecretsSave?: (repoUrl: string, payload: SecretsSavePayload) => void;
   onSecretsLoad?: (repoUrl: string) => Promise<string[]>;
   onClose: () => void;
 }
 
-/**
- * Per-repo Project Settings dialog — deployments and secrets. Split out of the
- * workspace-wide Settings dialog (feature: project settings per repo) so these
- * repo-scoped controls are reached from the per-repo menu in the sidebar
- * instead of being mixed in with account/workspace settings.
- */
 export function ProjectSettings({
   repoUrl,
   repoName,

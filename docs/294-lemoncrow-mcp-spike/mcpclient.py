@@ -4,7 +4,6 @@ import json, os, subprocess, sys, threading, queue, time
 
 LC = "/persist/lc/venv/bin/lc"
 
-
 class McpStdio:
     def __init__(self, cmd, env=None, cwd=None):
         self.p = subprocess.Popen(
@@ -60,12 +59,10 @@ class McpStdio:
         except Exception:
             self.p.kill()
 
-
 def connect(cwd, profile="core"):
     c = McpStdio([LC, "mcp", "--host", "claude"],
                  env={"LEMONCROW_MCP_TOOL_PROFILE": profile,
-                      # LemonCrow calls tiktoken for cl100k_base at search time.
-                      # Without a pre-built cache it fails closed on egress.
+
                       "TIKTOKEN_CACHE_DIR": os.environ.get(
                           "TIKTOKEN_CACHE_DIR", "/persist/tkcache")},
                  cwd=cwd)
@@ -76,7 +73,6 @@ def connect(cwd, profile="core"):
     })
     c.call("notifications/initialized", notify=True)
     return c, init
-
 
 if __name__ == "__main__":
     cwd = sys.argv[1] if len(sys.argv) > 1 else "/workspace"

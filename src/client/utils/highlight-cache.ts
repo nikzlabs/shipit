@@ -62,7 +62,7 @@ import { highlightCode } from "../syntax-highlight.js";
 
 interface Entry {
   language: string;
-  /** `null` is a real answer — an unregistered language renders plain — so it caches. */
+
   html: string | null;
 }
 
@@ -87,7 +87,6 @@ const MAX_CHARS = 1_000_000;
 const cache = new Map<string, Entry>();
 let cachedChars = 0;
 
-/** Both halves of an entry are retained, so both count against the budget. */
 function weigh(code: string, entry: Entry): number {
   // `?? 0` because `html` is legitimately null for an unregistered language.
   return code.length + (entry.html?.length ?? 0);
@@ -108,16 +107,10 @@ function drop(code: string): void {
   cache.delete(code);
 }
 
-/**
- * {@link highlightCode}, reusing an earlier result for the same text and
- * language. Same arguments, same return — including `null` for a language
- * nothing answers to.
- */
 export function highlightCached(code: string, language: string): string | null {
   const hit = cache.get(code);
   if (hit?.language === language) {
-    // Refresh recency so a block that is still being read is not evicted by a
-    // burst of blocks scrolling past it.
+
     cache.delete(code);
     cache.set(code, hit);
     return hit.html;
@@ -125,9 +118,6 @@ export function highlightCached(code: string, language: string): string | null {
 
   const html = highlightCode(code, language);
 
-  // `drop` before `set`, not `set` alone: overwriting an existing key leaves it
-  // at its original position in the Map's insertion order, so a freshly
-  // recomputed entry would stay the oldest and be the next one evicted.
   drop(code);
   const entry: Entry = { language, html };
   cache.set(code, entry);

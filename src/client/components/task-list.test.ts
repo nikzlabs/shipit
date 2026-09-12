@@ -18,7 +18,6 @@ function msg(
   return { role: "assistant", text, toolUse, toolResults };
 }
 
-/** What the CLI returns from a TaskCreate — the only place the id appears. */
 function created(id: string, subject: string): string {
   return `Task #${id} created successfully: ${subject}`;
 }
@@ -57,8 +56,7 @@ describe("foldTaskList", () => {
   });
 
   it("gives a create still awaiting its result a provisional id", () => {
-    // Mid-turn: the call is on the wire, the result is not. The row has to show
-    // now, and settle onto its real id when the result lands.
+
     const inFlight = foldTaskList([msg([tool("t1", "TaskCreate", { subject: "Ship it" })])]);
     expect(inFlight?.tasks).toEqual([{ id: "pending-t1", subject: "Ship it", status: "pending" }]);
 
@@ -105,8 +103,7 @@ describe("foldTaskList", () => {
   });
 
   it("adopts an update for a task whose create is no longer in the transcript", () => {
-    // After a compaction the create can be gone while the update survives.
-    // Dropping it would silently shrink the list.
+
     const state = foldTaskList([
       msg([tool("t1", "TaskUpdate", { taskId: "9", subject: "Survivor", status: "completed" })]),
     ]);
@@ -118,7 +115,7 @@ describe("foldTaskList", () => {
   });
 
   it("still folds a legacy TodoWrite list", () => {
-    // Sessions persisted before CLI 2.1.220 have TodoWrite in their history.
+
     const state = foldTaskList([
       msg([tool("t1", "TodoWrite", {
         todos: [
@@ -144,8 +141,7 @@ describe("foldTaskList", () => {
   });
 
   it("patches by item id on a TodoWrite with merge: true, Grok's declarative-with-patch form", () => {
-    // The docs/272 grok tour's exact shape (planning#437): one full-list call
-    // with item ids, then merge calls carrying only {id, status}.
+
     const state = foldTaskList([
       msg([tool("t1", "TodoWrite", {
         todos: [
@@ -159,7 +155,7 @@ describe("foldTaskList", () => {
         merge: true,
       })]),
     ]);
-    // Subjects survive the content-less patch; only the statuses move.
+
     expect(state?.tasks).toEqual([
       { id: "1", subject: "Read package.json", status: "completed" },
       { id: "2", subject: "Run the probe", status: "in_progress" },
@@ -179,7 +175,7 @@ describe("foldTaskList", () => {
   });
 
   it("skips a content-less patch for a row it never saw, and does not move the anchor for it", () => {
-    // The compaction stance TaskUpdate takes: an id alone renders as a blank
+
     // line, so an orphan patch must neither add a row nor drag the panel down.
     const state = foldTaskList([
       msg([tool("t1", "TodoWrite", { todos: [{ id: "1", content: "Real", status: "pending" }], merge: false })]),
@@ -210,8 +206,7 @@ describe("foldTaskList", () => {
   });
 
   it("finds a result recorded on a later message than its call", () => {
-    // Tool results land in whichever message group is open when they arrive,
-    // which is not always the one carrying the call.
+
     const state = foldTaskList([
       msg([tool("t1", "TaskCreate", { subject: "Split" })]),
       msg([], [result("t1", created("4", "Split"))]),
@@ -220,7 +215,7 @@ describe("foldTaskList", () => {
   });
 
   it("ignores a call the CLI rejected", () => {
-    // A denied or failed call changed nothing, so neither may the panel.
+
     const state = foldTaskList([
       msg([tool("t1", "TaskCreate", { subject: "Real" })], [result("t1", created("1", "Real"))]),
       msg([tool("t2", "TaskCreate", { subject: "Phantom" })],
@@ -233,8 +228,7 @@ describe("foldTaskList", () => {
   });
 
   it("does not move the anchor for an update that changes nothing yet", () => {
-    // Mid-stream a TaskUpdate has only its taskId. Treating that as a change
-    // would drag the panel down the transcript before anything had moved.
+
     const state = foldTaskList([
       msg([tool("t1", "TaskCreate", { subject: "One" })], [result("t1", created("1", "One"))]),
       msg([tool("t2", "TaskUpdate", { taskId: "1" })]),

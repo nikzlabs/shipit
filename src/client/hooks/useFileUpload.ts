@@ -1,14 +1,4 @@
-/**
- * useFileUpload — manages file upload API calls.
- * All upload state lives in the file store (Zustand) so it survives page reloads.
- * Pending uploads (not yet sent in a message) are shown as input chips.
- *
- * Files attached before a session exists (e.g. while on /{slug}/new before
- * claimSession resolves) show a placeholder chip immediately; the POST runs as
- * soon as a sessionId arrives. The bytes waiting for it live beside the store
- * (`retainUploadBytes`, docs/293), not in this hook — see the resume pass below
- * for why that difference matters.
- */
+
 
 // eslint-disable-next-line no-restricted-imports -- useEffect: resume uploads when sessionId becomes available
 import { useCallback, useEffect } from "react";
@@ -56,16 +46,13 @@ export async function deleteUploadFromServer(sessionId: string, uploadPath: stri
     if (!res.ok) {
       console.warn(`[upload] DELETE ${uploadPath} failed: ${res.status} ${res.statusText}`);
       // A definite refusal changed nothing, so it must NOT spend a listing's
-      // refetch budget — four of those in a row would leave the panel empty.
+
       return;
     }
-    // docs/294 req 1 — bumped on COMPLETION, not before the request: the point
-    // is "the server's set is now different", and a listing that started while
-    // the DELETE was still open would otherwise pass its freshness check with a
-    // file that has since gone.
+
     noteUploadsChanged(sessionId);
   } catch (err: unknown) {
-    // Unknown outcome — the delete may well have landed. Invalidate.
+
     console.warn("[upload] DELETE failed:", err);
     noteUploadsChanged(sessionId);
   }
@@ -74,7 +61,6 @@ export async function deleteUploadFromServer(sessionId: string, uploadPath: stri
 export function useFileUpload(sessionId: string | undefined) {
   const pendingUploads = useFileStore(useShallow((s) => s.sessionUploads.filter((u) => u.pending)));
 
-  /** POST a batch of files; updates the existing UploadItems with server response. */
   const uploadToServer = useCallback(async (sid: string, files: File[], items: UploadItem[]) => {
     const formData = new FormData();
     for (const file of files) {
@@ -100,14 +86,9 @@ export function useFileUpload(sessionId: string | undefined) {
       for (let i = 0; i < items.length; i++) {
         const uploaded = data.files[i];
         if (uploaded) {
-          // docs/293 req 7 / docs/294 req 7 — the chip may be gone for two very
-          // different reasons, and only one of them means "delete this file":
-          // the user dismissed it while it was uploading, or `switchSession`
+
           // cleared every chip when they went elsewhere. The chip list cannot
-          // tell those apart, and neither can the current session id — A→B→A
-          // restores the session without restoring the chip, and a Remove
-          // followed by a switch loses the removal. So the dismissal is recorded
-          // against the upload's own id when it happens.
+
           if (wasUploadDismissed(items[i].id)) {
             releaseUploadBytes(items[i].id);
             forgetUploadDismissal(items[i].id);
@@ -116,21 +97,15 @@ export function useFileUpload(sessionId: string | undefined) {
             continue;
           }
           if (!st.sessionUploads.some((u) => u.id === items[i].id)) {
-            // Gone without being dismissed: the user left the session. Keep the
-            // file and remember it as unsent, so coming back shows the chip.
+
             releaseUploadBytes(items[i].id);
             clearUploadTombstone(uploaded.path);
             addDraftUpload(sid, uploaded.path);
             continue;
           }
-          // A fresh upload supersedes any stale tombstone for its path. Without
-          // this, re-uploading a same-named file (server reuses the name via
-          // deduplicateFilename) leaves a prior delete's tombstone in place, and
-          // hydrateUploads filters the new file out on the next reconnect.
+
           clearUploadTombstone(uploaded.path);
-          // Record the attached-but-unsent path so the chip survives a reload /
-          // session switch (mirrors how the composer's draft text is persisted).
-          // hydrateUploads self-heals this set against chat history, so a path
+
           // left here after the file is sent never resurrects a chip.
           addDraftUpload(sid, uploaded.path);
           st.updateSessionUpload(items[i].id, {
@@ -140,7 +115,7 @@ export function useFileUpload(sessionId: string | undefined) {
             size: uploaded.size,
             progress: 100,
           });
-          // The bytes are on the server now — a retry would re-POST a duplicate.
+
           releaseUploadBytes(items[i].id);
         }
       }
@@ -152,24 +127,17 @@ export function useFileUpload(sessionId: string | undefined) {
       }
     } finally {
       for (const item of items) markUploadSettled(item.id);
-      // Every outcome, not just success: a rejected batch may have written files
-      // and rolled them back (`api-routes-files.ts`), and a listing that saw
-      // those temporary files is just as stale as one that missed a new file.
+
       noteUploadsChanged(sid);
     }
   }, []);
 
-  /**
-   * Add files. Placeholder chips appear immediately; the upload POST runs as
-   * soon as a session exists (buffered if not).
-   */
   const uploadFiles = useCallback(
     async (files: File[]) => {
       if (files.length === 0) return;
 
       const store = useFileStore.getState();
 
-      // Create placeholder items (with thumbnail preview for images)
       const items: UploadItem[] = files.map((f) => ({
         id: `upload-${++uploadIdCounter}`,
         name: f.name,
@@ -186,7 +154,6 @@ export function useFileUpload(sessionId: string | undefined) {
         retainUploadBytes(items[i].id, files[i]);
       }
 
-      // Read image files as data URLs for stable display in chat messages
       for (let i = 0; i < files.length; i++) {
         if (files[i].type.startsWith("image/")) {
           const reader = new FileReader();
@@ -198,9 +165,6 @@ export function useFileUpload(sessionId: string | undefined) {
         }
       }
 
-      // No session yet (the /{slug}/new view before claimSession resolves): the
-      // bytes are already retained above and the items read "uploading", which is
-      // exactly what the resume pass below looks for.
       if (!sessionId) return;
 
       await uploadToServer(sessionId, files, items);
@@ -248,18 +212,15 @@ export function useFileUpload(sessionId: string | undefined) {
     }
   }, [sessionId, uploadToServer]);
 
-  /** Remove a pending upload by index and delete the file from the server. */
   const removeUpload = useCallback((index: number) => {
     const item = pendingUploads[index];
     if (!item) return;
     if (item.previewUrl) URL.revokeObjectURL(item.previewUrl);
-    // docs/294 req 7 — say so now, while we know it was the user. The upload may
-    // still be in flight, and its completion has no other way to find out.
+
     noteUploadDismissed(item.id);
     if (item.path && sessionId) {
       markUploadDeleted(item.path);
-      // The user dismissed the chip before sending — drop it from the draft set
-      // so it isn't restored on the next reload.
+
       removeDraftUploads(sessionId, [item.path]);
       void deleteUploadFromServer(sessionId, item.path);
       useFileStore.getState().removeSessionUpload(item.path);
@@ -268,19 +229,6 @@ export function useFileUpload(sessionId: string | undefined) {
     }
   }, [sessionId, pendingUploads]);
 
-  /**
-   * docs/293 req 3 — re-POST a failed upload's bytes. This used to remove the
-   * chip, which read as "Retry deleted my attachment"; with req 2 blocking Send
-   * on a failed upload it would also have cleared the block by discarding the
-   * very thing the block protects.
-   *
-   * Only a failed chip is retryable. A `ready` one has had its bytes released
-   * deliberately (re-POSTing them would duplicate the file on the server, not
-   * replace it), and an `uploading` one already has a request — its own, or the
-   * resume pass's. Where the bytes are somehow absent the chip is left failed
-   * rather than deleted: Remove is the explicit way to drop an attachment, and
-   * it is available on every chip.
-   */
   const retryUpload = useCallback((index: number) => {
     const item = pendingUploads[index];
     if (item?.status !== "error") return;
@@ -293,32 +241,27 @@ export function useFileUpload(sessionId: string | undefined) {
       progress: 0,
       error: undefined,
     });
-    // No session yet: the chip now reads "uploading" with its bytes retained,
-    // which is exactly what the resume pass picks up when one arrives.
+
     if (!sessionId) return;
     void uploadToServer(sessionId, [file], [retried]);
   }, [pendingUploads, sessionId, uploadToServer]);
 
-  /** Get pending ready uploads as UploadRef[] for send_message. */
   const getUploadRefs = useCallback((): UploadRef[] => {
     return pendingUploads
       .filter((u) => u.status === "ready" && u.path)
       .map((u) => ({ path: u.path!, type: "upload" as const }));
   }, [pendingUploads]);
 
-  /** Mark all pending uploads as sent (clears the input chips). */
   const clearUploads = useCallback(() => {
     const sentPaths = pendingUploads.map((u) => u.path).filter((p): p is string => Boolean(p));
-    // `markUploadsSent` releases the retained bytes with the chips.
+
     useFileStore.getState().markUploadsSent();
-    // These paths are now sent, so they're no longer a draft. Removing them
-    // keeps the draft set tight; hydrateUploads would also prune them against
-    // chat history, so a missed removal here can't leave a stale chip.
+
     if (sessionId) removeDraftUploads(sessionId, sentPaths);
   }, [pendingUploads, sessionId]);
 
   return {
-    /** Pending uploads — shown as input chips, cleared on send. */
+
     uploads: pendingUploads,
     uploadFiles,
     removeUpload,

@@ -54,7 +54,6 @@
     border-radius: 10px; padding: 14px 16px;
   }
 
-  /* composer */
   .composer-wrap { padding: 14px 16px 12px; }
   .composer { display: flex; flex-direction: column; border-radius: 12px; background: var(--color-bg-secondary); border: 1px solid var(--color-border-secondary); }
   .composer.focus { border-color: rgba(59,130,246,.8); box-shadow: 0 0 0 1px rgba(59,130,246,.8); }
@@ -68,7 +67,6 @@
   .send { width: 30px; height: 30px; border-radius: 8px; background: var(--color-accent); display: flex; align-items: center; justify-content: center; color: #fff; margin-left: 4px; }
   .dial { width: 18px; height: 18px; border-radius: 50%; border: 2px solid var(--color-border-secondary); border-top-color: var(--color-accent); }
 
-  /* the combined control's trigger */
   .ctl { display: inline-flex; align-items: center; gap: 5px; border-radius: 8px; padding: 6px; color: var(--color-text-tertiary); }
   .ctl.quiet:hover { background: var(--color-bg-hover); }
   .ctl.mode-on { background: var(--color-accent-subtle); color: var(--color-accent); padding: 6px 7px; }
@@ -76,7 +74,6 @@
   .ctl .txt { font-size: 12px; font-weight: 600; }
   .ctl .div { width: 1px; height: 12px; background: currentColor; opacity: .3; }
 
-  /* menu */
   .menu { background: var(--color-bg-elevated); border: 1px solid var(--color-border-secondary); border-radius: 10px; padding: 4px; width: 300px; box-shadow: 0 14px 44px rgba(0,0,0,.6); }
   .mhead { padding: 8px 10px 5px; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .08em; color: var(--color-text-tertiary); display: flex; align-items: center; gap: 6px; }
   .msep { height: 1px; background: var(--color-border-primary); margin: 4px 2px; }
@@ -98,7 +95,6 @@
   }
   .btn { border: 1px solid var(--color-border-secondary); border-radius: 7px; padding: 3px 8px; color: var(--color-text-primary); font-size: 11.5px; white-space: nowrap; }
 
-  /* quick capture */
   .qc-shell { padding: 24px 14px 14px; background: var(--color-bg-overlay); }
   .qc { border: 1px solid var(--color-border-secondary); border-radius: 10px; background: var(--color-bg-elevated); box-shadow: 0 18px 60px rgba(0,0,0,.6); overflow: hidden; }
   .qc-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 11px 14px; border-bottom: 1px solid var(--color-border-primary); }
@@ -107,14 +103,12 @@
   .check { display: flex; align-items: flex-start; gap: 8px; }
   .box { width: 15px; height: 15px; border-radius: 4px; border: 1px solid var(--color-border-secondary); flex: 0 0 auto; margin-top: 2px; background: var(--color-bg-tertiary); }
 
-  /* today strip */
   .steps { display: flex; gap: 8px; flex-wrap: wrap; max-width: 880px; }
   .step { flex: 1 1 150px; border: 1px dashed var(--color-border-secondary); border-radius: 10px; padding: 11px 12px; background: var(--color-bg-secondary); }
   .step .n { display: inline-flex; width: 18px; height: 18px; border-radius: 50%; background: var(--color-warning-subtle); color: var(--color-warning); font-size: 11px; font-weight: 700; align-items: center; justify-content: center; margin-bottom: 6px; }
   .step .t { font-size: 12.5px; }
   .step .s { font-size: 11.5px; color: var(--color-text-tertiary); margin-top: 3px; }
 
-  /* before/after */
   .ba { display: flex; gap: 18px; align-items: flex-start; }
   .arrow { align-self: center; color: var(--color-text-tertiary); font-size: 22px; }
   .strike { text-decoration: line-through; opacity: .4; }
@@ -133,7 +127,6 @@
   nesting level there (req 9).
 </p>
 
-<!-- ═══════════════════════════════════════════ -->
 <h2>Today — the four-step dance</h2>
 <p class="note">
   Egress is plumbed <b>at container creation</b>, and the only control lives on a session that already exists.
@@ -146,7 +139,6 @@
   <div class="step"><span class="n">4</span><div class="t">Restart, then continue</div><div class="s">Restart to apply now, re-attach, re-send.</div></div>
 </div>
 
-<!-- ═══════════════════════════════════════════ -->
 <h2>1 · The control, at rest — no new footprint (req 5)</h2>
 <p class="note">
   The trigger is today's permission-mode button, unchanged in the common case: Auto is a bare icon with no
@@ -199,7 +191,6 @@
   </div>
 </div>
 
-<!-- ═══════════════════════════════════════════ -->
 <h2>2 · The menu — flat, two sections, no drill-down</h2>
 <p class="note">
   One popover, opened from that trigger. Both settings are visible at once and each is one tap away — the
@@ -296,7 +287,6 @@
   </div>
 </div>
 
-<!-- ═══════════════════════════════════════════ -->
 <h2>3 · In the composer — desktop, new session</h2>
 <div class="row">
   <div>
@@ -331,7 +321,6 @@
   </div>
 </div>
 
-<!-- ═══════════════════════════════════════════ -->
 <h2>4 · Same control on mobile (req 6)</h2>
 <p class="note">
   Today the mode folds <b>into</b> the parameters menu when the composer measures under 700px — its own width,
@@ -385,7 +374,6 @@
   </div>
 </div>
 
-<!-- ═══════════════════════════════════════════ -->
 <h2>5 · Quick Capture — no additional control</h2>
 <p class="note">
   The overlay already lifts the mode out of the folded menu into its row (docs/260 req 19). That same control
@@ -436,7 +424,6 @@
   </div>
 </div>
 
-<!-- ═══════════════════════════════════════════ -->
 <h2>6 · What leaves the parameters menu (req 9)</h2>
 <p class="note">
   With Mode gone, the folded settings menu holds only what a role sets. And a session already running under a
@@ -497,7 +484,6 @@
   </div>
 </div>
 
-<!-- ═══════════════════════════════════════════ -->
 <h2>7 · Session settings keeps its section (req 7)</h2>
 <p class="note">
   An earlier draft deleted the dialog's network radio group, on the reasoning that one setting should live in

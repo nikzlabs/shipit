@@ -1,12 +1,4 @@
-/**
- * Component tests for SettingsIntegrations (docs/201).
- *
- * The Integrations tab tiers three previously-separate surfaces into one:
- * curated "Connected services" (GitHub, Linear) over "MCP servers". These
- * assertions pin the tiering, the "Managed by ShipIt" badge that signals the
- * credential-brokering difference, and that the GitHub connection + PR toggle
- * moved here intact.
- */
+
 
 import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
 import { render, screen, cleanup, waitFor } from "@testing-library/react";
@@ -15,8 +7,6 @@ import { useMcpStore } from "../stores/mcp-store.js";
 
 const originalFetch = globalThis.fetch;
 
-/** Permissive GET stub — the embedded MCP/tracker panels fetch their state on
- * mount; every route resolves to an empty-but-ok payload. */
 function installFetchStub() {
   globalThis.fetch = ((input: RequestInfo | URL) => {
     const url = typeof input === "string" ? input : "url" in input ? input.url : input.href;
@@ -51,7 +41,7 @@ describe("SettingsIntegrations (docs/201)", () => {
     render(<SettingsIntegrations {...baseProps} githubStatus={{ authenticated: false }} />);
     expect(screen.getByText("Connected services")).toBeInTheDocument();
     expect(screen.getByText("MCP servers")).toBeInTheDocument();
-    // Linear lives in the curated tier, next to GitHub — not as an MCP.
+
     await waitFor(() => expect(screen.getByText("Linear")).toBeInTheDocument());
   });
 
@@ -62,7 +52,7 @@ describe("SettingsIntegrations (docs/201)", () => {
         githubStatus={{ authenticated: true, username: "octocat" }}
       />,
     );
-    // One badge for GitHub, one for Linear.
+
     expect(screen.getAllByText("Managed by ShipIt").length).toBeGreaterThanOrEqual(2);
   });
 

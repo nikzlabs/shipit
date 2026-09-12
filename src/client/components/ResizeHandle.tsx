@@ -1,8 +1,5 @@
-/**
- * Vertical drag handle — invisible 8px hit area overlaid on the panel border.
- * Uses -ml-2 to sit fully over the adjacent border-r.
- * col-resize cursor on hover to indicate draggability.
- */
+
+
 export function ResizeHandle({
   isDragging,
   onMouseDown,

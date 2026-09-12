@@ -65,8 +65,6 @@ describe("MobileTabBar", () => {
     expect(sessionsButton.className).toContain("text-(--color-text-link)");
     expect(sessionsButton).toHaveAttribute("aria-current", "page");
 
-    // Chat is the active panel underneath, but the open drawer owns the
-    // active state — so Chat is not highlighted.
     const chatButton = screen.getByText("Chat").closest("button")!;
     expect(chatButton.className).not.toContain("text-(--color-text-link)");
     expect(chatButton).not.toHaveAttribute("aria-current");
@@ -116,10 +114,9 @@ describe("MobileTabBar", () => {
   it("disables the content tabs but keeps Sessions and creation actions live when contentTabsDisabled", () => {
     renderMobileTabBar({ contentTabsDisabled: true });
 
-    // Home screen: no session to view, so the content tabs are inert...
     expect(screen.getByText("Chat").closest("button")!).toBeDisabled();
     expect(screen.getByText("Workspace").closest("button")!).toBeDisabled();
-    // ...but the drawer and creation actions stay reachable.
+
     expect(screen.getByRole("button", { name: "Sessions" })).not.toBeDisabled();
     expect(screen.getByRole("button", { name: "New Session" })).not.toBeDisabled();
   });

@@ -1,7 +1,5 @@
 #!/usr/bin/env bash
-# Run ONE task's two arms. Sub-agent spawns are capped at 3 per turn, so the
-# 12-run experiment has to be spread across turns: call this with one slug.
-#   ./pair.sh t2
+
 set -uo pipefail
 RW=/persist/rw/ripwire-0.4.0-linux-x64/ripwire
 OUT=/persist/bench/runs

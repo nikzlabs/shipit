@@ -1,12 +1,3 @@
-/**
- * FileReviewFooter — the review controls strip (draft count, past-reviews
- * disclosure, Cancel/Send) shared by the file-viewer dialog and the Present tab
- * (docs/219). Moved verbatim from `FilePreviewModal`'s footer + `PastReviews`.
- *
- * `onCancel` is optional: the dialog passes its close handler, Present omits it
- * (there's no modal to close).
- */
-
 import { useState, type ReactNode } from "react";
 import { PaperPlaneTiltIcon, CaretDownIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../../design-tokens.js";
@@ -48,8 +39,6 @@ function PastReviews({ history }: { history: FileReview[] }) {
               </button>
               {openId === review.id && (
                 <div className="ml-4 mt-1 mb-2 space-y-1">
-                  {/* docs/260 — the note that framed this review, kept beside
-                      the comments it was sent with. */}
                   {review.note && (
                     <div className="text-xs p-2 rounded border-l-2 border-l-(--color-border-secondary) bg-(--color-bg-tertiary)">
                       <span className="block text-[10px] uppercase tracking-wide text-(--color-text-tertiary)">
@@ -95,32 +84,14 @@ export function FileReviewFooter({
   commentCount: number;
   history: FileReview[];
   canSend: boolean;
-  /** An unsaved comment editor is open — Send is held so the in-progress
-   *  comment isn't silently dropped. Takes over the status slot to say so. */
   composing?: boolean;
-  /** Opens the send-confirmation dialog (docs/260); it does not send. */
   onSend: () => void;
   onCancel?: () => void;
-  /**
-   * docs/260 — the send-confirmation dialog, passed in rather than built here.
-   * The footer is shared by the file-viewer dialog and the Present tab, and
-   * both get the dialog by rendering it in this one place; the state behind it
-   * belongs to `useFileReviewControls`.
-   */
   sendDialog?: ReactNode;
 }) {
   return (
-    // Wraps rather than overflows: the Cancel + Send pair alone is ~220px, so
-    // at phone widths the status line drops to its own row instead of shoving
-    // the buttons off the edge. `ml-auto` on the controls keeps them
-    // right-aligned in both the one-row and two-row layouts.
     <div className="flex flex-wrap items-center px-6 py-3 border-t border-(--color-border-secondary) bg-(--color-bg-elevated) shrink-0 gap-x-4 gap-y-2">
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 min-w-0">
-        {/* The reason Send is held replaces the draft count rather than
-            sitting beside it — the composing state must not cost extra
-            horizontal space, and the count is still on the button itself.
-            Kept short enough (~153px) to sit beside "Past reviews" at 375px,
-            so opening an editor doesn't add a row and shift the footer. */}
         <span className="text-xs text-(--color-text-secondary) whitespace-nowrap">
           {composing
             ? "Finish your comment first"

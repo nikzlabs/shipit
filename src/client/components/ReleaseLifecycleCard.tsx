@@ -1,25 +1,4 @@
-/**
- * ReleaseLifecycleCard (docs/171) — the inline card for a chat-initiated release.
- * It is a **persisted transcript card**: the full `ReleaseStatusSummary` rides on
- * the chat message (upserted by the `release_card` WS, rehydrated from history),
- * so it survives a reconnect, switch, reload, AND an orchestrator restart — and
- * it renders inline at the point in scrollback where the release was proposed,
- * not as top chrome.
- *
- * Two shapes, driven by `phase`:
- *   - `proposed` → expanded: version, bump, gate/CI, tag, grouped notes, a
- *     prerelease badge, and the Confirm & publish / Cancel controls.
- *   - every other phase (`tagging | gating | published | deploying | released |
- *     failed | cancelled`) → a compact collapsed row — the card "collapses to
- *     that state" the moment the user decides, then keeps advancing to the
- *     terminal `released`/`failed` in place.
- *
- * The confirmation control is NOT a shell-shaped affordance (CLAUDE.md §5): it
- * answers the agent's proposal by sending a chat message through the same
- * user-message surface as any other reply. A one-shot guard (`acted`) hides the
- * buttons after the first click so a proposal can't be confirmed twice while the
- * agent's follow-up turn is still in flight.
- */
+
 
 import { useState } from "react";
 import { Spinner } from "./Spinner.js";
@@ -45,16 +24,11 @@ import type {
 } from "../../server/shared/types.js";
 
 export interface ReleaseLifecycleCardProps {
-  /** Full release snapshot — the card renders straight from this (no store). */
+
   card: ReleaseStatusSummary;
-  /**
-   * Confirm & publish — sends the "yes, ship it" chat message to the agent. The
-   * mechanism (defaulted to `tag-triggered` when the card omits it) lets the
-   * handler word the message correctly: a `release-branch` repo opens/merges a
-   * version-bump PR (CI tags), while `tag-triggered` pushes the tag.
-   */
+
   onConfirm?: (version: string, mechanism: ReleaseMechanism) => void;
-  /** Cancel — sends the cancel chat message to the agent. */
+
   onCancel?: (version: string) => void;
 }
 
@@ -111,7 +85,6 @@ function DeploymentRow({ deployments }: { deployments?: GitHubDeploymentStatus[]
   );
 }
 
-/** Truncated, monospace-free notes preview / published notes. */
 function Notes({ notes }: { notes?: string }) {
   if (!notes?.trim()) return null;
   return (
@@ -152,10 +125,9 @@ function headerIconFor(phase: ReleaseStatusSummary["phase"]) {
 
 export function ReleaseLifecycleCard({ card, onConfirm, onCancel }: ReleaseLifecycleCardProps) {
   // One-shot guard: a proposal answered once must not be answerable again while
-  // the agent's follow-up turn is still in flight (the card stays `proposed`
-  // until the agent emits the tagged/cancelled marker). Local state — on reload
+
   // the persisted card has either advanced (collapsed) or, if the agent never
-  // acted, comes back `proposed` and correctly actionable again.
+
   const [acted, setActed] = useState(false);
 
   const { phase, version, tag, prerelease, bumpType, versionSource } = card;
@@ -198,9 +170,6 @@ export function ReleaseLifecycleCard({ card, onConfirm, onCancel }: ReleaseLifec
     </div>
   );
 
-  // Collapsed: every phase past the decision. A compact single row (+ an error
-  // line for `failed`), so a confirmed/cancelled/released card sits quietly in
-  // the transcript.
   if (phase !== "proposed") {
     return (
       <div className="mt-2 rounded-lg border border-(--color-border-secondary) bg-(--color-bg-secondary)/80 overflow-hidden p-2.5">
@@ -218,7 +187,6 @@ export function ReleaseLifecycleCard({ card, onConfirm, onCancel }: ReleaseLifec
     );
   }
 
-  // Proposed: the expanded, interactive card.
   return (
     <div className="mt-2 rounded-lg border border-(--color-border-secondary) bg-(--color-bg-secondary)/80 overflow-hidden p-3">
       <div className="flex items-center gap-2">

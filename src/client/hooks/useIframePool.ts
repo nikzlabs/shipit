@@ -1,15 +1,5 @@
 import { useState, useRef, useCallback } from "react";
 
-/**
- * Maximum number of retained iframes across all sessions and ports — counted in
- * `(session, port)` pairs, so a multi-service stack spends several.
- *
- * Reassessed after each slot started costing its own renderer process
- * (docs/009-preview-system, "Is `MAX_IFRAME_SLOTS = 20` still right?"); 20 was
- * kept. Read that before changing it — the short version is that the number is
- * not the lever it looks like, and releasing slots whose preview is no longer
- * running would beat lowering it.
- */
 export const MAX_IFRAME_SLOTS = 20;
 
 export interface IframeSlot {
@@ -38,34 +28,23 @@ export interface IframeSlot {
 }
 
 export interface IframePool {
-  /** Map of slot key -> slot data (URL + container mode). */
+
   slots: Map<string, IframeSlot>;
-  /** LRU order, most recent first. Used to render iframes and to evict old ones. */
+
   slotOrder: string[];
-  /** Refs to the DOM iframe elements, keyed by slot key. */
+
   iframeRefs: React.RefObject<Map<string, HTMLIFrameElement | null>>;
-  /** Set of slot keys that have already been created. */
+
   createdSlotsRef: React.RefObject<Set<string>>;
-  /** Promote a slot to the front of the LRU and evict oldest if over capacity. */
+
   promoteSlot: (key: string) => void;
-  /** Add or update a slot with the given URL/containerMode metadata. */
+
   setSlot: (key: string, slot: IframeSlot) => void;
-  /**
-   * Remove one slot and its iframe from the pool. `usePreviewSlot` use only —
-   * see the hook docstring for why nothing else may call this.
-   */
+
   dropSlot: (key: string) => void;
-  /**
-   * Drop every slot belonging to one session, whatever port. `PreviewFrame` use
-   * only, for a session whose previews have stopped — see the hook docstring's
-   * second exception. Returns the keys it dropped.
-   */
+
   dropSessionSlots: (sessionId: string) => string[];
-  /**
-   * Read a slot outside the render cycle (stable identity). `usePreviewSlot`
-   * uses this to compare a retained slot's recorded owner at effect time
-   * without putting `slots` in its deps.
-   */
+
   getSlot: (key: string) => IframeSlot | undefined;
 }
 
@@ -117,21 +96,13 @@ export interface IframePool {
 export function useIframePool(): IframePool {
   const [slots, setSlots] = useState<Map<string, IframeSlot>>(new Map());
   const [slotOrder, setSlotOrder] = useState<string[]>([]);
-  // Mirror of `slots`, written only beside it in `setSlot`/`dropSlot`. The
-  // slot hook reads a retained slot's recorded owner at effect time through
-  // `getSlot`; putting `slots` in its deps would instead re-run the effect on
-  // every slot creation — including the takeover recreation it starts itself.
+
   const slotsRef = useRef<Map<string, IframeSlot>>(new Map());
   const iframeRefs = useRef<Map<string, HTMLIFrameElement | null>>(new Map());
   const createdSlotsRef = useRef<Set<string>>(new Set());
-  /** Rebuild count per key — see {@link IframeSlot.generation}. */
+
   const generationsRef = useRef<Map<string, number>>(new Map());
 
-  /**
-   * Remove a slot and its iframe from everything the pool tracks. The ref
-   * check makes a repeat drop (React may double-invoke a render, the hook
-   * may re-run its effect) a no-op rather than churn.
-   */
   const dropSlot = useCallback((key: string) => {
     if (!slotsRef.current.has(key)) return;
     generationsRef.current.set(key, (generationsRef.current.get(key) ?? 0) + 1);
@@ -148,8 +119,7 @@ export function useIframePool(): IframePool {
     setSlotOrder((prev) => {
       const without = prev.filter((k) => k !== key);
       const next = [key, ...without];
-      // Evict oldest slots beyond the cap — through `dropSlot`, so a slot
-      // leaving the pool has exactly one cleanup path however it leaves.
+
       if (next.length > MAX_IFRAME_SLOTS) {
         for (const k of next.slice(MAX_IFRAME_SLOTS)) dropSlot(k);
         return next.slice(0, MAX_IFRAME_SLOTS);
@@ -158,15 +128,6 @@ export function useIframePool(): IframePool {
     });
   }, [dropSlot]);
 
-  /**
-   * Drop every slot for one session — planning#496's exception, whose whole
-   * point is that a session's previews die together, so every port goes.
-   *
-   * Reads from `slotsRef` rather than the reactive `slots`, so the callback
-   * identity is stable and a caller can hold it without re-subscribing on every
-   * slot change. Routes each removal through {@link dropSlot} so a slot leaving
-   * the pool still has exactly one cleanup path.
-   */
   const dropSessionSlots = useCallback((sessionId: string) => {
     // Slot keys are `${sessionId}:${port}` and a session id never contains a
     // colon, so the prefix cannot match a different session.

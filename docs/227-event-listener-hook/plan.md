@@ -36,7 +36,7 @@ The deferred sketch did something like:
 ```ts
 useEffect(() => {
   target.addEventListener(event, handler);
-  return () => target.removeEventListener(event, () => {}); // ← BUG
+  return () => target.removeEventListener(event, () => {});
 }, [...]);
 ```
 

@@ -26,7 +26,6 @@ import { useSessionStore } from "./session-store.js";
  *    next shipit.yaml event. Mirrors `declarationsPending` in issues-store.
  */
 
-/** Backoff for the pending retry, matching the issues-store warm loop. */
 const PENDING_RETRY_DELAYS_MS = [500, 1000, 2000, 4000, 8000, 15000, 30000];
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
@@ -38,7 +37,6 @@ const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms
  */
 let fetchGeneration = 0;
 
-/** req 24 — where a granted host lands: this session only, or the whole instance. */
 export type PluginHostGrantScope = "session" | "global";
 
 /**
@@ -54,21 +52,21 @@ export type PluginHostGrantScope = "session" | "global";
 export interface PluginRepoRefreshOutcome {
   repo: string;
   kind: "activated" | "reinstalled" | "unchanged" | "failed";
-  /** The exact commit live NOW — after a failure, still the prior one (req 15). */
+
   commit: string | null;
-  /** Why it failed, or an advisory (a moved tag a durable pin overrode). */
+
   detail?: string;
 }
 
 interface PluginReposState {
-  /** The active session's snapshot; null until the first fetch lands. */
+
   snapshot: PluginReposSnapshot | null;
   /** Which session `snapshot` belongs to — read alongside it, never on its own. */
   forSessionId: string | null;
   fetchSnapshot: (sessionId: string) => Promise<void>;
-  /** Resolves with what the add took effect on (planning#376), or null if the server said nothing. */
+
   allowHost: (host: string, scope: PluginHostGrantScope) => Promise<EgressHostGrantOutcome | null>;
-  /** req 12 — bring one declared repository to its tracked branch's tip, now. */
+
   refreshRepo: (repoName: string) => Promise<PluginRepoRefreshOutcome>;
   reset: () => void;
 }
@@ -78,24 +76,11 @@ export const usePluginReposStore = create<PluginReposState>((set, get) => ({
   forSessionId: null,
 
   fetchSnapshot: async (sessionId: string) => {
-    // A fetch for a session the app has already left is dropped by `fetchOnce`
-    // anyway — but only AFTER it has taken a generation, and taking one
-    // invalidates the fetch the session the user is now on has in flight
-    // (independent review). The two `finally` refetches are how that happens:
-    // `allowHost` and `refreshRepo` capture their session at entry, and a POST
-    // is long enough for the user to switch during it, so the outgoing
-    // session's tidy-up refetch could take the incoming session's seeding
-    // fetch down with it and leave the new session with `snapshot: null` — no
-    // Plugins tab at all until the next shipit.yaml edit or reload. Every
-    // other caller passes the ACTIVE session, so returning early here costs
-    // them nothing and is the one place both paths pass through.
+
     if (useSessionStore.getState().sessionId !== sessionId) return;
     const generation = ++fetchGeneration;
     const applied = await fetchOnce(sessionId, generation, set);
-    // Retry in the background while the answer is still moving: the checkout
-    // can't answer yet (`pending`), or a repository is mid-activation and
-    // nothing pushes its completion. Resolving now rather than blocking keeps
-    // the caller (a render effect) cheap.
+
     if (applied && (applied.pending || applied.activating)) {
       void retryWhilePending(sessionId, generation, set);
     }
@@ -190,8 +175,7 @@ export const usePluginReposStore = create<PluginReposState>((set, get) => ({
         return { repo: repoName, kind: "failed", commit: null, detail };
       }
       const row = Array.isArray(body.rows) ? (body.rows[0] as Record<string, unknown> | undefined) : undefined;
-      // A 200 with no row means the round ran nothing for this repository —
-      // which for a name the card itself printed is a server-side state the
+
       // user cannot act on, so it is reported rather than rendered as success.
       if (!row) {
         return {
@@ -211,20 +195,12 @@ export const usePluginReposStore = create<PluginReposState>((set, get) => ({
   },
 
   reset: () => {
-    // Invalidate in-flight fetches: a response from before the reset would
-    // otherwise repopulate the store for a session the user has left.
+
     fetchGeneration++;
     set({ snapshot: null, forSessionId: null });
   },
 }));
 
-/**
- * One `PluginRefreshRow` off the wire, narrowed to what the card says.
- *
- * `reinstalled` is its own outcome rather than a flavour of `activated`
- * (docs/266 reqs 5, 6): the commit did not move and the plugin was nevertheless
- * installed again, so both "updated to X" and "already at X" would be wrong.
- */
 function toOutcome(repo: string, row: Record<string, unknown>): PluginRepoRefreshOutcome {
   const commit = typeof row.after === "string" ? row.after : null;
   const detail = typeof row.detail === "string" ? row.detail : undefined;
@@ -240,7 +216,6 @@ function toOutcome(repo: string, row: Record<string, unknown>): PluginRepoRefres
 
 type SetState = (partial: Partial<PluginReposState>) => void;
 
-/** One request; returns the snapshot if it was applied, else null. */
 async function fetchOnce(
   sessionId: string,
   generation: number,
@@ -270,21 +245,12 @@ async function retryWhilePending(
     if (generation !== fetchGeneration) return;
     if (useSessionStore.getState().sessionId !== sessionId) return;
     const snapshot = await fetchOnce(sessionId, generation, set);
-    // A dropped response (a newer fetch won) ends this loop — that fetch owns
-    // the retry from here.
+
     if (!snapshot) return;
     if (!snapshot.pending && !snapshot.activating) return;
   }
 }
 
-/**
- * The snapshot for `sessionId`, or null when the store holds another session's.
- *
- * Every read goes through this: the store is one slot, and a switch that
- * forgot to reset it would otherwise show the previous session's tab, dot and
- * cards. Pairing the value with its owner makes that structurally impossible
- * rather than dependent on each reset call site (review finding).
- */
 export function snapshotForSession(
   state: PluginReposState,
   sessionId: string | null | undefined,
@@ -293,14 +259,6 @@ export function snapshotForSession(
   return state.snapshot;
 }
 
-/**
- * Tab gating (req 13): plugin INTENT shows the tab — a `plugins:` block that
- * parses to zero valid repos still needs its warning surface — and so does a
- * snapshot carrying only warnings (an unreadable shipit.yaml can't prove
- * intent either way, and hiding the tab would erase the one place that says
- * so). `pending` alone shows nothing: the answer isn't known yet, and the
- * retry will bring it.
- */
 export function pluginsTabVisible(snapshot: PluginReposSnapshot | null): boolean {
   if (!snapshot) return false;
   return snapshot.declared || snapshot.warnings.length > 0;
@@ -331,17 +289,13 @@ export function pluginsAttention(snapshot: PluginReposSnapshot | null): boolean 
     snapshot.repos.some(
       (r) =>
         r.issues.length > 0 ||
-        // `?? []` — a snapshot cached by an older client build has neither
+
         // `credentials` nor `hosts` on its use entries; a stale shape must not
-        // throw here.
-        // `optional` is likewise absent from an older client's cached snapshot,
-        // where undefined is falsy and the name reads as required — which is
-        // what it meant before optionality existed.
+
         r.uses.some((u) => (u.credentials ?? []).some((c) => !c.satisfied && !c.optional)) ||
-        // Every verdict but `allowed` is a gap the user should know about —
+
         // including the two no grant closes (planning#383): a plugin that cannot
-        // reach its host is exactly the "surprise" req 24 exists to prevent,
-        // whether or not the fix is the user's to make.
+
         r.uses.some((u) => (u.hosts ?? []).some((h) => h.reach !== "allowed" && !h.optional)),
     )
   );

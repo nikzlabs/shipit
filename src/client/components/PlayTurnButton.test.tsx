@@ -3,7 +3,6 @@ import { render, screen, cleanup, fireEvent } from "@testing-library/react";
 import type { VoicePlaybackApi } from "../voice/use-voice-playback.js";
 import type { PlaybackState } from "../voice/playback-store.js";
 
-// Mock the playback hook the component consumes so we control state + assert actions.
 const playbackApi: VoicePlaybackApi = {
   state: "idle",
   playingTurnId: null,
@@ -57,7 +56,7 @@ describe("PlayTurnButton", () => {
   it("does not show playing UI for a turn that is not the active one", () => {
     setPlayback({ state: "playing", playingTurnId: "other", durationMs: 100, positionMs: 50 });
     render(<PlayTurnButton turnId="t1" text="hello" />);
-    // This turn reads as idle → Play, no Stop control.
+
     expect(screen.getByRole("button", { name: "Play" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Stop playback" })).not.toBeInTheDocument();
   });
@@ -90,7 +89,7 @@ describe("PlayTurnButton", () => {
   it("shows a busy spinner and ignores clicks while loading this turn", () => {
     setPlayback({ state: "loading", playingTurnId: "t1" });
     render(<PlayTurnButton turnId="t1" text="hello" />);
-    // Loading keeps the main label as "Play"; clicking is a no-op.
+
     const btn = screen.getByRole("button", { name: "Play" });
     fireEvent.click(btn);
     expect(playbackApi.play).not.toHaveBeenCalled();

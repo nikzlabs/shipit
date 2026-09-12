@@ -5,7 +5,7 @@ import { useSettingsStore } from "../stores/settings-store.js";
 import { useSessionStore } from "../stores/session-store.js";
 
 beforeEach(() => {
-  // Most tests assume we're "inside" a session — set a default session id.
+
   useSessionStore.getState().setSessionId("test-session");
   useSettingsStore.getState().setPermissionMode("test-session", "plan");
 });
@@ -13,7 +13,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   useSessionStore.getState().setSessionId(undefined);
-  // Reset the store's per-session map and default by writing fresh values.
+
   useSettingsStore.setState({ permissionMode: "auto", permissionModeBySession: {} });
 });
 
@@ -54,7 +54,7 @@ describe("PlanApproval", () => {
 
     it("only updates the current session's permission mode, not other sessions", () => {
       // Two sessions both in plan mode. Accepting the plan in session A must
-      // not flip session B out of plan mode.
+
       useSettingsStore.getState().setPermissionMode("session-a", "plan");
       useSettingsStore.getState().setPermissionMode("session-b", "plan");
       useSessionStore.getState().setSessionId("session-a");
@@ -97,7 +97,7 @@ describe("PlanApproval", () => {
       const dialog = screen.getByTestId("plan-expanded");
       expect(dialog).toBeInTheDocument();
       expect(dialog.textContent).toContain("Do the thing");
-      // The action buttons live in the dialog footer once expanded.
+
       expect(screen.getByTestId("accept-plan")).toBeInTheDocument();
       expect(screen.getByTestId("suggest-changes")).toBeInTheDocument();
     });
@@ -110,7 +110,7 @@ describe("PlanApproval", () => {
       fireEvent.click(screen.getByTestId("accept-plan"));
 
       expect(onSend).toHaveBeenCalledWith("Execute the plan you just described.");
-      // Once answered the dialog and its buttons are gone.
+
       expect(screen.queryByTestId("plan-expanded")).not.toBeInTheDocument();
       expect(screen.queryByTestId("accept-plan")).not.toBeInTheDocument();
     });
@@ -190,10 +190,6 @@ describe("PlanApproval", () => {
     });
   });
 
-  // History-reload counterpart to AskUserQuestion's `resolvedAnswer` —
-  // `resolved` is set when the agent's tool_result for ExitPlanMode has
-  // already arrived, so the chat shouldn't expose the action buttons
-  // again for a plan that's already been answered.
   describe("resolved (history reload)", () => {
     it("renders read-only confirmation when resolved is true", () => {
       const onSend = vi.fn().mockReturnValue(true);
@@ -204,8 +200,7 @@ describe("PlanApproval", () => {
     });
 
     it("local accept flow takes precedence over resolved when both are set", () => {
-      // Imagine a tool_result arrives mid-render — the local accept message
-      // should still be shown, since the user just saw their click.
+
       const onSend = vi.fn().mockReturnValue(true);
       const { rerender } = render(<PlanApproval onSend={onSend} disabled={false} />);
       fireEvent.click(screen.getByTestId("accept-plan"));

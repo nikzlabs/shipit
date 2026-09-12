@@ -14,7 +14,7 @@
     --color-text-tertiary: #9ca3af;
     --color-border-primary: #e5e7eb;
     --color-border-secondary: #d1d5db;
-    --amber-600: #d97706;   /* the current attention token */
+    --amber-600: #d97706;
     --amber-700: #b45309;
     --amber-800: #92400e;
     --color-pr: #7c3aed;
@@ -69,22 +69,15 @@
     letter-spacing: .04em; color: var(--color-text-tertiary);
     border: 1px solid var(--color-border-primary); border-radius: 999px; padding: 1px 6px; background: var(--color-bg-primary);
   }
-
-  /* ---- the title-highlight primitive: a span that hugs the text, truncates, white text ---- */
   .hl {
     display: inline-block; max-width: 100%; vertical-align: bottom;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     color: #ffffff !important; font-weight: 600;
     padding: 1px 6px; border-radius: 5px;
   }
-
-  /* T1 · Solid pill, token amber-600 */
   .t1 .attn .hl { background: var(--amber-600); }
-  /* T2 · Full-width bar (spans the title line), token amber-600 */
   .t2 .attn .hl { background: var(--amber-600); display: block; max-width: none; border-radius: 6px; }
-  /* T3 · Deeper amber-800 pill (contrast-safe white text) */
   .t3 .attn .hl { background: var(--amber-800); }
-  /* T4 · Rounded chip, amber-700 */
   .t4 .attn .hl { background: var(--amber-700); border-radius: 999px; padding: 1px 9px; }
 
   .swatchrow { display:flex; gap:8px; margin: 0 4px 12px; }
@@ -109,8 +102,6 @@
   </div>
 
   <div class="grid">
-
-    <!-- T3 first (recommended for contrast) -->
     <div class="card t3 featured">
       <div class="label"><span class="name">1 · Deep amber pill</span><span class="tag">recommended</span></div>
       <div class="desc-row">Solid <b>amber-800</b> fill behind the title, white text. The deeper shade is what makes white text actually readable.</div>
@@ -121,8 +112,6 @@
         <div class="row sel attn"><span class="prdot"></span><div class="body"><span class="title hl">Waiting for your input</span><div class="meta"><span class="statusdot" style="background:var(--amber-600)"></span><span>web · now</span></div></div><span class="state">sel+attn</span></div>
       </div>
     </div>
-
-    <!-- T1 token amber pill -->
     <div class="card t1">
       <div class="label"><span class="name">2 · Token amber pill</span><span class="tag warn">low contrast</span></div>
       <div class="desc-row">Same idea with the <b>current token amber-600</b> (<code>#d97706</code>). True to the existing color, but white text on it is light — see how it reads to you.</div>
@@ -133,8 +122,6 @@
         <div class="row sel attn"><span class="prdot"></span><div class="body"><span class="title hl">Waiting for your input</span><div class="meta"><span class="statusdot" style="background:var(--amber-600)"></span><span>web · now</span></div></div><span class="state">sel+attn</span></div>
       </div>
     </div>
-
-    <!-- T2 full width bar -->
     <div class="card t2">
       <div class="label"><span class="name">3 · Full-width bar</span></div>
       <div class="desc-row">The fill spans the whole title line instead of hugging the text — a bolder, more banner-like marker. Token amber-600 shown.</div>
@@ -145,8 +132,6 @@
         <div class="row sel attn"><span class="prdot"></span><div class="body"><span class="title hl">Waiting for your input</span><div class="meta"><span class="statusdot" style="background:var(--amber-600)"></span><span>web · now</span></div></div><span class="state">sel+attn</span></div>
       </div>
     </div>
-
-    <!-- T4 rounded chip -->
     <div class="card t4">
       <div class="label"><span class="name">4 · Rounded chip</span></div>
       <div class="desc-row">Pill with full rounding (<code>999px</code>) and a touch more side padding — reads as a “tag” rather than a highlight. Amber-700.</div>

@@ -10,13 +10,7 @@ interface ErrorBoundaryState {
   error: Error | null;
 }
 
-/**
- * React Error Boundary — catches unhandled render errors in the component
- * tree and displays a recovery UI instead of a blank screen.
- *
- * Must be a class component because React only supports error boundaries
- * via componentDidCatch / getDerivedStateFromError on class components.
- */
+// React error boundaries require class lifecycle methods.
 export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
   constructor(props: ErrorBoundaryProps) {
     super(props);

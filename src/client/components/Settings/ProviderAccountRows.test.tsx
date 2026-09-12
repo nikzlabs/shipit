@@ -1,13 +1,4 @@
-/**
- * docs/257 req 5 — results and errors render next to the step that produced
- * them, not as a toast somewhere else on screen.
- *
- * Every case here asserts the absence of a toast as well as the presence of the
- * inline notice — "we also render it inline" would pass a presence-only test.
- *
- * The failover-cutoff tests that used to live beside these moved to
- * `CredentialRouting.test.tsx` with the control itself (docs/252).
- */
+
 
 import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
 import { render, screen, cleanup, fireEvent, waitFor, act } from "@testing-library/react";
@@ -39,13 +30,6 @@ function account(id: string, isPrimary = false): CredentialRoute {
   };
 }
 
-/**
- * The body as `ServiceCard` hosts it. There is no longer an "Add account"
- * button to render beside it: docs/252 req 17 moved adding into the
- * add-service dialog, so a failure while *creating* an account is that
- * dialog's to report (`ServicesPanel.test.tsx`), and what is left here is
- * everything done to an account that already exists.
- */
 function renderRows(provider: "claude" | "codex" = "claude", onReconnect = vi.fn()) {
   const result = render(
     <ProviderAccountRows
@@ -58,16 +42,10 @@ function renderRows(provider: "claude" | "codex" = "claude", onReconnect = vi.fn
   return { ...result, onReconnect };
 }
 
-/**
- * Open one row's `⋯`. docs/252 req 19 moved every per-account verb in there, so
- * a test that used to find "Disconnect" as a permanently-rendered button now
- * has to open the menu first — which is the compaction, asserted.
- */
 async function openRowMenu(user: ReturnType<typeof userEvent.setup>, label: string) {
   await user.click(screen.getByLabelText(`Manage ${label}`));
 }
 
-/** Fail every request with a server-supplied message. */
 function installFailingFetch(message: string) {
   const fetchMock = vi.fn(() =>
     Promise.resolve(new Response(JSON.stringify({ error: message }), { status: 500 })),
@@ -104,9 +82,7 @@ describe("ProviderAccountRows inline results and errors (docs/257 req 5)", () =>
   });
 
   it("disconnects in one click with no session bookkeeping to report (docs/260-turn-level-account-routing req 3)", async () => {
-    // No pinning means no "moved N sessions" story: the row disappears and the
-    // remaining accounts render, nothing else. Sessions route among what
-    // remains at their next turn.
+
     const user = userEvent.setup();
     vi.stubGlobal("fetch", vi.fn(() =>
       Promise.resolve(new Response(
@@ -127,9 +103,7 @@ describe("ProviderAccountRows inline results and errors (docs/257 req 5)", () =>
   });
 
   it("gives the duplicate-account refusal a landing place on the card", () => {
-    // The one credential failure that arrives from OUTSIDE the card: it comes
-    // as an `agent_auth_failed` SSE, and the refusal deletes the row a per-row
-    // error would have used (docs/150-multiple-provider-subscriptions req 22). It was a global toast.
+
     renderRows();
     act(() => {
       useSettingsStore.getState().setProviderAccountNotice("anthropic-oauth", {
@@ -194,18 +168,11 @@ describe("ProviderAccountRows naming", () => {
   });
 });
 
-/**
- * docs/252 req 19 — **the row is `label · quota · ⋯`, and a healthy row says
- * nothing about its health.**
- */
 describe("ProviderAccountRows compact row", () => {
   it("says nothing about a ready account beyond its name", () => {
     renderRows();
     const row = screen.getByTestId("provider-account-row-a");
-    // No status pill, no "ready", no account UUID line, no permanently mounted
-    // rename field, and no green dot: an earlier mock-up put a `StatusDot` on
-    // every row, which is decoration on the normal case and a hue alone on the
-    // abnormal one.
+
     expect(screen.queryByTestId("provider-account-row-a-status")).toBeNull();
     expect(row).not.toHaveTextContent(/ready/i);
     expect(row.querySelector("input")).toBeNull();
@@ -273,14 +240,6 @@ describe("ProviderAccountRows compact row", () => {
   });
 });
 
-/**
- * docs/150-multiple-provider-subscriptions req 19 — the provider-wide purge, which a row's Disconnect is NOT.
- *
- * `DELETE /api/auth/api-key` clears every account's credentials *and* the
- * singleton pre-account path, where a legacy install's unscoped OAuth tokens
- * sit with no row to reach them from. It used to live on the Settings → Claude
- * tab and was nearly dropped with it; cross-backend review caught that.
- */
 describe("ProviderAccountRows stale-credential escape hatch", () => {
   it("offers the provider-wide purge when rows exist and none can authenticate", async () => {
     useSettingsStore.getState().setProviderAccounts([
@@ -302,7 +261,7 @@ describe("ProviderAccountRows stale-credential escape hatch", () => {
   });
 
   it("stays hidden while any account is usable", () => {
-    // `account()` is `ready` by default — nothing here is stale.
+
     renderRows();
     expect(screen.queryByTestId("provider-stale-credentials-claude")).toBeNull();
   });
@@ -314,20 +273,6 @@ describe("ProviderAccountRows stale-credential escape hatch", () => {
   });
 });
 
-/**
- * docs/274 req 16 — a subscription ShipIt has no reader for gets no read-out on
- * this row either.
- *
- * The header pill was where it was reported, but this row rendered the identical
- * empty `5h · —  7d · —` for the same reason: it asked `billingMode === "sub"`,
- * on the belief that every subscription reports a quota.
- *
- * The example is OpenCode Go, and it changed: this was written against xAI,
- * whose reader turned out to be one query parameter away (planning#454). Go is
- * the durable case — the vendor publishes no per-key usage API at all, so it is
- * missing by decision rather than by backlog (docs/272 req 6). The rule under
- * test is `modeReportsQuota`, not the service.
- */
 describe("a subscription with no quota reader (docs/274 req 16)", () => {
   function goAccount(overrides: Partial<CredentialRoute> = {}): CredentialRoute {
     return {
@@ -364,9 +309,7 @@ describe("a subscription with no quota reader (docs/274 req 16)", () => {
   it("keeps the read-out on a subscription that does report one", () => {
     useSettingsStore.getState().setProviderAccounts([account("a", true)]);
     renderRows();
-    // The Anthropic row's blanks mean "no reading yet" and have a refresh
-    // button beside them, which is what makes them a pending state rather than
-    // a permanent one.
+
     const row = screen.getByTestId("provider-account-row-a");
     expect(row.querySelector("[data-meter-pct]")).not.toBeNull();
   });

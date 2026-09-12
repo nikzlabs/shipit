@@ -1,11 +1,3 @@
-/**
- * Component tests for McpServerSettings (docs/088).
- *
- * Exercises the rendered server list, the add/edit form's validation
- * messages, the per-server status badge driven by useMcpStore.statuses,
- * and the disabled "Test" button when no session is active.
- */
-
 import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
 import { render, screen, cleanup, fireEvent, waitFor, within } from "@testing-library/react";
 import { McpServerSettings } from "./McpServerSettings.js";
@@ -23,8 +15,6 @@ const stdioConfig: McpServerConfig = {
 
 const originalFetch = globalThis.fetch;
 
-// Capture-and-respond fetch double. The component mounts useEffect that calls
-// `fetchServers()`, so every test needs a GET handler for /api/mcp-servers.
 class FakeFetch {
   routes: { match: RegExp; method: string; respond: (body: unknown) => { status?: number; body: unknown } }[] = [];
   calls: { method: string; url: string; body?: unknown }[] = [];
@@ -155,7 +145,6 @@ describe("McpServerSettings (docs/088)", () => {
     });
     fireEvent.click(screen.getByTestId("mcp-add-server"));
 
-    // Type an invalid name (uppercase + hyphen).
     const nameInput = screen.getByPlaceholderText("sentry");
     fireEvent.change(nameInput, { target: { value: "Bad-Name" } });
 
@@ -180,7 +169,6 @@ describe("McpServerSettings (docs/088)", () => {
     fireEvent.change(screen.getByPlaceholderText("sentry"), {
       target: { value: "ok" },
     });
-    // Empty the prefilled command field.
     const commandInput = screen.getByPlaceholderText("npx") as HTMLInputElement;
     fireEvent.change(commandInput, { target: { value: "" } });
 
@@ -221,14 +209,11 @@ describe("McpServerSettings (docs/088)", () => {
     });
 
     fireEvent.click(screen.getByRole("button", { name: "Edit" }));
-    // The form header reflects the editing state.
     expect(screen.getByText('Edit "linear"')).toBeInTheDocument();
 
-    // The env-var key is preserved, but the value field is empty (no secret echo).
     expect((screen.getByDisplayValue("LINEAR_API_KEY") as HTMLInputElement).value).toBe(
       "LINEAR_API_KEY",
     );
-    // The password input for the value should be empty — secrets are never echoed.
     const valueInputs = screen.getAllByPlaceholderText("(unchanged)");
     expect(valueInputs).toHaveLength(1);
     expect((valueInputs[0] as HTMLInputElement).value).toBe("");
@@ -263,8 +248,6 @@ describe("McpServerSettings (docs/088)", () => {
       expect(screen.getByTestId("mcp-oauth-notion_oauth")).toBeInTheDocument();
     });
 
-    // The duplicate standalone row is gone — its Test/Disable controls now
-    // live inside the provider card so the user sees one element, not two.
     expect(screen.queryByTestId("mcp-server-notion")).toBeNull();
 
     const card = screen.getByTestId("mcp-oauth-notion_oauth");
@@ -275,12 +258,6 @@ describe("McpServerSettings (docs/088)", () => {
   });
 
   it("reconciles stale tokens: auth-required status downgrades 'Connected' to Reconnect", async () => {
-    // Stored tokens exist (so listMcpOAuthProviders flags Connected) but the
-    // MCP server rejected them (CLI init reported needs-auth → "authentication
-    // required"). Without reconciliation the user would see two contradictory
-    // statuses on the same provider — green "Connected" up top, red "failed —
-    // authentication required" down below. The reconciled card shows a single
-    // "Authentication required" badge and a Reconnect CTA.
     const notionServer: McpServerConfig = {
       name: "notion",
       type: "http",
@@ -309,41 +286,29 @@ describe("McpServerSettings (docs/088)", () => {
       expect(screen.getByTestId("mcp-oauth-notion_oauth")).toBeInTheDocument();
     });
 
-    // Simulate the worker emitting needs-auth for the managed server.
     useMcpStore.getState().applyStatus("notion", "failed", "authentication required");
 
     const card = await waitFor(() => screen.getByTestId("mcp-oauth-notion_oauth"));
     await waitFor(() => {
       expect(within(card).getByText(/Authentication required/)).toBeInTheDocument();
     });
-    // Green "Connected" is suppressed.
     expect(within(card).queryByText(/● Connected/)).toBeNull();
-    // Reconnect is the primary action; Disconnect is still available so the
-    // user can opt out instead of refreshing.
     expect(within(card).getByRole("button", { name: "Reconnect" })).toBeInTheDocument();
     expect(within(card).getByRole("button", { name: "Disconnect" })).toBeInTheDocument();
-    // Test / Enable / Disable are hidden — they'd fail until tokens are fresh.
     expect(within(card).queryByRole("button", { name: "Test" })).toBeNull();
   });
 
   it("clearStatus drops the stale auth-required entry (used after Reconnect)", () => {
-    // White-box: connectProvider() calls clearStatus(defaultServerName) after a
-    // successful OAuth round-trip so the card flips back to plain "Connected"
-    // immediately instead of waiting for the next CLI init event.
     useMcpStore.getState().applyStatus("notion", "failed", "authentication required");
     expect(useMcpStore.getState().statuses.notion).toBeDefined();
 
     useMcpStore.getState().clearStatus("notion");
     expect(useMcpStore.getState().statuses.notion).toBeUndefined();
 
-    // Clearing a name that isn't tracked is a no-op (no throw).
     useMcpStore.getState().clearStatus("never-existed");
   });
 
   it("still shows an orphan OAuth-managed row when the provider is disconnected", async () => {
-    // Token revoked at provider side — server config still exists locally,
-    // so we surface it in the standalone list (with the via-connection badge)
-    // so the user can delete it.
     const notionServer: McpServerConfig = {
       name: "notion",
       type: "http",
@@ -372,8 +337,6 @@ describe("McpServerSettings (docs/088)", () => {
       expect(screen.getByTestId("mcp-server-notion")).toBeInTheDocument();
     });
 
-    // The row identifies itself as managed by the connection above and
-    // hides Edit, but is still visible so the user can delete it.
     const row = screen.getByTestId("mcp-server-notion");
     expect(within(row).getByText(/via Notion connection/)).toBeInTheDocument();
     expect(within(row).queryByRole("button", { name: "Edit" })).toBeNull();

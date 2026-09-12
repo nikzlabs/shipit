@@ -63,13 +63,9 @@ export function MobileRecordingOverlay({ voice }: { voice: VoiceInputApi }) {
   const transcribing = state === "transcribing";
   const error = state === "error";
   const active = recording || transcribing || error;
-  // After a transcription failure the audio is retained, so the primary
-  // recovery is to resend it verbatim rather than make the user re-speak.
+
   const canResend = error && canRetryTranscription;
 
-  // Escape cancels an active recording or dismisses an error (no-op once
-  // transcribing — the audio is already in flight). Harmless on mobile where
-  // there's no keyboard; useful for desktop testing of this view.
   useEventListener(recording || error ? window : null, "keydown", (e) => {
     if (e.key !== "Escape") return;
     e.preventDefault();
@@ -79,17 +75,11 @@ export function MobileRecordingOverlay({ voice }: { voice: VoiceInputApi }) {
 
   if (!active) return null;
 
-  // The Back button routes through here via the shared Dialog wrapper. Map it to
-  // the same state-specific exit as Escape; transcribing has no dismiss.
   const handleDismissRequest = () => {
     if (recording) voice.cancelRecording();
     else if (error) voice.dismissError();
   };
 
-  // Deliberately theme-independent: a recording surface is dark-with-light-text
-  // in every app (Voice Memos, WhatsApp), and the themeable text tokens flip to
-  // dark in light themes, blending into the scrim. A fixed dark scrim + explicit
-  // light text keeps contrast high in every theme.
   return (
     <Dialog open onOpenChange={(o) => { if (!o) handleDismissRequest(); }}>
       {createPortal(

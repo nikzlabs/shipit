@@ -10,7 +10,6 @@ export interface KvRow {
 }
 
 export interface FormState {
-  /** Original name when editing (for the PUT :id path). Empty when adding. */
   editingId: string;
   name: string;
   type: "stdio" | "http";
@@ -18,7 +17,6 @@ export interface FormState {
   args: string;
   url: string;
   npmPackage: string;
-  /** stdio env vars / http headers — values are raw secrets. */
   kv: KvRow[];
   enabled: boolean;
 }
@@ -35,7 +33,6 @@ export const EMPTY_FORM: FormState = {
   enabled: true,
 };
 
-/** Build the config blob + secrets map from form state. */
 export function buildPayload(form: FormState): {
   config: McpServerConfig;
   secrets: Record<string, string>;
@@ -77,7 +74,6 @@ export function buildPayload(form: FormState): {
   return { config, secrets };
 }
 
-/** Derive form state from an existing server (secrets are never echoed). */
 export function formFromServer(server: McpServerConfig): FormState {
   const kvSource =
     server.type === "stdio" ? server.env ?? {} : server.headers ?? {};
@@ -89,7 +85,7 @@ export function formFromServer(server: McpServerConfig): FormState {
     args: server.type === "stdio" ? (server.args ?? []).join(" ") : "",
     url: server.type === "http" ? server.url : "",
     npmPackage: server.type === "stdio" ? server.npmPackage ?? "" : "",
-    // Keys are kept; values start empty — the user re-enters secrets to change them.
+    // Never echo stored secret values.
     kv: Object.keys(kvSource).map((key) => ({ key, value: "" })),
     enabled: server.enabled,
   };

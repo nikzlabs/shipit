@@ -2,11 +2,6 @@ import { describe, it, expect } from "vitest";
 import { parseTrackerIssueLink } from "./tracker-link.js";
 import type { TrackerDestination } from "../../server/shared/declared-tracker.js";
 
-/**
- * docs/248 — a href only becomes an in-app link when it resolves to a
- * destination this session's repository declares (or the session's own repo).
- * These fixtures are that declared set.
- */
 const OWN: TrackerDestination = { id: "github", kind: "github", key: "owner/repo" };
 const PLANNING: TrackerDestination = {
   id: "github:acme/planning",
@@ -22,7 +17,7 @@ describe("parseTrackerIssueLink", () => {
     const link = parseTrackerIssueLink("https://linear.app/shipit-ai/issue/SHI-137", DECLARED);
     expect(link).toEqual({
       tracker: "linear:SHI",
-      // req 15 — rendered in the destination's name form.
+
       identifier: "roadmap#SHI-137",
       issueId: "SHI-137",
       url: "https://linear.app/shipit-ai/issue/SHI-137",
@@ -41,8 +36,7 @@ describe("parseTrackerIssueLink", () => {
   it("parses a GitHub issue URL for the session's own repository", () => {
     const link = parseTrackerIssueLink("https://github.com/owner/repo/issues/42", DECLARED);
     expect(link).toEqual({
-      // docs/248 — the link opens the inline viewer bound to the repository the
-      // href named, not whichever repo the active session happens to be on.
+
       tracker: "github",
       identifier: "owner/repo#42",
       issueId: "42",
@@ -60,9 +54,6 @@ describe("parseTrackerIssueLink", () => {
     });
   });
 
-  // req 11 — recognizing an address is not reaching it. An issue URL for a
-  // repository nobody declared has no in-app view to open, so it keeps its
-  // ordinary external link rather than becoming a link into nothing.
   it("does NOT intercept an issue URL for an undeclared repository", () => {
     expect(
       parseTrackerIssueLink("https://github.com/someone-else/notes/issues/9", DECLARED),

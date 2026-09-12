@@ -20,7 +20,6 @@
 @import "./themes/grok-light.css";
 @import "./themes/high-contrast.css";
 
-/* Class-based dark mode for Tailwind v4 — includes all dark-like themes */
 @custom-variant dark (&:where(.dark, .dark *, .midnight, .midnight *, .forest, .forest *, .rose, .rose *, .claude, .claude *, .codex, .codex *, .opencode, .opencode *, .grok, .grok *, .solarized, .solarized *, .high-contrast, .high-contrast *));
 
 /* App-shell height. The default is the CSS dynamic viewport; `useAppViewportHeight`
@@ -29,9 +28,7 @@
    `dvh` — which strands the mobile tab bar below the fold with `overflow: hidden`
    and no way to scroll back to it. See that hook for the full reasoning. */
 :root {
-  /* `100vh` first so a browser without `dvh` still gets a viewport-sized shell
-     rather than an invalid `height` (which computes to `auto` and lets the
-     document grow past the fold — the very failure this variable exists for). */
+
   --app-height: 100vh;
 }
 @supports (height: 100dvh) {
@@ -40,7 +37,6 @@
   }
 }
 
-/* ── Shared motion tokens (theme-independent) ── */
 :root {
   --duration-fast: 150ms;
   --duration-normal: 200ms;
@@ -113,13 +109,7 @@
    The progress spinner is built out of this rule: see `.spinner` below and
    `components/Spinner.tsx`. */
 @theme {
-  /* `pulse` animates opacity only, so Tailwind's own smooth default is already
-     free. It is re-declared here purely to pin that — an edit that swaps in a
-     transform would otherwise look harmless. `--animate-spin` and
-     `--animate-ping` are deliberately NOT re-declared: both animate transform,
-     so no infinite use of them is affordable, and the policy test fails the
-     build on `animate-spin` / `animate-ping` / `animate-bounce` appearing in a
-     component. Use `<Spinner />` instead. */
+
   --animate-pulse: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
 }
 
@@ -158,34 +148,23 @@
      --color-sandbox above: the dark values MUST stay scoped to the dark-theme
      classes, never :root, or they clobber every light theme. */
 :root {
-  --repo-color-0: #9c5636;          /* Clay */
-  --repo-color-1: #a8763c;         /* Ochre */
-  --repo-color-2: #8a7a2f;       /* Mustard */
-  --repo-color-3: #6d8a3a;         /* Olive */
-  --repo-color-4: #3c783c;          /* Fern */
-  --repo-color-5: #2c6f66;          /* Pine */
-  --repo-color-6: #2c7f96;          /* Cyan */
-  --repo-color-7: #3a6c9c;         /* Steel */
-  --repo-color-8: #3c56a8;         /* Denim */
-  --repo-color-9: #5c5088;      /* Lavender */
-  --repo-color-10: #96488c;        /* Orchid */
-  --repo-color-11: #a8506a;          /* Rose */
-  --repo-color-12: #a84040;         /* Brick */
-  --repo-color-13: #7a5c46;        /* Sienna */
-  --repo-color-14: #566b7a;         /* Slate */
-  --repo-color-15: #8a6060;         /* Taupe */
+  --repo-color-0: #9c5636;                    
+  --repo-color-1: #a8763c;                    
+  --repo-color-2: #8a7a2f;                    
+  --repo-color-3: #6d8a3a;                    
+  --repo-color-4: #3c783c;                    
+  --repo-color-5: #2c6f66;                    
+  --repo-color-6: #2c7f96;                    
+  --repo-color-7: #3a6c9c;                    
+  --repo-color-8: #3c56a8;                    
+  --repo-color-9: #5c5088;                    
+  --repo-color-10: #96488c;                    
+  --repo-color-11: #a8506a;                    
+  --repo-color-12: #a84040;                    
+  --repo-color-13: #7a5c46;                    
+  --repo-color-14: #566b7a;                    
+  --repo-color-15: #8a6060;                    
 
-  /* How much of the repo's own color the group's header band is mixed from,
-     over --color-bg-primary. The band's whole job is to say "this row is a
-     header, not a session" — the colored edge already does the separating — so
-     this is deliberately the SMALLEST signal that still reads as a header. The
-     band was originally --color-bg-tertiary, chosen to maximize contrast
-     against the flat Claude palettes; on a light theme that makes it the
-     DARKEST surface in the rail, so the headers outweighed the sessions and a
-     collapsed group became a solid slab. Maximum contrast was the wrong target.
-
-     Dark needs a slightly stronger mix: the same fraction of a light hue over
-     a near-black base separates less than a dark hue over a near-white one. */
   --repo-band-mix: 7%;
 }
 .dark, .midnight, .forest, .rose, .claude, .codex, .opencode, .grok, .solarized, .high-contrast {
@@ -208,10 +187,6 @@
   --repo-color-15: #c2a6a8;
 }
 
-/* Lock the page to the visible viewport. The app shell uses h-[100dvh] and
-   manages its own scroll regions; without this, mobile browsers let the
-   whole document scroll when the URL bar shows/hides, pushing the header
-   and PR card out of view. */
 html, body {
   overflow: hidden;
   overscroll-behavior: none;
@@ -221,22 +196,15 @@ html, body {
   background: var(--color-bg-primary);
 }
 
-/* Custom highlight for the markdown-comments "pending comment" range. The
-   native browser selection is dimmed or cleared once focus moves to the
-   comment textarea, so we paint a persistent highlight via the CSS Custom
-   Highlight API. See MarkdownSelectionComments.tsx. */
 ::highlight(shipit-pending-comment) {
   background-color: color-mix(in srgb, var(--color-accent) 35%, transparent);
   color: inherit;
 }
 
-/* ── Rocket launch animation (new-session empty state) ── */
-
 .rocket-scene {
   position: relative;
 }
 
-/* ── Stars ── */
 .star {
   position: absolute;
   border-radius: 50%;
@@ -257,7 +225,6 @@ html, body {
   100% { opacity: 0.6; transform: scale(1.5); }
 }
 
-/* ── Rocket container — anchored at bottom, smooth liftoff ── */
 .rocket-container {
   position: absolute;
   bottom: 0;
@@ -289,31 +256,29 @@ html, body {
   }
 }
 
-/* ── Rocket SVG ── */
 .rocket-svg {
   position: relative;
   z-index: 2;
   filter: drop-shadow(0 0 20px rgba(233, 69, 96, 0.3));
-  /* Shift down so the fins (not the flame) sit at the container bottom edge */
+
   margin-bottom: -60px;
 }
 
-/* ── Flame — ignites sideways first, then grows downward for thrust ── */
 .flame-group {
   transform-origin: 256px 400px;
   animation: flame-ignite 17.5s ease-out forwards;
 }
 
 @keyframes flame-ignite {
-  /* Ignition: sideways spread (0–5s) */
+
   0%    { transform: scaleY(0) scaleX(0); opacity: 0; }
   8%    { transform: scaleY(0.15) scaleX(1.8); opacity: 0.6; }
   16%   { transform: scaleY(0.2) scaleX(2.2); opacity: 0.8; }
   24%   { transform: scaleY(0.25) scaleX(2.0); opacity: 0.9; }
   28.5% { transform: scaleY(0.4) scaleX(1.6); opacity: 1; }
-  /* Slow creep phase — flames start growing downward (5–7s) */
+
   40%   { transform: scaleY(0.8) scaleX(1.3); opacity: 1; }
-  /* Full thrust during acceleration */
+
   60%   { transform: scaleY(1.6) scaleX(1.2); opacity: 1; }
   100%  { transform: scaleY(3.0) scaleX(1.1); opacity: 1; }
 }
@@ -329,7 +294,6 @@ html, body {
   100% { opacity: 1;   transform: scaleX(1.06); }
 }
 
-/* ── Exhaust glow — bloom that grows during ignition ── */
 .exhaust-glow {
   position: absolute;
   bottom: -30px;
@@ -352,7 +316,6 @@ html, body {
   100% { opacity: 0; transform: translateX(-50%) scale(1.0); }
 }
 
-/* ── Exhaust particles — sparks shooting sideways first, then outward ── */
 .particles {
   position: absolute;
   bottom: -10px;
@@ -371,12 +334,11 @@ html, body {
   animation: particle-burst 4.5s ease-out 4;
 }
 
-/* Sideways-biased particles (fire during ignition) */
 .p1 { animation-delay: 1.5s; --px: -60px; --py: 15px; background: #ff6b35; }
 .p2 { animation-delay: 2.5s; --px: 55px;  --py: 12px; background: #f7c948; }
 .p3 { animation-delay: 3.5s; --px: -45px; --py: 20px; background: #ff6b35; }
 .p4 { animation-delay: 4.5s; --px: 50px;  --py: 18px; background: #f7c948; }
-/* Downward particles (during thrust) */
+
 .p5 { animation-delay: 7.0s; --px: -25px; --py: 70px; background: #e94560; }
 .p6 { animation-delay: 7.5s; --px: 20px;  --py: 80px; background: #ff6b35; }
 .p7 { animation-delay: 8.0s; --px: -10px; --py: 65px; background: #f7c948; }
@@ -393,7 +355,6 @@ html, body {
   }
 }
 
-/* ── Smoke clouds — anchored at bottom of scene, billow sideways ── */
 .smoke-clouds {
   position: absolute;
   bottom: 0;
@@ -444,7 +405,6 @@ html, body {
   }
 }
 
-/* Toast entry animation — start invisible, transition to visible on mount */
 @starting-style {
   .toast-enter {
     opacity: 0;
@@ -508,7 +468,6 @@ html, body {
   background: currentColor;
 }
 
-/* Negative angles so the comet head travels clockwise as the phase advances. */
 .spinner > i:nth-child(1) { transform: rotate(0deg) translateY(-140%); animation: spoke-0 1.2s linear infinite }
 .spinner > i:nth-child(2) { transform: rotate(-30deg) translateY(-140%); animation: spoke-1 1.2s linear infinite }
 .spinner > i:nth-child(3) { transform: rotate(-60deg) translateY(-140%); animation: spoke-2 1.2s linear infinite }
@@ -522,16 +481,8 @@ html, body {
 .spinner > i:nth-child(11) { transform: rotate(-300deg) translateY(-140%); animation: spoke-10 1.2s linear infinite }
 .spinner > i:nth-child(12) { transform: rotate(-330deg) translateY(-140%); animation: spoke-11 1.2s linear infinite }
 
-/* Under reduced motion the travelling head goes away entirely. No box moves
-   either way, but the whole point of the design is that a bright point is
-   *perceived* to travel round the ring, and that perception is what the
-   preference is about — "it is only opacity" would be an argument about the
-   implementation, not about what the user sees. The ring keeps a slow, uniform
-   breath instead: still obviously in-flight, with no direction and no position
-   to track. Every spoke shares one animation, so this is also the cheapest
-   state the component has. */
 @media (prefers-reduced-motion: reduce) {
-  /* Same specificity as the numbered rules above, so it wins on source order. */
+
   .spinner > i:nth-child(n) {
     animation: spinner-breathe 2.4s ease-in-out infinite alternate;
   }
@@ -542,11 +493,6 @@ html, body {
   to { opacity: 0.3 }
 }
 
-/* ── Preview empty-state illustration (PreviewSetupInvite.tsx) ──
-   Decorative only: the dashed outlines march slowly to read as "waiting to be
-   filled", and the chat bubble's dots blink to read as a live conversation.
-   Nothing here carries meaning the copy doesn't also state, so the whole set
-   is switched off under `prefers-reduced-motion` at the bottom of this block. */
 @keyframes preview-art-march {
   to {
     stroke-dashoffset: -160;
@@ -595,9 +541,6 @@ html, body {
   animation: preview-art-pulse 2.4s ease-in-out 10;
 }
 
-/* 0.2s / 0.4s rather than the original 0.25s / 0.5s: the stagger stays even, and
-   both land on the 10 Hz grid so the three dots share one tick train instead of
-   opening three. */
 .preview-art-blink-2 {
   animation-delay: 0.2s;
 }
@@ -624,9 +567,6 @@ html, body {
   }
 }
 
-/* Monaco line highlight when the preview is opened at a specific line
-   (e.g. from a `path:line` link in chat). Fades on its own after the
-   decoration is cleared. */
 @keyframes preview-line-flash {
   from {
     background-color: rgb(250 204 21 / 0.35);
@@ -656,7 +596,6 @@ html, body {
   cursor: pointer;
 }
 
-/* readOnly surfaces (agent-review snapshots) suppress the click. */
 .monaco-comment-glyph--static {
   cursor: default;
 }
@@ -681,11 +620,6 @@ html, body {
   background-color: var(--color-accent-hover);
 }
 
-/* Same badge as the `+`, with a dot instead. The badge carries its own
-   contrast pair (accent fill, accent-text dot) rather than relying on the
-   fill reading against the editor background — both surfaces pin Monaco to
-   `vs-dark` regardless of the app theme, so a theme with a dark accent
-   (cool-light) would leave a bare accent-colored dot barely visible. */
 .monaco-comment-glyph::before {
   content: "";
   width: 14px;
@@ -703,7 +637,6 @@ html, body {
   background-color: var(--color-accent-text);
 }
 
-/* Resize handle — vertical divider between panels */
 .resize-handle {
   width: 8px;
   cursor: col-resize;
@@ -714,7 +647,6 @@ html, body {
   cursor: col-resize;
 }
 
-/* Search highlight — background color on matched text */
 .search-highlight {
   background-color: rgba(250, 204, 21, 0.4);
   color: inherit;
@@ -722,20 +654,15 @@ html, body {
   padding: 0 1px;
 }
 
-/* Active/current match — brighter to distinguish from other matches */
 .search-highlight--current {
   background-color: rgba(250, 204, 21, 0.8);
   color: #111;
 }
 
-/* ── Prose list markers — match text color ── */
 .prose :where(ul, ol) > li::marker {
   color: currentColor;
 }
 
-/* ── Prose code overrides — ensure proper contrast in light mode ──
- * Tailwind typography defaults assume dark pre backgrounds, so pre code
- * text is very light. Override to use our theme-aware syntax colors. */
 .prose :where(pre code):not(:where([class~="not-prose"], [class~="not-prose"] *)) {
   color: var(--color-syntax-base);
 }
@@ -746,8 +673,6 @@ html, body {
   border-radius: 0.25rem;
   font-size: 0.85em;
 }
-
-/* ── Scrollbar styling (uses theme tokens) ── */
 
 ::-webkit-scrollbar {
   width: 8px;
@@ -776,9 +701,6 @@ html, body {
   scrollbar-color: var(--color-scrollbar-thumb) transparent;
 }
 
-/* Horizontal strips (e.g. the right-panel tab bar) that need to scroll on
-   overflow but are too short to give up height to the 8px scrollbar. The strip
-   stays swipe/scroll-able; the scrollbar itself is just hidden. */
 @utility no-scrollbar {
   scrollbar-width: none;
   &::-webkit-scrollbar {
@@ -786,13 +708,11 @@ html, body {
   }
 }
 
-/* ── Syntax highlighting (token-based, works in all themes) ── */
 .hljs {
   color: var(--color-syntax-base);
   background: transparent;
 }
 
-/* ── Prose overrides — strip default inline-code and pre styling ── */
 .prose :where(code):not(:where([class~="not-prose"], [class~="not-prose"] *)) {
   background: transparent;
   padding: 0;

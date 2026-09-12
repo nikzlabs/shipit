@@ -55,7 +55,7 @@ Implemented in `src/server/orchestrator/prepared-dispatch.ts`, which owns the
 module-private brand key and is therefore the only file that can mint one:
 
 ```ts
-declare const PREPARED: unique symbol;                 // not exported
+declare const PREPARED: unique symbol;
 export type PreparedDispatch = AgentDispatchOptions & { readonly [PREPARED]: true };
 ```
 
@@ -108,7 +108,7 @@ handle:
 
 ```ts
 interface TurnHandle {
-  /** Resolves exactly once, when the turn reaches a terminal outcome. */
+
   readonly settled: Promise<TurnOutcome>;
 }
 
@@ -209,7 +209,7 @@ Liveness is then a question with a ground-truth answer, asked of the runner that
 actually owns the turn:
 
 ```ts
-runner.hasDelivery(id)   // running as the current turn, OR queued behind one
+runner.hasDelivery(id)
 ```
 
 - **Running** — `runner.activeDeliveryId`, set synchronously by `dispatch` in the

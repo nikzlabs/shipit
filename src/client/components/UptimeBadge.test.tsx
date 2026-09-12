@@ -41,7 +41,7 @@ describe("UptimeBadge", () => {
   });
 
   it("renders the initial elapsed label from processStartedAt", () => {
-    vi.setSystemTime(new Date("2026-05-18T12:02:30Z")); // 2m30s after start
+    vi.setSystemTime(new Date("2026-05-18T12:02:30Z"));                     
     render(<UptimeBadge processStartedAt={new Date("2026-05-18T12:00:00Z").getTime()} />);
     expect(screen.getByText("2m")).toBeInTheDocument();
   });
@@ -59,14 +59,12 @@ describe("UptimeBadge", () => {
   });
 
   it("resets to a fresh elapsed when processStartedAt changes (post-restart)", () => {
-    vi.setSystemTime(new Date("2026-05-18T12:05:00Z")); // 5min after first start
+    vi.setSystemTime(new Date("2026-05-18T12:05:00Z"));                          
     const { rerender } = render(
       <UptimeBadge processStartedAt={new Date("2026-05-18T12:00:00Z").getTime()} />,
     );
     expect(screen.getByText("5m")).toBeInTheDocument();
 
-    // Restart: orchestrator process bounced, SSE reconnected with a brand-new
-    // start time matching "now". The badge should snap back to ~0.
     rerender(
       <UptimeBadge processStartedAt={new Date("2026-05-18T12:05:00Z").getTime()} />,
     );

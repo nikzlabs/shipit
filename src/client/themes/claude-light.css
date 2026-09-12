@@ -1,6 +1,6 @@
-/* Claude Light theme — warm parchment with terracotta accent */
+
 .claude-light {
-  /* Surfaces */
+
   --color-bg-primary: #faf5ef;
   --color-bg-secondary: #f0e8de;
   --color-bg-tertiary: #e6dcd0;
@@ -9,25 +9,21 @@
   --color-bg-hover: rgba(180, 100, 60, 0.06);
   --color-bg-active: rgba(180, 100, 60, 0.1);
 
-  /* Text */
   --color-text-primary: #2a2018;
   --color-text-secondary: #5c5040;
   --color-text-tertiary: #9a8c78;
   --color-text-inverse: #faf5ef;
   --color-text-link: #c06040;
 
-  /* Borders */
   --color-border-primary: #decfbc;
   --color-border-secondary: #d0c0ac;
   --color-border-focus: #d97757;
 
-  /* Accent */
   --color-accent: #d97757;
   --color-accent-hover: #c4603f;
   --color-accent-text: #ffffff;
   --color-accent-subtle: rgba(217, 119, 87, 0.12);
 
-  /* Status */
   --color-success: #3a8a50;
   --color-success-subtle: rgba(58, 138, 80, 0.1);
   --color-success-border: rgba(58, 138, 80, 0.3);
@@ -38,7 +34,6 @@
   --color-info: #c06040;
   --color-info-subtle: rgba(192, 96, 64, 0.1);
 
-  /* Domain-specific */
   --color-pr: #8050a0;
   --color-pr-subtle: rgba(128, 80, 160, 0.1);
   --color-pr-border: rgba(128, 80, 160, 0.3);
@@ -54,17 +49,14 @@
   --color-attention: #d97706;
   --color-attention-text: #92400e;
 
-  /* Context meter */
   --color-context-ok: #3a8a50;
   --color-context-mid: #b89020;
   --color-context-high: #d07030;
   --color-context-full: #c43838;
 
-  /* Scrollbar */
   --color-scrollbar-thumb: rgba(154, 140, 120, 0.35);
   --color-scrollbar-thumb-hover: rgba(92, 80, 64, 0.5);
 
-  /* Syntax highlighting (warm, earthy light tones) */
   --color-syntax-base: #3c3424;
   --color-syntax-bg: #faf5ef;
   --color-syntax-keyword: #b85030;
@@ -82,6 +74,5 @@
   --color-syntax-deletion: #b85030;
   --color-syntax-deletion-bg: #faeae4;
 
-  /* Typography */
   --font-size-code: 13px;
 }

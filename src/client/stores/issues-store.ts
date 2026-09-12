@@ -14,7 +14,6 @@ import type {
   TrackerIssue,
 } from "../../server/shared/types.js";
 
-/** A tracker status option — the non-null shape of {@link TrackerIssue.status}. */
 type IssueStatusRef = NonNullable<TrackerIssue["status"]>;
 import {
   UNASSIGNED,
@@ -42,12 +41,6 @@ import {
   type IssueRefResolution,
 } from "../../server/shared/issue-ref-resolution.js";
 
-/**
- * The GitHub tracker is per-repo, so its issues are scoped to the active
- * session's remote (docs/170, planning#82). We pass the current session id on the
- * tracker/issue fetches; the server resolves it to a `{owner, repo}` binding.
- * Linear ignores it. Returns a `sessionId=…` pair, or "" when no session.
- */
 function sessionIdParam(): string {
   const id = useSessionStore.getState().sessionId;
   return id ? `sessionId=${encodeURIComponent(id)}` : "";
@@ -82,79 +75,43 @@ export function toTrackerDestinations(trackers: TrackerInfo[]): TrackerDestinati
   }));
 }
 
-/**
- * Signature of the declared-tracker view — everything the sub-tabs and
- * {@link trackerDestinations} read out of a `TrackerInfo`. `fetchTrackers`
- * compares it across a refresh so a caller can tell a real declaration change
- * from a no-op refresh (planning#323): a `shipit.yaml` edit that touched
- * `agent.install` or the compose path re-reads the (cheap, local) tracker list
- * without also spending a tracker-API round-trip on the issue list.
- */
 function declarationSignature(trackers: TrackerInfo[]): string {
   return JSON.stringify(
     trackers.map((t) => [t.id, t.kind, t.name ?? null, t.binding?.key ?? null, t.configured]),
   );
 }
 
-/**
- * docs/248 reqs 10/11 — resolve a reference the UI holds (a doc's `issue:`
- * frontmatter, a markdown href) against the declared destinations. Fails closed:
- * callers render an unresolvable reference legibly (plain text, or the external
- * link it already was) rather than an in-app link that would 404.
- */
 export function resolveUiIssueRef(pointer: string): IssueRefResolution {
   return resolveIssueRef(pointer, trackerDestinations());
 }
 
-/**
- * GitHub identifiers are `owner/repo#123` (or `planning#123` once the repository
- * declares a name for that destination); the tracker-native lookup id the detail
- * fetch wants is the bare number after `#`. Linear identifiers (`SHI-1`, no `#`)
- * ARE the lookup id, so they pass through unchanged. Mirrors the server's
- * `parseIssueRef`, kept here so a card (which only carries the display
- * identifier) can open the detail view without a round-trip to resolve the id.
- */
 export function issueLookupId(identifier: string): string {
   const hash = identifier.indexOf("#");
   return hash === -1 ? identifier : identifier.slice(hash + 1);
 }
 
-/**
- * The issue currently open in the inline detail view (docs/189). Carries the
- * tracker-native lookup `id` plus the display fields a caller already has (from
- * a list row or a chat card) so the header can render instantly while the
- * fully-hydrated issue is fetched.
- */
 export interface IssueSelection {
   tracker: TrackerId;
-  /** Tracker-native lookup id: a Linear key/UUID or a bare GitHub number. */
+
   id: string;
-  /** Display identifier, e.g. "SHI-28" or "owner/repo#42". */
+
   identifier: string;
   title?: string;
   url?: string;
-  /**
-   * Tracker-native id of a comment to scroll to + highlight once the thread
-   * lands (planning#105). Set when an opener has a specific comment to land on — e.g.
-   * clicking the provenance card for a comment the agent just posted. The detail
-   * view consumes it (clears it via `clearAnchorComment`) after anchoring, so a
-   * later refresh doesn't re-scroll.
-   */
+
   anchorCommentId?: string;
 }
 
-/** Argument to {@link IssuesState.openIssue} — from a list row or a chat card. */
 export interface OpenIssueRef {
   tracker: TrackerId;
-  /** Native lookup id (the list row's `issue.id`); derived from `identifier`
-   *  when absent (the chat-card path, which only knows the display id). */
+
   id?: string;
   identifier: string;
   title?: string;
   url?: string;
-  /** Full issue to render instantly while the fresh fetch lands (list path). */
+
   seed?: TrackerIssue;
-  /** Comment to scroll to + highlight once the thread lands (planning#105). */
+
   anchorCommentId?: string;
 }
 
@@ -169,59 +126,25 @@ export interface OpenIssueRef {
  * user never leaves ShipIt to read an issue.
  */
 interface IssuesState {
-  /** Configured-tracker metadata — drives the sub-tab switcher. */
+
   trackers: TrackerInfo[];
-  /**
-   * The repository whose declarations the store's contents belong to — the
-   * active session's remote URL, or null when there is no repo context
-   * (planning#327). Declarations live in a repository's `shipit.yaml`, so a switch
-   * to a session on a *different* repository invalidates everything here
-   * before `fetchTrackers` can say what the new repository declares. See
-   * {@link IssuesState.setRepoScope}.
-   */
+
   repoScope: string | null;
-  /**
-   * The last fetch could not read the session's declarations at all — its
-   * checkout isn't on disk yet (a disk-evicted session being re-cloned by
-   * activation). `trackers: []` then means "not yet", not "declares nothing",
-   * and {@link IssuesState.warmTrackers} keeps asking until it means the latter.
-   */
+
   declarationsPending: boolean;
   activeTracker: TrackerId;
   issuesByTracker: Record<string, TrackerIssue[]>;
-  /** Per-tracker info refreshed alongside the list (configured + binding). */
+
   infoByTracker: Record<string, TrackerInfo>;
-  /**
-   * Per-tracker assignable statuses (docs/191) — the tracker's full workflow
-   * states (Linear team states / GitHub Open·Closed), refreshed alongside the
-   * list. Drives the inline status editor's option menu on the list rows, which
-   * (unlike the detail view's `availableStatuses`) have no per-issue option set.
-   */
+
   statusesByTracker: Record<string, IssueStatusRef[]>;
-  /**
-   * Per-tracker available label set (name + color), fetched lazily and cached —
-   * mirrors `statusesByTracker`. The foundation a follow-up label filter facet /
-   * on-page editor consumes (the read-only available-labels endpoint). Distinct
-   * from the per-issue `TrackerIssue.labels`: this is the whole pickable set.
-   */
+
   labelsByTracker: Record<string, IssueLabel[]>;
   loading: boolean;
   error: string | null;
 
-  /**
-   * Client-side list filters (docs/173). `query` + `priorities` are
-   * normalized/universal so they persist across sub-tab switches; `statuses` +
-   * `assignees` are freeform per-tracker values, pruned to the active list on
-   * tracker switch / after a fetch (the `UNASSIGNED` sentinel always survives).
-   */
   filters: IssueFilters;
 
-  /**
-   * Whether the fetched list includes "done"/completed issues. Unlike the
-   * `filters` facets (which narrow the already-loaded list client-side), this is
-   * a fetch-scope control: toggling it re-fetches with `&includeDone` so the
-   * server widens the state set it returns. Persisted across reloads.
-   */
   includeDone: boolean;
 
   /**
@@ -231,40 +154,15 @@ interface IssuesState {
    */
   sortPrefs: SortPrefs;
 
-  /**
-   * Explicit collapse overrides for parent issues (docs/206), keyed by
-   * `TrackerIssue.id`: `true` = collapsed, `false` = expanded. An absent entry
-   * means "untouched", so the layout default applies (expanded on the wide table,
-   * collapsed on the narrow card layout — see `collapsePredicate`). Persisted
-   * GLOBALLY (not per session or repo — neither is the issue list) so the tree
-   * stays how the user left it across reloads.
-   */
   collapseById: Record<string, boolean>;
 
-  /**
-   * Scroll offset of the list's scroll container, persisted so opening an issue
-   * and pressing back lands on the same row the user left (docs/189). The list
-   * component fully unmounts behind the detail view, so its DOM `scrollTop` is
-   * gone on return — we stash it here on unmount and restore it on remount.
-   */
   listScrollTop: number;
 
-  /**
-   * The issue open in the inline detail view, or null when the list is showing
-   * (docs/189). `detail` is the fully-hydrated issue from `GET /api/issue`;
-   * until it lands the view renders from `selected`'s seed fields.
-   */
   selected: IssueSelection | null;
   detail: TrackerIssue | null;
   detailLoading: boolean;
   detailError: string | null;
 
-  /**
-   * The open issue's comment thread (docs/189 follow-up). `null` means "not
-   * fetched yet" (the view shows a loading hint), distinct from `[]` ("no
-   * comments"). Fetched alongside the detail when an issue opens, independently
-   * so the description paints without waiting on the thread.
-   */
   comments: TrackerComment[] | null;
   commentsLoading: boolean;
   commentsError: string | null;
@@ -290,18 +188,7 @@ interface IssuesState {
    * edits `shipit.yaml`), and an edit changes it with no switch at all.
    */
   setRepoScope: (repoUrl: string | null) => void;
-  /**
-   * Re-read the declared-tracker view from `GET /api/trackers` (a local
-   * `shipit.yaml` read server-side — no tracker API round-trip). Resolves to
-   * whether the declared set actually changed, so a caller refreshing on a
-   * `shipit.yaml` edit (planning#323) can skip the far more expensive issue-list
-   * fetch when the edit touched something else in the file.
-   *
-   * Also enforces docs/248 req 11 over what the store already holds: a
-   * destination that is no longer declared is not reachable, so the open detail
-   * closes back to the list and that tracker's cached list/statuses/labels are
-   * dropped (planning#327).
-   */
+
   fetchTrackers: () => Promise<boolean>;
   /**
    * `fetchTrackers`, plus a bounded background retry for as long as the server
@@ -317,28 +204,17 @@ interface IssuesState {
    */
   warmTrackers: () => Promise<void>;
   fetchIssues: (trackerId?: TrackerId) => Promise<void>;
-  /**
-   * Fetch + cache the tracker's full available-label set (name + color). Lazy:
-   * a follow-up label filter/editor calls it when it needs the pickable set;
-   * the issue list itself gets colors inline on each `TrackerIssue.labels`.
-   */
+
   fetchLabels: (trackerId?: TrackerId) => Promise<void>;
-  /** Open the detail view for an issue (from a list row or a chat card). */
+
   openIssue: (ref: OpenIssueRef) => Promise<void>;
-  /** Re-fetch the open issue (refresh button inside the detail view). */
+
   fetchDetail: () => Promise<void>;
-  /** Fetch the open issue's comment thread. */
+
   fetchComments: () => Promise<void>;
-  /**
-   * Clear the open selection's `anchorCommentId` after the detail view has
-   * scrolled to it (planning#105), so a later refresh/refetch doesn't re-anchor.
-   */
+
   clearAnchorComment: () => void;
-  /**
-   * Post a user-authored comment on the open issue. Appends the created comment
-   * to the thread on success. Returns an error message on failure, or null on
-   * success (so the calling component can surface it inline).
-   */
+
   postComment: (body: string) => Promise<string | null>;
   /**
    * Set an issue's status (docs/191). Patches the row + open detail in place on
@@ -346,27 +222,21 @@ interface IssuesState {
    * is passed explicitly because a `TrackerIssue` doesn't carry its tracker id.
    */
   setIssueStatus: (tracker: TrackerId, issue: TrackerIssue, status: string) => Promise<string | null>;
-  /** Set an issue's priority (Linear-only, docs/191). Same contract as status. */
+
   setIssuePriority: (
     tracker: TrackerId,
     issue: TrackerIssue,
     level: IssuePriorityLevel,
   ) => Promise<string | null>;
-  /**
-   * Replace an issue's full label set (the on-page label editor). `labels` is
-   * the COMPLETE desired set of names — a wholesale replace, not a delta — so a
-   * removal is just a name left out and `[]` clears all labels. Patches the row
-   * + open detail in place on success. Both trackers support labels, so (unlike
-   * priority) this isn't gated. Returns an error message, or null on success.
-   */
+
   setIssueLabels: (
     tracker: TrackerId,
     issue: TrackerIssue,
     labels: string[],
   ) => Promise<string | null>;
-  /** Close the detail view and return to the list. */
+
   closeIssue: () => void;
-  /** Stash the list's scroll offset so a later remount can restore it. */
+
   setListScrollTop: (top: number) => void;
   setQuery: (query: string) => void;
   togglePriority: (level: IssuePriorityLevel) => void;
@@ -374,13 +244,9 @@ interface IssuesState {
   toggleAssignee: (value: string) => void;
   toggleLabel: (name: string) => void;
   toggleIncludeDone: () => void;
-  /** Replace the sort/group prefs (from the sort modal). Persisted. */
+
   setSortPrefs: (prefs: SortPrefs) => void;
-  /**
-   * Record an explicit collapse/expand for a parent (docs/206). `collapsed` is
-   * the new state; it's stored as an override so the layout default no longer
-   * applies to this parent. Persisted.
-   */
+
   setCollapsed: (issueId: string, collapsed: boolean) => void;
   clearFilters: () => void;
   reset: () => void;
@@ -396,7 +262,6 @@ function emptyFilters(): IssueFilters {
   };
 }
 
-/** The closed-detail state — shared by `closeIssue` and the wider clears. */
 function closedDetail() {
   return {
     selected: null,
@@ -409,23 +274,9 @@ function closedDetail() {
   } as const;
 }
 
-/**
- * Everything the store holds *about one repository's issues*: the per-tracker
- * caches, the list chrome (loading/error/filters/scroll) and the open detail.
- * Backs both `reset()` and the repo-scope change, so the two can't drift.
- *
- * The caches are keyed by tracker id but their CONTENTS belong to the
- * destination that id named when they were fetched: the GitHub tracker resolves
- * against the active session's repo binding (`sessionIdParam`), so
- * `issuesByTracker["github"]` holds repo A's issues even though repo B declares
- * the same id. That's why a repo change clears all of them, while a declaration
- * refresh drops only the ids whose destination changed or went away (see
- * `destinationKey` / `pickReachable`).
- */
 function clearedRepoState() {
   return {
-    // Whether the *previous* repository's declarations were readable says
-    // nothing about the incoming one's; the next fetch answers it.
+
     declarationsPending: false,
     issuesByTracker: {},
     statusesByTracker: {},
@@ -438,22 +289,10 @@ function clearedRepoState() {
   };
 }
 
-/**
- * The destination a tracker id currently names, as the browser can see it: the
- * backend kind plus the backend's own identity for the binding (`owner/repo`,
- * a Linear team key). Two declarations of one id with different keys are two
- * different destinations, and nothing cached under that id crosses between them.
- * An absent binding is its own value — an unconfigured tracker reaches nothing.
- */
 function destinationKey(t: TrackerInfo): string {
   return `${t.kind ?? ""}:${t.binding?.key ?? ""}`;
 }
 
-/**
- * The subset of a per-tracker cache whose ids are still reachable. Returns the
- * same object when nothing is dropped, so a no-op refresh doesn't re-render
- * every subscriber.
- */
 function pickReachable<T>(record: Record<string, T>, reachable: Set<string>): Record<string, T> {
   const keys = Object.keys(record);
   if (keys.every((k) => reachable.has(k))) return record;
@@ -467,11 +306,6 @@ function toggleInSet<T>(set: Set<T>, value: T): Set<T> {
   return next;
 }
 
-/**
- * Prune freeform status/assignee selections to the values present in the given
- * list. The `UNASSIGNED` sentinel is preserved unconditionally — it's a
- * synthetic option that isn't enumerated by the tracker.
- */
 function pruneFilters(filters: IssueFilters, issues: TrackerIssue[]): IssueFilters {
   const validStatuses = new Set(distinctStatuses(issues).map((s) => s.name));
   const validAssignees = new Set(distinctAssignees(issues).map((a) => a.value));
@@ -487,48 +321,18 @@ function pruneFilters(filters: IssueFilters, issues: TrackerIssue[]): IssueFilte
   };
 }
 
-/**
- * Backoff between `warmTrackers` retries, in ms — one retry per entry, so the
- * budget is ~60s over 8 requests. Sized against what it waits for: a re-clone of
- * an evicted checkout from the bare cache, which is seconds for a small repo and
- * tens of seconds for a large one. Each request is a local `shipit.yaml` read
- * server-side with no tracker-API round-trip, so the cost of over-asking is
- * negligible; the cost of under-waiting is the bug this exists for.
- */
 const WARM_RETRY_DELAYS_MS = [500, 1000, 2000, 4000, 8000, 15000, 30000];
 
-/**
- * Which warm-up owns the store. A later `warmTrackers` supersedes the one in
- * flight rather than letting two backoff loops interleave writes.
- */
 let warmGeneration = 0;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-/**
- * What a tracker response is *about*: the session it was requested for (the
- * server resolves the GitHub binding from it) and the repository the store is
- * currently scoped to. Compared across the fetch await so a response that
- * outlived its subject is dropped rather than written.
- */
 function declarationScope(get: () => IssuesState): string {
   return `${useSessionStore.getState().sessionId ?? ""} ${get().repoScope ?? ""}`;
 }
 
-/**
- * The background half of {@link IssuesState.warmTrackers}: re-ask until the
- * session's checkout is readable, then stop. Bails the moment a newer warm-up
- * owns the store, or the session changes under it — a fetch issued for the
- * session we started on would otherwise write another repository's declarations
- * over the current one's.
- *
- * When the declarations finally land *and* differ from what the store was
- * showing, the issue list is refreshed on the same condition `files-changed`
- * uses for a `shipit.yaml` edit: the list is a real tracker-API round-trip, so
- * only refetch it when the declared set actually changed and the tab is showing.
- */
 async function retryUntilReadable(get: () => IssuesState, generation: number): Promise<void> {
   const startedFor = useSessionStore.getState().sessionId;
   let changed = false;
@@ -548,9 +352,7 @@ export const useIssuesStore = create<IssuesState>((set, get) => ({
   trackers: [],
   repoScope: null,
   declarationsPending: false,
-  // docs/248 — no built-in tracker, so there is no meaningful default until
-  // `fetchTrackers` lands. The session's own repository is the one destination
-  // that always exists when there is a repo at all, so it is the safe seed.
+
   activeTracker: "github",
   issuesByTracker: {},
   infoByTracker: {},
@@ -558,9 +360,7 @@ export const useIssuesStore = create<IssuesState>((set, get) => ({
   labelsByTracker: {},
   loading: false,
   error: null,
-  // Rehydrate the filter bar from the last reload (docs/173). Freeform
-  // status/assignee values are pruned to the loaded list by the first
-  // fetchIssues, so restoring before any fetch is safe.
+
   filters: getSavedIssueFilters(),
   includeDone: getSavedIncludeDone(),
   sortPrefs: getSavedSortPrefs(),
@@ -577,8 +377,7 @@ export const useIssuesStore = create<IssuesState>((set, get) => ({
   setActiveTracker: (id) =>
     set((state) => ({
       activeTracker: id,
-      // Prune freeform facets against the newly-active list (it may be empty
-      // until fetchIssues lands, which prunes again with fresh data).
+
       filters: pruneFilters(state.filters, state.issuesByTracker[id] ?? []),
     })),
 
@@ -588,17 +387,11 @@ export const useIssuesStore = create<IssuesState>((set, get) => ({
         ? state
         : {
             repoScope: repoUrl,
-            // The incoming repository's declarations are unknown until
-            // `fetchTrackers` lands; fail closed rather than rendering the
-            // previous repository's trackers (and its open issue) meanwhile.
+
             trackers: [],
             infoByTracker: {},
             ...clearedRepoState(),
-            // A tracker fetch always follows a scope change (`App` fires one on
-            // every session change), so the panel renders "loading" for the gap
-            // rather than the misleading "not connected" that an empty tracker
-            // list would otherwise produce. Cleared by the `fetchIssues` that
-            // follows when the tab is open.
+
             loading: true,
           },
     ),
@@ -615,27 +408,13 @@ export const useIssuesStore = create<IssuesState>((set, get) => ({
         trackers?: TrackerInfo[];
         declarationsPending?: boolean;
       };
-      // The answer describes the session/repository that was current when the
-      // request went out. If either moved across the await this response is
-      // about somewhere else, and writing it would paint one repository's
-      // declarations over another's — the resolution context every inline issue
-      // badge renders against, so a `planning#147` in the transcript would go
-      // plain the moment a slow response from the previous session landed last.
-      // Dropping is safe: whatever changed the scope issues its own fetch.
+
       if (declarationScope(get) !== requestedFor) return false;
       const trackers = data.trackers ?? [];
       const declarationsPending = data.declarationsPending === true;
       const changed = declarationSignature(get().trackers) !== declarationSignature(trackers);
       set((state) => {
-        // docs/248 req 11 (planning#327) — what the store holds for a tracker id
-        // survives only while that id still names the destination it was
-        // fetched from. Presence of the id is NOT enough: the session's own
-        // repository's GitHub Issues live under the bare `github` id (req 12),
-        // so that id is declared by every repository while pointing at a
-        // different destination in each — an issue opened in repo A would
-        // otherwise stay open, and refresh, against repo B's issue of the same
-        // number. A declared `name` re-pointed at another team/repo is the same
-        // case. Comparing the binding is what distinguishes them.
+
         const reachable = new Set(
           trackers
             .filter((t) => {
@@ -646,7 +425,7 @@ export const useIssuesStore = create<IssuesState>((set, get) => ({
         );
         const infoByTracker = { ...pickReachable(state.infoByTracker, reachable) };
         for (const t of trackers) infoByTracker[t.id] = t;
-        // Keep the active sub-tab valid if the configured set changed.
+
         const activeTracker = trackers.some((t) => t.id === state.activeTracker)
           ? state.activeTracker
           : (trackers[0]?.id ?? "github");
@@ -655,13 +434,11 @@ export const useIssuesStore = create<IssuesState>((set, get) => ({
           declarationsPending,
           infoByTracker,
           activeTracker,
-          // Only the unreachable entries go: a tracker that still names the
-          // same destination is still reachable and its cache is still valid.
+
           issuesByTracker: pickReachable(state.issuesByTracker, reachable),
           statusesByTracker: pickReachable(state.statusesByTracker, reachable),
           labelsByTracker: pickReachable(state.labelsByTracker, reachable),
-          // Close the open detail when its destination is gone — the list, in
-          // its default state, is what the Issues tab falls back to.
+
           ...(state.selected && !reachable.has(state.selected.tracker) ? closedDetail() : {}),
         };
       });
@@ -675,10 +452,7 @@ export const useIssuesStore = create<IssuesState>((set, get) => ({
   warmTrackers: async () => {
     const generation = ++warmGeneration;
     await get().fetchTrackers();
-    // Resolve on the first answer and retry in the background: callers sequence
-    // an issue-list fetch after this, and the session's own repository is
-    // listable whether or not the declarations have been read yet — blocking
-    // that on a re-clone would trade one stale panel for a slower one.
+
     if (get().declarationsPending) void retryUntilReadable(get, generation);
   },
 
@@ -701,9 +475,7 @@ export const useIssuesStore = create<IssuesState>((set, get) => ({
       }
       set((state) => {
         const issues = body.issues ?? [];
-        // Only re-prune when the freshly-loaded list belongs to the active
-        // sub-tab — a background fetch for another tracker shouldn't disturb
-        // the facets the user is currently looking at.
+
         const filters = id === state.activeTracker ? pruneFilters(state.filters, issues) : state.filters;
         return {
           loading: false,
@@ -713,9 +485,7 @@ export const useIssuesStore = create<IssuesState>((set, get) => ({
           infoByTracker: body.tracker
             ? { ...state.infoByTracker, [id]: body.tracker }
             : state.infoByTracker,
-          // Cache the tracker's assignable statuses for the inline status editor
-          // (docs/191). Only overwrite when the response carried them so a
-          // best-effort omission doesn't blank a previously-loaded set.
+
           statusesByTracker: body.availableStatuses
             ? { ...state.statusesByTracker, [id]: body.availableStatuses }
             : state.statusesByTracker,
@@ -746,8 +516,7 @@ export const useIssuesStore = create<IssuesState>((set, get) => ({
   openIssue: async (ref) => {
     const id = ref.id ?? issueLookupId(ref.identifier);
     set((state) => ({
-      // Align the list's sub-tab with the issue being opened so the back
-      // button lands on the matching tracker.
+
       activeTracker: ref.tracker,
       selected: {
         tracker: ref.tracker,
@@ -757,18 +526,17 @@ export const useIssuesStore = create<IssuesState>((set, get) => ({
         ...(ref.url !== undefined ? { url: ref.url } : {}),
         ...(ref.anchorCommentId !== undefined ? { anchorCommentId: ref.anchorCommentId } : {}),
       },
-      // Seed from the row/card so the view paints immediately; the fetch then
-      // hydrates the description + availableStatuses.
+
       detail: ref.seed ?? null,
       detailError: null,
       detailLoading: true,
-      // Reset the thread for the newly-opened issue; fetchComments repopulates.
+
       comments: null,
       commentsError: null,
       commentsLoading: true,
       filters: pruneFilters(state.filters, state.issuesByTracker[ref.tracker] ?? []),
     }));
-    // Independent fetches — the description shouldn't wait on the thread.
+
     await Promise.all([get().fetchDetail(), get().fetchComments()]);
   },
 
@@ -783,8 +551,7 @@ export const useIssuesStore = create<IssuesState>((set, get) => ({
         { headers: { Accept: "application/json" } },
       );
       const body = (await res.json().catch(() => ({}))) as Partial<GetIssueResult> & { error?: string };
-      // Drop a stale response: a newer openIssue may have superseded this fetch
-      // while it was in flight (a fast click from one card to another).
+
       const current = get().selected;
       if (current?.id !== sel.id || current?.tracker !== sel.tracker) return;
       if (!res.ok || !body.issue) {
@@ -810,7 +577,7 @@ export const useIssuesStore = create<IssuesState>((set, get) => ({
         { headers: { Accept: "application/json" } },
       );
       const body = (await res.json().catch(() => ({}))) as Partial<ListIssueCommentsResult> & { error?: string };
-      // Drop a stale response superseded by a newer openIssue (fast card clicks).
+
       const current = get().selected;
       if (current?.id !== sel.id || current?.tracker !== sel.tracker) return;
       if (!res.ok) {
@@ -852,7 +619,7 @@ export const useIssuesStore = create<IssuesState>((set, get) => ({
       if (!res.ok || !data.comment) {
         return data.error ?? `Failed to post comment (${res.status})`;
       }
-      // Append to the open thread (guarding against a mid-flight issue switch).
+
       const comment = data.comment;
       const current = get().selected;
       if (current?.id === sel.id && current?.tracker === sel.tracker) {
@@ -903,7 +670,7 @@ export const useIssuesStore = create<IssuesState>((set, get) => ({
     const next = !get().includeDone;
     saveIncludeDone(next);
     set({ includeDone: next });
-    // Re-fetch the active tracker so the widened/narrowed state set lands.
+
     void get().fetchIssues();
   },
 
@@ -917,19 +684,11 @@ export const useIssuesStore = create<IssuesState>((set, get) => ({
   reset: () => set(clearedRepoState()),
 }));
 
-/**
- * POST a user-initiated status/priority change (docs/191) and, on success, patch
- * the returned issue into the cached list row AND the open detail view in place
- * — no refetch. Matching is by `issue.id` (the tracker-native node id the row and
- * the hydrated detail share), so it survives a detail opened from a chat card
- * (whose `selected.id` may be a key rather than the node id). Returns an error
- * message on failure, or null on success, for the calling control to surface.
- */
 async function applyIssueMutation(
   endpoint: string,
   tracker: TrackerId,
   issue: TrackerIssue,
-  // `string` for status/priority; `string[]` for the wholesale label-set replace.
+
   payload: Record<string, string | string[]>,
 ): Promise<string | null> {
   try {
@@ -959,14 +718,9 @@ async function applyIssueMutation(
   }
 }
 
-// Persist the filter bar across reloads (docs/173). A single subscription
-// covers every mutation point — direct edits (setQuery/toggle*/clearFilters)
-// and the prune that runs inside setActiveTracker/fetchIssues — so no action
-// has to remember to save.
 useIssuesStore.subscribe((state, prev) => {
   if (state.filters !== prev.filters) saveIssueFilters(state.filters);
-  // Sort prefs + collapse state are global reference state (docs/206) — persist
-  // them on every change so they survive a reload, like the filter bar above.
+
   if (state.sortPrefs !== prev.sortPrefs) saveSortPrefs(state.sortPrefs);
   if (state.collapseById !== prev.collapseById) saveIssueCollapsed(state.collapseById);
 });

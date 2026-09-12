@@ -15,7 +15,6 @@ import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
 import { render, screen, cleanup, fireEvent, act } from "@testing-library/react";
 import type { VoiceInputApi } from "../voice/use-voice-input.js";
 
-/** Subscribers registered by the component under test. */
 const subscribers = new Set<(text: string) => void>();
 
 vi.mock("../voice/use-voice-input.js", () => ({
@@ -40,7 +39,6 @@ vi.mock("../voice/use-voice-input.js", () => ({
 
 const { MessageInput } = await import("./MessageInput.js");
 
-/** Push a transcript through every live subscription, as the real hook does. */
 function dictate(text: string) {
   act(() => {
     for (const cb of subscribers) cb(text);
@@ -89,8 +87,7 @@ describe("MessageInput dictation provenance (docs/144)", () => {
   });
 
   it("marks a message that mixes typing and dictation", () => {
-    // The point of the hint is transcription artifacts, and a partly-dictated
-    // message has them just the same.
+
     const onSend = vi.fn().mockReturnValue(true);
     render(<MessageInput onSend={onSend} disabled={false} />);
     const textarea = screen.getByPlaceholderText(PLACEHOLDER);
@@ -116,8 +113,7 @@ describe("MessageInput dictation provenance (docs/144)", () => {
   });
 
   it("drops the flag when the user clears the draft and types instead", () => {
-    // Dictate, think better of it, select-all-delete, type it by hand. Nothing
-    // spoken survives into the sent text, so the hint would be a lie.
+
     const onSend = vi.fn().mockReturnValue(true);
     render(<MessageInput onSend={onSend} disabled={false} />);
     const textarea = screen.getByPlaceholderText(PLACEHOLDER);

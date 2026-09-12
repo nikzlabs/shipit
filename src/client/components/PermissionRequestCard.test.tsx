@@ -60,8 +60,7 @@ describe("PermissionRequestCard details disclosure", () => {
     render(<PermissionRequestCard requestId={REQUEST_ID} />);
     expect(screen.getByText("Approve")).toBeInTheDocument();
     expect(screen.getByText("Deny")).toBeInTheDocument();
-    // Path-less (Bash) gates can't be remembered — the broker's allow-set is
-    // keyed by resource path.
+
     expect(screen.queryByText("Approve & remember")).not.toBeInTheDocument();
   });
 });

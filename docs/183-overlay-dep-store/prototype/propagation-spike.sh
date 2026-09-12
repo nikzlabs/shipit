@@ -1,31 +1,4 @@
 #!/usr/bin/env bash
-# PROTOTYPE — cross-container mount-propagation spike for docs/183.
-#
-# The single-namespace spikes (host-overlay-spike.sh / run-in-docker.sh) proved
-# overlayfs works. They did NOT prove the thing the chosen architecture depends
-# on: a *privileged sidecar* mounts an overlay inside ITS mount namespace, and a
-# SEPARATE session container must see the merged result through the shared named
-# volume. That requires the overlay mount to PROPAGATE to the Docker daemon's
-# namespace (so the daemon replicates it into the session container's mount).
-#
-# This script drives everything through the `docker` CLI only (so it runs the
-# same on a Linux host and on Docker Desktop / WSL2, where the daemon is in a
-# VM). It runs a ladder of propagation setups and reports, per rung:
-#   - VALID  : container B is looking at the SAME volume storage (sees the
-#              on-disk lower file) — i.e. the rung's mount source is real here
-#   - PROPAGATED : B sees the OVERLAY-merged content A mounted (the actual goal)
-#
-# Run on a Docker host:  bash propagation-spike.sh
-#   --with-host-setup : ALSO make the daemon-host root a shared mount
-#                       (mount --make-rshared / inside the host mount namespace,
-#                       via a --pid=host nsenter container) and re-test the
-#                       sidecar rung. This MUTATES host mount propagation — it is
-#                       the standard systemd default and reversible with
-#                       `mount --make-rprivate /`, but it is opt-in for that
-#                       reason. Use it to confirm the fix the bare run reveals.
-#
-# Run it on BOTH a bare-Linux/VPS-like host AND Docker Desktop (Mac/Windows);
-# the verdict can differ between them. Paste both verdicts into ../FINDINGS.md.
 set -u
 
 WITH_HOST_SETUP=0
@@ -33,8 +6,8 @@ WITH_HOST_SETUP=0
 
 IMG="ubuntu:24.04"
 VOL="ob-prop-vol"
-LOWER_MARK="HELLO_FROM_LOWER"     # written into the overlay LOWER dir (on-disk)
-A=""                              # current sidecar container name (for cleanup)
+LOWER_MARK="HELLO_FROM_LOWER"
+A=""
 
 ok()   { echo -e "    \033[32m$1\033[0m"; }
 bad()  { echo -e "    \033[31m$1\033[0m"; }
@@ -57,8 +30,6 @@ hdr "0. Environment"
 echo "    docker: $(docker version -f '{{.Server.Version}}' 2>/dev/null)  os/arch: $(docker version -f '{{.Server.Os}}/{{.Server.Arch}}' 2>/dev/null)"
 echo "    volume mountpoint (daemon-host path): $MP"
 
-# Sidecar setup script: build lower/upper/work, optionally tweak propagation on
-# the mount at $1 (/vol), then overlay-mount /vol/merged. Stays alive (sleep).
 read -r -d '' SIDECAR_SETUP <<'EOS' || true
 set -e
 PROP="${PROP:-none}"
@@ -68,11 +39,9 @@ case "$PROP" in
   make-rshared) mount --make-rshared /vol 2>/dev/null || echo "    (make-rshared failed)";;
 esac
 mount -t overlay overlay -o lowerdir=/vol/base,upperdir=/vol/up,workdir=/vol/wk /vol/merged
-# Sanity inside the sidecar itself:
 grep -q HELLO_FROM_LOWER /vol/merged/marker.txt && echo "SIDECAR_OVERLAY_OK" || echo "SIDECAR_OVERLAY_FAIL"
 EOS
 
-# Checker: container B reads the same volume and reports validity + propagation.
 read -r -d '' CHECK <<'EOS' || true
 base="$(cat /vol/base/marker.txt 2>/dev/null || echo MISSING)"
 merged="$(cat /vol/merged/marker.txt 2>/dev/null || echo MISSING)"
@@ -80,7 +49,7 @@ echo "B_BASE=$base"
 echo "B_MERGED=$merged"
 EOS
 
-run_rung() { # name  "docker-run-args-for-A"  "docker-run-args-for-B"  PROP
+run_rung() {
   local name="$1" a_args="$2" b_args="$3" prop="$4"
   hdr "Rung: $name"
   A="ob-prop-$name"
@@ -112,9 +81,6 @@ run_rung() { # name  "docker-run-args-for-A"  "docker-run-args-for-B"  PROP
 VERDICT="none"
 note() { [ "$LAST_RESULT" = "PROPAGATED" ] && VERDICT="$1"; }
 
-# Diagnose WHY propagation isn't reaching the daemon. The usual culprit: dockerd
-# runs in a DIFFERENT mount namespace than PID 1, so `make-rshared /` in PID 1
-# never reaches the daemon's view. Pure /proc parsing — no extra packages.
 diagnose_host() {
   hdr "Diagnostics — is the daemon even in PID 1's mount namespace?"
   docker run --rm --privileged --pid=host "$IMG" sh -c '
@@ -135,24 +101,12 @@ diagnose_host() {
   ' 2>&1 | sed 's/^/  /'
 }
 
-# Rung 0 — baseline: plain named-volume bind in both. Expected NOT propagated
-# (Docker mounts volumes rprivate), establishing that the naive approach fails.
 run_rung "A0" "-v $VOL:/vol"            "-v $VOL:/vol"            "none";          note "baseline-volume(rprivate)"
 
-# Rung 1 — sidecar makes its own /vol rshared before mounting overlay, both use
-# the named volume. Tests whether make-rshared inside the privileged container
-# is enough on this host's default dockerd propagation.
 run_rung "A1" "-v $VOL:/vol"            "-v $VOL:/vol"            "make-rshared";  note "named-volume + make-rshared"
 
-# Rung 2 — the realistic sidecar path: bind the volume's daemon-host mountpoint
-# with :rshared so A's overlay propagates to the host/daemon namespace; B binds
-# the same host path. Requires the host subtree to be a shared mount (systemd
-# hosts usually mount / rshared at boot; Docker Desktop's VM may differ).
 run_rung "A2" "-v $MP:/vol:rshared"     "-v $MP:/vol:rslave"     "none";          note "host-mountpoint :rshared (sidecar pattern)"
 
-# Rung 3 — opt-in: perform the standard host-side fix (make the daemon-host root
-# a shared mount) and re-test the sidecar rung. This is what a VPS provisioner
-# would do once at setup; here we apply it via a --pid=host nsenter container.
 if [ "$WITH_HOST_SETUP" -eq 1 ]; then
   hdr "Host setup: mount --make-rshared / (in the daemon-host mount namespace)"
   if setup_out="$(docker run --rm --privileged --pid=host "$IMG" \

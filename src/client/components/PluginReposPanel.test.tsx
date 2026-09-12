@@ -1,4 +1,4 @@
-// docs/262 — the Plugins tab pane: cards, identity, warnings, issue rows.
+
 
 import { describe, it, expect, afterEach } from "vitest";
 import { render, cleanup, screen, fireEvent, waitFor } from "@testing-library/react";
@@ -60,7 +60,7 @@ describe("PluginReposPanel", () => {
     expect(screen.getByText("self · live working tree")).toBeTruthy();
     expect(screen.getByText("tools")).toBeTruthy();
     expect(screen.getByText("nikzlabs/shipit")).toBeTruthy();
-    // Tracked repos show ref @ commit even before a commit exists.
+
     expect(screen.getByText("branch main @ —")).toBeTruthy();
   });
 
@@ -91,18 +91,13 @@ describe("PluginReposPanel", () => {
     render(<PluginReposPanel />);
     expect(screen.getByText("1 problem")).toBeTruthy();
     expect(screen.getByText(/is not in this repository's/)).toBeTruthy();
-    // The backticks are markup, not characters: the same strings are read in a
-    // terminal by `shipit plugin refresh`, so they stay in the string and the
-    // row renders them (found in the dogfood reading "`probe` declares…").
+
     expect(screen.getAllByText("exports.plugins")[0].tagName).toBe("CODE");
     expect(screen.queryByText(/`exports\.plugins`/)).toBeNull();
   });
 
   it("shows a dependency-store notice without calling it a problem", () => {
-    // planning#511 — the version is live and whole; what the row says is that
-    // every session re-installs its dependencies. A card that counted it as a
-    // problem would put a warning chip (and the tab's attention dot) on a plugin
-    // with nothing wrong with it, permanently, until its AUTHOR fixed it.
+
     setSnapshot({
       ...FIXTURE,
       repos: [
@@ -118,12 +113,8 @@ describe("PluginReposPanel", () => {
     expect(screen.queryByText("1 problem")).toBeNull();
   });
 
-  // The `active` footer once said those things "land with the remaining plugin
-  // mechanics (docs/262)" — tab v0's honest placeholder, still there after they
-  // shipped, so an active card denied its own features (found in the dogfood).
   // It must also not assert that all four already AGREE: the refetch that draws
-  // this card is emitted before the container prepare and the service reconcile
-  // are fired (review finding), so they follow rather than being done.
+
   it("the active footer states the checkout as fact and the rest as following", () => {
     setSnapshot({ ...FIXTURE, repos: [FIXTURE.repos[1]] });
     render(<PluginReposPanel />);
@@ -138,7 +129,6 @@ describe("PluginReposPanel", () => {
     expect(screen.getByText(/files only — no plugins activated/)).toBeTruthy();
   });
 
-  // docs/262 req 23 — a missing key is a visible, NAMED gap.
   describe("credential needs", () => {
     const withNeeds = (credentials: PluginCredentialNeed[]): PluginReposSnapshot => ({
       ...FIXTURE,
@@ -160,8 +150,7 @@ describe("PluginReposPanel", () => {
     });
 
     it("a satisfied credential is stated, not silently dropped", () => {
-      // req 23 asks for "which credentials … and whether they are satisfied":
-      // a set key is reported quietly; only a gap gets an action row.
+
       setSnapshot(withNeeds([{ name: "FAL_KEY", satisfied: true, optional: false }]));
       render(<PluginReposPanel />);
       expect(screen.queryByTestId("plugin-credential-need-artk-FAL_KEY")).toBeNull();
@@ -172,9 +161,7 @@ describe("PluginReposPanel", () => {
     });
 
     it("'Add key…' opens the CONSUMING project's secret store, never the plugin repo's", () => {
-      // plan §3's store trap: `setProjectSettingsRepoUrl` selects the store
-      // `/api/secrets` writes to, so the plugin repository's URL would save the
-      // key where nothing reads it.
+
       setSnapshot(withNeeds([{ name: "FAL_KEY", satisfied: false, optional: false }]));
       render(<PluginReposPanel />);
       fireEvent.click(screen.getByText("Add key…"));
@@ -205,15 +192,15 @@ describe("PluginReposPanel", () => {
         expect(row.textContent).toContain("can use");
         expect(row.textContent).toContain("PIXELLAB_KEY");
         expect(row.textContent).toContain("artk");
-        // Not a need: no need row, no need chip.
+
         expect(screen.queryByTestId("plugin-credential-need-artk-PIXELLAB_KEY")).toBeNull();
         expect(screen.queryByText("1 need")).toBeNull();
-        // The user may still want to set it.
+
         expect(screen.getByText("Add key…")).toBeTruthy();
       });
 
       it("is counted and worded exactly like a required one once SET", () => {
-        // Optionality is about the unsatisfied state alone.
+
         setSnapshot(withNeeds([{ name: "PIXELLAB_KEY", satisfied: true, optional: true }]));
         render(<PluginReposPanel />);
         expect(screen.queryByTestId("plugin-credential-optional-artk-PIXELLAB_KEY")).toBeNull();
@@ -221,8 +208,7 @@ describe("PluginReposPanel", () => {
       });
 
       it("leaves a required sibling a need — flip the flag and the row comes back", () => {
-        // The guard, run red: the SAME fixture with `optional: false` renders
-        // the need row and the chip.
+
         setSnapshot(
           withNeeds([
             { name: "FAL_KEY", satisfied: false, optional: false },
@@ -237,7 +223,6 @@ describe("PluginReposPanel", () => {
     });
   });
 
-  // docs/262 req 24 — the same visibility for declared hosts, plus the grant.
   describe("host needs", () => {
     const withHosts = (hosts: PluginHostNeed[]): PluginReposSnapshot => ({
       ...FIXTURE,
@@ -268,13 +253,6 @@ describe("PluginReposPanel", () => {
       expect(allowed.textContent).toContain("artk");
     });
 
-    /**
-     * planning#383 — a host no user act can reach. The card offered "Allow for
-     * session" / "Allow for ShipIt" here, and either one wrote a durable entry
-     * that changed nothing: on a deployment with no controlled resolver no
-     * grant can take effect, and the user could not learn that from the surface
-     * built to answer exactly this question.
-     */
     describe("a host no grant can reach", () => {
       it("states the deployment's limit on one row, and offers NO button", () => {
         setSnapshot(withHosts([{ host: "fal.run", reach: "blocked-by-deployment", optional: false }]));
@@ -282,10 +260,10 @@ describe("PluginReposPanel", () => {
         const row = screen.getByTestId("plugin-hosts-ungrantable");
         expect(row.textContent).toContain("fal.run");
         expect(row.textContent).toContain("can't allow extra hosts");
-        // The two lies, by their exact labels.
+
         expect(screen.queryByText("Allow for session")).toBeNull();
         expect(screen.queryByText("Allow for ShipIt")).toBeNull();
-        // And not as a grantable need row either, whose whole content is the grant.
+
         expect(screen.queryByTestId("plugin-host-need-artk-fal.run")).toBeNull();
       });
 
@@ -318,8 +296,7 @@ describe("PluginReposPanel", () => {
       });
 
       it("says so on an OPTIONAL host's own row, with no button", () => {
-        // The optional rows are not collapsed into the shared ungrantable row —
-        // that row is the alarm, and an optional host is the quiet case.
+
         setSnapshot(withHosts([{ host: "pixellab.ai", reach: "blocked-by-deployment", optional: true }]));
         render(<PluginReposPanel />);
         expect(screen.queryByTestId("plugin-hosts-ungrantable")).toBeNull();
@@ -328,16 +305,13 @@ describe("PluginReposPanel", () => {
         expect(row.textContent).toContain("can't allow extra hosts");
         expect(screen.queryByText("Allow for session")).toBeNull();
         expect(screen.queryByText("1 need")).toBeNull();
-        // …and it does NOT claim the host is absent from the allowlist.
-        // `blocked-by-deployment` is decided before the allowlist is consulted
-        // (`egress-host-reach.ts`), so an already-allowlisted host carries this
-        // verdict too and that sentence would be false (review finding).
+
         expect(row.textContent).not.toContain("egress allowlist");
       });
 
       it("leaves a grantable host on the same card with its buttons", () => {
         // The two verdicts are per host, so a deployment-blocked host must not
-        // take the grant away from one the user really can allow.
+
         setSnapshot(
           withHosts([
             { host: "fal.run", reach: "blocked-by-session", optional: false },
@@ -391,17 +365,11 @@ describe("PluginReposPanel", () => {
         expect(screen.getByTestId("plugin-host-need-artk-api.pixellab.ai")).toBeTruthy();
         expect(screen.getByText("Allow for session")).toBeTruthy();
         expect(screen.getByText("Allow for ShipIt")).toBeTruthy();
-        // And the other half of the sentence: a version that failed to activate
-        // is still refreshable, so the grant has something to take effect on.
+
         expect(screen.getByText("Refresh")).toBeTruthy();
       });
     });
 
-    /**
-     * reqs 23, 24 — the live case this grammar exists for: a plugin declaring
-     * hosts the project deliberately leaves out of its egress allowlist. The
-     * gap stays visible and grantable; it just stops reading as a fault.
-     */
     it("an OPTIONAL grantable host reads as an offer and keeps both grants", () => {
       setSnapshot(withHosts([{ host: "pixellab.ai", reach: "grantable", optional: true }]));
       render(<PluginReposPanel />);
@@ -415,7 +383,7 @@ describe("PluginReposPanel", () => {
     });
 
     it("the same host declared REQUIRED is a need — the flag is what decides", () => {
-      // The guard run red: one field flipped, same everything else.
+
       setSnapshot(withHosts([{ host: "pixellab.ai", reach: "grantable", optional: false }]));
       render(<PluginReposPanel />);
       expect(screen.getByTestId("plugin-host-need-artk-pixellab.ai")).toBeTruthy();
@@ -452,7 +420,6 @@ describe("PluginReposPanel", () => {
       expect(screen.getByText("2 needs")).toBeTruthy();
     });
 
-    // req 24: the grant is a deliberate user act on the USER's egress
     // allowlist, at one of the two scopes the requirement names — never
     // anything plugin-local, and never a side effect of the declaration.
     it("each scope posts to the existing egress route with that scope", async () => {
@@ -465,41 +432,32 @@ describe("PluginReposPanel", () => {
           grants.push(JSON.parse(typeof init?.body === "string" ? init.body : "null"));
           return Promise.resolve({ ok: true, json: async () => ({}) } as Response);
         }
-        // The store refetches its own snapshot after a grant; answering with the
-        // same one keeps the row rendered so the second scope can be clicked.
+
         return Promise.resolve({ ok: true, json: async () => snapshot } as Response);
       }) as typeof fetch;
       try {
         render(<PluginReposPanel />);
         fireEvent.click(screen.getByText("Allow for session"));
         await waitFor(() => expect(grants).toHaveLength(1));
-        // Session scope travels as the session id — the shape `/api/egress/hosts`
-        // reads as "this session's extras" (`global` is the reserved word).
+
         expect(grants[0]).toEqual({ host: "fal.run", scope: "sess" });
 
         fireEvent.click(screen.getByText("Allow for ShipIt"));
         await waitFor(() => expect(grants).toHaveLength(2));
-        // planning#376 — the session rides along for REPORTING only: the entry
-        // still lands at instance scope, and the id says whose surfaces the
-        // route should report on.
+
         expect(grants[1]).toEqual({ host: "fal.run", scope: "global", session: "sess" });
       } finally {
         globalThis.fetch = originalFetch;
       }
     });
 
-    // planning#376 — the grant used to say nothing at all: on success the row
-    // just disappeared, and the only account of the two scopes' very different
-    // behavior was a `title` on the button you had already pressed.
     describe("the outcome is reported after the grant", () => {
-      /** Grant, then answer the refetch with a snapshot where the host is allowed. */
+
       const renderGrant = async (grant: EgressHostGrantOutcome | null, button: string) => {
         const before = withHosts([{ host: "fal.run", reach: "grantable", optional: false }]);
         const after = withHosts([{ host: "fal.run", reach: "allowed", optional: false }]);
         setSnapshot(before);
-        // The store drops a snapshot for a session the app isn't on, and the
-        // point of this row is that it OUTLIVES the need row the refetch
-        // removes — so the refetch has to actually land.
+
         useSessionStore.setState({ sessionId: "sess" });
         const originalFetch = globalThis.fetch;
         globalThis.fetch = ((url: string) =>
@@ -548,7 +506,7 @@ describe("PluginReposPanel", () => {
         );
         try {
           const row = await screen.findByTestId("plugin-host-grant-outcome");
-          // The tooltip named services only; the agent is equally stale.
+
           expect(row.textContent).toContain("agent");
           expect(row.textContent).toContain("running service");
           expect(screen.getByText("Restart to apply now")).toBeTruthy();
@@ -557,11 +515,6 @@ describe("PluginReposPanel", () => {
         }
       });
 
-      // The 503 is "allowlist saved, but the live service refresh failed
-      // closed" — the host IS durably allowed, so the refetch removes the need
-      // row and any message kept on it would vanish with it. That is the same
-      // silent disappearance the issue is about, so the account moves to the
-      // card, where it survives.
       it("a failed grant is reported on the card, not on the row that unmounts", async () => {
         const before = withHosts([{ host: "fal.run", reach: "grantable", optional: false }]);
         const after = withHosts([{ host: "fal.run", reach: "allowed", optional: false }]);
@@ -595,8 +548,6 @@ describe("PluginReposPanel", () => {
     });
   });
 
-  // req 12 — "the user or the agent can request a plugin refresh". The agent's
-  // half has been a shim verb since the feature shipped; this is the user's.
   describe("refreshing a repository from the card (req 12)", () => {
     const card = (over: Partial<PluginReposSnapshot["repos"][number]> = {}) => ({
       declared: true,
@@ -619,7 +570,6 @@ describe("PluginReposPanel", () => {
       ],
     });
 
-    /** Answer the refresh with `row`, then every refetch with the same card. */
     const stub = (
       row: Record<string, unknown> | null,
       snapshot: PluginReposSnapshot,
@@ -654,9 +604,6 @@ describe("PluginReposPanel", () => {
       }
     });
 
-    // req 8 — a pinned project "stays at that exact revision until its
-    // declaration changes", so a Refresh here could only ever report "already
-    // at". The card says why instead of leaving a button-shaped hole.
     it("offers no Refresh on a pinned repository, and says what does move it", () => {
       setSnapshot(card({ pinned: true, ref: "pin v1.2.0" }));
       render(<PluginReposPanel />);
@@ -664,18 +611,12 @@ describe("PluginReposPanel", () => {
       expect(screen.getByText(/Pinned to an exact revision/)).toBeTruthy();
     });
 
-    // req 27 — a self-declared repository IS the working tree; edits are live
-    // and there is no version to fetch. Ratified in the mockup before the tab
-    // was built ("No Refresh button: edits apply live").
     it("offers no Refresh on a self-declared repository", () => {
       setSnapshot(card({ source: "self", status: "self", ref: null, commit: null }));
       render(<PluginReposPanel />);
       expect(screen.queryByText("Refresh")).toBeNull();
     });
 
-    // The one outcome that changes NOTHING on the card. Without a reported
-    // answer the button would look broken in exactly the case where it worked
-    // and there was simply nothing to do.
     it("reports 'already at' when the tracked tip is what is already live", async () => {
       const snapshot = card();
       setSnapshot(snapshot);
@@ -684,20 +625,13 @@ describe("PluginReposPanel", () => {
         render(<PluginReposPanel />);
         fireEvent.click(screen.getByText("Refresh"));
         await waitFor(() => expect(screen.getByText(/nothing to update/)).toBeTruthy());
-        // Scoped to the row: the header chip carries the same commit, and the
-        // point here is that the ANSWER names it.
+
         expect(screen.getByTestId("plugin-refresh-outcome").textContent).toContain("abcdef012");
       } finally {
         restore();
       }
     });
 
-    // An activation failure is a 200 carrying `{status:"failed", after:"<prior
-    // commit>"}` — req 15 keeps the prior generation whole and live, so what
-    // the user most needs is which version they are still on. An earlier
-    // version of this test used the 400 shape below, which carries no `after`
-    // at all, and so passed with the "still on" rendering deleted (independent
-    // review).
     it("reports a failed round and names the commit still live (req 15)", async () => {
       const snapshot = card();
       setSnapshot(snapshot);
@@ -720,8 +654,7 @@ describe("PluginReposPanel", () => {
     });
 
     // The other failure shape: the request never produced a row. A 400 (a name
-    // the declaration does not have) and a 501 (a runtime with no refresh hook)
-    // both land here, and from the user's side they are the same event.
+
     it("reports a refused request too, rather than going silent", async () => {
       const snapshot = card();
       setSnapshot(snapshot);
@@ -737,8 +670,6 @@ describe("PluginReposPanel", () => {
       }
     });
 
-    // Refresh IS the activation round, one serial queue per repository — a
-    // second press would queue behind the first and report on it.
     it("disables the button while a round is already running", () => {
       setSnapshot(card({ status: "activating" }));
       render(<PluginReposPanel />);

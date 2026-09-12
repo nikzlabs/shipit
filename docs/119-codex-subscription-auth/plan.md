@@ -147,7 +147,7 @@ Update both session-worker images and the dev/prod orchestrator images:
 RUN mkdir -p /workspace /credentials \
  && ln -s /credentials/.claude       /root/.claude       \
  && ln -sf /credentials/.claude.json /root/.claude.json  \
- && ln -s /credentials/.codex        /root/.codex            # NEW
+ && ln -s /credentials/.codex        /root/.codex
 ```
 
 The first time `codex login` runs it creates `/credentials/.codex/`
@@ -180,20 +180,12 @@ export class CodexAuthManager extends EventEmitter {
   private proc: ChildProcess | null = null;
   private _authenticated = false;
 
-  /** True if /credentials/.codex/auth.json exists and is non-empty. */
   checkCredentials(): boolean { /* fs.existsSync + size > 0 */ }
 
-  /** Spawn `codex login --device-auth`. Emits codex_auth_pending with
-   *  { verificationUri, userCode } once the CLI prints them. Emits
-   *  codex_auth_complete when the process exits 0 and credentials are on
-   *  disk. Emits codex_auth_failed on non-zero exit or 15-minute timeout. */
   startDeviceFlow(): void { /* spawn, regex stdout, on('close') resolve */ }
 
-  /** SIGTERM the login process if it's still running. */
   cancel(): void { /* this.proc?.kill('SIGTERM') */ }
 
-  /** Drop on-disk credentials so the next turn falls back to API key
-   *  (or to no auth at all). */
   signOut(): Promise<void> { /* fs.rm(/credentials/.codex/auth.json) */ }
 }
 ```
@@ -248,8 +240,6 @@ if (!hasFileAuth && !hasEnvAuth) {
   return;
 }
 
-// If both are present, prefer the subscription path: strip the env key from
-// the spawned child so codex doesn't silently route through Platform API.
 if (hasFileAuth) delete env.OPENAI_API_KEY;
 ```
 

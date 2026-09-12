@@ -1,31 +1,5 @@
 #!/usr/bin/env node
-/**
- * Measure what `content-visibility: auto` BUYS, as opposed to what it costs.
- *
- * `scripts/trace-idle-frames.mjs` measures the cost side of docs/265's
- * idle-compositing finding and deliberately starts tracing *after* load, so it
- * cannot see the two things `content-visibility: auto` exists for: skipping
- * layout and paint of off-screen rows at first render, and keeping a long
- * transcript cheap to scroll. This is the other half — the number the doc's
- * "The experiment that would settle it" asks for and nobody had.
- *
- * It traces from BEFORE navigation, reports the load-side totals, then drives a
- * scripted scroll from top to bottom and reports the same totals for that
- * window alone. Run the same URL with `cv=1` and `cv=0` and compare.
- *
- * Usage:
- *   node scripts/trace-load-and-scroll.mjs <url> [--scroll-ms=6000] [--window=w,h]
- *
- * Read `loadPhase` against `scrollPhase`: the load phase ends at the first
- * animation frame with no pending rendering work, so it covers parse, style,
- * first layout and first paint. The scroll phase is bounded by markers the
- * script emits itself (`console.timeStamp`), so trace-stop latency cannot leak
- * into it.
- *
- * Same caveat as the sibling script: no GPU in this container, so absolute
- * milliseconds are not a user's machine. Compare conditions measured the same
- * way in the same session.
- */
+/** Trace load and scroll costs for content-visibility comparisons. */
 
 import { spawn } from "node:child_process";
 import fs from "node:fs";
@@ -122,7 +96,6 @@ const events = [];
 browser.on("Tracing.dataCollected", (p) => events.push(...p.value));
 const tracingComplete = new Promise((resolve) => browser.on("Tracing.tracingComplete", resolve));
 
-// Tracing starts BEFORE navigation — that is the whole point of this script.
 await browser.send("Tracing.start", {
   transferMode: "ReportEvents",
   traceConfig: {
@@ -142,8 +115,7 @@ const loaded = new Promise((resolve) => browser.on("Page.loadEventFired", resolv
 await send("Page.navigate", { url });
 await Promise.race([loaded, sleep(60000)]);
 
-// The load phase ends when the page has nothing left to render. Two rAFs after
-// load is the cheapest reliable "the first frame has been produced" signal.
+// Two frames after load ensure the first frame completed.
 await send("Runtime.evaluate", {
   expression: `new Promise(r => requestAnimationFrame(() => requestAnimationFrame(() => {
     console.timeStamp("shipit-load-end");
@@ -152,9 +124,7 @@ await send("Runtime.evaluate", {
   awaitPromise: true,
 });
 
-// Scripted scroll top → bottom. Stepping per animation frame keeps this at the
-// browser's own cadence rather than a timer's, so the work measured is the work
-// a user's scroll would cause.
+// Drive scrolling at the browser's frame cadence.
 await send("Runtime.evaluate", {
   expression: `(() => {
     console.timeStamp("shipit-scroll-start");
@@ -182,7 +152,6 @@ await send("Runtime.evaluate", {
 await browser.send("Tracing.end");
 await Promise.race([tracingComplete, sleep(60000)]);
 
-// ── aggregate ────────────────────────────────────────────────────────────────
 const threadNames = new Map();
 for (const e of events) {
   if (e.ph === "M" && e.name === "thread_name") threadNames.set(`${e.pid}:${e.tid}`, e.args?.name);
@@ -200,14 +169,11 @@ for (const [key, n] of lifecycleWeight) {
   if (n > best) { best = n; mainKey = key; }
 }
 
-// Phase boundaries come from the markers the page emitted, so trace start/stop
-// latency is outside every window reported below.
+// Page markers exclude trace start and stop latency.
 const marks = new Map();
 for (const e of events) {
   const label = e.args?.data?.message ?? e.args?.message ?? e.name;
   if (typeof label === "string" && label.startsWith("shipit-")) marks.set(label, e.ts);
-  // TimeStamp events carry the label under args.data.message on modern Chrome;
-  // fall back to scanning any event whose name is the marker itself.
   if (e.name === "TimeStamp" && typeof e.args?.data?.message === "string") {
     marks.set(e.args.data.message, e.ts);
   }

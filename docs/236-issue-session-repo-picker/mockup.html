@@ -33,7 +33,6 @@
   h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
        color: var(--color-text-tertiary); margin: 28px 0 10px; font-weight: 600; }
 
-  /* ---- The split button ---- */
   .split { display: inline-flex; align-items: stretch; }
   .btn {
     display: inline-flex; align-items: center; justify-content: center; gap: 6px;
@@ -55,7 +54,6 @@
     box-shadow: inset 1px 0 0 0 color-mix(in oklab, currentColor 25%, transparent);
   }
 
-  /* ---- The menu ---- */
   .menu {
     margin-top: 4px; width: 224px; border-radius: 8px; padding: 4px 0;
     border: 1px solid var(--color-border-primary); background: var(--color-bg-elevated);
@@ -77,7 +75,6 @@
   .name { flex: 1; overflow: hidden; text-overflow: ellipsis; }
   .cloning { font-size: 9px; color: var(--color-warning); }
 
-  /* ---- Issue row context ---- */
   .list { border: 1px solid var(--color-border-primary); border-radius: 8px;
           background: var(--color-bg-primary); max-width: 860px; }
   .thead { border-radius: 7px 7px 0 0; }
@@ -98,8 +95,7 @@
   .row .meta { font-size: 11px; color: var(--color-text-secondary); }
   .row .act { display: flex; justify-content: center; }
   .row .act .split { width: 100%; }
-  /* The real menu renders through a Radix portal, so it floats above the list
-     rather than being clipped by it. Mirrored here with an absolute overlay. */
+
   .anchored { position: relative; max-width: 860px; }
   .anchored .menu { position: absolute; right: 13px; top: 78px; z-index: 5; }
 

@@ -34,23 +34,20 @@ describe("StartSessionButton", () => {
     const { rerender } = render(<StartSessionButton onClick={vi.fn()} />);
     // Default: the subtle accent-tint cta used down the Issues list.
     expect(screen.getByRole("button")).toHaveClass("bg-(--color-accent-subtle)");
-    // The detail footer overrides to a solid primary fill.
+
     rerender(<StartSessionButton variant="primary" onClick={vi.fn()} />);
     expect(screen.getByRole("button")).toHaveClass("bg-(--color-accent)");
   });
 });
 
-// docs/236: an issue often belongs to a project other than the session you're
-// sitting in, so the button splits into "start here" + "start in…".
 describe("StartSessionButton repo picker (docs/236)", () => {
   it("stays a plain button when there is nothing to choose between", () => {
     const { rerender } = render(
       <StartSessionButton onClick={vi.fn()} repos={TWO_REPOS} />,
     );
-    // No `onStartInRepo` — every pre-existing call site keeps one button.
+
     expect(screen.getAllByRole("button")).toHaveLength(1);
 
-    // One repo is not a choice either.
     rerender(
       <StartSessionButton
         onClick={vi.fn()}
@@ -80,7 +77,7 @@ describe("StartSessionButton repo picker (docs/236)", () => {
 
     expect(onStartInRepo).toHaveBeenCalledWith(TWO_REPOS[1]!.url);
     // The main half is the one-click default path; opening the menu must not
-    // also seed a session in the repo the user is trying to leave.
+
     expect(onClick).not.toHaveBeenCalled();
   });
 
@@ -113,8 +110,7 @@ describe("StartSessionButton repo picker (docs/236)", () => {
     await userEvent.click(
       screen.getByRole("button", { name: /start session in another repository/i }),
     );
-    // A claim against a still-cloning repo 400s server-side, so the row is
-    // rendered (so the user sees the repo exists) but not selectable.
+
     expect(await screen.findByRole("menuitem", { name: /fresh/i })).toHaveAttribute(
       "aria-disabled",
       "true",

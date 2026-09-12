@@ -18,7 +18,6 @@ import type { CredentialRoute, SubscriptionLimits, SubscriptionLimitsMap } from 
 import { useSettingsStore } from "../stores/settings-store.js";
 import { useUiStore } from "../stores/ui-store.js";
 
-/** docs/150 — wrap snapshots into the provider → route → limits wire shape. */
 function routed(...snaps: SubscriptionLimits[]): Record<string, SubscriptionLimits> {
   return Object.fromEntries(snaps.map((snap) => [snap.routeId, snap]));
 }
@@ -31,10 +30,6 @@ afterEach(() => {
   useUiStore.getState().setSettingsOpen(false);
 });
 
-// Reset timestamps live in the future relative to the test clock so the
-// meter doesn't collapse to 0 via the elapsed-reset rule (see
-// `effectivePct`). Tests that want the elapsed behavior pass a past
-// timestamp explicitly.
 const FUTURE_SESSION_RESET = new Date(Date.now() + 60 * 60_000).toISOString();
 const FUTURE_WEEKLY_RESET = new Date(Date.now() + 7 * 24 * 60 * 60_000).toISOString();
 
@@ -127,11 +122,11 @@ describe("meterDisplay", () => {
 });
 
 describe("timeElapsedPct", () => {
-  const windowMs = 7 * 24 * 60 * 60_000; // 7d
+  const windowMs = 7 * 24 * 60 * 60_000;      
   const now = Date.parse("2026-05-19T12:00:00Z");
 
   it("returns the fraction of the window already elapsed", () => {
-    // resets in 7d → 0% elapsed; resets now → 100% elapsed; halfway → 50%.
+
     const justStarted = new Date(now + windowMs).toISOString();
     const halfway = new Date(now + windowMs / 2).toISOString();
     expect(timeElapsedPct(justStarted, windowMs, now)).toBeCloseTo(0, 5);
@@ -139,8 +134,8 @@ describe("timeElapsedPct", () => {
   });
 
   it("clamps to 0–100 for resets outside the nominal window", () => {
-    const farFuture = new Date(now + windowMs * 2).toISOString(); // before start
-    const past = new Date(now - 60_000).toISOString(); // after reset
+    const farFuture = new Date(now + windowMs * 2).toISOString();                
+    const past = new Date(now - 60_000).toISOString();               
     expect(timeElapsedPct(farFuture, windowMs, now)).toBe(0);
     expect(timeElapsedPct(past, windowMs, now)).toBe(100);
   });
@@ -194,9 +189,6 @@ describe("SubscriptionLimitsBadge group", () => {
     expect(screen.getByRole("button", { name: "Refresh subscription usage" })).toBeInTheDocument();
   });
 
-  // docs/252 req 10 — a group is a `(service, billing mode)`, so an unnamed
-  // route's pill carries the SERVICE's name. It used to say "Claude", which
-  // named the harness rather than the thing that owns the quota.
   it("renders one row for one service", () => {
     const limits: SubscriptionLimitsMap = { "anthropic:sub": routed(makeSnap()) };
     render(<SubscriptionLimitsBadge limits={limits} />);
@@ -214,8 +206,7 @@ describe("SubscriptionLimitsBadge group", () => {
     ]);
     const limits: SubscriptionLimitsMap = {
       "anthropic:sub": {
-        // Reversed vs the account order to prove the pills follow the user's
-        // account order, not map insertion order.
+
         "acct-personal": makeSnap({ routeId: "acct-personal", session: { usedPct: 12, resetAt: FUTURE_SESSION_RESET } }),
         "acct-work": makeSnap({ routeId: "acct-work", session: { usedPct: 88, resetAt: FUTURE_SESSION_RESET } }),
       },
@@ -230,12 +221,6 @@ describe("SubscriptionLimitsBadge group", () => {
     expect(rows[1].textContent).toMatch(/5h 12%/);
   });
 
-  // docs/150 — the header row is finite and each account adds a ~250px pill.
-  // jsdom has no layout engine, so the assertion is on the two declarations
-  // that decide who gives ground: the pill may shrink below its content, and
-  // the label is the part that yields. Without them, three accounts pushed the
-  // header's trailing controls off-screen and slid the first pill under the
-  // logo (observed at 900px in the running app).
   it("lets a pill shrink by truncating its label, not by overflowing the row", () => {
     const now = Date.now();
     useSettingsStore.getState().setProviderAccounts([
@@ -248,12 +233,10 @@ describe("SubscriptionLimitsBadge group", () => {
     expect(pill?.className).toContain("min-w-0");
     const label = screen.getByText("nicolas.zherebtsov@gmail.com");
     expect(label.className).toContain("truncate");
-    // The full value stays reachable — truncation hides characters, not facts.
+
     expect(label).toHaveAttribute("title", expect.stringContaining("nicolas.zherebtsov@gmail.com"));
   });
 
-  // req 10 asks for the account name outright, so it is shown even when there
-  // is only one pill.
   it("labels a single account's pill with the account name", () => {
     const now = Date.now();
     useSettingsStore.getState().setProviderAccounts([
@@ -277,7 +260,6 @@ describe("SubscriptionLimitsBadge group", () => {
     expect(screen.getAllByText(/5h · —/)).toHaveLength(1);
   });
 
-  // Reserved env / API-key routes are not accounts, so they keep the service
   // label rather than inventing a name for something the user never named.
   it("keeps the service label for a reserved route", () => {
     useSettingsStore.getState().setProviderAccounts([]);
@@ -288,8 +270,7 @@ describe("SubscriptionLimitsBadge group", () => {
 
   it("renders both rows in stable order: Anthropic then OpenAI", () => {
     const limits: SubscriptionLimitsMap = {
-      // Map insertion order is reversed to confirm the component
-      // doesn't naively use it.
+
       "openai:sub": routed(makeSnap({ serviceId: "openai",
     billingMode: "sub", plan: "Plus", session: { usedPct: 10, resetAt: "x" }, weekly: { usedPct: 5, resetAt: "y" } })),
       "anthropic:sub": routed(makeSnap({ serviceId: "anthropic", billingMode: "sub" })),
@@ -379,17 +360,6 @@ describe("SubscriptionLimitPill", () => {
     expect(screen.getByText(/7d 90%/)).not.toHaveTextContent(/resets in/);
   });
 
-  /**
-   * REVERSED by planning#454, deliberately. This case used to assert that a
-   * `null` session inside a reading still drew `5h · —`, on the reading that a
-   * missing window means "not reported yet".
-   *
-   * It does not. A provider with a window reports it as an object even when it
-   * has no number for it — `{ usedPct: null, resetAt }`, the case immediately
-   * below — so `null` here is the provider saying the plan HAS no such window.
-   * Drawing a dash for it is the permanently-empty read-out the user reported.
-   * "Not reported yet" is the no-reading-at-all case, and it still draws both.
-   */
   it("drops a window the reader says the plan does not have", () => {
     render(
       <SubscriptionLimitPill
@@ -450,7 +420,7 @@ describe("SubscriptionLimitPill", () => {
   });
 
   it("fills each meter independently from its own percentage", () => {
-    // 5h at 96% → full (red) tier; 7d at 22% → neutral tier.
+
     const { container } = render(
       <SubscriptionLimitPill
         label="Claude"
@@ -492,14 +462,14 @@ describe("SubscriptionLimitPill", () => {
         })}
       />,
     );
-    // 5h window has elapsed → muted "reset" label, not a fabricated 0%/100%.
+
     expect(screen.getByText(/5h · reset/)).toBeInTheDocument();
     expect(screen.queryByText(/5h 0%/)).toBeNull();
     expect(screen.queryByText(/5h 100%/)).toBeNull();
-    // No gauge fill in the reset state — only the still-open weekly has one.
+
     const fills = container.querySelectorAll<HTMLElement>("[data-meter-fill]");
     expect(fills.length).toBe(1);
-    // Weekly window is still open — unchanged.
+
     expect(screen.getByText(/7d 91%/)).toBeInTheDocument();
     expect(screen.getByText(/7d 91%/).closest("[data-meter-pct]")).toHaveTextContent(/resets in/);
   });
@@ -551,10 +521,9 @@ describe("SubscriptionLimitPill", () => {
   });
 
   it("renders an explicit unknown state (no percentage, no countdown) when usedPct is null", () => {
-    // Claude CLI 2.1.140 reports the window without `utilization` below its
+
     // warning thresholds (anthropics/claude-code#50518). The pill must read as
-    // "unknown" rather than a bare reset countdown that looks like data
-    // (docs/161).
+
     const future = new Date(Date.now() + 60 * 60_000).toISOString();
     const { container } = render(
       <SubscriptionLimitPill
@@ -565,15 +534,14 @@ describe("SubscriptionLimitPill", () => {
         })}
       />,
     );
-    // Explicit "—" marker, no percentage, and the reset countdown is NOT the
-    // headline (it moves to the tooltip).
+
     expect(screen.getByText(/5h · —/)).toBeInTheDocument();
     expect(screen.queryByText(/\d+%/)).toBeNull();
     expect(screen.queryByText(/resets in/)).toBeNull();
-    // No fill bar and no time marker in the unknown state.
+
     expect(container.querySelector("[data-meter-fill]")).toBeNull();
     expect(container.querySelector("[data-time-marker]")).toBeNull();
-    // Tooltip explains the absence and points at the refresh button.
+
     expect(screen.getByText(/5h · —/).getAttribute("title")).toContain(
       "usage not reported",
     );
@@ -596,8 +564,7 @@ describe("SubscriptionLimitPill", () => {
   });
 
   it("renders a time marker positioned at the elapsed fraction of the window", () => {
-    // Weekly (7d) window resetting in 3.5d → ~50% of the window elapsed, so
-    // the marker sits at ~50% regardless of the 48% quota fill.
+
     const halfwayWeekly = new Date(Date.now() + 3.5 * 24 * 60 * 60_000).toISOString();
     const { container } = render(
       <SubscriptionLimitPill
@@ -617,8 +584,7 @@ describe("SubscriptionLimitPill", () => {
         snapshot={makeSnap({ session: null, weekly: { usedPct: 48, resetAt: "x" } })}
       />,
     );
-    // The quota fill still renders; the marker is skipped rather than drawn
-    // at a bogus position.
+
     expect(container.querySelector("[data-meter-fill]")).not.toBeNull();
     expect(container.querySelector("[data-time-marker]")).toBeNull();
   });
@@ -637,15 +603,11 @@ describe("SubscriptionLimitPill", () => {
     );
     const meter = container.querySelector('[data-meter-pct="42"]');
     expect(meter?.className).toContain("opacity-50");
-    // The marker is a descendant of the dimmed wrapper, so the stale fade
-    // cascades to it — no separate opacity handling needed.
+
     expect(meter?.querySelector("[data-time-marker]")).not.toBeNull();
   });
 });
 
-// The reported failure: an Anthropic account whose sign-in had expired kept a
-// pill full of real-looking numbers, so the header said "healthy" while every
-// turn on it was refused, and only Settings knew why.
 describe("SubscriptionLimitsBadge credential attention", () => {
   const now = Date.now();
 
@@ -668,8 +630,7 @@ describe("SubscriptionLimitsBadge credential attention", () => {
 
   it("replaces the meters with 'reconnect needed' for an account whose sign-in failed", () => {
     connect({ status: "auth_failed" });
-    // A snapshot IS present — the numbers are stale-but-real, which is exactly
-    // what made the broken state invisible.
+
     const limits: SubscriptionLimitsMap = { "anthropic:sub": routed(makeSnap({ routeId: "acct-work" })) };
     render(<SubscriptionLimitsBadge limits={limits} />);
 
@@ -677,7 +638,7 @@ describe("SubscriptionLimitsBadge credential attention", () => {
     expect(screen.getByText("reconnect needed")).toBeInTheDocument();
     expect(screen.queryByText(/5h/)).toBeNull();
     expect(screen.queryByText(/7d/)).toBeNull();
-    // Nothing to fetch until the sign-in is redone.
+
     expect(screen.queryByLabelText("Refresh subscription usage")).toBeNull();
   });
 
@@ -697,9 +658,8 @@ describe("SubscriptionLimitsBadge credential attention", () => {
     expect(screen.getByText("credential rejected")).toBeInTheDocument();
   });
 
-  // `externalId` present ⇒ this is a *reconnect* of a real account, not a
   // first sign-in. A row that has never been a credential is not in the header
-  // at all (see below).
+
   it("says a sign-in is in flight rather than showing quota it cannot have", () => {
     connect({ status: "authenticating", externalId: "user_1" });
     render(<SubscriptionLimitsBadge limits={{}} />);
@@ -714,9 +674,6 @@ describe("SubscriptionLimitsBadge credential attention", () => {
     expect(screen.queryByText("reconnect needed")).toBeNull();
   });
 
-  // The row `POST /api/provider-accounts` creates the instant *Sign in* is
-  // pressed is not a credential, and Settings does not list it. Without the
-  // same test here, starting a sign-in put a red "reconnect needed" in the
   // header about an account that had never been connected.
   it("renders no pill at all for a sign-in attempt that was never a credential", () => {
     connect({ status: "unavailable" });
@@ -730,10 +687,6 @@ describe("SubscriptionLimitsBadge credential attention", () => {
     expect(screen.getByText("reconnect needed")).toBeInTheDocument();
   });
 
-  // A supplied secret — an env-delivered token, a pasted plan key — is not an
-  // account row, so it reaches the header through its snapshot alone. planning#358
-  // records a provider refusing one exactly as it records a failed login, and
-  // the header has to say so too.
   function supply(overrides: Partial<CredentialRoute> = {}): void {
     useSettingsStore.getState().setCredentialRoutes([
       {
@@ -759,9 +712,8 @@ describe("SubscriptionLimitsBadge credential attention", () => {
     expect(screen.queryByText(/5h 30%/)).toBeNull();
   });
 
-  // The hole the snapshot-only path left: every turn on the token failed, so it
   // never reported a quota, so the header said nothing at all about the
-  // credential those turns were dying on.
+
   it("gives a refused supplied secret a pill even though it never reported a quota", () => {
     supply({ status: "auth_failed" });
     render(<SubscriptionLimitsBadge limits={{}} />);
@@ -782,7 +734,6 @@ describe("SubscriptionLimitsBadge credential attention", () => {
     expect(container.querySelectorAll(":scope > span")).toHaveLength(1);
   });
 
-  // Settings prints the same word one element to the left and hides the pill
   // for a non-ready credential, so a pill rendered there must not repeat it.
   it("stays silent when the host says the word itself", () => {
     render(<SubscriptionLimitPill label="Work" snapshot={makeSnap()} />);
@@ -822,10 +773,7 @@ describe("SubscriptionLimitsBadge auto refresh", () => {
   });
 
   it("refreshes only the pressed account, not every connected subscription", async () => {
-    // The regression this covers: the button used to post `{ agentId }` only,
-    // so the server fanned the fetch out over every route. `/api/oauth/usage`
-    // allows a handful of calls per ~30 min, so pressing the pill that showed
-    // no numbers spent the other subscription's budget and locked it out too.
+
     useSettingsStore.getState().setProviderAccounts([
       { id: "acct-one", serviceId: "anthropic", billingMode: "sub", via: "account", label: "Claude", status: "ready" },
       { id: "acct-two", serviceId: "anthropic", billingMode: "sub", via: "account", label: "Claude2", status: "ready" },
@@ -906,7 +854,7 @@ describe("SubscriptionLimitsBadge auto refresh", () => {
   it("throttles repeated opens so re-opening the dropdown can't burn the budget", async () => {
     render(<SubscriptionLimitsBadge limits={{ "anthropic:sub": routed(makeSnap()) }} autoRefresh />);
     await waitFor(() => expect(refreshCalls()).toHaveLength(1));
-    // Closing the popover unmounts the badge; re-opening remounts it.
+
     cleanup();
     render(<SubscriptionLimitsBadge limits={{ "anthropic:sub": routed(makeSnap()) }} autoRefresh />);
     await Promise.resolve();
@@ -938,8 +886,6 @@ describe("SubscriptionLimitsBadge auto refresh", () => {
     await waitFor(() => expect(refreshCalls()).toHaveLength(1));
     unmount();
 
-    // Opening the dropdown right after a manual refresh shouldn't spend a
-    // second call — the numbers are seconds old.
     render(<SubscriptionLimitsBadge limits={{ "anthropic:sub": routed(makeSnap()) }} autoRefresh />);
     await Promise.resolve();
     expect(refreshCalls()).toHaveLength(1);
@@ -988,9 +934,7 @@ describe("a subscription ShipIt has no quota reader for (docs/274 req 16)", () =
   });
 
   it("still says when that account cannot run a turn", () => {
-    // The pill's second job is about the SIGN-IN, not about quota, so it
-    // survives: a Go account needing reconnection is exactly as worth saying
-    // as an Anthropic one, and the header is the only place that says it.
+
     connectGo({ status: "auth_failed" });
     render(<SubscriptionLimitsBadge limits={{}} />);
     expect(screen.getByText("nik@go")).toBeInTheDocument();
@@ -1012,12 +956,10 @@ describe("a subscription ShipIt has no quota reader for (docs/274 req 16)", () =
       { id: "acct-go", serviceId: "opencode", billingMode: "sub", via: "account", label: "nik@go", isPrimary: true, status: "ready", createdAt: now, updatedAt: now },
     ]);
     const { container } = render(<SubscriptionLimitsBadge limits={{}} />);
-    // The quiet Anthropic account keeps its `—` meters: there its blanks mean
-    // "no reading yet", and the refresh button beside them is what makes that
-    // true rather than decorative.
+
     expect(container.querySelectorAll(":scope > span")).toHaveLength(1);
     expect(screen.getByText("Work")).toBeInTheDocument();
-    // The direct form of the same claim, independent of the DOM shape above.
+
     expect(screen.queryByText("nik@go")).toBeNull();
     expect(screen.getAllByText(/5h · —/)).toHaveLength(1);
     expect(screen.getByLabelText("Refresh subscription usage")).toBeInTheDocument();
@@ -1086,13 +1028,6 @@ describe("a plan whose reading carries only some of the windows (planning#454)",
     expect(screen.getByText(/7d\s*50%/)).toBeInTheDocument();
   });
 
-  /*
-    A window that EXISTS but has no number yet is not an absent window, and the
-    two are distinguished by shape rather than by a service list: the provider
-    sends `{ usedPct: null, resetAt }`. Claude below a warning threshold is
-    exactly this, and its `5h · —` is a pending state the refresh button can
-    still change.
-  */
   it("keeps a window the provider reported without a number", () => {
     render(
       <SubscriptionLimitPill
@@ -1105,8 +1040,7 @@ describe("a plan whose reading carries only some of the windows (planning#454)",
   });
 
   it("draws both as unread when there is no reading at all", () => {
-    // The connected-but-quiet account. Nothing is known yet, which is not the
-    // same as a plan with no windows — a refresh can still fill these.
+
     render(<SubscriptionLimitPill label="Work" serviceId="anthropic" showRefresh />);
     expect(screen.getByText(/5h · —/)).toBeInTheDocument();
     expect(screen.getByText(/7d · —/)).toBeInTheDocument();
@@ -1131,7 +1065,7 @@ describe("a plan whose reading carries only some of the windows (planning#454)",
   });
 
   it("keeps the refresh button beside a single meter", () => {
-    // The half the user asked for by name: a number, and something to press to
+
     // make it current. Losing a slot must not lose the button with it.
     render(
       <SubscriptionLimitPill

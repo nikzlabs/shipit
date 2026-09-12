@@ -1,63 +1,9 @@
 #!/usr/bin/env node
-/**
- * ShipIt PreToolUse hook: keep the agent on the session's dedicated branch,
- * and — while the session sits on a merged branch — keep it off hand-rolled
- * destructive git.
- *
- * Every ShipIt session is created on its own branch — auto-commit, auto-push,
- * and `gh pr create` all target it. If the agent runs `git checkout -b` (or
- * `git switch -c`, `git branch <name>`, `git switch <other>`), its work is
- * stranded off the branch ShipIt is tracking: commits land nowhere useful and
- * the PR ends up empty.
- *
- * The system prompt already tells the agent not to do this, but the Claude
- * Code CLI also injects its own built-in git guidance ("if on the default
- * branch, branch first") which the agent sometimes follows. This hook is the
- * structural enforcement layer that doesn't depend on prompt precedence.
- *
- * planning#267 adds a SECOND, narrowly-scoped rule on top of the same mechanism:
- * when `SHIPIT_GUARD_DESTRUCTIVE_GIT=1`, `git reset --hard`, `git checkout -f`,
- * force-pushes and starting a `git rebase` are blocked too. That env var is set only when the session
- * is merged with a recorded `mergedHeadSha` — i.e. exactly the state
- * `shipit branch reset-to-base` guards (docs/239). That command fails closed on
- * a safety gate (HEAD === mergedHeadSha, clean tree, on the session branch, no
- * in-progress sequencer), and its refusal is what turns three hazards — a wake
- * queued behind uncommitted work, a branch advanced between merge and
- * detection, a duplicate wake after a restart — from unrecoverable data loss
- * into a visible no-op. A refused agent that reaches for
- * `git reset --hard origin/main` reproduces the loss in one line, so the
- * refusal needs the same structural backing as the branch rule.
- *
- * It is deliberately NOT a blanket block: outside that state `git reset --hard`
- * has legitimate uses (throwing away a local mess the user asked to discard),
- * and blocking it everywhere is a worse trade than the hazard.
- *
- * Wired up via /etc/shipit/managed-settings.json (PreToolUse, matcher "Bash").
- * The settings file is always passed to the Claude CLI (see
- * src/server/session/claude.ts), so this hook is always active — unlike the
- * Stop hook, which self-gates on the SHIPIT_AUTO_CREATE_PR env var.
- *
- * Exit codes (Claude Code PreToolUse semantics):
- *   0 - allow the tool call
- *   2 - block the tool call; stderr is fed back to the model
- *
- * Heuristic, not a full shell parser: we split the command on common shell
- * separators and inspect each segment that invokes `git`. False negatives
- * (exotic quoting) are acceptable — the prompt instruction is the first line
- * of defense. False positives are avoided by requiring `git` to be the actual
- * command token of a segment.
- *
- * See docs/130-block-branch-ops/plan.md.
- */
+/** Blocks branch changes and destructive git during merged-branch recovery. */
 
 import { readFileSync } from "node:fs";
 
-// docs/211 — a Sandbox session has no single dedicated branch: the agent clones
-// repos into /workspace subdirs and owns its own branches/PRs there. Keeping the
-// agent pinned to one branch would break that, so the orchestrator sets
-// SHIPIT_SANDBOX=1 in the CLI env for sandbox sessions and we no-op here. (The
-// gate keys off the server-set env, derived from the session's authoritative
-// kind — never anything the agent can write.)
+// Sandbox sessions own their branches.
 if (process.env.SHIPIT_SANDBOX === "1") process.exit(0);
 
 let payload;
@@ -71,20 +17,12 @@ if (payload?.tool_name !== "Bash") process.exit(0);
 const command = payload?.tool_input?.command;
 if (typeof command !== "string" || !command.trim()) process.exit(0);
 
-/**
- * Split a shell line into the simple commands joined by &&, ||, ;, |, or
- * newlines. Good enough for a hook heuristic — we only need to isolate
- * candidate `git` invocations, not faithfully parse the shell.
- */
+/** Split a shell line into candidate commands. */
 function segments(line) {
   return line.split(/\|\||&&|[;\n|]/);
 }
 
-/**
- * Locate the git invocation in one segment. Returns `{ sub, rest, positionals }`
- * for a segment whose command token is `git`, or null otherwise. Shared by both
- * rules so they agree on what counts as "actually invoking git".
- */
+/** Parse a direct git invocation, or return null. */
 function parseGit(seg) {
   const tokens = seg.trim().split(/\s+/).filter(Boolean);
   // Step past leading `VAR=value` env assignments.
@@ -105,10 +43,6 @@ function parseGit(seg) {
   };
 }
 
-/**
- * Inspect one segment. Returns a human-readable reason string if it would
- * create or switch branches, or null otherwise.
- */
 function offends(seg) {
   const parsed = parseGit(seg);
   if (!parsed) return null;
@@ -130,10 +64,7 @@ function offends(seg) {
     return null;
   }
   if (sub === "branch") {
-    // Read-only forms (`git branch`, `-a`, `-v`, `--list <pattern>`,
-    // `--merged`, `--contains`, …) and deletions are fine. A bare positional
-    // name with none of those flags means a branch is being created,
-    // renamed, or force-moved.
+    // A positional outside list/delete forms creates or moves a branch.
     const isDelete = rest.some((t) => ["-d", "-D", "--delete"].includes(t));
     const isList = rest.some((t) =>
       [
@@ -161,16 +92,7 @@ function offends(seg) {
   return null;
 }
 
-/**
- * planning#267 — inspect one segment for hand-rolled destructive git. Only consulted
- * when the session is in the merged state `shipit branch reset-to-base` guards
- * (see `guardDestructiveGit` below). Returns a reason string or null.
- *
- * Scoped to the four forms that can silently discard this branch's work:
- * a hard reset, a forced checkout, a force-push, and starting a rebase.
- * Everything else — a mixed or soft reset, `git checkout -- <path>`, a plain
- * push — stays allowed.
- */
+/** Find destructive git forms blocked during merged-branch recovery. */
 function offendsDestructive(seg) {
   const parsed = parseGit(seg);
   if (!parsed) return null;
@@ -179,25 +101,8 @@ function offendsDestructive(seg) {
   if (sub === "reset" && rest.includes("--hard")) {
     return "`git reset --hard` discards this branch's state";
   }
-  // A rebase reaches the same end state as the hard reset above, and in this
-  // one state it is provably the wrong tool: CLAUDE.md post-turn invariant 4
-  // and /shipit-docs/sessions.md both say a branch whose work shipped under a
-  // different SHA returns to base via `shipit branch reset-to-base`, never a
-  // rebase — after a squash merge the base holds the branch's FINAL state while
-  // the branch's first commit adds the same paths in their INITIAL state, so
-  // the rebase hits add/add conflicts instead of dropping shipped patches. It
-  // also strands anything already pushed: the commits stay on the remote, leave
-  // the branch, and every later plain auto-push is rejected as non-fast-forward
-  // (the 2026-08-30 incident).
-  //
-  // Deliberately NOT a blanket rule. Outside this window a rebase is ordinary
-  // and useful, and this hook is the same narrow-scope bargain planning#267 made
-  // for `reset --hard`. The in-progress verbs are exempt — blocking
-  // `git rebase --abort` would trap the agent inside a rebase it cannot leave.
+  // Allow commands that control an existing rebase, especially abort.
   if (sub === "rebase") {
-    // Exempt: the verbs that steer a rebase already in flight (blocking
-    // `--abort` would trap the agent inside one), and `--help`, which is a
-    // read.
     const notAStart = rest.some((t) =>
       [
         "--continue",
@@ -214,12 +119,7 @@ function offendsDestructive(seg) {
       return "`git rebase` rewrites this branch's history";
     }
   }
-  // `git pull --rebase` starts the same rewrite by another name, and is the
-  // form an agent reaches for when the plain `rebase` is refused. Only the
-  // explicit flags are caught: `git -c pull.rebase=true pull` sets it through
-  // config this hook does not read, which is the same exotic-form false
-  // negative the header already accepts. A plain `git pull` stays allowed —
-  // it merges, which loses nothing.
+  // A plain pull merges and remains allowed.
   if (sub === "pull" && rest.some((t) => t === "--rebase" || t === "-r" || t.startsWith("--rebase="))) {
     return "`git pull --rebase` rewrites this branch's history";
   }
@@ -242,12 +142,7 @@ function offendsDestructive(seg) {
   return null;
 }
 
-// planning#267 — the destructive-git rule is scoped to the merged-with-recorded-head
-// state; the orchestrator sets SHIPIT_GUARD_DESTRUCTIVE_GIT=1 for exactly those
-// turns (server-derived from the session's `mergedHeadSha`, never anything the
-// agent can write). Outside it the rule is off, so an ordinary "throw away my
-// local mess" reset is untouched. Note the sandbox exit above already covers
-// sandbox sessions, which own their own branches and repos.
+// The orchestrator enables this only during merged-branch recovery.
 const guardDestructiveGit = process.env.SHIPIT_GUARD_DESTRUCTIVE_GIT === "1";
 
 for (const seg of segments(command)) {

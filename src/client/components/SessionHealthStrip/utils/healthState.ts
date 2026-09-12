@@ -1,9 +1,4 @@
-/**
- * Health-state types, constants, severity summarization, and format
- * helpers for the SessionHealthStrip. Pure data — no React.
- *
- * See docs/112-container-recovery/plan.md.
- */
+
 
 import type { RescuePhase } from "../../../../server/shared/types.js";
 
@@ -36,30 +31,16 @@ export interface RestartContainerResult {
   error: string | null;
 }
 
-/** Poll interval — short enough to feel responsive, long enough not to spam. */
 export const POLL_INTERVAL_MS = 10_000;
 
-/**
- * Faster poll cadence while a restart is in flight, so the user gets quick
- * feedback (the new container typically reaches "running" in 2-5s and we
- * don't want to make them stare at a stale spinner).
- */
 export const RESTART_POLL_INTERVAL_MS = 1500;
 
-/**
- * Hard ceiling on the "Restarting…" overlay. If the container still hasn't
- * become healthy after this window, clear the spinner so the user sees the
- * actual diagnostic state (container state, lastCreateError) instead of a
- * forever-spinning UI.
- */
 export const RESTART_OVERLAY_TIMEOUT_MS = 60_000;
 
-/** SSE staleness threshold — beyond this, surface a yellow warning. */
 export const STALE_EVENT_THRESHOLD_MS = 30_000;
 
 export type Severity = "ok" | "warn" | "error" | "unknown";
 
-/** Human-readable label per Rescue session phase. */
 export const PHASE_LABEL: Record<RescuePhase, string> = {
   stopping_stack: "Stopping services…",
   destroying_container: "Destroying container…",
@@ -78,22 +59,18 @@ export function summarize(
   if (isRestarting) return { severity: "warn", label: phaseLabel ?? "Rescuing…" };
   if (!health) return { severity: "unknown", label: "Checking…" };
 
-  // Container is gone or not running → error.
   if (health.containerState !== "running") {
     return { severity: "error", label: `Container ${health.containerState}` };
   }
 
-  // Container running but worker is unreachable → error (this is mode 2).
   if (!health.workerReachable) {
     return { severity: "error", label: "Worker unreachable" };
   }
 
-  // Worker reachable but state out of sync → warn.
   if (health.runnerRunningFlag === true && health.agentRunning === false) {
     return { severity: "warn", label: "Agent state out of sync" };
   }
 
-  // Stale SSE → warn.
   if (
     health.lastEventAt !== null &&
     Date.now() - health.lastEventAt > STALE_EVENT_THRESHOLD_MS

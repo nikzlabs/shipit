@@ -4,54 +4,14 @@
     <meta charset="UTF-8" />
     <title>Transcript highlight probe</title>
     <script>
-      /*
-       * Live DOM event listeners, counted by interception rather than sampling.
-       *
-       * The production trace (2026-08-30) showed listeners rising by *exactly*
-       * 620 per highlight call across 34 calls, while DOM nodes grew by 8 over
-       * the whole 15 s. `highlight.js` attaches no listeners — it returns a
-       * string — so the 620 belong to whatever React mounts each iteration.
-       *
-       * That is registration CHURN, not established retention: the trace holds
-       * 163 minor (scavenger) GCs and zero major/mark-compact ones, and only a
-       * major GC releases detached nodes and their listeners. So a subtree
-       * mounting and unmounting each iteration produces exactly this curve, and
-       * measuring no retention here is the expected result rather than a gap.
-       *
-       * CDP's `Performance.getMetrics` -> `JSEventListeners` is the counter the
-       * trace recorded, but it gives only a total. Patching `EventTarget` gives
-       * the same number AND names the target and event type, which is what turns
-       * "620" from a quantity into an address. `live()` is adds minus removes,
-       * so a subtree that cleans up returns to its baseline and one that leaks
-       * does not.
-       *
-       * THIS MUST BE AN INLINE SCRIPT, NOT PART OF THE MODULE. ES imports are
-       * hoisted, so a patch written at the top of the module still runs after
-       * every imported module's top-level code — and would miss anything the app
-       * registers at module scope. Verified by moving it: the counts differ.
-       */
+      /* Keep inline so interception starts before hoisted module imports. */
       (function () {
         var origAdd = EventTarget.prototype.addEventListener;
         var origRemove = EventTarget.prototype.removeEventListener;
         var adds = 0;
         var removes = 0;
         var byKey = new Map();
-        // target -> "type|capture" -> Map(listener -> entry). Needed because a
-        // truthful count has to reproduce two DOM rules that a naive
-        // call-counter gets wrong, and both of them inflate the answer:
-        //
-        //   1. DEDUPLICATION. `addEventListener` with the same (type, listener,
-        //      capture) triple is a NO-OP. Radix's keyboard/pointer tracker
-        //      re-adds one stable `handlePointer` on every keydown, so a
-        //      call-counter reports one new listener per keystroke per menu
-        //      where the browser registers none.
-        //   2. `once: true` AUTO-REMOVAL. Such a listener detaches when it
-        //      fires, without anyone calling `removeEventListener`, so a
-        //      call-counter never decrements it.
-        //
-        // Counting calls instead of registrations reported a 160-listener
-        // "leak" per keystroke in this fixture that the browser was not holding.
-        // Do not simplify this back.
+        // Track DOM deduplication and automatic removal of once listeners.
         var registry = new WeakMap();
 
         function targetName(t) {
@@ -76,16 +36,14 @@
           return typeof opts === "boolean" ? opts : !!(opts && opts.capture);
         }
 
-        // Optional stack capture for one `target type` key, so a leak can be
-        // traced to its registrant instead of merely counted. Off by default —
-        // building a stack on every registration is far too slow to leave on.
+        // Stack capture is opt-in because it is expensive.
         var watchKey = null;
         var watchStacks = [];
 
         EventTarget.prototype.addEventListener = function (type, fn, opts) {
           var capture = captureOf(opts);
           var perKey = slot(this, type, capture);
-          if (fn && perKey.has(fn)) return undefined; // rule 1: already registered
+          if (fn && perKey.has(fn)) return undefined;
           adds += 1;
           bump(this, type, 1);
           if (watchKey && targetName(this) + " " + type === watchKey && watchStacks.length < 40) {
@@ -95,9 +53,7 @@
           var bound = fn;
           var self = this;
           if (once && typeof fn === "function") {
-            // rule 2: observe the auto-removal by doing the bookkeeping in a
-            // wrapper. The wrapper is what the DOM holds, so `removeEventListener`
-            // below has to look it up rather than pass `fn` straight through.
+            // The wrapper records the browser's automatic removal.
             bound = function (ev) {
               removes += 1;
               bump(self, type, -1);

@@ -221,7 +221,6 @@ doc), this becomes either two branches or a capability flag
 if (agentId !== "codex") {
   return { skills: projectSkills };
 }
-// Merge Codex's container-side built-ins.
 ```
 
 **Why it's a hair**: Codex ships system skills inside the container at
@@ -379,58 +378,58 @@ src/
     session/
       agents/
         claude/
-          adapter.ts            # was: claude-adapter.ts
+          adapter.ts
           adapter.test.ts
-          process.ts            # was: ../claude.ts (PTY)
+          process.ts
           process.test.ts
-          auth-detection.test.ts # was: ../claude-auth-detection.test.ts
-          mcp-writer.ts         # NEW: generateMcpConfig logic moved out of session-worker.ts
-          tool-map.ts           # per-agent slice of the canonical tool table
-        codex/
-          adapter.ts            # was: codex-adapter.ts
-          adapter.test.ts
-          review-mcp.test.ts    # was: ../codex-review-mcp.test.ts
-          mcp-writer.ts         # NEW: ensureCodexMcpConfig moved out of session-worker.ts
+          auth-detection.test.ts
+          mcp-writer.ts
           tool-map.ts
-        index.ts                # re-exports + factory table
-        agent-process.ts        # shared interface re-export (stays put)
-        tool-map.ts             # merges per-agent slices into one canonical table
+        codex/
+          adapter.ts
+          adapter.test.ts
+          review-mcp.test.ts
+          mcp-writer.ts
+          tool-map.ts
+        index.ts
+        agent-process.ts
+        tool-map.ts
 
     orchestrator/
       agents/
         claude/
-          auth-manager.ts       # was: ../auth.ts (Claude-only parts)
-          oauth-refresher.ts    # was: ../claude-oauth-refresher.ts
+          auth-manager.ts
+          oauth-refresher.ts
           oauth-refresher.test.ts
-          limits-provider.ts    # was: ../limits/claude-limits.ts
-          limits-provider.test.ts
-          run-params-prep.ts    # NEW: where settingsPath injection moves to
-          system-prompt.ts      # NEW: Parallel-sessions section text
-        codex/
-          auth-manager.ts       # was: ../codex-auth.ts
-          auth-manager.test.ts
-          limits-provider.ts    # was: ../limits/codex-limits.ts
+          limits-provider.ts
           limits-provider.test.ts
           run-params-prep.ts
           system-prompt.ts
-        index.ts                # builds the per-agent runtime tables consumed by app-di.ts
-        types.ts                # AgentRuntime, AgentAuthManager, etc. interfaces
+        codex/
+          auth-manager.ts
+          auth-manager.test.ts
+          limits-provider.ts
+          limits-provider.test.ts
+          run-params-prep.ts
+          system-prompt.ts
+        index.ts
+        types.ts
 
     shared/
       agents/
-        types.ts                # AgentId, AgentEvent, AgentProcess (was: types/agent-types.ts)
-        registry.ts             # AgentRegistry, AGENT_DEFS (was: agent-registry.ts)
-        capabilities.ts         # AgentCapabilities + the new runtime knobs
+        types.ts
+        registry.ts
+        capabilities.ts
 
   client/
     agents/
       claude/
-        theme.css               # was: themes/claude.css
+        theme.css
         theme-light.css
       codex/
         theme.css
         theme-light.css
-      index.ts                  # per-agent client metadata (display name, icon path)
+      index.ts
 ```
 
 ### What each per-agent folder owns
@@ -490,7 +489,6 @@ export function buildAgentRuntime(deps: {…}): AgentRuntime {
     ["claude", claude.prepareRunParams],
     ["codex", codex.prepareRunParams],
   ]);
-  // … other per-agent hooks (auth-required nudge, system prompt sections, …)
   return { authManagers, limitsProviders, runParamsPreps, … };
 }
 ```

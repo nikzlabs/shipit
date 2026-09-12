@@ -8,14 +8,6 @@ import { reasoningOptionsFor } from "../../server/shared/catalogue/index.js";
 import type { AgentOption } from "../agent-types.js";
 import type { AgentId } from "../../server/shared/types.js";
 
-/**
- * The reasoning choice as both this control and docs/260's composer settings
- * menu render it. Extracted so the menu's Reasoning panel shares one precedence
- * rule (and one `saveReasoning` side effect) with the standalone selector.
- *
- * Returns `null` when the agent exposes no reasoning knob, which is the caller's
- * signal to render nothing.
- */
 export function useReasoningPickerState({
   agent,
   sessionReasoning,
@@ -40,28 +32,22 @@ export function useReasoningPickerState({
   );
 
   // docs/274 req 14 — the levels THIS SELECTION honours, never the harness's raw
-  // vocabulary. The two diverge for grok, which declares four levels and sends
-  // them only under a subscription, so reading `reasoning.options` here would
-  // put four controls on screen that change nothing on a key-billed session.
-  // The selection is derived from the same session and seed the model picker
+
   // beside this one reads, so the two controls cannot describe different rows.
   const selection = useBoundModelSelection(seedFromHistory);
   const reasoning = agent?.reasoning;
   const options = agent ? reasoningOptionsFor(agent.id as AgentId, selection) : [];
   if (!agent || !reasoning || options.length === 0) return null;
 
-  // `pending` (incl. an explicit null = "Default just picked") wins until cleared;
-  // otherwise the per-session value. The per-agent seed is consulted only when
-  // composing a brand-new session (`seedFromHistory`). `undefined` ⇒ Default.
   const current =
     pending !== undefined
       ? pending ?? undefined
       : sessionReasoning ?? (seedFromHistory ? getSavedReasoning(agent.id) : undefined);
 
   return {
-    /** The agent's own name for the knob ("Reasoning", "Reasoning effort"). */
+
     label: reasoning.label,
-    /** "Default" plus the levels this selection honours, in catalogue order. */
+
     options: [{ value: null as string | null, label: "Default" }, ...options],
     current,
     currentLabel: options.find((o) => o.value === current)?.label ?? "Default",
@@ -110,14 +96,10 @@ export function ReasoningSelector({
 }: {
   agent: AgentOption | undefined;
   sessionReasoning: string | undefined;
-  /** `null` clears the selection back to the agent's default. */
+
   onChange: (effort: string | null) => void;
   disabled?: boolean;
-  /**
-   * When true (new-session composer — no active session), fall back to the
-   * per-agent localStorage seed so the picker previews the level the new session
-   * will inherit. False for an active session, whose own value is authoritative.
-   */
+
   seedFromHistory?: boolean;
 }) {
   const state = useReasoningPickerState({ agent, sessionReasoning, onChange, seedFromHistory });

@@ -24,14 +24,13 @@ describe("AttentionViewToggle", () => {
   it("reads as pressed in the second view, and still carries the count (req 5)", () => {
     render(<AttentionViewToggle active count={2} onToggle={vi.fn()} />);
     expect(control().getAttribute("aria-pressed")).toBe("true");
-    // The count is on the chip for the eye and in the label for the ear.
+
     expect(control().getAttribute("aria-label")).toBe("Show all sessions (2 need you)");
     expect(control().textContent).toBe("2");
   });
 
   it("colours glyph and count from --color-attention-text, never the marker amber", () => {
-    // req 16 — the marker amber fails AA as small text on light themes, and the
-    // contrast guard only protects the token that is actually used here.
+
     const { container } = render(<AttentionViewToggle active count={9} onToggle={vi.fn()} />);
     expect(container.innerHTML).toContain("--color-attention-text");
     expect(container.innerHTML).not.toContain("(--color-attention)");

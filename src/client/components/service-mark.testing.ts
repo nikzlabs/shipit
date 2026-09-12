@@ -32,10 +32,8 @@
  * still discriminates in either direction.
  */
 
-/** The grid every `ServiceLogo` mark is drawn on. See `ServiceLogo.tsx`. */
 export const MARK_VIEW_BOX = "0 0 24 24";
 
-/** The first vendor mark under `root`, or `null` when the row carries none. */
 export function queryServiceMark(root: Element): SVGSVGElement | null {
   for (const svg of root.querySelectorAll("svg")) {
     if (svg.getAttribute("viewBox") === MARK_VIEW_BOX) return svg;

@@ -43,19 +43,17 @@ describe("RowHandlersProvider", () => {
     rerender(
       <RowHandlersProvider value={base({ onSendFollowUp: second })}><Row /></RowHandlersProvider>,
     );
-    // The row bailed out — which is the whole point…
+
     expect(renderCount).toBe(1);
 
     fireEvent.click(screen.getByText("send"));
-    // …and it still reached the current handler, not the one it rendered with.
+
     expect(first).not.toHaveBeenCalled();
     expect(second).toHaveBeenCalledWith("hi");
   });
 
   it("reports a handler the parent did not pass as absent", () => {
-    // Several cards gate a control on whether its handler EXISTS. Flattening
-    // every callback to an always-defined wrapper would draw buttons that do
-    // nothing, so optionality has to survive the indirection.
+
     render(<RowHandlersProvider value={base()}><Row /></RowHandlersProvider>);
     expect(screen.getByTestId("has-undo")).toHaveTextContent("no");
   });

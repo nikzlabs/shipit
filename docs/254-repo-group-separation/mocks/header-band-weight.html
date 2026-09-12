@@ -4,8 +4,7 @@
 <meta charset="utf-8">
 <title>Repo header band weight — Claude Light</title>
 <style>
-/* Tokens copied verbatim from src/client/themes/claude-light.css and claude.css,
-   and the shipped palette from src/client/index.css. */
+
 .claude-light {
   --color-bg-primary: #faf5ef;
   --color-bg-secondary: #f0e8de;
@@ -92,7 +91,6 @@ h1 { font-size: 20px; margin: 0 0 8px; letter-spacing: -.01em; }
 .pill.good { background: #d97757; color: #1a1410; }
 .pill.bad { background: #2e2519; color: #a89a8c; }
 
-/* ── Rail ─────────────────────────────────────────────────────────────── */
 .rail {
   width: 300px; background: var(--color-bg-primary); border: 1px solid var(--color-border-primary);
   border-radius: 8px; overflow: hidden; padding-bottom: 4px;
@@ -118,30 +116,21 @@ h1 { font-size: 20px; margin: 0 0 8px; letter-spacing: -.01em; }
 .row.new .title { color: var(--color-text-secondary); }
 .grp.collapsed .gbody { display: none; }
 
-/* ═════ The options — they differ ONLY in how the header row is painted ═══ */
-
-/* A · shipped: --color-bg-tertiary slab */
 .b-tertiary .ghead { background: var(--color-bg-tertiary); }
 
-/* B · one step lighter */
 .b-secondary .ghead { background: var(--color-bg-secondary); }
 
-/* C · no fill, hairline below */
 .b-rule .ghead { border-bottom: 1px solid var(--color-border-primary); }
 
-/* D · nothing at all — the edge and the type carry it */
 .b-none .ghead { }
 
-/* E · a wash of the repo's OWN hue, composited opaque */
 .b-wash .ghead { background: color-mix(in srgb, var(--a) var(--wash), var(--color-bg-primary)); }
 
-/* F · repo-hue wash + hairline */
 .b-washrule .ghead {
   background: color-mix(in srgb, var(--a) var(--wash), var(--color-bg-primary));
   border-bottom: 1px solid color-mix(in srgb, var(--a) 22%, var(--color-bg-primary));
 }
 
-/* G · inset chip rather than a full-bleed bar */
 .b-chip .ghead { padding-left: 8px; }
 .b-chip .ghead::before {
   content: ""; position: absolute; left: 4px; right: 4px; top: 2px; bottom: 2px;

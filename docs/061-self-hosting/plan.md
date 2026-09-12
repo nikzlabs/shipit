@@ -242,9 +242,9 @@ Sysbox (fully isolated Docker daemon per session) is deferred to [062-managed-sh
 
 ```yaml
 resources:
-  memory: 2048    # MB (default: 512, cap set by deployment)
-  cpu: 2.0        # cores (default: 0.5)
-  pids: 4096      # max PIDs (default: 4096)
+  memory: 2048
+  cpu: 2.0
+  pids: 4096
 ```
 
 **Flow:**
@@ -274,17 +274,15 @@ capabilities:
   docker: true
 
 resources:
-  memory: 3072    # orchestrator + session workers + Claude CLI
+  memory: 3072
   cpu: 2.0
-  pids: 4096      # many child processes from compose services, session workers, etc.
+  pids: 4096
 
 install: npm ci
 
 preview:
   command: |
-    # Build session worker image (needed by orchestrator to spawn session containers)
     docker build -t shipit-session-worker:dev -f docker/Dockerfile.session-worker.dev .
-    # Start Vite dev server (client HMR) and Fastify API server
     API_PORT=3001 npx vite --host 0.0.0.0 --port 3000 &
     WORKSPACE_VOLUME="" USE_CONTAINERS=true SESSION_WORKER_IMAGE=shipit-session-worker:dev \
       DOCKER_NETWORK=shipit-inner DOCKER_STACK=shipit-inner PORT=3001 npm run dev

@@ -40,7 +40,6 @@ export function KeybindingSettings() {
 
   const resolve = (def: KeybindingDef): string => keybindings[def.id] ?? def.defaultBinding;
 
-  // Conflict map: a normalized chord shared by >1 editable binding is a clash.
   const counts = new Map<string, number>();
   for (const def of KEYBINDINGS) {
     if (!def.editable) continue;

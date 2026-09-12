@@ -32,12 +32,10 @@ export type RightTab =
 type MobilePanel = "chat" | "preview";
 
 type SettingsTab =
-  // docs/252 — the per-vendor `agent-claude` / `agent-codex` tabs are gone.
-  // Credentials are listed by service, not by the harness that drives them,
-  // so Settings → Services is the one credential surface and the default tab.
+
   | "services"
   // docs/261 — the two configured reviewers. Directly after Services because it
-  // reads entirely off the credentials that tab configures.
+
   | "roles"
   | "integrations"
   | "git"
@@ -52,7 +50,7 @@ type SettingsTab =
 type ProjectSettingsTab = "deployments" | "secrets";
 
 interface UiState {
-  // State
+
   rightTab: RightTab;
   mobilePanel: MobilePanel;
   showTemplates: boolean;
@@ -60,110 +58,48 @@ interface UiState {
   agentList: AgentOption[];
   activeAgentId: AgentId;
   showUsageModal: boolean;
-  /**
-   * Authoritative session-cumulative usage for the active session: cost,
-   * duration, turn count. Mirrors `UsageManager.getSessionUsage()` on the
-   * server. Driven by `usage_update` (live) and seeded from the `/history`
-   * HTTP response on session attach.
-   */
+
   currentSessionUsage: SessionUsage | null;
   allUsageStats: UsageStats | null;
   modelInfo: ModelInfo | null;
-  /**
-   * Last-turn input tokens (= the current context size in the model's
-   * prompt window). Updated on each `turn_usage_update` and seeded from
-   * `/history`'s last `turnUsage` entry on session reload.
-   */
+
   contextTokens: number;
-  /**
-   * Cumulative input tokens across every turn in the session. Used for the
-   * popover's "Input tokens" total — distinct from `contextTokens` which is
-   * the most recent turn's input only.
-   */
+
   cumulativeInputTokens: number;
-  /** Cumulative output tokens across every turn in the session. */
+
   cumulativeOutputTokens: number;
   settingsOpen: boolean;
-  /** docs/211 — the Sandbox capability dialog. Hoisted here (rather than local
-   *  to SessionSidebar) so it can be opened from anywhere that needs it. */
+
   sandboxDialogOpen: boolean;
-  /**
-   * docs/279 — the per-session Session settings dialog. Hoisted here for the same
-   * reason as `sandboxDialogOpen`, plus one specific to it: the dialog now has
-   * TWO entry points (the sidebar's overflow menu and the sandbox banner), and on
-   * mobile the sidebar is an unmounted drawer, so open-state local to
-   * `SessionItem` would make the banner's control dead on a phone.
-   */
+
   sessionSettingsDialogOpen: boolean;
   quickCaptureOpen: boolean;
-  /**
-   * docs/144 Mode B — when the quick-capture overlay is opened via the
-   * voice hotkey, this is set so the overlay auto-starts mic capture on
-   * mount. Cleared once the overlay consumes it (so a subsequent text-only
-   * open doesn't spuriously record).
-   */
+
   quickCaptureAutoMic: boolean;
   settingsTab: SettingsTab;
-  /**
-   * URL of the repo whose Project Settings dialog is open, or `null` when
-   * closed. Project settings (deployments, secrets) are per-repo and live in
-   * their own dialog, invoked from the per-repo menu in the sidebar — not the
-   * workspace-wide Settings dialog.
-   */
+
   projectSettingsRepoUrl: string | null;
-  /** Which tab the Project Settings dialog opens on. */
+
   projectSettingsTab: ProjectSettingsTab;
   sidebarCollapsed: boolean;
-  /**
-   * docs/260-attention-sidebar-view req 13 — which of the sidebar's two views is showing: the repo
-   * tree (`"all"`) or the flat needs-attention list (`"attention"`). Persisted
-   * to localStorage so the sidebar reopens in the view the user chose.
-   */
+
   sidebarView: SidebarView;
   mobileSidebarOpen: boolean;
   toast: ToastData | null;
   bootstrapLoaded: boolean;
   dockerMemory: DockerMemoryStats | null;
-  /**
-   * Epoch milliseconds when the orchestrator process started. Set from
-   * the `system_info` SSE event on connect. The UptimeBadge ticks live
-   * from this value so the user can confirm a restart actually bounced
-   * the orchestrator. `null` until the SSE handshake completes.
-   */
+
   processStartedAt: number | null;
-  /**
-   * Channel-aware human-facing version of the running instance, from the
-   * `system_info` SSE event. Surfaced in Settings → Advanced as
-   * "Stable · v1.4.0" / "Edge · main @ abc1234". `null` until SSE connects.
-   */
+
   version: VersionInfo | null;
   updateMode: "managed" | "manual";
-  /**
-   * Account-wide subscription rate-limit snapshots, keyed by agent id.
-   * Driven by the `subscription_limits` SSE broadcast; the server
-   * replaces the map wholesale on every tick so sign-outs / unfetchable
-   * providers propagate naturally (missing key → no pill).
-   * See docs/135-subscription-limits-badge/plan.md.
-   */
+
   subscriptionLimits: SubscriptionLimitsMap;
-  /**
-   * Orchestrator runtime mode (feature 118), seeded from the `/api/bootstrap`
-   * response. `"local"` means the orchestrator runs in-process with no Docker
-   * layer — the dogfooding ShipIt-in-ShipIt path. The UI uses this to show a
-   * local-mode banner and hide container-only affordances (preview, terminal).
-   * Defaults to `"containerized"` for every production deploy.
-   */
+
   runtimeMode: RuntimeMode;
 
-  /**
-   * Tailscale sslip preview host (docs/216), or `null` when not a Tailscale VPS
-   * deploy. When set and the page is browsed over a `.ts.net` MagicDNS host,
-   * preview iframes route through this host (forced HTTP) instead of the app
-   * host. See `resolvePreviewHost`.
-   */
   tailnetPreviewHost: string | null;
 
-  // Actions
   setRightTab: (tab: RightTab) => void;
   setMobilePanel: (panel: MobilePanel) => void;
   setShowTemplates: (show: boolean) => void;
@@ -181,15 +117,11 @@ interface UiState {
   setQuickCaptureOpen: (open: boolean, autoMic?: boolean) => void;
   setQuickCaptureAutoMic: (active: boolean) => void;
   setSettingsTab: (tab: SettingsTab) => void;
-  /**
-   * Open (or close, with `null`) the per-repo Project Settings dialog. Pass a
-   * tab to deep-link; defaults to `"secrets"` — the actionable tab, since
-   * Deployments is just setup instructions.
-   */
+
   setProjectSettingsRepoUrl: (url: string | null, tab?: ProjectSettingsTab) => void;
   setSidebarCollapsed: (collapsed: boolean) => void;
   setSidebarView: (view: SidebarView) => void;
-  /** Flip between the two sidebar views — the switch and the keyboard chord. */
+
   toggleSidebarView: () => void;
   setMobileSidebarOpen: (open: boolean) => void;
   setToast: (toast: ToastData | null) => void;
@@ -203,7 +135,6 @@ interface UiState {
   setTailnetPreviewHost: (host: string | null) => void;
   reset: () => void;
 
-  // Async actions
   fetchUsageStats: (sessionId: string) => Promise<void>;
 }
 
@@ -260,10 +191,7 @@ export const useUiStore = create<UiState>((set) => ({
   setAgentList: (agentList) => set({ agentList }),
 
   setActiveAgentId: (id) => {
-    // localStorage write happens at the UI call site (App.tsx
-    // `handleAgentChange`) so internal syncs — e.g. mirroring a session's
-    // persisted agent into the UI on load — don't propagate that session's
-    // pick into the global "new session default" key.
+
     set({ activeAgentId: id });
   },
 
@@ -340,23 +268,16 @@ export const useUiStore = create<UiState>((set) => ({
       cumulativeInputTokens: 0,
       cumulativeOutputTokens: 0,
       // docs/252 — back to the seed, because this field is SYNCED TO THE
-      // CONNECTED SESSION by `useConnectionSync` and so goes stale the moment
-      // there is no longer a session behind it. Surviving the reset is what let
-      // the new-session route describe the session the user just left: its warm
-      // session is claimed but excluded from `sessions` (`SessionManager.list`
+
       // filters `warm = 0`), so the composer has a bound session it cannot see
-      // and falls back to this value. Resetting it to what the next session will
-      // actually be created on makes that fallback correct instead of stale, and
-      // an explicit pick still overwrites it (`handleAgentChange`).
-      //
-      // localStorage is deliberately NOT written here — see `setActiveAgentId`:
+
       // an internal sync must never move the global "new session default".
       activeAgentId: newSessionAgentId(s.agentList),
-      // On a session switch the mobile layout should always land on chat —
+
       // a new session's first thing to look at is its conversation, never the
-      // workspace/preview tab the previous session happened to be parked on.
+
       // (Unlike rightTab, which is the desktop tab and is intentionally
-      // preserved across switches via localStorage.)
+
       mobilePanel: "chat" as MobilePanel,
     })),
 

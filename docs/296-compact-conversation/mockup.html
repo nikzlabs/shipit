@@ -1,7 +1,7 @@
-<!doctype html><html lang="en" class="claude-light"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="icon" href="data:,"><title>Compact conversation — design mockup</title><style>/* Light theme — :root provides defaults, .light is used by the theme picker */
+<!doctype html><html lang="en" class="claude-light"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="icon" href="data:,"><title>Compact conversation — design mockup</title><style>                                                                               
 :root,
 .light {
-  /* Surfaces */
+
   --color-bg-primary: #ffffff;
   --color-bg-secondary: #f9fafb;
   --color-bg-tertiary: #f3f4f6;
@@ -10,25 +10,21 @@
   --color-bg-hover: rgba(0, 0, 0, 0.04);
   --color-bg-active: rgba(0, 0, 0, 0.08);
 
-  /* Text */
   --color-text-primary: #111827;
   --color-text-secondary: #4b5563;
   --color-text-tertiary: #9ca3af;
   --color-text-inverse: #ffffff;
   --color-text-link: #2563eb;
 
-  /* Borders */
   --color-border-primary: #dfe1e6;
   --color-border-secondary: #d1d5db;
   --color-border-focus: #3b82f6;
 
-  /* Accent */
   --color-accent: #2563eb;
   --color-accent-hover: #1d4ed8;
   --color-accent-text: #ffffff;
   --color-accent-subtle: rgba(37, 99, 235, 0.1);
 
-  /* Status */
   --color-success: #16a34a;
   --color-success-subtle: rgba(22, 163, 74, 0.1);
   --color-success-border: rgba(22, 163, 74, 0.3);
@@ -39,7 +35,6 @@
   --color-info: #2563eb;
   --color-info-subtle: rgba(37, 99, 235, 0.1);
 
-  /* Domain-specific */
   --color-pr: #7c3aed;
   --color-pr-subtle: rgba(124, 58, 237, 0.1);
   --color-pr-border: rgba(124, 58, 237, 0.3);
@@ -53,24 +48,17 @@
   --color-folder: #eab308;
   --color-autofix: #f97316;
   --color-attention: #d97706;
-  /* docs/260 — the attention amber as TEXT/glyph colour. `--color-attention` is a
-     3px marker on a row: at 12px and below it measures 2.35–2.89:1 on the light
-     themes' surfaces, under the 4.5:1 AA asks of small text. This is the lightest
-     shade of the same amber ramp that clears 4.5:1 on each theme, so the sidebar's
-     "Needs you" switch stays legible without touching the marker's colour. */
+
   --color-attention-text: #b45309;
 
-  /* Context meter */
   --color-context-ok: #22c55e;
   --color-context-mid: #eab308;
   --color-context-high: #f97316;
   --color-context-full: #ef4444;
 
-  /* Scrollbar */
   --color-scrollbar-thumb: rgba(156, 163, 175, 0.4);
   --color-scrollbar-thumb-hover: rgba(107, 114, 128, 0.6);
 
-  /* Syntax highlighting (GitHub Light) */
   --color-syntax-base: #24292e;
   --color-syntax-bg: #ffffff;
   --color-syntax-keyword: #d73a49;
@@ -88,12 +76,11 @@
   --color-syntax-deletion: #b31d28;
   --color-syntax-deletion-bg: #ffeef0;
 
-  /* Typography */
   --font-size-code: 13px;
 }
-/* Dark theme — applied via .dark class on <html> */
+
 .dark {
-  /* Surfaces */
+
   --color-bg-primary: #030712;
   --color-bg-secondary: #111827;
   --color-bg-tertiary: #1f2937;
@@ -102,25 +89,21 @@
   --color-bg-hover: rgba(255, 255, 255, 0.05);
   --color-bg-active: rgba(255, 255, 255, 0.1);
 
-  /* Text */
   --color-text-primary: #f3f4f6;
   --color-text-secondary: #9ca3af;
   --color-text-tertiary: #6b7280;
   --color-text-inverse: #030712;
   --color-text-link: #60a5fa;
 
-  /* Borders */
   --color-border-primary: #212c3b;
   --color-border-secondary: #374151;
   --color-border-focus: #3b82f6;
 
-  /* Accent */
   --color-accent: #3b82f6;
   --color-accent-hover: #2563eb;
   --color-accent-text: #ffffff;
   --color-accent-subtle: rgba(59, 130, 246, 0.15);
 
-  /* Status */
   --color-success: #22c55e;
   --color-success-subtle: rgba(34, 197, 94, 0.15);
   --color-success-border: rgba(34, 197, 94, 0.3);
@@ -131,7 +114,6 @@
   --color-info: #60a5fa;
   --color-info-subtle: rgba(96, 165, 250, 0.15);
 
-  /* Domain-specific */
   --color-pr: #a78bfa;
   --color-pr-subtle: rgba(167, 139, 250, 0.15);
   --color-pr-border: rgba(167, 139, 250, 0.3);
@@ -140,17 +122,14 @@
   --color-attention: #f59e0b;
   --color-attention-text: #f59e0b;
 
-  /* Context meter */
   --color-context-ok: #22c55e;
   --color-context-mid: #eab308;
   --color-context-high: #f97316;
   --color-context-full: #ef4444;
 
-  /* Scrollbar */
   --color-scrollbar-thumb: rgba(75, 85, 99, 0.5);
   --color-scrollbar-thumb-hover: rgba(107, 114, 128, 0.7);
 
-  /* Syntax highlighting (GitHub Dark) */
   --color-syntax-base: #c9d1d9;
   --color-syntax-bg: #0d1117;
   --color-syntax-keyword: #ff7b72;
@@ -168,14 +147,13 @@
   --color-syntax-deletion: #ffdcd7;
   --color-syntax-deletion-bg: #67060c;
 
-  /* Typography */
   --font-size-code: 13px;
 }
 
 *{box-sizing:border-box}body{margin:0;background:var(--color-bg-primary);color:var(--color-text-primary);font:14px/1.6 system-ui,sans-serif}button,input{font:inherit}button{cursor:pointer;border:1px solid var(--color-border-primary);background:var(--color-bg-tertiary);color:var(--color-text-primary);border-radius:7px;padding:6px 12px}button:hover{background:var(--color-bg-hover)}:focus-visible{outline:2px solid var(--color-border-focus);outline-offset:4px}header{padding:22px 30px;border-bottom:1px solid var(--color-border-primary);display:flex;justify-content:space-between;align-items:center;gap:18px}h1{font-size:20px;margin:2px 0}h2{font-size:15px;margin:0 0 12px}p{margin:8px 0}.eyebrow{font-size:11px;text-transform:uppercase;letter-spacing:.12em;color:var(--color-text-secondary)}.muted,small{color:var(--color-text-secondary)}main{display:grid;grid-template-columns:290px minmax(0,760px);gap:28px;max-width:1160px;margin:auto;padding:28px}.settings{align-self:start;background:var(--color-bg-secondary);padding:20px;border:1px solid var(--color-border-primary);border-radius:10px;position:sticky;top:20px}.path{font-size:12px;color:var(--color-text-secondary);margin-bottom:24px}.switchline{display:flex;gap:15px;align-items:center;justify-content:space-between}.switch{appearance:none;width:38px;height:22px;border-radius:20px;background:var(--color-border-secondary);flex-shrink:0;position:relative;cursor:pointer;margin:0}.switch:after{content:'';position:absolute;top:3px;left:3px;width:16px;height:16px;border-radius:50%;background:var(--color-text-primary)}.switch:checked{background:var(--color-accent)}.switch:checked:after{left:19px;background:var(--color-accent-text)}.help{font-size:12px;margin-top:12px}.rule{border-top:1px solid var(--color-border-primary);margin-top:22px;padding-top:16px}.sample-head{display:flex;align-items:center;justify-content:space-between;padding-bottom:14px;border-bottom:1px solid var(--color-border-primary)}.badge{font-size:11px;padding:2px 8px;border-radius:5px;background:var(--color-bg-tertiary);color:var(--color-text-secondary)}.badge.live{color:var(--color-info);background:var(--color-info-subtle)}article{padding:22px 0;border-bottom:1px solid var(--color-border-primary)}.user{background:var(--color-bg-secondary);border:1px solid var(--color-border-primary);border-radius:10px;padding:12px 16px;margin-bottom:16px}.meta{font-size:11px;color:var(--color-text-secondary);margin-bottom:6px;display:flex;justify-content:space-between}.disclosure{border:0;background:transparent;padding:3px 0;color:var(--color-text-link);font-size:12px;margin-bottom:12px}.detail{border-left:2px solid var(--color-border-primary);padding:0 14px;margin:0 0 14px;color:var(--color-text-secondary);font-size:13px}.tool{font:12px/1.8 ui-monospace,monospace;padding:5px 8px;margin:6px 0;background:var(--color-bg-secondary);border-radius:5px}.card{border:1px solid var(--color-border-primary);border-radius:8px;margin:10px 0;background:var(--color-bg-secondary);overflow:hidden}.card summary{padding:10px 13px;cursor:pointer;font-size:13px}.card .body{padding:0 14px 12px;font-size:12px;color:var(--color-text-secondary)}.status{float:right;font-size:11px;color:var(--color-text-primary)}.final{margin:17px 0 10px}.notice{font-size:12px;color:var(--color-attention-text);border-left:2px solid var(--color-warning);padding-left:12px;margin-top:12px}.composer{border:1px solid var(--color-border-secondary);border-radius:10px;padding:15px;color:var(--color-text-secondary);margin:20px 0 10px}.legend{font-size:12px;color:var(--color-text-secondary)}[hidden]{display:none!important}@media(max-width:760px){header{padding:16px}main{grid-template-columns:1fr;padding:16px;gap:20px}.settings{position:static}.path{margin-bottom:12px}h1{font-size:18px}.status{float:none;margin-left:10px}}@media(forced-colors:active){.switch{appearance:auto;width:22px;height:22px}.switch:after{display:none}}@media(prefers-reduced-motion:reduce){*{scroll-behavior:auto}}
-/* Claude Light theme — warm parchment with terracotta accent */
+
 .claude-light {
-  /* Surfaces */
+
   --color-bg-primary: #faf5ef;
   --color-bg-secondary: #f0e8de;
   --color-bg-tertiary: #e6dcd0;
@@ -184,25 +162,21 @@
   --color-bg-hover: rgba(180, 100, 60, 0.06);
   --color-bg-active: rgba(180, 100, 60, 0.1);
 
-  /* Text */
   --color-text-primary: #2a2018;
   --color-text-secondary: #5c5040;
   --color-text-tertiary: #9a8c78;
   --color-text-inverse: #faf5ef;
   --color-text-link: #c06040;
 
-  /* Borders */
   --color-border-primary: #decfbc;
   --color-border-secondary: #d0c0ac;
   --color-border-focus: #d97757;
 
-  /* Accent */
   --color-accent: #d97757;
   --color-accent-hover: #c4603f;
   --color-accent-text: #ffffff;
   --color-accent-subtle: rgba(217, 119, 87, 0.12);
 
-  /* Status */
   --color-success: #3a8a50;
   --color-success-subtle: rgba(58, 138, 80, 0.1);
   --color-success-border: rgba(58, 138, 80, 0.3);
@@ -213,7 +187,6 @@
   --color-info: #c06040;
   --color-info-subtle: rgba(192, 96, 64, 0.1);
 
-  /* Domain-specific */
   --color-pr: #8050a0;
   --color-pr-subtle: rgba(128, 80, 160, 0.1);
   --color-pr-border: rgba(128, 80, 160, 0.3);
@@ -229,17 +202,14 @@
   --color-attention: #d97706;
   --color-attention-text: #92400e;
 
-  /* Context meter */
   --color-context-ok: #3a8a50;
   --color-context-mid: #b89020;
   --color-context-high: #d07030;
   --color-context-full: #c43838;
 
-  /* Scrollbar */
   --color-scrollbar-thumb: rgba(154, 140, 120, 0.35);
   --color-scrollbar-thumb-hover: rgba(92, 80, 64, 0.5);
 
-  /* Syntax highlighting (warm, earthy light tones) */
   --color-syntax-base: #3c3424;
   --color-syntax-bg: #faf5ef;
   --color-syntax-keyword: #b85030;
@@ -257,7 +227,6 @@
   --color-syntax-deletion: #b85030;
   --color-syntax-deletion-bg: #faeae4;
 
-  /* Typography */
   --font-size-code: 13px;
 }
 

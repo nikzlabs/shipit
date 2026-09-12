@@ -1,54 +1,6 @@
 <!doctype html>
 <meta charset="utf-8">
 <title>idle frame cost</title>
-<!--
-  Two-ingredient reproduction for docs/265's idle-compositing finding. Drive it
-  with `node scripts/trace-idle-frames.mjs`; each query param toggles one
-  ingredient, and the interesting number is beginMainThreadFramesPerSecond.
-
-    ?spin=1              always-on animation, nothing else   → main frames ~0
-    ?spin=1&io=1         + one live IntersectionObserver     → main frames = display rate
-    ?spin=1&cv=1&n=300   + content-visibility:auto rows      → main frames = display rate
-    ?spin=0&cv=1&n=300   rows but no animation               → no frames at all
-
-  Neither ingredient costs anything alone. Together they run style recalc,
-  pre-paint, the intersection pass and commit every vsync. (Layout and paint do
-  NOT run per frame here — nothing is changing size or pixels on the main
-  thread; the animation's transform is the compositor's business.)
-
-  A third, independent knob for the layer-tree half of docs/265, since Layerize
-  is layer-list construction and should track how many layers exist:
-
-    ?spin=1&io=1&promote=400   400 on-screen composited layers → per-frame commit cost
-    ?spin=1&io=1&chunk=1500    1500 paint chunks, NOT composited → no effect (negative result)
-
-  `promote` puts `will-change: transform` on N small in-viewport boxes, so they
-  are really promoted and really visible. Watch `visibleLayers` against Commit's
-  msPerCall: ~0.399 us per layer per frame here.
-
-  `chunk` instead gives each box its own paint chunk WITHOUT compositing it
-  (`opacity` by default; `&chunkmode=filter|mixblend` for the other two). That is
-  the recorded negative: 1,500 of them leave both `visibleLayers` and Layerize
-  untouched, which is why "many paint chunks" is not the explanation for
-  production's expensive Layerize.
-
-  `steps=N` / `spinmode` vary HOW the always-on animation is written. This is the
-  knob the docs/265 fix came out of, and the two conditions that matter are:
-
-    ?spin=1&io=1&cv=1&n=300&steps=10           10 main frames/s, not 60
-    ?spin=1&io=1&cv=1&n=300&steps=10&spinmode=nonComp   still 60
-
-  So `steps(N)` schedules exactly N main-thread frames per iteration — but ONLY
-  for a compositor-only property. `nonComp` animates `left`, and stepping it
-  saves nothing, because the main thread has to run layout for it either way.
-  `spinmode=slow` (one rotation every 8s) is the recorded negative: duration
-  alone changes nothing.
-
-  `second=linear|<N>` adds a second animation, `secondOffsetMs` staggers its
-  mount. Cost is the UNION over running animations and step boundaries are
-  per-animation, so one linear animation pins the page at display rate, and two
-  `steps(10)` mounted 37 ms apart cost 20/s rather than 10.
--->
 <style>
   @keyframes spin-slow { to { transform: rotate(360deg); } }
   @keyframes slide-left { to { left: 40px; } }
@@ -78,8 +30,6 @@
       document.getElementById("spin").classList.add("tool-spinner");
       const mode = q.get("spinmode");
       if (mode) document.getElementById("spin").classList.add(mode);
-      // `?steps=N` is the falsifiable form of the steps() finding: main frames
-      // per second should track N, not the display rate.
       const steps = q.get("steps");
       if (steps) {
         document.getElementById("spin").classList.add("steps");
@@ -87,17 +37,9 @@
       }
     }
 
-    // `?second=linear|<N>` adds a SECOND always-on animation, to test whether
-    // frame scheduling is the union over running animations. It is: one linear
-    // animation pins the page at display rate however the first one is written.
     const second = q.get("second");
     if (second) {
-      // `&secondOffsetMs=N` starts it N ms late. A CSS animation's step
-      // boundaries are measured from ITS OWN start time, so two stepped
-      // animations that mounted at different moments tick on different grids
-      // and their frame costs ADD. That is the real-world case — components
-      // mount when their state changes, not together — so it is the number
-      // that decides how much stepping is worth.
+      // Staggering tests independent animation step boundaries.
       const offset = Number(q.get("secondOffsetMs") ?? 0);
       const start = () => {
         const el = document.getElementById("spin2");
@@ -118,10 +60,7 @@
       list.appendChild(row);
     }
 
-    // Promoted, on-screen, non-overlapping: each one is a real composited layer.
-    // Offscreen or inside a content-visibility subtree they would be skipped, and
-    // the sweep would measure nothing (which is how an earlier attempt at this
-    // failed to move Layerize at all).
+    // Keep promoted layers visible and separate.
     const promote = Number(q.get("promote") ?? 0);
     if (promote > 0) {
       const holder = document.createElement("div");
@@ -136,7 +75,7 @@
       document.body.appendChild(holder);
     }
 
-    // Paint chunks without compositing — the negative control for `promote`.
+    // Paint chunks without compositing are the negative control.
     const chunk = Number(q.get("chunk") ?? 0);
     if (chunk > 0) {
       const mode = q.get("chunkmode") ?? "opacity";
@@ -156,7 +95,6 @@
       document.body.appendChild(holder);
     }
 
-    // A single observer is enough; the cost is per frame, not per observer.
     if (q.get("io") === "1") new IntersectionObserver(() => {}).observe(list);
 
     document.getElementById("label").textContent =

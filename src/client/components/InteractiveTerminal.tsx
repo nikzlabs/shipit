@@ -6,16 +6,12 @@ import { WebLinksAddon } from "@xterm/addon-web-links";
 import "@xterm/xterm/css/xterm.css";
 
 export interface InteractiveTerminalProps {
-  /** Send user input to the server. */
   onInput: (data: string) => void;
-  /** Notify server of terminal size changes. */
   onResize: (cols: number, rows: number) => void;
-  /** Request the server to start the shell (called on mount). Receives initial dimensions. */
   onStart: (cols: number, rows: number) => void;
 }
 
 export interface InteractiveTerminalHandle {
-  /** Write server output directly to the xterm.js instance (bypasses React state). */
   write: (data: string) => void;
 }
 
@@ -26,14 +22,13 @@ export const InteractiveTerminal = forwardRef<InteractiveTerminalHandle, Interac
     const fitRef = useRef<FitAddon | null>(null);
     const startedRef = useRef(false);
 
-    // Expose write() to parent via ref
     useImperativeHandle(ref, () => ({
       write(data: string) {
         termRef.current?.write(data);
       },
     }), []);
 
-    // Stable callback refs so we don't re-create the terminal on prop changes
+    // Callback refs avoid rebuilding the terminal when props change.
     const onInputRef = useRef(onInput);
     onInputRef.current = onInput;
     const onResizeRef = useRef(onResize);
@@ -51,10 +46,10 @@ export const InteractiveTerminal = forwardRef<InteractiveTerminalHandle, Interac
         fontSize: 13,
         fontFamily: "'JetBrains Mono', 'Fira Code', 'Cascadia Code', Menlo, monospace",
         theme: {
-          background: "#030712",   // gray-950
-          foreground: "#d1d5db",   // gray-300
+          background: "#030712",
+          foreground: "#d1d5db",
           cursor: "#d1d5db",
-          selectionBackground: "#374151", // gray-700
+          selectionBackground: "#374151",
           black: "#1f2937",
           red: "#f87171",
           green: "#4ade80",
@@ -87,26 +82,21 @@ export const InteractiveTerminal = forwardRef<InteractiveTerminalHandle, Interac
       termRef.current = term;
       fitRef.current = fitAddon;
 
-      // Fit to container
       try {
         fitAddon.fit();
       } catch {
-        // Container may not be visible yet
+        // The container can still be hidden.
       }
 
-      // Forward user input to server
       term.onData((data) => {
         onInputRef.current(data);
       });
 
-      // Request terminal start on first mount, sending initial dimensions
       if (!startedRef.current) {
         startedRef.current = true;
         onStartRef.current(term.cols, term.rows);
       }
 
-      // Observe container resize to re-fit (debounced to avoid flooding
-      // the server with resize messages while the user drags a divider)
       let resizeTimer: ReturnType<typeof setTimeout> | null = null;
       const observer = new ResizeObserver(() => {
         if (resizeTimer) clearTimeout(resizeTimer);
@@ -115,7 +105,7 @@ export const InteractiveTerminal = forwardRef<InteractiveTerminalHandle, Interac
             fitAddon.fit();
             onResizeRef.current(term.cols, term.rows);
           } catch {
-            // Ignore — container may have been removed
+            // The container can be gone.
           }
         }, 150);
       });

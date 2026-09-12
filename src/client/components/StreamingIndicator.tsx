@@ -1,17 +1,4 @@
-/**
- * StreamingIndicator — activity status display.
- *
- * Derives a contextual status message describing what the agent is currently
- * doing (thinking, editing files, running commands, etc.) plus a small spinner
- * for in-progress tool executions. Used in the chat when waiting for or
- * receiving agent responses.
- *
- * Activity labels are derived from the agent CLI's NDJSON event types:
- * - No events yet → "Thinking..."
- * - assistant event with tool_use → tool-specific label (e.g., "Editing src/foo.ts")
- * - user event (tool result) → "Processing..."
- * - Between tool executions → "Thinking..."
- */
+
 
 import { sessionRelativePath } from "../path-utils.js";
 import { pluginSkillLabel } from "../../server/shared/plugin-skill-marker.js";
@@ -19,27 +6,19 @@ import { Spinner } from "./Spinner.js";
 import { ICON_SIZE } from "../design-tokens.js";
 
 export interface StreamingActivity {
-  /** Human-readable label for current activity (e.g., "Editing src/app.ts") */
+
   label: string;
-  /** The tool name if a tool is actively running, undefined otherwise */
+
   tool?: string;
 }
 
-/** Small spinner icon for in-progress tool executions. */
 export function ToolSpinner() {
   return <Spinner size={ICON_SIZE.XS} className="text-(--color-info)" />;
 }
 
-/**
- * Derive a human-readable activity label from a tool_use event.
- *
- * Maps both Claude CLI tool names and canonical tool names (from multi-agent
- * support) to short descriptions including relevant parameters (file paths,
- * commands) for at-a-glance status.
- */
 export function activityFromTool(toolName: string, input: Record<string, unknown>): StreamingActivity {
   switch (toolName) {
-    // Claude CLI names + canonical names
+
     case "Edit":
     case "file_edit":
       return {
@@ -112,8 +91,7 @@ export function activityFromTool(toolName: string, input: Record<string, unknown
         label: "Updating tasks...",
         tool: toolName,
       };
-    // Not to-do list tools despite the prefix — these act on a background task
-    // (a shell, an agent, a remote session).
+
     case "TaskStop":
       return {
         label: "Stopping background task...",
@@ -145,8 +123,7 @@ export function activityFromTool(toolName: string, input: Record<string, unknown
     }
     case "Skill": {
       const raw = typeof input.skill === "string" ? input.skill : "unknown";
-      // A plugin's skill runs under its namespaced directory name; show the
-      // `<alias>/<skill>` label instead (docs/262 req 22).
+
       const skill = pluginSkillLabel(raw) ?? raw;
       return {
         label: `Running skill: ${skill}...`,
@@ -193,7 +170,7 @@ export function activityFromTool(toolName: string, input: Record<string, unknown
         tool: toolName,
       };
     default: {
-      // Generic MCP tool handling — works for any MCP server
+
       if (toolName.startsWith("mcp__")) {
         const BROWSER_LABELS: Record<string, string> = {
           "mcp__playwright__browser_navigate": "Navigating to page",
@@ -209,7 +186,7 @@ export function activityFromTool(toolName: string, input: Record<string, unknown
         if (label) {
           return { label, tool: toolName };
         }
-        // Fallback for unknown MCP tools: "mcp__foo__bar_baz" → "Using bar baz..."
+
         const parts = toolName.split("__");
         const toolPart = parts.length >= 3 ? parts.slice(2).join(" ").replace(/_/g, " ") : toolName;
         return { label: `Using ${toolPart}...`, tool: toolName };
@@ -222,7 +199,6 @@ export function activityFromTool(toolName: string, input: Record<string, unknown
   }
 }
 
-/** Shorten a file path for display: strip session prefix, keep last 2 segments. */
 function shortPath(filePath: unknown): string {
   const relative = sessionRelativePath(filePath);
   const parts = relative.split("/").filter(Boolean);

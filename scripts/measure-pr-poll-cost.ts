@@ -1,37 +1,5 @@
 #!/usr/bin/env tsx
-/**
- * Phase 0 measurement script for docs/155-pr-poll-query-scoping.
- *
- * Runs the two candidate PR-status query shapes against a real GitHub repo
- * and reports the GraphQL `rateLimit.cost` charged for each. This is the
- * authoritative per-call points charge — the same number GitHub uses to
- * decide whether to rate-limit.
- *
- * Shapes measured:
- *   - Bulk (current production):  pullRequests(first: N)
- *       Light variant (no conversation fields)
- *       Heavy variant (with conversation fields — issue comments + review threads)
- *   - Aliased candidate:          K aliased pullRequest(number: $n) selections
- *       Light, heavy, and mixed (heavy on one, light on the rest)
- *
- * Methodology notes:
- *   - We include `rateLimit { cost limit remaining resetAt }` in every query.
- *   - All bulk variants share the same connection cap (`first: 30` files,
- *     `first: 10` contexts, `last: 3` deployments, etc.) used in production.
- *   - Aliased variants reuse the identical per-PR selection set so cost
- *     differences are attributable to the bulk wrapper, not the inner shape.
- *   - For aliased queries we need real PR numbers. We do one cheap GraphQL
- *     lookup to grab the first K open-PR numbers from the target repo and
- *     use those.
- *
- * Usage:
- *   GITHUB_TOKEN=ghp_xxx npx tsx scripts/measure-pr-poll-cost.ts \
- *     --owner nikzlabs --repo shipit \
- *     [--out docs/155-pr-poll-query-scoping/cost-measurements.md]
- *
- * Exit non-zero on auth / network failure; rate-limit cost itself is a value,
- * not a failure mode.
- */
+/** Measure GraphQL cost for bulk and aliased PR-status queries. */
 
 import { writeFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -77,8 +45,7 @@ interface GqlEnvelope<T> {
   errors?: { message: string }[];
 }
 
-/** Per-PR selection set — kept verbatim from pr-status-parser.ts so cost
- *  comparison is apples-to-apples. */
+/** Keep synchronized with the selection in pr-status-parser.ts. */
 const PR_NODE_FIELDS_LIGHT = `
   number
   title
@@ -190,8 +157,6 @@ function buildBulkQuery(first: number, includeConversation: boolean): string {
   `;
 }
 
-/** Builds an aliased query that fetches K specific PR numbers, optionally
- *  with one of them upgraded to the heavy conversation variant ("mixed" mode). */
 function buildAliasedQuery(
   numbers: number[],
   heavyMode: "none" | "all" | "first-only",
@@ -252,7 +217,6 @@ async function graphql<T>(
 
 interface MeasurementRow {
   shape: string;
-  /** N for bulk, K for aliased */
   n: number;
   variant: "light" | "heavy" | "mixed";
   cost: number | "error";

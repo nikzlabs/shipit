@@ -1,10 +1,6 @@
 // eslint-disable-next-line no-restricted-imports -- useEffect: DOM class manipulation + localStorage persistence (external system sync)
 import { useState, useEffect, useCallback } from "react";
 
-/**
- * Single source of truth for all themes.
- * To add a theme: create a CSS file, import it in index.css, add an entry here.
- */
 const THEME_DEFS = [
   { id: "light", label: "Light", description: "Clean and bright", light: true },
   { id: "warm-light", label: "Warm Light", description: "Cream and sand tones", light: true },
@@ -26,8 +22,6 @@ const THEME_DEFS = [
   { id: "high-contrast", label: "High Contrast", description: "Maximum readability", light: false },
 ] as const;
 
-// ── Derived types and collections (no duplication) ──
-
 export type Theme = (typeof THEME_DEFS)[number]["id"] | (string & {});
 
 export interface ThemeOption {
@@ -38,7 +32,6 @@ export interface ThemeOption {
 
 export const THEME_OPTIONS: ThemeOption[] = [...THEME_DEFS];
 
-/** All theme class names that may be applied to <html>. */
 const KNOWN_THEMES = THEME_DEFS.filter((t) => t.id !== "light").map((t) => t.id);
 
 const STORAGE_KEY = "shipit-theme";
@@ -57,21 +50,21 @@ function getInitialTheme(): Theme {
   } catch {
     // localStorage unavailable
   }
-  // No saved preference: follow the OS/browser color-scheme.
+
   try {
     if (window.matchMedia("(prefers-color-scheme: dark)").matches) return DEFAULT_DARK_THEME;
   } catch {
     // matchMedia unavailable → fall through to the light default below
   }
-  // OS prefers light/has no preference, or matchMedia unavailable.
+
   return DEFAULT_LIGHT_THEME;
 }
 
 function applyTheme(theme: Theme): void {
   const cl = document.documentElement.classList;
-  // Remove all known theme classes
+
   for (const t of KNOWN_THEMES) cl.remove(t);
-  // Light = no class (:root defaults), others add their class name
+
   if (theme !== "light") {
     cl.add(theme);
   }

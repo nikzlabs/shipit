@@ -271,8 +271,7 @@ The `PrStatusSummary` from phase 2 is extended:
 
 ```typescript
 interface PrStatusSummary {
-  // ... existing fields ...
-  autoMerge: {                    // NEW
+  autoMerge: {
     enabled: boolean;
     mergeMethod: "squash" | "merge" | "rebase";
     error?: PrAutoMergeError;

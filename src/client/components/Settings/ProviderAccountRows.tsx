@@ -64,21 +64,10 @@ import { useRowDrag } from "./useRowDrag.js";
  * differently. They are their own `(service, key)` card one row down.
  */
 
-/** The service whose subscription accounts this harness's login flow produces. */
 export function serviceIdForProvider(provider: AgentId): string {
   return nativeServiceForHarness(provider) ?? provider;
 }
 
-/**
- * The login flow that connects this harness's accounts.
- *
- * The auth stores are keyed by login flow (see `providerAccountAuthKey`), while
- * these components are still handed a harness — they legitimately need one for
- * harness-shaped questions ("is this CLI installed?"). This is the one hop
- * between the two, so a card converts once instead of every store call
- * guessing. `undefined` means the service has no sign-in at all (a
- * key-only service), in which case there is no challenge to key.
- */
 export function loginForProvider(provider: AgentId): LoginIntegrationId | undefined {
   return loginIntegrationForService(serviceIdForProvider(provider));
 }
@@ -102,7 +91,7 @@ function NoticeLine({
   testId,
 }: {
   notice: ProviderAccountNotice;
-  /** Present on card-level notices, which have no row to disappear with. */
+
   onDismiss?: () => void;
   testId: string;
 }) {
@@ -131,24 +120,10 @@ function NoticeLine({
   );
 }
 
-
-/**
- * This harness's accounts, in fallback order — **the connected ones**.
- *
- * Exported so the card that hosts these rows counts exactly what they render.
- * Deriving the count from a second, similar filter is how a header saying
- * "2 accounts" ends up over three rows, which is also why the attempt filter
- * lives here rather than at each call site: rows, count and routing controls
- * are all read from this one list.
- */
 export function useProviderAccounts(provider: AgentId): CredentialRoute[] {
   return useAllProviderAccounts(provider).filter((account) => !isUnconnectedAttempt(account));
 }
 
-/**
- * Every row this harness has, attempts included — for the one caller that is
- * *conducting* an attempt and needs to see it: `AddServiceDialog`.
- */
 export function useAllProviderAccounts(provider: AgentId): CredentialRoute[] {
   return providerAccountsOf(useSettingsStore((s) => s.providerAccounts), provider);
 }
@@ -163,18 +138,11 @@ export function providerAccountsOf(
   allAccounts: CredentialRoute[],
   provider: AgentId,
 ): CredentialRoute[] {
-  // planning#342 — the store holds `CredentialRoute`s, keyed by service. The
-  // login flow is still the CLI's, so this narrows by the harness's own vendor
-  // rather than by the harness.
+
   const serviceId = serviceIdForProvider(provider);
   return allAccounts.filter((account) => account.serviceId === serviceId);
 }
 
-/**
- * docs/150 — the provider runs ONE login process, so only one row can be
- * signing in at a time. The server enforces it (409); this just stops the user
- * walking into that refusal, and says why on hover instead of after the click.
- */
 function signingInAccount(accounts: CredentialRoute[]): CredentialRoute | undefined {
   return accounts.find((account) => account.status === "authenticating");
 }
@@ -183,11 +151,7 @@ const messageOf = (err: unknown, fallback: string): string =>
   err instanceof Error && err.message ? err.message : fallback;
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
-  // Only advertise a JSON content-type when we're actually sending a JSON
-  // body. Otherwise Fastify's JSON parser sees Content-Type: application/json
-  // with a zero-length body and rejects with FST_ERR_CTP_EMPTY_JSON_BODY
-  // (HTTP 400 "Bad Request") before the route handler ever runs — which
-  // showed up here as the Disconnect button surfacing a "Bad Request" toast.
+
   const hasBody = init?.body !== undefined && init?.body !== null;
   const res = await fetch(url, {
     ...init,
@@ -210,29 +174,6 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
 export const startAccountLogin = (provider: AgentId, accountId: string): Promise<unknown> =>
   request(`/api/provider-accounts/${provider}/${accountId}/login`, { method: "POST" });
 
-/**
- * req 17 — create the account row that a sign-in will fill.
- *
- * **Deliberately NOT "create and start the login" in one call**, although that
- * is what the user's single press does. The row is created server-side first
- * and the login started second, so a helper that awaited both before returning
- * would throw on a login-start failure *after* the account existed — leaving
- * the caller without the id of a row it had just caused, and therefore unable
- * to abandon it. That is the orphan req 17 forbids, and it was there until
- * cross-backend review found it. So the caller takes the id first and starts
- * the login itself.
- *
- * The created account is read from the response's own `account` field rather
- * than inferred by diffing the list: two dialogs (two tabs) starting the same
- * provider at once can each see the other's new row in their response, and a
- * diff picks whichever sorts first — so one dialog would go on to cancel and
- * delete the other's attempt. The diff survives only as a fallback for payloads
- * that predate the field.
- *
- * Was `AddAccountButton`, a control on the service card. req 17 removed the
- * card's own way in, so what is left is this function, called from the one
- * flow: `AddServiceDialog`'s last step.
- */
 export async function createAccount(
   provider: AgentId,
   knownAccountIds: Iterable<string>,
@@ -250,16 +191,6 @@ export async function createAccount(
   );
 }
 
-/**
- * Abandon an account that was created for a sign-in the user then called off.
- *
- * Cancel-then-delete, in that order and both best-effort: the login is a live
- * process on the provider's side, and leaving it running against a row that no
- * longer exists is how a provider ends up refusing the *next* sign-in with a
- * 409 nobody can clear from the UI. A failure on either step is swallowed —
- * the caller is closing a dialog, and the row it could not delete is visible
- * and deletable on the card.
- */
 export async function cancelAccountLogin(provider: AgentId, accountId: string): Promise<void> {
   try {
     await request(`/api/provider-accounts/${provider}/${accountId}/login/cancel`, { method: "POST" });
@@ -283,7 +214,6 @@ export async function abandonAccount(provider: AgentId, accountId: string): Prom
   if (loginId) useSettingsStore.getState().setProviderAccountAuth(loginId, accountId, null);
 }
 
-/** Human-readable "somebody else is signing in" refusal, or `undefined`. */
 export function signInBlockedReason(accounts: CredentialRoute[], accountId?: string): string | undefined {
   const signingIn = signingInAccount(accounts);
   if (!signingIn || signingIn.id === accountId) return undefined;
@@ -344,7 +274,7 @@ export function ChallengePlaceholder({
   children,
 }: {
   shape: "code" | "paste";
-  /** Where the sign-in has got to, in ShipIt's words. Takes the link's slot. */
+
   status?: string;
   testId?: string;
   children?: React.ReactNode;
@@ -364,7 +294,7 @@ export function ChallengePlaceholder({
           <div className={`mt-1 h-7 w-44 ${PULSE}`} />
         </div>
       ) : (
-        // The paste row: a field and its Submit, both at their real heights.
+
         <div className="flex gap-2">
           <div className={`h-[34px] min-w-0 flex-1 ${PULSE}`} />
           <div className={`h-[34px] w-28 ${PULSE}`} />
@@ -389,44 +319,17 @@ export function useAuthStatus(accountId: string | undefined): string | undefined
   return diagnostics.message ?? undefined;
 }
 
-/**
- * **The whole sign-in buffer, one collapsed control, inside the panel**
- * (docs/150).
- *
- * It is the record you open when something went wrong, and it is the ONLY place
- * the output is spelled out. Two rejected cuts are why that is stated so flatly:
- * a live three-line tail beside it put the same lines on screen twice, and this
- * control sitting *under* the box made the panel one of two places carrying the
- * sign-in.
- *
- * Claude only. Codex's device flow produces no such stream.
- */
 export function ClaudeAuthOutput({
   accountId,
   evenWhenEmpty,
 }: {
-  /**
-   * Undefined until the account this sign-in will hang on has been created —
-   * a couple of hundred milliseconds into the flow. The control renders
-   * anyway, empty, for the reason `evenWhenEmpty` exists: a panel that is
-   * about to hold it should not grow when it appears.
-   */
+
   accountId?: string;
-  /**
-   * Render the control before the first line arrives, for a panel that is
-   * about to fill with them.
-   *
-   * The CLI's first entry lands a few frames after the login starts, so a
-   * disclosure that waits for it grew the waiting panel by its own height
-   * *after* the panel had already appeared — measured, 302 → 395 → 419 across
-   * five frames, which is the second, smaller jump a user notices without
-   * being able to say what moved. Reserving it costs a line that says
-   * "Claude CLI output" for those few frames.
-   */
+
   evenWhenEmpty?: boolean;
 }) {
   // Read the map, then index — never `accountId ? useSettingsStore(...) : …`,
-  // which changes the hook count on the render where the id arrives.
+
   const allDiagnostics = useSettingsStore((s) => s.claudeAuthDiagnostics);
   const diagnostics = (accountId ? allDiagnostics[accountId] : undefined)
     ?? EMPTY_CLAUDE_AUTH_DIAGNOSTICS;
@@ -580,14 +483,6 @@ export function AccountChallenge({
   );
 }
 
-/**
- * This account's quota snapshot, if the provider has reported one.
- *
- * `subscription_limits` is keyed `(service, mode) → routeId`, and an account
- * that has simply been quiet has no entry — which is not the same as 0%. The
- * pill renders either way and says `—` for the windows it has no number for, so
- * the absence is passed through rather than filled in.
- */
 function snapshotFor(
   limits: SubscriptionLimitsMap,
   account: CredentialRoute,
@@ -603,11 +498,7 @@ export function ProviderAccountRows({
 }: {
   provider: AgentId;
   agent: AgentOption | undefined;
-  /**
-   * Which mode's quota these rows report. Only a subscription has one (req 10),
-   * and an account row only ever belongs to one — but the pill is keyed by
-   * `(service, mode)` and this is the caller's fact, not a re-derivation.
-   */
+
   billingMode: string;
   /**
    * Re-run the sign-in for an account, **in the add-service dialog** (req 19).
@@ -630,24 +521,9 @@ export function ProviderAccountRows({
   const setProviderAccountAuth = useSettingsStore((s) => s.setProviderAccountAuth);
   const [savingId, setSavingId] = useState<string | null>(null);
   const [draftLabels, setDraftLabels] = useState<Record<string, string>>({});
-  /**
-   * docs/257 req 5 — where a result or a failure lands.
-   *
-   * This card used to report add, rename, reorder, disconnect, connect, cancel
-   * and code submission through a global `toast()`. Req 5 says the result
-   * belongs next to the step that produced it: an error that appears somewhere
-   * else on screen and then disappears defeats the point of a setup panel whose
-   * whole job is to keep the ask in front of the user.
-   *
-   * Row-scoped where a row exists, card-scoped where it does not: a *successful*
-   * disconnect deletes the row its result describes, and the store's card notice
-   * outlives it.
-   */
+
   const [rowNotices, setRowNotices] = useState<Record<string, ProviderAccountNotice>>({});
-  /**
-   * Card-level notices live in the store, not here. See the store field: each
-   * one outlives either this component or the row it is about.
-   */
+
   const loginId = loginForProvider(provider);
   const cardNotice = useSettingsStore((s) => (loginId ? s.providerAccountNotices[loginId] : undefined));
   const setCardNotice = useSettingsStore((s) => s.setProviderAccountNotice);
@@ -655,7 +531,6 @@ export function ProviderAccountRows({
   const serviceName = serviceNameForProvider(provider);
   const installed = agent?.installed ?? true;
 
-  /** Post a failure on one account's row, replacing whatever was there. */
   const failRow = (accountId: string, err: unknown, fallback: string): void => {
     setRowNotices((current) => ({
       ...current,
@@ -663,7 +538,6 @@ export function ProviderAccountRows({
     }));
   };
 
-  /** Drop a row's notice — called as each action starts, so none goes stale. */
   const clearRow = (accountId: string): void => {
     setRowNotices((current) => {
       if (!(accountId in current)) return current;
@@ -672,13 +546,6 @@ export function ProviderAccountRows({
     });
   };
 
-  /**
-   * Close the rename field without saving.
-   *
-   * A draft's *presence* is what holds the field open now, so dropping it is
-   * both the cancel and the close — there is no second "is it open" flag to
-   * fall out of step with it.
-   */
   const cancelRename = (accountId: string): void => {
     setDraftLabels((current) => Object.fromEntries(
       Object.entries(current).filter(([id]) => id !== accountId),
@@ -687,9 +554,7 @@ export function ProviderAccountRows({
 
   const saveLabel = async (account: CredentialRoute) => {
     const label = (draftLabels[account.id] ?? account.label).trim();
-    // An empty or unchanged name still CLOSES the field: the draft is what
-    // holds it open, so returning early with the draft in place left the user
-    // typing into a field that had stopped listening.
+
     if (!label || label === account.label) {
       cancelRename(account.id);
       return;
@@ -740,15 +605,6 @@ export function ProviderAccountRows({
     }
   };
 
-  /**
-   * docs/260-turn-level-account-routing req 3 — disconnect is one click. There is no pinned-session
-   * question to ask (no session is pinned to anything), no replacement to
-   * pick, and nothing to report about moved or stranded sessions: each
-   * session's next turn routes among whatever accounts remain. The one
-   * refusal the server still makes — a live process running a turn or holding
-   * background work on this account (req 13) — is a wait, and its message
-   * lands on the row.
-   */
   const disconnect = async (account: CredentialRoute) => {
     setSavingId(account.id);
     clearRow(account.id);
@@ -779,9 +635,6 @@ export function ProviderAccountRows({
     }
   };
 
-  // The challenge itself is the dialog's now (req 19) — this only decides
-  // whether the menu's Reconnect can be pressed, which is the same question
-  // `AddServiceDialog` asks before it starts one.
   const blockedBy = (accountId: string): string | undefined =>
     signInBlockedReason(accounts, accountId);
 
@@ -836,17 +689,7 @@ export function ProviderAccountRows({
                 drag={dragFor(account.id)}
                 menuLabel={`Manage ${account.label}`}
                 quota={
-                  // Only a subscription reports a quota (req 10), and only a
-                  // connected one has anything to report. `label` is omitted:
-                  // the row to its left IS the account's name.
-                  //
-                  // `modeReportsQuota` and not `billingMode === "sub"` alone:
-                  // a subscription can be one ShipIt has no reader for at all
-                  // (docs/274 req 16 — OpenCode Go, whose vendor publishes no
-                  // per-key usage API), and then the pill renders two blank
-                  // windows and no refresh button, which reads as lost numbers
-                  // rather than as absent ones. The credential row beside this
-                  // one in `ServicesPanel` already asks the question this way.
+
                   billingMode === "sub"
                   && account.status === "ready"
                   && modeReportsQuota(account.serviceId, billingMode) ? (
@@ -975,8 +818,7 @@ function ClearStoredCredentials({
     setClearing(true);
     if (loginId) setCardNotice(loginId, null);
     try {
-      // The response carries the refreshed agent list; the server also fires an
-      // SSE `agent_list` broadcast so other open tabs repaint too.
+
       const result = await request<{ agents?: AgentOption[]; accounts?: CredentialRoute[] }>(
         "/api/auth/api-key",
         { method: "DELETE" },

@@ -4,7 +4,6 @@ import { ErrorBoundary } from "./ErrorBoundary.js";
 
 afterEach(cleanup);
 
-// Suppress React error boundary console.error noise during tests
 beforeEach(() => {
   vi.spyOn(console, "error").mockImplementation(() => {});
 });
@@ -13,12 +12,10 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-/** A component that always throws on render, for testing the boundary. */
 function ThrowingChild({ message }: { message: string }): React.JSX.Element {
   throw new Error(message);
 }
 
-/** A normal component that renders fine. */
 function GoodChild() {
   return <div>All good</div>;
 }
@@ -78,17 +75,12 @@ describe("ErrorBoundary", () => {
   });
 
   it("attempts recovery when Try to Recover is clicked", () => {
-    // The ThrowingChild will throw again on re-render, but the state
-    // transition (hasError → false) is the behavior we're testing.
-    // Since ThrowingChild always throws, recovery will fail and re-show
-    // the error UI — but the boundary's state was correctly cleared.
     render(
       <ErrorBoundary>
         <ThrowingChild message="boom" />
       </ErrorBoundary>
     );
     fireEvent.click(screen.getByText("Try to Recover"));
-    // Since the child always throws, we should still see the error UI
     expect(screen.getByText("Something went wrong")).toBeInTheDocument();
   });
 

@@ -30,12 +30,12 @@ export interface NonTurnFailureCardProps {
   serviceName?: string;
   billingMode?: "sub" | "key";
   modelId?: string;
-  /** True when the model came from the user's own pin rather than the derived default. */
+
   pinned?: boolean;
   fallback: string;
   detail?: string;
   dismissedAt?: string;
-  /** Injectable for tests; defaults to the dismiss endpoint. */
+
   onDismiss?: (cardId: string) => void;
 }
 
@@ -63,9 +63,7 @@ export function NonTurnFailureCard({
   onDismiss,
 }: NonTurnFailureCardProps) {
   // Local optimism ORed with the persisted stamp, never seeded from it. Seeding
-  // `useState` from a prop freezes the value at mount, so a dismissal arriving
-  // from another attached viewer (or from this session's own reload path) would
-  // leave the notice expanded until a remount. Cross-backend review found it.
+
   const [dismissedHere, setDismissedHere] = useState(false);
   const dismissed = dismissedHere || !!dismissedAt;
 
@@ -77,8 +75,7 @@ export function NonTurnFailureCard({
     }
     void fetch(`/api/sessions/${sessionId}/non-turn-failure/${cardId}/dismiss`, { method: "POST" })
       .catch((err: unknown) => {
-        // The card is already collapsed locally; a failed patch only means it
-        // comes back expanded on the next reload, which is the safe direction.
+
         console.error("[non-turn-failure] dismiss failed:", err);
       });
   };

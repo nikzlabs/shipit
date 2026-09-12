@@ -1,9 +1,5 @@
 import type { SearchMatch } from "../hooks/useSearch.js";
 
-/**
- * Filter search matches that fall within a text segment and adjust their
- * start offsets to be relative to that segment's content.
- */
 export function getSegmentMatches(
   matches: SearchMatch[],
   segOffset: number,
@@ -17,14 +13,6 @@ export function getSegmentMatches(
     .map((m) => ({ ...m, start: m.start - segOffset }));
 }
 
-/**
- * Render message text with search match highlights.
- *
- * Takes the raw text and the list of matches for this specific message,
- * and returns an array of React nodes with <mark> tags around matches.
- * The "current" match (the one actively navigated to) gets an extra CSS
- * class and a ref for scroll-into-view.
- */
 export function HighlightedText({
   text,
   matches,

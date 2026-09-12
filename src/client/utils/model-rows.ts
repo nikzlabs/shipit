@@ -12,18 +12,10 @@ import type { AgentOption, ModelChoice } from "../agent-types.js";
  * picker's React tree along with it.
  */
 export interface ModelRow extends ModelChoice {
-  /** The group this row belongs to: one `(service, billing mode)`. */
+
   groupKey: string;
 }
 
-/**
- * The eligible models of an agent as picker rows.
- *
- * Falls back to the bare `models` list when `eligibleModels` is absent — an
- * older wire payload or a test fixture. The fallback renders one unnamed group,
- * which is what the picker showed before the service axis existed; degrading to
- * it beats rendering nothing.
- */
 export function modelRowsFor(agent: AgentOption | undefined): ModelRow[] {
   if (!agent) return [];
   if (agent.eligibleModels && agent.eligibleModels.length > 0) {

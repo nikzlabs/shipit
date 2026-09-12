@@ -56,9 +56,6 @@ This is error-prone (wrong scopes, expired tokens) and unfamiliar to many users.
 #### New GitHubAuthManager Methods
 
 ```typescript
-// src/server/github-auth.ts — additions
-
-/** Start the device authorization flow. Returns code for user to enter. */
 async startDeviceAuth(): Promise<{
   deviceCode: string;
   userCode: string;
@@ -90,7 +87,6 @@ async startDeviceAuth(): Promise<{
   };
 }
 
-/** Poll for the device auth token. Returns token on success, null if still pending. */
 async pollDeviceAuth(deviceCode: string): Promise<
   | { status: "success"; token: string }
   | { status: "pending" }
@@ -124,14 +120,10 @@ async pollDeviceAuth(deviceCode: string): Promise<
 #### New WS Message Types
 
 ```typescript
-// src/server/types.ts — additions
-
-// Client → Server
 export interface WsGitHubDeviceAuthStart {
   type: "github_device_auth_start";
 }
 
-// Server → Client
 export interface WsGitHubDeviceAuthCode {
   type: "github_device_auth_code";
   userCode: string;
@@ -161,19 +153,16 @@ if (msg.type === "github_device_auth_start") {
       expiresIn,
     });
 
-    // Poll in background
     const pollInterval = setInterval(async () => {
       const result = await githubAuthManager.pollDeviceAuth(deviceCode);
 
       if (result.status === "success") {
         clearInterval(pollInterval);
         await githubAuthManager.setToken(result.token);
-        // Configure git credentials for active session
         if (activeSessionDir) {
           await githubAuthManager.configureGitCredentials(activeSessionDir);
         }
         send({ type: "github_device_auth_result", success: true });
-        // Also send updated github_status
         const status = await githubAuthManager.getStatus();
         send({ type: "github_status", ...status });
       } else if (result.status === "expired" || result.status === "error") {
@@ -186,13 +175,10 @@ if (msg.type === "github_device_auth_start") {
             : result.message,
         });
       }
-      // "pending" → keep polling
     }, interval * 1000);
 
-    // Clean up on disconnect
     socket.on("close", () => clearInterval(pollInterval));
 
-    // Auto-expire after expiresIn
     setTimeout(() => clearInterval(pollInterval), expiresIn * 1000);
   } catch (err) {
     send({ type: "github_device_auth_result", success: false, message: getErrorMessage(err) });
@@ -252,7 +238,6 @@ On success → overlay closes, GitHub status updates in header.
 #### State in App.tsx
 
 ```typescript
-// In lastMessage handler:
 if (data.type === "github_device_auth_code") {
   setDeviceAuthCode({ userCode: data.userCode, verificationUri: data.verificationUri });
 }

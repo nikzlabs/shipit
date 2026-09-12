@@ -20,8 +20,7 @@ export function useMessageHandler(params: {
   const historyLoaded = useSessionStore((s) => s.historyLoaded);
 
   // The queued-message stash must survive re-renders so a `queue_updated`
-  // arriving after `message_queued` can find the stashed entry. A module-level
-  // Map would also work but a ref scopes it to this hook instance.
+
   const queuedMessageStashRef = useRef(createQueuedMessageStash());
   const pendingAgentEventsRef = useRef<WsServerMessage[]>([]);
   const pendingSessionIdRef = useRef<string | undefined>(sessionId);
@@ -51,9 +50,7 @@ export function useMessageHandler(params: {
 
   // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {
-    // Drain ALL messages that arrived since the last render. This prevents
-    // message loss when React batches multiple setLastMessage() calls between
-    // renders (common during compose stack startup bursts).
+
     const messages = drainMessages();
     if (messages.length === 0) return;
 
@@ -64,17 +61,9 @@ export function useMessageHandler(params: {
       } catch {
         continue;
       }
-      // Streamed agent content, the attach-time turn snapshot, and the
-      // transient consult marker all depend on the HTTP history baseline.
-      // Queue them during reconnect hydration so an in-flight consult is
-      // restored only after the transcript is current — and so the snapshot
-      // lands on top of history rather than being overwritten by it, with the
-      // live events that followed it on the wire applied after, in order.
-      // `system_user_message` joins them: it appends a user bubble, and history
-      // REPLACES the transcript. Applied during hydration against a history
-      // request sampled a moment before the row was written, the bubble it added
+
       // is wiped by the load that follows — the very "my message never showed
-      // up" symptom this echo exists to fix, just in a narrower window.
+
       if (
         (data.type === "agent_event" || data.type === "sub_agent_spawn" || data.type === "turn_snapshot"
           || data.type === "system_user_message") &&

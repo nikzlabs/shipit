@@ -25,9 +25,9 @@ describe("resolveAuthedSelection", () => {
   });
 
   it("redirects to the only authed agent on a Codex-only install (fresh: no saved model)", () => {
-    // Reproduces the bug: picker hydrates with agent="claude"/no model, but
+
     // only Codex is authed. Must redirect AND carry Codex's default model so the
-    // WS connection wires up Codex instead of the unauthed Claude.
+
     const agents = [claude({ hasRunnableModels: false }), codex()];
     expect(resolveAuthedSelection(agents, "claude", undefined)).toEqual({
       agentId: "codex",
@@ -36,8 +36,7 @@ describe("resolveAuthedSelection", () => {
   });
 
   it("overwrites a stale saved model owned by the unauthed agent", () => {
-    // A leftover Claude model would otherwise pull the WS agent derivation back
-    // to the unauthed Claude (model is the source of truth for the agent).
+
     const agents = [claude({ hasRunnableModels: false }), codex()];
     expect(resolveAuthedSelection(agents, "claude", "sonnet")).toEqual({
       agentId: "codex",
@@ -46,8 +45,7 @@ describe("resolveAuthedSelection", () => {
   });
 
   it("preserves a saved model that already resolves to an authed agent", () => {
-    // activeAgentId is the unauthed Claude (e.g. mirrored from a stale agent
-    // pref) but the saved model already points at authed Codex — keep the pick.
+
     const agents = [claude({ hasRunnableModels: false }), codex()];
     expect(resolveAuthedSelection(agents, "claude", "gpt-5.5")).toEqual({
       agentId: "codex",
@@ -71,7 +69,7 @@ describe("resolveAuthedSelection", () => {
   });
 
   it("returns null when the active agent is already the first authed agent", () => {
-    // Avoids a redundant redirect/persist when nothing would change.
+
     const agents = [claude({ hasRunnableModels: false }), codex()];
     expect(resolveAuthedSelection(agents, "codex", "gpt-5.5")).toBeNull();
   });
@@ -79,9 +77,7 @@ describe("resolveAuthedSelection", () => {
 
 describe("resolveParkedRestore", () => {
   it("hands the parked harness back once it can run a turn again", () => {
-    // The whole point: a credential that came back is reported on the same
-    // event, and used to be ignored, so a transient `auth_failed` moved the
-    // user's harness permanently.
+
     const agents = [claude(), codex()];
     expect(resolveParkedRestore(agents, { agentId: "claude" })?.id).toBe("claude");
   });
@@ -102,8 +98,7 @@ describe("resolveParkedRestore", () => {
   });
 
   it("does not test the parked MODEL — only the harness", () => {
-    // The parked model can lose its credential while the harness keeps another;
-    // the seed writer resolves it down to a row the harness offers.
+
     const agents = [claude(), codex()];
     const parked = { agentId: "claude" as const, model: { modelId: "a-model-since-retired" } };
     expect(resolveParkedRestore(agents, parked)?.id).toBe("claude");

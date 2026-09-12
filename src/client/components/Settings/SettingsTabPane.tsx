@@ -1,19 +1,6 @@
 import type { ReactNode } from "react";
 import { cn } from "../../utils/cn.js";
 
-/**
- * Shell for a settings tab whose edits are committed with a Save button.
- *
- * The action bar sits **outside** the scroll container, so it stays pinned to
- * the bottom of the tab however far the body scrolls. Tabs used to end with a
- * plain row of buttons inside the scrolling area, which pushed Save out of
- * sight on a long form — the user had to scroll to the end to find out that
- * their edits were still unsaved.
- *
- * Tabs without a tab-level Save (Services, Advanced, Voice) keep their own
- * scroll container: their buttons are section-scoped and belong next to the
- * field they act on, not in a footer.
- */
 export function SettingsTabPane({
   children,
   footer,
@@ -21,9 +8,9 @@ export function SettingsTabPane({
   testId,
 }: {
   children: ReactNode;
-  /** Action bar content — rendered right-aligned in the pinned footer. */
+
   footer?: ReactNode;
-  /** Extra classes for the scrolling body (spacing, gap). */
+
   bodyClassName?: string;
   testId?: string;
 }) {

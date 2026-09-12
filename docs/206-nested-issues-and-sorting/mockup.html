@@ -41,7 +41,6 @@
     border-radius: 10px; overflow: hidden; box-shadow: 0 10px 40px rgba(0,0,0,0.45);
   }
 
-  /* Tracker tabs */
   .topbar { display: flex; align-items: stretch; background: var(--bg-secondary); border-bottom: 1px solid var(--border-secondary); }
   .tab { padding: 9px 14px; font-size: 12px; font-weight: 600; color: var(--text-tertiary); border-bottom: 2px solid transparent; cursor: pointer; background: none; border-top: none; border-left: none; border-right: none; }
   .tab.active { color: var(--text-primary); border-bottom-color: var(--accent); }
@@ -50,7 +49,6 @@
   .topbar .count { display: flex; align-items: center; padding: 0 12px; font-size: 12px; color: var(--text-secondary); gap: 4px; }
   .count b { color: var(--text-primary); }
 
-  /* Filter/search toolbar — the row that's already crowded, hence the modal. */
   .toolbar { display: flex; align-items: center; gap: 8px; padding: 7px 10px; background: var(--bg-secondary); border-bottom: 1px solid var(--border-primary); }
   .search { flex: 1; min-width: 0; display: inline-flex; align-items: center; gap: 6px; background: var(--bg-tertiary); border: 1px solid var(--border-secondary); border-radius: 6px; padding: 4px 9px; color: var(--text-tertiary); font-size: 12px; }
   .search input { flex: 1; min-width: 0; background: none; border: none; outline: none; color: var(--text-primary); font-size: 12px; }
@@ -63,7 +61,6 @@
   .sort-btn:hover { color: var(--text-primary); border-color: var(--accent); }
   .sort-btn.dirty::after { content: ""; position: absolute; top: -3px; right: -3px; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); border: 1.5px solid var(--bg-secondary); }
 
-  /* Table */
   .grid { display: grid; grid-template-columns: 168px minmax(120px, 1fr) 70px 124px 122px; align-items: center; gap: 10px; padding: 7px 14px; }
   .thead { position: sticky; top: 0; z-index: 2; background: var(--bg-secondary); border-bottom: 1px solid var(--border-secondary); font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; font-weight: 700; color: var(--text-tertiary); }
   .rows > .row { border-bottom: 1px solid var(--border-primary); }
@@ -112,7 +109,6 @@
   .grouphdr { display: flex; align-items: center; gap: 8px; padding: 6px 14px; background: var(--bg-secondary); border-bottom: 1px solid var(--border-primary); font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-secondary); }
   .grouphdr .gcount { color: var(--text-tertiary); font-weight: 600; }
 
-  /* ---- Mobile / card layout (narrow panel) ---- */
   .mcard { position: relative; padding: 11px 12px; border-bottom: 1px solid var(--border-primary); cursor: pointer; }
   .mcard:hover { background: var(--bg-hover); }
   .mcard.child { border-left: 2px solid var(--border-secondary); }
@@ -124,7 +120,6 @@
   .mcard-meta { display: flex; align-items: center; gap: 8px; margin-top: 7px; font-size: 11px; color: var(--text-tertiary); }
   .note { font-size: 11px; color: var(--text-tertiary); padding: 8px 12px; line-height: 1.5; background: var(--bg-secondary); border-bottom: 1px solid var(--border-primary); }
 
-  /* ---- Modal ---- */
   .backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.55); display: none; align-items: center; justify-content: center; z-index: 50; }
   .backdrop.open { display: flex; }
   .modal { width: 380px; max-width: calc(100vw - 32px); background: var(--bg-secondary); border: 1px solid var(--border-secondary); border-radius: 12px; box-shadow: 0 24px 70px rgba(0,0,0,0.6); overflow: hidden; }
@@ -166,7 +161,6 @@
   </div>
 
   <div class="stage">
-    <!-- ===================== DESKTOP PANEL ===================== -->
     <div>
       <p class="col-label">Desktop — table, recursive nesting</p>
       <div class="panel">
@@ -198,7 +192,6 @@
       </div>
     </div>
 
-    <!-- ===================== MOBILE PANEL ===================== -->
     <div>
       <p class="col-label">Mobile — cards, indent-only</p>
       <div class="panel">
@@ -213,7 +206,6 @@
     </div>
   </div>
 
-  <!-- ===================== SORT & GROUP MODAL ===================== -->
   <div class="backdrop" id="backdrop">
     <div class="modal" role="dialog" aria-label="Sort and group">
       <div class="modal-head">
@@ -312,13 +304,10 @@ const ISSUES = [
   { id: "i185", ident: "planning#187", parentId: null, title: "Inline issue label filter editor", pri: "medium", status: "inreview", assignee: "Ava", updated: 65, labels: [["frontend","#6e63f2"]] },
   { id: "i150", ident: "planning#152", parentId: null, title: "Fix flaky ws-disconnect resilience test", pri: "low", status: "todo", assignee: "Nik", updated: 30, labels: [["test","#7c818c"]] },
 
-  // Orphan: parent i300 is Done and excluded from the open list.
   { id: "i301", ident: "planning#303", parentId: "i300", title: "Backfill migration for parentId column", pri: "medium", status: "todo", assignee: "Nik", updated: 55, labels: [], orphanParent: "planning#302" },
 ];
 
 const DEFAULTS = { primary: "priority", primaryDir: 1, secondary: "status", secondaryDir: 1, group: "none" };
-// Collapsed parents persist GLOBALLY (localStorage), keyed by issue id — the issue
-// list isn't scoped to a session or a repo, so neither is its collapse state.
 const COLLAPSE_KEY = "shipit.issues.collapsed";
 const loadCollapsed = () => { try { return new Set(JSON.parse(localStorage.getItem(COLLAPSE_KEY) || "[]")); } catch { return new Set(); } };
 const saveCollapsed = () => { try { localStorage.setItem(COLLAPSE_KEY, JSON.stringify([...state.collapsed])); } catch (e) {} };
@@ -352,7 +341,6 @@ function priBars(lvl) {
 function statusCell(k) { const s = STATUS[k]; return `<span class="status" style="color:${s.color}"><span class="sdot ${s.filled?"filled":""}"></span><span class="sname">${s.name}</span></span>`; }
 function labelsCell(ls) { return ls.length ? `<div class="labels">` + ls.map(([n,c]) => `<span class="chip"><span class="cdot" style="background:${c}"></span>${n}</span>`).join("") + `</div>` : ""; }
 
-// ---- Desktop recursive render ----
 function rowHTML(issue, depth, childCount, collapsed) {
   let spines = "";
   for (let d = 0; d < depth; d++) spines += `<span class="tree-spine"></span>`;
@@ -379,13 +367,12 @@ function subtree(issue, depth) {
   return html;
 }
 
-// ---- Mobile recursive flatten (indent only) ----
 function mobileCards(issue, depth, out) {
   out.push({ issue, depth });
   for (const k of childrenOf(issue.id)) mobileCards(k, depth + 1, out);
 }
 function mcardHTML({ issue, depth }) {
-  const indent = Math.min(depth, 3) * 4; // cap at 3 levels, 4px per step — a faint hint, not a tree
+  const indent = Math.min(depth, 3) * 4;
   return `<div class="mcard ${depth?"child":""}" style="padding-left:${12 + indent}px">
     <div class="mcard-top"><span class="ident">${issue.ident}</span>${priBars(issue.pri)}</div>
     <div class="mt">${issue.title}</div>
@@ -393,7 +380,6 @@ function mcardHTML({ issue, depth }) {
   </div>`;
 }
 
-// ---- Grouping ----
 function groupKey(i) {
   if (state.group === "priority") return PRI[i.pri].label;
   if (state.group === "status")   return STATUS[i.status].name;
@@ -420,7 +406,6 @@ function render() {
   document.getElementById("rows").innerHTML = html;
   document.getElementById("count").textContent = ISSUES.length;
 
-  // Mobile
   const flat = [];
   for (const t of tops) mobileCards(t, 0, flat);
   document.getElementById("mrows").innerHTML = flat.map(mcardHTML).join("");
@@ -432,8 +417,6 @@ function render() {
 
 function label(key) { return ({priority:"Priority",status:"Status",title:"Title",updated:"Last updated",assignee:"Assignee"})[key] || key; }
 function updateSummary() {
-  // No standing summary row (keeps the toolbar one line tall) — the active order
-  // lives in the icon's tooltip, and the dirty dot flags a non-default order.
   const dir = d => d === 1 ? "↑" : "↓";
   let s = `${label(state.primary)} ${dir(state.primaryDir)}`;
   if (state.secondary !== "none") s += ` → ${label(state.secondary)} ${dir(state.secondaryDir)}`;
@@ -456,7 +439,6 @@ function wire() {
   });
 }
 
-// ---- Modal wiring ----
 const $ = id => document.getElementById(id);
 $("openSort").addEventListener("click", () => $("backdrop").classList.add("open"));
 $("closeSort").addEventListener("click", () => $("backdrop").classList.remove("open"));

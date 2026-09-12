@@ -1,4 +1,4 @@
-// docs/262 — the session-scoped store behind the Plugins tab.
+
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import {
@@ -56,7 +56,6 @@ describe("plugin-repos store", () => {
     expect(usePluginReposStore.getState().snapshot).toBeNull();
   });
 
-  // Latest-wins: the seeding fetch and a files-changed refetch overlap freely,
   // so response order must not decide which declaration the tab gates on.
   it("an older same-session response cannot overwrite a newer one", async () => {
     const bodies = [
@@ -67,7 +66,7 @@ describe("plugin-repos store", () => {
     const resolvers: (() => void)[] = [];
     globalThis.fetch = (async () => {
       const body = bodies[call++];
-      // Hold both responses open, then release them in reverse order.
+
       await new Promise<void>((r) => resolvers.push(r));
       return new Response(JSON.stringify(body), { status: 200 });
     }) as unknown as typeof fetch;
@@ -111,7 +110,7 @@ describe("plugin-repos store", () => {
       await usePluginReposStore.getState().fetchSnapshot("sess-a");
       expect(impl).toHaveBeenCalledTimes(1);
       await vi.advanceTimersByTimeAsync(60_000);
-      // Two pending answers, then a real one — and no further polling.
+
       expect(impl).toHaveBeenCalledTimes(3);
       expect(usePluginReposStore.getState().snapshot?.pending).toBe(false);
     } finally {
@@ -126,8 +125,7 @@ describe("snapshotForSession", () => {
   it("returns the snapshot only for its owning session", () => {
     const state = { snapshot: snap, forSessionId: "sess-a" } as never;
     expect(snapshotForSession(state, "sess-a")).toBe(snap);
-    // The regression this guards: a switch that skipped the reset would leave
-    // the previous session's tab, dot and cards on screen.
+
     expect(snapshotForSession(state, "sess-b")).toBeNull();
     expect(snapshotForSession(state, null)).toBeNull();
   });
@@ -195,11 +193,11 @@ describe("tab gating and attention (plan §3)", () => {
     });
     expect(pluginsAttention(snapshot({ repos: [{ ...card, uses: [use("grantable")] }] }))).toBe(true);
     expect(pluginsAttention(snapshot({ repos: [{ ...card, uses: [use("allowed")] }] }))).toBe(false);
-    // planning#383 — a gap nobody the user can be will close is still a gap the
+
     // user should be told about: the plugin cannot do its job either way.
     expect(pluginsAttention(snapshot({ repos: [{ ...card, uses: [use("blocked-by-deployment")] }] }))).toBe(true);
     expect(pluginsAttention(snapshot({ repos: [{ ...card, uses: [use("blocked-by-session")] }] }))).toBe(true);
-    // …and an optional host is not, whichever way it is unreachable.
+
     expect(pluginsAttention(snapshot({ repos: [{ ...card, uses: [use("grantable", true)] }] }))).toBe(false);
     expect(
       pluginsAttention(snapshot({ repos: [{ ...card, uses: [use("blocked-by-deployment", true)] }] })),
@@ -207,16 +205,12 @@ describe("tab gating and attention (plan §3)", () => {
   });
 
   it("a snapshot from an older client build has neither list and must not throw", () => {
-    // The store outlives a deploy: a cached response predating `hosts` (or
-    // `credentials`) reaches this predicate as `undefined`.
+
     const legacy = { plugin: "p", alias: "p", found: true } as unknown as (typeof card)["uses"][number];
     expect(pluginsAttention(snapshot({ repos: [{ ...card, uses: [legacy] }] }))).toBe(false);
   });
 });
 
-// req 24's affordance: the grant is the USER's act on the USER's allowlist —
-// the existing browser-only egress route, at one of the two scopes the
-// requirement names. Nothing plugin-shaped, and nothing a declaration triggers.
 describe("allowHost", () => {
   beforeEach(() => {
     usePluginReposStore.setState({ snapshot: snapshot(), forSessionId: "sess-a" });
@@ -231,8 +225,8 @@ describe("allowHost", () => {
   const captureFetch = (grantResponse: Response): ReturnType<typeof vi.fn> => {
     const impl = vi.fn(async (url: string) =>
       url === "/api/egress/hosts"
-        ? // Cloned per call: one grant response is reused across the two scopes,
-          // and a body can only be read once.
+        ?                                                                        
+
           grantResponse.clone()
         : new Response(JSON.stringify(snapshot()), { status: 200 }),
     );
@@ -247,9 +241,7 @@ describe("allowHost", () => {
 
     impl.mockClear();
     await usePluginReposStore.getState().allowHost("fal.run", "global");
-    // planning#376 — the session rides along for REPORTING only. The entry
-    // still lands at instance scope; the id says whose surfaces the route
-    // should report on, since a global add reaches them very differently.
+
     expect(JSON.parse(String(impl.mock.calls[0][1].body))).toEqual({
       host: "fal.run",
       scope: "global",
@@ -283,8 +275,7 @@ describe("allowHost", () => {
   });
 
   it("refetches on failure too, and rethrows", async () => {
-    // `POST /api/egress/hosts` answers 503 for "saved, but the live refresh
-    // failed closed" — the host may be allowed even though the call failed, so
+
     // the card must be re-read rather than left asserting the old answer.
     const impl = captureFetch(new Response("{}", { status: 503 }));
     await expect(usePluginReposStore.getState().allowHost("fal.run", "session")).rejects.toThrow();
@@ -301,9 +292,6 @@ describe("allowHost", () => {
   });
 });
 
-// req 12 — the USER's half of the refresh verb, on the same route and the same
-// round `shipit plugin refresh` runs. Every assertion here is about the answer
-// the button gets back: an act with no reported outcome is what this replaces.
 describe("refreshRepo", () => {
   const REFRESH_URL = "/api/sessions/sess-a/plugin/refresh";
 
@@ -343,9 +331,6 @@ describe("refreshRepo", () => {
       repo: "tools", kind: "activated", commit: "new-commit",
     });
 
-    // docs/266 reqs 5, 6 — the commit did not move and the plugin was installed
-    // again anyway. Reporting `unchanged` would tell the user their press did
-    // nothing, which is the one thing it demonstrably did not do.
     captureFetch(rowResponse({ status: "activated", reinstalled: true, after: "same" }));
     expect(await usePluginReposStore.getState().refreshRepo("tools")).toMatchObject({
       kind: "reinstalled", commit: "same",
@@ -365,9 +350,7 @@ describe("refreshRepo", () => {
   });
 
   it("turns a refused request into a reported failure rather than a throw", async () => {
-    // The route answers 400 for a name the declaration does not have, and 501
-    // where the runtime has no refresh hook at all. The caller is a button:
-    // every one of those has to arrive as something to show the user.
+
     captureFetch(new Response(JSON.stringify({ error: "`x` is not declared." }), { status: 400 }));
     expect(await usePluginReposStore.getState().refreshRepo("x")).toEqual({
       repo: "x", kind: "failed", commit: null, detail: "`x` is not declared.",
@@ -378,15 +361,14 @@ describe("refreshRepo", () => {
       kind: "failed", detail: "HTTP 500",
     });
 
-    // A 200 that reported on nothing is not a success either.
     captureFetch(new Response(JSON.stringify({ rows: [] }), { status: 200 }));
     expect(await usePluginReposStore.getState().refreshRepo("tools")).toMatchObject({ kind: "failed" });
   });
 
   it("refetches the snapshot on success AND on failure", async () => {
-    // A failed refresh still changes the card — the attempt's error becomes an
+
     // issue row and the status becomes `degraded` — so the stale snapshot must
-    // not be what the user reads afterwards.
+
     for (const response of [
       rowResponse({ status: "activated", after: "new" }),
       new Response(JSON.stringify({ error: "nope" }), { status: 400 }),
@@ -400,18 +382,10 @@ describe("refreshRepo", () => {
     }
   });
 
-  // Independent review, medium finding. The tidy-up refetch belongs to the
-  // session the press happened in, and a POST is long enough for the user to
-  // switch during it. Taking a fetch generation for a session nobody is on
-  // invalidates the fetch the session they ARE on has in flight, so the new
-  // session ends with `snapshot: null` — and no Plugins tab at all — until the
-  // next shipit.yaml edit or a reload.
   it("a refresh finishing after a session switch does not strand the new session", async () => {
     // The two must OVERLAP for this to reproduce: a B fetch that has already
     // landed cannot be invalidated retroactively. B's GET is therefore still in
-    // flight when A's tidy-up refetch runs, which is the real timing — a
-    // session switch starts B's seeding fetch immediately, while A's POST is
-    // the slow leg.
+
     const gate = (): [Promise<void>, () => void] => {
       let open!: () => void;
       const held = new Promise<void>((resolve) => { open = resolve; });
@@ -437,15 +411,11 @@ describe("refreshRepo", () => {
     usePluginReposStore.getState().reset();
     const seedingB = usePluginReposStore.getState().fetchSnapshot("sess-b");
 
-    // A finishes and runs its `finally` refetch while B's GET is still open.
     releaseRefresh();
     await refreshing;
     releaseSeed();
     await seedingB;
 
-    // Before the guard, A's refetch took a newer generation on the way to being
-    // dropped itself, B's response then failed the latest-wins check, and this
-    // read `null` — no snapshot, and so no Plugins tab for session B.
     expect(usePluginReposStore.getState().forSessionId).toBe("sess-b");
     expect(usePluginReposStore.getState().snapshot?.warnings).toEqual(["session B"]);
   });

@@ -101,9 +101,7 @@ export function useAttentionNotifications(
 
       const inFlight = pending.get(session.id);
       if (inFlight) {
-        // Still needs attention. Keep the original clock running (so flapping
-        // reasons can't defer the notification forever) but announce whatever
-        // the reason has become by the time it fires.
+
         inFlight.reason = reason;
         inFlight.title = session.title;
         if (session.remoteUrl) inFlight.remoteUrl = session.remoteUrl;
@@ -111,9 +109,7 @@ export function useAttentionNotifications(
       }
 
       const prev = prevReasonsRef.current.get(session.id);
-      // `prev === undefined` means this is the first time we see the
-      // session — seed it silently so reloads don't re-fire alerts for
-      // sessions that were already in an attention state.
+
       if (prev !== undefined && prev === null) {
         const sessionId = session.id;
         const timer = setTimeout(() => {
@@ -134,8 +130,6 @@ export function useAttentionNotifications(
       }
     }
 
-    // A session that was archived or removed while its notification was still
-    // settling has nothing left to announce.
     for (const sessionId of [...pending.keys()]) {
       if (!next.has(sessionId)) cancel(sessionId);
     }
@@ -143,9 +137,6 @@ export function useAttentionNotifications(
     prevReasonsRef.current = next;
   }, [sessions, activeRunnerSessions, awaitingPermissionSessions, backgroundTaskSessions, cardBySession, statusBySession, autoFixEnabled, autoResolveEnabled, notify]);
 
-  // Unmount only — deliberately a separate effect with no deps. Folding this
-  // into the effect above would clear every pending timer on each store change,
-  // which is exactly the settle window we're trying to observe.
   // eslint-disable-next-line no-restricted-syntax -- lifecycle cleanup
   useEffect(() => {
     const pending = pendingRef.current;

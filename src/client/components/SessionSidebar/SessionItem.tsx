@@ -20,31 +20,15 @@ interface SessionItemProps {
   onRestore?: (id: string) => void;
   repoLabel?: string;
   disabled?: boolean;
-  /**
-   * docs/117 Phase 2 — when true, this session row is rendered indented to
-   * indicate it was spawned by another session in the same group (the
-   * parent appears immediately above). Visual-only; the click target and
-   * archive controls are identical to a regular row.
-   */
+
   indented?: boolean;
-  /**
-   * Number of agent-spawned children attached to this session. When > 0,
-   * the row renders a caret toggle on the left so the user can collapse the
-   * brood — matches the existing repo-header caret pattern.
-   */
+
   childCount?: number;
   isChildrenCollapsed?: boolean;
   onToggleChildren?: () => void;
-  /**
-   * docs/156 — true when the device is a touch screen. The session row's
-   * overflow menu trigger is always visible on touch (no hover affordance);
-   * on desktop it hover-reveals on inactive rows.
-   */
+
   isTouch?: boolean;
-  /**
-   * Render the overflow menu through a portal by default. Dialog-contained rows
-   * disable this so Radix Dialog's modal focus/aria scope owns the menu too.
-   */
+
   overflowMenuPortaled?: boolean;
 }
 
@@ -88,10 +72,6 @@ export function SessionItem({ session, isCurrent, onResume, onSelectCurrent, onA
     setEditingTitle("");
   }, []);
 
-  // docs/128 — spin up a privileged ops session pre-loaded to investigate THIS
-  // session. The store seeds the new session's composer with the target identity
-  // and read-only boundary, leaving room for the operator's incident-specific
-  // request. On success we navigate straight into it.
   const handleInvestigateInOps = useCallback(async () => {
     const newId = await useSessionStore.getState().createOpsSession(session.id);
     if (newId) {
@@ -101,11 +81,8 @@ export function SessionItem({ session, isCurrent, onResume, onSelectCurrent, onA
     }
   }, [session.id, onResume]);
 
-  // Chat/session-scoped actions, relocated here from the PR card's overflow
-  // menu (which is now PR-only). Both are limited to the *current* session: the
   // store's `messages` are only the active session's, and a rewind restore must
-  // go over that session's socket. The rewind-restore event is bridged to the
-  // WS sender by a listener in App.tsx (`shipit:restore-rewind`).
+
   const rewindRecovery = useSessionStore((s) => s.rewindRecoveries[session.id]);
   const canRecoverRewind = isCurrent && !!rewindRecovery && rewindRecovery.expiresAt > Date.now();
 
@@ -125,20 +102,11 @@ export function SessionItem({ session, isCurrent, onResume, onSelectCurrent, onA
     window.dispatchEvent(new CustomEvent("shipit:restore-rewind", { detail: { sessionId: session.id } }));
   }, [session.id]);
 
-  // docs/110 — toggle the pin (persistent) flag. Pinning sticks the session to
-  // the top of its repo group and exempts it from sidebar demotion + disk
-  // reclamation; the store optimistically updates and the server broadcasts the
-  // reconciled session_list.
   const isPinned = !!session.pinnedAt;
   const handleTogglePin = useCallback(() => {
     void useSessionStore.getState().setPinned(session.id, !session.pinnedAt);
   }, [session.id, session.pinnedAt]);
-  // docs/277 — mute the session: it stops appearing as needing attention until
-  // its next turn starts (req 4). The control is offered only on a row that is
-  // currently asking for the user (req 6) — attention lives in the browser, so
-  // this menu IS that half of the rule — and on an already-muted row, which
-  // needs its way back (req 5): muting makes the reason go away, so a control
-  // gated on the reason alone would vanish at the moment it was used.
+
   const isMuted = !!session.mutedAt;
   const canToggleMute = !isArchived && (isMuted || needsAttention);
   const handleToggleMute = useCallback(() => {
@@ -148,22 +116,11 @@ export function SessionItem({ session, isCurrent, onResume, onSelectCurrent, onA
     void useSessionStore.getState().setKeepPreviewRunning(session.id, !session.keepPreviewRunning);
   }, [session.id, session.keepPreviewRunning]);
 
-  // The overflow trigger is always visible on the active row, on touch
-  // devices, and while the menu itself is open. On inactive desktop rows it
-  // hover-reveals so it doesn't add visual noise to the long sidebar list.
   const overflowAlwaysVisible = isCurrent || menuOpen || Boolean(isTouch);
   const hasCurrentSessionActions = isCurrent;
   const canInvestigateInOps = session.kind !== "ops";
   const hasSeparatedActions = hasCurrentSessionActions || canInvestigateInOps;
 
-  // docs/187 — "rail + trail": a needs-attention session is marked on the row's
-  // open RIGHT edge (clear of the PR icon and the panel's left border, where a
-  // marker is easy to miss). A crisp solid amber bar on the right edge — an `inset`
-  // box-shadow with a negative x-offset, so it paints the right inner edge with zero
-  // layout shift — gives the hard contrast peripheral vision catches; a soft amber
-  // gradient trails left from it for the glow. Both reuse the saturated per-theme
-  // `--color-attention` (the trail via `color-mix`), so no new tokens; the
-  // background layers over the row's own fill, so it coexists with the selected gray.
   const attentionMarker = needsAttention
     ? {
         boxShadow: "inset -3px 0 0 var(--color-attention)",

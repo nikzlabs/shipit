@@ -414,16 +414,13 @@ MCP data lives in the existing `CredentialStore` JSON file (`/credentials/shipit
 
 ```typescript
 interface CredentialData {
-  // existing fields (see src/server/orchestrator/credential-store.ts):
-  agentEnv?: Record<string, string>;             // existing — now also holds mcp__* secrets
+  agentEnv?: Record<string, string>;
   githubToken?: string;
   maxIdleContainers?: number;
   agentSystemInstructionsEnabled?: boolean;
   autoCreatePr?: boolean;
 
-  // NEW for this feature:
-  mcpServers?: Record<string, McpServerConfig>;  // server configs keyed by name,
-                                                  // values use $secret: refs
+  mcpServers?: Record<string, McpServerConfig>;
 }
 ```
 
@@ -461,14 +458,12 @@ Example persisted state:
 New `CredentialStore` methods:
 
 ```typescript
-// MCP server CRUD (orchestrator-side)
 getMcpServer(name: string): McpServerConfig | undefined;
 getAllMcpServers(): Record<string, McpServerConfig>;
 setMcpServer(name: string, config: McpServerConfig): void;
 deleteMcpServer(name: string): void;
 
-// Setting/clearing the secret value associated with a server's $secret: ref
-setMcpSecret(key: string, value: string): void;   // writes agentEnv[key] (key must match mcp__*)
+setMcpSecret(key: string, value: string): void;
 deleteMcpSecret(key: string): void;
 ```
 
@@ -483,24 +478,22 @@ A second validation gate exists worker-side: the `PUT /secrets` handler in `sess
 #### McpServerConfig type
 
 ```typescript
-// src/server/shared/types/mcp-types.ts
-
 interface McpStdioServerConfig {
   name: string;
   type: "stdio";
   command: string;
   args?: string[];
-  env?: Record<string, string>;       // env var names → $secret: references or literal values
-  npmPackage?: string;                 // package to npm install -g (e.g., "@anthropic-ai/linear-mcp")
-  setup?: string;                      // optional setup command
+  env?: Record<string, string>;
+  npmPackage?: string;
+  setup?: string;
   enabled: boolean;
 }
 
 interface McpHttpServerConfig {
   name: string;
   type: "http";
-  url: string;                         // Streamable HTTP endpoint
-  headers?: Record<string, string>;    // may contain $secret: references
+  url: string;
+  headers?: Record<string, string>;
   enabled: boolean;
 }
 
@@ -603,12 +596,10 @@ Deleting a server while it's actively spawned by the Claude CLI is safe because 
 In `claude.ts`, the tool allowlist construction adds user MCP server namespaces per mode (matching the policy in §"Key decisions" #3):
 
 ```typescript
-// auto + normal: include each enabled user MCP server's namespace
 for (const server of userMcpServers) {
   if (!server.enabled) continue;
   autoTools.push(`mcp__${server.name}__*`);
   normalTools.push(`mcp__${server.name}__*`);
-  // plan mode: deliberately omitted — third-party MCP tools cannot be assumed read-only
 }
 ```
 

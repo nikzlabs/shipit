@@ -62,14 +62,14 @@ plugins:
   repos:
     - repo: nicolasalt/game-tools # GitHub owner/name (v1; see Feedback below)
       name: game-tools            # explicit name: checkout path, feedback
-                                  # destination, plugin card, refresh target
+
       branch: main                # tracked branch (default: repo default branch)
-      # pin: v2.1.0               # tag or SHA; mutually exclusive with branch (req 8)
+
   use:
     - plugin: requirements        # selector: the exported plugin to activate
       from: game-tools            # references a declared repo by name
       alias: reqs                 # optional local name; default = plugin.
-                                  # Keys overrides/settings/skills namespacing and UI.
+
       overrides:                  # optional — flat: the entry IS one plugin
         services:
           requirements:           # per SERVICE (req 16)
@@ -261,19 +261,17 @@ exports:
   plugins:
     requirements:
       compose: plugins/requirements/docker-compose.yml  # service definitions,
-                                                        # incl. per-service startup (reqs 5, 16)
+
       cli:
         reqs: plugins/requirements/cli                  # command name → entry (req 17)
       skills: plugins/requirements/skills               # dir shipped to sessions (req 22)
       install: npm --prefix . ci                        # see Install contract (req 7)
       install-inputs: [package-lock.json]                 # files whose content re-triggers install
       dep-dirs: [node_modules]                            # what install populates; shared via the
-                                                          # dependency store (req 28). This is the
-                                                          # default — an empty list opts out
+
       credentials: [FAL_KEY]        # names only — values live with each project (req 23)
       hosts: [fal.run]              # informational; grants nothing (req 24)
-      # …and either list takes `{ name: X, optional: true }` for a name the
-      # plugin uses when given and works without (reqs 23, 24) — see below
+
       settings:                     # declared settings + defaults (req 26)
         root:
           description: Directory inside the project the plugin reads and writes

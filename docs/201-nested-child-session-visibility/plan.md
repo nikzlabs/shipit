@@ -78,10 +78,9 @@ Add one optional persisted field alongside the existing `parentSessionId`:
 
 ```ts
 interface SessionInfo {
-  // ... existing ...
-  parentSessionId?: string;  // immediate parent (unchanged) — lineage/provenance
-  spawnedByTurn?: string;    // unchanged
-  rootSessionId?: string;    // NEW — top-level ancestor of the spawn tree
+  parentSessionId?: string;
+  spawnedByTurn?: string;
+  rootSessionId?: string;
 }
 ```
 
@@ -113,19 +112,15 @@ linkage is **not** written directly from the spawn service; it flows through
 `GraduateSessionOpts` and is persisted inside `graduateSession()`:
 
 ```ts
-// child-sessions.ts — when building the graduateSession({...}) opts:
 const rootSessionId = parent.rootSessionId ?? parent.id;
 graduateSession(graduationDeps, {
-  // ...existing opts (parentSessionId, spawnedByTurn, ...)...
   ...(rootSessionId ? { rootSessionId } : {}),
 });
 ```
 
 ```ts
-// graduate-session.ts:64 — GraduateSessionOpts gains the field:
-rootSessionId?: string;   // top-level ancestor; paired with parentSessionId
+rootSessionId?: string;
 
-// graduate-session.ts:134 — forward it to the setter:
 if (parentSessionId)
   sessionManager.setParentSession(sessionId, parentSessionId, spawnedByTurn, rootSessionId);
 ```
@@ -141,15 +136,15 @@ Build a live-root set instead of (or in addition to) the
 
 ```ts
 const liveIds = new Set<string>();
-const liveRoots = new Set<string>();        // ids that are the root of some live brood
+const liveRoots = new Set<string>();
 for (const s of sessions) {
   if (s.userArchived) continue;
   liveIds.add(s.id);
   if (s.rootSessionId) liveRoots.add(s.rootSessionId);
 }
 const exemptFromCap = (s: SessionInfo): boolean =>
-  liveRoots.has(s.id) ||                                  // a root with any live descendant
-  (s.rootSessionId !== undefined && liveIds.has(s.rootSessionId)); // a descendant of a live root
+  liveRoots.has(s.id) ||
+  (s.rootSessionId !== undefined && liveIds.has(s.rootSessionId));
 ```
 
 This makes the exemption depth-independent: a grandchild is exempt as long as
@@ -178,9 +173,9 @@ const broodByRoot = new Map<string, SessionInfo[]>();
 const orphaned = new Set<string>();
 for (const s of sessions) {
   const root = s.rootSessionId;
-  if (!root) continue;                       // top-level session, not in a brood
+  if (!root) continue;
   if (!sessions.some((p) => p.id === root)) {
-    orphaned.add(s.id);                      // root not in this repo group → top-level fallback
+    orphaned.add(s.id);
     continue;
   }
   (broodByRoot.get(root) ?? broodByRoot.set(root, []).get(root)!).push(s);
@@ -350,12 +345,10 @@ load-bearing one favors undefined.
 **Query 1 — fetch the brood for a root.** Self-ref is tidier here:
 
 ```sql
--- undefined: root itself is NULL-tagged, so OR-in its own id (bind ?1 twice)
 SELECT * FROM sessions
 WHERE (id = ?1 OR root_session_id = ?1) AND user_archived = 0
 ORDER BY last_used_at DESC, rowid DESC;
 
--- self-ref: uniform single-param index range scan on idx_sessions_root
 SELECT * FROM sessions
 WHERE root_session_id = ?1 AND user_archived = 0
 ORDER BY last_used_at DESC, rowid DESC;
@@ -372,16 +365,13 @@ merged-session cap, i.e. the cap stops working. Rescuing it needs a `root === id
 discriminator smeared across every brood check:
 
 ```ts
-// self-ref — needs the discriminator everywhere "is this a brood?" is asked
 const exemptFromCap = (s) =>
   s.rootSessionId === s.id
-    ? parentsWithLiveChildren.has(s.id)   // a root: exempt only if it has live brood
-    : liveIds.has(s.rootSessionId);       // a descendant: exempt if root is live
+    ? parentsWithLiveChildren.has(s.id)
+    : liveIds.has(s.rootSessionId);
 
-// undefined — `rootSessionId == null` is already a crisp "not a descendant"
-// signal, so only descendants tag a root and a lone session never self-exempts
 const exemptFromCap = (s) =>
-  liveRoots.has(s.id) ||                                  // a root WITH live brood
+  liveRoots.has(s.id) ||
   (s.rootSessionId !== undefined && liveIds.has(s.rootSessionId));
 ```
 

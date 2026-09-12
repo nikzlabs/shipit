@@ -6,8 +6,6 @@ import type { FilePreviewAction } from "../components/FilePreviewModal.js";
 import { getLocalStorageObject, getSavedDraftUploads, saveDraftUploads } from "../utils/local-storage.js";
 import { useSessionStore } from "./session-store.js";
 
-// localStorage-backed set of upload paths the user has explicitly deleted.
-// Prevents hydrateUploads from resurrecting them if the server DELETE fails.
 const DELETED_UPLOADS_KEY = "shipit:deletedUploads";
 function getDeletedUploads(): Set<string> {
   return getLocalStorageObject<Set<string>>(DELETED_UPLOADS_KEY, new Set(), (parsed) => new Set(parsed as string[]));
@@ -17,11 +15,9 @@ export function markUploadDeleted(path: string) {
   set.add(path);
   localStorage.setItem(DELETED_UPLOADS_KEY, JSON.stringify([...set]));
 }
-// Remove a path from the deleted-uploads tombstone set. A fresh upload (or an
+
 // undone delete) must supersede any stale tombstone for its path — otherwise
-// `hydrateUploads` filters the just-uploaded file out on the next reconnect.
-// Tombstones are global (not session-scoped), so a same-named file in another
-// session can also collide; clearing on upload success resolves both cases.
+
 export function clearUploadTombstone(path: string) {
   const set = getDeletedUploads();
   if (!set.delete(path)) return;
@@ -41,34 +37,20 @@ interface FileState {
   selectedDoc: string | null;
   docContent: string | null;
 
-  // User-invocable skills for the composer's `/` autocomplete (doc 138).
   skills: SkillInfo[];
 
-  // Session uploads — persisted in Zustand to survive route transitions
   sessionUploads: UploadItem[];
 
-  // Unified file preview modal state
   previewFile: string | null;
   previewContent: string | null;
   previewType: FilePreviewType | null;
   previewLoading: boolean;
   previewActions: FilePreviewAction[];
-  /**
-   * 1-based line to reveal/highlight when opening a code file (e.g. from a
-   * `path:line` link in chat). `null` opens at the top. Markdown is rendered,
-   * not source, so this only affects the code (Monaco) view.
-   */
+
   previewLine: number | null;
-  /**
-   * Whether the previewed file exists on disk in the session workspace, and so
-   * can be downloaded from the files endpoint. True for `openPreview` (which
-   * reads the file from the server), false for `openPreviewWithContent` (an
-   * in-memory blob — a pasted image, a chat-inlined data URI) that has no path
-   * the download route could resolve.
-   */
+
   previewOnDisk: boolean;
 
-  // Secondary manual file editing dialog state (docs/174).
   editFile: string | null;
   editContent: string;
   editOriginalContent: string;
@@ -87,7 +69,6 @@ interface FileState {
   setViewingFileBinary: (binary: boolean) => void;
   reset: () => void;
 
-  // Session upload actions
   addSessionUploads: (items: UploadItem[]) => void;
   removeSessionUpload: (path: string) => void;
   removeSessionUploadById: (id: string) => void;
@@ -95,7 +76,6 @@ interface FileState {
   markUploadsSent: () => void;
   hydrateUploads: (sessionId: string, attempt?: number) => Promise<void>;
 
-  // Unified preview actions
   openPreview: (sessionId: string, filePath: string, opts?: { actions?: FilePreviewAction[]; line?: number }) => Promise<void>;
   openPreviewWithContent: (filePath: string, content: string, type: FilePreviewType, actions?: FilePreviewAction[]) => void;
   closePreview: () => void;
@@ -158,17 +138,14 @@ const initialState = {
  */
 const uploadBytes = new Map<string, File>();
 
-/** Hold the bytes behind an upload chip until it lands or goes away. */
 export function retainUploadBytes(id: string, file: File): void {
   uploadBytes.set(id, file);
 }
 
-/** The bytes behind a chip, if it still needs them. */
 export function getUploadBytes(id: string): File | undefined {
   return uploadBytes.get(id);
 }
 
-/** Every chip that still has bytes waiting to be POSTed, in insertion order. */
 export function pendingUploadBytes(): { id: string; file: File }[] {
   return [...uploadBytes].map(([id, file]) => ({ id, file }));
 }
@@ -177,17 +154,6 @@ export function releaseUploadBytes(id: string): void {
   uploadBytes.delete(id);
 }
 
-/**
- * Upload items with a POST in flight *anywhere*, not just in one hook.
- *
- * Module-level for the same reason the bytes are: unmounting a hook does not
- * cancel its `fetch`, which goes on running and goes on writing to this store.
- * A replacement hook with its own private set therefore saw an "uploading" chip
- * with bytes and no owner, and POSTed it a second time — two copies on the
- * server, and a chip whose bytes were released by whichever request landed
- * first, leaving Retry with nothing. Ownership belongs to the request, so the
- * record of it has to outlive the component that started it.
- */
 const activeUploads = new Set<string>();
 
 export function markUploadActive(id: string): void {
@@ -202,7 +168,6 @@ export function isUploadActive(id: string): boolean {
   return activeUploads.has(id);
 }
 
-/** Is any upload for this session mid-request right now? */
 export function hasActiveUploads(): boolean {
   return activeUploads.size > 0;
 }
@@ -256,10 +221,8 @@ export function forgetUploadDismissal(id: string): void {
 const uploadsChangeSeq = new Map<string, number>();
 let hydrateSeq = 0;
 
-/** How many times req 1's "fetch a fresh one" may chain before giving up. */
 const MAX_HYDRATE_REFETCHES = 3;
 
-/** Record that this client changed what the server holds for a session. */
 export function noteUploadsChanged(sessionId: string): void {
   uploadsChangeSeq.set(sessionId, (uploadsChangeSeq.get(sessionId) ?? 0) + 1);
 }
@@ -274,7 +237,6 @@ export function forgetPendingUploads(): void {
   uploadBytes.clear();
   activeUploads.clear();
 }
-
 
 function errorMessageFromResponse(status: number, fallback: string, body: unknown): string {
   if (body && typeof body === "object" && "error" in body && typeof body.error === "string") {
@@ -303,8 +265,6 @@ export const useFileStore = create<FileState>((set, get) => ({
 
   setViewingFileBinary: (binary) => set({ viewingFileBinary: binary }),
 
-  // Drops `sessionUploads`, so the bytes held for those chips go with them —
-  // a session switch calls this while the composer stays mounted.
   reset: () => {
     forgetPendingUploads();
     set(initialState);
@@ -332,9 +292,7 @@ export const useFileStore = create<FileState>((set, get) => ({
     })),
 
   markUploadsSent: () => {
-    // No bytes to release here: docs/293 reqs 1-2 mean every pending upload is
-    // `ready` by the time a send happens, and a successful upload released its
-    // bytes when it landed.
+
     set((state) => ({
       sessionUploads: state.sessionUploads.map((u) => {
         if (!u.pending) return u;
@@ -345,17 +303,13 @@ export const useFileStore = create<FileState>((set, get) => ({
   },
 
   hydrateUploads: async (sessionId, attempt = 0) => {
-    // docs/294 reqs 1-3 — captured BEFORE the request, compared after it. The
-    // listing is a snapshot, and everything below treats it as authority: it
-    // prunes the draft set and rebuilds every non-pending chip. An answer that
+
     // is no longer current must not get that authority.
     const seq = ++hydrateSeq;
     const changeAtStart = uploadsChangeSeq.get(sessionId) ?? 0;
     // docs/294 req 1 — a mutation that is still UNRESOLVED cannot have bumped
     // the counter yet, so the counter alone cannot see this overlap. A listing
-    // taken across an open upload observed a file the client had not yet learned
-    // about (two rows for it once the POST landed) or a file the server was
-    // about to roll back (a ready row for something that no longer exists).
+
     const mutatingAtStart = hasActiveUploads();
     try {
       const res = await fetch(`/api/sessions/${sessionId}/files/uploads`);
@@ -363,16 +317,14 @@ export const useFileStore = create<FileState>((set, get) => ({
       const data = (await res.json()) as { files: UploadedFile[] };
 
       // req 3 — a newer hydration owns the store now. Drop this one, and do NOT
-      // refetch: the newer request is already fetching.
+
       if (seq !== hydrateSeq) return;
-      // req 2 — the answer is for a session the user has left. `switchSession`
-      // sets the store's id synchronously, before history loads and before this
-      // is ever called, so the comparison is meaningful at both ends.
+
       if (useSessionStore.getState().sessionId !== sessionId) return;
       // req 1 — the listing predates a change this client made, so it cannot
-      // know about it. Take a fresh one. Bounded (non-requirement: no retry
+
       // policy beyond this) so a session churning uploads cannot spin the
-      // server; the existing triggers still cover the give-up case.
+
       if (
         (uploadsChangeSeq.get(sessionId) ?? 0) !== changeAtStart
         || mutatingAtStart
@@ -385,7 +337,7 @@ export const useFileStore = create<FileState>((set, get) => ({
       }
       const IMAGE_EXTS = /\.(png|jpe?g|gif|webp|svg)$/i;
       const deletedPaths = getDeletedUploads();
-      // Clean up the deleted set — remove entries for files that no longer exist on the server
+
       const serverPaths = new Set(data.files.map((f) => f.path));
       let deletedChanged = false;
       for (const dp of deletedPaths) {
@@ -396,25 +348,12 @@ export const useFileStore = create<FileState>((set, get) => ({
         else clearDeletedUploads();
       }
 
-      // A file on disk is, by default, NOT a chip — it was sent in a prior turn
-      // or is left over from an earlier visit, so it belongs in the /uploads
-      // panel (the agent can still read it) but not the input. The ONE thing
-      // that makes a hydrated file a chip again is the per-session draft set:
-      // paths the user attached but hasn't sent yet, persisted so the chip
-      // survives a reload/session-switch exactly like the composer's draft text.
-      //
-      // Self-heal the draft set before applying it: drop any path chat history
-      // shows was already sent. This is what structurally prevents the old
-      // resurrection bug — even if the send-time removal was missed, an
       // already-sent file is pruned here and never shown as a chip.
-      //
+
       // docs/294 req 4 — it deliberately does NOT prune a path merely because
-      // this listing lacks it. That rule made a snapshot authoritative over
-      // something it could not have known about: a second tab that finished an
-      // upload while this listing was in flight had its just-saved draft path
+
       // deleted out of shared localStorage, and the counters below cannot see
-      // another tab. Keeping the path costs a dead string; a chip is built from
-      // `data.files`, so a path with no file on the server renders nothing.
+
       const sentPaths = new Set<string>();
       for (const msg of useSessionStore.getState().messages) {
         if (msg.role !== "user") continue;
@@ -431,10 +370,9 @@ export const useFileStore = create<FileState>((set, get) => ({
       if (draftChanged) saveDraftUploads(sessionId, [...draftSet]);
 
       set((state) => {
-        // Preserve in-memory pending items first: a WS reconnect keeps the
-        // Zustand store, so a just-attached chip (possibly still uploading, no
+
         // path yet) must not be wiped. Everything else is rebuilt from disk,
-        // pending iff it's in the (self-healed) draft set.
+
         const pendingInMemory = state.sessionUploads.filter((u) => u.pending);
         const pendingPaths = new Set(
           pendingInMemory.map((u) => u.path).filter((p): p is string => Boolean(p)),
@@ -442,7 +380,7 @@ export const useFileStore = create<FileState>((set, get) => ({
         const hydrated = data.files
           .filter((f) => !deletedPaths.has(f.path) && !pendingPaths.has(f.path))
           .map((f) => {
-            // For image uploads, construct a URL the browser can use as <img src>
+
             const isImage = IMAGE_EXTS.test(f.name);
             const urlPath = f.path.startsWith("/") ? f.path.slice(1) : f.path;
             return {
@@ -475,11 +413,10 @@ export const useFileStore = create<FileState>((set, get) => ({
       previewOnDisk: true,
     });
 
-    // Normalize path for URL construction (strip leading slash from upload paths)
     const urlPath = filePath.startsWith("/") ? filePath.slice(1) : filePath;
 
     if (detectedType === "markdown") {
-      // Fetch via docs endpoint for markdown
+
       try {
         const res = await fetch(`/api/sessions/${sessionId}/docs/${urlPath}`);
         if (!res.ok) throw new Error(`Failed to fetch doc: ${res.status}`);
@@ -489,7 +426,7 @@ export const useFileStore = create<FileState>((set, get) => ({
         set({ previewContent: "_Failed to load document._", previewLoading: false });
       }
     } else {
-      // Fetch via files endpoint for code/image/binary
+
       try {
         const res = await fetch(`/api/sessions/${sessionId}/files/${urlPath}`);
         if (!res.ok) throw new Error(`Failed to fetch file: ${res.status}`);

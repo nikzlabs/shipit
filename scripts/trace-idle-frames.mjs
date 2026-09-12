@@ -1,69 +1,5 @@
 #!/usr/bin/env node
-/**
- * Measure what a page costs the renderer main thread while it is idle.
- *
- * Written for docs/265's "continuous idle compositing" finding: an always-on CSS
- * animation makes the browser schedule a frame every vsync, and *if the document
- * has any live IntersectionObserver* every one of those frames also drags a
- * main-thread rendering pass behind it. This script is how that was attributed.
- * It measures the cost side only — the saving that `content-visibility: auto`
- * buys at load and on scroll needs different instrumentation, so this is not the
- * tool for the follow-up left open in
- * `docs/265-transcript-render-cost/checklist.md`.
- *
- * It launches the Playwright chromium over CDP, records a DevTools trace for a
- * fixed window *after* the page has settled, and reports the two numbers that
- * distinguish "the compositor is busy" (cheap) from "the main thread is busy"
- * (not cheap):
- *
- *   drawFramesPerSecond            — frames the compositor produced
- *   beginMainThreadFramesPerSecond — frames that also ran the main-thread lifecycle
- *
- * A composited animation shows a high draw rate and a near-zero main-frame
- * rate. Anything else means something is forcing the main thread awake. The two
- * are independent: an animating element scrolled out of view drives main frames
- * at display rate while the compositor draws nothing at all, so read the
- * main-frame rate as the cost and the draw rate only as evidence of what is
- * visible.
- *
- * Usage:
- *   node scripts/trace-idle-frames.mjs <url> [seconds] [options]
- *
- *   --settle=<ms>    wait this long after load before recording (default 3000)
- *   --eval=<file>    run this script in the page before settling; its resolved
- *                    value is printed to stderr (use to inject a probe element
- *                    or mutate the page into the condition under test)
- *   --init=<file>    run this script before ANY page script (CDP
- *                    addScriptToEvaluateOnNewDocument) — the only way to
- *                    intercept observers the app creates during boot
- *   --window=<w,h>   browser window size (default 1440,900)
- *   --json=<file>    dump the report plus every raw trace event
- *
- * `visibleLayers` / `totalLayers` / `updateLayerPerFrame` exist for docs/265's
- * remaining open question, which is about the size of the composited layer tree:
- * `Layerize` is `PaintArtifactCompositor::Update`, main-thread layer-list
- * construction from paint chunks, so its cost tracks how many layers there are
- * and not how they are rasterised. Production ShipIt runs ~29 layer updates per
- * frame and a 0.65 ms `Layerize`; everything measured here sits at ~0.03 and
- * ~0.0025 ms with a 3-4 layer tree.
- *
- * Note on numbers: a container with no GPU rasterises in software, so absolute
- * milliseconds are not a user's machine. Ratios between conditions are the
- * point — always measure A and B the same way, in the same run.
- *
- * Two reporting details, so nobody re-derives them from surprise. `windowSeconds`
- * spans this renderer's own main-thread work and frames, NOT every event in the
- * trace — see the comment on it for why that distinction was worth 1.35x. And
- * `mainThreadBusyPerSecondMs` is total `RunTask` time, which exceeds the sum of
- * the named events below it — the breakdown lists the rendering lifecycle, not
- * everything the thread did.
- *
- * One thing this measures that `steps()` does NOT fix: a stepped animation only
- * stops scheduling frames if it animates a COMPOSITOR-ONLY property. Stepping an
- * animation of `left`, or of `stroke-dashoffset` on an SVG, still wakes the main
- * thread every vsync — measured at 60 against 10 for the same steps() on
- * `transform`.
- */
+/** Measure renderer main-thread work during an idle trace window. */
 
 import { spawn } from "node:child_process";
 import fs from "node:fs";
@@ -84,8 +20,7 @@ const settleMs = Number(flag("settle", 3000));
 const jsonOut = flag("json", null);
 const evalFile = flag("eval", null);
 const initFile = flag("init", null);
-// Viewport is a real axis for layer-tree cost, not a cosmetic setting: more
-// visible content means more composited layers to update per frame.
+// Viewport size affects the number of visible composited layers.
 const windowSize = flag("window", "1440,900");
 
 if (!url || !Number.isFinite(seconds)) {
@@ -96,9 +31,7 @@ if (!url || !Number.isFinite(seconds)) {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "trace-idle-"));
 
-// `detached` so the whole browser process group can be killed at the end.
-// Killing only the parent leaves every renderer behind as a zombie, and a few
-// hundred of those exhaust the container's pid cgroup mid-run.
+// Detach so cleanup can kill the complete browser process group.
 const chrome = spawn(CHROME, [
   "--headless=new",
   "--remote-debugging-port=0",
@@ -107,8 +40,7 @@ const chrome = spawn(CHROME, [
   "--disable-dev-shm-usage",
   "--hide-scrollbars",
   `--window-size=${windowSize}`,
-  // Frame production has to stay realistic, or an idle page measures as idle
-  // for the wrong reason.
+  // Keep background frame production realistic.
   "--disable-background-timer-throttling",
   "--disable-backgrounding-occluded-windows",
   "--disable-renderer-backgrounding",
@@ -126,7 +58,6 @@ const wsUrl = await new Promise((resolve, reject) => {
   });
 });
 
-/** Minimal CDP client over Node's global WebSocket — no dependencies. */
 class Cdp {
   constructor(ws) {
     this.ws = ws;
@@ -193,7 +124,6 @@ if (evalFile) {
   else if (result.result?.value !== undefined) console.error("eval →", JSON.stringify(result.result.value).slice(0, 900));
 }
 
-// Settle first: startup work is not the steady-state cost we are after.
 await sleep(settleMs);
 
 const events = [];
@@ -220,15 +150,7 @@ await sleep(seconds * 1000);
 await browser.send("Tracing.end");
 await Promise.race([tracingComplete, sleep(60000)]);
 
-// ── aggregate ────────────────────────────────────────────────────────────────
-// Pick the renderer main thread by NAME. Picking "the busiest thread" selects
-// the browser process on a genuinely idle page, which is how an idle page first
-// measured as costing nothing.
-//
-// Among threads named CrRendererMain, take the one running the most lifecycle
-// events, falling back to the first. That is a heuristic for "the renderer whose
-// page we navigated", and with several renderer processes in the trace (an
-// iframe on its own site, say) the fallback picks arbitrarily.
+// Choose the renderer main thread with the most lifecycle events.
 const threadNames = new Map();
 for (const e of events) {
   if (e.ph === "M" && e.name === "thread_name") threadNames.set(`${e.pid}:${e.tid}`, e.args?.name);
@@ -257,18 +179,7 @@ for (const e of events) {
   if (e.ph === "X" && e.name === "RunTask" && `${e.pid}:${e.tid}` === mainKey) mainBusyUs += e.dur ?? 0;
 }
 
-// The window is the span of the work the rates are ABOUT — this renderer's main
-// thread and its frames — not the span of every event in the trace.
-//
-// Spanning every event overstates it badly and silently: the browser process is
-// already producing frames when tracing starts, and Perfetto's own flush runs
-// after `Tracing.end`. An 8 s recording measured 10.77 s that way, so every
-// per-second rate came out 1.35x too low and 60 Hz read as 44.7. Caught in
-// review of the docs/265 animation work; numbers in that doc recorded BEFORE
-// 2026-09-01 use the old denominator and are not comparable with later ones.
-//
-// Fold rather than spread: a 10 s trace of a real app is hundreds of thousands
-// of events, and `Math.min(...arr)` overflows the stack well before that.
+// Use this renderer's event span and fold to avoid argument-stack overflow.
 let traceStart = Infinity;
 let traceEnd = -Infinity;
 for (const e of events) {
@@ -308,10 +219,7 @@ for (const e of events) {
   totals.set(e.name, t);
 }
 
-// Both frame counts are scoped to the renderer process, so the two rates are
-// directly comparable. `DrawFrame` comes off that renderer's Compositor thread
-// and `BeginMainThreadFrame` off its CrRendererMain — counting one globally and
-// the other per-process would silently mix in the browser process's frames.
+// Scope both frame counts to the selected renderer process.
 let drawFrames = 0;
 let mainFrames = 0;
 for (const e of events) {
@@ -337,10 +245,7 @@ const report = {
   ),
 };
 
-// Composited layer-tree size, read out of the trace rather than the CDP
-// LayerTree domain: `LayerTree.enable` succeeds in headless but never emits a
-// single `layerTreeDidChange`, so the domain is unusable here. cc annotates the
-// counts on its own per-frame events instead, which costs nothing extra.
+// Headless CDP does not emit LayerTree changes; trace events contain the counts.
 const layerCounts = { visible: null, total: null };
 for (const e of events) {
   if (e.pid !== mainPid) continue;

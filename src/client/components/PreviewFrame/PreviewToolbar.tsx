@@ -14,7 +14,6 @@ import { usePreviewStore } from "../../stores/preview-store.js";
 import { usePreviewToolbarCollapse } from "../../hooks/usePreviewToolbarCollapse.js";
 import { PreviewPath } from "./PreviewPath.js";
 
-/** One selectable port row in the port dropdown. */
 export interface PortInfo {
   port: number;
   label: string;
@@ -32,58 +31,47 @@ function statusToDotVariant(status: string): "success" | "warning" | "error" | "
 
 interface PreviewToolbarProps {
   isRunning: boolean;
-  /** Whether to render the port dropdown vs. a plain port label. */
+
   showSelector: boolean;
   portSelectorOpen: boolean;
   setPortSelectorOpen: (open: boolean) => void;
-  /** Status of the active port, used for the leading status dot. */
+
   activeStatus: string;
-  /** Display label for the active port (e.g. "localhost:5173" or a service name). */
+
   portLabel: string | null;
-  /** All selectable ports for the dropdown. */
+
   allPorts: PortInfo[];
   activePort: number;
   onSelectPort: (port: number) => void;
-  // Device-frame metrics (computed by useDeviceFrame in the parent).
+
   deviceFrameActive: boolean;
   deviceWidth: number;
   deviceHeight: number;
   deviceScale: number;
   deviceScalePercent: number;
-  /** Panel size at 100% scale for the Freeform row, or null while unmeasured. */
+
   freeformPanelSize: { width: number; height: number } | null;
-  // Error badge.
+
   hasErrors: boolean;
   errorCount: number;
   errorPanelOpen: boolean;
   setErrorPanelOpen: (fn: (prev: boolean) => boolean) => void;
-  /** Force-reload the active iframe. */
+
   onRefresh: () => void;
-  /** Navigate the embedded preview back one step in its session history. */
+
   onBack: () => void;
-  /** Navigate the embedded preview to its root URL. */
+
   onHome: () => void;
-  /**
-   * Whether the preview has a history entry of its own to go back to.
-   * `undefined` means the page hasn't told us (no Navigation API) — the button
-   * stays enabled and the injected script decides.
-   */
+
   canGoBack?: boolean;
-  /** URL of the active iframe slot, or null when none is mounted. */
+
   activeSlotUrl: string | null;
-  /** Path + query of the page the preview is on, or null when unknown. */
+
   previewPath: string | null;
-  /** The same location as an absolute URL, for click-to-copy. */
+
   previewFullUrl: string | null;
 }
 
-/**
- * Top bar of the preview pane: port selector, device viewport controls, the
- * error badge, the auto-fix toggle, and refresh / open-in-new-tab actions.
- *
- * Device-viewport and auto-fix UI state are read directly from `preview-store`
- * (same as before the split); port/error/refresh concerns arrive as props.
- */
 export function PreviewToolbar({
   isRunning,
   showSelector,
@@ -122,37 +110,24 @@ export function PreviewToolbar({
   const toggleLandscape = usePreviewStore((s) => s.toggleLandscape);
   const setFreeformSize = usePreviewStore((s) => s.setFreeformSize);
 
-  // The page the preview is CURRENTLY on, not the slot's entry URL —
-  // `activeSlotUrl` is where the iframe was pointed when the slot was created,
-  // so a user who had clicked into a sub-route (or an SPA route) was sent back
-  // to the front page. Same reasoning as the refresh button. `previewFullUrl`
-  // is the injected script's reported location, already origin-checked in
   // PreviewFrame; it's null when the page never reported one, and the entry URL
-  // is then the only location we know.
+
   const openUrl = previewFullUrl ?? activeSlotUrl;
 
-  // Changes whenever the bar's intrinsic width changes without the bar's own
-  // width changing — a ResizeObserver alone would not fire for any of these.
   const collapseSignature = [
     isRunning, showSelector, portLabel ?? "", hasErrors, errorPanelOpen, errorCount,
     deviceFrameActive, deviceWidth, deviceHeight, autoFixEnabled, autoFixRetries,
     previewPath ?? "",
-    // The DeviceSelector's own trigger text: a custom preset can share another
-    // preset's dimensions while having a wider label, so deviceWidth/Height do
-    // not stand in for it. isLandscape changes which trailing control shows.
+
     devicePreset?.label ?? "", isLandscape,
-    // The scale readout appears and disappears with the preview's HEIGHT, so
+
     // the toolbar's own width never changes and its observer never fires.
     deviceScale, deviceScalePercent,
   ].join("|");
   const collapseRef = usePreviewToolbarCollapse(collapseSignature);
 
   return (
-    // `group/ptb` + the data flags the collapse hook writes. Labels below hide
-    // off those flags; the groups stay `shrink-0` so the row genuinely
-    // overflows and the hook has something real to measure — giving the labels
-    // `truncate` instead would let them absorb the pressure silently and the
-    // address, which outranks them, would be squeezed in their place.
+
     <div
       ref={collapseRef}
       data-hide-viewport="false"
@@ -167,7 +142,7 @@ export function PreviewToolbar({
               <button
                 className="flex items-center gap-1.5 text-(--color-text-primary) hover:text-(--color-text-secondary) transition-colors cursor-pointer"
                 aria-label="Select preview port"
-                // Carries the service name once the collapse hides the label.
+
                 title={portLabel ? `Preview: ${portLabel}` : "Select preview port"}
               >
                 <StatusDot status={statusToDotVariant(activeStatus)} />
@@ -296,9 +271,7 @@ export function PreviewToolbar({
             checked={autoFixEnabled}
             onChange={onToggleAutoFix}
             // Explicit, because this checkbox otherwise takes its accessible
-            // name from the visible "Auto-fix" text beside it — which the
-            // collapse sets to display:none, dropping it out of name
-            // computation and leaving an unnamed checkbox.
+
             aria-label="Auto-fix"
             className="sr-only peer"
           />
@@ -332,14 +305,7 @@ export function PreviewToolbar({
           <ArrowClockwiseIcon size={ICON_SIZE.SM} />
         </Button>
         {openUrl ? (
-          // A real anchor, not a `<button>` calling `window.open`. Nothing on
-          // the web can choose which surface a link opens in — an installed PWA
-          // hands `_blank` to its own in-app browser (iOS since 16.4, Android
-          // Custom Tabs) and no API overrides that. What a genuine link DOES
-          // buy is the platform's native affordances on top of it: long-press →
-          // "Open in Safari/Chrome", the share sheet, and on desktop the
-          // cmd/ctrl/middle-click that a scripted open silently swallows. So
-          // the user can route it to their real browser even though we can't.
+
           <a
             href={openUrl}
             target="_blank"
@@ -351,8 +317,7 @@ export function PreviewToolbar({
             <ArrowSquareOutIcon size={ICON_SIZE.SM} />
           </a>
         ) : (
-          // No URL to link to — an anchor without an href is not a control, so
-          // fall back to the disabled button for the same affordance and look.
+
           <Button variant="ghost" size="sm" title="Open preview in new tab" disabled className="h-7 w-7 p-0">
             <ArrowSquareOutIcon size={ICON_SIZE.SM} />
           </Button>

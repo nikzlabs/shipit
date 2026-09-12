@@ -89,11 +89,9 @@ describe("useMessageHandler", () => {
   });
 
   it("queues a user-message echo until HTTP history has loaded", async () => {
-    // A message typed on another device arrives as `system_user_message` and
-    // APPENDS a bubble, while the history load REPLACES the transcript. Applied
-    // under a history response sampled a moment before the row was written, the
+
     // bubble is wiped by the load that follows — the same "my message never
-    // showed up" symptom the echo exists to fix, in a narrower window.
+
     const event: WsServerMessage = {
       type: "system_user_message",
       sessionId: "session-1",
@@ -114,8 +112,6 @@ describe("useMessageHandler", () => {
 
     expect(useSessionStore.getState().messages).toEqual([]);
 
-    // History lands first and happens NOT to contain the row (it was sampled
-    // before the write), so the drained echo is what puts the message on screen.
     act(() => {
       useSessionStore.getState().setMessages([{ role: "user", text: "earlier turn" }]);
       useSessionStore.getState().setHistoryLoaded(true);
@@ -130,8 +126,7 @@ describe("useMessageHandler", () => {
   });
 
   it("drops a queued echo whose row the history load already carried", async () => {
-    // The other order: history was sampled after the write, so the row — with
-    // the same persisted id — is already on screen when the echo drains.
+
     const event: WsServerMessage = {
       type: "system_user_message",
       sessionId: "session-1",
@@ -175,7 +170,7 @@ describe("useMessageHandler", () => {
    * that rendered that intermediate status would pass even with the bug.
    */
   it("queues the attach snapshot across a session switch with no connection-status transition", async () => {
-    // Mid-turn on the outgoing session: its history is loaded.
+
     useSessionStore.getState().setSessionId("session-1");
     useSessionStore.getState().setHistoryLoaded(true);
     useSessionStore.getState().setMessages([
@@ -205,15 +200,12 @@ describe("useMessageHandler", () => {
       resumeSessionInternal("session-2");
     });
 
-    // The incoming socket attaches and sends the running turn's snapshot.
     act(() => {
       queued.push(messageEvent(snapshot));
       rerender({ last: queued[0] });
     });
     expect(useSessionStore.getState().messages).toEqual([]);
 
-    // The history response lands after it, carrying only the rows the DB held
-    // at the last tool-result boundary.
     act(() => {
       useSessionStore.getState().setMessages([
         { role: "assistant", text: "stale baseline", inProgress: true },

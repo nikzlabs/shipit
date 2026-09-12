@@ -15,7 +15,6 @@ import { createRef } from "react";
 
 afterEach(cleanup);
 
-/** The scrolling element of a tab pane: the pane root's first child. */
 function scrollBodyOf(root: HTMLElement): HTMLElement {
   const body = root.firstElementChild as HTMLElement;
   expect(body.className).toContain("overflow-y-auto");

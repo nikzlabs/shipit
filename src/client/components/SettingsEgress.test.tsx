@@ -11,7 +11,6 @@ import type {
   EgressHostGrantOutcome,
 } from "../../server/shared/types.js";
 
-/** Stateful fetch stub returning the effective-allowlist view. */
 function stubFetch(
   initial: EgressAllowlistEntry[],
   opts: {
@@ -19,7 +18,7 @@ function stubFetch(
     withSession?: boolean;
     defaultsCustomized?: boolean;
     enforcementActive?: boolean;
-    /** planning#376 — what the route says the add took effect on. */
+
     grant?: EgressHostGrantOutcome;
   } = {},
 ) {
@@ -57,7 +56,7 @@ function stubFetch(
     if (url.startsWith("/api/egress/session/") && method === "PUT") override = (body?.override ?? null) as boolean | null;
     if (url === "/api/egress/defaults/restore") {
       defaultsCustomized = false;
-      entries = entries.map((e) => (e.source === "builtin" ? e : e)); // restored set is server-authoritative
+      entries = entries.map((e) => (e.source === "builtin" ? e : e));                                        
     }
     if (url === "/api/egress/hosts" && method === "POST") {
       const source = body?.scope === "global" ? "user-global" : "user-session";
@@ -129,9 +128,6 @@ describe("SettingsEgress (docs/172, planning#92)", () => {
     await waitFor(() => expect(screen.getByText("internal.corp")).toBeInTheDocument());
   });
 
-  // planning#376 — a successful add used to say nothing at all, so the user
-  // could not tell whether anything had to restart. It does now, from the
-  // route's own answer rather than from a guess about the scope.
   describe("reports what the add took effect on", () => {
     const add = async () => {
       render(<SettingsEgress />);
@@ -147,7 +143,7 @@ describe("SettingsEgress (docs/172, planning#92)", () => {
           scope: "global",
           liveNow: ["new-containers"],
           staleUntilRestart: ["agent", "services"],
-          // App-wide dialog: no session is in scope, so "restart" has no subject.
+
           restartSessionId: null,
           reach: "grantable",
         },
@@ -235,8 +231,7 @@ describe("SettingsEgress (docs/172, planning#92)", () => {
   });
 
   it("renders no per-session controls even when a session is active (Settings is global-only)", async () => {
-    // The per-session containment override + add-scope toggle moved out of the
-    // global Settings dialog onto the session's own menu (docs/172).
+
     useSessionStore.setState({ sessionId: "s1" });
     stubFetch([], { withSession: true });
     render(<SettingsEgress />);
@@ -247,7 +242,7 @@ describe("SettingsEgress (docs/172, planning#92)", () => {
   });
 
   it("loads the GLOBAL allowlist (no ?session=) even when a session is active", async () => {
-    // The mechanism behind global-only: the effective view is fetched with no
+
     // session in scope, so the server never returns "This session" rows.
     useSessionStore.setState({ sessionId: "s1" });
     const impl = stubFetch([], { withSession: true });

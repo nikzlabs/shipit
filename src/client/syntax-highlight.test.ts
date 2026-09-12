@@ -1,12 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { AUTO_DETECT, hljs, HIGHLIGHT_LANGUAGES, highlightCode, languageFromPath } from "./syntax-highlight.js";
 
-/**
- * Prose that the `c`, `cpp` and `csharp` grammars are quadratic on: words with
- * no sentence punctuation to break the run, which their declaration matchers
- * backtrack across. Sentence-ending punctuation makes the same length cheap, so
- * a guard built on ordinary sentences would pass no matter what is registered.
- */
 function pathologicalProse(chars: number): string {
   const unit = "the quick brown fox jumps over the lazy dog ";
   let text = "";
@@ -22,16 +16,13 @@ describe("HIGHLIGHT_LANGUAGES", () => {
   });
 
   it("is a bounded subset, not the full highlight.js build", () => {
-    // The whole point of the core build: 192 grammars is what made
-    // `highlightAuto` cost ~274 ms per call. If this ever climbs back toward
-    // that, the fallback has quietly become expensive again.
+
     expect(HIGHLIGHT_LANGUAGES.length).toBeGreaterThan(10);
     expect(HIGHLIGHT_LANGUAGES.length).toBeLessThan(40);
   });
 
   it("does not register a language it never lists", () => {
-    // `languageFromPath` and the auto-detect subset are both derived from this
-    // list, so a grammar reachable outside it would be invisible to both.
+
     expect(hljs.listLanguages().sort()).toEqual([...HIGHLIGHT_LANGUAGES].sort());
   });
 
@@ -44,27 +35,23 @@ describe("HIGHLIGHT_LANGUAGES", () => {
 
 describe("the auto-detect subset", () => {
   it("excludes the three grammars that are quadratic on prose", () => {
-    // Guessing across these cost a production session an 8.3 s synchronous
-    // freeze; they are ~95% of a guess and every other grammar combined is the
-    // remaining 5%. See the module doc for the measurements.
+
     for (const quadratic of ["c", "cpp", "csharp"]) {
       expect(AUTO_DETECT.LANGUAGES).not.toContain(quadratic);
     }
   });
 
   it("still registers those three, so a fence naming one highlights normally", () => {
-    // Only *guessing* changed. A ```c fence is one linear pass and stays colored.
+
     expect(highlightCode("int main(void) { return 0; }", "c")).toContain("hljs-keyword");
     expect(highlightCode("auto x = std::move(y);", "cpp")).toContain("hljs-");
     expect(highlightCode("public class A { }", "csharp")).toContain("hljs-keyword");
   });
 
   it("is the registered set minus exactly those three", () => {
-    // Both directions matter and neither is visible at the call site. A name
-    // guessed at but not registered is silently dropped by `highlightAuto`,
-    // shrinking detection with no error anywhere; and a grammar added to the
+
     // registered set but forgotten here would never be detected. This is what
-    // makes either omission a red build rather than a quiet loss.
+
     const expected = HIGHLIGHT_LANGUAGES.filter((n) => !["c", "cpp", "csharp"].includes(n));
     expect([...AUTO_DETECT.LANGUAGES].sort()).toEqual([...expected].sort());
   });
@@ -77,10 +64,9 @@ describe("the auto-detect subset", () => {
   });
 
   it("colors unlabelled C as something else rather than leaving it plain", () => {
-    // The exclusion only stops those three from *winning* detection; the best of
-    // the remaining 24 still wins. So unlabelled C is misclassified, not
+
     // un-highlighted — worth asserting because the opposite is the intuitive
-    // reading of "excluded from auto-detect", and the module doc says so.
+
     const c = "static int handle(struct conn *c, size_t n) {\n  if (!c) return -EINVAL;\n  return 0;\n}\n";
     const html = highlightCode(c, null);
     expect(html).not.toBeNull();
@@ -100,28 +86,16 @@ describe("the auto-detect size cap", () => {
   });
 
   it("does not cap a named language", () => {
-    // `hljs.highlight` with an explicit grammar is one linear pass — 41 ms on
-    // 200 KB — so capping it would strip highlighting from big files to save
-    // nothing.
+
     const big = `const x = 1;\n`.repeat(AUTO_DETECT.MAX_CHARS);
     expect(highlightCode(big, "typescript")).toContain("hljs-keyword");
   });
 
   it("guesses at prose below the cap without freezing the frame", () => {
-    // The real guard: this is the shape that froze a production session for
-    // 8.3 s at a larger size.
-    //
-    // Measured **against a control on the same input**, not against a
-    // millisecond budget. An absolute budget was tried first and is genuinely
-    // flaky — five isolated runs of this file produced 700 ms and 964 ms
-    // against a 500 ms budget alongside three passes, and CI runs test files
+
     // concurrently on a contended runner. A ratio cannot drift that way,
     // because load slows the control by the same factor it slows the subject.
-    //
-    // The control is five linear passes over the identical text, so the unit is
-    // "what this machine costs to walk this input" and the subject is "how many
-    // of those a guess costs". Separation is wide and not marginal: ~8x with
-    // the three quadratic grammars excluded, ~73-126x with them included.
+
     const code = pathologicalProse(AUTO_DETECT.MAX_CHARS - 500);
     highlightCode("warm up the regex compiler", null);
 
@@ -185,13 +159,12 @@ describe("languageFromPath", () => {
   });
 
   it("prefers a known extension over the filename stem", () => {
-    // `Dockerfile.md` is a markdown file about Dockerfiles, not a Dockerfile.
+
     expect(languageFromPath("Dockerfile.md")).toBe("markdown");
   });
 
   it("does not read a dotfile's own name as an extension", () => {
-    // `.gitignore".split(".").pop()` is "gitignore" — a naive extension split
-    // turns every dotfile into a bogus lookup.
+
     expect(languageFromPath(".gitignore")).toBeNull();
     expect(languageFromPath("/workspace/.prettierrc")).toBeNull();
   });
@@ -223,9 +196,7 @@ describe("highlightCode", () => {
   });
 
   it("returns null for a language outside the subset, rather than guessing", () => {
-    // A ```haskell fence. Auto-detecting here would color it as some *other*
-    // language and pay the full detection cost to get that wrong — the caller
-    // said what this is, and not having the grammar does not overrule them.
+
     expect(highlightCode('main = putStrLn "hi"', "haskell")).toBeNull();
   });
 
@@ -242,9 +213,7 @@ describe("highlightCode", () => {
   });
 
   it("returns the same markup whether the language is named or detected", () => {
-    // The two paths are separate calls into hljs; a divergence here would mean
-    // giving the highlighter the language changes what the user sees, not just
-    // how long it takes.
+
     const code = "SELECT id FROM sessions WHERE id = 1;";
     expect(highlightCode(code, "sql")).toBe(highlightCode(code, null));
   });

@@ -83,7 +83,7 @@ async function openRoleMenu() {
   await new Promise((resolve) => {
     requestAnimationFrame(() => resolve(null));
   });
-  // Radix opens dropdown triggers on pointerdown. Using the complete synthetic
+
   // click sequence can race focus work when the full client suite runs.
   fireEvent.pointerDown(screen.getByTestId("role-selector-trigger"), {
     button: 0,
@@ -126,8 +126,7 @@ describe("useRolePickerState", () => {
   }
 
   it("does not count the reviewer as 'the user has a role' (reqs 10, 16)", () => {
-    // The reviewer is on every install, including one where nobody configured
-    // anything — counting it would make req 16 permanently true.
+
     setRoles([REVIEWER]);
     render(<Probe />);
     expect(screen.getByTestId("probe")).toHaveTextContent("false:");
@@ -149,8 +148,7 @@ describe("RoleSelector (wide row)", () => {
   it("is the mark alone with no role selected — no label to learn here (req 16)", () => {
     render(<RoleSelector roles={[DEEP_DIVE]} onSelectRole={vi.fn()} />);
     const trigger = screen.getByTestId("role-selector-trigger");
-    // The word "Role" is deliberately absent: the mark is learned in Settings,
-    // where roles are created and it appears with its name.
+
     expect(trigger.textContent).toBe("");
     expect(trigger.getAttribute("aria-label")).toBe("Choose a role");
   });
@@ -189,11 +187,6 @@ describe("RoleSelector (wide row)", () => {
     expect(row).toHaveAttribute("aria-disabled", "true");
   });
 
-  /**
-   * req 4 — a locked role is a READOUT. The two failures below shipped together
-   * and are one mistake: `locked` was handed to the button's `disabled`, which
-   * dimmed it to half contrast while leaving Radix's menu bound to it.
-   */
   describe("locked (req 4)", () => {
     it("opens nothing, because the menu is not rendered at all", async () => {
       render(
@@ -205,8 +198,6 @@ describe("RoleSelector (wide row)", () => {
         />,
       );
 
-      // ABSENCE, not a disabled attribute — Radix binds the trigger on
-      // `pointerdown`, so a test for the latter passes against the bug.
       expect(screen.queryByTestId("role-selector-menu")).toBeNull();
       await userEvent.click(screen.getByTestId("role-selector-trigger"));
       expect(screen.queryByTestId("role-selector-menu")).toBeNull();
@@ -221,20 +212,19 @@ describe("RoleSelector (wide row)", () => {
 
       expect(trigger).toHaveTextContent("deep dive");
       expect(trigger.className).not.toContain("opacity-50");
-      // Same pill, not a second appearance for the same state.
+
       expect(trigger.className).toContain("bg-(--color-accent-subtle)");
       expect(trigger.className).toContain("text-(--color-accent)");
     });
 
     it("goes entirely when there is no role to report", () => {
-      // The mark's only job is to offer the list; locked, it offers nothing.
+
       render(<RoleSelector roles={[DEEP_DIVE]} onSelectRole={vi.fn()} locked />);
       expect(screen.queryByTestId("role-selector-trigger")).toBeNull();
     });
 
     it("says what is still changeable, not only what is not", () => {
-      // A lock stating a prohibition alone was read as "this session's settings
-      // are frozen" — the reading the vanished parameters appeared to confirm.
+
       render(
         <RoleSelector roles={[DEEP_DIVE]} selectedRole="deep dive" onSelectRole={vi.fn()} locked />,
       );
@@ -261,7 +251,7 @@ describe("RoleSelector (wide row)", () => {
 
   describe("No role (req 18)", () => {
     it("offers it in the list, and calls back with nothing selected", async () => {
-      // The act req 15's "changing a parameter is the whole of leaving a role"
+
       // cannot express: keep what the role set, drop the brief it carries.
       const onSelectRole = vi.fn();
       render(
@@ -275,8 +265,7 @@ describe("RoleSelector (wide row)", () => {
     it("is what the list shows as chosen while no role is in force", async () => {
       render(<RoleSelector roles={[DEEP_DIVE]} onSelectRole={vi.fn()} />);
       await userEvent.click(screen.getByTestId("role-selector-trigger"));
-      // The same selected treatment every picker row wears, asserted the way
-      // this file already asserts the pill's tint.
+
       expect(screen.getByTestId("role-option-none").className).toContain("bg-(--color-accent-subtle)");
       expect(screen.getByTestId("role-option-deep dive").className).not.toContain(
         "bg-(--color-accent-subtle)",
@@ -284,8 +273,7 @@ describe("RoleSelector (wide row)", () => {
     });
 
     it("is not offered once the choice of role has locked (req 4)", async () => {
-      // Clearing IS a choice of role. By the first turn the standing
-      // instructions have been delivered, so un-naming them states nothing.
+
       render(
         <RoleSelector
           roles={[DEEP_DIVE]}
@@ -301,8 +289,6 @@ describe("RoleSelector (wide row)", () => {
     });
   });
 });
-
-// ---- The narrow layout (docs/260's one menu) --------------------------------
 
 const claude: AgentOption = {
   id: "claude",
@@ -387,14 +373,7 @@ function renderMenu(props: Partial<React.ComponentProps<typeof ComposerSettingsM
 
 describe("one appearance for 'a role is in force' (docs/272 req 5)", () => {
   it("dresses the wide row's control and the narrow anchor identically", () => {
-    // They had drifted: the wide row followed the approved prototype's tinted
-    // pill, the narrow anchor inherited docs/260's plain settings control, and
-    // the same state wore two faces on nothing but the composer's width.
-    //
-    // Asserting they IMPORT the constant would not catch the regression this
-    // exists to catch — an import can be present and the class overridden at the
-    // call site — so it compares what was actually rendered, exactly as
-    // `picker-consistency.test.tsx` does for the three pickers.
+
     setRoles([DEEP_DIVE]);
     const { unmount } = render(
       <RoleSelector roles={[DEEP_DIVE]} selectedRole="deep dive" onSelectRole={vi.fn()} />,
@@ -405,10 +384,8 @@ describe("one appearance for 'a role is in force' (docs/272 req 5)", () => {
     renderMenu({ onRoleChange: vi.fn(), sessionRoleName: "deep dive" });
     const narrow = screen.getByTestId("composer-settings-trigger").className;
 
-    // Everything the shared constant carries — colour, radius, padding, type —
     // is on both. What differs is layout, which is each call site's own and must
-    // be: the wide control is `shrink-0`, the narrow anchor is the row's one
-    // elastic item (docs/260 req 8).
+
     for (const cls of ROLE_PILL_CLASS.split(/\s+/).filter(Boolean)) {
       expect(narrow, `narrow anchor is missing "${cls}"`).toContain(cls);
       expect(wide, `wide control is missing "${cls}"`).toContain(cls);
@@ -427,12 +404,7 @@ describe("the composer before a session is active (docs/272 reqs 5, 12)", () => 
   });
 
   it("names the role from the SEED, because there is no session row to read", () => {
-    // This is the bug this test exists for. `/{repo}/new` sits on a WARM
-    // session, and `SessionManager.list()` filters `warm = 0` — so the browser
-    // has no row for it, the server's answer to `set_role` lands on nothing, and
-    // the control read "None" forever however many times it was clicked. Before
-    // a session is active the seed IS the display, exactly as it is for the
-    // harness, model and reasoning pickers on that same route.
+
     localStorage.setItem("shipit-role-name", "deep dive");
     setRoles([DEEP_DIVE]);
     render(
@@ -452,7 +424,7 @@ describe("the composer before a session is active (docs/272 reqs 5, 12)", () => 
   });
 
   it("ignores the seed once a session IS active — the server is the only authority (req 13)", () => {
-    // The seed names the role the NEXT session starts on. Reading it for a live
+
     // session would name a role that session never took.
     localStorage.setItem("shipit-role-name", "deep dive");
     setRoles([DEEP_DIVE]);
@@ -474,11 +446,7 @@ describe("the composer before a session is active (docs/272 reqs 5, 12)", () => 
   });
 
   it("corrects a stale seed to the role's own parameters (req 15)", async () => {
-    // The seed slots are what the three pickers DISPLAY here, so a seed left
-    // over from earlier work showed a model the role would not run — reported as
-    // "the model name is incorrect". A role picked in this browser writes them;
-    // a role arriving from the slot on a page load has nothing that did, so the
-    // composer reconciles them.
+
     localStorage.setItem("shipit-role-name", "deep dive");
     localStorage.setItem(
       "vibe-model-id",
@@ -519,7 +487,7 @@ describe("the composer before a session is active (docs/272 reqs 5, 12)", () => 
         hasActiveSession={false}
       />,
     );
-    // Reveal the parameters, then move one.
+
     await userEvent.click(screen.getByTestId("role-selector-trigger"));
     await userEvent.click(screen.getByTestId("role-adjust-parameters"));
     await userEvent.click(screen.getByTestId("reasoning-trigger"));
@@ -689,8 +657,7 @@ describe("a locked role keeps the ROUTE to the parameters (docs/272 reqs 4, 5, 1
     fireEvent.click(screen.getByTestId("role-adjust-parameters"));
     expect(screen.getByTestId("model-trigger")).toBeInTheDocument();
     expect(screen.getByTestId("reasoning-trigger")).toBeInTheDocument();
-    // The one parameter the lock genuinely reaches — and it reaches it for every
-    // session alike, role or no role.
+
     expect(screen.getByTestId("harness-trigger").getAttribute("title")).toContain(
       "fixed for this session",
     );
@@ -731,8 +698,7 @@ describe("a locked role keeps the ROUTE to the parameters (docs/272 reqs 4, 5, 1
   });
 
   it("offers no OTHER role while it is open (req 4)", async () => {
-    // req 4 is unchanged: what loosened is what the lock reaches, not the lock.
-    // The menu exists, and there is nothing in it but the parameters.
+
     renderLocked();
     await openRoleMenu();
     expect(screen.getByTestId("role-selector-menu")).toBeInTheDocument();
@@ -828,17 +794,12 @@ describe("ComposerSettingsMenu — the role row (docs/272 req 15)", () => {
       onAdjustRoleParameters,
     });
     await userEvent.click(screen.getByTestId("composer-settings-trigger"));
-    // docs/285 req 9 — with the parameters folded away the root would hold only
-    // the Role row, so the menu opens ONTO the role list rather than making the
-    // user traverse a level whose only purpose is to lead here. The three rows
-    // are still absent, which is what req 5 is about.
+
     expect(screen.queryByTestId("composer-settings-row-harness")).toBeNull();
     expect(screen.queryByTestId("composer-settings-row-model")).toBeNull();
     expect(screen.queryByTestId("composer-settings-row-reasoning")).toBeNull();
     expect(screen.getByTestId("composer-settings-trigger")).toHaveTextContent("deep dive");
 
-    // "Adjust parameters…" is in that list, and the harness is named in it — it
-    // pins irreversibly, and switching role can switch it.
     await userEvent.click(screen.getByTestId("composer-settings-role-adjust"));
     expect(onAdjustRoleParameters).toHaveBeenCalled();
 
@@ -860,10 +821,7 @@ describe("ComposerSettingsMenu — the role row (docs/272 req 15)", () => {
   });
 
   it("carries the ROLE's name on the anchor, not the model's (req 5)", () => {
-    // docs/260 gave the anchor the model name as the most consequential of the
-    // four things behind it. A role outranks it on that test — it IS the
-    // harness, the model and the level — and leaving the model there put two
-    // answers to "what does this session run on" on one row.
+
     setRoles([DEEP_DIVE]);
     renderMenu({ onRoleChange: vi.fn(), sessionRoleName: "deep dive", roleParamsRevealed: false });
     expect(screen.getByTestId("composer-settings-model-name")).toHaveTextContent("deep dive");
@@ -881,9 +839,7 @@ describe("ComposerSettingsMenu — the role row (docs/272 req 15)", () => {
   });
 
   it("still reaches the parameters under a locked role, and offers no role (reqs 4, 15)", async () => {
-    // The same door as the wide row, reaching here for free: this menu takes
-    // `roleParamsRevealed` as a prop rather than recomputing it, which is why one
-    // condition in `MessageInput` governs both layouts.
+
     setRoles([DEEP_DIVE]);
     const onAdjustRoleParameters = vi.fn();
     renderMenu({
@@ -895,7 +851,7 @@ describe("ComposerSettingsMenu — the role row (docs/272 req 15)", () => {
     });
     await userEvent.click(screen.getByTestId("composer-settings-trigger"));
     expect(screen.queryByTestId("composer-settings-row-model")).toBeNull();
-    // req 9 — opens straight onto the role panel; there is no root to traverse.
+
     expect(screen.getByTestId("composer-settings-role-locked")).toBeInTheDocument();
     expect(screen.queryByTestId("composer-settings-role-deep dive")).toBeNull();
     await userEvent.click(screen.getByTestId("composer-settings-role-adjust"));
@@ -903,16 +859,12 @@ describe("ComposerSettingsMenu — the role row (docs/272 req 15)", () => {
   });
 
   it("offers No role in the panel, and not once the choice has locked (req 18)", async () => {
-    // One fact, both layouts: the narrow menu is where a role is chosen below
-    // 700px, so a clear reachable only in the wide row would be no clear at all
-    // on a phone.
+
     setRoles([DEEP_DIVE]);
     const onRoleChange = vi.fn();
     const { rerender } = renderMenu({ onRoleChange, sessionRoleName: "deep dive" });
     await userEvent.click(screen.getByTestId("composer-settings-trigger"));
-    // The parameters are revealed here (the default), so the root is a real
-    // four-row choice and the Role row is the way in — req 9's collapse applies
-    // only when Role would be the ONLY row.
+
     await userEvent.click(screen.getByTestId("composer-settings-row-role"));
     await userEvent.click(screen.getByTestId("composer-settings-role-none"));
     expect(onRoleChange).toHaveBeenCalledWith(undefined);
@@ -934,7 +886,7 @@ describe("ComposerSettingsMenu — the role row (docs/272 req 15)", () => {
       />,
     );
     await userEvent.click(screen.getByTestId("composer-settings-trigger"));
-    // Locked, parameters folded → req 9's collapse applies, so the list is the
+
     // menu. "No role" is absent because the choice is locked, not because the
     // panel was never reached.
     expect(screen.getByTestId("composer-settings-role-locked")).toBeInTheDocument();

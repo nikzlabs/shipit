@@ -167,10 +167,10 @@ this is the design's whole premise (docs/172: unprivileged containers,
 HTTP-only, no `docker exec`). Capability probe from this container:
 
 ```
-CapEff: 0x00000000000004eb        # CAP_SYS_ADMIN (bit 21) NOT set
+CapEff: 0x00000000000004eb
 mount -t overlay ...  -> mount: permission denied (exit 32)
 unshare --map-root-user --mount -> Operation not permitted
-/workspace fstype: ext2/ext3      # matches prod ext4 family
+/workspace fstype: ext2/ext3
 overlay present in /proc/filesystems
 ```
 

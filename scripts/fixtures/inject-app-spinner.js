@@ -1,20 +1,4 @@
-// `--eval` script for scripts/trace-idle-frames.mjs — puts a real ShipIt page
-// into the "an indicator is spinning" condition using the app's OWN animation
-// classes, so what gets measured is the app's stylesheet rather than a probe's.
-//
-// `scripts/fixtures/inject-probe-animation.js` injects its own linear keyframes
-// on purpose (it was attributing the pairing, and had to be independent of the
-// app). This one is the opposite instrument: it is how the docs/265 10 Hz rule
-// is verified end to end, so it must inherit whatever `index.css` says today.
-//
-//   #spin       one `.tool-spinner`      (the streaming / todo indicator)
-//   #mixed      `.tool-spinner` + `.animate-pulse` + `.animate-ping`, mounted
-//               100 ms apart — the multi-indicator case, where costs add
-//   #no-anim    inject nothing (the idle control)
-//
-// It returns the resolved `animation` shorthand of each injected element, which
-// is the positive control: a run whose `animation` reads `linear` is measuring
-// the un-stepped build whatever the numbers say.
+// Inject the app's own animation classes for idle-frame tracing.
 (async () => {
   const hash = location.hash;
 
@@ -33,8 +17,7 @@
   if (!hash.includes("no-anim")) {
     add("tool-spinner", 40);
     if (hash.includes("mixed")) {
-      // Staggered on purpose: step boundaries run from each animation's own
-      // start time, so simultaneous mounts would understate the real cost.
+      // Stagger mounts to keep their step boundaries independent.
       await new Promise((r) => setTimeout(r, 100));
       add("animate-pulse", 60);
       await new Promise((r) => setTimeout(r, 100));

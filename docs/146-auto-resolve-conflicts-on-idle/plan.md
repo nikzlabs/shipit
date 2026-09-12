@@ -61,48 +61,26 @@ export type RebaseAndResolveCb = (
 ) => Promise<AutoResolveResult>;
 
 export interface AutoConflictResolveState {
-  attemptCount: number;        // resets when head SHA changes
+  attemptCount: number;
   lastHeadSha: string;
   status: "idle" | "running" | "exhausted" | "deferred";
-  lastError?: string;          // non-conflict failures (network, auth, dirty tree) surface here
-  nextEligibleAt?: number;     // epoch ms; set on failure for the 5-min cooldown
-  pendingReset?: boolean;      // set by resetForUserActivity while running; applied by writeBack
-  lastEmittedDeferred?: string; // dedup tracker for back-to-back deferred WS emits
+  lastError?: string;
+  nextEligibleAt?: number;
+  pendingReset?: boolean;
+  lastEmittedDeferred?: string;
 }
 
 export class AutoConflictResolveManager {
-  /** sessionId → state */
   private states = new Map<string, AutoConflictResolveState>();
-  /** sessionId → last non-unknown mergeable value (UNKNOWN polls are ignored) */
   private lastKnownMergeable = new Map<string, "mergeable" | "conflicting">();
 
   constructor(
     private readonly onChange: (sessionId: string) => void,
-    /**
-     * Returns the live runner for a tracked session, or undefined if the
-     * session has no runner (evicted, archived, never activated). The poller
-     * tracks any session with an open PR — there is no guarantee a runner
-     * exists. See the "Runner availability" subsection below.
-     */
     private readonly getRunner: (sessionId: string) => SessionRunnerInterface | undefined,
-    /**
-     * Reads the global `autoResolveConflicts` setting at decision time. See
-     * the "Wiring into the manager" subsection — we deliberately do not
-     * mirror this value into per-session state, so toggling the global
-     * setting takes effect on the next poll/idle event with no fan-out.
-     */
     private readonly isGlobalEnabled: () => boolean,
     private rebaseAndResolveCb?: RebaseAndResolveCb,
   ) {}
 
-  /**
-   * Called from PrStatusPoller after each poll's summary is built. Async
-   * because the pre-attempt gate's `runner.verifyRunningState()` is an HTTP
-   * roundtrip to the worker for container runners. The poller's caller
-   * site must `void`-suppress (fire-and-forget) the returned promise — the
-   * poller's per-repo loop is sync today and we don't want to block other
-   * sessions on one session's worker probe. Use `void manager.handleTransition(...).catch(err => log)`.
-   */
   handleTransition(
     sessionId: string,
     current: PrStatusSummary,
@@ -110,67 +88,14 @@ export class AutoConflictResolveManager {
     headSha: string,
   ): Promise<void>;
 
-  /**
-   * Called when a session's runner transitions to idle (agent finished AND
-   * message queue empty). Wired by subscribing to the runner's existing
-   * `"idle"` event at session-track time — see "Wiring the idle hook"
-   * below. Async because it shares the pre-attempt gate with
-   * `handleTransition`. The registry's listener adapter must `void`-wrap
-   * the call: `runner.on("idle", () => { void cb(sessionId); })`.
-   */
   onRunnerIdle(sessionId: string): Promise<void>;
 
-  /**
-   * Reset attempt budget on a WS-typed user input. Called from the WS
-   * dispatch switch's `send_message` / `send_review_message` /
-   * `answer_question` cases. NOT called from `runner.dispatch` or from
-   * synthetic `handleSendMessage` invocations (e.g. `init_preview_config`).
-   *
-   * Effect: when status is NOT `"running"`, clears `attemptCount` to 0,
-   * clears `nextEligibleAt`, clears `lastError`, AND sets `status =
-   * "idle"` regardless of prior value (including `"exhausted"`).
-   * Allowing reset from `"exhausted"` is deliberate: the user explicitly
-   * re-engaged with the session, so give them a fresh budget.
-   *
-   * When status IS `"running"`, the immediate reset is deferred — do NOT
-   * clear attemptCount/nextEligibleAt/lastError now, since the in-flight
-   * wrapper's writeBack will overwrite them. Instead, set a
-   * `pendingReset = true` flag on the state. `writeBack` checks this
-   * flag at the very end: if set, apply the full reset (clear attempt,
-   * cooldown, lastError; set status to idle) AFTER writing its terminal
-   * status, and clear `pendingReset`. This honors the documented intent
-   * ("the user explicitly re-engaged with the session, so give them a
-   * fresh budget") for the case where the user types during an in-flight
-   * attempt that subsequently exhausts. Without this, the user re-engages,
-   * the attempt exhausts, and the failure banner appears for a user who
-   * actively asked for retry semantics.
-   */
   resetForUserActivity(sessionId: string): void;
 
-  /**
-   * Read the per-session state. Returns undefined if the session has no
-   * entry (never had a conflict, or state was dropped on resolution).
-   * Used by `attachAutomationState` to populate the SSE PR-status
-   * snapshot's `autoResolve` block. Mirrors `AutoFixManager.get` at
-   * `auto-fix-manager.ts:42-44`.
-   */
   get(sessionId: string): AutoConflictResolveState | undefined;
 
-  /**
-   * Drop a session's state entirely. Called from `PrStatusPoller.untrackSession`
-   * and from `handleTransition` when the PR transitions to CLOSED (without
-   * merge). Clears both `states` and `lastKnownMergeable` for the session.
-   */
   delete(sessionId: string): void;
 
-  /**
-   * Late-bind the rebase-and-resolve callback (constructor-time injection
-   * via the optional `rebaseAndResolveCb` field requires the closure's
-   * deps to exist at construction time, which they don't — the manager is
-   * built inside the poller, before `app-lifecycle.ts` has finished
-   * wiring `RebaseDriverDeps`). Mirrors `AutoFixManager.setFetchAndFixCb`
-   * at `auto-fix-manager.ts:37-39`.
-   */
   setRebaseAndResolveCb(cb: RebaseAndResolveCb): void;
 }
 ```
@@ -292,72 +217,15 @@ This is documented in the `getRunner` injection contract above. The poller injec
 What we add is a thin wrapper, `runAutoResolveAttempt`, alongside `runRebaseFlow` in `services/rebase-driver.ts` (same module so it shares helpers):
 
 ```typescript
-/**
- * Wraps `runRebaseFlow` for the auto-conflict-resolve path. Takes the
- * full `RebaseDriverDeps` because `runRebaseFlow` requires every field —
- * sessionManager, chatHistoryManager, usageManager, authManager, and
- * sseBroadcast are all consumed by `wireAgentListeners` inside
- * `runRebaseResolutionTurn` (see `rebase-driver.ts:236-281`). A thinner
- * signature would compile but couldn't actually invoke the flow.
- *
- * The orchestrator constructs `RebaseAndResolveCb` once at startup with
- * the *signature* `(sessionId, baseBranch) => Promise<AutoResolveResult>`,
- * mirroring how `fetchAndFixCb` is wired in `app-lifecycle.ts` (~line 601).
- * The closure looks up the runner via `runnerRegistry.get(sessionId)`
- * and constructs `RebaseDriverDeps` per-call from the captured shared
- * managers + per-session runner/git. The wrapper signature shown below
- * takes the full RebaseDriverDeps, but the manager doesn't see that
- * shape — it only calls the outer (sessionId, baseBranch) closure.
- *
- *   - Adds a wall-clock timeout (default 10 min, overridable via
- *     `deps.timeoutMs` for tests). On timeout, the wrapper owns the
- *     full runner-state teardown that `git.rebaseAbort()` alone does
- *     NOT cover. See "Timeout teardown" below.
- *   - Translates a `ServiceError(409)` from runRebaseFlow's
- *     `runner.running` guard into { outcome: "deferred", didWork: false }.
- *     This is the TOCTOU backstop: the manager's gate may pass but the
- *     runner could have started a turn between the gate and the driver
- *     entry. The 409 fires before any real work, so didWork=false tells
- *     writeBack not to count the attempt.
- *   - Translates a `runRebaseFlow` { status: "up_to_date" } result
- *     (GitHub said CONFLICTING but our local view disagrees) into
- *     { outcome: "deferred", didWork: false } for the same reason.
- *   - Pre-flight failures (dirty tree, stale rebase, no GitHub auth) →
- *     { outcome: "deferred", lastError: <reason>, didWork: false }.
- *     These are *not* errors — they're "couldn't even start, try again
- *     later" signals. The error+didWork:false shape is intentionally
- *     unused; see "Detection rules inside the wrapper".
- *   - Any other failure that arrives after runRebaseFlow has crossed
- *     its entry guards → { outcome: "error", lastError: <reason>,
- *     didWork: true }.
- *   - Emits the `auto_resolve_started` envelope via `runner.emitMessage`
- *     at the top of the attempt. Does NOT emit `auto_resolve_result` —
- *     that envelope is emitted by the manager's `writeBack`, so the
- *     terminal manager-derived `exhausted` case and the per-attempt
- *     `success`/`error`/`deferred` cases all go through one emit path.
- *     CLAUDE.md's WS-lifecycle section requires `runner.emitMessage`
- *     (NOT `ctx.send`) for any state mutation that must outlive a
- *     single socket — both the started emit here and the result emit
- *     in writeBack follow that rule.
- *
- * Does NOT emit the inner `rebase_started` / `rebase_conflicts` /
- * `rebase_complete` events itself — those are emitted by runRebaseFlow
- * as a side effect, so the existing UI from doc 094 lights up exactly
- * as it would on a user-initiated rebase.
- */
 export async function runAutoResolveAttempt(
   deps: RebaseDriverDeps & {
-    /** Wall-clock timeout for the whole attempt. Default 10 min. */
     timeoutMs?: number;
-    /** Injectable clock (default `Date.now`) so cooldown logic is testable. */
     now?: () => number;
   },
   baseBranch: string,
 ): Promise<AutoResolveResult>;
 
-/** Cooldown after a failed attempt before the same session retries. */
 export const AUTO_RESOLVE_COOLDOWN_MS = 5 * 60 * 1000;
-/** Shorter cooldown after a deferred outcome (dirty tree, no-auth, up_to_date race, etc.). */
 export const AUTO_RESOLVE_DEFERRED_COOLDOWN_MS = 60 * 1000;
 ```
 
@@ -489,21 +357,7 @@ interface WsAutoResolveResult {
   type: "auto_resolve_result";
   sessionId: string;
   outcome: "success" | "exhausted" | "deferred" | "error";
-  /**
-   * Attempt number this result corresponds to (1-indexed; matches the
-   * `attempt` field on the earlier WsAutoResolveStarted). Carried on the
-   * result envelope so each settle event is self-contained — the client
-   * doesn't have to remember the last WsAutoResolveStarted and pair them,
-   * which would be fragile across reconnects/replays.
-   */
   attempt: number;
-  /**
-   * Only meaningful when outcome === "success". Mirrors the inner
-   * WsRebaseComplete.forcePushed flag so the PR-card sub-banner can
-   * optionally show "rebased locally, push deferred" without listening
-   * to two separate channels. The inner WsRebaseComplete still fires
-   * from runRebaseFlow regardless.
-   */
   forcePushed?: boolean;
   lastError?: string;
 }

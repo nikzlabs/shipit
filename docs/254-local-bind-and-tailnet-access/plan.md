@@ -16,7 +16,7 @@ Two independent gaps, both confined to the **local install**
 **1. The local install publishes on every interface, with no auth in front.**
 
 ```yaml
-# docker/local/prod/compose.yml — before
+
 ports:
   - "4123:4123"      # no host IP -> 0.0.0.0
   - "4124:5173"
@@ -46,7 +46,7 @@ easy half. Previews are subdomain-only since docs/175
 subdomain, and the client refuses to even build a URL for a raw IP:
 
 ```ts
-// src/client/hooks/usePreviewHealthPoller.ts:43
+
 if (/^\d+\.\d+\.\d+\.\d+$/.test(apiHostname) || apiHostname.includes(":")) return null;
 ```
 
@@ -59,7 +59,7 @@ So browsing at `http://100.83.12.47:4123` gives a working app and no previews.
 One variable, defaulting to loopback:
 
 ```yaml
-# docker/local/prod/compose.yml — after
+
 ports:
   - "${SHIPIT_BIND_ADDR:-127.0.0.1}:4123:4123"
   - "${SHIPIT_BIND_ADDR:-127.0.0.1}:4124:5173"
@@ -99,7 +99,7 @@ The override is a generated compose file adding a second binding to the same
 container port; Compose concatenates `ports` across `-f` files:
 
 ```yaml
-# .shipit-tailnet.compose.yml — generated, git-ignored
+
 services:
   shipit:
     ports:

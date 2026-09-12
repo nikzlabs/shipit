@@ -45,19 +45,11 @@ interface HistoryResponse {
   }[];
   commits: GitCommit[];
   agentRunning?: boolean;
-  /**
-   * docs/235 — descriptions of the outstanding agent-initiated background tasks.
-   * A session can be between turns (`agentRunning: false`) and still be waiting
-   * on work; this is the authoritative snapshot of that state at load time.
-   */
+
   backgroundTasks?: string[];
-  /**
-   * Per-turn usage series for this session — sourced from `usage_turns` so
-   * the ContextDial popover sees a complete history (not just turns observed
-   * during the current WS connection).
-   */
+
   turnUsage?: TurnUsage[];
-  /** Cumulative session totals — seeds the cost surface on reload. */
+
   sessionUsage?: SessionUsage | null;
   cumulativeInputTokens?: number;
   cumulativeOutputTokens?: number;
@@ -66,12 +58,7 @@ interface HistoryResponse {
     action: "chat" | "code" | "both" | "fork";
     expiresAt: number;
   } | null;
-  /**
-   * docs/093 — durable Present-tab metadata. Rehydrates the present-store on
-   * session load so the Present tab survives a reload / session switch / a
-   * container restart (the artifact's bytes fetch lazily as today). Metadata
-   * only — no `content`.
-   */
+
   presentations?: {
     presentId: string;
     mimeType: string;
@@ -88,9 +75,9 @@ interface BootstrapResponse {
   templates: TemplateInfo[];
   githubStatus: { authenticated: boolean; username?: string; avatarUrl?: string };
   settings: {
-    /** docs/257 req 8 — server-computed "this install can run a turn". */
+
     canRunTurns?: boolean;
-    /** docs/257 req 9 — when harness onboarding was first completed (ISO). */
+
     harnessOnboardingCompletedAt?: string;
     gitIdentity: { name: string; email: string };
     systemPrompt: string;
@@ -105,9 +92,9 @@ interface BootstrapResponse {
     enableSubAgents?: boolean;
     providerAccounts?: CredentialRoute[];
     credentialRoutes?: CredentialRoute[];
-    /** docs/252 phase 7 (req 9) — the pinned non-turn model, absent for "follow the install". */
+
     nonTurnModel?: { serviceId: string; billingMode: "sub" | "key"; modelId: string };
-    /** docs/252 phase 7 (req 9) — what non-turn work resolves to now, harness included. */
+
     nonTurnModelResolved?: {
       serviceId: string;
       billingMode: "sub" | "key";
@@ -117,21 +104,17 @@ interface BootstrapResponse {
       harnessId: string;
       source: "pinned" | "default";
     };
-    /** docs/261 phase 3 (req 8) — both reviewer slots, pinned or auto-configured. */
+
     reviewers?: ReviewerSlotView[];
-    /** docs/264 phase 2 — every agent role, each resolved by the server. */
+
     roles?: RoleView[];
-    /** docs/150-multiple-provider-subscriptions reqs 4-6 — per-provider proactive failover cutoffs, keyed by agent id. */
+
     failoverCutoffs?: Record<string, { session: number; weekly: number }>;
     accountSelectionMode?: Record<string, "strict" | "balanced">;
   };
-  /** Orchestrator runtime mode (feature 118). Defaults to "containerized". */
+
   runtimeMode?: RuntimeMode;
-  /**
-   * Tailscale sslip preview host (docs/216). Present only on a Tailscale VPS
-   * deploy; routes preview iframes through sslip.io while the app/WS stay on the
-   * native MagicDNS host.
-   */
+
   tailnetPreviewHost?: string;
 }
 
@@ -251,24 +234,11 @@ function touch(cache: Map<string, { etag: string; data: unknown }>, key: string)
   cache.set(key, entry);
 }
 
-/** Testing seam — a fresh tab starts with an empty cache, so tests should too. */
 export function __resetHistoryCache(): void {
   historyCache.clear();
   treeCache.clear();
 }
 
-/**
- * Conditional GET for the workspace file tree (planning#375).
- *
- * Fetched HERE rather than through `useFileStore.fetchTree`, and awaited inside
- * the same `isStillActiveSession()` guard as everything else this function
- * writes. A fire-and-forget `fetchTree` was the first attempt and it was wrong
- * twice over: the store's setter has no session check, so a slow response for
- * the OUTGOING session lands after the switch and overwrites the incoming
- * session's tree; and the tree arriving strictly after the transcript makes the
- * Files panel say "No files yet" for the gap. Both disappear when the tree rides
- * the load it belongs to.
- */
 async function fetchFileTree(sessionId: string, signal: AbortSignal): Promise<FileTreeNode[] | null> {
   const cached = treeCache.get(sessionId);
   const res = await fetch(`/api/sessions/${sessionId}/files`, {
@@ -321,10 +291,7 @@ async function fetchFileTree(sessionId: string, signal: AbortSignal): Promise<Fi
  */
 function materializeTranscript(data: HistoryResponse, entry: HistoryCacheEntry | undefined): ChatMessage[] {
   if (entry?.materialized) return entry.materialized;
-  // `inProgress` rides through to the ChatMessage: it marks the rows that
-  // belong to a still-running turn, which is exactly the set an attach-time
-  // `turn_snapshot` replaces (see `turn-snapshot.ts`). `streaming` stays the
-  // narrower "this bubble is being written to" flag the renderer uses.
+
   const rows = data.messages.map((m) => ({
     ...m,
     streaming: m.inProgress ?? false,
@@ -360,9 +327,7 @@ function materializeTranscript(data: HistoryResponse, entry: HistoryCacheEntry |
  * Guard test: "re-seeds the card stores on a 304 over a replay-created draft".
  */
 function seedCardStoresFromHistory(messages: HistoryResponse["messages"]): void {
-  // docs/164 — so each `BugReportCard` renders with its correct phase (a filed
-  // card comes back "filed" with its issue link; a failed one as an editable
-  // draft).
+
   const persistedCards = messages
     .map((m) => (m as { bugReport?: BugReportCardState }).bugReport)
     .filter((b): b is BugReportCardState => !!b && typeof b.cardId === "string" && !!b.phase);
@@ -370,10 +335,6 @@ function seedCardStoresFromHistory(messages: HistoryResponse["messages"]): void 
     useBugReportStore.getState().seedCards(persistedCards);
   }
 
-  // docs/193 / planning#114 — so each `PermissionRequestCard` renders with its
-  // correct phase (an approved/denied/expired card comes back resolved, not
-  // re-offering Approve/Deny). A still-pending card comes back actionable — the
-  // worker holds the request, so the user can answer it after a reload.
   const persistedPermissions = messages
     .map((m) => (m as { permissionPrompt?: PermissionCardState }).permissionPrompt)
     .filter((p): p is PermissionCardState => !!p && typeof p.requestId === "string" && !!p.phase);
@@ -381,8 +342,6 @@ function seedCardStoresFromHistory(messages: HistoryResponse["messages"]): void 
     usePermissionStore.getState().seedCards(persistedPermissions);
   }
 
-  // docs/172 / planning#92 — so each `EgressPromptCard` renders with its correct
-  // phase (a resolved card comes back resolved, not re-offering the buttons).
   const persistedEgress = messages
     .map((m) => (m as { egressPrompt?: EgressPromptCardState }).egressPrompt)
     .filter((e): e is EgressPromptCardState => !!e && typeof e.cardId === "string" && !!e.phase);
@@ -390,8 +349,6 @@ function seedCardStoresFromHistory(messages: HistoryResponse["messages"]): void 
     useEgressPromptStore.getState().seedCards(persistedEgress);
   }
 
-  // docs/177 — so each `IssueWriteCard` renders with its correct undo state (an
-  // undone card comes back "undone", not re-offering Undo).
   const persistedWrites = messages
     .map((m) => (m as { issueWrite?: IssueWriteCard }).issueWrite)
     .filter((w): w is IssueWriteCard => !!w && typeof w.cardId === "string" && !!w.undoState);
@@ -400,82 +357,50 @@ function seedCardStoresFromHistory(messages: HistoryResponse["messages"]): void 
   }
 }
 
-/**
- * Fetch session history via HTTP and populate stores.
- * Shared between useConnectionSync (WS reconnect) and session-actions (session resume).
- */
 export async function loadSessionHistory(sessionId: string): Promise<void> {
   const seq = ++historyLoadSeq;
-  // Supersede the previous load — including one for a different session, since
-  // `historyLoadSeq` is global and "last request wins" is too.
+
   inFlightHistoryLoad?.controller.abort();
   const controller = new AbortController();
   inFlightHistoryLoad = { seq, controller };
   let data: HistoryResponse;
-  /**
-   * The cache entry `data` came from, when there is one. Carried out of the
-   * fetch so the install can memoize its materialization into it — see
-   * `materializeTranscript`. Absent only when the response had no ETag (an
-   * older server, a proxy that strips it, a test double), which degrades to
-   * exactly the old behaviour: a fresh map, every load.
-   */
+
   let cacheEntry: HistoryCacheEntry | undefined;
-  // In parallel with the transcript, not after it — two independent conditional
-  // GETs on one round trip's worth of latency. Failure is tolerated (`null`):
+
   // an unreachable file tree must never cost the user their transcript.
   const treePromise = fetchFileTree(sessionId, controller.signal).catch(() => null);
   try {
     const cached = historyCache.get(sessionId);
     const res = await fetch(`/api/sessions/${sessionId}/history`, {
       signal: controller.signal,
-      // Our own conditional request, so the 304 is visible HERE. Left to the
-      // browser's HTTP cache the revalidation would still happen, but `fetch`
-      // would hand back a 200 with the cached body and we would re-parse the
-      // megabytes we are trying to avoid.
+
       cache: "no-store",
       ...(cached ? { headers: { "If-None-Match": cached.etag } } : {}),
     });
     if (res.status === 304 && cached) {
-      // The cached payload is installed exactly as a fresh body would be —
-      // deliberately, on both paths (planning#467). A 304 is a positive
-      // statement that every payload source is unchanged: the validator is
-      // composed from the transcript revision AND the whole non-transcript rest
+
       // (`api-routes-session-spawn.ts`), so the cached object cannot be staler
-      // than a 200 in any field.
-      //
-      // Making the install conditional here was considered and rejected. It
-      // breaks the session switch-back, where `resumeSessionInternal` cleared
-      // `messages` and this install IS the incoming session's baseline restore;
-      // recovering that needs a marker saying whether the array is still the
-      // payload's materialization, and the marker's validity then rests on every
-      // present and future `setMessages` caller. The cost it was reaching for is
-      // removed instead, by `materializeTranscript`, which the install below
-      // shares — a 304 re-installs the identical array of identical rows, which
-      // no subscriber re-renders for.
+
       data = cached.data;
       cacheEntry = cached;
       touch(historyCache, sessionId);
     } else {
       data = await res.json() as HistoryResponse;
-      // Optional: a response with no ETag simply is not cached, which is the
-      // correct degradation (an older server, a proxy that strips it, a test
+
       // double). Never cache without a tag — the tag is the only thing that
-      // makes a later reuse safe.
+
       const etag = res.headers?.get("etag");
       if (etag) cacheEntry = remember(historyCache, sessionId, etag, data);
     }
   } catch (err) {
-    // A load we cancelled ourselves is not a failure. Return rather than throw,
-    // matching what a superseded load has always done — `useConnectionSync`
-    // relies on that (it logs a throw as "Failed to load session history" and
-    // suppresses its retry nudge).
+
     if (controller.signal.aborted) return;
     throw err;
   } finally {
     if (inFlightHistoryLoad?.seq === seq) inFlightHistoryLoad = null;
   }
   // Still the newest load for this session? A superseded response must not
-  // write anything — see `historyLoadSeq`.
+
   const isStillActiveSession = () =>
     historyLoadSeq === seq && useSessionStore.getState().sessionId === sessionId;
   if (!isStillActiveSession()) {
@@ -506,24 +431,10 @@ export async function loadSessionHistory(sessionId: string): Promise<void> {
    */
   session.setMessages(materializeTranscript(data, cacheEntry));
 
-  // Rehydrate the four card stores from the persisted rows. Runs on every
-  // completed load, `304` included, and deliberately does NOT share the
-  // transcript's condition — see `seedCardStoresFromHistory`.
   seedCardStoresFromHistory(data.messages);
 
-  // docs/093 — rehydrate the Present tab from durable metadata so it survives a
-  // reload / session switch / container restart. `hydrate` replaces the list
-  // without bumping the unseen badge or auto-switching the panel (silent sync),
-  // is idempotent by presentId, and preserves any already-fetched bytes — so it
-  // and the WS `present_state` replay can't double-render. Always called (even
-  // empty) so a now-cleared session drops a stale tab.
   usePresentStore.getState().hydrate(data.presentations ?? []);
 
-  // docs/235 — reconcile the standing background-task marker from the payload
-  // before deciding the chat status line. This load is authoritative for THIS
-  // session (and only this session): it carries the descriptions the SSE
-  // `session_attention` snapshot has no room for, so switching in upgrades the
-  // unnamed fallback label to the named one.
   const backgroundTasks = data.backgroundTasks ?? [];
   session.setBackgroundTaskSessions((prev) => {
     const next = new Map(prev);
@@ -534,12 +445,7 @@ export async function loadSessionHistory(sessionId: string): Promise<void> {
   if (data.agentRunning) {
     session.setIsLoading(true);
   } else if (backgroundTasks.length > 0) {
-    // Between turns with work outstanding the session is not idle, it is
-    // waiting — clearing the bar here reads as "finished". This is the same
-    // rule `handleSessionStatus` applies at turn end; without it, hydration
-    // raced the live/replayed `background_tasks` message and wiped the status
-    // line a moment after the switch. `tool` is deliberately left unset — no
-    // tool call is running, so the tool spinner would be a lie.
+
     session.setIsLoading(true);
     session.setActivity({ label: backgroundTaskLabel(backgroundTasks) });
   } else {
@@ -551,39 +457,23 @@ export async function loadSessionHistory(sessionId: string): Promise<void> {
     session.setRewindRecovery(data.rewindSnapshot);
   }
   useGitStore.getState().setCommits(data.commits);
-  // planning#375 — the tree came from its own conditional GET, started in
-  // parallel above. Applied HERE, inside the active-session guard, so a response
+
   // for a session the user has already left cannot overwrite the current one.
   const tree = await treePromise;
   if (tree && isStillActiveSession()) useFileStore.getState().setTree(tree);
 
-  // Seed cost surfaces from the authoritative usage store on reload, so the
-  // ContextDial doesn't have to wait for a fresh `usage_update` to know what
-  // the session has cost so far.
   const ui = useUiStore.getState();
   if (data.turnUsage) {
     session.setTurnUsageForSession(sessionId, data.turnUsage);
-    // Authoritative in BOTH directions, unlike `modelInfo` below (planning#482).
-    //
-    // `contextTokens` is a session-LESS global in the UI store, and
-    // `ContextDialMount` falls back to it for exactly the session that has no
-    // turns of its own. Writing it only when this session HAS turns therefore
-    // left a fresh session showing whatever the previously-viewed session had
+
     // put there — a session that has never completed a turn occupies nothing,
-    // and the empty payload is what says so. Real context occupancy = uncached
-    // input + cache reads + cache writes; `inputTokens` alone undercounts
-    // massively under prompt caching.
+
     ui.setContextTokens(
       data.turnUsage.length > 0
         ? turnContextTokens(data.turnUsage[data.turnUsage.length - 1])
         : 0,
     );
-    // Seed `modelInfo` from the most recent turn that recorded a model. The
-    // server only emits `model_info` over WS on `agent_init`, so a session
-    // loaded from history (page reload, session switch) where the agent isn't
-    // actively running has no other way to know which model was last used.
-    // Without this seeding the context dial — the surface that also shows the
-    // running session cost — would hide entirely until the next turn fires.
+
     const lastWithModel = [...data.turnUsage].reverse().find((t) => t.model);
     if (lastWithModel?.model) {
       ui.setModelInfo({
@@ -602,15 +492,13 @@ export async function loadSessionHistory(sessionId: string): Promise<void> {
     data.cumulativeOutputTokens ?? 0,
   );
 
-  // Fetch preview status via HTTP — reliable fallback in case the WS
-  // preview_status message is lost during the initial connection burst.
   try {
     const previewRes = await fetch(`/api/sessions/${sessionId}/preview-status`);
     if (!isStillActiveSession()) return;
     if (previewRes.ok) {
       const ps = await previewRes.json() as PreviewStatusResponse;
       if (!isStillActiveSession()) return;
-      // Only apply if the store still has no status (WS message may have arrived first)
+
       if (ps.known && !usePreviewStore.getState().status) {
         usePreviewStore.getState().setStatus({
           running: ps.running,
@@ -620,13 +508,11 @@ export async function loadSessionHistory(sessionId: string): Promise<void> {
           detectedPorts: ps.detectedPorts,
         });
       }
-      // If preview state is not yet known (runner SSE still connecting),
-      // retry once after a delay. By then the runner should have received
-      // state from the worker and the HTTP endpoint will return known: true.
+
       if (!ps.known) {
         setTimeout(async () => {
           if (!isStillActiveSession()) return;
-          if (usePreviewStore.getState().status) return; // WS delivered it in the meantime
+          if (usePreviewStore.getState().status) return;                                   
           try {
             const retryRes = await fetch(`/api/sessions/${sessionId}/preview-status`);
             if (!isStillActiveSession()) return;
@@ -652,9 +538,6 @@ export async function loadSessionHistory(sessionId: string): Promise<void> {
   }
 }
 
-/**
- * Fetch bootstrap data via HTTP and populate stores.
- */
 export async function loadBootstrapData(): Promise<void> {
   const res = await fetch("/api/bootstrap");
   if (!res.ok) throw new Error(`Bootstrap failed: ${res.status}`);
@@ -672,24 +555,17 @@ export async function loadBootstrapData(): Promise<void> {
   if (!data.settings.gitIdentity.name && !data.settings.gitIdentity.email) {
     useGitStore.getState().setIdentityNeeded(true);
   }
-  // docs/257 req 8 — the readers here copy named fields rather than spreading
+
   // `settings`, so a new one has to be wired by hand or it silently never
-  // arrives.
-  //
-  // `?? false` deliberately, and deliberately UNLIKE the `agent_list` SSE
-  // handler, which ignores an absent field instead. This is the authoritative
-  // full snapshot: a field missing from it means "the server did not say", and
+
   // "cannot run" is the safe reading. The SSE event is an incremental push,
-  // where a missing field means "no news" and clobbering a good value with
-  // `false` would disable a runnable install. (Both are belt-and-braces — the
-  // SPA is served by the same orchestrator that answers this request, so a
+
   // server old enough to omit the field cannot serve a client new enough to
-  // read it.)
+
   useSettingsStore.getState().setCanRunTurns(data.settings.canRunTurns ?? false);
-  // docs/257 req 9 — `?? null` for the same reason as `?? false` above: this is
+
   // the authoritative full snapshot, so an absent field means "never completed"
-  // rather than "no news". The SSE handler, an incremental push, ignores an
-  // absent field instead.
+
   useSettingsStore.getState()
     .setHarnessOnboardingCompletedAt(data.settings.harnessOnboardingCompletedAt ?? null);
   useSettingsStore.getState().setHasSystemPrompt(data.settings.systemPrompt.length > 0);
@@ -705,20 +581,18 @@ export async function loadBootstrapData(): Promise<void> {
   if (data.settings.enableSubAgents !== undefined) useSettingsStore.getState().setEnableSubAgents(data.settings.enableSubAgents);
   if (data.settings.providerAccounts) useSettingsStore.getState().setProviderAccounts(data.settings.providerAccounts);
   if (data.settings.credentialRoutes) useSettingsStore.getState().setCredentialRoutes(data.settings.credentialRoutes);
-  // docs/252 phase 7 (req 9) — the pin AND the resolved answer, always applied
+
   // (never guarded on presence): absent means "no pin" / "nothing runnable",
-  // which are real states the panel has to render, not a reason to keep a stale
-  // value from a previous read.
+
   useSettingsStore.getState().setNonTurnModel(
     data.settings.nonTurnModel ?? null,
     data.settings.nonTurnModelResolved ?? null,
   );
-  // docs/261 phase 3 (req 8) — guarded on presence, unlike the non-turn pair
+
   // above, because the two cases differ: an absent `nonTurnModel` is the real
-  // state "no pin", while an absent `reviewers` only ever means an older server.
-  // Clearing the array would empty the Reviewer tab rather than say anything.
+
   if (data.settings.reviewers) useSettingsStore.getState().setReviewers(data.settings.reviewers);
-  // docs/264 phase 2 — the roles, guarded on presence for the same reason.
+
   if (data.settings.roles) useSettingsStore.getState().setRoles(data.settings.roles);
   useUiStore.getState().setRuntimeMode(data.runtimeMode ?? "containerized");
   useUiStore.getState().setTailnetPreviewHost(data.tailnetPreviewHost ?? null);

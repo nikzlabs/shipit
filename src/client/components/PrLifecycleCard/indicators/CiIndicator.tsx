@@ -43,7 +43,7 @@ export function CiIndicator({ checks }: { checks: PrCardState["checks"] }) {
       </span>
     );
   }
-  // pending
+
   const pendingLabel = display.total === 0 ? "CI" : `CI ${display.passed}/${display.total}`;
   const pendingTitle = display.total === 0 ? "Waiting for CI checks to start" : `CI running  ${display.passed}/${display.total}`;
   return (

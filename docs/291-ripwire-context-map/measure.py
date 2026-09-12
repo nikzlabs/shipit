@@ -17,14 +17,9 @@ ENC = tiktoken.get_encoding("o200k_base")
 ROOT = "/workspace/src/server"
 RIPWIRE = "/persist/rw/ripwire-0.4.0-linux-x64/ripwire"
 
-
 def toks(s: str) -> int:
     return len(ENC.encode(s))
 
-
-# Gold sets come from CLAUDE.md, which states these answers independently of
-# ripwire. Keywords are derived ONLY from the words in the task phrase - no
-# insider symbol names, which would make the baseline unrealistically precise.
 TASKS = [
     dict(phrase="post-turn auto-push scheduler lease", keyword="autoPush",
          gold=["orchestrator/services/auto-push-scheduler.ts", "orchestrator/post-turn-hold.ts"]),
@@ -40,22 +35,19 @@ TASKS = [
          gold=["orchestrator/turn-executor.ts"]),
 ]
 
-
 def run(cmd, **kw):
     return subprocess.run(cmd, capture_output=True, text=True, **kw)
 
-
 rows = []
 for t in TASKS:
-    # --- Arm A: ripwire ---------------------------------------------------
+
     a = run([RIPWIRE, ROOT, f"--for={t['phrase']}"])
     rw_out = a.stdout
     rw_tokens = toks(rw_out)
-    # did it surface the gold files at all?
+
     hits = sum(1 for g in t["gold"] if g in rw_out)
     rw_recall = hits / len(t["gold"])
 
-    # --- Arm B: one grep, then read the gold files ------------------------
     b = run(["grep", "-rni", t["keyword"], ROOT, "--include=*.ts"])
     grep_out = b.stdout
     grep_tokens = toks(grep_out)

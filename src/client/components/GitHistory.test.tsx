@@ -131,7 +131,6 @@ describe("GitHistory", () => {
         />
       );
 
-      // Should not throw
       fireEvent.click(screen.getByText("click me"));
     });
   });

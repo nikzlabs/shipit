@@ -55,7 +55,7 @@ GitHub retries on non-2xx or >10s response. Handler:
 ```
 on POST /api/webhooks/github:
   verifyHmac(payload, secret)
-  if dedupe.seen(deliveryId): return 200   // X-GitHub-Delivery
+  if dedupe.seen(deliveryId): return 200
   enqueueBackgroundJob(payload)
   return 200
 ```

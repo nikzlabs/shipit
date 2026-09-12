@@ -1,6 +1,5 @@
 import { inputClass } from "./shared.js";
 
-/** stdio vs http selector for the MCP server form. */
 export function McpTypeSelector({
   value,
   onChange,

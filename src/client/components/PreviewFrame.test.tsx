@@ -6,21 +6,17 @@ import { usePreviewStore } from "../stores/preview-store.js";
 import { findPresetById } from "./device-presets.js";
 import type { PreviewError } from "../hooks/usePreviewErrors.js";
 
-// jsdom doesn't implement ResizeObserver — provide a no-op stub for the device-frame measurement effect.
 class ResizeObserverStub {
   observe(): void {}
   unobserve(): void {}
   disconnect(): void {}
 }
 
-// Mock fetch so the URL-reachability poll resolves immediately in tests
 beforeEach(() => {
   vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response()));
   vi.stubGlobal("ResizeObserver", ResizeObserverStub);
   usePreviewStore.getState().reset();
-  // Remembered slot paths deliberately survive `reset()` (they have to outlive
-  // a session switch), and every test here shares the same `_:port` slot key —
-  // so clear them explicitly or one test's route leaks into the next.
+
   usePreviewStore.getState().clearPreviewPaths();
 });
 
@@ -52,7 +48,7 @@ function makeError(overrides: Partial<PreviewError> = {}): PreviewError {
 describe("PreviewFrame", () => {
   it("shows nothing when preview is null and no session", () => {
     render(<PreviewFrame preview={null} {...defaultProps} />);
-    // No overlay content — empty preview area
+
     expect(screen.queryByText(/Preview will appear here/)).not.toBeInTheDocument();
   });
 
@@ -117,7 +113,7 @@ describe("PreviewFrame", () => {
     const user = userEvent.setup();
     const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite", detectedPorts: [3001, 8080] };
     render(<PreviewFrame preview={preview} {...defaultProps} detectedPorts={[3001, 8080]} selectedPort={null} onSelectPort={vi.fn()} />);
-    // Open the dropdown
+
     await user.click(screen.getByLabelText("Select preview port"));
     const items = screen.getAllByRole("menuitem");
     expect(items).toHaveLength(3);
@@ -131,9 +127,9 @@ describe("PreviewFrame", () => {
     const onSelectPort = vi.fn();
     const preview: PreviewStatus = { running: true, port: 3001, url: "http://localhost:3001", source: "detected", detectedPorts: [3001, 8080] };
     render(<PreviewFrame preview={preview} {...defaultProps} detectedPorts={[3001, 8080]} selectedPort={null} onSelectPort={onSelectPort} />);
-    // Open the dropdown
+
     await user.click(screen.getByLabelText("Select preview port"));
-    // Click the second port option
+
     const items = screen.getAllByRole("menuitem");
     await user.click(items[1]);
     expect(onSelectPort).toHaveBeenCalledWith(8080);
@@ -159,20 +155,17 @@ describe("PreviewFrame", () => {
     await screen.findByTitle("Live Preview");
 
     fireEvent.click(screen.getByTitle("Refresh preview"));
-    // iframe should have been re-mounted (different React key forces remount)
+
     await screen.findByTitle("Live Preview");
   });
 
   it("reloads the current page in place instead of re-navigating to the entry URL", async () => {
-    // Regression: refresh used to re-assign `src`, which sends a preview the
-    // user had navigated into (SPA route, sub-page) back to the front page.
+
     const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
     render(<PreviewFrame preview={preview} {...defaultProps} />);
     const iframe = (await screen.findByTitle("Live Preview")) as HTMLIFrameElement;
     const postMessage = vi.spyOn(iframe.contentWindow!, "postMessage");
 
-    // The injected preview script announces itself — only then do we know a
-    // "reload" command will be honoured.
     window.dispatchEvent(new MessageEvent("message", {
       data: { source: "shipit-preview", type: "loaded" },
       source: iframe.contentWindow,
@@ -188,8 +181,7 @@ describe("PreviewFrame", () => {
   });
 
   it("falls back to re-assigning src when the preview script never loaded", async () => {
-    // No "loaded" message — a non-proxied local preview, a 502, or an
-    // auth-gated response. A hard re-fetch is the only thing that can work.
+
     const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
     render(<PreviewFrame preview={preview} {...defaultProps} />);
     const iframe = (await screen.findByTitle("Live Preview")) as HTMLIFrameElement;
@@ -204,10 +196,7 @@ describe("PreviewFrame", () => {
   });
 
   it("hands an agent-authored destination to the preview script instead of reloading", async () => {
-    // Regression (docs/258): the pointer arrived as a `src` assignment, which
-    // is always a document load — so a link to a place inside the page the user
-    // was already on rebuilt the whole app. The script decides same-document
-    // vs. new document from the live location; this side only delivers.
+
     const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
     render(<PreviewFrame preview={preview} sessionId="s1" {...defaultProps} />);
     const iframe = (await screen.findByTitle("Live Preview")) as HTMLIFrameElement;
@@ -224,21 +213,17 @@ describe("PreviewFrame", () => {
       targetPath: "/requirements?focus=7#req-7", clickId: 1, startedAt: Date.now(),
     });
 
-    // Targeted at the slot's origin, not "*": a WindowProxy keeps its identity
-    // across origin changes, so the capability gate alone would hand the URL to
-    // a page the preview navigated itself to.
     await vi.waitFor(() => expect(postMessage).toHaveBeenCalledWith(
       { source: "shipit-toolbar", type: "navigate", url: "http://localhost:5173/requirements?focus=7#req-7" },
       "http://localhost:5173",
     ));
     expect(srcSetter).not.toHaveBeenCalled();
-    // The intent is consumed either way — it describes one click.
+
     expect(usePreviewStore.getState().previewLinkIntent).toBeNull();
   });
 
   it("falls back to src for a destination in a preview with no injected script", async () => {
-    // No "loaded" message — a non-proxied local preview, a 502, an auth-gated
-    // response. A document load is worse than a hash change but it arrives.
+
     const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
     render(<PreviewFrame preview={preview} sessionId="s1" {...defaultProps} />);
     const iframe = (await screen.findByTitle("Live Preview")) as HTMLIFrameElement;
@@ -259,9 +244,7 @@ describe("PreviewFrame", () => {
   });
 
   it("links to the page the preview is currently on, not the entry URL", async () => {
-    // Same regression as the refresh button above: the control used to open
-    // `activeSlotUrl`, so a user who had navigated into a sub-route got the
-    // front page in the new tab.
+
     const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
     render(<PreviewFrame preview={preview} {...defaultProps} />);
     const iframe = (await screen.findByTitle("Live Preview")) as HTMLIFrameElement;
@@ -287,10 +270,7 @@ describe("PreviewFrame", () => {
   });
 
   it("opens the preview as a real link, so the platform's own link handling applies", async () => {
-    // A `<button>` calling window.open gives the user no way to route the
-    // preview anywhere — no long-press "Open in Safari/Chrome" on mobile, no
-    // cmd/middle-click on desktop. An anchor does, and `noopener noreferrer`
-    // keeps arbitrary preview code from touching the ShipIt tab that spawned it.
+
     const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
     render(<PreviewFrame preview={preview} {...defaultProps} />);
     await screen.findByTitle("Live Preview");
@@ -330,8 +310,7 @@ describe("PreviewFrame", () => {
 
   it("ignores a reported path that is not a same-document absolute path", async () => {
     // The value is authored by the previewed page. A protocol-relative
-    // "//evil.example" would resolve against the slot URL into a foreign
-    // origin, putting someone else's host in the tooltip and on the clipboard.
+
     const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
     render(<PreviewFrame preview={preview} {...defaultProps} />);
     const iframe = (await screen.findByTitle("Live Preview")) as HTMLIFrameElement;
@@ -347,7 +326,7 @@ describe("PreviewFrame", () => {
   });
 
   it("does not show a path reported by a different session's background iframe", async () => {
-    // Slots are per (session, port); a background preview reporting its route
+
     // must not overwrite what the visible one says.
     const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
     render(<PreviewFrame preview={preview} sessionId="s1" {...defaultProps} />);
@@ -358,7 +337,6 @@ describe("PreviewFrame", () => {
     }));
     expect(await screen.findByText("/visible")).toBeInTheDocument();
 
-    // A message from a window that owns no slot is dropped entirely.
     window.dispatchEvent(new MessageEvent("message", {
       data: { source: "shipit-preview", type: "path", path: "/from-nowhere" },
       source: window,
@@ -368,11 +346,7 @@ describe("PreviewFrame", () => {
   });
 
   it("recreates a dropped slot at the path it was last on, not the front page", async () => {
-    // The pool can lose a slot for reasons the user didn't ask for: LRU
-    // eviction, this component unmounting (navigating home, a page reload), a
-    // container restart. Re-entering at the origin root dumped them back on the
-    // app's front page every time. The remembered path lives in the store, so
-    // it outlives the pool.
+
     const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
     const { unmount } = render(<PreviewFrame preview={preview} sessionId="s1" {...defaultProps} />);
     const iframe = (await screen.findByTitle("Live Preview")) as HTMLIFrameElement;
@@ -427,8 +401,6 @@ describe("PreviewFrame", () => {
     const iframe = (await screen.findByTitle("Live Preview")) as HTMLIFrameElement;
     const postMessage = vi.spyOn(iframe.contentWindow!, "postMessage");
 
-    // The injected preview script announces itself — only then do we know a
-    // "navigate" command will be honoured instead of falling back to `src`.
     window.dispatchEvent(new MessageEvent("message", {
       data: { source: "shipit-preview", type: "loaded" },
       source: iframe.contentWindow,
@@ -438,9 +410,6 @@ describe("PreviewFrame", () => {
 
     fireEvent.click(screen.getByTitle("Go to preview root"));
 
-    // Targeted at the slot's origin, not "*": a WindowProxy keeps its identity
-    // across origin changes, so the capability gate alone would hand the
-    // session-naming preview URL to a page the preview navigated itself to.
     expect(postMessage).toHaveBeenCalledWith(
       { source: "shipit-toolbar", type: "navigate", url: "http://localhost:5173/" },
       "http://localhost:5173",
@@ -449,11 +418,7 @@ describe("PreviewFrame", () => {
   });
 
   it("goes to the origin root even when the slot itself was recreated at a deep path", async () => {
-    // The case the root computation exists for. A slot dropped by LRU eviction
-    // or an unmount is recreated at its *remembered* path, so `activeSlotUrl`
-    // is itself a deep URL — sending the frame there would be a no-op that
-    // looks like a broken button. Without this the suite would still pass if
-    // `new URL("/", activeSlotUrl)` were replaced by `activeSlotUrl`.
+
     const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
     const { unmount } = render(<PreviewFrame preview={preview} sessionId="s1" {...defaultProps} />);
     const first = (await screen.findByTitle("Live Preview")) as HTMLIFrameElement;
@@ -482,7 +447,7 @@ describe("PreviewFrame", () => {
   });
 
   it("falls back to a document load at the origin root, not at the slot's deep path", async () => {
-    // Same computation, on the no-injected-script branch.
+
     const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
     const { unmount } = render(<PreviewFrame preview={preview} sessionId="s1" {...defaultProps} />);
     const first = (await screen.findByTitle("Live Preview")) as HTMLIFrameElement;
@@ -506,14 +471,12 @@ describe("PreviewFrame", () => {
   });
 
   it("places Home right of the address-bar separator, between it and the path", async () => {
-    // The requested arrangement is `| Responsive ⌄ | (home) /orders`: Home
-    // belongs to the address-bar group, not to the viewport controls, so the
-    // separator has to fall on its LEFT.
+
     const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
     const { container } = render(<PreviewFrame preview={preview} {...defaultProps} />);
     const device = screen.getByLabelText("Select device viewport");
     const home = screen.getByTitle("Go to preview root");
-    // The address-bar chip only renders once the page reports a path.
+
     const iframe = (await screen.findByTitle("Live Preview")) as HTMLIFrameElement;
     window.dispatchEvent(new MessageEvent("message", {
       data: { source: "shipit-preview", type: "path", path: "/orders" },
@@ -527,19 +490,15 @@ describe("PreviewFrame", () => {
       (a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
     expect(follows(device, home)).toBe(true);
     expect(follows(home, path)).toBe(true);
-    // Exactly one separator sits between the device selector and Home — the
-    // one that opens the address-bar group. Asserting it is what distinguishes
-    // this arrangement from Home sitting inside the viewport-control cluster.
+
     expect(separators.filter((s) => follows(device, s) && follows(s, home))).toHaveLength(1);
     expect(separators.filter((s) => follows(home, s))).toHaveLength(0);
   });
 
   it("keeps Home when the page has reported no path at all", async () => {
-    // The separator is rendered by the toolbar rather than by PreviewPath
-    // precisely so this holds: PreviewPath renders nothing without a path, and
+
     // a preview with no injected script never reports one — which is exactly
-    // the case where Home's document-load fallback is the only thing that
-    // works. Nesting Home in PreviewPath would hide it there.
+
     const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
     const { container } = render(<PreviewFrame preview={preview} {...defaultProps} />);
     await screen.findByTitle("Live Preview");
@@ -547,8 +506,7 @@ describe("PreviewFrame", () => {
     expect(screen.queryByLabelText(/Copy preview URL/)).not.toBeInTheDocument();
     const home = screen.getByTitle("Go to preview root");
     expect(home).toBeEnabled();
-    // ...and still behind its separator, so the layout doesn't shift when a
-    // path finally arrives.
+
     const separators = [...container.querySelectorAll("span")]
       .filter((el) => el.children.length === 0 && el.textContent === "|");
     expect(separators.some((s) =>
@@ -557,8 +515,7 @@ describe("PreviewFrame", () => {
   });
 
   it("falls back to a document load at root when Home is clicked and the preview script never loaded", async () => {
-    // No "loaded" message — a non-proxied local preview, a 502, or an
-    // auth-gated response. A hard re-fetch of the root is all that can work.
+
     const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
     render(<PreviewFrame preview={preview} {...defaultProps} />);
     const iframe = (await screen.findByTitle("Live Preview")) as HTMLIFrameElement;
@@ -578,10 +535,7 @@ describe("PreviewFrame", () => {
   });
 
   it("renders Home disabled while the preview is running but no slot URL exists yet", () => {
-    // A raw-IP access host can't carry `{session}--{port}.<host>`, so no slot
-    // URL can be built at all — the toolbar renders, but there is no origin to
-    // navigate to. Since docs/286 this is the only way to reach that state:
-    // every host that CAN build a URL gets its slot on the first pass.
+
     vi.stubEnv("VITE_API_HOST", "192.168.1.5:4123");
     usePreviewStore.getState().setServices([
       { name: "dev", status: "running", port: 3000, preview: "manual" },
@@ -605,9 +559,7 @@ describe("PreviewFrame", () => {
   });
 
   it("disables Back while the preview has no history entry of its own", async () => {
-    // Regression: a preview with nothing behind it used to run `history.back()`
-    // against the JOINT session history, walking the ShipIt tab itself back and
-    // dropping the user out of their session.
+
     const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
     render(<PreviewFrame preview={preview} {...defaultProps} />);
     const iframe = (await screen.findByTitle("Live Preview")) as HTMLIFrameElement;
@@ -620,14 +572,12 @@ describe("PreviewFrame", () => {
     report(false);
     expect(await screen.findByTitle("Nothing to go back to in the preview")).toBeDisabled();
 
-    // Navigating inside the preview creates one, and Back comes back to life.
     report(true);
     expect(await screen.findByTitle("Back")).toBeEnabled();
   });
 
   it("leaves Back enabled when the preview does not report canGoBack", async () => {
-    // No Navigation API in this browser: we can't know, so we don't disable the
-    // button — the injected script decides.
+
     const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
     render(<PreviewFrame preview={preview} {...defaultProps} />);
     const iframe = (await screen.findByTitle("Live Preview")) as HTMLIFrameElement;
@@ -658,9 +608,7 @@ describe("PreviewFrame", () => {
   });
 
   it("tracks canGoBack per slot, so a background preview cannot disable Back", async () => {
-    // The pool keeps other sessions' iframes mounted and they keep reporting.
-    // A single shared value would let a background preview at *its* base grey
-    // out Back for the preview the user is actually looking at.
+
     const previewA: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
     const previewB: PreviewStatus = { running: true, port: 3000, url: "http://localhost:3000", source: "vite" };
     const { rerender } = render(<PreviewFrame preview={previewA} sessionId="session-a" {...defaultProps} />);
@@ -684,9 +632,6 @@ describe("PreviewFrame", () => {
     report(background, false);
     expect(await screen.findByTitle("Back")).toBeEnabled();
 
-    // ...and the background report was *recorded* against its own slot rather
-    // than dropped — switching back to it shows the disabled state. Without
-    // this the test would also pass if the message had been ignored entirely.
     rerender(<PreviewFrame preview={previewA} sessionId="session-a" {...defaultProps} />);
     expect(await screen.findByTitle("Nothing to go back to in the preview")).toBeDisabled();
   });
@@ -774,15 +719,9 @@ describe("PreviewFrame", () => {
   });
 
   it("stops a background slot rendering with display:none, not visibility:hidden", async () => {
-    // nikzlabs/shipit#2418. `invisible` hides the pixels and lets the document
-    // keep drawing — measured cross-origin, a hidden page drew 240 frames in 4 s
-    // against 1 under `display: none`. On the reporter's phone that second live
-    // renderer cost the visible preview 9.5–13.5% of its frames. The iframe
-    // stays MOUNTED, which is what preserves its state; only the hiding changed.
-    //
+
     // Pinned because the difference is invisible in a screenshot diff and the
-    // two classes read as interchangeable: swapping this back to `invisible`
-    // would restore the bug with nothing else looking different.
+
     const previewA: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
     const previewB: PreviewStatus = { running: true, port: 4173, url: "http://localhost:4173", source: "vite" };
     const { rerender } = render(<PreviewFrame preview={previewA} sessionId="s1" {...defaultProps} />);
@@ -805,11 +744,9 @@ describe("PreviewFrame", () => {
   });
 
   it("stops the active preview rendering when its pane is not on screen", async () => {
-    // nikzlabs/shipit#2418, second site. The pane is kept mounted behind the
-    // other right-panel tabs (and behind the mobile Chat tab) so returning to it
-    // is instant — but until this prop existed the preview kept a WebGL canvas
+
     // drawing behind the Files tree, because the ancestor that hides it uses
-    // `visibility: hidden`, which does not stop rendering.
+
     const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
     const { rerender } = render(<PreviewFrame preview={preview} sessionId="s1" {...defaultProps} />);
     const iframe = await screen.findByTitle("Live Preview");
@@ -871,8 +808,6 @@ describe("PreviewFrame", () => {
     expect(trigger).toHaveTextContent("localhost:8080");
   });
 
-  // ---- Error badge & panel tests ----
-
   it("shows error badge when there are errors", () => {
     const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
     const errors = [makeError()];
@@ -892,15 +827,12 @@ describe("PreviewFrame", () => {
     const errors = [makeError()];
     render(<PreviewFrame preview={preview} {...defaultProps} errors={errors} />);
 
-    // Panel should not be visible initially
     expect(screen.queryByRole("region", { name: "Preview errors" })).not.toBeInTheDocument();
 
-    // Click to open
     fireEvent.click(screen.getByLabelText("Toggle error panel"));
     expect(screen.getByRole("region", { name: "Preview errors" })).toBeInTheDocument();
     expect(screen.getByText("Uncaught TypeError: x is not a function")).toBeInTheDocument();
 
-    // Click to close
     fireEvent.click(screen.getByLabelText("Toggle error panel"));
     expect(screen.queryByRole("region", { name: "Preview errors" })).not.toBeInTheDocument();
   });
@@ -986,8 +918,6 @@ describe("PreviewFrame", () => {
     expect(screen.getByText("Deprecation warning")).toBeInTheDocument();
   });
 
-  // ---- Install status tests (via startup steps) ----
-
   it("shows install running state via startup steps", () => {
     usePreviewStore.getState().initStartupSteps();
     usePreviewStore.getState().setStartupStep({ stepId: "install", status: "running" });
@@ -1001,8 +931,6 @@ describe("PreviewFrame", () => {
     render(<PreviewFrame preview={null} {...defaultProps} />);
     expect(screen.getByText(/exit code 1/)).toBeInTheDocument();
   });
-
-  // ---- Compose error overlay tests ----
 
   it("shows compose error overlay when composeError is set", () => {
     usePreviewStore.getState().setComposeError("Service `dev`: Absolute bind mount path `/app/node_modules` is not allowed.");
@@ -1026,8 +954,6 @@ describe("PreviewFrame", () => {
     expect(usePreviewStore.getState().composeError).toBeNull();
   });
 
-  // ---- Compose not configured hint tests ----
-
   it("shows the preview setup invite when composeNotConfigured is set", () => {
     usePreviewStore.getState().setComposeNotConfigured(true);
     render(<PreviewFrame preview={null} {...defaultProps} />);
@@ -1035,15 +961,10 @@ describe("PreviewFrame", () => {
     expect(screen.getByText(/app in this repo/)).toBeInTheDocument();
   });
 
-  // The whole point of the rewrite: the panel is the first thing a user sees
-  // after connecting a repo, and it used to greet them with our own config
-  // vocabulary. A regression here is invisible in a screenshot diff, so pin it.
   it("names no implementation detail in the preview setup invite", () => {
     usePreviewStore.getState().setComposeNotConfigured(true);
     const { container } = render(<PreviewFrame preview={null} {...defaultProps} />);
-    // `\b` rather than a bare /compose/i: the guard is about the noun we used
-    // to put on screen, and a loose match would trip over any future copy that
-    // happens to contain "composed".
+
     expect(container.textContent).not.toMatch(/\bcompose\b/i);
     expect(container.textContent).not.toMatch(/shipit\.yaml/i);
     expect(container.textContent).not.toMatch(/\bdocker\b/i);
@@ -1064,23 +985,18 @@ describe("PreviewFrame", () => {
     expect(usePreviewStore.getState().composeNotConfigured).toBe(false);
   });
 
-  // ---- "No preview running" empty state (services live in the drawer, docs/175) ----
-
   it("shows the manual-only empty state with a Show services button when every service is manual", () => {
     usePreviewStore.getState().setServices([
       { name: "dev", status: "stopped", port: 3000, preview: "manual" },
     ]);
-    // A non-null preview with running:false is what the orchestrator emits
-    // once the compose stack is up but no service is running — same shape
-    // as the "No preview running" empty state the user sees in production.
+
     const stoppedPreview: PreviewStatus = { running: false, port: 0, url: "" };
     render(<PreviewFrame preview={stoppedPreview} sessionId="abc" {...defaultProps} />);
-    // Manual-only copy nudges the user to start a service...
+
     expect(screen.getByText("No preview running. Start a service to launch it.")).toBeInTheDocument();
-    // ...but the list itself now lives in the drawer, not inline here.
+
     expect(screen.queryByTitle("Start dev")).not.toBeInTheDocument();
-    // No "Show services" button at all: the drawer opens itself while nothing
-    // is previewing, and its own caret undoes a hand collapse.
+
     expect(screen.queryByText("Show services")).not.toBeInTheDocument();
   });
 
@@ -1102,17 +1018,14 @@ describe("PreviewFrame", () => {
     ]);
     const stoppedPreview: PreviewStatus = { running: false, port: 0, url: "" };
     render(<PreviewFrame preview={stoppedPreview} sessionId="abc" {...defaultProps} />);
-    // Mixed stack: generic copy (auto preview is expected to come up on its own).
+
     expect(screen.getByText("No preview running")).toBeInTheDocument();
-    // No inline list rows — that lives in the drawer now.
+
     expect(screen.queryByTitle("Start web")).not.toBeInTheDocument();
   });
 
   it("renders the iframe when preview.running flips true while a manual service is in services", async () => {
-    // This is the dogfooding pivot: after the user clicks Start on the
-    // manual `dev` service, App.tsx synthesizes a `running:true` preview
-    // status (via deriveEffectivePreviewStatus) and passes it here. The
-    // services list still contains the running service, but the manual-only
+
     // overlay must NOT show — the iframe should take over instead.
     usePreviewStore.getState().setServices([
       { name: "dev", status: "running", port: 3000, preview: "manual" },
@@ -1139,8 +1052,7 @@ describe("PreviewFrame", () => {
   });
 
   it("shows the empty-state (not an infinite spinner) when the host can't carry a wildcard subdomain", () => {
-    // docs/175: a raw-IP access host can't build {session}--{port}.<host>, so no
-    // iframe slot is created. Instead of leaving the user on a blank pane,
+
     // PreviewFrame must explain why.
     vi.stubEnv("VITE_API_HOST", "192.168.1.5:4123");
     const runningPreview: PreviewStatus = {
@@ -1161,20 +1073,16 @@ describe("PreviewFrame", () => {
     expect(screen.getByText("Preview not available over this host")).toBeInTheDocument();
     expect(screen.getByText("192.168.1.5:4123")).toBeInTheDocument();
     expect(screen.queryByText("Connecting to dev server...")).not.toBeInTheDocument();
-    // docs/254-local-bind-and-tailnet-access req 8: explaining the constraint isn't enough — name a host that
-    // actually works, so the user has something to act on rather than a rule to
-    // reason about. Asserted here and not only in the helper's unit tests,
+
     // because the helper could keep passing while the component stopped
-    // rendering what it returns.
+
     expect(screen.getByText("http://192-168-1-5.sslip.io:4123")).toBeInTheDocument();
   });
 
   it("explains the constraint without inventing a host when none can be suggested", () => {
-    // A non-loopback IPv6 literal reaches the empty state (buildSubdomainUrl
-    // returns null for it) but gets no suggestion — sslip.io does serve dashed
-    // IPv6 names, but encoding one correctly is fiddly and deliberately out of
+
     // scope, so the empty state must stop at the explanation. A bogus concrete
-    // suggestion would be worse than none.
+
     vi.stubEnv("VITE_API_HOST", "[2001:db8::1]:4123");
     render(
       <PreviewFrame
@@ -1195,12 +1103,7 @@ describe("PreviewFrame", () => {
   });
 
   it("mounts the iframe on the first pass, with no reachability check first", async () => {
-    // docs/286 req 1: the pane adds no wait of its own. The slot used to be
-    // created only after `/api/preview-health` reported ready, which cost at
-    // least one round trip on every open and up to 15s when the probe
-    // disagreed with the browser. The proxy now absorbs a dev server that is
-    // still coming up, so the iframe is attached straight away and the wait —
-    // if there is one — belongs to the document inside it.
+
     usePreviewStore.getState().setServices([
       { name: "dev", status: "running", port: 3000, preview: "manual" },
     ]);
@@ -1227,8 +1130,6 @@ describe("PreviewFrame", () => {
     expect(iframe.getAttribute("src")).toBe("http://abc--3000.localhost:3000/");
   });
 
-  // ---- Managed source tests ----
-
   it("renders iframe for managed source preview", async () => {
     const preview: PreviewStatus = { running: true, port: 3000, url: "http://localhost:3000", source: "managed" };
     render(<PreviewFrame preview={preview} {...defaultProps} />);
@@ -1240,28 +1141,24 @@ describe("PreviewFrame", () => {
     const user = userEvent.setup();
     const preview: PreviewStatus = { running: true, port: 3000, url: "http://localhost:3000", source: "managed", detectedPorts: [8080] };
     render(<PreviewFrame preview={preview} {...defaultProps} detectedPorts={[8080]} selectedPort={null} onSelectPort={vi.fn()} />);
-    // Open the dropdown
+
     await user.click(screen.getByLabelText("Select preview port"));
     const items = screen.getAllByRole("menuitem");
     expect(items[0]).toHaveTextContent("Preview");
   });
 
-  // ---- Stale iframe tests ----
-
   it("preserves session A iframe in pool while polling for session B", async () => {
     const previewA: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
     const { rerender } = render(<PreviewFrame preview={previewA} sessionId="session-a" {...defaultProps} />);
-    // Wait for iframe to become ready (fetch mock resolves immediately)
+
     await screen.findByTitle("Live Preview");
     expect(screen.getByTitle("Live Preview")).toHaveAttribute("src", "http://localhost:5173");
 
-    // Switch to session B with a different running preview — polling hasn't resolved yet
     // Use a fetch that never resolves to simulate polling delay
     vi.stubGlobal("fetch", vi.fn().mockReturnValue(new Promise(() => {})));
     const previewB: PreviewStatus = { running: true, port: 3000, url: "http://localhost:3000", source: "vite" };
     rerender(<PreviewFrame preview={previewB} sessionId="session-b" {...defaultProps} />);
 
-    // Session A's iframe is preserved in pool as a background preview
     const iframe = screen.getByTitle("Background Preview");
     expect(iframe).toHaveAttribute("src", "http://localhost:5173");
   });
@@ -1271,21 +1168,14 @@ describe("PreviewFrame", () => {
     const { rerender } = render(<PreviewFrame preview={previewA} sessionId="session-a" {...defaultProps} />);
     await screen.findByTitle("Live Preview");
 
-    // Switch to session B where preview is null (waiting for WS message)
     rerender(<PreviewFrame preview={null} sessionId="session-b" {...defaultProps} />);
 
-    // Session A's iframe is preserved in pool as a background preview
     const iframe = screen.getByTitle("Background Preview");
     expect(iframe).toHaveAttribute("src", "http://localhost:5173");
   });
 
   it("keeps a session iframe in the background pool after session switch", async () => {
-    // No slot is dropped on a switch, whatever the session's PR phase. A merged
-    // PR used to prune its session's background slot, which meant returning to
-    // that session reloaded the preview onto the app's front page — for a
-    // saving of nothing, since a mounted iframe doesn't keep a container alive
-    // (idle reclamation is driven by viewers and agent turns). LRU eviction is
-    // now the only thing that drops a slot.
+
     const previewA: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
     const previewB: PreviewStatus = { running: true, port: 3000, url: "http://localhost:3000", source: "vite" };
     const { rerender } = render(<PreviewFrame preview={previewA} sessionId="session-a" {...defaultProps} />);
@@ -1298,14 +1188,9 @@ describe("PreviewFrame", () => {
   });
 
   it("keeps iframe DOM order stable across A→B→A switches (no reorder → no reload)", async () => {
-    // Repro for "the preview reloads when I switch back and forth between two
-    // sessions". The iframe pool kept its render list in LRU order, so every
-    // switch moved the active slot to the front of the list. Reordering keyed
-    // <iframe> elements moves them in the DOM, and a moved iframe is reloaded
-    // by the browser — wiping its in-page state and defeating the pool. The
+
     // fix renders in stable insertion order, so an existing iframe never
-    // changes its DOM position. We assert that order directly (jsdom can't
-    // observe the real-browser reload).
+
     const order = (container: HTMLElement) =>
       [...container.querySelectorAll("iframe")].map((f) => f.getAttribute("src"));
 
@@ -1319,8 +1204,7 @@ describe("PreviewFrame", () => {
     expect(order(container)).toEqual(["http://localhost:5173"]);
 
     // Switch to B. A must stay at its original DOM position (index 0); B is
-    // appended after it. The buggy LRU order would put the active B first
-    // (["http://localhost:3000", "http://localhost:5173"]), moving A.
+
     rerender(<PreviewFrame preview={previewB} sessionId="session-b" {...defaultProps} />);
     await screen.findByTitle("Live Preview");
     expect(order(container)).toEqual(["http://localhost:5173", "http://localhost:3000"]);
@@ -1333,19 +1217,11 @@ describe("PreviewFrame", () => {
   });
 
   it("shows spinner for fresh session start (no stale iframe)", () => {
-    // No previous preview → stale ref is null → show spinner
+
     render(<PreviewFrame preview={null} sessionId="session-a" {...defaultProps} />);
     expect(screen.getByText("Starting dev server...")).toBeInTheDocument();
     expect(screen.queryByTitle("Live Preview")).not.toBeInTheDocument();
   });
-
-  // ---- Slot ownership (planning#394) ----
-  // A port can change owner inside one session: a plugin service's published
-  // port is corrected off a collision, a plugin is removed and its band number
-  // reused, the project edits its own compose ports. The slot key is
-  // `sessionId:port`, so none of those change the key — only the recorded
-  // owner can tell a retained iframe of the previous owner's app from one
-  // that is still the right preview.
 
   it("keeps the retained iframe (no re-poll, no remount) when the port keeps its owner", async () => {
     usePreviewStore.getState().setServices([
@@ -1368,7 +1244,6 @@ describe("PreviewFrame", () => {
     );
     const first = await screen.findByTitle("Live Preview");
 
-    // A list refresh with the same owner for the port — the ordinary case —
     // must not remount the retained iframe.
     act(() => {
       usePreviewStore.getState().setServices([
@@ -1381,11 +1256,7 @@ describe("PreviewFrame", () => {
   });
 
   it("recreates and remounts the slot when the port changes owner", async () => {
-    // The #2325 symptom in mirror image, reached with no port collision:
-    // the pane shows a service that is not the one selected. The retained
-    // iframe holds the previous owner's already-loaded document, so the fix
-    // has to drop the slot (a fresh iframe element = a fresh document load)
-    // and re-create it — not merely promote it.
+
     usePreviewStore.getState().setServices([
       { name: "web", status: "running", port: 3000, preview: "auto" },
     ]);
@@ -1416,8 +1287,6 @@ describe("PreviewFrame", () => {
     const second = await screen.findByTitle("Live Preview");
     expect(second).not.toBe(first);
 
-    // The recreated slot records the NEW owner, so a later takeover drops
-    // again rather than trusting the stale record.
     act(() => {
       usePreviewStore.getState().setServices([
         { name: "worker", status: "running", port: 3000, preview: "auto" },
@@ -1429,9 +1298,7 @@ describe("PreviewFrame", () => {
   });
 
   it("does not drop the slot when the current owner is unknown (transient list state)", async () => {
-    // The service list is replaced wholesale on reconcile, so a momentarily
-    // empty list is not an ownership change. Evicting on `undefined` would
-    // drop slots during ordinary list updates.
+
     usePreviewStore.getState().setServices([
       { name: "web", status: "running", port: 3000, preview: "auto" },
     ]);
@@ -1454,7 +1321,7 @@ describe("PreviewFrame", () => {
 
     act(() => usePreviewStore.getState().setServices([]));
     await act(async () => {});
-    // ...and when the list comes back with the same owner, still retained.
+
     act(() => {
       usePreviewStore.getState().setServices([
         { name: "web", status: "running", port: 3000, preview: "auto" },
@@ -1466,10 +1333,9 @@ describe("PreviewFrame", () => {
   });
 
   it("does not drop a slot that was created before its service was known", async () => {
-    // A local dev-server preview has no service rows, so its slot records no
-    // owner. A service list later claiming the port is not a takeover: an
+
     // undefined recorded owner never evicts (the conservative side of the
-    // both-known rule).
+
     const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
     render(<PreviewFrame preview={preview} sessionId="s1" {...defaultProps} />);
     const first = await screen.findByTitle("Live Preview");
@@ -1483,8 +1349,6 @@ describe("PreviewFrame", () => {
 
     expect(screen.getByTitle("Live Preview")).toBe(first);
   });
-
-  // ---- Device frame / mobile preview tests ----
 
   it("does not render device selector when preview is not running", () => {
     render(<PreviewFrame preview={null} sessionId="session-a" {...defaultProps} />);
@@ -1537,7 +1401,7 @@ describe("PreviewFrame", () => {
     const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
     render(<PreviewFrame preview={preview} {...defaultProps} />);
     const iframe = await screen.findByTitle("Live Preview");
-    // No inline width/height when responsive
+
     expect(iframe.style.width).toBe("");
     expect(iframe.style.height).toBe("");
   });
@@ -1546,7 +1410,7 @@ describe("PreviewFrame", () => {
     usePreviewStore.setState({ devicePreset: null, isLandscape: false, customSize: null });
     const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
     render(<PreviewFrame preview={preview} {...defaultProps} />);
-    // Responsive fills the panel — there is no edge to grab.
+
     expect(screen.queryByTestId("viewport-resize-handles")).not.toBeInTheDocument();
     act(() => {
       usePreviewStore.getState().setDevicePreset(findPresetById("iphone-16"));
@@ -1578,8 +1442,7 @@ describe("PreviewFrame", () => {
   });
 
   it("scales the iframe down when the container is smaller than the device", async () => {
-    // Mock HTMLDivElement clientWidth/clientHeight so the device-frame measurement
-    // sees a 400×400 panel. iPad Air is 820×1180, so scale should be < 1.
+
     const widthSpy = vi.spyOn(HTMLDivElement.prototype, "clientWidth", "get").mockReturnValue(400);
     const heightSpy = vi.spyOn(HTMLDivElement.prototype, "clientHeight", "get").mockReturnValue(400);
     try {
@@ -1588,14 +1451,14 @@ describe("PreviewFrame", () => {
       const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
       render(<PreviewFrame preview={preview} {...defaultProps} />);
       const iframe = await screen.findByTitle("Live Preview");
-      // Expected scale: min(1, (400-32)/820, (400-32)/1180) = 368/1180 ≈ 0.312
+
       const transform = iframe.style.transform;
       const match = /scale\(([^)]+)\)/.exec(transform);
       expect(match).not.toBeNull();
       const scale = Number(match![1]);
       expect(scale).toBeGreaterThan(0);
       expect(scale).toBeLessThan(1);
-      // Header should show the scaled-down percentage
+
       const expectedPercent = Math.round(Math.min(1, 368 / 820, 368 / 1180) * 100);
       expect(screen.getByText(new RegExp(`\\(${expectedPercent}%\\)`))).toBeInTheDocument();
     } finally {
@@ -1616,15 +1479,13 @@ describe("PreviewFrame", () => {
       const match = /scale\(([^)]+)\)/.exec(iframe.style.transform);
       expect(match).not.toBeNull();
       expect(Number(match![1])).toBe(1);
-      // No "(NN%)" indicator when scale is 1
+
       expect(screen.queryByText(/\(\d+%\)/)).not.toBeInTheDocument();
     } finally {
       widthSpy.mockRestore();
       heightSpy.mockRestore();
     }
   });
-
-  // ---- Phase 5: missing-secrets banner ----
 
   it("shows missing-secrets banner when missingRequired is non-empty", () => {
     usePreviewStore.getState().setSecrets({
@@ -1683,30 +1544,12 @@ describe("PreviewFrame", () => {
     useSessionStore.setState({ sessionId: undefined, sessions: [] });
   });
 
-  // ---- Auth-block detection: cached-slot regression ----
-
   it("does not arm the auth-block reload timer when the user returns to a previously-loaded session", async () => {
-    // Repro for the "preview reloads ~5s after switching back to a session"
-    // bug. Before the per-slot `loadedSlotsRef`, the auth-block detector
-    // assumed every `activeSlotUrl` change implied a fresh HTML fetch and
-    // a fresh "loaded" postMessage. Re-visiting a cached iframe satisfies
-    // neither (src is unchanged, the iframe's contentWindow keeps running
-    // the previously-loaded page), so the timer expired with no signal
-    // and force-reloaded the iframe — destroying in-iframe state (scroll
-    // position, form inputs, SPA route).
-    //
-    // Rather than wait the real 5s for the timer to fire (or wrestle with
+
     // fake-timer ordering vs. the poll loop's microtasks), we observe the
-    // mechanism directly: when the user returns to a slot we've already
+
     // marked as loaded, the auth-block effect must NOT schedule the
-    // `setTimeout(MAX_AUTH_TIMEOUT_MS)` whose expiry is what triggers the
-    // reload.
-    //
-    // We need `isLocalPreview` to be false for the detection to run, so we
-    // override VITE_API_HOST to a non-loopback hostname. And we need the
-    // container-mode health probe to report ready immediately so the iframe
-    // slot is actually created — the default `new Response()` mock returns
-    // an empty body that `resp.json()` rejects on.
+
     vi.stubEnv("VITE_API_HOST", "example.com:3001");
     vi.stubGlobal(
       "fetch",
@@ -1732,18 +1575,10 @@ describe("PreviewFrame", () => {
       );
       const iframeA = (await screen.findByTitle("Live Preview")) as HTMLIFrameElement;
 
-      // The auth-block detector runs for the first time once the slot is
-      // created (it gates on `activeSlotUrl`). This first run *should*
-      // schedule a timer — we haven't received the "loaded" postMessage
-      // yet, so there's something real to detect. waitFor handles the
-      // microtask gap between the slot being added and the effect firing.
       await vi.waitFor(() => {
         expect(authTimers().length).toBeGreaterThanOrEqual(1);
       });
 
-      // The injected proxy script (HMR_WS_PATCH) postMessages "loaded" from
-      // inside the iframe once HTML is parsed. Simulate that — the handler
-      // matches `event.source` against each pool iframe's contentWindow.
       window.dispatchEvent(
         new MessageEvent("message", {
           data: { source: "shipit-preview", type: "loaded" },
@@ -1751,7 +1586,6 @@ describe("PreviewFrame", () => {
         }),
       );
 
-      // User switches to session B for a moment...
       const previewB: PreviewStatus = {
         running: true,
         port: 5173,
@@ -1761,23 +1595,13 @@ describe("PreviewFrame", () => {
       rerender(
         <PreviewFrame preview={previewB} sessionId="session-b" {...defaultProps} />,
       );
-      // Session B gets its own slot immediately (docs/286) and legitimately
-      // arms its own detection timer — that is B's first load, not a re-arm.
-      // Clear the spy here so the assertion below is only about the return
-      // to A.
+
       setTimeoutSpy.mockClear();
 
-      // ...and switches back to session A. The iframe pool keeps slot A's
-      // iframe alive; its contentWindow has not been torn down. With the
-      // per-slot loaded tracking in place, the auth-block effect sees
-      // slot A in `loadedSlotsRef` and does NOT arm a new timer. Without
-      // the tracking (the bug), it would arm a 5s timer whose expiry
-      // would force-reload the cached iframe.
       rerender(
         <PreviewFrame preview={previewA} sessionId="session-a" {...defaultProps} />,
       );
 
-      // Let any pending effects flush.
       await Promise.resolve();
       await Promise.resolve();
 
@@ -1790,13 +1614,9 @@ describe("PreviewFrame", () => {
   });
 
   it("does not re-arm the auth-block timer for a slot whose detection already concluded", async () => {
-    // `loadedSlotsRef` only covers slots that came up cleanly. A slot that
+
     // never reports "loaded" — a non-HTML root, a failed script injection, a
-    // 502 served during startup — was left unguarded, so every return to that
-    // session re-armed the timer and reloaded the cached iframe. The timer's
-    // premise is "we just fetched and heard nothing back"; on a revisit there
-    // was no fetch, so an expiry carries no signal. Once the detection has
-    // concluded for a slot we keep the verdict and stop re-arming.
+
     vi.useFakeTimers();
     vi.stubEnv("VITE_API_HOST", "example.com:3001");
     vi.stubGlobal(
@@ -1805,8 +1625,7 @@ describe("PreviewFrame", () => {
     );
     const MAX_AUTH_TIMEOUT_MS = 5000;
     const MAX_AUTH_RETRIES = 2;
-    // Installed after `useFakeTimers()` so it wraps the fake `setTimeout`, and
-    // before the render so it can see the very first arming.
+
     const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout");
     const authTimers = () =>
       setTimeoutSpy.mock.calls.filter(([, delay]) => delay === MAX_AUTH_TIMEOUT_MS);
@@ -1818,27 +1637,10 @@ describe("PreviewFrame", () => {
         <PreviewFrame preview={previewA} sessionId="session-a" {...defaultProps} />,
       );
 
-      // Run out the retry budget without ever reporting "loaded": two silent
-      // reloads, then the verdict.
-      //
-      // Every advance below is wrapped in `act`, and that is the whole fix for
-      // this test's history of flaking (nikzlabs/shipit#2139). Each of the
-      // first two expiries has to complete a `setRefreshKey` state update, a
-      // re-render and an effect re-arm before the next advance finds a timer to
-      // fire. Outside `act`, that flush belongs to React's own scheduler, which
-      // runs on a *real* macrotask captured before `useFakeTimers()` — so it is
-      // not ordered against the real `setTimeout` an async advance yields on.
-      // The fake clock contributes no progress at all: with the synchronous
       // `advanceTimersByTime` and no `act`, the verdict never appears however
-      // many times you advance. Earlier versions here therefore progressed only
-      // on those incidental real macrotasks, which is why first an exact count
+
       // and then a bounded retry loop both passed locally and lost the race on
-      // a loaded CI box — a loop can burn every iteration before React flushes
-      // once, and then falls through to a failing assertion.
-      //
-      // Inside `act` the flush happens before the call returns, so the count is
-      // exact rather than hopeful: wait for the first timer to be armed, then
-      // one advance per expiry.
+
       await vi.waitFor(() => expect(authTimers()).toHaveLength(1));
       for (let i = 0; i < MAX_AUTH_RETRIES + 1; i++) {
         await act(async () => {
@@ -1847,15 +1649,10 @@ describe("PreviewFrame", () => {
       }
       expect(screen.getByText("Preview authentication required")).toBeInTheDocument();
 
-      // Session B arms a detection timer of its own the moment its slot exists,
-      // which is B's first load and not a re-arm — so the spy is cleared after
-      // the switch to B and the assertion below is only about the return to A.
       rerender(<PreviewFrame preview={previewB} sessionId="session-b" {...defaultProps} />);
       setTimeoutSpy.mockClear();
       rerender(<PreviewFrame preview={previewA} sessionId="session-a" {...defaultProps} />);
 
-      // No fresh detection timer, and the verdict is still on screen rather
-      // than having silently reset.
       expect(authTimers()).toHaveLength(0);
       expect(screen.getByText("Preview authentication required")).toBeInTheDocument();
     } finally {
@@ -1865,22 +1662,19 @@ describe("PreviewFrame", () => {
     }
   });
 
-  // planning#478 — the pane holds the service it is on. When that service is
-  // down it waits for it rather than showing whatever else happens to be up.
   describe("waiting for its own service", () => {
     const WEB = { name: "web", status: "running" as const, port: 3000, preview: "auto" as const };
     const API_STOPPED = { name: "api", status: "stopped" as const, port: 4000, preview: "auto" as const };
-    // `web` is the only running service, so this is what the pane would show if
+
     // it fell back — `detectedPorts` never contains the stopped service.
     const RUNNING: PreviewStatus = {
       running: true, port: 3000, url: "/preview/s1/3000/", source: "detected", detectedPorts: [3000],
     };
-    /** Everything down — the parked service was the only preview there was. */
+
     const NOTHING_RUNNING: PreviewStatus = {
       running: false, port: 4000, url: "/preview/s1/4000/", detectedPorts: [],
     };
 
-    /** The pane's identity comes from the store's memory, keyed by name. */
     function rememberApi(): void {
       usePreviewStore.setState({ previewTargetMemory: { s1: { service: "api", port: 4000 } } });
     }
@@ -1905,16 +1699,13 @@ describe("PreviewFrame", () => {
       renderPane({ preview: RUNNING, detectedPorts: [3000] });
 
       expect(await screen.findByText("api is not running")).toBeInTheDocument();
-      // The toolbar names the service the pane is on, not the running one.
+
       expect(screen.getByText("api")).toBeInTheDocument();
       expect(screen.queryByText("web")).not.toBeInTheDocument();
     });
 
     it("waits by name when another service declares the same port", async () => {
-      // ShipIt warns about a duplicate project port but permits it, and the
-      // clashing row is listed first. Resolving the pane's service by port
-      // alone would sit forever on "web is not running" while the remembered
-      // `api` served 4000 perfectly well.
+
       rememberApi();
       usePreviewStore.getState().setServices([
         { ...WEB, status: "stopped", port: 4000 },
@@ -1930,8 +1721,7 @@ describe("PreviewFrame", () => {
     });
 
     it("names the service even when it is the only one and everything is down", async () => {
-      // The commonest restart of all. `preview.running` is false, so the pane
-      // used to drop the port and show the generic "No preview running".
+
       rememberApi();
       usePreviewStore.getState().setServices([{ ...API_STOPPED, status: "starting" }]);
       renderPane({ preview: NOTHING_RUNNING, detectedPorts: [] });
@@ -1947,14 +1737,13 @@ describe("PreviewFrame", () => {
 
       expect(await screen.findByText("Waiting for api…")).toBeInTheDocument();
       // The dot must agree with the overlay. `starting` is the warning colour;
-      // a green one beside "Waiting for api…" contradicts the pane.
+
       expect(document.querySelector(".bg-\\(--color-warning\\)")).toBeInTheDocument();
       expect(document.querySelector(".bg-\\(--color-success\\)")).not.toBeInTheDocument();
     });
 
     it("keeps the dot honest when the pane has no selector at all", async () => {
-      // One service, parked and stopped: the toolbar renders the plain-label
-      // branch, which used to hard-code a success dot from `isRunning`.
+
       rememberApi();
       usePreviewStore.getState().setServices([{ ...API_STOPPED, status: "starting" }]);
       renderPane({ preview: NOTHING_RUNNING, detectedPorts: [] });
@@ -1980,9 +1769,9 @@ describe("PreviewFrame", () => {
       renderPane({ preview: RUNNING, detectedPorts: [3000] });
 
       expect(await screen.findByText("api is not running")).toBeInTheDocument();
-      // A slot created here would park a document behind the overlay, and a
+
       // created slot is only ever promoted afterwards, never reloaded — so it
-      // would still be there when the service came back.
+
       expect(screen.queryByTitle("Live Preview")).not.toBeInTheDocument();
     });
 
@@ -1992,8 +1781,6 @@ describe("PreviewFrame", () => {
       const onSelectPort = vi.fn();
       renderPane({ preview: RUNNING, detectedPorts: [3000], onSelectPort });
 
-      // Without the stopped service's own row the selector would not render at
-      // all here — one detected port — stranding the user on the waiting state.
       await userEvent.click(await screen.findByLabelText("Select preview port"));
       await userEvent.click(await screen.findByRole("menuitem", { name: /web/ }));
       expect(onSelectPort).toHaveBeenCalledWith(3000);
@@ -2019,14 +1806,10 @@ describe("PreviewFrame", () => {
         detectedPorts: [3000, 4000],
       });
       const iframe = await screen.findByTitle("Live Preview");
-      // Stand in for the page having navigated itself. The reload asks the
-      // injected script first and falls back to re-assigning `src` — and only
-      // a `src` that DIFFERS makes the reload observable at all; re-writing the
-      // same string would be indistinguishable from doing nothing.
+
       const deepUrl = "http://s1--4000.localhost:3000/deep";
       iframe.setAttribute("src", deepUrl);
 
-      // Down…
       await act(async () => {
         usePreviewStore.getState().updateService({ ...API_STOPPED, status: "starting" });
       });
@@ -2038,8 +1821,6 @@ describe("PreviewFrame", () => {
       );
       expect(await screen.findByText("Waiting for api…")).toBeInTheDocument();
 
-      // …and back. The slot survived the outage by design, so without this the
-      // wait would end on the document the service served before it went down.
       await act(async () => {
         usePreviewStore.getState().updateService({ ...API_STOPPED, status: "running" });
       });
@@ -2063,8 +1844,6 @@ describe("PreviewFrame", () => {
       });
       usePreviewStore.getState().setServices([WEB, API_STOPPED]);
 
-      // Session s2 first, so its iframe is genuinely retained — the state the
-      // pool exists to preserve, and the thing a wrong reload would destroy.
       const s2 = (
         <PreviewFrame
           preview={{ ...RUNNING, url: "/preview/s2/3000/" }} sessionId="s2" {...defaultProps}
@@ -2073,12 +1852,10 @@ describe("PreviewFrame", () => {
       );
       const view = render(s2);
       const iframe = await screen.findByTitle("Live Preview");
-      // s2's page has navigated somewhere. A reload would send it back to the
-      // slot's entry URL, so this string surviving IS the assertion.
+
       const deepUrl = "http://s2--3000.localhost:3000/deep";
       iframe.setAttribute("src", deepUrl);
 
-      // Switch to s1, whose service is down: the pane waits.
       view.rerender(
         <PreviewFrame
           preview={RUNNING} sessionId="s1" {...defaultProps}
@@ -2087,7 +1864,6 @@ describe("PreviewFrame", () => {
       );
       expect(await screen.findByText("api is not running")).toBeInTheDocument();
 
-      // Straight back to s2. A bare "was waiting, isn't now" flag reads this as
       // a recovery and reloads s2's retained iframe, which never waited at all.
       view.rerender(s2);
       await screen.findByTitle("Live Preview");

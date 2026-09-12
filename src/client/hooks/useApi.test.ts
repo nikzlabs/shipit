@@ -109,10 +109,9 @@ describe("useApi", () => {
   });
 
   it("post() omits Content-Type header when no body is provided", async () => {
-    // Fastify's JSON parser rejects requests advertising
-    // Content-Type: application/json with an empty body
+
     // (FST_ERR_CTP_EMPTY_JSON_BODY → HTTP 400). Body-less POSTs must not
-    // claim to be sending JSON.
+
     mockFetch(200, { ok: true });
     const { result } = renderHook(() => useApi());
 

@@ -31,11 +31,11 @@ describe("issue-write-store (docs/177 persistence)", () => {
   });
 
   it("a re-delivered live card does not clobber an already-undone card (no-duplicate-on-replay)", () => {
-    // History seed makes the card undone (authoritative).
+
     useIssueWriteStore.getState().seedCards([card("c1", { undoState: "undone" })]);
-    // A turn-event-buffer replay re-delivers the original card on reconnect.
+
     useIssueWriteStore.getState().upsertCard(card("c1", { undoState: "available" }));
-    // The undone state survives — upsert is non-clobbering.
+
     expect(useIssueWriteStore.getState().cards.c1?.undoState).toBe("undone");
   });
 

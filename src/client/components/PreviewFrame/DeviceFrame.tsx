@@ -1,38 +1,26 @@
 import { useRef, useState, useLayoutEffect, type RefObject } from "react";
 import { usePreviewStore } from "../../stores/preview-store.js";
 
-/** Inner padding (px) reserved around the scaled device frame inside the panel. */
 const DEVICE_PADDING = 16;
 
 export interface DeviceFrameMetrics {
-  /** Attach to the panel that contains the device-framed iframe (measured for scale-to-fit). */
+
   deviceContainerRef: RefObject<HTMLDivElement | null>;
-  /** True when a preset (or custom size) is active and the iframe should be framed/scaled. */
+
   deviceFrameActive: boolean;
-  /** Device viewport width (px), accounting for landscape rotation. */
+
   deviceWidth: number;
-  /** Device viewport height (px), accounting for landscape rotation. */
+
   deviceHeight: number;
-  /** Scale factor (≤ 1) applied so the device fits the panel. */
+
   deviceScale: number;
-  /** `deviceScale` as an integer percentage for the header label. */
+
   deviceScalePercent: number;
-  /**
-   * The box a 100%-scale surface can occupy: panel minus frame padding, per
-   * axis. 0 while unmeasured. Clamps the drag handles and seeds the Freeform
-   * menu row's "current panel size" default (docs/278).
-   */
+
   availableWidth: number;
   availableHeight: number;
 }
 
-/**
- * Computes device-frame metrics for the preview iframe.
- *
- * When a preset is active, the iframe is resized to the preset width/height and
- * scaled down with `transform: scale()` if it doesn't fit the panel. The hook
- * owns the panel ref + a ResizeObserver so scale-to-fit recomputes on resize.
- */
 export function useDeviceFrame(): DeviceFrameMetrics {
   const devicePreset = usePreviewStore((s) => s.devicePreset);
   const isLandscape = usePreviewStore((s) => s.isLandscape);
@@ -41,7 +29,6 @@ export function useDeviceFrame(): DeviceFrameMetrics {
   const deviceContainerRef = useRef<HTMLDivElement | null>(null);
   const [deviceContainerSize, setDeviceContainerSize] = useState<{ width: number; height: number }>({ width: 0, height: 0 });
 
-  // Observe device container size to compute scale-to-fit when a preset is active.
   useLayoutEffect(() => {
     const el = deviceContainerRef.current;
     if (!el) return;
@@ -54,8 +41,6 @@ export function useDeviceFrame(): DeviceFrameMetrics {
     return () => observer.disconnect();
   }, [devicePreset, isLandscape, customSize]);
 
-  // ---- Device frame metrics ----
-  // Only applied when a preset (or custom size) is active. Otherwise the iframe fills the panel.
   const activeSize = devicePreset
     ? (devicePreset.category === "custom" && customSize
       ? { width: customSize.width, height: customSize.height }

@@ -1,20 +1,4 @@
-/**
- * SessionReportCard — in-chat affordance surfaced into a parent session when
- * its child pushes a report with `shipit session report` (docs/233 / planning#243).
- *
- * Session coordination used to run one way (parent → child), so a child that
- * found something affecting work outside its scope had nowhere to push it.
- * This card is the human-facing half of the fix: the machine-facing half is a
- * queued system turn carrying the same text into the recipient's agent.
- *
- * Three tones keyed off `severity`: `fyi` (neutral), `warn`, and `blocker`
- * (danger) — the same ladder the wake-turn uses, so what the user sees and what
- * the agent was told to do about it can't drift.
- *
- * Static card: every value is a baked-in prop (persisted on the message row), so
- * it renders identically live and after a reload with no client store. "Open"
- * switches the active session to the reporter.
- */
+
 
 import {
   ArrowSquareOutIcon,
@@ -32,16 +16,15 @@ export interface SessionReportCardProps {
   fromSessionId: string;
   fromTitle: string;
   fromBranch?: string;
-  /** How the reporter relates to THIS session — drives the header copy. */
+
   relation: "child" | "sibling";
   severity: "fyi" | "warn" | "blocker";
   subject?: string;
   body: string;
-  /** Optional navigation override; falls back to the session store (test-friendly). */
+
   onOpen?: (fromSessionId: string) => void;
 }
 
-/** Per-severity icon, accent color, and header label. */
 const SEVERITY_STYLE = {
   fyi: { color: "text-(--color-text-tertiary)", label: "Report" },
   warn: { color: "text-(--color-warning)", label: "Report — heads up" },

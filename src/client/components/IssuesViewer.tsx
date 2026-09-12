@@ -41,69 +41,36 @@ import { Spinner } from "./Spinner.js";
 export interface IssuesViewerProps {
   trackers: TrackerInfo[];
   activeTracker: TrackerId;
-  /** Full loaded list (the "M" in "N of M"); the source for derived facets. */
   issues: TrackerIssue[];
-  /** Filtered subset (the "N") — drives the count + empty state. */
   filteredIssues: TrackerIssue[];
-  /**
-   * Render plan (docs/206): ordered sections, each a flattened tree of rows.
-   * Two variants — the wide/table layout defaults parents expanded, the
-   * narrow/card layout defaults them collapsed — and the viewer renders whichever
-   * matches its measured width. One label-less section when ungrouped; one
-   * labelled section per group otherwise.
-   */
   desktopSections: IssueSection[];
   mobileSections: IssueSection[];
-  /** Active two-level sort + group prefs (drives the modal + the dirty dot). */
   sortPrefs: SortPrefs;
   filters: IssueFilters;
   statusOptions: StatusOption[];
   assigneeOptions: AssigneeOption[];
   labelOptions: LabelOption[];
   priorityCounts: Record<IssuePriorityLevel, number>;
-  /** Active tracker's info (configured + binding); falls back to `trackers`. */
   info?: TrackerInfo;
   loading: boolean;
   error: string | null;
-  /** Whether a repo is available to start a session on. */
   canStart: boolean;
-  /**
-   * Repos offered by the Start-session repo picker (docs/236). Two or more
-   * turns the button into a split control whose caret starts the issue in an
-   * explicitly chosen repo.
-   */
   repos: RepoInfo[];
-  /** Repo a plain Start-session click lands in — checkmarked in the picker. */
   targetRepoUrl?: string;
-  /** Whether the loaded list includes done/completed issues (fetch-scope). */
   includeDone: boolean;
-  /** The active tracker's assignable statuses, for the inline status editor (docs/191). */
   availableStatuses: IssueStatusRef[];
-  /** Whether priority is editable for the active tracker (Linear yes, GitHub no). */
   canEditPriority: boolean;
   onSelectTracker: (id: TrackerId) => void;
   onRefresh: () => void;
   onToggleIncludeDone: () => void;
-  /** Replace the sort/group prefs (from the sort modal). */
   onSetSortPrefs: (prefs: SortPrefs) => void;
-  /** Record an explicit collapse/expand for a parent issue (docs/206). */
   onSetCollapsed: (issueId: string, collapsed: boolean) => void;
-  /** Open the inline detail view for a row (docs/189). */
   onOpenIssue: (issue: TrackerIssue) => void;
-  /**
-   * Scroll offset to restore on mount — the list unmounts behind the detail
-   * view, so its DOM `scrollTop` is gone on return; the parent stashes it (docs/189).
-   */
   initialScrollTop: number;
-  /** Persist the list's scroll offset on unmount so the next mount can restore it. */
   onPersistScroll: (top: number) => void;
-  /** Set a row's status inline; resolves to an error message, or null (docs/191). */
   onSetStatus: (issue: TrackerIssue, status: string) => Promise<string | null>;
-  /** Set a row's priority inline (Linear-only); resolves to an error, or null. */
   onSetPriority: (issue: TrackerIssue, level: IssuePriorityLevel) => Promise<string | null>;
-  /** Seed a session from an issue; `repoUrl` overrides the default target repo. */
   onStartSession: (issue: TrackerIssue, repoUrl?: string) => void;
-  /** Open Settings → Trackers so the user can connect/bind Linear. */
   onConnect: () => void;
   onSetQuery: (query: string) => void;
   onTogglePriority: (level: IssuePriorityLevel) => void;
@@ -113,13 +80,6 @@ export interface IssuesViewerProps {
   onClearFilters: () => void;
 }
 
-/**
- * Compact identifier for the narrow ID column. GitHub identifiers are
- * `owner/repo#123`, which overflow the 64px track and collide with the title
- * (the full form survives in the link tooltip). Strip the repo path and the `#`
- * so only the bare `123` shows; Linear identifiers (`SHI-1`, no `#`) pass
- * through unchanged.
- */
 function shortIdentifier(identifier: string): string {
   const hash = identifier.indexOf("#");
   return hash === -1 ? identifier : identifier.slice(hash + 1);
@@ -144,15 +104,6 @@ function AssigneeLabel({ assignee }: { assignee: NonNullable<TrackerIssue["assig
   );
 }
 
-/**
- * Label chips shown under the issue title (planning#94). Each chip pairs a colored
- * dot with the label name in token-driven text, keeping the chip legible in
- * every theme. The dot uses the tracker's own label color when present, falling
- * back to a deterministic hash of the name (`labelDotColor`) when it isn't — so
- * labels stay visually distinguishable even on a path that omits the color. We
- * cap the row at a handful of chips and roll the rest into a "+N" so a
- * heavily-labeled issue never blows out the title cell.
- */
 const MAX_LABELS = 4;
 
 function IssueLabels({ labels }: { labels?: IssueLabel[] }) {
@@ -186,61 +137,19 @@ function IssueLabels({ labels }: { labels?: IssueLabel[] }) {
   );
 }
 
-/**
- * Grid template that reflows to the **panel** width via container queries
- * (docs/173). The Issues tab lives in a resizable side panel that is usually far
- * narrower than the viewport, so viewport breakpoints (`md:`/`lg:`) mis-fired —
- * a wide viewport picked the widest table even when the panel was ~520px, and it
- * overflowed (columns overlapped, the action button clipped off-screen). The
- * `@`-prefixed variants resolve against the nearest `@container` (the scroll
- * area) instead. A single DOM row whose cells are placed by `grid-area`, with
- * just two layouts — no column silently vanishes at mid widths:
- *   - narrow (< @md): stacked card — id+priority, title, status·assignee
- *     meta, full-width action.
- *   - @md+: the full table (every column, Assignee included).
- *
- * The title track is `minmax(<min>,1fr)`, so the table grid has an intrinsic
- * min-width (fixed cols + title min). When the panel is narrower than that, the
- * scroll container (`overflow-auto`) shows a HORIZONTAL scrollbar rather than
- * dropping a column or crushing the rest; the card layout (below @md) never
- * scrolls horizontally. The action track is a FIXED width (not `auto`) so
- * the independent header and row grids resolve to identical column tracks (with
- * `auto`, the header sized it to "Action" while rows sized it to the wider
- * button, and the `1fr` title absorbed the difference — misaligning the two).
- *
- * That fixed width MUST fit the widest form of the action button, because the
- * cell centers its content: anything wider overflows the track by half the
- * excess on each side, and the right-hand overflow eats the row's `pr-3` and
- * runs off the panel edge (there is no column to its right to absorb it). The
- * split repo-picker control (docs/236) measures ~164px — 138px for the main
- * half ("Start session" + rocket at `size="md"`) plus a 26px caret half sharing
- * one border — so the track is 168px, not the 134px that fit the pre-picker
- * plain button. Re-measure it if the label, the icon, or the button size change.
- */
+// The fixed 168px action track keeps the separate header and row grids aligned
+// and fits the split repo picker. Recheck it if that control changes.
 const ROW_GRID =
   "grid grid-cols-[auto_1fr] gap-x-2 gap-y-1 " +
   "[grid-template-areas:'id_pri'_'title_title'_'meta_meta'_'nested_nested'_'action_action'] " +
   "@md:grid-cols-[56px_minmax(96px,1fr)_84px_96px_92px_168px] @md:gap-x-2.5 @md:items-start " +
   "@md:[grid-template-areas:'id_title_pri_status_assignee_action']";
 
-// Every cell's FIRST line shares one fixed-height band, vertically centered, so
-// the row's leading line (id · title · priority · status · assignee · action)
-// reads as a single baseline regardless of each cell's inner element height —
-// the 11px id, the 14px title, the 18px priority pill, the dot+text status, and
-// the 20px button would otherwise each top-align at a slightly different center
-// (the row is `items-start`). 24px clears the tallest inner element (the
-// editor-trigger-wrapped priority badge). The title uses `min-h-6` instead so a
-// two-line title can still grow downward; its description + labels flow below.
 const FIRST_LINE = "flex items-center h-6";
 
-/** The `@md` container-query breakpoint (28rem) in px — below it the row grid
- *  folds to the card layout, and the panel switches to mobile collapse behavior.
- *  `@sm` is only 384px, which puts common phones (390px/430px CSS width) into
- *  the table layout; `@md` keeps handheld widths on the card layout. */
+// Keep collapse behavior synchronized with Tailwind's @md container breakpoint.
 const CARD_BREAKPOINT_PX = 448;
 
-/** Desktop indent per nesting level (px), capped so a deep tree can't crush the
- *  title column on a narrow panel. Mobile uses its own smaller, lower cap. */
 const DESKTOP_INDENT_STEP = 14;
 const DESKTOP_INDENT_MAX_DEPTH = 8;
 const MOBILE_INDENT_STEP = 4;
@@ -266,7 +175,6 @@ function IssueRow({
   targetRepoUrl?: string;
   availableStatuses: IssueStatusRef[];
   canEditPriority: boolean;
-  /** Luminance of the row surface, for contrast-adapting the status dot. */
   surfaceLum: number;
   onOpenIssue: (issue: TrackerIssue) => void;
   onSetCollapsed: (issueId: string, collapsed: boolean) => void;
@@ -275,20 +183,10 @@ function IssueRow({
   onStartSession: (issue: TrackerIssue, repoUrl?: string) => void;
 }) {
   const { issue, depth, hasChildren, childCount, collapsed, orphan } = row;
-  // Both layouts indent the whole row by depth via the row's own left padding —
-  // mobile (card) gets a faint indent + a "N nested issues" toggle (docs/206);
-  // desktop additionally shows the disclosure caret at the start of the title.
-  // `--mind`/`--dind` feed the row's left padding (mobile below @md, desktop at
-  // @md) so the entire left cluster (id + title) shifts together, not just the
-  // title text. The right-hand columns stay column-aligned (the 1fr title track
-  // absorbs the indent), giving the standard tree-table look.
   const mobileIndent = Math.min(depth, MOBILE_INDENT_MAX_DEPTH) * MOBILE_INDENT_STEP;
   const desktopIndent = Math.min(depth, DESKTOP_INDENT_MAX_DEPTH) * DESKTOP_INDENT_STEP;
   const toggle = () => onSetCollapsed(issue.id, !collapsed);
   return (
-    // The whole row opens the inline detail view (docs/189) — the deep link to
-    // the tracker now lives only inside that view, not on the row. A div with a
-    // button role (not a <button>) so the nested "Start session" button is legal.
     <div
       role="button"
       tabIndex={0}
@@ -300,31 +198,15 @@ function IssueRow({
           onOpenIssue(issue);
         }
       }}
-      // The left padding is `0.75rem + indent` in both layouts: `--mind` (mobile)
-      // below @md, `--dind` (desktop) at @md. Indenting the row — rather than just
-      // the title cell — shifts the id + title together so nested rows read as an
-      // indented block; the right-hand columns stay aligned (the 1fr title track
-      // absorbs the indent).
       style={{ "--mind": `${mobileIndent}px`, "--dind": `${desktopIndent}px` } as CSSProperties}
       className={`${ROW_GRID} group relative py-3 pr-3 pl-[calc(0.75rem+var(--mind,0px))] @md:pl-[calc(0.75rem+var(--dind,0))] cursor-pointer transition-colors focus:outline-none hover:bg-(--color-bg-hover) focus-visible:bg-(--color-bg-hover) before:absolute before:inset-y-0 before:left-0 before:w-0.5 before:rounded-r before:bg-(--color-accent) before:opacity-0 before:transition-opacity group-hover:before:opacity-100 focus-visible:before:opacity-100`}
     >
-      {/* Issue identifier — plain label; the row click (not this) opens detail. */}
       <span className={`[grid-area:id] ${FIRST_LINE} text-[11px] font-mono text-(--color-text-tertiary) group-hover:text-(--color-text-secondary) transition-colors min-w-0`}>
         <span className="truncate">{shortIdentifier(issue.identifier)}</span>
       </span>
 
-      {/* Title (+ optional description preview + labels), wraps to two lines. The
-          row is clickable as a whole (hover bg + accent left-bar already signal
-          that), so there's no hover caret to misalign against a wrapped title.
-          Desktop nesting (docs/206): the depth indent lives on the row's left
-          padding (above), so the whole left cluster shifts; the disclosure caret
-          sits at the START of the title cell (@md only). Mobile gets the same
-          row-padding indent plus a "N nested issues" toggle below. */}
       <div className="[grid-area:title] min-w-0">
         <div className="flex items-center min-h-6 text-sm font-medium text-(--color-text-primary)">
-          {/* Disclosure caret — only parents get it. Leaves render no spacer, so a
-              leaf's title sits flush at the cell start (no phantom caret-width gap;
-              the depth indent on the row already conveys nesting). */}
           {hasChildren && (
             <span className="hidden @md:flex items-center shrink-0 self-start h-6">
               <button
@@ -369,8 +251,6 @@ function IssueRow({
         <IssueLabels labels={issue.labels} />
       </div>
 
-      {/* Priority — right-aligned on mobile, column-aligned on desktop. Inline-
-          editable for Linear (docs/191); read-only badge for GitHub. */}
       <div className={`[grid-area:pri] ${FIRST_LINE} justify-self-end @md:justify-self-start`}>
         {canEditPriority ? (
           <IssuePriorityEditor
@@ -385,8 +265,6 @@ function IssueRow({
         )}
       </div>
 
-      {/* Status — its own column on desktop; folded into the meta line on mobile.
-          Inline-editable (docs/191). */}
       <div className="hidden @md:flex items-center h-6 [grid-area:status] text-xs text-(--color-text-secondary) min-w-0">
         {issue.status && (
           <IssueStatusEditor
@@ -408,12 +286,10 @@ function IssueRow({
         )}
       </div>
 
-      {/* Assignee — its own column in the table (@md+); folded into the card meta line below @md. */}
       <div className="hidden @md:flex items-center h-6 [grid-area:assignee] text-xs text-(--color-text-secondary) min-w-0">
         {issue.assignee && <AssigneeLabel assignee={issue.assignee} />}
       </div>
 
-      {/* Card-only meta line: status · assignee (shown when the table columns fold). */}
       <div className="@md:hidden [grid-area:meta] flex items-center gap-1.5 text-[11px] text-(--color-text-tertiary) min-w-0">
         {issue.status && (
           <span className="inline-flex items-center gap-1.5 min-w-0">
@@ -429,10 +305,6 @@ function IssueRow({
         {issue.assignee && <AssigneeLabel assignee={issue.assignee} />}
       </div>
 
-      {/* Card-only nested-issues toggle (docs/206). On the narrow card layout the
-          tree has no disclosure caret; instead a parent shows a tappable "N nested
-          issues" row, collapsed by default, so a long sub-issue list doesn't bury
-          the rest of the list. Hidden in the table layout (the caret takes over). */}
       {hasChildren && (
         <button
           type="button"
@@ -458,11 +330,6 @@ function IssueRow({
         </button>
       )}
 
-      {/* Wrapped in the shared first-line band so the button centers on the same
-          baseline as the other cells (the row is `items-start`). The cell fills
-          the action track and `justify-center` centers the button in it — the
-          `justify-self-center` header label centers in the same track, so
-          "Action" sits centered over the button. */}
       <div className={`[grid-area:action] ${FIRST_LINE} w-full justify-center`}>
         <StartSessionButton
           disabled={!canStart}
@@ -481,7 +348,6 @@ function IssueRow({
   );
 }
 
-/** Sticky table header — shown only in the table layout; the card layout has none. */
 function TableHeader() {
   return (
     <div
@@ -540,51 +406,27 @@ export function IssuesViewer({
 }: IssuesViewerProps) {
   const activeInfo = info ?? trackers.find((t) => t.id === activeTracker);
   const configured = activeInfo?.configured ?? false;
-  // planning#327 — a repo switch drops the declarations until the tracker fetch that
-  // follows lands. Neither "not connected" nor the previous repo's trackers is
-  // true in that window, so the panel says only what it knows.
+  // Tracker declarations are briefly empty while a repo switch loads.
   const declarationsPending = trackers.length === 0 && loading;
   const filterActive = anyFilterActive(filters);
   const showFilterBar = configured && issues.length > 0;
-  // Rows sit on the primary surface; adapt status-dot colors to its luminance
-  // so pale states stay legible on light themes (computed once for all rows).
   const rowSurfaceLum = useSurfaceLuminance("--color-bg-primary");
   const [sortOpen, setSortOpen] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
-  // Tie collapse behavior to the SAME width that flips the row layout (the `@md`
-  // container breakpoint, 28rem). When the panel is card-width, render the
-  // narrow sections (parents collapsed by default + "N nested issues" toggle);
-  // when table-width, the desktop sections (expanded + disclosure). Measured on
-  // the scroll container (the `@container`) so the two always agree. (docs/206)
   const isNarrow = useNarrowContainer(scrollRef, CARD_BREAKPOINT_PX);
   const sections = isNarrow ? mobileSections : desktopSections;
 
-  // Restore the saved scroll offset on mount and stash the current one on
-  // unmount, so opening an issue and pressing back lands on the same row
-  // (docs/189). Rows render synchronously from the cached list, so the
-  // scrollable content already exists here — `useLayoutEffect` sets `scrollTop`
-  // before paint, with no visible jump. Empty deps: this is a mount/unmount
-  // pair, and the captured `initialScrollTop`/`onPersistScroll` are exactly the
-  // values we want (the offset at mount, the persist fn for unmount).
   useLayoutEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
     el.scrollTop = initialScrollTop;
     return () => onPersistScroll(el.scrollTop);
-  // eslint-disable-next-line react-hooks/exhaustive-deps -- mount/unmount pair — the captured `initialScrollTop`/`onPersistScroll` are exactly the intended values (see above)
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- Restore and save only at mount boundaries.
   }, []);
 
   return (
     <div className="flex flex-col h-full">
-      {/* Single top bar: tracker sub-tabs · spacer · issue count · refresh */}
       <div className="flex items-stretch border-b border-(--color-border-secondary) bg-(--color-bg-secondary)">
-        {/* Sub-tab switcher — one per declared tracker, in declaration order.
-            The tab shows ONLY the label (the declared `title`, else the `name`).
-            It used to append `· <binding key>` — the `owner/repo` slug or Linear
-            team key — which made a two-tracker bar wider than the panel while
-            telling the reader something the tracker's own name already implies;
-            the binding survives as the hover title for the rare case it's
-            wanted. */}
         <div className="flex items-stretch">
           {trackers.map((t) => (
             <button
@@ -602,10 +444,8 @@ export function IssuesViewer({
           ))}
         </div>
 
-        {/* Empty space */}
         <div className="flex-1" />
 
-        {/* Issue count + refresh */}
         <div className="flex items-center gap-2 px-3 text-xs text-(--color-text-secondary)">
           <span className="font-medium whitespace-nowrap" data-testid="issue-count">
             {declarationsPending ? (
@@ -644,9 +484,6 @@ export function IssuesViewer({
             </Button>
           )}
           {configured && (
-            // Sort & group editor lives behind this icon — the toolbar (search +
-            // filters) has no room for it inline (docs/206). The accent dot flags
-            // a non-default order; the tooltip names the active order.
             <Button
               variant="ghost"
               size="md"
@@ -695,10 +532,6 @@ export function IssuesViewer({
         />
       )}
 
-      {/* `@container` so the row grid reflows to THIS panel's width, not the
-          viewport; `overflow-auto` so a too-narrow panel scrolls the table
-          horizontally (the grid's title-min keeps columns from crushing) rather
-          than clipping the action column. */}
       <div ref={scrollRef} className="@container flex-1 overflow-auto">
         {error && (
           <div className="flex items-start gap-2 m-3 p-3 rounded bg-(--color-error-subtle) text-(--color-error) text-xs">
@@ -713,9 +546,6 @@ export function IssuesViewer({
           </div>
         ) : !configured ? (
           isGitHubTracker(activeTracker) ? (
-            // GitHub needs no connect step — it reuses ShipIt's GitHub auth and
-            // scopes to the active session's repo. So "not configured" means
-            // there's no GitHub repo in context, not a missing credential.
             <div className="flex items-center justify-center h-full text-center px-6">
               <div className="space-y-3 max-w-xs">
                 <PlugIcon size={ICON_SIZE.XL} className="mx-auto text-(--color-text-tertiary)" />
@@ -762,8 +592,6 @@ export function IssuesViewer({
               return (
                 <div key={section.label ?? `__all-${si}`}>
                   {section.label !== null && (
-                    // Group-by section header (docs/206). Not sticky — keeps it
-                    // simple under the already-sticky column header.
                     <div className="flex items-center gap-2 px-3 py-1.5 bg-(--color-bg-secondary) border-b border-(--color-border-primary) text-[11px] font-semibold uppercase tracking-wide text-(--color-text-secondary)">
                       <span className="truncate">{section.label}</span>
                       <span className="text-(--color-text-tertiary)">{rootCount}</span>

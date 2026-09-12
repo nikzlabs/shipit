@@ -11,7 +11,6 @@ import { useSessionStore } from "../../../stores/session-store.js";
 import { MarkdownContent } from "../../message-markdown.js";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "../../ui/dialog.js";
 
-/** Display names for the spawn chip / consult card. */
 const SUB_AGENT_DISPLAY_NAMES: Record<string, string> = { claude: "Claude", codex: "Codex", opencode: "OpenCode", grok: "Grok Build" };
 
 /**
@@ -46,9 +45,6 @@ function describeRun(card: SubAgentConsultCardData): { subject: string; attribut
   const runOn = card.runOn;
   if (!runOn) return { subject: harness, attribution: null };
 
-  // An absent level is **Default** — the run passed no reasoning flag (a role at
-  // Default, docs/264 req 1). It is a level the user chose, so the card names it
-  // rather than dropping the segment.
   const reasoning = getHarness(card.subAgentId)?.capabilities.reasoning;
   const effort =
     runOn.reasoningEffort === undefined
@@ -67,12 +63,6 @@ function describeRun(card: SubAgentConsultCardData): { subject: string; attribut
   };
 }
 
-/**
- * docs/144 — transient in-flight "Asking Codex…" spinner, rendered at the bottom
- * of the transcript as live activity while the `shipit agent` call is in flight.
- * Emit-only, not persisted (CLAUDE.md §5) — it disappears once the terminal
- * `SubAgentConsultCardRow` lands inline where the consultation happened.
- */
 export function SubAgentSpawnChipRow({ chip }: { chip: SubAgentSpawnChip }) {
   const name = SUB_AGENT_DISPLAY_NAMES[chip.subAgentId] ?? chip.subAgentId;
   return (
@@ -85,14 +75,6 @@ export function SubAgentSpawnChipRow({ chip }: { chip: SubAgentSpawnChip }) {
   );
 }
 
-/**
- * Collapse the verbatim output into a single-line preview for the card face.
- *
- * docs/244 / planning#299 — shared with the server, which now BUILDS this line: a
- * consult's output is modal-only past the preview, so the wire copy carries the
- * preview and nothing else. Applying it again to the server's own preview is a
- * no-op, so this call site is correct for both a whole card and a projected one.
- */
 const previewLine = subAgentPreviewLine;
 
 /**
@@ -115,7 +97,6 @@ function RunAttribution({ text }: { text: string | null }) {
   );
 }
 
-/** The verb that opens the summary line, derived from the card's status. */
 function statusVerb(status: SubAgentConsultCardData["status"]): string {
   return (
     status === "pending" ? "Asking"
@@ -126,19 +107,6 @@ function statusVerb(status: SubAgentConsultCardData["status"]): string {
   );
 }
 
-/**
- * docs/144 + docs/220 — the persisted terminal record for a completed sub-agent
- * spawn. The summary line ("Consulted Codex · 47s · $0.03") survives a session
- * switch / full reload, and when the brokered call produced output (docs/220),
- * the card shows a stripped-down preview and opens the **verbatim** output in a
- * read-only viewer. This is how ShipIt surfaces what it brokers — the consultant's
- * own words, attributed, not re-typed by the primary agent.
- *
- * The viewer is a plain read-only `MarkdownContent` dialog — deliberately NOT a
- * file view: this is transcript content, not a workspace file, so it carries no
- * inline-comment / ask-review affordances. (`MarkdownContent` still linkifies
- * issue keys, file paths, and refs, so the findings stay clickable.)
- */
 export function SubAgentConsultCardRow({ card }: { card: SubAgentConsultCardData }) {
   const [open, setOpen] = useState(false);
   const { subject, attribution } = describeRun(card);
@@ -156,10 +124,6 @@ export function SubAgentConsultCardRow({ card }: { card: SubAgentConsultCardData
 
   const output = card.outputMarkdown?.trim() ? card.outputMarkdown : null;
 
-  // planning#280 — the durable in-flight row. Unlike the transient spinner chip this
-  // is persisted, so it stays put across a session switch, a reload, and a
-  // container restart, and it is anchored at the call site rather than pinned to
-  // the bottom of the transcript.
   if (pending) {
     return (
       <div
@@ -176,10 +140,6 @@ export function SubAgentConsultCardRow({ card }: { card: SubAgentConsultCardData
     );
   }
 
-  // No output (e.g. a transport failure or empty result) — keep the compact,
-  // non-interactive one-liner exactly as before, plus ShipIt's own explanation
-  // when there is one (planning#309: a consult cancelled by an orchestrator restart
-  // is otherwise indistinguishable from one the user cancelled).
   if (!output) {
     return (
       <div
@@ -230,13 +190,6 @@ export function SubAgentConsultCardRow({ card }: { card: SubAgentConsultCardData
   );
 }
 
-/**
- * The verbatim-output viewer. docs/244 / planning#299 — opening it IS the click
- * requirement 8 licenses a loading state for: the transcript payload carries
- * only the preview line, and the full markdown is fetched here. A card that
- * arrived whole (short output, or a pre-planning#299 row) renders immediately and
- * issues no request at all.
- */
 function ConsultOutputDialog({ card, title, preview, onClose }: {
   card: SubAgentConsultCardData;
   title: string;

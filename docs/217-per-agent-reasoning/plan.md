@@ -68,8 +68,8 @@ asserts `reasoning.options`):
 
 ```ts
 reasoning?: {
-  label: string;                                 // "Reasoning" (claude) | "Reasoning effort" (codex)
-  options: { value: string; label: string }[];  // does NOT include the default
+  label: string;
+  options: { value: string; label: string }[];
 }
 ```
 

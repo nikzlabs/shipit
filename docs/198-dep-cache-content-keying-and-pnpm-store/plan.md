@@ -35,8 +35,8 @@ the install exactly like a `sourceCommit` match does today:
 ```
 skip if marker.runtimeKey == runtimeKey
       && marker.installCommands == commands
-      && (marker.sourceCommit == HEAD            // existing exact-commit path
-          || marker.depsHash == hash(dep inputs)) // NEW: content path
+      && (marker.sourceCommit == HEAD
+          || marker.depsHash == hash(dep inputs))
 ```
 
 The `sourceCommit` path stays — it is what proves a *base publish* is safe (ancestry

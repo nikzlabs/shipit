@@ -1,35 +1,4 @@
-/**
- * docs/264 phase 2 (req 17) — **a role is edited in its own editor, not in a row
- * of inline controls.**
- *
- * A role carries a name, a description, standing instructions and five
- * parameters. That is more than a row of dropdowns can hold legibly, and
- * standing instructions are free text that needs room — so opening a role gives
- * one place to edit all of it, and saving is **one write of the whole role**
- * rather than a control-by-control trickle (the Reviewer tab's shape, which is
- * right for two ranked slots and wrong for this).
- *
- * Three things this file is careful about.
- *
- * **The harness is a real control, not a readout** (req 6). An earlier draft of
- * the design said every model has exactly one harness, so the field could ship
- * read-only; that is false — `deepseek-flash` is carried by *both* harnesses,
- * so a read-only field would leave a DeepSeek role
- * unable to say which harness it means, which is the expressiveness req 6 exists
- * to give it. So: a picker where the model has more than one valid harness, a
- * readout where it has exactly one, and the stored id as text where it has none.
- *
- * **The unresolved role stays editable.** When a stored model, service or
- * harness no longer exists the shared pickers have no option to select, and
- * would either drop the field or silently show the first available value. Every
- * control here falls back to the *stored* string, so the editor opens on what
- * the role actually holds and the user re-points it deliberately.
- *
- * **Nothing here decides what runs.** The server validates the whole tuple on
- * save with the harness-explicit validator (req 6), and its refusal names the
- * parameter. This file offers what the server said is eligible; it does not
- * reimplement which harness can carry which model.
- */
+/** Keeps unresolved stored values editable; the server validates the complete role on save. */
 
 import { useState } from "react";
 import { BrainIcon, WarningIcon } from "@phosphor-icons/react";
@@ -64,13 +33,6 @@ const INPUT_CLASS =
   + "text-sm text-(--color-text-primary) placeholder-(--color-text-tertiary) focus:outline-none "
   + "focus:border-(--color-border-focus)";
 
-/**
- * The five parameters, as the editor holds them while they are being edited.
- *
- * `reasoningEffort` is `undefined` for **Default** — the same encoding the
- * composer's picker uses (`ReasoningSelector.tsx`), and the same one the role is
- * stored and spawned with.
- */
 interface DraftParams {
   harnessId: string;
   serviceId: string;
@@ -79,7 +41,6 @@ interface DraftParams {
   reasoningEffort: string | undefined;
 }
 
-/** What both pickers show for "no flag, the harness's own level". */
 const DEFAULT_LEVEL_LABEL = "Default";
 
 export function RoleEditor({
@@ -90,11 +51,11 @@ export function RoleEditor({
   onCancel,
   onSave,
 }: {
-  /** The role being edited, or `undefined` to create one. */
+
   role: RoleView | undefined;
   agentList: AgentOption[];
   busy: boolean;
-  /** The server's refusal, verbatim — it names the parameter that is wrong. */
+
   error: string | undefined;
   onCancel: () => void;
   onSave: (name: string, write: RoleWrite) => void;
@@ -129,15 +90,6 @@ export function RoleEditor({
         })
       : (harness?.reasoning?.options ?? []);
 
-  /**
-   * Move the draft onto a new model, keeping the harness and the level **only
-   * where they still apply**.
-   *
-   * Not a silent repair: this is the draft the user is looking at, and the
-   * control shows the value that would be saved. The alternative — leaving a
-   * level the newly-chosen harness does not declare — would show a tuple the
-   * server is about to refuse, with nothing on screen saying why.
-   */
   const moveTo = (model: EligibleModelOption) => {
     setParams((prev) => {
       const next: DraftParams = {
@@ -154,8 +106,7 @@ export function RoleEditor({
       return {
         ...next,
         harnessId,
-        // The SELECTION being moved to, not the one being moved from — a level
-        // valid on the old row can be meaningless on the new one.
+
         reasoningEffort: effortFor(valid, harnessId, next.reasoningEffort, {
           serviceId: next.serviceId,
           billingMode: next.billingMode,
@@ -190,13 +141,13 @@ export function RoleEditor({
   };
 
   const trimmedName = name.trim();
-  // Req 18 — uniqueness is the server's to enforce (it holds the list); the only
+
   // thing the editor knows is that an unnamed role cannot be saved.
   const canSave = !busy && (reserved || (!!trimmedName && !!params));
 
   const submit = () => {
     if (!canSave) return;
-    // `reserved` implies a role, but only to a reader — the compiler needs the
+
     // role itself, and its name is the one that cannot change (req 2).
     onSave(role?.reserved ? role.name : name, {
       ...(role ? { previousName: role.name } : {}),
@@ -211,9 +162,7 @@ export function RoleEditor({
               serviceId: params.serviceId,
               billingMode: params.billingMode,
               modelId: params.modelId,
-              // Omitted for Default — the absence IS the value, so sending an
-              // explicit `undefined` (or `""`) would be a different thing on the
-              // wire from what the role means.
+
               ...(params.reasoningEffort !== undefined
                 ? { reasoningEffort: params.reasoningEffort }
                 : {}),
@@ -445,17 +394,7 @@ function HarnessControl({
   onChange: (choice: HarnessChoice) => void;
 }) {
   const current = harnesses.find((h) => h.id === selected);
-  /**
-   * A stored harness that is not among the valid ones is the field the row
-   * called invalid, so it has to be **repairable here** — even when exactly one
-   * replacement exists.
-   *
-   * Cross-agent review found this: a DeepSeek role pinned to Codex, on an
-   * install where Codex is later uninstalled, left `claude` as the only valid
-   * harness and rendered `codex` as an inert readout. The role could then only
-   * be repaired sideways, by re-picking the same model to make `moveTo` move
-   * the harness — which is not "keeps its edit controls" in any useful sense.
-   */
+
   const needsRepair = harnesses.length > 0 && !current;
   if (harnesses.length > 1 || needsRepair) {
     return (
@@ -544,19 +483,12 @@ function initialParams(
 ): DraftParams | undefined {
   if (role?.params.kind === "pinned") {
     const { harnessId, serviceId, billingMode, modelId, reasoningEffort } = role.params;
-    // **Verbatim, including an absent level** — `undefined` IS the draft's
-    // Default, the same encoding every other line in this file uses.
-    //
-    // Not `?? ""`, which is what docs/274 put here when a stored absent level
-    // only ever meant "this harness declares none". It breaks twice now that
-    // absent means Default on any harness: `levelLabel` finds no option whose
-    // value is `""` and renders the trigger EMPTY, and `submit` tests
-    // `!== undefined`, so it would send `reasoningEffort: ""` — which the server
+
     // refuses outright ("must be a non-empty string, or omitted for Default").
-    // Opening an existing Default role and pressing Save would fail.
+
     return { harnessId, serviceId, billingMode, modelId, reasoningEffort };
   }
-  if (role) return undefined; // the reviewer — its params are the two slot cards
+  if (role) return undefined;                                                    
   const first = models[0];
   if (!first) return undefined;
   const valid = harnessesForModel(agents, first);
@@ -566,24 +498,11 @@ function initialParams(
     serviceId: first.serviceId,
     billingMode: first.billingMode,
     modelId: first.modelId,
-    // A new role opens at **Default**, not at whichever level the harness
-    // happens to declare first. The old first-option pick meant a new Claude
-    // role silently opened on "Low" and a new Codex one on "None" — an
-    // arbitrary answer to a question the user had not been asked.
+
     reasoningEffort: undefined,
   };
 }
 
-/**
- * The level to hold when the harness changes: the current one where the new
- * harness declares it, else **Default**.
- *
- * Falling back to Default rather than to the harness's first option keeps this
- * honest about what it does not know. The user picked "high" on a harness that
- * is going away; the new harness not declaring "high" says nothing about which
- * of ITS levels they would have wanted, so the editor drops to the one answer
- * that needs no guess and shows it.
- */
 function effortFor(
   harnesses: HarnessChoice[],
   harnessId: string,
@@ -591,10 +510,9 @@ function effortFor(
   selection?: ModelSelection,
 ): string | undefined {
   if (current === undefined) return undefined;
-  // Asked of the SELECTION when there is one (docs/274 req 14): a level the new
+
   // row does not honour must drop to Default, exactly as a level the new harness
-  // does not declare does. Without the selection this falls back to the
-  // vocabulary, which is the pre-catalogue answer.
+
   const options = selection
     ? reasoningOptionsFor(harnessId as AgentId, selection)
     : (harnesses.find((h) => h.id === harnessId)?.reasoning?.options ?? []);
@@ -602,7 +520,6 @@ function effortFor(
   return options.some((o) => o.value === current) ? current : undefined;
 }
 
-/** A level's display label, with `undefined` reading as "Default". */
 function levelLabel(
   options: { value: string; label: string }[],
   current: string | undefined,

@@ -78,31 +78,23 @@ export function SessionSettingsDialog({
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }) {
-  // Server-computed: the now-resolved containment differs from what this
-  // session's live container was created with, so the change applies only on the
-  // next container start. Null while loading / when no container is running.
-  // docs/279 — the SANDBOX half's pending verdict. The network half reads the
-  // hook's instead: one value, one owner.
+
   const [capabilityPendingRestart, setCapabilityPendingRestart] = useState(false);
   const [restarting, setRestarting] = useState(false);
-  // docs/279 — a sandbox's capability grants. `undefined` until the fetch
+
   // resolves (the toggles render disabled meanwhile); never fetched at all for a
-  // non-sandbox session, which has no capability set.
+
   const [capabilities, setCapabilities] = useState<SessionCapabilities | undefined>(undefined);
   const [savingCapabilities, setSavingCapabilities] = useState(false);
 
   const api = useApi();
-  // docs/279 — which half of this dialog applies. Read from the session list
-  // (the same source the sandbox banner and the sidebar badge use) rather than
-  // inferred from a failed capabilities fetch, so the dialog renders the right
-  // shape on the first frame instead of flipping after a round-trip.
+
   const isSandbox = useSessionStore(
     (s) => s.sessions.find((session) => session.id === sessionId)?.kind === "sandbox",
   );
-  // The active session's live "is an agent turn running" flag. The dialog only
-  // renders for the current session, so this is the right session's state. A
+
   // restart would kill the running agent (see CLAUDE.md never-kill rules), so it
-  // gates the restart action.
+
   const agentRunning = useSessionStore((s) => s.isLoading);
 
   /**
@@ -122,10 +114,8 @@ export function SessionSettingsDialog({
   const net = useSessionNetworkMode(open && !isSandbox ? sessionId : null);
   const mode: Mode | undefined = net.loaded ? net.mode : undefined;
 
-  // docs/279 — a sandbox's grants + the server's pending-restart verdict. A
   // separate fetch from the egress one above because the two are mutually
-  // exclusive halves of this dialog: a sandbox has no containment override to
-  // read, and every other session has no capability set.
+
   // eslint-disable-next-line no-restricted-syntax -- external system sync: read this sandbox's grants when the dialog opens
   useEffect(() => {
     if (!open || !isSandbox) return;
@@ -140,9 +130,7 @@ export function SessionSettingsDialog({
           setCapabilityPendingRestart(view.pendingRestart);
         }
       } catch (err) {
-        // Leave the toggles disabled rather than rendering a guessed set the
-        // user could act on: an optimistic default here would show grants this
-        // session may not have.
+
         console.error("[session-capabilities] failed to read grants:", err);
       }
     })();
@@ -190,14 +178,9 @@ export function SessionSettingsDialog({
     setRestarting(true);
     try {
       await api.post(`/api/sessions/${encodeURIComponent(sessionId)}/container/restart`);
-      // Re-handshake the WS so the worker reattaches to the freshly-restarted
-      // container (mirrors the SessionHealthStrip rescue flow). Bridged to App's
-      // `reconnect()` via the window-event listener in useAppBootstrap.
+
       window.dispatchEvent(new CustomEvent("shipit:reconnect-ws"));
-      // The new container starts with the now-resolved mode, so nothing is
-      // pending anymore. Only the SANDBOX half is cleared here: the network
-      // half's value is the server's, and the hook re-reads it on the
-      // invalidation the restart produces rather than being told locally.
+
       setCapabilityPendingRestart(false);
       useUiStore.getState().setToast({
         message: isSandbox
@@ -213,19 +196,9 @@ export function SessionSettingsDialog({
     }
   };
 
-  // Would this session resolve to Contained? "inherit" follows the global switch;
-  // "contained"/"open" force it. Computed from the live `mode` so toggling to
-  // Open hides the warning immediately (Open isn't claiming containment).
   const pendingRestart = isSandbox ? capabilityPendingRestart : net.pendingRestart;
   const sessionContained = mode === "open" ? false : mode === "contained" ? true : net.globalEnabled;
-  // Policy says contain but the deployment can't enforce → warn instead of
-  // silently implying protection. Mirrors the Settings → Network egress banner.
-  //
-  // docs/285 — the WORDING comes from the shared helper, which names which of
-  // the two inactive deployments this is. The old copy here said "contained
-  // sessions fail to start", which is true only when the sidecar image is
-  // missing; with `SESSION_EGRESS_ENFORCE=0` the session starts fine and runs
-  // wide open — the opposite failure, reported as the one it is not.
+
   const enforcementNotice =
     mode !== undefined && sessionContained ? enforcementWarning(net.enforcementStatus) : null;
 

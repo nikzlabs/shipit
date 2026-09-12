@@ -13,7 +13,6 @@ const session = (id: string, title: string, createdAt: string, remoteUrl = ""): 
   remoteUrl,
 });
 
-/** Titles in rendered order — the thing every stability claim here is about. */
 function renderedTitles(): string[] {
   return [...document.querySelectorAll('[data-testid="session-item"] p')].map(
     (el) => el.textContent ?? "",
@@ -38,14 +37,12 @@ describe("AttentionSessionList", () => {
 
     expect(renderedTitles()).toEqual(["Newest", "Oldest"]);
     expect(screen.queryByText("Calm")).toBeNull();
-    // req 12 — the repo name replaces the grouping the view drops.
+
     expect(screen.getByText("repo")).toBeTruthy();
   });
 
   it("appends a late arrival instead of inserting it into the date order", () => {
-    // req 7 — no row already on screen may move. A plain createdAt sort would
-    // put "Newer" on top the moment it qualifies, pushing "Older" down a slot
-    // under the pointer; arrival order is what actually holds positions fixed.
+
     const sessions = [
       session("old", "Older", "2024-01-01"),
       session("new", "Newer", "2024-02-01"),
@@ -66,14 +63,12 @@ describe("AttentionSessionList", () => {
     const { rerender, unmount } = render(<AttentionSessionList {...props(sessions, ["a", "b"])} />);
     expect(renderedTitles()).toEqual(["Settles", "Still waiting"]);
 
-    // "a" stops needing attention while the view is open.
     rerender(<AttentionSessionList {...props(sessions, ["b"])} />);
     expect(renderedTitles()).toEqual(["Settles", "Still waiting"]);
-    // Losing the marker is the signal; the row also dims, like an archived one.
+
     expect(screen.getByText("Settles").closest(".opacity-60")).toBeTruthy();
     expect(screen.getByText("Still waiting").closest(".opacity-60")).toBeNull();
 
-    // Leaving and re-entering the view is what clears it.
     unmount();
     render(<AttentionSessionList {...props(sessions, ["b"])} />);
     expect(renderedTitles()).toEqual(["Still waiting"]);

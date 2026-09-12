@@ -181,9 +181,6 @@ export function VoiceTab() {
   const ttsProviderLabel = getVoiceProvider(ttsProvider)?.label ?? ttsProvider;
   const ttsConfigured = configured.includes(ttsProvider);
 
-  // Verifies the selected playback provider's key by synthesizing one short
-  // sentence. A successful TTS round-trip confirms the credential without
-  // needing mic permission here.
   const runTest = async () => {
     setTestState("testing");
     setTestMessage(null);

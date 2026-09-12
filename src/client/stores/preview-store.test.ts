@@ -6,8 +6,7 @@ import { VIEWPORT_MEMORY_KEY } from "./viewport-memory.js";
 
 describe("preview-store device viewport", () => {
   beforeEach(() => {
-    // clearViewportMemory before localStorage.clear(): it writes "{}" to
-    // storage, and these tests want a genuinely empty storage baseline.
+
     usePreviewStore.getState().clearViewportMemory();
     localStorage.clear();
     usePreviewStore.getState().reset();
@@ -67,8 +66,7 @@ describe("preview-store device viewport", () => {
       const s = usePreviewStore.getState();
       expect(s.devicePreset).toMatchObject({ id: "custom", label: "Custom", category: "custom" });
       expect(s.customSize).toEqual({ width: 500, height: 900 });
-      // A freeform size is stored as rendered — a leftover landscape flag from
-      // the preset it detached from would render it swapped.
+
       expect(s.isLandscape).toBe(false);
     });
   });
@@ -81,8 +79,7 @@ describe("preview-store device viewport", () => {
     });
 
     it("restores each session's viewport when switching between sessions", () => {
-      // Mirrors resumeSessionInternal's order: mutate under A, snapshot A,
-      // move the session id, restore B.
+
       usePreviewStore.getState().setDevicePreset(findPresetById("iphone-16"));
       usePreviewStore.getState().toggleLandscape();
       usePreviewStore.getState().snapshotSession("session-a");
@@ -108,8 +105,7 @@ describe("preview-store device viewport", () => {
 
     it("restores from memory even when an accidental defaults snapshot exists (cold load)", () => {
       usePreviewStore.getState().setDevicePreset(findPresetById("pixel-9"));
-      // Cold load: the URL→store sync effect calls resumeSessionInternal while
-      // the store still holds defaults, so a defaults snapshot for the incoming
+
       // session exists by the time restoreSession runs. The memory must win.
       usePreviewStore.setState({ devicePreset: null, isLandscape: false, customSize: null });
       usePreviewStore.getState().snapshotSession("session-a");
@@ -188,7 +184,7 @@ describe("preview-store startup steps", () => {
 
   describe("appendStartupStepLog", () => {
     it("no-ops when the target step does not exist", () => {
-      // No initStartupSteps() call — appending should not crash.
+
       usePreviewStore.getState().appendStartupStepLog("install", "hello\n");
       expect(usePreviewStore.getState().startupSteps).toEqual([]);
     });
@@ -210,15 +206,15 @@ describe("preview-store startup steps", () => {
 
     it("keeps only the most recent 50 lines for chatty installs", () => {
       usePreviewStore.getState().initStartupSteps();
-      // Pump in 200 distinct lines.
+
       for (let i = 0; i < 200; i++) {
         usePreviewStore.getState().appendStartupStepLog("install", `line ${i}\n`);
       }
       const step = usePreviewStore.getState().startupSteps.find((s) => s.stepId === "install");
       expect(step?.logLines.length).toBe(50);
-      // Last appended line wins.
+
       expect(step?.logLines[49]).toBe("line 199");
-      // Trimmed from the front, so anything older than line 150 is gone.
+
       expect(step?.logLines[0]).toBe("line 150");
     });
 
@@ -262,10 +258,7 @@ describe("preview-store remembered paths", () => {
   });
 
   it("survives the session-scoped reset", () => {
-    // `resetSessionState()` calls `reset()` when the route leaves a session for
-    // home — the same moment the desktop layout unmounts the iframe pool. If
-    // reset wiped these, the pool would be recreated at the front page, which
-    // is the one thing this map exists to prevent.
+
     usePreviewStore.getState().setPreviewPath("s1:5173", "/orders/8842");
     usePreviewStore.getState().reset();
     expect(usePreviewStore.getState().previewPaths["s1:5173"]).toBe("/orders/8842");
@@ -279,10 +272,7 @@ describe("preview-store remembered paths", () => {
   });
 
   it("rejects paths that the URL parser would resolve to a foreign origin", () => {
-    // WHATWG parsing treats `\` as `/` for http(s) and strips tab/CR/LF
-    // anywhere in the input, so each of these resolves off-origin despite
-    // starting with a single slash. The value is authored by the previewed
-    // page, and it reaches an iframe `src` and the user's clipboard.
+
     for (const path of [
       "//evil.example/x",
       "/\\evil.example/x",
@@ -300,7 +290,7 @@ describe("preview-store remembered paths", () => {
 
   it("evicts the least-recently-written entry past the cap", () => {
     for (let i = 0; i < 100; i++) usePreviewStore.getState().setPreviewPath(`s${i}:3000`, `/p${i}`);
-    // Re-writing the oldest key makes it most recent, so the *next* one ages out.
+
     usePreviewStore.getState().setPreviewPath("s0:3000", "/refreshed");
     usePreviewStore.getState().setPreviewPath("s100:3000", "/p100");
 

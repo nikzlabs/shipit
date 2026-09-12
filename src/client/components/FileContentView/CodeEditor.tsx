@@ -5,7 +5,6 @@ import { createCommentWidgetManager } from "../MonacoCommentWidgets.js";
 import type { CommentWidgetManager, LineCommentLike } from "../MonacoCommentWidgets.js";
 import type * as MonacoEditor from "monaco-editor";
 
-/** Map file extensions to Monaco language IDs. */
 export function getLanguageFromPath(filePath: string): string {
   const ext = filePath.split(".").pop()?.toLowerCase() ?? "";
   const map: Record<string, string> = {
@@ -36,13 +35,6 @@ export function getLanguageFromPath(filePath: string): string {
   return map[ext] ?? "plaintext";
 }
 
-/**
- * Read-only Monaco editor with inline line-comment widgets. Moved verbatim from
- * `FilePreviewModal` so both the dialog and the Present tab share one code/source
- * view (docs/219). `language` overrides the path-derived language — used so an
- * SVG file opened in "source" mode highlights as XML regardless of how the
- * surface labels it.
- */
 export function CodeEditor({
   filePath,
   content,
@@ -57,9 +49,7 @@ export function CodeEditor({
   sessionId: string;
   comments: { id: string; kind: "line" | "selection"; line?: number; text: string }[];
   readOnly?: boolean;
-  /** 1-based line to scroll to and briefly highlight once the editor mounts. */
   revealLine?: number;
-  /** Explicit Monaco language ID; defaults to `getLanguageFromPath(filePath)`. */
   language?: string;
 }) {
   const editorRef = useRef<HTMLDivElement>(null);
@@ -79,18 +69,10 @@ export function CodeEditor({
       .map((c) => ({ id: c.id, kind: "line", line: c.line, text: c.text }));
   }, [comments]);
 
-  // Latest `lineComments`, readable from inside the async editor setup below.
-  // The setup awaits a dynamic import, and the sync effect at the end of this
-  // component no-ops while that import is pending (there is no manager yet) —
-  // so comments arriving in that window would be applied by neither path if the
-  // setup used its captured value, and would stay stale until the next change.
+  // Cover comment updates while Monaco's dynamic import is pending.
   const lineCommentsRef = useRef(lineComments);
   lineCommentsRef.current = lineComments;
 
-  // `lineComments` is intentionally absent from the deps (see the note at the
-  // end of this effect): including it would tear down and rebuild the whole
-  // Monaco editor on every comment change. The effect below syncs it instead,
-  // and the ref above covers the import-in-flight window.
   // eslint-disable-next-line no-restricted-syntax -- Monaco lifecycle (createEditor + cleanup)
   useEffect(() => {
     if (!editorRef.current) return;
@@ -130,20 +112,12 @@ export function CodeEditor({
           if (readOnly) return;
           void deleteComment(sessionId, filePath, id);
         },
-        // An open comment editor blocks the footer's "Send comments" so an
-        // accidental submit can't drop a half-typed comment. The manager emits
-        // `false` on dispose, so unmounting mid-compose clears the flag.
         onInputOpenChange: (open) => { setComposing(sessionId, filePath, open); },
         readOnly,
       });
 
-      // Read through the ref, not the captured value: comments may have changed
-      // while the dynamic import above was in flight.
       managerRef.current.setComments(lineCommentsRef.current);
 
-      // Jump to (and briefly highlight) the requested line, e.g. when opened
-      // from a `path:line` link in chat. Clamp to the document so an out-of-range
-      // line from a stale reference still lands somewhere sensible.
       if (revealLine && revealLine > 0) {
         const lineCount = editor.getModel()?.getLineCount() ?? revealLine;
         const target = Math.min(revealLine, lineCount);
@@ -158,7 +132,6 @@ export function CodeEditor({
             },
           },
         ]);
-        // Fade the highlight after a moment so it draws the eye without sticking.
         setTimeout(() => {
           if (!disposed) decorations.clear();
         }, 2400);
@@ -172,11 +145,9 @@ export function CodeEditor({
       editorInstanceRef.current?.dispose();
       editorInstanceRef.current = null;
     };
-    // No `lineComments` dep — the setup reads it through `lineCommentsRef`, so
-    // comments sync without tearing down and rebuilding the editor.
+    // Adding lineComments would recreate Monaco for every comment update.
   }, [filePath, content, sessionId, addLineComment, editComment, deleteComment, setComposing, readOnly, revealLine, language]);
 
-  // Sync comments without rebuilding the editor.
   // eslint-disable-next-line no-restricted-syntax -- syncing widget state with store updates
   useEffect(() => {
     managerRef.current?.setComments(lineComments);

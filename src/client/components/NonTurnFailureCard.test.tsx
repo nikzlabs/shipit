@@ -50,16 +50,11 @@ describe("NonTurnFailureCard", () => {
     expect(card.textContent).toContain("dismissed");
   });
 
-  // The dismissal is persisted server-side, so a reload rehydrates the card
-  // already collapsed rather than re-showing a notice the user has read.
   it("renders collapsed when it was dismissed before this load", () => {
     render(<NonTurnFailureCard {...base} dismissedAt="2026-08-09T00:05:00.000Z" onDismiss={() => {}} />);
     expect(screen.getByTestId("non-turn-failure-card").getAttribute("data-dismissed")).toBe("true");
   });
 
-  // Cross-backend review: the dismissed flag used to be seeded into `useState`
-  // at mount, so a dismissal arriving from another attached viewer left this
-  // copy expanded until a remount. Local optimism ORed with the persisted stamp.
   it("follows a dismissal that arrives after mount", () => {
     const { rerender } = render(<NonTurnFailureCard {...base} onDismiss={() => {}} />);
     expect(screen.getByTestId("non-turn-failure-card").getAttribute("data-dismissed")).toBeNull();

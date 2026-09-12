@@ -5,10 +5,7 @@ plugins {
 
 android {
     namespace = "com.shipit.overlaytest"
-    // Deliberately OFF-matrix: the baked image ships android-34 and android-35
-    // only. Building against 33 forces the on-demand overlay to provision
-    // "platforms;android-33". Do NOT bump this to a baked level — that defeats
-    // the whole point of the fixture.
+    // Keep off-matrix to test on-demand SDK provisioning.
     compileSdk = 33
 
     defaultConfig {
@@ -28,8 +25,6 @@ android {
     }
 }
 
-// No androidx dependencies on purpose: an AndroidX artifact compiled against
-// API 34 would force compileSdk 34 and defeat the off-matrix (33) overlay
-// exercise. This app uses only the android.* framework.
+// AndroidX would force compileSdk 34 and invalidate this fixture.
 dependencies {
 }

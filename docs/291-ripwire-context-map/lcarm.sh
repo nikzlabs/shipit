@@ -1,8 +1,5 @@
 #!/usr/bin/env bash
-# Run the LemonCrow arm for ONE task. Mirrors /persist/bench/pair.sh exactly,
-# except the tool paragraph names lcsearch.py instead of the ripwire binary.
-# The baseline arm is NOT re-run: /persist/bench/runs/<slug>.baseline.json is
-# reused, same prompt and same role, so the arms stay comparable.
+
 set -uo pipefail
 LCS="/persist/lcbench/lcsearch.py"
 OUT=/persist/bench/runs

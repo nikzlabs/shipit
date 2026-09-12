@@ -4,18 +4,12 @@ import { Button } from "./ui/button.js";
 
 export interface HomeScreenProps {
   onAddRepo: () => void;
-  /** Whether GitHub is connected. Drives the on-ramp label: a connected user
-   *  adds a repo directly, while a manual-identity user is routed to the
-   *  Connect-GitHub prompt instead of a repo dialog that can only fail. */
   githubAuthenticated: boolean;
   hasRepos: boolean;
 }
 
 export function HomeScreen({ onAddRepo, githubAuthenticated, hasRepos }: HomeScreenProps) {
   if (!hasRepos) {
-    // Single on-ramp: add a GitHub repository. When GitHub isn't connected yet
-    // the same button routes to the Connect-GitHub prompt first, so a manual
-    // identity always leads somewhere real instead of a repo dialog that fails.
     return (
       <div className="flex flex-col items-center justify-center flex-1 min-h-0 px-4">
         <div className="text-center space-y-5 max-w-sm">

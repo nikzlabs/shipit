@@ -21,10 +21,8 @@
 import { usePlaybackStore } from "./playback-store.js";
 import { useSettingsStore } from "../stores/settings-store.js";
 
-/** One chime per this quiet window. Resets after this long with no notes. */
 export const CHIME_QUIET_WINDOW_MS = 20_000;
 
-// Module-level state — deliberately not React state. Mirrors playback-store.
 let unlocked = false;
 let lastNoteAt = 0;
 let audioCtx: AudioContext | null = null;
@@ -39,11 +37,6 @@ function getAudioCtx(): AudioContext | null {
   return audioCtx;
 }
 
-/**
- * Prime autoplay on a user gesture (the hands-free toggle, or a tap-to-play
- * click). Resumes the shared AudioContext so later chimes + autoplay are
- * permitted by browser policy.
- */
 export function armAutoplay(): void {
   unlocked = true;
   const ctx = getAudioCtx();
@@ -54,11 +47,6 @@ export function armAutoplay(): void {
   }
 }
 
-/**
- * Play a short attention chime, debounced to once per quiet window. Called
- * before autoplaying speech to re-grab an eyes-off user after silence — not on
- * every note in a burst.
- */
 function maybeChime(now: number): void {
   if (now - lastNoteAt < CHIME_QUIET_WINDOW_MS) return;
   const ctx = getAudioCtx();
@@ -79,12 +67,6 @@ function maybeChime(now: number): void {
   }
 }
 
-/**
- * Decide whether to autoplay an incoming native voice note. Returns true when
- * autoplay was triggered (so the bubble can suppress the tap-to-play prompt).
- *
- * `nowMs` is injectable for tests.
- */
 export function autoplayVoiceNote(
   note: { id: string; headline: string },
   nowMs: number = Date.now(),
@@ -95,13 +77,10 @@ export function autoplayVoiceNote(
   maybeChime(nowMs);
   lastNoteAt = nowMs;
 
-  // Latest-wins: playback-store.play stops any current audio and starts this
-  // one. A superseded note remains tap-to-replay in its bubble.
   void usePlaybackStore.getState().play(note.id, note.headline);
   return true;
 }
 
-/** Test-only reset of module state. */
 export function __resetVoiceNotesStateForTest(): void {
   unlocked = false;
   lastNoteAt = 0;

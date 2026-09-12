@@ -54,26 +54,12 @@ import type { ToolResultBlock } from "./MessageList.js";
  */
 const CLAMP_CLASS = "max-h-48 overflow-hidden";
 
-/**
- * req 4 — the inline report's measure is capped so it stops running the full
- * width of the chat.
- *
- * Deliberately NOT part of {@link reportProseClasses}: those classes are also
- * applied to the modal's *scroll container*, and a `max-width` on a scrolling
- * box shrinks the box — not just the text. That left the modal with a dead
- * ~80px gutter down its right side and a scrollbar floating in the middle of
- * it instead of against the dialog edge. The modal is a dedicated reading
- * surface whose own `max-w-3xl` is already the measure, so it takes the prose
- * styling without this.
- */
 const MEASURE_CAP = "max-w-[78ch]";
 
 export function SubagentReport({ result }: { result: ToolResultBlock }) {
   const report = parseSubagentReport(result.content);
   const isError = result.isError ?? false;
 
-  // req 1 — not a report at all. Checked before anything else so no part of the
-  // acknowledgement can reach the panel, the chips, or the modal.
   if (!isError && isBackgroundLaunchAck(report.text)) {
     return <BackgroundLaunchRow />;
   }
@@ -81,7 +67,6 @@ export function SubagentReport({ result }: { result: ToolResultBlock }) {
   return <ReportPanel result={result} text={report.text} meta={report.meta} isError={isError} />;
 }
 
-/** req 1/2 — the subagent is still working; there is nothing to report yet. */
 function BackgroundLaunchRow() {
   return (
     <div
@@ -109,18 +94,12 @@ function ReportPanel({
   const chips = parseReportMeta(meta);
   const { ref: bodyRef, overflows } = useOverflows(text);
 
-  // Either the panel is visibly cutting the report, or the server already did
-  // (req 8) and the rest is behind the fetch. Both mean there is more to see.
   const hasMore = overflows || result.truncated === true;
 
   return (
     <div data-testid="subagent-final-report" className="mt-2">
       <div
-        // The body is deliberately OPAQUE (`--color-bg-primary`, not a
-        // translucent tint): the clamp's fade has to blend into it exactly, and
-        // a translucent panel's effective colour depends on whatever is behind
-        // it, which no single gradient stop can match. The border and the
-        // tinted header do the separating work instead (req 3).
+
         className={`overflow-hidden rounded-lg border ${
           isError
             ? "border-(--color-error)/35 bg-(--color-error-subtle)"
@@ -241,8 +220,7 @@ function ReportModal({
   onClose: () => void;
 }) {
   const full = useFullReport(result);
-  // Until the fetch lands, show the clamped text we already have rather than a
-  // blank modal — the head is genuinely the head of what is being fetched.
+
   const text = full.text ?? inlineText;
 
   return (

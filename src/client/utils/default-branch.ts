@@ -20,15 +20,12 @@ import type { RepoInfo } from "../../server/shared/types.js";
 import { useRepoStore } from "../stores/repo-store.js";
 import { useSessionStore } from "../stores/session-store.js";
 
-/** The guess used until the repo's real default branch is known. */
 export const FALLBACK_DEFAULT_BRANCH = "main";
 
-/** Tolerant repo-URL match — mirrors the server's `canonicalRepoKey` fallback. */
 export function normalizeRepoUrl(u: string): string {
   return u.trim().toLowerCase().replace(/\/+$/, "").replace(/\.git$/, "");
 }
 
-/** Find a tracked repo by URL, tolerant of `.git` / trailing-slash variance. */
 export function findRepoByUrl(
   repos: RepoInfo[],
   url: string | undefined,
@@ -38,7 +35,6 @@ export function findRepoByUrl(
   return repos.find((r) => normalizeRepoUrl(r.url) === key);
 }
 
-/** The base branch for a remote URL — its resolved default, else `"main"`. */
 export function resolveDefaultBranch(
   repos: RepoInfo[],
   remoteUrl: string | undefined,
@@ -46,14 +42,6 @@ export function resolveDefaultBranch(
   return findRepoByUrl(repos, remoteUrl)?.defaultBranch ?? FALLBACK_DEFAULT_BRANCH;
 }
 
-/**
- * The default branch of the repo backing `sessionId`. Re-renders when the repo
- * list updates (the value arrives asynchronously over SSE shortly after boot),
- * so a component reading this settles onto the real branch on its own.
- *
- * Pass `undefined` for "no session" — you get the fallback rather than a crash,
- * which keeps this usable from components that render before hydration.
- */
 export function useSessionDefaultBranch(sessionId: string | undefined): string {
   const remoteUrl = useSessionStore((s) =>
     sessionId ? s.sessions.find((sess) => sess.id === sessionId)?.remoteUrl : undefined,

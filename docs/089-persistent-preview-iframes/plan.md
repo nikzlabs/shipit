@@ -37,13 +37,13 @@ PreviewFrame already owns the UI chrome (top bar, port selector, error panel, ov
 interface IframeSlot {
   sessionId: string;
   port: number;
-  url: string | null;   // set when polling confirms readiness
-  ready: boolean;        // polling completed for this slot
+  url: string | null;
+  ready: boolean;
 }
 
 state:
   slots: Map<slotKey, IframeSlot>
-  slotOrder: string[]           // LRU, most recent first
+  slotOrder: string[]
   iframeRefs: Map<slotKey, HTMLIFrameElement | null>
 ```
 

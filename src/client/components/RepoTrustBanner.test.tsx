@@ -63,7 +63,7 @@ describe("RepoTrustBanner (docs/178)", () => {
       "/api/repos/trust",
       expect.objectContaining({ method: "POST", body: JSON.stringify({ url }) }),
     );
-    // Optimistic flip clears the restricted overlay.
+
     await waitFor(() => expect(screen.queryByTestId("repo-trust-banner")).not.toBeInTheDocument());
     expect(useRepoStore.getState().repos[0].trusted).toBe(true);
   });

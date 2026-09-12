@@ -45,8 +45,6 @@ for name, src, want in CASES:
     if not ok:
         print(f"        want: {want!r}\n        got : {got!r}")
 
-# The migration header carries the origin key req 9 requires; a blanket sweep
-# would rewrite it into a pointer at the issue itself.
 body = "> Migrated from Linear **SHI-145**, created 2026-06-14.\n\n---\n\nBlocked on SHI-31."
 got, _ = rewrite_body(body, M)
 ok = got.startswith("> Migrated from Linear **SHI-145**") and "planning#33" in got

@@ -168,19 +168,17 @@ CLAUDE.md §5). ShipIt builds no emulator service, WebRTC bridge, or APK-push pi
 and the `/dev/kvm` allowance described above:
 
 ```yaml
-# docker-compose.yml — the recipe ShipIt ships; the agent drops it in on request,
-# alongside any web preview services (one compose file holds both)
 services:
   emulator:
-    image: budtmo/docker-android:emulator_14.0   # or an AOSP emulator-webrtc image
-    user: androidusr               # REQUIRED — image ships its own user; see below
+    image: budtmo/docker-android:emulator_14.0
+    user: androidusr
     environment:
-      - WEB_VNC=true                       # REQUIRED — enables the noVNC web UI (the user-facing preview)
-      - EMULATOR_DEVICE=Samsung Galaxy S10 # device profile
-    devices: ["/dev/kvm:/dev/kvm"] # hardware accel — the generator allowlists exactly this mapping
-    ports: ["6080:6080"]           # preview metadata: x-shipit-preview proxies ports[0]'s container port (the web UI)
-    expose: ["5555"]               # adb, reachable on the Compose network by service name
-    x-shipit-preview: auto         # renders the web UI in the preview pane
+      - WEB_VNC=true
+      - EMULATOR_DEVICE=Samsung Galaxy S10
+    devices: ["/dev/kvm:/dev/kvm"]
+    ports: ["6080:6080"]
+    expose: ["5555"]
+    x-shipit-preview: auto
 ```
 
 ShipIt strips host port bindings (services are reached through the preview proxy on the session network,

@@ -4,10 +4,6 @@
 <meta charset="utf-8">
 <title>Session sidebar — repo group separation variants</title>
 <style>
-/* ─────────────────────────────────────────────────────────────────────────
-   Theme tokens — copied from src/client/themes/warm-light.css and dark.css
-   so the mock renders against the real palette, not invented colors.
-   ───────────────────────────────────────────────────────────────────────── */
 :root, .warm-light {
   --color-bg-primary: #fdf8f0;
   --color-bg-secondary: #f5ede0;
@@ -49,8 +45,6 @@
   --page-fg: #fafafa;
 }
 
-/* Per-repo accent hues. Deliberately desaturated so four of them stacked in a
-   272px rail read as "different projects", not as a status/severity signal. */
 .warm-light [data-accent="a0"] { --accent: #8a6a3c; --accent-soft: rgba(138,106,60,.10); }
 .warm-light [data-accent="a1"] { --accent: #2f6f6a; --accent-soft: rgba(47,111,106,.10); }
 .warm-light [data-accent="a2"] { --accent: #6b4c9a; --accent-soft: rgba(107,76,154,.10); }
@@ -70,7 +64,6 @@ body {
   padding: 28px 28px 64px;
 }
 
-/* ── Page chrome ───────────────────────────────────────────────────────── */
 h1 { font-size: 20px; margin: 0 0 6px; letter-spacing: -.01em; }
 h2 { font-size: 15px; margin: 44px 0 10px; }
 .lede { max-width: 84ch; color: var(--color-text-secondary); margin: 0 0 4px; font-size: 13px; }
@@ -105,13 +98,6 @@ h2 { font-size: 15px; margin: 44px 0 10px; }
 .pill.good { background: var(--color-accent); color: #fff; }
 .dark .pill.good { color: #1a1206; }
 
-/* ─────────────────────────────────────────────────────────────────────────
-   APP CONTEXT — every variant is rendered against its REAL neighbours, not
-   floated on an invented page color. The sidebar rail is --color-bg-primary
-   (SessionSidebar.tsx:394) and the chat panel beside it is
-   --color-bg-secondary (AppLayout.tsx:344). No variant may repaint the rail
-   without saying so — see variant 3.
-   ───────────────────────────────────────────────────────────────────────── */
 .app {
   display: flex; height: 604px; border-radius: 10px; overflow: hidden;
   border: 1px solid var(--color-border-primary); box-shadow: 0 4px 16px rgba(0,0,0,.10);
@@ -128,7 +114,6 @@ h2 { font-size: 15px; margin: 44px 0 10px; }
 .skel { height: 6px; border-radius: 999px; background: var(--color-border-primary); margin: 6px 0; }
 .skel.s2 { width: 72%; } .skel.s3 { width: 54%; }
 
-/* ── Sidebar skeleton — identical DOM in every variant ─────────────────── */
 .grp { display: flex; flex-direction: column; position: relative; }
 .ghead { display: flex; align-items: center; gap: 6px; padding: 6px 12px 6px 14px; position: relative; }
 .caret { width: 20px; height: 20px; display: grid; place-items: center; flex: 0 0 auto; color: var(--color-text-tertiary); }
@@ -155,17 +140,12 @@ h2 { font-size: 15px; margin: 44px 0 10px; }
 .row.new .plus { width: 22px; height: 22px; display: grid; place-items: center; flex: 0 0 auto; opacity: .7; }
 .row.new .title { color: var(--color-text-secondary); }
 
-/* ── v1 · Current (baseline) — the skeleton above IS today's rendering ─── */
-
-/* ── v2 · Hairline rule + breathing room ───────────────────────────────── */
 .v-rule .grp + .grp { border-top: 1px solid var(--color-border-primary); margin-top: 10px; padding-top: 10px; }
 
-/* ── v3 · Outline cards — containment with NO repainted rail ───────────── */
 .v-card .scroll { padding: 6px; }
 .v-card .grp { border: 1px solid var(--color-border-primary); border-radius: 9px; overflow: hidden; margin-bottom: 8px; }
 .v-card .row { margin: 0 4px; }
 
-/* ── v4 · Filled header band ───────────────────────────────────────────── */
 .v-band .ghead {
   background: var(--color-bg-secondary);
   border-top: 1px solid var(--color-border-primary);
@@ -176,7 +156,6 @@ h2 { font-size: 15px; margin: 44px 0 10px; }
 .v-band .gname { color: var(--color-text-primary); }
 .v-band .gbody { padding-top: 4px; }
 
-/* ── v5 · Colored spine ────────────────────────────────────────────────── */
 .v-spine .grp { padding-left: 10px; }
 .v-spine .grp + .grp { margin-top: 10px; }
 .v-spine .grp::before { content: ""; position: absolute; left: 6px; top: 8px; bottom: 8px; width: 3px; border-radius: 999px; background: var(--accent); }
@@ -184,7 +163,6 @@ h2 { font-size: 15px; margin: 44px 0 10px; }
 .v-spine .glyph { color: var(--accent); }
 .v-spine .gname { color: var(--color-text-primary); }
 
-/* ── v6 · Monogram tile + accent name ──────────────────────────────────── */
 .v-tile .grp + .grp { margin-top: 12px; }
 .v-tile .caret { display: none; }
 .v-tile .glyph { display: none; }
@@ -195,7 +173,6 @@ h2 { font-size: 15px; margin: 44px 0 10px; }
 .v-tile .gcount { display: inline; }
 .v-tile .gbody { padding-left: 8px; }
 
-/* ── v7 · Typographic hierarchy only ───────────────────────────────────── */
 .v-type .grp + .grp { margin-top: 22px; }
 .v-type .ghead { padding-bottom: 2px; }
 .v-type .gname { font-size: 14px; font-weight: 700; letter-spacing: -.01em; color: var(--color-text-primary); }
@@ -205,7 +182,6 @@ h2 { font-size: 15px; margin: 44px 0 10px; }
 .v-type .row .title { font-size: 12px; }
 .v-type .pindiv { display: none; }
 
-/* ── v8 · Accordion (one repo open) ────────────────────────────────────── */
 .v-accordion .grp + .grp { border-top: 1px solid var(--color-border-primary); }
 .v-accordion .grp.closed .gbody { display: none; }
 .v-accordion .grp.closed .ghead { padding-top: 9px; padding-bottom: 9px; }
@@ -216,7 +192,6 @@ h2 { font-size: 15px; margin: 44px 0 10px; }
 .v-accordion .grp:not(.closed) .ghead { background: var(--color-bg-secondary); }
 .v-accordion .grp:not(.closed) .gname { color: var(--color-text-primary); }
 
-/* ── v9 · Tree guide line ──────────────────────────────────────────────── */
 .v-tree .grp + .grp { margin-top: 14px; }
 .v-tree .gbody { padding-left: 14px; }
 .v-tree .spine { display: block; position: absolute; left: 21px; top: 0; bottom: 10px; width: 1px; background: var(--color-border-primary); }
@@ -225,7 +200,6 @@ h2 { font-size: 15px; margin: 44px 0 10px; }
 .v-tree .pindiv { margin-left: 6px; }
 .v-tree .gname { color: var(--color-text-primary); }
 
-/* ── v10 · Outline card + per-repo accent edge + tile ──────────────────── */
 .v-combo .scroll { padding: 6px; }
 .v-combo .grp {
   border: 1px solid var(--color-border-primary); border-left: 3px solid var(--accent);
@@ -240,7 +214,6 @@ h2 { font-size: 15px; margin: 44px 0 10px; }
 .v-combo .sublabel { font-size: 9.5px; opacity: .8; }
 .v-combo .row { margin: 0 4px; }
 
-/* ── Legend / matrix ───────────────────────────────────────────────────── */
 .matrix { margin: 20px 0 0; border-collapse: collapse; font-size: 12px; background: var(--color-bg-primary); border-radius: 10px; overflow: hidden; }
 .matrix th, .matrix td { padding: 7px 12px; text-align: left; border-bottom: 1px solid var(--color-border-primary); }
 .matrix th { font-size: 10.5px; text-transform: uppercase; letter-spacing: .06em; color: var(--color-text-tertiary); font-weight: 700; background: var(--color-bg-secondary); }
@@ -286,7 +259,6 @@ h2 { font-size: 15px; margin: 44px 0 10px; }
 <table class="matrix" id="matrix"></table>
 
 <script>
-/* ── Icons (inline, no deps) ───────────────────────────────────────────── */
 const I = {
   caretDown: '<svg width="12" height="12" viewBox="0 0 256 256" fill="currentColor"><path d="M213.7 101.7l-80 80a8 8 0 0 1-11.4 0l-80-80A8 8 0 0 1 48 88h160a8 8 0 0 1 5.7 13.7z"/></svg>',
   github: '<svg width="12" height="12" viewBox="0 0 256 256" fill="currentColor"><path d="M208.3 75.7a80 80 0 0 0-6.5-63.4 8 8 0 0 0-6.9-4 79.9 79.9 0 0 0-62.3 30h-9.2a79.9 79.9 0 0 0-62.3-30 8 8 0 0 0-6.9 4 80 80 0 0 0-6.5 63.4A79.2 79.2 0 0 0 40 112v8a72.1 72.1 0 0 0 57.2 70.5A47.7 47.7 0 0 0 88 216v8H64a24 24 0 0 1-24-24 40 40 0 0 0-40-40 8 8 0 0 0 0 16 24 24 0 0 1 24 24 40 40 0 0 0 40 40h24v16a8 8 0 0 0 16 0v-40a32 32 0 0 1 64 0v40a8 8 0 0 0 16 0v-40a47.7 47.7 0 0 0-9.2-25.5A72.1 72.1 0 0 0 216 120v-8a79.2 79.2 0 0 0-7.7-36.3z"/></svg>',
@@ -299,7 +271,6 @@ const I = {
   dots: '<svg width="14" height="14" viewBox="0 0 256 256" fill="currentColor"><circle cx="128" cy="60" r="14"/><circle cx="128" cy="128" r="14"/><circle cx="128" cy="196" r="14"/></svg>',
 };
 
-/* ── Data — the four repos from the screenshot ─────────────────────────── */
 const REPOS = [
   { name: "personal", accent: "a0", mono: "P", sessions: [
       { title: "Deploy bare metal server wit…", time: "40d ago", icon: "branch" },
@@ -320,7 +291,6 @@ const REPOS = [
       { title: "Declare the planning track…", time: "6h ago", icon: "branch" },
   ]},
 ];
-/* Dense mode — what 8 repos actually looks like, which is where the problem bites. */
 const EXTRA = [
   { name: "infra-terraform", accent: "a1", mono: "I", sessions: [{ title: "Rotate the VPS deploy key", time: "2d ago", icon: "branch" }] },
   { name: "docs-site", accent: "a0", mono: "D", sessions: [{ title: "Fix the changelog anchor l…", time: "5h ago", icon: "branch" }] },
@@ -328,7 +298,6 @@ const EXTRA = [
   { name: "experiments", accent: "a2", mono: "E", sessions: [{ title: "Snapshot-test the emulator", time: "9d ago", icon: "branch" }] },
 ];
 
-/* ── Render ────────────────────────────────────────────────────────────── */
 function row(s, extraClass = "") {
   const cls = ["row", extraClass, s.current ? "current" : "", s.merged ? "merged" : ""].filter(Boolean).join(" ");
   const meta = [
@@ -367,7 +336,6 @@ function group(r, closed) {
   </section>`;
 }
 
-/* The sidebar in its real chrome: rail + the chat panel it butts against. */
 function app(variantId, repos) {
   const closedFor = (i) => variantId === "v-accordion" && i !== repos.length - 1;
   return `<div class="app ${variantId}">
@@ -458,7 +426,6 @@ function renderMatrix() {
     }).join("") + "</tbody>";
 }
 
-/* ── Toolbar ───────────────────────────────────────────────────────────── */
 function press(el, on) { el.setAttribute("aria-pressed", String(on)); }
 function applyAccent() {
   const on = document.getElementById("toggle-accent").getAttribute("aria-pressed") === "true";

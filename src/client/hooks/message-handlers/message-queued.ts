@@ -6,9 +6,7 @@ export const handleMessageQueued: Handler<WsMessageQueued> = (ctx, data) => {
   const session = useSessionStore.getState();
   const queued = data;
   session.setQueuedMessages((prev) => [...prev, { text: queued.text, position: queued.position }]);
-  // Remove the optimistically-added message from the conversation and stash it.
-  // The message will be re-inserted at the correct position (after the completed
-  // assistant turn) when it is dequeued for execution via queue_updated.
+
   session.setMessages((prev) => {
     let targetIdx = -1;
     for (let i = prev.length - 1; i >= 0; i--) {

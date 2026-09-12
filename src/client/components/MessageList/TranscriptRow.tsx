@@ -43,22 +43,22 @@ import { useRowHandlers } from "./row-context.js";
  */
 export interface TranscriptRowProps {
   el: VisualElement;
-  /** The message this element hangs off; the row's catch-all change signal. */
+
   anchor: ChatMessage | undefined;
-  /** Stable while the search results are unchanged; the row does its own lookup. */
+
   matchesByMessage: Map<number, SearchMatch[]>;
   currentMatch?: SearchMatch;
   currentMatchRef: RefObject<HTMLElement | null>;
-  /** Drives the rewind handle's "turn running" state. */
+
   isLoading: boolean;
   voicePlaybackEnabled: boolean;
-  /** This row's Play-button prose, or undefined. A primitive, so memo-safe. */
+
   turnProse?: string;
   activeSessionId?: string;
   hasRewindControls: boolean;
   forkDefaultName: string;
   rewindPreviews?: Record<string, WsRewindPreview>;
-  /** Precomputed by the parent — both are primitives, so they cost the memo nothing. */
+
   showGapBefore: boolean;
   gapPreviousRole: "user" | "assistant" | null;
 }
@@ -105,7 +105,6 @@ function TranscriptRowInner({
     );
   };
 
-  // ── The agent's to-do list, folded from its task calls (task-list.ts) ──
   if (el.kind === "task-panel") {
     return (
       <div className="flex justify-start">
@@ -116,8 +115,6 @@ function TranscriptRowInner({
     );
   }
 
-  // ── Tool-derived elements: grouped tool calls, standalone subagents,
-  //    and standalone tools (ExitPlanMode / AskUserQuestion / present) ──
   if (el.kind === "tool-group" || el.kind === "subagent" || el.kind === "standalone-tool") {
     return (
       <MessageToolElement
@@ -130,16 +127,11 @@ function TranscriptRowInner({
     );
   }
 
-  // ── Message bubble ──
   const i = el.index;
   const hideTools = el.hideTools;
   const msg = anchor;
   if (!msg) return null;
 
-  // Inline transcript cards (spawned session, review, voice note,
-  // permission/egress/issue prompts, etc.) carry no chat text of their
-  // own — render the card and skip the bubble path. Order is preserved
-  // verbatim inside `renderMessageCard`.
   const card = renderMessageCard(msg, {
     ...(activeSessionId ? { sessionId: activeSessionId } : {}),
     onResumeSession: handlers.onResumeSession,
@@ -159,9 +151,7 @@ function TranscriptRowInner({
   const segments = parseMessageSegments(msg.text);
   const hasCodeBlocks = segments.some((s) => s.type === "code");
   const useMarkdown = msg.role === "assistant" && !msg.isError && !msg.notice;
-  // Hide the bubble when it would be empty (no text/images/files and every
-  // tool is a task-list call, which renders as null inside the bubble —
-  // the task panel draws those)
+
   const hasVisibleTools = !hideTools && msg.toolUse?.some((t) => !isTaskListTool(t.name));
   const hideBubble = !msg.text && !msg.images?.length && !msg.files?.length && !hasVisibleTools && !!msg.toolUse?.length;
 
@@ -184,15 +174,9 @@ function TranscriptRowInner({
         } ${
           msg.role === "user"
             ? `rounded-lg px-4 py-3 break-words min-w-0 ${
-                // A user message with code blocks needs a reasonable
-                // minimum width so the block isn't squeezed to nothing
-                // (a code-only message would otherwise collapse, since
-                // `CodeBlock` contributes ~0 to the bubble's intrinsic
-                // width via `w-0`). `min(32rem,100%)` floors the width at
-                // 32rem while the `100%` cap (relative to the full-width
+
                 // row) guarantees it never exceeds the column — so long
-                // lines scroll inside the block instead of widening the
-                // whole chat into a horizontal scrollbar.
+
                 hasCodeBlocks ? "w-[min(32rem,100%)]" : "max-w-full"
               }`
             : "w-full min-w-0"
@@ -229,21 +213,13 @@ function TranscriptRowInner({
           </div>
         )}
         {useMarkdown ? (
-          // `shipitLinks` — the ONE surface where agent-authored pointers
-          // into the Preview / Present tab are live (docs/258). This text
-          // is the agent's own output; every other `MarkdownContent` call
-          // site renders content ShipIt did not author (PR and issue
+
           // bodies, comments, reviews, subagent reports) and must not be
-          // able to present a button that starts a Compose service.
+
           <MarkdownContent text={msg.text} shipitLinks />
         ) : hasCodeBlocks ? (
           segments.map((seg) => {
-            // Key on the segment's character offset, not its array index.
-            // While a user message with code blocks is being composed/
-            // streamed, indices stay stable but a content-derived key is
-            // sturdier against re-segmentation — it keeps each `CodeBlock`
-            // instance mounted so its memoized `hljs.highlight` cache
-            // survives instead of remounting and re-highlighting.
+
             if (seg.type === "code") {
               return (
                 <CodeBlock
@@ -291,12 +267,7 @@ function TranscriptRowInner({
             {msg.toolUse.map((tool, toolIdx) => {
               const toolResult = msg.toolResults?.find((r) => r.toolUseId === tool.id);
               const resolvedPlanContent = tool.name === "ExitPlanMode" ? handlers.findPlanContent(i) : undefined;
-              // See note in the standalone-tool branch above — the
-              // right disable signal is whether the tool has a result,
-              // not whether the message is last. AskUserQuestion /
-              // PlanApproval track their submitted state internally
-              // and read `result` to render the answered state on
-              // reload.
+
               const questionDisabled = !!toolResult;
               return (
                 <ToolUseItem
@@ -327,11 +298,6 @@ function TranscriptRowInner({
   );
 }
 
-/**
- * A shared empty array, so a row with no search matches gets the SAME reference
- * every render. A fresh `[]` would defeat `HighlightedText`'s own memo for every
- * row in the transcript whenever anything re-rendered.
- */
 const EMPTY_MATCHES: SearchMatch[] = [];
 
 export const TranscriptRow = memo(TranscriptRowInner);

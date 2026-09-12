@@ -527,9 +527,9 @@ type MarketplaceSource =
   | { kind: "url";    url: string };
 
 interface MarketplaceInfo {
-  id: string;           // catalog short name, e.g. "claude-plugins-official"
+  id: string;
   source: MarketplaceSource;
-  agentId: AgentId;     // catalog is per-backend
+  agentId: AgentId;
   autoUpdate: boolean;
   lastFetchedAt?: string;
   status: "ok" | "fetch-failed" | "loading";
@@ -543,10 +543,7 @@ interface PluginInfo {
   pinnedSha?: string;
   lastUpdated?: string;
   contains: {
-    skills: SkillRef[];   // {name, description}; v1 only populates this
-    // v3 adds: mcpServers, hooks, apps?, lspServers?
-    // (Ref types defined alongside in v3 — left out of v1 to keep the
-    // type honest about what's actually wired.)
+    skills: SkillRef[];
   };
   estimatedContextBytes: number;
 }
@@ -569,18 +566,15 @@ interface PluginInfo {
 New backend service `src/server/orchestrator/services/marketplace.ts`:
 
 ```ts
-// v1:
 listMarketplaces(agentId): MarketplaceInfo[]
 listPlugins(marketplaceId): PluginInfo[]
 installPlugin(workspaceDir, marketplaceId, pluginName): InstallResult
 uninstallPlugin(workspaceDir, marketplaceId, pluginName): void
 
-// v2 adds custom-marketplace verbs:
 addMarketplace(source, agentId): MarketplaceInfo
 removeMarketplace(id): void
 refreshMarketplace(id): MarketplaceInfo
 
-// v3 adds enable/disable, once we have a persistence target for the flag.
 ```
 
 These are pure functions in the §services layer pattern (CLAUDE.md), consumed
@@ -612,7 +606,7 @@ POST   /api/marketplaces/:id/refresh
 GET    /api/marketplaces/:id/plugins
 
 # Session-scoped (api-routes-files.ts):
-GET    /api/sessions/:id/plugins                              # list installed plugins (scans install markers)
+GET    /api/sessions/:id/plugins
 POST   /api/sessions/:id/plugins/install   { marketplaceId, pluginName }
 DELETE /api/sessions/:id/plugins/:marketplaceId/:pluginName
 
@@ -707,8 +701,7 @@ work. ShipIt marks every directory it installs with a sentinel file:
 ```
 .claude/skills/<plugin>__<skill>/
   SKILL.md
-  .shipit-installed.json   # { marketplaceId, pluginName, version, installedAt,
-                           #   skillMdHash: "<sha256 of SKILL.md at install time>" }
+  .shipit-installed.json
 ```
 
 Four policies that fall out:

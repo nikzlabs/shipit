@@ -37,16 +37,6 @@ import {
 } from "./local-storage.js";
 import type { RoleView } from "../../server/shared/types/agent-types.js";
 
-/**
- * Write the role's parameters into the three seed slots. Returns whether
- * anything actually changed.
- *
- * **The return value is what makes this safe to call on every render pass**, and
- * it has to be: the seeds also need correcting when a role arrives from the slot
- * on page load rather than from a click, and the caller for that is an effect.
- * Reporting "nothing moved" is what stops the write → re-render → write loop
- * that a bare `void` return would create.
- */
 export function applyRoleSeeds(role: RoleView | undefined): boolean {
   const resolved = role?.resolved;
   if (!resolved) return false;
@@ -65,13 +55,7 @@ export function applyRoleSeeds(role: RoleView | undefined): boolean {
   if (unchanged) return false;
   saveAgentId(resolved.harnessId);
   saveModelSelection(selection);
-  // Per-agent, like the picker's own writes: a level means something different
-  // on each harness, so it is stored against the one the role names.
-  //
-  // `null` — not `undefined` — is this store's "no level", and it is how the
-  // seed says **Default**: it clears the stored level, so the composer shows
-  // "Default" rather than whatever the last role happened to seed. A harness
-  // that declares no levels resolves to exactly the same thing (docs/274).
+
   saveReasoning(resolved.harnessId, resolved.reasoningEffort ?? null);
   return true;
 }

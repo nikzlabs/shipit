@@ -52,39 +52,39 @@ NotificationManager.create(notification)
 
 ```typescript
 type NotificationType =
-  | "permission_request"   // Claude needs tool approval — blocks progress
-  | "session_complete"     // Claude finished its turn in a session
-  | "session_error"        // Claude crashed or hit an unrecoverable error
-  | "pr_created"           // A PR was created via git push / gh CLI
-  | "deploy_status"        // Deploy succeeded or failed
-  | "queue_update";        // User's message moved in the queue
+  | "permission_request"
+  | "session_complete"
+  | "session_error"
+  | "pr_created"
+  | "deploy_status"
+  | "queue_update";
 
 type NotificationPriority = "high" | "medium" | "low";
 
 interface NotificationAction {
-  id: string;              // stable identifier for this action
-  label: string;           // display text: "Approve", "Deny", "View PR"
-  actionType: string;      // machine-readable: "approve_tool", "deny_tool", "navigate", "dismiss"
+  id: string;
+  label: string;
+  actionType: string;
   variant: "primary" | "secondary" | "danger";
-  payload?: Record<string, unknown>;  // context passed back to server on action
+  payload?: Record<string, unknown>;
 }
 
 interface AppNotification {
-  id: string;                          // unique ID (nanoid)
+  id: string;
   type: NotificationType;
   sessionId: string;
-  sessionName: string;                 // human-readable, so the user knows context without navigating
-  title: string;                       // short: "Tool approval needed"
-  body: string;                        // detail: "Claude wants to run: npm test"
+  sessionName: string;
+  title: string;
+  body: string;
   priority: NotificationPriority;
-  actions: NotificationAction[];       // inline action buttons
-  createdAt: string;                   // ISO 8601
-  read: boolean;                       // user has seen it (panel was open, or banner was visible)
-  resolved: boolean;                   // action was taken or notification was dismissed
-  resolvedAction?: string;             // which action was taken (action id)
-  resolvedAt?: string;                 // ISO 8601
-  expiresAt?: string;                  // optional auto-dismiss (e.g. queue updates)
-  metadata?: Record<string, unknown>;  // type-specific data (PR URL, deploy ID, tool name, etc.)
+  actions: NotificationAction[];
+  createdAt: string;
+  read: boolean;
+  resolved: boolean;
+  resolvedAction?: string;
+  resolvedAt?: string;
+  expiresAt?: string;
+  metadata?: Record<string, unknown>;
 }
 ```
 
@@ -187,13 +187,11 @@ Actions are HTTP (not WS) because they're simple mutations — the result is a s
 Server → Client only. Notifications are pushed; actions come back over HTTP.
 
 ```typescript
-// Sent when a notification is created or updated
 interface WsNotification {
   type: "notification";
   notification: AppNotification;
 }
 
-// Sent on connect or reconnect — full snapshot for hydration
 interface WsNotificationSnapshot {
   type: "notification_snapshot";
   notifications: AppNotification[];
@@ -265,11 +263,9 @@ For high-priority `permission_request` notifications, a persistent banner appear
 Notification state lives in `App.tsx` (consistent with the rest of the app). Hydrated from the `notification_snapshot` WS message on connect, then incrementally updated via `notification` WS messages.
 
 ```typescript
-// App.tsx state
 const [notifications, setNotifications] = useState<AppNotification[]>([]);
 const [notificationPanelOpen, setNotificationPanelOpen] = useState(false);
 
-// Derived
 const unresolvedCount = notifications.filter(n => !n.resolved).length;
 const hasHighPriority = notifications.some(n => !n.resolved && n.priority === "high");
 ```

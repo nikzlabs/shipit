@@ -22,7 +22,6 @@ from mcpclient import connect  # noqa: E402
 WORKSPACE = "/workspace"
 SCOPE = "src/server"  # string, matching the spike's measure_lc.py
 
-
 def main() -> int:
     if len(sys.argv) < 2:
         print(__doc__.strip(), file=sys.stderr)
@@ -53,7 +52,6 @@ def main() -> int:
         return 1
     print(text)
     return 0
-
 
 if __name__ == "__main__":
     raise SystemExit(main())

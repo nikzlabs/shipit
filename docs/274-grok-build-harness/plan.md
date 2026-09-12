@@ -1340,9 +1340,9 @@ plan spent). The terminal event:
 
 ```jsonc
 {"type":"result","subtype":"error_during_execution","is_error":true,
- "duration_ms":120012,                       // two attempts, a minute apart
+ "duration_ms":120012,
  "errors":["Out of credits: Your team has either used all available credits …"],
- …}                                          // NO `result` key at all
+ …}
 ```
 
 `result` and `errors` are **disjoint per event**: a success carries `result`

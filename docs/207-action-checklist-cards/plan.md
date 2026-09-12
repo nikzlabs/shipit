@@ -101,16 +101,16 @@ A new MCP tool, working name `propose_actions`, exposed alongside the existing
 
 ```
 propose_actions({
-  title?: string,            // optional heading, e.g. "Optional follow-ups"
+  title?: string,
   actions: [
     {
-      id: string,            // stable id for this action within the card
-      label: string,         // short button/checkbox text
-      description?: string,  // one-line explanation
-      defaultChecked?: bool, // agent's recommendation; user still decides
-      payload: string,       // the instruction the agent receives if selected
+      id: string,
+      label: string,
+      description?: string,
+      defaultChecked?: bool,
+      payload: string,
     },
-    ...                      // 1..N
+    ...
   ],
 })
 ```

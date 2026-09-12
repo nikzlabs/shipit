@@ -1,10 +1,4 @@
-/**
- * Unit tests for useMcpStore (docs/088).
- *
- * Verifies the round-trip behavior of CRUD actions against /api/mcp-servers,
- * the `mcp_server_status` event integration via applyStatus(), and the error
- * surfacing pattern.
- */
+
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { useMcpStore } from "./mcp-store.js";
@@ -117,7 +111,6 @@ describe("mcp-store (docs/088)", () => {
     fake.on("POST", "/api/mcp-servers", () => ({ server: sentryConfig }));
     fake.install();
 
-    // Seed with one server so we can verify sort.
     useMcpStore.setState({ servers: [stdioConfig] });
 
     await useMcpStore
@@ -128,7 +121,7 @@ describe("mcp-store (docs/088)", () => {
       "linear",
       "sentry",
     ]);
-    // The POST body carries both config and secrets.
+
     expect(fake.calls[0].body).toEqual({
       config: sentryConfig,
       secrets: { mcp__sentry__SENTRY_TOKEN: "sntrys_abc" },
@@ -199,9 +192,7 @@ describe("mcp-store (docs/088)", () => {
   });
 
   it("testServer() updates statuses so a successful test clears a stale failure badge", async () => {
-    // Simulate the bug: a prior agent init left a `failed — connection failed`
-    // status on the server. The user fixes the config, hits Test, it succeeds
-    // — the badge should now reflect `loaded`, not the old failure.
+
     useMcpStore.setState({
       statuses: { linear: { state: "failed", reason: "connection failed" } },
     });
@@ -240,7 +231,6 @@ describe("mcp-store (docs/088)", () => {
       sentry: { state: "failed", reason: "missing secret: TOKEN" },
     });
 
-    // Overwriting one leaves the other intact.
     useMcpStore.getState().applyStatus("linear", "failed", "install failed");
     expect(useMcpStore.getState().statuses.linear).toEqual({
       state: "failed",
@@ -266,8 +256,6 @@ describe("mcp-store (docs/088)", () => {
       oauthError: null,
     });
   });
-
-  // ---- Phase 2: OAuth ----
 
   describe("OAuth (docs/088 Phase 2)", () => {
     it("fetchOAuthProviders() populates the provider list", async () => {
@@ -332,11 +320,11 @@ describe("mcp-store (docs/088)", () => {
       fake.install();
 
       await useMcpStore.getState().disconnectOAuth("notion_oauth");
-      // The fetch fake recorded both the DELETE and the follow-up GET.
+
       const methods = fake.calls.map((c) => c.method);
       expect(methods).toContain("DELETE");
       expect(methods).toContain("GET");
-      // Final state shows the (refreshed) disconnected provider.
+
       expect(useMcpStore.getState().oauthProviders[0].status.connected).toBe(false);
     });
   });

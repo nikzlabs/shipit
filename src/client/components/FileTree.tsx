@@ -172,7 +172,6 @@ export function FileTree({ tree, onRefresh, onFileClick, selectedFile, onAddToCh
 
   return (
     <div className="flex flex-col h-full">
-      {/* Header bar */}
       <div className="flex items-center justify-between px-3 py-1.5 bg-(--color-bg-secondary) border-b border-(--color-border-secondary) text-xs text-(--color-text-secondary)">
         <span className="font-medium text-(--color-text-primary)">Files</span>
         <Button
@@ -186,13 +185,11 @@ export function FileTree({ tree, onRefresh, onFileClick, selectedFile, onAddToCh
         </Button>
       </div>
 
-      {/* Tree content */}
       <div className="flex-1 overflow-y-auto py-1">
         {tree.map((node) => (
           <TreeNode key={node.path} node={node} depth={0} onFileClick={onFileClick} selectedFile={selectedFile} onAddToChat={onAddToChat} onDownload={onDownload} onEdit={onEdit} />
         ))}
 
-        {/* Uploads section */}
         {uploads && uploads.length > 0 && (
           <div className="mt-2 border-t border-(--color-border-secondary) pt-1">
             <div className="flex items-center gap-1.5 px-2 py-1 text-xs font-medium text-(--color-text-secondary)">

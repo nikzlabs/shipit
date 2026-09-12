@@ -7,7 +7,6 @@ import type { FileTreeNode } from "../../server/shared/types.js";
 
 afterEach(cleanup);
 
-/** Wrap FileAutoComplete in a Popover context (required since it renders PopoverContent). */
 function PopoverWrapper({ children }: { children: React.ReactNode }) {
   return (
     <Popover open modal={false}>
@@ -63,7 +62,7 @@ describe("FileAutoComplete", () => {
       /></PopoverWrapper>,
     );
     const items = screen.getAllByTestId("file-autocomplete-item");
-    expect(items.length).toBe(4); // index.ts, utils.ts, App.tsx, package.json
+    expect(items.length).toBe(4);
   });
 
   it("calls onSelect when a file is clicked", async () => {

@@ -31,11 +31,11 @@ import { CaretRightIcon, ChatTextIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 
 export interface UserReviewCardProps {
-  /** Files the comments are anchored to. Empty for multi-file diff submissions. */
+
   filePaths: string[];
-  /** Number of comments included in the submission. */
+
   commentCount: number;
-  /** Full prompt that was shipped to the agent — shown in a collapsed disclosure. */
+
   prompt: string;
 }
 
@@ -79,11 +79,7 @@ export function UserReviewCard({ filePaths, commentCount, prompt }: UserReviewCa
           {promptExpanded && (
             <div
               data-testid="user-review-prompt"
-              // Semi-transparent page background rather than a fixed white or
-              // `--color-bg-secondary`: the card sits on an accent tint, so
-              // knocking the panel back toward the chat surface reads as inset
-              // on light and dark themes alike, where either fixed colour only
-              // works on one of them.
+
               className="mt-1.5 text-xs text-(--color-text-secondary) font-mono whitespace-pre-wrap rounded bg-(--color-bg-primary)/60 p-2 max-h-64 overflow-y-auto leading-5"
             >
               {prompt}

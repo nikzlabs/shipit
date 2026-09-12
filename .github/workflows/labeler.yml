@@ -1,10 +1,5 @@
 name: Pull request labeler
 
-# Best-effort path-based labeling: maps a PR's changed files to labels via
-# `.github/labeler.yml` so release-note sections (see `.github/release.yml`)
-# populate without manual triage. Labels added here are advisory — maintainers
-# can adjust them before merge, and an unlabeled PR never fails CI.
-
 on:
   pull_request_target:
 
@@ -15,32 +10,14 @@ permissions:
 jobs:
   labeler:
     name: Label PR by changed paths
-    # Match CI's public-repo posture: skip fork/external PRs entirely so the
-    # pull_request_target workflow never spends write permissions on untrusted
-    # contributor branches.
+    # Do not give pull_request_target write access to external branches.
     if: github.event.pull_request.head.repo.full_name == github.repository
-    # Pure GitHub API calls, no compute. GitHub-hosted standard runner (free
-    # for public repos).
     runs-on: ubuntu-24.04
     steps:
-      # Best-effort for real: a failure here must not turn the PR red, which is
-      # what the header above already claims and what this line makes true.
-      #
-      # The failure that prompted it was not a labeling problem at all — GitHub's
-      # own CDN answered the action download with `429 Too Many Requests`, three
-      # times, so the job died before any label logic ran. Nothing in a PR's diff
-      # can cause or fix that, and a cosmetic release-note label is not worth
-      # blocking a merge on someone else's rate limit.
-      #
-      # Step-level rather than job-level on purpose: the step still reports its
-      # failure in the run, so a genuinely broken `.github/labeler.yml` stays
-      # visible instead of silently labeling nothing forever.
       - uses: actions/labeler@v6.1.0
         continue-on-error: true
         with:
           repo-token: ${{ github.token }}
           configuration-path: .github/labeler.yml
-          # Don't strip labels a maintainer added by hand; only ever add.
           sync-labels: false
-          # Match dotfile paths like `.github/**`.
           dot: true

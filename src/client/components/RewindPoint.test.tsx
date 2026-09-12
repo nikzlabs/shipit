@@ -18,8 +18,7 @@ function renderPoint(props: Partial<React.ComponentProps<typeof RewindPoint>> = 
 
 describe("RewindPoint", () => {
   // planning#184: a running turn must not block fork. Fork spins off a new session
-  // from a committed SHA and doesn't mutate this one, so the affordance stays
-  // live (and presents as fork-only) while the agent works.
+
   it("keeps the fork affordance enabled while a turn is running", () => {
     renderPoint({ turnRunning: true });
     const button = screen.getByRole("button", { name: "Fork as new session" });
@@ -31,7 +30,6 @@ describe("RewindPoint", () => {
     expect(screen.getByRole("button", { name: "Rewind options" })).not.toBeDisabled();
   });
 
-  // The `disabled` prop is the genuine hard-off (no current source today, but
   // it must still fully gate the control and surface the wait tooltip).
   it("fully disables the control when disabled", () => {
     renderPoint({ disabled: true, turnRunning: true });

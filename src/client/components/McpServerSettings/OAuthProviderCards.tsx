@@ -11,12 +11,6 @@ import type {
   McpTestResult as McpTestResultData,
 } from "../../../server/shared/types.js";
 
-/**
- * "One-click connections" — the OAuth provider cards. When a provider is
- * connected, its auto-created MCP server row is folded into the card (Test /
- * Enable / Disable controls live here) and a stale auth-required status
- * downgrades "Connected" to a Reconnect CTA.
- */
 export function OAuthProviderCards({
   providers,
   servers,
@@ -52,21 +46,13 @@ export function OAuthProviderCards({
         {providers.map((provider) => {
           const inFlight = oauthInFlight === provider.id;
           const connected = provider.status.connected;
-          // When connected, fold the auto-created MCP server row into this
-          // card so the user sees one element per provider instead of a
-          // duplicated provider card + server row pair.
           const managedServer = connected
             ? servers.find((s) => oauthSourceForServer(s) === provider.id)
             : undefined;
           const result = managedServer ? testResults[managedServer.name] : undefined;
           const isTesting = result === "loading";
           const isToggling = managedServer ? toggleInFlight[managedServer.name] : false;
-          // Stored tokens exist (`connected`) but the MCP server rejected
-          // them (`failed — authentication required`). The two signals
-          // are otherwise independent — without this reconciliation the
-          // card would say "● Connected" while the server row says
-          // "● failed — authentication required", which is what the user
-          // hit. Downgrade the badge and surface a Reconnect CTA.
+          // Runtime authentication failure overrides the stored-token state.
           const serverStatus: McpServerStatusEntry | undefined = managedServer
             ? statuses[managedServer.name]
             : undefined;
@@ -94,9 +80,6 @@ export function OAuthProviderCards({
                         ● Authentication required — reconnect
                       </span>
                     )}
-                    {/* When auth is expired the dedicated badge above
-                        already says what's wrong; rendering the generic
-                        StatusBadge too would just duplicate the text. */}
                     {managedServer && !authExpired && (
                       <StatusBadge name={managedServer.name} />
                     )}
