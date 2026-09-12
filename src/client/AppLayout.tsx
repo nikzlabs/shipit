@@ -5,7 +5,6 @@ import { Popover, PopoverContent, PopoverTrigger } from "./components/ui/popover
 import { WithTooltip } from "./components/ui/tooltip.js";
 import { ThemePicker } from "./components/ThemePicker.js";
 import { SessionSidebar } from "./components/SessionSidebar.js";
-import { ResizeHandle } from "./components/ResizeHandle.js";
 import { ConnectionBanner } from "./components/ConnectionBanner.js";
 import { MobileTabBar } from "./components/MobileTabBar.js";
 import { Toast } from "./components/Toast.js";
@@ -21,7 +20,7 @@ import { GitHubRateLimitBanner } from "./components/GitHubRateLimitBanner.js";
 import { LocalModeBanner } from "./components/LocalModeBanner.js";
 import { Logo } from "./components/Logo.js";
 import { QuickCaptureOverlay } from "./components/QuickCaptureOverlay.js";
-import { MobileContentPanels } from "./components/MobileContentPanels.js";
+import { ContentPanels } from "./components/ContentPanels.js";
 import { MobileSessionsPanel } from "./components/MobileSessionsPanel.js";
 
 // Keep complete class names for Tailwind's source scanner.
@@ -210,48 +209,14 @@ export function AppLayout({
         </div>
       </header>
 
-      {isMobile ? (
-        <>
-          <div className="relative flex flex-col flex-1 min-h-0">
-            <MobileContentPanels
-              showHomeScreen={showHomeScreen}
-              showNewSessionView={showNewSessionView}
-              activePanel={mobilePanel}
-              chatPanel={chatPanel}
-              rightPanel={rightPanel}
-            />
-            <MobileSessionsPanel open={mobileSidebarOpen} onClose={onCloseMobileSidebar}>
-              <SessionSidebar
-                sessions={sessions}
-                currentSessionId={currentSessionId}
-                activeNewSessionRepoUrl={activeNewSessionRepoUrl}
-                onResume={(sid) => { onResumeSession(sid); onCloseMobileSidebar(); }}
-                onArchive={onArchiveSession}
-                onNewSessionForRepo={(url) => { onNewSessionForRepo(url); onCloseMobileSidebar(); }}
-                collapsed={false}
-                onToggleCollapse={onCloseMobileSidebar}
-                repos={repos}
-                onAddRepo={() => { onAddRepo(); onCloseMobileSidebar(); }}
-                onCreateNewRepo={() => { onCreateNewRepo(); onCloseMobileSidebar(); }}
-                mobile
-                onClose={onCloseMobileSidebar}
-              />
-            </MobileSessionsPanel>
-          </div>
-          <MobileTabBar
-            activePanel={mobilePanel}
-            sidebarOpen={mobileSidebarOpen}
-            contentTabsDisabled={showHomeScreen && !showNewSessionView}
-            onChangePanel={onMobilePanelChange}
-            onOpenSessions={onOpenSessions}
-            onNewSession={onMobileNewSession}
-            onQuickSession={onMobileQuickSession}
-            onVoiceSession={onMobileVoiceSession}
-            newSessionDisabled={repos.length === 0}
-          />
-        </>
-      ) : (
-        <div className="flex flex-1 min-h-0">
+      {/*
+        One tree for both layouts: `isMobile` may pick classes and children, never
+        the element at a position. A type change here (this was once a Fragment
+        against a div) remounts the whole chat column on every resize across
+        768 px. Unused slots stay occupied by `null`. See `ContentPanels`.
+      */}
+      <div className={isMobile ? "relative flex flex-col flex-1 min-h-0" : "flex flex-1 min-h-0"}>
+        {!isMobile && (
           <SessionSidebar
             sessions={sessions}
             currentSessionId={currentSessionId}
@@ -265,18 +230,52 @@ export function AppLayout({
             onAddRepo={onAddRepo}
             onCreateNewRepo={onCreateNewRepo}
           />
-          <div ref={containerRef} className="flex flex-1 min-h-0 overflow-hidden">
-            <div data-chat-panel className={`flex flex-col min-w-0 ${showHomeScreen ? "" : "border-r border-(--color-border-primary)"}`} style={{ width: showHomeScreen ? "100%" : `${fraction * 100}%` }}>
-              {chatPanel}
-            </div>
-            {!showHomeScreen && (
-              <>
-                <ResizeHandle isDragging={isDragging} onMouseDown={onMouseDown} onTouchStart={onTouchStart} />
-                <div className={`min-w-0 flex flex-col bg-(--color-bg-secondary) ${isDragging ? "pointer-events-none" : ""}`} style={{ width: `${(1 - fraction) * 100}%` }}>{rightPanel}</div>
-              </>
-            )}
-          </div>
-        </div>
+        )}
+        <ContentPanels
+          isMobile={isMobile}
+          showHomeScreen={showHomeScreen}
+          showNewSessionView={showNewSessionView}
+          activePanel={mobilePanel}
+          chatPanel={chatPanel}
+          rightPanel={rightPanel}
+          fraction={fraction}
+          isDragging={isDragging}
+          onMouseDown={onMouseDown}
+          onTouchStart={onTouchStart}
+          containerRef={containerRef}
+        />
+        {isMobile && (
+          <MobileSessionsPanel open={mobileSidebarOpen} onClose={onCloseMobileSidebar}>
+            <SessionSidebar
+              sessions={sessions}
+              currentSessionId={currentSessionId}
+              activeNewSessionRepoUrl={activeNewSessionRepoUrl}
+              onResume={(sid) => { onResumeSession(sid); onCloseMobileSidebar(); }}
+              onArchive={onArchiveSession}
+              onNewSessionForRepo={(url) => { onNewSessionForRepo(url); onCloseMobileSidebar(); }}
+              collapsed={false}
+              onToggleCollapse={onCloseMobileSidebar}
+              repos={repos}
+              onAddRepo={() => { onAddRepo(); onCloseMobileSidebar(); }}
+              onCreateNewRepo={() => { onCreateNewRepo(); onCloseMobileSidebar(); }}
+              mobile
+              onClose={onCloseMobileSidebar}
+            />
+          </MobileSessionsPanel>
+        )}
+      </div>
+      {isMobile && (
+        <MobileTabBar
+          activePanel={mobilePanel}
+          sidebarOpen={mobileSidebarOpen}
+          contentTabsDisabled={showHomeScreen && !showNewSessionView}
+          onChangePanel={onMobilePanelChange}
+          onOpenSessions={onOpenSessions}
+          onNewSession={onMobileNewSession}
+          onQuickSession={onMobileQuickSession}
+          onVoiceSession={onMobileVoiceSession}
+          newSessionDisabled={repos.length === 0}
+        />
       )}
 
       {toast && <Toast toast={toast} />}

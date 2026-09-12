@@ -1,11 +1,12 @@
 /** Browser probe for MessageList highlight calls and code-block mounts. */
 
 import { createRoot } from "react-dom/client";
-import { useState } from "react";
+import { useRef, useState } from "react";
 // Patch the same core module instance used by syntax-highlight.ts.
 import hljs from "highlight.js/lib/core";
 import "./transcript-highlight-probe.css";
 import { MessageList } from "../../src/client/components/MessageList/MessageList.js";
+import { AppLayout } from "../../src/client/AppLayout.js";
 import { useSessionStore } from "../../src/client/stores/session-store.js";
 
 // Lazy tool-result fetches require a session ID.
@@ -94,6 +95,71 @@ const MESSAGES = buildTranscript();
 
 const REWIND = new URLSearchParams(location.search).get("rewind") !== "0";
 
+// `?layout=1` renders the transcript as the real `AppLayout`'s chatPanel, so
+// `window.__setMobile(v)` measures the shipped breakpoint switch rather than the
+// hand-copied shape `__swapWrapper` reproduces.
+const LAYOUT = new URLSearchParams(location.search).get("layout") === "1";
+
+// Enough of AppLayout's surface to mount it; none of it is under measurement.
+const LAYOUT_STUBS = {
+  theme: "dark",
+  onSelectTheme: () => {},
+  onSettingsOpen: () => {},
+  onShortcutsOpen: () => {},
+  hasSystemPrompt: false,
+  githubAuthenticated: false,
+  dockerMemory: null,
+  processStartedAt: null,
+  subscriptionLimits: {},
+  onNavigateHome: () => {},
+  onOpenSessions: () => {},
+  showConnectionBanner: false,
+  connectionStatus: "open",
+  reconnectAttempt: 0,
+  onReconnect: () => {},
+  showHomeScreen: false,
+  showNewSessionView: false,
+  mobilePanel: "chat",
+  onMobilePanelChange: () => {},
+  onMobileNewSession: () => {},
+  onMobileQuickSession: () => {},
+  onMobileVoiceSession: () => {},
+  onQuickSessionCreated: () => {},
+  fraction: 0.5,
+  isDragging: false,
+  onMouseDown: () => {},
+  onTouchStart: () => {},
+  sessions: [],
+  currentSessionId: "probe-session",
+  activeNewSessionRepoUrl: undefined,
+  sidebarCollapsed: false,
+  mobileSidebarOpen: false,
+  onCloseMobileSidebar: () => {},
+  onResumeSession: () => {},
+  onArchiveSession: async () => {},
+  onNewSessionForRepo: () => {},
+  onToggleSidebarCollapse: () => {},
+  repos: [],
+  onAddRepo: () => {},
+  onCreateNewRepo: () => {},
+  toast: null,
+};
+
+function LayoutHarness({ list }) {
+  const [mobile, setMobile] = useState(false);
+  const containerRef = useRef(null);
+  window.__setMobile = (v) => setMobile(v);
+  return (
+    <AppLayout
+      {...LAYOUT_STUBS}
+      isMobile={mobile}
+      containerRef={containerRef}
+      chatPanel={list}
+      rightPanel={<div className="p-4 text-sm">workspace</div>}
+    />
+  );
+}
+
 function Harness() {
   const [tick, setTick] = useState(0);
   // Leading rows force existing index-based keys to change.
@@ -116,6 +182,7 @@ function Harness() {
       sessionTitle={`t${tick}`}
     />
   );
+  if (LAYOUT) return <LayoutHarness list={list} />;
   return (
     <div className="flex flex-col h-screen bg-(--color-bg-primary)">
       {swap ? <>{list}</> : <div className="flex flex-col flex-1 min-h-0">{list}</div>}
