@@ -100,6 +100,7 @@ export async function registerContainerRoutes(
                     credentialStore: deps.credentialStore,
                     generateText: deps.generateText,
                     createGitManager: deps.createGitManager,
+                    sseBroadcast: deps.sseBroadcast,
                   },
                 }
               : {}),

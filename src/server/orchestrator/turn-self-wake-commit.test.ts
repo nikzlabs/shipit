@@ -130,6 +130,7 @@ describe("post-turn flow for a self-woken turn", () => {
         getPrStatus: vi.fn().mockReturnValue(undefined),
         getSecretBlock: vi.fn().mockReturnValue(undefined),
         setSecretBlock: vi.fn(),
+        setWorkspaceBlock: vi.fn().mockReturnValue(false),
       },
       scheduleAutoPush,
     } as unknown as Parameters<typeof postTurnCommit>[0];

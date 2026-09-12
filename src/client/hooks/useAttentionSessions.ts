@@ -43,6 +43,7 @@ export function useAttentionSessions(sessions: SessionInfo[]): Set<string> {
         autoResolveEnabled,
         resolved: isTerminalPrResolved(session),
         muted: !!session.mutedAt,
+        workspaceBlockKind: session.workspaceBlock,
       });
       if (reason !== null) ids.add(session.id);
     }

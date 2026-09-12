@@ -1,4 +1,4 @@
-import type { PreviousMergedPr, ProviderRouteKind, SessionCapabilities, SessionInfo, SessionMergeWatch, SessionSecretBlock, SessionTitleSource } from "../shared/types.js";
+import type { PreviousMergedPr, ProviderRouteKind, SessionCapabilities, SessionInfo, SessionMergeWatch, SessionSecretBlock, SessionTitleSource, WorkspaceBlockKind } from "../shared/types.js";
 import { normalizeCapabilities } from "../shared/types.js";
 import { isTerminalPrResolved, resolvedAt } from "../shared/session-resolution.js";
 import type { DatabaseManager } from "../shared/database.js";
@@ -64,6 +64,7 @@ interface SessionRow {
   muted_at: string | null;
   merge_watch: string | null;
   secret_block: string | null;
+  workspace_block: string | null;
   merge_issue_effects: string | null;
   previous_merged_pr: string | null;
   merged_head_sha: string | null;
@@ -163,7 +164,10 @@ export function filterVisibleInSidebar(
   return sessions.filter(
     (s) =>
       !s.userArchived &&
+      // docs/298-broken-workspace-visibility req 1 — a broken workspace needs
+      // the user, and a session the cap hid is one they cannot reach at all.
       (!!s.pinnedAt
+        || !!s.workspaceBlock
         || holdsActiveReservation(s)
         || !isTerminalPrResolved(s)
         || topResolvedIds.has(s.id)
@@ -257,6 +261,7 @@ export class SessionManager {
         // The next auto-commit rescans and restores the block if needed.
       }
     }
+    if (row.workspace_block) info.workspaceBlock = row.workspace_block as WorkspaceBlockKind;
     if (row.merged_head_sha) info.mergedHeadSha = row.merged_head_sha;
     if (row.pending_agent_notice) info.pendingAgentNotice = row.pending_agent_notice;
     // Partial provenance must not authorize a merge.
@@ -858,6 +863,18 @@ export class SessionManager {
 
   getSecretBlock(id: string): SessionSecretBlock | undefined {
     return this.get(id)?.secretBlock;
+  }
+
+  /**
+   * docs/298 — record or clear the broken-workspace state. Returns whether the
+   * stored value changed: the janitor re-observes a stuck session every pass, and
+   * only a real change is worth broadcasting the whole session list for.
+   */
+  setWorkspaceBlock(id: string, kind: WorkspaceBlockKind | null): boolean {
+    const current = this.get(id);
+    if (!current || current.workspaceBlock === (kind ?? undefined)) return false;
+    this.db.prepare("UPDATE sessions SET workspace_block = ? WHERE id = ?").run(kind, id);
+    return true;
   }
 
   // Archived children can still owe a merge notification.

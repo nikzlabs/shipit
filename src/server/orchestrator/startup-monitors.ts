@@ -202,6 +202,8 @@ export async function startStartupMonitors(
             chatHistory: chatHistoryManager,
             notifiedEvictBlocked,
             evictStuckLog,
+            onSessionsChanged: () =>
+              sseBroadcast("session_list", { sessions: sessionManager.list() }),
             paceMs: escalationPaceMs,
             diskFreeLow,
             diskFreeHigh,

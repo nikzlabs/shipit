@@ -460,6 +460,7 @@ export async function registerFileRoutes(
                     credentialStore: deps.credentialStore,
                     generateText: deps.generateText,
                     createGitManager: deps.createGitManager,
+                    sseBroadcast: deps.sseBroadcast,
                   },
                 }
               : {}),

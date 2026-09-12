@@ -431,6 +431,8 @@ async function restoreSessionWorkspaceImpl(
   await materializeLfsAndChown(session.workspaceDir, session.remoteUrl);
 
   sessionManager.setDiskTier(sessionId, "hot");
+  // docs/298 — a fresh clone cannot be the broken checkout the marker described.
+  sessionManager.setWorkspaceBlock(sessionId, null);
   console.log(
     `[restoreSessionWorkspace] re-materialized workspace for ${sessionId} at ${session.workspaceDir}`,
   );

@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { postTurnCommit } from "./post-turn.js";
 import { chownWorkspaceGitToSessionWorker } from "../session-worker-uid.js";
-import type { SessionInfo } from "../../shared/types.js";
+import type { SessionInfo, WorkspaceBlockKind } from "../../shared/types.js";
 
 // Mock ownership changes: /workspace is the actual checkout.
 vi.mock("../session-worker-uid.js", () => ({
@@ -18,6 +18,7 @@ function makeCtx(kind?: SessionInfo["kind"]) {
     chatHistoryManager: { updateLastMessage: vi.fn(), indexOfMessageId: vi.fn() },
     sessionManager: {
       get: vi.fn(() => (kind ? ({ id: "s1", kind } as SessionInfo) : undefined)),
+      setWorkspaceBlock: vi.fn(() => false),
       getSecretBlock: vi.fn(() => undefined),
       setSecretBlock: vi.fn(),
     },
@@ -68,6 +69,7 @@ describe("postTurnCommit — gate does not widen, and covers the moved-HEAD push
       chatHistoryManager: { updateLastMessage: vi.fn(() => null), indexOfMessageId: vi.fn(() => -1) },
       sessionManager: {
       get: vi.fn(() => (kind ? ({ id: "s1", kind } as SessionInfo) : undefined)),
+      setWorkspaceBlock: vi.fn(() => false),
       getSecretBlock: vi.fn(() => undefined),
       setSecretBlock: vi.fn(),
     },
@@ -155,6 +157,7 @@ describe("postTurnCommit — gate does not widen, and covers the moved-HEAD push
       chatHistoryManager: { updateLastMessage: vi.fn(), indexOfMessageId: vi.fn(), append: vi.fn() },
       sessionManager: {
         get: vi.fn(() => ({ id: "s1", kind: "ops" } as SessionInfo)),
+        setWorkspaceBlock: vi.fn(() => false),
         getSecretBlock: vi.fn(() => undefined),
         setSecretBlock: vi.fn(),
       },
@@ -194,6 +197,7 @@ describe("postTurnCommit — agent self-commit (moved HEAD) secret guard", () =>
       chatHistoryManager: { updateLastMessage: vi.fn(), indexOfMessageId: vi.fn(), append },
       sessionManager: {
         get: vi.fn(() => undefined),
+        setWorkspaceBlock: vi.fn(() => false),
         getSecretBlock: vi.fn(() => undefined),
         setSecretBlock: vi.fn(),
       },
@@ -263,6 +267,7 @@ describe("postTurnCommit — merged sessions never silently auto-push", () => {
           ...opts.session,
         } as SessionInfo)),
         getPrStatus: vi.fn(() => opts.prStatus ?? { prNumber: 1963, baseBranch: "main" }),
+        setWorkspaceBlock: vi.fn(() => false),
         getSecretBlock: vi.fn(() => undefined),
         setSecretBlock: vi.fn(),
       },
@@ -357,6 +362,7 @@ describe("postTurnCommit — a secret-blocked commit is sticky and announced", (
       chatHistoryManager: { updateLastMessage: vi.fn(() => null), indexOfMessageId: vi.fn(() => -1), append },
       sessionManager: {
         get: vi.fn(() => ({ id: "s1" } as SessionInfo)),
+        setWorkspaceBlock: vi.fn(() => false),
         getSecretBlock: vi.fn(() => stored),
         setSecretBlock: vi.fn((_id: string, b: unknown) => {
           stored = b ?? undefined;
@@ -411,6 +417,7 @@ describe("postTurnCommit — a secret-blocked commit is sticky and announced", (
       chatHistoryManager: { updateLastMessage: vi.fn(() => null), indexOfMessageId: vi.fn(() => -1), append: vi.fn() },
       sessionManager: {
         get: vi.fn(() => ({ id: "s1" } as SessionInfo)),
+        setWorkspaceBlock: vi.fn(() => false),
         getSecretBlock: vi.fn(() => ({ findings: [FINDING], at: "x", notifyCount: 2 })),
         setSecretBlock,
       },
@@ -422,6 +429,99 @@ describe("postTurnCommit — a secret-blocked commit is sticky and announced", (
     });
 
     expect(setSecretBlock).not.toHaveBeenCalled();
+  });
+});
+
+describe("docs/298: postTurnCommit clears the broken-workspace marker", () => {
+  // The fake holds real state: a setter that always reports a change would make
+  // "no marker to clear" pass without the production gate existing.
+  function makeCtx(opts: {
+    commitResult?: Record<string, unknown>;
+    block?: WorkspaceBlockKind | undefined;
+    rebasing?: boolean;
+    sequencing?: boolean;
+  } = {}) {
+    let block = "block" in opts ? opts.block : ("conflict" as WorkspaceBlockKind | undefined);
+    const sseBroadcast = vi.fn();
+    const ctx = {
+      createGitManager: vi.fn(() => ({
+        autoCommit: vi.fn(async () => ({
+          commitHash: "abc1234", conflictedFiles: [], rebaseInProgress: false,
+          secretFindings: [], ...opts.commitResult,
+        })),
+        getHeadHash: vi.fn(async () => "head"),
+        isRebaseInProgress: vi.fn(async () => opts.rebasing ?? false),
+        isMergeOrSequencerInProgress: vi.fn(async () => opts.sequencing ?? false),
+      })),
+      chatHistoryManager: { updateLastMessage: vi.fn(() => null), indexOfMessageId: vi.fn(() => -1), append: vi.fn() },
+      sessionManager: {
+        get: vi.fn(() => ({ id: "s1", ...(block ? { workspaceBlock: block } : {}) } as SessionInfo)),
+        list: vi.fn(() => [{ id: "s1" } as SessionInfo]),
+        setWorkspaceBlock: vi.fn((_id: string, kind: WorkspaceBlockKind | null) => {
+          if (block === (kind ?? undefined)) return false;
+          block = kind ?? undefined;
+          return true;
+        }),
+        getSecretBlock: vi.fn(() => undefined),
+        setSecretBlock: vi.fn(),
+      },
+      sseBroadcast,
+      scheduleAutoPush: vi.fn(),
+    } as unknown as Parameters<typeof postTurnCommit>[0];
+    return { ctx, sseBroadcast, blockNow: () => block };
+  }
+
+  async function run(ctx: Parameters<typeof postTurnCommit>[0]) {
+    await postTurnCommit(ctx, {
+      sessionDir: "/workspace", sessionId: "s1", emit: vi.fn(), turnSummary: "fixed it",
+    });
+  }
+
+  it("clears it and announces the new list when the commit held nothing back", async () => {
+    const { ctx, sseBroadcast, blockNow } = makeCtx();
+    await run(ctx);
+    expect(blockNow()).toBeUndefined();
+    expect(sseBroadcast).toHaveBeenCalledWith("session_list", { sessions: [{ id: "s1" }] });
+  });
+
+  it("leaves it alone while the auto-commit reports the rebase", async () => {
+    const { ctx, blockNow } = makeCtx({
+      commitResult: { commitHash: null, rebaseInProgress: true },
+    });
+    await run(ctx);
+    expect(blockNow()).toBe("conflict");
+  });
+
+  // The incident's exact shape: autoCommit reports nothing wrong, and the tree IS
+  // clean — the unfinished rebase lives in .git, where only these calls see it.
+  it("leaves it alone when the clean tree still holds rebase state", async () => {
+    const { ctx, blockNow } = makeCtx({ rebasing: true });
+    await run(ctx);
+    expect(blockNow()).toBe("conflict");
+  });
+
+  it("leaves it alone when the clean tree still holds merge/cherry-pick state", async () => {
+    const { ctx, blockNow } = makeCtx({ sequencing: true });
+    await run(ctx);
+    expect(blockNow()).toBe("conflict");
+  });
+
+  it("leaves it alone while a path is still unreadable, `omitted` included", async () => {
+    const { ctx, blockNow } = makeCtx({
+      commitResult: { unreadable: { kind: "omitted", detail: "data/db" } },
+    });
+    await run(ctx);
+    expect(blockNow()).toBe("conflict");
+  });
+
+  it("asks git nothing, and announces nothing, when there is no marker", async () => {
+    const { ctx, sseBroadcast } = makeCtx({ block: undefined });
+    await run(ctx);
+    const git = (ctx.createGitManager as unknown as { mock: { results: { value: {
+      isRebaseInProgress: { mock: { calls: unknown[] } };
+    } }[] } }).mock.results[0]!.value;
+    expect(git.isRebaseInProgress.mock.calls).toHaveLength(0);
+    expect(sseBroadcast).not.toHaveBeenCalled();
   });
 });
 
@@ -437,6 +537,7 @@ describe("postTurnCommit — unreadable workspace content", () => {
       chatHistoryManager: { updateLastMessage: vi.fn(() => null), indexOfMessageId: vi.fn(() => -1), append: vi.fn() },
       sessionManager: {
         get: vi.fn(() => ({ id: "s1" } as SessionInfo)),
+        setWorkspaceBlock: vi.fn(() => false),
         getSecretBlock: vi.fn(() => ({ findings: [], at: 1 })),
         setSecretBlock,
       },
@@ -507,6 +608,7 @@ describe("postTurnCommit — an auto-commit that threw", () => {
       chatHistoryManager: { updateLastMessage: vi.fn(() => null), indexOfMessageId: vi.fn(() => -1), append },
       sessionManager: {
         get: vi.fn(() => ({ id: "s1" } as SessionInfo)),
+        setWorkspaceBlock: vi.fn(() => false),
         getSecretBlock: vi.fn(() => undefined),
         setSecretBlock: vi.fn(),
       },
@@ -547,6 +649,7 @@ describe("postTurnCommit — .git is reconciled before the commit, not only afte
       chatHistoryManager: { updateLastMessage: vi.fn(() => null), indexOfMessageId: vi.fn(() => -1), append: vi.fn() },
       sessionManager: {
         get: vi.fn(() => ({ id: "s1" } as SessionInfo)),
+        setWorkspaceBlock: vi.fn(() => false),
         getSecretBlock: vi.fn(() => undefined),
         setSecretBlock: vi.fn(),
       },
@@ -589,6 +692,7 @@ describe("postTurnCommit — .git is reconciled before the commit, not only afte
       chatHistoryManager: { updateLastMessage: vi.fn(), indexOfMessageId: vi.fn() },
       sessionManager: {
         get: vi.fn(() => ({ id: "s1", kind: "ops" } as SessionInfo)),
+        setWorkspaceBlock: vi.fn(() => false),
         getSecretBlock: vi.fn(() => undefined),
         setSecretBlock: vi.fn(),
       },

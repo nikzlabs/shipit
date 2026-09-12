@@ -1,7 +1,7 @@
 import { readdir } from "node:fs/promises";
 import { join } from "node:path";
 import type { SessionManager } from "./sessions.js";
-import type { SessionInfo } from "../shared/types.js";
+import type { SessionInfo, WorkspaceBlockKind } from "../shared/types.js";
 import type { SessionRunnerRegistry } from "./session-runner.js";
 import type { ServiceManager } from "./service-manager.js";
 import type { GitManager } from "../shared/git.js";
@@ -31,6 +31,8 @@ export interface TierEscalationDeps {
   chatHistory?: { append(sessionId: string, message: PersistedMessage): unknown };
   notifiedEvictBlocked?: Set<string>;
   evictStuckLog?: Map<string, string>;
+  /** docs/298 — the broken-workspace marker changed, so the sidebar needs the new list. */
+  onSessionsChanged?: () => void;
   diskFreeLow?: number;
   diskFreeHigh?: number;
   getFreeDiskBytes?: () => Promise<number | null>;
@@ -119,6 +121,25 @@ async function reclaimToLight(
   return true;
 }
 
+/**
+ * docs/298 — publish (or withdraw) the session's broken-workspace state. Only a
+ * real change broadcasts, so a session stuck for weeks does not re-push the
+ * whole session list on every janitor tick.
+ */
+function recordWorkspaceBlock(
+  session: SessionInfo,
+  deps: TierEscalationDeps,
+  kind: WorkspaceBlockKind | null,
+): void {
+  if (!deps.sessionManager.setWorkspaceBlock(session.id, kind)) return;
+  console.log(
+    kind === null
+      ? `[disk-janitor] ${session.id}: workspace no longer blocked`
+      : `[disk-janitor] ${session.id}: workspace blocked (${kind}) — keeping it in the sidebar`,
+  );
+  deps.onSessionsChanged?.();
+}
+
 // Keep uncommittable work outside git, including rescue refs, which could expose secrets.
 async function blockedEvict<T extends "blocked-by-push" | "blocked-by-dirty">(
   session: SessionInfo,
@@ -127,6 +148,9 @@ async function blockedEvict<T extends "blocked-by-push" | "blocked-by-dirty">(
   reason?: EvictBlockReason,
 ): Promise<T> {
   clearStuck(session, deps);
+  // A push that failed leaves a committable tree: that is not the user's to repair,
+  // so only a reason the durability check could name raises the marker.
+  recordWorkspaceBlock(session, deps, reason?.kind ?? null);
   if (reason) {
     console.warn(
       `[disk-janitor] evict blocked for ${session.id} — the checkout can't be made durable `
@@ -259,6 +283,9 @@ async function reclaimToEvicted(
       return "skipped";
     }
     clearStuck(session, deps);
+    // Durable now, so whatever blocked it earlier is gone: req 6 of
+    // docs/298-broken-workspace-visibility.
+    recordWorkspaceBlock(session, deps, null);
   }
 
   const fresh = sessionManager.get(session.id);
@@ -320,6 +347,9 @@ async function reclaimToEvicted(
 
   sessionManager.setDiskTier(session.id, "evicted");
   clearStuck(session, deps);
+  // An evicted session is excluded from every later pass, so a marker not cleared
+  // here is permanent — and the wiped-workspace paths above never ran the git check.
+  recordWorkspaceBlock(session, deps, null);
   console.log(`[disk-janitor] ${session.id}: light → evicted (workspace + overlay wiped)`);
   return "evicted";
 }

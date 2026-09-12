@@ -90,6 +90,7 @@ async function savePendingWorkForSync(
       createGitManager: deps.createGitManager,
       chatHistoryManager: deps.chatHistoryManager,
       sessionManager: deps.sessionManager,
+      sseBroadcast: deps.sseBroadcast,
       scheduleAutoPush: (git, sid) => deps.scheduleAutoPush?.(git, sid),
     },
     {
