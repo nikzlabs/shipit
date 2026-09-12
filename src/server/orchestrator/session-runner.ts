@@ -172,6 +172,9 @@ export class AgentTurnAdmissionError extends Error {
  * that holds the session between turns: its own hold is what keeps the queue from
  * draining, so a queued entry of its own would settle only after the thing it is
  * waiting to release, and the session freezes for ever (planning#297).
+ *
+ * Covers admission only. A refusing caller must also set `postTurn: "none"`, or pre-turn
+ * compaction can re-queue it after it was admitted (`dispatched-turn.ts`).
  */
 export interface DispatchAdmission {
   whenBusy: "queue" | "refuse";

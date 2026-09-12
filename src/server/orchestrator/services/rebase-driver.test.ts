@@ -1255,6 +1255,9 @@ describe("rebase-driver: planning#369 up-to-date branch with unpushed commits", 
       return Promise.resolve({ status: "not-an-lfs-repo" as const, usesLfs: false });
     });
 
+    // Counted: a deadline that expires before the agent ever runs is measuring the
+    // wrong thing, which is exactly how this test used to pass.
+    const runs = vi.fn();
     const hangingAgent = () => Object.assign(new EventEmitter(), {
       agentId: "claude" as const,
       capabilities: {
@@ -1262,7 +1265,7 @@ describe("rebase-driver: planning#369 up-to-date branch with unpushed commits", 
         supportsPermissionModes: false, supportedPermissionModes: [], toolNames: [],
         models: [], supportsReview: true,
       },
-      run: () => {},
+      run: runs,
       kill: () => {},
     }) as unknown as AgentProcess;
 
@@ -1278,6 +1281,7 @@ describe("rebase-driver: planning#369 up-to-date branch with unpushed commits", 
     const result = await runAutoResolveAttempt(attemptDeps, "main");
 
     expect(result).toMatchObject({ outcome: "error", lastError: "timeout" });
+    expect(runs).toHaveBeenCalledTimes(1);
     expect(order.indexOf("restore")).toBeGreaterThanOrEqual(0);
     expect(order.indexOf("restore")).toBeLessThan(order.indexOf("drain"));
   });
@@ -1930,7 +1934,8 @@ describe("rebase-driver: planning#338 displacement + queue hold", () => {
       const captured: { role: string; text: string }[] = [];
 
       // The observed trigger: the session opened its PR "while the suite and review finish".
-      runner.setAgent(new FakeRebaseAgent(() => "resident") as unknown as AgentProcess);
+      const resident = new FakeRebaseAgent(() => "resident") as unknown as AgentProcess;
+      runner.setAgent(resident);
       runner.isStreamingActive = true;
       runner.setBackgroundTasks([{ id: "bg-1", description: "npm test" }]);
       expect(runner.backgroundWorkDescriptions).toEqual(["npm test"]);
@@ -1946,6 +1951,10 @@ describe("rebase-driver: planning#338 displacement + queue hold", () => {
         sseBroadcast: () => {},
         recordSyncCard: true,
       }, "main"), { runner, git, captured });
+
+      // Refusing is the point: the work the gate protects must still be there.
+      expect(runner.getAgent()).toBe(resident);
+      expect(runner.backgroundWorkDescriptions).toEqual(["npm test"]);
     });
 
     it("is never steered into another turn, and never enters the queue", async () => {

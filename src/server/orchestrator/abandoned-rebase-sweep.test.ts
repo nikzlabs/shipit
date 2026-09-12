@@ -2,11 +2,8 @@ import { describe, it, expect, vi } from "vitest";
 import type { GitManager } from "../shared/git.js";
 import type { SessionInfo } from "../shared/types.js";
 import type { SessionManager } from "./sessions.js";
-import {
-  reportAbandonedRebases,
-  buildAbandonedRebaseNotice,
-  ABANDONED_REBASE_NOTICE_PREFIX,
-} from "./abandoned-rebase-sweep.js";
+import type { SessionRunnerInterface, SessionRunnerRegistry } from "./session-runner.js";
+import { reportAbandonedRebases, buildAbandonedRebaseNotice } from "./abandoned-rebase-sweep.js";
 
 vi.mock("./checkout-durability.js", () => ({
   // Every fixture session's workspaceDir is a stand-in, never a real checkout.
@@ -21,14 +18,31 @@ function session(over: Partial<SessionInfo> & { id: string }): SessionInfo {
   } as SessionInfo;
 }
 
-function deps(sessions: SessionInfo[], rebasing: (dir: string) => boolean) {
+function deps(
+  sessions: SessionInfo[],
+  rebasing: (dir: string) => boolean,
+  busy: ReadonlySet<string> = new Set(),
+) {
+  // Models appendPendingAgentNotice's real contract: append, and dedupe on the stored text.
   const notices = new Map<string, string>();
+  for (const s of sessions) if (s.pendingAgentNotice) notices.set(s.id, s.pendingAgentNotice);
   return {
     notices,
     sessionManager: {
-      list: () => sessions,
+      allIds: () => sessions.map((s) => s.id),
+      get: (id: string) => sessions.find((s) => s.id === id),
+      appendPendingAgentNotice: (id: string, notice: string) => {
+        const existing = notices.get(id) ?? "";
+        if (existing.includes(notice)) return;
+        notices.set(id, existing ? `${existing}\n\n${notice}` : notice);
+      },
+      // Present so a regression to the overwriting setter fails on the assertion,
+      // not on a missing method.
       setPendingAgentNotice: (id: string, notice: string) => { notices.set(id, notice); },
     } as unknown as SessionManager,
+    runnerRegistry: {
+      get: (id: string) => (busy.has(id) ? { agentBusy: true } as SessionRunnerInterface : undefined),
+    } as unknown as SessionRunnerRegistry,
     createGitManager: (dir: string) => ({
       isRebaseInProgress: () => Promise.resolve(rebasing(dir)),
     }) as unknown as GitManager,
@@ -36,7 +50,7 @@ function deps(sessions: SessionInfo[], rebasing: (dir: string) => boolean) {
 }
 
 describe("abandoned-rebase startup sweep", () => {
-  it("tells the next turn to recover a checkout left mid-rebase", async () => {
+  it("tells the next turn to check a checkout left mid-rebase", async () => {
     const d = deps([session({ id: "stuck" }), session({ id: "fine" })], (dir) => dir.endsWith("stuck"));
 
     expect(await reportAbandonedRebases(d)).toEqual(["stuck"]);
@@ -44,29 +58,35 @@ describe("abandoned-rebase startup sweep", () => {
     expect(d.notices.has("fine")).toBe(false);
   });
 
-  it("does not repeat the notice while the earlier one is still unconsumed", async () => {
+  it("keeps an unrelated pending notice instead of replacing it", async () => {
+    const d = deps([session({ id: "stuck", pendingAgentNotice: "[System] LFS restore failed." })], () => true);
+
+    await reportAbandonedRebases(d);
+
+    const notice = d.notices.get("stuck") ?? "";
+    expect(notice).toContain("[System] LFS restore failed.");
+    expect(notice).toContain("part-way through a rebase");
+  });
+
+  it("does not repeat itself while the earlier notice is still unconsumed", async () => {
     // A stuck session survives many restarts; it must not collect one notice per boot.
-    const d = deps(
-      [session({ id: "stuck", pendingAgentNotice: buildAbandonedRebaseNotice() })],
-      () => true,
-    );
+    const d = deps([session({ id: "stuck", pendingAgentNotice: buildAbandonedRebaseNotice() })], () => true);
 
     expect(await reportAbandonedRebases(d)).toEqual(["stuck"]);
+    expect(d.notices.get("stuck")).toBe(buildAbandonedRebaseNotice());
+  });
+
+  it("leaves a rebase alone while a turn is still driving it", async () => {
+    // Turn adoption runs before this sweep, so a surviving turn's rebase is not abandoned.
+    const d = deps([session({ id: "adopted" })], () => true, new Set(["adopted"]));
+
+    expect(await reportAbandonedRebases(d)).toEqual([]);
     expect(d.notices.size).toBe(0);
   });
 
-  it("re-reports once the agent consumed the notice and the rebase is still stuck", async () => {
-    const d = deps(
-      [session({ id: "stuck", pendingAgentNotice: "[System] something else entirely" })],
-      () => true,
-    );
-
-    await reportAbandonedRebases(d);
-    expect(d.notices.get("stuck")).toContain(ABANDONED_REBASE_NOTICE_PREFIX);
-  });
-
-  it("skips archived sessions and evicted checkouts, which have nothing to recover in place", async () => {
+  it("skips warm, archived and evicted sessions, which have nothing to recover in place", async () => {
     const d = deps([
+      session({ id: "warm", warm: true }),
       session({ id: "archived", userArchived: true }),
       session({ id: "evicted", diskTier: "evicted" }),
       session({ id: "no-workspace", workspaceDir: undefined }),
@@ -84,6 +104,6 @@ describe("abandoned-rebase startup sweep", () => {
     };
 
     expect(await reportAbandonedRebases({ ...d, createGitManager })).toEqual(["stuck"]);
-    expect(d.notices.get("stuck")).toContain(ABANDONED_REBASE_NOTICE_PREFIX);
+    expect(d.notices.get("stuck")).toBe(buildAbandonedRebaseNotice());
   });
 });

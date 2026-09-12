@@ -401,15 +401,26 @@ So the property moves to the dispatch itself:
 - Refusal also skips steering: a caller that wants its own turn or nothing must
   not be delivered into someone else's.
 
+Admission is all it covers. A refusing caller must also carry `postTurn: "none"`,
+or pre-turn compaction re-queues it *after* admission (`dispatched-turn.ts`); the
+rebase driver does, for its own reasons, and the constraint is documented on
+`DispatchAdmission` for whoever refuses next.
+
 Nothing enters the queue on refusal, which is the point beyond settling: a
 stranded resolution prompt would drain later and ask the agent to resolve
 conflicts that the abort had already removed.
 
 **A restart strands the same flow durably**, and that half is only reported, not
-fixed. `abandoned-rebase-sweep.ts` runs at boot, finds session checkouts left
-mid-rebase, and records a `pendingAgentNotice` telling the next turn to finish or
-abort it — last-write-wins, so it cannot accumulate across restarts. Resuming the
-rebase, and a Resume/Abort card, are planning#531.
+fixed. `abandoned-rebase-sweep.ts` runs at boot, after turn adoption, and records
+a `pendingAgentNotice` for every checkout that is mid-rebase with no turn driving
+it. Three details are load-bearing: it walks `allIds()`, not `list()`, because
+that is sidebar-filtered and a stuck session whose PR merged long ago — the shape
+this exists for — is exactly what the filter drops; it **appends** the notice
+(`appendPendingAgentNotice`, which dedupes on the stored text inside one
+transaction) rather than overwriting an unrelated pending notice; and it claims
+only what git's rebase state proves, since an agent-driven rebase looks identical
+on disk and adoption can leave one legitimately in flight. Resuming the rebase,
+and a Resume/Abort card, are planning#531.
 
 Guards: `services/rebase-driver.test.ts` drives the real flow into each gate
 (`!deps`, `mergeHold`, resident agent with background work) and asserts it fails

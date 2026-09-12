@@ -913,7 +913,9 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
   })();
 
   // A restart drops the rebase driver but not the half-applied rebase on disk.
-  void reportAbandonedRebases({ sessionManager, createGitManager }).catch((err: unknown) => {
+  void reportAbandonedRebases({
+    sessionManager, runnerRegistry, createGitManager,
+  }).catch((err: unknown) => {
     console.error("[abandoned-rebase] startup sweep failed:", err);
   });
 
