@@ -108,7 +108,22 @@ describe("AskUserQuestion", () => {
   });
 
   describe("single-select interaction", () => {
-    it("calls onAnswer immediately when an option is clicked (single question)", () => {
+    it("shows the submit button for a lone single-select question, disabled until a pick", () => {
+      const onAnswer = vi.fn<AnswerFn>(() => true);
+      render(
+        <AskUserQuestion
+          toolUseId="t1"
+          questions={singleQuestion}
+          onAnswer={onAnswer}
+          disabled={false}
+        />
+      );
+      expect(screen.getByTestId("submit-answer")).toBeDisabled();
+      fireEvent.click(screen.getByTestId("option-Redis"));
+      expect(screen.getByTestId("submit-answer")).toBeEnabled();
+    });
+
+    it("does not answer on the option click alone (single question)", () => {
       const onAnswer = vi.fn<AnswerFn>(() => true);
       render(
         <AskUserQuestion
@@ -119,7 +134,40 @@ describe("AskUserQuestion", () => {
         />
       );
       fireEvent.click(screen.getByTestId("option-Redis"));
+      expect(onAnswer).not.toHaveBeenCalled();
+      expect(screen.getByTestId("option-Redis").className).toContain("bg-(--color-accent-subtle)");
+    });
+
+    it("submits the picked option when submit is clicked", () => {
+      const onAnswer = vi.fn<AnswerFn>(() => true);
+      render(
+        <AskUserQuestion
+          toolUseId="t1"
+          questions={singleQuestion}
+          onAnswer={onAnswer}
+          disabled={false}
+        />
+      );
+      fireEvent.click(screen.getByTestId("option-Redis"));
+      fireEvent.click(screen.getByTestId("submit-answer"));
       expect(onAnswer).toHaveBeenCalledWith("t1", { "0": "Redis" }, "Redis");
+    });
+
+    it("replaces the pick when another option is clicked before submit", () => {
+      const onAnswer = vi.fn<AnswerFn>(() => true);
+      render(
+        <AskUserQuestion
+          toolUseId="t1"
+          questions={singleQuestion}
+          onAnswer={onAnswer}
+          disabled={false}
+        />
+      );
+      fireEvent.click(screen.getByTestId("option-Redis"));
+      fireEvent.click(screen.getByTestId("option-In-memory"));
+      fireEvent.click(screen.getByTestId("submit-answer"));
+      expect(onAnswer).toHaveBeenCalledTimes(1);
+      expect(onAnswer).toHaveBeenCalledWith("t1", { "0": "In-memory" }, "In-memory");
     });
 
     it("disables options after answering", () => {
@@ -133,6 +181,8 @@ describe("AskUserQuestion", () => {
         />
       );
       fireEvent.click(screen.getByTestId("option-Redis"));
+      fireEvent.click(screen.getByTestId("submit-answer"));
+      expect(screen.getByTestId("option-In-memory")).toBeDisabled();
       fireEvent.click(screen.getByTestId("option-In-memory"));
       expect(onAnswer).toHaveBeenCalledTimes(1);
     });
@@ -148,6 +198,7 @@ describe("AskUserQuestion", () => {
         />
       );
       fireEvent.click(screen.getByTestId("option-Redis"));
+      fireEvent.click(screen.getByTestId("submit-answer"));
       expect(screen.queryByTestId("option-other")).not.toBeInTheDocument();
     });
   });
@@ -391,7 +442,7 @@ describe("AskUserQuestion", () => {
       expect(onAnswer).toHaveBeenCalledWith("t1", { "0": "My custom answer" }, "My custom answer");
     });
 
-    it("shows a submit button when Other is active for a single question", () => {
+    it("keeps the submit button when Other is active for a single question", () => {
       const onAnswer = vi.fn<AnswerFn>(() => true);
       render(
         <AskUserQuestion
@@ -401,7 +452,6 @@ describe("AskUserQuestion", () => {
           disabled={false}
         />
       );
-      expect(screen.queryByTestId("submit-answer")).not.toBeInTheDocument();
       fireEvent.click(screen.getByTestId("option-other"));
       expect(screen.getByTestId("submit-answer")).toBeInTheDocument();
     });
@@ -439,6 +489,7 @@ describe("AskUserQuestion", () => {
       fireEvent.click(screen.getByTestId("option-other"));
       expect(screen.queryByTestId("other-input")).not.toBeInTheDocument();
       fireEvent.click(screen.getByTestId("option-Redis"));
+      fireEvent.click(screen.getByTestId("submit-answer"));
       expect(onAnswer).toHaveBeenCalledWith("t1", { "0": "Redis" }, "Redis");
     });
 
@@ -713,6 +764,7 @@ describe("AskUserQuestion", () => {
         />
       );
       fireEvent.click(screen.getByTestId("option-In-memory"));
+      fireEvent.click(screen.getByTestId("submit-answer"));
       expect(onAnswer).toHaveBeenCalledWith("t1", { "0": "In-memory" }, "In-memory");
       rerender(
         <AskUserQuestion
@@ -741,11 +793,11 @@ describe("AskUserQuestion — the answered lock is conditional on delivery", () 
       />
     );
     fireEvent.click(screen.getByTestId("option-Redis"));
+    fireEvent.click(screen.getByTestId("submit-answer"));
     expect(onAnswer).toHaveBeenCalledTimes(1);
 
-    const redis = screen.getByTestId("option-Redis");
-    expect(redis).toBeEnabled();
-    fireEvent.click(redis);
+    expect(screen.getByTestId("option-Redis")).toBeEnabled();
+    fireEvent.click(screen.getByTestId("submit-answer"));
     expect(onAnswer).toHaveBeenCalledTimes(2);
   });
 
@@ -761,11 +813,11 @@ describe("AskUserQuestion — the answered lock is conditional on delivery", () 
       />
     );
     fireEvent.click(screen.getByTestId("option-Redis"));
-    fireEvent.click(screen.getByTestId("option-Redis"));
+    fireEvent.click(screen.getByTestId("submit-answer"));
+    fireEvent.click(screen.getByTestId("submit-answer"));
     expect(onAnswer).toHaveBeenCalledTimes(2);
 
-    fireEvent.click(screen.getByTestId("option-Redis"));
-    expect(onAnswer).toHaveBeenCalledTimes(2);
+    expect(screen.queryByTestId("submit-answer")).not.toBeInTheDocument();
     expect(screen.getByTestId("option-Redis")).toBeDisabled();
   });
 });
@@ -794,7 +846,7 @@ describe("AskUserQuestion — option text is selectable", () => {
     expect(screen.getByTestId("option-other")).toHaveClass("select-text");
   });
 
-  it("does not answer when the click only ends a selection drag over the row", () => {
+  it("does not pick the option when the click only ends a selection drag over the row", () => {
     const onAnswer = vi.fn<AnswerFn>(() => true);
     render(
       <AskUserQuestion
@@ -808,8 +860,8 @@ describe("AskUserQuestion — option text is selectable", () => {
     selectTextIn(redis);
     fireEvent.click(redis);
 
-    expect(onAnswer).not.toHaveBeenCalled();
-    expect(redis).toBeEnabled();
+    expect(redis.className).not.toContain("bg-(--color-accent-subtle)");
+    expect(screen.getByTestId("submit-answer")).toBeDisabled();
   });
 
   it("does not toggle Other when the click only ends a selection drag over it", () => {
@@ -828,7 +880,7 @@ describe("AskUserQuestion — option text is selectable", () => {
     expect(screen.queryByTestId("other-input")).not.toBeInTheDocument();
   });
 
-  it("still answers a plain click while text elsewhere is selected", () => {
+  it("still picks on a plain click while text elsewhere is selected", () => {
     const onAnswer = vi.fn<AnswerFn>(() => true);
     render(
       <AskUserQuestion
@@ -840,6 +892,7 @@ describe("AskUserQuestion — option text is selectable", () => {
     );
     selectTextIn(screen.getByTestId("option-In-memory"));
     fireEvent.click(screen.getByTestId("option-Redis"));
+    fireEvent.click(screen.getByTestId("submit-answer"));
 
     expect(onAnswer).toHaveBeenCalledWith("t1", { "0": "Redis" }, "Redis");
   });

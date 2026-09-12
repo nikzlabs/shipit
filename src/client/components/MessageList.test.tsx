@@ -1847,6 +1847,7 @@ describe("MessageList", () => {
         <MessageList messages={messages} isLoading={true} onAnswerQuestion={onAnswerQuestion} />
       );
       fireEvent.click(screen.getByTestId("option-Redis"));
+      fireEvent.click(screen.getByTestId("submit-answer"));
       expect(onAnswerQuestion).toHaveBeenCalledWith("ask-1", { "0": "Redis" }, "Redis");
     });
 
@@ -1867,6 +1868,7 @@ describe("MessageList", () => {
         <MessageList messages={messages} isLoading={false} onAnswerQuestion={onAnswerQuestion} />
       );
       fireEvent.click(screen.getByTestId("option-Redis"));
+      fireEvent.click(screen.getByTestId("submit-answer"));
       expect(onAnswerQuestion).toHaveBeenCalledWith("ask-1", { "0": "Redis" }, "Redis");
     });
 
