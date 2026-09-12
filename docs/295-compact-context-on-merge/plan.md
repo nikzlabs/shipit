@@ -138,14 +138,22 @@ global setting" and the setting is on:
   from their own stores, so the composer looked untouched while a checkbox had
   quietly gone back to blue, with no signal at all.
 
-**Attribution.** The eligibility-flicker mechanism above is a demonstrated defect
-class, not a proven account of the report that prompted this work. For that
-incident the orchestrator log was checked end to end and showed only
-`reset_eligible=true` across both merge windows — no `false`, no `failing
-closed`, no `(file-change)` — so it did not fire there. The user was on a phone,
-where backgrounded-tab churn makes a remount routine, and the remount path is
-what the evidence supports. Both are fixed; neither is claimed as the proven
-cause.
+**Attribution.** The remount is what the host log positively supports. A remount
+is the one candidate that predicts **zero** `false` intents on the wire — both
+tick states re-initialise to `true` — and zero is what the server received on a
+turn where the user had unticked a box. The pre-turn LFS restore fired on both
+post-merge turns, which only `autoResetMergedBranchOnContinue`'s `moved: true`
+path can produce, and no `opted-out` skip line exists anywhere in the retained
+log; so the branch reset ran and `resetMergedBranch` was not `false` either.
+
+The eligibility-flicker mechanism above is a real defect of the same class and is
+fixed here, but it did not fire in that incident: the log holds only
+`reset_eligible=true` across both merge windows, and `emitResetEligible` logs on
+every path where `merged` is true, so a `false` could not have been silent. The
+same goes for the control's hit target — the two buttons abutted and the compact
+row had no top padding, so the apparent breathing room above its checkbox was a
+live hit target for the reset control; a near-miss would have shown as exactly
+one `false` on the wire, and none was sent. Both are fixed; neither is the cause.
 
 So the tick state is `mergeContinueOptOutBySession` in the PR store, mirrored to
 `shipit-merge-continue-optout:{sessionId}` in localStorage — the third durable
