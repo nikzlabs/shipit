@@ -154,8 +154,7 @@ CLI's own word (`active`).
 
 - `send-message.ts` — an action the harness marks `"turn"` is left alone and
   becomes an ordinary turn. Everything else is intercepted, refusals included.
-- `agent-execution.ts` — a `"turn"` goal command is delivered **verbatim**
-  (`opts.verbatim`, shared with the Grok sibling), for the measured reason
+- `agent-execution.ts` — a `"turn"` goal command is delivered **verbatim**, for the measured reason
   above. The notices that would otherwise have ridden it are left *unconsumed*
   for the next ordinary turn rather than eaten, since they are read with
   `consume…` calls that cannot be undone.

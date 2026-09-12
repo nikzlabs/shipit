@@ -1,5 +1,4 @@
 import type { WsServerMessage, ImageAttachment, FileAttachment, PermissionMode } from "../../shared/types.js";
-import type { AgentCapabilities } from "../../shared/types/agent-types.js";
 import type { ConnectionCtx, RunnerCtx, AppCtx } from "./types.js";
 import { getErrorMessage, resolveFileAttachments, resolveUploadRefs, formatFileContext } from "../validation.js";
 import { buildTurnMessages, type AgentListenerDeps } from "./agent-listeners.js";
@@ -7,7 +6,7 @@ import { postTurnCommit } from "./post-turn.js";
 import { billingModeForRoute } from "../sessions.js";
 import { resolveRunner } from "./resolve-runner.js";
 import { parseCompactCommand } from "../../shared/compact-command.js";
-import { parseGoalCommand } from "../../shared/goal-command.js";
+import { isCommandInvocation } from "../../shared/command-invocation.js";
 import {
   shouldCompactBeforeTurn,
   noteMissedCompaction,
@@ -101,20 +100,6 @@ export async function drainNextQueuedMessage(
     console.error("[queue] Error processing queued message:", getErrorMessage(err));
     runner.running = false;
   });
-}
-
-/**
- * docs/297 — true when the message is a `/goal` action this harness answers by
- * letting the user's own text reach the CLI. The CLI treats it as a command only
- * when it is the whole message, so nothing may be added before or after it.
- */
-export function ridesTurnGoalCommand(
-  text: string,
-  capabilities: Pick<AgentCapabilities, "supportsGoals" | "goalActions"> | undefined,
-): boolean {
-  if (!(capabilities?.supportsGoals ?? false)) return false;
-  const command = parseGoalCommand(text);
-  return command !== null && capabilities?.goalActions?.[command.action] === "turn";
 }
 
 function isCompactCommandFor(ctx: FullCtx, text: string): boolean {
@@ -259,9 +244,6 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
   permissionMode?: PermissionMode;
   isNewSession: boolean;
   uploadPaths?: string[];
-  /** docs/298 — the harness reads this text as its own command only when the prompt
-   *  is exactly the command, so nothing may be prepended or appended. */
-  verbatim?: boolean;
   userReview?: { filePaths: string[]; commentCount: number };
   compact?: boolean;
   /** false skips reset; true/undefined follows the global setting. */
@@ -377,12 +359,16 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
       }
     : undefined;
 
-  // docs/297 — a goal command the harness runs as a turn is a NATIVE CLI command:
-  // the CLI reads it only when it is the whole message, and reads everything after
-  // `/goal ` as the objective. So it is delivered verbatim, and the notices that
-  // would otherwise ride it are left pending for the next turn rather than eaten.
+  // docs/299 — the harness reads its own command only when the message is exactly
+  // the command, so it is delivered alone and every notice that would have ridden
+  // it is left pending for the next turn rather than eaten. Attachments are refused
+  // at the entry point, so one still present here came from a machine sender —
+  // keeping its context beats dropping it silently.
   const ridesTurnAsCommand =
-    !opts.compact && (opts.verbatim ?? ridesTurnGoalCommand(userText, agentInfo?.capabilities));
+    !opts.compact
+    && validatedFiles.length === 0
+    && !(images && images.length > 0)
+    && isCommandInvocation(userText, agentInfo?.capabilities.skillInvocationPrefix);
 
   // Compaction must neither move the branch nor receive instructions to resume work.
   let resetHook: PreTurnResetHookResult = { agentPrefix: "" };
@@ -427,8 +413,6 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
   ]
     .filter(Boolean)
     .join("\n\n");
-  // takeRoleStandingInstructions is a take: reading it on a verbatim turn, which
-  // cannot carry it, would destroy the role's brief for good.
   // takeRoleStandingInstructions is a take, so reading it on a turn that cannot
   // carry it would destroy the role's brief for good.
   const roleContext = capturedSessionId && !ridesTurnAsCommand

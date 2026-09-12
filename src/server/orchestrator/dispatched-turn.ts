@@ -22,6 +22,7 @@ import { formatSessionMessagePrompt } from "./session-message-origin.js";
 import { dependencyGapAgentPrefix } from "./dependency-staleness.js";
 import { isCompactCommand } from "../shared/compact-command.js";
 import { getAgentCapabilities } from "../shared/agent-registry.js";
+import { isCommandInvocation } from "../shared/command-invocation.js";
 
 const MAX_NO_RESULT_RETRIES = 1;
 
@@ -184,14 +185,26 @@ async function runDispatchedTurnInner(
     ? formatSessionMessagePrompt(surfacedText, opts.messageOrigin)
     : surfacedText;
 
+  // docs/299 — the harness reads its own command only when the message is exactly
+  // the command, so it is delivered alone and nothing that would have ridden it is
+  // consumed. A message wrapped with its origin is excluded: that wrapper is the
+  // message's provenance, and a sibling agent's command is not the user's own text.
+  const nativeCommand =
+    !isCompactRequest
+    && !opts.messageOrigin
+    && !opts.agentInterface
+    && validatedFiles.length === 0
+    && !(images && images.length > 0)
+    && isCommandInvocation(text, getAgentCapabilities(agentId)?.skillInvocationPrefix);
+
   // Reset once per message, outside retries. postTurn:none belongs to an ongoing git operation.
-  const reset = sessionDir && opts.postTurn !== "none" && !isCompactRequest
+  const reset = sessionDir && opts.postTurn !== "none" && !isCompactRequest && !nativeCommand
     ? await deps.preTurnReset?.(
         runner, runner.sessionId, sessionDir, opts.resetMergedBranch,
       )
     : undefined;
 
-  const pendingNotice = opts.postTurn !== "none" && !isCompactRequest
+  const pendingNotice = opts.postTurn !== "none" && !isCompactRequest && !nativeCommand
     ? deps.consumePendingAgentNotice?.(runner.sessionId) ?? ""
     : "";
   // Consumption clears the notice; restore it if setup fails before executor handoff.
@@ -207,7 +220,7 @@ async function runDispatchedTurnInner(
   };
 
   // Bug outcomes are intentionally consumed at most once, including failed delivery.
-  const bugOutcomeNotice = opts.systemTurn || isCompactRequest
+  const bugOutcomeNotice = opts.systemTurn || isCompactRequest || nativeCommand
     ? ""
     : buildBugOutcomeNotice(deps.consumeBugOutcomes?.(runner.sessionId) ?? []);
 
@@ -215,20 +228,23 @@ async function runDispatchedTurnInner(
     pendingNotice,
     bugOutcomeNotice,
     reset?.agentPrefix,
-    isCompactRequest ? "" : dependencyGapAgentPrefix(runner.dependencyGap),
+    isCompactRequest || nativeCommand ? "" : dependencyGapAgentPrefix(runner.dependencyGap),
   ]
     .filter(Boolean)
     .join("\n\n");
-  const roleContext = deps.takeRoleInstructions?.(runner.sessionId) ?? "";
-  const prompt =
-    (agentPrefix ? `${agentPrefix}\n\n` : "") +
-    assembleAgentPrompt({
-      userText: agentText,
-      fileContext,
-      imageContext,
-      ...(roleContext ? { roleContext } : {}),
-      dictated: opts.dictated,
-    });
+  // takeRoleInstructions is a take, so reading it on a turn that cannot carry it
+  // would destroy the role's brief for good.
+  const roleContext = nativeCommand ? "" : deps.takeRoleInstructions?.(runner.sessionId) ?? "";
+  const prompt = nativeCommand
+    ? agentText.trim()
+    : (agentPrefix ? `${agentPrefix}\n\n` : "") +
+      assembleAgentPrompt({
+        userText: agentText,
+        fileContext,
+        imageContext,
+        ...(roleContext ? { roleContext } : {}),
+        dictated: opts.dictated,
+      });
 
   const historyImages = images?.map((img) => ({ data: img.data, mediaType: img.mediaType }));
   const historyFiles =

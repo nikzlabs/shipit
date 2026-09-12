@@ -121,9 +121,10 @@ image, dictation and role context after it, and prepends any pending notice.
 
 So a `"turn"` goal action runs as a **verbatim** turn, which
 [docs/297](../297-goal-on-claude/plan.md) built for the same measurement on Claude
-Code and this feature shares: `ridesTurnGoalCommand(text, capabilities)` decides it
-from the message and the harness's own map, and the prompt becomes the user's text
-and nothing else. Derived rather than threaded, the way compaction derives
+Code and this feature shares. [docs/299](../299-native-command-prompt/plan.md)
+then generalized the decision to every command invocation:
+`isCommandInvocation(text, prefix)` reads it from the message and the harness's own
+invocation prefix, and the prompt becomes the user's text and nothing else. Derived rather than threaded, the way compaction derives
 `compact`, so a `/goal` queued while another turn ran is still verbatim when it
 drains. The adapter needs no change — it already writes `params.prompt` byte for
 byte to its prompt file.
@@ -141,8 +142,9 @@ Skipping the context must not lose it, so two things go with it:
   so they append context like the rest.
 
 The same prefix would stop a `/skill` invocation being recognised on any harness.
-That is a wider pre-existing defect, filed separately; `assembleAgentPrompt`'s
-existing branches are deliberately untouched here.
+That wider defect was filed separately and fixed in
+[docs/299](../299-native-command-prompt/plan.md), which deleted
+`assembleAgentPrompt`'s slash branch — deliberately untouched here.
 
 ### Adapter (session side)
 
@@ -228,6 +230,6 @@ fields it would unlock are in the measurement table above.
 - `src/server/shared/catalogue/harnesses.ts` — the `grok` block's `goalActions`.
 - `src/server/shared/types/agent-types.ts` — `goalActions`.
 - `src/server/orchestrator/ws-handlers/send-message.ts`, `goal-command.ts` — the gate and the refusal.
-- `src/server/orchestrator/ws-handlers/agent-execution.ts` — `ridesTurnGoalCommand`, shared with docs/297.
+- `src/server/orchestrator/ws-handlers/agent-execution.ts` — the verbatim turn, shared with docs/297 and generalized by docs/299.
 - `src/server/orchestrator/services/agent-goal.ts` — `user_paused`'s label.
 - `src/client/components/GoalChip.tsx`, `MessageInput/MessageInput.tsx`, `utils/send-handler.ts`.
