@@ -778,6 +778,54 @@ export function removeDraftUploads(sessionKey: string, toRemove: string[]): void
   if (next.length !== paths.length) saveDraftUploads(sessionKey, next);
 }
 
+// docs/218 + docs/295 — the per-message opt-out for the two merge-continue
+// controls: the third durable half of a draft, beside its text and its upload
+// paths. The untick belongs to the message being composed, and that message
+// survives a reload and a reconnect; component state did not, so every remount
+// silently re-ticked the box. Holds only what the user turned OFF.
+const MERGE_CONTINUE_OPT_OUT_KEY_PREFIX = "shipit-merge-continue-optout:";
+
+/** The two composer controls a merged session offers before its next turn. */
+export type MergeContinueControl = "reset" | "compact";
+
+/** Which of them the user unticked for the message currently being composed. */
+export type MergeContinueOptOut = Partial<Record<MergeContinueControl, boolean>>;
+
+function isMergeContinueControl(value: unknown): value is MergeContinueControl {
+  return value === "reset" || value === "compact";
+}
+
+/** Read a session's unticked merge-continue controls. `{}` when it has none. */
+export function getSavedMergeContinueOptOut(sessionKey: string): MergeContinueOptOut {
+  return getLocalStorageObject<MergeContinueOptOut>(
+    MERGE_CONTINUE_OPT_OUT_KEY_PREFIX + sessionKey,
+    {},
+    (parsed) => {
+      // localStorage is user-writable, so an unknown control name is dropped.
+      if (!Array.isArray(parsed)) return {};
+      const optOut: MergeContinueOptOut = {};
+      for (const entry of parsed) {
+        if (isMergeContinueControl(entry)) optOut[entry] = true;
+      }
+      return optOut;
+    },
+  );
+}
+
+/** Persist (or clear, when nothing is unticked) a session's merge-continue opt-out. */
+export function saveMergeContinueOptOut(sessionKey: string, optOut: MergeContinueOptOut): void {
+  const controls = (["reset", "compact"] as const).filter((c) => optOut[c]);
+  try {
+    if (controls.length > 0) {
+      localStorage.setItem(MERGE_CONTINUE_OPT_OUT_KEY_PREFIX + sessionKey, JSON.stringify(controls));
+    } else {
+      localStorage.removeItem(MERGE_CONTINUE_OPT_OUT_KEY_PREFIX + sessionKey);
+    }
+  } catch {
+    // localStorage may be unavailable
+  }
+}
+
 const ISSUE_FILTERS_KEY = "shipit-issue-filters";
 
 const VALID_PRIORITY_LEVELS: readonly IssuePriorityLevel[] = [

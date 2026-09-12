@@ -103,11 +103,49 @@ the shipped work — which is why req 7 is a requirement, not a nicety.
 ## The per-send intent (req 5, req 6)
 
 The wire path mirrors `resetMergedBranch` field for field:
-`WsSendMessage.compactContext?: boolean`, set only when the control was shown,
-non-sticky, never persisted, read independently of its sibling. Both flags ride
-the queue (`QueuedMessage`, `AgentDispatchOptions`), so an untick made while a
-turn was running still applies when the entry drains — including on the
-`/review` frame, which composes its own prompt.
+`WsSendMessage.compactContext?: boolean`, non-sticky, never persisted, read
+independently of its sibling. Both flags ride the queue (`QueuedMessage`,
+`AgentDispatchOptions`), so an untick made while a turn was running still
+applies when the entry drains — including on the `/review` frame, which composes
+its own prompt.
+
+**The untick belongs to the message, and only that message leaving clears it.**
+It shipped as two `useState(true)` flags re-armed by an effect keyed on the
+control becoming visible, and carried on the wire only while the control was
+visible. Both halves discarded a deliberate untick, silently and in the
+compacting direction, because an **omitted** `compactContext` means "follow the
+global setting" and the setting is on:
+
+- `reset_eligible` has four emitters (activation, post-turn, merge-detected, and
+  the file-change recompute in `reset-eligible-watch.ts`, which re-runs on every
+  batch of writes to the workspace), and `computeResetEligibility` **fails
+  closed** — a git read that throws answers `false` for a session that is
+  perfectly eligible. So one `false`, for a reason that never reaches the user,
+  re-ticked the box on the way back to `true`; and a send made while the control
+  was still away carried no intent at all. This is the reported incident: the
+  user unticked a visible control and sent 7.5 s later, with no reload, no
+  reconnect and no send in between.
+- Component state does not outlive the composer. A WebSocket reconnect or a page
+  reload remounts it and re-ticked the box.
+
+So the tick state is `mergeContinueOptOutBySession` in the PR store, mirrored to
+`shipit-merge-continue-optout:{sessionId}` in localStorage — the third durable
+half of a draft, beside its text and its upload chips — and it holds only what
+the user turned **off**. Nothing keys on a visibility transition. The payload
+carries the intent whenever the control is shown **or** an opt-out is
+outstanding; an opt-out can only say `false`, and `false` can only skip an
+action, so carrying it is safe whatever the server thinks eligibility is by the
+time the frame lands. The sibling `resetMergedBranch` control had the identical
+shape and the identical defect, and takes the same fix.
+
+**A send does not echo eligibility back at the composer.** `handleSendMessage`
+activates the session on every send, and activation pushed a freshly computed
+`reset_eligible`. That answer is a pre-turn one the same message is about to
+invalidate, and it landed ~10 ms after the send — cancelling the composer's
+optimistic hide and putting both controls back on screen, re-ticked, while the
+turn they belonged to ran. The send now passes
+`skipResetEligibleSignal`; a viewer arriving still gets the signal, and the
+post-turn recompute is the authoritative answer for the turn.
 
 ## A typed `/compact` is still one compaction (req 12)
 
@@ -190,8 +228,8 @@ Offered whenever the reset control is, so req 11's single setting governs both
 with no second gate. Nothing gates on context size (req 3). Placed as a
 subordinate second line inside the existing control block — one line, no
 description — so the block that appears at the moment the user wants to type
-does not double in weight. Both tick states re-tick on send and on a session
-switch, so an untick never rides a later message or another session.
+does not double in weight. Both tick states re-tick on send, and are keyed by
+session, so an untick never rides a later message or another session.
 
 ## The shared setting (req 11)
 
@@ -210,6 +248,7 @@ Advanced description names both.
 | `orchestrator/turn-executor.ts` | `TurnInput.compact`, passed to `buildRunParams` for the dispatched path. |
 | `shared/types/ws-client-messages.ts` | `compactContext?: boolean`. |
 | `client/components/MessageInput/MessageInput.tsx` | The control, its tick state, the payload flag. |
+| `client/stores/pr-store.ts`, `client/utils/local-storage.ts` | `mergeContinueOptOutBySession` and its durable mirror: the untick outlives the composer. |
 | `client/utils/send-handler.ts` | Carries the flag, on the `/review` frame too. |
 | `client/components/Settings/tabs/AdvancedTab.tsx` | Description names both actions. |
 

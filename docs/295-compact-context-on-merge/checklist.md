@@ -42,9 +42,23 @@ Design: [plan.md](./plan.md). Requirements: [requirements.md](./requirements.md)
 
 - [x] `showCompactControl = showResetControl && supportsCompaction` in
       `MessageInput.tsx`; no occupancy state (req 3, req 10).
-- [x] Checked by default, re-ticked on send and on a session switch (req 2,
-      req 5); rendered as a subordinate line in the existing control block.
+- [x] Checked by default, re-ticked on send, keyed by session (req 2, req 5);
+      rendered as a subordinate line in the existing control block.
 - [x] The Settings → Advanced description names both actions (req 11).
+
+## The untick survives until its message is sent (req 5)
+
+- [x] The tick state is `mergeContinueOptOutBySession` in the PR store, mirrored
+      to localStorage per session, and nothing keys on the control's visibility
+      transition — so an eligibility answer arriving between the untick and the
+      send cannot re-tick it, and neither can a remount.
+- [x] The payload carries the intent when the control is shown **or** an opt-out
+      is outstanding: an omitted field means "follow the setting", so the
+      previous rule discarded the untick in the compacting direction.
+- [x] `handleSendMessage` activates with `skipResetEligibleSignal`, so a send no
+      longer echoes a pre-turn eligibility answer that cancels the composer's
+      optimistic hide.
+- [x] The sibling `resetMergedBranch` control takes the same fix.
 
 ## Tests
 

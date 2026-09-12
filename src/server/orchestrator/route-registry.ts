@@ -30,7 +30,7 @@ import {
 } from "./api-origin-guard.js";
 import { frameGuardHeaders, framePolicyFromEnv } from "../shared/frame-policy.js";
 import { projectTurnSnapshotForWire } from "./transcript-projection.js";
-import type { ConnectionCtx, RunnerCtx, AppCtx } from "./ws-handlers/types.js";
+import type { ActivateSessionOptions, ConnectionCtx, RunnerCtx, AppCtx } from "./ws-handlers/types.js";
 import * as terminalHandlers from "./ws-handlers/terminal-handlers.js";
 import * as miscHandlers from "./ws-handlers/misc-handlers.js";
 import * as rollbackHandlers from "./ws-handlers/rollback-handlers.js";
@@ -734,7 +734,7 @@ export async function registerRoutes(
         return createGitManager(activeSessionDir);
       };
 
-      const activateSession = async (sid: string) => {
+      const activateSession = async (sid: string, opts?: ActivateSessionOptions) => {
         const s = sessionManager.get(sid);
         activeAppSessionId = sid;
         const dir = s?.workspaceDir ?? null;
@@ -814,7 +814,8 @@ export async function registerRoutes(
               }
             })();
           }
-          if (dir) {
+          // docs/295 — a send suppresses this: see `skipResetEligibleSignal`.
+          if (dir && !opts?.skipResetEligibleSignal) {
             const eligibleDir = dir;
             void (async () => {
               try {

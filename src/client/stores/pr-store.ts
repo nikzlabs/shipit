@@ -9,6 +9,12 @@ import type {
   NotableFileChange,
 } from "../../server/shared/types/github-types.js";
 import { useSettingsStore } from "./settings-store.js";
+import {
+  getSavedMergeContinueOptOut,
+  saveMergeContinueOptOut,
+  type MergeContinueControl,
+  type MergeContinueOptOut,
+} from "../utils/local-storage.js";
 
 interface ImportSearchResult {
   fullName: string;
@@ -148,6 +154,18 @@ interface PrState {
    */
   resetEligibleBySession: Record<string, boolean>;
 
+  /**
+   * docs/218 + docs/295 — which of the two merge-continue controls the user has
+   * unticked for the message being composed in each session. Holds only the
+   * opt-outs; an absent session (or control) is ticked, the documented default.
+   *
+   * Store state rather than composer state because it must outlive the
+   * composer, which remounts on a reconnect and on a session switch. Mirrored to
+   * localStorage so it outlives a reload too, as the draft text and the draft
+   * upload chips are; a session missing here falls back to the stored value.
+   */
+  mergeContinueOptOutBySession: Record<string, MergeContinueOptOut>;
+
   importSearchResults: ImportSearchResult[];
 
   applyPrStatusUpdates: (updates: PrStatusSummary[], removals?: string[], isSnapshot?: boolean) => void;
@@ -157,6 +175,14 @@ interface PrState {
   setNotableFiles: (sessionId: string, cardId: string, notableFiles: NotableFileChange[]) => void;
 
   setResetEligible: (sessionId: string, eligible: boolean) => void;
+  /** docs/295 — record (or take back) an untick, durable mirror included. */
+  setMergeContinueOptOut: (
+    sessionId: string,
+    control: MergeContinueControl,
+    optedOut: boolean,
+  ) => void;
+  /** Re-tick both: the message the untick was made for has been sent (req 5). */
+  clearMergeContinueOptOut: (sessionId: string) => void;
 
   fixCI: (sessionId: string) => Promise<string | null>;
 
@@ -193,6 +219,7 @@ const initialState = {
   autoMergeBySession: {} as Record<string, NonNullable<PrCardState["autoMerge"]>>,
   notableFilesBySession: {} as Record<string, NotableFileChange[]>,
   resetEligibleBySession: {} as Record<string, boolean>,
+  mergeContinueOptOutBySession: {} as Record<string, MergeContinueOptOut>,
   importSearchResults: [] as ImportSearchResult[],
 };
 
@@ -383,6 +410,35 @@ export const usePrStore = create<PrState>((set, get) => ({
         delete next[sessionId];
       }
       return { resetEligibleBySession: next };
+    });
+  },
+
+  setMergeContinueOptOut: (sessionId, control, optedOut) => {
+    set((state) => {
+      const current = state.mergeContinueOptOutBySession[sessionId]
+        ?? getSavedMergeContinueOptOut(sessionId);
+      const updated: MergeContinueOptOut = { ...current };
+      if (optedOut) {
+        updated[control] = true;
+      } else {
+        // eslint-disable-next-line @typescript-eslint/no-dynamic-delete
+        delete updated[control];
+      }
+      saveMergeContinueOptOut(sessionId, updated);
+      return {
+        mergeContinueOptOutBySession: { ...state.mergeContinueOptOutBySession, [sessionId]: updated },
+      };
+    });
+  },
+
+  clearMergeContinueOptOut: (sessionId) => {
+    saveMergeContinueOptOut(sessionId, {});
+    set((state) => {
+      if (!(sessionId in state.mergeContinueOptOutBySession)) return state;
+      const next = { ...state.mergeContinueOptOutBySession };
+      // eslint-disable-next-line @typescript-eslint/no-dynamic-delete
+      delete next[sessionId];
+      return { mergeContinueOptOutBySession: next };
     });
   },
 

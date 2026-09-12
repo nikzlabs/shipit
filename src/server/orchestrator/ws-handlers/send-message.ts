@@ -320,7 +320,11 @@ export async function handleSendMessage(
     }
     // Another viewer can change network mode and rebuild the container before this send.
     await settleNetworkModeWrites(effectiveSessionId);
-    await ctx.activateSession(effectiveSessionId);
+    // docs/295 — bookkeeping, not a viewer arrival: the eligibility answer this
+    // would push is about to be invalidated by this very message, and it lands
+    // on the composer while the turn runs. The post-turn recompute is the one
+    // that speaks for this turn.
+    await ctx.activateSession(effectiveSessionId, { skipResetEligibleSignal: true });
     const session = ctx.sessionManager.get(effectiveSessionId);
     agentSessionId = session?.agentSessionId;
 

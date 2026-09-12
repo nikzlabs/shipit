@@ -7,6 +7,7 @@ import { buildApp } from "../index.js";
 import { GitManager } from "../../shared/git.js";
 import { SessionManager } from "../sessions.js";
 import { ChatHistoryManager } from "../chat-history.js";
+import { RepoStore } from "../repo-store.js";
 import { AuthManager } from "../agents/claude/auth-manager.js";
 
 import type { FastifyInstance } from "fastify";
@@ -23,6 +24,7 @@ import type { PrStatusSummary } from "../../shared/types/github-types.js";
 import { DatabaseManager } from "../../shared/database.js";
 
 const SESSION_ID = "merged-session";
+const REPO_URL = "https://github.com/o/r.git";
 
 describe("Integration: the pre-turn compaction of a merged session (docs/295)", () => {
   let app: FastifyInstance;
@@ -33,6 +35,7 @@ describe("Integration: the pre-turn compaction of a merged session (docs/295)", 
   let sessionManager: SessionManager;
   let spawns: FakeClaudeProcess[] = [];
   let dbManager: DatabaseManager;
+  let repoStore: RepoStore;
 
   beforeEach(async () => {
     dbManager = createTestDatabaseManager();
@@ -69,8 +72,11 @@ describe("Integration: the pre-turn compaction of a merged session (docs/295)", 
       checks: { state: "none", total: 0, passed: 0, failed: 0, pending: 0 },
     } as unknown as PrStatusSummary);
 
+    repoStore = new RepoStore(dbManager);
+
     app = await buildApp({
       credentialStore,
+      repoStore,
       createGitManager: (dir: string) => new GitManager(dir),
       sessionManager,
       chatHistoryManager,
@@ -354,6 +360,36 @@ describe("Integration: the pre-turn compaction of a merged session (docs/295)", 
     expect(only.lastCompact).toBeFalsy();
     expect(only.lastPrompt).toContain("start the next slice");
     expect(spawns).toHaveLength(1);
+
+    client.close();
+  });
+
+  /**
+   * A send activates the session, and activation used to push a freshly
+   * computed `reset_eligible`. That answer is a PRE-turn one that this very
+   * message is about to invalidate, and it landed on the composer about 10 ms
+   * after the send — cancelling the optimistic hide and putting both controls
+   * back on screen, re-ticked, while the turn they belonged to was still
+   * running. A viewer arriving still gets the signal; a send no longer
+   * manufactures one.
+   */
+  it("does not echo reset_eligible back at a send (the controls stay hidden for the turn)", async () => {
+    // Eligibility is only signalled for a repo-backed session, and a send is
+    // only accepted for a trusted repo.
+    repoStore.add(REPO_URL);
+    repoStore.setTrusted(REPO_URL, true);
+    sessionManager.setRemoteUrl(SESSION_ID, REPO_URL);
+
+    const client = await TestClient.connect(port, SESSION_ID);
+    // A viewer arriving is told: this is what puts the controls on screen.
+    const onConnect = await client.receiveType("reset_eligible");
+    expect(onConnect).toMatchObject({ sessionId: SESSION_ID, eligible: true });
+
+    client.send({ type: "send_message", text: "start the next slice", compactContext: false });
+    await waitForClaude(() => spawns.at(-1) ?? (null as never));
+
+    const duringTurn = await client.drain({ quietMs: 300, maxMs: 2000 });
+    expect(duringTurn.filter((m) => m.type === "reset_eligible")).toEqual([]);
 
     client.close();
   });

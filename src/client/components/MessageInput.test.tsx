@@ -6,6 +6,7 @@ import type { AgentOption } from "../agent-types.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { usePrStore } from "../stores/pr-store.js";
 import { useSettingsStore } from "../stores/settings-store.js";
+import { handleResetEligible } from "../hooks/message-handlers/reset-eligible.js";
 import { INSET_FOCUS_RING } from "../design-tokens.js";
 
 afterEach(cleanup);
@@ -649,8 +650,9 @@ describe("MessageInput", () => {
     };
 
     afterEach(() => {
-      usePrStore.setState({ resetEligibleBySession: {} });
+      usePrStore.setState({ resetEligibleBySession: {}, mergeContinueOptOutBySession: {} });
       useSettingsStore.setState({ autoResetMergedBranch: true });
+      localStorage.clear();
     });
 
     it("is hidden when the session is not reset-eligible", () => {
@@ -706,6 +708,26 @@ describe("MessageInput", () => {
       // No reset will run, so the signal must not be optimistically cleared —
 
       expect(usePrStore.getState().resetEligibleBySession.s1).toBe(true);
+    });
+
+    it("keeps the untick when eligibility flickers between the untick and the send", () => {
+      // docs/295 — the sibling control has the identical shape, so it had the
+      // identical defect: an eligibility answer arriving in between re-ticked
+      // it, and a send made while the control was away carried no intent at
+      // all — which the server reads as "follow the setting", i.e. reset.
+      usePrStore.setState({ resetEligibleBySession: { s1: true } });
+      useSettingsStore.setState({ autoResetMergedBranch: true });
+      const onSend = vi.fn().mockReturnValue(true);
+      render(<MessageInput onSend={onSend} disabled={false} sessionId="s1" />);
+      fireEvent.click(screen.getByTestId("reset-merged-branch-control")); // untick
+      act(() => {
+        handleResetEligible(
+          { terminalRef: { current: null }, queuedMessageStash: new Map() },
+          { type: "reset_eligible", sessionId: "s1", eligible: false },
+        );
+      });
+      typeAndSend();
+      expect(onSend).toHaveBeenCalledWith(expect.objectContaining({ resetMergedBranch: false }));
     });
   });
 
@@ -792,9 +814,27 @@ describe("MessageInput", () => {
       fireEvent.click(screen.getByLabelText("Send message"));
     };
 
+    /**
+     * The server's own signal, not a raw `setState`.
+     *
+     * The distinction is the whole point of the incident below: the composer
+     * ALSO writes `resetEligibleBySession` (the optimistic hide on a ticked
+     * send), so a test that pokes the map directly cannot tell the two writers
+     * apart — and the tick state must react to neither.
+     */
+    const serverSaysEligible = (eligible: boolean, sessionId = "s1") => {
+      act(() => {
+        handleResetEligible(
+          { terminalRef: { current: null }, queuedMessageStash: new Map() },
+          { type: "reset_eligible", sessionId, eligible },
+        );
+      });
+    };
+
     afterEach(() => {
-      usePrStore.setState({ resetEligibleBySession: {} });
+      usePrStore.setState({ resetEligibleBySession: {}, mergeContinueOptOutBySession: {} });
       useSettingsStore.setState({ autoResetMergedBranch: true });
+      localStorage.clear();
     });
 
     it("is offered whenever the reset control is, and ticked by default (reqs 1, 2)", () => {
@@ -912,17 +952,86 @@ describe("MessageInput", () => {
       expect(onSend).toHaveBeenCalledWith(expect.objectContaining({ compactContext: true }));
     });
 
-    it("re-ticks whenever the control reappears (non-sticky, req 5)", () => {
+    /**
+     * The production defect, end to end.
+     *
+     * The user waited for the row, unticked "Compact the context", and sent
+     * 7.5 s later with no reload, no reconnect and no send in between — and
+     * ShipIt compacted anyway. None of the three suspected mechanisms (the
+     * post-send activation echo, a remount, a send inside the pre-signal
+     * window) was present.
+     *
+     * What WAS present is an eligibility answer landing between the untick and
+     * the send. `reset_eligible` has four emitters — activation, post-turn,
+     * merge-detected, and a file-change recompute that re-runs on every batch
+     * of writes to the workspace — and `computeResetEligibility` fails closed,
+     * so a git read that throws (an `index.lock` held by the post-merge fetch,
+     * push or chown) answers `false` for a session that is perfectly eligible.
+     * The composer re-armed on the control's visibility, so that `false`
+     * re-ticked the box; and if the `true` had not arrived back by the time the
+     * user pressed Send, the frame omitted `compactContext` altogether, which
+     * the server reads as "follow the global setting" and also compacts.
+     *
+     * Both shapes are below. The user's intent must reach the wire in each.
+     */
+    describe("an eligibility answer between the untick and the send (the incident)", () => {
+      it("keeps the untick when eligibility flickers false and back to true", () => {
+        usePrStore.setState({ resetEligibleBySession: { s1: true } });
+        useSettingsStore.setState({ autoResetMergedBranch: true });
+        const onSend = renderComposer();
+        fireEvent.click(screen.getByTestId("compact-context-control")); // untick
+        // A recompute fails closed, then the next one succeeds. Nothing the
+        // user did, and nothing they can see.
+        serverSaysEligible(false);
+        serverSaysEligible(true);
+        typeAndSend();
+        expect(onSend).toHaveBeenCalledWith(expect.objectContaining({ compactContext: false }));
+      });
+
+      it("still carries the untick when the control is away at send time", () => {
+        usePrStore.setState({ resetEligibleBySession: { s1: true } });
+        useSettingsStore.setState({ autoResetMergedBranch: true });
+        const onSend = renderComposer();
+        fireEvent.click(screen.getByTestId("compact-context-control")); // untick
+        serverSaysEligible(false);
+        expect(screen.queryByTestId("compact-context-control")).not.toBeInTheDocument();
+        typeAndSend();
+        // Omitting the field is not neutral — the server reads an absent
+        // `compactContext` as the global setting, which compacts. An opt-out
+        // can only say `false`, and `false` can only skip, so it is carried
+        // whatever the server currently thinks eligibility is.
+        expect(onSend).toHaveBeenCalledWith(expect.objectContaining({ compactContext: false }));
+      });
+
+      it("does not invent an intent when the user never unticked anything", () => {
+        usePrStore.setState({ resetEligibleBySession: { s1: true } });
+        useSettingsStore.setState({ autoResetMergedBranch: true });
+        const onSend = renderComposer();
+        serverSaysEligible(false);
+        typeAndSend();
+        // No control, no opt-out: the server follows the setting, which is how
+        // a programmatic continuation behaves (req 13).
+        expect(onSend.mock.calls[0]![0]).not.toHaveProperty("compactContext");
+        expect(onSend.mock.calls[0]![0]).not.toHaveProperty("resetMergedBranch");
+      });
+    });
+
+    it("keeps the untick across a remount (reconnect or reload)", () => {
       usePrStore.setState({ resetEligibleBySession: { s1: true } });
       useSettingsStore.setState({ autoResetMergedBranch: true });
-      const onSend = renderComposer();
-      fireEvent.click(screen.getByTestId("compact-context-control"));          
-
-      act(() => { usePrStore.setState({ resetEligibleBySession: {} }); });
-      act(() => { usePrStore.setState({ resetEligibleBySession: { s1: true } }); });
+      renderComposer();
+      fireEvent.click(screen.getByTestId("compact-context-control")); // untick
+      // A WebSocket reconnect remounts the composer; a reload does that AND
+      // empties the store, leaving localStorage as the only record. Test the
+      // harder one.
+      cleanup();
+      usePrStore.setState({ mergeContinueOptOutBySession: {} });
+      const onSend = renderComposer(vi.fn().mockReturnValue(true));
+      expect(screen.getByTestId("compact-context-control")).toHaveAttribute("aria-pressed", "false");
       typeAndSend();
-      expect(onSend).toHaveBeenCalledWith(expect.objectContaining({ compactContext: true }));
+      expect(onSend).toHaveBeenCalledWith(expect.objectContaining({ compactContext: false }));
     });
+
   });
 
   describe("narrow composer row (docs/260)", () => {
