@@ -1,5 +1,5 @@
 import { usePrStore } from "../stores/pr-store.js";
-import { getSavedMergeContinueOptOut } from "./local-storage.js";
+import { getSavedMergeContinueOptOut, readOptOutSessionKey } from "./local-storage.js";
 
 /**
  * docs/218 + docs/295 — the per-send intent for the two post-merge controls, as
@@ -51,4 +51,49 @@ export function mergeContinueFrameFields(
     ...(reset !== undefined ? { resetMergedBranch: reset } : {}),
     ...(compact !== undefined ? { compactContext: compact } : {}),
   };
+}
+
+/**
+ * The untick applied to ONE message (req 5), and this is where that message is
+ * declared gone. Called only on a send that actually reached the wire, so a
+ * refused or dropped send leaves the user's choice intact for their retry.
+ *
+ * Paired with `mergeContinueFrameFields` on purpose: read and consume live in
+ * one module, and `sendUserTurn` / `dispatchAgentMessage` are the only callers,
+ * so no producer can carry the intent and then forget to spend it. That was the
+ * first shape of this fix and it was wrong — the action-card path read the
+ * opt-out, sent it, and left it in place to govern every later message.
+ */
+export function consumeMergeContinueIntent(sessionId: string | undefined): void {
+  if (!sessionId) return;
+  usePrStore.getState().clearMergeContinueOptOut(sessionId);
+}
+
+/**
+ * Keep every tab's view of the opt-out in step with the durable mirror.
+ *
+ * The composer memoises what it read, while a send reads afresh — so without
+ * this, tab B could DISPLAY an unticked box while its next frame carried
+ * nothing (tab A having sent and cleared the key), or display a ticked one
+ * while the frame carried `false`. A control that disagrees with what it sends
+ * is the whole defect class this feature keeps hitting, so the display and the
+ * wire are pinned to one snapshot: the store, which this keeps true.
+ *
+ * `storage` fires only in the OTHER tabs, which is exactly the case that needs
+ * it; the writing tab already went through the store.
+ */
+export function syncMergeContinueOptOutAcrossTabs(): () => void {
+  const onStorage = (event: StorageEvent) => {
+    const sessionId = readOptOutSessionKey(event.key);
+    if (!sessionId) return;
+    const stored = getSavedMergeContinueOptOut(sessionId);
+    usePrStore.setState((state) => ({
+      mergeContinueOptOutBySession: {
+        ...state.mergeContinueOptOutBySession,
+        [sessionId]: stored,
+      },
+    }));
+  };
+  window.addEventListener("storage", onStorage);
+  return () => window.removeEventListener("storage", onStorage);
 }

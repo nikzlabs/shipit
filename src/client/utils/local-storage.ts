@@ -795,6 +795,12 @@ function isMergeContinueControl(value: unknown): value is MergeContinueControl {
   return value === "reset" || value === "compact";
 }
 
+/** The session a merge-continue storage key belongs to, or `undefined`. */
+export function readOptOutSessionKey(key: string | null): string | undefined {
+  if (!key?.startsWith(MERGE_CONTINUE_OPT_OUT_KEY_PREFIX)) return undefined;
+  return key.slice(MERGE_CONTINUE_OPT_OUT_KEY_PREFIX.length) || undefined;
+}
+
 /** Read a session's unticked merge-continue controls. `{}` when it has none. */
 export function getSavedMergeContinueOptOut(sessionKey: string): MergeContinueOptOut {
   return getLocalStorageObject<MergeContinueOptOut>(

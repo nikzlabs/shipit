@@ -47,7 +47,8 @@ import { useTabLabelCollapse } from "./hooks/useTabLabelCollapse.js";
 import { useApi } from "./hooks/useApi.js";
 import { formatErrorForMessage, PREVIEW_SETUP_PROMPT } from "./components/PreviewFrame.js";
 import { MessageInput, type SendPayload } from "./components/MessageInput.js";
-import { mergeContinueFrameFields } from "./utils/merge-continue-intent.js";
+import { sendUserTurn } from "./utils/send-user-turn.js";
+import { syncMergeContinueOptOutAcrossTabs } from "./utils/merge-continue-intent.js";
 import { MessageList } from "./components/MessageList.js";
 import type { RewindGapAction } from "./components/RewindPoint.js";
 import { RocketLaunch } from "./components/RocketLaunch.js";
@@ -180,6 +181,10 @@ export default function App() {
   const isNewSessionRoute = newSessionRepoSlug !== undefined;
 
   useServerEvents();
+  // docs/295 — another tab sending (or unticking) must not leave this one
+  // displaying a choice it would not send. See the function's own note.
+  // eslint-disable-next-line no-restricted-syntax -- subscribes to an external store (the `storage` event) with cleanup
+  useEffect(syncMergeContinueOptOutAcrossTabs, []);
 
   const sessionId = useSessionStore((s) => s.sessionId);
 
@@ -516,6 +521,8 @@ export default function App() {
         sessionId: sid,
         text,
         activity: "Fixing preview errors…",
+      // A ShipIt button the user pressed — carries their post-merge ticks.
+      userInitiated: true,
         apiPost,
       })
         .catch(() => {
@@ -541,6 +548,8 @@ export default function App() {
       sessionId: sid,
       text,
       activity: "Creating PR…",
+      // A ShipIt button the user pressed — carries their post-merge ticks.
+      userInitiated: true,
       apiPost,
     })
       .catch(() => {
@@ -568,6 +577,8 @@ export default function App() {
       sessionId: sid,
       text,
       activity: "Fixing compose error…",
+      // A ShipIt button the user pressed — carries their post-merge ticks.
+      userInitiated: true,
       apiPost,
     })
       .catch(() => {
@@ -593,6 +604,8 @@ export default function App() {
       sessionId: sid,
       text,
       activity: "Setting up preview…",
+      // A ShipIt button the user pressed — carries their post-merge ticks.
+      userInitiated: true,
       apiPost,
     })
       .catch(() => {
@@ -651,21 +664,19 @@ export default function App() {
       const pm = useSettingsStore
         .getState()
         .getPermissionMode(session.sessionId);
-      return sendUserMessage({
+      // docs/295 — a card button is the user's own click, in the view the
+      // post-merge checkboxes are in. This frame carried neither flag, so an
+      // untick the user was still looking at was ignored.
+      return sendUserTurn({
+        sessionId: session.sessionId,
+        frame: {
+          text,
+          sessionId: session.sessionId,
+          permissionMode: pm !== "auto" ? pm : undefined,
+        },
         bubble: { role: "user", text },
         activity: "Thinking...",
-        dispatch: (requestId) =>
-          send({
-            type: "send_message",
-            requestId,
-            text,
-            sessionId: session.sessionId,
-            permissionMode: pm !== "auto" ? pm : undefined,
-            // docs/295 — a card button is the user's own click, in the view the
-            // post-merge checkboxes are in. This frame carried neither flag, so
-            // an untick the user was still looking at was ignored.
-            ...mergeContinueFrameFields(session.sessionId),
-          }),
+        dispatch: (frame) => send(frame),
       });
     },
     [send],
@@ -678,18 +689,16 @@ export default function App() {
         .getState()
         .getPermissionMode(session.sessionId);
       const text = buildReleaseConfirmMessage(version, mechanism);
-      sendUserMessage({
+      sendUserTurn({
+        sessionId: session.sessionId,
+        frame: {
+          text,
+          sessionId: session.sessionId,
+          permissionMode: pm !== "auto" ? pm : undefined,
+        },
         bubble: { role: "user", text },
         activity: "Publishing release...",
-        dispatch: (requestId) =>
-          send({
-            type: "send_message",
-            requestId,
-            text,
-            sessionId: session.sessionId,
-            permissionMode: pm !== "auto" ? pm : undefined,
-            ...mergeContinueFrameFields(session.sessionId),
-          }),
+        dispatch: (frame) => send(frame),
       });
     },
     [send],
@@ -699,17 +708,12 @@ export default function App() {
     (version: string) => {
       const session = useSessionStore.getState();
       const text = `Cancel the ${version} release — do not bump, tag, or push anything.`;
-      sendUserMessage({
+      sendUserTurn({
+        sessionId: session.sessionId ?? undefined,
+        frame: { text, sessionId: session.sessionId ?? undefined },
         bubble: { role: "user", text },
         activity: "Thinking...",
-        dispatch: (requestId) =>
-          send({
-            type: "send_message",
-            requestId,
-            text,
-            sessionId: session.sessionId ?? undefined,
-            ...mergeContinueFrameFields(session.sessionId ?? undefined),
-          }),
+        dispatch: (frame) => send(frame),
       });
     },
     [send],
@@ -1048,22 +1052,20 @@ export default function App() {
       useFileStore.getState().closePreview();
       useUiStore.getState().setMobilePanel("chat");
       const sid = useSessionStore.getState().sessionId;
-      sendUserMessage({
+      sendUserTurn({
+        sessionId: sid ?? undefined,
+        frame: {
+          text: prompt,
+          sessionId: sid ?? undefined,
+          userReview: { filePaths, commentCount },
+        },
         bubble: {
           role: "user",
           text: prompt,
           userReview: { filePaths, commentCount },
         },
         activity: "Working on comments...",
-        dispatch: (requestId) =>
-          send({
-            type: "send_message",
-            requestId,
-            text: prompt,
-            sessionId: sid ?? undefined,
-            userReview: { filePaths, commentCount },
-            ...mergeContinueFrameFields(sid ?? undefined),
-          }),
+        dispatch: (frame) => send(frame),
       });
     },
     [send],
@@ -1084,17 +1086,12 @@ export default function App() {
       }
       useFileStore.getState().closePreview();
       useUiStore.getState().setMobilePanel("chat");
-      sendUserMessage({
+      sendUserTurn({
+        sessionId: sid,
+        frame: { text: prompt, sessionId: sid },
         bubble: { role: "user", text: prompt },
         activity: "Reviewing...",
-        dispatch: (requestId) =>
-          send({
-            type: "send_message",
-            requestId,
-            text: prompt,
-            sessionId: sid,
-            ...mergeContinueFrameFields(sid),
-          }),
+        dispatch: (frame) => send(frame),
       });
     },
     [send, navigate, isNewSessionRoute],

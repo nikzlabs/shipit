@@ -63,8 +63,17 @@ Design: [plan.md](./plan.md). Requirements: [requirements.md](./requirements.md)
       `mergeContinueFrameFields` builder — the five `App.tsx` frames (action
       card, both release-card buttons, review comments, ask-for-review) sent
       neither flag, which is what made a card click ignore the checkbox.
-- [x] A source-scanning guard fails the build on a frame that neither calls the
-      builder nor declares itself exempt at the frame.
+- [x] Reading the intent and SPENDING it are one act: `sendUserTurn` consumes on
+      a send that reached the wire, and only then (req 5). A builder alone let
+      the action-card path carry an untick and never clear it.
+- [x] `send-user-turn.ts` is the only file that builds a `send_message` frame; a
+      guard fails the build on any other. A non-turn frame calls
+      `sendControlFrame`, a named export rather than a comment.
+- [x] The HTTP dispatch path (`POST /agent/dispatch`) carries and spends it for
+      the four ShipIt buttons that use it; a CI auto-fix and an agent-interface
+      continuation keep req 13.
+- [x] Display and wire read one snapshot — a `storage` listener syncs another
+      tab's write into the store.
 
 ## Tests
 

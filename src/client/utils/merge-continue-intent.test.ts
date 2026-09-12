@@ -4,7 +4,10 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { usePrStore } from "../stores/pr-store.js";
 import { saveMergeContinueOptOut } from "./local-storage.js";
-import { mergeContinueFrameFields } from "./merge-continue-intent.js";
+import {
+  mergeContinueFrameFields,
+  syncMergeContinueOptOutAcrossTabs,
+} from "./merge-continue-intent.js";
 
 beforeEach(() => {
   usePrStore.setState({ mergeContinueOptOutBySession: {} });
@@ -54,26 +57,65 @@ describe("mergeContinueFrameFields (docs/218 + docs/295)", () => {
   });
 });
 
-/**
- * The drift guard, and the reason this file scans source instead of testing
- * five call sites.
- *
- * The flags were spread by hand at each producer of a `send_message` frame, and
- * exactly one producer did it. The other five — the action-card button, both
- * release-card buttons, the review-comments submit and "ask the agent to review
- * this file" — sent neither flag, so a user who unticked "Compact the context"
- * and then pressed a button on a card was compacted anyway while their untick
- * sat on screen untouched. docs/293 had already closed the same omission for
- * the `/review` branch *inside* `runSend`; closing it one site at a time is
- * what let the rest drift.
- *
- * So the rule is structural: a new producer either carries the intent or says,
- * at the frame, why it does not. A test over the five known call sites would
- * have passed on the day the sixth was written.
- */
-const NOT_APPLICABLE = "merge-continue-intent: not-applicable";
+describe("cross-tab sync", () => {
+  /**
+   * The composer memoises what it read while a send reads afresh, so without
+   * this another tab could DISPLAY an unticked box and send nothing, or display
+   * a ticked one and send `false`. A control that disagrees with what it sends
+   * is the defect class this whole feature keeps hitting.
+   */
+  it("pulls another tab's write into the store, so display and wire agree", () => {
+    usePrStore.getState().setMergeContinueOptOut("s1", "compact", true);
+    const stop = syncMergeContinueOptOutAcrossTabs();
+    // The other tab sent, which cleared the shared key.
+    saveMergeContinueOptOut("s1", {});
+    window.dispatchEvent(new StorageEvent("storage", {
+      key: "shipit-merge-continue-optout:s1",
+    }));
+    expect(usePrStore.getState().mergeContinueOptOutBySession.s1).toEqual({});
+    expect(mergeContinueFrameFields("s1")).toEqual({});
+    stop();
+  });
 
-describe("every `send_message` producer carries the per-send intent", () => {
+  it("ignores storage keys that are not ours", () => {
+    usePrStore.getState().setMergeContinueOptOut("s1", "compact", true);
+    const stop = syncMergeContinueOptOutAcrossTabs();
+    window.dispatchEvent(new StorageEvent("storage", { key: "shipit-draft-message:s1" }));
+    expect(usePrStore.getState().mergeContinueOptOutBySession.s1).toMatchObject({ compact: true });
+    stop();
+  });
+
+  it("stops listening when disposed", () => {
+    usePrStore.getState().setMergeContinueOptOut("s1", "compact", true);
+    syncMergeContinueOptOutAcrossTabs()();
+    saveMergeContinueOptOut("s1", {});
+    window.dispatchEvent(new StorageEvent("storage", {
+      key: "shipit-merge-continue-optout:s1",
+    }));
+    expect(usePrStore.getState().mergeContinueOptOutBySession.s1).toMatchObject({ compact: true });
+  });
+});
+
+/**
+ * The drift guard.
+ *
+ * The first version of this scanned for `type: "send_message"` and accepted a
+ * nearby builder call or an exemption comment. A review took it apart: split
+ * literals, `type: someConstant` and different quoting all escaped it, and its
+ * backward window let one frame's exemption silently cover the frame written
+ * below it. A guard that can be walked past by accident is worse than none,
+ * because it is cited as proof.
+ *
+ * So the rule is now structural rather than textual: the frame literal may
+ * exist in exactly ONE non-test file, `send-user-turn.ts`, which owns the frame,
+ * the intent and its consumption together. A producer that starts no turn calls
+ * `sendControlFrame` — a named export a reviewer can enumerate, not a comment
+ * anyone can copy. Escaping this needs a deliberate second frame builder, which
+ * is the diff nobody merges by accident.
+ */
+const FRAME_OWNER = "utils/send-user-turn.ts";
+
+describe("only one file builds a `send_message` frame", () => {
   const clientDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
   const sources: string[] = [];
@@ -86,36 +128,29 @@ describe("every `send_message` producer carries the per-send intent", () => {
   };
   walk(clientDir);
 
-  it("finds the producers it is meant to be guarding", () => {
-    const producing = sources.filter((f) => fs.readFileSync(f, "utf8").includes('type: "send_message"'));
-    // Fewer than this means the scan broke, not that the code got tidier.
-    expect(producing.length).toBeGreaterThanOrEqual(2);
+  /** Strip comments, so prose describing the frame is not mistaken for one. */
+  const code = (file: string) =>
+    fs.readFileSync(file, "utf8")
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/^\s*\/\/.*$/gm, "");
+
+  it("finds the owner, so a rename cannot silently empty this guard", () => {
+    const owner = sources.find((f) => path.relative(clientDir, f) === FRAME_OWNER);
+    expect(owner, `${FRAME_OWNER} not found — update FRAME_OWNER`).toBeDefined();
+    expect(code(owner!)).toContain("send_message");
   });
 
-  it("has every frame either build the fields or declare itself exempt", () => {
-    const offenders: string[] = [];
-    for (const file of sources) {
-      const lines = fs.readFileSync(file, "utf8").split("\n");
-      lines.forEach((line, i) => {
-        if (!line.includes('type: "send_message"')) return;
-        // Prose that merely mentions the frame is not a producer of one.
-        if (/^\s*(\/\/|\*|\/\*)/.test(line)) return;
-        // The frame's own object literal, plus a SHORT lead-in. Deliberately
-        // tight above: a generous backward window lets an exemption written for
-        // one frame silently cover an unrelated frame added below it, which is
-        // the same "nobody re-derived the reason" failure this guard exists for.
-        // So the marker goes on the line next to the frame; its justification
-        // can be as long as it needs to be above that.
-        const frame = lines.slice(Math.max(0, i - 3), i + 14).join("\n");
-        if (frame.includes("mergeContinueFrameFields(") || frame.includes(NOT_APPLICABLE)) return;
-        offenders.push(`${path.relative(clientDir, file)}:${i + 1}`);
-      });
-    }
+  it("has no other file building one", () => {
+    // Any spelling of the discriminant, not just the one we happen to use.
+    const builders = sources
+      .filter((f) => /["'`]send_message["'`]/.test(code(f)))
+      .map((f) => path.relative(clientDir, f))
+      .filter((rel) => rel !== FRAME_OWNER);
     expect(
-      offenders,
-      "A `send_message` frame must spread `mergeContinueFrameFields(sessionId)` so a "
-      + "post-merge untick reaches the server, or carry the comment "
-      + `\`${NOT_APPLICABLE}\` saying why it cannot. Offending frames: ${offenders.join(", ")}`,
+      builders,
+      `A \`send_message\` frame may only be built in ${FRAME_OWNER}, which applies the `
+      + "post-merge per-send intent and spends it on delivery. Call `sendUserTurn` (a turn) "
+      + `or \`sendControlFrame\` (starts no turn) instead. Offending files: ${builders.join(", ")}`,
     ).toEqual([]);
   });
 });

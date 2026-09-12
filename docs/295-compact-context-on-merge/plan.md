@@ -156,11 +156,31 @@ ever expressed); the send reaching `handleSendMessage` (matching the
 `(activation)` echo 8 ms before the turn); and the user's untick still visibly
 unticked, because the composer was never submitted and so never cleared.
 
-So the per-send intent is built in **one** place — `mergeContinueFrameFields`
-(`client/utils/merge-continue-intent.ts`) — which every producer of a
-`send_message` frame calls, and a source-scanning guard in its test file fails
-the build on a frame that neither calls it nor says at the frame why it cannot.
-Only an opt-out is carried: absent and `true` both mean "do it".
+**Reading the intent and spending it are one act, in one place.** A shared
+*builder* was the first fix and it was not enough: the action-card path then
+carried the untick and never consumed it, so one untick governed every later
+message — req 5 says it applies to that one message. So `sendUserTurn`
+(`client/utils/send-user-turn.ts`) owns the frame, the intent and its
+consumption together, and is the **only** place a `send_message` frame is built;
+a guard test fails the build if that literal appears in any other client file.
+A producer that starts no turn calls `sendControlFrame` — a named export a
+reviewer can enumerate, not a comment anyone can copy. The consumption happens
+only on a send that reached the wire, so a refused one leaves the user's choice
+where they can still see it. Only an opt-out is carried: absent and `true` both
+mean "do it".
+
+**The transport does not decide it; the interaction does.** The same omission
+existed on the HTTP dispatch (`POST /agent/dispatch`), which four ShipIt buttons
+use — preview errors, Create PR, and the two compose-error actions. They now
+pass `userInitiated`, which carries the intent and spends it; a CI auto-fix and
+an agent-interface continuation do not, and keep req 13. The server route and
+`services/agent.ts` forward the two fields onto the dispatch shape, which
+already carried them.
+
+**One snapshot for display and wire.** The composer memoises what it read while
+a send reads afresh, so another tab could display an unticked box and send
+nothing. `syncMergeContinueOptOutAcrossTabs` pulls a `storage` write into the
+store, which both sides read.
 
 **A click is not a programmatic continuation** (req 13 vs req 5). Req 13 sends a
 continuation "the user did not type" to the setting alone, and its stated reason
@@ -313,8 +333,10 @@ Advanced description names both.
 | `shared/types/ws-client-messages.ts` | `compactContext?: boolean`. |
 | `client/components/MessageInput/MessageInput.tsx` | The control, its tick state, the payload flag. |
 | `client/stores/pr-store.ts`, `client/utils/local-storage.ts` | `mergeContinueOptOutBySession` and its durable mirror: the untick outlives the composer. |
-| `client/utils/merge-continue-intent.ts` | `mergeContinueFrameFields` — the ONE builder every `send_message` producer calls. |
-| `client/utils/send-handler.ts`, `client/App.tsx` | The six producers, all through that builder. |
+| `client/utils/send-user-turn.ts` | `sendUserTurn` / `sendControlFrame` — the ONLY place a `send_message` frame is built. |
+| `client/utils/merge-continue-intent.ts` | Read, consume, and the cross-tab sync. |
+| `client/utils/dispatch-agent-message.ts`, `orchestrator/services/agent.ts`, `api-routes-agent.ts` | The HTTP dispatch carries it for a user-clicked send. |
+| `client/utils/send-handler.ts`, `client/App.tsx` | Every producer, through that one boundary. |
 | `client/components/Settings/tabs/AdvancedTab.tsx` | Description names both actions. |
 
 ## Risks

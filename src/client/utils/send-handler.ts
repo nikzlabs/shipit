@@ -5,11 +5,10 @@ import { useSessionStore } from "../stores/session-store.js";
 import { useSettingsStore } from "../stores/settings-store.js";
 import { useFileStore } from "../stores/file-store.js";
 import { useUiStore } from "../stores/ui-store.js";
-import { sendUserMessage } from "./send-user-message.js";
+import { sendControlFrame, sendUserTurn } from "./send-user-turn.js";
 import { buildAttachmentPlan } from "./attachment-plan.js";
 import { isReviewCommand, resolveReviewRequest } from "./review-command.js";
 import { composeReviewMessage, resolveReviewer } from "./compose-review-body.js";
-import { mergeContinueFrameFields } from "./merge-continue-intent.js";
 import { parseGoalCommand } from "../../server/shared/goal-command.js";
 
 export interface SendDeps {
@@ -63,21 +62,15 @@ export function runSend(deps: SendDeps, payload: SendPayload): boolean {
       }),
     );
 
-    const reviewSent = sendUserMessage({
+    // docs/218 + docs/295 — `/review` is still a composer send, so it carries
+    // the per-send tick boxes, and spends them when it goes.
+    const reviewSent = sendUserTurn({
+      sessionId: sid,
+      frame: { text: prompt, sessionId: sid, ...plan.frame },
       bubble: { role: "user", text: prompt, ...plan.bubble },
       activity: "Reviewing...",
-      dispatch: (requestId) =>
-        send({
-          type: "send_message",
-          requestId,
-          text: prompt,
-          sessionId: sid,
-          ...plan.frame,
-          // docs/218 + docs/295 — `/review` is still a composer send, so it
-          // carries the per-send tick boxes. From the one builder every
-          // `send_message` producer uses; never spread by hand here.
-          ...mergeContinueFrameFields(sid, { resetMergedBranch, compactContext }),
-        }),
+      intent: { resetMergedBranch, compactContext },
+      dispatch: (frame) => send(frame),
     });
     // docs/293 req 4 — the frame never left the browser. `sendUserMessage` has
 
@@ -106,24 +99,9 @@ export function runSend(deps: SendDeps, payload: SendPayload): boolean {
   if (goalSessionId && goalCommand && goalAgent?.supportsGoals) {
     const mode = goalAgent.goalActions ? goalAgent.goalActions[goalCommand.action] : "control";
     if (mode !== "turn") {
-      // This frame starts no turn, so there is nothing for a branch reset or a
-      // compaction to apply to.
-      //
-      // Verify it at `src/server/orchestrator/ws-handlers/send-message.ts:54`
-      // (docs/154, on `main` since 35719d01 — NOT present in older builds, so
-      // check the branch you are reading): `handleSendMessage` opens with
-      //
-      //     if (goalCommand && (caps?.supportsGoals ?? false) && mode !== "turn")
-      //
-      // which calls `handleGoalCommand` and `return`s — ahead of the queue, the
-      // reset and `decideCompactBeforeTurn`. This site sends only when that same
-      // condition holds here (`mode !== "turn"` with `goalAgent.supportsGoals`),
-      // so the server always intercepts it. A `/goal` whose action IS a "turn"
-      // falls through both branches and takes the ordinary composer path, which
-      // carries the intent.
-      //
-      // merge-continue-intent: not-applicable — for the reason directly above.
-      return send({ type: "send_message", text: trimmed, sessionId: goalSessionId });
+      // Starts no turn, so there is nothing for a reset or a compaction to
+      // apply to — see `sendControlFrame` for the server branch that proves it.
+      return sendControlFrame({ text: trimmed, sessionId: goalSessionId }, send);
     }
   }
 
@@ -149,25 +127,19 @@ export function runSend(deps: SendDeps, payload: SendPayload): boolean {
     const issueRef =
       pendingIssue?.sessionId === currentSessionId ? pendingIssue.ref : undefined;
 
-    const message = {
-      type: "send_message" as const,
-      text,
+    const sent = sendUserTurn({
       sessionId: currentSessionId,
-      ...(issueRef ? { issueRef } : {}),
-      ...plan.frame,
-      permissionMode: (() => {
-        const pm = settings.getPermissionMode(currentSessionId);
-        return pm !== "auto" ? pm : undefined;
-      })(),
-
-      // docs/218 + docs/295 — the per-send opt-outs for the two post-merge
-      // controls, from the one builder every `send_message` producer uses.
-      ...mergeContinueFrameFields(currentSessionId, { resetMergedBranch, compactContext }),
-
-      ...(dictated ? { dictated: true } : {}),
-    };
-
-    const sent = sendUserMessage({
+      frame: {
+        text,
+        sessionId: currentSessionId,
+        ...(issueRef ? { issueRef } : {}),
+        ...plan.frame,
+        permissionMode: (() => {
+          const pm = settings.getPermissionMode(currentSessionId);
+          return pm !== "auto" ? pm : undefined;
+        })(),
+        ...(dictated ? { dictated: true } : {}),
+      },
       bubble: {
         role: "user",
         text,
@@ -176,10 +148,14 @@ export function runSend(deps: SendDeps, payload: SendPayload): boolean {
         uploadPaths: uploadPathsForMessage,
       },
       activity: "Thinking...",
-      dispatch: (requestId) => {
-        const frame = { ...message, requestId };
+      // docs/218 + docs/295 — the composer knows whether it SHOWED the
+      // controls, so it states its own answer rather than taking the stored one.
+      intent: { resetMergedBranch, compactContext },
+      dispatch: (frame) => {
         if (send(frame)) return true;
-
+        // Dropped — e.g. the socket is still connecting after a claim on
+        // /{slug}/new. Stash for `useConnectionSync` to flush, and report
+        // accepted: the frame is not lost, so the intent is spent with it.
         useSessionStore.getState().setPendingWsMessage(frame);
         return true;
       },
