@@ -708,6 +708,45 @@ describe("MessageInput", () => {
     });
   });
 
+  describe("docs/154 — /goal in the / menu (req 5)", () => {
+    const openMenu = (supportsGoals: boolean) => {
+      render(
+        <MessageInput
+          onSend={vi.fn()}
+          disabled={false}
+          sessionId="s1"
+          agents={[{
+            id: "codex" as const,
+            name: "Codex",
+            installed: true,
+            hasRunnableModels: true,
+            models: [],
+            supportsReview: true,
+            supportsCompaction: true,
+            supportsGoals,
+          }]}
+          activeAgentId="codex"
+        />,
+      );
+      const textarea = screen.getByPlaceholderText("Describe what to build... (type @ to attach files)");
+      fireEvent.change(textarea, { target: { value: "/" } });
+    };
+
+    it("offers the goal commands when the agent supports goals", () => {
+      openMenu(true);
+      expect(screen.getByText("/goal")).toBeInTheDocument();
+      expect(screen.getByText("/goal clear")).toBeInTheDocument();
+      expect(screen.getByText("/goal pause")).toBeInTheDocument();
+      expect(screen.getByText("/goal resume")).toBeInTheDocument();
+    });
+
+    it("offers none when it does not", () => {
+      openMenu(false);
+      expect(screen.getByText("/compact")).toBeInTheDocument();
+      expect(screen.queryByText("/goal clear")).not.toBeInTheDocument();
+    });
+  });
+
   describe("docs/295 — compact-the-context control", () => {
     const compactingAgent = [{
       id: "claude" as const,

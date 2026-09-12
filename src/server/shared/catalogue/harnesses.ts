@@ -86,6 +86,7 @@ export const HARNESSES = [
       // Late assistant events after turn/completed belong to the finished turn.
       startsOwnTurns: false,
       supportsCompaction: true,
+      supportsGoals: true,
       skillsDirName: ".codex",
       skillInvocationPrefix: "$",
     },

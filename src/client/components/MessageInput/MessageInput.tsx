@@ -617,11 +617,20 @@ export function MessageInput({
     agents.find((a) => a.id === activeAgentId)?.skillInvocationPrefix ?? "/";
 
   const slashCommands = useMemo<SlashCommand[]>(() => {
-    const supportsCompaction =
-      agents.find((a) => a.id === activeAgentId)?.supportsCompaction ?? false;
-    return supportsCompaction
-      ? [{ name: "compact", description: "Summarize the conversation to free up context" }]
-      : [];
+    const active = agents.find((a) => a.id === activeAgentId);
+    return [
+      ...(active?.supportsCompaction
+        ? [{ name: "compact", description: "Summarize the conversation to free up context" }]
+        : []),
+      ...(active?.supportsGoals
+        ? [
+            { name: "goal", description: "Show the goal — or type /goal <objective> to set one" },
+            { name: "goal clear", description: "Remove the goal" },
+            { name: "goal pause", description: "Pause the goal" },
+            { name: "goal resume", description: "Resume a paused goal" },
+          ]
+        : []),
+    ];
   }, [agents, activeAgentId]);
 
   const handleCommandSelect = useCallback(

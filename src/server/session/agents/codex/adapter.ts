@@ -7,6 +7,8 @@ import { killProcessTree } from "../../../shared/kill-child.js";
 import type {
   AgentId,
   AgentCapabilities,
+  AgentGoalCommand,
+  AgentGoalCommandResult,
   AgentMcpWriteContext,
   AgentMcpWriteResult,
   AgentProcess,
@@ -27,6 +29,7 @@ import { codexHome, resolveAgentHome } from "../../../shared/agent-home.js";
 import { CodexRateLimits } from "./codex-rate-limits.js";
 import { CodexEventHandler } from "./codex-event-handler.js";
 import { ensureCodexProjectTrusted } from "./project-trust.js";
+import { executeGoalCommand, runCodexGoalControl } from "./codex-goal.js";
 
 export { unwrapShellCommand, buildCodexPermissionInput } from "./codex-tool-normalizer.js";
 
@@ -73,25 +76,6 @@ export const CODEX_SANDBOX_ARGS: readonly string[] = [
   "-c", `sandbox_mode="danger-full-access"`,
   "-c", `approval_policy="never"`,
   "-c", "features.use_legacy_landlock=true",
-];
-
-/**
- * Turn off Codex's native goal mode (`goals`, stable and on by default since
- * 0.133.0) until ShipIt renders and clears goals — docs/154-native-goal-command.
- * ShipIt shows no goal and has no `/goal clear`, yet the model can create one
- * itself, and every `thread/resume` restarts it: a session got stuck on a goal
- * the user could neither see nor clear. Delete this when docs/154 lands.
- *
- * Measured against the pinned 0.154.0: `codex features list` flips `goals` from
- * `true` to `false`; `-c features.goals="notabool"` fails the `app-server`
- * spawn with `invalid type: string "notabool", expected a boolean`;
- * `thread/goal/get` answers `goals feature is disabled`; `create_goal` /
- * `update_goal` / `get_goal` leave the model request; and resuming a thread
- * with an active goal no longer starts a continuation turn by itself. What
- * stays is the goal text already in that thread's history — no config removes it.
- */
-export const CODEX_GOALS_OFF_ARGS: readonly string[] = [
-  "-c", "features.goals=false",
 ];
 
 interface JsonRpcRequest {
@@ -167,6 +151,8 @@ export class CodexAdapter
         sendErrorResponse: (id, code, message) => { this.sendErrorResponse(id, code, message); },
         sendNotification: (method, params) => { this.sendNotification(method, params); },
         kill: () => { this.kill(); },
+        goalRequest: (method, params) => this.liveGoalRequest(method, params),
+        restoreGoalOutOfProcess: (threadId) => this.runGoalControl(threadId, { action: "resume" }),
       },
       this.rateLimits,
       [...CODEX_TOOL_NAMES],
@@ -186,6 +172,7 @@ export class CodexAdapter
     supportsReview: true,
     supportsSteering: true,
     supportsCompaction: true,
+    supportsGoals: true,
     skillsDirName: ".codex",
     skillInvocationPrefix: "$",
   };
@@ -285,7 +272,6 @@ export class CodexAdapter
     // Global config overrides must precede the subcommand.
     const args = [
       ...CODEX_SANDBOX_ARGS,
-      ...CODEX_GOALS_OFF_ARGS,
       ...(params.reasoningEffort ? ["-c", `model_reasoning_effort=${params.reasoningEffort}`] : []),
       ...providerArgs,
       "app-server",
@@ -334,14 +320,22 @@ export class CodexAdapter
       this.emit("error", err);
     });
 
+    let exited = false;
     this.proc.on("close", (code) => {
+      exited = true;
       this.drainLines(true);
       this.emit("done", code ?? 1);
       this.proc = null;
+      // A request still waiting would hang forever — and with it the goal restore in initializeAndRun's finally.
+      this.pendingRequests.forEach(({ reject }) => reject(new Error("Codex process exited")));
+      this.pendingRequests.clear();
     });
 
     this.eventHandler.initializeAndRun(params).catch((err: unknown) => {
-      this.emit("error", err instanceof Error ? err : new Error(String(err)));
+      const error = err instanceof Error ? err : new Error(String(err));
+      // The exit already reported this run's end through done.
+      if (exited) this.emit("log", "codex", `startup ended by process exit: ${error.message}`);
+      else this.emit("error", error);
     });
   }
 
@@ -390,6 +384,36 @@ export class CodexAdapter
     console.warn(
       "[codex-adapter] compact() called with no live thread — the orchestrator should have spawned a compaction run instead",
     );
+  }
+
+  // docs/154 — between turns the process is gone, so a control process answers instead.
+  async goalCommand(threadId: string, command: AgentGoalCommand): Promise<AgentGoalCommandResult> {
+    if (this.proc && this.eventHandler.getThreadId() === threadId) {
+      try {
+        return await executeGoalCommand((method, params) => this.liveGoalRequest(method, params), threadId, command);
+      } catch (err) {
+        // Alive means a real refusal. Gone means the turn ended mid-command; every command is safe to repeat.
+        if (this.proc) throw err;
+      }
+    }
+    return this.runGoalControl(threadId, command);
+  }
+
+  private runGoalControl(threadId: string, command: AgentGoalCommand): Promise<AgentGoalCommandResult> {
+    const scopedHome = this.spawnHomeOverride ?? this.resolveHome?.();
+    return runCodexGoalControl({
+      threadId,
+      command,
+      cwd: process.cwd(),
+      env: { ...process.env, HOME: resolveAgentHome(scopedHome), CODEX_HOME: this.codexConfigDir() },
+    });
+  }
+
+  // kill() rejects what is pending, but a request written after it would wait forever.
+  private liveGoalRequest(method: string, params: Record<string, unknown>): Promise<unknown> {
+    return this.proc?.stdin?.writable
+      ? this.sendRequest(method, params)
+      : Promise.reject(new Error("Codex process ended"));
   }
 
   interrupt(): void {

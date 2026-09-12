@@ -3,7 +3,7 @@ import { normalizeCapabilities } from "../shared/types.js";
 import { isTerminalPrResolved, resolvedAt } from "../shared/session-resolution.js";
 import type { DatabaseManager } from "../shared/database.js";
 import type { PrStatusSummary } from "../shared/types/github-types.js";
-import type { AgentId } from "../shared/types/agent-types.js";
+import type { AgentGoal, AgentId } from "../shared/types/agent-types.js";
 import type { BillingMode, ModelSelection } from "../shared/catalogue/index.js";
 import { resolveModelSelection, sameCredentialOwner } from "../shared/catalogue/index.js";
 import { repoId, stripRemoteUrlCredentials } from "./git-utils.js";
@@ -70,6 +70,24 @@ interface SessionRow {
   pending_agent_notice: string | null;
   pr_repo_id: string | null;
   pr_number: number | null;
+  agent_goal: string | null;
+}
+
+function parseAgentGoal(json: string): AgentGoal | undefined {
+  try {
+    const goal = JSON.parse(json) as Partial<AgentGoal> | null;
+    return goal && typeof goal.objective === "string" && typeof goal.status === "string"
+      ? goal as AgentGoal
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+// Usage counters move on every update; only what the chip shows is worth a write and a broadcast.
+function sameShownGoal(a: AgentGoal | null, b: AgentGoal | null): boolean {
+  if (!a || !b) return a === b;
+  return a.objective === b.objective && a.status === b.status && a.tokenBudget === b.tokenBudget;
 }
 
 export const MAX_MERGED_SESSIONS_PER_REPO = 5;
@@ -246,6 +264,10 @@ export class SessionManager {
       info.prNumber = row.pr_number;
       info.prRepoId = row.pr_repo_id;
     }
+    if (row.agent_goal) {
+      const goal = parseAgentGoal(row.agent_goal);
+      if (goal) info.agentGoal = goal;
+    }
     return info;
   }
 
@@ -312,6 +334,22 @@ export class SessionManager {
     this.db.prepare("UPDATE sessions SET agent_session_id = ? WHERE id = ?").run(agentSessionId, id);
   }
 
+  /**
+   * docs/154 — returns whether the shown goal changed, so callers broadcast only then.
+   * A stored JSON `null` means "read, no goal"; SQL NULL means "never read".
+   */
+  setAgentGoal(id: string, goal: AgentGoal | null): boolean {
+    if (this.agentGoalChecked(id) && sameShownGoal(this.get(id)?.agentGoal ?? null, goal)) return false;
+    this.db.prepare("UPDATE sessions SET agent_goal = ? WHERE id = ?").run(JSON.stringify(goal), id);
+    return true;
+  }
+
+  agentGoalChecked(id: string): boolean {
+    const row = this.db.prepare("SELECT agent_goal FROM sessions WHERE id = ?").get(id) as
+      { agent_goal: string | null } | undefined;
+    return typeof row?.agent_goal === "string";
+  }
+
   setConversationReplay(id: string, replay: string): void {
     this.db.prepare("UPDATE sessions SET conversation_replay = ? WHERE id = ?").run(replay, id);
   }
@@ -363,7 +401,8 @@ export class SessionManager {
   }
 
   clearAgentSessionId(id: string): void {
-    this.db.prepare("UPDATE sessions SET agent_session_id = NULL WHERE id = ?").run(id);
+    // The goal belonged to the old conversation's thread.
+    this.db.prepare("UPDATE sessions SET agent_session_id = NULL, agent_goal = NULL WHERE id = ?").run(id);
   }
 
   // This URL is later written into agent-readable clone configs.

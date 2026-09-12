@@ -111,6 +111,7 @@ import { PrDetailPanel } from "./components/PrDetailPanel.js";
 import { PresentPane } from "./components/PresentPane.js";
 import { HostPanel } from "./components/HostPanel.js";
 import { RebaseBanner } from "./components/RebaseBanner.js";
+import { GoalChip } from "./components/GoalChip.js";
 import { SecretBlockBanner } from "./components/SecretBlockBanner.js";
 import { QueueIndicator } from "./components/QueueIndicator.js";
 import { AgentStatusBar } from "./components/AgentStatusBar.js";
@@ -1612,6 +1613,9 @@ export default function App() {
           <div className="flex flex-col gap-2">
             {isLoading && <AgentStatusBar activity={activity} />}
             {wsSessionId && <RebaseBanner sessionId={wsSessionId} />}
+            {wsSessionId && currentSession?.agentGoal
+              && agentList.find((a) => a.id === activeAgentId)?.supportsGoals
+              && <GoalChip goal={currentSession.agentGoal} />}
             <SecretBlockBanner />
             {queuedMessages.length > 0 && (
               <QueueIndicator

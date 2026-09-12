@@ -24,6 +24,7 @@ export interface AgentOption {
   supportedPermissionModes?: PermissionMode[];
   supportsSteering?: boolean;
   supportsCompaction?: boolean;
+  supportsGoals?: boolean;
   skillInvocationPrefix?: string;
   reasoning?: {
     label: string;

@@ -3,6 +3,7 @@ import { EventEmitter } from "node:events";
 import type { AgentProcess, AgentId, AgentEvent, AgentRunParams, TerminalProcess, WorkerAgentStatus } from "../shared/types.js";
 import type { WsServerMessage, ClaudeContentBlockToolUse, SkillInfo, PermissionMode, PermissionDecision } from "../shared/types.js";
 import type { PresentStateEntry } from "../shared/types/ws-server-messages.js";
+import type { AgentGoalCommand, AgentGoalCommandResult, WorkerAgentGoalBody } from "../shared/types/agent-types.js";
 import type { PresentStore } from "./present-store.js";
 import { emitChatCard, type InProgressPersister } from "./chat-card-persistence.js";
 import type { SessionRunnerInterface, SessionRunnerEvents, QueuedMessage, SystemTurnDeps, ChatMessageGroup, SteeredMessage, RecordedChatCard } from "./session-runner.js";
@@ -43,6 +44,9 @@ export type { ProxyAgentRunner } from "./proxy-agent-process.js";
 
 // Bounds POST acceptance; install completion arrives separately over SSE.
 const INSTALL_POST_TIMEOUT_MS = 180_000;
+
+// Outlasts the worker's 15 s goal control process, so a late success is never reported as a failure.
+const GOAL_WORKER_TIMEOUT_MS = 30_000;
 
 const PLUGIN_PREPARE_TIMEOUT_MS = 30_000;
 
@@ -907,6 +911,19 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
 
   async compactAgentOnWorker(instructions?: string): Promise<void> {
     await workerPost(this.workerUrl, "/agent/compact", instructions ? { instructions } : undefined);
+  }
+
+  async goalCommandOnWorker(agentId: AgentId, threadId: string, command: AgentGoalCommand): Promise<AgentGoalCommandResult> {
+    const body: WorkerAgentGoalBody = { agentId, threadId, command };
+    try {
+      return await workerPost(this.workerUrl, "/agent/goal", body, { timeoutMs: GOAL_WORKER_TIMEOUT_MS }) as AgentGoalCommandResult;
+    } catch (err) {
+      // A worker from before docs/154 has no such route; Fastify answers 404 "Not Found".
+      if (err instanceof Error && err.message === "Not Found") {
+        throw new Error("this session's container predates goal support; it updates when ShipIt next replaces the container", { cause: err });
+      }
+      throw err;
+    }
   }
 
   async resolvePermissionOnWorker(requestId: string, decision: PermissionDecision): Promise<void> {

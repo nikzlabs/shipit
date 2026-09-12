@@ -137,6 +137,7 @@ export function listAgents(agentRegistry: AgentRegistry): AgentInfo[] {
     supportsReview: a.capabilities.supportsReview,
     supportsSteering: a.capabilities.supportsSteering,
     supportsCompaction: a.capabilities.supportsCompaction,
+    supportsGoals: a.capabilities.supportsGoals ?? false,
     supportedPermissionModes: a.capabilities.supportedPermissionModes,
     skillInvocationPrefix: a.capabilities.skillInvocationPrefix,
     ...(a.capabilities.reasoning ? { reasoning: a.capabilities.reasoning } : {}),

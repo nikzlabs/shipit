@@ -20,6 +20,8 @@ function makeHandler(): {
     sendErrorResponse: vi.fn(),
     sendNotification: vi.fn(),
     kill: vi.fn(),
+    goalRequest: vi.fn(async () => ({})),
+    restoreGoalOutOfProcess: vi.fn(async () => ({ goal: null })),
   };
   return { handler: new CodexEventHandler(ctx, new CodexRateLimits(), []), logs, events };
 }
@@ -41,6 +43,131 @@ function shellResult(id: string, output: string, exitCode = 1): { method: string
     params: { item: { id, type: "commandExecution", command: "ls", exitCode, aggregatedOutput: output } },
   };
 }
+
+// Recorded from codex-cli 0.154.0 (docs/154 plan.md, "Measured").
+const GOAL = {
+  threadId: "t1", objective: "Ship it", status: "active", tokenBudget: null,
+  tokensUsed: 0, timeUsedSeconds: 0, createdAt: 1789140440, updatedAt: 1789140441,
+};
+const SHOWN_GOAL = {
+  objective: "Ship it", status: "active", tokenBudget: null, tokensUsed: 0, timeUsedSeconds: 0, updatedAt: 1789140441,
+};
+
+describe("goal notifications (docs/154 req 1)", () => {
+  it("reports a goal the model created with create_goal", () => {
+    const { handler, events } = makeHandler();
+    handler.handleNotification({ method: "thread/goal/updated", params: { threadId: "t1", turnId: "turn-1", goal: GOAL } });
+    expect(events).toEqual([{ type: "agent_goal_updated", goal: SHOWN_GOAL }]);
+  });
+
+  it("reports a cleared goal as no goal", () => {
+    const { handler, events } = makeHandler();
+    handler.handleNotification({ method: "thread/goal/cleared", params: { threadId: "t1" } });
+    expect(events).toEqual([{ type: "agent_goal_updated", goal: null }]);
+  });
+
+  it("ignores a subagent thread's goal", () => {
+    const { handler, events } = makeHandler();
+    handler.handleNotification({ method: "thread/started", params: { thread: { id: "parent" } } });
+    handler.handleNotification({ method: "thread/goal/updated", params: { threadId: "child", goal: { ...GOAL, threadId: "child" } } });
+    handler.handleNotification({ method: "thread/goal/cleared", params: { threadId: "child" } });
+    expect(events).toEqual([]);
+  });
+});
+
+describe("goal across a resume (docs/154)", () => {
+  // Codex, as measured on 0.154.0: a resume re-announces the goal it holds.
+  function makeRunHandler(opts: { goal: typeof GOAL | null; turnStartFails?: boolean; liveRestoreFails?: boolean }) {
+    const events: AgentEvent[] = [];
+    const calls: string[] = [];
+    let current = opts.goal ? { ...opts.goal } : null;
+    const ctx: CodexTransport = {
+      emitEvent: (event) => events.push(event),
+      emitLog: () => {},
+      sendRequest: vi.fn(async (method: string) => {
+        if (method !== "initialize") calls.push(method);
+        if (method === "thread/resume") {
+          if (current) handler.handleNotification({ method: "thread/goal/updated", params: { threadId: "t1", goal: current } });
+          return { thread: { id: "t1" } };
+        }
+        if (method === "thread/start") return { thread: { id: "t1" } };
+        if (method === "turn/start") {
+          if (opts.turnStartFails) throw new Error("turn/start refused");
+          return { turn: { id: "turn-1" } };
+        }
+        return {};
+      }),
+      sendResponse: vi.fn(),
+      sendErrorResponse: vi.fn(),
+      sendNotification: vi.fn(),
+      kill: vi.fn(),
+      goalRequest: vi.fn(async (method: string, params: Record<string, unknown>) => {
+        const status = typeof params.status === "string" ? params.status : undefined;
+        calls.push(status ? `${method}:${status}` : method);
+        if (method === "thread/goal/get") return { goal: current };
+        if (opts.liveRestoreFails && status === "active") throw new Error("Codex process ended");
+        if (current && status) current = { ...current, status };
+        return { goal: current };
+      }),
+      restoreGoalOutOfProcess: vi.fn(async () => {
+        if (current) current = { ...current, status: "active" };
+        return { goal: current && { ...SHOWN_GOAL, status: "active" } };
+      }),
+    };
+    // The ctx closures read `handler` only when called, which is after this line.
+    const handler = new CodexEventHandler(ctx, new CodexRateLimits(), []);
+    const goalEvents = () => events.filter((e) => e.type === "agent_goal_updated");
+    return { handler, ctx, calls, goalEvents, finalStatus: () => current?.status };
+  }
+
+  it("pauses an active goal across the resume and restores it after turn/start", async () => {
+    const run = makeRunHandler({ goal: GOAL });
+    await run.handler.initializeAndRun({ prompt: "hi", cwd: "/w", sessionId: "t1" });
+    // No active goal at resume, so Codex starts no continuation turn of its own.
+    expect(run.calls).toEqual([
+      "thread/goal/get", "thread/goal/set:paused", "thread/resume", "turn/start", "thread/goal/set:active",
+    ]);
+    // The hold is not news: the chip only ever sees the goal as active.
+    expect(run.goalEvents()).toEqual([{ type: "agent_goal_updated", goal: SHOWN_GOAL }]);
+    expect(run.finalStatus()).toBe("active");
+  });
+
+  it.each(["paused", "complete", "budgetLimited"])("never re-activates a %s goal", async (status) => {
+    const run = makeRunHandler({ goal: { ...GOAL, status } });
+    await run.handler.initializeAndRun({ prompt: "hi", cwd: "/w", sessionId: "t1" });
+    expect(run.calls).toEqual(["thread/goal/get", "thread/resume", "turn/start"]);
+    expect(run.finalStatus()).toBe(status);
+    expect(run.goalEvents()[0]).toEqual({ type: "agent_goal_updated", goal: { ...SHOWN_GOAL, status } });
+  });
+
+  it("restores the goal when turn/start fails", async () => {
+    const run = makeRunHandler({ goal: GOAL, turnStartFails: true });
+    await expect(run.handler.initializeAndRun({ prompt: "hi", cwd: "/w", sessionId: "t1" })).rejects.toThrow("turn/start refused");
+    expect(run.calls.at(-1)).toBe("thread/goal/set:active");
+    expect(run.finalStatus()).toBe("active");
+  });
+
+  it("restores the goal through a control process when the process died", async () => {
+    const run = makeRunHandler({ goal: GOAL, liveRestoreFails: true });
+    await run.handler.initializeAndRun({ prompt: "hi", cwd: "/w", sessionId: "t1" });
+    expect(run.ctx.restoreGoalOutOfProcess).toHaveBeenCalledWith("t1");
+    expect(run.finalStatus()).toBe("active");
+    expect(run.goalEvents().at(-1)).toEqual({ type: "agent_goal_updated", goal: SHOWN_GOAL });
+  });
+
+  it("clears a stale goal when the resumed thread has none", async () => {
+    const run = makeRunHandler({ goal: null });
+    await run.handler.initializeAndRun({ prompt: "hi", cwd: "/w", sessionId: "t1" });
+    expect(run.goalEvents()).toEqual([{ type: "agent_goal_updated", goal: null }]);
+  });
+
+  it("reports no goal for a new thread without asking", async () => {
+    const run = makeRunHandler({ goal: GOAL });
+    await run.handler.initializeAndRun({ prompt: "hi", cwd: "/w" });
+    expect(run.goalEvents()).toEqual([{ type: "agent_goal_updated", goal: null }]);
+    expect(run.calls).not.toContain("thread/goal/get");
+  });
+});
 
 describe("configWarning", () => {
   it("logs an invalid config as a server-level problem, naming the file and position", () => {

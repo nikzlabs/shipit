@@ -177,8 +177,38 @@ export interface AgentCapabilities {
   /** Resolve through the registry, not proxy defaults. Absent is false; late output alone is not a new turn. */
   startsOwnTurns?: boolean;
   supportsCompaction: boolean;
+  /** docs/154 — the CLI owns a goal ShipIt can read and change. Absent is false. */
+  supportsGoals?: boolean;
   skillsDirName: string;
   skillInvocationPrefix: string;
+}
+
+/** docs/154 — Codex `ThreadGoal`; `status` stays the CLI's own string. */
+export interface AgentGoal {
+  objective: string;
+  status: string;
+  tokenBudget: number | null;
+  tokensUsed: number;
+  timeUsedSeconds: number;
+  /** Unix seconds. */
+  updatedAt: number;
+}
+
+export type AgentGoalCommand =
+  | { action: "get" }
+  | { action: "set"; objective: string }
+  | { action: "clear" }
+  | { action: "pause" }
+  | { action: "resume" };
+
+export interface AgentGoalCommandResult {
+  goal: AgentGoal | null;
+}
+
+/** null means the thread has no goal. */
+export interface AgentGoalUpdatedEvent {
+  type: "agent_goal_updated";
+  goal: AgentGoal | null;
 }
 
 export interface AgentInitEvent {
@@ -323,7 +353,8 @@ export type AgentEvent =
   | AgentPermissionRequestEvent
   | AgentPermissionResolvedEvent
   | AgentBackgroundTasksEvent
-  | AgentSelfWakeEvent;
+  | AgentSelfWakeEvent
+  | AgentGoalUpdatedEvent;
 
 export type AgentContentBlock =
   | { type: "text"; text: string }
@@ -425,7 +456,15 @@ export interface AgentProcess extends EventEmitter<AgentProcessEvents> {
   setPermissionRequester?(requester: PermissionRequester): void;
   /** Correlates a surviving worker turn after orchestrator restart. */
   setDeliveryId?(deliveryId: string): void;
+  /** docs/154 — works with or without a live process; `threadId` is the session's agentSessionId. */
+  goalCommand?(threadId: string, command: AgentGoalCommand): Promise<AgentGoalCommandResult>;
   writeMcpConfig(ctx: AgentMcpWriteContext): AgentMcpWriteResult;
+}
+
+export interface WorkerAgentGoalBody {
+  agentId: AgentId;
+  threadId: string;
+  command: AgentGoalCommand;
 }
 
 /** Keep additive: old workers survive orchestrator deploys. */

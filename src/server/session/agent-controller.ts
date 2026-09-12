@@ -7,6 +7,7 @@ import type {
   AgentId,
 } from "./agents/agent-process.js";
 import type { PermissionMode, ServiceRouting, WorkerAgentKillBody, WorkerAgentStartBody, WorkerAgentStatus } from "../shared/types.js";
+import type { AgentGoalCommand, WorkerAgentGoalBody } from "../shared/types/agent-types.js";
 import type { PermissionBroker } from "./permission-broker.js";
 import type { WorkerSSEEvent } from "./sse-broadcaster.js";
 import type { McpConfigController } from "./mcp-config-controller.js";
@@ -24,6 +25,13 @@ import {
 } from "../shared/sub-agent-run.js";
 
 export type WorkerAgentFactory = (agentId: AgentId) => AgentProcess;
+
+function isGoalCommandBody(command: unknown): command is AgentGoalCommand {
+  if (!command || typeof command !== "object") return false;
+  const c = command as { action?: unknown; objective?: unknown };
+  if (c.action === "set") return typeof c.objective === "string" && c.objective.trim() !== "";
+  return c.action === "get" || c.action === "clear" || c.action === "pause" || c.action === "resume";
+}
 
 export interface AgentControllerDeps {
   agentFactory: WorkerAgentFactory;
@@ -265,6 +273,30 @@ export class AgentController {
       const instructions = typeof request.body?.instructions === "string" ? request.body.instructions : undefined;
       this.agent.compact(instructions);
       return { success: true };
+    });
+
+    // docs/154 — a live turn answers on its own process; otherwise a fresh adapter runs a control process.
+    app.post<{ Body: WorkerAgentGoalBody | null }>("/agent/goal", async (request, reply) => {
+      const { agentId, threadId, command } = request.body ?? {};
+      if (!agentId || typeof threadId !== "string" || !threadId || !isGoalCommandBody(command)) {
+        return reply.code(400).send({ error: "agentId, threadId and a goal command are required" });
+      }
+      let agent = this.agent;
+      if (agent?.agentId !== agentId || !agent.goalCommand) {
+        try {
+          agent = this.deps.agentFactory(agentId);
+        } catch (err) {
+          return reply.code(400).send({ error: `Unknown agent: ${agentId} (${getErrorMessage(err)})` });
+        }
+      }
+      if (!agent.goalCommand) {
+        return reply.code(400).send({ error: `Agent ${agentId} does not support goals` });
+      }
+      try {
+        return await agent.goalCommand(threadId, command);
+      } catch (err) {
+        return reply.code(502).send({ error: getErrorMessage(err) });
+      }
     });
 
     app.get("/agent/status", async (): Promise<WorkerAgentStatus> => ({

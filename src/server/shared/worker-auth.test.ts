@@ -77,11 +77,12 @@ describe("isLifecyclePath", () => {
       "/agent/message",
       "/agent/permission-mode",
       "/agent/compact",
+      "/agent/goal",
       "/agent/permission/resolve",
     ]) {
       expect(isLifecyclePath(path), path).toBe(true);
     }
-    expect(LIFECYCLE_PATHS.size).toBe(9);
+    expect(LIFECYCLE_PATHS.size).toBe(10);
   });
 
   it("excludes the status probe and anything outside the exact set", () => {

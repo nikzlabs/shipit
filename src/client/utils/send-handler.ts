@@ -9,6 +9,7 @@ import { sendUserMessage } from "./send-user-message.js";
 import { buildAttachmentPlan } from "./attachment-plan.js";
 import { isReviewCommand, resolveReviewRequest } from "./review-command.js";
 import { composeReviewMessage, resolveReviewer } from "./compose-review-body.js";
+import { isGoalCommand } from "../../server/shared/goal-command.js";
 
 export interface SendDeps {
   /** Put a frame on the wire. `false` means the bytes never left the browser. */
@@ -91,6 +92,17 @@ export function runSend(deps: SendDeps, payload: SendPayload): boolean {
     useFileStore.getState().closePreview();
     if (plan.clearAttachments) reviewSettings.clearPendingFiles();
     return true;
+  }
+
+  // docs/154 — a goal command starts no turn, so no bubble and no spinner; the
+  // server answers with an inline notice.
+  const goalSessionId = useSessionStore.getState().sessionId;
+  const ui = useUiStore.getState();
+  if (
+    goalSessionId && isGoalCommand(trimmed)
+    && ui.agentList.find((a) => a.id === ui.activeAgentId)?.supportsGoals
+  ) {
+    return send({ type: "send_message", text: trimmed, sessionId: goalSessionId });
   }
 
   requestPermission();

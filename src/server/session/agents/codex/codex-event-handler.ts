@@ -3,6 +3,7 @@ import path from "node:path";
 import type {
   AgentContentBlock,
   AgentEvent,
+  AgentGoalCommandResult,
   AgentRunParams,
   PermissionRequester,
 } from "../agent-process.js";
@@ -26,6 +27,8 @@ import {
   isSandboxVeto,
   sandboxVetoNotice,
 } from "./sandbox-diagnostics.js";
+import { executeGoalCommand, normalizeCodexGoal } from "./codex-goal.js";
+import type { AgentGoal } from "../../../shared/types/agent-types.js";
 
 interface JsonRpcServerRequest {
   id: number;
@@ -78,6 +81,10 @@ export interface CodexTransport {
   sendErrorResponse(id: number, code: number, message: string): void;
   sendNotification(method: string, params?: Record<string, unknown>): void;
   kill(): void;
+  /** Like sendRequest, but rejects at once when the process is gone. */
+  goalRequest(method: string, params: Record<string, unknown>): Promise<unknown>;
+  /** Set a goal active again through a control process, for when this one has died. */
+  restoreGoalOutOfProcess(threadId: string): Promise<AgentGoalCommandResult>;
 }
 
 export class CodexEventHandler {
@@ -117,6 +124,9 @@ export class CodexEventHandler {
   private compactionPreTokens: number | undefined;
 
   private requestPermission: PermissionRequester | null = null;
+
+  // docs/154 — ShipIt paused the goal across the resume; its own notifications are not news.
+  private goalHeld = false;
 
   getThreadId(): string | null {
     return this.threadId;
@@ -231,6 +241,19 @@ export class CodexEventHandler {
           params.tokenUsage as CodexTokenUsage | undefined,
           params.turnId as string | undefined,
         );
+        break;
+      }
+
+      case "thread/goal/updated": {
+        if (this.goalHeld || !this.isParentThread(params)) break;
+        const goal = normalizeCodexGoal(params.goal);
+        if (goal) this.ctx.emitEvent({ type: "agent_goal_updated", goal });
+        break;
+      }
+
+      case "thread/goal/cleared": {
+        if (!this.isParentThread(params)) break;
+        this.ctx.emitEvent({ type: "agent_goal_updated", goal: null });
         break;
       }
 
@@ -645,7 +668,9 @@ export class CodexEventHandler {
     }
 
     let threadResult: unknown;
+    let heldGoal = false;
     if (params.sessionId) {
+      heldGoal = await this.holdActiveGoal(params.sessionId);
       // Never fall back to a new thread on resume failure: that would discard the conversation.
       try {
         threadResult = await this.ctx.sendRequest("thread/resume", {
@@ -653,6 +678,7 @@ export class CodexEventHandler {
           threadId: params.sessionId,
         });
       } catch (err: unknown) {
+        if (heldGoal) await this.releaseGoal(params.sessionId);
         const reason = err instanceof Error ? err.message : String(err);
         this.ctx.emitLog("codex", `thread/resume failed for ${params.sessionId}: ${reason}`);
         throw new Error(
@@ -686,30 +712,86 @@ export class CodexEventHandler {
       tools: this.toolNames,
     });
 
-    if (params.compact) {
-      this.compactionRequested = true;
-      this.compactSpawnMode = true;
-      await this.ctx.sendRequest("thread/compact/start", { threadId: this.threadId });
-      return;
+    try {
+      if (params.compact) {
+        this.compactionRequested = true;
+        this.compactSpawnMode = true;
+        await this.ctx.sendRequest("thread/compact/start", { threadId: this.threadId });
+        return;
+      }
+
+      const turnParams: Record<string, unknown> = {
+        threadId: this.threadId,
+        input: [{ type: "text", text: params.prompt }],
+        // The session container is the sandbox; nested bubblewrap cannot create its namespace.
+        approvalPolicy: "never",
+        sandboxPolicy: { type: "dangerFullAccess" },
+      };
+
+      if (params.cwd) {
+        turnParams.cwd = params.cwd;
+      }
+
+      turnParams.model = model;
+
+      // Capture the response ID too, in case turn/started was missed before a steer.
+      const turnResult = await this.ctx.sendRequest("turn/start", turnParams);
+      const turnData = turnResult as { turnId?: string; turn?: { id?: string } } | undefined;
+      this.currentTurnId = turnData?.turn?.id ?? turnData?.turnId ?? this.currentTurnId;
+    } finally {
+      // Also on failure: a goal ShipIt paused must not stay paused.
+      if (heldGoal && params.sessionId) await this.releaseGoal(params.sessionId);
     }
 
-    const turnParams: Record<string, unknown> = {
-      threadId: this.threadId,
-      input: [{ type: "text", text: params.prompt }],
-      // The session container is the sandbox; nested bubblewrap cannot create its namespace.
-      approvalPolicy: "never",
-      sandboxPolicy: { type: "dangerFullAccess" },
-    };
+    if (!params.sessionId) this.ctx.emitEvent({ type: "agent_goal_updated", goal: null });
+  }
 
-    if (params.cwd) {
-      turnParams.cwd = params.cwd;
+  /**
+   * docs/154 — on 0.154.0, resuming a thread whose goal is active makes Codex
+   * start its own continuation turn before ours and fold the user's message
+   * into it. Reading on the still-unloaded thread starts no turn; pause only an
+   * active goal. The read doubles as the rehydrate.
+   */
+  private async holdActiveGoal(threadId: string): Promise<boolean> {
+    let goal: AgentGoal | null;
+    try {
+      ({ goal } = await executeGoalCommand((m, p) => this.ctx.goalRequest(m, p), threadId, { action: "get" }));
+    } catch (err: unknown) {
+      this.ctx.emitLog("codex", `thread/goal/get failed: ${err instanceof Error ? err.message : String(err)}`);
+      return false;
     }
+    if (goal?.status !== "active") {
+      this.ctx.emitEvent({ type: "agent_goal_updated", goal });
+      return false;
+    }
+    this.goalHeld = true;
+    try {
+      await this.ctx.goalRequest("thread/goal/set", { threadId, status: "paused" });
+      return true;
+    } catch (err: unknown) {
+      this.goalHeld = false;
+      this.ctx.emitLog("codex", `could not hold the goal across resume: ${err instanceof Error ? err.message : String(err)}`);
+      return false;
+    }
+  }
 
-    turnParams.model = model;
-
-    // Capture the response ID too, in case turn/started was missed before a steer.
-    const turnResult = await this.ctx.sendRequest("turn/start", turnParams);
-    const turnData = turnResult as { turnId?: string; turn?: { id?: string } } | undefined;
-    this.currentTurnId = turnData?.turn?.id ?? turnData?.turnId ?? this.currentTurnId;
+  private async releaseGoal(threadId: string): Promise<void> {
+    this.goalHeld = false;
+    let goal: AgentGoal | null;
+    try {
+      goal = normalizeCodexGoal(
+        ((await this.ctx.goalRequest("thread/goal/set", { threadId, status: "active" })) as { goal?: unknown } | null)?.goal,
+      );
+    } catch (err: unknown) {
+      // The process died, so the thread is unloaded: a control process restores it without a turn.
+      this.ctx.emitLog("codex", `restoring the goal through a control process: ${err instanceof Error ? err.message : String(err)}`);
+      try {
+        ({ goal } = await this.ctx.restoreGoalOutOfProcess(threadId));
+      } catch (restoreErr: unknown) {
+        this.ctx.emitLog("codex", `could not restore the goal; it stays paused until the next turn reads it: ${restoreErr instanceof Error ? restoreErr.message : String(restoreErr)}`);
+        return;
+      }
+    }
+    if (goal) this.ctx.emitEvent({ type: "agent_goal_updated", goal });
   }
 }
