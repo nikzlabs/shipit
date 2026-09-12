@@ -433,13 +433,14 @@ export const usePrStore = create<PrState>((set, get) => ({
 
   clearMergeContinueOptOut: (sessionId) => {
     saveMergeContinueOptOut(sessionId, {});
-    set((state) => {
-      if (!(sessionId in state.mergeContinueOptOutBySession)) return state;
-      const next = { ...state.mergeContinueOptOutBySession };
-      // eslint-disable-next-line @typescript-eslint/no-dynamic-delete
-      delete next[sessionId];
-      return { mergeContinueOptOutBySession: next };
-    });
+    // Writes an EMPTY entry rather than dropping the key. After a reload the
+    // store has nothing for this session and the composer reads the opt-out
+    // straight from localStorage, so dropping the key left both its subscribed
+    // value and its memo key unchanged — the untick then governed every later
+    // message too. An entry that exists is what makes the store authoritative.
+    set((state) => ({
+      mergeContinueOptOutBySession: { ...state.mergeContinueOptOutBySession, [sessionId]: {} },
+    }));
   },
 
   fixCI: async (sessionId) => {

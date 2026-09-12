@@ -953,35 +953,29 @@ describe("MessageInput", () => {
     });
 
     /**
-     * The production defect, end to end.
+     * An eligibility answer landing between the untick and the send.
      *
-     * The user waited for the row, unticked "Compact the context", and sent
-     * 7.5 s later with no reload, no reconnect and no send in between — and
-     * ShipIt compacted anyway. None of the three suspected mechanisms (the
-     * post-send activation echo, a remount, a send inside the pre-signal
-     * window) was present.
-     *
-     * What WAS present is an eligibility answer landing between the untick and
-     * the send. `reset_eligible` has four emitters — activation, post-turn,
-     * merge-detected, and a file-change recompute that re-runs on every batch
-     * of writes to the workspace — and `computeResetEligibility` fails closed,
-     * so a git read that throws (an `index.lock` held by the post-merge fetch,
-     * push or chown) answers `false` for a session that is perfectly eligible.
-     * The composer re-armed on the control's visibility, so that `false`
-     * re-ticked the box; and if the `true` had not arrived back by the time the
-     * user pressed Send, the frame omitted `compactContext` altogether, which
-     * the server reads as "follow the global setting" and also compacts.
+     * Several server paths recompute eligibility between turns — activation,
+     * post-turn, merge-detected, the debounced file-change recompute, and two
+     * direct emitters — and `computeResetEligibility` fails closed, so a git
+     * read that throws answers `false` for a session that is perfectly
+     * eligible. The composer re-armed on the control's visibility, so that
+     * `false` re-ticked the box; and if `true` had not arrived back by the time
+     * the user pressed Send, the frame omitted `compactContext` altogether,
+     * which falls back to the global setting.
      *
      * Both shapes are below. The user's intent must reach the wire in each.
      */
-    describe("an eligibility answer between the untick and the send (the incident)", () => {
+    describe("an eligibility answer between the untick and the send", () => {
       it("keeps the untick when eligibility flickers false and back to true", () => {
         usePrStore.setState({ resetEligibleBySession: { s1: true } });
         useSettingsStore.setState({ autoResetMergedBranch: true });
         const onSend = renderComposer();
         fireEvent.click(screen.getByTestId("compact-context-control")); // untick
         // A recompute fails closed, then the next one succeeds. Nothing the
-        // user did, and nothing they can see.
+        // user did, and nothing they can see. (Injected here: the test proves
+        // the composer's response to the signal, not that any given production
+        // incident produced one.)
         serverSaysEligible(false);
         serverSaysEligible(true);
         typeAndSend();
@@ -1016,20 +1010,79 @@ describe("MessageInput", () => {
       });
     });
 
+    /**
+     * The composer is remounted by more than a reload, and the untick was the
+     * ONLY thing on it that did not survive.
+     *
+     * `AppLayout` renders the chat panel into a Fragment on mobile and a `div`
+     * on desktop, so any `isMobile` flip destroys and rebuilds the subtree; and
+     * App's own `{(showHarnessOnboarding || !showHomeScreen || showNewSessionView)
+     * && …}` wrapper drops the composer whenever `showHomeScreen` turns true.
+     * The draft text and the attachment chips came back from their stores, so
+     * the composer looked untouched — and a small checkbox had quietly gone
+     * back to blue with no signal at all. The reported incident was on a phone,
+     * where backgrounded-tab churn makes this routine.
+     */
+    it("keeps the untick when the composer is remounted under a restored draft", () => {
+      usePrStore.setState({ resetEligibleBySession: { s1: true } });
+      useSettingsStore.setState({ autoResetMergedBranch: true });
+      const onSend = vi.fn().mockReturnValue(true);
+      const composer = (
+        <MessageInput
+          onSend={onSend} disabled={false} sessionId="s1" focusKey="s1"
+          agents={compactingAgent} activeAgentId="claude"
+        />
+      );
+      const { unmount } = render(composer);
+      fireEvent.change(
+        screen.getByPlaceholderText("Describe what to build... (type @ to attach files)"),
+        { target: { value: "next slice of work" } },
+      );
+      fireEvent.click(screen.getByTestId("compact-context-control")); // untick
+
+      unmount();
+      render(composer);
+
+      // What the user sees on the rebuilt composer: their text is back, and so
+      // is their choice. Before this fix only the first of those was true.
+      const restored = screen.getByPlaceholderText(
+        "Describe what to build... (type @ to attach files)",
+      ) as HTMLTextAreaElement;
+      expect(restored.value).toBe("next slice of work");
+      expect(screen.getByTestId("compact-context-control")).toHaveAttribute("aria-pressed", "false");
+
+      fireEvent.click(screen.getByLabelText("Send message"));
+      expect(onSend).toHaveBeenCalledWith(expect.objectContaining({ compactContext: false }));
+    });
+
     it("keeps the untick across a remount (reconnect or reload)", () => {
       usePrStore.setState({ resetEligibleBySession: { s1: true } });
       useSettingsStore.setState({ autoResetMergedBranch: true });
       renderComposer();
-      fireEvent.click(screen.getByTestId("compact-context-control")); // untick
-      // A WebSocket reconnect remounts the composer; a reload does that AND
-      // empties the store, leaving localStorage as the only record. Test the
-      // harder one.
+      // Untick BOTH, so the still-ticked reset does not optimistically clear
+      // eligibility and take the row off screen — this test is about the row
+      // still being there, with the user's choice on it.
+      fireEvent.click(screen.getByTestId("reset-merged-branch-control"));
+      fireEvent.click(screen.getByTestId("compact-context-control"));
+      // A reload remounts the composer AND empties the store, leaving
+      // localStorage as the only record of the choice.
       cleanup();
       usePrStore.setState({ mergeContinueOptOutBySession: {} });
       const onSend = renderComposer(vi.fn().mockReturnValue(true));
       expect(screen.getByTestId("compact-context-control")).toHaveAttribute("aria-pressed", "false");
       typeAndSend();
-      expect(onSend).toHaveBeenCalledWith(expect.objectContaining({ compactContext: false }));
+      expect(onSend.mock.calls[0]![0]).toMatchObject({
+        compactContext: false, resetMergedBranch: false,
+      });
+      // …and it applies to THAT message only (req 5). Clearing has to reach the
+      // mounted composer even though the opt-out came only from localStorage:
+      // dropping the storage key alone left the restored value on screen and
+      // the untick went on governing every later message in the session.
+      expect(screen.getByTestId("compact-context-control")).toHaveAttribute("aria-pressed", "true");
+      typeAndSend();
+      expect(onSend.mock.calls[1]![0]).toMatchObject({
+        compactContext: true, resetMergedBranch: true,
+      });
     });
 
   });

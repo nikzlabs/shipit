@@ -322,14 +322,18 @@ export function MessageInput({
    * Both controls' tick state, and why it is not component state.
    *
    * It was two `useState(true)` flags re-armed by an effect keyed on the
-   * control becoming visible, and each half silently discarded an untick the
-   * user was still looking at. The visibility is not an episode boundary and is
-   * not under the user's control: `reset_eligible` has four emitters — one of
-   * them a file-change recompute that re-runs on every batch of workspace
-   * writes — and `computeResetEligibility` fails closed, so a git read that
-   * throws answers `false` for an eligible session. One such `false` re-ticked
-   * the box on the way back to `true`. And a reconnect or a reload remounts the
-   * composer, which re-ticked it too.
+   * control becoming visible, and each half could silently discard an untick
+   * the user was still looking at. The visibility is not an episode boundary
+   * and is not under the user's control: several server paths recompute
+   * eligibility between turns (including a debounced file-change recompute),
+   * and `computeResetEligibility` fails closed, so a git read that throws
+   * answers `false` for an eligible session. One such `false` re-ticks the box
+   * on the way back to `true`, and a send made while the control is away used
+   * to omit the field entirely. And the composer is remounted by more than a
+   * reload — `AppLayout` swaps a Fragment for a `div` across the mobile
+   * breakpoint, and App drops the composer whenever `showHomeScreen` turns
+   * true — through all of which the draft text and the chips came back from
+   * their stores while this one checkbox silently did not.
    *
    * So the untick belongs to the message being drafted and lives as long as
    * that draft does — in the store, mirrored to localStorage, keyed by session
@@ -593,10 +597,11 @@ export function MessageInput({
       deferredFiles: isCompact || !isOverlay ? [] : localFiles,
       // docs/218 — carried when the control is shown, and docs/295 — also
       // whenever an untick is outstanding for this session, even with the
-      // control off screen. An OMITTED field means "follow the global setting",
-      // so gating on visibility alone dropped the untick in the compacting
-      // direction whenever eligibility went momentarily false. An opt-out can
-      // only say `false`, and `false` can only skip, so carrying it is safe.
+      // control off screen. An OMITTED field falls back to the global setting
+      // (and the server's own eligibility gates), so gating on visibility alone
+      // dropped the untick in the acting direction whenever eligibility went
+      // momentarily false. An opt-out can only say `false`, and `false` can
+      // only skip, so carrying it is safe.
       ...(showResetControl || mergeOptOut.reset ? { resetMergedBranch: resetChecked } : {}),
       // Read independently of its sibling (req 6).
       ...(showCompactControl || mergeOptOut.compact ? { compactContext: compactChecked } : {}),
@@ -878,7 +883,7 @@ export function MessageInput({
                 data-testid="reset-merged-branch-control"
                 aria-pressed={resetChecked}
                 onClick={() => toggleMergeControl("reset", resetChecked)}
-                className="w-full flex items-start gap-2.5 px-3 py-2.5 text-left"
+                className="w-full flex items-start gap-2.5 px-3 pt-2.5 pb-1 text-left"
               >
                 <span
                   className={`shrink-0 mt-0.5 grid place-items-center w-4 h-4 rounded ${
@@ -898,14 +903,20 @@ export function MessageInput({
                   </span>
                 </span>
               </button>
-              {/* docs/295 — subordinate to the row above: one line, no description. */}
+              {/* docs/295 — subordinate to the row above: one line, no description.
+                  Its own top padding, not the reset row's bottom padding: the two
+                  buttons abut, so the apparent breathing room above this checkbox
+                  used to be a live hit target for the OTHER control, and a
+                  near-miss silently unticked the branch reset while the tick the
+                  user was aiming at stayed on. Same total gap, split between the
+                  rows it looks like. */}
               {showCompactControl && (
                 <button
                   type="button"
                   data-testid="compact-context-control"
                   aria-pressed={compactChecked}
                   onClick={() => toggleMergeControl("compact", compactChecked)}
-                  className="w-full flex items-center gap-2.5 pl-3 pr-3 pb-2.5 text-left"
+                  className="w-full flex items-center gap-2.5 px-3 pt-1.5 pb-2.5 text-left"
                 >
                   <span
                     className={`shrink-0 grid place-items-center w-4 h-4 rounded ${

@@ -116,17 +116,36 @@ visible. Both halves discarded a deliberate untick, silently and in the
 compacting direction, because an **omitted** `compactContext` means "follow the
 global setting" and the setting is on:
 
-- `reset_eligible` has four emitters (activation, post-turn, merge-detected, and
-  the file-change recompute in `reset-eligible-watch.ts`, which re-runs on every
-  batch of writes to the workspace), and `computeResetEligibility` **fails
-  closed** — a git read that throws answers `false` for a session that is
-  perfectly eligible. So one `false`, for a reason that never reaches the user,
-  re-ticked the box on the way back to `true`; and a send made while the control
-  was still away carried no intent at all. This is the reported incident: the
-  user unticked a visible control and sent 7.5 s later, with no reload, no
-  reconnect and no send in between.
-- Component state does not outlive the composer. A WebSocket reconnect or a page
-  reload remounts it and re-ticked the box.
+- Eligibility is recomputed between turns by several server paths — the
+  activation, post-turn and merge-detected emitters, the debounced file-change
+  recompute in `reset-eligible-watch.ts` (which requires `mergedAt` and skips
+  while a turn runs), the dispatched post-turn path in
+  `runner-registry-factory.ts`, and the direct emitters in
+  `pre-turn-reset-hook.ts` and `api-routes-git.ts`. `computeResetEligibility`
+  **fails closed**: a git read that throws answers `false` for a session that is
+  perfectly eligible. One such `false`, for a reason that never reaches the
+  user, re-ticks the box on the way back to `true`; and a send made while the
+  control is still away carries no intent at all, which falls back to the global
+  setting.
+- **Component state does not outlive the composer, and the untick was the only
+  thing on it that did not.** `AppLayout` renders the chat panel into a Fragment
+  on mobile and a `div` on desktop, so any `isMobile` flip destroys and rebuilds
+  the subtree; App's `{(showHarnessOnboarding || !showHomeScreen ||
+  showNewSessionView) && …}` wrapper drops the composer whenever `showHomeScreen`
+  turns true; and a page reload remounts it outright. (A WebSocket reconnect does
+  **not** — `App.tsx` keeps the composer mounted and only changes its `disabled`
+  prop.) Through all of those the draft text and the attachment chips came back
+  from their own stores, so the composer looked untouched while a checkbox had
+  quietly gone back to blue, with no signal at all.
+
+**Attribution.** The eligibility-flicker mechanism above is a demonstrated defect
+class, not a proven account of the report that prompted this work. For that
+incident the orchestrator log was checked end to end and showed only
+`reset_eligible=true` across both merge windows — no `false`, no `failing
+closed`, no `(file-change)` — so it did not fire there. The user was on a phone,
+where backgrounded-tab churn makes a remount routine, and the remount path is
+what the evidence supports. Both are fixed; neither is claimed as the proven
+cause.
 
 So the tick state is `mergeContinueOptOutBySession` in the PR store, mirrored to
 `shipit-merge-continue-optout:{sessionId}` in localStorage — the third durable
