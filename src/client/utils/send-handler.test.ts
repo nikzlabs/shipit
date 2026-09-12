@@ -66,6 +66,32 @@ describe("a /goal command starts no turn (docs/154 req 4)", () => {
     expect(useSessionStore.getState().isLoading).toBe(false);
   });
 
+  // docs/298 — Grok's set runs its planner, so a real turn follows and needs its bubble.
+  it("keeps the bubble and spinner for an action the agent runs in a turn", () => {
+    useUiStore.setState({
+      agentList: [{ ...codex, id: "grok", goalActions: { get: "control", set: "turn" } }],
+      activeAgentId: "grok",
+    });
+    const d = deps();
+
+    runSend(d, payload({ text: "/goal ship it" }));
+    expect(useSessionStore.getState().messages).toHaveLength(1);
+    expect(useSessionStore.getState().isLoading).toBe(true);
+  });
+
+  // An action the agent refuses is answered with a notice, so no turn follows that either.
+  it("sends a bare frame for an action the agent refuses", () => {
+    useUiStore.setState({
+      agentList: [{ ...codex, id: "grok", goalActions: { get: "control", set: "turn" } }],
+      activeAgentId: "grok",
+    });
+    const d = deps();
+
+    expect(runSend(d, payload({ text: "/goal pause" }))).toBe(true);
+    expect(framesFrom(d)).toEqual([{ type: "send_message", text: "/goal pause", sessionId: "s1" }]);
+    expect(useSessionStore.getState().messages).toEqual([]);
+  });
+
   it("is an ordinary message when the agent has no goals", () => {
     useUiStore.setState({ agentList: [{ ...codex, id: "claude", supportsGoals: false }], activeAgentId: "claude" });
     const d = deps();

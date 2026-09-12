@@ -119,6 +119,14 @@ const STATUS_LABELS: Record<string, string> = {
   usageLimited: "stopped at the usage limit",
   budgetLimited: "stopped at its token budget",
   complete: "complete",
+  // docs/298 — Grok's words. Every `grok -r` leaves an active goal user_paused,
+  // so a Grok goal reads as paused whenever no turn is driving it.
+  user_paused: "paused",
+  back_off_paused: "paused, backing off",
+  no_progress_paused: "paused, no progress",
+  infra_paused: "paused after an infrastructure error",
+  budget_limited: "stopped at its token budget",
+  interrupted: "interrupted",
 };
 
 export function goalStatusLabel(status: string): string {

@@ -2,6 +2,7 @@ import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
 import { render, screen, cleanup, fireEvent, act } from "@testing-library/react";
 import { MessageInput } from "./MessageInput.js";
 import type { PermissionMode } from "../../server/shared/types.js";
+import type { AgentOption } from "../agent-types.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { usePrStore } from "../stores/pr-store.js";
 import { useSettingsStore } from "../stores/settings-store.js";
@@ -709,7 +710,7 @@ describe("MessageInput", () => {
   });
 
   describe("docs/154 — /goal in the / menu (req 5)", () => {
-    const openMenu = (supportsGoals: boolean) => {
+    const openMenu = (supportsGoals: boolean, goalActions?: AgentOption["goalActions"]) => {
       render(
         <MessageInput
           onSend={vi.fn()}
@@ -724,6 +725,7 @@ describe("MessageInput", () => {
             supportsReview: true,
             supportsCompaction: true,
             supportsGoals,
+            ...(goalActions ? { goalActions } : {}),
           }]}
           activeAgentId="codex"
         />,
@@ -744,6 +746,15 @@ describe("MessageInput", () => {
       openMenu(false);
       expect(screen.getByText("/compact")).toBeInTheDocument();
       expect(screen.queryByText("/goal clear")).not.toBeInTheDocument();
+    });
+
+    // docs/298 — an action the harness refuses must not be offered; picking it would only warn.
+    it("leaves out an action the agent does not declare", () => {
+      openMenu(true, { get: "control", set: "turn", clear: "control" });
+      expect(screen.getByText("/goal")).toBeInTheDocument();
+      expect(screen.getByText("/goal clear")).toBeInTheDocument();
+      expect(screen.queryByText("/goal pause")).not.toBeInTheDocument();
+      expect(screen.queryByText("/goal resume")).not.toBeInTheDocument();
     });
   });
 

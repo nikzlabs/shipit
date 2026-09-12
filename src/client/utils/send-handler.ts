@@ -94,9 +94,9 @@ export function runSend(deps: SendDeps, payload: SendPayload): boolean {
     return true;
   }
 
-  // docs/154 — a goal command the server answers out of band starts no turn, so
-  // no bubble and no spinner. docs/297 — an action marked "turn" is an ordinary
-  // message: on Claude Code `/goal <objective>` makes the CLI start working.
+  // docs/154 — a goal command the server answers (or refuses) starts no turn, so
+  // no bubble and no spinner. docs/297, docs/298 — an action marked "turn" is an
+  // ordinary message: `/goal <objective>` makes the CLI itself start working.
   const goalSessionId = useSessionStore.getState().sessionId;
   const ui = useUiStore.getState();
   const goalCommand = parseGoalCommand(trimmed);

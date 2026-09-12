@@ -31,7 +31,7 @@ resumed the same thread (and so the same goal) every turn, and sent a typed
 |---|---|---|
 | **Codex CLI** (pinned 0.154.0) | `thread/goal/*` JSON-RPC, on by default | Supported — the full vocabulary |
 | **Claude Code CLI** (pinned 2.1.260) | `/goal`, handled locally by the CLI (Stop-hook-backed). `/goal <condition>`, `/goal clear` and a status read; no pause, no resume | Supported — [docs/297](../297-goal-on-claude/plan.md) |
-| **Grok** (Build 1.0.18) | `/goal <objective>\|status\|pause\|resume\|clear`, handled locally by the CLI | Not offered yet — being added alongside docs/297 |
+| **Grok** (Build 1.0.18) | `/goal <objective>\|status\|pause\|resume\|clear`, handled locally by the CLI | Supported — [docs/298](../298-goal-on-grok/plan.md); `set` and `resume` ride a turn because they run the agent |
 | **OpenCode** (1.18.27) | None | Not offered |
 
 "Handled locally by the CLI" means the command never becomes a model call: it

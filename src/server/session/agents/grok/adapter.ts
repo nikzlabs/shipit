@@ -8,7 +8,21 @@ import { killChild, killProcessTree } from "../../../shared/kill-child.js";
 import { GROK_TOOL_NAMES } from "../../../shared/agent-registry.js";
 import { HARNESSES } from "../../../shared/catalogue/harnesses.js";
 import { GROK_PERMISSION_MODES } from "../../../shared/types/agent-types.js";
+/**
+ * docs/298 — the turn's prompt is the user's text plus context and any pre-turn
+ * prefix, so an exact match would miss a real `/goal` turn. A slash invocation is
+ * placed first and the segments are newline-joined (`prompt-assembly.ts`), so the
+ * command always begins a line. A false positive costs one zero-token read.
+ */
+const GOAL_TURN = /^\/goal\b/m;
+
+// The turn's result waits on the post-turn goal read, so it is bounded twice: the
+// control spawn's own budget, and a hard grace past it for a promise that never settles.
+const POST_TURN_GOAL_READ_MS = 5_000;
+const GOAL_READ_GRACE_MS = 2_000;
 import type {
+  AgentGoalCommand,
+  AgentGoalCommandResult,
   AgentId,
   AgentCapabilities,
   AgentContentBlock,
@@ -28,8 +42,10 @@ import { PLAYWRIGHT_MCP_ARGS, PLAYWRIGHT_MCP_COMMAND } from "../playwright-mcp.j
 import { grokResultErrorText, parseGrokLine, type GrokEvent } from "./stream.js";
 import { normalizeGrokToolCall, normalizeGrokToolResult } from "./grok-tool-normalizer.js";
 import { renderGrokConfigToml, type GrokMcpServer } from "./config-toml.js";
+import { isGoalControlInFlight, runGrokGoalControl } from "./grok-goal.js";
 
-const GROK_REASONING = HARNESSES.find((h) => h.id === "grok")?.capabilities.reasoning;
+const GROK_CAPS = HARNESSES.find((h) => h.id === "grok")?.capabilities;
+const GROK_REASONING = GROK_CAPS?.reasoning;
 
 const NPM_BIN_DIR = /(^|[\\/])node_modules[\\/]\.bin[\\/]?$/;
 
@@ -121,6 +137,8 @@ export class GrokAdapter
     supportsReview: true,
     supportsSteering: false,
     supportsCompaction: true,
+    supportsGoals: true,
+    ...(GROK_CAPS?.goalActions ? { goalActions: GROK_CAPS.goalActions } : {}),
     skillsDirName: ".grok",
     skillInvocationPrefix: "/",
   };
@@ -143,6 +161,13 @@ export class GrokAdapter
   private interruptKillTimer: NodeJS.Timeout | null = null;
   private watchdog: NodeJS.Timeout | null = null;
   private turnSessionId = "";
+  // docs/298 — a `/goal` turn leaves a goal behind that only a read can report.
+  private turnWasGoalCommand = false;
+  private lastTurnCwd: string | null = null;
+  // A turn's homeDir overrides the resolver, and the goal lives under whichever one it used.
+  private lastTurnHome: string | null = null;
+  private heldResult: AgentEvent | null = null;
+  private goalReadToken = 0;
   private sawResult = false;
   private sawAnyEvent = false;
   // Fatal errors have no result event; preserve their quota wording for close.
@@ -169,6 +194,7 @@ export class GrokAdapter
       return;
     }
     this.sawResult = false;
+    this.heldResult = null;
     this.sawAnyEvent = false;
     this.fatalErrorText = null;
     this.latestCallContextTokens = undefined;
@@ -179,7 +205,17 @@ export class GrokAdapter
       this.emit("event", { type: "agent_compaction_started", trigger: "manual" });
     }
 
+    // The mirror of goalCommand's refusal: whichever starts first, the other waits.
+    if (params.sessionId && isGoalControlInFlight(params.sessionId)) {
+      this.emit("error", new Error(
+        "A /goal command is still running on this session. Grok's goal commands share its session files, so this turn was not started — send it again in a moment.",
+      ));
+      return;
+    }
+
     this.turnSessionId = params.sessionId ?? randomUUID();
+    this.turnWasGoalCommand = GOAL_TURN.test(params.prompt);
+    this.lastTurnCwd = params.cwd;
 
     const args = [
       "--output-format", "streaming-messages-json",
@@ -222,6 +258,7 @@ export class GrokAdapter
 
     const scopedHome = params.homeDir ?? this.resolveHome?.();
     const home = resolveAgentHome(scopedHome);
+    this.lastTurnHome = home;
     const configRoot = this.makeSpawnHome(grokHome(home));
     if (configRoot === null) {
       this.cleanupTurnFiles();
@@ -329,8 +366,15 @@ export class GrokAdapter
       this.drainStderrLines(true);
       this.cleanupTurnFiles();
       if (!this.sawResult) this.emitSynthesizedResult(exitCode);
-      this.emit("done", exitCode ?? 0);
       this.proc = null;
+      const finish = (): void => {
+        const held = this.heldResult;
+        this.heldResult = null;
+        if (held) this.emit("event", held);
+        this.emit("done", exitCode ?? 0);
+      };
+      if (this.turnWasGoalCommand) void this.reportGoalAfterTurn().finally(finish);
+      else finish();
     });
   }
 
@@ -439,7 +483,10 @@ export class GrokAdapter
     }
 
     const mapped = this.mapEvent(raw);
-    if (mapped) this.emit("event", mapped);
+    // The orchestrator drains its queue on agent_result, so a goal turn holds its
+    // result until the goal read has finished; two processes must not share a session.
+    if (mapped?.type === "agent_result" && this.turnWasGoalCommand) this.heldResult = mapped;
+    else if (mapped) this.emit("event", mapped);
 
     if (raw.type === "result") {
       this.sawResult = true;
@@ -584,6 +631,62 @@ export class GrokAdapter
       error:
         this.fatalErrorText
         ?? `Grok exited with code ${String(exitCode)} before producing a result`,
+    });
+  }
+
+  /**
+   * docs/298 — `set` and `resume` ride a turn, so ShipIt learns the resulting goal
+   * from one zero-cost `/goal status` read at the turn's end. `streaming-messages-json`
+   * drops Grok's own `goal_updated` update, so the stream cannot report it.
+   */
+  private reportGoalAfterTurn(): Promise<void> {
+    const turn = ++this.goalReadToken;
+    const read = (async () => {
+      try {
+        const { goal } = await this.runGoalControl(this.turnSessionId, { action: "get" }, POST_TURN_GOAL_READ_MS);
+        // A read that lands after its deadline belongs to a turn the orchestrator has finished.
+        if (turn === this.goalReadToken) this.emit("event", { type: "agent_goal_updated", goal });
+      } catch (err) {
+        console.warn(`[grok] could not read the goal after a /goal turn: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    })();
+    // The turn's result waits on this, so it is bounded whatever the read does.
+    let timer: NodeJS.Timeout | undefined;
+    const deadline = new Promise<void>((resolve) => {
+      timer = setTimeout(() => {
+        this.goalReadToken++;
+        console.warn("[grok] the goal read outlived its deadline — finishing the turn without it");
+        resolve();
+      }, POST_TURN_GOAL_READ_MS + GOAL_READ_GRACE_MS);
+    });
+    return Promise.race([read, deadline]).finally(() => { clearTimeout(timer); });
+  }
+
+  /** docs/298 — between turns only; a second process on one session writes the same goal files. */
+  async goalCommand(threadId: string, command: AgentGoalCommand): Promise<AgentGoalCommandResult> {
+    if (this.proc) {
+      throw new Error("a turn is running, and Grok's goal commands share its session files — wait for the turn to finish");
+    }
+    return this.runGoalControl(threadId, command);
+  }
+
+  private runGoalControl(
+    threadId: string,
+    command: AgentGoalCommand,
+    timeoutMs?: number,
+  ): Promise<AgentGoalCommandResult> {
+    const home = this.lastTurnHome ?? resolveAgentHome(this.resolveHome?.());
+    return runGrokGoalControl({
+      ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+      threadId,
+      command,
+      // `-r` resolves a session by id whatever the cwd, so this only sets the trusted folder.
+      cwd: this.lastTurnCwd ?? process.cwd(),
+      home,
+      configRoot: grokHome(home),
+      binary: resolveGrokBinary(),
+      compatToggles: COMPAT_TOGGLES,
+      spawnFn: this.spawnFn,
     });
   }
 
