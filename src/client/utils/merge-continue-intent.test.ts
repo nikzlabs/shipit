@@ -100,9 +100,13 @@ describe("every `send_message` producer carries the per-send intent", () => {
         if (!line.includes('type: "send_message"')) return;
         // Prose that merely mentions the frame is not a producer of one.
         if (/^\s*(\/\/|\*|\/\*)/.test(line)) return;
-        // The frame's own object literal plus the comment block that may
-        // introduce it, generously bounded at both ends.
-        const frame = lines.slice(Math.max(0, i - 8), i + 14).join("\n");
+        // The frame's own object literal, plus a SHORT lead-in. Deliberately
+        // tight above: a generous backward window lets an exemption written for
+        // one frame silently cover an unrelated frame added below it, which is
+        // the same "nobody re-derived the reason" failure this guard exists for.
+        // So the marker goes on the line next to the frame; its justification
+        // can be as long as it needs to be above that.
+        const frame = lines.slice(Math.max(0, i - 3), i + 14).join("\n");
         if (frame.includes("mergeContinueFrameFields(") || frame.includes(NOT_APPLICABLE)) return;
         offenders.push(`${path.relative(clientDir, file)}:${i + 1}`);
       });

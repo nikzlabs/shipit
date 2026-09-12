@@ -106,10 +106,23 @@ export function runSend(deps: SendDeps, payload: SendPayload): boolean {
   if (goalSessionId && goalCommand && goalAgent?.supportsGoals) {
     const mode = goalAgent.goalActions ? goalAgent.goalActions[goalCommand.action] : "control";
     if (mode !== "turn") {
-      // merge-continue-intent: not-applicable — `handleSendMessage` answers a
-      // control-mode `/goal` and returns before the reset/compaction decision
-      // (`ws-handlers/send-message.ts`, the `mode !== "turn"` branch), so this
-      // frame starts no turn for either of them to apply to.
+      // This frame starts no turn, so there is nothing for a branch reset or a
+      // compaction to apply to.
+      //
+      // Verify it at `src/server/orchestrator/ws-handlers/send-message.ts:54`
+      // (docs/154, on `main` since 35719d01 — NOT present in older builds, so
+      // check the branch you are reading): `handleSendMessage` opens with
+      //
+      //     if (goalCommand && (caps?.supportsGoals ?? false) && mode !== "turn")
+      //
+      // which calls `handleGoalCommand` and `return`s — ahead of the queue, the
+      // reset and `decideCompactBeforeTurn`. This site sends only when that same
+      // condition holds here (`mode !== "turn"` with `goalAgent.supportsGoals`),
+      // so the server always intercepts it. A `/goal` whose action IS a "turn"
+      // falls through both branches and takes the ordinary composer path, which
+      // carries the intent.
+      //
+      // merge-continue-intent: not-applicable — for the reason directly above.
       return send({ type: "send_message", text: trimmed, sessionId: goalSessionId });
     }
   }
