@@ -14,6 +14,7 @@ function inputs(overrides: Partial<AttentionInputs> = {}): AttentionInputs {
     autoResolveEnabled: false,
     resolved: false,
     muted: false,
+    workspaceBlockKind: undefined,
     ...overrides,
   };
 }
@@ -305,6 +306,51 @@ describe("computeAttentionReason", () => {
 
     it("restores the reason once the mute is gone", () => {
       expect(computeAttentionReason(inputs({ muted: false }))).toBe("Waiting for your input");
+    });
+  });
+
+  describe("broken workspace (docs/298)", () => {
+    it("names the block that is holding the workspace", () => {
+      expect(computeAttentionReason(inputs({ workspaceBlockKind: "conflict" })))
+        .toBe("Workspace has an unresolved merge or rebase");
+      expect(computeAttentionReason(inputs({ workspaceBlockKind: "no-repository" })))
+        .toBe("Workspace is no longer a git repository");
+    });
+
+    it("survives the running-agent and background-task short-circuits (req 4)", () => {
+      expect(
+        computeAttentionReason(inputs({ workspaceBlockKind: "conflict", isAgentRunning: true })),
+      ).toBe("Workspace has an unresolved merge or rebase");
+      expect(
+        computeAttentionReason(inputs({ workspaceBlockKind: "conflict", hasBackgroundTasks: true })),
+      ).toBe("Workspace has an unresolved merge or rebase");
+    });
+
+    it("survives a resolved PR — the incident session was merged weeks earlier", () => {
+      expect(
+        computeAttentionReason(inputs({ workspaceBlockKind: "conflict", resolved: true })),
+      ).toBe("Workspace has an unresolved merge or rebase");
+    });
+
+    it("yields to a blocked permission prompt, which is the more immediate block", () => {
+      expect(
+        computeAttentionReason(inputs({ workspaceBlockKind: "conflict", awaitingPermission: true })),
+      ).toBe("Needs your approval to continue");
+    });
+
+    it("stays silent while the session is muted (req 5)", () => {
+      expect(
+        computeAttentionReason(inputs({ workspaceBlockKind: "conflict", muted: true })),
+      ).toBeNull();
+    });
+
+    it("outranks the ordinary CI-failure reason", () => {
+      expect(
+        computeAttentionReason(inputs({
+          workspaceBlockKind: "unreadable",
+          card: card({ checks: FAILURE }),
+        })),
+      ).toBe("Workspace has a file ShipIt can't read");
     });
   });
 });

@@ -16,6 +16,8 @@ import { chownWorkspaceGitToSessionWorker } from "../session-worker-uid.js";
 
 type PostTurnCtx = Pick<ConnectionCtx & AppCtx, "createGitManager" | "chatHistoryManager" | "sessionManager"> & {
   scheduleAutoPush: (git: ReturnType<AppCtx["createGitManager"]>, sessionId?: string) => void;
+  /** docs/298 — publish a cleared broken-workspace marker; omit where no transport is at hand. */
+  sseBroadcast?: (event: string, data: unknown) => void;
 };
 
 export async function postTurnCommit(
@@ -107,6 +109,28 @@ export async function postTurnCommit(
     }
   }
 
+  /**
+   * docs/298-broken-workspace-visibility req 6 — withdraw the marker once the
+   * workspace is repaired, which the disk janitor cannot see for a session the
+   * user is sitting in (an attached viewer never descends the tier ladder).
+   *
+   * The autoCommit result is NOT sufficient evidence on its own: it reports a
+   * clean tree without looking at `MERGE_HEAD` / `CHERRY_PICK_HEAD` /
+   * `REVERT_HEAD`, and a clean tree holding unfinished sequencer state is exactly
+   * the shape the janitor still refuses (`ensureCheckoutDurable`). So ask git the
+   * same two questions it does — only when there is a marker to withdraw, which
+   * keeps these calls off the ordinary turn's path.
+   */
+  async function clearWorkspaceBlockIfRepaired(
+    git: ReturnType<AppCtx["createGitManager"]>,
+    sessionId: string,
+  ): Promise<void> {
+    if (await git.isRebaseInProgress()) return;
+    if (await git.isMergeOrSequencerInProgress()) return;
+    if (!ctx.sessionManager.setWorkspaceBlock(sessionId, null)) return;
+    ctx.sseBroadcast?.("session_list", { sessions: ctx.sessionManager.list() });
+  }
+
   async function commitInLock(): Promise<string | null> {
     const git = ctx.createGitManager(opts.sessionDir);
     const parentHash = await git.getHeadHash();
@@ -147,6 +171,18 @@ export async function postTurnCommit(
         sessionManager: ctx.sessionManager,
         emit: opts.emit,
       });
+    }
+    if (
+      opts.sessionId
+      && secretFindings.length === 0
+      && conflictedFiles.length === 0
+      && !rebaseInProgress
+      // `omitted` counts as broken here, unlike for the secret block above: the
+      // eviction check refuses a tree it could not read in full.
+      && !unreadable
+      && ctx.sessionManager.get(opts.sessionId)?.workspaceBlock !== undefined
+    ) {
+      await clearWorkspaceBlockIfRepaired(git, opts.sessionId);
     }
     if ((conflictedFiles.length > 0 || rebaseInProgress) && opts.sessionId) {
       emitNoticePostTurn(

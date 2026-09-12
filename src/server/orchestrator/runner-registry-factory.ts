@@ -365,6 +365,7 @@ export function createRunnerRegistry(
               createGitManager,
               chatHistoryManager,
               sessionManager,
+              sseBroadcast,
               scheduleAutoPush: (git) => schedulePushGit(git),
             },
             {

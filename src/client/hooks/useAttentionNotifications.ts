@@ -89,6 +89,7 @@ export function useAttentionNotifications(
         autoResolveEnabled,
         resolved: isTerminalPrResolved(session),
         muted: !!session.mutedAt,
+        workspaceBlockKind: session.workspaceBlock,
       });
       next.set(session.id, reason);
 

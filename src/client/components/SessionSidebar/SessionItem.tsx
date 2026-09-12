@@ -35,7 +35,9 @@ interface SessionItemProps {
 export function SessionItem({ session, isCurrent, onResume, onSelectCurrent, onArchive, onRestore, repoLabel, disabled, indented, childCount, isChildrenCollapsed, onToggleChildren, isTouch, overflowMenuPortaled = true }: SessionItemProps) {
   const isArchived = session.archived === true;
 
-  const attentionReason = useAttentionInfo(session.id, !!session.mutedAt);
+  const attentionReason = useAttentionInfo(
+    session.id, !!session.mutedAt, session.workspaceBlock,
+  );
   const needsAttention = attentionReason !== null && !isArchived;
   const hasChildren = (childCount ?? 0) > 0 && !!onToggleChildren;
 

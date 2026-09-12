@@ -545,6 +545,32 @@ describe("SessionManager", () => {
     });
   });
 
+  describe("docs/298: workspace block", () => {
+    it("round-trips, and reports only real changes so a stuck session stays quiet", () => {
+      const mgr = new SessionManager(dbManager);
+      mgr.track("sess-1", "Test");
+      expect(mgr.get("sess-1")?.workspaceBlock).toBeUndefined();
+      expect(mgr.setWorkspaceBlock("sess-1", null)).toBe(false);
+
+      expect(mgr.setWorkspaceBlock("sess-1", "conflict")).toBe(true);
+      expect(mgr.get("sess-1")?.workspaceBlock).toBe("conflict");
+
+      // Re-observing the same block every janitor pass must stay silent.
+      expect(mgr.setWorkspaceBlock("sess-1", "conflict")).toBe(false);
+
+      expect(mgr.setWorkspaceBlock("sess-1", "secret")).toBe(true);
+      expect(mgr.get("sess-1")?.workspaceBlock).toBe("secret");
+
+      expect(mgr.setWorkspaceBlock("sess-1", null)).toBe(true);
+      expect(mgr.get("sess-1")?.workspaceBlock).toBeUndefined();
+    });
+
+    it("reports no change for an unknown session", () => {
+      const mgr = new SessionManager(dbManager);
+      expect(mgr.setWorkspaceBlock("missing", "conflict")).toBe(false);
+    });
+  });
+
   describe("docs/221: pending agent notice (out-of-band branch move)", () => {
     it("round-trips through persistence and is consumed exactly once", () => {
       const mgr = new SessionManager(dbManager);
@@ -968,6 +994,37 @@ describe("SessionManager", () => {
       ];
       const visible = filterVisibleInSidebar(sessions, 3).map((s) => s.id).sort();
       expect(visible).toEqual(["m1", "m2", "m3", "m4"]);
+    });
+
+    describe("docs/298: broken-workspace exemption", () => {
+      it("keeps a session whose workspace is blocked, however far past the cap it is", () => {
+        const sessions = [
+          { ...merged("stuck", "2024-01-01 09:00:00"), workspaceBlock: "conflict" as const },
+          merged("m2", "2024-01-02 09:00:00"),
+          merged("m3", "2024-01-03 09:00:00"),
+          merged("m4", "2024-01-04 09:00:00"),
+        ];
+        const visible = filterVisibleInSidebar(sessions, 1).map((s) => s.id).sort();
+        expect(visible).toEqual(["m4", "stuck"]);
+      });
+
+      it("keeps it at the default cap too, with the cap otherwise full", () => {
+        const sessions = [
+          { ...merged("stuck", "2024-01-01 09:00:00"), workspaceBlock: "conflict" as const },
+          ...Array.from({ length: MAX_MERGED_SESSIONS_PER_REPO }, (_, i) =>
+            merged(`m${i}`, `2025-01-0${i + 1} 09:00:00`)),
+        ];
+        expect(filterVisibleInSidebar(sessions).map((s) => s.id)).toContain("stuck");
+        expect(filterVisibleInSidebar(sessions)).toHaveLength(MAX_MERGED_SESSIONS_PER_REPO + 1);
+      });
+
+      it("still drops it once the user archives it", () => {
+        const sessions = [
+          { ...merged("stuck", "2024-01-01 09:00:00"), workspaceBlock: "conflict" as const, userArchived: true },
+          merged("m2", "2024-01-02 09:00:00"),
+        ];
+        expect(filterVisibleInSidebar(sessions, 1).map((s) => s.id)).toEqual(["m2"]);
+      });
     });
 
     it("archiving a visible merged session does not promote a demoted one", () => {

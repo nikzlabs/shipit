@@ -983,6 +983,137 @@ describe("escalateDiskTiers", () => {
     expect(appended[0]!.text).toContain("rebase is in progress");
   });
 
+  describe("docs/298: broken-workspace marker", () => {
+    async function rebasingSession(id: string) {
+      const sm = new SessionManager(dbManager!);
+      const wsDir = path.join(tmpDir, `ws-${id}`);
+      await initRepo(wsDir);
+      fs.mkdirSync(path.join(wsDir, ".git", "rebase-merge"), { recursive: true });
+      insertSession({
+        id,
+        lastUsedAt: daysAgo(DEFAULT_DISK_LADDER.evictUnmergedAfterMs / 86_400_000 + 1),
+        diskTier: "light",
+        workspaceDir: wsDir,
+        branch: "main",
+      });
+      return { sm, wsDir };
+    }
+
+    it("records the block that held the evict, and announces the changed list", async () => {
+      setup();
+      const { sm } = await rebasingSession("stuck");
+      const { registry } = fakeRegistry();
+      const onSessionsChanged = vi.fn();
+
+      await escalateDiskTiers({
+        ...baseDeps(sm, registry),
+        createGitManager: (dir) => new GitManager(dir),
+        onSessionsChanged,
+      });
+
+      expect(sm.get("stuck")?.workspaceBlock).toBe("conflict");
+      expect(onSessionsChanged).toHaveBeenCalledTimes(1);
+    });
+
+    it("does not re-announce an unchanged block on a later pass", async () => {
+      setup();
+      const { sm } = await rebasingSession("stuck-twice");
+      const { registry } = fakeRegistry();
+      const onSessionsChanged = vi.fn();
+      const deps = {
+        ...baseDeps(sm, registry),
+        createGitManager: (dir: string) => new GitManager(dir),
+        onSessionsChanged,
+      };
+
+      await escalateDiskTiers(deps);
+      await escalateDiskTiers(deps);
+
+      expect(sm.get("stuck-twice")?.workspaceBlock).toBe("conflict");
+      expect(onSessionsChanged).toHaveBeenCalledTimes(1);
+    });
+
+    it("clears the block once the checkout is durable again (req 6)", async () => {
+      setup();
+      const sm = new SessionManager(dbManager!);
+      const wsDir = path.join(tmpDir, "ws-repaired");
+      await initRepo(wsDir);
+      insertSession({
+        id: "repaired",
+        lastUsedAt: daysAgo(DEFAULT_DISK_LADDER.evictUnmergedAfterMs / 86_400_000 + 1),
+        diskTier: "light",
+        workspaceDir: wsDir,
+        branch: "main",
+      });
+      expect(sm.setWorkspaceBlock("repaired", "conflict")).toBe(true);
+
+      const { registry } = fakeRegistry();
+      const onSessionsChanged = vi.fn();
+      const result = await escalateDiskTiers({
+        ...baseDeps(sm, registry),
+        createGitManager: (dir) => new GitManager(dir),
+        onSessionsChanged,
+      });
+
+      expect(result.toEvicted).toBe(1);
+      expect(sm.get("repaired")?.workspaceBlock).toBeUndefined();
+      expect(onSessionsChanged).toHaveBeenCalledTimes(1);
+    });
+
+    // The evict clears run BEFORE the wipe; nothing revisits an evicted session.
+    it("clears the block when the wipe path never ran a git check at all", async () => {
+      setup();
+      const sm = new SessionManager(dbManager!);
+      const wsDir = path.join(tmpDir, "ws-vanished");
+      insertSession({
+        id: "vanished",
+        lastUsedAt: daysAgo(DEFAULT_DISK_LADDER.evictUnmergedAfterMs / 86_400_000 + 1),
+        diskTier: "light",
+        workspaceDir: wsDir,
+        branch: "main",
+      });
+      expect(sm.setWorkspaceBlock("vanished", "no-repository")).toBe(true);
+
+      const { registry } = fakeRegistry();
+      const result = await escalateDiskTiers({
+        ...baseDeps(sm, registry),
+        createGitManager: (dir) => new GitManager(dir),
+      });
+
+      expect(result.toEvicted).toBe(1);
+      expect(sm.get("vanished")?.diskTier).toBe("evicted");
+      expect(sm.get("vanished")?.workspaceBlock).toBeUndefined();
+    });
+
+    it("withdraws a dirty block once the same checkout is only push-blocked", async () => {
+      setup();
+      const sm = new SessionManager(dbManager!);
+      const wsDir = path.join(tmpDir, "ws-unpushable");
+      await initRepo(wsDir, { noRemote: true });
+      insertSession({
+        id: "unpushable",
+        lastUsedAt: daysAgo(DEFAULT_DISK_LADDER.evictUnmergedAfterMs / 86_400_000 + 1),
+        diskTier: "light",
+        workspaceDir: wsDir,
+        branch: "main",
+      });
+      expect(sm.setWorkspaceBlock("unpushable", "conflict")).toBe(true);
+
+      const { registry } = fakeRegistry();
+      const onSessionsChanged = vi.fn();
+      const result = await escalateDiskTiers({
+        ...baseDeps(sm, registry),
+        createGitManager: (dir) => new GitManager(dir),
+        onSessionsChanged,
+      });
+
+      // A failed push is offline/auth trouble, not a workspace the user repairs.
+      expect(result.evictBlockedByPush).toBe(1);
+      expect(sm.get("unpushable")?.workspaceBlock).toBeUndefined();
+      expect(onSessionsChanged).toHaveBeenCalledTimes(1);
+    });
+  });
+
   it("planning#296: never evicts a session whose work has no remote to live on", async () => {
     setup();
     const sm = new SessionManager(dbManager!);

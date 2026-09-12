@@ -4,6 +4,20 @@ import { useSettingsStore } from "../stores/settings-store.js";
 import { isTerminalPrResolved } from "../../server/shared/session-resolution.js";
 import type { PrCardState } from "../stores/pr-store.js";
 import type { PrStatusSummary } from "../../server/shared/types/github-types.js";
+import type { WorkspaceBlockKind } from "../../server/shared/types.js";
+
+/**
+ * docs/298-broken-workspace-visibility req 3 — what to say about a workspace
+ * ShipIt cannot put into a safe state. Exhaustive by construction: a new
+ * `WorkspaceBlockKind` fails to compile until it has a sentence here.
+ */
+const WORKSPACE_BLOCK_REASON: Record<WorkspaceBlockKind, string> = {
+  conflict: "Workspace has an unresolved merge or rebase",
+  secret: "Workspace holds a secret that can't be committed",
+  unreadable: "Workspace has a file ShipIt can't read",
+  "no-repository": "Workspace is no longer a git repository",
+  unknown: "Workspace has changes ShipIt can't commit",
+};
 
 export interface AttentionInputs {
   card: PrCardState | undefined;
@@ -31,6 +45,12 @@ export interface AttentionInputs {
   resolved: boolean;
 
   muted: boolean;
+  /**
+   * docs/298 — `SessionInfo.workspaceBlock`, or undefined when nothing blocks
+   * the checkout. Unlike every other reason here, nothing in the session
+   * resolves this one on its own.
+   */
+  workspaceBlockKind: WorkspaceBlockKind | undefined;
 }
 
 /**
@@ -57,6 +77,7 @@ export function computeAttentionReason({
   autoResolveEnabled,
   resolved,
   muted,
+  workspaceBlockKind,
 }: AttentionInputs): string | null {
 
   // count, and the notification watcher all go quiet together precisely because
@@ -73,6 +94,13 @@ export function computeAttentionReason({
   // other reason — including the `isAgentRunning` short-circuit below, because
 
   if (awaitingPermission) return "Needs your approval to continue";
+
+  // docs/298-broken-workspace-visibility reqs 3-5 — a workspace ShipIt cannot
+  // put into a safe state. It sits above the two short-circuits below because
+  // neither premise holds for it: no turn repairs a stuck rebase by finishing,
+  // and a merged PR does not make an uncommittable checkout stop needing the
+  // user. Below the permission prompt, which is the more immediate block.
+  if (workspaceBlockKind) return WORKSPACE_BLOCK_REASON[workspaceBlockKind];
 
   if (isAgentRunning || hasBackgroundTasks) return null;
 
@@ -109,7 +137,16 @@ export function computeAttentionReason({
   return "Waiting for your input";
 }
 
-export function useAttentionInfo(sessionId: string, muted = false): string | null {
+/**
+ * `muted` and `workspaceBlockKind` are passed in rather than looked up: the
+ * caller is a session ROW, whose `SessionInfo` may come from a list the store
+ * has not caught up with, and a stale lookup would contradict the row itself.
+ */
+export function useAttentionInfo(
+  sessionId: string,
+  muted = false,
+  workspaceBlockKind?: WorkspaceBlockKind,
+): string | null {
   const card = usePrStore((s) => s.cardBySession[sessionId]);
   const status = usePrStore((s) => s.statusBySession[sessionId]);
   const isAgentRunning = useSessionStore((s) => s.activeRunnerSessions.has(sessionId));
@@ -121,5 +158,5 @@ export function useAttentionInfo(sessionId: string, muted = false): string | nul
     const session = s.sessions.find((sess) => sess.id === sessionId);
     return session ? isTerminalPrResolved(session) : false;
   });
-  return computeAttentionReason({ card, status, isAgentRunning, awaitingPermission, hasBackgroundTasks, autoFixEnabled, autoResolveEnabled, resolved, muted });
+  return computeAttentionReason({ card, status, isAgentRunning, awaitingPermission, hasBackgroundTasks, autoFixEnabled, autoResolveEnabled, resolved, muted, workspaceBlockKind });
 }

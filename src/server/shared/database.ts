@@ -829,6 +829,10 @@ const MIGRATIONS: Migration[] = [
   (db) => {
     addSessionColumnIfMissing(db, "agent_goal");
   },
+  // docs/298 — why the checkout cannot be made durable, as JSON.
+  (db) => {
+    addSessionColumnIfMissing(db, "workspace_block");
+  },
 ];
 
 /** Guard tests that rewind user_version and replay later migrations. */

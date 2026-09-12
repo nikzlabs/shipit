@@ -90,6 +90,23 @@ describe("restoreSessionWorkspace (planning#181)", () => {
     expect(sessionManager.get(id)?.diskTier).toBe("hot");
   });
 
+  it("docs/298: withdraws a broken-workspace marker the fresh clone cannot still have", async () => {
+    const id = "sess-marked";
+    const workspaceDir = path.join(tmpDir, "workspace-marked");
+    sessionManager.track(id, "Broken", workspaceDir);
+    sessionManager.setRemoteUrl(id, remoteUrl);
+    sessionManager.setBranch(id, "main");
+    dbManager.db.prepare("UPDATE sessions SET disk_tier = 'evicted' WHERE id = ?").run(id);
+    expect(sessionManager.setWorkspaceBlock(id, "no-repository")).toBe(true);
+
+    const restored = await restoreSessionWorkspace(
+      sessionManager, createRepoGit, () => cacheDir, githubAuthManager, repoStore, id,
+    );
+
+    expect(restored).toBe(true);
+    expect(sessionManager.get(id)?.workspaceBlock).toBeUndefined();
+  });
+
   it("recreates the branch off the default branch when it was never pushed", async () => {
     const id = "sess-2";
     const workspaceDir = path.join(tmpDir, "workspace2");

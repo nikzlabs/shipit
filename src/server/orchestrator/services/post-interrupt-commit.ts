@@ -20,6 +20,8 @@ export interface PostInterruptCommitDeps {
   generateText: GenerateText;
   createGitManager: (dir: string) => GitManager;
   scheduleAutoPush?: (git: GitManager, sessionId?: string) => void;
+  /** docs/298 — this path can be the one that clears a broken-workspace marker. */
+  sseBroadcast?: (event: string, data: unknown) => void;
 }
 
 // Allow pending writes time to finish before committing partial work.
@@ -43,6 +45,7 @@ export async function runPostInterruptCommit(args: {
         createGitManager: deps.createGitManager,
         chatHistoryManager: deps.chatHistoryManager,
         sessionManager: deps.sessionManager,
+        ...(deps.sseBroadcast ? { sseBroadcast: deps.sseBroadcast } : {}),
         scheduleAutoPush: deps.scheduleAutoPush ?? (() => {}),
       },
       {

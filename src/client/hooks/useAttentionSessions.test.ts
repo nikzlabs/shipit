@@ -56,4 +56,20 @@ describe("useAttentionSessions", () => {
     rerender({ list: [session({ id: "live" }), session({ id: "muted" })] });
     expect([...result.current]).toEqual(["live", "muted"]);
   });
+
+  it("docs/298: includes a merged session whose workspace is blocked, agent or not", () => {
+    useSessionStore.setState({ activeRunnerSessions: new Set(["stuck"]) });
+    const sessions = [
+      session({
+        id: "stuck",
+        mergedAt: "2024-01-02T00:00:00.000Z",
+        workspaceBlock: "conflict",
+      }),
+      session({ id: "merged", mergedAt: "2024-01-02T00:00:00.000Z" }),
+    ];
+
+    const { result } = renderHook(() => useAttentionSessions(sessions));
+
+    expect([...result.current]).toEqual(["stuck"]);
+  });
 });

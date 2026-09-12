@@ -97,6 +97,8 @@ export interface SessionInfo {
   autoFixCiPaused?: boolean;
   mergeWatch?: SessionMergeWatch;
   secretBlock?: SessionSecretBlock;
+  /** Set when the checkout cannot be made durable; exempts the row from the sidebar cap. */
+  workspaceBlock?: WorkspaceBlockKind;
   /** Must not affect resolved status, sidebar grouping, or disk eviction. */
   previousMergedPr?: PreviousMergedPr;
   /** PR head.sha, never local HEAD at detection; reset fails closed if missing. */
@@ -126,6 +128,19 @@ export interface SessionSecretBlock {
   /** Bounds remediation so a persistent secret cannot cause endless agent turns. */
   notifyCount: number;
 }
+
+/**
+ * docs/298 — why a checkout could not be made durable. The same names as
+ * `EvictBlockReason["kind"]` without its server-only payloads; the janitor
+ * assigns `reason.kind` straight into this, so a new evict reason cannot ship
+ * without a name here.
+ */
+export type WorkspaceBlockKind =
+  | "secret"
+  | "conflict"
+  | "no-repository"
+  | "unreadable"
+  | "unknown";
 
 export interface SessionMergeWatch {
   parentSessionId: string;
