@@ -839,7 +839,6 @@ export async function registerRoutes(
         // user is sitting in is marked (or cleared) here instead. Off the critical
         // path: it is a few git reads, and the sidebar learns via its own broadcast.
         if (dir) {
-          const blockDir = dir;
           void refreshWorkspaceBlockOnActivation(
             {
               sessionManager,
@@ -848,7 +847,7 @@ export async function registerRoutes(
                 sseBroadcast("session_list", { sessions: sessionManager.list() }),
             },
             sid,
-            blockDir,
+            dir,
           ).catch((err: unknown) => {
             console.warn(`[workspace-block] activation check for ${sid} failed:`, getErrorMessage(err));
           });

@@ -17,5 +17,6 @@
 - [x] `npm run typecheck`, `npm run lint:dev`, `npm test`
 - [x] Open-session check: `inspectCheckoutBlock` (read-only — never `ensureCheckoutDurable`, which commits and pushes), shared with `ensureCheckoutDurable`
 - [x] `recordWorkspaceBlock` moved to `services/workspace-block.ts` so both writers share the change-only write and the broadcast
-- [x] Activation clearing bounded by `READ_ONLY_BLOCK_KINDS` — a `secret` marker survives a clean open-time inspection
+- [x] Activation raises and withdraws `conflict` only; a marker of any other kind is the janitor's and is neither cleared nor overwritten
+- [x] Marker re-read after the inspection's await; overlapping activations deduplicated by session
 - [ ] Follow-up: a click-to-repair action on the surfaced state — planning#533

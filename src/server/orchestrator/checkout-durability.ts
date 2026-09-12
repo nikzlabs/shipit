@@ -63,16 +63,17 @@ async function classifyInspectedTree(
  * could never be used for: that one *repairs* durability, so calling it on
  * activation would commit and push a user's work merely because they opened a tab.
  * Both callers share one classifier, so there is still one evaluator of the
- * question (req 2) — this path just cannot reach the kinds that need a commit
- * attempt (`secret`) or a push attempt.
+ * question (req 2).
+ *
+ * What it cannot decide: `secret` needs `autoCommit`'s scan and both
+ * `blocked-by-push` causes need a push attempt. `unreadable` it decides only
+ * *partly* — `git status` reports an omitted directory but an unreadable FILE
+ * looks merely modified, and only `git add` fails on it. A caller that acts on
+ * the absence of a block must account for all three.
  */
 export async function inspectCheckoutBlock(git: GitManager): Promise<EvictBlockReason | null> {
   return await classifyInspectedTree(git, await git.inspectWorkingTree());
 }
-
-/** The kinds `inspectCheckoutBlock` can decide, and therefore the only ones it may withdraw. */
-export const READ_ONLY_BLOCK_KINDS: ReadonlySet<EvictBlockReason["kind"]> =
-  new Set<EvictBlockReason["kind"]>(["conflict", "unreadable"]);
 
 // Use the tracking ref: merged branches may be deleted remotely after a successful push.
 async function tipIsOnOrigin(git: GitManager, branch: string): Promise<boolean> {

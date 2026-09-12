@@ -160,28 +160,49 @@ describe("inspectCheckoutBlock", () => {
   /**
    * The constraint that matters most: activation runs this merely because the user
    * opened a tab, so committing or pushing their work here would be a data-handling
-   * bug, not a slow path.
+   * bug, not a slow path. The dangerous shape is the ORDINARY DIRTY tree — the one
+   * `ensureCheckoutDurable` would commit and push — which this classifies as no
+   * block at all, so a regression there would be invisible to a conflict fixture.
    */
-  it("never commits and never pushes", async () => {
+  it("leaves an ordinary dirty tree exactly as it found it", async () => {
+    fs.writeFileSync(path.join(workDir, "README.md"), "edited but not committed");
+    fs.writeFileSync(path.join(workDir, "untracked.txt"), "never staged");
+    const head = execSync("git rev-parse HEAD", { cwd: workDir }).toString();
+    const remoteHead = execSync("git rev-parse refs/heads/main", { cwd: remoteDir }).toString();
+    const porcelain = execSync("git status --porcelain", { cwd: workDir }).toString();
+
+    expect(await inspectCheckoutBlock(new GitManager(workDir))).toBeNull();
+
+    expect(execSync("git rev-parse HEAD", { cwd: workDir }).toString()).toBe(head);
+    expect(execSync("git rev-parse refs/heads/main", { cwd: remoteDir }).toString()).toBe(remoteHead);
+    expect(execSync("git status --porcelain", { cwd: workDir }).toString()).toBe(porcelain);
+    expect(fs.readFileSync(path.join(workDir, "README.md"), "utf8")).toBe("edited but not committed");
+    expect(fs.readFileSync(path.join(workDir, "untracked.txt"), "utf8")).toBe("never staged");
+  });
+
+  it.each([
+    ["a clean tree", { clean: true, conflictedFiles: [] as string[] }],
+    ["an ordinary dirty tree", { clean: false, conflictedFiles: [] as string[] }],
+    ["a conflicted tree", { clean: false, conflictedFiles: ["a.txt"] }],
+  ])("calls no mutating git command for %s", async (_label, tree) => {
     const calls: string[] = [];
     const record = (name: string) => () => {
       calls.push(name);
       return Promise.resolve();
     };
     const git = {
-      inspectWorkingTree: () =>
-        Promise.resolve({ clean: false, conflictedFiles: ["a.txt"], unreadable: null }),
+      inspectWorkingTree: () => Promise.resolve({ ...tree, unreadable: null }),
       isRebaseInProgress: () => Promise.resolve(false),
       isMergeOrSequencerInProgress: () => Promise.resolve(false),
       autoCommit: record("autoCommit"),
       commit: record("commit"),
       add: record("add"),
       push: record("push"),
+      reset: record("reset"),
     } as unknown as GitManager;
 
-    const result = await inspectCheckoutBlock(git);
+    await inspectCheckoutBlock(git);
 
-    expect(result).toMatchObject({ kind: "conflict", conflictedFiles: ["a.txt"] });
     expect(calls).toEqual([]);
   });
 });

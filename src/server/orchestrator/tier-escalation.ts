@@ -1,7 +1,7 @@
 import { readdir } from "node:fs/promises";
 import { join } from "node:path";
 import type { SessionManager } from "./sessions.js";
-import type { SessionInfo, WorkspaceBlockKind } from "../shared/types.js";
+import type { SessionInfo } from "../shared/types.js";
 import type { SessionRunnerRegistry } from "./session-runner.js";
 import type { ServiceManager } from "./service-manager.js";
 import type { GitManager } from "../shared/git.js";
@@ -122,14 +122,6 @@ async function reclaimToLight(
   return true;
 }
 
-function markWorkspaceBlock(
-  session: SessionInfo,
-  deps: TierEscalationDeps,
-  kind: WorkspaceBlockKind | null,
-): void {
-  recordWorkspaceBlock(deps, session.id, kind, "disk-janitor");
-}
-
 // Keep uncommittable work outside git, including rescue refs, which could expose secrets.
 async function blockedEvict<T extends "blocked-by-push" | "blocked-by-dirty">(
   session: SessionInfo,
@@ -140,7 +132,7 @@ async function blockedEvict<T extends "blocked-by-push" | "blocked-by-dirty">(
   clearStuck(session, deps);
   // A push that failed leaves a committable tree: that is not the user's to repair,
   // so only a reason the durability check could name raises the marker.
-  markWorkspaceBlock(session, deps, reason?.kind ?? null);
+  recordWorkspaceBlock(deps, session.id, reason?.kind ?? null, "disk-janitor");
   if (reason) {
     console.warn(
       `[disk-janitor] evict blocked for ${session.id} — the checkout can't be made durable `
@@ -275,7 +267,7 @@ async function reclaimToEvicted(
     clearStuck(session, deps);
     // Durable now, so whatever blocked it earlier is gone: req 6 of
     // docs/298-broken-workspace-visibility.
-    markWorkspaceBlock(session, deps, null);
+    recordWorkspaceBlock(deps, session.id, null, "disk-janitor");
   }
 
   const fresh = sessionManager.get(session.id);
@@ -339,7 +331,7 @@ async function reclaimToEvicted(
   clearStuck(session, deps);
   // An evicted session is excluded from every later pass, so a marker not cleared
   // here is permanent — and the wiped-workspace paths above never ran the git check.
-  markWorkspaceBlock(session, deps, null);
+  recordWorkspaceBlock(deps, session.id, null, "disk-janitor");
   console.log(`[disk-janitor] ${session.id}: light → evicted (workspace + overlay wiped)`);
   return "evicted";
 }

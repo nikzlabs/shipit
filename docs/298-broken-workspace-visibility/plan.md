@@ -154,12 +154,24 @@ That keeps req 2's "one mechanism" intact — this is a second *caller* of one
 evaluator, not a second evaluator. Cost is three git reads, off the critical
 path of showing the session, beside the activation reads that already run there.
 
-**Clearing is scoped to what the check can see.** It can decide `conflict` and
-`unreadable`; it cannot decide `secret` (that needs `autoCommit`'s scan) or
-either `blocked-by-push` cause (that needs a push attempt). A clean inspection is
-therefore no evidence about a marker of another kind, so
-`READ_ONLY_BLOCK_KINDS` bounds what activation may withdraw — a session the
-janitor marked `secret` keeps that marker when opened on a clean tree.
+**Activation owns exactly one kind: `conflict`.** It cannot decide `secret` (that
+needs `autoCommit`'s scan) or either `blocked-by-push` cause (that needs a push
+attempt). `unreadable` it decides only *partly*, which is the subtle one: `git
+status` reports an omitted **directory**, but an unreadable **file** looks merely
+modified and is discovered only when `git add` fails — and the stored marker does
+not record which variant it was. So a marker of any other kind belongs to the
+janitor, and activation leaves that session entirely alone.
+
+Leaving it alone covers **overwriting as well as clearing**. Downgrading a
+`secret` to `conflict` is the same information loss one step removed: the
+`conflict` is withdrawn the next time the rebase is resolved, while the secret is
+still there.
+
+The inspection awaits, so the marker is re-read immediately before the write: a
+janitor pass that started before the viewer attached can land inside that window
+with an answer this check cannot reach. Overlapping activations (reconnect
+bursts) are deduplicated by session, so two checks cannot settle in the order
+they happened to finish.
 
 **One accepted limit remains.** A session nobody opens, and that never descends
 the ladder (pinned, or holding a preview reservation), is still not evaluated:
@@ -209,7 +221,7 @@ what to do. A repair affordance is tracked as planning#533.
 | `src/server/orchestrator/sessions.ts` | `SessionRow.workspace_block`; `fromRow`; `setWorkspaceBlock`; the `filterVisibleInSidebar` exemption |
 | `src/server/orchestrator/tier-escalation.ts` | set in `blockedEvict`, clear on the durable path; `onSessionsChanged` dep |
 | `src/server/orchestrator/services/workspace-block.ts` | `recordWorkspaceBlock` (the one writer); `refreshWorkspaceBlockOnActivation` |
-| `src/server/orchestrator/checkout-durability.ts` | `inspectCheckoutBlock` + `READ_ONLY_BLOCK_KINDS` — the read-only classifier both callers share |
+| `src/server/orchestrator/checkout-durability.ts` | `inspectCheckoutBlock` — the read-only classifier both callers share |
 | `src/server/shared/git.ts` | `inspectWorkingTree` also reports `conflictedFiles` (`WorkingTreeState`) |
 | `src/server/orchestrator/route-registry.ts` | `activateSession` runs the open-time check off the critical path |
 | `src/server/orchestrator/startup-monitors.ts` | wires `onSessionsChanged` to `sseBroadcast("session_list", …)` |

@@ -90,6 +90,101 @@ describe("refreshWorkspaceBlockOnActivation", () => {
     expect(onSessionsChanged).not.toHaveBeenCalled();
   });
 
+  /**
+   * Overwriting is the same information loss as clearing, one step removed: a
+   * `secret` downgraded to `conflict` is withdrawn entirely the next time the
+   * conflict is resolved, while the secret is still there.
+   */
+  it("does not overwrite a secret marker with a conflict it can see", async () => {
+    const sessionManager = makeSessionManager({ id: "s1", workspaceBlock: "secret" });
+
+    await refreshWorkspaceBlockOnActivation(
+      { sessionManager, createGitManager: () => makeGit({ rebaseInProgress: true }) },
+      "s1",
+      "/ws",
+    );
+
+    expect(sessionManager.state.workspaceBlock).toBe("secret");
+  });
+
+  /**
+   * `git status` reports an omitted DIRECTORY, but an unreadable FILE looks merely
+   * modified and is only found when `git add` fails — and the stored kind does not
+   * say which variant it was. So a clean inspection is not evidence of repair.
+   */
+  it("keeps an unreadable marker, whose file variant it cannot detect", async () => {
+    const sessionManager = makeSessionManager({ id: "s1", workspaceBlock: "unreadable" });
+
+    await refreshWorkspaceBlockOnActivation(
+      { sessionManager, createGitManager: cleanGit },
+      "s1",
+      "/ws",
+    );
+
+    expect(sessionManager.state.workspaceBlock).toBe("unreadable");
+  });
+
+  it("says nothing when it sees a block of a kind it does not own", async () => {
+    const sessionManager = makeSessionManager({ id: "s1" });
+    const onSessionsChanged = vi.fn();
+
+    await refreshWorkspaceBlockOnActivation(
+      {
+        sessionManager,
+        createGitManager: () => makeGit({ unreadable: { kind: "omitted", detail: "pgdata/" } }),
+        onSessionsChanged,
+      },
+      "s1",
+      "/ws",
+    );
+
+    expect(sessionManager.state.workspaceBlock).toBeUndefined();
+    expect(onSessionsChanged).not.toHaveBeenCalled();
+  });
+
+  /**
+   * The inspection awaits, and a janitor pass that started before the viewer
+   * attached can land inside that window with an answer this check cannot reach.
+   */
+  it("does not clear a marker the janitor wrote while the inspection was running", async () => {
+    const sessionManager = makeSessionManager({ id: "s1", workspaceBlock: "conflict" });
+    const createGitManager = () => ({
+      inspectWorkingTree: () => Promise.resolve({ clean: true, conflictedFiles: [], unreadable: null }),
+      isRebaseInProgress: () => Promise.resolve(false),
+      isMergeOrSequencerInProgress: async () => {
+        // The janitor finishes its own durability check mid-inspection.
+        sessionManager.setWorkspaceBlock("s1", "secret");
+        return false;
+      },
+    }) as unknown as GitManager;
+
+    await refreshWorkspaceBlockOnActivation({ sessionManager, createGitManager }, "s1", "/ws");
+
+    expect(sessionManager.state.workspaceBlock).toBe("secret");
+  });
+
+  it("runs one inspection for a burst of activations on the same session", async () => {
+    const sessionManager = makeSessionManager({ id: "s1" });
+    let inspections = 0;
+    const createGitManager = () => ({
+      inspectWorkingTree: async () => {
+        inspections++;
+        await new Promise((r) => setTimeout(r, 10));
+        return { clean: true, conflictedFiles: [], unreadable: null };
+      },
+      isRebaseInProgress: () => Promise.resolve(false),
+      isMergeOrSequencerInProgress: () => Promise.resolve(false),
+    }) as unknown as GitManager;
+
+    await Promise.all([
+      refreshWorkspaceBlockOnActivation({ sessionManager, createGitManager }, "s1", "/ws"),
+      refreshWorkspaceBlockOnActivation({ sessionManager, createGitManager }, "s1", "/ws"),
+      refreshWorkspaceBlockOnActivation({ sessionManager, createGitManager }, "s1", "/ws"),
+    ]);
+
+    expect(inspections).toBe(1);
+  });
+
   it("stays quiet when the marker already says what the check found", async () => {
     const sessionManager = makeSessionManager({ id: "s1", workspaceBlock: "conflict" });
     const onSessionsChanged = vi.fn();

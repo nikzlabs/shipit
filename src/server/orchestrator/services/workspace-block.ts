@@ -1,6 +1,6 @@
 import type { GitManager } from "../../shared/git.js";
 import type { SessionInfo, WorkspaceBlockKind } from "../../shared/types.js";
-import { inspectCheckoutBlock, READ_ONLY_BLOCK_KINDS } from "../checkout-durability.js";
+import { inspectCheckoutBlock } from "../checkout-durability.js";
 import { autoCommitAllowed } from "./auto-commit-gate.js";
 
 export interface WorkspaceBlockDeps {
@@ -41,6 +41,22 @@ export interface ActivationWorkspaceCheckDeps extends WorkspaceBlockDeps {
 }
 
 /**
+ * The one kind the open-time check decides completely, and therefore the only one
+ * it may raise or withdraw.
+ *
+ * `secret` needs `autoCommit`'s scan and `blocked-by-push` needs a push attempt, so
+ * a clean read-only inspection is no evidence about either. `unreadable` is the
+ * subtle one: `git status` sees an omitted *directory*, but an unreadable FILE
+ * looks merely modified and is only discovered when `git add` fails — and the
+ * stored marker does not say which variant it was. So a marker of any other kind
+ * belongs to the janitor, and activation leaves the session entirely alone rather
+ * than overwrite it with a kind it can see or withdraw it on evidence it lacks.
+ */
+const OPEN_TIME_KIND: WorkspaceBlockKind = "conflict";
+
+const inFlight = new Set<string>();
+
+/**
  * docs/298 — evaluate the checkout when the user opens the session.
  *
  * The disk janitor is the other writer, and it only ever looks at a session idle
@@ -60,17 +76,27 @@ export async function refreshWorkspaceBlockOnActivation(
   const session = deps.sessionManager.get(sessionId);
   // Ops/sandbox checkouts are never swept automatically; nor are they judged here.
   if (!session || !autoCommitAllowed(session)) return;
+  if (!activationOwnsMarker(deps, sessionId)) return;
 
-  const block = await inspectCheckoutBlock(deps.createGitManager(workspaceDir));
-  if (block) {
-    recordWorkspaceBlock(deps, sessionId, block.kind, "activation");
-    return;
+  // Reconnects can activate the same session repeatedly; one answer serves them all,
+  // and two overlapping checks could otherwise settle in the order they finished.
+  if (inFlight.has(sessionId)) return;
+  inFlight.add(sessionId);
+  let block;
+  try {
+    block = await inspectCheckoutBlock(deps.createGitManager(workspaceDir));
+  } finally {
+    inFlight.delete(sessionId);
   }
 
-  // A clean inspection is not evidence about a kind this check cannot see: a
-  // `secret` marker needs a commit attempt and `blocked-by-push` needs a push, so
-  // withdrawing either here would lose what the janitor found.
+  // The inspection awaited, so re-ask: a janitor pass that started before the
+  // viewer attached may have recorded something this check must not overwrite.
+  if (!activationOwnsMarker(deps, sessionId)) return;
+  if (block && block.kind !== OPEN_TIME_KIND) return;
+  recordWorkspaceBlock(deps, sessionId, block ? block.kind : null, "activation");
+}
+
+function activationOwnsMarker(deps: WorkspaceBlockDeps, sessionId: string): boolean {
   const current = deps.sessionManager.get(sessionId)?.workspaceBlock;
-  if (current === undefined || !READ_ONLY_BLOCK_KINDS.has(current)) return;
-  recordWorkspaceBlock(deps, sessionId, null, "activation");
+  return current === undefined || current === OPEN_TIME_KIND;
 }
