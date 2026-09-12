@@ -169,6 +169,16 @@ describe("describeGoalResult", () => {
     expect(describeGoalResult({ action: "clear" }, null)).toBe("Goal cleared.");
   });
 
+  // docs/298 — Grok's own words, so the notice never shows a raw enum variant.
+  it("labels Grok's statuses", () => {
+    expect(describeGoalResult({ action: "get" }, { ...GOAL, status: "user_paused", tokensUsed: 0 }))
+      .toBe("Goal (paused): Ship it");
+    expect(describeGoalResult({ action: "get" }, { ...GOAL, status: "budget_limited", tokensUsed: 0 }))
+      .toBe("Goal (stopped at its token budget): Ship it");
+    expect(describeGoalResult({ action: "get" }, { ...GOAL, status: "no_progress_paused", tokensUsed: 0 }))
+      .toBe("Goal (paused, no progress): Ship it");
+  });
+
   it("says so when there is no goal", () => {
     expect(describeGoalResult({ action: "get" }, null)).toBe("No goal is set.");
     expect(describeGoalResult({ action: "pause" }, null)).toBe("No goal is set.");

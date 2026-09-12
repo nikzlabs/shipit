@@ -182,6 +182,10 @@ export const HARNESSES = [
       startsOwnTurns: false,
       // /compact is intercepted. Wire metadata says "auto" even for manual requests.
       supportsCompaction: true,
+      supportsGoals: true,
+      // docs/298 — measured: get/pause/clear answer locally at zero cost, while set
+      // and resume run the planner, implementer and verifier, so they need a turn.
+      goalActions: { get: "control", pause: "control", clear: "control", set: "turn", resume: "turn" },
       skillsDirName: ".grok",
       skillInvocationPrefix: "/",
     },

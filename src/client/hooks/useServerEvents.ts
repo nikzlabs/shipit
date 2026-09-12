@@ -11,6 +11,7 @@ import type { ToastData } from "../components/Toast.js";
 import { fullResetAllStores } from "../stores/actions/session-actions.js";
 import type { AgentId, SessionInfo, RepoInfo, PrStatusSummary, DockerMemoryStats, SystemInfo, SubscriptionLimitsMap, PermissionMode, CredentialRoute, EgressSettings } from "../../server/shared/types.js";
 import type { ReviewerSlotView, RoleView } from "../../server/shared/types/agent-types.js";
+import type { GoalActionModes } from "../agent-types.js";
 import { getLoadedClientBuildId, shouldReloadForServerBuild } from "../utils/client-build.js";
 import {
   getParkedHarness,
@@ -466,7 +467,7 @@ export function useServerEvents(): void {
 
           supportsCompaction?: boolean;
           supportsGoals?: boolean;
-          goalActions?: Partial<Record<"get" | "set" | "clear" | "pause" | "resume", "control" | "turn">>;
+          goalActions?: GoalActionModes;
 
           supportedPermissionModes?: PermissionMode[];
 

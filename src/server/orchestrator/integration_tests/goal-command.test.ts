@@ -113,6 +113,44 @@ async function receiveNotice(client: TestClient, timeoutMs = 3000): Promise<stri
   }
 }
 
+/** docs/298 — Grok's real catalogue entry decides the gate; this only records what reached the agent. */
+class FakeGoalGrok extends EventEmitter<AgentProcessEvents> implements AgentProcess {
+  readonly agentId: AgentId = "grok";
+  readonly capabilities: AgentCapabilities = {
+    supportsResume: true,
+    supportsImages: false,
+    supportsSystemPrompt: true,
+    supportsPermissionModes: true,
+    supportedPermissionModes: [],
+    toolNames: [],
+    models: [],
+    supportsReview: false,
+    supportsSteering: false,
+    supportsCompaction: true,
+    supportsGoals: true,
+    skillsDirName: ".grok",
+    skillInvocationPrefix: "/",
+  };
+  readonly isStreaming = false;
+  lastPrompt: string | null = null;
+  goalCalls: AgentGoalCommand[] = [];
+
+  run(params: AgentRunParams): void {
+    this.lastPrompt = params.prompt;
+  }
+  writeStdin(): void {}
+  sendUserMessage(): void {}
+  interrupt(): void {}
+  kill(): void {}
+  writeMcpConfig(): Record<string, never> {
+    return {};
+  }
+  goalCommand(_threadId: string, command: AgentGoalCommand): Promise<AgentGoalCommandResult> {
+    this.goalCalls.push(command);
+    return Promise.resolve(goalAnswer);
+  }
+}
+
 describe("Integration: /goal (docs/154)", () => {
   let app: FastifyInstance;
   let port: number;
@@ -121,28 +159,34 @@ describe("Integration: /goal (docs/154)", () => {
   let sessions: SessionManager;
   let chatHistory: ChatHistoryManager;
   let codexes: FakeGoalCodex[];
+  let groks: FakeGoalGrok[];
   let lastClaude: FakeClaudeProcess | null;
   let savedOpenAIKey: string | undefined;
+  let savedXaiKey: string | undefined;
 
   beforeEach(async () => {
     dbManager = createTestDatabaseManager();
     codexes = [];
+    groks = [];
     lastClaude = null;
     goalAnswer = { goal: null };
     claudeGoalAnswer = { goal: null };
     claudeGoalCalls = [];
     savedOpenAIKey = process.env.OPENAI_API_KEY;
+    savedXaiKey = process.env.XAI_API_KEY;
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-goal-"));
     sessions = new SessionManager(dbManager);
     chatHistory = new ChatHistoryManager(dbManager);
 
     const registry = new AgentRegistry({
-      checkBinary: async (binary) => binary === "claude" || binary === "codex",
+      checkBinary: async (binary) => binary === "claude" || binary === "codex" || binary === "grok",
       checkClaudeAuth: () => true,
     });
     await registry.detect();
     process.env.OPENAI_API_KEY = "test-key-for-codex";
     registry.refreshAuth("codex");
+    process.env.XAI_API_KEY = "test-key-for-grok";
+    registry.refreshAuth("grok");
 
     app = await buildApp({
       credentialStore: createTestCredentialStore(tmpDir),
@@ -156,6 +200,11 @@ describe("Integration: /goal (docs/154)", () => {
           const codex = new FakeGoalCodex();
           codexes.push(codex);
           return codex;
+        }
+        if (agentId === "grok") {
+          const grok = new FakeGoalGrok();
+          groks.push(grok);
+          return grok;
         }
         lastClaude = new FakeGoalClaude();
         return lastClaude as unknown as AgentProcess;
@@ -174,6 +223,8 @@ describe("Integration: /goal (docs/154)", () => {
     await new Promise((r) => setTimeout(r, 50));
     if (savedOpenAIKey !== undefined) process.env.OPENAI_API_KEY = savedOpenAIKey;
     else delete process.env.OPENAI_API_KEY;
+    if (savedXaiKey !== undefined) process.env.XAI_API_KEY = savedXaiKey;
+    else delete process.env.XAI_API_KEY;
     fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
   });
 
@@ -268,6 +319,40 @@ describe("Integration: /goal (docs/154)", () => {
       .toEqual(["get", "pause", "resume"]);
     // Every one was answered out of band; none became a turn.
     expect(codexes.filter((c) => c.runCalled)).toHaveLength(1);
+    client.close();
+  });
+
+  // docs/298 — Grok's set and resume run its planner and verifier, so they must take the
+  // ordinary turn path, where the transcript, the auto-commit and interrupt all apply.
+  it.each(["/goal Make the suite green", "/goal resume"])(
+    "sends %s to Grok as an ordinary prompt, not as a command ShipIt answers",
+    async (text) => {
+      const client = await TestClient.connect(port, undefined, { agent: "grok" });
+      await client.receive();
+
+      client.send({ type: "send_message", text });
+      await waitUntil(() => groks.some((g) => g.lastPrompt !== null));
+      expect(groks.find((g) => g.lastPrompt !== null)?.lastPrompt).toContain(text);
+      expect(groks.flatMap((g) => g.goalCalls)).toEqual([]);
+      client.close();
+    },
+  );
+
+  it("answers Grok's /goal status out of band, with no turn (docs/298)", async () => {
+    const client = await TestClient.connect(port, undefined, { agent: "grok" });
+    await client.receive();
+
+    client.send({ type: "send_message", text: "Work on it" });
+    await waitUntil(() => groks.some((g) => g.lastPrompt !== null));
+    const turn = groks.find((g) => g.lastPrompt !== null)!;
+    turn.emit("event", { type: "agent_result", status: "success", sessionId: "grok-thread" });
+    turn.emit("done", 0);
+    await waitUntil(() => sessions.get(client.sessionId)?.agentSessionId === "grok-thread");
+
+    goalAnswer = { goal: { ...GOAL, status: "user_paused" } };
+    client.send({ type: "send_message", text: "/goal status" });
+    expect(await receiveNotice(client)).toBe("Goal (paused): Make the suite green");
+    expect(groks.flatMap((g) => g.goalCalls)).toEqual([{ action: "get" }]);
     client.close();
   });
 
