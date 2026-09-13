@@ -352,6 +352,15 @@ No open questions remain.
     selected too: "what would this harness give me" is a question worth answering before
     installing one.
 
+25. **On screen these are called model providers, never services.** The Settings surface, the
+    flow that adds a credential, the usage breakdown, onboarding, and every message that
+    points a user at any of them use *model provider* (or *provider*, where the surface has
+    already said which kind). The word *service* is reserved for a Docker Compose service —
+    the preview drawer, `shipit service`, and the agent's compose documentation — so that no
+    sentence a user reads can mean either one. This requirement governs displayed text only:
+    identifiers, API paths, stored columns and CLI flags are free to keep saying `service`,
+    and a user never sees them.
+
 ## Open questions
 
 _None._
@@ -362,11 +371,13 @@ _None._
   term, maybe rename to 'model providers'?"* The word already means a Docker Compose service
   everywhere else in the product — the preview drawer, `shipit service`, `compose.md` — and
   that meaning is Docker's, so it cannot move. **Chosen: the UI says "Model providers"; the
-  code keeps `service`.** The Settings tab, the panel, the add flow, the usage grouping and
-  every message pointing at them read *provider*; `ServiceDef`, `serviceId`, the catalogue
-  module, `/api/credential-routes` and the `service_id` columns are unchanged, because
-  renaming ~1300 references and migrating a column buys the user nothing. Requirements below
-  keep saying *service* for the same reason: they describe the model, not the label.
+  code keeps `service`.** Added as req 25. `ServiceDef`, `serviceId`, the catalogue module,
+  `/api/credential-routes` and the `service_id` columns are unchanged, because renaming ~1300
+  references and migrating a column buys the user nothing. Reqs 1–24 keep saying *service* for
+  the same reason: they describe the model, not the label. Two messages carry an exception req
+  25 allows because the noun is the flag that produced them — `roles.ts`'s `No service named
+  "…"` and `No model … is offered by any service` answer a CLI call that spelled `--service`,
+  and renaming only the prose would leave the error disagreeing with the flag the caller typed.
 
 - 2026-08-20 — Which figure does the running surface show for a **mixed** session? Req 16 named
   the subscription case and the metered case; the implementation resolved the overlap
