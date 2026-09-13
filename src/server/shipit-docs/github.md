@@ -264,6 +264,10 @@ one per session kind:
   Deployments, under "Agent permissions". Off for every repository until they
   do; without it the shim
   returns a 403 and the user merges from the PR card in the ShipIt UI instead.
+  Where the settings read covers that permission, `shipit settings list` reports
+  it, so you can say whether it is off for this repository rather than asking
+  the user to go and check (`/shipit-docs/settings.md`). A session that binds no
+  repository reads it as unavailable, with that reason.
 - In a **Sandbox** session the per-sandbox grant applies as before: the user
   turns on **"Allow merging PRs"** under GitHub access when creating it.
 - **Ops sessions never merge.**

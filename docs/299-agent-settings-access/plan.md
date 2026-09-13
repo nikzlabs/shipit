@@ -575,10 +575,12 @@ affordance ShipIt's own UI puts in front of the user.
 ## Key files
 
 New: `shared/settings-catalogue/` (declarations, `type` constructors, the
-derivations); `services/settings-read.ts`; `services/settings-apply.ts` (the
-shared writers, the conflict-domain lock, the broadcast);
-`services/settings-proposal.ts` (compile, claim, baseline, transition);
-`ws-handlers/settings-proposal-handlers.ts`;
+derivations); `services/settings-read.ts` and `api-routes-settings-agent.ts`
+(the two session-scoped, container-accessible reads `GET
+/api/sessions/:id/settings` and `…/settings/detail?key=`);
+`services/settings-apply.ts` (the shared writers, the conflict-domain lock, the
+broadcast); `services/settings-proposal.ts` (compile, claim, baseline,
+transition); `ws-handlers/settings-proposal-handlers.ts`;
 `session/agent-shim/shipit-settings.ts`; the client card handler and component;
 `shipit-docs/settings.md`.
 

@@ -60,7 +60,10 @@ remove it, or fork into a new directory if you mean to customize it.
 
 **Install** from **Settings → Skills** is repo-targeted: ShipIt spawns a
 dedicated session that writes the skill files and opens a pull request titled
-`Install <plugin> skill`. The skill becomes available in a session once that
+`Install <plugin> skill`. That tab is discovery, not configuration: it holds no
+stored setting, so `shipit settings list` will not name one for it
+(`/shipit-docs/settings.md`). Which skills are installed you read from the
+directories above, not from ShipIt's settings. The skill becomes available in a session once that
 PR is merged and lands on the branch you're working from — it does not appear
 in an unrelated in-progress session.
 

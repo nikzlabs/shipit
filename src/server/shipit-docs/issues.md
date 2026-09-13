@@ -254,7 +254,11 @@ flag would file a planning issue publicly. If you don't know the declared names,
 the error lists them. Like every other write it is do-then-surface — the issue is created right away and a
 provenance card with **Undo** is posted; Undo **cancels** the issue (Linear →
 canceled state, GitHub → closed as not-planned). If the chosen tracker isn't
-connected, the command fails telling you to connect it in Settings first.
+connected, the command fails telling you to connect it in Settings → Integrations.
+The connection is a credential, so ShipIt never shows you its value; where the
+read covers it, `shipit settings list` reports a credential as *configured* or
+*not configured*, which is enough to tell the user whether they are connecting
+it or re-connecting it (`/shipit-docs/settings.md`).
 
 Writes happen **immediately**. ShipIt then posts an inline **provenance card**
 in the chat recording what changed, with an **Undo** button the user can press

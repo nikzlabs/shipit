@@ -414,6 +414,24 @@ export function registerAgentOpsRoutes(
     async (request, reply) => relay("POST", "/agent/spawn", request.body ?? {}, reply, { timeoutMs: 0 }),
   );
 
+  app.get<{ Querystring: { tab?: string } }>(
+    "/agent-ops/settings/list",
+    async (request, reply) => {
+      const tab = request.query?.tab?.trim();
+      const qs = tab ? `?${new URLSearchParams({ tab }).toString()}` : "";
+      return relay("GET", `/settings${qs}`, undefined, reply);
+    },
+  );
+
+  app.get<{ Querystring: { key?: string } }>(
+    "/agent-ops/settings/get",
+    async (request, reply) => {
+      const key = request.query?.key?.trim() ?? "";
+      const qs = `?${new URLSearchParams({ key }).toString()}`;
+      return relay("GET", `/settings/detail${qs}`, undefined, reply);
+    },
+  );
+
   app.get("/agent-ops/agent/roles", async (_request, reply) => relay("GET", "/agent/roles", undefined, reply));
 
   app.get("/agent-ops/agent/params", async (_request, reply) => relay("GET", "/agent/params", undefined, reply));

@@ -18,6 +18,7 @@ platform capabilities.
 | [sandbox-session.md](sandbox-session.md) | Sandbox session — empty `/workspace`, the git/docker/network capabilities, how to clone & open PRs per-repo, persistence |
 | [agent.md](agent.md) | One-shot sub-agents — `shipit agent run --role NAME`, relaying an override the user asked for, and the two reads that say what exists here (`shipit agent roles` / `shipit agent params`) |
 | [issues.md](issues.md) | Tracker-neutral issue access — `shipit issue view/list/comment/edit/status/assign` (GitHub + Linear), do-then-surface writes with Undo |
+| [settings.md](settings.md) | Reading ShipIt's own settings — `shipit settings list/get`, what a projection shows, and why saved is not the same as in effect |
 | [skills.md](skills.md) | Skill directory layout — hand-written vs ShipIt-installed, install markers, auto-commit |
 | [plugins.md](plugins.md) | **Using** a plugin repository — declaring another repo's tools, the read-only `/plugins/<name>` checkout, plugin env and install, `shipit plugin refresh/status` |
 | [plugin-authoring.md](plugin-authoring.md) | **Writing** a plugin repository — testing exports with `repo: self`, and what a consuming project does differently (read-only tree, ports, install, failure messages) |

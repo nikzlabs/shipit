@@ -19,7 +19,11 @@ you supply is the name:
   --model X`. The role supplies everything you did not name. **Relay** an
   override the user asked for; never **decide** one yourself.
 
-If the role you need does not exist, say so — the user creates it in Settings.
+If the role you need does not exist, say so — the user creates it under
+Settings → Roles. `shipit agent roles` is what tells you which roles exist;
+`shipit settings list` indexes the settings around them, so you can say what is
+configured today rather than sending the user to go and look
+(`/shipit-docs/settings.md`).
 And if repository policy hands you a **complete target** (a command naming every
 parameter it runs on), pass it through **unchanged**: that is a different
 invocation and it stays available. A complete target names the harness, the
@@ -364,9 +368,14 @@ id or a bad flag, since neither condition can ever clear.
 
 ## Limits
 
-- **Opt-in.** The feature only works when the user has enabled **Multi-agent
-  sessions** under **Settings → Advanced**. Otherwise the command returns a
-  clear "disabled" error.
+- **Opt-in.** The feature only works when the setting
+  `advanced.enableSubAgents` is on — **Settings → Advanced**, "Allow spawning
+  another agent for a sub-task". Otherwise the command returns a clear
+  "disabled" error. **Read it before you ask**: `shipit settings get
+  advanced.enableSubAgents` says whether it is already on, so a failure you are
+  looking at gets an explanation instead of a guess, and the user is never asked
+  to turn on something they turned on last week
+  (`/shipit-docs/settings.md`).
 - **Only harnesses this deployment installed.** Which agent CLIs an install has is
   chosen when ShipIt is deployed, so a harness a role names — or one you named as
   an override — may simply not be present here, and the command then fails with

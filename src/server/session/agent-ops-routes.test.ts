@@ -805,4 +805,29 @@ describe("agent-ops routes", () => {
     });
     expect(client.calls[1]).toMatchObject({ body: { repo: "tools", force: true } });
   });
+  it("GET /agent-ops/settings/list relays to the session's settings index", async () => {
+    client.setResponse("GET", "/settings", {
+      ok: true, status: 200,
+      body: { settings: [{ key: "advanced.autoFixCi" }], tabs: ["advanced"] },
+    });
+
+    const res = await app.inject({ method: "GET", url: "/agent-ops/settings/list" });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ tabs: ["advanced"] });
+    expect(client.calls[0]).toMatchObject({ method: "GET", path: "/settings" });
+  });
+
+  it("GET /agent-ops/settings/list forwards --tab", async () => {
+    await app.inject({ method: "GET", url: "/agent-ops/settings/list?tab=network" });
+    expect(client.calls[0].path).toBe("/settings?tab=network");
+  });
+
+  it("GET /agent-ops/settings/get forwards the key, encoded", async () => {
+    await app.inject({ method: "GET", url: "/agent-ops/settings/get?key=advanced.enableSubAgents" });
+    expect(client.calls[0]).toMatchObject({
+      method: "GET",
+      path: "/settings/detail?key=advanced.enableSubAgents",
+    });
+  });
 });

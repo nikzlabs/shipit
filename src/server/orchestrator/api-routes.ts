@@ -59,6 +59,7 @@ import { registerMcpRoutes } from "./api-routes-mcp.js";
 import { registerReviewRoutes } from "./api-routes-reviews.js";
 import { registerUpdateRoutes } from "./api-routes-updates.js";
 import { registerAgentRoutes } from "./api-routes-agent.js";
+import { registerAgentSettingsRoutes } from "./api-routes-settings-agent.js";
 import { registerLimitsRoutes } from "./api-routes-limits.js";
 import { registerMarketplaceRoutes } from "./api-routes-marketplace.js";
 import { registerVoiceRoutes } from "./api-routes-voice.js";
@@ -244,6 +245,7 @@ export async function registerApiRoutes(
   }
   await registerUpdateRoutes(app);
   await registerAgentRoutes(app, deps);
+  await registerAgentSettingsRoutes(app, deps);
   await registerVoiceRoutes(app, deps);
   await registerBugReportRoutes(app, deps);
   await registerProposeActionsRoutes(app, deps);
