@@ -62,6 +62,7 @@ export async function getBootstrapData(deps: {
         ...resolveHarnessOnboarding(deps.agentRegistry, deps.credentialStore),
         gitIdentity: { name: "", email: "" },
         systemPrompt: "",
+        systemPromptOps: "",
         agents: listAgents(deps.agentRegistry),
         failoverCutoffs: {},
         accountSelectionMode: {},

@@ -43,6 +43,26 @@ describe("global system prompt (app-scope)", () => {
     expect(await readGlobalSystemPrompt(appRoot)).toBeUndefined();
   });
 
+  it("keeps the ops block in its own file, so neither scope reads the other's text", async () => {
+    const appRoot = setup();
+    expect(globalSystemPromptPath(appRoot, "ops")).toBe(
+      path.join(appRoot, ".shipit", "system-prompt-ops.md"),
+    );
+
+    await writeGlobalSystemPrompt(appRoot, "Standard only.");
+    await writeGlobalSystemPrompt(appRoot, "Ops only.", "ops");
+
+    expect(await readGlobalSystemPrompt(appRoot)).toBe("Standard only.");
+    expect(await readGlobalSystemPrompt(appRoot, "ops")).toBe("Ops only.");
+  });
+
+  it("reports an empty ops block as no prompt, never as the standard one", async () => {
+    const appRoot = setup();
+    await writeGlobalSystemPrompt(appRoot, "Standard only.");
+
+    expect(await readGlobalSystemPrompt(appRoot, "ops")).toBeUndefined();
+  });
+
   it("treats a blank write as 'delete the file', and a blank file as no prompt", async () => {
     const appRoot = setup();
     await writeGlobalSystemPrompt(appRoot, "Something");

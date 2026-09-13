@@ -81,6 +81,7 @@ interface BootstrapResponse {
     harnessOnboardingCompletedAt?: string;
     gitIdentity: { name: string; email: string };
     systemPrompt: string;
+    systemPromptOps?: string;
     memoryBudgetMb?: number | null;
     agentSystemInstructionsEnabled?: boolean;
     agentSystemInstructions?: string;
@@ -570,6 +571,7 @@ export async function loadBootstrapData(): Promise<void> {
     .setHarnessOnboardingCompletedAt(data.settings.harnessOnboardingCompletedAt ?? null);
   useSettingsStore.getState().setHasSystemPrompt(data.settings.systemPrompt.length > 0);
   useSettingsStore.getState().setSystemPromptContent(data.settings.systemPrompt);
+  useSettingsStore.getState().setSystemPromptOpsContent(data.settings.systemPromptOps ?? "");
   if (data.settings.memoryBudgetMb !== undefined) useSettingsStore.getState().setMemoryBudgetMb(data.settings.memoryBudgetMb);
   if (data.settings.agentSystemInstructionsEnabled !== undefined) useSettingsStore.getState().setAgentSystemInstructionsEnabled(data.settings.agentSystemInstructionsEnabled);
   if (data.settings.agentSystemInstructions) useSettingsStore.getState().setAgentSystemInstructions(data.settings.agentSystemInstructions);

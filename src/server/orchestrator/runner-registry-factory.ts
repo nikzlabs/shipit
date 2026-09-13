@@ -23,6 +23,7 @@ import type { RuntimeMode } from "./app-di.js";
 import type { LogStore } from "./log-store.js";
 import type { UsageManager } from "./usage.js";
 import type { PrepareRunParamsFn } from "./agent-run-params-prep.js";
+import type { SystemPromptScope } from "./global-system-prompt.js";
 import type { ProviderAccountManager } from "./provider-account-manager.js";
 import type { TurnOutcome } from "./turn-settlement.js";
 import type { AutoPushScheduler } from "./services/auto-push-scheduler.js";
@@ -84,7 +85,7 @@ export interface RunnerRegistryDeps {
   broadcastLog: (sessionId: string, source: LogSource, text: string) => void;
   credentialsDir?: string;
   providerAccountManager?: ProviderAccountManager;
-  readSystemPrompt?: () => Promise<string | undefined>;
+  readSystemPrompt?: (scope: SystemPromptScope) => Promise<string | undefined>;
   generateText?: GenerateText;
   /** Lazy because the poller depends on this registry and is constructed later. */
   getPrStatusPoller?: () => PrStatusPoller | undefined;

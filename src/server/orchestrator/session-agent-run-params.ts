@@ -3,6 +3,7 @@ import type { AgentId, AgentRunParams, PermissionMode } from "../shared/types.js
 import type { CredentialStore } from "./credential-store.js";
 import type { SessionManager } from "./sessions.js";
 import { buildAgentSystemInstructions } from "./agent-instructions.js";
+import type { SystemPromptScope } from "./global-system-prompt.js";
 import {
   getPrepareRunParams,
   type PrepareRunParamsFn,
@@ -13,7 +14,7 @@ export interface BuildAgentRunParamsDeps {
   credentialStore: CredentialStore;
   githubAuthManager: { authenticated: boolean };
   sessionManager: SessionManager;
-  readSystemPrompt: () => Promise<string | undefined>;
+  readSystemPrompt: (scope: SystemPromptScope) => Promise<string | undefined>;
   getSelectedModel: () => string | undefined;
   getSelectedReasoning?: () => string | undefined;
   runParamsPreps?: Map<AgentId, PrepareRunParamsFn>;
@@ -78,7 +79,7 @@ export async function buildAgentRunParams(
     && deps.credentialStore.getAutoCreatePr()
     && deps.githubAuthManager.authenticated;
 
-  const userSystemPrompt = await deps.readSystemPrompt();
+  const userSystemPrompt = await deps.readSystemPrompt(isOps ? "ops" : "standard");
 
   const agentInstructions = agentInstructionsEnabled
     ? buildAgentSystemInstructions({ agentId, isOps, isSandbox })

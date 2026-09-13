@@ -9,7 +9,7 @@ import { KeybindingSettings } from "../KeybindingSettings.js";
 import { useUiStore } from "../../stores/ui-store.js";
 import { ServicesPanel } from "./ServicesPanel.js";
 import { BackgroundWorkSection } from "./BackgroundWorkSection.js";
-import { InstructionsTab } from "./tabs/InstructionsTab.js";
+import { InstructionsTab, MAX_LENGTH } from "./tabs/InstructionsTab.js";
 import { GitTab } from "./tabs/GitTab.js";
 import { VoiceTab } from "./tabs/VoiceTab.js";
 import { AdvancedTab } from "./tabs/AdvancedTab.js";
@@ -25,7 +25,8 @@ const TABS = ["services", "roles", "integrations", "git", "instructions", "skill
 
 export interface SettingsProps {
   initialContent: string;
-  onSaveInstructions: (content: string) => void;
+  initialOpsContent: string;
+  onSaveInstructions: (content: string, opsContent: string) => void;
   githubStatus: { authenticated: boolean; username?: string; avatarUrl?: string };
   onGitHubTokenSubmit: (token: string) => Promise<void> | void;
   onGitHubLogout: () => void;
@@ -44,6 +45,7 @@ export interface SettingsProps {
 
 export function Settings({
   initialContent,
+  initialOpsContent,
   onSaveInstructions,
   githubStatus,
   onGitHubTokenSubmit,
@@ -63,12 +65,18 @@ export function Settings({
   const activeTab = useUiStore((s) => s.settingsTab) ?? "services";
   const setActiveTab = useUiStore((s) => s.setSettingsTab);
   const [content, setContent] = useState(initialContent);
+  const [opsContent, setOpsContent] = useState(initialOpsContent);
   const savedRef = useRef(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
+  // A rejected save closes the modal and drops the draft, so the keyboard path
+  // enforces the same limit the Save button disables itself on.
+  const saveBlocked = content.length > MAX_LENGTH || opsContent.length > MAX_LENGTH;
+
   const handleSave = () => {
+    if (saveBlocked) return;
     savedRef.current = true;
-    onSaveInstructions(content);
+    onSaveInstructions(content, opsContent);
   };
 
   const handleClose = () => {
@@ -141,6 +149,8 @@ export function Settings({
             <InstructionsTab
               content={content}
               onContentChange={setContent}
+              opsContent={opsContent}
+              onOpsContentChange={setOpsContent}
               textareaRef={textareaRef}
               onSave={handleSave}
               onClose={onClose}

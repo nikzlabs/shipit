@@ -50,6 +50,7 @@ const claudeUnauthed = { ...claudeAuthed, hasRunnableModels: false };
 
 const defaultProps: SettingsProps = {
   initialContent: "",
+  initialOpsContent: "",
   onSaveInstructions: vi.fn(),
   githubStatus: { authenticated: false },
   onGitHubTokenSubmit: vi.fn(),
@@ -536,7 +537,7 @@ describe("Settings - Instructions tab", () => {
       target: { value: "Updated content" },
     });
     await userEvent.click(screen.getByTestId("settings-save"));
-    expect(onSaveInstructions).toHaveBeenCalledWith("Updated content");
+    expect(onSaveInstructions).toHaveBeenCalledWith("Updated content", "");
   });
 
   it("calls onClose when Cancel is clicked", async () => {
@@ -560,7 +561,7 @@ describe("Settings - Instructions tab", () => {
     const onSaveInstructions = vi.fn();
     await renderOnInstructionsTab({ initialContent: "Test content", onSaveInstructions });
     fireEvent.keyDown(screen.getByRole("dialog"), { key: "Enter", ctrlKey: true });
-    expect(onSaveInstructions).toHaveBeenCalledWith("Test content");
+    expect(onSaveInstructions).toHaveBeenCalledWith("Test content", "");
   });
 
   it("saves with empty string when content is cleared", async () => {
@@ -570,7 +571,39 @@ describe("Settings - Instructions tab", () => {
       target: { value: "" },
     });
     await userEvent.click(screen.getByTestId("settings-save"));
-    expect(onSaveInstructions).toHaveBeenCalledWith("");
+    expect(onSaveInstructions).toHaveBeenCalledWith("", "");
+  });
+
+  it("saves the ops block separately from Your Instructions", async () => {
+    const onSaveInstructions = vi.fn();
+    await renderOnInstructionsTab({
+      initialContent: "Be concise.",
+      initialOpsContent: "Report a timeline.",
+      onSaveInstructions,
+    });
+    fireEvent.change(screen.getByTestId("settings-textarea-ops"), {
+      target: { value: "Name the evidence." },
+    });
+    await userEvent.click(screen.getByTestId("settings-save"));
+    expect(onSaveInstructions).toHaveBeenCalledWith("Be concise.", "Name the evidence.");
+  });
+
+  it("disables Save when the ops block exceeds 50,000 characters", async () => {
+    await renderOnInstructionsTab({ initialOpsContent: "x".repeat(50_001) });
+    expect(screen.getByTestId("settings-save")).toBeDisabled();
+  });
+
+  // A rejected save closes the modal and drops the draft, so Ctrl+Enter must
+  // honour the same limit the button does.
+  it("does not save on Ctrl+Enter while a box is over the limit", async () => {
+    const onSaveInstructions = vi.fn();
+    await renderOnInstructionsTab({
+      initialContent: "Be concise.",
+      initialOpsContent: "x".repeat(50_001),
+      onSaveInstructions,
+    });
+    fireEvent.keyDown(screen.getByRole("dialog"), { key: "Enter", ctrlKey: true });
+    expect(onSaveInstructions).not.toHaveBeenCalled();
   });
 });
 

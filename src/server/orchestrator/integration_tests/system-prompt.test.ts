@@ -23,6 +23,7 @@ import { DatabaseManager } from "../../shared/database.js";
 import { AGENT_SYSTEM_INSTRUCTIONS, buildAgentSystemInstructions } from "../agent-instructions.js";
 
 const CLAUDE_AGENT_INSTRUCTIONS = buildAgentSystemInstructions({ agentId: "claude" });
+const CLAUDE_OPS_AGENT_INSTRUCTIONS = buildAgentSystemInstructions({ agentId: "claude", isOps: true });
 
 describe("Integration: System prompt", () => {
   let app: FastifyInstance;
@@ -30,15 +31,17 @@ describe("Integration: System prompt", () => {
   let tmpDir: string;
   let lastClaude: FakeClaudeProcess = null as any;
   let dbManager: DatabaseManager;
+  let sessionManager: SessionManager;
 
   beforeEach(async () => {
     dbManager = createTestDatabaseManager();
     lastClaude = null as any;
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-sysprompt-"));
+    sessionManager = new SessionManager(dbManager);
     app = await buildApp({
       credentialStore: createTestCredentialStore(tmpDir),
       createGitManager: (dir: string) => new GitManager(dir),
-      sessionManager: new SessionManager(dbManager),
+      sessionManager,
       authManager: new StubAuthManager() as unknown as AuthManager,
       githubAuthManager: new StubGitHubAuthManager() as unknown as GitHubAuthManager,
       agentFactory: () => {
@@ -119,6 +122,89 @@ describe("Integration: System prompt", () => {
     expect(typeof AGENT_SYSTEM_INSTRUCTIONS).toBe("string");
 
     client.close();
+  });
+
+  // docs/014-system-prompt req 6 — an ops session takes the ops block instead of
+  // the standard one, and takes nothing when the ops block is empty.
+  it("an ops session gets the ops block, never the standard one", async () => {
+    const settingsRes = await app.inject({
+      method: "PUT",
+      url: "/api/settings",
+      payload: { systemPrompt: "Be concise.", systemPromptOps: "Report a timeline." },
+    });
+    expect(settingsRes.statusCode).toBe(200);
+
+    const client = await TestClient.connect(port);
+    await client.receive();
+    sessionManager.setKind(client.sessionId!, "ops");
+
+    client.send({ type: "send_message", text: "Hello" });
+    await waitForClaude(() => lastClaude);
+
+    expect(lastClaude.lastSystemPrompt).toBe(
+      `${CLAUDE_OPS_AGENT_INSTRUCTIONS}\n\nReport a timeline.`,
+    );
+
+    client.close();
+  });
+
+  it("an ops session with an empty ops block gets no user instructions at all", async () => {
+    const settingsRes = await app.inject({
+      method: "PUT",
+      url: "/api/settings",
+      payload: { systemPrompt: "Be concise." },
+    });
+    expect(settingsRes.statusCode).toBe(200);
+
+    const client = await TestClient.connect(port);
+    await client.receive();
+    sessionManager.setKind(client.sessionId!, "ops");
+
+    client.send({ type: "send_message", text: "Hello" });
+    await waitForClaude(() => lastClaude);
+
+    expect(lastClaude.lastSystemPrompt).toBe(CLAUDE_OPS_AGENT_INSTRUCTIONS);
+
+    client.close();
+  });
+
+  it("a standard session keeps the standard block when an ops block is set", async () => {
+    const settingsRes = await app.inject({
+      method: "PUT",
+      url: "/api/settings",
+      payload: { systemPrompt: "Be concise.", systemPromptOps: "Report a timeline." },
+    });
+    expect(settingsRes.statusCode).toBe(200);
+
+    const client = await TestClient.connect(port);
+    await client.receive();
+
+    client.send({ type: "send_message", text: "Hello" });
+    await waitForClaude(() => lastClaude);
+
+    expect(lastClaude.lastSystemPrompt).toBe(`${CLAUDE_AGENT_INSTRUCTIONS}\n\nBe concise.`);
+
+    client.close();
+  });
+
+  it("rejects an over-long ops block without persisting the standard one", async () => {
+    await app.inject({
+      method: "PUT",
+      url: "/api/settings",
+      payload: { systemPrompt: "Original.", systemPromptOps: "Original ops." },
+    });
+
+    const res = await app.inject({
+      method: "PUT",
+      url: "/api/settings",
+      payload: { systemPrompt: "Replaced.", systemPromptOps: "x".repeat(50_001) },
+    });
+    expect(res.statusCode).toBe(400);
+
+    const after = await app.inject({ method: "GET", url: "/api/bootstrap" });
+    const settings = after.json().settings as { systemPrompt: string; systemPromptOps: string };
+    expect(settings.systemPrompt).toBe("Original.");
+    expect(settings.systemPromptOps).toBe("Original ops.");
   });
 
   it("agent system instructions are omitted when disabled", async () => {

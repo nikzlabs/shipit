@@ -62,6 +62,8 @@ describe("tab Save buttons stay pinned", () => {
       <InstructionsTab
         content=""
         onContentChange={() => {}}
+        opsContent=""
+        onOpsContentChange={() => {}}
         textareaRef={createRef<HTMLTextAreaElement>()}
         onSave={() => {}}
         onClose={() => {}}

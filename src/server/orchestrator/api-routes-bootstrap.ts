@@ -107,6 +107,7 @@ export async function registerBootstrapRoutes(
   app.put<{ Body: {
     gitIdentity?: { name: string; email: string };
     systemPrompt?: string;
+    systemPromptOps?: string;
     memoryBudgetMb?: number | null;
     agentSystemInstructionsEnabled?: boolean;
     autoCreatePr?: boolean;
@@ -138,6 +139,7 @@ export async function registerBootstrapRoutes(
           },
           ...(request.body.gitIdentity !== undefined ? { gitIdentity: request.body.gitIdentity } : {}),
           ...(request.body.systemPrompt !== undefined ? { systemPrompt: request.body.systemPrompt } : {}),
+          ...(request.body.systemPromptOps !== undefined ? { systemPromptOps: request.body.systemPromptOps } : {}),
           ...(request.body.memoryBudgetMb !== undefined ? { memoryBudgetMb: request.body.memoryBudgetMb } : {}),
           ...(request.body.agentSystemInstructionsEnabled !== undefined ? { agentSystemInstructionsEnabled: request.body.agentSystemInstructionsEnabled } : {}),
           ...(request.body.autoCreatePr !== undefined ? { autoCreatePr: request.body.autoCreatePr } : {}),
