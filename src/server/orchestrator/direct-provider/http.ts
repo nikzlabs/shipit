@@ -22,19 +22,28 @@ export function uncachedInput(
   return Math.max(0, total - (cacheRead ?? 0) - (cacheWrite ?? 0));
 }
 
+/** `openai-responses` reports this as a status it already rejects on its own. */
+const OUTPUT_LIMIT_STOPS = new Set(["max_tokens", "length"]);
+
 /**
- * An empty answer is a failure, not a short success. Every caller of a direct
- * call wants text, and a run that stops on its output cap, or on a provider's
- * refusal, can return HTTP 200 carrying none — which would otherwise reach the
- * user as a silently blank result.
+ * An answer that stopped short is a failure, not a short success, and both ways
+ * of stopping arrive as HTTP 200. An EMPTY answer would reach the user blank; a
+ * PARTIAL one is worse, being indistinguishable from a complete answer — a
+ * voice transcript cleaned this way is replaced by its own opening clause with
+ * nothing to say so (docs/299-direct-provider-calls req 6). Asking for a budget
+ * wide enough that the cap cannot bite is not a substitute: the provider's own
+ * limit can be lower than ours, and only the provider says which one stopped it.
  */
-export function requireText(
+export function requireCompleteText(
   text: string,
   label: string,
   reason?: string,
   // It was still billed, so the counts ride on the error rather than vanishing.
   usage?: DirectCallUsage,
 ): string {
+  if (reason && OUTPUT_LIMIT_STOPS.has(reason)) {
+    throw new DirectCallError(502, `${label} ran out of output budget (${reason})`, usage);
+  }
   if (text) return text;
   throw new DirectCallError(502, `${label} returned no text${reason ? ` (${reason})` : ""}`, usage);
 }

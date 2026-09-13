@@ -1,5 +1,5 @@
 import { DIRECT_CALL_PATHS, joinEndpoint } from "../../shared/catalogue/index.js";
-import { maxOutputTokens, postJson, requireText } from "./http.js";
+import { maxOutputTokens, postJson, requireCompleteText } from "./http.js";
 import type { DirectCall, DirectCallUsage } from "./types.js";
 
 const ANTHROPIC_VERSION = "2023-06-01";
@@ -55,6 +55,6 @@ export function createAnthropicMessagesCall(fetchImpl: typeof fetch = fetch): Di
       cacheReadTokens: data.usage?.cache_read_input_tokens,
       cacheCreateTokens: data.usage?.cache_creation_input_tokens,
     };
-    return { text: requireText(text, LABEL, data.stop_reason, usage), ...usage };
+    return { text: requireCompleteText(text, LABEL, data.stop_reason, usage), ...usage };
   };
 }

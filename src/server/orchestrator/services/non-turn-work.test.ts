@@ -594,7 +594,7 @@ describe("recordNonTurnUsage with no resolved target", () => {
   });
 });
 
-describe("recordNonTurnUsage — what the selection says, not how it ran (docs/299 req 7)", () => {
+describe("recordNonTurnUsage — what the selection says, not how it ran (docs/299-direct-provider-calls req 7)", () => {
   let dbManager: DatabaseManager;
   let usageManager: UsageManager;
 
@@ -692,7 +692,7 @@ describe("recordNonTurnUsage — what the selection says, not how it ran (docs/2
 });
 
 /**
- * docs/299 reqs 2, 4 and 7. Both cases below fail before this feature: the
+ * docs/299-direct-provider-calls reqs 2, 4 and 7. Both cases below fail before this feature: the
  * no-session one returned the pre-feature fallback, and the reclaimed-container
  * one reported "The session's container was not running."
  */
@@ -859,7 +859,7 @@ describe("makeNonTurnGenerateText — a direct call needs no session and no cont
 
   it("still records what a textless answer was billed", async () => {
     // HTTP 200, all the tokens spent, no answer: the run failed and the money
-    // is real, so it has to appear in the totals exactly once (docs/299 req 7).
+    // is real, so it has to appear in the totals exactly once (docs/299-direct-provider-calls req 7).
     const { makeNonTurnGenerateText } = await import("./non-turn-work.js");
     const { deps, h } = buildDirectDeps({
       reply: () => new Response(
@@ -921,5 +921,59 @@ describe("makeNonTurnGenerateText — a direct call needs no session and no cont
 
     expect(await generate("prompt", "/ws")).toBe("");
     expect(h.appended).toHaveLength(0);
+  });
+});
+
+/**
+ * The executor is shared with voice cleanup, which must write nothing to the
+ * chat transcript (docs/299-direct-provider-calls req 6). So it reports a failure to its caller and
+ * renders nothing itself; the caller that wants a card emits one.
+ */
+describe("runNonTurnDirect — reports failure, never renders it", () => {
+  const target = {
+    execution: "direct" as const,
+    selection: { serviceId: "anthropic", billingMode: "key" as const, modelId: "haiku" },
+    serviceName: "Anthropic",
+    source: "default" as const,
+    call: {
+      style: "anthropic-messages" as const,
+      baseUrl: "https://api.anthropic.com",
+      apiModelId: "claude-haiku-4-5",
+      storageEnv: "ANTHROPIC_API_KEY",
+    },
+    apiKey: "sk-direct",
+  };
+
+  it("returns the reason rather than empty text", async () => {
+    const { runNonTurnDirect } = await import("./non-turn-work.js");
+    const fetchImpl = (async () => new Response("no key", { status: 401 })) as unknown as typeof fetch;
+
+    const outcome = await runNonTurnDirect({ fetchImpl }, {
+      sessionId: "s1",
+      purpose: "voice-cleanup",
+      target,
+      prompt: "clean this",
+    });
+
+    expect(outcome.ok).toBe(false);
+    if (outcome.ok) throw new Error("expected a failure");
+    expect(outcome.detail).toContain("401");
+  });
+
+  it("returns the answer on success", async () => {
+    const { runNonTurnDirect } = await import("./non-turn-work.js");
+    const fetchImpl = (async () => new Response(
+      JSON.stringify({ content: [{ type: "text", text: "Add a React useEffect" }] }),
+      { status: 200, headers: { "Content-Type": "application/json" } },
+    )) as unknown as typeof fetch;
+
+    const outcome = await runNonTurnDirect({ fetchImpl }, {
+      sessionId: null,
+      purpose: "voice-cleanup",
+      target,
+      prompt: "clean this",
+    });
+
+    expect(outcome).toEqual({ ok: true, text: "Add a React useEffect" });
   });
 });

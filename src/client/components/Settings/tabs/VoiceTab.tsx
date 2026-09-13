@@ -31,25 +31,28 @@ const VOICE_LANGUAGES: { code: string; label: string }[] = [
   { code: "zh", label: "Chinese" },
 ];
 
-const CLEANUP_STATUS_LABELS: Record<string, string> = {
-  "openai-cleanup": "Cleanup via your OpenAI key",
-};
-
+// Cleanup runs on the background-work model, not on a provider ShipIt picks for
+// it (docs/299-direct-provider-calls req 5), so the line names that model or says nothing can clean.
 const CLEANUP_UNAVAILABLE =
-  "Cleanup needs an OpenAI key — add one above. Until then the raw transcript is inserted.";
+  "No model is set up to run background work, so cleanup can't run. Until then the raw transcript is inserted.";
 
-// "No key" and "couldn't ask" are different facts and the first one blames the
-// user, so a failed status fetch must not render as the missing-key line.
+interface CleanupModel {
+  serviceName: string;
+  modelId: string;
+}
+
+// "Nothing can clean" and "couldn't ask" are different facts and the first one
+// blames the user, so a failed status fetch must not render as the first line.
 type CleanupStatus =
   | { state: "pending" }
   | { state: "unknown" }
-  | { state: "ready"; provider: string | null };
+  | { state: "ready"; model: CleanupModel | null };
 
 function cleanupStatusText(status: CleanupStatus): string | null {
   if (status.state === "pending") return null;
   if (status.state === "unknown") return "Couldn't check whether cleanup is available.";
-  if (!status.provider) return CLEANUP_UNAVAILABLE;
-  return CLEANUP_STATUS_LABELS[status.provider] ?? `Cleanup via ${status.provider}`;
+  if (!status.model) return CLEANUP_UNAVAILABLE;
+  return `Cleanup runs your background-work model: ${status.model.serviceName} ${status.model.modelId}.`;
 }
 
 /**
@@ -57,8 +60,8 @@ function cleanupStatusText(status: CleanupStatus): string | null {
  * needs a credential has its own server-side key (POSTed to
  * /api/voice/credentials, never read back; status is the `configured` id
  * list). STT/TTS providers are chosen from the shared catalog. Every other
- * field lives in the client settings-store (localStorage). The cleanup-provider
- * line is read-only — the orchestrator picks it; the user only sees which runs.
+ * field lives in the client settings-store (localStorage). The cleanup line is
+ * read-only: it reports the background-work model, which is chosen elsewhere.
  */
 export function VoiceTab() {
   const voiceInputEnabled = useSettingsStore((s) => s.voiceInputEnabled);
@@ -108,8 +111,8 @@ export function VoiceTab() {
     try {
       const res = await fetch("/api/voice/cleanup/status");
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = (await res.json()) as { provider: string | null };
-      setCleanupStatus({ state: "ready", provider: data.provider });
+      const data = (await res.json()) as { model: CleanupModel | null };
+      setCleanupStatus({ state: "ready", model: data.model });
     } catch {
       setCleanupStatus({ state: "unknown" });
     }

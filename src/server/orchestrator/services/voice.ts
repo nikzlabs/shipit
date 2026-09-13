@@ -2,15 +2,14 @@ import type { CredentialStore } from "../credential-store.js";
 import { ServiceError } from "./types.js";
 import {
   getVoiceAdapters,
-  pickCleanupProvider,
   cleanTranscript,
   stripForTts,
   ttsCacheKey,
   VoiceProviderError,
   type TtsCache,
   type CleanupErrorCode,
-  type CleanupProvider,
 } from "../voice/index.js";
+import { planCleanup, type VoiceCleanupDeps } from "./voice-cleanup.js";
 import {
   getVoiceProvider,
   isValidVoice,
@@ -19,7 +18,6 @@ import {
 
 const DEFAULT_STT_PROVIDER = "openai";
 const DEFAULT_TTS_PROVIDER = "openai";
-const CLEANUP_OPENAI_PROVIDER = "openai";
 
 export interface VoiceCredentialStatus {
   configured: string[];
@@ -28,8 +26,12 @@ export interface VoiceCredentialStatus {
 export interface TranscribeResult {
   text: string;
   rawText: string;
-  cleanupProvider?: CleanupProvider["id"];
   cleanupErrorCode?: CleanupErrorCode;
+}
+
+/** Null where nothing can clean a transcript, so the status line can say so. */
+export interface CleanupStatus {
+  model: { serviceName: string; modelId: string } | null;
 }
 
 function mapProviderError(err: unknown, fallback: string): ServiceError {
@@ -71,16 +73,19 @@ export function getVoiceCredentialStatus(credentialStore: CredentialStore): Voic
   return { configured: credentialStore.getConfiguredVoiceProviders() };
 }
 
-export function getCleanupStatus(
-  credentialStore: CredentialStore,
-  fetchImpl: typeof fetch = fetch,
-): { provider: CleanupProvider["id"] | null } {
-  const key = credentialStore.getVoiceProviderKey(CLEANUP_OPENAI_PROVIDER);
-  return { provider: pickCleanupProvider(key, fetchImpl)?.id ?? null };
+/**
+ * What would actually clean the next dictation — the background-work choice, or
+ * nothing (docs/299-direct-provider-calls req 5). It reports the same
+ * resolution cleanup runs, so the settings line cannot claim a provider that
+ * would then fail.
+ */
+export function getCleanupStatus(deps: VoiceCleanupDeps): CleanupStatus {
+  const plan = planCleanup(deps);
+  return { model: plan ? { serviceName: plan.serviceName, modelId: plan.modelId } : null };
 }
 
 export async function transcribeVoice(
-  credentialStore: CredentialStore,
+  deps: VoiceCleanupDeps,
   input: {
     audio: Buffer;
     mimeType?: string;
@@ -99,7 +104,7 @@ export async function transcribeVoice(
     throw new ServiceError(400, `No transcription adapter for provider: ${providerId}`);
   }
 
-  const key = credentialStore.getVoiceProviderKey(providerId);
+  const key = deps.credentialStore.getVoiceProviderKey(providerId);
   if (!key) throw new ServiceError(400, `No API key configured for ${providerId}`);
   if (input.audio.length === 0) throw new ServiceError(400, "Empty audio");
 
@@ -117,15 +122,10 @@ export async function transcribeVoice(
   if (!raw) return { text: "", rawText: "" };
   if (!input.cleanup) return { text: raw, rawText: raw };
 
-  const cleanupKey = credentialStore.getVoiceProviderKey(CLEANUP_OPENAI_PROVIDER);
-  const provider = pickCleanupProvider(cleanupKey, fetchImpl);
-  const result = await cleanTranscript(raw, provider, {
-    ...(input.language ? { language: input.language } : {}),
-  });
+  const result = await cleanTranscript(raw, planCleanup(deps));
   return {
     text: result.text,
     rawText: raw,
-    ...(result.cleanupProvider ? { cleanupProvider: result.cleanupProvider } : {}),
     ...(result.cleanupErrorCode ? { cleanupErrorCode: result.cleanupErrorCode } : {}),
   };
 }

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { maxOutputTokens, requireText, uncachedInput } from "./http.js";
+import { maxOutputTokens, requireCompleteText, uncachedInput } from "./http.js";
 import { DirectCallError } from "./types.js";
 
 describe("maxOutputTokens", () => {
@@ -39,13 +39,37 @@ describe("uncachedInput", () => {
   });
 });
 
-describe("requireText", () => {
+describe("requireCompleteText", () => {
   it("passes text through", () => {
-    expect(requireText("answer", "Style")).toBe("answer");
+    expect(requireCompleteText("answer", "Style")).toBe("answer");
   });
 
   it("turns an empty answer into an error naming why it stopped", () => {
-    expect(() => requireText("", "Style", "max_tokens")).toThrow(DirectCallError);
-    expect(() => requireText("", "Style", "max_tokens")).toThrow(/max_tokens/);
+    expect(() => requireCompleteText("", "Style", "max_tokens")).toThrow(DirectCallError);
+    expect(() => requireCompleteText("", "Style", "max_tokens")).toThrow(/max_tokens/);
+  });
+
+  // A partial answer reads exactly like a complete one, so accepting it would
+  // replace a dictation with its own opening clause and say nothing.
+  it("rejects a partial answer the provider stopped on its output limit", () => {
+    expect(() => requireCompleteText("Rename the file", "Style", "max_tokens"))
+      .toThrow(/output budget/);
+    expect(() => requireCompleteText("Rename the file", "Style", "length"))
+      .toThrow(/output budget/);
+  });
+
+  it("keeps the counts on the error, because the partial answer was billed", () => {
+    try {
+      requireCompleteText("Rename the file", "Style", "length", { inputTokens: 90, outputTokens: 12 });
+      throw new Error("expected a failure");
+    } catch (err) {
+      expect((err as DirectCallError).usage).toEqual({ inputTokens: 90, outputTokens: 12 });
+    }
+  });
+
+  it("passes an ordinary stop reason through", () => {
+    expect(requireCompleteText("answer", "Style", "stop")).toBe("answer");
+    expect(requireCompleteText("answer", "Style", "end_turn")).toBe("answer");
+    expect(requireCompleteText("answer", "Style", "completed")).toBe("answer");
   });
 });

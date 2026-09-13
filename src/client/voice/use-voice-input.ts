@@ -97,7 +97,6 @@ export interface VoiceInputApi {
 interface TranscribeResponse {
   text: string;
   rawText: string;
-  cleanupProvider?: string;
   cleanupErrorCode?: string;
 }
 

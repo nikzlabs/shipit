@@ -1,5 +1,5 @@
 import { DIRECT_CALL_PATHS, joinEndpoint } from "../../shared/catalogue/index.js";
-import { maxOutputTokens, postJson, requireText, uncachedInput } from "./http.js";
+import { maxOutputTokens, postJson, requireCompleteText, uncachedInput } from "./http.js";
 import { DirectCallError, type DirectCall, type DirectCallUsage } from "./types.js";
 
 const LABEL = "OpenAI Responses";
@@ -77,6 +77,6 @@ export function createOpenAiResponsesCall(fetchImpl: typeof fetch = fetch): Dire
       .map((block) => block.text ?? "")
       .join("")
       .trim();
-    return { text: requireText(text, LABEL, data.status, usage), ...usage };
+    return { text: requireCompleteText(text, LABEL, data.status, usage), ...usage };
   };
 }
