@@ -37,8 +37,8 @@ separate act of making it visible.
   [One change per card](#one-change-per-card).
 - **No server-side view of browser-local values, and no browser-local writes**;
   see [Browser-local settings](#browser-local-settings).
-- **No outcome-polling.** The agent never waits on or polls a card. It is told
-  once at the start of its next turn, and the read surface is authoritative; see
+- **No outcome-polling.** The agent never waits on or polls a card. It is told on
+  a later turn, at least once, and the read surface is authoritative; see
   [How the agent learns the outcome](#how-the-agent-learns-the-outcome).
 - **Per-session settings.** These do have a dialog of their own —
   `SessionSidebar/SessionSettingsDialog.tsx` holds a sandbox's capability grants
@@ -232,9 +232,10 @@ a second provider.
 says a setting reaches the agent *carrying its description* — a one-line
 description in `list` is what lets the agent pick the right key to `get`.
 
-`get` before `propose` is not a suggestion: the card's `from` comes from that
-read, and so does the outcome of any earlier proposal. That is the same read that
-stops the agent re-proposing something already dismissed.
+`get` before `propose` is how the agent decides what to propose and sees the last
+outcome, so it does not re-propose something already dismissed. It is **not** in
+the correctness chain: the card's `from` and its private baseline are read by the
+server at propose time, in one snapshot — see [Applying](#applying).
 
 **Options can go stale between `get` and apply**, for exactly the reason they are
 live — a harness is uninstalled, a credential removed. Not a new hazard:
@@ -336,6 +337,8 @@ writer passes through it" is false:
 | `api-routes-bootstrap.ts:92` | git identity — its own route and its own service, not part of `saveGlobalSettings` |
 | `api-routes-bootstrap.ts:265` | credential routing order, with propagation and broadcast of its own |
 | `api-routes-bootstrap.ts:331` | provider-account order |
+| `api-routes-bootstrap.ts:226` | a stored credential's label |
+| `api-routes-bootstrap.ts:309` | a provider account's label |
 
 So the route bodies are extracted into shared apply functions that every writer
 calls, and a **settings broadcast is added** so an applied change reaches every
@@ -367,12 +370,30 @@ The store already knows better in one place. `stampHarnessOnboardingCompleted`
 writes, and on failure **rolls the in-memory value back** and returns `undefined`,
 with the comment *"memory-only completion would vanish at restart"*
 (`credential-store.ts:268`). That is the contract the apply path needs, and this
-feature generalises it rather than inventing one: a declared write reports
-success or failure, and a failed disk write restores the previous in-memory value
-before returning. `failed` then means nothing changed, which is what the card
-says.
+feature generalises it: a declared write reports success or failure, and a failed
+disk write restores the previous in-memory value before returning.
 
-This is new work on a shipped store, and it is the first item of the apply
+**It is not only that store.** Every proposable writer needs the same treatment,
+and three shipped ones do not have it today:
+
+| Writer | What it does on failure now |
+|---|---|
+| `CredentialStore.save()` | logs and returns `void`; the value survives in memory (`credential-store.ts:255`) |
+| `writeGlobalSystemPrompt` | **swallows the `unlink` error** when clearing the instructions, so "cleared" can be false (`global-system-prompt.ts:25`) |
+| `setGitIdentity` | two separate `git config` calls — the name can land and the email throw (`git-config.ts:212`) |
+
+So the contract is per declaration, not one global fix, and it has three
+outcomes rather than two:
+
+- **`failed`** — verified that nothing changed. Only a writer that can prove it
+  rolled back may report this, which is why the mockup's "Nothing was written"
+  is a claim a declaration has to earn.
+- **partial** — some of a multi-write operation landed. Git identity is the
+  worked example: the card says which half applied.
+- **uncertain** — the write threw and the writer cannot say what state it left.
+  Better shown than flattened into either of the others.
+
+This is new work on shipped code, and it is the first item of the apply
 extraction rather than an afterthought — every other guarantee here is worthless
 if "applied" can be false.
 
@@ -502,11 +523,10 @@ repository. So every proposal carries a **target**: the declaration key plus a
 concrete address — the repository for a project-scope setting, the item id for a
 collection member, nothing for a plain global one.
 
-The target is the identity for all four things that need one: the card's stored
-subject, the `lastProposal` lookup, the per-key lock, and the apply. Locking on
-the declaration key alone would serialize two repositories' merge permissions
-against each other and, worse, make one repository's pending card look like the
-other's.
+The target is the identity for three things: the card's stored subject, the
+`lastProposal` lookup, and the apply. It is **not** the lock — that is taken on
+the conflict domain, which is coarser; see above. Without the repository in the address, one repository's pending card looks like
+the other's.
 
 A project-scope target is **frozen when the card is written**. Apply verifies the
 session still binds that repository, so a card written before a rebind cannot
@@ -608,6 +628,14 @@ Validation **runs again at apply time**, because a card outlives its turn: a
 role's model can leave the catalogue or its harness become uninstalled, which the
 role validators check against live state (`services/roles.ts:102`, `:128`).
 
+One qualification, because the existing writer does less than that sentence
+implies: role saves validate with purpose `"save"`, which deliberately skips
+credential eligibility so that *"disconnected roles must remain editable"*
+(`services/role-settings.ts:142`). A proposal therefore does **not** refuse a
+role whose credential has since been removed — it applies and reports the role as
+saved but not currently runnable. Diverging from the dialog here would mean the
+agent could not fix a role the user can fix by hand.
+
 ### `--reason` is untrusted text
 
 Flattened to one line and length-capped, as bug-report titles are
@@ -656,7 +684,7 @@ Apply is the longer path:
    cannot be expressed through `persistCardTransition`, which runs its `patchDb`
    callback **only** when the card is not in flight
    (`chat-card-persistence.ts:176`–`183`) — exactly the case that needs it.
-3. **Inside the shared layer's per-key lock**: re-read, compare against the
+3. **Inside the shared layer's conflict-domain lock**: re-read, compare against the
    card's stored **baseline**, and revalidate the target. Any mismatch resolves
    the card `stale` and applies nothing. Note this is a comparison, not a
    difference: a second card that proposes the value the setting already holds
@@ -782,9 +810,13 @@ agent acts on:
 | `unknown` | Reads the value and tells the user the earlier outcome is uncertain. |
 
 **It is the last proposal for the target, not for the session.** A proposal from
-another session is reported too, with its `sessionId`, because "the user already
-declined this" is a fact about the setting and not about who asked. Scoping it
-per session would let two sessions take turns asking the same dismissed question.
+another session is reported too, with its `sessionId`, because what the user did
+about this setting is a fact about the setting and not about who asked.
+
+It is one record, and that is a deliberate limit rather than a guarantee: a
+dismissal in one session followed by a proposal in another leaves only the
+latter, so this does not amount to a durable veto and is not claimed as one. A
+dismissal-history subsystem would be more machinery than the problem deserves.
 
 **A dismissal is about the value, not the setting.** `phase: "dismissed"` carries
 the `proposed` value, and declining one model or one memory limit says nothing
@@ -796,9 +828,10 @@ it forbids is re-proposing *that* change unprompted.
 earlier draft refused a proposal while another was pending, which reads as
 prudent and is not: the pending card may belong to a session the user has
 forgotten, and nothing expires it, so one stale card would become an indefinite
-veto on that setting everywhere. The conflict it was guarding against is already
-handled — whichever card is applied second fails its baseline check and resolves
-`stale`, which is exactly the right outcome and the one the user can see. The
+veto on that setting everywhere. The conflict it was guarding against is already handled by the baseline check:
+a second card that would change the value away from what the first one left
+resolves `stale`, and one that happens to propose the value now in place applies
+as a no-op. The
 agent is told a card is pending and can say so instead of posting a duplicate.
 
 ### And a notice at the start of the next turn
@@ -828,19 +861,28 @@ fails to spawn loses it permanently (`chat-history.ts:519`,
 `dispatched-turn.ts:209`). Requirement 8 says the agent *is* told, so that is not
 good enough.
 
-**"Once the turn starts" is not good enough either**, and it has to be named
-precisely or the same bug survives behind a later-looking flag. The turn-start
-broadcast fires before submission, and the proxy's submission methods both return
-before their worker request completes: `run()` calls
-`_startAgentViaProxy(...).catch(…)` and returns, and `sendUserMessage()` is a
-`void`-ed async call (`proxy-agent-process.ts:77`, `:91`). Neither proves the
-prompt arrived.
+**"Once the turn starts" is not good enough either.** The turn-start broadcast
+fires before submission, and the proxy's submission methods both return before
+their worker request completes: `run()` calls `_startAgentViaProxy(...).catch(…)`
+and returns, and `sendUserMessage()` is a `void`-ed async call
+(`proxy-agent-process.ts:77`, `:91`). Neither proves the prompt arrived — and
+even a worker HTTP success does not, since the spawn can fail after it or the
+process's stdin can be dead.
 
-The acceptance boundary is the **resolution of that awaited worker request** —
-the same point whose rejection emits `error` on those two paths. An outcome is
-marked notified there, on both the fresh-process and resident-process paths, and
-the flag records which outcomes that prompt carried. Anything that fails before
-it leaves the outcome pending for the next eligible turn.
+**So delivery is at-least-once, deliberately.** Chasing an acknowledgement that
+proves the agent read the notice means chasing a guarantee that does not exist at
+any layer here. The design inverts the failure instead:
+
+- An outcome is marked notified only when the turn it rode **produced agent
+  output** — evidence the agent ran, rather than evidence the prompt was posted.
+- Anything short of that leaves it pending, so it rides the next turn.
+- **A duplicate notice is harmless and a lost one is not.** The notice says a
+  card was resolved and what it became; hearing that twice costs a line of
+  prompt, and the agent re-reads the setting anyway. Hearing it never is exactly
+  the failure requirement 8 exists to prevent.
+
+That asymmetry is the whole argument. Exactly-once would be better if it were
+achievable; at-least-once is achievable and fails in the harmless direction.
 
 The cost of getting this wrong is the exact failure requirement 8 exists to
 prevent — the agent believing nothing changed and reminding the user about a

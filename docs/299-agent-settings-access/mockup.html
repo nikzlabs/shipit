@@ -226,7 +226,7 @@ button.theme:hover { background:var(--color-bg-hover); }
            stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><line x1="12" y1="7.5" x2="12" y2="13"/><circle cx="12" cy="16.4" r="1" fill="currentColor" stroke="none"/></svg>
     </span>
     <span><strong style="color:var(--color-error)">Failed</strong> <span class="sep">·</span> the change could not be saved</span>
-    <span class="sub">Nothing was written. Multi-agent sessions is still Off.</span>
+    <span class="sub">Nothing was written — the change was rolled back. Multi-agent sessions is still Off.</span>
   </div>
 
   <div class="resolved">
@@ -253,7 +253,10 @@ button.theme:hover { background:var(--color-bg-hover); }
     <span class="sub">Saved. Applies to sessions started from now on — running containers are unchanged.</span>
   </div>
   <p class="legend">
-    Reporting this as a plain “Applied” would tell the user the host is reachable now, which it is not.
+    A write can also land <em>partly</em> — changing the git identity is two separate commands, so the name
+    can be saved and the email fail — or land with an outcome the writer cannot verify. Those are reported as
+    themselves rather than squeezed into “applied” or “failed”.
+    Reporting the case above as a plain “Applied” would tell the user the host is reachable now, which it is not.
     A global allowlist write does no live reload; only a session-scoped one does. The same split covers
     every write whose follow-up can fail after the value has landed — an update-channel change that then
     fails to check for updates, an MCP change whose per-session refresh is fire-and-forget.
