@@ -14,8 +14,8 @@ and its
 [integration-checklist.md](../266-harness-integration-recipe/integration-checklist.md);
 the candidate assessment with the probe evidence is the Antigravity section of
 [candidates.md](../266-harness-integration-recipe/candidates.md). This doc
-holds what the feature must do. There is no `plan.md` yet: the open question
-below blocks design and code.
+holds what the feature must do; [plan.md](./plan.md) implements it and
+[checklist.md](./checklist.md) tracks the branch work.
 
 Source of the decisions below: the user's messages in the assessing session
 (2026-09-13) and the follow-up action the user approved from that session.
@@ -70,12 +70,34 @@ Anything the user did not say is under "Open questions".
 
 ## Open questions
 
-- **MCP tool labels.** MCP tools do not appear in the CLI's `init.tools`; the
-  agent calls them through one `call_mcp_tool` wrapper. How the wrapper's
-  arguments map to ShipIt's tool-activity labels is unprobed. This one is
-  answerable by a probe at design time, not by a decision.
+None.
 
 ## Resolved questions
+
+- 2026-09-13 — How does a `call_mcp_tool` call map to ShipIt's tool-activity
+  labels? Resolved empirically on 1.2.2, not by a human (key mode,
+  `gemini-3.8-flash-low`; capture `probes/global-mcp.ndjson`): the wrapper's
+  `tool` step carries `tool_info.parameters.{ServerName, ToolName, Arguments}`
+  and, on the `DONE` step, `tool_info.output` — everything a label needs.
+  The `init.tools` list does name `call_mcp_tool` (57 built-in tools). Design
+  in plan.md.
+- 2026-09-13 — The Phase 0 items requirement 6 names as unknown, resolved
+  empirically on 1.2.2, not by a human (all captures under `probes/`):
+  `/compact` on a resumed headless conversation reaches the model as plain
+  user text — no summary step, transcript unchanged (`compact-b.ndjson`), so
+  `supportsCompaction` is `false` (probed); a plugin in the config home loads
+  rules, MCP servers and skills **only after `antigravity plugin install
+  <path>`** (a bare directory is treated as uninstalled), after which all
+  three were observed live (`plugin-rules`, `plugin-mcp`, `plugin-skill`);
+  a workspace `AGENTS.md`/`CLAUDE.md` and workspace `.claude/skills`,
+  `.agents/skills`, `.gemini/skills` were **not** disclosed in a headless
+  turn (`skills.ndjson`) — plugin skills were. Basis of plan.md's plugin
+  design.
+- 2026-09-13 — Measured, not a requirement: the metered key the user saved
+  is a Google free-tier key, and Google answered 429 with `limit: 0` for
+  `gemini-3.1-pro` and 5 requests per minute / 20 per day per flash model.
+  The probes ran on the flash models within those limits. The 429 text is
+  Google's own; plan.md carries it to the user through the turn's error row.
 
 - 2026-09-13 — Do the Antigravity Additional Terms of Service §6 ("using third
   party software, tools, or services to access the Service, e.g. using

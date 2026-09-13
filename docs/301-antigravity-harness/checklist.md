@@ -1,0 +1,123 @@
+# Antigravity CLI harness — integration checklist
+
+Copied from
+[docs/266-harness-integration-recipe/integration-checklist.md](../266-harness-integration-recipe/integration-checklist.md);
+the expansion of every line, with file pointers and gotchas, is in
+[that recipe's plan.md](../266-harness-integration-recipe/plan.md). What is
+Antigravity-specific is in [plan.md](./plan.md).
+
+**Phase 0 — assess (before any code)**
+- [x] Candidate passes the capability checklist items 1–5, 7–10 and 12
+      (stream schema: documented and captured; auth: account token file +
+      `GEMINI_API_KEY`; reasoning levels: `--effort low|medium|high`); the
+      install mechanism (a non-npm branch of the same script) is the user's
+      decision of 2026-09-13
+- [ ] Item 11 still OPEN: the API style to a *redirected* endpoint —
+      `GOOGLE_GEMINI_BASE_URL` is vendor-documented and unprobed; run the
+      CLI against a local recorder before the `spawn.endpoint` override is
+      declared
+- [ ] Item 6, runtime half, still OPEN: updater suppression is proven for
+      the worker uid only; the orchestrator-side spawns run as root, and the
+      gate stays open until suppression is demonstrated as root or the
+      install path is mounted read-only (plan.md, "Install")
+- [x] `supportsCompaction` (item 14) settled by a REAL probe: `/compact` as a
+      resumed headless turn's prompt on 1.2.2 reaches the model as text, no
+      summary step — `false`, probed (`probes/compact-b.ndjson`)
+- [ ] `supportsReview` (item 15) settled by a depth-0 probe with the real
+      composed review message. The probe needs a ShipIt session on the
+      harness, so it runs inside the implementation PR, before the flag is
+      declared and before that PR merges — never after; `run_command` /
+      `command_status` + `invoke_subagent` exist in `init.tools`, so the
+      expectation is `true`
+- [x] Every capability `false` (item 13) says WHY beside it (plan.md,
+      "Catalogue row")
+
+**1 — Types**
+- [ ] Widen `AgentId` (+ `LoginIntegrationId` `google-antigravity-oauth`;
+      + `ANTIGRAVITY_PERMISSION_MODES` with the full-auto member only, req 8)
+- [ ] Widen the ESLint leak-guard regex + add the two folder exemptions
+      (same commit)
+
+**2 — Catalogue**
+- [ ] `HarnessDef` row (`styles: ["gemini-generate-content"]`); the `google`
+      `ServiceDef` gains a `sub` mode for the account; rewrite the docs/302
+      "vendor no harness speaks yet" guard into join assertions
+- [x] `GEMINI_API_KEY` declared in the `dev` compose service's
+      `x-shipit-secrets` block (docs/302; `agent: true` since PR #2752)
+- [ ] `ANTIGRAVITY_TOOL_NAMES` (57 names, `probes/flash-test.ndjson` init)
+
+**3 — Install & images**
+- [ ] `install-agent-clis.sh`: known set, `harness_pkg_prefix` sentinel arm,
+      binary, tarball fetch + checksum + `chmod -R a-w` into
+      `/opt/antigravity`, prune arm, `installed.json` (plan.md, "Install")
+- [ ] Version pin: newest release ≥ 7 days old at implementation time,
+      hand-verified (the tarball is outside `check-deps`)
+- [ ] `SHIPIT_HARNESSES` defaults unchanged (installable-but-unchecked,
+      docs/271); `HARNESS_ROWS` in both `deployment/*/setup.sh`
+- [ ] Dogfood opt-in: add `antigravity` to the hard-coded `SHIPIT_HARNESSES`
+      build arg in BOTH dogfood blocks of `docker-compose.yml`
+- [ ] Credential symlink `/credentials/.gemini` in the 3 Dockerfiles + the
+      `entrypoint.sh` gosu `mkdir -p` block (+ `Dockerfile.dev`, which today
+      lacks `.grok` too)
+
+**4 — Tables**
+- [ ] Every required `Record<AgentId, …>` table (the compiler lists them)
+- [ ] `buildLocalAgentFactory` switch
+- [ ] The four `buildAgentRuntime` Maps + the local
+      `PARALLEL_SESSIONS_SECTIONS` map (NOT compiler-forced); the auth manager
+      also into `catalogue.test.ts`'s "every declared login backed by a real
+      auth manager" guard
+
+**5 — Silent sites**
+- [ ] Work the silent-sites list end to end (validators, `?? "claude"`
+      defaults, registry probes, MCP tool subset, shim help text, UI name
+      tables, egress allowlists: sign-in + account-mode hosts measured first)
+- [ ] Revocation: `SUBTREE_STATE_SUBPATHS` entry for `.gemini` with the
+      state subpaths under `antigravity-cli/`, plus the test that a revoked
+      token is gone and a conversation survives (plan.md, "Credentials")
+- [ ] Nested token path: `tokenFileNamesForSubtree` returns root-relative
+      paths so `.gemini/antigravity-cli/antigravity-oauth-token` is found by
+      orphan discovery; nested-token orphan-recovery test
+- [ ] `settings.json` (`modelProvider`) derived by the adapter at every
+      spawn from the home's token presence (plan.md, "Credentials")
+- [ ] Updater suppression probed as root for the orchestrator-side spawns
+      (sign-in, naming); dropped uid or read-only mount if it writes
+
+**6 — Session adapter**
+- [ ] `session/agents/antigravity/` (adapter + spawn home + plugin writer +
+      tool normalizer + tests); register in barrel, `AGENT_TOOL_MAPS`,
+      `createWorkerAgent` + factory test
+- [ ] Token accounting per plan.md: sum the turn's step usages (a resumed
+      run's `result.usage` is cumulative over the conversation), context =
+      last step's `input + cache_read` (cache reads sit outside `input`);
+      `probes/plugin-mcp.ndjson` and `compact-b.ndjson` as fixtures
+
+**7 — Orchestrator folder**
+- [ ] `orchestrator/agents/antigravity/` (auth manager with `submitCode`,
+      run-params prep, system prompt; no limits provider until a usage
+      reader is found) + one entry per runtime map
+- [ ] Update the *existing* backends' prompts, shipit-docs, and the voice
+      vocabulary that name CLIs by name
+
+**8 — Client**
+- [ ] Theme CSS ×2 + `index.css` + `useTheme`
+- [ ] Auth card: `ServicesPanel.tsx` paste-shape gate (`=== "claude"` →
+      set of paste-shaped providers) + `ProviderAccountRows` label table
+
+**9 — Tests**
+- [ ] Extend the build-breaking parity tests (installer↔catalogue: the
+      npm-shaped `harness_pkg_prefix` assertion; stub the tarball fetch);
+      sibling auth/turn integration tests; client fixtures
+- [ ] Token freshness reader verified against a REAL captured token file,
+      committed as its `token-freshness-guard.test.ts` fixture (values
+      blanked; `expiry` is the field)
+
+**10 — Verify empirically**
+- [ ] Stream-capture conformance test from the vendored `probes/*.ndjson`
+      (incl. the "answer present, status ERROR" 503 case in
+      `plugin-mcp.ndjson`); one dogfood turn per auth mode (billing route!);
+      `shipit agent run` both directions; every declared capability flag
+      confirmed against observed behaviour; skills disclosure via the plugin
+      symlink verified
+- [ ] Event-conversion verification: run the docs/272 recipe —
+      `docs/272-harness-conversion-verification/verification-checklist.md`
