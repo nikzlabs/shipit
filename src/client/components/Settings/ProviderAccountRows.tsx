@@ -439,18 +439,18 @@ export function AccountChallenge({
 
   return (
     <AuthPanel testId={`provider-account-challenge-${account.id}`}>
-      {/* A button, not a text link: as a bare line of link-coloured text at the
-          top of the panel it read as the panel's heading, and users waited for a
-          browser that only opens on a click. It stays an `<a>` so cmd-click and
-          long-press still work. */}
+      {/* Button-styled, but still an `<a>`, so cmd-click and long-press work.
+          The label truncates and the icon does not: the icon is what says this
+          leaves ShipIt, and the base class is `whitespace-nowrap`, so without
+          both the label pushes the icon to zero width in a narrow dialog. */}
       <a
         href={pendingAuth.verificationUri}
         target="_blank"
         rel="noopener noreferrer"
         className={cn(buttonVariants({ variant: "cta", size: "md" }), "w-full")}
       >
-        Open {serviceName} authentication page
-        <ArrowSquareOutIcon size={ICON_SIZE.SM} />
+        <span className="min-w-0 truncate">Open {serviceName} authentication page</span>
+        <ArrowSquareOutIcon aria-hidden size={ICON_SIZE.SM} className="shrink-0" />
       </a>
       {pendingAuth.userCode ? (
         <div>

@@ -3175,8 +3175,8 @@ at is the one carrying the provider's code.
   fill in, and a second button beside it is a live control they did not ask for, in the one
   place where a stray click restarts the login they are in the middle of. So the button is
   gone from the start, the wait and the challenge; it returns only when nothing is happening
-  (stopped, or never started), and is **secondary** even then, since the step's own next
-  action is no longer a button. A hung login is recovered the way everything else here is —
+  (stopped, or never started), and is **secondary** even then, since the call to action
+  belongs to the panel and not to the footer. A hung login is recovered the way everything else here is —
   close it and start again. A mode that also takes a key keeps its primary *Sign in*, because
   nothing auto-starts there.
 
@@ -3223,7 +3223,7 @@ pulse alone reads as *stuck* rather than as *working*.
   request first — sampled per frame, one frame of blue, seven of nothing, then whatever came
   next, which reads as a control that hung around after the UI had moved on and was then
   swapped for a disabled *Save*. The rule is uniform across both kinds of mode now: while a
-  sign-in is under way there is one button and it says Cancel.
+  sign-in is under way the footer holds one button and it says Cancel.
 - **Save appears with the field it saves.** It used to render from step 1, where there is
   nothing to save: permanently disabled, and — the mode being unknown that early — `primary`,
   so arriving at a mode with an account path *animated* it from blue to grey. Sampled per
