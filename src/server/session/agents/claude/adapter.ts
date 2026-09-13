@@ -59,6 +59,19 @@ function textFromUserContent(content: unknown[]): string {
     .join("");
 }
 
+/**
+ * docs/297 — the CLI is generating. A turn it starts itself reaches neither
+ * `run()` nor `sendUserMessage()`, so this is the only notice; without it a goal
+ * command is written to a working CLI, which hands the model a mid-turn user
+ * message nobody sent. Excluded: `init`, repeated for a local command answered
+ * without a turn, and a subagent stream, which runs between the CLI's own turns.
+ */
+export function indicatesTurnActivity(raw: ClaudeEvent): boolean {
+  if (raw.type === "system") return raw.subtype === "task_notification";
+  if (raw.type !== "assistant" && raw.type !== "stream_event") return false;
+  return !raw.parent_tool_use_id;
+}
+
 interface PendingGoal {
   resolve: (result: AgentGoalCommandResult) => void;
   reject: (err: Error) => void;
@@ -101,6 +114,7 @@ export class ClaudeAdapter
     // starts work at once, so it has to ride the turn.
     supportsGoals: true,
     goalActions: { get: "control", clear: "control", set: "turn" },
+    goalReadEntersContext: true,
     skillsDirName: ".claude",
     skillInvocationPrefix: "/",
   };
@@ -110,7 +124,8 @@ export class ClaudeAdapter
   private _permissionPromptTool: string | undefined;
 
   // docs/297 — a goal control process resumes the live session id, so it must
-  // not run beside a turn; and it runs where the turn ran.
+  // not run beside a turn; and it runs where the turn ran. Tracks the CLI's own
+  // turns too, not just the ones ShipIt dispatched — see `indicatesTurnActivity`.
   private turnLive = false;
   private lastCwd: string | undefined;
   private spawnHomeOverride: string | undefined;
@@ -139,6 +154,8 @@ export class ClaudeAdapter
       // An answer to a command ShipIt injected belongs to that command, not the
       // transcript: the user typed no message and no turn ran.
       if (this.consumeGoalAnswer(raw)) return;
+
+      if (indicatesTurnActivity(raw)) this.turnLive = true;
 
       if (raw.type === "system" && raw.subtype === "init" && raw.mcp_servers) {
         const statuses = raw.mcp_servers.map(mapCliMcpStatus);

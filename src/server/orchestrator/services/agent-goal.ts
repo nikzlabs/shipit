@@ -66,6 +66,9 @@ export function goalAgentFor(
 /**
  * docs/154 req 6 — read a goal that was never read, without a turn. Best
  * effort: a container that is not up yet leaves it for the next turn.
+ *
+ * docs/297 req 10 — not where the read costs a message in the model's own
+ * context, which it then carries for the rest of the session.
  */
 export async function reconcileAgentGoal(
   deps: AgentGoalDeps & { sessionManager: Pick<SessionManager, "agentGoalChecked"> },
@@ -73,7 +76,9 @@ export async function reconcileAgentGoal(
   agentId: AgentId,
   resolveAgent: () => AgentProcess | null,
 ): Promise<void> {
-  if (!(getAgentCapabilities(agentId)?.supportsGoals ?? false)) return;
+  const caps = getAgentCapabilities(agentId);
+  if (!(caps?.supportsGoals ?? false)) return;
+  if (caps?.goalReadEntersContext ?? false) return;
   const threadId = deps.sessionManager.get(sessionId)?.agentSessionId;
   if (!threadId || deps.sessionManager.agentGoalChecked(sessionId)) return;
   // Resolved last: it can install an agent, which must not happen for a session

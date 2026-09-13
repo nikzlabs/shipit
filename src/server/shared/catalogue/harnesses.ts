@@ -46,6 +46,9 @@ export const HARNESSES = [
       // starts work at once, so it has to ride the turn.
       supportsGoals: true,
       goalActions: { get: "control", clear: "control", set: "turn" },
+      // Measured: the CLI records a `/goal` it answers in the thread, so every
+      // later resume replays it as a message the user never sent.
+      goalReadEntersContext: true,
       skillsDirName: ".claude",
       skillInvocationPrefix: "/",
     },

@@ -175,8 +175,8 @@ export function createRunnerRegistry(
         runner.mergeHold = true;
         runner.beginPostTurnWork();
       }
-      // docs/297 — idle is last of all, so the agent process is gone and a goal
-      // control process cannot race the turn that just ended.
+      // docs/297 — idle is last of all, but a resident CLI outlives the turn and
+      // may already be in one of its own, so the adapter's refusal is the guard.
       runner.on("idle", () => {
         void refreshAgentGoalAfterTurn(
           { sessionManager, sseBroadcast },

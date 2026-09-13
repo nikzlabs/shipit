@@ -88,6 +88,18 @@ describe("reconcileAgentGoal (docs/154 req 6)", () => {
     await reconcileAgentGoal(deps({}), "s1", "opencode", createAgent);
     expect(createAgent).not.toHaveBeenCalled();
   });
+
+  // docs/297 — Claude Code records a `/goal` it answers in the thread, so reading
+  // a goal nobody asked about plants a user message the user never sent.
+  it("does not read a harness whose read enters the model's context", async () => {
+    const sessionManager = fakeSessions();
+    const createAgent = vi.fn(goalAgent);
+    await reconcileAgentGoal(
+      { sessionManager: sessionManager as never, sseBroadcast: vi.fn() }, "s1", "claude", createAgent,
+    );
+    expect(createAgent).not.toHaveBeenCalled();
+    expect(sessionManager.setAgentGoal).not.toHaveBeenCalled();
+  });
 });
 
 describe("refreshAgentGoalAfterTurn (docs/297 req 2)", () => {
