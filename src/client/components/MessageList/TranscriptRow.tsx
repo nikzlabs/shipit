@@ -61,6 +61,30 @@ export interface TranscriptRowProps {
 
   showGapBefore: boolean;
   gapPreviousRole: "user" | "assistant" | null;
+  /**
+   * docs/299 req 2 — this row is kept by a collapsed turn but its own tool
+   * subtree is not. Rendered with the `hidden` attribute, never unmounted:
+   * `AskUserQuestion` holds its selections and free text in component state, so
+   * a conditional render would throw away an answer the user had typed.
+   */
+  collapseTools?: boolean;
+}
+
+/**
+ * docs/299 — a code-only rewind sets `rolledBack` on every row from the gap and
+ * `codeRollbackHash` on the first of them, and sets neither `notice` nor
+ * `isError` (`rewind-complete.ts`), so a collapsed turn would hide the row that
+ * carries the explanation. `MessageList` draws this between the rows instead,
+ * outside the wrapper it hides — the same place it keeps the rewind gap.
+ */
+export function CodeRollbackNotice({ hash }: { hash: string }) {
+  return (
+    <div className="flex justify-center">
+      <div className="rounded-full border border-(--color-border-primary) bg-(--color-bg-secondary) px-3 py-1 text-xs text-(--color-text-secondary)">
+        Code rolled back to {hash.slice(0, 7)}. The changes from the previous response have been reverted.
+      </div>
+    </div>
+  );
 }
 
 function TranscriptRowInner({
@@ -78,6 +102,7 @@ function TranscriptRowInner({
   rewindPreviews,
   showGapBefore,
   gapPreviousRole,
+  collapseTools,
 }: TranscriptRowProps) {
   const handlers = useRowHandlers();
 
@@ -158,13 +183,6 @@ function TranscriptRowInner({
   return (
     <>
       {showGapBefore && renderRewindPoint(i)}
-      {msg.rolledBack && msg.codeRollbackHash && (
-        <div className="flex justify-center">
-          <div className="rounded-full border border-(--color-border-primary) bg-(--color-bg-secondary) px-3 py-1 text-xs text-(--color-text-secondary)">
-            Code rolled back to {msg.codeRollbackHash.slice(0, 7)}. The changes from the previous response have been reverted.
-          </div>
-        </div>
-      )}
       {!hideBubble && (
       <div className={`group flex ${msg.role === "user" ? "justify-end" : "justify-start"} ${msg.rolledBack ? "opacity-40" : ""}`}>
 
@@ -263,7 +281,7 @@ function TranscriptRowInner({
         )}
 
         {!hideTools && msg.toolUse && msg.toolUse.length > 0 && (
-          <div className="mt-2 space-y-1">
+          <div className="mt-2 space-y-1" hidden={collapseTools}>
             {msg.toolUse.map((tool, toolIdx) => {
               const toolResult = msg.toolResults?.find((r) => r.toolUseId === tool.id);
               const resolvedPlanContent = tool.name === "ExitPlanMode" ? handlers.findPlanContent(i) : undefined;

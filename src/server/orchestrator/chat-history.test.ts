@@ -1145,6 +1145,37 @@ describe("ChatHistoryManager", () => {
     });
   });
 
+  describe("action-checklist submission (docs/299)", () => {
+    const checklist = (cardId: string): PersistedMessage => ({
+      role: "assistant",
+      text: "",
+      actionChecklist: {
+        cardId,
+        actions: [{ id: "1", label: "Open a PR", payload: "Open a PR" }],
+        createdAt: "2026-09-13T00:00:00.000Z",
+      },
+    });
+
+    it("records submittedAt inside the existing card JSON, so no migration is needed", () => {
+      const mgr = new ChatHistoryManager(dbManager);
+      mgr.append("sess-1", checklist("a1"));
+      // An older row reads as never submitted, which is the correct default.
+      expect(mgr.findActionChecklistCard("sess-1", "a1")?.submittedAt).toBeUndefined();
+
+      expect(mgr.updateActionChecklistCard("sess-1", "a1", { submittedAt: "2026-09-13T01:00:00.000Z" })).toBe(true);
+      const card = mgr.load("sess-1")[0].actionChecklist;
+      expect(card?.submittedAt).toBe("2026-09-13T01:00:00.000Z");
+      expect(card?.actions).toHaveLength(1);
+    });
+
+    it("returns false when no checklist matches the given id", () => {
+      const mgr = new ChatHistoryManager(dbManager);
+      mgr.append("sess-1", checklist("a1"));
+      expect(mgr.updateActionChecklistCard("sess-1", "missing", { submittedAt: "x" })).toBe(false);
+      expect(mgr.findActionChecklistCard("sess-1", "missing")).toBeNull();
+    });
+  });
+
   describe("issue-ref card persistence (docs/188)", () => {
     const refCard = (cardId: string): PersistedMessage => ({
       role: "assistant",

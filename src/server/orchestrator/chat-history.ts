@@ -718,6 +718,37 @@ export class ChatHistoryManager {
     })();
   }
 
+  findActionChecklistCard(sessionId: string, cardId: string): ActionChecklistCard | null {
+    const rows = this.stmtLoadAll.all(sessionId) as MessageRow[];
+    for (const row of rows) {
+      if (!row.action_checklist) continue;
+      const card = JSON.parse(row.action_checklist) as ActionChecklistCard;
+      if (card.cardId === cardId) return card;
+    }
+    return null;
+  }
+
+  /** docs/299 — the card rides inside the existing `action_checklist` JSON, so no migration. */
+  updateActionChecklistCard(
+    sessionId: string,
+    cardId: string,
+    patch: Partial<ActionChecklistCard>,
+  ): boolean {
+    return this.db.transaction(() => {
+      const rows = this.stmtLoadAll.all(sessionId) as MessageRow[];
+      for (const row of rows) {
+        if (!row.action_checklist) continue;
+        const card = JSON.parse(row.action_checklist) as ActionChecklistCard;
+        if (card.cardId !== cardId) continue;
+        const msg = this.fromRow(row);
+        msg.actionChecklist = { ...card, ...patch };
+        this.stmtUpdate.run({ ...this.toRow(sessionId, msg), id: row.id });
+        return true;
+      }
+      return false;
+    })();
+  }
+
   indexOfMessageId(sessionId: string, id: number): number {
     const ids = this.db.prepare("SELECT id FROM messages WHERE session_id = ? ORDER BY id").all(sessionId) as { id: number }[];
     return ids.findIndex((r) => r.id === id);

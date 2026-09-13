@@ -76,6 +76,12 @@ export interface ActionChecklistCard {
   branch?: string;
   headSha?: string;
   createdAt: string;
+  /**
+   * When the server accepted a submission composed from this card. Records that
+   * the user acted, so docs/299 can collapse the card with the rest of its turn;
+   * it locks nothing, so the card above stays a reusable composer.
+   */
+  submittedAt?: string;
 }
 
 export interface BranchAutoResetCard {

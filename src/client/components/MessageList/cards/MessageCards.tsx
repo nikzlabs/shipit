@@ -50,7 +50,7 @@ export interface MessageCardCallbacks {
     anchorCommentId?: string;
   }) => void;
 
-  onSendFollowUp?: (text: string) => boolean;
+  onSendFollowUp?: (text: string, options?: { actionChecklistCardId?: string }) => boolean;
 
   onReleaseConfirm?: (version: string, mechanism: ReleaseMechanism) => void;
 

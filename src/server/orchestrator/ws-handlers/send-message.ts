@@ -10,6 +10,8 @@ import { graduateSession } from "../services/graduate-session.js";
 import { pinIssueSeededSession } from "../services/issue-seeded-session.js";
 import { markIssueStartedFromSeed } from "../issue-lifecycle.js";
 import { recordSteeredMessage, persistTurnInProgress } from "./agent-listeners.js";
+import { persistCardTransition } from "../chat-card-persistence.js";
+import type { SessionRunnerInterface } from "../session-runner.js";
 import { decideCompactBeforeTurn, runCompactionAhead, runAgentWithMessage, saveImagesToUploadsDir, assembleAgentPrompt } from "./agent-execution.js";
 import { resolveRunner } from "./resolve-runner.js";
 import { shouldSteerMessage } from "../dispatch-steering.js";
@@ -38,6 +40,36 @@ function ensureActiveAgentAuthenticated(ctx: FullCtx): boolean {
     return false;
   }
   return true;
+}
+
+/**
+ * docs/299 req 12 — a checklist the user has acted on collapses with its turn,
+ * so the acceptance of the composed message is what records the submission. The
+ * client sends no separate "I submitted" frame: its socket write proves only
+ * that bytes left the browser, and this handler can still refuse the message.
+ *
+ * `persistCardTransition`, not a bare database write: a checklist submitted
+ * while its own turn is still running would otherwise be undone by the next
+ * turn rebuild (`chat-card-persistence.ts`).
+ */
+export function recordActionChecklistSubmission(
+  ctx: Pick<FullCtx, "getActiveAppSessionId" | "chatHistoryManager">,
+  runner: SessionRunnerInterface,
+  cardId: string,
+): void {
+  const sessionId = ctx.getActiveAppSessionId();
+  if (!sessionId) return;
+  // First submission wins: `submittedAt` records that the user acted, not how often.
+  if (ctx.chatHistoryManager.findActionChecklistCard(sessionId, cardId)?.submittedAt) return;
+  const submittedAt = new Date().toISOString();
+  persistCardTransition(
+    runner,
+    { chatHistoryManager: ctx.chatHistoryManager, sessionId },
+    (m) => m.actionChecklist?.cardId === cardId,
+    (m) => ({ ...m, actionChecklist: { ...m.actionChecklist!, submittedAt } }),
+    () => { ctx.chatHistoryManager.updateActionChecklistCard(sessionId, cardId, { submittedAt }); },
+  );
+  runner.emitMessage({ type: "action_checklist_update", sessionId, cardId, submittedAt });
 }
 
 export async function handleSendMessage(
@@ -111,6 +143,10 @@ export async function handleSendMessage(
 
   const runnerForQueue = resolveRunner(ctx);
   if (runnerForQueue) runnerForQueue.assertCanDispatch();
+
+  if (msg.actionChecklistCardId && runnerForQueue) {
+    recordActionChecklistSubmission(ctx, runnerForQueue, msg.actionChecklistCardId);
+  }
   const heldByMerge = runnerForQueue?.mergeHold === true;
   if (runnerForQueue?.running || runnerForQueue?.systemTurnInProgress || heldByMerge) {
     const actuallyRunning = heldByMerge ? false : await runnerForQueue.verifyRunningState();

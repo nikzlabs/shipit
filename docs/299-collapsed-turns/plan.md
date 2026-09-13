@@ -7,8 +7,14 @@ description: Collapse every turn but the newest to the request and the reply, so
 # Design
 
 See [requirements](./requirements.md). This replaces the display rules of
-[docs/296-compact-conversation](../296-compact-conversation/plan.md), which stay
-in place until this work ships.
+[docs/296-compact-conversation](../296-compact-conversation/plan.md).
+
+**Implemented.** Key files: `src/client/components/MessageList/compact-turns.ts`
+(the display-turn split and the keep/hide rule),
+`hooks/useCompactConversation.ts` (the row views, the pending-card table and the
+one-way protection guard), `MessageList.tsx` (the expand button and the hoisted
+rollback notice), `TranscriptRow.tsx` (`collapseTools`), and, for the checklist's
+submitted state, `ws-handlers/send-message.ts` and `chat-history.ts`.
 
 Loading speed is designed separately, in
 [docs/300-transcript-load-speed](../300-transcript-load-speed/plan.md). That
@@ -92,10 +98,12 @@ media-bearing messages whole; this keeps that.
 **A code-rollback notice survives its row being hidden.** Verified at
 `rewind-complete.ts:8-12` and `TranscriptRow.tsx:161-167`: a code-only rewind
 sets `rolledBack` on every row from the gap and `codeRollbackHash` on the first
-of them, and the "Code rolled back to …" pill renders inside that row, beside
+of them, and the "Code rolled back to …" pill rendered inside that row, beside
 its bubble rather than within it. It sets neither `notice` nor `isError`, so
-rule 2 does not keep it. Render the pill even when the row's content is hidden,
-the same way docs/296 keeps the rewind gap outside the hidden bubble. Otherwise
+rule 2 does not keep it. The pill moves out of the row altogether, into the same
+between-rows position `MessageList` already uses for the rewind gap — one place
+rather than a copy on each side of a condition, and `shouldShowGapBefore`
+returns false for a rolled-back row so the two never compete. Otherwise
 rewinding code at the start of a multi-message response hides the explanation
 while leaving the reply that describes the reverted changes on screen.
 
@@ -140,7 +148,12 @@ person.
 The last row is the one exception to requirement 2's unconditional tool hiding,
 and requirement 12 is what grants it: an unanswered question is the product
 waiting on a person, whatever kind of element it renders as. A question with a
-result is ordinary history and hides with the rest.
+result is ordinary history and hides with the rest. A retained row holding an
+unanswered question keeps its **whole** tool subtree rather than each tool being
+decided separately: the only tools that can share a row with prose are the
+standalone ones, so the over-retention is at most a plan banner or a presented
+artifact beside a live question, and per-tool visibility would buy nothing for
+the extra state it would have to thread through the memoized row.
 
 Two card kinds were considered and rejected. An **issue write** offers Undo
 indefinitely — verified at `issue.ts:96` and `IssueWriteCard.tsx:198`, the
@@ -165,8 +178,11 @@ column, so the field rides inside that JSON and an older row reads as never
 submitted, which is the correct default.
 
 **One message, recorded where the action is accepted.** The submission already
-sends the composed text as an ordinary message; carry the card id on that
-message and set `submittedAt` when the server accepts it. Do **not** add a
+sends the composed text as an ordinary message; it carries the card id as
+`actionChecklistCardId`, and `handleSendMessage` sets `submittedAt` once the
+message is past every refusal. The first submission wins — the field records
+that the user acted, not how often — and an `action_checklist_update` broadcast
+keeps every attached viewer in step without a reload. Do **not** add a
 second "I submitted" frame from the client: `handleSubmit`'s boolean means only
 that bytes reached an open socket — `useWebSocket.ts:18` disclaims server
 receipt — so the server can reject the action at its authentication gate
