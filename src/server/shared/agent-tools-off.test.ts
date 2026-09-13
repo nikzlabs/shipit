@@ -1,10 +1,12 @@
 import { describe, it, expect } from "vitest";
 import {
+  ANTIGRAVITY_TOOLS_OFF_REFUSAL,
   CLAUDE_TOOLS_OFF_ARGS,
   CODEX_TOOLS_OFF_ARGS,
   GROK_TOOLS_OFF_ARGS,
   OPENCODE_TOOLS_OFF_CONFIG,
   toolsOffArgs,
+  toolsOffRefusal,
 } from "./agent-tools-off.js";
 
 /**
@@ -57,5 +59,18 @@ describe("tools-off shaping", () => {
     expect(toolsOffArgs("claude")).toBe(CLAUDE_TOOLS_OFF_ARGS);
     expect(toolsOffArgs("codex")).toBe(CODEX_TOOLS_OFF_ARGS);
     expect(toolsOffArgs("grok")).toBe(GROK_TOOLS_OFF_ARGS);
+  });
+
+  // An unmeasured harness must refuse, never answer with an empty list: `[]`
+  // compiles and reads as "tools are off" while every tool stays live.
+  it("antigravity refuses instead of answering with no flags", () => {
+    expect(toolsOffRefusal("antigravity")).toBe(ANTIGRAVITY_TOOLS_OFF_REFUSAL);
+    expect(() => toolsOffArgs("antigravity")).toThrow(ANTIGRAVITY_TOOLS_OFF_REFUSAL);
+  });
+
+  it("a measured harness carries no refusal", () => {
+    for (const id of ["claude", "codex", "grok", "opencode"] as const) {
+      expect(toolsOffRefusal(id)).toBeUndefined();
+    }
   });
 });

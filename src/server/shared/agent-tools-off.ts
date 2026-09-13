@@ -51,12 +51,39 @@ export const GROK_TOOLS_OFF_ARGS: readonly string[] = [
 /** OpenCode takes no tool flags; its config's wildcard entry empties the set. */
 export const OPENCODE_TOOLS_OFF_CONFIG: Readonly<Record<string, boolean>> = { "*": false };
 
-/** Empty for OpenCode, which is configured through its config file instead. */
+/**
+ * Antigravity has never been measured the way every entry above was, so ShipIt
+ * has no flag set it can claim empties this CLI's tool set (planning#543). An
+ * empty arg list would compile and would read as "tools are off" while the
+ * harness kept every tool — the exact outcome tools-off exists to prevent — so a
+ * tools-off run on this harness is refused instead. Refusing degrades well:
+ * docs/299-direct-provider-calls req 9 inserts the raw transcript when a cleanup
+ * run cannot finish.
+ */
+export const ANTIGRAVITY_TOOLS_OFF_REFUSAL =
+  "Antigravity has no measured way to run with its tools off, so the run was refused"
+  + " rather than started with every tool live.";
+
+const TOOLS_OFF_REFUSALS = new Map<AgentId, string>([
+  ["antigravity", ANTIGRAVITY_TOOLS_OFF_REFUSAL],
+]);
+
+/** Why this harness cannot run with its tools off, or undefined when it can. */
+export function toolsOffRefusal(agentId: AgentId): string | undefined {
+  return TOOLS_OFF_REFUSALS.get(agentId);
+}
+
+/**
+ * Empty for OpenCode, which is configured through its config file instead.
+ * Throws for a harness `toolsOffRefusal` names: an argument list cannot express
+ * a refusal, and a caller reaching for args must fail loudly rather than spawn.
+ */
 export function toolsOffArgs(agentId: AgentId): readonly string[] {
   switch (agentId) {
     case "claude": return CLAUDE_TOOLS_OFF_ARGS;
     case "codex": return CODEX_TOOLS_OFF_ARGS;
     case "grok": return GROK_TOOLS_OFF_ARGS;
     case "opencode": return [];
+    case "antigravity": throw new Error(ANTIGRAVITY_TOOLS_OFF_REFUSAL);
   }
 }

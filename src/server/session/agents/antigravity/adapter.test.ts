@@ -6,6 +6,7 @@ import { PassThrough } from "node:stream";
 import type { ChildProcess, SpawnOptions } from "node:child_process";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AntigravityAdapter } from "./adapter.js";
+import { ANTIGRAVITY_TOOLS_OFF_REFUSAL } from "../../../shared/agent-tools-off.js";
 import type { AgentEvent, AgentRunParams } from "../agent-process.js";
 
 interface FakeProc extends EventEmitter {
@@ -471,6 +472,17 @@ describe("AntigravityAdapter", () => {
       adapter.run({ prompt: "/compact", cwd, compact: true });
       expect(spawned).toEqual([]);
       expect(errors[0].message).toContain("no compaction");
+    });
+
+    // No flag set has been measured to empty this CLI's tool set, so spawning
+    // would run a caller that asked for no tools with all of them.
+    it("refuses a tools-off run instead of spawning with every tool live", () => {
+      const errors: Error[] = [];
+      adapter.removeAllListeners("error");
+      adapter.on("error", (e) => errors.push(e));
+      adapter.run({ prompt: "tidy this transcript", cwd, toolsOff: true });
+      expect(spawned).toEqual([]);
+      expect(errors[0].message).toBe(ANTIGRAVITY_TOOLS_OFF_REFUSAL);
     });
 
     // A large prompt is written in chunks; if the CLI dies during startup the
