@@ -5,61 +5,55 @@
 - [x] Record the user's requirements and the four reported problems.
 - [x] Verify the storage, wire and caching facts the design depends on.
 - [x] Write the design.
-- [x] Answer the open question about cards that still need the user.
-- [x] Get an independent review of the design.
-- [x] Correct the design against the review.
-- [x] Split loading speed into
-      [docs/300-transcript-load-speed](../300-transcript-load-speed/plan.md).
-- [x] Second review, of this feature alone.
-- [x] Correct the design against it: drop the per-row flags from the classifier,
-      keep the rollback notice, suppress tools on a kept prose row, delete the
-      issue-write undo exception, and restore the `lastProse` exclusions.
 - [x] Answer the open question about action-checklist resolution state: add and
       store a submitted flag.
+- [x] Split loading speed into
+      [docs/300-transcript-load-speed](../300-transcript-load-speed/plan.md).
+- [x] Three independent reviews, each verified against the source before the
+      design was changed.
 
 ## Checklist submitted state
 
 - [ ] Add `submittedAt` to `ActionChecklistCard`; it rides inside the existing
       `action_checklist` JSON column, so no migration.
-- [ ] Send `action_checklist_submitted` from the card once the message is
-      delivered.
-- [ ] Add `updateActionChecklistCard` to `ChatHistoryManager`, mirroring
-      `updateIssueWriteCard`.
-- [ ] Emit `action_checklist_update` to every attached viewer, and register the
-      type in `TRANSCRIPT_SCOPED_MESSAGES`.
-- [ ] Test the round trip: submit, reload, and the flag survives.
+- [ ] Carry the card id on the action message the card already sends, and set
+      `submittedAt` when the server accepts it. No separate client frame.
+- [ ] Persist through `persistCardTransition`, so a running turn's rebuild
+      cannot undo it.
+- [ ] Test submission during an active execution, followed by a snapshot, a
+      finalization and a reload.
 
-## Implementation
+## Display rules
 
 - [ ] Add the display-turn split and the keep/hide rule beside the code it
       replaces, in the client.
 - [ ] Rewrite `useCompactConversation`: newest display turn always full, no
-      `activeFrom` boundary, no per-row flags; keep the focus/selection
-      protection, the reading anchor and search reveal.
-- [ ] Make the protection guard one-way, so no row hides under a pointer that is
-      already down (planning#540). A test must press a control in a transcript
-      that has a protected run and assert the control acted.
+      `activeFrom` boundary, no per-row flags.
 - [ ] Hide every tool group, including one whose tool failed.
-- [ ] Render a kept prose row with `hideTools`, so a standalone tool sharing
-      its row does not appear.
-- [ ] Keep the `lastProse` exclusions, so an appended error row cannot displace
-      the reply.
+- [ ] Hide a tool subtree inside a retained row with the `hidden` attribute,
+      never by unmounting it.
+- [ ] Widen the last-reply rule to a message with text, images or files.
+- [ ] Keep the `isError` and `rolledBack` exclusions, so an appended error row
+      cannot displace the reply.
 - [ ] Render a code-rollback notice even when its row is hidden.
-- [ ] Hide all cards except those that still need the user, reading bug-report
-      state from its store rather than from the message row.
+- [ ] Keep the six pending-card cases in the plan's table, each reading its
+      named source.
 - [ ] Keep user rows, error rows and notices.
-- [ ] Keep hidden rows mounted and counted, so no card remounts.
+- [ ] Keep hidden rows mounted and counted, so nothing remounts.
+- [ ] Make the protection guard one-way, so no row hides under a pointer that is
+      already down (planning#540), and extend it to tool subtrees.
 - [ ] Rebuild the expand control as a real button.
 - [ ] Update the Settings help text, which promises "all cards" today.
+
+## Tests
+
 - [ ] Component tests, including one that goes red without each new guard.
-- [ ] Test that an unsent bug-report draft survives collapsing and expanding.
-- [ ] Test that a watching viewer and a reconnecting viewer see the same turns
-      collapsed during a steered execution.
-
-## Stale flags (separate bug, not a dependency)
-
-- [ ] Clear the per-row `inProgress` and `streaming` flags on every turn-end
-      path, not only `agent_result`.
+- [ ] An unfinished question's typed answer survives collapsing and expanding.
+- [ ] An unsent bug-report draft survives collapsing and expanding.
+- [ ] Pressing a control in a transcript with a protected turn performs the
+      action.
+- [ ] A watching viewer and a reconnecting viewer agree on which turns are
+      collapsed, with the steered case asserted as the known difference.
 
 ## Before shipping
 

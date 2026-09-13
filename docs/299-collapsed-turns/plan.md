@@ -13,7 +13,11 @@ in place until this work ships.
 Loading speed is designed separately, in
 [docs/300-transcript-load-speed](../300-transcript-load-speed/plan.md). That
 work can only stop sending what these rules already hide, so it depends on this
-one. Everything here is client-side.
+one.
+
+The display rules are client-side. One piece of server work comes with them: a
+checklist has to record that it was submitted, which requirement 12 needs and
+the card does not have today.
 
 ## What changes against the shipped feature
 
@@ -36,24 +40,33 @@ how the client already derives a run (`compact-turns.ts:20`).
 **The newest display turn is never collapsed. That is the whole live-turn
 rule.** The classifier reads no `inProgress` and no `streaming` flag.
 
-That is deliberate, and it is a change from an earlier draft of this document.
-The per-row flags cannot identify a live execution:
+The per-row flags cannot identify a live execution. Ordinary live appends set
+`streaming`, not `inProgress`, and the merge rebuilds the row without carrying
+`inProgress` forward (`agent-event.ts:185-195`); an attach snapshot marks
+**every** row of the execution `inProgress` (`turn-snapshot.ts:9`). A classifier
+keyed on them gives a viewer who watched the turn and a viewer who reconnected
+different answers for the same rows.
 
-- Ordinary live appends set `streaming`, not `inProgress`, and the merge rebuilds
-  the row without carrying `inProgress` forward (`agent-event.ts:185-195`).
-- An attach snapshot marks **every** row of the execution `inProgress`
-  (`turn-snapshot.ts:9`).
+### Where position is not identical either
 
-So the same rows carry different flags for a viewer who watched the turn and a
-viewer who reconnected, and a design keyed on those flags shows the two viewers
-different transcripts. Position does not have that problem: both derive the
-newest display turn from the same user rows.
+Position is a better signal, not a perfect one, and the difference is worth
+stating rather than assuming. A steer during uninterrupted prose is recorded by
+`recordSteeredMessage` (`agent-message-builder.ts:95`), which computes an
+`afterGroupIndex` but does **not** arm `needsNewMessageGroup`. Later prose
+therefore merges into the preceding group (`accumulateAssistantGroups`, the
+final `else` at `agent-message-builder.ts:44`), while the watching client has
+already inserted the user row and appends its prose after it. Reconstructed
+history can then place that prose **before** the steer, which moves a display
+turn boundary. A second divergence: `message-steered.ts:10` suppresses a
+repeated identical user text for another viewer.
 
-A row being streamed is always inside the newest display turn, so it is already
-protected. An execution that a steered message splits into several display turns
-collapses its earlier ones, which is exactly what requirement 1 asks for — and
-it removes the steering exception the earlier draft invented without a user
-decision.
+So the claim this design makes is the narrow one: **the boundary is derived from
+the rows, so two viewers agree whenever their rows agree** — which the flags
+never did, at any time. Making the rows themselves agree means arming the group
+boundary on a steer, which changes turn persistence and belongs in its own
+change, with tests for a steer during streaming prose. Until then, a steered
+execution is the known case where a watcher and a reconnector can disagree, and
+the verification list below covers it.
 
 ## What a collapsed turn shows
 
@@ -61,15 +74,20 @@ Keep a row when any of these holds:
 
 1. `role === "user"` — requirement 5, with its attachments.
 2. `isError`, or `notice === true` — requirement 11.
-3. A card that still needs the user — requirement 12, see the next section.
-4. It is the display turn's **last agent prose**: an assistant row with
-   non-empty text that is not a card carrier, not a notice, not an error and not
-   rolled back. This is `lastProse` in `compact-turns.ts:43`, unchanged — its
-   `isError` and `rolledBack` exclusions matter, or an appended error row
-   displaces the ordinary reply.
+3. It still needs the user — requirement 12, defined below.
+4. It is the display turn's **last agent reply**: the last assistant row with
+   text, images or files, that is not a card carrier, not a notice, not an error
+   and not rolled back.
 5. It is in the newest display turn.
 
 Everything else is hidden.
+
+Rule 4 is `lastProse` (`compact-turns.ts:43`) **widened**: that predicate
+requires non-empty text, so an answer that ends with a diagram or an attached
+file would be skipped and an earlier paragraph shown in its place — requirement
+5 says the last agent message. Its `isError` and `rolledBack` exclusions stay,
+or an appended error row displaces the reply. docs/296 already retained
+media-bearing messages whole; this keeps that.
 
 **A code-rollback notice survives its row being hidden.** Verified at
 `rewind-complete.ts:8-12` and `TranscriptRow.tsx:161-167`: a code-only rewind
@@ -79,149 +97,143 @@ its bubble rather than within it. It sets neither `notice` nor `isError`, so
 rule 2 does not keep it. Render the pill even when the row's content is hidden,
 the same way docs/296 keeps the rewind gap outside the hidden bubble. Otherwise
 rewinding code at the start of a multi-message response hides the explanation
-while leaving the reply that describes the reverted changes on screen — a
-requirement 11 failure.
+while leaving the reply that describes the reverted changes on screen.
 
-**A kept prose row must not bring its tools with it.** Verified at
-`chat-card-persistence.ts:60-71` and `agent-event.ts:185-195`: one row carries
-`text`, `toolUse` and `toolResults` together. For *groupable* tools the renderer
-already splits them — `buildVisualElements` emits a `message` element with
+## Tools inside a kept row: hide, never unmount
+
+Verified at `chat-card-persistence.ts:60-71` and `agent-event.ts:185-195`: one
+row carries `text`, `toolUse` and `toolResults` together. For *groupable* tools
+the renderer splits them — `buildVisualElements` emits a `message` element with
 `hideTools: true` plus a separate `tool-group` element
 (`visual-elements.ts:198-210`). For a **standalone** tool it does not: verified
 at `visual-elements.ts:223-243`, a row with prose plus only `AskUserQuestion`,
 `ExitPlanMode`, `present` or a task-list tool stays one message element with its
-tools attached.
+tools attached. Hiding that element loses the reply; keeping it shows the tool.
 
-So for that branch, hiding the element loses the reply (requirement 5) and
-keeping it shows the tool (requirement 2). Neither removing a classifier
-exception nor adding one can satisfy both. **Render the kept prose element with
-`hideTools: true` when its turn is collapsed.** The renderer already honours
-that flag (`TranscriptRow.tsx:155`), so this needs no new element kind and no
-change to `buildVisualElements`.
+**Do not reach for the existing `hideTools` flag.** Verified at
+`TranscriptRow.tsx:264`, it is a conditional render: `{!hideTools && msg.toolUse
+&& …}` removes the whole tool subtree from the tree. `AskUserQuestion` keeps its
+selections, its free-text answers and its submitted state in component state
+(`AskUserQuestion.tsx:145-150`), so a user who types an answer, collapses the
+turn and expands it again loses what they typed. That would contradict this
+design's own promise that nothing holding user input is remounted.
 
-That is also where the shipped feature fails requirement 2 twice:
-`isCompactDetail` keeps a whole tool group when any item has an error result
-(`compact-turns.ts:50`), and keeps a message whole when it carries a tool that
-was not folded into a group (`compact-turns.ts:54`). Both carve-outs go.
+Instead, wrap the tool subtree in an element that carries the `hidden`
+attribute, exactly as the transcript already hides whole rows while leaving them
+mounted. The subtree keeps its state, and a collapse costs nothing.
 
-## Cards that still need the user (req 12)
+## What "still needs the user" means (req 12)
 
-"The card's own resolved state decides" is not an existing contract, and the
-earlier draft asserted it without checking. What the code actually offers:
+An explicit set, each with the state that decides it. Nothing here is a
+judgement about importance; a card is kept when the product is waiting on a
+person.
 
-- **Bug reports have authoritative state, but not on the message.** The
-  transcript row carries only `{ cardId }` (`bug-report-card.ts:24`); the phase
-  lives in the card store, which `loadSessionHistory` seeds on every load
-  (`session-data.ts:303-330`). So the classifier can honour requirement 12 for
-  bug reports by reading the store, not the row.
-- **Action checklists have no resolved state at all**, so this feature adds one.
-  Verified at `chat.ts:71`: the card is documented as an "immutable, reusable
-  message composer; submitting actions does not lock the card", and it has no
-  `submitted` field. Submission changes component-local selection and a
-  five-second acknowledgement (`ActionChecklistCard.tsx:71`), so after a reload
-  the classifier cannot tell a submitted checklist from an untouched one. The
-  user chose to add and persist the flag; the design is below.
-- **Issue writes have no undo expiry.** Verified at `issue.ts:96` and
-  `IssueWriteCard.tsx:198`: the states are `available`, `undoing`, `undone` and
-  `failed`, and Undo is offered indefinitely. The earlier draft treated an
-  available Undo as "still needs the user", which would retain every provenance
-  card in the session forever. **That exception is deleted.** An optional
-  reversal of a completed operation is not an unfinished interaction.
+| Kept while | Source |
+|---|---|
+| A permission prompt is pending | `phase === "pending"` (`PermissionRequestCard.tsx:29`) |
+| An egress prompt is pending | `phase === "pending"` (`EgressPromptCard.tsx:21`) |
+| A release is proposed but not confirmed | `phase === "proposed"` (`ReleaseLifecycleCard.tsx:173`) |
+| A bug report is not filed | the card store, seeded on every load (`session-data.ts:331`) |
+| An action checklist was never submitted | a new `submittedAt`, below |
+| A question was never answered | the tool has no result (`message-tools.tsx:140` passes `result?.content` as `resolvedAnswer`) |
 
-### Recording that a checklist was submitted
+The last row is the one exception to requirement 2's unconditional tool hiding,
+and requirement 12 is what grants it: an unanswered question is the product
+waiting on a person, whatever kind of element it renders as. A question with a
+result is ordinary history and hides with the rest.
 
-`ActionChecklistCard` gains one optional field, `submittedAt: string`, set the
-first time the user submits anything from that card. The classifier hides a
-checklist that has it.
+Two card kinds were considered and rejected. An **issue write** offers Undo
+indefinitely — verified at `issue.ts:96` and `IssueWriteCard.tsx:198`, the
+states are `available`, `undoing`, `undone`, `failed`, with no expiry — so
+treating an available Undo as unfinished would retain every provenance card in
+the session forever. Optional reversal of a completed operation is not an
+unfinished interaction. A **presented artifact** is output, not a request.
+
+## Recording that a checklist was submitted
+
+Verified at `chat.ts:71`, `ActionChecklistCard` is documented as an "immutable,
+reusable message composer; submitting actions does not lock the card", and it
+has no submitted field; submission changes only component-local state and a
+five-second acknowledgement (`ActionChecklistCard.tsx:71`). The user chose to
+add and persist one.
+
+`ActionChecklistCard` gains one optional `submittedAt: string`.
 
 **No migration and no new column.** Verified at `chat-history.ts:203` and
 `:354`: the card is already persisted as JSON in its own `action_checklist`
-column, so an optional field rides inside that JSON. An older row simply lacks
-it and reads as never submitted, which is the correct default.
+column, so the field rides inside that JSON and an older row reads as never
+submitted, which is the correct default.
 
-**The persistence path already exists, for another card.** Verified at
-`chat-history.ts:700-719`: `updateIssueWriteCard(sessionId, cardId, patch)`
-finds the row carrying that `cardId`, merges the patch into the card, and
-rewrites the row inside a transaction. Verified at
-`issue-write-handlers.ts:52-78`: the handler emits a `issue_write_update`
-message to every attached viewer and persists the same transition. Mirror both:
+**One message, recorded where the action is accepted.** The submission already
+sends the composed text as an ordinary message; carry the card id on that
+message and set `submittedAt` when the server accepts it. Do **not** add a
+second "I submitted" frame from the client: `handleSubmit`'s boolean means only
+that bytes reached an open socket — `useWebSocket.ts:18` disclaims server
+receipt — so the server can reject the action at its authentication gate
+(`send-message.ts:32`) while the separate state frame succeeds, and a
+disconnection between the two frames leaves an accepted submission recorded as
+untouched.
 
-- a client-to-server `action_checklist_submitted { cardId }`, sent from
-  `handleSubmit` once the message is delivered (`ActionChecklistCard.tsx:71`);
-- a handler that calls a new `updateActionChecklistCard` and emits
-  `action_checklist_update { sessionId, cardId, submittedAt }`;
-- a client handler that patches the row, with the new message type added to
-  `TRANSCRIPT_SCOPED_MESSAGES` (`message-handlers/index.ts`), because it names
-  one session's transcript and must be dropped by any other.
+**Persist through `persistCardTransition`, not a bare database write.** Verified
+at `chat-card-persistence.ts:155`, that helper patches `runner.recordedCards`
+as well as the database, and its own comment states why: "Patch recorded state
+too, or the next turn rebuild will undo a database-only update."
+`issue-write-handlers.ts:14` is the existing caller. A checklist submitted while
+its producing execution is still running is exactly the case that a
+database-only write loses, at the next persistence boundary or snapshot.
 
 **The card stays reusable.** `submittedAt` records that the user acted; it locks
-nothing and disables nothing, so the documented contract at `chat.ts:71` still
-holds. Expanding the turn brings the card back in full working order.
+nothing, so the documented contract at `chat.ts:71` still holds. Expanding the
+turn brings the card back in full working order.
 
 **The accepted cost.** A user who ticks one action now and means to tick another
 later finds the card collapsed after the first submission. Any finer rule —
 recording which action ids were submitted, and keeping the card visible while
 one is unclaimed — keeps a partly-used checklist on screen for the life of the
-session, which is exactly the retain-forever failure that removed the
-issue-write exception above. One submission means acted upon.
+session, which is the retain-forever failure that removed the issue-write
+exception above. One submission means acted upon.
 
 ## Client
 
 `useCompactConversation` is rewritten. The `activeFrom` boundary of
 `useCompactConversation.ts:20-28` is deleted: requirement 4 removes the case it
-defends against, and the newest-display-turn rule replaces it with a signal both
-viewers compute the same way.
-
-**Keep every protection the shipped feature has.** The focus and selection
-guard (`useCompactConversation.ts:29-69`), the reading-anchor restoration
-(`CompactLayout.tsx`), and search reveal (`useCompactConversation.ts:96`) all
-stay. Automatic collapse still happens while the user reads, because another
-viewer or a queued message can start the next turn.
-
-**But the guard must stop closing a run under the user's pointer.** The shipped
-protection is symmetric: it opens a run when focus or a selection enters it, and
-closes it again the moment they leave. Closing is synchronous — the existing
-test `compact-conversation.test.tsx:97` asserts that clearing a selection hides
-the protected row immediately. A press inside the transcript collapses any
-selection and moves focus on **`mousedown`**, so the rows hide and the list
-shrinks between `mousedown` and `mouseup`. The pointer is then over different
-content: no `click` fires on the intended target, and `CompactLayout` re-anchors
-the scroll for up to twelve frames afterwards. The user sees the page move
-instead of the button working, which is the reported defect.
-
-The rewrite must make protection **one-way**: opening a run is automatic,
-closing it is not. A run opened because the user had focus or a selection in it
-stays open for the rest of the visit, until they collapse it with its own
-button. Nothing then hides under a pointer that is already down. Suppressing
-the guard between `pointerdown` and `pointerup` would fix the same case
-narrowly, but it leaves every other path that hides a row mid-gesture.
+defends against, and the newest-display-turn rule replaces it.
 
 **Keep hidden rows mounted and counted**, as docs/296 does, so a collapse or an
 expansion never moves a card to a different DOM parent and never remounts it.
 Requirement 12 makes that load-bearing: the cards that survive a collapse are
-exactly the ones that may hold unsent user input.
+exactly the ones that may hold unsent user input, and so are the tool subtrees
+above.
 
-In-app search keeps its current behavior: it matches message text, including
-text inside a collapsed turn, and opens a turn that matches.
+**Protection becomes one-way.** The shipped guard
+(`useCompactConversation.ts:29-69`) opens a turn when focus or a selection
+enters it and closes it the moment they leave, synchronously — the existing test
+`compact-conversation.test.tsx:97` asserts that clearing a selection hides the
+protected row at once. A press inside the transcript collapses the selection and
+moves focus on **`mousedown`**, so rows hide and the list shrinks between
+`mousedown` and `mouseup`: no `click` fires on the intended target, and
+`CompactLayout` re-anchors the scroll afterwards. That is the reported defect
+(planning#540).
 
-Put the display-turn split and the keep/hide rule in the client, beside the code
-it replaces. docs/300 needs the same rule on the server and will promote it to
+So opening stays automatic and closing does not: a turn opened because the user
+had focus or a selection in it stays open until they collapse it with its own
+button. Nothing hides under a pointer that is already down. Requirement 1's
+automatic collapse still governs a turn the user has not touched; a turn they
+have touched is theirs until they say otherwise, which is the same principle as
+the manual expansion the requirement already allows.
+
+The guard must also cover a tool subtree inside a retained row, not only rows
+classified as hidden detail — an unfinished question lives there.
+
+Reading-anchor restoration (`CompactLayout.tsx`) and search reveal
+(`useCompactConversation.ts:96`) stay unchanged. In-app search keeps matching
+message text, including text inside a collapsed turn, and opens a turn that
+matches.
+
+Put the display-turn split and the keep/hide rule beside the code it replaces,
+in the client. docs/300 needs the same rule on the server and will promote it to
 `src/server/shared/` then; writing it there now would be a boundary for a caller
 that does not exist.
-
-### The stale in-progress flags are a separate bug
-
-`agent-interrupted.ts:10` and `error.ts:9` clear `isLoading` but not the per-row
-`inProgress` flag, and `session-data.ts:297` turns a persisted in-progress row
-into `streaming: true`. Today that pins a run open forever, which is why the
-shipped feature sometimes shows no expand control at all. (`agent_result` is the
-usual place the flag is cleared, `agent-event.ts:299-311`, though a
-`turn_snapshot` with `final: true` clears it too — the current attach path sends
-running snapshots.)
-
-This design does not depend on that fix, because its classifier reads no flags.
-The bug is still worth fixing: it breaks the shipped feature until this work
-lands, and docs/300 does use the persisted `in_progress` column.
 
 ## The expand control (req 8)
 
@@ -242,36 +254,47 @@ agent message and all cards", which this design contradicts
 
 - No change to what the server sends. That is docs/300.
 - No truncation of the kept agent message.
-- No change to the persisted history, the agent lifecycle, or the turn-event
-  buffer.
-- No change to `turn_snapshot` or the live WS append path.
 - No new database column. The one new piece of persisted state, a checklist's
   `submittedAt`, rides inside the card JSON that is already stored.
+- No change to the agent lifecycle, the turn-event buffer, `turn_snapshot`, or
+  the live WS append path.
+- No change to how a steer is grouped. That divergence is named above and is its
+  own change.
 
 ## Simpler alternatives considered
 
 - **Keep the shipped classifier and fix only the newest-turn rule.** Rejected:
   three of the four reported problems are in the classifier, not in the
   boundary.
-- **Key the live-turn rule on the per-row flags.** Rejected above: the flags
-  disagree between a watching viewer and a reconnecting one.
+- **Key the live-turn rule on the per-row flags.** Rejected: the flags disagree
+  between a watching viewer and a reconnecting one at all times, where the rows
+  disagree only after a steer.
+- **Reuse `hideTools` for tools in a retained row.** Rejected: it unmounts the
+  subtree and destroys unfinished input.
 - **A turn id column.** Rejected: user-row boundaries already define a display
   turn, and a new column would need a backfill migration.
 
 ## Verification
 
 - Newest turn full; the previous turn collapses when a new turn starts.
-- A steered execution collapses its earlier display turns, and a viewer who
-  reconnects mid-execution sees the same thing as the viewer who watched it.
+- A viewer who watched a turn and one who reconnects see the same turns
+  collapsed — including the steered case, which is expected to fail until the
+  grouping change lands and must be asserted as a known difference rather than
+  left untested.
 - Tool groups hidden whether or not a tool failed.
 - A prose row that also carries a standalone tool keeps its prose and hides the
-  tool.
+  tool, and the tool keeps its state: type into a question's free-text field,
+  collapse the turn, expand it, and the text is still there.
+- A turn whose last agent message is an image or a file keeps that message.
 - An appended error row does not displace the turn's ordinary reply.
 - A code rollback notice stays visible when its row is hidden.
-- Error rows and notices kept; an unsent bug report kept, with its state.
+- Every card in the "still needs the user" table stays visible in its pending
+  state and hides once resolved, including after a reload.
+- A checklist submitted during a running turn still reads as submitted after the
+  turn finishes and after a reload.
+- Pressing a control in a transcript that has a protected turn performs the
+  action, and the scroll does not move.
 - An interrupted turn and a failed turn both collapse.
-- Expanding and collapsing never remounts a card: type into a bug-report card,
-  toggle an older turn, and the draft survives.
 - Search matches text inside a collapsed turn and opens it.
 - Setting off: the view is exactly as today.
 - Reload, reconnect, session switch, rewind, fork.
