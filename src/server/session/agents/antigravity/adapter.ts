@@ -5,6 +5,7 @@ import { randomUUID } from "node:crypto";
 import { spawn as nodeSpawn, type ChildProcess, type SpawnOptions } from "node:child_process";
 import { killChild, killProcessTree } from "../../../shared/kill-child.js";
 import { ANTIGRAVITY_TOOL_NAMES } from "../../../shared/agent-registry.js";
+import { ANTIGRAVITY_TOOLS_OFF_REFUSAL } from "../../../shared/agent-tools-off.js";
 import { HARNESSES } from "../../../shared/catalogue/harnesses.js";
 import { ANTIGRAVITY_PERMISSION_MODES } from "../../../shared/types/agent-types.js";
 import type {
@@ -156,6 +157,13 @@ export class AntigravityAdapter
     if (params.compact) {
       // Probed on 1.2.2: /compact reaches the model as plain user text.
       this.emit("error", new Error("Antigravity has no compaction; the request was not sent."));
+      return;
+    }
+
+    // Fail closed: spawning would run a caller that asked for no tools with all
+    // of them. Why there is no flag set to apply: `agent-tools-off.ts`.
+    if (params.toolsOff) {
+      this.emit("error", new Error(ANTIGRAVITY_TOOLS_OFF_REFUSAL));
       return;
     }
 
