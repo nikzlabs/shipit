@@ -46,7 +46,6 @@ vi.mock("./TranscriptRow.js", () => ({
 }));
 
 const { MessageList } = await import("./MessageList.js");
-const { useSessionStore } = await import("../../stores/session-store.js");
 
 beforeAll(() => {
   Element.prototype.scrollIntoView = () => {};
@@ -56,7 +55,6 @@ afterEach(() => {
   cleanup();
   mounts.clear();
   renders.clear();
-  useSessionStore.setState({ compacting: false, compactingAnchor: null });
 });
 
 function user(text: string): ChatMessage { return { role: "user", text }; }
@@ -105,25 +103,6 @@ describe("MessageList — content-visibility sits on row groups", () => {
     }
 
     expect(groupEls(container).length).toBe(3);
-
-    for (let i = 0; i < 45; i++) expect(mounts.get(`m-${i}`)).toBe(1);
-  });
-
-  it("does not remount rows when the compacting indicator appears and goes", () => {
-
-    const base = transcript(45);
-    const { rerender, container } = render(<MessageList messages={base} isLoading={false} />);
-    for (let i = 0; i < 45; i++) expect(mounts.get(`m-${i}`)).toBe(1);
-
-    useSessionStore.setState({ compacting: true, compactingAnchor: 25 });
-    rerender(<MessageList messages={[...base]} isLoading />);
-    const indicator = container.querySelector('[data-testid="compacting-indicator"]');
-    expect(indicator).not.toBeNull();
-    expect(groupEls(container)[1].contains(indicator)).toBe(true);
-
-    useSessionStore.setState({ compacting: false, compactingAnchor: null });
-    rerender(<MessageList messages={[...base]} isLoading={false} />);
-    expect(container.querySelector('[data-testid="compacting-indicator"]')).toBeNull();
 
     for (let i = 0; i < 45; i++) expect(mounts.get(`m-${i}`)).toBe(1);
   });

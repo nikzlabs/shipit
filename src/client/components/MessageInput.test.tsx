@@ -876,6 +876,32 @@ describe("MessageInput", () => {
       expect(screen.queryByTestId("compact-context-control")).not.toBeInTheDocument();
     });
 
+    it("is hidden while a turn runs, and an untick made before it still rides the send", () => {
+      usePrStore.setState({ resetEligibleBySession: { s1: true } });
+      useSettingsStore.setState({ autoResetMergedBranch: true });
+      const onSend = vi.fn().mockReturnValue(true);
+      const composer = (isLoading: boolean) => (
+        <MessageInput
+          onSend={onSend} disabled={false} sessionId="s1" isLoading={isLoading}
+          agents={compactingAgent} activeAgentId="claude"
+        />
+      );
+      const { rerender } = render(composer(false));
+      fireEvent.click(screen.getByTestId("compact-context-control")); // untick
+
+      rerender(composer(true));
+      // The running turn is the one doing the reset and the compaction, so a
+      // tick changed now governs nothing in flight. Both controls go.
+      expect(screen.queryByTestId("compact-context-control")).not.toBeInTheDocument();
+      expect(screen.queryByTestId("reset-merged-branch-control")).not.toBeInTheDocument();
+
+      // Hiding them must not throw the choice away: the untick lives in the
+      // store, so a message queued behind the turn still carries it.
+      typeAndSend();
+      expect(onSend).toHaveBeenCalled();
+      expect(optOut().compact).toBe(true);
+    });
+
     it("is hidden when the backend cannot compact (req 10)", () => {
       usePrStore.setState({ resetEligibleBySession: { s1: true } });
       useSettingsStore.setState({ autoResetMergedBranch: true });

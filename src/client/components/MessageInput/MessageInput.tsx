@@ -310,7 +310,13 @@ export function MessageInput({
   // Correctness is server-side; the checkbox is intent.
   const autoResetMergedBranch = useSettingsStore((s) => s.autoResetMergedBranch);
   const resetEligible = usePrStore((s) => (sessionId ? s.resetEligibleBySession[sessionId] ?? false : false));
-  const showResetControl = resetEligible && autoResetMergedBranch;
+  // Hidden while a turn runs: the intent is read and spent when a frame goes, so
+  // a tick changed now governs nothing in flight, and the reset and compaction
+  // the running turn is performing are what end the eligibility anyway. Shown
+  // mid-turn the controls read as switches over work already under way. Any
+  // untick outlives the hide (it lives in the store, not in the control), so a
+  // send made while they are away still carries it.
+  const showResetControl = resetEligible && autoResetMergedBranch && !isLoading;
 
   // docs/295 — offered whenever the reset control is (reqs 1, 3, 11), if the
   // backend can compact (req 10). No occupancy threshold (req 3).

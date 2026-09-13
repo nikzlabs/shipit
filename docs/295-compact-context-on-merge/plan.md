@@ -305,6 +305,7 @@ without the card — the same loss a review queued behind a merge hold has today
 ## The composer control (req 1, req 2, req 3, req 10)
 
 ```
+showResetControl   = resetEligible && autoResetMergedBranch && !isLoading
 showCompactControl = showResetControl && supportsCompaction
 ```
 
@@ -314,6 +315,18 @@ subordinate second line inside the existing control block — one line, no
 description — so the block that appears at the moment the user wants to type
 does not double in weight. Both tick states re-tick on send, and are keyed by
 session, so an untick never rides a later message or another session.
+
+**`!isLoading` — the controls are hidden while a turn runs.** The intent is
+read and spent when a frame goes (`sendUserTurn`), so a tick changed after that
+governs nothing in flight; and the turn under way is the one performing the
+reset and the compaction, which is what ends the eligibility. Left on screen
+they read as live switches over work already happening — the ticked pair sitting
+under a "Compacting context..." status and a queued message. The optimistic hide
+on submit (`setResetEligible(sessionId, false)`) already did this for the common
+case, but only for a send with the reset still **ticked**; this covers every
+send, and the unticked one is exactly where the stale controls were most
+misleading. Hiding them loses nothing: the untick lives in the store, and
+`mergeContinueFrameFields` carries it whether or not the control is shown.
 
 ## The shared setting (req 11)
 

@@ -37,21 +37,12 @@ interface SessionState {
   isLoading: boolean;
   activity: StreamingActivity | undefined;
   /**
-   * docs/178 — transient "Compacting…" indicator. Set true on a
-   * `compaction_status` with `active:true`, cleared on `active:false` (or when
-   * the matching card lands). Never persisted — purely a live progress signal.
+   * docs/178 — a compaction is in flight. Set true on a `compaction_status`
+   * with `active:true`, cleared on `active:false` (or when the matching card
+   * lands). Never persisted — purely a live progress signal; it is what the
+   * agent status bar says instead of the current activity.
    */
   compacting: boolean;
-  /**
-   * docs/178 — the transcript position the in-flight compaction started at:
-   * `messages.length` at the moment `compacting` went true, or `null` when no
-   * compaction is running. `MessageList` renders the transient indicator at
-   * this position instead of at the end of the list, so a message the user
-   * sends *while* the compaction runs lands BELOW the spinner — the order the
-   * two things actually happened in. Derived by `setCompacting`; never set
-   * directly.
-   */
-  compactingAnchor: number | null;
   /**
    * docs/144 — transient sub-agent spawn chips keyed by spawnId. Set from
    * `sub_agent_spawn` WS messages; "Asking Codex…" while in flight, replaced by
@@ -269,7 +260,6 @@ const initialResettableState = {
   isLoading: false,
   activity: undefined as StreamingActivity | undefined,
   compacting: false,
-  compactingAnchor: null as number | null,
   subAgentSpawns: {},
   selectedRepoUrl: null as string | null,
   creatingRepo: false,
@@ -327,16 +317,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
   setActivity: (activity) => set({ activity }),
 
-  // the replay must not move the spinner down past messages sent since.
-  setCompacting: (compacting) =>
-    set((s) => ({
-      compacting,
-      compactingAnchor: !compacting
-        ? null
-        : s.compacting && s.compactingAnchor !== null
-        ? s.compactingAnchor
-        : s.messages.length,
-    })),
+  setCompacting: (compacting) => set({ compacting }),
   upsertSubAgentSpawn: (chip) =>
     set((s) => ({ subAgentSpawns: { ...s.subAgentSpawns, [chip.spawnId]: chip } })),
   removeSubAgentSpawn: (spawnId) =>
