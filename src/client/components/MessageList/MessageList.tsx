@@ -324,7 +324,7 @@ export function MessageList({
                   : <CaretDownIcon size={ICON_SIZE.XS} weight="bold" />}
                 {view.open ? "Show compact turn" : "Show full turn"}
               </Button>
-              {!view.open && view.run.lastReply < 0 && <span>Turn ended without an agent reply.</span>}
+              {!view.open && view.empty && <span>Turn ended without an agent reply.</span>}
             </div>
           )}
           {view.hidden && isBubble && shouldShowGapBefore(el.index) && renderRewindPoint(el.index)}

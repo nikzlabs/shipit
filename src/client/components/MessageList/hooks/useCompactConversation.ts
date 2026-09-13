@@ -12,8 +12,8 @@ import { usePermissionStore } from "../../../stores/permission-store.js";
 import { useEgressPromptStore } from "../../../stores/egress-prompt-store.js";
 
 type CompactRowView =
-  | { hidden: boolean; collapseTools: boolean; run?: undefined; first?: undefined; open?: undefined; search?: undefined; controls?: undefined }
-  | { hidden: boolean; collapseTools: boolean; run: CompactRun; first: boolean; open: boolean; search: boolean; controls?: string };
+  | { hidden: boolean; collapseTools: boolean; empty?: undefined; run?: undefined; first?: undefined; open?: undefined; search?: undefined; controls?: undefined }
+  | { hidden: boolean; collapseTools: boolean; empty: boolean; run: CompactRun; first: boolean; open: boolean; search: boolean; controls?: string };
 
 /**
  * docs/299 req 12 — the cards a collapsed turn keeps, each reading the state
@@ -132,6 +132,10 @@ export function useCompactConversation(
     // Only a row that HAS something hidden can be worth protecting; a kept reply
     // must not expand its own turn just because the user selected a word in it.
     const protectableIndices = new Set<number>();
+    // A turn that keeps nothing at all: its collapsed form is the button alone,
+    // which is the only case worth labelling. An error row or a pending card is
+    // its own explanation and needs no note beside it.
+    const showsSomething = new Set<CompactRun>();
     for (const el of elements) {
       const index = elementMessageIndex(el);
       const run = byIndex.get(index);
@@ -141,9 +145,12 @@ export function useCompactConversation(
         detail.add(el);
         protectableIndices.add(index);
       } else if (shouldCollapseRowTools(el, messages[index])) {
+        showsSomething.add(run);
         withDetails.add(run);
         collapsedTools.add(el);
         protectableIndices.add(index);
+      } else {
+        showsSomething.add(run);
       }
     }
     const controls = new Map<CompactRun, string[]>();
@@ -177,6 +184,7 @@ export function useCompactConversation(
       return {
         hidden: !open && detail.has(el),
         collapseTools: !open && collapsedTools.has(el),
+        empty: !showsSomething.has(run),
         run, first, open, search,
         controls: first ? controls.get(run)?.join(" ") : undefined,
       };

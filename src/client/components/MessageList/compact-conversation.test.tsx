@@ -371,12 +371,28 @@ describe("collapsed turns", () => {
     expect(screen.getByText("Checking files")).not.toBeVisible();
   });
 
-  it("shows a no-reply label only for a collapsed run without any text", () => {
+  it("labels a collapsed turn only when it would otherwise be the button alone", () => {
     compactOn();
-    const data: ChatMessage[] = [user("Task"), { ...bot(""), toolUse: [{ type: "tool_use", id: "r", name: "Read", input: {} }] }, user("Next"), bot("Working now")];
-    render(<MessageList messages={data} isLoading={false} />);
+    const toolOnly: ChatMessage[] = [user("Task"), { ...bot(""), toolUse: [{ type: "tool_use", id: "r", name: "Read", input: {} }] }, user("Next"), bot("Working now")];
+    const { rerender } = render(<MessageList messages={toolOnly} isLoading={false} />);
     expect(screen.getByText("Turn ended without an agent reply.")).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: /Show full turn/ }));
+    expect(screen.queryByText("Turn ended without an agent reply.")).not.toBeInTheDocument();
+
+    // An error row explains itself; the label beside it would be noise.
+    rerender(<MessageList messages={[
+      user("Task"), { ...bot(""), toolUse: [{ type: "tool_use" as const, id: "r", name: "Read", input: {} }] },
+      { ...bot("Process stopped"), isError: true }, user("Next"), bot("Working now"),
+    ] as ChatMessage[]} isLoading={false} />);
+    expect(screen.getByText("Process stopped")).toBeVisible();
+    expect(screen.queryByText("Turn ended without an agent reply.")).not.toBeInTheDocument();
+
+    // And a turn whose reply is an image is not a turn without a reply.
+    rerender(<MessageList messages={[
+      user("Chart it"), { ...bot(""), images: [{ data: "abc", mediaType: "image/png" }] },
+      { ...bot(""), toolUse: [{ type: "tool_use" as const, id: "r2", name: "Read", input: {} }] },
+      user("Next"), bot("Working now"),
+    ] as ChatMessage[]} isLoading={false} />);
     expect(screen.queryByText("Turn ended without an agent reply.")).not.toBeInTheDocument();
   });
 

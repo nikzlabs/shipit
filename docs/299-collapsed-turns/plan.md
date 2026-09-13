@@ -272,6 +272,14 @@ ghost text (`MessageList.tsx:331`). It keeps `aria-expanded` and
 `aria-controls`. No hidden-row count, and no failure status beside it —
 requirement 11 already keeps the error row on screen.
 
+docs/296's "Turn ended without an agent reply." note survives, on a narrower
+condition: a turn that keeps **nothing**, so its collapsed form is the button
+alone. The shipped rule showed it whenever the turn had no assistant *text*,
+which put the note beside a turn whose reply was an image — and suppressed it
+for a turn whose only content was an error row, where it was redundant anyway.
+Both are decided by the same classification that hides the rows, so the note
+cannot disagree with what is on screen.
+
 Follow the `design-language` skill: semantic color tokens only, no hardcoded
 palette values, `@phosphor-icons/react` for the icon.
 

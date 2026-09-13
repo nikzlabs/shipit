@@ -48,6 +48,8 @@
 - [x] Carry the tool-collapse state into the reading-anchor signal, so expanding
       a turn whose only hidden content is a tool subtree restores the position.
 - [x] Rebuild the expand control as a real button.
+- [x] Narrow the "Turn ended without an agent reply." note to a turn that keeps
+      nothing, so it cannot contradict what the collapsed turn shows.
 - [x] Update the Settings help text, which promises "all cards" today.
 
 ## Tests
