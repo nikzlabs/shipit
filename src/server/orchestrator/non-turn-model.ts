@@ -15,6 +15,7 @@ import {
   type ModelSelection,
 } from "../shared/catalogue/index.js";
 import { isHarnessInstalled } from "../shared/installed-harnesses.js";
+import { toolsOffRefusal } from "../shared/agent-tools-off.js";
 import type { EligibleModel } from "../shared/agent-registry.js";
 import {
   credentialSecretForRoute,
@@ -117,8 +118,26 @@ export function runnerForNonTurnSelection(
     const direct = directRunnerFor(selection, credentials, opts.directKeyFor);
     if (direct) return direct;
   }
-  const harness = harnessForSelection(selection, credentials, opts);
+  const harness = backgroundWorkHarnessFor(selection, credentials, opts);
   return harness ? { execution: "harness", ...harness } : undefined;
+}
+
+/**
+ * Background work runs a harness one-shot with its tools off, so a harness with
+ * no measured way to do that cannot carry it — and must not be offered, rather
+ * than refused once the user has chosen it (`agent-tools-off.ts`).
+ *
+ * Filtered here and NOT in `harnessesForSelection`, which the reviewer and the
+ * role resolver share: those run an ordinary turn with tools live, where the
+ * refusal says nothing about whether the harness can do the work.
+ */
+function backgroundWorkHarnessFor(
+  selection: ModelSelection,
+  credentials: readonly ConfiguredCredential[],
+  opts: HarnessSearchOpts,
+): { harnessId: AgentId; selection: ModelSelection } | undefined {
+  return harnessesForSelection(selection, credentials, opts)
+    .find((candidate) => !toolsOffRefusal(candidate.harnessId));
 }
 
 function directRunnerFor(
@@ -307,7 +326,7 @@ export function resolveNonTurnModel(
   // listed and being read; a harness on the same selection still answers.
   const harnessId = resolved.execution === "harness"
     ? resolved.harnessId
-    : harnessForSelection(selection, credentials)?.harnessId;
+    : backgroundWorkHarnessFor(selection, credentials, {})?.harnessId;
   if (!harnessId) {
     return pinned
       ? { ok: false, reason: "pin_unavailable", serviceName: common.serviceName, selection }

@@ -430,6 +430,57 @@ describe("backgroundWorkOptions — what the selector may offer (docs/299 req 3)
   });
 
   /**
+   * Background work runs a harness one-shot with its tools off, so a harness
+   * that has no measured way to do that must not be offered at all — a row the
+   * user can pick and that then refuses at run time is the state this replaces.
+   *
+   * Derived from `toolsOffRefusal` rather than naming a harness, so measuring
+   * one (planning#546) widens the list here instead of failing this test.
+   */
+  it("never offers a row whose only carrier cannot run with its tools off", async () => {
+    const { backgroundWorkOptions } = await import("./non-turn-model.js");
+    const { toolsOffRefusal } = await import("../shared/agent-tools-off.js");
+    const { allHarnesses, allServices, resolveDirectCall } = await import("../shared/catalogue/index.js");
+
+    const refusing = allHarnesses().map((h) => h.id).filter((id) => toolsOffRefusal(id));
+    expect(refusing.length, "no harness refuses tools-off — this proves nothing")
+      .toBeGreaterThan(0);
+
+    for (const service of allServices()) {
+      for (const mode of service.modes) {
+        const credentials = [credential(service.id, mode.kind)];
+        const options = backgroundWorkOptions(credentials, {
+          isInstalled: (id) => refusing.includes(id),
+        });
+        // Whatever survives with only those installed must be a direct call.
+        for (const option of options) {
+          expect(resolveDirectCall(option), `${service.id}/${mode.kind}/${option.modelId}`)
+            .toBeDefined();
+        }
+      }
+    }
+  });
+
+  it("resolves onto a harness that can run with its tools off, never one that cannot", async () => {
+    const { backgroundWorkOptions, runnerForNonTurnSelection } = await import("./non-turn-model.js");
+    const { toolsOffRefusal } = await import("../shared/agent-tools-off.js");
+    const { allServices } = await import("../shared/catalogue/index.js");
+    const installed = { isInstalled: () => true };
+
+    for (const service of allServices()) {
+      for (const mode of service.modes) {
+        const credentials = [credential(service.id, mode.kind)];
+        for (const option of backgroundWorkOptions(credentials, installed)) {
+          const runner = runnerForNonTurnSelection(option, credentials, installed);
+          if (runner?.execution !== "harness") continue;
+          expect(toolsOffRefusal(runner.harnessId), `${service.id}/${mode.kind}/${option.modelId}`)
+            .toBeUndefined();
+        }
+      }
+    }
+  });
+
+  /**
    * The option list and the resolver are one search, so a pin the picker offers
    * is one `resolveNonTurnModel` can run — the drift this slice exists to close.
    */
