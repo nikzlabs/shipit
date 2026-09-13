@@ -78,16 +78,29 @@ fails, so the server side leads and the option list follows it.
 
 ## Phase 4 — Cleanup container, deadline, voice key
 
-- [ ] Create the cleanup container at orchestrator start; recreate it from the health monitor.
-- [ ] Exempt it from `steady-state-reclaim` / the idle enforcer; test that a memory-pressure pass leaves it alone.
-- [ ] One-shot spawn with tools off — `--tools ""` for Claude, the equivalent per harness.
-- [ ] Reuse the existing spawn-home machinery for per-request isolation; do **not** delete `provisionSubAgentSpawnHome`, which also builds OpenCode's ChatGPT credential projection and publishes rotated tokens (`session-agent-credentials.ts:367`, `:397`).
-- [ ] `RUNTIME_MODE=local`: run the harness from the orchestrator as `session-namer.ts` does; test it, since local cleanup has no container path today.
-- [ ] Orchestrator-side deadline returning the raw transcript, not waiting on teardown.
-- [ ] Worker cancellation addressed by spawn id; `/agent/kill` targets the primary agent and is not it. Never kill the shared container to enforce one request's deadline.
-- [ ] Split the cleanup budget into a direct value and a harness value.
-- [ ] Remove `pickCleanupProvider`; keep `isSane`.
-- [ ] Move `emitNonTurnFailure` out of the shared path so cleanup writes nothing to chat (req 6).
+- [x] Create the cleanup container at orchestrator start; recreate it from the health monitor.
+- [x] Exempt it from `steady-state-reclaim` / the idle enforcer; test that a memory-pressure pass leaves it alone.
+- [x] One-shot spawn with tools off — `--tools ""` for Claude, the equivalent per harness.
+- [x] Reuse the existing spawn-home machinery for per-request isolation; do **not** delete `provisionSubAgentSpawnHome`, which also builds OpenCode's ChatGPT credential projection and publishes rotated tokens (`session-agent-credentials.ts:367`, `:397`).
+- [x] `RUNTIME_MODE=local`: run the harness from the orchestrator as `session-namer.ts` does; test it, since local cleanup has no container path today.
+- [x] Worker cancellation addressed by spawn id; `/agent/kill` targets the primary agent and is not it. Never kill the shared container to enforce one request's deadline.
+
+Shipped in PR #2761. It also broke `main`: the switch it added over `AgentId` was written before
+the Antigravity harness added a fifth member, and the two merged in that order. Neither pull
+request's own checks could see it, because each was green against the base it forked from.
+Antigravity turned out to have no way to run with its tools off at all — its adapter reads no
+such flag — so background work refuses that harness rather than running it with every tool live.
+Measuring it properly is [planning#546](https://github.com/nikzlabs/shipit-planning/issues/546).
+
+- [x] Orchestrator-side deadline returning the raw transcript, not waiting on teardown.
+- [x] Split the cleanup budget into a direct value and a harness value.
+- [x] Remove `pickCleanupProvider`; keep `isSane`.
+- [x] Move `emitNonTurnFailure` out of the shared path so cleanup writes nothing to chat (req 6).
+
+Shipped in PR #2767, which also deleted `voice/providers/openai-cleanup.ts` — cleanup now runs
+entirely on the background-work choice, with no provider of its own. Until the voice key is
+adopted, an install whose only OpenAI key is that one has no cleanup.
+
 - [ ] Adopt `voiceProviderKeys.openai` as an ordinary OpenAI service credential, per docs/252 req 20's precedent. Seed background work onto it only when nothing is set.
 - [ ] The adoption notice in `VoiceTab.tsx`; declining leaves cleanup unavailable and says so, and never writes a background-work choice.
 - [ ] `VoiceTab.tsx` status names the background-work choice, links to that setting, and says when cleanup will take a few seconds. Render test per state.
