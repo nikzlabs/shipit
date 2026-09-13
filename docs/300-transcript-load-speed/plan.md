@@ -126,8 +126,12 @@ working untouched. The cost is that a steered live execution keeps earlier
 display turns full until it settles — bounded to one execution that is already
 being streamed, and the deliberate price of leaving the live path alone.
 
-This also means a stale `inProgress` flag would keep a dead turn permanently
-full. docs/299 lists that fix; this design depends on it.
+This rule reads the persisted `in_progress` column, which is authoritative,
+rather than the client's per-row flags, which disagree between a viewer who
+watched the turn and one who reconnected (see docs/299, "the one signal this
+design trusts"). A turn whose row stayed `in_progress` after a crash would
+therefore be sent full forever, so the flag-clearing fix in docs/299's checklist
+is a dependency of this work, though not of docs/299 itself.
 
 ## The endpoint
 

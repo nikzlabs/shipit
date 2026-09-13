@@ -39,7 +39,7 @@ need their own messages and the significant events.
    during a turn.
 5. A collapsed turn shows the user's own message and the last agent message,
    complete. It shows no cards, so the user reads only the request and the
-   reply.
+   reply. Requirements 11 and 12 are the exceptions to "no cards".
 6. Moved to [docs/300-transcript-load-speed](../300-transcript-load-speed/requirements.md) req 2.
 7. Moved to [docs/300-transcript-load-speed](../300-transcript-load-speed/requirements.md) req 3.
 8. The control that expands a turn is clearly a button. It is easy to see, and
@@ -58,7 +58,12 @@ need their own messages and the significant events.
 
 ## Open questions
 
-None.
+- Requirement 12 says a card the user has already acted on is hidden. An action
+  checklist has no record that it was submitted: the card is an immutable,
+  reusable composer, and submitting changes nothing that survives a reload. So
+  either every action checklist stays visible for the life of the session, or a
+  submitted flag is added and persisted. Which? A bug report is not affected —
+  its state is authoritative and already restored on load.
 
 ## Resolved questions
 
