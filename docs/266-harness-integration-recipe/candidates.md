@@ -23,7 +23,7 @@ semantics, not a shrug.
 | 2. Streaming schema | ✅ documented NDJSON | ❓ undocumented — capture + conformance test required | ⚠️ documented but coarse; loss bugs (see verdict) | ✅ documented NDJSON, 3 event types *(probed)* |
 | 3. Session resume | ✅ | ✅ | ✅ | ✅ `--conversation <id>`, id in `init` *(probed)* |
 | 4. Full-auto permissions | ✅ `--force` + allow/deny | ✅ `--always-approve` + modes | ✅ `--auto` + config | ✅ `--dangerously-skip-permissions` + allow list *(probed)* |
-| 5. Auth injectable | ⚠️ key env ✅ / subscription ❓ (path undocumented) | ✅ `~/.grok/auth.json`; device-auth *(third-party)* | ✅ plain file; ❌ no Anthropic subscription | ⚠️ key env ✅ *(probed)* / account ❓ keyring-only; file fallback broken upstream (see verdict) |
+| 5. Auth injectable | ⚠️ key env ✅ / subscription ❓ (path undocumented) | ✅ `~/.grok/auth.json`; device-auth *(third-party)* | ✅ plain file; ❌ no Anthropic subscription | ⚠️ key env ✅ *(probed)* / account ❓ code flow works headless and a token file is written *(probed)*; fresh-process read still unproven (see verdict) |
 | 6. Pinnable install | ❌ none documented — policy gate | ⚠️ pinned install script *(third-party)* | ✅ npm exact | ✅ versioned GitHub release tarball; ❌ no npm |
 | 7. Instructions | ✅ AGENTS.md/CLAUDE.md | ✅ AGENTS.md | ✅ AGENTS.md | ✅ AGENTS.md/GEMINI.md + plugin `rules/`; ❌ no flag |
 | 8. MCP | ✅ `mcp.json` | ✅ `config.toml` | ✅ `opencode.json` | ✅ `~/.gemini/config/mcp_config.json` *(probed)* |
@@ -224,9 +224,30 @@ item below is observed output of that binary.
   - *Account*: Google OAuth into the **OS keyring** (Secret Service /
     D-Bus). The file fallback `~/.gemini/antigravity-cli/
     antigravity-oauth-token` is write-only in containers per upstream
-    #479 (open, reported on 1.0.10; not re-verified on 1.2.2 — needs a real
-    login). Settling it takes either a fixed fallback in a newer release or
-    a Secret Service daemon inside the session container.
+    #479 (open, reported on 1.0.10). Probed on 1.2.2 in a session
+    container with no D-Bus: print mode itself runs the sign-in — it prints
+    the Google URL on stderr and reads the authorization code from stdin
+    (60 s window) — and on success writes `antigravity-oauth-token` (mode
+    0600; keys `access_token`, `refresh_token`, `id_token`, `expiry`,
+    `auth_method`, `token_type`). Whether a *fresh* process reads that
+    file back is the open half of #479; the probe script for it is the
+    account-login test described in the verdict. Settling it takes either
+    that probe passing or a Secret Service daemon inside the session image.
+  - *Eligibility gate*: after a successful OAuth exchange the CLI asks
+    Google an account-eligibility question and can refuse the account
+    (observed: *"Eligibility check failed: Your current account is not
+    eligible for Antigravity. To use Antigravity you must be 18 years old
+    or older. If you think you are receiving this message in error, please
+    ensure you have verified your age and try to log in again."*). It
+    arrives as an `error:` line on stderr with a non-zero exit, and the
+    token file is still written. **Requirement for the adapter: relay that
+    text to the user verbatim.** Today's auth handling matches stderr
+    against generic patterns (`textIndicatesAuthFailure`,
+    `session/agents/claude/process.ts`) and replaces the message with the
+    per-harness string in `orchestrator/services/agent-auth-gate.ts`; the
+    eligibility text matches none of those patterns, and even if it did,
+    the generic "sign in or add a key" copy would hide the only sentence
+    that tells the user what to fix.
   - *Terms*: the Antigravity Additional Terms of Service §6 state *"Using
     third party software, tools, or services to access the Service (e.g.
     using OpenClaw with Antigravity OAuth) is a breach of this Agreement"*.
@@ -272,12 +293,15 @@ item below is observed output of that binary.
   effort levels, token usage, pinnable release asset, and a plugin
   mechanism that carries prompt, MCP and skills from the scoped home. Two
   things stand in front of any recipe step:
-  1. **Account auth is unproven in a container** — keyring-only storage
-     and a file fallback reported write-only (#479). Until a real login on
-     a current release proves the token survives a fresh process (or a
-     Secret Service daemon is added to the session image), integration
-     would be **metered `GEMINI_API_KEY` only**, which inverts ShipIt's
-     subscription-first default and needs a sign-off. The terms are not
+  1. **Account auth is half-proven in a container** — the headless sign-in
+     works and writes the token file (probed on 1.2.2), but the
+     fresh-process read is the half #479 reports broken and the probe was
+     stopped by an account-eligibility refusal before it ran. Until it
+     passes (or a Secret Service daemon is added to the session image),
+     integration would be **metered `GEMINI_API_KEY` only**, which inverts
+     ShipIt's subscription-first default and needs a sign-off. Whatever
+     the outcome, the adapter must surface Google's account-level refusals
+     verbatim (see the eligibility note above). The terms are not
      the blocker: ShipIt runs Google's own CLI, which is the client the
      §6 example permits; only the broad "in connection with" phrase is
      left to the user's reading.
