@@ -16,13 +16,10 @@ type CompactRowView =
   | { hidden: boolean; collapseTools: boolean; empty: boolean; run: CompactRun; first: boolean; open: boolean; search: boolean; controls?: string };
 
 /**
- * docs/299 req 12 — the cards a collapsed turn keeps, each reading the state
- * that decides it. Nothing here is a judgement about importance: a card is kept
- * while the product is waiting on a person, and hides once they have acted.
- *
- * The three card stores are authoritative over the persisted row — they are
- * re-seeded from history on every load (`session-data.ts`), and a live update
- * lands there rather than on the message.
+ * docs/299 req 12 — a card is kept while the product is waiting on a person,
+ * and hides once they have acted. The three stores outrank the persisted row:
+ * they are re-seeded from history on every load (`session-data.ts`), and a live
+ * update lands there rather than on the message.
  */
 function useNeedsUser(): NeedsUser {
   const bugReports = useBugReportStore((s) => s.cards);
@@ -65,15 +62,10 @@ export function useCompactConversation(
 
   /**
    * planning#540 — protection is ONE-WAY: focus or a selection entering a turn
-   * opens it, and nothing but the user's own button closes it again.
-   *
-   * The shipped guard also closed a turn the moment focus or the selection left
-   * it, synchronously. A press inside the transcript collapses the selection and
-   * moves focus on `mousedown`, so rows hid and the list shrank between
-   * `mousedown` and `mouseup`: no `click` ever reached the control the user was
-   * pressing, and the reading anchor re-anchored the scroll underneath them.
-   * Requirement 1's automatic collapse still governs a turn nobody has touched;
-   * a turn the user has touched is theirs until they say otherwise.
+   * opens it, and nothing but the user's own button closes it again. Closing it
+   * on focus/selection LEAVING, as the shipped guard did, hid rows between
+   * `mousedown` and `mouseup` — so the click never reached what was pressed and
+   * the scroll re-anchored under the user.
    */
   // eslint-disable-next-line no-restricted-syntax -- subscribe to browser focus/selection, not derived application state
   useEffect(() => {
