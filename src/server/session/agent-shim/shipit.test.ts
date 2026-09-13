@@ -3136,7 +3136,7 @@ describe("runShim — agent run", () => {
     const out = await run(["agent", "run", "--role", "reviewer", "--prompt-file", file], {
       "POST /agent-ops/agent/spawn": {
         status: 403,
-        body: { error: "Sub-agents are disabled. Enable them in Settings → Advanced." },
+        body: { error: "Sub-agents are disabled. Enable them in Settings → Advanced, under \"Multi-agent sessions\"." },
       },
     });
     expect(out.exitCode).toBe(1);
