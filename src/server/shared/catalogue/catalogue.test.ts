@@ -1026,6 +1026,50 @@ describe("the launch catalogue is a requirement, not a capability (req 15)", () 
   });
 });
 
+describe("a vendor no harness speaks yet (docs/302-gemini-catalogue-vendor req 5)", () => {
+  const google = () => getService("google");
+  const GEMINI_KEY = { serviceId: "google", billingMode: "key" as const, via: "string" as const };
+
+  it("stores its key as a metered credential under the vendor's own variable", () => {
+    expect(google()?.modes.map((m) => m.kind)).toEqual(["key"]);
+    expect(storageEnvFor("google", "key")).toBe("GEMINI_API_KEY");
+    expect(credentialModeForStorageEnv("GEMINI_API_KEY")).toEqual({ serviceId: "google", billingMode: "key" });
+  });
+
+  it("declares every model under the Gemini style alone, with an endpoint for it", () => {
+    const mode = getMode("google", "key");
+    expect(mode?.endpoints["gemini-generate-content"]).toBe("https://generativelanguage.googleapis.com");
+    expect(mode?.models.length).toBeGreaterThan(0);
+    for (const model of mode?.models ?? []) {
+      expect(model.styles, model.id).toEqual(["gemini-generate-content"]);
+      expect(model.family, model.id).toBe("gemini");
+    }
+  });
+
+  it("joins no shipped harness, so nothing offers or shapes its rows", () => {
+    for (const harness of allHarnesses()) {
+      expect(harnessServiceSupport(harness.id, "google"), harness.id).toBe("none");
+      expect(eligibleEntriesForHarness(harness.id, [GEMINI_KEY]), harness.id).toEqual([]);
+      expect(
+        catalogueEntriesForHarness(harness.id).some((e) => e.service.id === "google"),
+        harness.id,
+      ).toBe(false);
+      for (const model of getMode("google", "key")?.models ?? []) {
+        expect(
+          resolveSpawnShaping(harness.id, { serviceId: "google", billingMode: "key", modelId: model.id }),
+          `${harness.id}/${model.id}`,
+        ).toBeUndefined();
+      }
+    }
+  });
+
+  it("carries Google's published input limit, not the gateway rows' rounded one", () => {
+    for (const model of getMode("google", "key")?.models ?? []) {
+      expect(model.contextWindow.default, model.id).toBe(1_048_576);
+    }
+  });
+});
+
 describe("resolving a bare model id", () => {
   it("takes the first service and mode declaring it", () => {
     expect(resolveModelSelection("claude-opus-5")).toEqual({

@@ -16,6 +16,7 @@ export const EGRESS_DEFAULT_ALLOWLIST: readonly string[] = [
   "api.x.ai",
   "auth.x.ai",
   "cli-chat-proxy.grok.com",
+  "generativelanguage.googleapis.com",
   ".github.com",
   ".githubusercontent.com",
   ".githubassets.com",
@@ -49,6 +50,7 @@ export const EGRESS_LIFELINE_ALLOWLIST: readonly string[] = [
   "api.x.ai",
   "auth.x.ai",
   "cli-chat-proxy.grok.com",
+  "generativelanguage.googleapis.com",
 ];
 
 export const EGRESS_GITHUB_LIFELINE_HOSTS: readonly string[] = [

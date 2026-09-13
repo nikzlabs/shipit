@@ -36,6 +36,10 @@ export const MODEL_VISION: Record<CanonicalModelKey, VisionSupport> = {
   "deepseek-v4.1-flash": "yes",
 
   "gemini-3.7-flash": "yes",
+  // Google's model pages describe the Gemini 3 line as natively multimodal
+  // with image input (2026-09-13); not measured through any ShipIt harness.
+  "gemini-3.8-flash": "yes",
+  "gemini-3.1-pro-preview": "yes",
 
   "grok-4.6": "yes",
   "grok-4.5": "yes",
