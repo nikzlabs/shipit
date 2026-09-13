@@ -146,8 +146,16 @@ no gain.
     Stop hook in force, so ShipIt would say "Goal cleared", hide the chip, and
     the next turn would still follow the goal — the docs/154 incident, rebuilt.
     The adapter consumes the answer and the zero-turn `result` that follows it,
-    so neither reaches the transcript or the turn machinery, where a `result`
-    reads as a CLI-started turn.
+    so neither reaches ShipIt's transcript or the turn machinery, where a
+    `result` reads as a CLI-started turn.
+
+    It does **not** stay out of the *model's* context, and nothing in ShipIt can
+    put it there. Measured on 2.1.260 by running this exact invocation against a
+    throwaway thread: the CLI records the command in the thread as two `user`
+    entries — a `<local-command-caveat>` and a `<command-name>/goal</command-name>`
+    — so every later resume replays it to the model as a message the user never
+    sent. The cost of a read is therefore not zero in the way "0 turns, 0 cost"
+    suggests (both measured, and both true).
   - **Otherwise** → `runClaudeGoalControl`.
   - `set` is refused on every path. Nothing routes one here (`goalActions` marks
     it `"turn"`), and refusing rather than running it is what keeps requirement 7
