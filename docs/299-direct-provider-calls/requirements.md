@@ -26,21 +26,32 @@ where a harness runs the work; what becomes a choice is whether a harness runs i
 2. Background work can run as a **direct call to the provider's API**, with no harness and no
    container. It is an ordinary way to run background work, not a fallback.
 
-3. **The selector presents every option the user's credentials actually support**, and the
-   options differ by billing mode:
+3. **The selector presents every option the user's credentials actually support.** What decides
+   the options is **how the credential was obtained**, which is req 1's distinction:
 
-   - A **subscription** offers that vendor's harness, and nothing else. An Anthropic
-     subscription offers Claude Code; a ChatGPT subscription offers Codex.
-   - An **API key** offers a direct call to that provider, and nothing else.
+   - A credential obtained by **signing in to the vendor's own application** is client-bound.
+     It offers the harnesses that can carry it, and no direct call. An Anthropic subscription
+     offers Claude Code; a ChatGPT subscription offers Codex and OpenCode.
+   - A credential the user **pasted or the deployment supplied** offers a direct call.
 
-   A service the user has configured both ways therefore offers two options. A service that only
-   ever has a key offers one.
+   A service the user has configured both ways therefore offers both kinds of option. A service
+   that only ever has a pasted key offers a direct call.
 
-   A harness can run on an API key today, and background work no longer offers that. It is
+   A harness can run on a pasted key today, and background work no longer offers that. It is
    slower than a direct call, it needs a container, and it produces the same text — so the row
    would only ever be the worse of two ways to reach the same model. This narrows
    [`docs/252-custom-models`](../252-custom-models/requirements.md) req 8 for background work
    alone: session model selection is unchanged, and a key still reaches every harness there.
+
+   **The rule is not the billing mode.** An earlier draft said a subscription offers its
+   vendor's harness and a key offers a direct call. That is wrong on the catalogue ShipIt
+   already ships: GLM's coding plan is a `sub` mode whose credential is a pasted string carried
+   by **Claude Code**, which is not its vendor's harness
+   (`src/server/shared/catalogue/services.ts:290`), and a ChatGPT subscription is carried by
+   both Codex and OpenCode (`src/server/shared/catalogue/services.ts:164`). The catalogue says
+   so itself: billing mode is "independent of credential delivery"
+   (`src/server/shared/catalogue/types.ts:11`). Keying on the billing mode would have removed
+   those working routes.
 
 4. A direct call needs no session and no container, so background work that runs this way
    succeeds when no session is open and when a session's container has been reclaimed. Today
@@ -60,17 +71,48 @@ where a harness runs the work; what becomes a choice is whether a harness runs i
    [`docs/252-custom-models`](../252-custom-models/requirements.md) req 16's split by service
    and billing mode.
 
-8. **Background work that runs a harness costs the same whether or not the user did it
-   recently.** There is no first-run penalty after a quiet period, and cleanup latency does not
-   depend on which sessions happen to be open or on what ShipIt reclaimed while the user was
-   away. Cleanup that runs a harness is slower than a direct call — that difference is req 3's
-   visible trade — but it is *predictable*, which is what a push-to-talk control needs.
+8. **Voice cleanup that runs a harness pays no container start.** The first dictation after a
+   quiet period costs no container-start delay, and cleanup latency does not depend on which
+   sessions happen to be open or on what ShipIt reclaimed while the user was away. Cleanup that
+   runs a harness is slower than a direct call — that difference is req 3's visible trade — but
+   it does not become slower still because the user paused.
+
+   This is narrower than an earlier draft, which promised equal latency for *all* harness-run
+   background work. The receipt below supports a warm cleanup container and nothing wider.
+
+9. **A cleanup run that cannot finish quickly inserts the raw transcript anyway.** There is an
+   end-to-end deadline the user can feel, not merely a timeout passed to whatever runs the work.
+   A harness that stops answering must not leave the composer waiting.
 
 ## Open questions
 
-_None._
+- **How does a dictation's spend appear in usage?** Req 7 says a direct call is metered spend
+  reported under docs/252 req 16's split, but a usage row requires a session id
+  (`src/server/shared/database.ts:550` — `session_id TEXT NOT NULL`) and a dictation may have no
+  session. The options are: attribute it to whichever session was active and record nothing when
+  there is none; make the usage row's session id nullable and report install-level spend as its
+  own row; or do not record cleanup spend at all and say so where usage is shown. The first is
+  cheapest and under-reports; the second is the honest one and touches the schema; the third
+  makes req 7 partly false for cleanup.
 
 ## Resolved questions
+
+- 2026-09-13 — Does the billing mode decide whether background work runs a harness or calls the
+  API directly? **Chosen: no — the credential's origin decides.** The independent review
+  (`shipit agent run --role reviewer`, run `c24cf98a`) produced a counterexample from the shipped
+  catalogue: GLM's coding plan is a `sub` mode carried by Claude Code, so "a subscription offers
+  its vendor's harness" both names a harness GLM does not own and would have removed a working
+  route; a ChatGPT subscription has two carriers for the same reason. Req 3 now keys on whether
+  the credential came from signing in to the vendor's own application, which is the distinction
+  req 1 was already drawing and which classifies every case the earlier wording got wrong. The
+  user's three examples are unchanged by this: an Anthropic subscription is a sign-in, an
+  Anthropic API key is pasted, and other services are pasted keys.
+
+  The same review corrected two claims that were wrong rather than incomplete. Req 8 promised
+  equal latency for all harness-run background work while its receipt supports only a warm
+  cleanup container, and is narrowed. `plan.md` attributed the gap between two one-shot
+  measurements to CLI boot; both measurements include boot, so the difference isolates nothing —
+  corrected where the numbers are recorded.
 
 - 2026-09-13 — When a service is configured with an API key, does the selector also offer that
   service's models under a harness? **Chosen: no — the direct call only.** The alternative was
@@ -121,13 +163,18 @@ _None._
 
 ## Requirement provenance
 
-Reqs 2, 3, 5 and 8 are the user's, quoted in the receipts above. Req 1 is the user's concern
-("forbidden by tos") stated as a rule. Reqs 4, 6 and 7 are the agent's: req 4 names a benefit
-that falls out of reqs 2 and 3, req 6 preserves existing cleanup behaviour, and req 7 applies
-docs/252 req 16 to the new case. None of the three was asked for, and each is small enough to
-delete if it is wrong.
+Reqs 2, 3 and 5 are the user's, quoted in the receipts above. Req 1 is the user's concern
+("forbidden by tos") stated as a rule.
 
-Req 8 needs one note, because the user's instruction was a mechanism — a container that is never
-stopped — and a requirement states what is observable. The observable half is written here; the
-container itself is in `plan.md`. If a later design reaches the same predictability another way,
-req 8 is satisfied and the receipt records what was actually asked for.
+Reqs 4, 6, 7 and 9 are the agent's. Req 4 names a benefit that falls out of reqs 2 and 3, req 6
+preserves existing cleanup behaviour, req 7 applies docs/252 req 16 to the new case, and req 9
+states a deadline the design needs and today's code does not provide. None was asked for. An
+earlier version of this section called them "small enough to delete if it is wrong", which the
+review rightly rejected: req 7 in particular has no cheap answer, which is why it now carries an
+open question rather than a claim.
+
+**Req 8 is the user's instruction narrowed.** What the user asked for was a mechanism — a
+cleanup container that is never stopped — and a requirement states what is observable, so the
+observable half is written here and the container is in `plan.md`. The first draft widened it to
+all harness-run background work, which the receipt does not support; the review caught that and
+it is now scoped to cleanup, which is what was actually asked for.
