@@ -27,7 +27,6 @@ import {
 import { DEFAULT_FAILOVER_CUTOFF } from "../shared/types.js";
 import { subscriptionWindowIsCurrent } from "../shared/types/usage-limits-types.js";
 import type { VoiceDeliveryMode } from "../shared/types/voice-note-types.js";
-import { DEFAULT_VOICE_DELIVERY_MODE } from "../shared/types/voice-note-types.js";
 import {
   allServices,
   getMode,
@@ -35,7 +34,15 @@ import {
   selectionExists,
   storageEnvFor,
 } from "../shared/catalogue/index.js";
-import type { BillingMode, ModelSelection } from "../shared/catalogue/index.js";
+import type { ModelSelection } from "../shared/catalogue/index.js";
+import { credentialStoreField, GLOBAL_SETTINGS } from "../shared/settings-catalogue/index.js";
+import type {
+  AnySettingDeclaration,
+  CredentialStoreSettingField,
+  CredentialStoreSettingKey,
+  GlobalSettingsCatalogue,
+  SettingValue,
+} from "../shared/settings-catalogue/index.js";
 
 interface LinearTrackerConfig {
   token?: string;
@@ -52,21 +59,15 @@ interface StoredRole {
   params?: RolePinnedParams;
 }
 
-interface CredentialData {
+// The catalogue owns these fields' type, default and validation (docs/299).
+type DeclaredSettingsData = Partial<Record<CredentialStoreSettingField, unknown>>;
+
+interface CredentialData extends DeclaredSettingsData {
   agentEnv?: Record<string, string>;
   githubToken?: string;
   linear?: LinearTrackerConfig;
-  memoryBudgetMb?: number;
-  agentSystemInstructionsEnabled?: boolean;
-  autoCreatePr?: boolean;
-  liveSteering?: boolean;
   failoverCutoffs?: Record<string, FailoverCutoffs>;
   accountSelectionMode?: Record<string, AccountSelectionMode>;
-  autoResolveConflicts?: boolean;
-  autoFixCi?: boolean;
-  autoResetMergedBranch?: boolean;
-  enableSubAgents?: boolean;
-  nonTurnModel?: { serviceId: string; billingMode: BillingMode; modelId: string };
   reviewers?: Partial<Record<ReviewerSlot, ReviewerPin>>;
   roles?: Record<string, StoredRole>;
   mcpServers?: Record<string, McpServerConfig>;
@@ -79,7 +80,6 @@ interface CredentialData {
   // Server-only, keyed by route ID so multiple credentials can share a destination env name.
   credentialSecrets?: Record<string, string>;
   voiceProviderKeys?: Record<string, string>;
-  voiceDeliveryMode?: VoiceDeliveryMode;
   voiceWebhook?: { url: string; token: string };
   // Survives credential removal so completed onboarding does not return.
   harnessOnboardingCompletedAt?: string;
@@ -594,16 +594,38 @@ export class CredentialStore {
       .map(([id]) => id);
   }
 
+  /** The catalogue carries the default and how a stored value is interpreted. */
+  getDeclaredSetting<K extends CredentialStoreSettingKey>(
+    key: K,
+  ): SettingValue<GlobalSettingsCatalogue[K]> {
+    const declaration = GLOBAL_SETTINGS[key];
+    return declaration.type.read(this.data[credentialStoreField(key)]) as SettingValue<
+      GlobalSettingsCatalogue[K]
+    >;
+  }
+
+  /** Throws when the value fails the declared validation, so a bad write cannot persist. */
+  setDeclaredSetting(key: CredentialStoreSettingKey, value: unknown): void {
+    const declaration: AnySettingDeclaration = GLOBAL_SETTINGS[key];
+    const checked = declaration.type.validate(value, declaration.label);
+    if (!checked.ok) throw new Error(checked.message);
+    const field = credentialStoreField(key);
+    const stored = declaration.type.serialize(checked.value);
+    if (stored === undefined) {
+      // eslint-disable-next-line @typescript-eslint/no-dynamic-delete -- keyed by a declared setting's field
+      delete this.data[field];
+    } else {
+      this.data[field] = stored;
+    }
+    this.save();
+  }
+
   getVoiceDeliveryMode(): VoiceDeliveryMode {
-    const mode = this.data.voiceDeliveryMode;
-    return mode === "native" || mode === "external" || mode === "both"
-      ? mode
-      : DEFAULT_VOICE_DELIVERY_MODE;
+    return this.getDeclaredSetting("voice.deliveryMode");
   }
 
   setVoiceDeliveryMode(mode: VoiceDeliveryMode): void {
-    this.data.voiceDeliveryMode = mode;
-    this.save();
+    this.setDeclaredSetting("voice.deliveryMode", mode);
   }
 
   getVoiceWebhook(): { url: string; token: string } | null {
@@ -628,45 +650,36 @@ export class CredentialStore {
 
   /** The configured budget in MB, or `null` for "the host is the budget". */
   getMemoryBudgetMb(): number | null {
-    const v = this.data.memoryBudgetMb;
-    return typeof v === "number" && v > 0 ? v : null;
+    return this.getDeclaredSetting("advanced.memoryBudgetMb");
   }
 
   setMemoryBudgetMb(mb: number | null): void {
-    if (mb === null || !Number.isFinite(mb) || mb <= 0) {
-      delete this.data.memoryBudgetMb;
-    } else {
-      this.data.memoryBudgetMb = Math.floor(mb);
-    }
-    this.save();
+    this.setDeclaredSetting("advanced.memoryBudgetMb", mb);
   }
 
   getAgentSystemInstructionsEnabled(): boolean {
-    return this.data.agentSystemInstructionsEnabled ?? true;
+    return this.getDeclaredSetting("instructions.agentInstructionsEnabled");
   }
 
   setAgentSystemInstructionsEnabled(enabled: boolean): void {
-    this.data.agentSystemInstructionsEnabled = enabled;
-    this.save();
+    this.setDeclaredSetting("instructions.agentInstructionsEnabled", enabled);
   }
 
   getAutoCreatePr(): boolean {
-    return this.data.autoCreatePr ?? false;
+    return this.getDeclaredSetting("integrations.autoCreatePr");
   }
 
   setAutoCreatePr(enabled: boolean): void {
-    this.data.autoCreatePr = enabled;
-    this.save();
+    this.setDeclaredSetting("integrations.autoCreatePr", enabled);
   }
 
   // Steering avoids resume errors from interrupted turns with signed thinking blocks.
   getLiveSteering(): boolean {
-    return this.data.liveSteering ?? true;
+    return this.getDeclaredSetting("advanced.liveSteering");
   }
 
   setLiveSteering(enabled: boolean): void {
-    this.data.liveSteering = enabled;
-    this.save();
+    this.setDeclaredSetting("advanced.liveSteering", enabled);
   }
 
   getFailoverCutoffs(serviceId: string, billingMode: CredentialBillingMode): FailoverCutoffs {
@@ -714,64 +727,43 @@ export class CredentialStore {
   }
 
   getAutoResolveConflicts(): boolean {
-    return this.data.autoResolveConflicts ?? false;
+    return this.getDeclaredSetting("advanced.autoResolveConflicts");
   }
 
   setAutoResolveConflicts(enabled: boolean): void {
-    this.data.autoResolveConflicts = enabled;
-    this.save();
+    this.setDeclaredSetting("advanced.autoResolveConflicts", enabled);
   }
 
   getAutoFixCi(): boolean {
-    return this.data.autoFixCi ?? false;
+    return this.getDeclaredSetting("advanced.autoFixCi");
   }
 
   setAutoFixCi(enabled: boolean): void {
-    this.data.autoFixCi = enabled;
-    this.save();
+    this.setDeclaredSetting("advanced.autoFixCi", enabled);
   }
 
   getAutoResetMergedBranch(): boolean {
-    return this.data.autoResetMergedBranch ?? true;
+    return this.getDeclaredSetting("advanced.autoResetMergedBranch");
   }
 
   setAutoResetMergedBranch(enabled: boolean): void {
-    this.data.autoResetMergedBranch = enabled;
-    this.save();
+    this.setDeclaredSetting("advanced.autoResetMergedBranch", enabled);
   }
 
   getEnableSubAgents(): boolean {
-    return this.data.enableSubAgents ?? true;
+    return this.getDeclaredSetting("advanced.enableSubAgents");
   }
 
   setEnableSubAgents(enabled: boolean): void {
-    this.data.enableSubAgents = enabled;
-    this.save();
+    this.setDeclaredSetting("advanced.enableSubAgents", enabled);
   }
 
   getNonTurnModel(): ModelSelection | undefined {
-    const stored = this.data.nonTurnModel;
-    if (!stored) return undefined;
-    // Keep retired pins so the resolver can follow their successor instead of discarding the choice.
-    if (selectionExists(stored)) return { ...stored };
-    const retired = getMode(stored.serviceId, stored.billingMode)
-      ?.retired.some((r) => r.id === stored.modelId);
-    return retired ? { ...stored } : undefined;
+    return this.getDeclaredSetting("services.nonTurnModel") ?? undefined;
   }
 
   setNonTurnModel(selection: ModelSelection | null): void {
-    if (selection === null) {
-      delete this.data.nonTurnModel;
-      this.save();
-      return;
-    }
-    if (!selectionExists(selection)) {
-      throw new Error(
-        `No catalogue entry for ${selection.serviceId}/${selection.billingMode}/${selection.modelId}`,
-      );
-    }
-    this.data.nonTurnModel = { ...selection };
-    this.save();
+    this.setDeclaredSetting("services.nonTurnModel", selection);
   }
 
   // A failed seed must not remain in memory as a saved setting; save() would swallow the error.
