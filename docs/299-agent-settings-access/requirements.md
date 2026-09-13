@@ -41,7 +41,9 @@ agent is the actor.
 ## Requirements
 
 1. From inside a session, the agent can read ShipIt's current settings itself,
-   without asking the user to read a value out and paste it back.
+   without asking the user to read a value out and paste it back. It reads in two
+   steps — an index of every setting it may see, then the detail of one — and
+   that shape is the same whatever the setting is.
 2. Reading a setting never exposes secret material. For anything holding a
    credential — API keys, tokens, secret values, provider accounts — the agent
    learns only whether it is configured, never the value.
@@ -55,9 +57,10 @@ agent is the actor.
    container mode; in `RUNTIME_MODE=local` no click gate is enforceable for this
    or for any existing settings route, which is recorded below as a known
    limitation of local mode rather than as an exception this feature invented.
-5. Every setting the Settings dialog shows is in scope, not only the ones that
-   block the agent. A setting the dialog shows but this feature cannot reach is
-   still named, with the reason it cannot be reached.
+5. Every setting shown by the global **Settings** dialog and by the
+   per-repository **Project Settings** dialog is in scope, not only the ones that
+   block the agent. A setting either dialog shows but this feature cannot reach
+   is still named, with the reason it cannot be reached.
 6. The capability has no master switch. It is always available, and the click on
    the proposal is what governs it.
 7. Adding a new setting to ShipIt makes it available to the agent
@@ -77,15 +80,12 @@ agent is the actor.
 ## Known limitations
 
 - **`RUNTIME_MODE=local` enforces no click gate, and this feature does not
-  change that.** There is no container manager in local mode, so the
-  orchestrator's container guard returns without checking
-  (`api-container-guard.ts:135`), and the WebSocket origin check passes a
-  handshake that sends no Origin (`api-origin-guard.ts:245`). A local-mode agent
-  is an ordinary local process on an unauthenticated API: it can already call
-  `PUT /api/settings` directly, with no card and no click, and could do so before
-  this feature existed. Closing it means authenticating the orchestrator's API
-  against local callers, which is separate work on a shared surface. Recorded
-  2026-09-13; see the receipt below.
+  change that.** A local-mode agent is an ordinary local process on an
+  unauthenticated API: it can already write settings directly, with no card and
+  no click, and could do so before this feature existed. Closing it means
+  authenticating the orchestrator's API against local callers, which is separate
+  work on a shared surface. The user accepted this on 2026-09-13 (receipt below);
+  `plan.md` → *Who can resolve a card* carries the mechanics.
 
 ## Resolved questions
 
@@ -113,10 +113,9 @@ agent is the actor.
   user, not realizing that it needs to check the status."* An earlier draft cut
   that notice on the grounds that no requirement asked for it and that the read
   surface already carried the outcome — but a read only helps an agent that
-  thinks to read, and nothing was prompting it to. → requirement 8. The two are
-  now complementary rather than alternatives: the notice prompts, and
-  `lastProposal` remains the source of truth, so a notice that goes undelivered
-  costs nothing.
+  thinks to read, and nothing was prompting it to. → requirement 8. Requirement 8
+  says the agent *is* told, so an outcome that fails to reach a turn is carried to
+  the next one rather than dropped; `plan.md` carries how.
 - 2026-09-13 — *Does the settings list carry each setting's option set, or only
   the large ones?* The user: *"every option should be fetched. I.e. when reading,
   the agent gets only the available settings, then they can fetch more details
@@ -148,9 +147,11 @@ agent is the actor.
   out would keep the dead end this feature exists to remove. Secret *values*
   remain unreadable and unproposable under requirement 2 either way.
 - 2026-09-13 — *Per-session settings too, or global only?* Answered by the scope
-  choice above: the dialog is the boundary. Per-session sandbox capabilities are
-  set from the sandbox banner rather than the dialog, so they are out of scope
-  here; the egress allowlist is in the dialog's Network tab, so it is in.
+  choice above: the two named dialogs are the boundary. Per-session settings have
+  a dialog of their own (`SessionSidebar/SessionSettingsDialog.tsx`, holding
+  sandbox capability grants and the network containment override) and it is not
+  one of the two, so they are out of scope. The global egress allowlist is in the
+  Network tab, so it is in.
 - 2026-09-13 — *What replaces the `[needs you]` prose line?* Withdrawn, not a
   decision for the user: `CLAUDE.md` → "Responding in chat" already rules that
   the list never repeats an affordance ShipIt's own UI puts in front of the

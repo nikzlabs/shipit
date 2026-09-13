@@ -81,7 +81,7 @@ Five things are then **derived**, not written again:
 
 | Derived | From | Consequence |
 |---|---|---|
-| `GlobalSettings` | a mapped type over the catalogue | a setting that is not declared has no field |
+| `GlobalSettings`' **stored** half | a mapped type over the catalogue | a setting that is not declared has no field |
 | the `PUT /api/settings` body type and its validation | the same | an undeclared setting cannot be saved |
 | `CredentialStore` read/write | `store` plus `type`'s default | the duplicated defaults and validation go away; a named accessor may stay as a thin delegate where callers read better for it |
 | the dialog's standard controls, with their label and help | `label`, `description`, `type` | the user and the agent read the same words |
@@ -91,6 +91,13 @@ The last row is requirement 7, and it holds **structurally**: the agent's view i
 a projection of the same table the server persists from, so there is no state in
 which a setting exists and the agent cannot see it. No registration step, and no
 guard test standing in for one.
+
+**`GlobalSettings` splits rather than derives whole.** Today it mixes stored
+settings with computed status — `canRunTurns`, the agent list, resolved reviewer
+and role views (`services/types.ts:25`) — and those are not declarations, by this
+plan's own three-way split. The response keeps both halves: the stored half is
+derived from the catalogue, the computed half stays hand-assembled beside it. The
+wire shape does not change; only where the stored half comes from does.
 
 This is a net deletion for the settings it covers — the accessor pairs, the
 `if`-chain branches and the duplicated body type all collapse into the
@@ -210,8 +217,9 @@ role, never by size:
   proposable with the refusal reason if not. Nothing else — no options, no
   bounds, no patchable keys, however short they would be.
 - **`get <key>` is the detail.** The same entry plus everything above: the option
-  set, the bounds, the patchable field keys, saved-versus-effective, and what
-  became of any proposal this session already made for it.
+  set, the bounds, the patchable field keys, saved-versus-effective, and
+  `lastProposal` — the most recent proposal against that target, from any
+  session, and what became of it.
 
 So the agent's path is always **list → get → propose**, with the same shape for a
 two-member enum and a hundred-model selection. A size threshold would have made
@@ -324,18 +332,27 @@ writer passes through it" is false:
 | `ws-handlers/egress-handlers.ts:30` | adds a host to the **global** allowlist from the egress prompt card |
 | `api-routes-updates.ts:19` | the update channel, which the Advanced tab shows |
 | `api-routes-session-repos.ts` | agent-merge permission, repository colour |
+| `api-routes-bootstrap.ts:92` | git identity — its own route and its own service, not part of `saveGlobalSettings` |
+| `api-routes-bootstrap.ts:265` | credential routing order, with propagation and broadcast of its own |
+| `api-routes-bootstrap.ts:331` | provider-account order |
 
 So the route bodies are extracted into shared apply functions that every writer
 calls, and a **settings broadcast is added** so an applied change reaches every
 viewer. The broadcast is new work, not an inherited guarantee.
 
 A broadcast alone is not enough for a viewer that was **not connected** when it
-fired. Bootstrap runs once per mount (`useConnectionSync.ts:68`) and the
-reconnect path hydrates chat history, not settings (`:78`), so a browser that
-reconnects after an applied change keeps showing the old value indefinitely. The
-reconnect path therefore refetches settings alongside history. An editor left
-open with unsaved edits is not silently rewritten under the user — it keeps the
-draft and says the underlying value changed.
+fired. Bootstrap runs once per mount (`useConnectionSync.ts:68`), so a browser
+that reconnects after an applied change keeps showing the old value indefinitely.
+
+Refreshing beside chat-history hydration is not sufficient either: that path
+requires an active session and its session WebSocket (`useConnectionSync.ts:78`),
+and settings are global — the user may have the dialog open on the home screen
+with no session at all, and the global SSE connection can reconnect on its own,
+where `onopen` only resets the retry counter (`useServerEvents.ts:734`). So the
+refetch hangs off **the global connection's recovery**, not the session's.
+
+An editor left open with unsaved edits is not silently rewritten under the user —
+it keeps the draft and says the underlying value changed.
 
 **The shared layer serializes per setting key — which buys ordering, not conflict
 detection.** A card claim stops two clicks on one card; it does nothing about a
@@ -369,6 +386,19 @@ operations — "add an egress host", "set a role's model". Three rules:
 3. **An operation whose complete effect cannot be displayed is refused**
    (`unsafe_to_display`), rather than approved on a partial description.
 
+Rule 3 needs a worked pair, because "narrow patches yes" does not settle it:
+
+- **Allowed** — *disable the MCP server named `notion`.* The change is one
+  boolean the card shows in full, and the fields the projection hides are
+  untouched by it.
+- **Refused** — *change that server's URL.* The projection shows only the URL's
+  host, so a card proposing a new URL would either display less than it changes
+  or display a path and query the agent is not allowed to read back. Either way
+  the user would be approving something they cannot see, so the declaration
+  refuses it and the agent says the URL has to be edited in Settings.
+
+The test is not how big the change is. It is whether the card can show all of it.
+
 ## Scope inventory
 
 Both dialogs are in scope (`requirements.md`, resolved 2026-09-13): the global
@@ -377,7 +407,7 @@ Both dialogs are in scope (`requirements.md`, resolved 2026-09-13): the global
 
 | Tab | Settings | Read | Propose |
 |---|---|---|---|
-| Services | credential routing order, account selection mode, failover cutoffs, non-turn model pin, installed harnesses | yes | yes |
+| Services | credential routing order, account selection mode, failover cutoffs, non-turn model pin | yes | yes |
 | Services | provider API keys | configured / not | no — `secret` |
 | Services | provider accounts | connected / not | no — `external_flow` |
 | Roles | per role: harness, model, effort, description, standing instructions | yes | yes |
@@ -385,20 +415,32 @@ Both dialogs are in scope (`requirements.md`, resolved 2026-09-13): the global
 | Integrations | MCP servers, tracker connections, connected services | derived fields only — name, transport, connected state, URL host | narrow patches yes; credential fields no — `secret`; an OAuth connection `external_flow` |
 | Git | git identity name and email | yes | yes |
 | Instructions | your instructions, agent instructions enabled | yes | yes |
-| Skills | installed skills, marketplaces | yes | yes |
 | Keyboard | keybindings | no — `browser_local` | no — `browser_local` |
 | Voice | delivery mode | yes | yes |
 | Voice | webhook | configured / not | no — `secret` |
 | Voice | dictation, playback, TTS provider, voice, speed, hands-free | no — `browser_local` | no — `browser_local` |
-| Network | egress on/off, the global allowlist, enforcement state | yes | yes |
+| Network | egress on/off, the global allowlist | yes | yes |
 | Advanced | memory budget, live steering, auto-create-PR, auto-resolve conflicts, auto-fix CI, auto-reset merged branch, sub-agents, update channel | yes | yes |
 | Advanced | compact conversation, browser notification, sound | no — `browser_local` | no — `browser_local` |
 | Project · Deployments | the agent-merge permission | yes | yes |
 | Project · Secrets | secret names | names only | no — `secret` |
 | Project · Appearance | repository colour | yes | yes |
 
-Two things the dialogs do **not** contain, and which are therefore out of scope:
+Five things the dialogs appear to contain and do not. Each is a
+`not-a-setting` exclusion with this reason, and each was in an earlier draft of
+this table — the inventory is the part of this design most likely to be wrong,
+which is what the coverage walk is for.
 
+- **Installed harnesses.** The Services tab's harness rows are explicitly *"a
+  statement, not a control"* — harnesses are installed in the image, not from the
+  browser (`Settings/ServicesPanel.tsx:418`). Derived status.
+- **Egress enforcement state.** Computed from the deployment, not set. Derived
+  status, and excluded by this plan's own three-way split.
+- **The whole Skills tab.** It is discover-only: it browses a catalogue and
+  installs, where *install* is app-wide, repo-targeted, and runs in its own
+  session that opens a PR. There is no installed list and no uninstall
+  (`SkillsTab.tsx:1`–`14`). Browsing is not a setting and installing is an
+  operation the agent already performs by other means.
 - **Per-session egress hosts.** The Network tab deliberately loads the global
   list only (`SettingsEgress.tsx:218`, whose comment says the effective list must
   exclude per-session entries). A per-session host is granted from the egress
@@ -408,11 +450,41 @@ Two things the dialogs do **not** contain, and which are therefore out of scope:
   outbound links to Vercel, Cloudflare and Netlify
   (`ProjectSettings.tsx:76`–`120`). There is nothing else there to read or set.
 
-**Project scope is frozen into the card.** A `scope: "project"` descriptor
-resolves its repository from the session's binding, refuses to read or propose in
-a session with none, and **stores the repository it targeted** on the card. Apply
-verifies the session still binds that repository, so a card written before a
-rebind cannot be applied against a different repo.
+### The target of a change
+
+A declaration key is not enough to identify what a card changes. `roles[].model`
+names a kind of setting; `project.allowAgentMerge` names one that exists once per
+repository. So every proposal carries a **target**: the declaration key plus a
+concrete address — the repository for a project-scope setting, the item id for a
+collection member, nothing for a plain global one.
+
+The target is the identity for all four things that need one: the card's stored
+subject, the `lastProposal` lookup, the per-key lock, and the apply. Locking on
+the declaration key alone would serialize two repositories' merge permissions
+against each other and, worse, make one repository's pending card look like the
+other's.
+
+A project-scope target is **frozen when the card is written**. Apply verifies the
+session still binds that repository, so a card written before a rebind cannot
+land on a different repo.
+
+### The unit of a change is the declared operation, not a field
+
+Field-level declarations (above) are about **discovery** — every field is named
+and described. They are not the unit of mutation, and conflating the two would
+produce cards that cannot be applied.
+
+A role's "runs on" is the worked example. Picking a model rewrites the service,
+the billing mode and the model id together, then re-derives the harness and the
+reasoning effort against what that model supports
+(`Settings/roles/RoleEditor.tsx:93`). Proposing "change the model" as a single
+field change would require an intermediate state where the harness does not
+support the model — invalid on the way through. So the declared operation is the
+**tuple**, displayed as one change and validated as one.
+
+This is also why no dependent-change machinery is needed. What an earlier draft
+tried to model as "this field also moves those fields" is really one operation
+that was being described at the wrong granularity.
 
 ### Browser-local settings
 
@@ -446,11 +518,13 @@ proposable. It never carries option sets, bounds or patchable field keys — see
 
 **`get <key>` is the detail** for one setting: the index entry plus the legal
 value shape, saved-versus-effective, and `lastProposal` — the most recent
-proposal against that setting from **any** session, and what became of it.
+proposal against that target from **any** session, and what became of it.
 
 Both carry the explanations the existing views already compute, so the agent says
 *why* and not only *what* (req 3) — a role's `RoleUnavailableReason`, a reviewer
-slot's `pin_unavailable`, egress enforcement state.
+slot's `pin_unavailable`, whether egress enforcement is active. Derived status is
+not declared as a setting, but a declared setting's read may carry it as the
+reason that setting is not doing what the user expects.
 
 `get` distinguishes **saved** from **effective** where they differ: a global
 egress host is saved and applies to containers started afterwards; a change that
@@ -517,7 +591,14 @@ machinery but **not** a template: it takes the host from the client's message an
 mutates without loading or claiming a pending proposal, which is safe only
 because its whole decision is one idempotent host add.
 
-The order is:
+**Dismiss is its own path, and it is short.** Load, then one atomic
+`pending → dismissed`. It reads no current value, takes no lock and revalidates
+nothing: declining a change cannot be stale and cannot fail. Routing it through
+the apply sequence would let a dismissal be refused because the setting moved,
+which is absurd — the user is saying no, and the answer is no whatever the value
+is now.
+
+Apply is the longer path:
 
 1. **Load the proposal from persisted state**, keyed by **owning session plus
    card id**, never from the decision message — which supplies only those two and
@@ -551,11 +632,17 @@ the server checks what `baseline` covers.
 Phases: `pending` → `applying` → `applied` | `dismissed` | `stale` | `refused` |
 `failed` | `unknown`.
 
-- **`applied` records saved and effective separately.** An egress host can be
-  saved and not yet live; a session-scoped reload can fail closed, which the
-  route reports as 503 with the list already written
-  (`api-routes-egress.ts:175`). Flattening either to "applied" or to "failed"
-  tells the user the opposite of what happened.
+- **`applied` records saved and effective separately.** This is not an egress
+  quirk; it is the normal shape of a settings write here. An egress host is saved
+  and applies to containers started afterwards. `setChannel` writes the channel
+  and then calls `checkForUpdates`, which can throw after the write has landed
+  (`services/updates.ts:255`). An MCP change calls
+  `refreshAgentEnvForAllSessions`, which returns `void`, launches a promise per
+  session and only logs failures (`session-agent-env.ts:186`) — so the apply
+  cannot know whether every session refreshed. The outcome therefore records what
+  was **saved** and, separately, what is known about the **follow-up**.
+  Flattening either to "applied" or to "failed" tells the user the opposite of
+  what happened.
 - **`unknown`** is the state of a card found in `applying` after a restart. It is
   shown as *outcome unknown — check the setting*, and is never retried
   automatically, because the side effect may already have run. Re-reading the
@@ -564,15 +651,26 @@ Phases: `pending` → `applying` → `applied` | `dismissed` | `stale` | `refuse
   handler accepts anything**: every interrupted claim is converted to `unknown`
   first, so a card can never be actionable and mid-apply at the same time.
 
-**The apply settles without a runner.** Session and repository context is
-captured when the decision arrives, and the apply, the broadcast and the terminal
-write belong to the shared layer rather than to a connection. But capturing
-context does not reserve the runner: the idle enforcer can dispose one, which
-clears its turn state and listeners. Where a step needs the runner — emitting the
-card transition to attached viewers — it takes the existing post-turn work lease
-(`services/post-turn-hold.ts`), which folds into `agentBusy` and makes a
-non-forced `dispose()` decline. Everything else completes whether the runner
-survives or not.
+**The apply settles without a runner, and that needs a second persistence path.**
+The target and session context are captured when the decision arrives, and the
+apply, the broadcast and the terminal write belong to the shared layer rather
+than to a connection. A card can be resolved hours after its turn, by which time
+the runner may be long disposed.
+
+`persistCardTransition` cannot carry that: it **requires** a runner
+(`chat-card-persistence.ts:156`), because its whole job is choosing between
+patching an in-flight recorded card and writing the row. So settlement has two
+paths, and the runner-less one is the primary:
+
+- **No runner** — write the terminal phase straight to chat history. Nothing to
+  synchronize, nobody to emit to.
+- **Runner present** — the same durable write, then synchronize the recorded card
+  and emit to attached viewers.
+
+The post-turn work lease (`post-turn-hold.ts`) is **not** the answer here, and an
+earlier draft cited it as though it were: it is capped at
+`POST_TURN_HOLD_MAX_MS` = 120 s, so it cannot reserve a runner for a card the
+user clicks tomorrow. It is for the tail of a turn, not for this.
 
 **Who can resolve a card.** In container mode a session container cannot reach
 the decision path: the boundary is the container guard's `containerAccessible`
@@ -627,18 +725,25 @@ agent acts on:
 | `failed` | May propose again, and should say the previous attempt failed. |
 | `unknown` | Reads the value and tells the user the earlier outcome is uncertain. |
 
-**It is the last proposal for the setting, not for the session.** A proposal from
+**It is the last proposal for the target, not for the session.** A proposal from
 another session is reported too, with its `sessionId`, because "the user already
-declined this change" is a fact about the setting and not about who asked. Scoping
-it per session would let two sessions take turns asking the same dismissed
-question.
+declined this" is a fact about the setting and not about who asked. Scoping it
+per session would let two sessions take turns asking the same dismissed question.
 
-**A pending proposal blocks a second one.** `shipit settings propose` on a
-setting whose `lastProposal.phase` is `pending` is refused, naming the existing
-card, rather than posting a second card for the same setting. Two live cards
-proposing different values for one setting would make the first one's approval
-depend on which the user clicked first, and the loser would resolve `stale` with
-no explanation the user could see coming.
+**A dismissal is about the value, not the setting.** `phase: "dismissed"` carries
+the `proposed` value, and declining one model or one memory limit says nothing
+about every other value — treating it as a veto on the setting would leave the
+agent unable to offer a better answer after the user rejected a worse one. What
+it forbids is re-proposing *that* change unprompted.
+
+**A pending card does not block a second proposal.** Reporting it is enough. An
+earlier draft refused a proposal while another was pending, which reads as
+prudent and is not: the pending card may belong to a session the user has
+forgotten, and nothing expires it, so one stale card would become an indefinite
+veto on that setting everywhere. The conflict it was guarding against is already
+handled — whichever card is applied second fails its baseline check and resolves
+`stale`, which is exactly the right outcome and the one the user can see. The
+agent is told a card is pending and can say so instead of posting a duplicate.
 
 ### And a notice at the start of the next turn
 
@@ -660,13 +765,22 @@ The wording states the outcome as fact, marks a dismissed change *do not
 re-propose unless asked*, and says plainly that it is a status line from ShipIt
 rather than part of the user's message.
 
-**The notice prompts; `lastProposal` decides.** Delivery is at-most-once
-*attempted* — the outcome is marked consumed while the prompt is assembled, so a
-turn that then fails to spawn loses it (`dispatched-turn.ts:209`). That is
-acceptable precisely because it is not the source of truth: the agent re-reads
-the setting before proposing anyway, and `lastProposal` is authoritative. A lost
-notice costs a prompt, not a correctness guarantee, and the agent docs say to
-trust the read rather than the notice.
+**The notice is carried until a turn actually receives it.** This is the one
+place the bug-report mechanism is copied with a change rather than as-is. There,
+an outcome is marked notified while the prompt is assembled, so a turn that then
+fails to spawn loses it permanently (`chat-history.ts:519`,
+`dispatched-turn.ts:209`). Requirement 8 says the agent *is* told, so that
+behaviour would not satisfy it: the outcome is instead marked notified only once
+a turn has started with the notice in its prompt, and an outcome whose turn never
+started is carried to the next eligible turn.
+
+The cost of getting this wrong is the exact failure requirement 8 exists to
+prevent — the agent believing nothing changed and reminding the user about a
+setting they already handled.
+
+**The notice prompts; `lastProposal` decides.** The notice says something moved;
+the read says what it is now. The agent re-reads the setting before proposing
+anyway, and the docs tell it to trust the read rather than the notice's wording.
 
 ## Persistence
 

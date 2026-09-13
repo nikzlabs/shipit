@@ -221,6 +221,15 @@ button.theme:hover { background:var(--color-bg-hover); }
   </div>
 
   <div class="resolved">
+    <span style="color:var(--color-error)" aria-hidden="true">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+           stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><line x1="12" y1="7.5" x2="12" y2="13"/><circle cx="12" cy="16.4" r="1" fill="currentColor" stroke="none"/></svg>
+    </span>
+    <span><strong style="color:var(--color-error)">Failed</strong> <span class="sep">·</span> the change could not be saved</span>
+    <span class="sub">Nothing was written. Multi-agent sessions is still Off.</span>
+  </div>
+
+  <div class="resolved">
     <span class="muted" aria-hidden="true">
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
            stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M9.6 9.3a2.5 2.5 0 1 1 2.9 3v1.2"/><circle cx="12.5" cy="16.6" r="1" fill="currentColor" stroke="none"/></svg>
@@ -245,7 +254,9 @@ button.theme:hover { background:var(--color-bg-hover); }
   </div>
   <p class="legend">
     Reporting this as a plain “Applied” would tell the user the host is reachable now, which it is not.
-    A global allowlist write does no live reload; only a session-scoped one does.
+    A global allowlist write does no live reload; only a session-scoped one does. The same split covers
+    every write whose follow-up can fail after the value has landed — an update-channel change that then
+    fails to check for updates, an MCP change whose per-session refresh is fire-and-forget.
   </p>
 
   <div class="divider"></div>
