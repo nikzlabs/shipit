@@ -51,7 +51,10 @@ agent is the actor.
 4. The agent's only write path is a proposal. It posts a card that names the
    exact change, and the setting does not move until the user clicks. This holds
    for every setting: there is no class of setting the agent may change on its
-   own, however small or reversible the change is.
+   own, however small or reversible the change is. The guarantee is about
+   container mode; in `RUNTIME_MODE=local` no click gate is enforceable for this
+   or for any existing settings route, which is recorded below as a known
+   limitation of local mode rather than as an exception this feature invented.
 5. Every setting the Settings dialog shows is in scope, not only the ones that
    block the agent. A setting the dialog shows but this feature cannot reach is
    still named, with the reason it cannot be reached.
@@ -65,19 +68,20 @@ agent is the actor.
 
 ## Open questions
 
-- **Requirement 4 cannot be enforced in `RUNTIME_MODE=local`, and the design
-  cannot grant itself the exception.** In local mode there is no container
-  manager, so the orchestrator's container guard returns without checking
-  (`api-container-guard.ts:135`) and the WebSocket origin check passes a
+- (none)
+
+## Known limitations
+
+- **`RUNTIME_MODE=local` enforces no click gate, and this feature does not
+  change that.** There is no container manager in local mode, so the
+  orchestrator's container guard returns without checking
+  (`api-container-guard.ts:135`), and the WebSocket origin check passes a
   handshake that sends no Origin (`api-origin-guard.ts:245`). A local-mode agent
-  is an ordinary local process: it can already call `PUT /api/settings`
-  **directly**, with no card and no click, and it can do so today without this
-  feature. So the click gate is a real guarantee in container mode and an
-  unenforceable one in local mode, for reasons that predate this design and that
-  this design cannot fix. Which is it: (a) req 4 is read as "in container mode",
-  with the local-mode position written down as a known limitation of local mode
-  generally; or (b) local-mode API authentication is required first, as separate
-  work this feature would then depend on?
+  is an ordinary local process on an unauthenticated API: it can already call
+  `PUT /api/settings` directly, with no card and no click, and could do so before
+  this feature existed. Closing it means authenticating the orchestrator's API
+  against local callers, which is separate work on a shared surface. Recorded
+  2026-09-13; see the receipt below.
 
 ## Resolved questions
 
@@ -99,6 +103,14 @@ agent is the actor.
   in the dialog, chosen over the smaller "only what blocks the agent" list. The
   agent must be able to answer a question about any setting the user names, not
   only the ones it trips over itself. → requirement 5.
+- 2026-09-13 — *How does requirement 4 read in local mode, where the click gate
+  cannot be enforced?* **Container mode, with the gap documented.** The user
+  chose this over two alternatives: authenticating the local-mode API first as
+  prerequisite work, and shipping only the read path until the question settled.
+  The reasoning that carried it is that the gap is pre-existing and wider than
+  this feature — a local-mode agent can already write settings directly — so
+  making this feature wait would not close it and would not reduce it. →
+  requirement 4's mode clause, and the known limitation above.
 - 2026-09-13 — *How does a setting reach the agent?* The user: *"the design
   should make the settings to be defined in a way so new settings automatically
   could be available to the agent, with descriptions."* This replaces the

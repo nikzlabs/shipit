@@ -487,9 +487,15 @@ container manager (`:135`) and the WebSocket origin check passes a handshake wit
 no Origin (`api-origin-guard.ts:245`) — so a local-mode agent could resolve its
 own proposal. It could also simply call `PUT /api/settings` itself, today,
 without this feature: local mode's orchestrator API is unauthenticated for any
-local process. **This design cannot grant itself an exception to req 4**, so the
-question of how req 4 reads in local mode is open in `requirements.md` and blocks
-implementation.
+local process.
+
+That was put to the user rather than decided here, because a design cannot grant
+itself an exception to a requirement. The answer (`requirements.md`, resolved
+2026-09-13) is that **req 4 is a container-mode guarantee**, and local mode's
+absence of one is recorded as a known limitation of local mode rather than
+something this feature introduces. Closing it means authenticating the
+orchestrator's API against local callers — separate work on a shared surface, and
+not a precondition for this.
 
 ### How the agent learns the outcome
 
@@ -665,8 +671,11 @@ Beyond the persistence round-trip tests the recipe requires:
   per editable field, and each field's control has to bind to it — more work than
   a single entry per panel, and the reason requirement 7 is true for nested
   fields rather than only top-level ones.
-- **Requirement 4 is unresolved for local mode** and blocks implementation. It is
-  an open question in `requirements.md`, not something this design can decide.
+- **Local mode enforces no click gate**, by the resolution above. The card is a
+  real gate in container mode and a convention in local mode, so do not write a
+  test that asserts local mode refuses an agent-submitted decision — it does not,
+  and a test claiming otherwise would be the kind of guarantee this design has
+  had to correct three times.
 - **A partial conversion weakens requirement 7 silently.** Until `GlobalSettings`
   and the route body are actually derived, an undeclared setting still works and
   the agent still cannot see it. So the derivation lands as one piece for the

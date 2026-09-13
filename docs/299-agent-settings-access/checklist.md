@@ -1,8 +1,6 @@
 # Agent access to ShipIt settings — checklist
 
-Design only. **One open question blocks implementation** — how requirement 4
-reads in `RUNTIME_MODE=local`, where the click gate is unenforceable for reasons
-that predate this feature. See `requirements.md` → Open questions.
+Design only so far. Every open question is answered; implementation can start.
 
 ## Design
 
@@ -17,7 +15,8 @@ that predate this feature. See `requirements.md` → Open questions.
 - [x] Third review — dependents machinery, the proposals command and the test-id
       obligation cut; field-level declarations, server-only baseline, writer
       inventory, restart ordering and reconnect sync added
-- [ ] Answer the local-mode question for requirement 4
+- [x] Local-mode question answered: requirement 4 is a container-mode guarantee,
+      local mode's gap recorded as a known limitation
 
 ## Phase 1 — the catalogue and the read path
 
