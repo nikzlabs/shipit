@@ -3,6 +3,9 @@ import type { CredentialRoute, NonTurnFailureCard, WsServerMessage } from "../..
 import type { PersistedMessage } from "../chat-history.js";
 import type { SubAgentRunResult } from "../../shared/sub-agent-run.js";
 import { TEST_CREDENTIALS_DIR } from "../credentials-test-helpers.js";
+import { DatabaseManager } from "../../shared/database.js";
+import { UsageManager } from "../usage.js";
+import { recordNonTurnUsage } from "./non-turn-work.js";
 
 function keyRoute(serviceId: string): CredentialRoute {
   return {
@@ -584,5 +587,102 @@ describe("recordNonTurnUsage with no resolved target", () => {
     });
 
     expect(rows).toHaveLength(0);
+  });
+});
+
+describe("recordNonTurnUsage — what the selection says, not how it ran (docs/299 req 7)", () => {
+  let dbManager: DatabaseManager;
+  let usageManager: UsageManager;
+
+  beforeEach(() => {
+    dbManager = new DatabaseManager(":memory:");
+    usageManager = new UsageManager(dbManager);
+  });
+  afterEach(() => {
+    dbManager.close();
+  });
+
+  const telemetry = { durationMs: 900, inputTokens: 1_000_000, outputTokens: 0 };
+
+  const rowsOf = (sessionId: string) =>
+    dbManager.db.prepare("SELECT * FROM usage_turns WHERE session_id = ? ORDER BY id")
+      .all(sessionId) as Record<string, unknown>[];
+
+  // OpenCode Go is a `sub` mode carried by a pasted key over ordinary API
+  // endpoints, so calling it directly is still subscription usage.
+  it("keeps a direct call on a subscription as subscription usage, never metered spend", () => {
+    recordNonTurnUsage({ usageManager }, {
+      sessionId: "s1",
+      purpose: "pr-description",
+      target: { selection: { serviceId: "opencode", billingMode: "sub", modelId: "glm-5.3" } },
+      telemetry,
+    });
+
+    const row = rowsOf("s1")[0];
+    expect(row).toMatchObject({
+      service_id: "opencode",
+      billing_mode: "sub",
+      cost_usd: 0,
+      model: "glm-5.3",
+      background_work: 1,
+      sub_agent_id: null,
+    });
+    const group = usageManager.getSessionUsage("s1")!.groups!.find((g) => g.key === "opencode:sub")!;
+    expect(group.costUsd).toBe(0);
+    expect(group.atApiRatesUsd).toBeGreaterThan(0);
+  });
+
+  it("prices a direct call on a key from the catalogue, with no harness to report a cost", () => {
+    recordNonTurnUsage({ usageManager }, {
+      sessionId: "s1",
+      purpose: "pr-description",
+      target: { selection: { serviceId: "deepseek", billingMode: "key", modelId: "deepseek-flash" } },
+      telemetry,
+    });
+
+    const row = rowsOf("s1")[0];
+    expect(row.billing_mode).toBe("key");
+    expect(row.cost_usd as number).toBeGreaterThan(0);
+    expect(usageManager.getSessionUsage("s1")!.totals.meteredCostUsd).toBeGreaterThan(0);
+  });
+
+  it("keeps a direct call carrying a session id out of that session's context dial", () => {
+    usageManager.record("s1", 0.1, 2000, 800, 100, { contextTokens: 1500, model: "claude-opus-5" });
+    recordNonTurnUsage({ usageManager }, {
+      sessionId: "s1",
+      purpose: "session-naming",
+      target: { selection: { serviceId: "deepseek", billingMode: "key", modelId: "deepseek-flash" } },
+      telemetry: { ...telemetry, inputTokens: 4000 },
+    });
+
+    const dial = usageManager.getPerTurnUsage("s1");
+    expect(dial).toHaveLength(1);
+    expect(dial.at(-1)).toMatchObject({ contextTokens: 1500, model: "claude-opus-5" });
+  });
+
+  it("records work belonging to no session as install-level spend", () => {
+    recordNonTurnUsage({ usageManager }, {
+      sessionId: null,
+      purpose: "pr-description",
+      target: { selection: { serviceId: "deepseek", billingMode: "key", modelId: "deepseek-flash" } },
+      telemetry,
+    });
+
+    const stats = usageManager.getStats();
+    expect(stats.sessions).toEqual([]);
+    expect(stats.groups.map((g) => g.key)).toEqual(["install:deepseek:key"]);
+    expect(stats.totals.meteredCostUsd).toBeGreaterThan(0);
+  });
+
+  it("still names the harness that ran the work, where one did", () => {
+    recordNonTurnUsage({ usageManager }, {
+      sessionId: "s1",
+      harnessId: "claude",
+      purpose: "pr-description",
+      target: { selection: { serviceId: "deepseek", billingMode: "key", modelId: "deepseek-flash" } },
+      telemetry,
+    });
+
+    expect(rowsOf("s1")[0]).toMatchObject({ sub_agent_id: "claude", background_work: 1 });
   });
 });

@@ -319,7 +319,9 @@ function worstQuota(
 ): { pct: number; label: string } | null {
   if (group.kind !== "sub" || !limits) return null;
   let worst: { pct: number; label: string } | null = null;
-  for (const snapshot of Object.values(limits[group.key] ?? {})) {
+  // Keyed on the subscription, not on the row: an install-level row is the same
+  // plan being consumed, and may be the only row a user has to read it from.
+  for (const snapshot of Object.values(limits[`${group.serviceId}:${group.billingMode}`] ?? {})) {
     for (const [label, window] of [["5h window", snapshot.session], ["7d window", snapshot.weekly]] as const) {
       if (window?.usedPct === undefined || window.usedPct === null) continue;
       if (!subscriptionWindowIsCurrent(window, now)) continue;
@@ -348,6 +350,12 @@ function worstQuota(
  * such dollar is pre-feature: a sub-agent consult whose stored default predates
  * the triple also writes an unattributed row and keeps the harness's own figure
  * (`services/sub-agent.ts`). That is phase 3's shape, unchanged here.
+ *
+ * An install-level row (docs/299 req 7) is background work that belonged to no
+ * session — a transcript cleaned while nothing was open. It is deliberately not
+ * the legacy row: its provider and billing mode are known, so it keeps its
+ * price, its quota bar and its provider name, and only adds what is different
+ * about it. It reaches install-wide reporting alone, never a session's own view.
  */
 function UsageGroupRow({
   group,
@@ -376,6 +384,15 @@ function UsageGroupRow({
           <span className="text-[10px] px-1.5 py-px rounded-full border border-(--color-border-primary) text-(--color-text-secondary)">
             {legacy ? "Unattributed" : billingModeLabel(group.billingMode!)}
           </span>
+          {group.installLevel && (
+            <span
+              className="text-[10px] px-1.5 py-px rounded-full border border-(--color-border-primary) text-(--color-text-secondary)"
+              title="Background work that belonged to no session, such as a dictation cleaned with nothing open"
+              data-testid="usage-group-install-level"
+            >
+              Background work
+            </span>
+          )}
         </span>
         {group.models.length > 0 && (
           <span className="block text-xs text-(--color-text-secondary) truncate">

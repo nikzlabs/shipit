@@ -36,7 +36,8 @@ export function costFromRates(rates: ModelPrice, tokens: TurnTokens): number {
 }
 
 export function resolveTurnCost(args: {
-  harnessId: AgentId;
+  /** Undefined where no harness ran the work, which reports no cost of its own. */
+  harnessId: AgentId | undefined;
   attribution: TurnAttribution | undefined;
   // Undefined means unreported, not free.
   reportedCostUsd: number | undefined;
