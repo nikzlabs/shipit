@@ -9,6 +9,7 @@ Design in [`plan.md`](./plan.md), requirements in [`requirements.md`](./requirem
 - [x] Write `plan.md`.
 - [x] First independent review; fold its findings in.
 - [x] Second independent review of the corrected design; fold its findings in.
+- [x] Prototype the UI changes as [`mockup.html`](./mockup.html); link it from `plan.md`.
 
 ## Phase 1 — Stop the terms violation
 
@@ -35,7 +36,8 @@ Design in [`plan.md`](./plan.md), requirements in [`requirements.md`](./requirem
 - [ ] Background-work eligibility that does not require an installed harness.
 - [ ] Background-work option list not filtered by `agent.installed` (`model-choice.ts:32`), carried through bootstrap and credential-change updates.
 - [ ] Seeding and save validation in `services/settings.ts` accept an option with no installed harness.
-- [ ] `BackgroundWorkSection.tsx` states "Direct call to <service>" where that is what runs.
+- [ ] `BackgroundWorkSection.tsx` derived line reads "Called directly · no harness, no container" where that is what runs; render test per state.
+- [ ] `UsageModal.tsx` renders the install-level background-work group install-wide, and a session's own view does not.
 
 ## Phase 3 — Both callers onto the executor
 
@@ -56,7 +58,8 @@ Design in [`plan.md`](./plan.md), requirements in [`requirements.md`](./requirem
 - [ ] Remove `pickCleanupProvider`; keep `isSane`.
 - [ ] Move `emitNonTurnFailure` out of the shared path so cleanup writes nothing to chat (req 6).
 - [ ] Adopt `voiceProviderKeys.openai` as an ordinary OpenAI service credential, per docs/252 req 20's precedent. Seed background work onto it only when nothing is set.
-- [ ] `VoiceTab.tsx` status names the background-work choice and links to that setting.
+- [ ] The adoption notice in `VoiceTab.tsx`; declining leaves cleanup unavailable and says so, and never writes a background-work choice.
+- [ ] `VoiceTab.tsx` status names the background-work choice, links to that setting, and says when cleanup will take a few seconds. Render test per state.
 - [ ] Test: cleanup failure inserts the raw transcript and persists no chat card.
 
 ## Closing

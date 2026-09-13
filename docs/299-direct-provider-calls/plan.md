@@ -131,6 +131,38 @@ own option list, carried through the same bootstrap and credential-change paths,
 changes to seeding and save validation in `services/settings.ts`. The union change will not
 surface this — nothing about it fails to compile.
 
+## UI changes
+
+Prototyped in [`mockup.html`](./mockup.html), which draws today's state beside the new one for
+each surface. Four surfaces, and one of them changes by *not* changing.
+
+**Background work (`BackgroundWorkSection.tsx`).** One line and two picker contents. The derived
+line beneath the controls already carries the fact the controls cannot state, so it now reads
+"Called directly · no harness, no container" where that is what happens. The wording deliberately
+avoids "Direct call to Anthropic": the service is named by the control beside it, and what the
+user needs from this line is the consequence, not a repetition. The pickers gain services whose
+credential permits a direct call with no harness installed, and lose the harness rows for a model
+already reachable directly (req 3).
+
+**Voice cleanup status (`VoiceTab.tsx`).** Today the line names a provider ShipIt picked —
+"Cleanup via your Claude subscription" — which describes a decision the user can neither see nor
+change. It now names their own choice and links to it, and says plainly when cleanup will take a
+few seconds, so a pause does not read as a fault. A dictation is the one place in ShipIt where
+several seconds of silence is indistinguishable from a bug.
+
+**The voice-key adoption notice** is the migration in visible form: an offer to add the existing
+OpenAI voice key as a service credential, with declining leaving cleanup unavailable and saying
+so. It exists because the alternative — silently writing a background-work choice on the user's
+behalf — would decide something req 9 of docs/252 reserves for them.
+
+**Usage (`UsageModal.tsx`).** One new group row for background work belonging to no session,
+install-wide only. It is deliberately *not* the existing unattributed group, which holds volume
+whose service and billing mode are unknown; this row knows both.
+
+**The composer's context dial does not change**, and the mockup records that state on purpose.
+It is what a regression would look like if the background-work classification were lost: the dial
+would report the background model and its occupancy instead of the session's own.
+
 ## The cleanup container
 
 One container per install, holding no repository and no resident harness process. Each request
