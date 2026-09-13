@@ -18,7 +18,7 @@ Load it with `loadPrompt(import.meta.url, "./x.md")` (`orchestrator/load-prompt.
 
 Examples: `agents/<id>/system-prompt.md`, `voice/cleanup-prompt.md`, `orchestrator/prompts/*.md`.
 
-**Known exception:** `session-namer.ts` still defines its `PROMPT_TEMPLATE` inline in TypeScript and substitutes per call. It predates this convention and is not a model to copy — if you touch it, move the text to an `.md` rather than extending the inline template.
+**A per-call hole is still data.** `session-namer.ts` loads `session-naming-prompt.md` at module level and fills its `{{MESSAGE}}` per call through `buildSessionNamePrompt`. The file read happens once; only the substitution is per call, which is composition and belongs in TypeScript. A prompt whose text varies per request is not a reason to inline it.
 
 ## Prompt *composition* is code
 
