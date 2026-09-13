@@ -478,6 +478,7 @@ Both dialogs are in scope (`requirements.md`, resolved 2026-09-13): the global
 | Keyboard | keybindings | no — `browser_local` | no — `browser_local` |
 | Voice | delivery mode | yes | yes |
 | Voice | webhook | configured / not | no — `secret` |
+| Voice | speech and voice provider API keys | configured / not | no — `secret` (`Settings/tabs/VoiceTab.tsx:212`) |
 | Voice | dictation on/off, speech-to-text provider, transcript cleanup, language, playback on/off, TTS provider, voice, speed, hands-free | no — `browser_local` | no — `browser_local` |
 | Network | egress on/off, the global allowlist | yes | yes |
 | Advanced | memory budget, release channel, and the toggles: inject messages mid-turn, auto-fix CI, auto-resolve conflicts, start from the latest base after a merge, multi-agent sessions | yes | yes |
@@ -686,10 +687,7 @@ Apply is the longer path:
    (`chat-card-persistence.ts:176`–`183`) — exactly the case that needs it.
 3. **Inside the shared layer's conflict-domain lock**: re-read, compare against the
    card's stored **baseline**, and revalidate the target. Any mismatch resolves
-   the card `stale` and applies nothing. Note this is a comparison, not a
-   difference: a second card that proposes the value the setting already holds
-   compares equal and applies as a no-op, which is correct — "the second apply is
-   always stale" would be too strong. The check is against state, never an
+   the card `stale` and applies nothing. The check is against state, never an
    observed transition, so it is correct for a viewer that was not connected when
    the value changed.
 4. **Apply**, then write the terminal phase.
@@ -829,9 +827,8 @@ earlier draft refused a proposal while another was pending, which reads as
 prudent and is not: the pending card may belong to a session the user has
 forgotten, and nothing expires it, so one stale card would become an indefinite
 veto on that setting everywhere. The conflict it was guarding against is already handled by the baseline check:
-a second card that would change the value away from what the first one left
-resolves `stale`, and one that happens to propose the value now in place applies
-as a no-op. The
+a card whose captured baseline no longer matches the stored value resolves
+`stale`, whichever session wrote that value. The
 agent is told a card is pending and can say so instead of posting a duplicate.
 
 ### And a notice at the start of the next turn
@@ -854,7 +851,7 @@ The wording states the outcome as fact, marks a dismissed change *do not
 re-propose unless asked*, and says plainly that it is a status line from ShipIt
 rather than part of the user's message.
 
-**The notice is carried until the worker accepts the prompt.** This is the one
+**The notice is carried until a turn actually runs.** This is the one
 place the bug-report mechanism is copied with a change rather than as-is. There,
 an outcome is marked notified while the prompt is assembled, so a turn that then
 fails to spawn loses it permanently (`chat-history.ts:519`,
@@ -873,9 +870,25 @@ process's stdin can be dead.
 proves the agent read the notice means chasing a guarantee that does not exist at
 any layer here. The design inverts the failure instead:
 
-- An outcome is marked notified only when the turn it rode **produced agent
-  output** — evidence the agent ran, rather than evidence the prompt was posted.
+- An outcome is marked notified only when the turn it rode **settled as a real
+  agent turn** — evidence the agent ran, rather than evidence the prompt was
+  posted.
 - Anything short of that leaves it pending, so it rides the next turn.
+
+"Produced output" is **not** the test, and this is the trap worth naming. When
+every connected account refuses a turn for quota, `turn-executor.ts` emits
+assistant text saying so — *"Every connected account refused this turn for
+quota…"* (`turn-executor.ts:30`) — and a rule keyed on output would consume the
+outcome there. The agent never saw the notice, the user tops up their quota, and
+the notice is gone for good: requirement 8 broken in exactly the case where the
+user is most likely to be mid-fix.
+
+So the acknowledgement sits **after** ShipIt's credential-failure classification
+and its failover retry (`credential-failure-policy.ts`, and the failover loop
+guarded by `quotaRetryInProgress` in `turn-executor.ts`). A turn the classifier
+called a quota or auth refusal does not acknowledge anything. Raw
+`agent_result.status === "success"` is not sufficient either, for the same
+reason.
 - **A duplicate notice is harmless and a lost one is not.** The notice says a
   card was resolved and what it became; hearing that twice costs a line of
   prompt, and the agent re-reads the setting anyway. Hearing it never is exactly

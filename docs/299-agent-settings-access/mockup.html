@@ -183,8 +183,10 @@ button.theme:hover { background:var(--color-bg-hover); }
 
   <div class="divider"></div>
 
-  <h2>After the click — every terminal state</h2>
-  <p class="note">The card collapses in place. It is persisted, so it is still here tomorrow.</p>
+  <h2>After the click</h2>
+  <p class="note">The card collapses in place. It is persisted, so it is still here tomorrow.
+    A write that lands only partly, or whose result the writer cannot verify, reports itself as such
+    rather than as one of these.</p>
 
   <div class="resolved">
     <span class="ok" aria-hidden="true">
@@ -208,7 +210,7 @@ button.theme:hover { background:var(--color-bg-hover); }
            stroke-linecap="round" stroke-linejoin="round"><path d="M12 4.5 21 19.5H3Z"/><line x1="12" y1="10" x2="12" y2="14"/><circle cx="12" cy="16.8" r="1" fill="currentColor" stroke="none"/></svg>
     </span>
     <span><strong class="warn">Not applied</strong> <span class="sep">·</span> the setting changed after this was proposed</span>
-    <span class="sub">It is already On. Nothing was written.</span>
+    <span class="sub">Its value moved after this card was written. Nothing was applied.</span>
   </div>
 
   <div class="resolved">
