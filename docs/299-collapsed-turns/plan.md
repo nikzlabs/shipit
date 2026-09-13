@@ -178,6 +178,24 @@ guard (`useCompactConversation.ts:29-69`), the reading-anchor restoration
 stay. Automatic collapse still happens while the user reads, because another
 viewer or a queued message can start the next turn.
 
+**But the guard must stop closing a run under the user's pointer.** The shipped
+protection is symmetric: it opens a run when focus or a selection enters it, and
+closes it again the moment they leave. Closing is synchronous — the existing
+test `compact-conversation.test.tsx:97` asserts that clearing a selection hides
+the protected row immediately. A press inside the transcript collapses any
+selection and moves focus on **`mousedown`**, so the rows hide and the list
+shrinks between `mousedown` and `mouseup`. The pointer is then over different
+content: no `click` fires on the intended target, and `CompactLayout` re-anchors
+the scroll for up to twelve frames afterwards. The user sees the page move
+instead of the button working, which is the reported defect.
+
+The rewrite must make protection **one-way**: opening a run is automatic,
+closing it is not. A run opened because the user had focus or a selection in it
+stays open for the rest of the visit, until they collapse it with its own
+button. Nothing then hides under a pointer that is already down. Suppressing
+the guard between `pointerdown` and `pointerup` would fix the same case
+narrowly, but it leaves every other path that hides a row mid-gesture.
+
 **Keep hidden rows mounted and counted**, as docs/296 does, so a collapse or an
 expansion never moves a card to a different DOM parent and never remounts it.
 Requirement 12 makes that load-bearing: the cards that survive a collapse are

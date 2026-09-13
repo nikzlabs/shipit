@@ -36,6 +36,9 @@
 - [ ] Rewrite `useCompactConversation`: newest display turn always full, no
       `activeFrom` boundary, no per-row flags; keep the focus/selection
       protection, the reading anchor and search reveal.
+- [ ] Make the protection guard one-way, so no row hides under a pointer that is
+      already down (planning#540). A test must press a control in a transcript
+      that has a protected run and assert the control acted.
 - [ ] Hide every tool group, including one whose tool failed.
 - [ ] Render a kept prose row with `hideTools`, so a standalone tool sharing
       its row does not appear.
