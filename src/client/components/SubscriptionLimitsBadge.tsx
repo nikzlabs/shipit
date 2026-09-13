@@ -247,7 +247,7 @@ interface SubscriptionLimitPillProps {
    * Whose quota this is — omitted where the surrounding row already says so.
    *
    * In the header a pill floats free and must name its account (docs/150 req
-   * 10). On a Settings → Services credential row (docs/252 req 19) the row IS
+   * 10). On a Settings → Model providers credential row (docs/252 req 19) the row IS
    * the account's name, and repeating it inside the pill spends the width the
    * compaction was for. The pill is otherwise identical, deliberately: the
    * meters, the elapsed-time marker, the staleness dimming and the refresh
@@ -362,7 +362,7 @@ export function SubscriptionLimitPill({ serviceId, routeId, label, snapshot, sho
 
 /**
  * The attention word inside a header pill, and the way out of the state it
- * names: pressing it opens Settings → Services, where the credential's remedy
+ * names: pressing it opens Settings → Model providers, where the credential's remedy
  * lives — *Reconnect* for an account, *Replace* for a supplied secret.
  *
  * It is a button rather than a label because the alternative is a dead end —

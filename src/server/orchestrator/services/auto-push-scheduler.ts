@@ -335,7 +335,7 @@ export function createAutoPushScheduler(deps: AutoPushDeps): AutoPushScheduler {
         if (invalidated) {
           report(
             sessionId,
-            "Auto-push failed: your GitHub token is invalid or expired. Sign in again in Settings → GitHub.",
+            "Auto-push failed: your GitHub token is invalid or expired. Sign in again in Settings → Integrations.",
           );
           return;
         }

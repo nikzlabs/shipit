@@ -54,7 +54,7 @@ interface ModelGroup {
  * A group header: the service's mark and name at the left edge, its billing mode
  * as a coloured pill at the right.
  *
- * The pill is the same component Settings → Services puts on a card header, and
+ * The pill is the same component Settings → Model providers puts on a card header, and
  * the right edge is where it goes because the header is a two-column statement —
  * *which service*, and *who is paying* — not a sentence. Rendered as plain
  * tertiary text run on after the name (what shipped first), the mode read as a

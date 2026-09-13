@@ -155,7 +155,7 @@ function resolveConfiguredTrackerIn(registry: TrackerRegistry, trackerId: string
   const tracker = registry.get(trackerId as TrackerId);
   if (!tracker) throw new ServiceError(404, undeclaredTrackerMessage(trackerId, registry));
   if (!tracker.isConfigured()) {
-    throw new ServiceError(409, `${tracker.label} is not connected. Connect it in Settings → Issues.`);
+    throw new ServiceError(409, `${tracker.label} is not connected. Connect it in Settings → Integrations.`);
   }
   return tracker;
 }
@@ -800,7 +800,7 @@ export async function undoIssueWrite(
   const tracker = registry.getRecorded(card.tracker);
   if (!tracker) throw new ServiceError(404, undeclaredTrackerMessage(card.tracker, registry));
   if (!tracker.isConfigured()) {
-    throw new ServiceError(409, `${tracker.label} is not connected. Connect it in Settings → Issues.`);
+    throw new ServiceError(409, `${tracker.label} is not connected. Connect it in Settings → Integrations.`);
   }
   try {
     switch (card.undo.kind) {

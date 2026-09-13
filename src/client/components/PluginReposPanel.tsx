@@ -364,7 +364,7 @@ function PluginRepoCard({
                 closed", and the browser cannot tell that from a write that
                 never landed. */}
             <RichErrorText
-              text={`Allowing \`${failedHost}\` failed. It may have been saved without the live refresh — check Settings → Network egress, then try again.`}
+              text={`Allowing \`${failedHost}\` failed. It may have been saved without the live refresh — check Settings → Network, then try again.`}
               links={false}
             />
           </p>

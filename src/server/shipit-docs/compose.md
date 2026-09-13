@@ -190,7 +190,7 @@ fresh dependency tree. The `x-` prefix means Docker Compose ignores it.
 ## `x-shipit-secrets`
 
 Declare which env vars (API keys, connection strings, tokens) each service
-needs. The user configures values once in **Settings → Secrets**;
+needs. The user configures values once in **Project Settings → Secrets**;
 ShipIt auto-injects them into every session for the repo:
 
 ```yaml

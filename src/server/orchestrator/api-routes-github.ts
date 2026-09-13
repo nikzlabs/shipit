@@ -1119,7 +1119,7 @@ export async function registerGitHubRoutes(
         reply.code(403).send({
           error:
             "Agents cannot merge pull requests in this repository. The user turns this on in "
-            + "Project Settings → Agent permissions. Until then, merge from the PR lifecycle card "
+            + "Project Settings → Deployments, under \"Agent permissions\". Until then, merge from the PR lifecycle card "
             + "in the ShipIt UI.",
         });
         return;

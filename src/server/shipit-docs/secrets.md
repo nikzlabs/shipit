@@ -4,7 +4,7 @@ ShipIt injects environment variables into compose services from a per-repo
 secret store. Declare what each service needs in its compose definition with
 `x-shipit-secrets` — the same `x-shipit-*` extension pattern as
 `x-shipit-preview`. Users configure the actual values once per repo in the
-**Settings → Secrets** panel; the values are then auto-loaded into every
+**Project Settings → Secrets** panel; the values are then auto-loaded into every
 session for that repo and survive container restarts.
 
 ## Why declare secrets?
@@ -78,12 +78,12 @@ services:
 ### Compose services receive user-supplied secrets
 
 Every value injected into a compose service comes from the **per-repo secret
-store** — values the user entered in **Settings → Secrets**, keyed by the
+store** — values the user entered in **Project Settings → Secrets**, keyed by the
 declared `name`. To give a service a credential, the user sets a secret of the
 same name.
 
 > **MCP OAuth tokens reach the agent through a separate path.** Connecting a
-> one-click provider (e.g. Notion) under Settings → MCP Servers wires the token
+> one-click provider (e.g. Notion) under Settings → Integrations wires the token
 > into the *agent's* MCP servers via the `$platform:<id>` placeholder (resolved
 > from the `MCP_PLATFORM_<ID>` env var). That is the user wiring an MCP server
 > into their own agent — distinct from compose-service secret resolution.
@@ -221,7 +221,7 @@ a host that can't enforce it — but an operator **can** disable it
 (`SESSION_EGRESS_ENFORCE=0`, e.g. when the host can't run the required NET_ADMIN
 sidecar; the installer detects this and asks). When containment is disabled or
 unenforceable, the old unrestricted-egress exposure returns, so still scope
-`agent: true` to non-sensitive values. The Settings → Network egress panel shows
+`agent: true` to non-sensitive values. The Settings → Network panel shows
 whether containment is actually **enforced** on this deployment (it warns
 "Contained — NOT enforced" when policy says contain but the host can't).
 

@@ -1,5 +1,5 @@
 /**
- * docs/252 — the **one** card Settings → Services is built from.
+ * docs/252 — the **one** card Settings → Model providers is built from.
  *
  * Before this, the list rendered two different things: string-delivered
  * credentials got a bordered card with a service name and a billing-mode pill,

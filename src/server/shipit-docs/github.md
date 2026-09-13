@@ -261,7 +261,8 @@ one per session kind:
 
 - In a **repo-bound** session it works only where the repository's owner turned
   on **"Allow agents to merge their own pull requests"** in Project Settings →
-  Agent permissions. Off for every repository until they do; without it the shim
+  Deployments, under "Agent permissions". Off for every repository until they
+  do; without it the shim
   returns a 403 and the user merges from the PR card in the ShipIt UI instead.
 - In a **Sandbox** session the per-sandbox grant applies as before: the user
   turns on **"Allow merging PRs"** under GitHub access when creating it.
