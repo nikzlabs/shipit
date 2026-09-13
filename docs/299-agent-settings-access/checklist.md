@@ -13,4 +13,3 @@ in the *same PR*"). Review history lives there too.
 - [x] `mockup.html` — the card's pending and terminal states, both themes
 - [x] Independent design reviews, each cold, each with a removal brief, with
       every finding verified against the code before being acted on
-- [ ] Reviewer answers yes to "ready to implement"

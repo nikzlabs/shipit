@@ -591,10 +591,30 @@ slot's `pin_unavailable`, whether egress enforcement is active. Derived status i
 not declared as a setting, but a declared setting's read may carry it as the
 reason that setting is not doing what the user expects.
 
-`get` distinguishes **saved** from **effective** where they differ: a global
-egress host is saved and applies to containers started afterwards; a change that
-needs a session restart says so. Reporting only the stored value would tell the
-agent a change is live when it is not.
+`get` distinguishes **saved** from **effective** where they differ. "Saved,
+applies after a restart" is not good enough on its own, because for some sessions
+a restart changes nothing: a sandbox whose network capability is off is
+contained, so adding a host to the global allowlist will never grant it.
+Promising that the fix lands on the next start would be false in exactly the case
+the user is trying to unblock.
+
+So effectiveness is **computed, not inferred from whether a reload ran**. ShipIt
+already has the machinery — `egressHostReach` resolves a host against the
+session's containment, its resolved config and whether DNS control is deployed,
+and the egress route already returns it as `reach`
+(`api-routes-egress.ts:110`–`119`). Reads and outcomes use it and report which of
+four things is true:
+
+- **live** — reachable now.
+- **restart-dependent** — saved, and a new container picks it up.
+- **excluded for this session** — policy prevents it whatever the allowlist says,
+  with the reason. The contained sandbox is this case, and the honest answer is
+  that the session's network capability is what has to change.
+- **uncertain** — the write landed and its effect could not be verified.
+
+The same four apply to any setting whose stored value and live effect can differ.
+Egress is where it bites hardest, and where inferring from the reload would have
+produced a confidently wrong answer.
 
 **A setting that cannot be read degrades to an entry, never to an error.** In a
 session with no bound repository the project-scope entries read as *unavailable —
@@ -711,8 +731,11 @@ a **server-only** revision over the whole stored value, which never leaves the
 orchestrator and is what step 3 compares. The user approves what `from` shows;
 the server checks what `baseline` covers.
 
-Phases: `pending` → `applying` → `applied` | `dismissed` | `stale` | `refused` |
-`failed` | `unknown`.
+Phases:
+
+- `pending` → `dismissed` (direct; dismissal takes no lock and cannot be stale)
+- `pending` → `applying` → `applied` | `partial` | `uncertain` | `stale` |
+  `refused` | `failed` | `unknown`
 
 - **`applied` records saved and effective separately.** This is not an egress
   quirk; it is the normal shape of a settings write here. An egress host is saved
@@ -777,7 +800,7 @@ not a precondition for this.
 
 Two channels, and they do different jobs. **The read surface is authoritative.** `shipit settings get <key>`
 carries a `lastProposal` field, and the agent must read a setting before
-proposing anyway — that is where `from` comes from — so an outcome is visible
+proposing anyway — and that read is where it sees the last outcome — so an outcome is visible
 exactly when it matters. A separate history-browsing command is not part of this:
 no requirement asks for one, and `get` already answers the question at the moment
 it is asked.
@@ -1055,7 +1078,10 @@ Beyond the persistence round-trip tests the recipe requires:
   do not interleave. The test asserts ordering only; it does **not** assert that
   the later write loses, because the lock does not detect a stale full-object
   submit and this feature does not claim to fix that.
-- **Saved versus effective** — a global egress add reports saved-not-yet-live.
+- **Saved versus effective** — a global egress add reports restart-dependent for
+  an ordinary session, and **excluded for this session** for a sandbox whose
+  network capability is off, where a restart would never grant it. Inferring from
+  whether a reload ran gives the wrong answer for the second case.
 - **Restart ordering** — a claim interrupted before and after the side effect
   both resolve `unknown`, and recovery converts them before the decision handler
   accepts anything.
