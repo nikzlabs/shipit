@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "no
 import path from "node:path";
 import type { ChildProcess } from "node:child_process";
 import { killProcessTree } from "../../../shared/kill-child.js";
+import { CODEX_TOOLS_OFF_ARGS } from "../../../shared/agent-tools-off.js";
 import type {
   AgentId,
   AgentCapabilities,
@@ -272,6 +273,7 @@ export class CodexAdapter
     // Global config overrides must precede the subcommand.
     const args = [
       ...CODEX_SANDBOX_ARGS,
+      ...(params.toolsOff ? CODEX_TOOLS_OFF_ARGS : []),
       ...(params.reasoningEffort ? ["-c", `model_reasoning_effort=${params.reasoningEffort}`] : []),
       ...providerArgs,
       "app-server",

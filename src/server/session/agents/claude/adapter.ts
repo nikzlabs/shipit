@@ -412,6 +412,7 @@ export class ClaudeAdapter
       sandbox: params.sandbox,
       guardDestructiveGit: params.guardDestructiveGit,
       permissionPromptTool: this._permissionPromptTool,
+      toolsOff: params.toolsOff,
     });
   }
 

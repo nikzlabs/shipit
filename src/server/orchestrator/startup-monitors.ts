@@ -38,8 +38,17 @@ export async function startStartupMonitors(
     loopDetector, oomBreaker, chatHistoryManager,
     repoPrefetcher, claudeOAuthRefresherRef, codexOAuthRefresherRef,
     startupTimer, authManagers, dockerProxyServer, databaseManager,
-    mergeWatchManager, autoPushScheduler, agentMergeExecutor,
+    mergeWatchManager, autoPushScheduler, agentMergeExecutor, cleanupContainer,
   } = rt;
+
+  // Held for the process: the first dictation after a quiet period must not pay
+  // a container start (docs/299 req 8). Creation is off the boot critical path.
+  if (cleanupContainer) {
+    void cleanupContainer.start().catch((err: unknown) => {
+      console.error("[cleanup-container] startup failed:", err);
+    });
+    app.addHook("onClose", async () => { cleanupContainer.stop(); });
+  }
 
   const deployment = resolveDeploymentMode();
   // Docker reads can outlast the interval; overlapping reads publish stale snapshots.

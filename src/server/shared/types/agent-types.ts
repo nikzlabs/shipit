@@ -412,6 +412,8 @@ export interface AgentRunParams {
   guardDestructiveGit?: boolean;
   useStreaming?: boolean;
   compact?: boolean;
+  /** One-shot background work with no tool set; see shared/agent-tools-off.ts. */
+  toolsOff?: boolean;
 }
 
 export interface AgentMcpBridge {

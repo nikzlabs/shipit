@@ -4,6 +4,7 @@ import path from "node:path";
 import { spawn as nodeSpawn, type ChildProcess, type SpawnOptions } from "node:child_process";
 import { killChild, killProcessTree } from "../../../shared/kill-child.js";
 import { OPENCODE_TOOL_NAMES } from "../../../shared/agent-registry.js";
+import { OPENCODE_TOOLS_OFF_CONFIG } from "../../../shared/agent-tools-off.js";
 import { HARNESSES } from "../../../shared/catalogue/harnesses.js";
 import type {
   AgentId,
@@ -116,6 +117,8 @@ export class OpencodeAdapter
     }
 
     const config: Record<string, unknown> = { $schema: "https://opencode.ai/config.json" };
+
+    if (params.toolsOff) config.tools = { ...OPENCODE_TOOLS_OFF_CONFIG };
 
     if (isOpenCodeAccountRouting(params.serviceRouting) && params.model) {
       Object.assign(config, opencodeAccountConfig(params.model));

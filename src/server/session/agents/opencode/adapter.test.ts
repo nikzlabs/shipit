@@ -669,3 +669,27 @@ describe("OpenCode ChatGPT account route", () => {
     } finally { adapter.kill(); fs.rmSync(home, { recursive: true, force: true }); }
   });
 });
+
+// docs/299 — OpenCode takes no tool flags, so tools-off rides its config file.
+describe("OpencodeAdapter — tools off", () => {
+  function configFromSpawn(params: Partial<AgentRunParams>): Record<string, unknown> {
+    const child = new FakeChild();
+    const spawnFn = vi.fn(() => child as unknown as ChildProcess);
+    const adapter = new OpencodeAdapter({ spawnFn });
+    try {
+      adapter.run({ ...RUN_PARAMS, ...params });
+      const call = (spawnFn.mock.calls as unknown as [string, string[], { env: Record<string, string> }][])[0];
+      return JSON.parse(fs.readFileSync(call[2].env.OPENCODE_CONFIG, "utf8")) as Record<string, unknown>;
+    } finally {
+      adapter.kill();
+    }
+  }
+
+  it("empties the tool set through the config wildcard", () => {
+    expect(configFromSpawn({ toolsOff: true }).tools).toEqual({ "*": false });
+  });
+
+  it("leaves an ordinary turn's config without a tools entry", () => {
+    expect(configFromSpawn({})).not.toHaveProperty("tools");
+  });
+});

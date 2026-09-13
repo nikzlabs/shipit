@@ -61,6 +61,11 @@ import { reconcileOrphanedConsultCards } from "./consult-card-reconcile.js";
 import { createOomCircuitBreaker } from "./oom-circuit-breaker.js";
 import { MergeWatchManager } from "./merge-watch.js";
 import { createSessionLoopDetector } from "./loop-detector.js";
+import { CleanupContainerManager, CLEANUP_CONTAINER_SESSION_ID } from "./cleanup-container.js";
+import {
+  LocalBackgroundHarnessRunner,
+  type BackgroundHarnessRunner,
+} from "./background-harness-run.js";
 import { createRepoPrefetcher, type RepoPrefetcher } from "./repo-prefetch.js";
 import { pruneSessionVolumes } from "./disk-janitor.js";
 import { isOverlayEligible, isOverlayEnabled } from "./overlay-session.js";
@@ -170,6 +175,21 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
   const oomBreaker = createOomCircuitBreaker();
 
   const loopDetector = createSessionLoopDetector();
+
+  // One entry point for background work that must run a harness (docs/299 phase 4).
+  // Container mode spawns into the always-on cleanup container; local mode, which
+  // has no container manager at all, runs the same adapter from here.
+  const cleanupContainer = containerManager && !isTestMode
+    ? new CleanupContainerManager({ containerManager, sessionsRoot, credentialsDir })
+    : null;
+  const backgroundHarnessRunner: BackgroundHarnessRunner | null = cleanupContainer
+    ?? (localAgentFactory
+      ? new LocalBackgroundHarnessRunner({
+          agentFactory: localAgentFactory,
+          credentialsDir,
+          sessionId: CLEANUP_CONTAINER_SESSION_ID,
+        })
+      : null);
 
   const effectiveRunnerFactory = buildRunnerFactory({
     deps, containerManager, credentialsDir, sessionManager, runtimeMode, broadcastLog,
@@ -943,6 +963,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     sseClients, sseBroadcast,
     logStore, getLogBuffer, clearLogBuffer, removeLogBuffer, broadcastLog, removeSessionLogs,
     oomBreaker, loopDetector,
+    cleanupContainer, backgroundHarnessRunner,
     effectiveRunnerFactory,
     serviceManagers, composeStopPromises, composeWarnings, composeNotConfigured,
     latestMemoryStats,

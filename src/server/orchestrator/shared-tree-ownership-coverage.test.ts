@@ -47,6 +47,12 @@ const ALLOWED: Record<string, { count: number; why: string }> = {
       + "walk is load-bearing here for the opposite reason: it must reach the legacy-alias "
       + "symlinks, which it lchowns in place without following.",
   },
+  "orchestrator/cleanup-container.ts": {
+    count: 1,
+    why: "The cleanup container's directory, just created and holding nothing (docs/299). "
+      + "It is never a clone: the container holds no repository at all, so there is no "
+      + "object store to descend into and nothing shares an inode with a bare cache.",
+  },
   "orchestrator/session-dir-factory.ts": {
     count: 1,
     why: "A session directory that has just been created and holds nothing yet — "

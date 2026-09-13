@@ -26,6 +26,8 @@ export interface SubAgentRunOptions {
   reasoningEffort?: string;
   timeoutMs?: number;
   maxOutputChars?: number;
+  /** Empty the harness's tool set for a one-shot run (docs/299). */
+  toolsOff?: boolean;
 }
 
 export type SubAgentRunStatus = "success" | "error" | "timeout" | "cancelled";
@@ -62,6 +64,7 @@ export interface SubAgentSpawnRequest {
   reasoningEffort?: string;
   timeoutMs?: number;
   maxOutputChars?: number;
+  toolsOff?: boolean;
 }
 
 export interface SubAgentRunHandle {
@@ -216,5 +219,6 @@ export function buildSubAgentRunParams(opts: SubAgentRunOptions): AgentRunParams
     ...(opts.serviceRouting !== undefined ? { serviceRouting: opts.serviceRouting } : {}),
     ...(opts.reasoningEffort !== undefined ? { reasoningEffort: opts.reasoningEffort } : {}),
     ...(opts.homeDir !== undefined ? { homeDir: opts.homeDir } : {}),
+    ...(opts.toolsOff !== undefined ? { toolsOff: opts.toolsOff } : {}),
   };
 }

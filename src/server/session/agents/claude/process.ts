@@ -8,6 +8,7 @@ import type { ClaudeEvent, ImageAttachment, PermissionMode, ServiceRouting } fro
 import { stripAnsi } from "../../../shared/strip-ansi.js";
 import type { AgentHomeResolver } from "../../../shared/agent-home.js";
 import { resolveAgentHome } from "../../../shared/agent-home.js";
+import { CLAUDE_TOOLS_OFF_ARGS } from "../../../shared/agent-tools-off.js";
 
 // Environment credentials override disk login; unscoped routes still need them.
 export function scrubEnvAuthForScopedHome(env: Record<string, string>, scopedHome: string | undefined): void {
@@ -91,6 +92,7 @@ export interface ClaudeRunOptions {
   sandbox?: boolean;
   guardDestructiveGit?: boolean;
   permissionPromptTool?: string;
+  toolsOff?: boolean;
 }
 
 // Files avoid Linux's 128 KiB limit per argument. The caller deletes the file.
@@ -162,7 +164,7 @@ export class ClaudeProcess extends EventEmitter {
       "--input-format", "stream-json",
       "--output-format", "stream-json",
       "--verbose",
-      "--allowedTools", tools,
+      ...(opts.toolsOff ? CLAUDE_TOOLS_OFF_ARGS : ["--allowedTools", tools]),
     ];
 
     // CLI auto applies the classifier even with the Bash allowlist entry.
@@ -444,7 +446,7 @@ export class StreamingClaudeProcess extends EventEmitter {
       "--output-format", "stream-json",
       "--replay-user-messages",
       "--verbose",
-      "--allowedTools", tools,
+      ...(opts.toolsOff ? CLAUDE_TOOLS_OFF_ARGS : ["--allowedTools", tools]),
     ];
 
     if (permissionMode === "plan") {

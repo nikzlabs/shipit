@@ -12,6 +12,7 @@ import { repoUrlToHash } from "./git-utils.js";
 import type { GitRemoteCredential } from "./repo-git.js";
 import { EGRESS_RESOLVER_LABEL } from "./egress-dns-install.js";
 import { EGRESS_PROXY_LABEL } from "./egress-proxy-install.js";
+import { CLEANUP_CONTAINER_SESSION_ID } from "./cleanup-container.js";
 
 describe("runDiskJanitor", () => {
   let tmpDir: string;
@@ -1183,6 +1184,36 @@ describe("runDiskJanitor", () => {
     expect(fs.existsSync(path.join(credentialsDir, "sessions", archivedId))).toBe(false);
     expect(fs.existsSync(path.join(credentialsDir, "sessions", goneId))).toBe(false);
     expect(result.credentialDirsRemoved).toBe(2);
+  });
+
+  // docs/299 — the cleanup container mounts this directory and has no session
+  // row, so an "untracked means orphan" sweep would delete it from under a live
+  // mount: the container keeps reading a deleted inode while the orchestrator
+  // writes spawn homes into its replacement.
+  it("keeps the cleanup container's credentials, which belong to no session", async () => {
+    setup();
+    const sessionManager = new SessionManager(dbManager!);
+    const repoStore = new RepoStore(dbManager!);
+
+    const credentialsDir = path.join(tmpDir, "credentials");
+    const reserved = path.join(credentialsDir, "sessions", CLEANUP_CONTAINER_SESSION_ID);
+    const orphan = path.join(credentialsDir, "sessions", "gone000000000000");
+    for (const dir of [reserved, orphan]) {
+      fs.mkdirSync(path.join(dir, ".claude"), { recursive: true });
+      fs.writeFileSync(path.join(dir, ".claude", ".credentials.json"), "{}");
+    }
+
+    const result = await runDiskJanitor({
+      sessionManager,
+      repoStore,
+      stateDir: tmpDir,
+      credentialsDir,
+      runDocker: () => Promise.resolve(""),
+    });
+
+    expect(fs.existsSync(reserved)).toBe(true);
+    expect(fs.existsSync(orphan)).toBe(false);
+    expect(result.credentialDirsRemoved).toBe(1);
   });
 
   it("preserves per-session logs for disk-evicted-but-live sessions; reaps user-archived/untracked (planning#181)", async () => {

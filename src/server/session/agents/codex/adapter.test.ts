@@ -162,6 +162,37 @@ describe("CodexAdapter", () => {
   });
 
   /**
+   * docs/299 — Codex has no "no tools" flag; these seven overrides together take
+   * its request from 9 tool definitions to 0. Asserted by literal value and at
+   * argv position, as with the sandbox overrides below: this is a wire contract
+   * with the pinned CLI, and comparing against the exported constant would pass
+   * whatever that constant said.
+   */
+  describe("tools off (background work)", () => {
+    it("disables the shell tool before `app-server` when toolsOff is set", () => {
+      adapter = new CodexAdapter(() => false);
+      adapter.run({ prompt: "clean this up", cwd: "/workspace", toolsOff: true });
+      expect(lastSpawnArgs).toEqual([
+        ...SANDBOX,
+        "-c", "features.shell_tool=false",
+        "-c", "features.multi_agent=false",
+        "-c", "features.goals=false",
+        "-c", "features.view_image=false",
+        "-c", 'web_search="disabled"',
+        "-c", "tools.update_plan={enabled=false}",
+        "-c", "tools.experimental_request_user_input={enabled=false}",
+        "app-server",
+      ]);
+    });
+
+    it("leaves an ordinary turn's tools alone", () => {
+      adapter = new CodexAdapter(() => false);
+      adapter.run({ prompt: "hi", cwd: "/workspace" });
+      expect(lastSpawnArgs).not.toContain("features.shell_tool=false");
+    });
+  });
+
+  /**
    * `sandboxPolicy: { type: "dangerFullAccess" }` on `turn/start` was the ONLY
    * thing disabling Codex's sandbox, and when codex-cli 0.153.2 fell back past
    * it every tool call died on `bwrap: No permissions to create new namespace`.

@@ -408,6 +408,30 @@ describe("ClaudeProcess", () => {
       paths.forEach((p) => { try { unlinkSync(p!); } catch { /* ignore */ } });
     });
 
+    // docs/299 — a one-shot background run carries no tool set at all.
+    it("replaces the tool allowlist with an empty tool set when toolsOff is set", () => {
+      const mockProc = createMockChildProcess();
+      mockChildSpawn.mockReturnValue(mockProc as any);
+
+      new ClaudeProcess().run({ prompt: "clean this up", toolsOff: true });
+
+      const args = mockChildSpawn.mock.calls[0][1] as string[];
+      expect(args).not.toContain("--allowedTools");
+      expect(args[args.indexOf("--tools") + 1]).toBe("");
+      expect(args).toContain("--strict-mcp-config");
+    });
+
+    it("keeps the tool allowlist for an ordinary turn", () => {
+      const mockProc = createMockChildProcess();
+      mockChildSpawn.mockReturnValue(mockProc as any);
+
+      new ClaudeProcess().run({ prompt: "hi" });
+
+      const args = mockChildSpawn.mock.calls[0][1] as string[];
+      expect(args).toContain("--allowedTools");
+      expect(args).not.toContain("--tools");
+    });
+
     it("never puts the prompt in argv (MAX_ARG_STRLEN caps one argument at 128 KiB)", () => {
       const mockProc = createMockChildProcess();
       mockChildSpawn.mockReturnValue(mockProc as any);
