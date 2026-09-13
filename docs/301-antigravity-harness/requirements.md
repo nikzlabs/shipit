@@ -14,8 +14,8 @@ and its
 [integration-checklist.md](../266-harness-integration-recipe/integration-checklist.md);
 the candidate assessment with the probe evidence is the Antigravity section of
 [candidates.md](../266-harness-integration-recipe/candidates.md). This doc
-holds what the feature must do. There is no `plan.md` yet: the open questions
-below block design and code.
+holds what the feature must do. There is no `plan.md` yet: the open question
+below blocks design and code.
 
 Source of the decisions below: the user's messages in the assessing session
 (2026-09-13) and the follow-up action the user approved from that session.
@@ -27,9 +27,11 @@ Anything the user did not say is under "Open questions".
    harness can be selected — session creation, model picking, roles — on
    installs that include it in `SHIPIT_HARNESSES`.
 2. **Google account sign-in.** A user can authenticate Antigravity with their
-   Google account from inside ShipIt. Sessions on this harness then run on the
-   stored account credential without a second sign-in, including sessions that
-   start in a fresh container. (Basis: the credential is a plain token file in
+   Google account from inside ShipIt, the same way as for Claude Code: ShipIt
+   shows the sign-in link the CLI prints, the user signs in with Google, pastes
+   the authorization code into ShipIt, and ShipIt hands it to the CLI. Sessions
+   on this harness then run on the stored account credential without a second
+   sign-in, including sessions that start in a fresh container. (Basis: the credential is a plain token file in
    the CLI's config home, and a fresh process authenticates from a byte-copy of
    that home; probed on 1.2.2, see candidates.md.)
 3. **Metered key.** A user can instead supply a Gemini API key
@@ -44,9 +46,10 @@ Anything the user did not say is under "Open questions".
    ShipIt shows Google's own sentence to the user. The generic per-harness
    message in `src/server/orchestrator/services/agent-auth-gate.ts` must not
    replace it, because that generic copy hides the sentence that names the fix.
-5. **Pinned install.** The binary is installed at one exact version and the
-   image's installed-set report names the harness, so ShipIt treats it as
-   installed. Runtime version stability holds: the CLI's own auto-updater
+5. **Pinned install, same script as the other harnesses.** The binary is
+   installed by the same install script that installs the other harnesses,
+   at one exact version, and the image's installed-set report names the
+   harness, so ShipIt treats it as installed. Runtime version stability holds: the CLI's own auto-updater
    never replaces the pinned binary. (Basis: on 1.2.2 the updater skips itself
    when the install directory is not writable — log line
    `auto_updater.go: Directory … is not fully accessible (readable: true,
@@ -60,31 +63,13 @@ Anything the user did not say is under "Open questions".
 7. **Catalogue before harness.** Gemini's wire format and Google's vendor row
    exist in the model catalogue before this harness declares them
    (docs/302-gemini-catalogue-vendor, a separate feature).
+8. **Full-auto only at launch.** Sessions on this harness run with the CLI's
+   skip-permissions flag; the permission-mode selector offers only full-auto
+   for it. A guarded mode (the CLI's documented `PreToolUse` hook is the
+   candidate) is a separate follow-up feature, not part of this one.
 
 ## Open questions
 
-- **Install path.** The CLI is a ~213 MB Go binary shipped as a per-version
-  GitHub release tarball, not an npm package, so the `docker/agent-cli`
-  pipeline cannot install it. docs/266 says a non-npm CLI is a design decision
-  to surface, not to improvise. Which path: a non-npm branch in
-  `install-agent-clis.sh` that downloads the pinned tarball into a root-owned,
-  read-only directory and writes the id into `installed.json` (the read-only
-  directory is also what disables the updater, req 5); or wait for an npm
-  package from Google; or leave the harness out of the image and let the
-  operator install it?
-- **Guarded mode.** In print mode the CLI soft-denies a tool that needs
-  approval and continues; there is no permission-prompt MCP tool. The
-  documented `PreToolUse` hook returns allow/deny/ask synchronously and is the
-  candidate for ShipIt's guarded permission mode, unprobed. Ship full-auto only
-  at launch, or make guarded mode via the hook part of this feature?
-- **Sign-in flow.** The CLI runs the Google sign-in itself in print mode: it
-  prints the URL on stderr, and the user pastes the authorization code from
-  Google's callback page back into the CLI's stdin within 60 seconds. ShipIt's
-  existing login integrations are device-code shaped (ShipIt shows a URL and a
-  code; the user enters the code on the vendor's page). Which shape: a new
-  login integration that shows the URL and offers a code field inside ShipIt
-  with the 60-second window visible; or key-only at launch, account sign-in
-  later; or the user signs in elsewhere and uploads the token file?
 - **MCP tool labels.** MCP tools do not appear in the CLI's `init.tools`; the
   agent calls them through one `call_mcp_tool` wrapper. How the wrapper's
   arguments map to ShipIt's tool-activity labels is unprobed. This one is
@@ -109,3 +94,18 @@ Anything the user did not say is under "Open questions".
 - 2026-09-13 — Can the auto-updater be stopped? Resolved empirically on 1.2.2,
   not by a human: a read-only install directory makes the updater skip itself.
   Basis of requirement 5's runtime half.
+- 2026-09-13 — Install path for a ~213 MB Go binary shipped as a per-version
+  GitHub release tarball, not an npm package (the agent offered: a non-npm
+  branch in the image's install script; wait for an npm package; operator
+  installs)? The user: "same as other harnesses: installed on the host via the
+  same script". Requirement 5 reworded; how the script fetches a non-npm
+  artefact is design (plan.md).
+- 2026-09-13 — Guarded mode via the `PreToolUse` hook, or full-auto only? The
+  user: full-auto only at launch. Requirement 8 added.
+- 2026-09-13 — Sign-in flow: the CLI prints the Google URL and reads the
+  authorization code from stdin within 60 seconds. The user: "same as we do
+  for claude". Claude Code's login in ShipIt is that same code-paste shape
+  (ShipIt shows the URL, the user pastes the code into ShipIt, ShipIt writes
+  it to the CLI). Requirement 2 reworded to name it. The agent's question had
+  described ShipIt's logins as device-code shaped; that is Grok's, not
+  Claude's.
