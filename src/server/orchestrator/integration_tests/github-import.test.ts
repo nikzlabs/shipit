@@ -101,9 +101,22 @@ describe("GitHub repo search via HTTP", () => {
     await githubAuth.setToken("test-token");
     githubAuth.setUserRepos([repo("test-user/recent")]);
 
+    for (const q of ["", "a", "%20%20b%20"]) {
+      const res = await app.inject({ method: "GET", url: `/api/github/repos?q=${q}` });
+      expect(res.json().repos.map((r: { fullName: string }) => r.fullName)).toEqual(["test-user/recent"]);
+    }
+    expect(githubAuth.searchReposCalls).toEqual([]);
+  });
+
+  it("caps the default listing, keeping the most recently pushed", async () => {
+    await githubAuth.setToken("test-token");
+    githubAuth.setUserRepos(Array.from({ length: 40 }, (_, i) => repo(`test-user/r-${i}`)));
+
     const res = await app.inject({ method: "GET", url: "/api/github/repos?q=" });
 
-    expect(res.json().repos.map((r: { fullName: string }) => r.fullName)).toEqual(["test-user/recent"]);
-    expect(githubAuth.searchReposCalls).toEqual([]);
+    const fullNames = res.json().repos.map((r: { fullName: string }) => r.fullName);
+    expect(fullNames).toHaveLength(15);
+    expect(fullNames[0]).toBe("test-user/r-0");
+    expect(fullNames[14]).toBe("test-user/r-14");
   });
 });

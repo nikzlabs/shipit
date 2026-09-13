@@ -131,6 +131,10 @@ export class GitHubAuthManager extends EventEmitter {
 
   // Do not persist the environment fallback: a disk copy would mask token rotation.
   checkCredentials(): boolean {
+    // Any credential transition can change which repos the account sees, and the
+    // token is not a sufficient key: the same token re-submitted after its scopes
+    // or org access changed must not be served a cached list.
+    this.invalidateUserRepoCache();
     const diskToken = this.credentialStore.getGithubToken();
     if (diskToken) {
       this._token = diskToken;
@@ -172,6 +176,7 @@ export class GitHubAuthManager extends EventEmitter {
     this._token = trimmed;
     this._username = check.user.username;
     this._avatarUrl = check.user.avatarUrl;
+    this.invalidateUserRepoCache();
 
     this.credentialStore.setGithubToken(trimmed);
 
@@ -341,10 +346,10 @@ export class GitHubAuthManager extends EventEmitter {
   }
 
   private async fetchAndCacheUserRepos(token: string, epoch: number): Promise<GitHubRepoSummary[]> {
-    const { repos, complete } = await listUserReposImpl(token);
-    // A partial walk still serves this search, but caching it would hide the
+    const { repos, failed } = await listUserReposImpl(token);
+    // A failed walk still serves this search, but caching it would hide the
     // missing repos until the TTL expired, long after GitHub recovered.
-    if (complete && epoch === this._userRepoEpoch) {
+    if (!failed && epoch === this._userRepoEpoch) {
       this._userRepoCache = { token, fetchedAt: Date.now(), repos };
     }
     return repos;

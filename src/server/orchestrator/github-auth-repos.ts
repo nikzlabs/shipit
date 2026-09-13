@@ -59,12 +59,13 @@ export interface GitHubRepoSummary {
   cloneUrl: string;
 }
 
+/** Only the two fields every consumer indexes on are required; the rest get defaults. */
 interface GitHubRepoPayload {
   full_name: string;
-  description: string | null;
-  private: boolean;
-  default_branch: string;
   clone_url: string;
+  description?: string | null;
+  private?: boolean;
+  default_branch?: string;
 }
 
 const USER_REPOS_PER_PAGE = 100;
@@ -73,18 +74,29 @@ const USER_REPOS_MAX_PAGES = 10;
 
 export interface UserRepoListing {
   repos: GitHubRepoSummary[];
-  /** False when a page failed, so the caller knows the listing is partial and must not be cached. */
-  complete: boolean;
+  /**
+   * A page request failed, so entries a retry might return are missing. Distinct
+   * from stopping at `USER_REPOS_MAX_PAGES`, which truncates deterministically
+   * and is safe to cache.
+   */
+  failed: boolean;
 }
 
-function toRepoSummary(r: GitHubRepoPayload): GitHubRepoSummary {
-  return {
+function isRepoPayload(value: unknown): value is GitHubRepoPayload {
+  if (typeof value !== "object" || value === null) return false;
+  const r = value as Partial<GitHubRepoPayload>;
+  return typeof r.full_name === "string" && typeof r.clone_url === "string";
+}
+
+/** Drops entries missing the fields every consumer indexes on, rather than ranking `undefined`. */
+function toRepoSummaries(data: unknown[]): GitHubRepoSummary[] {
+  return data.filter(isRepoPayload).map((r) => ({
     fullName: r.full_name,
-    description: r.description,
-    private: r.private,
-    defaultBranch: r.default_branch,
+    description: r.description ?? null,
+    private: r.private ?? false,
+    defaultBranch: r.default_branch ?? "main",
     cloneUrl: r.clone_url,
-  };
+  }));
 }
 
 /**
@@ -100,18 +112,18 @@ export async function listUserRepos(token: string): Promise<UserRepoListing> {
         `https://api.github.com/user/repos?sort=pushed&per_page=${USER_REPOS_PER_PAGE}&page=${page}&affiliation=owner,collaborator`,
         token,
       );
-      if (!res.ok) return { repos, complete: false };
+      if (!res.ok) return { repos, failed: true };
 
-      const data = (await res.json()) as GitHubRepoPayload[];
-      if (!Array.isArray(data)) return { repos, complete: false };
-      repos.push(...data.map(toRepoSummary));
+      const data = (await res.json()) as unknown;
+      if (!Array.isArray(data)) return { repos, failed: true };
+      repos.push(...toRepoSummaries(data));
       if (data.length < USER_REPOS_PER_PAGE) break;
     }
   } catch {
     // Network failure mid-walk: keep the pages that already arrived, but say so.
-    return { repos, complete: false };
+    return { repos, failed: true };
   }
-  return { repos, complete: true };
+  return { repos, failed: false };
 }
 
 export async function listOrgs(token: string): Promise<{ login: string; avatarUrl: string }[]> {
@@ -163,10 +175,10 @@ export async function searchRepos(token: string, query: string): Promise<GitHubR
 
     if (!res.ok) return [];
 
-    const data = (await res.json()) as { items?: GitHubRepoPayload[] };
+    const data = (await res.json()) as { items?: unknown };
     // Degrade to the personal-repo half of the search rather than failing it.
     if (!Array.isArray(data.items)) return [];
-    return data.items.map(toRepoSummary);
+    return toRepoSummaries(data.items);
   } catch {
     return [];
   }

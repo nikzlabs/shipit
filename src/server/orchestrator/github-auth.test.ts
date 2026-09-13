@@ -997,6 +997,21 @@ describe("GitHubAuthManager.listUserRepos", () => {
     return input instanceof URL ? input.href : input.url;
   }
 
+  function listingResponse(fullNames: string[]): Response {
+    return new Response(
+      JSON.stringify(
+        fullNames.map((fullName) => ({
+          full_name: fullName,
+          description: null,
+          private: false,
+          default_branch: "main",
+          clone_url: `https://github.com/${fullName}.git`,
+        })),
+      ),
+      { status: 200, headers: { "Content-Type": "application/json" } },
+    );
+  }
+
   function pageResponse(count: number, prefix: string): Response {
     const repos = Array.from({ length: count }, (_, i) => ({
       full_name: `${prefix}/repo-${i}`,
@@ -1027,9 +1042,13 @@ describe("GitHubAuthManager.listUserRepos", () => {
 
     expect(repos).toHaveLength(130);
     expect(fetchSpy).toHaveBeenCalledTimes(2);
-    expect(urlOf(fetchSpy.mock.calls[0][0])).toContain("page=1");
-    expect(urlOf(fetchSpy.mock.calls[1][0])).toContain("page=2");
-    expect(urlOf(fetchSpy.mock.calls[0][0])).toContain("per_page=100");
+    const first = new URL(urlOf(fetchSpy.mock.calls[0][0])).searchParams;
+    const second = new URL(urlOf(fetchSpy.mock.calls[1][0])).searchParams;
+    expect(first.get("page")).toBe("1");
+    expect(second.get("page")).toBe("2");
+    expect(first.get("per_page")).toBe("100");
+    expect(repos[0].fullName).toBe("me/repo-0");
+    expect(repos[100].fullName).toBe("also-me/repo-0");
   });
 
   it("stops at the page cap for an account with very many repos", async () => {
@@ -1106,6 +1125,10 @@ describe("GitHubAuthManager.listUserRepos", () => {
     await mgr.listUserRepos();
     expect(fetchSpy).toHaveBeenCalledTimes(1);
 
+    vi.spyOn(Date, "now").mockReturnValue(1_000_000 + 5 * 60 * 1000 - 1);
+    await mgr.listUserRepos();
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+
     vi.spyOn(Date, "now").mockReturnValue(1_000_000 + 5 * 60 * 1000 + 1);
     await mgr.listUserRepos();
     expect(fetchSpy).toHaveBeenCalledTimes(2);
@@ -1113,17 +1136,69 @@ describe("GitHubAuthManager.listUserRepos", () => {
 
   it("re-fetches after a repo is created so the new repo is searchable", async () => {
     const mgr = authedManager();
-    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (url) =>
-      urlOf(url).includes("/user/repos?")
-        ? pageResponse(3, "me")
-        : new Response(
-            JSON.stringify({ name: "r", full_name: "me/r", html_url: "u", clone_url: "c" }),
-            { status: 201, headers: { "Content-Type": "application/json" } },
-          ),
+    let created = false;
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
+      if (!urlOf(url).includes("/user/repos?")) {
+        created = true;
+        return new Response(
+          JSON.stringify({ name: "fresh", full_name: "me/fresh", html_url: "u", clone_url: "c" }),
+          { status: 201, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      return listingResponse(created ? ["me/repo-0", "me/fresh"] : ["me/repo-0"]);
+    });
+
+    expect((await mgr.listUserRepos()).map((r) => r.fullName)).not.toContain("me/fresh");
+    await mgr.createRepo("fresh");
+    expect((await mgr.listUserRepos()).map((r) => r.fullName)).toContain("me/fresh");
+
+    expect(fetchSpy.mock.calls.filter((c) => urlOf(c[0]).includes("/user/repos?"))).toHaveLength(2);
+  });
+
+  it("drops malformed entries rather than ranking an undefined name", async () => {
+    const mgr = authedManager();
+    vi.spyOn(globalThis, "fetch").mockImplementation(
+      async () =>
+        new Response(JSON.stringify([{}, { full_name: "me/real", clone_url: "c" }, null]), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
     );
 
+    expect((await mgr.listUserRepos()).map((r) => r.fullName)).toEqual(["me/real"]);
+  });
+
+  it("re-fetches when the same token is reconnected, whose access may have changed", async () => {
+    const store = new CredentialStore(tmpDir);
+    store.setGithubToken("ghp_x");
+    const mgr = new GitHubAuthManager(tmpDir, store);
+    mgr.checkCredentials();
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async () => pageResponse(3, "me"));
+
     await mgr.listUserRepos();
-    await mgr.createRepo("r");
+    mgr.checkCredentials();
+    await mgr.listUserRepos();
+
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it("re-fetches when the same token is re-submitted after its access changed", async () => {
+    const store = new CredentialStore(tmpDir);
+    store.setGithubToken("ghp_x");
+    const mgr = new GitHubAuthManager(tmpDir, store);
+    mgr.checkCredentials();
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
+      if (urlOf(url).endsWith("/user")) {
+        return new Response(
+          JSON.stringify({ login: "me", avatar_url: "a", id: 1, name: null }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      return listingResponse(["me/repo-0"]);
+    });
+
+    await mgr.listUserRepos();
+    await mgr.setToken("ghp_x");
     await mgr.listUserRepos();
 
     expect(fetchSpy.mock.calls.filter((c) => urlOf(c[0]).includes("/user/repos?"))).toHaveLength(2);

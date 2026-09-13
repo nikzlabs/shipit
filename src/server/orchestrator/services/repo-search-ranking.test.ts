@@ -52,9 +52,10 @@ describe("rankRepoSearchResults", () => {
   });
 
   it("keeps push order within a tier", () => {
-    const ranked = rankRepoSearchResults("api", [repo("me/api-new"), repo("me/api-old")], []);
+    // Deliberately reverse-alphabetical, so an incidental name sort cannot pass.
+    const ranked = rankRepoSearchResults("api", [repo("me/api-zulu"), repo("me/api-alpha")], []);
 
-    expect(names(ranked)).toEqual(["me/api-new", "me/api-old"]);
+    expect(names(ranked)).toEqual(["me/api-zulu", "me/api-alpha"]);
   });
 
   it("matches case-insensitively", () => {
@@ -83,10 +84,30 @@ describe("rankRepoSearchResults", () => {
     expect(names(ranked)).toEqual(["me/newest", "me/older"]);
   });
 
-  it("does not let an unqualified query match across the slash", () => {
+  it("does not match a query whose owner part is only a suffix of the owner", () => {
     const ranked = rankRepoSearchResults("e/s", [repo("me/shipit")], []);
 
     expect(names(ranked)).toEqual([]);
+  });
+
+  it("ranks an exact owner above owners that merely share its prefix", () => {
+    const lookalikes = Array.from({ length: 10 }, (_, i) => repo(`me-${i}/ship`));
+    const ranked = rankRepoSearchResults("me/ship", [...lookalikes, repo("me/ship")], []);
+
+    expect(ranked[0].fullName).toBe("me/ship");
+  });
+
+  it("ranks an exact owner first for a bare owner/ query", () => {
+    const lookalikes = Array.from({ length: 10 }, (_, i) => repo(`me-${i}/thing`));
+    const ranked = rankRepoSearchResults("me/", [...lookalikes, repo("me/thing")], []);
+
+    expect(ranked[0].fullName).toBe("me/thing");
+  });
+
+  it("treats an empty owner segment as any owner", () => {
+    const ranked = rankRepoSearchResults("/ship", [repo("me/shipit"), repo("me/unrelated")], []);
+
+    expect(names(ranked)).toEqual(["me/shipit"]);
   });
 
   it("does not repeat a repo returned by both sources", () => {
