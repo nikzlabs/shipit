@@ -15,19 +15,9 @@ import { TtsCache } from "./voice/index.js";
 import { routeVoiceNote, sanitizeVoiceContext } from "./voice/voice-note-router.js";
 
 export async function registerVoiceRoutes(app: FastifyInstance, deps: ApiDeps): Promise<void> {
-  const { credentialStore, authManager } = deps;
+  const { credentialStore } = deps;
   const cacheDir = path.join(deps.stateDir ?? deps.workspaceDir, ".voice-cache");
   const ttsCache = new TtsCache(cacheDir);
-
-  const cleanupCredentialRoot = (): string | undefined => {
-    try {
-      const route = deps.providerAccountManager?.selectRouteForTurn("anthropic");
-      if (route?.kind !== "account") return undefined;
-      return deps.providerAccountManager?.resolveCredentialRoot("claude", route.id);
-    } catch {
-      return undefined;
-    }
-  };
 
   function handleError(reply: FastifyReply, err: unknown, genericMsg: string): void {
     if (err instanceof ServiceError) {
@@ -61,7 +51,7 @@ export async function registerVoiceRoutes(app: FastifyInstance, deps: ApiDeps): 
   });
 
   app.get("/api/voice/cleanup/status", async () => {
-    return getCleanupStatus(credentialStore, authManager, fetch, cleanupCredentialRoot());
+    return getCleanupStatus(credentialStore);
   });
 
   app.post("/api/voice/transcribe", async (request, reply) => {
@@ -99,13 +89,13 @@ export async function registerVoiceRoutes(app: FastifyInstance, deps: ApiDeps): 
     }
 
     try {
-      return await transcribeVoice(credentialStore, authManager, {
+      return await transcribeVoice(credentialStore, {
         audio,
         cleanup,
         ...(mimeType ? { mimeType } : {}),
         ...(language ? { language } : {}),
         ...(sttProvider ? { sttProvider } : {}),
-      }, fetch, cleanupCredentialRoot());
+      });
     } catch (err) {
       handleError(reply, err, "Failed to transcribe");
     }

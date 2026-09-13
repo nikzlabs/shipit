@@ -4,7 +4,6 @@ export { createOpenAiTtsProvider } from "./providers/openai-tts.js";
 export { createElevenLabsTtsProvider } from "./providers/elevenlabs-tts.js";
 export { createDeepgramProvider } from "./providers/deepgram.js";
 export { getVoiceAdapters } from "./registry.js";
-export { createClaudeCleanupProvider } from "./providers/claude-cleanup.js";
 export { createOpenAiCleanupProvider } from "./providers/openai-cleanup.js";
 export { CLEANUP_INSTRUCTIONS, buildCleanupPrompt } from "./cleanup-prompt.js";
 export {

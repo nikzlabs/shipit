@@ -1,5 +1,4 @@
 import type { CredentialStore } from "../credential-store.js";
-import type { AuthManager } from "../agents/claude/auth-manager.js";
 import { ServiceError } from "./types.js";
 import {
   getVoiceAdapters,
@@ -72,20 +71,16 @@ export function getVoiceCredentialStatus(credentialStore: CredentialStore): Voic
   return { configured: credentialStore.getConfiguredVoiceProviders() };
 }
 
-export async function getCleanupStatus(
+export function getCleanupStatus(
   credentialStore: CredentialStore,
-  authManager: AuthManager,
   fetchImpl: typeof fetch = fetch,
-  credentialDir?: string,
-): Promise<{ provider: CleanupProvider["id"] | null }> {
+): { provider: CleanupProvider["id"] | null } {
   const key = credentialStore.getVoiceProviderKey(CLEANUP_OPENAI_PROVIDER);
-  const provider = await pickCleanupProvider(authManager, key, fetchImpl, credentialDir);
-  return { provider: provider?.id ?? null };
+  return { provider: pickCleanupProvider(key, fetchImpl)?.id ?? null };
 }
 
 export async function transcribeVoice(
   credentialStore: CredentialStore,
-  authManager: AuthManager,
   input: {
     audio: Buffer;
     mimeType?: string;
@@ -94,7 +89,6 @@ export async function transcribeVoice(
     sttProvider?: string;
   },
   fetchImpl: typeof fetch = fetch,
-  credentialDir?: string,
 ): Promise<TranscribeResult> {
   const providerId = input.sttProvider ?? DEFAULT_STT_PROVIDER;
   if (!providerSupports(providerId, "stt")) {
@@ -124,7 +118,7 @@ export async function transcribeVoice(
   if (!input.cleanup) return { text: raw, rawText: raw };
 
   const cleanupKey = credentialStore.getVoiceProviderKey(CLEANUP_OPENAI_PROVIDER);
-  const provider = await pickCleanupProvider(authManager, cleanupKey, fetchImpl, credentialDir);
+  const provider = pickCleanupProvider(cleanupKey, fetchImpl);
   const result = await cleanTranscript(raw, provider, {
     ...(input.language ? { language: input.language } : {}),
   });

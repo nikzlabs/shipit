@@ -53,12 +53,6 @@ function makeRunnerRegistry(sessionId: string) {
   };
 }
 
-function makeAuthManager(token: string | null = null) {
-  return {
-    getAccessToken: vi.fn(async () => ({ token })),
-  };
-}
-
 function buildMultipartBody(parts: {
   name: string;
   value: string | Buffer;
@@ -89,38 +83,27 @@ let tmpDir: string;
 
 async function buildApp(overrides?: {
   credentialStore?: ReturnType<typeof makeCredentialStore>;
-  authManager?: ReturnType<typeof makeAuthManager>;
   runnerRegistry?: { get: (id: string) => unknown };
   chatHistoryManager?: {
     replaceInProgress: (sessionId: string, messages: unknown[]) => void;
     append: (sessionId: string, message: unknown) => void;
   };
-  providerAccountManager?: {
-    selectRouteForTurn: (agentId: string) => unknown;
-    resolveCredentialRoot?: (agentId: string, accountId: string) => string;
-  };
 }): Promise<{
   app: FastifyInstance;
   credentialStore: ReturnType<typeof makeCredentialStore>;
-  authManager: ReturnType<typeof makeAuthManager>;
 }> {
   const credentialStore = overrides?.credentialStore ?? makeCredentialStore();
-  const authManager = overrides?.authManager ?? makeAuthManager();
   const app = Fastify();
   await app.register(fastifyMultipart);
   await registerVoiceRoutes(app, {
     credentialStore,
-    authManager,
     workspaceDir: tmpDir,
     stateDir: tmpDir,
     runnerRegistry: overrides?.runnerRegistry ?? { get: () => undefined },
     chatHistoryManager: overrides?.chatHistoryManager ?? { replaceInProgress: vi.fn(), append: vi.fn() },
-    providerAccountManager: overrides?.providerAccountManager ?? {
-      selectRouteForTurn: () => ({ kind: "api-key", id: "claude-api-key" }),
-    },
   } as unknown as ApiDeps);
   await app.ready();
-  return { app, credentialStore, authManager };
+  return { app, credentialStore };
 }
 
 beforeEach(() => {
@@ -233,58 +216,31 @@ describe("POST/DELETE /api/voice/credentials", () => {
 });
 
 describe("GET /api/voice/cleanup/status", () => {
-  it("returns null provider when no OAuth bearer and no key", async () => {
-    const { app } = await buildApp({ authManager: makeAuthManager(null) });
+  it("reports no provider when no OpenAI key is set", async () => {
+    const { app } = await buildApp();
     const res = await app.inject({ method: "GET", url: "/api/voice/cleanup/status" });
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({ provider: null });
     await app.close();
   });
 
-  it("indicates the claude cleanup provider when an OAuth bearer is present", async () => {
-    const { app } = await buildApp({ authManager: makeAuthManager("oauth-bearer-token") });
+  it("reports the OpenAI cleanup provider when the key is set", async () => {
+    const credentialStore = makeCredentialStore();
+    credentialStore.setVoiceProviderKey("openai", "sk-abc");
+    const { app } = await buildApp({ credentialStore });
     const res = await app.inject({ method: "GET", url: "/api/voice/cleanup/status" });
     expect(res.statusCode).toBe(200);
-    const body = res.json();
-    expect(body.provider).toBeTruthy();
+    expect(res.json()).toEqual({ provider: "openai-cleanup" });
     await app.close();
   });
 
-  it("reads the bearer from the credential root of the account the router picks", async () => {
-    const authManager = makeAuthManager("oauth-bearer-token");
-    const { app } = await buildApp({
-      authManager,
-      providerAccountManager: {
-        selectRouteForTurn: () => ({ kind: "account", id: "acct_work" }),
-        resolveCredentialRoot: (agentId, accountId) =>
-          `/credentials/provider-accounts/${agentId}/${accountId}`,
-      },
-    });
-
+  it("reports no provider for a Deepgram-only install, where cleanup cannot run", async () => {
+    const credentialStore = makeCredentialStore();
+    credentialStore.setVoiceProviderKey("deepgram", "dg-xyz");
+    const { app } = await buildApp({ credentialStore });
     const res = await app.inject({ method: "GET", url: "/api/voice/cleanup/status" });
-
     expect(res.statusCode).toBe(200);
-    expect(authManager.getAccessToken).toHaveBeenCalledWith(
-      "/credentials/provider-accounts/claude/acct_work",
-    );
-    await app.close();
-  });
-
-  it("degrades to an unscoped read when account resolution throws", async () => {
-    const authManager = makeAuthManager("oauth-bearer-token");
-    const { app } = await buildApp({
-      authManager,
-      providerAccountManager: {
-        selectRouteForTurn: () => {
-          throw new Error("account store unavailable");
-        },
-      },
-    });
-
-    const res = await app.inject({ method: "GET", url: "/api/voice/cleanup/status" });
-
-    expect(res.statusCode).toBe(200);
-    expect(authManager.getAccessToken).toHaveBeenCalledWith(undefined);
+    expect(res.json()).toEqual({ provider: null });
     await app.close();
   });
 });
@@ -445,6 +401,86 @@ describe("POST /api/voice/transcribe", () => {
     expect(res.json()).toEqual({ text: "recognized text", rawText: "recognized text" });
     expect(res.payload).not.toContain(secret);
     expect(JSON.stringify(res.headers)).not.toContain(secret);
+    await app.close();
+  });
+
+  // docs/299-direct-provider-calls phase 1's accepted regression: with no
+  // OpenAI key there is no cleanup route left, and the raw transcript is what
+  // the composer gets (docs/299-direct-provider-calls req 6).
+  it("inserts the raw transcript when cleanup is on and only a Deepgram key is set", async () => {
+    const credentialStore = makeCredentialStore();
+    credentialStore.setVoiceProviderKey("deepgram", "dg-xyz");
+
+    const fetchImpl = vi.fn(async () =>
+      new Response(
+        JSON.stringify({
+          results: { channels: [{ alternatives: [{ transcript: "um add a react use effect" }] }] },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    vi.stubGlobal("fetch", fetchImpl);
+
+    const { payload, boundary } = buildMultipartBody([
+      { name: "audio", filename: "audio.webm", contentType: "audio/webm", value: Buffer.from("audio-bytes") },
+      { name: "cleanup", value: "true" },
+      { name: "sttProvider", value: "deepgram" },
+    ]);
+    const { app } = await buildApp({ credentialStore });
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/voice/transcribe",
+      payload,
+      headers: { "content-type": `multipart/form-data; boundary=${boundary}` },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({
+      text: "um add a react use effect",
+      rawText: "um add a react use effect",
+      cleanupErrorCode: "no-provider",
+    });
+    // One call: the transcription. No cleanup request was attempted.
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    await app.close();
+  });
+
+  it("cleans the transcript when the OpenAI key is set", async () => {
+    const credentialStore = makeCredentialStore();
+    credentialStore.setVoiceProviderKey("openai", "sk-abc");
+
+    const fetchImpl = vi.fn(async (input: unknown) =>
+      String(input).includes("chat/completions")
+        ? new Response(JSON.stringify({ choices: [{ message: { content: "Add a React useEffect" } }] }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          })
+        : new Response(JSON.stringify({ text: "um add a react use effect" }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+    );
+    vi.stubGlobal("fetch", fetchImpl);
+
+    const { payload, boundary } = buildMultipartBody([
+      { name: "audio", filename: "audio.webm", contentType: "audio/webm", value: Buffer.from("audio-bytes") },
+      { name: "cleanup", value: "true" },
+      { name: "sttProvider", value: "openai" },
+    ]);
+    const { app } = await buildApp({ credentialStore });
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/voice/transcribe",
+      payload,
+      headers: { "content-type": `multipart/form-data; boundary=${boundary}` },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({
+      text: "Add a React useEffect",
+      rawText: "um add a react use effect",
+      cleanupProvider: "openai-cleanup",
+    });
     await app.close();
   });
 

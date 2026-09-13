@@ -1,56 +1,20 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect } from "vitest";
 import { pickCleanupProvider, cleanTranscript } from "./cleanup.js";
 import type { CleanupProvider } from "./providers/types.js";
-import type { AuthManager } from "../agents/claude/auth-manager.js";
-
-function authStub(token: string | null): AuthManager {
-  return {
-    getAccessToken: vi.fn().mockResolvedValue({ token }),
-  } as unknown as AuthManager;
-}
-
-function authThrows(): AuthManager {
-  return {
-    getAccessToken: vi.fn().mockRejectedValue(new Error("oauth broken")),
-  } as unknown as AuthManager;
-}
 
 describe("pickCleanupProvider", () => {
-  it("prefers the Claude OAuth bearer when present", async () => {
-    const provider = await pickCleanupProvider(authStub("oauth-token"), "openai-key");
-    expect(provider?.id).toBe("claude-oauth");
+  it("uses the OpenAI voice key", () => {
+    expect(pickCleanupProvider("openai-key")?.id).toBe("openai-cleanup");
   });
 
-  it("falls back to OpenAI when no OAuth bearer", async () => {
-    const provider = await pickCleanupProvider(authStub(null), "openai-key");
-    expect(provider?.id).toBe("openai-cleanup");
-  });
-
-  it("falls back to OpenAI when the OAuth lookup throws", async () => {
-    const provider = await pickCleanupProvider(authThrows(), "openai-key");
-    expect(provider?.id).toBe("openai-cleanup");
-  });
-
-  it("returns null when neither path is available", async () => {
-    expect(await pickCleanupProvider(authStub(null), null)).toBeNull();
-  });
-
-  it("reads the OAuth bearer from the account root it was given", async () => {
-    const auth = authStub("oauth-token");
-    await pickCleanupProvider(auth, "openai-key", fetch, "/credentials/provider-accounts/claude/acct_work");
-    expect(auth.getAccessToken).toHaveBeenCalledWith("/credentials/provider-accounts/claude/acct_work");
-  });
-
-  it("leaves the read unscoped for a reserved route, which uses the singleton path", async () => {
-    const auth = authStub("env-token");
-    await pickCleanupProvider(auth, "openai-key");
-    expect(auth.getAccessToken).toHaveBeenCalledWith(undefined);
+  it("returns null without one", () => {
+    expect(pickCleanupProvider(null)).toBeNull();
   });
 });
 
 function fakeProvider(impl: (raw: string) => Promise<string> | string): CleanupProvider {
   return {
-    id: "claude-oauth",
+    id: "openai-cleanup",
     clean: async (raw) => impl(raw),
   };
 }
@@ -66,7 +30,7 @@ describe("cleanTranscript", () => {
   it("returns the cleaned text on success", async () => {
     const r = await cleanTranscript("um hello", fakeProvider(() => "Hello"));
     expect(r.text).toBe("Hello");
-    expect(r.cleanupProvider).toBe("claude-oauth");
+    expect(r.cleanupProvider).toBe("openai-cleanup");
     expect(r.cleanupErrorCode).toBeUndefined();
   });
 
@@ -88,17 +52,22 @@ describe("cleanTranscript", () => {
     expect(r.cleanupErrorCode).toBe("preamble");
   });
 
-  it("falls through to raw with timeout code on abort", async () => {
-    const provider = fakeProvider(
-      () =>
-        new Promise<string>((_resolve, reject) => {
-          setTimeout(() => {
+  // The provider aborts only when cleanTranscript's own timer fires, so
+  // dropping that timer makes this resolve with the cleaned text instead.
+  it("falls through to raw with timeout code when the deadline fires", async () => {
+    const provider: CleanupProvider = {
+      id: "openai-cleanup",
+      clean: (_raw, opts) =>
+        new Promise<string>((resolve, reject) => {
+          const timer = setTimeout(() => resolve("Answered in time"), 500);
+          opts.signal?.addEventListener("abort", () => {
+            clearTimeout(timer);
             const e = new Error("aborted");
             e.name = "AbortError";
             reject(e);
-          }, 5);
+          });
         }),
-    );
+    };
     const r = await cleanTranscript("hello", provider, { timeoutMs: 1 });
     expect(r.text).toBe("hello");
     expect(r.cleanupErrorCode).toBe("timeout");
