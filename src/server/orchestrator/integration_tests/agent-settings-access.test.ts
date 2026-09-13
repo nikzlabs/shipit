@@ -17,8 +17,8 @@ import {
 import type { DatabaseManager } from "../../shared/database.js";
 import { runShim, type ShimIO } from "../../session/agent-shim/shipit.js";
 
-// docs/299-agent-settings-access req 1: the agent reads ShipIt's settings itself,
-// end to end — shim, relay path, orchestrator route, catalogue projection.
+// docs/299-agent-settings-access req 1: the agent reads ShipIt's settings
+// itself — the shim, the orchestrator route, and the catalogue projection.
 
 describe("Integration: agent settings access (docs/299)", () => {
   let app: FastifyInstance;
@@ -56,7 +56,8 @@ describe("Integration: agent settings access (docs/299)", () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  // The shim's path, mapped the way the agent-ops relay maps it.
+  // The shim against the real orchestrator routes. The relay in between is
+  // mapped the way `agent-ops-routes.ts` maps it and is tested there.
   async function runSettingsShim(
     argv: string[],
   ): Promise<{ stdout: string; stderr: string; exitCode: number | null }> {
@@ -109,7 +110,7 @@ describe("Integration: agent settings access (docs/299)", () => {
     expect(stdout).toContain("second-opinion review from a different model");
   });
 
-  it("returns the whole catalogue as JSON, with no hard-coded list of settings", async () => {
+  it("returns the whole catalogue as JSON, read from the catalogue rather than a list here", async () => {
     const { stdout } = await runSettingsShim(["settings", "list", "--json"]);
     const body = JSON.parse(stdout) as {
       settings: { key: string; readable: boolean }[];
@@ -133,7 +134,10 @@ describe("Integration: agent settings access (docs/299)", () => {
     expect(stderr).toContain("advanced.nope");
   });
 
-  it("refuses a settings read for another session", async () => {
+  // Keeping a container to its OWN session is the container guard's job and is
+  // covered by its golden route table; this only pins that an unknown session
+  // is a 404 rather than a listing of defaults.
+  it("404s a read for a session that does not exist", async () => {
     const res = await app.inject({ method: "GET", url: "/api/sessions/not-a-session/settings" });
     expect(res.statusCode).toBe(404);
   });

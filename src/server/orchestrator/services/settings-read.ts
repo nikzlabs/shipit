@@ -22,7 +22,14 @@ import { ServiceError } from "./types.js";
  * The agent's read surface, projected from the declarations
  * (docs/299-agent-settings-access req 1, 3, 5, 7). It is a projection and never
  * a second description of ShipIt's settings: every entry it returns comes from
- * the catalogue, so a setting declared today is readable today with no edit here.
+ * the catalogue, and a newly declared setting is INDEXED here — key, label,
+ * description, shape, refusal — with no edit to this file.
+ *
+ * Its VALUE is too, where the settings payload stores it. A declaration whose
+ * store is `own-route` names only the route that writes it, so reading one back
+ * needs an adapter below; without one the entry says it cannot be read rather
+ * than reporting a default as the live value. That is the deliberate limit of
+ * the derivation, not a place a setting can be forgotten.
  *
  * Two steps by ROLE, never by size: `list` is the index — what a setting is and
  * what it is set to — and `get` is the detail, carrying the value's shape and
@@ -104,6 +111,8 @@ export interface SettingsReadDeps {
   egressEnforcementActive?: boolean | undefined;
   containerManager?: {
     get(sessionId: string): { status?: string; egressContainedAtStart?: boolean } | undefined;
+    /** The shipped resolver, so sandbox capabilities are honoured, not re-derived. */
+    resolveEgress(sessionId: string): { contained: boolean; userHostsExcluded?: boolean } | undefined;
   } | undefined;
   /** Injected by tests; the release channel otherwise comes off the host checkout. */
   readReleaseChannel?: (() => Promise<string>) | undefined;
@@ -180,7 +189,7 @@ function isConfigured(raw: unknown): boolean {
   return true;
 }
 
-function formatPlain(raw: unknown, declaration: AnySettingDeclaration): string {
+function formatPlain(raw: unknown, declaration: Pick<AnySettingDeclaration, "type">): string {
   if (raw === null || raw === undefined) return "not set";
   if (typeof raw === "boolean" || typeof raw === "number") {
     const unit = declaration.type.shape.unit;
@@ -190,7 +199,7 @@ function formatPlain(raw: unknown, declaration: AnySettingDeclaration): string {
   return JSON.stringify(raw);
 }
 
-interface ProjectedValue {
+export interface ProjectedValue {
   value: unknown;
   display: string;
   notes: string[];
@@ -201,8 +210,8 @@ interface ProjectedValue {
  * derived values). `detail` carries the user's own prose whole; the index caps
  * it, because an index is for scanning.
  */
-function project(
-  declaration: AnySettingDeclaration,
+export function projectSettingValue(
+  declaration: Pick<AnySettingDeclaration, "emits" | "type">,
   raw: unknown,
   detail: boolean,
 ): ProjectedValue {
@@ -262,6 +271,16 @@ function egressContainmentEffect(deps: SettingsReadDeps, sessionId: string): Set
   if (!store) {
     return { state: "uncertain", detail: "This install has no egress allowlist store to resolve containment against." };
   }
+  // The shipped resolver, not a re-derivation: a sandbox whose network
+  // capability is off is contained by `sandboxLifelineEgressConfig` no matter
+  // what the global setting says, and it marks that with `userHostsExcluded`.
+  const config = deps.containerManager?.resolveEgress(sessionId);
+  if (config?.userHostsExcluded) {
+    return {
+      state: "excluded",
+      detail: "This session's own network capability decides its containment, and no restart makes the global setting apply to it. The session's network capability is what has to change.",
+    };
+  }
   const override = store.getSessionOverride(sessionId);
   if (override !== null) {
     return {
@@ -270,23 +289,35 @@ function egressContainmentEffect(deps: SettingsReadDeps, sessionId: string): Set
     };
   }
   const container = deps.containerManager?.get(sessionId);
-  const startedContained = container?.status === "running" ? container.egressContainedAtStart : undefined;
-  const resolved = store.resolveContained(sessionId);
-  if (startedContained !== undefined && startedContained !== resolved) {
-    return {
-      state: "restart-dependent",
-      detail: `This session's container started ${startedContained ? "contained" : "open"} and stays that way until it is restarted.`,
-    };
+  const resolved = config?.contained ?? store.resolveContained(sessionId);
+  if (container?.status === "running") {
+    const startedContained = container.egressContainedAtStart;
+    // A rediscovered container has no recorded boot policy, which
+    // `session-container.ts` treats as unknown rather than as the current one.
+    if (startedContained === undefined) {
+      return {
+        state: "uncertain",
+        detail: "This session's container was rediscovered after a ShipIt restart, so ShipIt does not know which network mode it started under. Restarting the session is what makes the stored value certain.",
+      };
+    }
+    if (startedContained !== resolved) {
+      return {
+        state: "restart-dependent",
+        detail: `This session's container started ${startedContained ? "contained" : "open"} and stays that way until it is restarted.`,
+      };
+    }
   }
   return { state: "live" };
 }
 
 /**
  * Settings whose stored value and live effect can differ. A setting with no
- * entry reads `live`, which is the honest default: its value is read from the
- * store on the path that uses it, so the next use is the stored value. An entry
- * belongs here when something already fixed — a container's start-time
- * topology, a per-session override — decides instead.
+ * entry reads `live`, meaning what `SettingEffect` defines it to mean: the next
+ * use of the setting reads the stored value. That is not a claim about a
+ * process already running, which is why the wording is narrow. An entry belongs
+ * here when something already fixed — a container's start-time topology, a
+ * per-session override, a capability the session cannot change — decides
+ * instead, and a setting consumed once at ShipIt's own startup needs one too.
  */
 const EFFECT_PROBES: Record<string, EffectProbe> = {
   "network.egressContained": egressContainmentEffect,
@@ -341,8 +372,21 @@ const UNREADABLE_NOTES: Record<SettingUnreadableReason, string> = {
 
 interface ReadState {
   stored: Record<string, unknown>;
+  /** The bulk read of the stored half failed, so no payload setting has a value. */
+  storedFailed: boolean;
   sessionId: string;
   repoBound: boolean;
+}
+
+/**
+ * A failure is reported without its message. An exception raised while reading a
+ * setting can carry whatever the failing reader was holding, and this output
+ * reaches the agent in text, in `--json` and in a card — so the projection
+ * boundary holds here too, and the detail goes to the server log instead.
+ */
+function readFailureNote(key: string, err: unknown): string {
+  console.error(`[settings-read] reading ${key} failed:`, err);
+  return "ShipIt could not read this setting's value. The failure is in the server log.";
 }
 
 /**
@@ -368,6 +412,11 @@ async function readValue(
   const scoped = scopeUnreadableReason(declaration, state.repoBound);
   if (scoped) return { ok: false, reason: scoped, note: UNREADABLE_NOTES[scoped] };
   if (isPayloadDeclaration(declaration)) {
+    // The stored half is one bulk read, so its failure is per entry for every
+    // payload setting — and the own-route ones still read.
+    if (state.storedFailed) {
+      return { ok: false, reason: "no_reader", note: UNREADABLE_NOTES.no_reader };
+    }
     const raw = state.stored[declaration.wire];
     // `omitWhenNull` drops the field rather than sending null; the pin is unset.
     return { ok: true, value: raw === undefined ? declaration.type.defaultValue : raw };
@@ -389,7 +438,14 @@ async function buildEntry(
   state: ReadState,
   detail: boolean,
 ): Promise<SettingIndexEntry> {
-  const outcome = await readValue(declaration, deps, state);
+  // Degrade per entry, never abort: one setting whose read throws must not cost
+  // the agent the index of every other setting.
+  let outcome: ReadOutcome;
+  try {
+    outcome = await readValue(declaration, deps, state);
+  } catch (err) {
+    outcome = { ok: false, reason: "no_reader", note: readFailureNote(declaration.key, err) };
+  }
   const base = {
     key: declaration.key,
     label: declaration.label,
@@ -410,11 +466,16 @@ async function buildEntry(
       notes: [outcome.note],
     };
   }
-  const projected = project(declaration, outcome.value, detail);
-  const effect = (EFFECT_PROBES[declaration.key] ?? (() => ({ state: "live" as const })))(
-    deps,
-    state.sessionId,
-  );
+  const projected = projectSettingValue(declaration, outcome.value, detail);
+  const probe = EFFECT_PROBES[declaration.key];
+  let effect: SettingEffect = { state: "live" };
+  if (probe) {
+    try {
+      effect = probe(deps, state.sessionId);
+    } catch (err) {
+      effect = { state: "uncertain", detail: readFailureNote(declaration.key, err) };
+    }
+  }
   return {
     ...base,
     value: projected.value,
@@ -428,15 +489,18 @@ async function buildEntry(
 async function readState(deps: SettingsReadDeps, sessionId: string): Promise<ReadState> {
   const session = deps.sessionManager.get(sessionId);
   if (!session) throw new ServiceError(404, "Session not found");
-  const stored = await readStoredGlobalSettings({
-    appWorkspaceDir: deps.appWorkspaceDir,
-    ...(deps.credentialStore ? { credentialStore: deps.credentialStore } : {}),
-  });
-  return {
-    stored: stored as unknown as Record<string, unknown>,
-    sessionId,
-    repoBound: !!session.remoteUrl,
-  };
+  let stored: Record<string, unknown> = {};
+  let storedFailed = false;
+  try {
+    stored = await readStoredGlobalSettings({
+      appWorkspaceDir: deps.appWorkspaceDir,
+      ...(deps.credentialStore ? { credentialStore: deps.credentialStore } : {}),
+    });
+  } catch (err) {
+    storedFailed = true;
+    console.error("[settings-read] reading the stored settings failed:", err);
+  }
+  return { stored, storedFailed, sessionId, repoBound: !!session.remoteUrl };
 }
 
 /**
@@ -462,6 +526,29 @@ export async function listSettingsForAgent(
   return { settings, tabs };
 }
 
+/**
+ * The extra detail, or a note saying it could not be resolved. The declared
+ * value and shape are the answer either way, so a failure to resolve live
+ * options must not turn the whole read into an error.
+ */
+function resolveLiveDetail(
+  key: string,
+  deps: SettingsReadDeps,
+  entry: SettingIndexEntry,
+): Record<string, unknown> | undefined {
+  const detail = LIVE_DETAILS[key];
+  if (!detail) return undefined;
+  try {
+    return detail(deps);
+  } catch (err) {
+    console.error(`[settings-read] resolving live detail for ${key} failed:`, err);
+    entry.notes.push(
+      "ShipIt could not resolve this setting's live options. The failure is in the server log.",
+    );
+    return undefined;
+  }
+}
+
 /** The detail of one setting: its whole description, its value's shape, and what resolves live. */
 export async function getSettingForAgent(
   deps: SettingsReadDeps,
@@ -474,7 +561,7 @@ export async function getSettingForAgent(
   }
   const state = await readState(deps, sessionId);
   const entry = await buildEntry(declaration, deps, state, true);
-  const live = entry.readable ? LIVE_DETAILS[declaration.key]?.(deps) : undefined;
+  const live = entry.readable ? resolveLiveDetail(declaration.key, deps, entry) : undefined;
   return {
     ...entry,
     description: oneLine(declaration.description),

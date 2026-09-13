@@ -41,23 +41,27 @@ In effect: yes — the stored value is what ShipIt uses next.
 Lets the agent in a session spawn another agent for a one-shot sub-task …
 ```
 
-## Every setting is named, including the ones you cannot see
+## What the read will and will not show you
 
-Both the global **Settings** dialog and the per-repository **Project Settings**
-dialog are in scope — not only the settings that block you. If the user asks
-what something is set to, you can answer.
+Settings from both the global **Settings** dialog and the per-repository
+**Project Settings** dialog belong in this read — not only the ones that block
+you. So when the user asks what something is set to, `list` is where you look
+first, and `--tab` takes one of the tab names `list` prints (a tab with no
+declared setting is refused by name, not silently emptied).
 
-A setting ShipIt will not or cannot show you is still **listed, with the
-reason**, never silently missing:
+A setting ShipIt will not or cannot show the **value** of is still listed, with
+the reason, rather than coming back with a number it invented:
 
 | What the read says | What it means |
 |---|---|
 | `configured` / `not configured` | Credential material — an API key, a token, a webhook secret. You learn whether it is set, never the value. |
 | `unreadable (browser_local)` | The value lives in the user's browser, not on ShipIt's server. |
 | `unreadable (no_repository)` | A per-repository setting, read from a session that binds no repository. |
+| `unreadable (no_reader)` | ShipIt could not read the stored value on this install. Say that; do not fall back to what you think the default is. |
 
 Degrading is per entry. A session with no repository still gets every global
-setting in the same listing.
+setting in the same listing, and one setting ShipIt cannot read costs you no
+other setting.
 
 The value you see is a **projection**: ShipIt emits values it derived itself,
 not text the user typed into a field that could hold a credential. Where the
@@ -101,8 +105,16 @@ reaches ShipIt's server.
 
 Every entry is generated from ShipIt's own declaration of that setting — the
 same declaration the Settings dialog renders its label and help text from. So a
-setting added to ShipIt is readable here the day it is added, carrying the
-user's description, and there is no second list that could fall behind. If you
-cannot find a setting in `list`, it is because it is not one: derived status
-(whether egress enforcement is running, which harnesses this image installed)
-and actions (*Check for updates*) are not settings and are not listed.
+setting added to ShipIt appears here carrying the user's description, and there
+is no second list of ShipIt's settings that could fall behind.
+
+Two things the dialogs show are **not** settings and are correctly absent:
+**derived status** (whether egress enforcement is running, which harnesses this
+image installed, whether an update is available) and **actions** (*Check for
+updates*, installing a skill). Nobody can set those, so there is nothing to read.
+
+But absence is not proof. `list` shows what is declared, and ShipIt's settings
+are being brought under that declaration over several releases, so a control the
+user can see in the dialog may not be in `list` yet. **Never report a setting's
+value from memory or from a default you assume** — if `list` does not name it,
+say ShipIt does not expose it to you and let the user read it out.

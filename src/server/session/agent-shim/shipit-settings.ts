@@ -128,10 +128,15 @@ export async function handleSettingsGet(args: string[], deps: RunDeps): Promise<
       : `Value: unreadable (${asString(entry.unreadableReason)})`,
   ];
   const state = entry.effect?.state;
-  if (state && state !== "live") {
-    lines.push(`In effect: NO — ${state}${entry.effect?.detail ? `: ${entry.effect.detail}` : ""}`);
-  } else if (state === "live") {
+  const detail = entry.effect?.detail ? `: ${entry.effect.detail}` : "";
+  if (state === "live") {
     lines.push("In effect: yes — the stored value is what ShipIt uses next.");
+  } else if (state === "uncertain") {
+    // ShipIt said it could not confirm the effect, which is not the same as
+    // saying the setting has none. Do not tell the user it is not working.
+    lines.push(`In effect: UNCONFIRMED — ShipIt cannot tell${detail}`);
+  } else if (state) {
+    lines.push(`In effect: NO — ${state}${detail}`);
   }
   const refusal = refusalLine(entry);
   if (refusal) lines.push(refusal);

@@ -217,6 +217,23 @@ describe("shipit settings get", () => {
     expect(res.stdout).toContain("The user enters it in Settings.");
   });
 
+  it("does not read `uncertain` as `not in effect`", async () => {
+    const { run } = makeRunner();
+    const res = await run(["settings", "get", "network.egressContained"], {
+      "GET /agent-ops/settings/get": {
+        status: 200,
+        body: {
+          ...DETAIL.body,
+          key: "network.egressContained",
+          effect: { state: "uncertain", detail: "the container was rediscovered" },
+        },
+      },
+    });
+
+    expect(res.stdout).toContain("UNCONFIRMED");
+    expect(res.stdout).not.toContain("In effect: NO");
+  });
+
   it("requires a key", async () => {
     const { run } = makeRunner();
     const res = await run(["settings", "get"]);

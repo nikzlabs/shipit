@@ -4,10 +4,12 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { CredentialStore } from "../credential-store.js";
 import { writeGlobalSystemPrompt } from "../global-system-prompt.js";
-import { GLOBAL_SETTINGS } from "../../shared/settings-catalogue/index.js";
+import { GLOBAL_SETTINGS, configuredOnly, text, userText } from "../../shared/settings-catalogue/index.js";
+import type { Projection } from "../../shared/settings-catalogue/index.js";
 import {
   getSettingForAgent,
   listSettingsForAgent,
+  projectSettingValue,
   scopeUnreadableReason,
   type SettingsReadDeps,
 } from "./settings-read.js";
@@ -103,6 +105,43 @@ describe("listSettingsForAgent", () => {
     expect(settings.filter((s) => s.readable).length).toBe(settings.length - 1);
   });
 
+  it("degrades the one entry whose read throws, and still returns the rest", async () => {
+    const { settings } = await listSettingsForAgent(
+      deps({
+        readReleaseChannel: async () => {
+          throw new Error("host checkout is gone");
+        },
+      }),
+      "s1",
+    );
+    const channel = settings.find((s) => s.key === "advanced.releaseChannel");
+    expect(channel).toMatchObject({ readable: false, unreadableReason: "no_reader" });
+    expect(channel?.notes.join(" ")).toContain("could not read");
+    // A failing reader's own message can carry whatever it was holding, so it
+    // goes to the server log and never into the agent's output.
+    expect(JSON.stringify(settings)).not.toContain("host checkout is gone");
+    expect(settings.find((s) => s.key === "advanced.autoFixCi")?.readable).toBe(true);
+  });
+
+  it("degrades the payload settings together when the bulk stored read fails, and still reads the rest", async () => {
+    // The stored half is one read, so its failure costs every payload setting —
+    // but not the own-route ones, and not the call.
+    const broken = {
+      getDeclaredSetting: () => { throw new Error("credentials file is unreadable"); },
+    } as unknown as CredentialStore;
+    const { settings } = await listSettingsForAgent(
+      deps({ credentialStore: broken, egressAllowlistStore: egressStore({ globalEnabled: false }) }),
+      "s1",
+    );
+    expect(settings.find((s) => s.key === "advanced.autoFixCi")).toMatchObject({
+      readable: false,
+      unreadableReason: "no_reader",
+    });
+    expect(settings.find((s) => s.key === "network.egressContained")?.value).toBe(false);
+    expect(settings.find((s) => s.key === "advanced.releaseChannel")?.value).toBe("edge");
+    expect(JSON.stringify(settings)).not.toContain("credentials file is unreadable");
+  });
+
   it("reads an own-route setting through its reader", async () => {
     const { settings } = await listSettingsForAgent(
       deps({ egressAllowlistStore: egressStore({ globalEnabled: false }) }),
@@ -138,11 +177,18 @@ describe("scopeUnreadableReason", () => {
 });
 
 describe("saved is not effective", () => {
-  const network = (over: Parameters<typeof egressStore>[0], container?: unknown) =>
+  const network = (
+    over: Parameters<typeof egressStore>[0],
+    container?: { status?: string; egressContainedAtStart?: boolean },
+    resolved?: { contained: boolean; userHostsExcluded?: boolean },
+  ) =>
     deps({
       egressAllowlistStore: egressStore(over),
       egressEnforcementStatus: "active",
-      ...(container ? { containerManager: { get: () => container } as SettingsReadDeps["containerManager"] } : {}),
+      containerManager: {
+        get: () => container,
+        resolveEgress: () => resolved,
+      },
     });
 
   it("says live when nothing already fixed decides otherwise", async () => {
@@ -158,6 +204,52 @@ describe("saved is not effective", () => {
     );
     expect(entry.effect.state).toBe("restart-dependent");
     expect(entry.effect.detail).toContain("open");
+  });
+
+  it("says excluded, not restart-dependent, for a sandbox whose capability forces containment", async () => {
+    // `sandboxLifelineEgressConfig` contains a network-less sandbox whatever the
+    // global setting says, and marks it with userHostsExcluded. A restart would
+    // not adopt the global value, so promising one would be a false promise.
+    const entry = await getSettingForAgent(
+      network(
+        { globalEnabled: false },
+        { status: "running", egressContainedAtStart: true },
+        { contained: true, userHostsExcluded: true },
+      ),
+      "s1",
+      "network.egressContained",
+    );
+    expect(entry.effect.state).toBe("excluded");
+    expect(entry.effect.detail).toContain("network capability");
+  });
+
+  it("says uncertain when a running container's boot mode is unknown", async () => {
+    // A container rediscovered after a ShipIt restart records no boot policy.
+    const entry = await getSettingForAgent(
+      network({ globalEnabled: true }, { status: "running" }),
+      "s1",
+      "network.egressContained",
+    );
+    expect(entry.effect.state).toBe("uncertain");
+    expect(entry.effect.detail).toContain("rediscovered");
+  });
+
+  it("degrades to uncertain rather than aborting when the probe throws", async () => {
+    const entry = await getSettingForAgent(
+      deps({
+        egressEnforcementStatus: "active",
+        egressAllowlistStore: {
+          getGlobalEnabled: () => true,
+          getSessionOverride: () => { throw new Error("db is gone"); },
+          resolveContained: () => true,
+        } as unknown as SettingsReadDeps["egressAllowlistStore"],
+      }),
+      "s1",
+      "network.egressContained",
+    );
+    expect(entry.effect.state).toBe("uncertain");
+    // The failure's own words never reach the agent; only the server log has them.
+    expect(JSON.stringify(entry)).not.toContain("db is gone");
   });
 
   it("says excluded for this session when the session sets its own network mode", async () => {
@@ -206,11 +298,39 @@ describe("getSettingForAgent", () => {
     expect(entry.display).toBe("not set");
   });
 
-  it("resolves a model selection live", async () => {
+  it("resolves a model selection live, naming why nothing resolves here", async () => {
+    // No credential is configured in this fixture, so the honest live answer is
+    // an empty option list and the resolver's own reason — not a silent null.
     const entry = await getSettingForAgent(deps(), "s1", "services.nonTurnModel");
-    expect(entry.live).toBeDefined();
-    expect(entry.live).toHaveProperty("options");
-    expect(entry.live).toHaveProperty("resolved");
+    expect(entry.live).toMatchObject({
+      options: [],
+      resolved: null,
+      unavailableReason: "nothing_eligible",
+    });
+  });
+
+  it("resolves the eligible models from the credentials that are configured", async () => {
+    credentialStore.upsertCredentialRouteWithSecret(
+      {
+        id: "anthropic-key-fixture",
+        serviceId: "anthropic",
+        billingMode: "key",
+        via: "string",
+        status: "ready",
+        priority: 0,
+        isPrimary: true,
+        label: "fixture",
+        createdAt: 0,
+        updatedAt: 0,
+      },
+      "sk-ant-fixture",
+    );
+    const entry = await getSettingForAgent(deps(), "s1", "services.nonTurnModel");
+    const live = entry.live as { options: { serviceId: string }[] };
+    expect(live.options.length).toBeGreaterThan(0);
+    expect(live.options.every((o) => o.serviceId === "anthropic")).toBe(true);
+    // The credential itself never rides along with its eligibility.
+    expect(JSON.stringify(entry)).not.toContain("sk-ant-fixture");
   });
 
   it("returns the user's own prose whole, where the index shortened it", async () => {
@@ -227,8 +347,39 @@ describe("getSettingForAgent", () => {
     });
   });
 
-  it("says why a setting cannot be changed on the agent's behalf", async () => {
+  it("reports a setting the agent may propose as allowed, with no refusal to explain", async () => {
     const entry = await getSettingForAgent(deps(), "s1", "advanced.enableSubAgents");
     expect(entry.propose).toEqual({ allowed: true });
+  });
+});
+
+// Req 2: reading never exposes secret material. No declaration uses these
+// projections yet, so the guard runs against the projection itself rather than
+// against whichever setting happens to be declared today.
+describe("projectSettingValue", () => {
+  const declaration = (emits: Projection) => ({ emits, type: text({ maxLength: 100 }) });
+
+  it("emits only whether a credential is configured, never the credential", () => {
+    const projected = projectSettingValue(
+      declaration(configuredOnly()),
+      "sk-ant-super-secret",
+      true,
+    );
+    expect(projected.value).toEqual({ configured: true });
+    expect(projected.display).toBe("configured");
+    expect(JSON.stringify(projected)).not.toContain("sk-ant-super-secret");
+  });
+
+  it("says not configured for an empty credential, still without the field's value", () => {
+    const projected = projectSettingValue(declaration(configuredOnly()), "   ", false);
+    expect(projected.value).toEqual({ configured: false });
+    expect(projected.display).toBe("not configured");
+  });
+
+  it("carries user_text only where the declaration marked it, with its reason", () => {
+    const reason = "The user's own prose, shown because it is theirs.";
+    const projected = projectSettingValue(declaration(userText(reason)), "my words", true);
+    expect(projected.value).toBe("my words");
+    expect(projected.notes).toContain(reason);
   });
 });
