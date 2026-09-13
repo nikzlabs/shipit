@@ -48,6 +48,7 @@ interface Harness {
 function buildDeps(opts: {
   pinned?: ModelSelection;
   routes?: CredentialRoute[];
+  voiceKeys?: Record<string, string>;
   harnessResult?: (req: BackgroundHarnessRun) => Promise<SubAgentRunResult>;
   noHarnessRunner?: boolean;
   reply?: () => Response;
@@ -77,6 +78,7 @@ function buildDeps(opts: {
       getCredentialRoute: (id: string) => routes.find((r) => r.id === id),
       getSelectionMode: () => "strict" as const,
       getFailoverCutoffs: () => ({ session: 90, weekly: 90 }),
+      getVoiceProviderKey: (id: string) => opts.voiceKeys?.[id] ?? null,
     },
     usageManager: {
       record: (
@@ -291,13 +293,33 @@ describe("getCleanupStatus", () => {
     vi.doUnmock("../../shared/installed-harnesses.js");
   });
 
-  it("names the model that would actually clean the next dictation", async () => {
+  it("names the model that would actually clean the next dictation, and the harness it waits on", async () => {
     const { getCleanupStatus } = await import("./voice.js");
     const { deps } = buildDeps({});
 
     expect(getCleanupStatus(deps).model).toEqual({
       serviceName: "GLM (Z.ai)",
       modelId: "glm-5.3[1m]",
+      modelLabel: "GLM-5.3",
+      execution: "harness",
+      harnessName: "Claude Code",
+    });
+  });
+
+  // The line promises a quick cleanup here and a few seconds above, so the two
+  // must be told apart by what will actually run, not by the model's name.
+  it("reports a direct call as direct, with no harness to name", async () => {
+    const { getCleanupStatus } = await import("./voice.js");
+    const { deps } = buildDeps({
+      routes: [keyRoute("anthropic")],
+      pinned: { serviceId: "anthropic", billingMode: "key", modelId: "haiku" },
+    });
+
+    expect(getCleanupStatus(deps).model).toEqual({
+      serviceName: "Anthropic",
+      modelId: "haiku",
+      modelLabel: "Haiku 4.5",
+      execution: "direct",
     });
   });
 
@@ -306,5 +328,105 @@ describe("getCleanupStatus", () => {
     const { deps } = buildDeps({ routes: [] });
 
     expect(getCleanupStatus(deps).model).toBeNull();
+  });
+});
+
+/**
+ * The migration in visible form (docs/299-direct-provider-calls req 5): an
+ * offer, never a silent write. Each case below is a state the Voice tab renders
+ * differently.
+ */
+describe("findVoiceKeyAdoptionOffer", () => {
+  beforeEach(() => {
+    vi.resetModules();
+    vi.doMock("../../shared/installed-harnesses.js", () => ({
+      isHarnessInstalled: () => true,
+      readInstalledHarnesses: () => ["claude", "codex"],
+    }));
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.doUnmock("../../shared/installed-harnesses.js");
+  });
+
+  it("offers the OpenAI voice key to an install whose cleanup has nothing to run on", async () => {
+    const { getCleanupStatus } = await import("./voice.js");
+    const { deps } = buildDeps({ routes: [], voiceKeys: { openai: "sk-voice" } });
+
+    const status = getCleanupStatus(deps);
+    expect(status.model).toBeNull();
+    expect(status.adoptableVoiceKey).toEqual({
+      providerId: "openai",
+      providerLabel: "OpenAI",
+      serviceName: "OpenAI",
+    });
+  });
+
+  it("offers nothing where there is no voice key at all", async () => {
+    const { getCleanupStatus } = await import("./voice.js");
+    const { deps } = buildDeps({ routes: [] });
+
+    expect(getCleanupStatus(deps).adoptableVoiceKey).toBeNull();
+  });
+
+  // Deepgram is a voice provider and not a model provider, so there is no
+  // credential to adopt it into and no cleanup its key could buy.
+  it("offers nothing for a voice key whose provider runs no models", async () => {
+    const { getCleanupStatus } = await import("./voice.js");
+    const { deps } = buildDeps({ routes: [], voiceKeys: { deepgram: "dg-voice" } });
+
+    expect(getCleanupStatus(deps).adoptableVoiceKey).toBeNull();
+  });
+
+  it("offers nothing while cleanup already runs, since adoption would not change it", async () => {
+    const { getCleanupStatus } = await import("./voice.js");
+    const { deps } = buildDeps({ voiceKeys: { openai: "sk-voice" } });
+
+    expect(getCleanupStatus(deps).model).not.toBeNull();
+    expect(getCleanupStatus(deps).adoptableVoiceKey).toBeNull();
+  });
+
+  // Adoption seeds only where nothing is set, so with a pin pointing elsewhere
+  // it cannot deliver the cleanup the offer's copy promises.
+  it("offers nothing where a pin on another provider would keep cleanup broken", async () => {
+    const { getCleanupStatus } = await import("./voice.js");
+    const { deps } = buildDeps({
+      routes: [],
+      voiceKeys: { openai: "sk-voice" },
+      pinned: { serviceId: "anthropic", billingMode: "key", modelId: "haiku" },
+    });
+
+    expect(getCleanupStatus(deps).adoptableVoiceKey).toBeNull();
+  });
+
+  /**
+   * A pin on a retired model is not a dead pin: background work follows the
+   * declared successor, so the adopted credential does reach it and the offer
+   * must not be withheld. The retired id is read from the catalogue rather than
+   * written here, so this case moves with the catalogue instead of pinning it.
+   */
+  it("offers the key where the pin is a retired model the credential still reaches", async () => {
+    const { getMode } = await import("../../shared/catalogue/index.js");
+    const { getCleanupStatus } = await import("./voice.js");
+    const retiredId = getMode("openai", "key")?.retired[0]?.id;
+    expect(retiredId, "OpenAI's key mode must declare a retired model for this case to exist").toBeTruthy();
+    const { deps } = buildDeps({
+      routes: [],
+      voiceKeys: { openai: "sk-voice" },
+      pinned: { serviceId: "openai", billingMode: "key", modelId: retiredId! },
+    });
+
+    expect(getCleanupStatus(deps).adoptableVoiceKey?.providerId).toBe("openai");
+  });
+
+  it("offers the key where the pin is that very credential", async () => {
+    const { getCleanupStatus } = await import("./voice.js");
+    const { deps } = buildDeps({
+      routes: [],
+      voiceKeys: { openai: "sk-voice" },
+      pinned: { serviceId: "openai", billingMode: "key", modelId: "gpt-5.4-mini" },
+    });
+
+    expect(getCleanupStatus(deps).adoptableVoiceKey?.providerId).toBe("openai");
   });
 });
