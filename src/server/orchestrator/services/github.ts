@@ -11,6 +11,7 @@ import type { SessionManager } from "../sessions.js";
 import { parseGitHubRemote } from "../git-utils.js";
 import type { GitRemoteCredentialResolver } from "../../shared/git-remote-credential.js";
 import { resolvePrBaseBranch } from "./git.js";
+import { rankRepoSearchResults } from "./repo-search-ranking.js";
 import { ServiceError } from "./types.js";
 import { validateNonEmptyString } from "./validation.js";
 import { getErrorMessage } from "../validation.js";
@@ -97,6 +98,9 @@ export {
   triggerCIFix,
 } from "./github-ci-fix.js";
 
+/** Recent personal repos shown before anything is typed, and right after connecting. */
+const DEFAULT_REPO_LIST_SIZE = 15;
+
 export function getGitHubStatus(githubAuthManager: GitHubAuthManager): GitHubStatus {
   return githubAuthManager.getStatus();
 }
@@ -108,13 +112,28 @@ export async function listGitHubOrgs(
   return githubAuthManager.listOrgs();
 }
 
+/**
+ * GitHub's repo search regularly omits the caller's own repos — its index lags,
+ * and `in:name` relevance buries them under public repos. So the personal list
+ * is always fetched alongside the search and ranked first, rather than trusting
+ * the search API to return it (docs/027-github-import).
+ */
 export async function searchGitHubRepos(
   githubAuthManager: GitHubAuthManager,
   query: string,
 ) {
   if (!githubAuthManager.authenticated) return [];
-  if (!query || query.length < 2) return githubAuthManager.listUserRepos();
-  return githubAuthManager.searchRepos(query);
+
+  const trimmed = query.trim();
+  if (trimmed.length < 2) {
+    return (await githubAuthManager.listUserRepos()).slice(0, DEFAULT_REPO_LIST_SIZE);
+  }
+
+  const [personalRepos, searchResults] = await Promise.all([
+    githubAuthManager.listUserRepos(),
+    githubAuthManager.searchRepos(trimmed),
+  ]);
+  return rankRepoSearchResults(trimmed, personalRepos, searchResults);
 }
 
 export async function getPrStatus(
@@ -1654,7 +1673,7 @@ export async function setGitHubToken(
     }
   }
 
-  const repos = await githubAuthManager.listUserRepos();
+  const repos = (await githubAuthManager.listUserRepos()).slice(0, DEFAULT_REPO_LIST_SIZE);
   return { status: githubAuthManager.getStatus(), repos };
 }
 

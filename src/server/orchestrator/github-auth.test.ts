@@ -971,3 +971,300 @@ describe("GitHubAuthManager.listOrgs", () => {
     expect(await mgr.listOrgs()).toEqual([]);
   });
 });
+
+describe("GitHubAuthManager.listUserRepos", () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-list-user-repos-"));
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  function authedManager(token = "ghp_x"): GitHubAuthManager {
+    const store = new CredentialStore(tmpDir);
+    store.setGithubToken(token);
+    const mgr = new GitHubAuthManager(tmpDir, store);
+    mgr.checkCredentials();
+    return mgr;
+  }
+
+  function urlOf(input: RequestInfo | URL): string {
+    if (typeof input === "string") return input;
+    return input instanceof URL ? input.href : input.url;
+  }
+
+  function listingResponse(fullNames: string[]): Response {
+    return new Response(
+      JSON.stringify(
+        fullNames.map((fullName) => ({
+          full_name: fullName,
+          description: null,
+          private: false,
+          default_branch: "main",
+          clone_url: `https://github.com/${fullName}.git`,
+        })),
+      ),
+      { status: 200, headers: { "Content-Type": "application/json" } },
+    );
+  }
+
+  function pageResponse(count: number, prefix: string): Response {
+    const repos = Array.from({ length: count }, (_, i) => ({
+      full_name: `${prefix}/repo-${i}`,
+      description: null,
+      private: false,
+      default_branch: "main",
+      clone_url: `https://github.com/${prefix}/repo-${i}.git`,
+    }));
+    return new Response(JSON.stringify(repos), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+
+  it("returns [] when unauthenticated", async () => {
+    const mgr = new GitHubAuthManager(tmpDir, new CredentialStore(tmpDir));
+    expect(await mgr.listUserRepos()).toEqual([]);
+  });
+
+  it("walks every page until a short one ends the list", async () => {
+    const mgr = authedManager();
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(pageResponse(100, "me"))
+      .mockResolvedValueOnce(pageResponse(30, "also-me"));
+
+    const repos = await mgr.listUserRepos();
+
+    expect(repos).toHaveLength(130);
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    const first = new URL(urlOf(fetchSpy.mock.calls[0][0])).searchParams;
+    const second = new URL(urlOf(fetchSpy.mock.calls[1][0])).searchParams;
+    expect(first.get("page")).toBe("1");
+    expect(second.get("page")).toBe("2");
+    expect(first.get("per_page")).toBe("100");
+    expect(repos[0].fullName).toBe("me/repo-0");
+    expect(repos[100].fullName).toBe("also-me/repo-0");
+  });
+
+  it("stops at the page cap for an account with very many repos", async () => {
+    const mgr = authedManager();
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async () => pageResponse(100, "me"));
+
+    expect(await mgr.listUserRepos()).toHaveLength(1000);
+    expect(fetchSpy).toHaveBeenCalledTimes(10);
+  });
+
+  it("keeps the pages that arrived when a later page fails", async () => {
+    const mgr = authedManager();
+    vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(pageResponse(100, "me"))
+      .mockResolvedValueOnce(new Response("", { status: 502 }));
+
+    expect(await mgr.listUserRepos()).toHaveLength(100);
+  });
+
+  it("serves repeat calls from cache so a search burst is one fetch", async () => {
+    const mgr = authedManager();
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(pageResponse(3, "me"));
+
+    await mgr.listUserRepos();
+    await mgr.listUserRepos();
+    await mgr.listUserRepos();
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not cache a failed fetch", async () => {
+    const mgr = authedManager();
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response("", { status: 502 }));
+
+    await mgr.listUserRepos();
+    await mgr.listUserRepos();
+
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not cache a partial walk, so a recovered page is picked up at once", async () => {
+    const mgr = authedManager();
+    let failPageTwo = true;
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
+      if (urlOf(url).includes("page=2")) {
+        if (failPageTwo) return new Response("", { status: 502 });
+        return pageResponse(30, "also-me");
+      }
+      return pageResponse(100, "me");
+    });
+
+    expect(await mgr.listUserRepos()).toHaveLength(100);
+
+    failPageTwo = false;
+    expect(await mgr.listUserRepos()).toHaveLength(130);
+  });
+
+  it("caches a genuinely empty account", async () => {
+    const mgr = authedManager();
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async () => pageResponse(0, "me"));
+
+    expect(await mgr.listUserRepos()).toEqual([]);
+    await mgr.listUserRepos();
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("re-fetches once the cache entry has expired", async () => {
+    const mgr = authedManager();
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async () => pageResponse(3, "me"));
+
+    vi.spyOn(Date, "now").mockReturnValue(1_000_000);
+    await mgr.listUserRepos();
+    await mgr.listUserRepos();
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+
+    vi.spyOn(Date, "now").mockReturnValue(1_000_000 + 5 * 60 * 1000 - 1);
+    await mgr.listUserRepos();
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+
+    vi.spyOn(Date, "now").mockReturnValue(1_000_000 + 5 * 60 * 1000 + 1);
+    await mgr.listUserRepos();
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it("re-fetches after a repo is created so the new repo is searchable", async () => {
+    const mgr = authedManager();
+    let created = false;
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
+      if (!urlOf(url).includes("/user/repos?")) {
+        created = true;
+        return new Response(
+          JSON.stringify({ name: "fresh", full_name: "me/fresh", html_url: "u", clone_url: "c" }),
+          { status: 201, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      return listingResponse(created ? ["me/repo-0", "me/fresh"] : ["me/repo-0"]);
+    });
+
+    expect((await mgr.listUserRepos()).map((r) => r.fullName)).not.toContain("me/fresh");
+    await mgr.createRepo("fresh");
+    expect((await mgr.listUserRepos()).map((r) => r.fullName)).toContain("me/fresh");
+
+    expect(fetchSpy.mock.calls.filter((c) => urlOf(c[0]).includes("/user/repos?"))).toHaveLength(2);
+  });
+
+  it("drops malformed entries rather than ranking an undefined name", async () => {
+    const mgr = authedManager();
+    vi.spyOn(globalThis, "fetch").mockImplementation(
+      async () =>
+        new Response(JSON.stringify([{}, { full_name: "me/real", clone_url: "c" }, null]), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+    );
+
+    expect((await mgr.listUserRepos()).map((r) => r.fullName)).toEqual(["me/real"]);
+  });
+
+  it("re-fetches when the same token is reconnected, whose access may have changed", async () => {
+    const store = new CredentialStore(tmpDir);
+    store.setGithubToken("ghp_x");
+    const mgr = new GitHubAuthManager(tmpDir, store);
+    mgr.checkCredentials();
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async () => pageResponse(3, "me"));
+
+    await mgr.listUserRepos();
+    mgr.checkCredentials();
+    await mgr.listUserRepos();
+
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it("re-fetches when the same token is re-submitted after its access changed", async () => {
+    const store = new CredentialStore(tmpDir);
+    store.setGithubToken("ghp_x");
+    const mgr = new GitHubAuthManager(tmpDir, store);
+    mgr.checkCredentials();
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
+      if (urlOf(url).endsWith("/user")) {
+        return new Response(
+          JSON.stringify({ login: "me", avatar_url: "a", id: 1, name: null }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      return listingResponse(["me/repo-0"]);
+    });
+
+    await mgr.listUserRepos();
+    await mgr.setToken("ghp_x");
+    await mgr.listUserRepos();
+
+    expect(fetchSpy.mock.calls.filter((c) => urlOf(c[0]).includes("/user/repos?"))).toHaveLength(2);
+  });
+
+  it("joins overlapping calls into one walk of the pages", async () => {
+    const mgr = authedManager();
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(
+      async () => new Promise((resolve) => setTimeout(() => resolve(pageResponse(3, "me")), 5)),
+    );
+
+    const [a, b] = await Promise.all([mgr.listUserRepos(), mgr.listUserRepos()]);
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(a).toHaveLength(3);
+    expect(b).toHaveLength(3);
+  });
+
+  it("does not let a walk that started before a repo was created repopulate the cache", async () => {
+    const mgr = authedManager();
+    let releaseList: (() => void) | undefined;
+    let listCalls = 0;
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
+      if (urlOf(url).includes("/user/repos?")) {
+        // Only the first walk is held open; the post-creation one runs straight through.
+        if (++listCalls === 1) {
+          await new Promise<void>((resolve) => {
+            releaseList = resolve;
+          });
+        }
+        return pageResponse(3, "me");
+      }
+      return new Response(
+        JSON.stringify({ name: "r", full_name: "me/r", html_url: "u", clone_url: "c" }),
+        { status: 201, headers: { "Content-Type": "application/json" } },
+      );
+    });
+
+    const listing = mgr.listUserRepos();
+    await vi.waitFor(() => expect(releaseList).toBeDefined());
+    await mgr.createRepo("r");
+    releaseList?.();
+    await listing;
+
+    // The pre-creation walk must not be serving later searches.
+    await mgr.listUserRepos();
+    expect(
+      vi.mocked(globalThis.fetch).mock.calls.filter((c) => urlOf(c[0]).includes("/user/repos?")),
+    ).toHaveLength(2);
+  });
+
+  it("drops the cache on logout, so reconnecting the same token re-fetches", async () => {
+    const store = new CredentialStore(tmpDir);
+    store.setGithubToken("ghp_x");
+    const mgr = new GitHubAuthManager(tmpDir, store);
+    mgr.checkCredentials();
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async () => pageResponse(3, "me"));
+
+    expect(await mgr.listUserRepos()).toHaveLength(3);
+
+    mgr.clearCredentials();
+    expect(await mgr.listUserRepos()).toEqual([]);
+
+    store.setGithubToken("ghp_x");
+    mgr.checkCredentials();
+    expect(await mgr.listUserRepos()).toHaveLength(3);
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+  });
+});

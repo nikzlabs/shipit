@@ -6,6 +6,7 @@ import { getErrorMessage } from "../shared/utils.js";
 import { setGitIdentity, setGlobalCredentialHelper, clearGlobalCredentialHelper, CONTAINER_CREDENTIAL_HELPER } from "./git-config.js";
 import { GitHubAppTokenMinter, type AppTokenMintResult } from "./github-app-token.js";
 import { createRepo as createRepoImpl, listUserRepos as listUserReposImpl, searchRepos as searchReposImpl, checkRepoWriteAccess as checkRepoWriteAccessImpl, listOrgs as listOrgsImpl } from "./github-auth-repos.js";
+import type { GitHubRepoSummary } from "./github-auth-repos.js";
 import { createPullRequest as createPullRequestImpl, findPullRequest as findPullRequestImpl, findPullRequestAnyState as findPullRequestAnyStateImpl, mergePullRequest as mergePullRequestImpl, mergePullRequestAttempt as mergePullRequestAttemptImpl, findPullRequestByNumber as findPullRequestByNumberImpl, enableAutoMerge as enableAutoMergeImpl, disableAutoMerge as disableAutoMergeImpl, updatePullRequest as updatePullRequestImpl, addPullRequestComment as addPullRequestCommentImpl, addLabelsToPullRequest as addLabelsToPullRequestImpl, removeLabelFromPullRequest as removeLabelFromPullRequestImpl, markPullRequestReady as markPullRequestReadyImpl, listPullRequests as listPullRequestsImpl, viewPullRequest as viewPullRequestImpl, viewPullRequestResult as viewPullRequestResultImpl, viewPullRequestConversation as viewPullRequestConversationImpl, getPullRequestNodeId as getPullRequestNodeIdImpl } from "./github-auth-prs.js";
 import type { PullRequestDetail, PrConversation, PrListState, ListPullRequestsResult, MergeAttempt, TerminalPrFacts } from "./github-auth-prs.js";
 import { getCheckStatus as getCheckStatusImpl, getCheckRunAnnotations as getCheckRunAnnotationsImpl, getJobLogs as getJobLogsImpl } from "./github-auth-checks.js";
@@ -39,6 +40,9 @@ export interface GitHubRateLimitState {
   /** Remaining points in the current window, or `null` if unknown. */
   remaining: number | null;
 }
+
+/** Long enough to cover a burst of search keystrokes, short enough to notice a new repo. */
+const USER_REPO_CACHE_TTL_MS = 5 * 60 * 1000;
 
 export interface GitHubRepoResult {
   success: boolean;
@@ -104,6 +108,11 @@ export class GitHubAuthManager extends EventEmitter {
     resetAt: null,
     remaining: null,
   };
+  /** Keyed by token so any credential change is a miss; see `listUserRepos`. */
+  private _userRepoCache: { token: string; fetchedAt: number; repos: GitHubRepoSummary[] } | null = null;
+  private _userRepoFetch: { token: string; promise: Promise<GitHubRepoSummary[]> } | null = null;
+  /** Bumped by anything that invalidates the list, so an in-flight walk can't write a stale cache. */
+  private _userRepoEpoch = 0;
 
   constructor(
     workspaceDir: string,
@@ -122,6 +131,10 @@ export class GitHubAuthManager extends EventEmitter {
 
   // Do not persist the environment fallback: a disk copy would mask token rotation.
   checkCredentials(): boolean {
+    // Any credential transition can change which repos the account sees, and the
+    // token is not a sufficient key: the same token re-submitted after its scopes
+    // or org access changed must not be served a cached list.
+    this.invalidateUserRepoCache();
     const diskToken = this.credentialStore.getGithubToken();
     if (diskToken) {
       this._token = diskToken;
@@ -163,6 +176,7 @@ export class GitHubAuthManager extends EventEmitter {
     this._token = trimmed;
     this._username = check.user.username;
     this._avatarUrl = check.user.avatarUrl;
+    this.invalidateUserRepoCache();
 
     this.credentialStore.setGithubToken(trimmed);
 
@@ -227,6 +241,7 @@ export class GitHubAuthManager extends EventEmitter {
     this._token = null;
     this._username = null;
     this._avatarUrl = null;
+    this.invalidateUserRepoCache();
     this.credentialStore.clearGithubToken();
     try { clearGlobalCredentialHelper(); } catch (err) {
       console.error("[github-auth] Failed to clear global credential helper:", err);
@@ -264,7 +279,10 @@ export class GitHubAuthManager extends EventEmitter {
     if (!this._token) {
       return { success: false, message: "Not authenticated with GitHub" };
     }
-    return createRepoImpl(this._token, name, options);
+    const result = await createRepoImpl(this._token, name, options);
+    // A repo created here must show up in the very next search.
+    if (result.success) this.invalidateUserRepoCache();
+    return result;
   }
 
   async listOrgs(): Promise<{ login: string; avatarUrl: string }[]> {
@@ -300,24 +318,50 @@ export class GitHubAuthManager extends EventEmitter {
     return createIssueImpl(this._token, options);
   }
 
-  async listUserRepos(): Promise<{
-    fullName: string;
-    description: string | null;
-    private: boolean;
-    defaultBranch: string;
-    cloneUrl: string;
-  }[]> {
-    if (!this._token) return [];
-    return listUserReposImpl(this._token);
+  /**
+   * Every repo the account owns or collaborates on. Cached because repo search
+   * fetches the whole list on each keystroke to rank personal repos first, and
+   * the list changes far more slowly than someone types.
+   */
+  async listUserRepos(): Promise<GitHubRepoSummary[]> {
+    const token = this._token;
+    if (!token) return [];
+
+    const cached = this._userRepoCache;
+    if (cached?.token === token && Date.now() - cached.fetchedAt < USER_REPO_CACHE_TTL_MS) {
+      return cached.repos;
+    }
+
+    // Claimed synchronously so overlapping searches join one walk of the pages.
+    const inFlight = this._userRepoFetch;
+    if (inFlight?.token === token) return inFlight.promise;
+
+    const promise = this.fetchAndCacheUserRepos(token, this._userRepoEpoch);
+    this._userRepoFetch = { token, promise };
+    try {
+      return await promise;
+    } finally {
+      if (this._userRepoFetch?.promise === promise) this._userRepoFetch = null;
+    }
   }
 
-  async searchRepos(query: string): Promise<{
-    fullName: string;
-    description: string | null;
-    private: boolean;
-    defaultBranch: string;
-    cloneUrl: string;
-  }[]> {
+  private async fetchAndCacheUserRepos(token: string, epoch: number): Promise<GitHubRepoSummary[]> {
+    const { repos, failed } = await listUserReposImpl(token);
+    // A failed walk still serves this search, but caching it would hide the
+    // missing repos until the TTL expired, long after GitHub recovered.
+    if (!failed && epoch === this._userRepoEpoch) {
+      this._userRepoCache = { token, fetchedAt: Date.now(), repos };
+    }
+    return repos;
+  }
+
+  private invalidateUserRepoCache(): void {
+    this._userRepoCache = null;
+    this._userRepoFetch = null;
+    this._userRepoEpoch++;
+  }
+
+  async searchRepos(query: string): Promise<GitHubRepoSummary[]> {
     if (!this._token) return [];
     return searchReposImpl(this._token, query);
   }

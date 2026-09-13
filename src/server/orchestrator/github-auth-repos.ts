@@ -51,32 +51,79 @@ export async function createRepo(
   }
 }
 
-export async function listUserRepos(token: string): Promise<{
+export interface GitHubRepoSummary {
   fullName: string;
   description: string | null;
   private: boolean;
   defaultBranch: string;
   cloneUrl: string;
-}[]> {
+}
+
+/** Only the two fields every consumer indexes on are required; the rest get defaults. */
+interface GitHubRepoPayload {
+  full_name: string;
+  clone_url: string;
+  description?: string | null;
+  private?: boolean;
+  default_branch?: string;
+}
+
+const USER_REPOS_PER_PAGE = 100;
+/** Bounds the walk so an account with thousands of repos can't stall a repo search. */
+const USER_REPOS_MAX_PAGES = 10;
+
+export interface UserRepoListing {
+  repos: GitHubRepoSummary[];
+  /**
+   * A page request failed, so entries a retry might return are missing. Distinct
+   * from stopping at `USER_REPOS_MAX_PAGES`, which truncates deterministically
+   * and is safe to cache.
+   */
+  failed: boolean;
+}
+
+function isRepoPayload(value: unknown): value is GitHubRepoPayload {
+  if (typeof value !== "object" || value === null) return false;
+  const r = value as Partial<GitHubRepoPayload>;
+  return typeof r.full_name === "string" && typeof r.clone_url === "string";
+}
+
+/** Drops entries missing the fields every consumer indexes on, rather than ranking `undefined`. */
+function toRepoSummaries(data: unknown[]): GitHubRepoSummary[] {
+  return data.filter(isRepoPayload).map((r) => ({
+    fullName: r.full_name,
+    description: r.description ?? null,
+    private: r.private ?? false,
+    defaultBranch: r.default_branch ?? "main",
+    cloneUrl: r.clone_url,
+  }));
+}
+
+/**
+ * Every repo the account owns or collaborates on, most recently pushed first.
+ * Paginated in full because repo search ranks these ahead of GitHub's own
+ * search results (docs/027-github-import), which drop personal repos.
+ */
+export async function listUserRepos(token: string): Promise<UserRepoListing> {
+  const repos: GitHubRepoSummary[] = [];
   try {
-    const res = await fetchGitHub(
-      "https://api.github.com/user/repos?sort=pushed&per_page=15&affiliation=owner,collaborator",
-      token,
-    );
+    for (let page = 1; page <= USER_REPOS_MAX_PAGES; page++) {
+      const res = await fetchGitHub(
+        `https://api.github.com/user/repos?sort=pushed&per_page=${USER_REPOS_PER_PAGE}&page=${page}&affiliation=owner,collaborator`,
+        token,
+      );
+      if (!res.ok) return { repos, failed: true };
 
-    if (!res.ok) return [];
-
-    const data = (await res.json()) as { full_name: string; description: string | null; private: boolean; default_branch: string; clone_url: string }[];
-    return data.map((r) => ({
-      fullName: r.full_name,
-      description: r.description,
-      private: r.private,
-      defaultBranch: r.default_branch,
-      cloneUrl: r.clone_url,
-    }));
+      const data = (await res.json()) as unknown;
+      if (!Array.isArray(data)) return { repos, failed: true };
+      repos.push(...toRepoSummaries(data));
+      if (data.length < USER_REPOS_PER_PAGE) break;
+    }
   } catch {
-    return [];
+    // Network failure mid-walk: keep the pages that already arrived, but say so.
+    return { repos, failed: true };
   }
+  return { repos, failed: false };
 }
 
 export async function listOrgs(token: string): Promise<{ login: string; avatarUrl: string }[]> {
@@ -119,26 +166,20 @@ export async function checkRepoWriteAccess(
   }
 }
 
-export async function searchRepos(token: string, query: string): Promise<{
-  fullName: string;
-  description: string | null;
-  private: boolean;
-  defaultBranch: string;
-  cloneUrl: string;
-}[]> {
-  const res = await fetchGitHub(
-    `https://api.github.com/search/repositories?q=${encodeURIComponent(query)}+in:name&sort=updated&per_page=10`,
-    token,
-  );
+export async function searchRepos(token: string, query: string): Promise<GitHubRepoSummary[]> {
+  try {
+    const res = await fetchGitHub(
+      `https://api.github.com/search/repositories?q=${encodeURIComponent(query)}+in:name&sort=updated&per_page=10`,
+      token,
+    );
 
-  if (!res.ok) return [];
+    if (!res.ok) return [];
 
-  const data = (await res.json()) as { items: { full_name: string; description: string | null; private: boolean; default_branch: string; clone_url: string }[] };
-  return data.items.map((r) => ({
-    fullName: r.full_name,
-    description: r.description,
-    private: r.private,
-    defaultBranch: r.default_branch,
-    cloneUrl: r.clone_url,
-  }));
+    const data = (await res.json()) as { items?: unknown };
+    // Degrade to the personal-repo half of the search rather than failing it.
+    if (!Array.isArray(data.items)) return [];
+    return toRepoSummaries(data.items);
+  } catch {
+    return [];
+  }
 }

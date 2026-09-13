@@ -13,6 +13,7 @@ import { DatabaseManager } from "../../shared/database.js";
 import { CredentialStore } from "../credential-store.js";
 import { initGlobalGitConfig, setGitIdentity } from "../git-config.js";
 import { repoUrlToHash } from "../git-utils.js";
+import type { GitHubRepoSummary } from "../github-auth-repos.js";
 
 export class TestClient {
   private ws: WebSocket;
@@ -322,7 +323,20 @@ export class StubGitHubAuthManager extends EventEmitter {
     };
   }
 
-  async searchRepos(_query: string) {
+  private _searchRepos: GitHubRepoSummary[] | null = null;
+  private _userRepos: GitHubRepoSummary[] | null = null;
+  searchReposCalls: string[] = [];
+  /** Overrides what GitHub's repo *search* returns, separately from the personal list. */
+  setSearchRepos(repos: GitHubRepoSummary[]) {
+    this._searchRepos = repos;
+  }
+  setUserRepos(repos: GitHubRepoSummary[]) {
+    this._userRepos = repos;
+  }
+
+  async searchRepos(query: string): Promise<GitHubRepoSummary[]> {
+    this.searchReposCalls.push(query);
+    if (this._searchRepos) return this._searchRepos;
     return [
       {
         fullName: "test-user/test-repo",
@@ -334,8 +348,9 @@ export class StubGitHubAuthManager extends EventEmitter {
     ];
   }
 
-  async listUserRepos() {
+  async listUserRepos(): Promise<GitHubRepoSummary[]> {
     if (!this._authenticated) return [];
+    if (this._userRepos) return this._userRepos;
     return [
       {
         fullName: "test-user/my-project",

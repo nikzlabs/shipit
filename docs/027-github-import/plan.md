@@ -1,3 +1,9 @@
+---
+issue: planning#539
+title: GitHub Repo Import & PR Status Bar
+description: Clone an existing GitHub repo into a session, auto-push after every commit, and run the PR lifecycle from a status bar.
+---
+
 # 027 — GitHub Repo Import & PR Status Bar
 
 ## Summary
@@ -100,6 +106,46 @@ async searchRepos(query: string): Promise<Array<{
   }));
 }
 ```
+
+#### Repo Search Ranking — personal repos first
+
+The snippet above is the original design. As shipped, `searchGitHubRepos`
+(`src/server/orchestrator/services/github.ts`) does **not** hand the query
+straight to GitHub's search API, because that API regularly fails to return the
+caller's own repositories: its repo index lags behind creation and pushes, and
+`in:name` relevance over `per_page=10` buries a personal repo under public ones
+with similar names. A user searching for a repo they own would find nothing.
+
+So every search fetches both halves in parallel and ranks locally:
+
+- `listUserRepos` (`github-auth-repos.ts`) walks **all** pages of
+  `/user/repos?affiliation=owner,collaborator&sort=pushed` (100 per page, bounded
+  at 10 pages so a pathological account can't stall a search) rather than the
+  first 15. It reports `failed: true` when a *page request* failed — distinct
+  from stopping at the page bound, which truncates deterministically — so a walk
+  cut short by an error still serves the current search but is never cached.
+  Entries missing `full_name`/`clone_url` are dropped rather than ranked.
+- `rankRepoSearchResults` (`services/repo-search-ranking.ts`) matches that list
+  against the query — exact name, then name prefix, then name substring, then
+  owner substring, push-recency within a tier — and places those matches above
+  the search results, deduplicated by full name. At most 10 personal matches, 20
+  results total. An `owner/name` query is split on the slash instead of being
+  matched against the full name as a substring: `me/ship` must not match
+  `acme/ship-cli`, which contains it only by spanning the owner boundary. The
+  owner is matched by prefix but ranked on exactness, so `me/ship` can't be
+  pushed out of the result cap by repos belonging to `me-1`, `me-2`, ….
+- A query shorter than 2 characters skips search entirely and lists the 15 most
+  recently pushed personal repos, which is also what the dialog shows on open
+  and immediately after a token is connected.
+
+The full list is cached on `GitHubAuthManager` for 5 minutes, keyed by token, so
+a burst of keystrokes costs one fetch and overlapping calls join a single walk.
+Creating a repo and **every credential transition** invalidate it — the token
+alone is not a sufficient key, since the same token re-submitted after its scopes
+or org access changed must not be served the old list. Invalidation bumps an
+epoch counter so an already-running walk can't repopulate the cache it just
+cleared. `searchRepos` swallows its own errors so a failed search still returns
+the personal half.
 
 #### New Message Types
 
