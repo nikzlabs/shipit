@@ -66,13 +66,24 @@ export interface NonTurnTelemetry {
   cacheCreateTokens?: number;
 }
 
-// Unattributed runs record token volume without a price; absent telemetry creates no row.
+/**
+ * Unattributed runs record token volume without a price; absent telemetry creates
+ * no row.
+ *
+ * A null session id is install-level spend — background work belonging to no
+ * session, which is reported install-wide rather than charged to whichever
+ * session happened to be open (docs/299 req 7). An absent harness id means no
+ * harness ran the work; the row is still background work, and says so in its own
+ * field. Service and billing mode come from the *selection*, so a direct call on
+ * a subscription stays subscription usage with an at-API-rates comparison.
+ */
 export function recordNonTurnUsage(
   deps: Pick<NonTurnWorkDeps, "usageManager">,
   args: {
-    sessionId: string;
-    harnessId: AgentId;
-    target?: NonTurnTarget | undefined;
+    sessionId: string | null;
+    harnessId?: AgentId | undefined;
+    // The selection alone: what the user chose is what usage reports.
+    target?: Pick<NonTurnTarget, "selection"> | undefined;
     purpose: NonTurnPurpose;
     telemetry: NonTurnTelemetry;
   },
@@ -90,7 +101,7 @@ export function recordNonTurnUsage(
       ? `on ${target.selection.serviceId}/${target.selection.billingMode}`
       : "with no model resolved";
     console.warn(
-      `[non-turn] no token telemetry from ${harnessId} for ${args.purpose}`
+      `[non-turn] no token telemetry from ${harnessId ?? "a direct call"} for ${args.purpose}`
       + ` ${where}; nothing recorded`,
     );
     return;
@@ -118,8 +129,10 @@ export function recordNonTurnUsage(
     telemetry.inputTokens,
     telemetry.outputTokens,
     {
-      // Keep this run outside the primary agent's delta chain and context dial.
-      subAgentId: harnessId,
+      // Keeps this run outside the primary agent's delta chain and context dial
+      // whether or not a harness ran it.
+      backgroundWork: true,
+      ...(harnessId ? { subAgentId: harnessId } : {}),
       costSource: cost.costSource,
       ...(target ? { model: target.selection.modelId } : {}),
       ...(attribution ? { attribution } : {}),

@@ -44,11 +44,17 @@ export function turnContextTokens(
 export type UsageGroupKind = "sub" | "key" | "legacy";
 
 export interface UsageGroup {
-  /** serviceId:billingMode, or "legacy". */
+  /** serviceId:billingMode, or "legacy", prefixed "install:" when installLevel. */
   key: string;
   kind: UsageGroupKind;
   serviceId?: string;
   billingMode?: BillingMode;
+  /**
+   * Background work that belongs to no session (docs/299 req 7). Its provider and
+   * billing mode are known, so it is not the unattributed group; it appears only
+   * in install-wide reporting, never inside a session's own view.
+   */
+  installLevel?: boolean;
   models: string[];
   turns: number;
   tokens: number;

@@ -23,7 +23,8 @@ export function fillWeekGaps(buckets: WeeklyUsage[]): WeeklyUsage[] {
 
 interface UsageRow {
   id: number;
-  session_id: string;
+  /** Null is install-level spend: work that belongs to no session (docs/299 req 7). */
+  session_id: string | null;
   cost_usd: number;
   duration_ms: number;
   input_tokens: number | null;
@@ -40,6 +41,7 @@ interface UsageRow {
   rate_output: number | null;
   rate_cache_read: number | null;
   rate_cache_write: number | null;
+  background_work: number;
   created_at: string;
 }
 
@@ -63,6 +65,13 @@ export interface RecordedTurn {
   /** Last API call's context occupancy, not the turn-wide token sum. */
   contextTokens?: number;
   subAgentId?: string;
+  /**
+   * Background work — session naming, pull-request descriptions, voice cleanup.
+   * It has its own context window and is never one of the session's turns, so it
+   * is classified here rather than inferred from a harness id: a direct provider
+   * call runs the same work with no harness to name (docs/299 req 7).
+   */
+  backgroundWork?: boolean;
   credentialRouteId?: string;
   costSource?: TurnCostSource;
   attribution?: TurnAttribution;
@@ -76,9 +85,12 @@ export type RecordedTurnExtra = Omit<
 >;
 
 // Group by persisted rates as well as service/mode so price changes remain distinct.
+// `install_level` keeps spend belonging to no session in a row of its own rather
+// than folded into a session-attributed group for the same provider.
 const SPLIT_COLUMNS = `
   service_id, billing_mode,
   rate_input, rate_output, rate_cache_read, rate_cache_write,
+  session_id IS NULL AS install_level,
   SUM(cost_usd) AS cost,
   SUM(COALESCE(input_tokens, 0)) AS input_tokens,
   SUM(COALESCE(output_tokens, 0)) AS output_tokens,
@@ -88,12 +100,14 @@ const SPLIT_COLUMNS = `
   GROUP_CONCAT(DISTINCT model) AS models
 `;
 const SPLIT_GROUP_BY = `
-  GROUP BY service_id, billing_mode, rate_input, rate_output, rate_cache_read, rate_cache_write
+  GROUP BY service_id, billing_mode, rate_input, rate_output, rate_cache_read, rate_cache_write,
+           install_level
 `;
 
 interface SplitRow {
   service_id: string | null;
   billing_mode: string | null;
+  install_level: number;
   rate_input: number | null;
   rate_output: number | null;
   rate_cache_read: number | null;
@@ -110,18 +124,24 @@ interface SplitRow {
 // Includes new rows without attribution, not only historical usage.
 export const LEGACY_GROUP_KEY = "legacy";
 
+/** Distinguishes install-level spend from a session-attributed group for the same provider. */
+const INSTALL_LEVEL_KEY_PREFIX = "install:";
+
 function foldSplitRows(rows: SplitRow[]): UsageGroup[] {
   const byKey = new Map<string, UsageGroup & { modelSet: Set<string> }>();
   for (const r of rows) {
     const attributed = r.service_id !== null && (r.billing_mode === "sub" || r.billing_mode === "key");
     const billingMode = attributed ? (r.billing_mode as BillingMode) : undefined;
-    const key = attributed ? `${r.service_id}:${billingMode}` : LEGACY_GROUP_KEY;
+    const installLevel = r.install_level === 1;
+    const key = (installLevel ? INSTALL_LEVEL_KEY_PREFIX : "")
+      + (attributed ? `${r.service_id}:${billingMode}` : LEGACY_GROUP_KEY);
     let group = byKey.get(key);
     if (!group) {
       group = {
         key,
         kind: billingMode ?? "legacy",
         ...(attributed ? { serviceId: r.service_id!, billingMode } : {}),
+        ...(installLevel ? { installLevel: true } : {}),
         models: [],
         modelSet: new Set<string>(),
         turns: 0,
@@ -155,9 +175,13 @@ function foldSplitRows(rows: SplitRow[]): UsageGroup[] {
     }
   }
   const rank = { sub: 0, key: 1, legacy: 2 };
+  const installRank = (g: UsageGroup) => (g.installLevel ? 1 : 0);
   return [...byKey.values()]
     .map(({ modelSet, ...group }) => ({ ...group, models: [...modelSet].sort() }))
-    .sort((a, b) => rank[a.kind] - rank[b.kind] || a.key.localeCompare(b.key));
+    .sort((a, b) =>
+      rank[a.kind] - rank[b.kind]
+      || installRank(a) - installRank(b)
+      || a.key.localeCompare(b.key));
 }
 
 export class UsageManager {
@@ -181,20 +205,25 @@ export class UsageManager {
         sub_agent_id, cumulative_cost_usd,
         service_id, billing_mode,
         rate_input, rate_output, rate_cache_read, rate_cache_write,
-        credential_route_id
+        credential_route_id, background_work
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
-    // Consults route independently and must not change the session's account notice.
+    // Consults and background work route independently and must not change the
+    // session's account notice. Background work is named by its own column: a
+    // direct provider call has no harness id to leave in `sub_agent_id`.
     this.stmtLastRoute = this.db.prepare(`
       SELECT credential_route_id FROM usage_turns
-      WHERE session_id = ? AND sub_agent_id IS NULL AND credential_route_id IS NOT NULL
+      WHERE session_id = ? AND sub_agent_id IS NULL AND background_work = 0
+        AND credential_route_id IS NOT NULL
       ORDER BY id DESC LIMIT 1
     `);
-    // Each conversation has its own cumulative baseline; NULL identifies the primary agent.
+    // Each conversation has its own cumulative baseline; a NULL sub-agent id and
+    // no background flag together identify the session's own turns.
     this.stmtLastCumulative = this.db.prepare(`
       SELECT cumulative_cost_usd FROM usage_turns
-      WHERE session_id = ? AND sub_agent_id IS ? AND cumulative_cost_usd IS NOT NULL
+      WHERE session_id = ? AND sub_agent_id IS ? AND background_work = ?
+        AND cumulative_cost_usd IS NOT NULL
       ORDER BY id DESC LIMIT 1
     `);
     this.stmtSessionUsage = this.db.prepare(`
@@ -217,22 +246,30 @@ export class UsageManager {
     );
   }
 
-  /** Return the persisted per-turn cost so live output matches reloaded history. */
+  /**
+   * Return the persisted per-turn cost so live output matches reloaded history.
+   * A null session id is install-level spend — work that belongs to no session.
+   */
   record(
-    sessionId: string,
+    sessionId: string | null,
     costUsd: number,
     durationMs: number,
     inputTokens?: number,
     outputTokens?: number,
     extra?: RecordedTurnExtra,
   ): number {
+    const ownTurn = extra?.subAgentId === undefined && !extra?.backgroundWork;
     const costSource: TurnCostSource =
-      extra?.costSource ?? (extra?.subAgentId !== undefined ? "per-turn" : "cumulative");
+      extra?.costSource ?? (ownTurn ? "cumulative" : "per-turn");
     let perTurnCost = costUsd;
     let cumulative: number | null = extra?.cumulativeSnapshot ?? null;
     if (costSource === "cumulative") {
       cumulative = costUsd;
-      const prev = this.stmtLastCumulative.get(sessionId, extra?.subAgentId ?? null) as
+      const prev = this.stmtLastCumulative.get(
+        sessionId,
+        extra?.subAgentId ?? null,
+        extra?.backgroundWork ? 1 : 0,
+      ) as
         | { cumulative_cost_usd: number }
         | undefined;
       const prevCum = prev?.cumulative_cost_usd;
@@ -260,6 +297,7 @@ export class UsageManager {
       attribution?.rates.cacheRead ?? null,
       attribution?.rates.cacheWrite ?? null,
       extra?.credentialRouteId ?? null,
+      extra?.backgroundWork ? 1 : 0,
     );
     return perTurnCost;
   }
@@ -298,15 +336,17 @@ export class UsageManager {
 
   getSessionTurns(sessionId: string): UsageTurn[] {
     const rows = this.stmtSessionTurns.all(sessionId) as UsageRow[];
-    return rows.map((r) => this.fromRow(r));
+    return rows.map((r) => this.fromRow(r, sessionId));
   }
 
   getPerTurnUsage(sessionId: string): TurnUsage[] {
     const rows = this.stmtSessionTurns.all(sessionId) as UsageRow[];
     const out: TurnUsage[] = [];
     for (const r of rows) {
-      // Consults have separate context windows and must not affect the session dial.
-      if (r.sub_agent_id !== null) continue;
+      // Consults and background work have separate context windows and must not
+      // affect the session dial. Background work is excluded by its own column,
+      // not by the harness id it may not have (docs/299 req 7).
+      if (r.sub_agent_id !== null || r.background_work === 1) continue;
       if (r.input_tokens === null && r.output_tokens === null) continue;
       const turn: TurnUsage = {
         inputTokens: r.input_tokens ?? 0,
@@ -330,10 +370,13 @@ export class UsageManager {
       SELECT session_id, SUM(duration_ms) as total_duration, ${SPLIT_COLUMNS}
       FROM usage_turns
       ${SPLIT_GROUP_BY.replace("GROUP BY", "GROUP BY session_id,")}
-    `).all() as (SplitRow & { session_id: string; total_duration: number | null })[];
+    `).all() as (SplitRow & { session_id: string | null; total_duration: number | null })[];
 
     const bySession = new Map<string, { rows: SplitRow[]; durationMs: number; turns: number }>();
     for (const r of perSession) {
+      // Install-level spend belongs to no session and gets no session row; it is
+      // reported install-wide, in `groups` and the totals below.
+      if (r.session_id === null) continue;
       let entry = bySession.get(r.session_id);
       if (!entry) bySession.set(r.session_id, (entry = { rows: [], durationMs: 0, turns: 0 }));
       entry.rows.push(r);
@@ -355,7 +398,9 @@ export class UsageManager {
       sessions,
       totals: usageTotalsFrom(groups),
       groups,
-      totalTurns: sessions.reduce((n, s) => n + s.turnCount, 0),
+      // Counted from the install-wide groups, not from `sessions`, so install-level
+      // work is in the same count as the totals beside it.
+      totalTurns: groups.reduce((n, g) => n + g.turns, 0),
       weekly: this.weeklySeries(),
     };
   }
@@ -397,9 +442,10 @@ export class UsageManager {
     return result.changes > 0;
   }
 
-  private fromRow(row: UsageRow): UsageTurn {
+  // The caller's id, since only a session's own rows are read through here.
+  private fromRow(row: UsageRow, sessionId: string): UsageTurn {
     const turn: UsageTurn = {
-      sessionId: row.session_id,
+      sessionId,
       costUsd: row.cost_usd,
       durationMs: row.duration_ms,
       timestamp: row.created_at,

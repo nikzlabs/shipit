@@ -646,6 +646,67 @@ describe("UsageModal — the usage split (docs/252 req 16)", () => {
     expect(within(legacy).getByText(/12\.4K tokens|12,400 tokens/)).toBeInTheDocument();
   });
 
+  // docs/299 req 7 — install-level spend, not the unattributed bucket: its
+  // provider and billing mode are known, so it keeps both.
+  it("names an install-level row as background work while keeping its provider and price", () => {
+    render(
+      <UsageModal
+        currentSessionUsage={null}
+        allUsage={{
+          sessions: [],
+          totals: totals({ meteredCostUsd: 0.5, meteredTurns: 2, meteredTokens: 200_000 }),
+          groups: [{ ...meteredGroup, key: "install:deepseek:key", installLevel: true }],
+          totalTurns: 2,
+          weekly: [],
+        }}
+        sessions={mockSessions}
+        onClose={() => {}}
+      />
+    );
+    const row = screen.getAllByTestId("usage-group-row")
+      .find((r) => r.dataset.groupKey === "install:deepseek:key")!;
+    expect(within(row).getByTestId("usage-group-install-level")).toHaveTextContent("Background work");
+    expect(within(row).getByText("DeepSeek")).toBeInTheDocument();
+    expect(within(row).getByText("$0.11")).toBeInTheDocument();
+    expect(within(row).queryByText("Unattributed")).toBeNull();
+  });
+
+  it("reads an install-level plan row's quota from the subscription it consumes", () => {
+    render(
+      <UsageModal
+        currentSessionUsage={null}
+        allUsage={{
+          sessions: [],
+          totals: totals({ atApiRatesUsd: 5.4, includedTurns: 9, includedTokens: 1_400_000 }),
+          groups: [{ ...planGroup, key: "install:anthropic:sub", installLevel: true }],
+          totalTurns: 9,
+          weekly: [],
+        }}
+        sessions={mockSessions}
+        onClose={() => {}}
+        subscriptionLimits={{
+          "anthropic:sub": {
+            "acct-a": {
+              serviceId: "anthropic", billingMode: "sub", routeId: "acct-a", plan: "Max",
+              session: { usedPct: 62, resetAt: "2030-01-01T00:00:00Z" },
+              weekly: null, fetchedAt: Date.now(),
+            },
+          },
+        }}
+      />
+    );
+    const row = screen.getAllByTestId("usage-group-row")
+      .find((r) => r.dataset.groupKey === "install:anthropic:sub")!;
+    expect(within(row).getByTestId("usage-group-quota")).toHaveStyle({ width: "62%" });
+  });
+
+  it("shows no background-work label on an ordinary session-attributed row", () => {
+    render(
+      <UsageModal currentSessionUsage={mixed} allUsage={null} sessions={mockSessions} onClose={() => {}} />
+    );
+    expect(screen.queryByTestId("usage-group-install-level")).toBeNull();
+  });
+
   it("averages each figure over the turns that produced it", () => {
 
     render(

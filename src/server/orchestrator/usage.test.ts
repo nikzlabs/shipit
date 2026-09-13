@@ -544,3 +544,128 @@ describe("UsageManager — the usage split (docs/252 req 16)", () => {
     expect(week.tokens).toBe(1_600_000);
   });
 });
+
+describe("UsageManager — install-level spend (docs/299 req 7)", () => {
+  let dbManager: DatabaseManager;
+  beforeEach(() => { dbManager = new DatabaseManager(":memory:"); });
+  afterEach(() => { dbManager.close(); });
+
+  const rates = { input: 1, output: 1, cacheRead: 1, cacheWrite: 1 };
+  const key = (serviceId: string) => ({ serviceId, billingMode: "key" as const, rates });
+  const groupOf = (groups: UsageGroup[], k: string) => groups.find((g) => g.key === k);
+
+  it("reports work belonging to no session install-wide, and in no session's own view", () => {
+    const mgr = new UsageManager(dbManager);
+    mgr.record("s", 0.25, 1000, 100_000, 0, {
+      costSource: "per-turn", attribution: key("deepseek"), model: "deepseek-flash",
+    });
+    mgr.record(null, 0.5, 400, 200_000, 0, {
+      backgroundWork: true, costSource: "per-turn", attribution: key("openai"), model: "gpt-5.4-mini",
+    });
+
+    const stats = mgr.getStats();
+    const installLevel = groupOf(stats.groups, "install:openai:key")!;
+    expect(installLevel.installLevel).toBe(true);
+    expect(installLevel.serviceId).toBe("openai");
+    expect(installLevel.billingMode).toBe("key");
+    expect(installLevel.costUsd).toBeCloseTo(0.5);
+    expect(installLevel.models).toEqual(["gpt-5.4-mini"]);
+    // The money is in the install-wide total, not attributed to a session.
+    expect(stats.totals.meteredCostUsd).toBeCloseTo(0.75);
+    expect(stats.totalTurns).toBe(2);
+    expect(stats.sessions.map((s) => s.sessionId)).toEqual(["s"]);
+
+    const session = mgr.getSessionUsage("s")!;
+    expect(session.turnCount).toBe(1);
+    expect(session.totals.meteredCostUsd).toBeCloseTo(0.25);
+    expect(session.groups!.map((g) => g.key)).toEqual(["deepseek:key"]);
+  });
+
+  it("keeps install-level work in a row of its own, not folded into the provider's session work", () => {
+    const mgr = new UsageManager(dbManager);
+    mgr.record("s", 0.25, 1000, 100_000, 0, { costSource: "per-turn", attribution: key("openai") });
+    mgr.record(null, 0.5, 400, 200_000, 0, {
+      backgroundWork: true, costSource: "per-turn", attribution: key("openai"),
+    });
+
+    const groups = mgr.getStats().groups;
+    expect(groups.map((g) => g.key)).toEqual(["openai:key", "install:openai:key"]);
+    expect(groupOf(groups, "openai:key")!.costUsd).toBeCloseTo(0.25);
+    expect(groupOf(groups, "openai:key")!.installLevel).toBeUndefined();
+    expect(groupOf(groups, "install:openai:key")!.costUsd).toBeCloseTo(0.5);
+  });
+
+  it("counts install-level spend in the weekly series", () => {
+    const mgr = new UsageManager(dbManager);
+    mgr.record(null, 0.5, 400, 200_000, 0, {
+      backgroundWork: true, costSource: "per-turn", attribution: key("openai"),
+    });
+
+    const weekly = mgr.getStats().weekly;
+    expect(weekly).toHaveLength(1);
+    expect(weekly[0].costUsd).toBeCloseTo(0.5);
+    expect(weekly[0].tokens).toBe(200_000);
+  });
+
+  it("survives deleting the sessions, because it never belonged to one", () => {
+    const mgr = new UsageManager(dbManager);
+    mgr.record("s", 0.25, 1000, 100_000, 0, { costSource: "per-turn", attribution: key("openai") });
+    mgr.record(null, 0.5, 400, 200_000, 0, {
+      backgroundWork: true, costSource: "per-turn", attribution: key("openai"),
+    });
+
+    expect(mgr.delete("s")).toBe(true);
+    expect(mgr.getStats().groups.map((g) => g.key)).toEqual(["install:openai:key"]);
+    expect(mgr.getStats().totalTurns).toBe(1);
+  });
+});
+
+describe("UsageManager — background work is classified, not inferred from a harness (docs/299 req 7)", () => {
+  let dbManager: DatabaseManager;
+  beforeEach(() => { dbManager = new DatabaseManager(":memory:"); });
+  afterEach(() => { dbManager.close(); });
+
+  it("keeps a harness-less background run out of the session's context dial", () => {
+    const mgr = new UsageManager(dbManager);
+    mgr.record("s", 0.10, 2000, 800, 100, { contextTokens: 1500, model: "claude-opus-5" });
+    // A direct provider call: a session id to report against, and no harness id.
+    mgr.record("s", 0.01, 900, 500, 60, {
+      backgroundWork: true, costSource: "per-turn", contextTokens: 700, model: "gpt-5.4-mini",
+    });
+
+    const dial = mgr.getPerTurnUsage("s");
+    expect(dial).toHaveLength(1);
+    // What the composer reads: the last remaining row's context and model.
+    expect(dial.at(-1)!.contextTokens).toBe(1500);
+    expect(dial.at(-1)!.model).toBe("claude-opus-5");
+    // Still counted as the session's spend and volume.
+    expect(mgr.getSessionUsage("s")!.turnCount).toBe(2);
+  });
+
+  it("keeps a harness-less background run out of the session's last credential route", () => {
+    const mgr = new UsageManager(dbManager);
+    mgr.record("s", 0.10, 2000, 800, 100, { credentialRouteId: "anthropic-sub" });
+    mgr.record("s", 0.01, 900, 500, 60, {
+      backgroundWork: true, costSource: "per-turn", credentialRouteId: "openai-key",
+    });
+
+    expect(mgr.lastTurnCredentialRouteId("s")).toBe("anthropic-sub");
+  });
+
+  it("gives a harness-less background run its own cumulative chain", () => {
+    const mgr = new UsageManager(dbManager);
+    mgr.record("s", 2.0, 1000);
+    expect(mgr.record("s", 9.0, 900, 1, 1, { backgroundWork: true, costSource: "cumulative" }))
+      .toBeCloseTo(9.0);
+    expect(mgr.record("s", 3.0, 1000)).toBeCloseTo(1.0);
+  });
+
+  // Each background run is one shot reporting its own cost, so consecutive runs
+  // are not a rising total to subtract.
+  it("defaults a background run to a per-turn cost, harness id or not", () => {
+    const mgr = new UsageManager(dbManager);
+    mgr.record("s", 2.0, 1000);
+    expect(mgr.record("s", 5.0, 900, 1, 1, { backgroundWork: true })).toBeCloseTo(5.0);
+    expect(mgr.record("s", 6.0, 900, 1, 1, { backgroundWork: true })).toBeCloseTo(6.0);
+  });
+});

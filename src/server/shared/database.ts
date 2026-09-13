@@ -838,6 +838,72 @@ const MIGRATIONS: Migration[] = [
   (db) => {
     addSessionColumnIfMissing(db, "merge_continue_declined_anchor");
   },
+  // docs/299-direct-provider-calls req 7 — a null session_id is install-level
+  // spend, and `background_work` classifies a run without consulting a harness
+  // id. SQLite cannot drop NOT NULL in place, so the nullable column needs a
+  // rebuild; the flag joins it here rather than in an ALTER of its own.
+  //
+  // No backfill of the flag: `sub_agent_id` cannot tell background work from a
+  // sub-agent consult (`services/sub-agent.ts` writes it too), and every read
+  // path still excludes both, so historical rows lose nothing by staying 0.
+  (db) => {
+    const columns = db.prepare("PRAGMA table_info(usage_turns)").all() as { name: string }[];
+    if (columns.some((c) => c.name === "background_work")) return;
+    db.exec(`
+      CREATE TABLE usage_turns_new (
+        id INTEGER PRIMARY KEY,
+        session_id TEXT,
+        cost_usd REAL NOT NULL,
+        duration_ms INTEGER NOT NULL,
+        input_tokens INTEGER,
+        output_tokens INTEGER,
+        created_at TEXT DEFAULT (datetime('now')),
+        cache_read_tokens INTEGER,
+        cache_create_tokens INTEGER,
+        model TEXT,
+        context_tokens INTEGER,
+        sub_agent_id TEXT,
+        cumulative_cost_usd REAL,
+        service_id TEXT,
+        billing_mode TEXT,
+        rate_input REAL,
+        rate_output REAL,
+        rate_cache_read REAL,
+        rate_cache_write REAL,
+        credential_route_id TEXT,
+        cumulative_tokens_repaired INTEGER,
+        background_work INTEGER NOT NULL DEFAULT 0,
+        CHECK (
+          (service_id IS NULL AND billing_mode IS NULL
+           AND rate_input IS NULL AND rate_output IS NULL
+           AND rate_cache_read IS NULL AND rate_cache_write IS NULL)
+          OR
+          (service_id IS NOT NULL AND billing_mode IS NOT NULL
+           AND rate_input IS NOT NULL AND rate_output IS NOT NULL
+           AND rate_cache_read IS NOT NULL AND rate_cache_write IS NOT NULL)
+        )
+      );
+      INSERT INTO usage_turns_new (
+        id, session_id, cost_usd, duration_ms, input_tokens, output_tokens,
+        created_at, cache_read_tokens, cache_create_tokens, model,
+        context_tokens, sub_agent_id, cumulative_cost_usd,
+        service_id, billing_mode,
+        rate_input, rate_output, rate_cache_read, rate_cache_write,
+        credential_route_id, cumulative_tokens_repaired
+      )
+      SELECT
+        id, session_id, cost_usd, duration_ms, input_tokens, output_tokens,
+        created_at, cache_read_tokens, cache_create_tokens, model,
+        context_tokens, sub_agent_id, cumulative_cost_usd,
+        service_id, billing_mode,
+        rate_input, rate_output, rate_cache_read, rate_cache_write,
+        credential_route_id, cumulative_tokens_repaired
+      FROM usage_turns;
+      DROP TABLE usage_turns;
+      ALTER TABLE usage_turns_new RENAME TO usage_turns;
+      CREATE INDEX IF NOT EXISTS idx_usage_session ON usage_turns(session_id);
+    `);
+  },
 ];
 
 /** Guard tests that rewind user_version and replay later migrations. */
@@ -855,6 +921,8 @@ export const MODEL_SELECTION_MIGRATION = 68;
 export const USAGE_ATTRIBUTION_MIGRATION = 69;
 
 export const CODEX_ROLLUP_REPAIR_MIGRATION = 73;
+
+export const INSTALL_LEVEL_USAGE_MIGRATION = 91;
 
 export class DatabaseManager {
   readonly db: DatabaseInstance;
