@@ -5,17 +5,24 @@ import type { RepoStore } from "../repo-store.js";
 import type { GitManager } from "../../shared/git.js";
 import type { PrStatusPoller } from "../pr-status-poller.js";
 import type { AgentId } from "../../shared/types.js";
-import { generateSessionName, type SessionNameResult } from "../session-namer.js";
+import {
+  buildSessionNamePrompt,
+  generateSessionName,
+  parseSessionName,
+  NO_USABLE_TITLE,
+  type SessionNameResult,
+} from "../session-namer.js";
 import type { ProviderAccountManager } from "../provider-account-manager.js";
 import { accountServiceForHarness, providerAccountCredentialRoot } from "../provider-account-manager.js";
 import { getErrorMessage } from "../validation.js";
 import { isTitleLockedAgainst } from "./session-title.js";
 import { nativeServiceForHarness, selectionExists } from "../../shared/catalogue/index.js";
 import type { BillingMode } from "../../shared/catalogue/index.js";
-import { resolveNonTurnModel } from "../non-turn-model.js";
+import { resolveNonTurnModel, type NonTurnDirectTarget } from "../non-turn-model.js";
 import {
   emitNonTurnFailure,
   recordNonTurnUsage,
+  runNonTurnDirect,
   type NonTurnFailurePersister,
 } from "./non-turn-work.js";
 import type { CredentialStore } from "../credential-store.js";
@@ -34,6 +41,8 @@ export interface GraduateSessionDeps {
   credentialStore?: CredentialStore;
   chatHistoryManager?: NonTurnFailurePersister;
   usageManager?: UsageManager;
+  /** Injection point for the direct clients' transport, as non-turn work has. */
+  fetchImpl?: typeof fetch;
 }
 
 export interface GraduateSessionOpts {
@@ -60,7 +69,7 @@ export function graduateSession(deps: GraduateSessionDeps, opts: GraduateSession
   const {
     sessionManager, runnerRegistry, repoStore, createGitManager, prStatusPoller, sseBroadcast,
     ensureAgentTokenFresh, providerAccountManager, credentialsDir,
-    credentialStore, chatHistoryManager, usageManager,
+    credentialStore, chatHistoryManager, usageManager, fetchImpl,
   } = deps;
   const { sessionId, userText, agentId, explicitTitle, explicitBranch, skipBranchRename, model, serviceId, billingMode, reasoning, parentSessionId, spawnedByTurn, rootSessionId, originRoleName } = opts;
 
@@ -100,6 +109,7 @@ export function graduateSession(deps: GraduateSessionDeps, opts: GraduateSession
         ...(credentialStore ? { credentialStore } : {}),
         ...(chatHistoryManager ? { chatHistoryManager } : {}),
         ...(usageManager ? { usageManager } : {}),
+        ...(fetchImpl ? { fetchImpl } : {}),
       },
       { sessionId, userText, agentId, skipBranchRename: skipBranchRename ?? false },
     );
@@ -124,6 +134,7 @@ interface ScheduleSessionNamingDeps {
   credentialStore?: CredentialStore;
   chatHistoryManager?: NonTurnFailurePersister;
   usageManager?: UsageManager;
+  fetchImpl?: typeof fetch;
 }
 
 interface ScheduleSessionNamingOpts {
@@ -137,33 +148,32 @@ function scheduleSessionNaming(deps: ScheduleSessionNamingDeps, opts: ScheduleSe
   const {
     sessionManager, runnerRegistry, createGitManager, prStatusPoller, sseBroadcast,
     ensureAgentTokenFresh, providerAccountManager, credentialsDir,
-    credentialStore, chatHistoryManager, usageManager,
+    credentialStore, chatHistoryManager, usageManager, fetchImpl,
   } = deps;
   const { sessionId, userText, agentId, skipBranchRename } = opts;
 
   // Naming has its own model selection, independent of the session's model.
-  // It asks for a harness because it runs a CLI straight from the orchestrator
-  // (`session-namer.ts`), which a direct-call target has nothing to feed;
-  // docs/299 phase 3 moves naming onto the direct executor.
   const resolution = credentialStore
-    ? resolveNonTurnModel(
-        {
-          credentialStore,
-          ...(providerAccountManager ? { providerAccountManager } : {}),
-        },
-        { harnessOnly: true },
-      )
+    ? resolveNonTurnModel({
+        credentialStore,
+        ...(providerAccountManager ? { providerAccountManager } : {}),
+      })
     : undefined;
   const resolvedTarget = resolution?.ok ? resolution.target : undefined;
   const target = resolvedTarget?.execution === "harness" ? resolvedTarget : undefined;
+  // A direct call has no harness, no CLI and no container, so none of the
+  // account plumbing below applies to it (docs/299 reqs 2 and 4).
+  const directTarget = resolvedTarget?.execution === "direct" ? resolvedTarget : undefined;
   // A missing pinned model stops naming; no eligible selection allows the legacy CLI fallback.
   const pinUnavailable = resolution !== undefined && !resolution.ok
     && resolution.reason === "pin_unavailable";
   const namingHarness = target?.harnessId ?? agentId;
 
-  const namingRoute = target
-    ? target.route
-    : (providerAccountManager?.selectRouteForTurn(accountServiceForHarness(namingHarness)) ?? null);
+  const namingRoute = directTarget
+    ? null
+    : target
+      ? target.route
+      : (providerAccountManager?.selectRouteForTurn(accountServiceForHarness(namingHarness)) ?? null);
   const namingAccountId = namingRoute?.kind === "account" ? namingRoute.id : undefined;
   const namingCredentialRoot = namingAccountId && credentialsDir
     ? providerAccountCredentialRoot(credentialsDir, namingHarness, namingAccountId)
@@ -190,10 +200,10 @@ function scheduleSessionNaming(deps: ScheduleSessionNamingDeps, opts: ScheduleSe
       );
       return;
     }
-    if (!target) return;
+    if (!resolvedTarget) return;
     emitNonTurnFailure(
       { getRunnerRegistry: () => runnerRegistry, chatHistoryManager },
-      { sessionId, purpose: "session-naming", target, detail },
+      { sessionId, purpose: "session-naming", target: resolvedTarget, detail },
     );
   };
 
@@ -226,10 +236,35 @@ function scheduleSessionNaming(deps: ScheduleSessionNamingDeps, opts: ScheduleSe
     }
   };
 
+  /**
+   * The direct executor: the same prompt, with no harness, no CLI and no
+   * container (docs/299-direct-provider-calls req 2). It records what the call
+   * spent from the *selection*, and returns its failure rather than rendering
+   * one, so naming keeps emitting its own single card below.
+   */
+  const nameDirectly = async (direct: NonTurnDirectTarget): Promise<SessionNameResult> => {
+    const outcome = await runNonTurnDirect(
+      {
+        ...(usageManager ? { usageManager } : {}),
+        ...(fetchImpl ? { fetchImpl } : {}),
+      },
+      {
+        sessionId,
+        purpose: "session-naming",
+        target: direct,
+        prompt: buildSessionNamePrompt(userText),
+      },
+    );
+    if (!outcome.ok) return { name: null, failure: outcome.detail };
+    const name = parseSessionName(outcome.text);
+    return name ? { name } : { name: null, failure: NO_USABLE_TITLE };
+  };
+
   const nameAfterHeal = async (): Promise<SessionNameResult> => {
     if (pinUnavailable) {
       return { name: null };
     }
+    if (directTarget) return nameDirectly(directTarget);
     if (ensureAgentTokenFresh) {
       try {
         // Refresh only the account naming will use; an unrelated revoked account must not interfere.

@@ -22,6 +22,7 @@ import {
   makeAntigravitySpawnHome,
   syncAntigravityModelProvider,
 } from "../shared/antigravity-home.js";
+import { fillPromptTokens, loadPrompt } from "./load-prompt.js";
 
 /** Naming is one short sentence; the cheapest level every offered model accepts. */
 const ANTIGRAVITY_NAMING_EFFORT = "low";
@@ -57,14 +58,52 @@ export interface SessionNamingTarget {
   credentialRoot?: string | undefined;
 }
 
-const PROMPT_TEMPLATE = `Given this user message for a coding session, generate:
-1. A short branch-friendly slug (lowercase, hyphens only, no special chars, max 40 chars)
-2. A human-readable session title (max 60 chars)
+const PROMPT_TEMPLATE = loadPrompt(import.meta.url, "./session-naming-prompt.md");
 
-User message: "{MESSAGE}"
+export const NO_USABLE_TITLE = "The naming run returned no usable title.";
 
-Respond with ONLY valid JSON, no markdown fences: {"slug": "...", "title": "..."}`;
+/**
+ * The prompt carries the message it names and never asks the model to read the
+ * repository, so it is safe to run with no tools at all — which is what a direct
+ * provider call gives it (docs/299 req 2).
+ */
+export function buildSessionNamePrompt(userMessage: string): string {
+  return fillPromptTokens(PROMPT_TEMPLATE, { MESSAGE: userMessage.slice(0, 200) });
+}
 
+// The prompt asks for slug first, but a model that answers correctly in the
+// other order has still been billed, and a direct call bills per naming run.
+const SLUG_FIRST = /\{[^}]*"slug"\s*:\s*"[^"]*"[^}]*"title"\s*:\s*"[^"]*"[^}]*\}/;
+const TITLE_FIRST = /\{[^}]*"title"\s*:\s*"[^"]*"[^}]*"slug"\s*:\s*"[^"]*"[^}]*\}/;
+
+/** Null keeps the placeholder title; the caller decides what to say about it. */
+export function parseSessionName(text: string): SessionName | null {
+  const jsonMatch = SLUG_FIRST.exec(text) ?? TITLE_FIRST.exec(text);
+  if (!jsonMatch) {
+    console.warn("[session-namer] No JSON found in response:", text.slice(0, 200));
+    return null;
+  }
+
+  let parsed: { slug?: string; title?: string };
+  try {
+    parsed = JSON.parse(jsonMatch[0]) as { slug?: string; title?: string };
+  } catch {
+    console.warn("[session-namer] Unparseable JSON in response:", jsonMatch[0].slice(0, 200));
+    return null;
+  }
+  const slug = typeof parsed.slug === "string"
+    ? parsed.slug.toLowerCase().replace(/[^a-z0-9-]/g, "").slice(0, 40)
+    : null;
+  const title = typeof parsed.title === "string"
+    ? parsed.title.slice(0, 60)
+    : null;
+
+  if (slug && title) return { slug, title };
+  console.warn("[session-namer] Invalid parsed result:", parsed);
+  return null;
+}
+
+/** The harness path: a CLI run from the orchestrator, outside any container. */
 export async function generateSessionName(
   userMessage: string,
   target: SessionNamingTarget,
@@ -75,33 +114,15 @@ export async function generateSessionName(
     return { name: null, failure: `${harnessId} is not installed in this deployment.` };
   }
 
-  const truncated = userMessage.slice(0, 200);
-  const prompt = PROMPT_TEMPLATE.replace("{MESSAGE}", truncated);
-
   try {
-    const run = await callAgentCli(prompt, target);
+    const run = await callAgentCli(buildSessionNamePrompt(userMessage), target);
     const usage = run.usage ? { usage: run.usage } : {};
     if (!run.text) {
       return { name: null, ...usage, failure: run.failure ?? "The naming CLI returned nothing." };
     }
 
-    const jsonMatch = /\{[^}]*"slug"\s*:\s*"[^"]*"[^}]*"title"\s*:\s*"[^"]*"[^}]*\}/.exec(run.text);
-    if (!jsonMatch) {
-      console.warn("[session-namer] No JSON found in response:", run.text.slice(0, 200));
-      return { name: null, ...usage, failure: "The naming CLI returned no usable title." };
-    }
-
-    const parsed = JSON.parse(jsonMatch[0]) as { slug?: string; title?: string };
-    const slug = typeof parsed.slug === "string"
-      ? parsed.slug.toLowerCase().replace(/[^a-z0-9-]/g, "").slice(0, 40)
-      : null;
-    const title = typeof parsed.title === "string"
-      ? parsed.title.slice(0, 60)
-      : null;
-
-    if (slug && title) return { name: { slug, title }, ...usage };
-    console.warn("[session-namer] Invalid parsed result:", parsed);
-    return { name: null, ...usage, failure: "The naming CLI returned no usable title." };
+    const name = parseSessionName(run.text);
+    return name ? { name, ...usage } : { name: null, ...usage, failure: NO_USABLE_TITLE };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     console.warn("[session-namer] Error:", message);
