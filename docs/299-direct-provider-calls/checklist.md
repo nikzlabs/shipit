@@ -13,10 +13,14 @@ Design in [`plan.md`](./plan.md), requirements in [`requirements.md`](./requirem
 
 ## Phase 1 — Stop the terms violation
 
-- [ ] Delete `voice/providers/claude-cleanup.ts` and its test.
-- [ ] Drop the Claude branch from `pickCleanupProvider`, so cleanup uses the OpenAI voice key only.
-- [ ] Update `GET /api/voice/cleanup/status` and the `CLEANUP_STATUS_LABELS` entry in `VoiceTab.tsx`.
-- [ ] Confirm no other caller uses `AuthManager.getAccessToken()` for inference. `limits-provider.ts` reads the user's own usage and runs none — leave it and say why.
+- [x] Delete `voice/providers/claude-cleanup.ts` and its test.
+- [x] Drop the Claude branch from `pickCleanupProvider`, so cleanup uses the OpenAI voice key only.
+- [x] Update `GET /api/voice/cleanup/status` and the `CLEANUP_STATUS_LABELS` entry in `VoiceTab.tsx`.
+- [x] Confirm no other caller uses `AuthManager.getAccessToken()` for inference. `limits-provider.ts` reads the user's own usage and runs none — leave it and say why.
+
+Shipped in PR #2754. Until phase 4 restores cleanup through the background-work model, an
+install whose only transcription is Deepgram and which holds no OpenAI voice key has no
+cleanup at all.
 
 ## Phase 2 — Catalogue contract, direct clients, usage
 
