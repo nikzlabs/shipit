@@ -1,5 +1,5 @@
 import type { PrStatusSummary, PrMergeableState } from "../shared/types/github-types.js";
-import type { SessionRunnerInterface } from "./session-runner.js";
+import { residentBackgroundWork, type SessionRunnerInterface } from "./session-runner.js";
 import { getErrorMessage } from "./validation.js";
 import { AutoRemediationManager } from "./auto-remediation-manager.js";
 import type { RemediationArbiter } from "./auto-remediation-arbiter.js";
@@ -8,6 +8,14 @@ export const MAX_AUTO_RESOLVE_ATTEMPTS = 3;
 export const AUTO_RESOLVE_COOLDOWN_MS = 5 * 60 * 1000;
 export const AUTO_RESOLVE_DEFERRED_COOLDOWN_MS = 60 * 1000;
 export const AUTO_RESOLVE_SETTLE_MS = 60 * 1000;
+
+/**
+ * The one deferral reason that is not transient: a system turn cannot displace a resident
+ * agent running background work, and that work can last an hour. Retrying it on the
+ * ordinary deferred cooldown is an unbounded loop (nikzlabs/shipit#2751).
+ */
+export const AUTO_RESOLVE_DEFER_BACKGROUND_WORK = "agent_background_work";
+export const AUTO_RESOLVE_BACKGROUND_WORK_COOLDOWN_MS = 15 * 60 * 1000;
 
 export type AutoResolveResult =
   | { outcome: "success"; forcePushed: boolean; didWork: true }
@@ -28,6 +36,12 @@ interface ConflictSignal {
 export class AutoConflictResolveManager extends AutoRemediationManager<ConflictSignal> {
   private lastKnownMergeable = new Map<string, "mergeable" | "conflicting">();
   private baseBranchCache = new Map<string, string>();
+  /**
+   * The `nextEligibleAt` an in-force background-work deferral wrote. Identity, not a flag:
+   * `state.lastError` is sticky across a later reasonless deferral, so keying the idle
+   * release on the reason released a cooldown that deferral had just set.
+   */
+  private backgroundWorkCooldown = new Map<string, number>();
 
   private rebaseAndResolveCb?: RebaseAndResolveCb;
 
@@ -94,6 +108,24 @@ export class AutoConflictResolveManager extends AutoRemediationManager<ConflictS
   protected override onDelete(sessionId: string): void {
     this.lastKnownMergeable.delete(sessionId);
     this.baseBranchCache.delete(sessionId);
+    this.backgroundWorkCooldown.delete(sessionId);
+  }
+
+  /**
+   * The background-work cooldown is a rate bound, not the recovery path: the moment the
+   * work it waits on is gone, the retry is eligible again.
+   */
+  override async onRunnerIdle(sessionId: string): Promise<void> {
+    const state = this.states.get(sessionId);
+    const waiting = this.backgroundWorkCooldown.get(sessionId);
+    if (state?.status === "deferred" && waiting !== undefined && state.nextEligibleAt === waiting) {
+      const runner = this.cfg.getRunner(sessionId);
+      if (!runner || residentBackgroundWork(runner).length === 0) {
+        delete state.nextEligibleAt;
+        this.backgroundWorkCooldown.delete(sessionId);
+      }
+    }
+    await super.onRunnerIdle(sessionId);
   }
 
   handleTransition(
@@ -170,6 +202,9 @@ export class AutoConflictResolveManager extends AutoRemediationManager<ConflictS
     let emitLastError: string | undefined;
     let pushed = false;
 
+    // Every branch below overwrites nextEligibleAt, so no earlier marker survives this one.
+    this.backgroundWorkCooldown.delete(sessionId);
+
     if (result.outcome === "success") {
       state.attemptCount++;
       if (result.forcePushed) {
@@ -206,7 +241,11 @@ export class AutoConflictResolveManager extends AutoRemediationManager<ConflictS
     } else {
       if (result.lastError !== undefined) state.lastError = result.lastError;
       state.status = "deferred";
-      state.nextEligibleAt = this.now() + AUTO_RESOLVE_DEFERRED_COOLDOWN_MS;
+      const persistent = result.lastError === AUTO_RESOLVE_DEFER_BACKGROUND_WORK;
+      state.nextEligibleAt = this.now() + (
+        persistent ? AUTO_RESOLVE_BACKGROUND_WORK_COOLDOWN_MS : AUTO_RESOLVE_DEFERRED_COOLDOWN_MS
+      );
+      if (persistent) this.backgroundWorkCooldown.set(sessionId, state.nextEligibleAt);
       emitLastError = result.lastError;
     }
 
