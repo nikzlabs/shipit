@@ -10,10 +10,16 @@ import { allHarnesses, allServices, credentialModeForStorageEnv, getMode, getMod
 import { backgroundWorkOptions, firstEligibleNonTurnSelection, resolveNonTurnModel, runnerForNonTurnSelection } from "../non-turn-model.js";
 import { listConfiguredCredentials } from "../service-routing.js";
 import { listCredentialRoutes, upsertSingleStringCredential } from "./credential-routes.js";
-import type { VoiceDeliveryMode } from "../../shared/types/voice-note-types.js";
-import { getGitIdentity, setGitIdentity as writeGitIdentity } from "../git-config.js";
+import { setGitIdentity as writeGitIdentity } from "../git-config.js";
 import { buildAgentSystemInstructions } from "../agent-instructions.js";
-import { readGlobalSystemPrompt, writeGlobalSystemPrompt, type SystemPromptScope } from "../global-system-prompt.js";
+import { GLOBAL_SETTINGS } from "../../shared/settings-catalogue/index.js";
+import type { GlobalSettingKey, GlobalSettingsPatch } from "../../shared/settings-catalogue/index.js";
+import {
+  currentDeclaredValue,
+  readStoredGlobalSettings,
+  validateDeclaredSettings,
+  writeDeclaredSetting,
+} from "./settings-derivation.js";
 import { ServiceError } from "./types.js";
 import type { AgentInfo, GlobalSettings, NonTurnModelResolved, NonTurnModelSelection, ReviewerPinPatch, ReviewerSlotView } from "./types.js";
 import type { ReviewerPin, ReviewerSlot, RoleView } from "../../shared/types/agent-types.js";
@@ -24,7 +30,7 @@ import {
   resolveReviewerPinPatch,
 } from "./reviewer-settings.js";
 import { buildRoleSettings } from "./roles.js";
-import { applyRoleWrites } from "./role-settings.js";
+import { planRoleWrites } from "./role-settings.js";
 import type { ProviderAccountManager } from "../provider-account-manager.js";
 import type { SessionManager } from "../sessions.js";
 import type { SessionRunnerInterface, SessionRunnerRegistry } from "../session-runner.js";
@@ -173,30 +179,23 @@ export async function getGlobalSettings(
   credentialStore?: CredentialStore,
   providerAccountManager?: ProviderAccountManager,
 ): Promise<GlobalSettings> {
-  const stored = getGitIdentity();
-  const gitIdentity = stored
-    ? { name: stored.name, email: stored.email }
-    : { name: "", email: "" };
-
-  const systemPrompt = (await readGlobalSystemPrompt(appWorkspaceDir)) ?? "";
-  const systemPromptOps = (await readGlobalSystemPrompt(appWorkspaceDir, "ops")) ?? "";
+  // Seeds the pin before the stored half is read, so a first read returns it.
+  const { nonTurnModelResolved, backgroundWorkModels } =
+    buildNonTurnModelSettings(agentRegistry, credentialStore, providerAccountManager);
+  const storedSettings = await readStoredGlobalSettings({
+    appWorkspaceDir,
+    ...(credentialStore ? { credentialStore } : {}),
+  });
 
   const agents = listAgents(agentRegistry);
-  const memoryBudgetMb = credentialStore?.getMemoryBudgetMb() ?? null;
-  const agentSystemInstructionsEnabled = credentialStore?.getAgentSystemInstructionsEnabled() ?? true;
-  const autoCreatePr = credentialStore?.getAutoCreatePr() ?? false;
-  const liveSteering = credentialStore?.getLiveSteering() ?? true;
-  const autoResolveConflicts = credentialStore?.getAutoResolveConflicts() ?? false;
-  const autoFixCi = credentialStore?.getAutoFixCi() ?? false;
-  const autoResetMergedBranch = credentialStore?.getAutoResetMergedBranch() ?? true;
-  const enableSubAgents = credentialStore?.getEnableSubAgents() ?? true;
   const previewAgent = agentRegistry.available()[0] ?? agentRegistry.list()[0];
   const agentSystemInstructions = previewAgent
     ? buildAgentSystemInstructions({ agentId: previewAgent.id })
     : "";
   const providerAccounts = providerAccountManager?.list() ?? [];
-  const voiceDeliveryMode = credentialStore?.getVoiceDeliveryMode() ?? "native";
   const voiceWebhookConfigured = !!credentialStore?.getVoiceWebhook();
+  // Addressed per service rather than stored once, so the catalogue does not
+  // carry them yet — they land with the target-addressed settings (docs/299).
   const failoverCutoffs: Record<string, FailoverCutoffs> = {};
   const accountSelectionMode: Record<string, AccountSelectionMode> = {};
   for (const service of allServices()) {
@@ -212,43 +211,82 @@ export async function getGlobalSettings(
   const { canRunTurns, harnessOnboardingCompletedAt } =
     resolveHarnessOnboarding(agentRegistry, credentialStore);
   const credentialRoutes = credentialStore ? listCredentialRoutes(credentialStore) : [];
-  const { nonTurnModel, nonTurnModelResolved, backgroundWorkModels } =
-    buildNonTurnModelSettings(agentRegistry, credentialStore, providerAccountManager);
   const reviewers = buildReviewerSettings({ credentialStore, providerAccountManager });
   const roles = credentialStore
     ? buildRoleSettings({ credentialStore, ...(providerAccountManager ? { providerAccountManager } : {}) })
     : [];
-  return { canRunTurns, harnessOnboardingCompletedAt, failoverCutoffs, accountSelectionMode, gitIdentity, systemPrompt, systemPromptOps, agents, memoryBudgetMb, agentSystemInstructionsEnabled, agentSystemInstructions, autoCreatePr, liveSteering, autoResolveConflicts, autoFixCi, autoResetMergedBranch, enableSubAgents, voiceDeliveryMode, voiceWebhookConfigured, providerAccounts, credentialRoutes, reviewers, roles, backgroundWorkModels,
-    ...(nonTurnModel ? { nonTurnModel } : {}),
+  return { ...storedSettings, canRunTurns, harnessOnboardingCompletedAt, failoverCutoffs, accountSelectionMode, agents, agentSystemInstructions, voiceWebhookConfigured, providerAccounts, credentialRoutes, reviewers, roles, backgroundWorkModels,
     ...(nonTurnModelResolved ? { nonTurnModelResolved } : {}) };
 }
 
-function validatedSystemPrompt(value: unknown, scope: SystemPromptScope): string {
-  const content = typeof value === "string" ? value : "";
-  if (content.length > 50_000) {
-    throw new ServiceError(
-      400,
-      `${scope === "ops" ? "Ops session prompt" : "System prompt"} too long (max 50,000 characters)`,
-    );
-  }
-  return content;
+interface SaveHookContext {
+  agentRegistry: AgentRegistry;
+  credentialStore: CredentialStore;
+  onAutoResolveConflictsEnabled?: () => void;
+  onAutoFixCiEnabled?: () => void;
 }
+
+/**
+ * What saving a setting does beyond storing it. A declaration says what a
+ * setting is; anything else the write has to do lives here, keyed by the
+ * declared key — so an ordinary setting needs no entry (docs/299 req 7).
+ */
+interface SaveHook {
+  /** Refuse a value for a reason the declared type cannot express. */
+  check?: (value: unknown, ctx: SaveHookContext) => void;
+  /** Runs after the value is stored; `previous` is the value it replaced. */
+  after?: (value: unknown, previous: unknown, ctx: SaveHookContext) => void;
+}
+
+const SAVE_HOOKS: Partial<Record<GlobalSettingKey, SaveHook>> = {
+  // Enabling remediation refreshes existing snapshots without waiting for a PR change.
+  "advanced.autoResolveConflicts": {
+    after: (value, previous, ctx) => {
+      if (value === true && previous !== true) ctx.onAutoResolveConflictsEnabled?.();
+    },
+  },
+  "advanced.autoFixCi": {
+    after: (value, previous, ctx) => {
+      if (value === true && previous !== true) ctx.onAutoFixCiEnabled?.();
+    },
+  },
+  "services.nonTurnModel": {
+    check: (value, ctx) => {
+      if (value === null) return;
+      const selection = value as NonTurnModelSelection;
+      // Not `harnessForNonTurnSelection`: a model provider whose credential
+      // permits a direct call needs no installed harness (docs/299 req 3), and
+      // asking for one here refused by hand exactly what seeding accepts.
+      const runnable = runnerForNonTurnSelection(
+        selection,
+        listConfiguredCredentials(ctx.credentialStore),
+      );
+      if (!runnable) {
+        throw new ServiceError(
+          400,
+          `Nothing can run ${selection.serviceId}/${selection.billingMode}/${selection.modelId} with the credentials configured — no installed harness carries it, and its credential may not be called directly`,
+        );
+      }
+    },
+    after: (value, _previous, ctx) => {
+      // Older clients send null; reseed once when a runnable selection exists.
+      if (value === null) seedNonTurnModel(ctx.credentialStore, ctx.agentRegistry);
+    },
+  },
+};
 
 export function setGitIdentityService(
   name: string,
   email: string,
 ): { name: string; email: string } {
-  const trimmedName = name.trim();
-  const trimmedEmail = email.trim();
-  if (!trimmedName) throw new ServiceError(400, "Git user name cannot be empty");
-  if (!trimmedEmail) throw new ServiceError(400, "Git email cannot be empty");
-  if (trimmedName.length > 200) throw new ServiceError(400, "Git user name is too long (max 200 characters)");
-  if (trimmedEmail.length > 200) throw new ServiceError(400, "Git email is too long (max 200 characters)");
-  writeGitIdentity(trimmedName, trimmedEmail);
-  return { name: trimmedName, email: trimmedEmail };
+  const declaration = GLOBAL_SETTINGS["git.identity"];
+  const checked = declaration.type.validate({ name, email }, declaration.label);
+  if (!checked.ok) throw new ServiceError(400, checked.message);
+  writeGitIdentity(checked.value.name, checked.value.email);
+  return checked.value;
 }
 
-export interface SaveGlobalSettingsOptions {
+export interface SaveGlobalSettingsOptions extends GlobalSettingsPatch {
   agentRegistry: AgentRegistry;
   /** Orchestrator workspace containing the global system prompt. */
   appWorkspaceDir: string;
@@ -256,25 +294,68 @@ export interface SaveGlobalSettingsOptions {
   providerAccountManager?: ProviderAccountManager;
   onAutoResolveConflictsEnabled?: () => void;
   onAutoFixCiEnabled?: () => void;
-  gitIdentity?: { name: string; email: string };
-  systemPrompt?: string;
-  /** Sent instead of `systemPrompt` in an ops session. */
-  systemPromptOps?: string;
-  /** null restores the host-derived budget. */
-  memoryBudgetMb?: number | null;
-  agentSystemInstructionsEnabled?: boolean;
-  autoCreatePr?: boolean;
-  liveSteering?: boolean;
-  autoResolveConflicts?: boolean;
-  autoFixCi?: boolean;
-  autoResetMergedBranch?: boolean;
-  enableSubAgents?: boolean;
+  // Addressed per service or per item; not derived from the catalogue yet.
   failoverCutoffs?: Record<string, Partial<FailoverCutoffs>>;
   accountSelectionMode?: Record<string, AccountSelectionMode>;
-  voiceDeliveryMode?: VoiceDeliveryMode;
-  nonTurnModel?: NonTurnModelSelection | null;
   reviewers?: Record<string, unknown>;
   roles?: Record<string, unknown>;
+}
+
+interface SubscriptionModeTarget { serviceId: string; billingMode: "sub" }
+
+function planFailoverCutoffs(
+  cutoffs: Record<string, Partial<FailoverCutoffs>> | undefined,
+): { target: SubscriptionModeTarget; patch: Partial<FailoverCutoffs> }[] {
+  if (cutoffs === undefined) return [];
+  return Object.entries(cutoffs).map(([key, patch]) => {
+    const target = requireSubscriptionModeKey(key);
+    for (const window of ["session", "weekly"] as const) {
+      const value = patch[window];
+      if (value === undefined) continue;
+      if (!Number.isInteger(value) || value < 1 || value > 100) {
+        throw new ServiceError(400, `${window} failover cutoff must be an integer between 1 and 100`);
+      }
+    }
+    return { target, patch };
+  });
+}
+
+function planSelectionModes(
+  modes: Record<string, AccountSelectionMode> | undefined,
+): { target: SubscriptionModeTarget; mode: AccountSelectionMode }[] {
+  if (modes === undefined) return [];
+  return Object.entries(modes).map(([key, mode]) => {
+    const target = requireSubscriptionModeKey(key);
+    if (mode !== "strict" && mode !== "balanced") {
+      throw new ServiceError(400, `Account selection mode must be "strict" or "balanced"`);
+    }
+    return { target, mode };
+  });
+}
+
+// Resolve all slots before writing any, so a bad second slot cannot partly save.
+function planReviewerPins(
+  reviewers: Record<string, unknown> | undefined,
+  credentialStore: CredentialStore,
+): [ReviewerSlot, ReviewerPin | null][] {
+  if (reviewers === undefined) return [];
+  if (reviewers === null || typeof reviewers !== "object" || Array.isArray(reviewers)) {
+    throw new ServiceError(400, "reviewers must be an object keyed by reviewer slot");
+  }
+  return Object.entries(reviewers).map(([slot, raw]) => {
+    const patch: ReviewerPinPatch | null = parseReviewerPinPatch(raw, slot);
+    return [
+      requireReviewerSlot(slot),
+      patch === null ? null : resolveReviewerPinPatch(patch, credentialStore),
+    ];
+  });
+}
+
+function requireRolesObject(roles: unknown): Record<string, unknown> {
+  if (roles === null || typeof roles !== "object" || Array.isArray(roles)) {
+    throw new ServiceError(400, "roles must be an object keyed by role name");
+  }
+  return roles as Record<string, unknown>;
 }
 
 export async function saveGlobalSettings(
@@ -282,145 +363,59 @@ export async function saveGlobalSettings(
 ): Promise<GlobalSettings> {
   const {
     agentRegistry, appWorkspaceDir, credentialStore, providerAccountManager,
-    onAutoResolveConflictsEnabled,
-    gitIdentity, systemPrompt, systemPromptOps, memoryBudgetMb,
-    agentSystemInstructionsEnabled, autoCreatePr, liveSteering,
-    autoResolveConflicts, autoFixCi, autoResetMergedBranch, enableSubAgents, voiceDeliveryMode,
-    failoverCutoffs, accountSelectionMode, nonTurnModel, reviewers, roles,
+    failoverCutoffs, accountSelectionMode, reviewers, roles,
   } = opts;
 
-  if (gitIdentity) {
-    const name = typeof gitIdentity.name === "string" ? gitIdentity.name.trim() : "";
-    const email = typeof gitIdentity.email === "string" ? gitIdentity.email.trim() : "";
-    if (!name) throw new ServiceError(400, "Git user name cannot be empty");
-    if (!email) throw new ServiceError(400, "Git email cannot be empty");
-    if (name.length > 200) throw new ServiceError(400, "Git user name is too long (max 200 characters)");
-    if (email.length > 200) throw new ServiceError(400, "Git email is too long (max 200 characters)");
-    writeGitIdentity(name, email);
-  }
+  const derivationCtx = { appWorkspaceDir, credentialStore };
+  const hookCtx: SaveHookContext = {
+    agentRegistry,
+    credentialStore,
+    ...(opts.onAutoResolveConflictsEnabled
+      ? { onAutoResolveConflictsEnabled: opts.onAutoResolveConflictsEnabled } : {}),
+    ...(opts.onAutoFixCiEnabled ? { onAutoFixCiEnabled: opts.onAutoFixCiEnabled } : {}),
+  };
 
-  // Validate both blocks before writing either, so one over-long box cannot
-  // leave the other half of the Instructions tab persisted.
-  const promptWrites: [SystemPromptScope, string][] = [];
-  if (systemPrompt !== undefined) {
-    promptWrites.push(["standard", validatedSystemPrompt(systemPrompt, "standard")]);
+  // Everything is validated before anything is written. A save that ends in a
+  // 400 must leave nothing behind: on the shipped path a rejected `roles` block
+  // could still have persisted an earlier toggle, and enabling auto-fix CI or
+  // auto-resolve is not something a failed request may do.
+  const declaredWrites = validateDeclaredSettings(opts);
+  for (const write of declaredWrites) {
+    SAVE_HOOKS[write.declaration.key as GlobalSettingKey]?.check?.(write.value, hookCtx);
   }
-  if (systemPromptOps !== undefined) {
-    promptWrites.push(["ops", validatedSystemPrompt(systemPromptOps, "ops")]);
-  }
-  for (const [scope, content] of promptWrites) {
-    await writeGlobalSystemPrompt(appWorkspaceDir, content, scope);
-  }
+  const cutoffWrites = planFailoverCutoffs(failoverCutoffs);
+  const selectionWrites = planSelectionModes(accountSelectionMode);
+  const reviewerWrites = planReviewerPins(reviewers, credentialStore);
+  const roleWrites = roles === undefined ? undefined : requireRolesObject(roles);
+  if (roleWrites) planRoleWrites(roleWrites, credentialStore, { credentialStore });
 
-  if (memoryBudgetMb !== undefined) {
-    credentialStore.setMemoryBudgetMb(
-      memoryBudgetMb === null ? null : Math.max(0, Math.floor(memoryBudgetMb)),
-    );
+  for (const write of declaredWrites) {
+    const hook = SAVE_HOOKS[write.declaration.key as GlobalSettingKey];
+    const previous = hook?.after
+      ? currentDeclaredValue(write.declaration, credentialStore)
+      : undefined;
+    await writeDeclaredSetting(write, derivationCtx);
+    hook?.after?.(write.value, previous, hookCtx);
   }
-
-  if (agentSystemInstructionsEnabled !== undefined) {
-    credentialStore.setAgentSystemInstructionsEnabled(agentSystemInstructionsEnabled);
+  for (const { target, patch } of cutoffWrites) {
+    credentialStore.setFailoverCutoffs(target.serviceId, target.billingMode, patch);
   }
-
-  if (autoCreatePr !== undefined) {
-    credentialStore.setAutoCreatePr(autoCreatePr);
+  for (const { target, mode } of selectionWrites) {
+    credentialStore.setSelectionMode(target.serviceId, target.billingMode, mode);
   }
-
-  if (liveSteering !== undefined) {
-    credentialStore.setLiveSteering(liveSteering);
-  }
-
-  if (enableSubAgents !== undefined) {
-    credentialStore.setEnableSubAgents(enableSubAgents);
-  }
-
-  if (failoverCutoffs !== undefined) {
-    for (const [key, patch] of Object.entries(failoverCutoffs)) {
-      const target = requireSubscriptionModeKey(key);
-      for (const window of ["session", "weekly"] as const) {
-        const value = patch[window];
-        if (value === undefined) continue;
-        if (!Number.isInteger(value) || value < 1 || value > 100) {
-          throw new ServiceError(400, `${window} failover cutoff must be an integer between 1 and 100`);
-        }
+  for (const [slot, pin] of reviewerWrites) credentialStore.setReviewerPin(slot, pin);
+  if (roleWrites) {
+    // Re-planned here rather than reused from the validation pass above: a role
+    // plan carries an existence check, and another save can land in an await
+    // between the two. Planning and applying in one synchronous run is what the
+    // shipped `applyRoleWrites` gave for free.
+    for (const plan of planRoleWrites(roleWrites, credentialStore, { credentialStore })) {
+      // Create before deleting the old name so a crash cannot lose both copies.
+      credentialStore.setRole(plan.name, plan.role);
+      if (plan.previousName && plan.previousName !== plan.name) {
+        credentialStore.setRole(plan.previousName, null);
       }
-      credentialStore.setFailoverCutoffs(target.serviceId, target.billingMode, patch);
     }
-  }
-
-  if (accountSelectionMode !== undefined) {
-    for (const [key, mode] of Object.entries(accountSelectionMode)) {
-      const target = requireSubscriptionModeKey(key);
-      if (mode !== "strict" && mode !== "balanced") {
-        throw new ServiceError(400, `Account selection mode must be "strict" or "balanced"`);
-      }
-      credentialStore.setSelectionMode(target.serviceId, target.billingMode, mode);
-    }
-  }
-
-  if (nonTurnModel !== undefined) {
-    if (nonTurnModel === null) {
-      // Older clients send null; reseed once when a runnable selection exists.
-      credentialStore.setNonTurnModel(null);
-      seedNonTurnModel(credentialStore, agentRegistry);
-    } else {
-      // Not `harnessForNonTurnSelection`: a model provider whose credential
-      // permits a direct call needs no installed harness (docs/299 req 3), and
-      // asking for one here refused by hand exactly what seeding accepts.
-      const runnable = runnerForNonTurnSelection(
-        nonTurnModel,
-        listConfiguredCredentials(credentialStore),
-      );
-      if (!runnable) {
-        throw new ServiceError(
-          400,
-          `Nothing can run ${nonTurnModel.serviceId}/${nonTurnModel.billingMode}/${nonTurnModel.modelId} with the credentials configured — no installed harness carries it, and its credential may not be called directly`,
-        );
-      }
-      credentialStore.setNonTurnModel(nonTurnModel);
-    }
-  }
-
-  // Validate all slots before writing any, so a bad second slot cannot partly save.
-  if (reviewers !== undefined) {
-    if (reviewers === null || typeof reviewers !== "object" || Array.isArray(reviewers)) {
-      throw new ServiceError(400, "reviewers must be an object keyed by reviewer slot");
-    }
-    const resolved: [ReviewerSlot, ReviewerPin | null][] = Object.entries(reviewers).map(
-      ([slot, raw]) => {
-        const patch: ReviewerPinPatch | null = parseReviewerPinPatch(raw, slot);
-        return [
-          requireReviewerSlot(slot),
-          patch === null ? null : resolveReviewerPinPatch(patch, credentialStore),
-        ];
-      },
-    );
-    for (const [slot, pin] of resolved) credentialStore.setReviewerPin(slot, pin);
-  }
-
-  if (roles !== undefined) {
-    applyRoleWrites(roles, credentialStore, { credentialStore });
-  }
-
-  if (voiceDeliveryMode !== undefined) {
-    credentialStore.setVoiceDeliveryMode(voiceDeliveryMode);
-  }
-
-  // Enabling remediation refreshes existing snapshots without waiting for a PR change.
-  if (autoResolveConflicts !== undefined) {
-    const prev = credentialStore.getAutoResolveConflicts();
-    credentialStore.setAutoResolveConflicts(autoResolveConflicts);
-    if (!prev && autoResolveConflicts) onAutoResolveConflictsEnabled?.();
-  }
-
-  if (autoFixCi !== undefined) {
-    const prev = credentialStore.getAutoFixCi();
-    credentialStore.setAutoFixCi(autoFixCi);
-    if (!prev && autoFixCi) opts.onAutoFixCiEnabled?.();
-  }
-
-  if (autoResetMergedBranch !== undefined) {
-    credentialStore.setAutoResetMergedBranch(autoResetMergedBranch);
   }
 
   return getGlobalSettings(agentRegistry, appWorkspaceDir, credentialStore, providerAccountManager);
