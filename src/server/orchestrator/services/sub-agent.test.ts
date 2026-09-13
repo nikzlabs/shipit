@@ -1608,8 +1608,8 @@ describe("sweepSubAgentCredentialsOnSignOut", () => {
     fs.mkdirSync(path.join(root, ".codex"), { recursive: true });
     fs.writeFileSync(path.join(root, ".codex", "auth.json"), "{}");
 
-    provisionSubAgentCredentials(root, "sessA", "codex");
-    provisionSubAgentCredentials(root, "sessB", "codex");
+    provisionSubAgentCredentials(root, "sessA", "codex", "consult-1");
+    provisionSubAgentCredentials(root, "sessB", "codex", "consult-1");
 
     const dirA = path.join(perSessionCredentialsDir(root, "sessA"), ".codex");
     const dirB = path.join(perSessionCredentialsDir(root, "sessB"), ".codex");

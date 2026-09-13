@@ -450,7 +450,7 @@ async function runNonTurnSpawn(
       if (sameHarness) {
         provisionSubAgentSpawnHome(credentialsDir, sessionId, spawnId, target.harnessId, accountId);
       } else {
-        provisionSubAgentCredentials(credentialsDir, sessionId, target.harnessId, accountId);
+        provisionSubAgentCredentials(credentialsDir, sessionId, target.harnessId, spawnId, accountId);
       }
     }
     const result = await runner.spawnSubAgent({
@@ -507,7 +507,7 @@ async function runNonTurnSpawn(
           // Release the borrow even when token sync fails.
         }
         // The borrow captured the prior account; reading the current marker would find the borrower.
-        const restoreAccountId = releaseSubAgentCredentials(credentialsDir, sessionId, target.harnessId);
+        const restoreAccountId = releaseSubAgentCredentials(credentialsDir, sessionId, target.harnessId, spawnId);
         const session = deps.sessionManager?.get(sessionId);
         if (session?.agentId === target.harnessId && restoreAccountId) {
           provisionProviderAccountCredentials(
