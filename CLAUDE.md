@@ -187,11 +187,7 @@ Two browser channels: per-session **WebSocket** (`/ws/sessions/{id}`) and global
 - **Update docs when done** — update the relevant `plan.md` with new subsystems, patterns, or key files you added. Mark completed checklist items with `[x]`.
 - **Update shipit-docs when changing agent-facing behavior** — when changing platform behavior visible to the agent inside session containers (preview config, shipit.yaml schema, container environment, GitHub integration), update the corresponding file in `src/server/shipit-docs/`. These docs are baked into the session worker image at `/shipit-docs/` and are the agent's primary reference for the platform.
 
-## Responding in chat
-
-The shape of a reply — what its closing block contains, when to ask rather than tell — is the user's own setting, not a repository convention. This section holds only what is specific to ShipIt.
-
-**What ShipIt's own UI already surfaces is never a step for the user to perform.** Merging a pull request is the standing example: the lifecycle card is in the transcript with the button on it, so "merge the PR" instructs the user to do what they can already see. Record it as state instead — "the pull request is open" — and let the card carry the action. The same holds for reviewing a diff, opening the preview, and starting a service: where the product puts the affordance in front of the user, a reply does not repeat it (§1, §2).
+## Code style
 
 - **ESM throughout** — `"type": "module"` in package.json. Use `.js` extensions in relative imports (e.g., `import { foo } from "./bar.js"`).
 - **Type imports** — use `import type { X } from "./path.js"` for type-only imports.
