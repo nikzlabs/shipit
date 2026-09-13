@@ -190,12 +190,16 @@ honest answer req 5 asks for where a setting cannot be reached.
 | Network | egress on/off, global allowlist, per-session hosts, enforcement state | yes | yes |
 | Advanced | memory budget, live steering, auto-create-PR, auto-resolve conflicts, auto-fix CI, auto-reset merged branch, sub-agents, update channel | yes | yes |
 | Advanced | compact conversation, browser notification, sound | browser-local | apply in the browser you click from |
-| Project Settings | secrets | names only | no — `secret` |
-| Project Settings | agent-merge permission | yes | yes |
-| Project Settings | repository colour | yes | yes |
+| Project · Secrets | secret names | names only | no — `secret`; the agent does not have the value |
+| Project · Deployments | automatic deployment config, agent-merge permission | yes | yes |
+| Project · Deployments | deploy provider tokens | configured / not | no — `secret` |
+| Project · Appearance | repository colour | yes | yes |
 
-The Project Settings rows depend on an unresolved scope question — see
-`requirements.md` → Open questions.
+Both dialogs are in scope — the global one and the per-repository **Project
+Settings** (`ProjectSettings.tsx`), whose three tabs are the last four rows.
+Project-scope settings are addressed per repository, so a descriptor with
+`scope: "project"` takes a repo URL from the session's own binding rather than
+from the agent, and reads as unavailable in a session with no bound repository.
 
 ### Browser-local settings
 

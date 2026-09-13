@@ -1,6 +1,6 @@
 # Agent access to ShipIt settings — checklist
 
-Design only so far. Implementation starts once the open question is answered.
+Design only so far. Every open question is answered; implementation can start.
 
 ## Design
 
@@ -9,8 +9,7 @@ Design only so far. Implementation starts once the open question is answered.
 - [x] `plan.md` written against the numbered requirements
 - [x] Independent design review, with a removal brief
 - [x] Review findings folded into `plan.md` — two elements cut, six claims corrected
-- [ ] Answer the remaining open question: does req 5's "the dialog" include the
-      per-repo Project Settings dialog? Blocks implementation code.
+- [x] Scope resolved: both dialogs, global Settings and per-repo Project Settings
 
 ## Registry
 
@@ -23,7 +22,9 @@ Design only so far. Implementation starts once the open question is answered.
 - [ ] `alsoChanges` declarations and the dependent-key guard
 - [ ] Collection descriptors with domain-specific item operations: egress hosts,
       roles, reviewer slots, MCP servers, skills
-- [ ] Project scope, if the open question resolves that way
+- [ ] Project scope descriptors: secret names, deployment config, agent-merge
+      permission, repository colour; resolved per repository from the session's
+      own binding
 
 ## Apply path
 

@@ -60,15 +60,7 @@ agent is the actor.
 
 ## Open questions
 
-- **Which dialog does req 5 mean?** ShipIt has two: the global **Settings**
-  dialog with ten tabs, and a per-repository **Project Settings** dialog holding
-  the Secrets panel, the "Allow agents to merge their own pull requests"
-  permission and the repository colour. The second one holds two of the things
-  agent-facing docs currently tell the agent to ask the user for
-  (`shipit-docs/secrets.md`, `shipit-docs/github.md:263`), which argues for
-  including it; the question was asked about "the dialog", singular, which does
-  not settle it. The design currently covers both. Answering "global only"
-  removes one scope from the registry and changes nothing else.
+- (none)
 
 ## Resolved questions
 
@@ -89,8 +81,15 @@ agent is the actor.
 - 2026-09-13 — *Which settings are in scope for a first version?* Every setting
   in the dialog, chosen over the smaller "only what blocks the agent" list. The
   agent must be able to answer a question about any setting the user names, not
-  only the ones it trips over itself. → requirement 5. *Which* dialog is still
-  open, above.
+  only the ones it trips over itself. → requirement 5.
+- 2026-09-13 — *Which dialog does req 5 mean?* ShipIt has two: the global
+  **Settings** dialog with ten tabs, and the per-repository **Project Settings**
+  dialog. The answer is **both**. Project Settings holds two of the things
+  agent-facing docs currently tell the agent to ask the user for by hand — the
+  Secrets panel (`shipit-docs/secrets.md`) and the "Allow agents to merge their
+  own pull requests" permission (`shipit-docs/github.md:263`) — so leaving it
+  out would keep the dead end this feature exists to remove. Secret *values*
+  remain unreadable and unproposable under requirement 2 either way.
 - 2026-09-13 — *Per-session settings too, or global only?* Answered by the scope
   choice above: the dialog is the boundary. Per-session sandbox capabilities are
   set from the sandbox banner rather than the dialog, so they are out of scope
