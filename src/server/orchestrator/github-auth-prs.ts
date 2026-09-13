@@ -329,7 +329,7 @@ export async function enableAutoMerge(
     const errMsg = graphqlData.errors[0]?.message ?? "Unknown error";
     const lower = errMsg.toLowerCase();
     if (lower.includes("auto-merge") || lower.includes("not allowed")) {
-      return { success: false, message: "“Allow auto-merge” is turned off for this repository. Enable it in Settings → General → Pull Requests." };
+      return { success: false, message: "“Allow auto-merge” is turned off for this repository. Enable it on GitHub, under the repository's Settings → General → Pull Requests." };
     }
     if (lower.includes("clean status") || lower.includes("not in")) {
       return { success: false, message: "No branch protection rule requires a status check or review on the base branch, so there's nothing for auto-merge to wait on. Add a required check to the rule (or ruleset)." };

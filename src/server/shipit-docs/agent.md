@@ -364,8 +364,9 @@ id or a bad flag, since neither condition can ever clear.
 
 ## Limits
 
-- **Opt-in.** The feature only works when the user has enabled **Settings →
-  Multi-agent sessions**. Otherwise the command returns a clear "disabled" error.
+- **Opt-in.** The feature only works when the user has enabled **Multi-agent
+  sessions** under **Settings → Advanced**. Otherwise the command returns a
+  clear "disabled" error.
 - **Only harnesses this deployment installed.** Which agent CLIs an install has is
   chosen when ShipIt is deployed, so a harness a role names — or one you named as
   an override — may simply not be present here, and the command then fails with

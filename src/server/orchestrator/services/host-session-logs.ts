@@ -28,7 +28,7 @@ export const OPS_SAFE_TEMPLATES: readonly { producer: string; pattern: RegExp }[
   },
   {
     producer: "auto-push-scheduler: invalid token",
-    pattern: /^Auto-push failed: your GitHub token is invalid or expired\. Sign in again in Settings → GitHub\.$/,
+    pattern: /^Auto-push failed: your GitHub token is invalid or expired\. Sign in again in Settings → Integrations\.$/,
   },
   {
     producer: "auto-push-scheduler: missing workflow scope",

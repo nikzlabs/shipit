@@ -35,7 +35,7 @@ import { useRowDrag } from "./useRowDrag.js";
  * This **was** `ProviderAccountsCard`: a card of its own, with its own header,
  * its own status dot, its own routing controls and its own collapsed API-key
  * disclosure. It rendered in three places — the Claude tab, the Codex tab and
- * Settings → Services — and in the last of those it sat *outside* the card
+ * Settings → Model providers — and in the last of those it sat *outside* the card
  * list, borderless and titled after the harness vendor, so the one screen that
  * lists credentials showed two different card languages at once.
  *

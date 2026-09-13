@@ -642,7 +642,7 @@ describe("SubscriptionLimitsBadge credential attention", () => {
     expect(screen.queryByLabelText("Refresh subscription usage")).toBeNull();
   });
 
-  it("opens Settings → Services when the attention word is pressed", () => {
+  it("opens Settings → Model providers when the attention word is pressed", () => {
     connect({ status: "auth_failed" });
     render(<SubscriptionLimitsBadge limits={{}} />);
 

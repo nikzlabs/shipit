@@ -3,7 +3,7 @@ import type { EgressHostGrantOutcome, EgressHostReach } from "../../server/share
 /**
  * planning#376 — the one wording for "you allowed a host; here is what took
  * effect", shared by the two surfaces that grant one (the Plugins card's host
- * row and Settings → Network egress).
+ * row and Settings → Network).
  *
  * It renders the server's answer and derives nothing of its own: which surfaces
  * are live is read out of `liveNow` / `staleUntilRestart`, never re-inferred

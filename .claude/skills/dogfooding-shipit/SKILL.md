@@ -26,7 +26,7 @@ Full design: `docs/118-shipit-ui-local`.
 
 ## Credentials — set them once, outside
 
-The `dev` service's credentials are **user-supplied secrets**, set once in the outer **Settings → Secrets** (`docs/184-remove-platform-secret-forwarding`). Platform secret forwarding was deliberately removed, so nothing is inherited.
+The `dev` service's credentials are **user-supplied secrets**, set once in the outer **Project Settings → Secrets** (`docs/184-remove-platform-secret-forwarding`). Platform secret forwarding was deliberately removed, so nothing is inherited.
 
 `GITHUB_TOKEN` plus **any service credential you want to exercise** is the set. The `x-shipit-secrets` block in `docker-compose.yml` declares every `storageEnv` name the model catalogue knows — `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `DEEPSEEK_API_KEY`, `ZAI_CODING_PLAN_KEY`, `ZAI_API_KEY`, `OPENROUTER_API_KEY`, `VERCEL_AI_GATEWAY_API_KEY` — so a key set once out there appears in every dogfood session without a visit to inner Settings (docs/131 req 11).
 
@@ -53,7 +53,7 @@ The seed prints a `⚠` line for each hazard that applies. `local-agent-credenti
 
 ## Testing onboarding — the `onboarding` service, not a wipe
 
-`dev` is a *configured* install and cannot be un-configured. Every key supplied in the outer Settings → Secrets is injected into it, `adoptEnvCredentials` turns each one into a stored credential at boot (docs/252 req 20), and `resolveHarnessOnboarding` then stamps `harnessOnboardingCompletedAt` on the first read — permanently, since nothing clears it. **`DOGFOOD_SEED_CREDENTIALS=0` is not enough**: it stops the seeder POSTing, and adoption still makes rows out of the variables.
+`dev` is a *configured* install and cannot be un-configured. Every key supplied in the outer Project Settings → Secrets is injected into it, `adoptEnvCredentials` turns each one into a stored credential at boot (docs/252 req 20), and `resolveHarnessOnboarding` then stamps `harnessOnboardingCompletedAt` on the first read — permanently, since nothing clears it. **`DOGFOOD_SEED_CREDENTIALS=0` is not enough**: it stops the seeder POSTing, and adoption still makes rows out of the variables.
 
 So there is a second manual service:
 
@@ -91,7 +91,7 @@ Already-present means *left completely alone*: a credential or role you edited i
 
 Nothing is hardcoded: a role's `(harness, service, billing mode, model, level)` is resolved against what this install can actually run, so the set differs per install and a role is never stranded by someone else's secrets. `reviewer` is never written — it exists on every install and resolves its params per run (`docs/264-agent-roles` req 2).
 
-`needs-a-credential` is **deliberately unavailable**, so the "shown, disabled, with its reason" state is visible too: the seeder derives it by taking the first catalogue entry its harness can speak to that this install holds *no* credential for, so it reads `Service disconnected` in Settings → Roles and is greyed out in the composer's role menu. An install that holds every credential simply gets no such role. Connecting that service turns it into an ordinary working role — that is not a bug.
+`needs-a-credential` is **deliberately unavailable**, so the "shown, disabled, with its reason" state is visible too: the seeder derives it by taking the first catalogue entry its harness can speak to that this install holds *no* credential for, so it reads `Provider disconnected` in Settings → Roles and is greyed out in the composer's role menu. An install that holds every credential simply gets no such role. Connecting that service turns it into an ordinary working role — that is not a bug.
 
 Delete a seeded role in the inner UI and the next `dev` boot puts it back. To try the empty-install state instead, set `DOGFOOD_SEED_ROLES: "0"` on the `dev` service.
 

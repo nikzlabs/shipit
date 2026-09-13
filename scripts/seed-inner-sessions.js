@@ -141,7 +141,7 @@ export async function seed(deps = {}, opts = {}) {
   if (bootstrap?.githubStatus?.authenticated === false) {
     log(
       "GitHub is not authenticated in the inner ShipIt — set the GITHUB_TOKEN "
-      + "secret in the outer ShipIt's Settings → Secrets. Public repos will "
+      + "secret in the outer ShipIt's Project Settings → Secrets. Public repos will "
       + "still clone; private ones will fail.",
     );
   }

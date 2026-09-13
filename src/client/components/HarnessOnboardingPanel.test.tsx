@@ -22,7 +22,7 @@ describe("HarnessOnboardingPanel (docs/257 reqs 1, 2, 5, 7)", () => {
     expect(container.querySelector("[class*='bg-(--color-bg-overlay)']")).toBeNull();
   });
 
-  it("hosts the Settings → Services surface rather than its own card list", () => {
+  it("hosts the Settings → Model providers surface rather than its own card list", () => {
     render(<HarnessOnboardingPanel agentList={agentList} />);
     expect(screen.getByTestId("services-panel")).toBeInTheDocument();
     expect(screen.getByTestId("services-empty")).toBeInTheDocument();

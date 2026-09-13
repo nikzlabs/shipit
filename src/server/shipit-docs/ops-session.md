@@ -5,8 +5,8 @@ alongside) the production ShipIt host with a deliberately narrow set of
 privileges for **read-only** debugging. This doc is your contract: what you can
 do, what you cannot, and where to look.
 
-An ops session is created from ShipIt's Settings ("Ops / Host" → "Create ops
-session for this host"). It is marked server-side with `kind: "ops"`, which is
+An ops session is created from the session sidebar's **New advanced session**
+menu → **Ops session**. It is marked server-side with `kind: "ops"`, which is
 the *only* thing that unlocks the privileges below. Copying this session's
 `shipit.yaml` into an ordinary session does nothing — the host mounts are
 dropped unless the session was created as an ops session.

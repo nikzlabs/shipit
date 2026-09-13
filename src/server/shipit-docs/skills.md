@@ -16,7 +16,7 @@ ShipIt surfaces two kinds of skill directories under the workspace:
   (verified, docs/274), so on a Grok session both directories' skills are
   disclosed.
 - `<workspace>/<agent-dir>/skills/<plugin>__<skill>/SKILL.md` — skills the user
-  installed from a marketplace via **Settings → Skills → Discover**
+  installed from a marketplace via **Settings → Skills**
   (docs/149). These have a sentinel `.shipit-installed.json` file next to the
   `SKILL.md` and invoke under the catalog's namespace (e.g.
   `/commit-commands:commit` for Claude or `$commit-commands:commit` for Codex).

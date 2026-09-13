@@ -151,7 +151,7 @@ export async function runSubAgent(
 
   if (!deps.credentialStore.getEnableSubAgents()) {
     throw rejectSpawn(sessionId, requested, 403, "sub_agents_disabled",
-      "Sub-agents are disabled. Enable them in Settings → Multi-agent sessions.");
+      "Sub-agents are disabled. Enable them in Settings → Advanced, under \"Multi-agent sessions\".");
   }
 
   if (typeof prompt !== "string" || prompt.trim().length === 0) {

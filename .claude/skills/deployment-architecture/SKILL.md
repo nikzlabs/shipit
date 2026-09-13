@@ -44,7 +44,7 @@ This data is broadcast via SSE `pr_status` events and displayed in the PR lifecy
 
 ## Setup Guide
 
-The Settings dialog has a "Deployments" tab under the "Project" section that shows:
+The per-repo **Project Settings → Deployments** tab shows:
 - Links to import repos on Vercel, Cloudflare Pages, and Netlify
 - A brief explanation of how auto-deploy works with ShipIt
 

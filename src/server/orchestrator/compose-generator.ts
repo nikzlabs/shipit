@@ -753,8 +753,8 @@ export function validateServiceSecurity(
         if (name === "docker-socket-proxy") {
           throw new ComposeValidationError(
             `Service \`${name}\`: Docker socket mount is only allowed for ` +
-            `server-created ops sessions. Recreate the ops session from Settings ` +
-            `so it is marked as kind="ops".`,
+            `server-created ops sessions. Recreate it from the sidebar's ` +
+            `"New advanced session" menu → "Ops session" so it is marked as kind="ops".`,
           );
         }
         throw new ComposeValidationError(

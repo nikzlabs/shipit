@@ -574,7 +574,7 @@ describe("Settings - Instructions tab", () => {
   });
 });
 
-describe("Settings - Services → OpenAI subscription", () => {
+describe("Settings - Model providers → OpenAI subscription", () => {
   const codexInstalled = {
     id: "codex",
     name: "Codex",

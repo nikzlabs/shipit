@@ -1,5 +1,5 @@
 /**
- * docs/252 phase 2 — Settings → Services.
+ * docs/252 phase 2 — Settings → Model providers.
  *
  * **A list of what you configured, not of what exists.** It starts empty; the
  * catalogue appears inside the "Add a service" dialog, at the moment it is a
