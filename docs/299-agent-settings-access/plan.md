@@ -61,7 +61,7 @@ interface SettingDescriptor {
   help: string;                // one line, the dialog's own help text
   scope: "global" | "project" | "browser";
   kind: "boolean" | "enum" | "number" | "text" | "collection";
-  project: SettingProjection;  // the ONLY fields this setting may ever emit
+  emits: SettingProjection;    // the ONLY fields this setting may ever emit
   read?(ctx): SettingValue;    // absent for scope "browser"
   propose:
     | { kind: "no"; reason: ProposeRefusal }   // read-only, secret, external flow
@@ -76,7 +76,7 @@ review.
 
 ### 1. Output is an allowlist, not a redaction
 
-`project` names the exact fields a setting may emit — in `list`, in `get`, in the
+`emits` names the exact fields a setting may emit — in `list`, in `get`, in the
 card's `from`/`to`, and in an error message. Anything not named is dropped
 before it leaves the registry.
 
