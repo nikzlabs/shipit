@@ -101,6 +101,7 @@ function makeHarness(over: {
       get: () => session,
       getPrStatus: () => prStatus ?? null,
       clearMerged: vi.fn(),
+      setMergeContinueDeclined: vi.fn(),
     },
     prStatusPoller: { getStatus: () => prStatus ?? null, reArm: vi.fn() },
     createGitManager: () => over.git ?? makeGit(),
@@ -288,6 +289,28 @@ describe("applyPreTurnReset — the branch did not move", () => {
 
     result.afterUserMessagePersisted!("s1");
     expect(h.appended.find((m) => m.notice === true)?.noticeLevel).toBe("info");
+  });
+
+  /**
+   * docs/218 req 6 — recording the decline is what ends the offer. The session
+   * is still merged, still clean and still on the merged tip afterwards, so
+   * nothing else distinguishes it from one that has never been asked.
+   */
+  it("records the untick against the merged head, and hides the control", async () => {
+    const h = makeHarness();
+    await run(h, false);
+
+    expect(h.deps.sessionManager.setMergeContinueDeclined).toHaveBeenCalledWith("s1", MERGED_SHA);
+    expect(h.emitted).toContainEqual({ type: "reset_eligible", sessionId: "s1", eligible: false });
+  });
+
+  it("records nothing when the reset was refused rather than declined", async () => {
+    const h = makeHarness({ git: makeGit({ isClean: vi.fn().mockResolvedValue(false) }) });
+    await run(h);
+
+    // A dirty tree is an obstacle, not an answer: docs/218 re-evaluates it every
+    // turn and the notice tells the user to clear it and send again.
+    expect(h.deps.sessionManager.setMergeContinueDeclined).not.toHaveBeenCalled();
   });
 
   it("is completely silent on a session with no merged PR", async () => {

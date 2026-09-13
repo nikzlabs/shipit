@@ -77,6 +77,19 @@ export async function applyPreTurnReset(args: {
     intent,
   );
 
+  // docs/218 req 6 — the offer belongs to this merge, and the user just answered
+  // it. Recorded here rather than inside the reset service because the service's
+  // deps are read-only, and recorded against the merged head so a LATER merge
+  // re-offers without a clearing step. `emitResetEligible` below then answers
+  // false for every later message, which also stands the compaction down.
+  if (reset.skip?.clause === "opted-out") {
+    const mergedHeadSha = deps.sessionManager.get(sessionId)?.mergedHeadSha;
+    if (mergedHeadSha) {
+      deps.sessionManager.setMergeContinueDeclined(sessionId, mergedHeadSha);
+      runner.emitMessage({ type: "reset_eligible", sessionId, eligible: false });
+    }
+  }
+
   if (!reset.moved && !reset.skip) return NO_RESET;
 
   let card: BranchAutoResetCard | null = null;

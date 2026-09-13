@@ -246,6 +246,45 @@ describe("autoResetMergedBranchOnContinue", () => {
     expect(out.agentPrefix).toContain("do not re-apply");
   });
 
+  /**
+   * docs/218 req 6 — the message AFTER a decline carries no intent at all (its
+   * control is gone), so `intent === undefined` follows the global setting. The
+   * decline has to be re-read from the session or the very next message undoes it.
+   */
+  it("does not reset a merge whose continuation the user already declined", async () => {
+    const git = makeGit();
+    const out = await autoResetMergedBranchOnContinue(
+      makeDeps({
+        getSession: () => makeSession({ mergeContinueDeclinedSha: MERGED_SHA }),
+        createGitManager: () => git,
+      }),
+      "s1",
+      "/ws",
+    );
+    expect(out.moved).toBe(false);
+    expect(out.skip?.clause).toBe("already-declined");
+    expect(git.resetHardToRemoteBase).not.toHaveBeenCalled();
+  });
+
+  it("tells a declined session how to move the branch, not to send another message", async () => {
+    const out = await autoResetMergedBranchOnContinue(
+      makeDeps({ getSession: () => makeSession({ mergeContinueDeclinedSha: MERGED_SHA }) }),
+      "s1",
+      "/ws",
+    );
+    expect(out.skip?.level).toBe("info");
+    expect(out.skip?.notice).toContain("shipit branch reset-to-base");
+    expect(out.skip?.notice).not.toContain("re-evaluated every turn");
+  });
+
+  it("nags once per merge about a standing decline, not on every message", async () => {
+    const deps = makeDeps({ getSession: () => makeSession({ mergeContinueDeclinedSha: MERGED_SHA }) });
+    const first = await autoResetMergedBranchOnContinue(deps, "s1", "/ws");
+    const second = await autoResetMergedBranchOnContinue(deps, "s1", "/ws");
+    expect(first.skip?.notice).toBeDefined();
+    expect(second.skip?.notice).toBeUndefined();
+  });
+
   it("nikzlabs/shipit#2349: restores LFS content the reset rewrote as pointer text", async () => {
     vi.mocked(restoreLfsAfterTreeRewrite).mockClear();
     const git = makeGit();
@@ -580,6 +619,30 @@ describe("isResetEligible (composer-control signal)", () => {
   it("is fail-safe false on a git throw", async () => {
     const git = makeGit({ isClean: vi.fn().mockRejectedValue(new Error("git boom")) });
     expect(await isResetEligible(makeDeps({ createGitManager: () => git }), "s1", "/ws")).toBe(false);
+  });
+
+  /**
+   * docs/218 req 6 — the offer belongs to one merge. Without this the branch is
+   * still merged, still clean and still on the merged tip after a declined
+   * continuation, so the pure state predicate says "eligible" again and the very
+   * next message resets AND compacts (the compaction reads this same predicate).
+   */
+  describe("a declined continuation (docs/218 req 6)", () => {
+    it("is false once the user declined this merge's continuation", async () => {
+      const session = makeSession({ mergeContinueDeclinedSha: MERGED_SHA });
+      expect(await isResetEligible(makeDeps({ getSession: () => session }), "s1", "/ws")).toBe(false);
+    });
+
+    it("is true again after a LATER merge, with no clearing step", async () => {
+      const nextMerge = "c0ffee110000000000000000000000000000eeff";
+      const session = makeSession({
+        mergedHeadSha: nextMerge,
+        mergeContinueDeclinedSha: MERGED_SHA,
+      });
+      const git = makeGit({ getHeadHash: vi.fn().mockResolvedValue(nextMerge) });
+      const deps = makeDeps({ getSession: () => session, createGitManager: () => git });
+      expect(await isResetEligible(deps, "s1", "/ws")).toBe(true);
+    });
   });
 });
 

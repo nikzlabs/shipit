@@ -34,6 +34,7 @@ export type ResetSkipClause =
   | "not-merged"
   | "setting-off"
   | "opted-out"
+  | "already-declined"
   | "no-merged-head-sha"
   | "no-base-branch"
   | "dirty-tree"
@@ -60,6 +61,25 @@ export interface ResetSkipInfo extends ResetSkip {
 }
 
 const NOT_MOVED: ResetOutcome = { moved: false };
+
+/**
+ * docs/218 req 6 — the offer belongs to ONE merge, and the user already answered
+ * it. Deliberately NOT part of `computeResetBlocker`: that is the *safety* gate,
+ * shared with `resetBranchToBaseExplicit`, and `shipit branch reset-to-base` must
+ * still work after the user declined the automatic offer. This is the separate
+ * question of whether to make the offer at all.
+ */
+export function declinedThisMerge(session: SessionInfo | undefined): boolean {
+  const anchor = session?.mergedHeadSha;
+  return anchor !== undefined && session?.mergeContinueDeclinedSha === anchor;
+}
+
+const ALREADY_DECLINED: ResetSkip = {
+  clause: "already-declined",
+  detail:
+    "“start from the latest base” was unticked when this pull request merged, and that "
+    + "choice stands for this merge rather than being re-offered on every later message",
+};
 
 const DIRTY_PATH_LIMIT = 10;
 
@@ -182,6 +202,11 @@ export async function computeResetEligibility(
     const session = deps.getSession(sessionId);
     if (!session?.mergedAt) return { eligible: false, merged: false, blocker: null };
     merged = true;
+    // Answered for this merge: no control, and no compaction either — the
+    // compaction decision reads this same predicate (docs/295).
+    if (declinedThisMerge(session)) {
+      return { eligible: false, merged: true, blocker: ALREADY_DECLINED };
+    }
     const prStatus = deps.getPrStatus(sessionId);
     const git = deps.createGitManager(sessionDir);
     const blocker = await computeResetBlocker(session, prStatus, git);
@@ -329,6 +354,11 @@ export async function autoResetMergedBranchOnContinue(
         detail: "“start from the latest base” was unticked for this message",
       });
     }
+    // The later message carries no intent — its control is gone — so without this
+    // the decline would be undone by the very next thing the user sends.
+    if (declinedThisMerge(session)) {
+      return skipped(sessionId, session, prStatus, ALREADY_DECLINED);
+    }
 
     const git = deps.createGitManager(sessionDir);
 
@@ -400,13 +430,16 @@ function skipped(
 ): ResetOutcome {
   const prNumber = prStatus?.prNumber ?? session.previousMergedPr?.number;
   const base = prStatus?.baseBranch ?? session.previousMergedPr?.baseBranch;
-  const level = skip.clause === "setting-off" || skip.clause === "opted-out" ? "info" : "warn";
+  const chosen = skip.clause === "setting-off" || skip.clause === "opted-out";
+  const level = chosen || skip.clause === "already-declined" ? "info" : "warn";
   console.warn(
     `[pre-turn-reset] skipped for ${sessionId} (${skip.clause}): ${skip.detail}. `
       + `Branch stays on the merged tip${prNumber ? ` (PR #${prNumber})` : ""}.`,
   );
-  // Suppress only repeated user notices; opt-outs must not overwrite a standing safety refusal.
-  const notice = level === "info" || claimSkipNotice(sessionId, skip.clause, session)
+  // A choice made on THIS message is restated every time it is made; a standing
+  // decline and a safety refusal are episode-scoped, or they would nag on every
+  // later message. Opt-outs must not overwrite a standing safety refusal.
+  const notice = chosen || claimSkipNotice(sessionId, skip.clause, session)
     ? { notice: buildSkipNotice(skip, prNumber, base) }
     : {};
   return {
@@ -420,13 +453,18 @@ function buildSkipNotice(skip: ResetSkip, prNumber?: number, base?: string): str
   const pr = prNumber ? `#${prNumber}` : "for this session";
   const into = base ? ` into ${base}` : "";
   const target = base ? `origin/${base}` : "the latest base";
+  // A declined offer is not re-evaluated (docs/218 req 6), so it must not be told
+  // that sending another message brings it back.
+  const howToGetIt =
+    skip.clause === "opted-out" || skip.clause === "already-declined"
+      ? `To move the branch after all, ask the agent to run \`shipit branch reset-to-base\`.`
+      : `Clear the reason above and send another message (the reset is re-evaluated every turn), `
+        + `or ask the agent to run \`shipit branch reset-to-base\`.`;
   return (
     `Branch not updated to the latest base. Pull request ${pr} merged${into}, but this branch `
     + `was not reset to ${target} because ${skip.detail}.\n\n`
     + `It still sits on the already-merged commits, so anything committed here belongs to no `
-    + `open pull request — and ShipIt will not auto-push it.\n\n`
-    + `Clear the reason above and send another message (the reset is re-evaluated every turn), `
-    + `or ask the agent to run \`shipit branch reset-to-base\`.`
+    + `open pull request — and ShipIt will not auto-push it.\n\n${howToGetIt}`
   );
 }
 

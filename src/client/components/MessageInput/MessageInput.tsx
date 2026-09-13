@@ -609,7 +609,11 @@ export function MessageInput({
 
     if (!onSend(payload)) return;
 
-    if (showResetControl && resetChecked && sessionId) {
+    // docs/218 req 6 — either answer ends the offer, so the optimistic hide no
+    // longer depends on which one it was: ticked resets the branch, unticked is
+    // recorded as declined for this merge. It used to be `&& resetChecked`,
+    // which is why an unticked send left both controls standing.
+    if (showResetControl && sessionId) {
       usePrStore.getState().setResetEligible(sessionId, false);
     }
     // NOT cleared here. `sendUserTurn` spends the untick when the frame goes,

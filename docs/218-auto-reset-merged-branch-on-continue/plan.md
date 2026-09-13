@@ -105,13 +105,30 @@ mockup for reference.)
   `autoResetMergedBranch` (default on). Unticking is a **per-send** choice that does
   **not** persist — the next eligible message shows it checked again. The global
   setting is the escape hatch for someone who never wants it.
-- **Visibility is derived from live session state, recomputed after each turn — not
-  a one-shot flag.** Two behaviors fall out naturally:
+- **The offer belongs to one merge and is made once** (see
+  [requirements.md](./requirements.md) req 6). Either answer ends it:
   - **Sent checked →** the reset runs, the branch moves off the merged tip, the
     session re-arms; eligibility is now false → the control disappears and stays
     gone (nothing left to reset).
-  - **Sent unticked →** no reset, branch still at the merged tip, still merged →
-    eligibility holds → the control reappears (checked) on the next message.
+  - **Sent unticked →** no reset, but the decline is recorded against the merged
+    head (`SessionInfo.mergeContinueDeclinedSha`), and eligibility answers false
+    from then on → the control does not reappear, and the docs/295 compaction
+    stands down with it, since it reads the same predicate.
+
+  This second half is a **2026-09-13 change**. It used to read "eligibility holds
+  → the control reappears (checked) on the next message", and that is what
+  shipped: eligibility is a pure state predicate — merged, clean tree,
+  `HEAD === mergedHeadSha` — and a declined continuation leaves all three true,
+  so the branch was reset and the context compacted on the *following* message
+  instead. A decline is an answer, not a pause.
+
+  **A refusal is not a decline.** A reset ShipIt refused (dirty tree, moved head)
+  was never *offered* — such a session is not eligible, so no control was shown —
+  and it stays re-evaluated every turn, as the merge-time notice promises. Only
+  `clause: "opted-out"` records a decline. And the decline is not a safety gate:
+  `shipit branch reset-to-base` still moves the branch on request, which is why
+  `declinedThisMerge` sits outside `computeResetBlocker` (shared with
+  `resetBranchToBaseExplicit`) rather than inside it.
 - **Correctness is server-side.** The checkbox value is only the user's *intent*; the
   pre-turn helper re-validates the full gate at send time regardless of what the
   client sent, so a stale client eligibility flag can never cause an unsafe reset.
@@ -564,11 +581,14 @@ fixes, mirroring how docs/216 re-arms the PR card "NOW" rather than lagging unti
    false — the handler emits `reset_eligible: false` immediately. This covers **every** send
    path (composer, propose-action buttons, programmatic follow-ups), independent of turn
    length. The post-turn recompute stays as the fail-safe (manual `git reset` with no pre-turn
-   move) and reconciles an unticked send back to eligible.
+   move). **Since req 6 (2026-09-13) an unticked send hides the control too** — the hook
+   records the decline and emits `reset_eligible: false` for it, where the post-turn recompute
+   used to reconcile it back to eligible.
 2. **Client (optimistic, composer path).** `handleSubmit` (`MessageInput.tsx`) also clears the
-   signal (`setResetEligible(sessionId, false)`) on a *checked* send, so the control vanishes
-   on click without even a WS round-trip. An *unticked* send leaves it intact (no reset runs).
-   Covered by the "optimistically clears / keeps eligibility" tests in `MessageInput.test.tsx`.
+   signal (`setResetEligible(sessionId, false)`), so the control vanishes on click without even
+   a WS round-trip. This was `&& resetChecked` until req 6 made both answers end the offer —
+   which is why an unticked send used to leave both controls standing through the turn it
+   started. Covered by the "optimistically clears" tests in `MessageInput.test.tsx`.
 
 **Phase 3 — default flipped ON.** `credentialStore.getAutoResetMergedBranch()` now defaults
 `?? true`; the client settings store, `GlobalSettings`, and the bootstrap fallback default

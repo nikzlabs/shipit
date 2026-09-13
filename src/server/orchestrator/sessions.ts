@@ -68,6 +68,7 @@ interface SessionRow {
   merge_issue_effects: string | null;
   previous_merged_pr: string | null;
   merged_head_sha: string | null;
+  merge_continue_declined_sha: string | null;
   pending_agent_notice: string | null;
   pr_repo_id: string | null;
   pr_number: number | null;
@@ -263,6 +264,9 @@ export class SessionManager {
     }
     if (row.workspace_block) info.workspaceBlock = row.workspace_block as WorkspaceBlockKind;
     if (row.merged_head_sha) info.mergedHeadSha = row.merged_head_sha;
+    if (row.merge_continue_declined_sha) {
+      info.mergeContinueDeclinedSha = row.merge_continue_declined_sha;
+    }
     if (row.pending_agent_notice) info.pendingAgentNotice = row.pending_agent_notice;
     // Partial provenance must not authorize a merge.
     if (row.pr_number && row.pr_repo_id) {
@@ -479,6 +483,17 @@ export class SessionManager {
 
   setMergedHeadSha(id: string, sha: string): void {
     this.db.prepare("UPDATE sessions SET merged_head_sha = ? WHERE id = ?").run(sha, id);
+  }
+
+  /**
+   * docs/218 — record that the user declined this merge's continuation, so the
+   * offer is not made again for it. Keyed by the merged head, so a later merge
+   * re-offers with no clearing step of its own.
+   */
+  setMergeContinueDeclined(id: string, mergedHeadSha: string): void {
+    this.db.prepare(
+      "UPDATE sessions SET merge_continue_declined_sha = ? WHERE id = ?",
+    ).run(mergedHeadSha, id);
   }
 
   clearMerged(id: string, previousMergedPr: PreviousMergedPr | null): boolean {

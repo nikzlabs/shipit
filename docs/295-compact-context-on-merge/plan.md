@@ -337,16 +337,17 @@ fired at all.
 Hiding them keeps every choice already made: the untick lives in the store, and
 `mergeContinueFrameFields` carries it whether or not the control is shown.
 
-**The trade.** What it does cost is the chance to make a *new* choice mid-turn.
-Untick both, send a message that changes nothing, and the session is still
-eligible when that turn ends — so a second message queued behind it will be
+**There is nothing left to opt out of.** Review raised a real cost of the hide:
+untick both, send a message that changes nothing, and the session used to still
+be eligible when that turn ended — so a second message queued behind it was
 reset and compacted at drain (`runQueuedInteractiveMessage` re-decides from the
 queued entry's own flags, and an absent flag follows the setting), with no
-control on screen to opt it out. Req 5 makes each untick govern one message, so
-this is a real lost affordance and not a stale-state bug. It is accepted here
-because it needs the previous send to have unticked the **reset** specifically,
-and because the alternative — keeping the controls up through every turn — is
-the reported defect. Found by review, recorded rather than silently narrowed.
+control on screen to stop it. That was a genuine lost affordance, and the fix
+was not to restore the control but to stop the second message triggering
+anything: [docs/218 req 6](../218-auto-reset-merged-branch-on-continue/requirements.md)
+now ends the offer at the first answer, and `shouldCompactBeforeTurn` reads the
+same `isResetEligible` predicate, so the compaction stands down with the reset.
+One merge, one offer, one compaction.
 
 ## The shared setting (req 11)
 
@@ -379,13 +380,16 @@ Advanced description names both.
   starts, with the agent status bar reading "Compacting context..." — but not
   with the checkbox there to untick, which is the trade above. Req 3 rules out
   shortening the wait with a size gate.
-- **No mid-turn opt-out for a queued message.** See the trade under *The
-  composer control*: a message queued behind a turn that left the session
-  eligible is reset and compacted at drain with no control on screen.
+- **No mid-turn opt-out for a queued message** — and nothing that needs one:
+  docs/218 req 6 ends the offer at the first answer, so a later message on the
+  same merge compacts nothing. A message queued behind the *offered* turn is the
+  one already covered by req 12's "one compaction".
 - **Stop reaches the compaction, not the send.** Interrupting during the
   compaction stops that turn; the queued message then runs. Cancelling the
   whole send from inside the compaction is not something a requirement asks for.
 - **A refused reset compacts again next time.** Eligibility is the composer's
-  own signal, so while a reset keeps being refused (no network, say) the box
-  keeps appearing ticked and each message compacts first. Consistent with what
-  the user sees; untick to skip.
+  own signal, so while a reset keeps being *refused* (no network, say) the box
+  keeps appearing ticked and each message compacts first. A refusal is not a
+  decline — docs/218 req 6 ends the offer only on an answer the user gave — so
+  this one survives that change. Consistent with what the user sees; untick to
+  skip, which now ends the offer.
