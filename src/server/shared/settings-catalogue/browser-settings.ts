@@ -1,10 +1,11 @@
-import { defineSetting, withheld } from "./types.js";
+import { sttProviders, ttsProviders } from "../voice-catalog.js";
+import { defineSetting, itemAddress, withheld } from "./types.js";
 import type { AnySettingDeclaration } from "./types.js";
-import { bool, collection, numeric, text } from "./value-types.js";
+import { bool, collection, enumOf, numeric, text } from "./value-types.js";
 
 /**
  * The part of both dialogs that lives in `localStorage`
- * (`stores/settings-store.ts:396`), declared so that req 5 holds: a setting a
+ * (`client/utils/local-storage.ts`), declared so that req 5 holds: a setting a
  * dialog shows and this feature cannot reach is still named, with the reason.
  *
  * **These are named and explained, nothing more.** Read and propose both refuse
@@ -37,6 +38,21 @@ export const BROWSER_SETTINGS = {
     propose: NOT_PROPOSABLE,
   }),
 
+  "keyboard.keybindings[].chord": defineSetting({
+    key: "keyboard.keybindings[].chord",
+    tab: "keyboard",
+    scope: "browser",
+    address: itemAddress("a ShipIt command id, e.g. voice-mode-a"),
+    label: "Shortcut",
+    description:
+      "The keys bound to one command. A chord that another command already uses is refused, and a "
+      + "command that opens quick-capture or the mic needs a second modifier.",
+    type: text({ maxLength: 64, noun: "Shortcut" }),
+    store: { kind: "browser", localStorageKey: "shipit-keybindings" },
+    emits: BROWSER_LOCAL,
+    propose: NOT_PROPOSABLE,
+  }),
+
   "voice.inputEnabled": defineSetting({
     key: "voice.inputEnabled",
     tab: "voice",
@@ -57,7 +73,10 @@ export const BROWSER_SETTINGS = {
     description:
       "Which provider transcribes dictation. It needs a key, and the key is a server-side setting "
       + "of its own.",
-    type: text({ maxLength: 64, default: "openai", noun: "Speech-to-text provider" }),
+    type: enumOf({
+      default: "openai",
+      options: sttProviders().map((provider) => ({ value: provider.id, label: provider.label })),
+    }),
     store: { kind: "browser", localStorageKey: "shipit-stt-provider" },
     emits: BROWSER_LOCAL,
     propose: NOT_PROPOSABLE,
@@ -80,7 +99,9 @@ export const BROWSER_SETTINGS = {
     tab: "voice",
     scope: "browser",
     label: "Language",
-    description: "The language dictation is transcribed as. Empty follows the browser's locale.",
+    description:
+      "The language dictation is transcribed as, chosen from the dozen the tab offers. Empty "
+      + "follows the browser's locale.",
     type: text({ maxLength: 16, noun: "Dictation language" }),
     store: { kind: "browser", localStorageKey: "shipit-voice-language" },
     emits: BROWSER_LOCAL,
@@ -105,7 +126,10 @@ export const BROWSER_SETTINGS = {
     scope: "browser",
     label: "Text-to-speech provider",
     description: "Which provider speaks a voice note. It needs a key of its own.",
-    type: text({ maxLength: 64, default: "openai", noun: "Text-to-speech provider" }),
+    type: enumOf({
+      default: "openai",
+      options: ttsProviders().map((provider) => ({ value: provider.id, label: provider.label })),
+    }),
     store: { kind: "browser", localStorageKey: "shipit-tts-provider" },
     emits: BROWSER_LOCAL,
     propose: NOT_PROPOSABLE,
@@ -116,8 +140,10 @@ export const BROWSER_SETTINGS = {
     tab: "voice",
     scope: "browser",
     label: "Voice",
-    description: "Which of the provider's voices speaks. Changing provider re-picks it.",
-    type: text({ maxLength: 64, noun: "Voice" }),
+    description:
+      "Which of the provider's voices speaks. The choices are that provider's voices, so changing "
+      + "provider re-picks it.",
+    type: text({ maxLength: 64, default: "alloy", noun: "Voice" }),
     store: { kind: "browser", localStorageKey: "shipit-tts-voice" },
     emits: BROWSER_LOCAL,
     propose: NOT_PROPOSABLE,
@@ -170,7 +196,7 @@ export const BROWSER_SETTINGS = {
     scope: "browser",
     label: "Browser notification",
     description: "Show a desktop notification when the tab is in the background.",
-    type: bool({ default: false }),
+    type: bool({ default: true }),
     store: { kind: "browser", localStorageKey: "shipit-notify-on-finish" },
     emits: BROWSER_LOCAL,
     propose: NOT_PROPOSABLE,
@@ -182,7 +208,7 @@ export const BROWSER_SETTINGS = {
     scope: "browser",
     label: "Sound",
     description: "Play a chime when a session needs attention.",
-    type: bool({ default: false }),
+    type: bool({ default: true }),
     store: { kind: "browser", localStorageKey: "shipit-sound-on-finish" },
     emits: BROWSER_LOCAL,
     propose: NOT_PROPOSABLE,

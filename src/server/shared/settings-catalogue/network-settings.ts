@@ -1,4 +1,5 @@
-import { defineSetting, derived, itemAddress, userText } from "./types.js";
+import { hostEntryProjection } from "./projection.js";
+import { defineSetting, derived, itemAddress } from "./types.js";
 import type { AnySettingDeclaration } from "./types.js";
 import { collection, text } from "./value-types.js";
 
@@ -29,8 +30,11 @@ export const NETWORK_SETTINGS = {
       patchableFields: [],
     }),
     store: { kind: "bespoke", ownedBy: "the egress allowlist store, global scope (/api/egress/hosts)" },
-    emits: derived("the allowed hosts", (raw) =>
-      Array.isArray(raw) ? raw.filter((host): host is string => typeof host === "string") : []),
+    emits: derived(
+      "the allowed hosts; an entry that is not shaped like a host is dropped, since it can match "
+      + "nothing anyway",
+      (raw) => (Array.isArray(raw) ? raw.map(hostEntryProjection).filter((host) => host !== null) : []),
+    ),
     propose: { kind: "yes" },
   }),
 
@@ -45,10 +49,10 @@ export const NETWORK_SETTINGS = {
       + "well.",
     type: text({ maxLength: 253, noun: "Host", required: true, trim: true }),
     store: { kind: "bespoke", ownedBy: "the egress allowlist store, global scope (/api/egress/hosts)" },
-    emits: userText(
-      "A host name the user allowed. It is the whole subject of the setting, and a proposal card "
-      + "shows it in full — there is nothing else of it to withhold.",
-    ),
+    // The host is the whole subject of the setting and a card shows it in full,
+    // but only once it is a host: the box takes any text, and a pasted URL can
+    // carry a token in its user information or its query.
+    emits: derived("the entry, when it is shaped like a host", hostEntryProjection),
     propose: { kind: "yes" },
   }),
 } as const satisfies Record<string, AnySettingDeclaration>;

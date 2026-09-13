@@ -25,18 +25,31 @@ export const VOICE_SETTINGS = {
     propose: { kind: "no", reason: "secret" },
   }),
 
-  "voice.webhook": defineSetting({
-    key: "voice.webhook",
+  "voice.webhook.url": defineSetting({
+    key: "voice.webhook.url",
     tab: "voice",
     scope: "global",
-    label: "Voice note webhook",
+    label: "Voice note webhook URL",
     description:
-      "Where a voice note is POSTed when delivery includes the external mode, with a bearer token "
-      + "ShipIt stores and never shows again.",
-    type: text({ maxLength: 2_000, noun: "Voice webhook" }),
+      "Where a voice note is POSTed when delivery includes the external mode. It is half of one "
+      + "credential — the bearer token is the other half — so ShipIt reports only whether the "
+      + "webhook is configured.",
+    type: text({ maxLength: 2_000, noun: "Voice webhook URL" }),
     store: { kind: "bespoke", ownedBy: "the voice webhook credential (POST /api/voice/webhook)" },
-    // The URL and the token are saved together and the token is the reason the
-    // pair is unreadable: a card could not show what it replaces.
+    emits: configuredOnly(),
+    propose: { kind: "no", reason: "secret" },
+  }),
+
+  "voice.webhook.token": defineSetting({
+    key: "voice.webhook.token",
+    tab: "voice",
+    scope: "global",
+    label: "Voice note webhook bearer token",
+    description:
+      "Sent as the bearer token on every voice-note POST. Saving with it left blank keeps the "
+      + "stored one; ShipIt never shows it again.",
+    type: text({ maxLength: 4_000, noun: "Voice webhook token" }),
+    store: { kind: "bespoke", ownedBy: "the voice webhook credential (POST /api/voice/webhook)" },
     emits: configuredOnly(),
     propose: { kind: "no", reason: "secret" },
   }),

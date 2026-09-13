@@ -95,6 +95,25 @@ export function formatSetting(declaration: AnySettingDeclaration, outcome: Proje
 }
 
 /**
+ * An allowlist entry, but only when it is shaped like a host — a leading dot
+ * for a subdomain match, then labels.
+ *
+ * `normalizeHost` trims, lowercases and drops a trailing dot and nothing else
+ * (`egress-allowlist.ts:82`), and the dialog stores whatever was typed, so a
+ * pasted `https://user:token@host/path?token=…` is a possible stored entry. Such
+ * an entry matches no host — `hostMatchesEntry` compares whole labels — so
+ * emitting nothing for it loses the reader nothing and keeps a pasted credential
+ * out of every output.
+ */
+const HOST_ENTRY = /^\.?[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)*$/;
+
+export function hostEntryProjection(raw: unknown): string | null {
+  if (typeof raw !== "string") return null;
+  const entry = raw.trim().toLowerCase();
+  return HOST_ENTRY.test(entry) ? entry : null;
+}
+
+/**
  * The host an MCP URL is reachable at, and nothing else of it: userinfo, path,
  * query and fragment are where a token travels (plan.md's worked pair refuses a
  * URL change for the same reason).

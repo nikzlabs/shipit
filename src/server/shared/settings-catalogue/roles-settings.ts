@@ -43,8 +43,23 @@ export const ROLES_SETTINGS = {
     propose: { kind: "yes" },
   }),
 
-  "roles.model": defineSetting({
-    key: "roles.model",
+  "roles[].name": defineSetting({
+    key: "roles[].name",
+    tab: "roles",
+    scope: "global",
+    address: ROLE_ADDRESS,
+    label: "Name",
+    description:
+      "What the role is called, and what `--role` takes. `reviewer` is reserved: ShipIt picks what "
+      + "it runs on per review, so that role's name cannot be changed.",
+    type: text({ maxLength: 64, noun: "Role name", required: true, trim: true }),
+    store: { kind: "bespoke", ownedBy: "credential-store roles (PUT /api/settings `roles`)" },
+    emits: userText("The name the user gave their own role, and the name the agent addresses it by."),
+    propose: { kind: "yes" },
+  }),
+
+  "roles[].model": defineSetting({
+    key: "roles[].model",
     tab: "roles",
     scope: "global",
     address: ROLE_ADDRESS,
@@ -59,8 +74,8 @@ export const ROLES_SETTINGS = {
     propose: { kind: "yes" },
   }),
 
-  "roles.harness": defineSetting({
-    key: "roles.harness",
+  "roles[].harness": defineSetting({
+    key: "roles[].harness",
     tab: "roles",
     scope: "global",
     address: ROLE_ADDRESS,
@@ -74,8 +89,8 @@ export const ROLES_SETTINGS = {
     propose: { kind: "yes" },
   }),
 
-  "roles.reasoningEffort": defineSetting({
-    key: "roles.reasoningEffort",
+  "roles[].reasoningEffort": defineSetting({
+    key: "roles[].reasoningEffort",
     tab: "roles",
     scope: "global",
     address: ROLE_ADDRESS,
@@ -89,8 +104,8 @@ export const ROLES_SETTINGS = {
     propose: { kind: "yes" },
   }),
 
-  "roles.description": defineSetting({
-    key: "roles.description",
+  "roles[].description": defineSetting({
+    key: "roles[].description",
     tab: "roles",
     scope: "global",
     address: ROLE_ADDRESS,
@@ -104,8 +119,8 @@ export const ROLES_SETTINGS = {
     propose: { kind: "yes" },
   }),
 
-  "roles.prompt": defineSetting({
-    key: "roles.prompt",
+  "roles[].prompt": defineSetting({
+    key: "roles[].prompt",
     tab: "roles",
     scope: "global",
     address: ROLE_ADDRESS,
@@ -117,8 +132,31 @@ export const ROLES_SETTINGS = {
     propose: { kind: "yes" },
   }),
 
-  "roles.reviewerSlot": defineSetting({
-    key: "roles.reviewerSlot",
+  "reviewers": defineSetting({
+    key: "reviewers",
+    tab: "roles",
+    scope: "global",
+    label: "Reviewer candidates",
+    description:
+      "The two slots ShipIt picks a reviewer from. A slot is either pinned to a model or left on "
+      + "automatic; the harness is derived per review rather than pinned.",
+    type: collection<string>({ operations: ["pin", "clear"], patchableFields: ["model", "reasoningEffort"] }),
+    store: { kind: "bespoke", ownedBy: "credential-store reviewer slots (PUT /api/settings `reviewers`)" },
+    emits: derived("each slot and whether it is pinned or automatic", (raw) =>
+      Array.isArray(raw)
+        ? raw.map((entry) => {
+            const row = entry as { slot?: unknown; source?: unknown };
+            return {
+              slot: typeof row?.slot === "string" ? row.slot : null,
+              source: typeof row?.source === "string" ? row.source : null,
+            };
+          })
+        : []),
+    propose: { kind: "yes" },
+  }),
+
+  "reviewers[].model": defineSetting({
+    key: "reviewers[].model",
     tab: "roles",
     scope: "global",
     address: SLOT_ADDRESS,
@@ -133,8 +171,8 @@ export const ROLES_SETTINGS = {
     propose: { kind: "yes" },
   }),
 
-  "roles.reviewerSlot.reasoningEffort": defineSetting({
-    key: "roles.reviewerSlot.reasoningEffort",
+  "reviewers[].reasoningEffort": defineSetting({
+    key: "reviewers[].reasoningEffort",
     tab: "roles",
     scope: "global",
     address: SLOT_ADDRESS,

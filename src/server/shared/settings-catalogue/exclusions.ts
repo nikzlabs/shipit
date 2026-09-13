@@ -119,6 +119,15 @@ export const SETTING_EXCLUSIONS: readonly SettingExclusion[] = [
       + "opens a pull request in a session of its own (`SkillsTab.tsx:1`).",
   },
   {
+    id: "keyboard.fixedKeys",
+    tab: "keyboard",
+    scope: "browser",
+    label: "Editor keys like Enter and Esc are fixed",
+    reason: "explanatory-copy",
+    why: "Rows that state a binding ShipIt does not let anyone change; they render a hint instead "
+      + "of a control.",
+  },
+  {
     id: "voice.cleanupModel",
     tab: "voice",
     scope: "global",
@@ -204,7 +213,7 @@ export const SETTING_EXCLUSIONS: readonly SettingExclusion[] = [
     scope: "project",
     label: "Secrets a service declares it needs",
     reason: "derived-status",
-    why: "Read from the repository's own `docker-compose.yml`. Which of them are set is the "
-      + "setting; the declaration is the repository's.",
+    why: "Read from what the repository's own services and activated plugins say they need. "
+      + "Which names are set is the setting; the declaration belongs to the repository.",
   },
 ];

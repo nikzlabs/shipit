@@ -34,13 +34,57 @@ const MCP_FIXTURE: Record<string, unknown> = {
   "mcp.servers[].headers": { Authorization: `Bearer ${TOKEN}` },
 };
 
-const mcpFields = ALL_SETTINGS.filter((d) => d.key.startsWith("mcp.servers[]"));
+/**
+ * The same sentinel, planted in every OTHER projection that derives its output.
+ * A `derived` projection is an arbitrary function, so no structural rule can say
+ * it is safe — a fixture per projection is what can, and the coverage test below
+ * fails when a new one arrives without one.
+ */
+const DERIVED_FIXTURES: Record<string, unknown> = {
+  "mcp.servers": [
+    { name: "notion", type: "http", url: `https://x@h/${TOKEN}`, headers: { A: TOKEN } },
+    { name: "sentry", type: "stdio", command: "npx", args: [`--token=${TOKEN}`] },
+  ],
+  "services.credentials": [
+    { id: "route-1", label: "Personal", secret: TOKEN },
+    { id: "route-2", label: "Work", secret: TOKEN },
+  ],
+  "services.providerAccounts": [{ id: "acct-1", label: "Work", accessToken: TOKEN }],
+  "roles": [{ name: "deep-dive", prompt: `Use ${TOKEN}`, params: { modelId: "m" } }],
+  "reviewers": [
+    { slot: "first", source: "pinned", pin: { modelId: `m-${TOKEN}` } },
+    { slot: "second", source: "auto" },
+  ],
+  "network.egress.hosts": [
+    "api.example.com",
+    // The box takes any text, so a pasted URL is a possible stored entry.
+    `https://svc:${TOKEN}@example.com/hook?token=${TOKEN}`, // gitleaks:allow
+  ],
+  "network.egress.hosts[].host": `https://svc:${TOKEN}@example.com/hook?token=${TOKEN}`, // gitleaks:allow
+  "project.secrets": { SENTRY_DSN: TOKEN, DATABASE_URL: TOKEN },
+};
 
 function declarationFor(key: string): AnySettingDeclaration {
-  const found = mcpFields.find((d) => d.key === key);
+  const found = ALL_SETTINGS.find((d) => d.key === key);
   if (!found) throw new Error(`No declaration for ${key}`);
   return found;
 }
+
+/** Every output path a reader can reach, for one declaration and one value. */
+function outputsOf(key: string, raw: unknown): string[] {
+  const declaration = declarationFor(key);
+  const outcome = projectSetting(declaration, raw);
+  const validation = declaration.type.validate(raw, declaration.label);
+  return [
+    JSON.stringify(outcome),
+    formatSetting(declaration, outcome),
+    // What a proposal card would show as the value being replaced.
+    JSON.stringify({ from: outcome.readable ? outcome.value : null }),
+    validation.ok ? "" : validation.message,
+  ];
+}
+
+const mcpFields = ALL_SETTINGS.filter((d) => d.key.startsWith("mcp.servers[]"));
 
 describe("MCP projections", () => {
   it("puts every declared MCP field through the leak fixture", () => {
@@ -49,18 +93,7 @@ describe("MCP projections", () => {
 
   for (const [key, raw] of Object.entries(MCP_FIXTURE)) {
     it(`emits no credential material from ${key}`, () => {
-      const declaration = declarationFor(key);
-      const outcome = projectSetting(declaration, raw);
-
-      // The four output paths a reader can reach: the value itself, the text a
-      // read prints, the `from` a proposal card would show, and an error.
-      const asJson = JSON.stringify(outcome);
-      const asText = formatSetting(declaration, outcome);
-      const cardFrom = JSON.stringify({ from: outcome.readable ? outcome.value : null });
-      const validation = declaration.type.validate(raw, declaration.label);
-      const asError = validation.ok ? "" : validation.message;
-
-      for (const output of [asJson, asText, cardFrom, asError]) {
+      for (const output of outputsOf(key, raw)) {
         expect(output).not.toContain(TOKEN);
       }
     });
@@ -84,14 +117,12 @@ describe("MCP projections", () => {
   });
 
   it("emits only the names of the servers, not the servers", () => {
-    const servers = [
-      { name: "notion", type: "http", url: `https://x@h/${TOKEN}`, headers: { A: TOKEN } },
-      { name: "sentry", type: "stdio", command: "npx", args: [`--token=${TOKEN}`] },
-    ];
-    const outcome = projectSetting(INTEGRATIONS_SETTINGS["mcp.servers"], servers);
+    const outcome = projectSetting(
+      INTEGRATIONS_SETTINGS["mcp.servers"],
+      DERIVED_FIXTURES["mcp.servers"],
+    );
 
     expect(outcome).toEqual({ readable: true, value: ["notion", "sentry"] });
-    expect(JSON.stringify(outcome)).not.toContain(TOKEN);
   });
 
   it("emits an unparseable URL as nothing at all", () => {
@@ -101,16 +132,48 @@ describe("MCP projections", () => {
   });
 });
 
-describe("projections elsewhere", () => {
-  it("keeps a credential order to ids, whatever the caller holds", () => {
-    const routes = [
-      { id: "route-1", label: "Personal", secret: TOKEN },
-      { id: "route-2", label: "Work", secret: TOKEN },
-    ];
-    const outcome = projectSetting(SERVICES_SETTINGS["services.credentialOrder"], routes);
+describe("every other derived projection", () => {
+  it("has a leak fixture of its own", () => {
+    const derivedKeys = ALL_SETTINGS
+      .filter((d) => d.emits.kind === "derived" && !d.key.startsWith("mcp.servers[]"))
+      .map((d) => d.key);
+
+    expect(derivedKeys.sort()).toEqual(Object.keys(DERIVED_FIXTURES).sort());
+  });
+
+  for (const [key, raw] of Object.entries(DERIVED_FIXTURES)) {
+    it(`emits no credential material from ${key}`, () => {
+      for (const output of outputsOf(key, raw)) {
+        expect(output).not.toContain(TOKEN);
+      }
+    });
+  }
+
+  it("keeps a credential list to ids, whatever the caller holds", () => {
+    const outcome = projectSetting(
+      SERVICES_SETTINGS["services.credentials"],
+      DERIVED_FIXTURES["services.credentials"],
+    );
 
     expect(outcome).toEqual({ readable: true, value: ["route-1", "route-2"] });
-    expect(JSON.stringify(outcome)).not.toContain(TOKEN);
+  });
+
+  it("drops an allowlist entry that is not a host, since it can match none", () => {
+    const outcome = projectSetting(
+      declarationFor("network.egress.hosts"),
+      DERIVED_FIXTURES["network.egress.hosts"],
+    );
+
+    expect(outcome).toEqual({ readable: true, value: ["api.example.com"] });
+  });
+
+  it("names the secrets that are set and never their values", () => {
+    const outcome = projectSetting(
+      declarationFor("project.secrets"),
+      DERIVED_FIXTURES["project.secrets"],
+    );
+
+    expect(outcome).toEqual({ readable: true, value: ["SENTRY_DSN", "DATABASE_URL"] });
   });
 
   it("refuses a browser-local read with the sentence the dialog's user would recognise", () => {

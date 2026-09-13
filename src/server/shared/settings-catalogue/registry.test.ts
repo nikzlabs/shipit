@@ -65,14 +65,27 @@ describe("the settings registry", () => {
     }
   });
 
-  it("never emits the value of something it refuses as secret", () => {
+  it("never hands over the stored value of something it refuses as secret", () => {
     for (const declaration of ALL_SETTINGS) {
       if (declaration.propose.kind !== "no" || declaration.propose.reason !== "secret") continue;
 
-      // `plain` and `user_text` hand the stored value over whole, which for
-      // credential material is the leak itself.
+      // `plain` emits the stored value whole, which for credential material is
+      // the leak itself. `user_text` is the marked exception — a secret's NAME
+      // is shown because naming it is the point — and the mark carries the
+      // reason review reads, checked below.
       expect(declaration.emits.kind, declaration.key).not.toBe("plain");
-      expect(declaration.emits.kind, declaration.key).not.toBe("user_text");
+    }
+  });
+
+  it("makes every user_text projection say why the user's own text is shown", () => {
+    const marked = ALL_SETTINGS.filter((d) => d.emits.kind === "user_text");
+
+    expect(marked.length).toBeGreaterThan(0);
+    for (const declaration of marked) {
+      const { emits } = declaration;
+
+      expect(emits.kind === "user_text" && emits.reason.length, declaration.key)
+        .toBeGreaterThan(30);
     }
   });
 

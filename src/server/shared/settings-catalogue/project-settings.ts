@@ -5,6 +5,7 @@ import {
   derived,
   plain,
   repositoryItemAddress,
+  userText,
 } from "./types.js";
 import type { AnySettingDeclaration } from "./types.js";
 import { REPO_COLOR_COUNT } from "../repo-colors.js";
@@ -55,10 +56,33 @@ export const PROJECT_SETTINGS = {
     store: { kind: "bespoke", ownedBy: "the repository secrets store (PUT /api/secrets)" },
     // Names only (plan.md → Scope inventory): the name says what is missing,
     // which is the whole of what the agent needs to ask the user for.
+    // The names are the user's own text and are emitted deliberately — naming
+    // the missing secret is the whole of what the agent has to tell them. The
+    // projection's work is dropping the value column, which no field-name rule
+    // would do for a record the user keys.
     emits: derived("the secret names that are set, never a value", (raw) =>
       Array.isArray(raw)
         ? raw.filter((name): name is string => typeof name === "string")
         : Object.keys((raw ?? {}) as Record<string, unknown>)),
+    propose: { kind: "no", reason: "secret" },
+  }),
+
+  "project.secrets[].name": defineSetting({
+    key: "project.secrets[].name",
+    tab: "project-secrets",
+    scope: "project",
+    address: repositoryItemAddress("a secret name in the session's repository"),
+    label: "Secret name",
+    description:
+      "What one secret is called — the environment variable a service reads. A repository's "
+      + "`docker-compose.yml` and its plugins declare the ones they need; the user may add others.",
+    type: text({ maxLength: 200, noun: "Secret name", required: true, trim: true }),
+    store: { kind: "bespoke", ownedBy: "the repository secrets store (PUT /api/secrets)" },
+    emits: userText(
+      "The name the user gave their own secret. It is what the agent must be able to name when it "
+      + "asks for one to be set, and it is already shown in the dialog and to every service.",
+    ),
+    // A name with no value does nothing, and only the user can supply the value.
     propose: { kind: "no", reason: "secret" },
   }),
 

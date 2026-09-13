@@ -220,12 +220,15 @@ export const INTEGRATIONS_SETTINGS = {
     scope: "global",
     label: "GitHub",
     description:
-      "The GitHub account ShipIt pushes, opens pull requests and reads checks as. Connected with "
-      + "a token created on GitHub; ShipIt reports the account and whether it is connected.",
-    type: text({ maxLength: 200, noun: "GitHub connection" }),
+      "The GitHub account ShipIt pushes, opens pull requests and reads checks as. It is a token "
+      + "the user creates on GitHub and pastes in, so ShipIt reports the account and whether it is "
+      + "connected, never the token.",
+    type: text({ maxLength: 500, noun: "GitHub token" }),
     store: { kind: "bespoke", ownedBy: "the GitHub credential (POST /api/github/token)" },
     emits: configuredOnly(),
-    propose: { kind: "no", reason: "external_flow" },
+    // A pasted classic token, not a sign-in ShipIt can send the user through:
+    // `GitHubTokenForm` takes the token itself, so this is `secret`.
+    propose: { kind: "no", reason: "secret" },
   }),
 
   "integrations.linear.credential": defineSetting({

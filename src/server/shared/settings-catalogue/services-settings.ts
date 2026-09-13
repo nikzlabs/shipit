@@ -34,17 +34,19 @@ function idsOnly(raw: unknown): unknown {
 }
 
 export const SERVICES_SETTINGS = {
-  "services.credentialOrder": defineSetting({
-    key: "services.credentialOrder",
+  "services.credentials": defineSetting({
+    key: "services.credentials",
     tab: "services",
     scope: "global",
     address: MODE_ADDRESS,
-    label: "Credential order",
+    label: "Credentials",
     description:
-      "The order ShipIt tries this service's credentials in. Under \"Use in order\" new sessions "
-      + "start on the first credential with quota left; the order is the fallback sequence either "
-      + "way.",
-    type: collection<string>({ operations: ["reorder"], patchableFields: [] }),
+      "The keys and tokens ShipIt bills this service's models to, in the order it tries them. The "
+      + "service and the billing mode are the address, not fields: they are chosen when a "
+      + "credential is added and a credential does not move between them. "
+      + "Under \"Use in order\" new sessions start on the first with quota left; the order is the "
+      + "fallback sequence either way.",
+    type: collection<string>({ operations: ["add", "remove", "reorder"], patchableFields: ["label"] }),
     store: { kind: "bespoke", ownedBy: "credential routes (PUT /api/credential-routes/:service/:mode/order)" },
     emits: derived("the credential ids, in the order they are tried", idsOnly),
     propose: { kind: "yes" },
@@ -104,8 +106,8 @@ export const SERVICES_SETTINGS = {
     propose: { kind: "yes" },
   }),
 
-  "services.credential.label": defineSetting({
-    key: "services.credential.label",
+  "services.credentials[].label": defineSetting({
+    key: "services.credentials[].label",
     tab: "services",
     scope: "global",
     address: CREDENTIAL_ADDRESS,
@@ -118,23 +120,23 @@ export const SERVICES_SETTINGS = {
     propose: { kind: "yes" },
   }),
 
-  "services.credential.secret": defineSetting({
-    key: "services.credential.secret",
+  "services.credentials[].secret": defineSetting({
+    key: "services.credentials[].secret",
     tab: "services",
     scope: "global",
     address: CREDENTIAL_ADDRESS,
     label: "API key",
     description:
-      "The provider key or token this credential delivers. Stored server-side and never sent back "
-      + "to the browser or to a session.",
+      "The provider key or token this credential delivers. Never sent back to the browser, and "
+      + "delivered to a session only as the environment variable the harness reads.",
     type: text({ maxLength: 4_000, noun: "API key" }),
     store: { kind: "bespoke", ownedBy: "credential routes (POST /api/credential-routes, PATCH …/:routeId `secret`)" },
     emits: configuredOnly(),
     propose: { kind: "no", reason: "secret" },
   }),
 
-  "services.providerAccount.connection": defineSetting({
-    key: "services.providerAccount.connection",
+  "services.providerAccounts[].connection": defineSetting({
+    key: "services.providerAccounts[].connection",
     tab: "services",
     scope: "global",
     address: ACCOUNT_ADDRESS,
@@ -148,8 +150,8 @@ export const SERVICES_SETTINGS = {
     propose: { kind: "no", reason: "external_flow" },
   }),
 
-  "services.providerAccount.label": defineSetting({
-    key: "services.providerAccount.label",
+  "services.providerAccounts[].label": defineSetting({
+    key: "services.providerAccounts[].label",
     tab: "services",
     scope: "global",
     address: ACCOUNT_ADDRESS,
@@ -162,14 +164,16 @@ export const SERVICES_SETTINGS = {
     propose: { kind: "yes" },
   }),
 
-  "services.providerAccountOrder": defineSetting({
-    key: "services.providerAccountOrder",
+  "services.providerAccounts": defineSetting({
+    key: "services.providerAccounts",
     tab: "services",
     scope: "global",
     address: PROVIDER_ADDRESS,
-    label: "Account order",
-    description: "The order ShipIt tries this provider's connected accounts in.",
-    type: collection<string>({ operations: ["reorder"], patchableFields: [] }),
+    label: "Provider accounts",
+    description:
+      "The subscription accounts signed in for this provider, in the order ShipIt tries them. "
+      + "Connecting one is the provider's own sign-in; the order and a disconnect are not.",
+    type: collection<string>({ operations: ["disconnect", "reorder"], patchableFields: ["label"] }),
     store: { kind: "bespoke", ownedBy: "provider accounts (PUT /api/provider-accounts/:provider/order)" },
     emits: derived("the account ids, in the order they are tried", idsOnly),
     propose: { kind: "yes" },
