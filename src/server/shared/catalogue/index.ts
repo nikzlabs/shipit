@@ -716,3 +716,13 @@ export function parseSelection(raw: string | undefined): ModelSelection | undefi
   if (!modelId) return undefined;
   return { serviceId, billingMode, modelId };
 }
+
+/**
+ * Narrow an untrusted string (a query parameter, a DB column, localStorage) to a
+ * harness id, from the CATALOGUE rather than a hand-written list — the literal
+ * lists this replaces each silently dropped a new harness.
+ */
+export function knownAgentId(value: string | undefined): AgentId | undefined {
+  if (!value) return undefined;
+  return HARNESSES.find((h) => (h.id as string) === value)?.id;
+}

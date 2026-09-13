@@ -16,10 +16,11 @@ Antigravity-specific is in [plan.md](./plan.md).
       (`probes/recorder.js`), `GOOGLE_GEMINI_BASE_URL` sends
       `<base>/v1beta/models/<id>:streamGenerateContent?alt=sse` with the key
       on `x-goog-api-key` (`probes/endpoint-redirect.ndjson`)
-- [x] Item 6, runtime half: the pinned install is read-only to the worker uid,
-      which covers every turn. The orchestrator-side spawns run as root and
-      mode bits do not stop root — see "Still open" below; the orchestrator
-      image does not ship the CLI at all, so nothing there can be updated
+- [x] Item 6, runtime half: CLOSED, two ways. A read-only install makes the
+      updater skip itself (probed, with a writable control), and
+      `AGY_CLI_DISABLE_AUTO_UPDATE=true` stops it even for root — measured on a
+      writable install, so mode bits cannot be doing the work. `=1` fails
+      silently. This corrects candidates.md's "no off-switch" record
 - [x] `supportsCompaction` (item 14) settled by a REAL probe on BOTH the first
       round's 1.2.2 and the pinned 1.1.27: `/compact` as a resumed headless
       turn's prompt reaches the model as text, no summary step — `false`,
@@ -79,9 +80,11 @@ Antigravity-specific is in [plan.md](./plan.md).
       visible to orphan discovery and leak repair
 - [x] `settings.json` (`modelProvider`) derived by the adapter at every spawn
       from the home's own token presence
-- [ ] Updater suppression probed **as root**. Not done: the orchestrator image
-      does not install the CLI, so the sign-in and naming spawns can only run
-      where it is installed read-only — but that reasoning is not a measurement
+- [x] The updater cannot replace the pinned binary in ANY spawn path:
+      `ANTIGRAVITY_SPAWN_ENV` carries `AGY_CLI_DISABLE_AUTO_UPDATE=true` into
+      the turn adapter, the sign-in manager and the session namer. The earlier
+      claim that the orchestrator images do not install the CLI was wrong —
+      `Dockerfile.prod`, `.dev` and `.dogfood` all run `install-agent-clis`
 
 **6 — Session adapter**
 - [x] `session/agents/antigravity/` (adapter + tool normalizer + tests) and
@@ -125,13 +128,17 @@ Antigravity-specific is in [plan.md](./plan.md).
 
 ## Still open
 
-- **Updater suppression as root.** Proven for the unprivileged worker uid
-  (the log line `Directory … is not fully accessible (readable: true,
-  writable: false), skipping update`). The orchestrator-side spawns — sign-in
-  and session naming — run as root, and mode bits do not stop root. In
-  practice the orchestrator image never installs the CLI, so those spawns only
-  happen in single-container installs; measure it there before relying on it.
 - **`supportsReview`** — see Phase 0 above.
+- **Concurrent spawns share one durable directory.** Two Antigravity runs
+  against the same session's credential subtree — a key-mode and an account-mode
+  consult, or local mode — can change each other's credentials and
+  `settings.json` mid-run, so one can end up billed to the other's route. The
+  per-spawn HOME isolates `config/` and deliberately not the durable directory,
+  which is where the token and conversations live; the cause is ShipIt's
+  cross-harness BORROW path, which provisions one subtree per session without
+  serializing runs or reference-counting cleanup. The settings write is atomic,
+  which stops a torn read and fixes nothing else. This is not Antigravity-specific
+  and is not fixed here.
 - **The account-mode host is inferred, not observed.** The egress allowlist
   gains `cloudcode-pa.googleapis.com` from the pinned binary's compiled host
   list, because no signed-in account was available to watch. Re-measure on the

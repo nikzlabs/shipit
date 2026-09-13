@@ -1,5 +1,11 @@
 // Transcript names control field retention and inline rendering.
 // Glob is the closest available name for a directory listing.
+//
+// `manage_task` is deliberately ABSENT. It manages background processes
+// (`{Action: "kill", TaskId: …}`), not a to-do list, so mapping it to TodoWrite
+// routed it to a task panel that rejects input without `todos` — and the task
+// panel's rows are hidden from the ordinary transcript, so killing or inspecting
+// a background task produced no row at all. Unmapped, it renders as itself.
 export const ANTIGRAVITY_TRANSCRIPT_TOOL_NAMES: Record<string, string> = {
   browser_subagent: "Agent",
   command_status: "Bash",
@@ -8,7 +14,6 @@ export const ANTIGRAVITY_TRANSCRIPT_TOOL_NAMES: Record<string, string> = {
   grep_search: "Grep",
   invoke_subagent: "Agent",
   list_dir: "Glob",
-  manage_task: "TodoWrite",
   multi_replace_file_content: "Edit",
   notebook_edit: "NotebookEdit",
   read_url_content: "WebFetch",
@@ -29,7 +34,14 @@ export const ANTIGRAVITY_UNNORMALIZED_INTERACTIVE_TOOLS = new Set([
   "ask_question",
 ]);
 
-// The CLI's parameter keys are PascalCase; transcript cards read Claude's names.
+/**
+ * The CLI's parameter keys are PascalCase; transcript cards read Claude's names.
+ *
+ * The CONTENT keys matter as much as the paths: a Write card with a `file_path`
+ * and no `content`, or an Edit card with no `old_string`/`new_string`, renders
+ * as an empty box — the card looks fine and the diff is simply gone
+ * (`client/components/message-tools.tsx`).
+ */
 const INPUT_KEY_RENAMES: Record<string, string> = {
   AbsolutePath: "file_path",
   TargetFile: "file_path",
@@ -40,6 +52,9 @@ const INPUT_KEY_RENAMES: Record<string, string> = {
   CommandLine: "command",
   Command: "command",
   Url: "url",
+  CodeContent: "content",
+  TargetContent: "old_string",
+  ReplacementContent: "new_string",
 };
 
 /** `call_mcp_tool` names the server and tool in its parameters (planning#437 pattern). */

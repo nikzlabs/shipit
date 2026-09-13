@@ -19,6 +19,25 @@ import path from "node:path";
  * to the durable one, and whose `config/` is written fresh.
  */
 
+/**
+ * Every spawn's environment, whatever runs it.
+ *
+ * The updater is the reason this exists. A read-only install directory makes it
+ * skip itself, which covers the unprivileged session worker — but the
+ * orchestrator-side spawns (sign-in, session naming) run as ROOT, and root
+ * ignores mode bits, so the pinned version had no runtime guarantee there. This
+ * variable does, and it is not documented: it was found in the pinned binary's
+ * compiled strings and then measured, on a WRITABLE install so that mode bits
+ * could not be doing the work.
+ *
+ * The VALUE is load-bearing and the trap is silent: `=true` keeps the binary at
+ * its pinned version, while `=1` lets the updater replace it mid-run with no
+ * error anywhere. Both were measured.
+ */
+export const ANTIGRAVITY_SPAWN_ENV: Readonly<Record<string, string>> = {
+  AGY_CLI_DISABLE_AUTO_UPDATE: "true",
+};
+
 export const ANTIGRAVITY_CREDENTIAL_DIR = ".gemini";
 const CLI_SUBDIR = "antigravity-cli";
 const TOKEN_FILENAME = "antigravity-oauth-token";
@@ -44,10 +63,23 @@ export function hasAntigravityAccountToken(home: string): boolean {
 
 /**
  * The CLI reads GEMINI_API_KEY only when `settings.json` selects the gemini
- * provider (probed on 1.2.2). The file lives inside the durable directory, so
- * the adapter derives its value from what that directory holds rather than from
- * routing it cannot see on every spawn path: an account token present means the
- * account wins and the key is scrubbed anyway.
+ * provider (probed). The file lives inside the durable directory, so the adapter
+ * derives its value from what that directory holds rather than from routing it
+ * cannot see on every spawn path: an account token present means the account
+ * wins and the key is scrubbed anyway.
+ *
+ * ⚠️ **This is shared state, and the sharing is not this module's to fix.** Two
+ * Antigravity spawns against one credential subtree — a key-mode and an
+ * account-mode consult from the same session, or local mode — see each other's
+ * `settings.json` and each other's credentials, because ShipIt's cross-harness
+ * BORROW path provisions one subtree per session and neither serializes the
+ * runs nor reference-counts the cleanup (`session-agent-credentials.ts`). The
+ * per-spawn HOME isolates `config/`; it deliberately does not isolate the
+ * durable directory, since that is where the token and the conversations live.
+ * The write below is atomic so a reader never sees a torn file — which is worth
+ * having and is NOT a fix for the interleaving. Tracked on planning#543; no
+ * `modelProvider` environment override exists to sidestep it (checked against
+ * the pinned binary's compiled strings).
  */
 export function syncAntigravityModelProvider(home: string, useKey: boolean): void {
   const cliDir = antigravityCliDir(home);
@@ -71,7 +103,12 @@ export function syncAntigravityModelProvider(home: string, useKey: boolean): voi
   }
   try {
     fs.mkdirSync(cliDir, { recursive: true });
-    fs.writeFileSync(file, `${JSON.stringify(settings, null, 2)}\n`);
+    // Rename over, never write in place: a concurrent spawn must never read a
+    // half-written file. This makes each write atomic; it does NOT make two
+    // spawns' writes safe — see the note above.
+    const tmp = `${file}.tmp-${process.pid}-${Date.now()}`;
+    fs.writeFileSync(tmp, `${JSON.stringify(settings, null, 2)}\n`);
+    fs.renameSync(tmp, file);
   } catch (err) {
     console.warn(`[antigravity] could not write ${file}: ${String(err)}`);
   }
@@ -81,7 +118,8 @@ export function syncAntigravityModelProvider(home: string, useKey: boolean): voi
  * The CLI's model ids drop the catalogue's `-preview` suffix and take the
  * reasoning level as `--effort`, never as part of the id — probed on 1.2.2:
  * `--model gemini-3.1-pro-preview` is "not recognized", `--model gemini-3.1-pro
- * --effort high` reaches `gemini-3.1-pro-preview-customtools` on the wire.
+ * --effort high` reaches `gemini-3.1-pro-preview` on the wire, which is the
+ * catalogue id again — so the translation is a round trip, not a lossy rename.
  */
 export function antigravityCliModelId(catalogueId: string): string {
   return catalogueId.endsWith("-preview") ? catalogueId.slice(0, -"-preview".length) : catalogueId;

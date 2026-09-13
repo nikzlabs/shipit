@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { PassThrough } from "node:stream";
 import type { ChildProcess, SpawnOptions } from "node:child_process";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AntigravityAdapter } from "./adapter.js";
 import type { AgentEvent, AgentRunParams } from "../agent-process.js";
 
@@ -58,6 +58,7 @@ describe("AntigravityAdapter", () => {
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     fs.rmSync(tmp, { recursive: true, force: true });
   });
 
@@ -69,7 +70,9 @@ describe("AntigravityAdapter", () => {
     for (const line of lines) proc.stdout.write(`${line}\n`);
   }
 
+  /** Node's real order: `exit` carries the code, `close` follows once pipes drain. */
   function close(code: number | null): void {
+    proc.emit("exit", code, code === null ? "SIGTERM" : null);
     proc.emit("close", code);
   }
 
@@ -129,6 +132,16 @@ describe("AntigravityAdapter", () => {
     it("runs full-auto, since that is the only mode this harness offers", () => {
       run();
       expect(spawned[0].args).toContain("--dangerously-skip-permissions");
+    });
+
+    /**
+     * Measured on a WRITABLE install so mode bits could not be doing the work:
+     * `=true` keeps the pinned binary, `=1` lets the updater replace it with no
+     * error anywhere. The read-only install cannot cover root, so this does.
+     */
+    it("disables the CLI's auto-updater with the value that actually works", () => {
+      run();
+      expect((spawned[0].opts.env as Record<string, string>).AGY_CLI_DISABLE_AUTO_UPDATE).toBe("true");
     });
   });
 
@@ -214,6 +227,16 @@ describe("AntigravityAdapter", () => {
       run();
       feed([INIT]);
       expect(events[0]).toMatchObject({ type: "agent_init", agentId: "antigravity", sessionId: "conv-1" });
+    });
+
+    // The CLI echoes its OWN id, which the catalogue does not carry — reporting
+    // it loses Pro's 1,048,576-token window to a 200k default.
+    it("reports the catalogue model id, not the CLI's translated one", () => {
+      run({ model: "gemini-3.1-pro-preview", reasoningEffort: "high" });
+      feed([JSON.stringify({
+        event: "init", conversation_id: "c", init: { model: "gemini-3.1-pro" },
+      })]);
+      expect(events[0]).toMatchObject({ type: "agent_init", model: "gemini-3.1-pro-preview" });
     });
 
     it("streams assistant text deltas", () => {
@@ -316,6 +339,7 @@ describe("AntigravityAdapter", () => {
         fresh.on("error", () => { /* ignored */ });
         fresh.run({ prompt: "x", cwd });
         proc.stdout.write(fs.readFileSync(path.join(PROBES, name), "utf8"));
+        proc.emit("exit", 0, null);
         proc.emit("close", 0);
         const result = seen.at(-1) as { type: string; status: string; error?: string };
         expect(result.type, name).toBe("agent_result");
@@ -324,11 +348,118 @@ describe("AntigravityAdapter", () => {
       }
     });
 
-    it("stays silent when the process was signalled, so an interrupt is not a finished turn", () => {
+    /**
+     * An MCP server (or a browser under one) inherits stdout, so `close` can stay
+     * pending forever after the CLI itself has exited — and killProcessTree
+     * cannot reach a descendant of an already-exited handle. Settling on `close`
+     * alone stranded the turn with no result and no `done`.
+     */
+    it("settles on exit when a descendant keeps the output open", async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      const done: number[] = [];
+      adapter.on("done", (c) => done.push(c));
+      run();
+      feed([INIT, RESULT_OK]);
+      proc.emit("exit", 0, null); // no "close": a descendant still holds the pipes
+      await vi.advanceTimersByTimeAsync(3_000);
+      const result = events.at(-1) as { type: string; status: string };
+      expect(result.type).toBe("agent_result");
+      expect(result.status).toBe("success");
+      expect(done).toEqual([0]);
+    });
+
+    it("settles exactly once when close arrives after exit", async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      const done: number[] = [];
+      adapter.on("done", (c) => done.push(c));
+      run();
+      feed([INIT, RESULT_OK]);
+      close(0);
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(events.filter((e) => e.type === "agent_result")).toHaveLength(1);
+      expect(done).toEqual([0]);
+    });
+
+    /**
+     * Reaping establishes who sent the signal, not whether the turn worked: a
+     * refusal delivers an error envelope and can still sit there until the grace
+     * expires. Calling that a success dropped Google's sentence (req 4).
+     */
+    it("does not call a reaped turn successful when its envelope reported an error", async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      run();
+      feed([INIT, JSON.stringify({
+        event: "result",
+        result: { status: "ERROR", response: "", error: "Eligibility check failed: not eligible." },
+      })]);
+      // The process never exits; the reap fires and signals it.
+      await vi.advanceTimersByTimeAsync(6_000);
+      proc.emit("exit", null, "SIGTERM");
+      await vi.advanceTimersByTimeAsync(3_000);
+      const result = events.at(-1) as { status: string; error?: string };
+      expect(result.status).toBe("error");
+      expect(result.error).toBe("Eligibility check failed: not eligible.");
+    });
+
+    it("keeps a reaped turn successful when its envelope reported success", async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      run();
+      feed([INIT, RESULT_OK]);
+      await vi.advanceTimersByTimeAsync(6_000);
+      proc.emit("exit", null, "SIGTERM");
+      await vi.advanceTimersByTimeAsync(3_000);
+      expect((events.at(-1) as { status: string }).status).toBe("success");
+    });
+
+    it("stays silent only for an interrupt ShipIt asked for", () => {
       run();
       feed([INIT]);
+      adapter.interrupt();
       close(null);
       expect(events.filter((e) => e.type === "agent_result")).toEqual([]);
+    });
+
+    // The adapter SIGTERMs the process 5s after a result to reap MCP children.
+    // Treating that signal as an interrupt threw away the finished turn.
+    it("keeps the turn when it reaped the process itself after the result", async () => {
+      // The grace timer must be registered on the fake clock, so install it first.
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      run();
+      feed([INIT, step({
+        step_index: 1, state: "DONE", step_type: "agent_response", text_delta: "done",
+        usage: { input_tokens: 7, output_tokens: 3, total_tokens: 10 },
+      }), RESULT_OK]);
+      // Drain the stream, then fire the grace timer that reaps the process.
+      await vi.advanceTimersByTimeAsync(6_000);
+      close(null);
+      const result = events.at(-1) as { type: string; status: string; tokens?: unknown };
+      expect(result.type).toBe("agent_result");
+      expect(result.status).toBe("success");
+      expect(result.tokens).toEqual({ input: 7, output: 3, cacheRead: 0 });
+    });
+
+    // An OOM kill is a signal nobody asked for, and the user must be told.
+    it("reports an error when the process was killed mid-turn by something else", () => {
+      run();
+      feed([INIT, step({ step_index: 1, state: "DONE", step_type: "agent_response", text_delta: "half" })]);
+      close(null);
+      const result = events.at(-1) as { type: string; status: string; error?: string };
+      expect(result.type).toBe("agent_result");
+      expect(result.status).toBe("error");
+    });
+
+    // The pinned 1.1.27 writes NOTHING to stderr under stream-json: the refusal
+    // text is only in the result envelope, which is why the fallback exists.
+    it("falls back to the result envelope's error when stderr carried none", () => {
+      run();
+      feed([JSON.stringify({
+        event: "result",
+        result: { status: "ERROR", response: "", error: "Eligibility check failed: not eligible." },
+      })]);
+      close(1);
+      const result = events.at(-1) as { status: string; error: string };
+      expect(result.status).toBe("error");
+      expect(result.error).toBe("Eligibility check failed: not eligible.");
     });
   });
 
@@ -340,6 +471,13 @@ describe("AntigravityAdapter", () => {
       adapter.run({ prompt: "/compact", cwd, compact: true });
       expect(spawned).toEqual([]);
       expect(errors[0].message).toContain("no compaction");
+    });
+
+    // A large prompt is written in chunks; if the CLI dies during startup the
+    // EPIPE arrives asynchronously and an unhandled stream error kills the worker.
+    it("survives the CLI closing stdin while the prompt is still being written", () => {
+      run({ prompt: "x".repeat(100_000) });
+      expect(() => proc.stdin.emit("error", new Error("write EPIPE"))).not.toThrow();
     });
 
     it("reports a dropped steer rather than silently losing it", () => {

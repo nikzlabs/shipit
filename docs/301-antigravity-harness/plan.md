@@ -160,7 +160,8 @@ no credential. Each finding cites its capture.
   high)"*. Two consequences for the adapter. The catalogue's
   `gemini-3.1-pro-preview` is **not a CLI id** ("not recognized as a known
   model"); the CLI id is `gemini-3.1-pro`, so the adapter strips the `-preview`
-  suffix and the wire then carries `gemini-3.1-pro-preview-customtools`. And
+  suffix, and the wire then carries the catalogue id straight back
+  (`endpoint-redirect.ndjson`) — the translation is a round trip. And
   Pro has no `medium` — *"gemini-3.1-pro has no \"medium\" effort (available:
   low, high)"* — which is what `ModelDef.reasoningEfforts` narrows. Because the
   flag is mandatory, a turn that arrives with no effort still needs one; the
@@ -377,10 +378,12 @@ one non-npm branch, gated on `contains antigravity $selected`:
   renders in the sign-in card as-is. At turn time: the adapter does **not**
   classify an `error:` line as `auth_required` (that path replaces the text
   with `AGENT_NOT_AUTHENTICATED_MESSAGE` in `agent-auth-handler.ts`); it ends
-  the turn by the Phase 0 outcome rule (exit code + `result` received),
-  and when that rule says error, the error row's text is this process's
-  stderr `error:` line — never `result.error`, which can be stale. Choosing
-  the text and deciding the outcome are two separate steps. The one exception is a
+  the turn by the Phase 0 outcome rule (exit code + `result` received), and only
+  once that rule has said error does it choose text: this process's stderr error
+  line, else the result envelope's. Choosing the text and deciding the outcome
+  are two separate steps, which is exactly what makes the envelope safe to read
+  here and unsafe to read for the outcome. The sign-in run uses `--output-format
+  text`, where the pinned CLI does print to stderr — with a capital `Error:`. The one exception is a
   missing credential before spawn, where the generic gate is the right
   answer. Same rule carries Google's 429 quota text to the user.
 - **Key mode**: `settings.json` as above, and the adapter scrubs

@@ -73,9 +73,15 @@ export function parseAntigravityLine(line: string): AntigravityEvent | null {
 }
 
 /**
- * The CLI mirrors a terminal failure to stderr as an `error:` line, and an
- * `error_message` step carries no text at all — so that line is the only
- * process-local source of the sentence the user needs (docs/301 req 4).
+ * The CLI mirrors a terminal failure to stderr as an error line, and an
+ * `error_message` step carries no text at all.
+ *
+ * The prefix's CASE is a version difference, not a detail: 1.1.27 writes
+ * `Error:` and 1.2.2 writes `error:`, so a case-sensitive match finds Google's
+ * refusal on one version and nothing on the other (req 4). And under
+ * `--output-format stream-json` 1.1.27 writes NOTHING here at all — the text is
+ * only in the result envelope — which is why the adapter falls back to it for a
+ * turn it has already decided failed.
  */
 export function antigravityStderrErrorText(stderr: string): string | undefined {
   const lines = stderr.split("\n");
@@ -83,7 +89,7 @@ export function antigravityStderrErrorText(stderr: string): string | undefined {
   let capturing = false;
   for (const raw of lines) {
     const line = raw.trimEnd();
-    if (line.startsWith("error:")) {
+    if (/^error:/i.test(line)) {
       capturing = true;
       collected.push(line.slice("error:".length).trim());
       continue;

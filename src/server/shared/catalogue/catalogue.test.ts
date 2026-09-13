@@ -7,6 +7,7 @@ import {
   catalogueEntriesForHarness,
   getHarness,
   getService,
+  knownAgentId,
   reasoningOptionsFor,
   selectionHonoursEffort,
   catalogueContextWindows,
@@ -1093,6 +1094,20 @@ describe("the Gemini vendor row, now that a harness speaks it (docs/301-antigrav
         expect(model.contextWindow.default, model.id).toBe(1_048_576);
       }
     }
+  });
+});
+
+describe("narrowing an untrusted agent id (docs/266 step 5)", () => {
+  it("accepts every harness the catalogue declares, so a new one is never dropped", () => {
+    for (const harness of allHarnesses()) {
+      expect(knownAgentId(harness.id), harness.id).toBe(harness.id);
+    }
+  });
+
+  it("rejects anything else, including the empty string", () => {
+    expect(knownAgentId("cursor")).toBeUndefined();
+    expect(knownAgentId("")).toBeUndefined();
+    expect(knownAgentId(undefined)).toBeUndefined();
   });
 });
 

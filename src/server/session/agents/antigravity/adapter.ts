@@ -19,6 +19,7 @@ import type {
 } from "../agent-process.js";
 import { resolveAgentHome, type AgentHomeResolver } from "../../../shared/agent-home.js";
 import {
+  ANTIGRAVITY_SPAWN_ENV,
   antigravityCliModelId,
   hasAntigravityAccountToken,
   makeAntigravitySpawnHome,
@@ -55,6 +56,9 @@ const DEFAULT_EFFORT = "high";
 const REPO_INSTRUCTION_FILES = ["AGENTS.md", "CLAUDE.md", "GEMINI.md"];
 
 const RESULT_EXIT_GRACE_MS = 5_000;
+
+/** How long `close` may lag `exit` before the turn settles without it. */
+const EXIT_DRAIN_GRACE_MS = 2_000;
 
 type McpServerEntry = Record<string, unknown>;
 
@@ -99,10 +103,22 @@ export class AntigravityAdapter
   private pendingMcpServers: Record<string, McpServerEntry> = {};
   private usage = new AntigravityUsageAccumulator();
   private turnSessionId = "";
+  /** The catalogue id this turn selected, before translation to the CLI's. */
+  private turnCatalogueModel: string | undefined;
   private sawResult = false;
   private resultDurationMs: number | undefined;
+  private resultErrorText: string | undefined;
+  private resultStatus: string | undefined;
   private resultKillTimer: NodeJS.Timeout | null = null;
   private interruptKillTimer: NodeJS.Timeout | null = null;
+  /** Set only by interrupt(): a signal ShipIt asked for is not a finished turn. */
+  private interrupted = false;
+  /** Set when WE signalled a process that had delivered a result but not exited. */
+  private reapedAfterResult = false;
+  private exitCode: number | null = null;
+  private exited = false;
+  private settled = false;
+  private drainTimer: NodeJS.Timeout | null = null;
   /** A tool step reports twice (ACTIVE then DONE); the id correlates the pair. */
   private stepToolUseIds = new Map<number, string>();
 
@@ -123,11 +139,19 @@ export class AntigravityAdapter
     this.usage = new AntigravityUsageAccumulator();
     this.stepToolUseIds.clear();
     this.sawResult = false;
+    this.interrupted = false;
+    this.reapedAfterResult = false;
+    this.exitCode = null;
+    this.exited = false;
+    this.settled = false;
     this.resultDurationMs = undefined;
+    this.resultErrorText = undefined;
+    this.resultStatus = undefined;
     this.buffer = "";
     this.stderrBuffer = "";
     this.stderrAll = "";
     this.turnSessionId = params.sessionId ?? "";
+    this.turnCatalogueModel = params.model;
 
     if (params.compact) {
       // Probed on 1.2.2: /compact reaches the model as plain user text.
@@ -138,7 +162,10 @@ export class AntigravityAdapter
     const credentialHome = resolveAgentHome(params.homeDir ?? this.resolveHome?.());
     const hasAccount = hasAntigravityAccountToken(credentialHome);
 
-    const spawnEnv: Record<string, string> = { ...(process.env as Record<string, string>) };
+    const spawnEnv: Record<string, string> = {
+      ...(process.env as Record<string, string>),
+      ...ANTIGRAVITY_SPAWN_ENV,
+    };
     // Scrub first, then deliver: an ambient key must not out-prefer the account.
     scrubHarnessEnvCredentials(spawnEnv, "antigravity");
     let usingKey = false;
@@ -215,6 +242,13 @@ export class AntigravityAdapter
     }
 
     // The prompt rides stdin, never argv: argv caps a single argument at 128 KiB.
+    // A large prompt is written in several chunks, so if the CLI dies during
+    // startup the EPIPE arrives ASYNCHRONOUSLY — past this try/catch and past the
+    // child's own error listener, where an unhandled 'error' on a stream takes
+    // the whole worker down before the turn can report anything.
+    this.proc.stdin?.on("error", (err: Error) => {
+      console.warn(`[antigravity] the CLI closed stdin before the prompt was written: ${err.message}`);
+    });
     try {
       this.proc.stdin?.write(`${JSON.stringify({ event: "user", message: { content: params.prompt } })}\n`);
       this.proc.stdin?.end();
@@ -238,17 +272,43 @@ export class AntigravityAdapter
       this.emit("error", err);
     });
 
-    this.proc.on("close", (exitCode) => {
-      this.clearTimers();
-      this.drainLines(true);
-      this.drainStderrLines(true);
-      // The result envelope is buffered and the single terminal event is emitted
-      // here, because only this point knows the exit code (docs/301 outcome rule).
-      this.emitTerminalResult(exitCode);
-      this.cleanupTurnFiles();
-      this.proc = null;
-      this.emit("done", exitCode ?? 0);
+    /**
+     * `exit` carries the real exit code; `close` waits for every inherited pipe.
+     * A CLI descendant (an MCP server, or a browser under one) that keeps stdout
+     * open leaves `close` pending indefinitely, and killProcessTree cannot reach
+     * a descendant of a handle that has already exited — so settling on `close`
+     * alone strands the turn with no result and no `done`.
+     */
+    this.proc.on("exit", (code) => {
+      this.exited = true;
+      this.exitCode = code;
+      if (this.drainTimer) clearTimeout(this.drainTimer);
+      // Give the stream a moment to finish arriving, then settle regardless.
+      this.drainTimer = setTimeout(() => {
+        this.drainTimer = null;
+        console.warn("[antigravity] the process exited but its output stayed open — settling the turn without it");
+        this.settle();
+      }, EXIT_DRAIN_GRACE_MS);
     });
+
+    this.proc.on("close", () => {
+      this.settle();
+    });
+  }
+
+  /** Runs once per turn, from whichever of `close` or the drain deadline is first. */
+  private settle(): void {
+    if (this.settled) return;
+    this.settled = true;
+    this.clearTimers();
+    this.drainLines(true);
+    this.drainStderrLines(true);
+    // The result envelope is buffered and the single terminal event is emitted
+    // here, because only this point knows the process's own outcome.
+    this.emitTerminalResult();
+    this.cleanupTurnFiles();
+    this.proc = null;
+    this.emit("done", this.exitCode ?? 0);
   }
 
   /**
@@ -315,7 +375,13 @@ export class AntigravityAdapter
         type: "agent_init",
         agentId: "antigravity",
         sessionId: this.turnSessionId,
-        ...(raw.init?.model ? { model: raw.init.model } : {}),
+        // The CLI echoes ITS id (`gemini-3.1-pro`), which the catalogue does not
+        // carry — reporting it loses the model's context window to a 200k
+        // default. Report what the turn selected; fall back to the CLI's only
+        // when nothing was selected.
+        ...(this.turnCatalogueModel ?? raw.init?.model
+          ? { model: this.turnCatalogueModel ?? raw.init?.model ?? "" }
+          : {}),
         ...(raw.init?.tools ? { tools: raw.init.tools } : {}),
         ...(raw.init?.permission_mode ? { permissionMode: raw.init.permission_mode } : {}),
       });
@@ -331,11 +397,19 @@ export class AntigravityAdapter
     this.sawResult = true;
     const seconds = raw.result?.duration_seconds;
     if (typeof seconds === "number") this.resultDurationMs = Math.round(seconds * 1000);
+    // Kept, never trusted on its own: read only once the exit code has already
+    // ruled the turn a failure, so a stale one on a SUCCESSFUL resumed turn can
+    // never reach the user.
+    this.resultErrorText = raw.result?.error;
+    this.resultStatus = raw.result?.status;
     if (!this.resultKillTimer && this.proc) {
-      // MCP children can hold the process open past the result.
       this.resultKillTimer = setTimeout(() => {
         this.resultKillTimer = null;
-        if (this.proc) killProcessTree(this.proc, "SIGTERM", { label: "antigravity" });
+        // Only a process that has not EXITED needs reaping; one that has exited
+        // but not closed is handled by the drain deadline, with a real exit code.
+        if (!this.proc || this.exited) return;
+        this.reapedAfterResult = true;
+        killProcessTree(this.proc, "SIGTERM", { label: "antigravity" });
       }, RESULT_EXIT_GRACE_MS);
     }
   }
@@ -389,12 +463,32 @@ export class AntigravityAdapter
    * docs/301's outcome rule, applied once: the turn succeeded only when the
    * process exited 0 AND a `result` envelope arrived. A truncated stream is an
    * error turn by construction, whatever text preceded it — partial output never
-   * implies success. The error text is this process's own stderr `error:` line.
+   * implies success.
+   *
+   * The error TEXT and the OUTCOME are decided separately, which is what makes
+   * `result.error` usable at all: it describes the conversation and can be a
+   * previous turn's, but it is consulted only once the exit code has already
+   * ruled THIS turn a failure — and under `--output-format stream-json` on the
+   * pinned version it is the only place a refusal's text appears.
    */
-  private emitTerminalResult(exitCode: number | null): void {
-    // A signalled death is an interrupt, not a completed turn.
-    if (exitCode === null) return;
-    const ok = exitCode === 0 && this.sawResult;
+  private emitTerminalResult(): void {
+    const exitCode = this.exitCode;
+    // A signal ShipIt asked for is not a finished turn — but a signal is not by
+    // itself evidence of one. A process reaped after delivering its result, or
+    // killed by the OS mid-turn, still has an outcome the user must see; only an
+    // interrupt is silent.
+    if (this.interrupted) return;
+    /**
+     * Reaping establishes who sent the signal, never whether the turn worked —
+     * an eligibility refusal delivers an error envelope and can still sit there
+     * until the grace expires. When we killed a process that never exited, there
+     * is no exit code to read, so the envelope's own `status` decides: it is the
+     * only signal left, and inventing a success would drop Google's refusal
+     * (req 4). This is the one place the envelope rules on an outcome.
+     */
+    const ok = this.sawResult
+      && (exitCode === 0
+        || (exitCode === null && this.reapedAfterResult && this.resultStatus === "SUCCESS"));
     const tokens = this.usage.tokens;
     const contextTokens = this.usage.contextTokens;
     const stderrText = antigravityStderrErrorText(this.stderrAll);
@@ -411,17 +505,19 @@ export class AntigravityAdapter
         ? {}
         : {
             error: stderrText
+              ?? this.resultErrorText
               ?? (this.sawResult
-                ? `Antigravity exited with code ${String(exitCode)}`
+                ? `Antigravity ended with ${exitCode === null ? "a signal" : `code ${String(exitCode)}`}`
                 : "Antigravity ended without a result event"),
           }),
     });
   }
 
   private clearTimers(): void {
-    for (const t of [this.resultKillTimer, this.interruptKillTimer]) if (t) clearTimeout(t);
+    for (const t of [this.resultKillTimer, this.interruptKillTimer, this.drainTimer]) if (t) clearTimeout(t);
     this.resultKillTimer = null;
     this.interruptKillTimer = null;
+    this.drainTimer = null;
   }
 
   private cleanupTurnFiles(): void {
@@ -443,6 +539,7 @@ export class AntigravityAdapter
   interrupt(): void {
     const proc = this.proc;
     if (!proc) return;
+    this.interrupted = true;
     killChild(proc, "SIGINT");
     if (this.interruptKillTimer) clearTimeout(this.interruptKillTimer);
     this.interruptKillTimer = setTimeout(() => {

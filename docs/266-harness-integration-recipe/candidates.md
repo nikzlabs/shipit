@@ -188,8 +188,11 @@ with an invalid `GEMINI_API_KEY`, then one real Google sign-in. Every
   acquisition is exact-pinnable outside the npm pipeline (plan.md Phase 3's
   Cursor case). Daily 1.x releases. **Auto-updater**: every run spawns a
   background update process (`auto_updater.go` in the CLI log,
-  `updater/update.lock`) *(probed)*; `--help`, `update --help` and the
-  settings keys compiled into the binary expose no switch. Phase 0.6
+  `updater/update.lock`) *(probed)*; `--help` and `update --help` expose no
+  switch. **Superseded 2026-09-13 (docs/301): `AGY_CLI_DISABLE_AUTO_UPDATE=true`
+  DOES stop it** — undocumented, found by a `strings` sweep of the pinned
+  binary and then measured on a writable install. `=1` does not work and fails
+  silently. Phase 0.6
   requires it disabled for a curl-installed binary, so item 6's runtime
   half is open; a read-only, root-owned install path is the obvious
   mitigation, unverified.

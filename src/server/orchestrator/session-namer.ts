@@ -16,6 +16,7 @@ import { ensureCodexHomeInitialized } from "./agents/codex/home-init.js";
 import { opencodeModelArg, opencodeProviderConfig, isOpenCodeAccountRouting, opencodeAccountConfig, prepareOpenCodeAccountEnv } from "../shared/opencode-spawn-shaping.js";
 import { parseOpencodeLine, OpencodeTurnAccumulator } from "../shared/opencode-stream.js";
 import {
+  ANTIGRAVITY_SPAWN_ENV,
   antigravityCliModelId,
   hasAntigravityAccountToken,
   makeAntigravitySpawnHome,
@@ -251,7 +252,7 @@ async function callAgentCli(prompt: string, target: SessionNamingTarget): Promis
         // The CLI refuses a base model id without a level.
         args.push("--effort", ANTIGRAVITY_NAMING_EFFORT);
       }
-      const extraEnv: Record<string, string> = { HOME: spawnHome.home };
+      const extraEnv: Record<string, string> = { ...ANTIGRAVITY_SPAWN_ENV, HOME: spawnHome.home };
       if (serviceRouting) extraEnv.GOOGLE_GEMINI_BASE_URL = serviceRouting.baseUrl;
       try {
         const raw = await callCli("antigravity", args, target, extraEnv);

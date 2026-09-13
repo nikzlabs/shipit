@@ -166,6 +166,15 @@ describe("the stderr error line", () => {
     );
   });
 
+  /**
+   * The prefix's CASE is a version difference: 1.1.27 writes `Error:` and 1.2.2
+   * writes `error:`. A case-sensitive match finds Google's refusal on one
+   * version and silently nothing on the other.
+   */
+  it.each(["Error:", "error:"])("accepts the %s prefix, since the CLI changed it", (prefix) => {
+    expect(antigravityStderrErrorText(`${prefix} the sentence\n`)).toBe("the sentence");
+  });
+
   it("reports nothing when the process printed no error line", () => {
     expect(antigravityStderrErrorText("")).toBeUndefined();
     expect(antigravityStderrErrorText("just a warning\n")).toBeUndefined();

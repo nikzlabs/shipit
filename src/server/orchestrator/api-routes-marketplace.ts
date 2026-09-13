@@ -12,6 +12,7 @@ import {
 } from "./services/index.js";
 import { getErrorMessage } from "./validation.js";
 import { isHarnessInstalled } from "../shared/installed-harnesses.js";
+import { knownAgentId } from "../shared/catalogue/index.js";
 
 export interface MarketplaceRouteDeps {
   marketplaceStore: MarketplaceStore;
@@ -28,11 +29,7 @@ export async function registerMarketplaceRoutes(
   app.get<{ Querystring: { agent?: string } }>(
     "/api/marketplaces",
     async (request) => {
-      const agent =
-        request.query.agent === "codex" || request.query.agent === "claude"
-        || request.query.agent === "opencode" || request.query.agent === "grok"
-          ? request.query.agent
-          : undefined;
+      const agent = knownAgentId(request.query.agent);
       return { marketplaces: listMarketplaces(marketplaceStore, agent) };
     },
   );

@@ -5,6 +5,7 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { killChild } from "../../../shared/kill-child.js";
 import { scrubHarnessEnvCredentials } from "../../../shared/spawn-routing.js";
 import {
+  ANTIGRAVITY_SPAWN_ENV,
   antigravityCliDir,
   antigravityTokenPath,
   syncAntigravityModelProvider,
@@ -35,6 +36,10 @@ const SIGN_IN_PROMPT = "Reply with the single word pong.";
 
 // The CLI prints its sign-in link on stderr; match either host it can use.
 export const GOOGLE_AUTH_URL_PATTERN = /https:\/\/(?:accounts\.google\.com|antigravity\.google)\/[^\s"']+/;
+
+/** The same URL, but only once something after it proves it is complete. */
+const TERMINATED_AUTH_URL_PATTERN =
+  /(https:\/\/(?:accounts\.google\.com|antigravity\.google)\/[^\s"']+)[\s"']/;
 
 function tokenExistsAt(home: string): boolean {
   try {
@@ -129,6 +134,8 @@ export class AntigravityAuthManager
   private proc: ChildProcess | null = null;
   private timeoutHandle: ReturnType<typeof setTimeout> | null = null;
   private stderrBuffer = "";
+  /** stdout and stderr combined: the link can arrive on either, in any chunking. */
+  private outputBuffer = "";
   private lastPendingDetails: AgentAuthPendingDetails | null = null;
   private activeCredentialDir: string | null = null;
   private activeFlowAccountId: string | null = null;
@@ -169,6 +176,7 @@ export class AntigravityAuthManager
       return;
     }
     this.stderrBuffer = "";
+    this.outputBuffer = "";
     this.lastPendingDetails = null;
     this.terminalEmitted = false;
     this.activeCredentialDir = opts?.credentialDir ?? null;
@@ -179,7 +187,11 @@ export class AntigravityAuthManager
     // Account mode must not select the key provider.
     syncAntigravityModelProvider(home, false);
 
-    const env: Record<string, string> = { ...(process.env as Record<string, string>), HOME: home };
+    const env: Record<string, string> = {
+      ...(process.env as Record<string, string>),
+      ...ANTIGRAVITY_SPAWN_ENV,
+      HOME: home,
+    };
     // An ambient GEMINI_API_KEY (or ADC) would authenticate the run instead.
     scrubHarnessEnvCredentials(env, "antigravity");
 
@@ -198,6 +210,11 @@ export class AntigravityAuthManager
     }
 
     this.proc = proc;
+    // The CLI reads the code within 60 seconds and then closes stdin; a write
+    // after that raises EPIPE asynchronously, which is fatal if unhandled.
+    proc.stdin?.on("error", (err: Error) => {
+      console.warn(`[antigravity-auth] the CLI stopped reading the authorization code: ${err.message}`);
+    });
     proc.stdout?.on("data", (chunk: Buffer) => { this.handleOutput(chunk.toString("utf-8")); });
     proc.stderr?.on("data", (chunk: Buffer) => {
       const text = chunk.toString("utf-8");
@@ -234,11 +251,19 @@ export class AntigravityAuthManager
     }, this.timeoutMs);
   }
 
+  /**
+   * Match against the ACCUMULATED output, and only once the URL is terminated by
+   * whitespace: a stderr chunk boundary lands wherever the pipe buffer says, so
+   * matching a single chunk emits a truncated link (split mid-query-string) or
+   * none at all (split inside the host). The user pastes a code against that
+   * link, so a truncated one wastes the CLI's 60-second window.
+   */
   private handleOutput(text: string): void {
     if (this.lastPendingDetails) return;
-    const match = GOOGLE_AUTH_URL_PATTERN.exec(text);
+    this.outputBuffer += text;
+    const match = TERMINATED_AUTH_URL_PATTERN.exec(this.outputBuffer);
     if (!match) return;
-    const details: AgentAuthPendingDetails = { kind: "code-paste-url", verificationUri: match[0] };
+    const details: AgentAuthPendingDetails = { kind: "code-paste-url", verificationUri: match[1] };
     this.lastPendingDetails = details;
     this.emit("pending", details);
   }
@@ -248,7 +273,11 @@ export class AntigravityAuthManager
       console.warn("[antigravity-auth] submitCode with no sign-in process; the code was dropped");
       return;
     }
-    this.proc.stdin.write(`${code.trim()}\n`);
+    try {
+      this.proc.stdin.write(`${code.trim()}\n`);
+    } catch (err) {
+      console.warn(`[antigravity-auth] could not deliver the authorization code: ${String(err)}`);
+    }
   }
 
   cancel(): void {
