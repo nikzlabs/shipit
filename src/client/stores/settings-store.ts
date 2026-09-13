@@ -2,6 +2,7 @@ import type { LoginIntegrationId } from "../../server/shared/catalogue/types.js"
 import { create } from "zustand";
 import type { CredentialRoute, PermissionMode, FileContextRef } from "../../server/shared/types.js";
 import type { ReviewerSlotView, RoleView } from "../../server/shared/types/agent-types.js";
+import type { EligibleModelOption } from "../agent-types.js";
 import {
   getSavedCompactConversation, saveCompactConversation,
   getSavedNotifyOnFinish, saveNotifyOnFinish,
@@ -240,9 +241,23 @@ interface SettingsState {
         label: string;
         // Absent where background work runs as a direct provider call (docs/299 req 2).
         harnessId?: string;
+        /** Which of the two ran it, so the client never reads an absent harness as a state. */
+        execution?: "harness" | "direct";
         source: "pinned" | "default";
       }
     | null;
+  /**
+   * docs/299 req 3 — what the background-work selector may offer.
+   *
+   * NOT `eligibleModelsOf(agentList)`, and that is the whole point of the field:
+   * that list is the union over installed harnesses, so a model provider
+   * reachable only by a direct call is missing from it however well the server
+   * resolves one. Computed server-side from the same search the resolver runs,
+   * hydrated from `GET /api/bootstrap` and pushed on every `agent_list` SSE — so
+   * adding a credential fills the picker in an open Settings tab rather than on
+   * the next reload.
+   */
+  backgroundWorkModels: EligibleModelOption[];
   /**
    * docs/261 phase 3 (reqs 1, 5, 8) — both reviewer slots, in the user's order,
    * each labelled pinned or auto-configured and carrying what it resolves to.
@@ -337,6 +352,7 @@ interface SettingsState {
     pinned: SettingsState["nonTurnModel"],
     resolved: SettingsState["nonTurnModelResolved"],
   ) => void;
+  setBackgroundWorkModels: (models: EligibleModelOption[]) => void;
   /**
    * docs/261 phase 3 — replace both reviewer slots with the server's answer.
    *
@@ -431,6 +447,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   credentialRoutes: [],
   nonTurnModel: null,
   nonTurnModelResolved: null,
+  backgroundWorkModels: [],
   reviewers: [],
   roles: [],
   providerAccountAuths: {},
@@ -630,6 +647,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   setProviderAccounts: (accounts) => set({ providerAccounts: accounts }),
   setCredentialRoutes: (routes) => set({ credentialRoutes: routes }),
   setNonTurnModel: (pinned, resolved) => set({ nonTurnModel: pinned, nonTurnModelResolved: resolved }),
+  setBackgroundWorkModels: (models) => set({ backgroundWorkModels: models }),
   setReviewers: (reviewers) => set({ reviewers }),
   setRoles: (roles) => set({ roles }),
   setProviderAccountAuth: (loginId, accountId, auth) =>

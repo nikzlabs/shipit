@@ -77,9 +77,21 @@ const reviewers: ReviewerSlotView[] = [
   { slot: "second", source: "auto", unavailableReason: "nothing_eligible" },
 ];
 
+const backgroundWorkModels = [
+  {
+    serviceId: "deepseek",
+    serviceName: "DeepSeek",
+    billingMode: "key" as const,
+    modelId: "deepseek-v4",
+    label: "V4",
+    canonicalModelKey: "deepseek-v4",
+  },
+];
+
 beforeEach(() => {
   vi.stubGlobal("EventSource", FakeEventSource);
   useSettingsStore.getState().setReviewers([]);
+  useSettingsStore.getState().setBackgroundWorkModels([]);
 });
 
 afterEach(() => {
@@ -109,5 +121,35 @@ describe("useServerEvents — agent_list carries the reviewer resolution", () =>
     });
 
     expect(useSettingsStore.getState().reviewers).toEqual(reviewers);
+  });
+});
+
+/**
+ * docs/299 req 3 — the same hop for the background-work option list, and for the
+ * same reason: adding a model provider credential has to fill those two pickers
+ * while Settings is open. A list that is right at boot and stale afterwards is a
+ * bug, and `BackgroundWorkSection`'s own tests set the store directly, so this
+ * is the only test that fails if this hop drops the field.
+ */
+describe("useServerEvents — agent_list carries the background-work options", () => {
+  it("applies a pushed option list to the store", () => {
+    renderHook(() => useServerEvents());
+
+    act(() => {
+      FakeEventSource.last?.emit("agent_list", { agents: AGENTS, canRunTurns: true, backgroundWorkModels });
+    });
+
+    expect(useSettingsStore.getState().backgroundWorkModels).toEqual(backgroundWorkModels);
+  });
+
+  it("leaves the last known options alone when the payload omits them", () => {
+    useSettingsStore.getState().setBackgroundWorkModels(backgroundWorkModels);
+    renderHook(() => useServerEvents());
+
+    act(() => {
+      FakeEventSource.last?.emit("agent_list", { agents: AGENTS, canRunTurns: true });
+    });
+
+    expect(useSettingsStore.getState().backgroundWorkModels).toEqual(backgroundWorkModels);
   });
 });

@@ -11,7 +11,7 @@ import type { ToastData } from "../components/Toast.js";
 import { fullResetAllStores } from "../stores/actions/session-actions.js";
 import type { AgentId, SessionInfo, RepoInfo, PrStatusSummary, DockerMemoryStats, SystemInfo, SubscriptionLimitsMap, PermissionMode, CredentialRoute, EgressSettings } from "../../server/shared/types.js";
 import type { ReviewerSlotView, RoleView } from "../../server/shared/types/agent-types.js";
-import type { GoalActionModes } from "../agent-types.js";
+import type { EligibleModelOption, GoalActionModes } from "../agent-types.js";
 import { getLoadedClientBuildId, shouldReloadForServerBuild } from "../utils/client-build.js";
 import {
   getParkedHarness,
@@ -496,8 +496,11 @@ export function useServerEvents(): void {
           serviceName: string;
           label: string;
           harnessId?: string;
+          execution?: "harness" | "direct";
           source: "pinned" | "default";
         } | null;
+
+        backgroundWorkModels?: EligibleModelOption[];
       };
       if (data.reviewers) {
         useSettingsStore.getState().setReviewers(data.reviewers);
@@ -510,6 +513,11 @@ export function useServerEvents(): void {
           data.nonTurnModel ?? null,
           data.nonTurnModelResolved ?? null,
         );
+      }
+      // req 3 — a credential added while Settings is open has to fill the
+      // background-work pickers now, not on the next reload.
+      if (data.backgroundWorkModels) {
+        useSettingsStore.getState().setBackgroundWorkModels(data.backgroundWorkModels);
       }
       if (typeof data.canRunTurns === "boolean") {
         useSettingsStore.getState().setCanRunTurns(data.canRunTurns);

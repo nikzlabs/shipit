@@ -5,7 +5,7 @@ import type { SessionInfo, RepoInfo, TurnUsage, SessionUsage, RuntimeMode, Crede
 import { turnContextTokens } from "../../server/shared/types.js";
 import { getContextWindowForModel } from "../../server/shared/model-windows.js";
 import type { ReviewerSlotView, RoleView } from "../../server/shared/types/agent-types.js";
-import type { AgentOption } from "../agent-types.js";
+import type { AgentOption, EligibleModelOption } from "../agent-types.js";
 import type { TemplateInfo } from "./template-info.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { useGitStore } from "../stores/git-store.js";
@@ -103,8 +103,11 @@ interface BootstrapResponse {
       serviceName: string;
       label: string;
       harnessId?: string;
+      execution?: "harness" | "direct";
       source: "pinned" | "default";
     };
+
+    backgroundWorkModels?: EligibleModelOption[];
 
     reviewers?: ReviewerSlotView[];
 
@@ -592,6 +595,10 @@ export async function loadBootstrapData(): Promise<void> {
   );
 
   // above, because the two cases differ: an absent `nonTurnModel` is the real
+
+  if (data.settings.backgroundWorkModels) {
+    useSettingsStore.getState().setBackgroundWorkModels(data.settings.backgroundWorkModels);
+  }
 
   if (data.settings.reviewers) useSettingsStore.getState().setReviewers(data.settings.reviewers);
 
