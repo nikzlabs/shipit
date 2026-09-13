@@ -9,14 +9,16 @@ const ROWS = directCallSelections()
   .filter((entry) => entry.target.style === "openai-chat-completions")
   .map((entry) => [`${entry.selection.serviceId}/${entry.selection.modelId}`, entry] as const);
 
+// This style reports an input TOTAL that includes its cached portion: 100 in
+// all, of which 60 were read from cache and 20 written to it.
 function chatResponse(content: string): Response {
   return new Response(
     JSON.stringify({
-      choices: [{ message: { content } }],
+      choices: [{ message: { content }, finish_reason: "stop" }],
       usage: {
-        prompt_tokens: 11,
-        completion_tokens: 22,
-        prompt_tokens_details: { cached_tokens: 33 },
+        prompt_tokens: 100,
+        completion_tokens: 15,
+        prompt_tokens_details: { cached_tokens: 60, cache_write_tokens: 20 },
       },
     }),
     { status: 200, headers: { "Content-Type": "application/json" } },
@@ -48,33 +50,39 @@ describe("createOpenAiChatCompletionsCall against shipped catalogue rows", () =>
     if (entry.target.apiModelId !== entry.selection.modelId) {
       expect(sent.model).not.toBe(entry.selection.modelId);
     }
+    expect(sent.messages).toEqual([{ role: "user", content: "clean this" }]);
     expect(init.headers.Authorization).toBe("Bearer test-key");
     for (const [name, value] of Object.entries(entry.target.headers ?? {})) {
       expect(init.headers[name]).toBe(value);
     }
     expect(sent.max_tokens).toBeGreaterThanOrEqual(1200 / 4);
   });
-
-  it("sends every header a shipped credential declares", () => {
-    // Nothing here declares headers for its own sake: a service that refuses a
-    // generic client must have them on the wire, so at least one row carries some.
-    const declared = ROWS.filter(([, entry]) => entry.target.headers !== undefined);
-    expect(declared.length).toBeGreaterThan(0);
-  });
 });
 
 describe("createOpenAiChatCompletionsCall", () => {
   const base = ROWS[0][1];
 
-  it("returns the trimmed completion and the cached input count", async () => {
+  it("subtracts the cached portion from the input total", async () => {
     const fetchImpl = vi.fn().mockResolvedValue(chatResponse("  Cleaned  "));
 
     const result = await callWith(fetchImpl, base);
 
     expect(result.text).toBe("Cleaned");
-    expect(result.inputTokens).toBe(11);
-    expect(result.outputTokens).toBe(22);
-    expect(result.cacheReadTokens).toBe(33);
+    expect(result.inputTokens).toBe(20);
+    expect(result.outputTokens).toBe(15);
+    expect(result.cacheReadTokens).toBe(60);
+    expect(result.cacheCreateTokens).toBe(20);
+  });
+
+  it("leaves the input count undefined when the provider reports none", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ choices: [{ message: { content: "hi" } }] }), { status: 200 }),
+    );
+
+    const result = await callWith(fetchImpl, base);
+
+    // A zero would assert a free run, which is not what silence means.
+    expect(result.inputTokens).toBeUndefined();
   });
 
   it("forwards the abort signal", async () => {
@@ -91,6 +99,19 @@ describe("createOpenAiChatCompletionsCall", () => {
     });
 
     expect(fetchImpl.mock.calls[0][1].signal).toBe(controller.signal);
+  });
+
+  it("fails on a completion truncated to nothing", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ choices: [{ message: { content: "" }, finish_reason: "length" }] }), {
+        status: 200,
+      }),
+    );
+
+    await expect(callWith(fetchImpl, base)).rejects.toMatchObject({
+      name: "DirectCallError",
+      message: expect.stringContaining("length"),
+    });
   });
 
   it("reports the provider's status on a refusal", async () => {

@@ -527,9 +527,11 @@ export const SERVICES = [
             // session-less request with 400 MissingSessionID when docs/252
             // measured it, so a direct call names ShipIt and carries a session.
             // Probed again 2026-09-13: both now answer 401 before either check,
-            // so the headers cannot be re-verified without a live key.
+            // so the headers cannot be re-verified without a live key. The
+            // session id identifies one conversation, so it is minted per call.
             directCall: {
-              headers: { "User-Agent": "ShipIt", "x-opencode-session": "shipit-background-work" },
+              headers: { "User-Agent": "ShipIt" },
+              perCallIdHeaders: ["x-opencode-session"],
             },
           },
         ],

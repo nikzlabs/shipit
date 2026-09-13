@@ -5,20 +5,24 @@ import { DirectCallError } from "./types.js";
 
 // Real shipped rows, not a hand-written fixture: a request shape assertion
 // alone would pass while sending a harness alias to a base that never carries
-// this style (docs/299).
+// this style (docs/299). The URLs those rows must produce are pinned
+// independently in `catalogue/direct-call-contract.test.ts`.
 const ROWS = directCallSelections()
   .filter((entry) => entry.target.style === "anthropic-messages")
   .map((entry) => [`${entry.selection.serviceId}/${entry.selection.modelId}`, entry] as const);
 
+// This style reports the three input figures disjointly: 20 uncached, 60 read
+// from cache, 20 written to it.
 function messagesResponse(text: string): Response {
   return new Response(
     JSON.stringify({
       content: [{ type: "thinking", text: "ignored" }, { type: "text", text }],
+      stop_reason: "end_turn",
       usage: {
-        input_tokens: 11,
-        output_tokens: 22,
-        cache_read_input_tokens: 33,
-        cache_creation_input_tokens: 44,
+        input_tokens: 20,
+        output_tokens: 15,
+        cache_read_input_tokens: 60,
+        cache_creation_input_tokens: 20,
       },
     }),
     { status: 200, headers: { "Content-Type": "application/json" } },
@@ -50,6 +54,7 @@ describe("createAnthropicMessagesCall against shipped catalogue rows", () => {
     if (entry.target.apiModelId !== entry.selection.modelId) {
       expect(sent.model).not.toBe(entry.selection.modelId);
     }
+    expect(sent.messages).toEqual([{ role: "user", content: "clean this" }]);
     expect(init.headers["x-api-key"]).toBe("test-key");
     expect(init.headers["anthropic-version"]).toBeTruthy();
     for (const [name, value] of Object.entries(entry.target.headers ?? {})) {
@@ -62,16 +67,16 @@ describe("createAnthropicMessagesCall against shipped catalogue rows", () => {
 describe("createAnthropicMessagesCall", () => {
   const base = ROWS[0][1];
 
-  it("returns the joined text and counts cache reads apart from cache writes", async () => {
+  it("returns the joined text and keeps the three input counts disjoint", async () => {
     const fetchImpl = vi.fn().mockResolvedValue(messagesResponse("  Cleaned  "));
 
     const result = await callWith(fetchImpl, base);
 
     expect(result.text).toBe("Cleaned");
-    expect(result.inputTokens).toBe(11);
-    expect(result.outputTokens).toBe(22);
-    expect(result.cacheReadTokens).toBe(33);
-    expect(result.cacheCreateTokens).toBe(44);
+    expect(result.inputTokens).toBe(20);
+    expect(result.outputTokens).toBe(15);
+    expect(result.cacheReadTokens).toBe(60);
+    expect(result.cacheCreateTokens).toBe(20);
   });
 
   it("forwards the abort signal", async () => {
@@ -88,6 +93,17 @@ describe("createAnthropicMessagesCall", () => {
     });
 
     expect(fetchImpl.mock.calls[0][1].signal).toBe(controller.signal);
+  });
+
+  it("fails on an answer that stopped before writing any text", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ content: [], stop_reason: "max_tokens" }), { status: 200 }),
+    );
+
+    await expect(callWith(fetchImpl, base)).rejects.toMatchObject({
+      name: "DirectCallError",
+      message: expect.stringContaining("max_tokens"),
+    });
   });
 
   it("reports the provider's status on a refusal", async () => {

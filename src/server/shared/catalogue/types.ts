@@ -79,6 +79,12 @@ export type CredentialTarget =
 export interface DirectCallDef {
   /** Added to the style's own auth and content headers, and override them. */
   headers?: Record<string, string>;
+  /**
+   * Headers naming one conversation rather than carrying a fixed value. The
+   * resolver mints a fresh id per resolution, since a constant would place
+   * every job on every install under one conversation.
+   */
+  perCallIdHeaders?: string[];
 }
 
 export type ModeCredential =

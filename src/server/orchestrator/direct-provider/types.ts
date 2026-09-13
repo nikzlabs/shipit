@@ -16,12 +16,16 @@ export interface DirectCallRequest {
 }
 
 /**
- * Cache reads and cache writes are counted separately because pricing rates
- * them separately (`shared/codex-token-usage.ts`); folding either into
- * inputTokens produces a wrong spend figure rather than a missing one.
+ * Counts are DISJOINT, as `disjointCodexTokens` already requires of harness
+ * telemetry: the three input figures never overlap, so a consumer can price
+ * each at its own rate. The Messages API reports this shape already; the two
+ * OpenAI styles report an input total that INCLUDES its cached portion, and
+ * their clients subtract before returning. Pricing rates the three separately,
+ * so an overlap is a wrong spend figure rather than a missing one.
  */
 export interface DirectCallResult {
   text: string;
+  /** Uncached input only. */
   inputTokens?: number;
   outputTokens?: number;
   cacheReadTokens?: number;

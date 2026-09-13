@@ -1,11 +1,13 @@
 import { DIRECT_CALL_PATHS, joinEndpoint } from "../../shared/catalogue/index.js";
-import { maxOutputTokens, postJson } from "./http.js";
+import { maxOutputTokens, postJson, requireText } from "./http.js";
 import type { DirectCall } from "./types.js";
 
 const ANTHROPIC_VERSION = "2023-06-01";
+const LABEL = "Anthropic Messages";
 
 interface MessagesResponse {
   content?: { type: string; text?: string }[];
+  stop_reason?: string;
   usage?: {
     input_tokens?: number;
     output_tokens?: number;
@@ -36,7 +38,7 @@ export function createAnthropicMessagesCall(fetchImpl: typeof fetch = fetch): Di
         messages: [{ role: "user", content: req.prompt }],
       },
       req.signal,
-      "Anthropic Messages",
+      LABEL,
     )) as MessagesResponse;
 
     const text = (data.content ?? [])
@@ -45,7 +47,8 @@ export function createAnthropicMessagesCall(fetchImpl: typeof fetch = fetch): Di
       .join("")
       .trim();
     return {
-      text,
+      // This style reports the three input figures disjointly already.
+      text: requireText(text, LABEL, data.stop_reason),
       inputTokens: data.usage?.input_tokens,
       outputTokens: data.usage?.output_tokens,
       cacheReadTokens: data.usage?.cache_read_input_tokens,

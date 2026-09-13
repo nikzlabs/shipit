@@ -7,6 +7,7 @@ import type {
   BillingModeDef,
   CredentialTarget,
   CredentialTargets,
+  DirectCallDef,
   HarnessDef,
   LoginIntegrationId,
   ModeCredential,
@@ -241,15 +242,26 @@ export function resolveDirectCall(
   for (const style of DIRECT_CALL_STYLE_ORDER) {
     const baseUrl = mode.endpoints[style];
     if (!model.styles.includes(style) || !baseUrl || !directCallPathFor(style)) continue;
+    const headers = directCallHeaders(credential.directCall);
     return {
       style,
       baseUrl,
       apiModelId: model.apiId ?? model.id,
       storageEnv: credential.storageEnv,
-      ...(credential.directCall.headers ? { headers: { ...credential.directCall.headers } } : {}),
+      ...(headers ? { headers } : {}),
     };
   }
   return undefined;
+}
+
+// One resolution is one background job, so a per-resolution id is the
+// conversation identity a service asking for one expects.
+function directCallHeaders(def: DirectCallDef): Record<string, string> | undefined {
+  const minted = (def.perCallIdHeaders ?? []).map(
+    (name) => [name, `shipit-${crypto.randomUUID()}`] as const,
+  );
+  if (!def.headers && minted.length === 0) return undefined;
+  return { ...def.headers, ...Object.fromEntries(minted) };
 }
 
 export interface DirectCallEntry {

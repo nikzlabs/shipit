@@ -172,8 +172,13 @@ describe("required request headers", () => {
     (_name, entry) => {
       const credential = getMode(entry.selection.serviceId, entry.selection.billingMode)
         ?.credentials.find((c) => c.via === "string");
-      const declared = credential?.via === "string" ? credential.directCall?.headers : undefined;
-      expect(entry.target.headers).toEqual(declared);
+      const declared = credential?.via === "string" ? credential.directCall : undefined;
+      const fixed = declared?.headers ?? {};
+      const minted = declared?.perCallIdHeaders ?? [];
+      const headers = entry.target.headers ?? {};
+      for (const [name, value] of Object.entries(fixed)) expect(headers[name]).toBe(value);
+      for (const name of minted) expect(headers[name], name).toBeTruthy();
+      expect(Object.keys(headers).sort()).toEqual([...Object.keys(fixed), ...minted].sort());
     },
   );
 

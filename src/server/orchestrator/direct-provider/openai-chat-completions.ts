@@ -1,13 +1,15 @@
 import { DIRECT_CALL_PATHS, joinEndpoint } from "../../shared/catalogue/index.js";
-import { maxOutputTokens, postJson } from "./http.js";
+import { maxOutputTokens, postJson, requireText, uncachedInput } from "./http.js";
 import type { DirectCall } from "./types.js";
 
+const LABEL = "OpenAI Chat Completions";
+
 interface ChatCompletionsResponse {
-  choices?: { message?: { content?: string } }[];
+  choices?: { message?: { content?: string }; finish_reason?: string }[];
   usage?: {
     prompt_tokens?: number;
     completion_tokens?: number;
-    prompt_tokens_details?: { cached_tokens?: number };
+    prompt_tokens_details?: { cached_tokens?: number; cache_write_tokens?: number };
   };
 }
 
@@ -29,14 +31,22 @@ export function createOpenAiChatCompletionsCall(fetchImpl: typeof fetch = fetch)
         messages: [{ role: "user", content: req.prompt }],
       },
       req.signal,
-      "OpenAI Chat Completions",
+      LABEL,
     )) as ChatCompletionsResponse;
 
+    const cacheRead = data.usage?.prompt_tokens_details?.cached_tokens;
+    const cacheWrite = data.usage?.prompt_tokens_details?.cache_write_tokens;
     return {
-      text: (data.choices?.[0]?.message?.content ?? "").trim(),
-      inputTokens: data.usage?.prompt_tokens,
+      text: requireText(
+        (data.choices?.[0]?.message?.content ?? "").trim(),
+        LABEL,
+        data.choices?.[0]?.finish_reason,
+      ),
+      // prompt_tokens counts the cached portion too; DirectCallResult is disjoint.
+      inputTokens: uncachedInput(data.usage?.prompt_tokens, cacheRead, cacheWrite),
       outputTokens: data.usage?.completion_tokens,
-      cacheReadTokens: data.usage?.prompt_tokens_details?.cached_tokens,
+      cacheReadTokens: cacheRead,
+      cacheCreateTokens: cacheWrite,
     };
   };
 }
