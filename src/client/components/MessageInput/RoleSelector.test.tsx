@@ -183,7 +183,7 @@ describe("RoleSelector (wide row)", () => {
     );
     await userEvent.click(screen.getByTestId("role-selector-trigger"));
     const row = screen.getByTestId("role-option-offline");
-    expect(row).toHaveTextContent("Its service is disconnected");
+    expect(row).toHaveTextContent("Its provider is disconnected");
     expect(row).toHaveAttribute("aria-disabled", "true");
   });
 

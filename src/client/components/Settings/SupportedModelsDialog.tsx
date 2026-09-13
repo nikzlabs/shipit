@@ -388,10 +388,10 @@ export function SupportedModelsDialog({
             estimates, so this must too).
           */}
           <p className="mt-1.5 text-xs text-(--color-text-secondary)">
-            Every model ShipIt&rsquo;s catalogue offers, per service and billing mode. The harness
+            Every model ShipIt&rsquo;s catalogue offers, per provider and billing mode. The harness
             columns are every harness ShipIt integrates &mdash; a model needs one that speaks its
             API style, and several may. A column marked <em>not installed</em> is a harness this
-            deployment does not have. Prices are the service&rsquo;s own rate per million tokens and
+            deployment does not have. Prices are the provider&rsquo;s own rate per million tokens and
             are estimates; under a subscription they are what the tokens would have cost, not an
             extra charge.
           </p>
@@ -437,7 +437,7 @@ export function SupportedModelsDialog({
             data-testid="supported-models-nav"
           >
             <p className="px-1.5 pb-1.5 text-[10px] uppercase tracking-wider text-(--color-text-tertiary)">
-              Services
+              Providers
             </p>
             {services.map((service) => (
               <button

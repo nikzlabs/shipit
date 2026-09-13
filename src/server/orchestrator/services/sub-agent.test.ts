@@ -490,7 +490,7 @@ describe("runSubAgent — --role reviewer", () => {
       400,
     );
     expect(err.message).toContain('role "reviewer" cannot run');
-    expect(err.message).toContain("Connect a service in Settings");
+    expect(err.message).toContain("Connect a provider in Settings");
     expect(runner.spawnSubAgent).not.toHaveBeenCalled();
   });
 

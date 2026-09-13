@@ -254,7 +254,7 @@ export function reorderCredentialRoutes(
     throw new ServiceError(400, "Credential order contains duplicates");
   }
   if (ids.length !== known.size || ids.some((id) => !known.has(id))) {
-    throw new ServiceError(400, "Credential order must list every credential for this service and mode exactly once");
+    throw new ServiceError(400, "Credential order must list every credential for this provider and mode exactly once");
   }
   const before = deliveredValueFor(credentialStore, serviceId, mode);
   ids.forEach((id, index) => {
@@ -273,7 +273,7 @@ function requireStringRoute(credentialStore: CredentialStore, routeId: string): 
   if (!route) throw new ServiceError(404, `Credential not found: ${routeId}`);
   if (route.via !== "string") {
     // Account removal also needs to stop login and remove its credential directory.
-    throw new ServiceError(400, "That credential is a connected account — manage it from its service's accounts.");
+    throw new ServiceError(400, "That credential is a connected account — manage it from its provider's accounts.");
   }
   return route;
 }

@@ -526,7 +526,7 @@ describe("runtime-401 auto-retry (docs/179)", () => {
     await waitFor(() => durableHistory.some((m) => m.isError), "durable sign-in notice");
 
     const notice = durableHistory.find((m) => m.isError);
-    expect(String(notice.text)).toContain("Settings → Agents");
+    expect(String(notice.text)).toContain("Settings → Model providers");
     expect(durableHistory.every((m) => !m.inProgress)).toBe(true);
     expect(durableHistory.filter((m) => m.isError)).toHaveLength(1);
 

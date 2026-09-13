@@ -178,14 +178,14 @@ describe("picker consistency (req 13)", () => {
       { slot: "second", source: "auto", resolved: undefined },
     ]);
     const { container: reviewer } = render(<ReviewerSection agentList={none} />);
-    expect(reviewer.querySelectorAll("button[aria-label^='Service for']")).toHaveLength(0);
+    expect(reviewer.querySelectorAll("button[aria-label^='Model provider for']")).toHaveLength(0);
     expect(reviewer.querySelectorAll("button[aria-label^='Model for']")).toHaveLength(0);
 
     expect(screen.getAllByText(/Nothing to review with yet/)).toHaveLength(2);
     cleanup();
 
     const { container: background } = render(<BackgroundWorkSection agentList={none} />);
-    expect(background.querySelectorAll("button[aria-label^='Service for']")).toHaveLength(0);
+    expect(background.querySelectorAll("button[aria-label^='Model provider for']")).toHaveLength(0);
     expect(background.querySelectorAll("button[aria-label='Model for background work']")).toHaveLength(0);
     expect(screen.getByText(/Nothing to run it on yet/)).toBeTruthy();
   });

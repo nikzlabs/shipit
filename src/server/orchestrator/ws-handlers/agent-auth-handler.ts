@@ -11,7 +11,7 @@ import { UNKNOWN_RESET_LOCKOUT_MS } from "./agent-rate-limits.js";
 import type { AgentListenerDeps, WireListenersOpts } from "./agent-listeners.js";
 
 export const AGENT_NOT_AUTHENTICATED_MESSAGE =
-  "This agent is not authenticated. Open Settings → Agents to sign in, then resend your message.";
+  "This agent is not authenticated. Open Settings → Model providers to sign in, then resend your message.";
 
 export function wireAuthRequiredHandler(
   agent: AgentProcess,

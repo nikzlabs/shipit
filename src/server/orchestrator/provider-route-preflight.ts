@@ -45,7 +45,7 @@ export function describeAccountSelectionFailure(
       if (subject) {
         return (
           `Every ${subject} credential is out of quota. ${resets} ` +
-          `Send this message again once quota is back, or add another ${subject} credential in Settings → Services.`
+          `Send this message again once quota is back, or add another ${subject} credential in Settings → Model providers.`
         );
       }
       return (
@@ -55,7 +55,7 @@ export function describeAccountSelectionFailure(
     }
     case "auth_required":
       return subject
-        ? `No ${subject} credential is configured. Add one in Settings → Services to run this turn.`
+        ? `No ${subject} credential is configured. Add one in Settings → Model providers to run this turn.`
         : `No ${label} account is connected. Connect one in Settings to run this turn.`;
   }
 }

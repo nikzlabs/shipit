@@ -27,7 +27,7 @@ function unavailableMessage(name: string, reason: RoleUnavailableReason, detail:
     case "stranded":
       return `The role "${name}" cannot run: ${detail} Edit it in Settings → Roles.`;
     case "disconnected":
-      return `The role "${name}" cannot run: ${detail} Reconnect the service in Settings.`;
+      return `The role "${name}" cannot run: ${detail} Reconnect the provider in Settings.`;
     case "quota_exhausted":
       return `The role "${name}" cannot run right now: its subscription is spent. It works again when the quota resets.`;
   }

@@ -34,13 +34,13 @@ The `dev` service's credentials are **user-supplied secrets**, set once in the o
 
 ### A supplied key becomes a credential ROUTE, not just a variable
 
-This matters and is not what the environment alone gives you. A bare variable is read by `listConfiguredCredentials` (`service-routing.ts`), so its models are already *eligible* and it does get a synthetic `env:<NAME>` route id. What it does **not** have is a row — so inner Settings → Services shows nothing, and it can be neither ordered, nor persistently benched, nor failed over to (`stringSelectionFor` reaches it only when nothing is stored). `scripts/seed-inner-credentials.ts` closes that: at boot it POSTs each supplied variable to `/api/credential-routes`, so the inner instance holds a real credential.
+This matters and is not what the environment alone gives you. A bare variable is read by `listConfiguredCredentials` (`service-routing.ts`), so its models are already *eligible* and it does get a synthetic `env:<NAME>` route id. What it does **not** have is a row — so inner Settings → Model providers shows nothing, and it can be neither ordered, nor persistently benched, nor failed over to (`stringSelectionFor` reaches it only when nothing is stored). `scripts/seed-inner-credentials.ts` closes that: at boot it POSTs each supplied variable to `/api/credential-routes`, so the inner instance holds a real credential.
 
 The stored credential reaches a local turn through `applyLocalMcp` → `localMcpSpawnEnv` → `selectAgentEnvForPush`, which applies `SHIPIT_CREDENTIAL_*` to `process.env` around each spawn, read live from the store. **No orchestrator restart is needed** — a credential seeded (or added by hand) after boot works on the next turn. Verified with a real inner turn.
 
 ### ⚠ Two billing hazards, and the first one is the one people miss
 
-**1. Any metered key can become what background work spends on.** Session naming and PR descriptions resolve an unpinned model with `firstEligibleNonTurnSelection` (`non-turn-model.ts`) — the *first eligible model in catalogue order*, over whatever credentials the install holds. So supplying only a DeepSeek key makes that the background-work model, and it bills. No CLI is involved, and this applies to every metered `key` mode, not just the vendor-native ones. Check **Settings → Services → Background work**, and pin it if you care.
+**1. Any metered key can become what background work spends on.** Session naming and PR descriptions resolve an unpinned model with `firstEligibleNonTurnSelection` (`non-turn-model.ts`) — the *first eligible model in catalogue order*, over whatever credentials the install holds. So supplying only a DeepSeek key makes that the background-work model, and it bills. No CLI is involved, and this applies to every metered `key` mode, not just the vendor-native ones. Check **Settings → Model providers → Background work**, and pin it if you care.
 
 **2. Three names bypass a connected account.** `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` and `OPENAI_API_KEY` are read by the vendor CLIs **directly**. Two things protect a spawn, and neither is universal:
 
@@ -79,7 +79,7 @@ Never test onboarding by deleting credentials from inner Settings or wiping `.in
 
 At `dev`-service boot, `scripts/seed-inner.ts` runs in the background and seeds three things in order, all prefixed `[seed]` in the service logs (`docs/131-dogfood-seed-sessions`):
 
-1. **Credentials** (`scripts/seed-inner-credentials.ts`) — every supplied service key becomes a credential route, labelled `… (dogfood secret)` in inner Settings → Services.
+1. **Credentials** (`scripts/seed-inner-credentials.ts`) — every supplied service key becomes a credential route, labelled `… (dogfood secret)` in inner Settings → Model providers.
 2. **Roles** (`scripts/seed-inner-roles.ts`) — a few agent roles, so the role surfaces are not empty: `deep-dive`, `quick-look`, `second-opinion`, and `needs-a-credential`. Second **because it reads what the install can run** — a role's harness, model and level are resolved out of `settings.agents`, which step 1 has just widened.
 3. **Repos** (`scripts/seed-inner-sessions.js`) — adds and trusts the repos in `scripts/dogfood-seed.json`, so the inner UI comes up with a repo ready to work in instead of an empty slate. Last, because a cold clone takes minutes.
 

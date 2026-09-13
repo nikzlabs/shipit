@@ -346,7 +346,7 @@ function RoleRow({
 
 const UNAVAILABLE_LABEL: Record<string, string> = {
   stranded: "Needs fixing",
-  disconnected: "Service disconnected",
+  disconnected: "Provider disconnected",
   quota_exhausted: "Quota spent",
 };
 
@@ -362,7 +362,7 @@ function unavailableDetail(role: RoleView): string {
         ? `Its ${FIELD_LABEL[role.invalidField]} is no longer valid — edit the role to re-point it.`
         : "Part of what it names no longer exists — edit the role to re-point it.";
     case "disconnected":
-      return "The service it names has no usable credential — reconnect it under Services. The role itself is fine.";
+      return "The provider it names has no usable credential — reconnect it under Model providers. The role itself is fine.";
     case "quota_exhausted":
       return role.earliestResetAt
         ? `Its subscription is spent until ${new Date(role.earliestResetAt).toLocaleString()}. Nothing to fix.`
@@ -374,7 +374,7 @@ function unavailableDetail(role: RoleView): string {
 
 const FIELD_LABEL: Record<string, string> = {
   harnessId: "harness",
-  service: "service",
+  service: "model provider",
   billingMode: "billing mode",
   model: "model",
   reasoningEffort: "reasoning level",

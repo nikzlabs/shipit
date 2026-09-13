@@ -107,10 +107,10 @@ describe("Settings", () => {
   });
 });
 
-describe("Settings - Services → Anthropic subscription", () => {
-  it("opens on Services, with no per-vendor tab to open on instead", () => {
+describe("Settings - Model providers → Anthropic subscription", () => {
+  it("opens on Model providers, with no per-vendor tab to open on instead", () => {
     render(<Settings {...defaultProps} />);
-    expect(screen.getByRole("tab", { name: "Services" })).toHaveAttribute("data-state", "active");
+    expect(screen.getByRole("tab", { name: "Model providers" })).toHaveAttribute("data-state", "active");
     expect(screen.queryByRole("tab", { name: "Claude" })).not.toBeInTheDocument();
     expect(screen.queryByRole("tab", { name: "Codex" })).not.toBeInTheDocument();
   });
@@ -944,10 +944,10 @@ describe("Settings - Advanced tab", () => {
 
 describe("Settings - Sidebar", () => {
 
-  it("lists one flat group with Services first and no vendor tabs", () => {
+  it("lists one flat group with Model providers first and no vendor tabs", () => {
     render(<Settings {...defaultProps} />);
     const tabs = screen.getAllByRole("tab");
-    expect(tabs[0]).toHaveTextContent("Services");
+    expect(tabs[0]).toHaveTextContent("Model providers");
     expect(screen.queryByText("Agent")).not.toBeInTheDocument();
     expect(screen.queryByText("General")).not.toBeInTheDocument();
     expect(screen.queryByTestId("settings-tab-agent-claude")).not.toBeInTheDocument();
@@ -990,10 +990,10 @@ describe("Settings - Tab switching", () => {
     expect(screen.queryByTestId("claude-auth-card")).not.toBeInTheDocument();
   });
 
-  it("clicking Services switches back", async () => {
+  it("clicking Model providers switches back", async () => {
     render(<Settings {...defaultProps} />);
     await userEvent.click(screen.getByRole("tab", { name: "Integrations" }));
-    await userEvent.click(screen.getByRole("tab", { name: "Services" }));
+    await userEvent.click(screen.getByRole("tab", { name: "Model providers" }));
     expect(screen.getByTestId("services-panel")).toBeInTheDocument();
     expect(screen.queryByTestId("github-token-form")).not.toBeInTheDocument();
   });

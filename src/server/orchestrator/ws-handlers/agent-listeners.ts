@@ -195,7 +195,7 @@ export function wireAgentListeners(
         const invalidId = missingConversation[1];
         const recovering = opts.recoverMissingConversation?.(invalidId) ?? false;
         if (!recovering) {
-          const message = "Couldn't resume the previous conversation. ShipIt could not start a fresh thread automatically; resend your message or open Settings → Agents if the problem continues.";
+          const message = "Couldn't resume the previous conversation. ShipIt could not start a fresh thread automatically; resend your message, or start a new session if the problem continues.";
           const turnSessionId = opts.capturedSessionId;
           if (runner && turnSessionId) {
             emitChatCard(

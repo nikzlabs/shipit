@@ -38,7 +38,7 @@ vi.mock("../voice/use-voice-input.js", () => ({
 
 const { QuickCaptureOverlay } = await import("./QuickCaptureOverlay.js");
 
-const REASON = "Add a service to start chatting";
+const REASON = "Add a model provider to start chatting";
 const LIVE_PLACEHOLDER = "Describe what to build... (type @ to attach files)";
 const REPO_URL = "https://github.com/acme/app.git";
 

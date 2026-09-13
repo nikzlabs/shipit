@@ -18,7 +18,7 @@ import { useSettingsStore } from "../stores/settings-store.js";
 import { useUiStore } from "../stores/ui-store.js";
 
 /**
- * The placeholder a composer shows when the install has no runnable service
+ * The placeholder a composer shows when the install has no runnable provider
  * (req 3). Three properties, all load-bearing:
  *
  * - **It names no location.** The same string serves while the onboarding panel
@@ -26,11 +26,11 @@ import { useUiStore } from "../stores/ui-store.js";
  *   long after onboarding, when the answer is Settings. "In Settings" is wrong
  *   in the first case; "above" is wrong in the second.
  * - **Its verb and noun match the control to find** — docs/252's Settings
- *   surface is "Services" and its action is "Add a service".
+ *   surface is "Model providers" and its action is "Add a model provider".
  * - **It says what is blocked, not what is broken.** The composer is the only
  *   disabled thing; everything else works, so this is an instruction.
  */
-export const NO_RUNNABLE_SERVICE_REASON = "Add a service to start chatting";
+export const NO_RUNNABLE_SERVICE_REASON = "Add a model provider to start chatting";
 
 export function chatDisabledReason(state: {
   bootstrapLoaded: boolean;

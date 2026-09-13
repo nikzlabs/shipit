@@ -617,7 +617,7 @@ describe("UsageModal — the usage split (docs/252 req 16)", () => {
     );
     const legacy = screen.getAllByTestId("usage-group-row")
       .find((r) => r.dataset.groupKey === "legacy")!;
-    expect(within(legacy).getByText("No service recorded")).toBeInTheDocument();
+    expect(within(legacy).getByText("No provider recorded")).toBeInTheDocument();
     expect(within(legacy).getByText("Unattributed")).toBeInTheDocument();
     expect(within(legacy).getByText("earlier accounting")).toBeInTheDocument();
     expect(within(legacy).getByText("$31.70")).toBeInTheDocument();

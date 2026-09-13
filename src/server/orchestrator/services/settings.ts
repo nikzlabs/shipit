@@ -390,7 +390,7 @@ export function setAgent(
   if (!info.hasRunnableModels) {
     throw new ServiceError(
       400,
-      `${info.name} has no models available. Add a credential for a service it can reach in Settings → Services.`,
+      `${info.name} has no models available. Add a credential for a provider it can reach in Settings → Model providers.`,
     );
   }
   return { agentId };

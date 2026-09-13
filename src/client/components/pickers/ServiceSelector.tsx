@@ -27,7 +27,7 @@ export function ServiceSelector({
   onChange,
   disabled,
   idPrefix,
-  fallbackLabel = "No service",
+  fallbackLabel = "No provider",
 }: {
   services: ServiceChoice[];
 
@@ -51,7 +51,7 @@ export function ServiceSelector({
             icon: <ServiceLogo service={{ id: current.serviceId, name: current.serviceName }} />,
           }
         : {})}
-      ariaLabel={`Service for ${idPrefix}`}
+      ariaLabel={`Model provider for ${idPrefix}`}
       triggerTestId={`${idPrefix}-service-trigger`}
       menuTestId={`${idPrefix}-service-menu`}
       menuWidth="w-64"

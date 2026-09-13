@@ -90,7 +90,7 @@ export function Settings({
 
   const tabLabel = (tab: Tab) => {
     switch (tab) {
-      case "services": return "Services";
+      case "services": return "Model providers";
       case "roles": return "Roles";
       case "integrations": return "Integrations";
       case "git": return "Git";

@@ -71,7 +71,7 @@ describe("credentialFailurePolicyFor — docs/252 req 12", () => {
       credentialFailurePolicyFor(session({ serviceId: "deepseek", billingMode: "key" })),
     );
     expect(message).toContain("DeepSeek");
-    expect(message).toContain("Settings → Services");
+    expect(message).toContain("Settings → Model providers");
     expect(message.toLowerCase()).not.toContain("sign in");
   });
 

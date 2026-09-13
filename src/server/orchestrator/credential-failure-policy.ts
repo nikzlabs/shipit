@@ -61,14 +61,14 @@ export function credentialFailureStopMessage(policy: CredentialFailurePolicy): s
   return (
     `Authentication failed for ${subject}, so this turn stopped. `
     + `ShipIt does not retry or re-authenticate an API key — check the credential in `
-    + `Settings → Services, then resend your message.`
+    + `Settings → Model providers, then resend your message.`
   );
 }
 
 export function credentialSetAsideMessage(policy: CredentialFailurePolicy): string {
   const name = policy.serviceId
     ? getService(policy.serviceId)?.name ?? policy.serviceId
-    : "this service";
+    : "this provider";
   return (
     `Authentication failed for the ${name} credential this turn was using, so the turn stopped. `
     + `ShipIt has set that credential aside — send your message again and it will use another `

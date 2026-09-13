@@ -320,7 +320,7 @@ export function ServicesPanel({ agentList = [] }: { agentList?: AgentOption[] })
       */}
       <div className="flex items-baseline gap-2">
         <div className="min-w-0">
-        <h3 className="text-sm font-medium text-(--color-text-primary)">Services</h3>
+        <h3 className="text-sm font-medium text-(--color-text-primary)">Model providers</h3>
         <p
           className="mt-0.5 text-xs text-(--color-text-tertiary)"
           // The empty state keeps its own test id, because "nothing configured"
@@ -329,7 +329,7 @@ export function ServicesPanel({ agentList = [] }: { agentList?: AgentOption[] })
         >
           {empty
             ? "Connect one to start — a subscription you already pay for, or an API key."
-            : "ShipIt defines the services; you supply the credential."}
+            : "ShipIt defines the providers; you supply the credential."}
         </p>
         </div>
         <span className="flex-1" />
@@ -364,7 +364,7 @@ export function ServicesPanel({ agentList = [] }: { agentList?: AgentOption[] })
           onClick={() => setDialog({})}
           data-testid={empty ? "services-add-empty" : "services-add"}
         >
-          <PlusIcon size={ICON_SIZE.XS} /> Add a service
+          <PlusIcon size={ICON_SIZE.XS} /> Add a model provider
         </Button>
       </div>
 
@@ -431,7 +431,7 @@ function InstalledHarnesses({ agentList }: { agentList: AgentOption[] }) {
       <h3 className="text-sm font-medium text-(--color-text-primary)">Installed harnesses</h3>
       {installed.length === 0 ? (
         <p className="text-xs text-(--color-text-tertiary)">
-          None. A service credential cannot run a turn on its own — this install has no harness
+          None. A provider credential cannot run a turn on its own — this install has no harness
           to drive it.
         </p>
       ) : (
@@ -684,7 +684,7 @@ const MODE_NOTICES: Record<string, string> = {
 
   // ShipIt cannot prevent this one, so it says so where the credential lives.
   [credentialModeKey("opencode", "sub")]:
-    "ShipIt cannot read OpenCode Go's usage — the service publishes no per-key quota API — so this card shows no remaining figure and reacts only to the plan's own limit errors. If “Use balance” is enabled in the OpenCode console, running out of Go usage continues on your metered Zen credits instead of stopping, and ShipIt is not told.",
+    "ShipIt cannot read OpenCode Go's usage — the provider publishes no per-key quota API — so this card shows no remaining figure and reacts only to the plan's own limit errors. If “Use balance” is enabled in the OpenCode console, running out of Go usage continues on your metered Zen credits instead of stopping, and ShipIt is not told.",
 };
 
 function ModeNotice({
@@ -1523,7 +1523,7 @@ function AddServiceDialog({
           A prop on one component, not a second dialog.
         */}
         <DialogTitle className="text-sm font-semibold" data-testid="add-service-title">
-          {reconnectAccountId === undefined ? "Add a service" : "Reconnect"}
+          {reconnectAccountId === undefined ? "Add a model provider" : "Reconnect"}
           {service ? ` — ${service.name}` : ""}
           {reconnectAccountId !== undefined && signInAccount ? ` · ${signInAccount.label}` : ""}
         </DialogTitle>
@@ -1567,7 +1567,7 @@ function AddServiceDialog({
                 */}
                 <div className="sticky left-0 z-10 row-span-full grid grid-rows-subgrid gap-y-1 bg-(--color-bg-elevated) pr-1">
                   <p className="text-[10px] uppercase tracking-wider text-(--color-text-tertiary)">
-                    1 · Which service
+                    1 · Which provider
                   </p>
                   {allServices().map((s) => (
                     <button
@@ -1651,7 +1651,7 @@ function AddServiceDialog({
             </div>
             {supportHarnesses.length > 0 && (
               <p className="pt-2 text-[11px] text-(--color-text-tertiary)">
-                A tick means that harness can run the service&rsquo;s models. A service no column
+                A tick means that harness can run the provider&rsquo;s models. A provider no column
                 ticks has no harness here to drive it.
               </p>
             )}
@@ -1799,7 +1799,7 @@ function AddServiceDialog({
                 <p className="text-[11px] text-(--color-text-tertiary)">
                   {modeAllowsMultipleCredentials(billingMode)
                     ? "ShipIt fails over between the credentials of one subscription when one runs out."
-                    : "One key per service. Metered — no quota to report, so its card shows no usage."}
+                    : "One key per provider. Metered — no quota to report, so its card shows no usage."}
                 </p>
                 {/* The same hazard the card will carry, said BEFORE the key is
                     pasted — the one moment the user can still decide against
@@ -1909,7 +1909,7 @@ function AddServiceDialog({
               onClick={() => void startSignIn()}
               data-testid="add-service-sign-in"
             >
-              {signInStalled ? "Try again" : `Sign in to ${service?.name ?? "the service"}`}
+              {signInStalled ? "Try again" : `Sign in to ${service?.name ?? "the provider"}`}
             </Button>
           )}
         </div>
