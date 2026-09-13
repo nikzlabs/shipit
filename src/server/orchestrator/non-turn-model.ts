@@ -93,12 +93,6 @@ export interface HarnessSearchOpts {
 
 export interface NonTurnSearchOpts extends HarnessSearchOpts {
   /**
-   * Session naming still runs a CLI straight from the orchestrator, so it asks
-   * for a harness it can actually run. docs/299 phase 3 moves it onto the
-   * direct executor and this option goes with it.
-   */
-  harnessOnly?: boolean;
-  /**
    * Reads the credential a direct call would send. A caller that supplies one
    * offers a direct call only where the key is readable, so the runner it gets
    * back is one it can run; a caller asking about eligibility alone (seeding,
@@ -123,10 +117,8 @@ export function runnerForNonTurnSelection(
   credentials: readonly ConfiguredCredential[],
   opts: NonTurnSearchOpts = {},
 ): NonTurnRunner | undefined {
-  if (!opts.harnessOnly) {
-    const direct = directRunnerFor(selection, credentials, opts.directKeyFor);
-    if (direct) return direct;
-  }
+  const direct = directRunnerFor(selection, credentials, opts.directKeyFor);
+  if (direct) return direct;
   const harness = backgroundWorkHarnessFor(selection, credentials, opts);
   return harness ? { execution: "harness", ...harness } : undefined;
 }
@@ -288,10 +280,7 @@ export function backgroundWorkOptions(
   return out;
 }
 
-export function resolveNonTurnModel(
-  deps: NonTurnModelDeps,
-  opts: Pick<NonTurnSearchOpts, "harnessOnly"> = {},
-): NonTurnResolution {
+export function resolveNonTurnModel(deps: NonTurnModelDeps): NonTurnResolution {
   const credentials = listConfiguredCredentials(deps.credentialStore, deps.env ?? process.env);
   const pinned = deps.credentialStore.getNonTurnModel();
   const routeDeps = {
@@ -300,7 +289,6 @@ export function resolveNonTurnModel(
     ...(deps.env ? { env: deps.env } : {}),
   };
   const search: NonTurnSearchOpts = {
-    ...opts,
     directKeyFor: (selection, call) => directCallKey(deps, routeDeps, selection, call),
   };
   const resolved = pinned
