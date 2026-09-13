@@ -118,6 +118,8 @@ const GEMINI_PRICES = {
 } as const;
 // Google's published input limit for the Gemini 3 line; the gateway Gemini rows keep theirs.
 const GEMINI_WINDOW = { default: 1_048_576 } as const;
+// `antigravity models` lists gemini-3.1-pro-{high,low} only — no medium tier.
+const PRO_EFFORTS = ["low", "high"];
 
 // Match the app-server's assigned window, not the larger advertised API maximum.
 const CODEX_WINDOW = { default: 272_000 } as const;
@@ -254,17 +256,33 @@ export const SERVICES = [
     name: "Gemini (Google)",
     modes: [
       {
+        // The free Antigravity preview, reached by signing in with a Google
+        // account (docs/301 req 2). Google publishes no usage route for it, so
+        // the quota id has no reader and the account shows no meters.
+        kind: "sub",
+        endpoints: { [G_GC]: "https://generativelanguage.googleapis.com" },
+        quota: "google-antigravity-usage",
+        credentials: [{ via: "account", login: "google-antigravity-oauth", carriers: ["antigravity"] }],
+        retired: [],
+        // Account mode also offers third-party models (Claude, GPT-OSS). They are
+        // left out: ShipIt would misdescribe their wire format, and the vendor's
+        // Additional Terms §8 governs them separately.
+        models: [
+          { id: "gemini-3.8-flash", label: "Gemini 3.8 Flash", ...MODEL_IDENTITIES.gemini38flash, styles: [G_GC], contextWindow: GEMINI_WINDOW, price: GEMINI_PRICES.gemini38flash },
+          { id: "gemini-3.1-pro-preview", label: "Gemini 3.1 Pro (preview)", ...MODEL_IDENTITIES.gemini31proPreview, styles: [G_GC], contextWindow: GEMINI_WINDOW, price: GEMINI_PRICES.gemini31proPreview, reasoningEfforts: PRO_EFFORTS },
+        ],
+      },
+      {
         kind: "key",
         endpoints: { [G_GC]: "https://generativelanguage.googleapis.com" },
         // The key permits a direct call; no client speaks G_GC yet, so
         // resolveDirectCall still answers no (docs/302 req 5).
         credentials: [{ via: "string", storageEnv: "GEMINI_API_KEY", directCall: {} }],
         retired: [],
-        // No shipped harness speaks G_GC, so these rows join nothing until one
-        // does (docs/302 req 5). Model ids are Google's own, 2026-09-13.
+        // Model ids are Google's own, 2026-09-13.
         models: [
           { id: "gemini-3.8-flash", label: "Gemini 3.8 Flash", ...MODEL_IDENTITIES.gemini38flash, styles: [G_GC], contextWindow: GEMINI_WINDOW, price: GEMINI_PRICES.gemini38flash },
-          { id: "gemini-3.1-pro-preview", label: "Gemini 3.1 Pro (preview)", ...MODEL_IDENTITIES.gemini31proPreview, styles: [G_GC], contextWindow: GEMINI_WINDOW, price: GEMINI_PRICES.gemini31proPreview },
+          { id: "gemini-3.1-pro-preview", label: "Gemini 3.1 Pro (preview)", ...MODEL_IDENTITIES.gemini31proPreview, styles: [G_GC], contextWindow: GEMINI_WINDOW, price: GEMINI_PRICES.gemini31proPreview, reasoningEfforts: PRO_EFFORTS },
         ],
       },
     ],

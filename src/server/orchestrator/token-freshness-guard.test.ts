@@ -1,5 +1,10 @@
 // Fixtures: Claude captured 2026-08-20; Grok captured 2026-08-19 (device auth).
 // Codex is reconstructed from docs/154 and its auth manager, not a current capture.
+// Antigravity's KEY SET is a real observation — the six keys a 1.x sign-in wrote,
+// recorded in docs/266-harness-integration-recipe/candidates.md and confirmed
+// against the pinned binary's own json struct tags — but the file itself was not
+// re-captured, so `expiry`'s exact RFC3339Nano spelling is reconstructed from the
+// Go oauth2.Token shape. Re-capture it the first time an account signs in.
 // Tokens are placeholders; JWT gitleaks markers sit in the unparsed signature.
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "node:fs";

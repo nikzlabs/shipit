@@ -8,11 +8,13 @@ import * as claude from "./claude/index.js";
 import * as codex from "./codex/index.js";
 import * as opencode from "./opencode/index.js";
 import * as grok from "./grok/index.js";
+import * as antigravity from "./antigravity/index.js";
 
 export interface BuildAgentRuntimeDeps {
   authManager: claude.AuthManager;
   codexAuthManager: codex.CodexAuthManager;
   xaiAuthManager?: grok.XaiAuthManager;
+  antigravityAuthManager?: antigravity.AntigravityAuthManager;
   providerAccountManager?: ProviderAccountManager;
 }
 
@@ -28,6 +30,7 @@ export function buildAgentRuntime(deps: BuildAgentRuntimeDeps): AgentRuntime {
     deps.authManager,
     deps.codexAuthManager,
     deps.xaiAuthManager,
+    deps.antigravityAuthManager,
   ];
   const authManagers = new Map<LoginIntegrationId, AgentAuthManager>(
     declared.filter((mgr) => mgr !== undefined).map((mgr) => [mgr.loginId, mgr]),
@@ -58,6 +61,7 @@ export function buildAgentRuntime(deps: BuildAgentRuntimeDeps): AgentRuntime {
     ["codex", codex.prepareCodexRunParams],
     ["opencode", opencode.prepareOpencodeRunParams],
     ["grok", grok.prepareGrokRunParams],
+    ["antigravity", antigravity.prepareAntigravityRunParams],
   ]);
 
   const parallelSessionsSections = new Map<AgentId, string>([
@@ -65,6 +69,7 @@ export function buildAgentRuntime(deps: BuildAgentRuntimeDeps): AgentRuntime {
     ["codex", codex.CODEX_PARALLEL_SESSIONS_SECTION],
     ["opencode", opencode.OPENCODE_PARALLEL_SESSIONS_SECTION],
     ["grok", grok.GROK_PARALLEL_SESSIONS_SECTION],
+    ["antigravity", antigravity.ANTIGRAVITY_PARALLEL_SESSIONS_SECTION],
   ]);
 
   return { authManagers, limitsProviders, runParamsPreps, parallelSessionsSections };

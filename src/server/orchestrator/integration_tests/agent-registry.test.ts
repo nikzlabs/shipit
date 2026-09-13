@@ -61,7 +61,7 @@ describe("Integration: Agent registry — list_agents", () => {
     expect(res.statusCode).toBe(200);
     const data = res.json();
 
-    expect(data.agents).toHaveLength(4);
+    expect(data.agents).toHaveLength(5);
 
     const claude = data.agents.find((a: any) => a.id === "claude");
     expect(claude.installed).toBe(true);

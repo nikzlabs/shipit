@@ -3,11 +3,14 @@ import type { ImageAttachment, PermissionMode } from "./attachment-types.js";
 import type { ApiStyle, BillingMode, CredentialTarget } from "../catalogue/types.js";
 import type { McpServerConfig, McpServerStatus } from "./mcp-types.js";
 
-export type AgentId = "claude" | "codex" | "opencode" | "grok";
+export type AgentId = "claude" | "codex" | "opencode" | "grok" | "antigravity";
 
 export const CLAUDE_PERMISSION_MODES: PermissionMode[] = ["auto", "plan", "guarded"];
 
 export const GROK_PERMISSION_MODES: PermissionMode[] = ["auto", "plan", "guarded"];
+
+/** docs/301 req 8 — full-auto only at launch; the CLI's PreToolUse hook is the guarded-mode follow-up. */
+export const ANTIGRAVITY_PERMISSION_MODES: PermissionMode[] = ["auto"];
 
 export interface AgentReasoningCapability {
   label: string;

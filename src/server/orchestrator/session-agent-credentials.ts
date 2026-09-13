@@ -7,6 +7,7 @@ import {
   ensureClaudeWorkspaceTrusted,
 } from "./agents/claude/user-config.js";
 import { CONTAINER_CREDENTIALS_DIR } from "../shared/fs-constants.js";
+import { allHarnesses } from "../shared/catalogue/index.js";
 import { providerAccountCredentialRoot } from "./provider-account-manager.js";
 import {
   AGENT_TOKEN_FILES,
@@ -79,13 +80,13 @@ export function readSessionResidentRoute(
     if (!parsed || typeof parsed !== "object") return {};
     const out: Partial<Record<AgentId, RecordedResidentRoute>> = {};
     for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
-      if (key !== "claude" && key !== "codex" && key !== "opencode" && key !== "grok") continue;
+      if (!allHarnesses().some((h) => (h.id as string) === key)) continue;
       const route = value as { kind?: unknown; id?: unknown };
       if (
         (route?.kind === "account" || route?.kind === "reserved" || route?.kind === "string")
         && typeof route.id === "string"
       ) {
-        out[key] = { kind: route.kind, id: route.id };
+        out[key as AgentId] = { kind: route.kind, id: route.id };
       }
     }
     return out;
@@ -185,9 +186,26 @@ function removeProviderSubtreeForReplacement(sessionDir: string, rel: string): v
   const preserved = SUBTREE_STATE_SUBPATHS[rel];
   if (!preserved) return;
 
-  for (const entry of fs.readdirSync(target)) {
-    if (preserved.includes(entry)) continue;
-    fs.rmSync(path.join(target, entry), { recursive: true, force: true });
+  prunePreserving(target, preserved.map((sub) => sub.split("/")));
+}
+
+/**
+ * A preserved entry may be a PATH, not just a name: Antigravity keeps its token
+ * beside its conversation state inside `antigravity-cli/`, so the two are only
+ * separable one level deeper. A single-component entry behaves exactly as
+ * before — the whole directory is kept.
+ */
+function prunePreserving(dir: string, keep: string[][]): void {
+  for (const entry of fs.readdirSync(dir)) {
+    const matching = keep.filter((segments) => segments[0] === entry);
+    const child = path.join(dir, entry);
+    if (matching.some((segments) => segments.length === 1)) continue;
+    const deeper = matching.map((segments) => segments.slice(1)).filter((segments) => segments.length > 0);
+    if (deeper.length === 0 || !fs.lstatSync(child).isDirectory()) {
+      fs.rmSync(child, { recursive: true, force: true });
+      continue;
+    }
+    prunePreserving(child, deeper);
   }
 }
 

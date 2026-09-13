@@ -109,6 +109,13 @@ import { MODE_LABEL, ServiceCard } from "./ServiceCard.js";
 import { SupportedModelsDialog } from "./SupportedModelsDialog.js";
 import { CredentialSelectionModeControl, FailoverCutoffControls } from "./CredentialRouting.js";
 
+/**
+ * Sign-ins whose CLI prints a URL and then reads a pasted authorization code,
+ * rather than showing a device code to type at the provider. The placeholder has
+ * to match the shape of the field that will replace it.
+ */
+const PASTE_SHAPED_SIGN_INS = new Set<AgentId>(["claude", "antigravity"]);
+
 function catalogueModes(): { service: ServiceDef; billingMode: BillingMode }[] {
   return allServices().flatMap((service) =>
     service.modes.map((mode) => ({ service, billingMode: mode.kind })),
@@ -1733,7 +1740,7 @@ function AddServiceDialog({
                     ) : (
 
                       <ChallengePlaceholder
-                        shape={signInProvider === "claude" ? "paste" : "code"}
+                        shape={signInProvider && PASTE_SHAPED_SIGN_INS.has(signInProvider) ? "paste" : "code"}
                         {...(authStatus ? { status: authStatus } : {})}
                         testId="add-service-signin-starting"
                       >

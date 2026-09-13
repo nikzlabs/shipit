@@ -17,7 +17,20 @@ the catalogue vendor row landed in
 [docs/302-gemini-catalogue-vendor](../302-gemini-catalogue-vendor/plan.md)
 (req 7).
 
-## Phase 0 findings (CLI 1.2.2, 2026-09-13, in a session container)
+## Phase 0 findings (2026-09-13, in a session container)
+
+**The pinned version is 1.1.27** — the newest release at least 7 days old
+(published 2026-09-05; 1.2.2 was a day old). The first probe round ran on 1.2.2;
+every load-bearing finding below was then **re-verified on 1.1.27**, and none of
+them changed.
+
+The later round used a **local HTTP recorder** pointed at by
+`GOOGLE_GEMINI_BASE_URL` (`probes/recorder.js`, captures in
+`probes/endpoint-redirect.ndjson`). Redirecting the endpoint turned out to be
+the sharpest instrument available here: the request itself is the measurement,
+so a claim about what the CLI *sends* — which model id, which rules, which
+skills, which MCP servers — is answered exactly, offline, at no quota cost,
+instead of being inferred from what the model happened to reply.
 
 All probes ran headless in key mode (`GEMINI_API_KEY`, a free-tier key) on
 `gemini-3.8-flash-low` / `gemini-3.7-flash-low`. Raw captures, the probe
@@ -84,17 +97,23 @@ no credential. Each finding cites its capture.
   that file with `view_file` before its first call — an extra read step
   before every first MCP use, to be expected in transcripts. Plugin-supplied
   servers are namespaced `<plugin>_<server>`.
-- **Plugins load rules, MCP and skills — after an install step**
-  (`plugin-rules`, `plugin-mcp`, `plugin-skill`, `probe-run.txt`). A plugin
-  directory dropped under `~/.gemini/antigravity-cli/plugins/<name>/` is
-  ignored and its data directory deleted ("uninstalled plugin"). After
-  `antigravity plugin install <path>` the CLI copies the plugin to
-  `~/.gemini/config/plugins/<name>/` (`plugin.json`, `rules/AGENTS.md`,
-  `mcp_config.json`, `skills/`) and records it in
-  `~/.gemini/config/import_manifest.json`; from then on every headless turn
-  honoured the rule (`ZEBRA-PLUGIN` prefix), called the plugin's MCP server
-  and listed and used the plugin skill (`MARMALADE`). Two built-in skills
-  (`agy-customizations`, `antigravity-guide`) are always disclosed.
+- **A hand-written plugin delivers rules, skills and MCP — no install step,
+  no manifest** (`endpoint-redirect.ndjson`, on 1.1.27, in a brand-new HOME).
+  This is the finding the whole spawn design rests on, and the recorder settled
+  it outright: a directory at `~/.gemini/config/plugins/<name>/` carrying only
+  `plugin.json`, `rules/AGENTS.md`, `skills/<name>` (a **symlink**, followed)
+  and `mcp_config.json` put all four on the wire — the rule inside the CLI's own
+  `<RULE[path]>` block under "rules you must ALWAYS follow", the skill's name and
+  description in the tool preamble, the plugin's MCP servers namespaced
+  `<plugin>_<server>`. The earlier 1.2.2 round had needed `antigravity plugin
+  install <path>`; what actually distinguishes the two is **not** the install
+  command but the manifest. `import_manifest.json` is optional, and a
+  MALFORMED one SUPPRESSES loading entirely — the first hand-written attempt
+  failed for that reason alone. So ShipIt writes no manifest, which is the
+  case that was probed. A plugin dropped under `antigravity-cli/plugins/`
+  instead of `config/plugins/` is still ignored and its data directory deleted
+  ("uninstalled plugin"). Two built-in skills (`agy-customizations`,
+  `antigravity-guide`) are always disclosed.
 - **Workspace instructions and skills are NOT read in a headless turn**
   (`skills.ndjson`, `skills-cli-log.txt`, `skills-transcript_full.jsonl`;
   the docs/209 probe, run with **no plugin installed**, status `SUCCESS`):
@@ -132,12 +151,28 @@ no credential. Each finding cites its capture.
   20/day per flash model. The text is Google's own and lands in
   `result.error` + stderr; it must reach the user (see "Errors reach the
   user verbatim").
-- **Model ids on the CLI carry the effort as a suffix**: `antigravity
-  models` lists `gemini-3.8-flash-{high,medium,low}`, `gemini-3.7-flash-*`,
-  `gemini-3.6-flash-*`, `gemini-3.1-pro-{high,low}`; `--effort
-  low|medium|high` also exists ("--effort is not supported for the current
-  model" is compiled in). The catalogue ids are `gemini-3.8-flash` and
-  `gemini-3.1-pro-preview` (docs/302).
+- **Model delivery, settled** (`endpoint-redirect.ndjson`,
+  `refusal-no-effort.ndjson`). `antigravity models` lists ids with the level
+  baked in (`gemini-3.8-flash-high`, `gemini-3.1-pro-low`, …), but that is the
+  listing format, not the flag format. The CLI takes a **base id plus
+  `--effort`**, and requires the pair: `--model gemini-3.8-flash` alone exits 1
+  with *"--model gemini-3.8-flash requires --effort (available: low, medium,
+  high)"*. Two consequences for the adapter. The catalogue's
+  `gemini-3.1-pro-preview` is **not a CLI id** ("not recognized as a known
+  model"); the CLI id is `gemini-3.1-pro`, so the adapter strips the `-preview`
+  suffix and the wire then carries `gemini-3.1-pro-preview-customtools`. And
+  Pro has no `medium` — *"gemini-3.1-pro has no \"medium\" effort (available:
+  low, high)"* — which is what `ModelDef.reasoningEfforts` narrows. Because the
+  flag is mandatory, a turn that arrives with no effort still needs one; the
+  adapter falls back to `high`, the one level every offered model accepts and
+  the same value as `REVIEWER_DEFAULT_EFFORT`, so the two cannot disagree.
+- **The CLI makes a second, unselected model call per run**
+  (`endpoint-redirect.ndjson`): every print run also POSTs to
+  `gemini-3.1-flash-lite-preview` with a "conversation title generator" system
+  instruction. It is small (~800 bytes of prompt) and ShipIt neither selects nor
+  prices it, but it is real spend on a model the picker never showed. Recorded
+  here so a future bill or an egress rule is not a surprise; no mitigation is
+  known short of a CLI setting that does not appear to exist.
 - **No login subcommand.** The top-level commands are `help`, `mcp`,
   `models`, `plugin`, `update`. Sign-in happens inside a print run: URL on
   stderr, code read from stdin within 60 s, token file written
@@ -158,8 +193,11 @@ selected (req 1): pickers, roles and `SHIPIT_HARNESSES` all derive from
   `settings.json` by the adapter — the key alone is not enough, probed) and
   `account: { kind: "scoped-home" }` (req 2; the token is a plain file).
   `spawn.model: { kind: "flag", flag: "--model" }`; `spawn.endpoint`: env
-  `GOOGLE_GEMINI_BASE_URL` (vendor-documented, **unprobed** — verify with the
-  recorder at implementation before the endpoint override is declared).
+  `GOOGLE_GEMINI_BASE_URL` — **probed** (Phase 0 item 11, closed): redirected
+  to a local recorder the CLI POSTs
+  `<base>/v1beta/models/<id>:streamGenerateContent?alt=sse` with the key on an
+  `x-goog-api-key` header, so the bare-host endpoint docs/302 declares is the
+  right shape.
 - The `google` `ServiceDef` gains a `sub` mode (the free-preview account)
   with `login: "google-antigravity-oauth"`, `carriers: ["antigravity"]`, and
   the account-mode models observed in candidates.md (the Gemini pair plus
@@ -170,12 +208,9 @@ selected (req 1): pickers, roles and `SHIPIT_HARNESSES` all derive from
   signed-in token before deciding; if none exists, the docs/274 "no-reader
   subscription gets no meters" rule applies and the `quota: null` arm that
   docs/274 removed comes back for this one mode.
-- **Model delivery must translate ids.** The CLI wants `<catalogue-id>-<effort>`
-  (and `gemini-3.1-pro-*` without `-preview`), the service receives the
-  catalogue id. Probe at implementation which of `--model gemini-3.8-flash
-  --effort high` and `--model gemini-3.8-flash-high` the CLI accepts, then
-  either translate in the adapter (Claude's `[1m]`-strip precedent) or record
-  the CLI ids as the harness's own aliases.
+- **Model delivery translates in the adapter** (`antigravityCliModelId`,
+  Claude's `[1m]`-strip precedent): catalogue id minus a `-preview` suffix,
+  plus a mandatory `--effort`. See the Phase 0 finding for the probe.
 - Capabilities, each grounded above: `supportsResume: true`
   (`--conversation`); `supportsImages: false` — **not-wired**, tracked in
   planning#543's follow-ups: the CLI has no image flag and the
@@ -186,13 +221,16 @@ selected (req 1): pickers, roles and `SHIPIT_HARNESSES` all derive from
   `ANTIGRAVITY_PERMISSION_MODES` (full-auto only, req 8);
   `reasoning: { options: low|medium|high }` with the Pro row narrowed to
   `low|high` via `ModelDef.reasoningEfforts` (docs/302 left the field for
-  this); `supportsReview`: **set by the item-15 probe, not declared here**
-  — docs/266 rejects "unexercised at launch" as a basis; the three things
-  the flow needs are all in `init.tools` (`run_command` with
+  this); `supportsReview: false` — **not-wired**, and the one capability
+  this feature did not settle. The docs/266 item-15 depth-0 probe needs a live
+  session on this harness with a credential that can fund a whole review turn,
+  and the only credential available was a free-tier key (5 requests/minute).
+  Everything the flow needs is in `init.tools` — `run_command` with
   `command_status` for a minutes-long command, `invoke_subagent`,
-  `view_file`/`grep_search`), so the expectation is `true`, and the
-  depth-0 probe with the real composed review message runs on the first
-  session the implementation can open (checklist Phase 0); `supportsSteering: false` —
+  `view_file`/`grep_search` — so the expectation is still `true`; declaring it
+  unprobed is exactly the mistake docs/266 item 13 exists to stop. The `false`
+  hides the file-viewer button and leaves `/review` working, so nothing is
+  blocked by waiting. planning#543 tracks the probe; `supportsSteering: false` —
   **structural** (spawn per turn; the CLI's `--input-format stream-json`
   resident shape is a follow-up); `startsOwnTurns: false` — structural;
   `supportsCompaction: false` — probed; `supportsGoals: false` — not-wired
@@ -222,7 +260,7 @@ one non-npm branch, gated on `contains antigravity $selected`:
 - `KNOWN_HARNESSES` gains `antigravity`; `harness_bin` echoes `antigravity`;
   `harness_pkg_prefix` gets a sentinel arm (the parity test requires the arm
   and the pruning loop calls it; it prunes nothing for this harness).
-- `ANTIGRAVITY_VERSION=<x.y.z>` and `ANTIGRAVITY_SHA256_{x64,arm64}` pinned
+- `ANTIGRAVITY_VERSION=1.1.27` and `ANTIGRAVITY_SHA256_{X64,ARM64}` pinned
   in the script; the branch curls
   `https://github.com/google-antigravity/antigravity-cli/releases/download/<version>/agy_cli_linux_<arch>.tar.gz`
   (arch from `uname -m` as `Dockerfile.session-worker.docker` does), checks
@@ -234,7 +272,9 @@ one non-npm branch, gated on `contains antigravity $selected`:
 - `harness_link_target` returns `/opt/antigravity/antigravity`; the generic
   link, `--version` verification (under the scratch `HOME`) and
   `installed.json` loops then cover it. The prune arm removes
-  `/opt/antigravity` when deselected.
+  `/opt/antigravity` when deselected — after `chmod -R u+w`, because the seal
+  that stops the updater also stops the delete, and a reinstall or a prune that
+  only works as root is a trap for every other caller.
 - **Read-only install neutralises the updater — for the worker uid.** On
   1.2.2 the updater logs `Directory … is not fully accessible (readable:
   true, writable: false), skipping update` and exits (probed as the
@@ -248,12 +288,20 @@ one non-npm branch, gated on `contains antigravity $selected`:
   rule) or mount the install path read-only in the orchestrator image. The
   checksum proves the artefact at build time only; the runtime guarantee is
   this one. Re-check the log line on every version bump (docs/272).
-- **Version choice**: daily 1.x releases; take the newest that is ≥ 7 days
-  old at implementation time and record its date — `check-deps` covers only
-  the two npm manifests, so this pin is policed by review, not CI.
-- `agent-cli-install.test.ts` runs the real script against a stub `npm`; the
-  tarball fetch needs a stub of the same kind (an env override pointing the
-  branch at a local tarball) so the behavioural tests stay offline.
+- **Version choice: 1.1.27, published 2026-09-05.** Releases are near-daily,
+  so the dependency policy's 7-day cooldown is the binding constraint and this
+  was the newest release old enough on 2026-09-13. `check-deps` covers only the
+  two npm manifests, so the pin is policed by review, not CI. The first probe
+  round had run on 1.2.2 (one day old); every load-bearing finding was re-run
+  against 1.1.27 before it was pinned, so the design is measured on the version
+  that actually ships.
+- `agent-cli-install.test.ts` runs the real script against a stub `npm`. The
+  tarball fetch stays offline the same way, but **without a second code path**:
+  `ANTIGRAVITY_BASE_URL` and the two digests are `${VAR:-default}` shell
+  variables, so a test points the fetch at a `file://` tarball and supplies that
+  tarball's own digest. There is one fetch, and it always verifies — an
+  env-controlled "skip the checksum" branch would be a supply-chain hole that
+  outlives the test that needed it.
 - Dogfood: the root `docker-compose.yml` hard-codes `SHIPIT_HARNESSES` in
   both dogfood blocks; add `antigravity` to both. `DEFAULT_HARNESSES` and
   `HARNESS_DEFAULT` stay unchanged (docs/271: installable, not default).

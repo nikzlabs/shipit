@@ -4,6 +4,8 @@ import type { AgentId, CredentialRoute } from "../shared/types.js";
 import { nativeServiceForHarness } from "../shared/catalogue/index.js";
 import { extractCodexIdentity } from "./agents/codex/auth-manager.js";
 import { extractXaiIdentity } from "./agents/grok/auth-manager.js";
+import { extractAntigravityIdentity } from "./agents/antigravity/auth-manager.js";
+import { antigravityTokenPath } from "../shared/antigravity-home.js";
 
 export interface ProviderAccountIdentity {
   externalId: string;
@@ -34,6 +36,12 @@ export function readGrokAccountIdentity(credentialRoot: string): ProviderAccount
   return extractXaiIdentity(auth);
 }
 
+export function readAntigravityAccountIdentity(credentialRoot: string): ProviderAccountIdentity | null {
+  const token = readJsonObject(antigravityTokenPath(credentialRoot));
+  if (!token) return null;
+  return extractAntigravityIdentity(token);
+}
+
 export function readProviderAccountIdentity(
   provider: AgentId,
   credentialRoot: string,
@@ -41,6 +49,7 @@ export function readProviderAccountIdentity(
   if (provider === "claude") return readClaudeAccountIdentity(credentialRoot);
   if (provider === "codex") return readCodexAccountIdentity(credentialRoot);
   if (provider === "grok") return readGrokAccountIdentity(credentialRoot);
+  if (provider === "antigravity") return readAntigravityAccountIdentity(credentialRoot);
   return null;
 }
 

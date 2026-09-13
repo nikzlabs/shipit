@@ -5,7 +5,7 @@ import type { DatabaseManager } from "../shared/database.js";
 import type { PrStatusSummary } from "../shared/types/github-types.js";
 import type { AgentGoal, AgentId } from "../shared/types/agent-types.js";
 import type { BillingMode, ModelSelection } from "../shared/catalogue/index.js";
-import { resolveModelSelection, sameCredentialOwner } from "../shared/catalogue/index.js";
+import { allHarnesses, resolveModelSelection, sameCredentialOwner } from "../shared/catalogue/index.js";
 import { repoId, stripRemoteUrlCredentials } from "./git-utils.js";
 
 // Bill by the actual route, which can differ from the session's requested mode.
@@ -215,10 +215,9 @@ export class SessionManager {
     if (row.closed_at) info.closedAt = row.closed_at;
     if (row.model) info.model = row.model;
     if (row.reasoning_effort) info.reasoningEffort = row.reasoning_effort;
-    if (
-      row.agent_id === "claude" || row.agent_id === "codex"
-      || row.agent_id === "opencode" || row.agent_id === "grok"
-    ) info.agentId = row.agent_id;
+    if (row.agent_id !== null && allHarnesses().some((h) => (h.id as string) === row.agent_id)) {
+      info.agentId = row.agent_id as AgentId;
+    }
     if (row.agent_pinned) info.agentPinned = true;
     // Service/mode and model may be populated independently on legacy selections.
     if (row.service_id) info.serviceId = row.service_id;

@@ -10,6 +10,7 @@ const THEME_DEFS = [
   { id: "codex-light", label: "Codex Light", description: "Mint and terminal green", light: true },
   { id: "opencode-light", label: "OpenCode Light", description: "Warm paper and amber", light: true },
   { id: "grok-light", label: "Grok Light", description: "Cool paper and graphite", light: true },
+  { id: "antigravity-light", label: "Antigravity Light", description: "Paper and Google blue", light: true },
   { id: "dark", label: "Dark", description: "Classic dark mode", light: false },
   { id: "midnight", label: "Midnight", description: "Deep blue tones", light: false },
   { id: "forest", label: "Forest", description: "Green and earthy", light: false },
@@ -18,6 +19,7 @@ const THEME_DEFS = [
   { id: "codex", label: "Codex Dark", description: "Terminal green", light: false },
   { id: "opencode", label: "OpenCode Dark", description: "Charcoal and amber", light: false },
   { id: "grok", label: "Grok Dark", description: "Pure black and slate", light: false },
+  { id: "antigravity", label: "Antigravity Dark", description: "Deep space navy and blue", light: false },
   { id: "solarized", label: "Solarized Dark", description: "Classic Solarized Dark", light: false },
   { id: "high-contrast", label: "High Contrast", description: "Maximum readability", light: false },
 ] as const;

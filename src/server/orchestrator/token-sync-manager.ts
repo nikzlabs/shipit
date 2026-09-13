@@ -10,6 +10,8 @@ import {
 } from "../shared/fs-constants.js";
 import { PROVIDER_ACCOUNTS_SUBDIR, providerAccountCredentialRoot } from "./provider-account-manager.js";
 import { probeNestedString } from "./agents/agent-auth-base.js";
+import { readAntigravityTokenFreshnessFile } from "./agents/antigravity/auth-manager.js";
+import { ANTIGRAVITY_TOKEN_REL } from "../shared/antigravity-home.js";
 import { readXaiTokenFreshnessFile } from "./agents/grok/auth-manager.js";
 import {
   AGENT_CREDENTIAL_PATHS,
@@ -26,6 +28,9 @@ export const AGENT_TOKEN_FILES: Partial<Record<AgentId, readonly string[]>> = {
   codex: [".codex/auth.json"],
   // Grok's adapter must copy back auth.json when the CLI replaces its file symlink.
   grok: [".grok/auth.json"],
+  // Three components: the token sits below the linked .gemini root, so a CLI
+  // refresh rename cannot replace the link (docs/266 step 3).
+  antigravity: [ANTIGRAVITY_TOKEN_REL],
 };
 
 // Claude resume only finds conversations in the current working directory's bucket.
@@ -104,6 +109,7 @@ export const TOKEN_FRESHNESS: Partial<Record<AgentId, (file: string) => number |
   claude: readClaudeTokenExpiry,
   codex: readCodexTokenFreshness,
   grok: readXaiTokenFreshnessFile,
+  antigravity: readAntigravityTokenFreshnessFile,
 };
 
 // Unknown freshness does not mean absence: preserve credentials the reader cannot order.
@@ -376,11 +382,25 @@ const CODEX_SESSION_STATE_SUBPATHS: readonly string[] = [
 
 const GROK_SESSION_STATE_SUBPATHS: readonly string[] = ["sessions"];
 
+// The Antigravity token sits BESIDE its state inside antigravity-cli/, so the
+// preserved entries are paths one level deeper. settings.json is deliberately
+// absent: the adapter derives it at every spawn.
+const ANTIGRAVITY_SESSION_STATE_SUBPATHS: readonly string[] = [
+  "antigravity-cli/conversations",
+  "antigravity-cli/brain",
+  "antigravity-cli/conversation_summaries.db",
+  "antigravity-cli/mcp",
+  "antigravity-cli/plugin_data",
+  "antigravity-cli/cache",
+  "antigravity-cli/log",
+];
+
 // Shared by leak repair and account replacement; keep auth/config out of state merges.
 export const SUBTREE_STATE_SUBPATHS: Readonly<Record<string, readonly string[]>> = {
   ".claude": CLAUDE_SESSION_STATE_SUBPATHS,
   ".codex": CODEX_SESSION_STATE_SUBPATHS,
   ".grok": GROK_SESSION_STATE_SUBPATHS,
+  ".gemini": ANTIGRAVITY_SESSION_STATE_SUBPATHS,
   ".local/share/opencode": ["shipit-data", "opencode.db", "opencode.db-wal", "opencode.db-shm", "storage", "snapshot"],
 };
 
@@ -395,12 +415,20 @@ type LeakRepairResult =
   | { outcome: "recovered"; recoveredAgentSessionId: string }
   | { outcome: "clear" };
 
+/**
+ * Root-RELATIVE remainders, not bare filenames: a token can sit more than one
+ * level below its declared root (`.gemini/antigravity-cli/…`), and every caller
+ * path.joins the result onto a subtree root. A bare-filename match made such a
+ * token invisible to orphan discovery and leak repair.
+ */
 function tokenFileNamesForSubtree(rel: string): string[] {
+  const prefix = `${rel}/`;
   const names: string[] = [];
   for (const files of Object.values(AGENT_TOKEN_FILES)) {
     for (const file of files ?? []) {
-      const parts = file.split("/");
-      if (parts.length === 2 && parts[0] === rel) names.push(parts[1]);
+      if (!file.startsWith(prefix)) continue;
+      const remainder = file.slice(prefix.length);
+      if (remainder.length > 0 && !names.includes(remainder)) names.push(remainder);
     }
   }
   return names;

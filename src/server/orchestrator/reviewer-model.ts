@@ -31,6 +31,7 @@ export const REVIEWER_DEFAULT_EFFORT: Record<AgentId, string | null> = {
   codex: "high",
   opencode: "high",
   grok: "high",
+  antigravity: "high",
 };
 
 export type ReviewerSource = "pinned" | "auto";

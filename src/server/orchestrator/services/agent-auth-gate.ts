@@ -7,6 +7,7 @@ const AUTH_ERROR: Record<AgentId, string> = {
   codex: "Codex is not authenticated. Sign in to Codex or add OPENAI_API_KEY in Settings → Model providers.",
   opencode: "OpenCode has no usable credential. Add an API key for a provider OpenCode can run in Settings → Model providers.",
   grok: "Grok Build is not authenticated. Add XAI_API_KEY in Settings → Model providers.",
+  antigravity: "Antigravity is not authenticated. Sign in with Google or add GEMINI_API_KEY in Settings → Model providers.",
 };
 
 export function agentAuthenticationError(agentId: AgentId): string {

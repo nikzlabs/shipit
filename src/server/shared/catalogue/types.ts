@@ -18,7 +18,8 @@ export type HarnessId = AgentId;
 export type LoginIntegrationId =
   | "anthropic-oauth"
   | "openai-chatgpt"
-  | "xai-oauth";
+  | "xai-oauth"
+  | "google-antigravity-oauth";
 
 export type QuotaIntegrationId =
   | "anthropic-oauth-usage"
@@ -26,7 +27,10 @@ export type QuotaIntegrationId =
   | "zai-plan-usage"
   // No per-key usage reader; Go reacts to service 429s.
   | "opencode-go-usage"
-  | "xai-plan-usage";
+  | "xai-plan-usage"
+  // Declared without a reader: no usage route is known for the Antigravity
+  // preview account, so docs/274's honest-absence rule gives it no meters.
+  | "google-antigravity-usage";
 
 /** API rates in USD per million tokens, including subscription cost comparisons. */
 export interface ModelPrice {

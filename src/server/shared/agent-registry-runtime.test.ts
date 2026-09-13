@@ -43,8 +43,8 @@ describe("AgentRegistry", () => {
     await registry.detect();
 
     const agents = registry.list();
-    expect(agents).toHaveLength(4);
-    expect(agents.map((a) => a.id)).toEqual(["claude", "codex", "opencode", "grok"]);
+    expect(agents).toHaveLength(5);
+    expect(agents.map((a) => a.id)).toEqual(["claude", "codex", "opencode", "grok", "antigravity"]);
   });
 
   it("checks Claude auth via checkClaudeAuth callback", async () => {

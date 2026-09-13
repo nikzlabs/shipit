@@ -7,6 +7,7 @@ const AGENT_LIMIT_LABELS: Record<AgentId, string> = {
   codex: "Codex",
   opencode: "OpenCode",
   grok: "Grok Build",
+  antigravity: "Antigravity",
 };
 
 // Bound lockouts when the provider gives no reset time.

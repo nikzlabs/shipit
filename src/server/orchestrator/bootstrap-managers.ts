@@ -116,7 +116,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     autoPushDebounceMs, sessionsRoot, agentFactory, localAgentFactory,
     createGitManager, createRepoGit, databaseManager, sessionManager,
     repoStore, chatHistoryManager, usageManager, authManager, codexAuthManager,
-    xaiAuthManager,
+    xaiAuthManager, antigravityAuthManager,
     credentialStore, providerAccountManager, agentRegistry, githubAuthManager,
     secretStore, reviewStore, egressAllowlistStore, presentStore, generateText,
     isTestMode, runtimeMode,
@@ -318,6 +318,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     authManager,
     codexAuthManager,
     xaiAuthManager,
+    antigravityAuthManager,
     ...(providerAccountManager ? { providerAccountManager } : {}),
   });
   const { authManagers, limitsProviders, runParamsPreps } = agentRuntime;
@@ -932,7 +933,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     autoPushDebounceMs, sessionsRoot, agentFactory, localAgentFactory,
     createGitManager, createRepoGit, databaseManager, sessionManager,
     repoStore, chatHistoryManager, usageManager, authManager, codexAuthManager,
-    xaiAuthManager,
+    xaiAuthManager, antigravityAuthManager,
     credentialStore, providerAccountManager, agentRegistry, githubAuthManager,
     secretStore, reviewStore, egressAllowlistStore, presentStore,
     generateText: effectiveGenerateText,

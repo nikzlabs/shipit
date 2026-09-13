@@ -240,13 +240,13 @@ describe("useTheme", () => {
     expect(document.documentElement.classList.contains("midnight")).toBe(false);
   });
 
-  it("THEME_OPTIONS includes all eighteen themes", () => {
+  it("THEME_OPTIONS includes all twenty themes", () => {
     const ids = THEME_OPTIONS.map((t) => t.id);
     expect(ids).toEqual([
       "light", "warm-light", "cool-light", "solarized-light", "claude-light", "codex-light", "opencode-light",
-      "grok-light",
+      "grok-light", "antigravity-light",
       "dark", "midnight", "forest", "rose",
-      "claude", "codex", "opencode", "grok", "solarized", "high-contrast",
+      "claude", "codex", "opencode", "grok", "antigravity", "solarized", "high-contrast",
     ]);
   });
 });
