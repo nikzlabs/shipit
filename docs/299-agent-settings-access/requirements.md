@@ -60,7 +60,15 @@ agent is the actor.
 
 ## Open questions
 
-- (none)
+- **Which dialog does req 5 mean?** ShipIt has two: the global **Settings**
+  dialog with ten tabs, and a per-repository **Project Settings** dialog holding
+  the Secrets panel, the "Allow agents to merge their own pull requests"
+  permission and the repository colour. The second one holds two of the things
+  agent-facing docs currently tell the agent to ask the user for
+  (`shipit-docs/secrets.md`, `shipit-docs/github.md:263`), which argues for
+  including it; the question was asked about "the dialog", singular, which does
+  not settle it. The design currently covers both. Answering "global only"
+  removes one scope from the registry and changes nothing else.
 
 ## Resolved questions
 
@@ -81,7 +89,8 @@ agent is the actor.
 - 2026-09-13 — *Which settings are in scope for a first version?* Every setting
   in the dialog, chosen over the smaller "only what blocks the agent" list. The
   agent must be able to answer a question about any setting the user names, not
-  only the ones it trips over itself. → requirement 5.
+  only the ones it trips over itself. → requirement 5. *Which* dialog is still
+  open, above.
 - 2026-09-13 — *Per-session settings too, or global only?* Answered by the scope
   choice above: the dialog is the boundary. Per-session sandbox capabilities are
   set from the sandbox banner rather than the dialog, so they are out of scope
