@@ -74,18 +74,26 @@ with its tools off is never selected for background work at all.
 
 - [x] Pull-request path: resolve and execute above the no-session and no-runner gates (`non-turn-work.ts:231`, `:252`).
 - [x] Test that background work now succeeds with no session open and with the container reclaimed.
-- [ ] Session naming: extract prompt construction and result parsing from the `execFile` invocation in `session-namer.ts:443`; run the selected executor; keep its failure, usage and branch-finalisation behaviour.
+- [x] Session naming: extract prompt construction and result parsing from the `execFile` invocation in `session-namer.ts:443`; run the selected executor; keep its failure, usage and branch-finalisation behaviour.
+- [x] Delete `harnessOnly` once naming stops asking for it; it has no other caller.
 
-**Naming's defect is worse than "it takes the slower route", and the fix must remove both halves.**
-`services/graduate-session.ts` resolves with `harnessOnly: true` — the last caller of that option.
-On an install whose background-work choice resolves direct-only, that yields `pin_unavailable`,
-so the session gets **no generated name** *and* a failure card saying the model's credential or
-harness is gone, while the credential is present and working. The false cause is the damaging
-part: it sends the user to Settings to repair nothing. Found by the selector slice, verified
-against `main`. A second decision rides with it — once `harnessOnly` goes, the new
-`toolsOffRefusal` filter becomes what keeps naming off an unusable harness, but naming's
-orchestrator-side `execFile` path passes no tools-off flag today, so the two paths disagree about
-what "can run background work" means.
+Shipped in PR #2769. The defect it removed was worse than "naming takes the slower route", and
+both halves are gone: `services/graduate-session.ts` resolved with `harnessOnly: true`, so an
+install whose background-work choice is reachable only as a direct call got `pin_unavailable` —
+**no generated name on any session**, plus a card saying the model's credential or harness was
+gone while that credential was present and working. The false cause was the damaging half,
+because it sent the user to Settings to repair nothing.
+
+- **Whether naming should keep its own definition of an eligible harness was a real decision,
+  not a consequence.** It was taken deliberately and is recorded in [`plan.md`](./plan.md);
+  measuring the one harness it costs is
+  [planning#546](https://github.com/nikzlabs/shipit-planning/issues/546).
+- **The dispatch route resolved no background-work model at all.** `POST
+  /api/sessions/:id/agent/dispatch` passed none of the credential plumbing into graduation, so
+  it named on the session's own harness and silently ignored the user's choice. Found by review,
+  outside the slice as written.
+- **The title parser was order-dependent.** It matched slug-before-title only, so a correct
+  answer in the other key order was discarded after the provider had already billed for it.
 
 **Sequencing, decided while shipping rather than in the design.** The union, the direct executor
 and the pull-request caller ship together, ahead of the selector work. A selector that offered a

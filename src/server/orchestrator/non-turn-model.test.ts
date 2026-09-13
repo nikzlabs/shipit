@@ -296,36 +296,6 @@ describe("resolveNonTurnModel — a direct call where the credential permits one
     expect(result.target.selection.serviceId).toBe("deepseek");
     expect(result.target.apiKey).toBe("sk-env");
   });
-
-  it("gives a caller that asks for a harness one it can run", async () => {
-    // Session naming still runs a CLI of its own until docs/299 phase 3.
-    installAll();
-    const { resolveNonTurnModel } = await import("./non-turn-model.js");
-    const result = resolveNonTurnModel(
-      {
-        credentialStore: storeWith([route({ serviceId: "anthropic", billingMode: "key" })]),
-        env: {},
-      },
-      { harnessOnly: true },
-    );
-
-    if (!result.ok || result.target.execution !== "harness") throw new Error("expected a harness");
-    expect(result.target.harnessId).toBe("claude");
-  });
-
-  it("has nothing to offer a harness-only caller with no harness installed", async () => {
-    installNone();
-    const { resolveNonTurnModel } = await import("./non-turn-model.js");
-    const result = resolveNonTurnModel(
-      {
-        credentialStore: storeWith([route({ serviceId: "anthropic", billingMode: "key" })]),
-        env: {},
-      },
-      { harnessOnly: true },
-    );
-
-    expect(result.ok).toBe(false);
-  });
 });
 
 describe("backgroundWorkOptions — what the selector may offer (docs/299 req 3)", () => {
