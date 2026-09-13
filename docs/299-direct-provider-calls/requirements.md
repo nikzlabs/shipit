@@ -71,6 +71,12 @@ where a harness runs the work; what becomes a choice is whether a harness runs i
    [`docs/252-custom-models`](../252-custom-models/requirements.md) req 16's split by service
    and billing mode.
 
+   **Background work that belongs to no session is still reported.** A dictation cleaned while
+   no session is open spends the user's money, so it appears in usage as install-level spend in
+   its own right, rather than being attributed to an unrelated session or dropped from the
+   totals. This is the same principle docs/252 req 16 applies to work whose attribution does not
+   exist: volume that is real is never silently omitted, and never priced at zero.
+
 8. **Voice cleanup that runs a harness pays no container start.** The first dictation after a
    quiet period costs no container-start delay, and cleanup latency does not depend on which
    sessions happen to be open or on what ShipIt reclaimed while the user was away. Cleanup that
@@ -86,16 +92,18 @@ where a harness runs the work; what becomes a choice is whether a harness runs i
 
 ## Open questions
 
-- **How does a dictation's spend appear in usage?** Req 7 says a direct call is metered spend
-  reported under docs/252 req 16's split, but a usage row requires a session id
-  (`src/server/shared/database.ts:550` — `session_id TEXT NOT NULL`) and a dictation may have no
-  session. The options are: attribute it to whichever session was active and record nothing when
-  there is none; make the usage row's session id nullable and report install-level spend as its
-  own row; or do not record cleanup spend at all and say so where usage is shown. The first is
-  cheapest and under-reports; the second is the honest one and touches the schema; the third
-  makes req 7 partly false for cleanup.
+_None._
 
 ## Resolved questions
+
+- 2026-09-13 — How does a dictation's spend appear in usage, when a usage row requires a session
+  id (`src/server/shared/database.ts:550`) and a dictation may have no session? **Chosen: make
+  the session id nullable and report install-level spend as its own row.** The rejected
+  alternatives were attributing the spend to whichever session happened to be active, which is
+  cheapest and charges a session for work that was not its turn, and not recording cleanup spend
+  at all, which would have made req 7 partly false — real money leaving the user's key and
+  appearing in no total. The chosen answer is the most work, touching the schema and the usage
+  views, and is the only one that reports every dictation honestly. Req 7 extended.
 
 - 2026-09-13 — Does the billing mode decide whether background work runs a harness or calls the
   API directly? **Chosen: no — the credential's origin decides.** The independent review

@@ -8,7 +8,7 @@ Design in [`plan.md`](./plan.md), requirements in [`requirements.md`](./requirem
 - [x] Measure one-shot harness latency against the cleanup budget.
 - [x] Write `plan.md`.
 - [x] Independent review; fold its findings back into both documents.
-- [ ] Answer the open question on how a dictation's spend appears in usage.
+- [x] Answer the open question on how a dictation's spend appears in usage.
 
 ## Phase 1 — Stop the terms violation
 
@@ -27,6 +27,9 @@ Design in [`plan.md`](./plan.md), requirements in [`requirements.md`](./requirem
 - [ ] `anthropic-messages.ts` and `openai-chat-completions.ts` seeded from the deleted voice adapters; `openai-responses.ts` new.
 - [ ] Per-style test that the URL and the API model id are built from **real catalogue rows**, one per shipped service — a fake-fetch shape assertion cannot fail on either bug.
 - [ ] `NonTurnTarget` becomes a union on `execution`; fix every consumer the compiler names.
+- [ ] Migration making `usage_turns.session_id` nullable; a null means install-level spend.
+- [ ] `recordNonTurnUsage` accepts no session id and no harness id for a direct call.
+- [ ] Every usage read path that groups by session renders the install-level row instead of skipping it or failing on a null — usage modal, per-session cost, by-spend ranking.
 - [ ] Background-work eligibility that does not require an installed harness.
 - [ ] Background-work option list that is not filtered by `agent.installed` (`model-choice.ts:32`), carried through bootstrap and credential-change updates.
 - [ ] Seeding and save validation in `services/settings.ts` accept an option with no installed harness.

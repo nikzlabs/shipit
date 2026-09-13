@@ -93,6 +93,22 @@ Tests against a fake `fetch` that assert the request shape would pass while send
 alias to a wrong URL. So each style also needs a test that the URL and the model id are built
 from real catalogue rows, one per shipped service.
 
+## Usage for work that belongs to no session
+
+`usage_turns.session_id` is `TEXT NOT NULL` (`shared/database.ts:550`), and `recordNonTurnUsage`
+requires both a session id and a harness id (`services/non-turn-work.ts:73`). Neither holds for a
+dictation cleaned with no session open.
+
+The column becomes nullable, and a null session id means install-level spend (req 7). That is a
+migration plus every read path that groups by session — the usage modal, the per-session cost,
+the by-spend ranking — each of which must render the install-level row rather than skip it or
+crash on a null. `harnessId` moves into the same union as `NonTurnTarget`: a direct call reports
+its service and model and no harness, which is a true statement rather than a placeholder.
+
+This is deliberately the expensive answer. Attributing the spend to whichever session happened to
+be active is one line and charges a session for work that was not its turn; recording nothing
+makes req 7 false for the one kind of background work that runs most often.
+
 ## Selector eligibility reaches further than the resolver
 
 `BackgroundWorkSection` gets its options from `eligibleModelsOf(agentList)`, which skips every
