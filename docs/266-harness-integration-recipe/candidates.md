@@ -23,7 +23,7 @@ semantics, not a shrug.
 | 2. Streaming schema | ✅ documented NDJSON | ❓ undocumented — capture + conformance test required | ⚠️ documented but coarse; loss bugs (see verdict) | ✅ documented NDJSON, 3 event types *(probed)* |
 | 3. Session resume | ✅ | ✅ | ✅ | ✅ `--conversation <id>`, id in `init` *(probed)* |
 | 4. Full-auto permissions | ✅ `--force` + allow/deny | ✅ `--always-approve` + modes | ✅ `--auto` + config | ✅ `--dangerously-skip-permissions` + allow list *(probed)* |
-| 5. Auth injectable | ⚠️ key env ✅ / subscription ❓ (path undocumented) | ✅ `~/.grok/auth.json`; device-auth *(third-party)* | ✅ plain file; ❌ no Anthropic subscription | ⚠️ key env ✅ *(probed)* / account ❓ code flow works headless and a token file is written *(probed)*; fresh-process read still unproven (see verdict) |
+| 5. Auth injectable | ⚠️ key env ✅ / subscription ❓ (path undocumented) | ✅ `~/.grok/auth.json`; device-auth *(third-party)* | ✅ plain file; ❌ no Anthropic subscription | ✅ key env *(probed)* / account: plain token file, read back by a fresh process on a copied home *(probed)* |
 | 6. Pinnable install | ❌ none documented — policy gate | ⚠️ pinned install script *(third-party)* | ✅ npm exact | ✅ versioned GitHub release tarball; ❌ no npm |
 | 7. Instructions | ✅ AGENTS.md/CLAUDE.md | ✅ AGENTS.md | ✅ AGENTS.md | ✅ AGENTS.md/GEMINI.md + plugin `rules/`; ❌ no flag |
 | 8. MCP | ✅ `mcp.json` | ✅ `config.toml` | ✅ `opencode.json` | ✅ `~/.gemini/config/mcp_config.json` *(probed)* |
@@ -212,7 +212,7 @@ item below is observed output of that binary.
   starts a new one *(probed)*. Store is `~/.gemini/antigravity-cli/
   conversations/<id>.db` plus a `brain/<id>/` transcript tree. Nothing was
   written into the workspace during a print run *(probed)*.
-- **Auth**: two paths; the account path is unproven in a container.
+- **Auth**: two paths, both proven in a session container.
   - *Metered key*: `GEMINI_API_KEY` + `{"modelProvider":"gemini"}` in
     `~/.gemini/antigravity-cli/settings.json`. Verified live: the request
     reached `generativelanguage.googleapis.com` and came back
@@ -221,18 +221,27 @@ item below is observed output of that binary.
     `GOOGLE_GEMINI_BASE_URL` overrides the endpoint. An `AGY_ADC_AUTH`
     (Application Default Credentials) mode also exists in the binary,
     unverified.
-  - *Account*: Google OAuth into the **OS keyring** (Secret Service /
-    D-Bus). The file fallback `~/.gemini/antigravity-cli/
-    antigravity-oauth-token` is write-only in containers per upstream
-    #479 (open, reported on 1.0.10). Probed on 1.2.2 in a session
-    container with no D-Bus: print mode itself runs the sign-in — it prints
-    the Google URL on stderr and reads the authorization code from stdin
-    (60 s window) — and on success writes `antigravity-oauth-token` (mode
-    0600; keys `access_token`, `refresh_token`, `id_token`, `expiry`,
-    `auth_method`, `token_type`). Whether a *fresh* process reads that
-    file back is the open half of #479; the probe script for it is the
-    account-login test described in the verdict. Settling it takes either
-    that probe passing or a Secret Service daemon inside the session image.
+  - *Account*: Google OAuth, into the OS keyring where one exists and
+    otherwise into `~/.gemini/antigravity-cli/antigravity-oauth-token`.
+    Upstream #479 (open, reported on 1.0.10) says that file is write-only.
+    **Not on 1.2.2** — probed 2026-09-13 in a session container with no
+    D-Bus and no keyring daemon: print mode itself runs the sign-in (Google
+    URL on stderr, authorization code read from stdin, 60 s window) and
+    writes the token file (mode 0600; keys `access_token`,
+    `refresh_token`, `id_token`, `expiry`, `auth_method`, `token_type`);
+    then a fresh `-p` process with stdin closed answered from that file
+    alone, and so did a fresh process on a **byte-copy of the home
+    directory** — the exact shape of a ShipIt scoped-home mount. So the
+    account credential is a plain injectable file like Grok's
+    `auth.json`, and the recipe's "link the credential root as a
+    directory, never the token file" rule applies (refresh is expected to
+    rewrite the file; not observed within the hour-long token lifetime).
+    With account auth `agy models` adds `claude-sonnet-4-6`,
+    `claude-opus-4-6-thinking` and `gpt-oss-120b-medium` to the Gemini
+    list *(probed)* — third-party models fall under §8 of the terms.
+    Default `permission_mode` without the skip flag is `request-review`
+    *(probed)*; a real turn streams `agent_response` steps with
+    `text_delta` and per-step `usage`, and wrote nothing into cwd.
   - *Eligibility gate*: after a successful OAuth exchange the CLI asks
     Google an account-eligibility question and can refuse the account
     (observed: *"Eligibility check failed: Your current account is not
@@ -291,20 +300,16 @@ item below is observed output of that binary.
 - **Verdict**: technically the closest match to the Claude-shaped recipe of
   any candidate — documented stream, id-addressed resume, full-auto flag,
   effort levels, token usage, pinnable release asset, and a plugin
-  mechanism that carries prompt, MCP and skills from the scoped home. Two
-  things stand in front of any recipe step:
-  1. **Account auth is half-proven in a container** — the headless sign-in
-     works and writes the token file (probed on 1.2.2), but the
-     fresh-process read is the half #479 reports broken and the probe was
-     stopped by an account-eligibility refusal before it ran. Until it
-     passes (or a Secret Service daemon is added to the session image),
-     integration would be **metered `GEMINI_API_KEY` only**, which inverts
-     ShipIt's subscription-first default and needs a sign-off. Whatever
-     the outcome, the adapter must surface Google's account-level refusals
-     verbatim (see the eligibility note above). The terms are not
-     the blocker: ShipIt runs Google's own CLI, which is the client the
-     §6 example permits; only the broad "in connection with" phrase is
-     left to the user's reading.
+  mechanism that carries prompt, MCP and skills from the scoped home. Both
+  auth paths are proven (the account path end to end, on a copied home),
+  so the subscription-first default holds; the terms are not a blocker
+  either — ShipIt runs Google's own CLI, which is the client the §6
+  example permits, and only the broad "in connection with" phrase is left
+  to the user's reading. One thing stands in front of the recipe, plus
+  one requirement the recipe does not yet name:
+  1. **Account-level refusals surface verbatim** (eligibility note above):
+     the adapter must pass Google's own sentence through to the user, not
+     the generic per-harness auth copy.
   2. **A new vendor row**: Gemini's `generateContent` wire format is not an
      `ApiStyle`, and docs/272-opencode-inference already notes Gemini
      models are unrepresentable without one — so a Google service +
