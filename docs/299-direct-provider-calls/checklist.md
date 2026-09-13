@@ -125,12 +125,29 @@ Shipped in PR #2767, which also deleted `voice/providers/openai-cleanup.ts` — 
 entirely on the background-work choice, with no provider of its own. Until the voice key is
 adopted, an install whose only OpenAI key is that one has no cleanup.
 
-- [ ] Adopt `voiceProviderKeys.openai` as an ordinary OpenAI service credential, per docs/252 req 20's precedent. Seed background work onto it only when nothing is set.
-- [ ] The adoption notice in `VoiceTab.tsx`; declining leaves cleanup unavailable and says so, and never writes a background-work choice.
-- [ ] `VoiceTab.tsx` status names the background-work choice, links to that setting, and says when cleanup will take a few seconds. Render test per state.
-- [ ] Test: cleanup failure inserts the raw transcript and persists no chat card.
+- [x] Adopt `voiceProviderKeys.openai` as an ordinary OpenAI service credential, per docs/252 req 20's precedent. Seed background work onto it only when nothing is set.
+- [x] The adoption notice in `VoiceTab.tsx`; declining leaves cleanup unavailable and says so, and never writes a background-work choice.
+- [x] `VoiceTab.tsx` status names the background-work choice, links to that setting, and says when cleanup will take a few seconds. Render test per state.
+- [x] Test: cleanup failure inserts the raw transcript and persists no chat card.
+
+Shipped in PR #2771. Adoption goes through `createStringCredential`, the same path a pasted key
+takes, so the adopted key is an ordinary credential — renameable, removable, ordered like any
+other — rather than a second shape. Two things the slice checked rather than assumed:
+
+- **Whether the offer is safe to make is `runnerForNonTurnSelection`'s answer, not a restatement
+  of the rule.** An independent review found the first version treating a pin on a *retired*
+  model as unreachable, so it withheld the offer from an install where adoption would in fact
+  have restored cleanup. Asking the resolver removes the second copy of the rule.
+- **Phase 4b had already rewritten the cleanup status line**, contrary to the slice brief.
+
+The "no chat card" half of the last item is settled by construction rather than by a test, which
+is the stronger answer and is why no guard was written: `VoiceCleanupDeps` carries neither a
+runner registry nor a chat-history manager, and `runNonTurnDirect` returns its failure instead of
+rendering one, so cleanup has no reachable way to write to a transcript (req 6). A test would
+need an injection point that deliberately does not exist, and would pass whether or not the
+guarantee held.
 
 ## Closing
 
-- [ ] Re-review the branch diff against every numbered requirement.
-- [ ] Comment the outcome on [planning#542](https://github.com/nikzlabs/shipit-planning/issues/542).
+- [x] Re-review the branch diff against every numbered requirement.
+- [x] Comment the outcome on [planning#542](https://github.com/nikzlabs/shipit-planning/issues/542).
