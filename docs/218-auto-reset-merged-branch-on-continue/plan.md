@@ -110,10 +110,22 @@ mockup for reference.)
   - **Sent checked →** the reset runs, the branch moves off the merged tip, the
     session re-arms; eligibility is now false → the control disappears and stays
     gone (nothing left to reset).
-  - **Sent unticked →** no reset, but the decline is recorded against the merged
-    head (`SessionInfo.mergeContinueDeclinedSha`), and eligibility answers false
+  - **Sent unticked →** no reset, but the decline is recorded against the merge
+    (`SessionInfo.mergeContinueDeclinedAnchor`), and eligibility answers false
     from then on → the control does not reappear, and the docs/295 compaction
     stands down with it, since it reads the same predicate.
+
+  **The anchor is the MERGE, not the commit** (`mergeContinueAnchor`:
+  `mergedAt` plus the head). Two attempts at a narrower identity were both
+  wrong, and review caught both. A head-only anchor **loses** the decline for a
+  session eligible by the ancestry clause, which needs no `mergedHeadSha` at all
+  — so those sessions were offered again on the next message, silently. And a
+  head is not unique to a merge: two pull requests can merge the same commit,
+  into different bases, so a later merge could inherit a refusal the user never
+  gave. `mergedAt` is written once per merge (`markMerged` runs only while it is
+  null) and nulled when the merge is retired, which is what makes it an identity
+  for the merge. Independently, `clearMerged` and `clearPriorPrRecord` also clear
+  the decline, so the two defences do not rely on each other.
 
   This second half is a **2026-09-13 change**. It used to read "eligibility holds
   → the control reappears (checked) on the next message", and that is what
@@ -588,7 +600,13 @@ fixes, mirroring how docs/216 re-arms the PR card "NOW" rather than lagging unti
    signal (`setResetEligible(sessionId, false)`), so the control vanishes on click without even
    a WS round-trip. This was `&& resetChecked` until req 6 made both answers end the offer —
    which is why an unticked send used to leave both controls standing through the turn it
-   started. Covered by the "optimistically clears" tests in `MessageInput.test.tsx`.
+   started. It excludes a **control command**: `/compact` and `/goal` answer nothing (the
+   server skips the reset hook for them, and a `/goal` that does not ride a turn starts none),
+   so hiding the controls there would leave the user unable to re-tick a choice nothing had
+   spent — the same exclusion the untick itself already has. Predicting nothing is safe in only
+   one direction: a control that lingers is corrected by the post-turn recompute, one that
+   vanished wrongly is not. Covered by the "optimistically clears" tests in
+   `MessageInput.test.tsx`.
 
 **Phase 3 — default flipped ON.** `credentialStore.getAutoResetMergedBranch()` now defaults
 `?? true`; the client settings store, `GlobalSettings`, and the bootstrap fallback default

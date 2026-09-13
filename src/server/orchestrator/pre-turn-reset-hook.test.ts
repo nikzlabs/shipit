@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { applyPreTurnReset, type PreTurnResetHookDeps, type PreTurnResetRunner } from "./pre-turn-reset-hook.js";
-import { clearResetSkipEpisode } from "./services/pre-turn-reset.js";
+import { clearResetSkipEpisode, mergeContinueAnchor } from "./services/pre-turn-reset.js";
 import { MERGE_RECHECK_TIMEOUT_MS } from "./services/pre-turn-merge-recheck.js";
 import type { GitManager } from "../shared/git.js";
 import type { SessionInfo, WsServerMessage } from "../shared/types.js";
@@ -296,12 +296,33 @@ describe("applyPreTurnReset — the branch did not move", () => {
    * is still merged, still clean and still on the merged tip afterwards, so
    * nothing else distinguishes it from one that has never been asked.
    */
-  it("records the untick against the merged head, and hides the control", async () => {
+  it("records the untick against the merge it answers, and hides the control", async () => {
     const h = makeHarness();
     await run(h, false);
 
-    expect(h.deps.sessionManager.setMergeContinueDeclined).toHaveBeenCalledWith("s1", MERGED_SHA);
+    expect(h.deps.sessionManager.setMergeContinueDeclined).toHaveBeenCalledWith(
+      "s1",
+      mergeContinueAnchor(makeSession()),
+    );
     expect(h.emitted).toContainEqual({ type: "reset_eligible", sessionId: "s1", eligible: false });
+  });
+
+  /**
+   * The anchor needs only `mergedAt`, which the skip above already proves is
+   * set — so this path is unreachable. It is asserted because the alternative
+   * to shouting is dropping the user's choice in silence: without a recorded
+   * decline the offer returns on the next message and resets their branch.
+   */
+  it("records a decline even for a session with no merged head sha", async () => {
+    const noAnchor = makeSession();
+    delete noAnchor.mergedHeadSha;
+    const h = makeHarness({ session: noAnchor });
+    await run(h, false);
+
+    expect(h.deps.sessionManager.setMergeContinueDeclined).toHaveBeenCalledWith(
+      "s1",
+      mergeContinueAnchor(noAnchor),
+    );
   });
 
   it("records nothing when the reset was refused rather than declined", async () => {

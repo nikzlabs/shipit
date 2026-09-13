@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
-import { computeResetEligible, computeResetBlocker, autoResetMergedBranchOnContinue, isResetEligible, emitResetEligible, announceResetStateOnMerge, clearResetSkipEpisode, resetBranchToBaseExplicit, RESET_REFUSAL_GUIDANCE, type PreTurnResetDeps, type MergeNoticeRunner } from "./pre-turn-reset.js";
+import { computeResetEligible, computeResetBlocker, autoResetMergedBranchOnContinue, isResetEligible, emitResetEligible, announceResetStateOnMerge, clearResetSkipEpisode, mergeContinueAnchor, resetBranchToBaseExplicit, RESET_REFUSAL_GUIDANCE, type PreTurnResetDeps, type MergeNoticeRunner } from "./pre-turn-reset.js";
 import { handWorkspaceBackToWorker } from "../session-worker-uid.js";
 
 vi.mock("../session-worker-uid.js", () => ({ handWorkspaceBackToWorker: vi.fn() }));
@@ -34,6 +34,9 @@ function makeSession(over: Partial<SessionInfo> = {}): SessionInfo {
     ...over,
   };
 }
+
+/** The anchor `makeSession()`'s default merge produces (docs/218 req 6). */
+const declinedAnchor = (): string => mergeContinueAnchor(makeSession())!;
 
 function makePrStatus(over: Partial<PrStatusSummary> = {}): PrStatusSummary {
   return {
@@ -255,7 +258,7 @@ describe("autoResetMergedBranchOnContinue", () => {
     const git = makeGit();
     const out = await autoResetMergedBranchOnContinue(
       makeDeps({
-        getSession: () => makeSession({ mergeContinueDeclinedSha: MERGED_SHA }),
+        getSession: () => makeSession({ mergeContinueDeclinedAnchor: declinedAnchor() }),
         createGitManager: () => git,
       }),
       "s1",
@@ -268,7 +271,7 @@ describe("autoResetMergedBranchOnContinue", () => {
 
   it("tells a declined session how to move the branch, not to send another message", async () => {
     const out = await autoResetMergedBranchOnContinue(
-      makeDeps({ getSession: () => makeSession({ mergeContinueDeclinedSha: MERGED_SHA }) }),
+      makeDeps({ getSession: () => makeSession({ mergeContinueDeclinedAnchor: declinedAnchor() }) }),
       "s1",
       "/ws",
     );
@@ -278,7 +281,7 @@ describe("autoResetMergedBranchOnContinue", () => {
   });
 
   it("nags once per merge about a standing decline, not on every message", async () => {
-    const deps = makeDeps({ getSession: () => makeSession({ mergeContinueDeclinedSha: MERGED_SHA }) });
+    const deps = makeDeps({ getSession: () => makeSession({ mergeContinueDeclinedAnchor: declinedAnchor() }) });
     const first = await autoResetMergedBranchOnContinue(deps, "s1", "/ws");
     const second = await autoResetMergedBranchOnContinue(deps, "s1", "/ws");
     expect(first.skip?.notice).toBeDefined();
@@ -629,19 +632,58 @@ describe("isResetEligible (composer-control signal)", () => {
    */
   describe("a declined continuation (docs/218 req 6)", () => {
     it("is false once the user declined this merge's continuation", async () => {
-      const session = makeSession({ mergeContinueDeclinedSha: MERGED_SHA });
+      const session = makeSession({ mergeContinueDeclinedAnchor: declinedAnchor() });
       expect(await isResetEligible(makeDeps({ getSession: () => session }), "s1", "/ws")).toBe(false);
+    });
+
+    /**
+     * The identity must exist for EVERY eligible merged session, not just ones
+     * with a merge anchor. `computeResetBlocker` calls a session eligible
+     * whenever HEAD is contained in `origin/<base>`, with no `mergedHeadSha` at
+     * all — so keying the decline on that sha alone recorded nothing here, and
+     * the offer came back on the next message. Found by review.
+     */
+    it("records a decline for a session that is eligible by ancestry alone", async () => {
+      const noAnchor = makeSession();
+      delete noAnchor.mergedHeadSha;
+      const git = makeGit({ isAncestor: vi.fn().mockResolvedValue(true) });
+      const deps = makeDeps({ getSession: () => noAnchor, createGitManager: () => git });
+      expect(await isResetEligible(deps, "s1", "/ws")).toBe(true);
+
+      const anchor = mergeContinueAnchor(noAnchor);
+      expect(anchor).toBeDefined();
+      const declined = { ...noAnchor, mergeContinueDeclinedAnchor: anchor! };
+      expect(
+        await isResetEligible(makeDeps({ getSession: () => declined, createGitManager: () => git }), "s1", "/ws"),
+      ).toBe(false);
     });
 
     it("is true again after a LATER merge, with no clearing step", async () => {
       const nextMerge = "c0ffee110000000000000000000000000000eeff";
       const session = makeSession({
+        mergedAt: "2026-07-01 09:00:00",
         mergedHeadSha: nextMerge,
-        mergeContinueDeclinedSha: MERGED_SHA,
+        mergeContinueDeclinedAnchor: declinedAnchor(),
       });
       const git = makeGit({ getHeadHash: vi.fn().mockResolvedValue(nextMerge) });
       const deps = makeDeps({ getSession: () => session, createGitManager: () => git });
       expect(await isResetEligible(deps, "s1", "/ws")).toBe(true);
+    });
+
+    /**
+     * Two pull requests CAN merge the same head — into different bases, say —
+     * so a head alone is not the merge. `mergedAt` is written once per merge
+     * (`markMerged` runs only while it is null) and cleared when the merge is
+     * retired, which is what makes the anchor a merge identity rather than a
+     * commit one. Found by review.
+     */
+    it("is true again for a second merge that happens to reuse the head", async () => {
+      const session = makeSession({
+        mergedAt: "2026-07-01 09:00:00",
+        mergeContinueDeclinedAnchor: declinedAnchor(),
+      });
+      expect(session.mergedHeadSha).toBe(MERGED_SHA);
+      expect(await isResetEligible(makeDeps({ getSession: () => session }), "s1", "/ws")).toBe(true);
     });
   });
 });

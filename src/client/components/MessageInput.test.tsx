@@ -722,6 +722,28 @@ describe("MessageInput", () => {
       expect(screen.queryByTestId("reset-merged-branch-control")).not.toBeInTheDocument();
     });
 
+    /**
+     * A control command answers nothing, so it must not hide the offer.
+     * `runSend` reports `/goal clear` as accepted, but it starts no continuation
+     * — the server skips the whole reset hook — and nothing would recompute
+     * eligibility afterwards, so the user would be left unable to re-tick a
+     * choice nothing had spent. The untick itself already has this exclusion.
+     * Found by review.
+     */
+    it("does not hide the offer for a control command that answers nothing", () => {
+      usePrStore.setState({ resetEligibleBySession: { s1: true } });
+      useSettingsStore.setState({ autoResetMergedBranch: true });
+      render(<MessageInput onSend={vi.fn().mockReturnValue(true)} disabled={false} sessionId="s1" />);
+      fireEvent.click(screen.getByTestId("reset-merged-branch-control")); // untick
+
+      const textarea = screen.getByPlaceholderText("Describe what to build... (type @ to attach files)");
+      fireEvent.change(textarea, { target: { value: "/goal clear" } });
+      fireEvent.click(screen.getByLabelText("Send message"));
+
+      expect(usePrStore.getState().resetEligibleBySession.s1).toBe(true);
+      expect(screen.getByTestId("reset-merged-branch-control")).toBeInTheDocument();
+    });
+
     it("keeps the untick when eligibility flickers between the untick and the send", () => {
       // docs/295 — the sibling control has the identical shape, so it had the
       // identical defect: an eligibility answer arriving in between re-ticked

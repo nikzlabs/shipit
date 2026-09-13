@@ -480,6 +480,18 @@ describe("SessionManager", () => {
       expect(s?.mergedAt).toBeFalsy();
       expect(s?.previousMergedPr).toBeUndefined();
     });
+
+    // docs/218 req 6 — a decline answers ONE merge. Retiring that merge has to
+    // drop it, or the next merge inherits a refusal the user never gave.
+    it("drops a recorded merge-continuation decline", () => {
+      const mgr = new SessionManager(dbManager);
+      mgr.track("sess-1", "Test");
+      mgr.markMerged("sess-1");
+      mgr.setMergeContinueDeclined("sess-1", "anchor-of-the-first-merge");
+
+      expect(mgr.clearMerged("sess-1", breadcrumb)).toBe(true);
+      expect(mgr.get("sess-1")?.mergeContinueDeclinedAnchor).toBeUndefined();
+    });
   });
 
   describe("clearPriorPrRecord (unarchive drops the previous PR entirely)", () => {
@@ -491,11 +503,15 @@ describe("SessionManager", () => {
       mgr.markMerged("sess-1");
       mgr.setMergedHeadSha("sess-1", "abc123def456");
 
+      mgr.setMergeContinueDeclined("sess-1", "anchor-of-the-first-merge");
+
       mgr.clearPriorPrRecord("sess-1");
       const s = mgr.get("sess-1");
       expect(s?.mergedAt).toBeUndefined();
       expect(s?.mergedHeadSha).toBeUndefined();
       expect(s?.previousMergedPr).toBeUndefined();
+      // docs/218 req 6 — as with clearMerged: the decline dies with its merge.
+      expect(s?.mergeContinueDeclinedAnchor).toBeUndefined();
     });
 
     it("clears a breadcrumb left by an earlier re-arm, which clearMerged cannot", () => {

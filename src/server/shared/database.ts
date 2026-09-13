@@ -833,10 +833,10 @@ const MIGRATIONS: Migration[] = [
   (db) => {
     addSessionColumnIfMissing(db, "workspace_block");
   },
-  // docs/218 — the merged head whose continuation the user declined; the offer
-  // is not made again for that merge.
+  // docs/218 — identifies the merge whose continuation the user declined; the
+  // offer is not made again for it.
   (db) => {
-    addSessionColumnIfMissing(db, "merge_continue_declined_sha");
+    addSessionColumnIfMissing(db, "merge_continue_declined_anchor");
   },
 ];
 

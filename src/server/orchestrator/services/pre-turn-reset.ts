@@ -63,15 +63,31 @@ export interface ResetSkipInfo extends ResetSkip {
 const NOT_MOVED: ResetOutcome = { moved: false };
 
 /**
- * docs/218 req 6 — the offer belongs to ONE merge, and the user already answered
- * it. Deliberately NOT part of `computeResetBlocker`: that is the *safety* gate,
- * shared with `resetBranchToBaseExplicit`, and `shipit branch reset-to-base` must
- * still work after the user declined the automatic offer. This is the separate
- * question of whether to make the offer at all.
+ * docs/218 req 6 — which merge a decline belongs to.
+ *
+ * `mergedAt` leads because it is the only thing present on EVERY merged session:
+ * `computeResetBlocker` calls a session eligible whenever HEAD is contained in
+ * `origin/<base>`, with no anchor at all, so an identity that needed
+ * `mergedHeadSha` would silently fail to record the decline for exactly those
+ * sessions — and they would be offered again on the next message. `markMerged`
+ * writes it once per merge (`AND merged_at IS NULL`) and `clearMerged` nulls it,
+ * so it changes with the merge; the head is appended because a second-resolution
+ * timestamp alone is a weak identity.
+ */
+export function mergeContinueAnchor(session: SessionInfo | undefined): string | undefined {
+  if (!session?.mergedAt) return undefined;
+  return `${session.mergedAt}|${session.mergedHeadSha ?? ""}`;
+}
+
+/**
+ * The user already answered this merge's offer. Deliberately NOT part of
+ * `computeResetBlocker`: that is the *safety* gate, shared with
+ * `resetBranchToBaseExplicit`, and `shipit branch reset-to-base` must still work
+ * after a decline. This is the separate question of whether to make the offer.
  */
 export function declinedThisMerge(session: SessionInfo | undefined): boolean {
-  const anchor = session?.mergedHeadSha;
-  return anchor !== undefined && session?.mergeContinueDeclinedSha === anchor;
+  const anchor = mergeContinueAnchor(session);
+  return anchor !== undefined && session?.mergeContinueDeclinedAnchor === anchor;
 }
 
 const ALREADY_DECLINED: ResetSkip = {
