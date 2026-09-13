@@ -900,3 +900,46 @@ describe("CredentialStore — agent roles (docs/264 phase 1)", () => {
     expect(store.getRoles().map((r) => r.name)).toEqual(["reviewer"]);
   });
 });
+
+/**
+ * The on-disk field names an existing install already has. Written out by hand
+ * rather than read from the catalogue: a test that asks the declarations where a
+ * value lives cannot notice two declarations swapping their fields, which would
+ * read every existing install's saved settings back under the wrong name.
+ *
+ * One field is written at a time, so a swap shows up as the WRONG getter moving
+ * off its default. `nonTurnModel` is left out: its value has to name a live
+ * catalogue entry, which would pin a model id here.
+ */
+describe("declared settings keep the field names shipped installs wrote", () => {
+  let dir: string;
+
+  const LEGACY: { field: string; stored: unknown; fallback: unknown; read: (s: CredentialStore) => unknown }[] = [
+    { field: "memoryBudgetMb", stored: 8192, fallback: null, read: (s) => s.getMemoryBudgetMb() },
+    { field: "agentSystemInstructionsEnabled", stored: false, fallback: true, read: (s) => s.getAgentSystemInstructionsEnabled() },
+    { field: "autoCreatePr", stored: true, fallback: false, read: (s) => s.getAutoCreatePr() },
+    { field: "liveSteering", stored: false, fallback: true, read: (s) => s.getLiveSteering() },
+    { field: "autoResolveConflicts", stored: true, fallback: false, read: (s) => s.getAutoResolveConflicts() },
+    { field: "autoFixCi", stored: true, fallback: false, read: (s) => s.getAutoFixCi() },
+    { field: "autoResetMergedBranch", stored: false, fallback: true, read: (s) => s.getAutoResetMergedBranch() },
+    { field: "enableSubAgents", stored: false, fallback: true, read: (s) => s.getEnableSubAgents() },
+    { field: "voiceDeliveryMode", stored: "external", fallback: "native", read: (s) => s.getVoiceDeliveryMode() },
+  ];
+
+  afterEach(() => {
+    if (dir) fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it.each(LEGACY)("reads $field, and only $field, from the key shipped installs wrote", (target) => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-cred-legacy-"));
+    fs.writeFileSync(
+      path.join(dir, "shipit-credentials.json"),
+      JSON.stringify({ [target.field]: target.stored }),
+    );
+    const store = new CredentialStore(dir);
+
+    for (const row of LEGACY) {
+      expect(row.read(store)).toBe(row.field === target.field ? target.stored : row.fallback);
+    }
+  });
+});
