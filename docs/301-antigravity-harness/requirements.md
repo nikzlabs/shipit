@@ -93,12 +93,11 @@ None.
   `.agents/skills`, `.gemini/skills` were **not** disclosed in a headless
   turn (`skills.ndjson`) — plugin skills were. Basis of plan.md's plugin
   design.
-- 2026-09-13 — The metered key the user saved is a Google free-tier key:
-  Google answers 429 with `limit: 0` for `gemini-3.1-pro` and 5 requests per
-  minute / 20 per day for each flash model, per model. The probes ran on the
-  flash models. A ShipIt session on this harness needs a paid-tier key or an
-  account; the 429 text is Google's own and reaches the user through the
-  turn's error row (plan.md).
+- 2026-09-13 — Measured, not a requirement: the metered key the user saved
+  is a Google free-tier key, and Google answered 429 with `limit: 0` for
+  `gemini-3.1-pro` and 5 requests per minute / 20 per day per flash model.
+  The probes ran on the flash models within those limits. The 429 text is
+  Google's own; plan.md carries it to the user through the turn's error row.
 
 - 2026-09-13 — Do the Antigravity Additional Terms of Service §6 ("using third
   party software, tools, or services to access the Service, e.g. using

@@ -1,0 +1,126 @@
+
+== Using GEMINI_API_KEY from the environment (metered key mode, model gemini-3.8-flash-low)
+
+== agy plugin install (local path)
+  [32m[ok][0m    shipitprobe
+          [32m✔[0m skills      : 1 processed
+          - agents      : skipped (not found)
+          - commands    : skipped (not found)
+          [32m✔[0m mcpServers  : 1 processed
+          - hooks       : skipped (not found)
+{
+  "imports": [
+    {
+      "name": "shipitprobe",
+      "source": "antigravity",
+      "importedAt": "2026-09-13T14:54:03Z",
+      "components": [
+        "skills",
+        "mcpServers"
+      ]
+    }
+  ]
+}
+
+== agy mcp list (with plugin)
+NAME   TYPE   STATUS   COMMAND/URL
+probe  stdio  enabled  node /persist/agy-login-test/mcp-server.js echo_probe
+
+== PROBE plugin-rules
+exit=0
+status:   "status":"SUCCESS"
+response: "response":"ZEBRA-PLUGIN pong\n"
+tool steps:
+        2 "step_type":"agent_response"
+        1 "step_type":"user_input"
+
+== PROBE plugin-mcp
+(pacing 65s)
+exit=0
+status:   "status":"ERROR"
+response: "response":"ZEBRA-PLUGIN [plugin_probe:hi]\n"
+tool steps:
+        6 "step_type":"agent_response"
+        4 "step_type":"error_message"
+        4 "step_type":"tool"
+        1 "step_type":"user_input"
+  "tool_info":{"name":"call_mcp_tool","parameters":{"Arguments":{"text":"hi"}
+  "tool_info":{"name":"view_file","parameters":{"AbsolutePath":"/persist/agy-login-test/home/.gemini/antigravity-cli/mcp/shipitprobe_pluginprobe/plugin_probe.json"}
+
+== PROBE plugin-skill
+(pacing 65s)
+exit=0
+status:   "status":"SUCCESS"
+response: "response":"ZEBRA-PLUGIN MARMALADE\nagy-customizations, antigravity-guide, probe-skill\n"
+tool steps:
+        4 "step_type":"agent_response"
+        2 "step_type":"tool"
+        1 "step_type":"user_input"
+  "tool_info":{"name":"view_file","parameters":{"AbsolutePath":"/persist/agy-login-test/home/.gemini/config/plugins/shipitprobe/skills/probe-skill/SKILL.md"}
+
+== plugin/skill lines in the CLI log
+I0913 14:52:12.183179     238 manager.go:1304] Reloading system slash commands and skills
+I0913 14:52:13.026263      44 plugin_data.go:53] Removed the data directory of uninstalled plugin "shipitprobe"
+I0913 14:52:13.143865     263 manager.go:1304] Reloading system slash commands and skills
+I0913 14:52:13.952074      82 plugin_data.go:53] Removed the data directory of uninstalled plugin "shipitprobe"
+I0913 14:52:14.069737     253 manager.go:1304] Reloading system slash commands and skills
+I0913 14:52:15.235108      42 plugin_data.go:53] Removed the data directory of uninstalled plugin "shipitprobe"
+I0913 14:52:15.348025     240 manager.go:1304] Reloading system slash commands and skills
+I0913 14:52:16.250127      68 plugin_data.go:53] Removed the data directory of uninstalled plugin "shipitprobe"
+I0913 14:52:17.226085      82 plugin_data.go:53] Removed the data directory of uninstalled plugin "shipitprobe"
+I0913 14:52:51.201185     276 manager.go:1304] Reloading system slash commands and skills
+I0913 14:53:04.099037      52 plugin_data.go:53] Removed the data directory of uninstalled plugin "shipitprobe"
+I0913 14:53:04.211231     280 manager.go:1304] Reloading system slash commands and skills
+I0913 14:53:15.064037      32 plugin_data.go:53] Removed the data directory of uninstalled plugin "shipitprobe"
+I0913 14:53:15.190939     172 manager.go:1304] Reloading system slash commands and skills
+I0913 14:53:18.912206      66 plugin_data.go:53] Removed the data directory of uninstalled plugin "shipitprobe"
+I0913 14:53:19.011342     274 manager.go:1304] Reloading system slash commands and skills
+I0913 14:53:21.062043      28 plugin_data.go:53] Removed the data directory of uninstalled plugin "shipitprobe"
+I0913 14:53:21.161861     264 manager.go:1304] Reloading system slash commands and skills
+I0913 14:53:22.427189      68 plugin_data.go:53] Removed the data directory of uninstalled plugin "shipitprobe"
+I0913 14:53:22.522269     263 manager.go:1304] Reloading system slash commands and skills
+I0913 14:53:23.569124      51 plugin_data.go:53] Removed the data directory of uninstalled plugin "shipitprobe"
+I0913 14:53:26.726181      66 plugin_data.go:53] Removed the data directory of uninstalled plugin "shipitprobe"
+I0913 14:54:56.113479     282 manager.go:1304] Reloading system slash commands and skills
+I0913 14:56:04.469574      75 manager.go:1304] Reloading system slash commands and skills
+I0913 14:58:05.367744     244 manager.go:1304] Reloading system slash commands and skills
+
+== Workspace files written by the runs (expect none):
+
+== Done. Outputs in /persist/agy-login-test/probes.
+
+== Using GEMINI_API_KEY from the environment (metered key mode, model gemini-3.8-flash-low)
+
+== PROBE compact-a
+exit=0
+status:   "status":"SUCCESS"
+response: "response":"ZEBRA-PLUGIN ok\n"
+tool steps:
+        1 "step_type":"agent_response"
+        1 "step_type":"user_input"
+conversation_id=47b8386f-3d20-4138-b080-fbc28b29e81e
+
+== PROBE compact-b
+(pacing 65s)
+exit=0
+status:   "status":"SUCCESS"
+response: "response":"ZEBRA-PLUGIN Understood. I remember the codeword **TANGERINE**. How can I help you next?\n"
+tool steps:
+        3 "step_type":"agent_response"
+        1 "step_type":"system_message"
+        1 "step_type":"user_input"
+
+== PROBE compact-c
+(pacing 65s)
+exit=0
+status:   "status":"SUCCESS"
+response: "response":"ZEBRA-PLUGIN TANGERINE\n"
+tool steps:
+        2 "step_type":"agent_response"
+        1 "step_type":"system_message"
+        1 "step_type":"user_input"
+
+== Workspace files written by the runs (expect none):
+
+== Done. Outputs in /persist/agy-login-test/probes.
+finished rc=0

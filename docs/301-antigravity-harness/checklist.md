@@ -17,8 +17,10 @@ Antigravity-specific is in [plan.md](./plan.md).
       resumed headless turn's prompt on 1.2.2 reaches the model as text, no
       summary step — `false`, probed (`probes/compact-b.ndjson`)
 - [ ] `supportsReview` (item 15) settled by a depth-0 probe with the real
-      composed review message — needs a ShipIt session on the harness
-      (Phase 10); `run_command` + `invoke_subagent` exist in `init.tools`
+      composed review message on the first session the implementation can
+      open — the flag is set from that probe, not declared beforehand;
+      `run_command`/`command_status` + `invoke_subagent` exist in
+      `init.tools`, so the expectation is `true`
 - [x] Every capability `false` (item 13) says WHY beside it (plan.md,
       "Catalogue row")
 
@@ -62,13 +64,23 @@ Antigravity-specific is in [plan.md](./plan.md).
 - [ ] Work the silent-sites list end to end (validators, `?? "claude"`
       defaults, registry probes, MCP tool subset, shim help text, UI name
       tables, egress allowlists: sign-in + account-mode hosts measured first)
+- [ ] Revocation: `SUBTREE_STATE_SUBPATHS` entry for `.gemini` with the
+      state subpaths under `antigravity-cli/`, plus the test that a revoked
+      token is gone and a conversation survives (plan.md, "Credentials")
+- [ ] `POST_PROVISION_CONFIG.antigravity` writes
+      `antigravity-cli/settings.json` (`modelProvider: gemini`) for key-routed
+      homes
+- [ ] Updater suppression probed as root for the orchestrator-side spawns
+      (sign-in, naming); dropped uid or read-only mount if it writes
 
 **6 — Session adapter**
 - [ ] `session/agents/antigravity/` (adapter + spawn home + plugin writer +
       tool normalizer + tests); register in barrel, `AGENT_TOOL_MAPS`,
       `createWorkerAgent` + factory test
-- [x] No token-usage normalizer: `total = input + output`, thinking ⊂ output,
-      cache_read ⊂ input (verified on every captured step and result)
+- [ ] Token accounting per plan.md: sum the turn's step usages (a resumed
+      run's `result.usage` is cumulative over the conversation), context =
+      last step's `input + cache_read` (cache reads sit outside `input`);
+      `probes/plugin-mcp.ndjson` and `compact-b.ndjson` as fixtures
 
 **7 — Orchestrator folder**
 - [ ] `orchestrator/agents/antigravity/` (auth manager with `submitCode`,

@@ -135,6 +135,9 @@ if want compact; then
   if [ -n "$CID" ]; then
     run compact-b "/compact" --conversation "$CID"
     run compact-c "What is the codeword I gave you? Reply with the one word only." --conversation "$CID"
+    # The CLI's own transcript: proves whether /compact replaced any step.
+    cp "$HOME1/.gemini/antigravity-cli/brain/$CID/.system_generated/logs/transcript_full.jsonl" "$OUT/compact-transcript_full.jsonl"
+    echo "transcript steps: $(wc -l <"$OUT/compact-transcript_full.jsonl")"
   fi
 fi
 

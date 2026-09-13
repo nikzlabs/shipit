@@ -39,11 +39,20 @@ no credential. Each finding cites its capture.
   is `ERROR` with `error` set and exit 0. The adapter must treat
   `response` + `error` together: text present ⇒ the turn's assistant text
   stands and the error is narrated; text absent ⇒ an error turn.
-- **Token arithmetic is disjoint** — no normalizer: on every captured step
-  and result `total = input + output`; `thinking_tokens` ⊂ `output_tokens`,
-  `cache_read_tokens` ⊂ `input_tokens` (35826 + 505 = 36331 with 8174 cache
-  reads, `plugin-mcp.ndjson`). No dollar figure on the wire; ShipIt prices
-  from the catalogue.
+- **Token accounting, verified on every captured step and result**
+  (`plugin-mcp.ndjson`, `compact-b.ndjson`): `total_tokens = input_tokens +
+  output_tokens` always; `thinking_tokens` ⊂ `output_tokens`; and
+  **`cache_read_tokens` is outside `input_tokens`** — the step that read
+  8,174 cached tokens reports `input_tokens: 2561, total: 2805`, so `input`
+  is the uncached prompt and context occupancy is `input + cache_read`.
+  **A resumed run's `result.usage` is cumulative across the whole
+  conversation**, not the turn: `compact-b` (`num_turns: 2`) reports
+  `input_tokens: 21470` while its only new step used 10,836. So the adapter
+  sums the turn's `step_update.usage` for the turn total and takes the last
+  step's `input + cache_read` as context occupancy; it never maps
+  `result.usage` straight through. Cache reads price at the catalogue's
+  `cacheRead` rate; no dollar figure is on the wire. These two captures are
+  the fixtures for that arithmetic.
 - **MCP** (`global-mcp.ndjson`, resolves the open question): servers from
   `~/.gemini/config/mcp_config.json` (`mcpServers`, stdio) are listed by
   `antigravity mcp list` and called through `call_mcp_tool` with
@@ -54,7 +63,7 @@ no credential. Each finding cites its capture.
   before every first MCP use, to be expected in transcripts. Plugin-supplied
   servers are namespaced `<plugin>_<server>`.
 - **Plugins load rules, MCP and skills — after an install step**
-  (`plugin-rules`, `plugin-mcp`, `plugin-skill`, `probe-run.log`). A plugin
+  (`plugin-rules`, `plugin-mcp`, `plugin-skill`, `probe-run.txt`). A plugin
   directory dropped under `~/.gemini/antigravity-cli/plugins/<name>/` is
   ignored and its data directory deleted ("uninstalled plugin"). After
   `antigravity plugin install <path>` the CLI copies the plugin to
@@ -65,14 +74,19 @@ no credential. Each finding cites its capture.
   and listed and used the plugin skill (`MARMALADE`). Two built-in skills
   (`agy-customizations`, `antigravity-guide`) are always disclosed.
 - **Workspace instructions and skills are NOT read in a headless turn**
-  (`skills.ndjson`, docs/209 probe): a fresh git repo with `AGENTS.md`,
-  `CLAUDE.md`, `.claude/skills/`, `.agents/skills/` and `.gemini/skills/`
-  disclosed none of them — the model knew only the plugin rule and the plugin
-  and built-in skills, and the CLI log resolved the `user_rules` prompt
-  section as empty before the plugin existed. The vendor documentation says
-  rules load from `GEMINI.md`/`AGENTS.md` walking up from cwd; 1.2.2 print
-  mode did not. So the plugin is the only proven path for prompt, MCP and
-  skills, and repo skills reach the model only through it.
+  (`skills.ndjson`, `skills-cli-log.txt`, `skills-transcript_full.jsonl`;
+  the docs/209 probe, run with **no plugin installed**, status `SUCCESS`):
+  a fresh git repo carrying `GEMINI.md`, `AGENTS.md` and `CLAUDE.md` (three
+  distinct codewords) plus `.claude/skills/`, `.agents/skills/` and
+  `.gemini/skills/` got the answer "1) None" and only the two built-in
+  skills; the CLI log for that run resolves the `user_rules` prompt section
+  as `empty component`, and the CLI's own transcript never contains a
+  codeword. The vendor documentation says rules load from
+  `GEMINI.md`/`AGENTS.md` walking up from cwd; 1.2.2 print mode did not, in
+  two runs on two models. The positive control is the plugin run above,
+  where a rule of the same shape was honoured. So for instructions and
+  skills the plugin is the only proven path; MCP needs no plugin (the global
+  `config/mcp_config.json` worked on its own, `global-mcp.ndjson`).
 - **`/compact` is not compaction** (`compact-b.ndjson`, item 14 probe): sent
   as the prompt of a resumed conversation it reached the model as
   `<USER_REQUEST>/compact</USER_REQUEST>`, no summary step ran, the CLI's own
@@ -102,7 +116,11 @@ no credential. Each finding cites its capture.
   stderr, code read from stdin within 60 s, token file written
   (candidates.md, probed once with a real account).
 
-## Catalogue row (recipe step 2)
+## Catalogue row (recipe step 2, req 1)
+
+The row is what makes the harness selectable wherever a harness can be
+selected (req 1): pickers, roles and `SHIPIT_HARNESSES` all derive from
+`HARNESSES`.
 
 - `id: "antigravity"`, `name: "Antigravity"`, `binary: "antigravity"`,
   `nativeService: "google"`, `styles: ["gemini-generate-content"]` — the
@@ -141,9 +159,13 @@ no credential. Each finding cites its capture.
   `ANTIGRAVITY_PERMISSION_MODES` (full-auto only, req 8);
   `reasoning: { options: low|medium|high }` with the Pro row narrowed to
   `low|high` via `ModelDef.reasoningEfforts` (docs/302 left the field for
-  this); `supportsReview: false` at launch — **not-wired**, the depth-0
-  probe needs a session on the harness (item 15; `run_command` and
-  `invoke_subagent` are in `init.tools`); `supportsSteering: false` —
+  this); `supportsReview`: **set by the item-15 probe, not declared here**
+  — docs/266 rejects "unexercised at launch" as a basis; the three things
+  the flow needs are all in `init.tools` (`run_command` with
+  `command_status` for a minutes-long command, `invoke_subagent`,
+  `view_file`/`grep_search`), so the expectation is `true`, and the
+  depth-0 probe with the real composed review message runs on the first
+  session the implementation can open (checklist Phase 0); `supportsSteering: false` —
   **structural** (spawn per turn; the CLI's `--input-format stream-json`
   resident shape is a follow-up); `startsOwnTurns: false` — structural;
   `supportsCompaction: false` — probed; `supportsGoals: false` — not-wired
@@ -184,11 +206,19 @@ one non-npm branch, gated on `contains antigravity $selected`:
   link, `--version` verification (under the scratch `HOME`) and
   `installed.json` loops then cover it. The prune arm removes
   `/opt/antigravity` when deselected.
-- **Read-only install neutralises the updater**: on 1.2.2 the updater logs
-  `Directory … is not fully accessible (readable: true, writable: false),
-  skipping update` and exits (probed, candidates.md). `/opt/agent-cli` is
-  already root-owned and read-only to the worker; `/opt/antigravity` follows
-  the same rule. Re-check the log line on every version bump (docs/272).
+- **Read-only install neutralises the updater — for the worker uid.** On
+  1.2.2 the updater logs `Directory … is not fully accessible (readable:
+  true, writable: false), skipping update` and exits (probed as the
+  unprivileged session user, candidates.md). `/opt/agent-cli` is already
+  root-owned and read-only to the worker; `/opt/antigravity` follows the
+  same rule, and that covers every turn. **It does not cover root**: the
+  orchestrator-side spawns (the sign-in run in the auth manager, session
+  naming) inherit the orchestrator's identity, and mode bits do not stop a
+  root process. Probe the updater's decision as root at implementation; if
+  it writes, run those two spawns under a dropped uid (the docs/266 git
+  rule) or mount the install path read-only in the orchestrator image. The
+  checksum proves the artefact at build time only; the runtime guarantee is
+  this one. Re-check the log line on every version bump (docs/272).
 - **Version choice**: daily 1.x releases; take the newest that is ≥ 7 days
   old at implementation time and record its date — `check-deps` covers only
   the two npm manifests, so this pin is policed by review, not CI.
@@ -209,6 +239,25 @@ one non-npm branch, gated on `contains antigravity $selected`:
   [".gemini/antigravity-cli/antigravity-oauth-token"]` — the token is one
   level below the link, so a refresh rename cannot swap the link (docs/266
   step 3 rule).
+- **Revocation is a silent site the recipe list does not name.**
+  `removeProviderSubtreeForReplacement` (`session-agent-credentials.ts`)
+  returns without deleting anything for a directory root that has no
+  `SUBTREE_STATE_SUBPATHS` entry (`token-sync-manager.ts`), so a bare
+  `AGENT_CREDENTIAL_PATHS` entry would leave a revoked account's token in
+  place. And the entry cannot simply preserve `antigravity-cli/`, because
+  the token sits inside it beside the state. So the entry lists the
+  state subpaths *under* `antigravity-cli/` (`conversations`, `brain`,
+  `conversation_summaries.db`, `mcp`, `plugin_data`, `cache`, `log`) and the
+  removal walks one level deeper for this root — with a test that revokes a
+  seeded `.gemini` and asserts the token is gone and a conversation file
+  survives.
+- **`settings.json` is provisioning, not a spawn.** The CLI needs
+  `{"modelProvider":"gemini"}` in `antigravity-cli/settings.json` to use the
+  key (probed), and that file lives in the credential root. A
+  `POST_PROVISION_CONFIG.antigravity` hook (the Claude precedent in
+  `session-agent-credentials.ts`) writes it when a key-routed home is
+  provisioned, and an account home carries none; the adapter never writes
+  into the durable directory.
 - **Freshness reader** on the token's `expiry` field (ISO-8601 per
   candidates.md; verify on the real file), falling back to the JWT `exp` of
   `id_token`/`access_token` (Codex's shape). Fixture: the real file with
@@ -267,16 +316,26 @@ one non-npm branch, gated on `contains antigravity $selected`:
   `plugin_data/` stay durable and shared) and a fresh `.gemini/config/`
   written per spawn: `mcp_config.json` (Playwright + the `shipit` bridge +
   the user's servers with `$secret:` resolved, in `mcpServers` shape),
-  `plugins/shipit/` (`plugin.json`, `rules/AGENTS.md` = ShipIt's system
-  prompt fragment, `skills/` = symlinks to the repo's `.claude/skills/*` for
-  docs/209 disclosure) and `import_manifest.json` naming it. **Verify at
+  `plugins/shipit/` (`plugin.json`; `rules/AGENTS.md` = ShipIt's system
+  prompt fragment **followed by the repository's own instructions**, read at
+  spawn from the workspace's `AGENTS.md`, else `CLAUDE.md`, else `GEMINI.md`,
+  under a heading naming the file — because the CLI reads none of them
+  itself (probed above) and ShipIt's instruction builder does not include
+  them for any harness; `skills/` = symlinks to the repo's `.claude/skills/*`
+  for docs/209 disclosure) and `import_manifest.json` naming it. **Verify at
   implementation** that a hand-written `config/plugins/<name>/` +
   manifest entry is honoured without running `plugin install` (the probe ran
   the command; the files it wrote are exactly these), and that a symlinked
   skill directory inside the plugin is followed. Cleanup is `rmSync` on the
-  throwaway root. Two processes (a turn and a `shipit agent run`) share the
-  durable directory; the CLI keeps per-conversation `presence/<id>.lock`
-  files, and each has its own `config/`.
+  throwaway root. **Why a throwaway root at all, given ShipIt already
+  scopes homes:** a brokered `shipit agent run` gets its own credential copy
+  (`provisionSubAgentSpawnHome`, verified at source), so the orchestrator
+  path never shares a home — but the worker-side `createWorkerAgent` builds
+  a sub-agent adapter with no scoped home (docs/274, the Grok concurrency
+  bug), and in local mode the account root itself is the home. The
+  throwaway root makes `config/` per-process in those two cases; the durable
+  link is what keeps the token, conversations and the MCP schema cache
+  shared. Drop it only if those two paths gain a scoped home of their own.
 - **Event mapping** (`mapEvent`): `init` → `agent_init`; `agent_response`
   deltas → `agent_assistant` text; a `tool` step ACTIVE → tool_use (name +
   normalized input), DONE → `agent_tool_result` (`tool_info.output`);
@@ -292,11 +351,16 @@ one non-npm branch, gated on `contains antigravity $selected`:
 - **Session naming**: `--output-format json` is Antigravity's own envelope
   (`result.response`), so a `parseAntigravityJson` beside `parseGrokJson`,
   under a scratch home as Grok's naming runs get.
-- Env discipline at spawn: `resolveAgentHome()` → `scrubEnvAuthForScopedHome`
-  → `applyServiceRouting` (order per `claude/process.ts`), and
-  `GOOGLE_API_KEY` / `AGY_ADC_AUTH` / `GOOGLE_APPLICATION_CREDENTIALS`
-  unset so ADC cannot bill a different Google account (the probes unset
-  them for the same reason).
+- Env discipline at spawn, Grok's shape, not Claude's: `resolveAgentHome()`
+  → `scrubHarnessEnvCredentials(env, "antigravity")` → deliver the routed
+  credential to `routing.credentialTarget` and the endpoint to
+  `GOOGLE_GEMINI_BASE_URL = routing.baseUrl` in the adapter itself.
+  `scrubEnvAuthForScopedHome` and `applyServiceRouting` (`spawn-routing.ts`)
+  are Anthropic-specific — the latter sets `ANTHROPIC_BASE_URL` — and are
+  not reused (verified at source). Also unset `GOOGLE_API_KEY` /
+  `AGY_ADC_AUTH` / `GOOGLE_APPLICATION_CREDENTIALS` so ADC cannot bill a
+  different Google account (the probes unset them for the same reason). The
+  naming run takes the same env path under its scratch home.
 
 ## Follow-ups tracked on planning#543, not in this feature
 
