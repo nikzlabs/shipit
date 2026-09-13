@@ -200,4 +200,37 @@ describe("AddRepoDialog", () => {
 
     vi.useRealTimers();
   });
+
+  it("asks for the default repo list again when the query is cleared", async () => {
+    vi.useFakeTimers();
+    const onSearch = vi.fn();
+    render(<AddRepoDialog {...defaultProps} onSearch={onSearch} />);
+
+    const input = screen.getByPlaceholderText("Search GitHub repos or paste a URL...");
+    fireEvent.change(input, { target: { value: "test" } });
+    vi.advanceTimersByTime(300);
+    expect(onSearch).toHaveBeenLastCalledWith("test");
+
+    fireEvent.change(input, { target: { value: "" } });
+    vi.advanceTimersByTime(300);
+    expect(onSearch).toHaveBeenLastCalledWith("");
+
+    vi.useRealTimers();
+  });
+
+  it("asks for the default repo list when the query drops below the search minimum", async () => {
+    vi.useFakeTimers();
+    const onSearch = vi.fn();
+    render(<AddRepoDialog {...defaultProps} onSearch={onSearch} />);
+
+    const input = screen.getByPlaceholderText("Search GitHub repos or paste a URL...");
+    fireEvent.change(input, { target: { value: "test" } });
+    vi.advanceTimersByTime(300);
+
+    fireEvent.change(input, { target: { value: "t" } });
+    vi.advanceTimersByTime(300);
+    expect(onSearch).toHaveBeenLastCalledWith("");
+
+    vi.useRealTimers();
+  });
 });

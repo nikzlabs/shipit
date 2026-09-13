@@ -66,9 +66,11 @@ export function AddRepoDialog({ open, onClose, onAdd, onCreateNew, onRepoReady, 
   const handleInputChange = (value: string) => {
     setQuery(value);
     if (debounceRef.current) clearTimeout(debounceRef.current);
-    if (value.trim().length >= 2) {
-      debounceRef.current = setTimeout(() => onSearch(value.trim()), 300);
-    }
+    const trimmed = value.trim();
+    // Deleting back below the minimum length asks for the default personal-repo
+    // list, so the results return to it instead of keeping the last query's.
+    const next = trimmed.length >= 2 ? trimmed : "";
+    debounceRef.current = setTimeout(() => onSearch(next), 300);
   };
 
   const handleSelect = async (url: string) => {
