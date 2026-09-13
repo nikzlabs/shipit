@@ -8,16 +8,6 @@ export interface SttProvider {
   transcribe(audio: Buffer, opts: SttTranscribeOptions): Promise<string>;
 }
 
-export interface CleanupOptions {
-  language?: string;
-  signal?: AbortSignal;
-}
-
-export interface CleanupProvider {
-  readonly id: "openai-cleanup";
-  clean(rawTranscript: string, opts: CleanupOptions): Promise<string>;
-}
-
 export interface TtsSpeakOptions {
   voice: string;
   speed: number;

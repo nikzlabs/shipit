@@ -179,7 +179,7 @@ export async function registerRoutes(
     isTestMode, runtimeMode,
     containerManager, getBareCacheDir, marketplaceStore, sseBroadcast,
     getLogBuffer, clearLogBuffer, broadcastLog, removeSessionLogs,
-    oomBreaker, loopDetector,
+    oomBreaker, loopDetector, backgroundHarnessRunner,
     serviceManagers, composeStopPromises, composeWarnings, composeNotConfigured,
     nudgeClaudeOAuthRefresh, onAgentAuthRequired, ensureAgentTokenFresh,
     authManagers, runParamsPreps,
@@ -281,6 +281,7 @@ export async function registerRoutes(
     agentFactory,
     oomBreaker,
     loopDetector,
+    backgroundHarnessRunner,
     ...(deps.mcpOAuthFetchImpl !== undefined
       ? { mcpOAuthFetchImpl: deps.mcpOAuthFetchImpl }
       : {}),

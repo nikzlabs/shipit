@@ -11,6 +11,7 @@ import {
   transcribeVoice,
   speakVoice,
 } from "./services/voice.js";
+import type { VoiceCleanupDeps } from "./services/voice-cleanup.js";
 import { TtsCache } from "./voice/index.js";
 import { routeVoiceNote, sanitizeVoiceContext } from "./voice/voice-note-router.js";
 
@@ -18,6 +19,14 @@ export async function registerVoiceRoutes(app: FastifyInstance, deps: ApiDeps): 
   const { credentialStore } = deps;
   const cacheDir = path.join(deps.stateDir ?? deps.workspaceDir, ".voice-cache");
   const ttsCache = new TtsCache(cacheDir);
+  // Cleanup runs on the background-work choice, which may be a direct API call
+  // or a harness in the always-on cleanup container (docs/299-direct-provider-calls reqs 5 and 8).
+  const cleanupDeps: VoiceCleanupDeps = {
+    credentialStore,
+    providerAccountManager: deps.providerAccountManager,
+    usageManager: deps.usageManager,
+    backgroundHarnessRunner: deps.backgroundHarnessRunner,
+  };
 
   function handleError(reply: FastifyReply, err: unknown, genericMsg: string): void {
     if (err instanceof ServiceError) {
@@ -51,7 +60,7 @@ export async function registerVoiceRoutes(app: FastifyInstance, deps: ApiDeps): 
   });
 
   app.get("/api/voice/cleanup/status", async () => {
-    return getCleanupStatus(credentialStore);
+    return getCleanupStatus(cleanupDeps);
   });
 
   app.post("/api/voice/transcribe", async (request, reply) => {
@@ -89,7 +98,9 @@ export async function registerVoiceRoutes(app: FastifyInstance, deps: ApiDeps): 
     }
 
     try {
-      return await transcribeVoice(credentialStore, {
+      // No session id: the container cleanup may use is not the session's
+      // (docs/299), and a dictation's spend is install-level.
+      return await transcribeVoice(cleanupDeps, {
         audio,
         cleanup,
         ...(mimeType ? { mimeType } : {}),

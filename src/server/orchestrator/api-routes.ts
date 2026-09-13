@@ -35,6 +35,7 @@ import type { RuntimeMode } from "../shared/types.js";
 import type { ProviderAccountManager } from "./provider-account-manager.js";
 import type { ModelRunner } from "./services/redaction.js";
 import type { LogStoreReader } from "./services/host-session-logs.js";
+import type { BackgroundHarnessRunner } from "./background-harness-run.js";
 
 import { ServiceError } from "./services/index.js";
 
@@ -163,6 +164,8 @@ export interface ApiDeps {
   agentFactory?: (agentId: AgentId) => AgentProcess;
   mcpOAuthFetchImpl?: typeof fetch;
   trackerFetchImpl?: typeof fetch;
+  /** Runs background work that needs a harness but no session (docs/299-direct-provider-calls req 8). */
+  backgroundHarnessRunner?: BackgroundHarnessRunner | null;
 }
 
 export function resolveSessionDir(

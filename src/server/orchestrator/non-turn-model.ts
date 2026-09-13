@@ -24,12 +24,21 @@ import {
   type ServiceRoutingCredentialSource,
 } from "./service-routing.js";
 
-export type NonTurnPurpose = "session-naming" | "pr-description";
+/** The purposes that report a failure as a chat card, mirroring `NonTurnFailureCard`. */
+export type NonTurnCardPurpose = "session-naming" | "pr-description";
+
+/**
+ * Voice cleanup is background work too, and is deliberately not a card purpose:
+ * a dictation is not an operation the user is watching, so its failure inserts
+ * the raw transcript and writes nothing to the transcript
+ * (docs/299-direct-provider-calls req 6).
+ */
+export type NonTurnPurpose = NonTurnCardPurpose | "voice-cleanup";
 
 export type GenerateText = (
   prompt: string,
   cwd: string,
-  opts?: { sessionId?: string; purpose?: NonTurnPurpose },
+  opts?: { sessionId?: string; purpose?: NonTurnCardPurpose },
 ) => Promise<string>;
 
 interface NonTurnTargetCommon {
@@ -102,7 +111,7 @@ export type NonTurnRunner =
 
 /**
  * A direct call where the credential permits one, and no harness row for the
- * same model (docs/299 req 3). A harness can reach that model too, but for
+ * same model (docs/299-direct-provider-calls req 3). A harness can reach that model too, but for
  * background work it is slower, needs a container and arrives at the same
  * place. The capability itself is the catalogue's answer — `resolveDirectCall`
  * — never re-derived from the billing mode or from how the credential arrived.

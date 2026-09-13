@@ -7,12 +7,45 @@ import Fastify, { type FastifyInstance } from "fastify";
 import fastifyMultipart from "@fastify/multipart";
 import { registerVoiceRoutes } from "./api-routes-voice.js";
 import type { ApiDeps } from "./api-routes.js";
+import type { CredentialRoute } from "../shared/types.js";
 
-function makeCredentialStore() {
+function anthropicKeyRoute(): CredentialRoute {
+  return {
+    id: "anthropic-key",
+    serviceId: "anthropic",
+    billingMode: "key",
+    via: "string",
+    status: "ready",
+    priority: 0,
+    isPrimary: true,
+    label: "test",
+    createdAt: 0,
+    updatedAt: 0,
+  };
+}
+
+/**
+ * `backgroundWork` is the model-provider registry cleanup resolves against
+ * (docs/299-direct-provider-calls req 5). It is deliberately separate from the voice keys: an OpenAI
+ * voice key is not a service credential, so it buys no cleanup.
+ */
+function makeCredentialStore(backgroundWork: CredentialRoute[] = []) {
   const keys = new Map<string, string>();
   let deliveryMode: "native" | "external" | "both" = "native";
   let webhook: { url: string; token: string } | null = null;
   return {
+    getNonTurnModel: vi.fn(() => undefined),
+    listCredentialRoutes: vi.fn((serviceId?: string, billingMode?: string) =>
+      backgroundWork.filter(
+        (r) =>
+          (serviceId === undefined || r.serviceId === serviceId)
+          && (billingMode === undefined || r.billingMode === billingMode),
+      ),
+    ),
+    getCredentialSecret: vi.fn(() => "sk-background-work"),
+    getCredentialRoute: vi.fn((id: string) => backgroundWork.find((r) => r.id === id)),
+    getSelectionMode: vi.fn(() => "strict" as const),
+    getFailoverCutoffs: vi.fn(() => ({ session: 90, weekly: 90 })),
     getVoiceProviderKey: vi.fn((id: string): string | null => keys.get(id) ?? null),
     setVoiceProviderKey: vi.fn((id: string, k: string) => {
       keys.set(id, k);
@@ -216,31 +249,42 @@ describe("POST/DELETE /api/voice/credentials", () => {
 });
 
 describe("GET /api/voice/cleanup/status", () => {
-  it("reports no provider when no OpenAI key is set", async () => {
+  it("reports no model when no background-work credential is configured", async () => {
     const { app } = await buildApp();
     const res = await app.inject({ method: "GET", url: "/api/voice/cleanup/status" });
     expect(res.statusCode).toBe(200);
-    expect(res.json()).toEqual({ provider: null });
+    expect(res.json()).toEqual({ model: null });
     await app.close();
   });
 
-  it("reports the OpenAI cleanup provider when the key is set", async () => {
+  it("names the background-work model that would clean the next dictation", async () => {
+    const credentialStore = makeCredentialStore([anthropicKeyRoute()]);
+    const { app } = await buildApp({ credentialStore });
+    const res = await app.inject({ method: "GET", url: "/api/voice/cleanup/status" });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().model).toMatchObject({ serviceName: "Anthropic" });
+    await app.close();
+  });
+
+  // The OpenAI voice key lives in `voiceProviderKeys`, not in the model-provider
+  // registry, so it is not a credential background work can run on.
+  it("reports no model for an install whose only OpenAI key is the voice one", async () => {
     const credentialStore = makeCredentialStore();
     credentialStore.setVoiceProviderKey("openai", "sk-abc");
     const { app } = await buildApp({ credentialStore });
     const res = await app.inject({ method: "GET", url: "/api/voice/cleanup/status" });
     expect(res.statusCode).toBe(200);
-    expect(res.json()).toEqual({ provider: "openai-cleanup" });
+    expect(res.json()).toEqual({ model: null });
     await app.close();
   });
 
-  it("reports no provider for a Deepgram-only install, where cleanup cannot run", async () => {
+  it("reports no model for a Deepgram-only install, where cleanup cannot run", async () => {
     const credentialStore = makeCredentialStore();
     credentialStore.setVoiceProviderKey("deepgram", "dg-xyz");
     const { app } = await buildApp({ credentialStore });
     const res = await app.inject({ method: "GET", url: "/api/voice/cleanup/status" });
     expect(res.statusCode).toBe(200);
-    expect(res.json()).toEqual({ provider: null });
+    expect(res.json()).toEqual({ model: null });
     await app.close();
   });
 });
@@ -404,9 +448,8 @@ describe("POST /api/voice/transcribe", () => {
     await app.close();
   });
 
-  // docs/299-direct-provider-calls phase 1's accepted regression: with no
-  // OpenAI key there is no cleanup route left, and the raw transcript is what
-  // the composer gets (docs/299-direct-provider-calls req 6).
+  // An install with no model-provider credential has nothing to clean with, and
+  // the raw transcript is what the composer gets (docs/299-direct-provider-calls req 6).
   it("inserts the raw transcript when cleanup is on and only a Deepgram key is set", async () => {
     const credentialStore = makeCredentialStore();
     credentialStore.setVoiceProviderKey("deepgram", "dg-xyz");
@@ -445,16 +488,16 @@ describe("POST /api/voice/transcribe", () => {
     await app.close();
   });
 
-  it("cleans the transcript when the OpenAI key is set", async () => {
-    const credentialStore = makeCredentialStore();
+  it("cleans the transcript on the background-work model", async () => {
+    const credentialStore = makeCredentialStore([anthropicKeyRoute()]);
     credentialStore.setVoiceProviderKey("openai", "sk-abc");
 
     const fetchImpl = vi.fn(async (input: unknown) =>
-      String(input).includes("chat/completions")
-        ? new Response(JSON.stringify({ choices: [{ message: { content: "Add a React useEffect" } }] }), {
-            status: 200,
-            headers: { "Content-Type": "application/json" },
-          })
+      String(input).includes("api.anthropic.com")
+        ? new Response(
+            JSON.stringify({ content: [{ type: "text", text: "Add a React useEffect" }] }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          )
         : new Response(JSON.stringify({ text: "um add a react use effect" }), {
             status: 200,
             headers: { "Content-Type": "application/json" },
@@ -479,8 +522,55 @@ describe("POST /api/voice/transcribe", () => {
     expect(res.json()).toEqual({
       text: "Add a React useEffect",
       rawText: "um add a react use effect",
-      cleanupProvider: "openai-cleanup",
     });
+    await app.close();
+  });
+
+  /**
+   * docs/299-direct-provider-calls req 6. A dictation is not an operation the user is watching, so a
+   * cleanup failure inserts the raw transcript and writes nothing to the chat
+   * transcript — no card, persisted or emitted.
+   */
+  it("writes nothing to the chat transcript when cleanup fails", async () => {
+    const credentialStore = makeCredentialStore([anthropicKeyRoute()]);
+    credentialStore.setVoiceProviderKey("openai", "sk-abc");
+    const chatHistoryManager = { replaceInProgress: vi.fn(), append: vi.fn() };
+    const { emitted, registry } = makeRunnerRegistry("s1");
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: unknown) =>
+        String(input).includes("api.anthropic.com")
+          ? new Response("no key", { status: 401 })
+          : new Response(JSON.stringify({ text: "um add a react use effect" }), {
+              status: 200,
+              headers: { "Content-Type": "application/json" },
+            }),
+      ),
+    );
+
+    const { payload, boundary } = buildMultipartBody([
+      { name: "audio", filename: "audio.webm", contentType: "audio/webm", value: Buffer.from("audio-bytes") },
+      { name: "cleanup", value: "true" },
+      { name: "sttProvider", value: "openai" },
+    ]);
+    const { app } = await buildApp({ credentialStore, chatHistoryManager, runnerRegistry: registry });
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/voice/transcribe",
+      payload,
+      headers: { "content-type": `multipart/form-data; boundary=${boundary}` },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({
+      text: "um add a react use effect",
+      rawText: "um add a react use effect",
+      cleanupErrorCode: "provider-error",
+    });
+    expect(chatHistoryManager.append).not.toHaveBeenCalled();
+    expect(chatHistoryManager.replaceInProgress).not.toHaveBeenCalled();
+    expect(emitted).toEqual([]);
     await app.close();
   });
 

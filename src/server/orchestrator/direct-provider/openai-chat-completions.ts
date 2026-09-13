@@ -1,5 +1,5 @@
 import { DIRECT_CALL_PATHS, joinEndpoint } from "../../shared/catalogue/index.js";
-import { maxOutputTokens, postJson, requireText, uncachedInput } from "./http.js";
+import { maxOutputTokens, postJson, requireCompleteText, uncachedInput } from "./http.js";
 import type { DirectCall, DirectCallUsage } from "./types.js";
 
 const LABEL = "OpenAI Chat Completions";
@@ -47,7 +47,7 @@ export function createOpenAiChatCompletionsCall(fetchImpl: typeof fetch = fetch)
       cacheCreateTokens: cacheWrite,
     };
     return {
-      text: requireText(
+      text: requireCompleteText(
         typeof content === "string" ? content.trim() : "",
         LABEL,
         data.choices?.[0]?.finish_reason,

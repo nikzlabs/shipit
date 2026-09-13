@@ -28,6 +28,7 @@ import {
 import {
   resolveNonTurnModel,
   type GenerateText,
+  type NonTurnCardPurpose,
   type NonTurnDirectTarget,
   type NonTurnHarnessTarget,
   type NonTurnPurpose,
@@ -85,7 +86,7 @@ export interface NonTurnTelemetry {
  *
  * A null session id is install-level spend — background work belonging to no
  * session, which is reported install-wide rather than charged to whichever
- * session happened to be open (docs/299 req 7). An absent harness id means no
+ * session happened to be open (docs/299-direct-provider-calls req 7). An absent harness id means no
  * harness ran the work; the row is still background work, and says so in its own
  * field. Service and billing mode come from the *selection*, so a direct call on
  * a subscription stays subscription usage with an at-API-rates comparison.
@@ -155,16 +156,21 @@ export function recordNonTurnUsage(
   );
 }
 
-const FALLBACK_TEXT: Record<NonTurnPurpose, string> = {
+const FALLBACK_TEXT: Record<NonTurnCardPurpose, string> = {
   "session-naming": "The session kept its placeholder title.",
   "pr-description": "The pull request got a generic description.",
 };
 
+/**
+ * Only a card purpose can reach this, so voice cleanup cannot persist a card by
+ * accident (docs/299-direct-provider-calls req 6) — the executors below report
+ * an outcome and leave the decision to emit to the caller that wants one.
+ */
 export function emitNonTurnFailure(
   deps: Pick<NonTurnWorkDeps, "getRunnerRegistry" | "chatHistoryManager">,
   args: {
     sessionId: string;
-    purpose: NonTurnPurpose;
+    purpose: NonTurnCardPurpose;
     target?: NonTurnTarget | undefined;
     unavailable?: { serviceName: string; serviceId: string; billingMode: "sub" | "key"; modelId: string } | undefined;
     detail?: string | undefined;
@@ -252,7 +258,7 @@ export function dismissNonTurnFailure(
  * changing models.
  *
  * Resolution and execution sit ABOVE the session and runner gates below, because
- * a direct call needs neither (docs/299 req 4): it runs with no session open and
+ * a direct call needs neither (docs/299-direct-provider-calls req 4): it runs with no session open and
  * with the session's container reclaimed. A session id, where one exists, is
  * reporting context passed alongside — where to put a failure card, and which
  * session's usage to charge — not a precondition.
@@ -271,12 +277,19 @@ export function makeNonTurnGenerateText(
 
     const resolved = resolution.ok ? resolution.target : undefined;
     if (resolved?.execution === "direct") {
-      return runNonTurnDirect(deps, {
+      const outcome = await runNonTurnDirect(deps, {
         sessionId: sessionId ?? null,
         purpose,
         target: resolved,
         prompt,
       });
+      if (outcome.ok) return outcome.text;
+      // Work belonging to no session has no transcript to carry the notice;
+      // runNonTurnDirect has already logged the reason.
+      if (sessionId) {
+        emitNonTurnFailure(deps, { sessionId, purpose, target: resolved, detail: outcome.detail });
+      }
+      return "";
     }
 
     // Everything below runs a harness inside the session's own container.
@@ -313,9 +326,19 @@ export function makeNonTurnGenerateText(
 }
 
 /**
+ * Failure is returned, never rendered: voice cleanup shares this path and must
+ * write nothing to the chat transcript (docs/299-direct-provider-calls req 6).
+ * The caller that wants a card emits one; the union makes forgetting visible to
+ * the compiler.
+ */
+export type NonTurnOutcome =
+  | { ok: true; text: string }
+  | { ok: false; detail: string };
+
+/**
  * Background work as a direct provider call, and the usage it spent (docs/299
- * reqs 2 and 7). The whole act is one entry point — call, then record — because
- * a caller that had to remember the second half eventually would not.
+ * reqs 2 and 7). The call and the recording are one entry point, because a
+ * caller that had to remember the second half eventually would not.
  *
  * A null session id is install-level spend. No harness id is written, and the
  * service and billing mode come from the *selection*, so a direct call on a
@@ -323,15 +346,16 @@ export function makeNonTurnGenerateText(
  * than becoming metered spend.
  */
 export async function runNonTurnDirect(
-  deps: Pick<NonTurnWorkDeps, "usageManager" | "fetchImpl" | "getRunnerRegistry" | "chatHistoryManager">,
+  deps: Pick<NonTurnWorkDeps, "usageManager" | "fetchImpl">,
   args: {
     sessionId: string | null;
     purpose: NonTurnPurpose;
     target: NonTurnDirectTarget;
     prompt: string;
     signal?: AbortSignal | undefined;
+    maxOutputChars?: number | undefined;
   },
-): Promise<string> {
+): Promise<NonTurnOutcome> {
   const { target, purpose, sessionId } = args;
   const startedAt = Date.now();
   const record = (usage: DirectCallUsage): void => {
@@ -348,11 +372,12 @@ export async function runNonTurnDirect(
       },
     });
   };
-  const fail = (detail: string): string => {
-    // Work belonging to no session has no transcript to carry the notice.
-    if (sessionId) emitNonTurnFailure(deps, { sessionId, purpose, target, detail });
-    else console.warn(`[non-turn] ${purpose} direct call failed with no session: ${detail}`);
-    return "";
+  const fail = (detail: string): NonTurnOutcome => {
+    console.warn(
+      `[non-turn] ${purpose} direct call failed session=${sessionId ?? "-"} `
+      + `service=${target.selection.serviceId}/${target.selection.billingMode}: ${detail}`,
+    );
+    return { ok: false, detail };
   };
 
   const call = directCallForStyle(target.call.style, deps.fetchImpl ?? fetch);
@@ -365,16 +390,16 @@ export async function runNonTurnDirect(
       apiKey: target.apiKey,
       ...(target.call.headers ? { headers: target.call.headers } : {}),
       prompt: args.prompt,
-      maxOutputChars: NON_TURN_MAX_OUTPUT_CHARS,
+      maxOutputChars: args.maxOutputChars ?? NON_TURN_MAX_OUTPUT_CHARS,
       signal: args.signal ?? AbortSignal.timeout(NON_TURN_DIRECT_TIMEOUT_MS),
     });
     record(result);
     const text = result.text.trim();
     // A provider can answer 200 with no content; every caller wants text.
-    return text ? text : fail("The call returned no text.");
+    return text ? { ok: true, text } : fail("The call returned no text.");
   } catch (err) {
     // A run that stopped on its output cap, or wrote only reasoning, fails and
-    // is billed. Record what it spent before reporting it (docs/299 req 7).
+    // is billed. Record what it spent before reporting it (docs/299-direct-provider-calls req 7).
     if (err instanceof DirectCallError && err.usage) record(err.usage);
     return fail(getErrorMessage(err));
   }
@@ -383,7 +408,7 @@ export async function runNonTurnDirect(
 function reportUnrunnable(
   deps: Pick<NonTurnWorkDeps, "getRunnerRegistry" | "chatHistoryManager">,
   sessionId: string,
-  purpose: NonTurnPurpose,
+  purpose: NonTurnCardPurpose,
   resolution: Extract<NonTurnResolution, { ok: false; reason: "pin_unavailable" }>,
 ): void {
   emitNonTurnFailure(deps, {
@@ -403,7 +428,9 @@ async function runNonTurnSpawn(
   deps: NonTurnWorkDeps,
   args: {
     sessionId: string;
-    purpose: NonTurnPurpose;
+    // A session's own container runs only the card purposes; voice cleanup has
+    // its own runner and never reaches here.
+    purpose: NonTurnCardPurpose;
     target: NonTurnHarnessTarget;
     prompt: string;
     runner: SessionRunnerInterface;
