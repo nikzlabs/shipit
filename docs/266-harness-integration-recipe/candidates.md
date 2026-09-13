@@ -23,15 +23,15 @@ semantics, not a shrug.
 | 2. Streaming schema | ✅ documented NDJSON | ❓ undocumented — capture + conformance test required | ⚠️ documented but coarse; loss bugs (see verdict) | ✅ documented NDJSON, 3 event types *(probed)* |
 | 3. Session resume | ✅ | ✅ | ✅ | ✅ `--conversation <id>`, id in `init` *(probed)* |
 | 4. Full-auto permissions | ✅ `--force` + allow/deny | ✅ `--always-approve` + modes | ✅ `--auto` + config | ✅ `--dangerously-skip-permissions` + allow list *(probed)* |
-| 5. Auth injectable | ⚠️ key env ✅ / subscription ❓ (path undocumented) | ✅ `~/.grok/auth.json`; device-auth *(third-party)* | ✅ plain file; ❌ no Anthropic subscription | ✅ key env *(probed)* / account: plain token file, read back by a fresh process on a copied home *(probed)* |
-| 6. Pinnable install | ❌ none documented — policy gate | ⚠️ pinned install script *(third-party)* | ✅ npm exact | ✅ versioned GitHub release tarball; ❌ no npm |
+| 5. Auth injectable | ⚠️ key env ✅ / subscription ❓ (path undocumented) | ✅ `~/.grok/auth.json`; device-auth *(third-party)* | ✅ plain file; ❌ no Anthropic subscription | ✅ key env reaches Google *(probed, invalid key)* / account: plain token file, read back by a fresh process on a copied home *(probed once)* |
+| 6. Pinnable install | ❌ none documented — policy gate | ⚠️ pinned install script *(third-party)* | ✅ npm exact | ⚠️ exact acquisition ✅ (versioned GitHub release tarball); ❌ no npm; auto-updater spawns on every run, no disable found *(probed)* |
 | 7. Instructions | ✅ AGENTS.md/CLAUDE.md | ✅ AGENTS.md | ✅ AGENTS.md | ✅ AGENTS.md/GEMINI.md + plugin `rules/`; ❌ no flag |
 | 8. MCP | ✅ `mcp.json` | ✅ `config.toml` | ✅ `opencode.json` | ✅ `~/.gemini/config/mcp_config.json` *(probed)* |
 | 9. Skills disclosure | ❓ empirical, untested | ❓ empirical, untested | ❓ empirical, untested | ❓ `.agents/skills/` + `skills.json` paths, untested |
 | 10. Token telemetry | ❌ none in result event | ❓ claimed in stream, schema unverified | ✅ per-step tokens + cost (verify overlap) | ✅ `usage` in `result` *(probed)* |
-| 11. API style to redirected endpoint | ❓ (service-fused; likely none) | ❓ | ❓ (many claimed) | ❌ Gemini `generateContent` — no `ApiStyle` for it yet |
+| 11. API style to redirected endpoint | ❓ (service-fused; likely none) | ❓ | ❓ (many claimed) | ❌ no ShipIt `ApiStyle` for Gemini `generateContent`; endpoint override `GOOGLE_GEMINI_BASE_URL` per vendor docs, unprobed |
 | 12. Reasoning control | ❓ | ❓ | ⚠️ `reasoningEffort` config *(per docs/252 survey)* | ✅ `--effort low\|medium\|high` |
-| 13. Remaining capability flags | ❓ empirical | ❓ empirical | ❓ empirical | ❓ empirical; compaction ❌ structural |
+| 13. Remaining capability flags | ❓ empirical | ❓ empirical | ❓ empirical | ❓ empirical; compaction ❓ resumed `/compact` unprobed |
 
 Row 12 matters more than it looks: a harness that turns out to have *no*
 reasoning levels hits the `reviewer-model.test.ts` constraint (plan.md
@@ -175,148 +175,131 @@ projects are unrelated.
 ## Antigravity CLI (Google)
 
 `agy`, Google's terminal harness for the Antigravity platform (Antigravity
-2.0, I/O 2026); positioned as the successor of the open-source Gemini CLI
+2.0, I/O 2026), positioned as the successor of the open-source Gemini CLI
 for consumer users. **Closed source**, proprietary, free during preview.
-Assessed 2026-09-13 by downloading release 1.2.2 into a session container
-and running it headless with an invalid `GEMINI_API_KEY`; every *(probed)*
-item below is observed output of that binary.
+Assessed 2026-09-13 on release 1.2.2 in a session container: headless runs
+with an invalid `GEMINI_API_KEY`, then one real Google sign-in. Every
+*(probed)* item is observed output of that binary, observed once.
 
 - **Binary / install**: `antigravity` (installed as `agy`), a ~213 MB Go
-  binary. `curl -fsSL https://antigravity.google/cli/install.sh | bash`
-  fetches a *latest-only* manifest; but every GitHub release carries
-  per-platform assets
-  (`releases/download/<version>/agy_cli_linux_x64.tar.gz`, `_arm64` too),
-  so the install is exact-pinnable — outside the npm pipeline, like the
-  Cursor decision docs/266 plan.md Phase 3 anticipates. Daily 1.x releases.
-  Runs an update check (`updater/update.lock`, `last_check.timestamp`); no
-  disable flag in `--help`, an `AutoUpdate` settings key exists in the
-  binary, unverified.
+  binary. The vendor's `install.sh` reads a *latest-only* manifest, but
+  every GitHub release carries per-platform assets
+  (`releases/download/<version>/agy_cli_linux_{x64,arm64}.tar.gz`), so
+  acquisition is exact-pinnable outside the npm pipeline (plan.md Phase 3's
+  Cursor case). Daily 1.x releases. **Auto-updater**: every run spawns a
+  background update process (`auto_updater.go` in the CLI log,
+  `updater/update.lock`) *(probed)*; `--help`, `update --help` and the
+  settings keys compiled into the binary expose no switch. Phase 0.6
+  requires it disabled for a curl-installed binary, so item 6's runtime
+  half is open; a read-only, root-owned install path is the obvious
+  mitigation, unverified.
 - **Headless**: `agy -p "prompt" --output-format stream-json
   --dangerously-skip-permissions`; `--model <id>`, `--effort
   low|medium|high`, `--mode accept-edits|plan`, `--json-schema`,
-  `--print-timeout` (default 5 m), `--add-dir`, `--sandbox`. `-p` takes
-  the prompt as its value, so a resident driver spawns
-  `--print='' --input-format stream-json --output-format stream-json` and
-  writes `{"event":"user","message":{"content":"…"}}` lines to stdin — one
-  turn per line, one process, one conversation *(probed)*. Slash commands
-  expand in print mode unless `--disable-slash-commands`.
+  `--print-timeout` (default 5 m), `--add-dir`, `--sandbox`,
+  `--disable-slash-commands` (they expand in print mode). `-p` takes the
+  prompt as its value, so a resident driver spawns `--print=''
+  --input-format stream-json --output-format stream-json` and writes
+  `{"event":"user","message":{"content":"…"}}` lines to stdin — one turn
+  per line, one process, one conversation *(probed)*.
 - **Streaming**: documented NDJSON, three events *(probed)*: `init`
-  (`conversation_id`, `cwd`, `tools[]`, `permission_mode`), `step_update`
-  (`step_index`, `step_type` — `user_input`, `error_message`,
-  `system_message`, tool steps —, `state` ACTIVE/DONE, `text_delta`,
-  `tool_info`), terminal `result` (`status` SUCCESS/ERROR/CANCELED/…,
-  `response`, `error`, `num_turns`, `usage.{input,output,thinking,
-  cache_read,total}_tokens`). Errors are mirrored to stderr. Exit 0 on
-  success, 1 on an agent error, 2 on malformed input.
+  (`conversation_id`, `cwd`, `tools[]`, `permission_mode` — default
+  `request-review`), `step_update` (`step_index`, `step_type`:
+  `user_input`, `agent_response`, `system_message`, `error_message`, tool
+  steps; `state` ACTIVE/DONE; `text_delta`; `tool_info`; per-step `usage`),
+  terminal `result` (`status` SUCCESS/ERROR/CANCELED/…, `response`,
+  `error`, `num_turns`, `usage.{input,output,thinking,cache_read,total}
+  _tokens`). Errors mirror to stderr. Exit 0 success, 1 agent error, 2
+  malformed input.
 - **Sessions**: `--conversation <id>` resumes; an unknown id warns and
-  starts a new one *(probed)*. Store is `~/.gemini/antigravity-cli/
-  conversations/<id>.db` plus a `brain/<id>/` transcript tree. Nothing was
-  written into the workspace during a print run *(probed)*.
-- **Auth**: two paths, both proven in a session container.
-  - *Metered key*: `GEMINI_API_KEY` + `{"modelProvider":"gemini"}` in
-    `~/.gemini/antigravity-cli/settings.json`. Verified live: the request
-    reached `generativelanguage.googleapis.com` and came back
-    `API_KEY_INVALID` *(probed)*. The older upstream issues #78/#223 saying
-    key auth is unsupported predate 1.1.13 and are stale.
-    `GOOGLE_GEMINI_BASE_URL` overrides the endpoint. An `AGY_ADC_AUTH`
-    (Application Default Credentials) mode also exists in the binary,
-    unverified.
-  - *Account*: Google OAuth, into the OS keyring where one exists and
-    otherwise into `~/.gemini/antigravity-cli/antigravity-oauth-token`.
-    Upstream #479 (open, reported on 1.0.10) says that file is write-only.
-    **Not on 1.2.2** — probed 2026-09-13 in a session container with no
-    D-Bus and no keyring daemon: print mode itself runs the sign-in (Google
-    URL on stderr, authorization code read from stdin, 60 s window) and
-    writes the token file (mode 0600; keys `access_token`,
-    `refresh_token`, `id_token`, `expiry`, `auth_method`, `token_type`);
-    then a fresh `-p` process with stdin closed answered from that file
-    alone, and so did a fresh process on a **byte-copy of the home
-    directory** — the exact shape of a ShipIt scoped-home mount. So the
-    account credential is a plain injectable file like Grok's
-    `auth.json`, and the recipe's "link the credential root as a
-    directory, never the token file" rule applies (refresh is expected to
-    rewrite the file; not observed within the hour-long token lifetime).
-    With account auth `agy models` adds `claude-sonnet-4-6`,
-    `claude-opus-4-6-thinking` and `gpt-oss-120b-medium` to the Gemini
-    list *(probed)* — third-party models fall under §8 of the terms.
-    Default `permission_mode` without the skip flag is `request-review`
-    *(probed)*; a real turn streams `agent_response` steps with
-    `text_delta` and per-step `usage`, and wrote nothing into cwd.
-  - *Eligibility gate*: after a successful OAuth exchange the CLI asks
-    Google an account-eligibility question and can refuse the account
-    (observed: *"Eligibility check failed: Your current account is not
-    eligible for Antigravity. To use Antigravity you must be 18 years old
-    or older. If you think you are receiving this message in error, please
-    ensure you have verified your age and try to log in again."*). It
-    arrives as an `error:` line on stderr with a non-zero exit, and the
-    token file is still written. **Requirement for the adapter: relay that
-    text to the user verbatim.** Today's auth handling matches stderr
-    against generic patterns (`textIndicatesAuthFailure`,
-    `session/agents/claude/process.ts`) and replaces the message with the
-    per-harness string in `orchestrator/services/agent-auth-gate.ts`; the
-    eligibility text matches none of those patterns, and even if it did,
-    the generic "sign in or add a key" copy would hide the only sentence
-    that tells the user what to fix.
-  - *Terms*: the Antigravity Additional Terms of Service §6 state *"Using
-    third party software, tools, or services to access the Service (e.g.
-    using OpenClaw with Antigravity OAuth) is a breach of this Agreement"*.
-    The example is a third-party **client** that takes the OAuth token and
-    calls the backend itself (OpenClaw; the `opencode-antigravity-auth`
-    plugin). ShipIt spawns Google's own `agy`, which stays the only client
-    of the Service — the same shape as ShipIt's Claude Code subscription
-    use, and Google documents headless mode for scripts and CI. The same
-    section also lists *"using the Service in connection with products not
-    provided by us"*, which read literally would cover a CI runner too; how
-    far that reaches is a reading for the user, not the agent.
-  - No env var relocates the config home; the scoped-home mechanism must
-    set `HOME`, which the Claude/Codex adapters already do.
+  starts a new one *(probed)*. Store: `~/.gemini/antigravity-cli/
+  conversations/<id>.db` + `brain/<id>/` transcripts. A print run wrote
+  nothing into cwd *(probed)*. No env var relocates the config home; the
+  scoped-home mechanism must set `HOME`, as the Claude/Codex adapters do.
+- **Auth — metered key**: `GEMINI_API_KEY` + `{"modelProvider":"gemini"}`
+  in `~/.gemini/antigravity-cli/settings.json`; the request reached
+  `generativelanguage.googleapis.com` and returned `API_KEY_INVALID`
+  *(probed)* — key injection shown, not a completed inference. Upstream
+  #78/#223 ("key auth unsupported") predate 1.1.13. `GOOGLE_GEMINI_BASE_URL`
+  overrides the endpoint per the vendor's install page (unprobed);
+  `AGY_ADC_AUTH` exists in the binary (unverified). Models offered:
+  `gemini-3.8-flash-{high,medium,low}` … `gemini-3.1-pro-{high,low}`
+  *(probed)*.
+- **Auth — account**: Google OAuth into the OS keyring where one exists,
+  else `~/.gemini/antigravity-cli/antigravity-oauth-token`. Upstream #479
+  (reported on 1.0.10) says that file is write-only; **not on 1.2.2**
+  *(probed, no D-Bus, no keyring daemon)*: print mode runs the sign-in
+  itself (URL on stderr, code read from stdin, 60 s window), writes the
+  token file (0600; keys `access_token`, `refresh_token`, `id_token`,
+  `expiry`, `auth_method`, `token_type`), and a fresh `-p` process with
+  stdin closed answered from that file — also on a **byte-copy of the
+  home**, the shape of a scoped-home mount. So the credential is a plain
+  file like Grok's `auth.json`; the recipe's "link the credential root as
+  a directory, never the token file" rule applies (refresh rewrite not
+  observed within the token's one-hour lifetime). Account auth adds
+  `claude-sonnet-4-6`, `claude-opus-4-6-thinking`, `gpt-oss-120b-medium`
+  *(probed)*; third-party models fall under §8 of the terms.
+- **Eligibility gate**: after the OAuth exchange the CLI asks Google an
+  account-eligibility question and can refuse (observed: *"Eligibility
+  check failed: Your current account is not eligible for Antigravity. To
+  use Antigravity you must be 18 years old or older. If you think you are
+  receiving this message in error, please ensure you have verified your
+  age and try to log in again."*) — an `error:` stderr line, non-zero
+  exit, token file still written. **User requirement (Nik, 2026-09-13):
+  the adapter relays such text verbatim.** Today's path
+  (`textIndicatesAuthFailure` in `session/agents/claude/process.ts` →
+  `orchestrator/services/agent-auth-gate.ts`) pattern-matches stderr and
+  substitutes generic copy that would hide the sentence naming the fix.
+- **Terms**: Additional Terms of Service §6: *"Using third party software,
+  tools, or services to access the Service (e.g. using OpenClaw with
+  Antigravity OAuth) is a breach of this Agreement"*, and *"using the
+  Service in connection with products not provided by us"* is listed as
+  abuse. The user's reading (Nik, 2026-09-13): the example is a
+  third-party **client** using the OAuth token directly (OpenClaw, the
+  `opencode-antigravity-auth` plugin), whereas ShipIt would spawn Google's
+  own `agy` as the only client — the shape of ShipIt's Claude Code
+  subscription use; the "in connection with" phrase read literally covers
+  a CI runner too. The section grants nothing expressly. Recorded here,
+  decided by the user.
 - **Instructions / MCP / permissions / hooks**: no system-prompt flag.
   Rules load from `GEMINI.md`/`AGENTS.md` walking up from cwd, and from
   `rules/AGENTS.md` inside a plugin at `~/.gemini/antigravity-cli/plugins/
   <name>/` (`plugin.json` marker; may also carry `mcp_config.json`,
-  `hooks.json`, `skills/`). A ShipIt-written plugin in the scoped home is
-  the injection path for prompt + MCP + skills without touching the repo.
-  Global MCP config `~/.gemini/config/mcp_config.json` (`mcpServers`,
-  stdio + `serverUrl`) is picked up by `agy mcp list` *(probed)*; MCP tools
-  do **not** appear in `init.tools` — they are reached through one
-  `call_mcp_tool` wrapper, which changes the tool-activity mapping.
-  Permission modes: `toolPermission` request-review | proceed-in-sandbox |
-  strict | always-proceed, plus `permissions.allow` patterns
-  (`command(git)`, `write_file(src/)`). In print mode a tool needing
-  approval is *soft-denied* and the run continues; there is no
+  `hooks.json`, `skills/`; skills also from `.agents/skills/` and
+  `skills.json` path entries). A ShipIt-written plugin in the scoped home
+  is the vendor-documented *candidate* path for prompt + MCP + skills
+  without touching the repo — loading unprobed. Global MCP config
+  `~/.gemini/config/mcp_config.json` (`mcpServers`, stdio + `serverUrl`)
+  is listed by `agy mcp list` *(probed)*; MCP tools do **not** appear in
+  `init.tools`, they go through one `call_mcp_tool` wrapper (affects
+  tool-activity mapping). Permissions: `toolPermission` request-review |
+  proceed-in-sandbox | strict | always-proceed, plus `permissions.allow`
+  patterns (`command(git)`, `write_file(src/)`); in print mode a tool
+  needing approval is *soft-denied* and the run continues; no
   permission-prompt MCP tool. The documented `PreToolUse` hook returns
-  `allow`/`deny`/`ask` synchronously (30 s default timeout), which is the
-  candidate mechanism for ShipIt's guarded mode. Built-in tools include a
-  browser suite, `search_web`, `generate_image`, subagents
-  (`define_subagent`/`invoke_subagent`) and `run_command`.
-- **Models / compaction / review**: `agy models` lists
-  `gemini-3.8-flash-{high,medium,low}` … `gemini-3.1-pro-{high,low}` for
-  the key provider *(probed)*; Claude and GPT-OSS backends are
-  account-only per vendor docs. Compaction is automatic
-  (`NewContextSummaryHook` in the binary) with no user command — item 14
-  is structural ❌. Review primitives (shell + subagent) exist; item 15
-  needs the depth-0 probe. Native ACP is requested upstream (#31, open);
-  community `agy-acp` bridges exist.
-- **Verdict**: technically the closest match to the Claude-shaped recipe of
-  any candidate — documented stream, id-addressed resume, full-auto flag,
-  effort levels, token usage, pinnable release asset, and a plugin
-  mechanism that carries prompt, MCP and skills from the scoped home. Both
-  auth paths are proven (the account path end to end, on a copied home),
-  so the subscription-first default holds; the terms are not a blocker
-  either — ShipIt runs Google's own CLI, which is the client the §6
-  example permits, and only the broad "in connection with" phrase is left
-  to the user's reading. One thing stands in front of the recipe, plus
-  one requirement the recipe does not yet name:
-  1. **Account-level refusals surface verbatim** (eligibility note above):
-     the adapter must pass Google's own sentence through to the user, not
-     the generic per-harness auth copy.
+  `allow`/`deny`/`ask` synchronously (30 s default) — the candidate for
+  guarded mode, unprobed. Built-in tools include a browser suite,
+  `search_web`, subagents and `run_command`.
+- **Compaction / review / ACP**: the binary carries an automatic
+  context-summary hook and the reference lists no `/compact`, but Phase
+  0.14 forbids concluding from that — item 14 stays unknown until
+  `/compact` on a resumed headless session is measured. Review primitives
+  (shell + subagent) exist; item 15 needs the depth-0 probe. Native ACP is
+  requested upstream (#31); community `agy-acp` bridges exist.
+- **Verdict**: the closest match to the Claude-shaped recipe of any
+  candidate — documented stream, id-addressed resume, full-auto flag,
+  effort levels, token usage, exact-version release asset, and an account
+  credential that is a plain file. Unresolved before a recipe step:
+  1. **Item 6, runtime half**: no auto-updater off-switch found; needs a
+     verified mitigation (read-only install path) or a sign-off.
   2. **A new vendor row**: Gemini's `generateContent` wire format is not an
-     `ApiStyle`, and docs/272-opencode-inference already notes Gemini
-     models are unrepresentable without one — so a Google service +
-     fourth style lands in the catalogue before the harness row.
-  Lesser costs: a non-npm binary in the image, a `call_mcp_tool` wrapper
-  that hides MCP tool names from the stream, and PreToolUse hooks as the
-  only guarded-mode mechanism (unprobed against a live model).
+     `ApiStyle` (docs/272-opencode-inference notes Gemini models are
+     unrepresentable without one); catalogue row before harness row.
+  3. **Terms**: the user's reading above, recorded, not decided here.
+  Carried requirement: account-level refusals surface verbatim. Unprobed,
+  for Phase 10: `/compact` on a resumed session, plugin-based
+  prompt/MCP/skills loading, skills disclosure, PreToolUse as guarded
+  mode, `call_mcp_tool`'s effect on tool-activity labels.
 
 ## Cross-cutting
 
