@@ -10,6 +10,7 @@ import {
   CREATE_INTERVAL_MS,
 } from "./cleanup-container.js";
 import { SUB_AGENT_HOME_SUBDIR } from "./session-credentials-scaffold.js";
+import { ANTIGRAVITY_TOOLS_OFF_REFUSAL } from "../shared/agent-tools-off.js";
 import type { SessionContainer, SessionContainerManager } from "./session-container.js";
 
 const posts: { url: string; path: string; body: Record<string, unknown> }[] = [];
@@ -155,6 +156,20 @@ describe("CleanupContainerManager", () => {
     mgr.stop();
 
     expect(cm.createCalls).toHaveLength(1);
+  });
+
+  it("refuses a harness whose tools cannot be turned off, without starting a container", async () => {
+    // Antigravity's adapter reads no toolsOff flag, so spawning it would run the
+    // full tool set. Refusing before ensure() also keeps an unusable run from
+    // creating the container.
+    const { mgr, cm } = makeManager(root);
+
+    const result = await mgr.run({ harnessId: "antigravity", prompt: "clean this up", model: "gemini-3-pro" });
+
+    expect(result.status).toBe("error");
+    expect(result.error).toBe(ANTIGRAVITY_TOOLS_OFF_REFUSAL);
+    expect(posts.find((p) => p.path === "/agent/spawn")).toBeUndefined();
+    expect(cm.createCalls).toHaveLength(0);
   });
 
   it("spawns one-shot with tools off into a private home, and releases it", async () => {
