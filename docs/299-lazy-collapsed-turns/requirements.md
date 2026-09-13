@@ -34,8 +34,8 @@ the significant events.
 4. Opening a session shows every earlier turn collapsed. It does not matter
    whether the agent was working at that moment, or whether the viewer attached
    during a turn.
-5. A collapsed turn shows the user's own message and the significant events of
-   that turn, so the user can read what the conversation was about.
+5. A collapsed turn shows the user's own message and the last agent message. It
+   shows no cards, so the user reads only the request and the reply.
 6. The server does not send the hidden content of a collapsed turn. Loading a
    session transfers only the content that is displayed.
 7. Expanding one turn loads that turn's full content at that moment, and shows
@@ -43,18 +43,30 @@ the significant events.
 8. The control that expands a turn is clearly a button. It is easy to see, and
    the user can tell it apart from the content of the turn.
 
+9. The feature stays off by default. The user turns it on in Settings.
+10. A control expands every collapsed turn at once and loads the full
+    transcript. In-app search stays on the client and searches the content that
+    is loaded.
+
 ## Open questions
 
-- Is the feature on by default now that it also reduces the load size? It is off
-  by default today.
-- Requirement 5 says "the significant events". The shipped feature keeps all 24
-  card types, which includes voice notes, session renames and branch-sync
-  notices. Which set stays visible?
-- In-app search matches the text of hidden messages today. Requirement 6 stops
-  that text from being loaded. How does search behave?
-- Does a collapsed interrupted or failed turn show a small status marker, or
-  nothing at all?
+- Requirement 5 keeps the last agent message. How much of it — the whole
+  message, or only its last paragraphs?
+- Where does the expand-everything control of requirement 10 go?
+- Does a collapsed interrupted or failed turn show a status marker?
 
 ## Resolved questions
 
-None yet.
+2026-09-13 — Is the feature on by default now that it also reduces the load
+size? The user answered: off by default. They want to test it first and expect
+some iterations. Turning it on by default can follow later. This is requirement
+9.
+
+2026-09-13 — Which cards stay visible in a collapsed turn? The user answered:
+none of them. No card is relevant in a past turn. A collapsed turn shows only the
+last agent message. This changed requirement 5.
+
+2026-09-13 — In-app search cannot match text that was never loaded. The user
+answered: do not make search server-side, because that is a can of worms. Add a
+control that expands all turns and loads the whole transcript instead. This is
+requirement 10.
