@@ -44,18 +44,22 @@ no credential. Each finding cites its capture.
   this process. So the outcome rule uses only process-local signals: the
   **exit code** decides — non-zero, or no `result` event, ⇒ error turn;
   zero with a `result` ⇒ success with the stream's `agent_response` text —
-  and the error text, whether for the error row or for narrating a
-  recovered `error_message` step, comes from this process's stderr
-  `error:` lines. `result.status` and `result.error` are never read. In
+  and the error row's text comes from this process's stderr `error:` line,
+  which every terminal refusal printed. A recovered `error_message` step
+  (a mid-turn 503 the CLI retried) left **nothing** on stderr in either
+  capture, so it is narrated only when this process's stderr carried text
+  and is otherwise silent; nothing is invented for it. `result.status` and
+  `result.error` are never read. In
   every observed run the exit code tracked the real outcome: 0 for the two
   recovered runs and for the resumed turn carrying a stale error
   (`probe-run.txt`, `compact-run.txt`), and 1 for every run Google refused
   outright with a 429 and an empty `response` — eight of them in the first,
   unpaced attempt, whose log was not kept, so that half is observed but not
   vendored and the implementation captures one. Fixtures: `plugin-mcp.ndjson`
-  (recovered), `compact-c.ndjson` (stale error, success) and a
-  failure-after-partial-output case to capture at implementation (none
-  observed yet; the rule must not assume text implies success).
+  (recovered), `compact-c.ndjson` (stale error, success), plus two to
+  capture at implementation with stderr and exit code recorded: a terminal
+  refusal (exit 1, `error:` on stderr) and a failure after partial output
+  (none observed yet; the rule must not assume text implies success).
 - **Token accounting, verified on every captured step and result**
   (`plugin-mcp.ndjson`, `compact-b.ndjson`): `total_tokens = input_tokens +
   output_tokens` always; `thinking_tokens` ⊂ `output_tokens`; and
@@ -325,9 +329,10 @@ one non-npm branch, gated on `contains antigravity $selected`:
   renders in the sign-in card as-is. At turn time: the adapter does **not**
   classify an `error:` line as `auth_required` (that path replaces the text
   with `AGENT_NOT_AUTHENTICATED_MESSAGE` in `agent-auth-handler.ts`); it ends
-  the turn as an error whose text is this process's stderr `error:` line
-  (never `result.error`, which can be stale — see the outcome rule in
-  Phase 0), which the error row shows. The one exception is a
+  the turn by the Phase 0 outcome rule (exit code + `result` received),
+  and when that rule says error, the error row's text is this process's
+  stderr `error:` line — never `result.error`, which can be stale. Choosing
+  the text and deciding the outcome are two separate steps. The one exception is a
   missing credential before spawn, where the generic gate is the right
   answer. Same rule carries Google's 429 quota text to the user.
 - **Key mode**: `settings.json` as above, and the adapter scrubs
@@ -382,11 +387,14 @@ one non-npm branch, gated on `contains antigravity $selected`:
   deltas → `agent_assistant` text; a `tool` step ACTIVE → tool_use (name +
   normalized input), DONE → `agent_tool_result` (`tool_info.output`);
   `error_message` → the error narration; the resume `system_message` notice
-  is dropped; `result` → `agent_result` with disjoint tokens, cost priced
-  from the catalogue, and the "answer present, status ERROR" rule above. A
-  truncated stream (no `result`) synthesises the terminal result from the
-  exit code (OpenCode precedent). Conformance fixtures replay the vendored
-  captures byte for byte.
+  is dropped; the `result` envelope is **buffered, not emitted**: the
+  adapter waits for process close and emits exactly one `agent_result`,
+  success only when the exit code is zero AND a `result` was received
+  (tokens summed from this stream's steps, cost priced from the
+  catalogue), error otherwise with this process's stderr text — the Phase 0
+  outcome rule, applied once. A truncated stream (no `result`) is therefore
+  an error turn by construction, whatever text preceded it. Conformance
+  fixtures replay the vendored captures byte for byte.
 - **Permission gate**: none at launch (req 8) — `--dangerously-skip-permissions`
   always; the `PreToolUse` hook (`hooks.json` in the plugin) is the tracked
   guarded-mode follow-up.
