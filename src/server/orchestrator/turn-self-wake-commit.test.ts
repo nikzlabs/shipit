@@ -45,6 +45,18 @@ async function selfWake(agent: FakeAgent, taskId = "bg-1"): Promise<void> {
 // Slow git polls must not exhaust the deadline before enough attempts run; measured peak: 59.
 const MIN_POLLS = 200;
 
+/**
+ * Several conditions here are `git status --porcelain` via `execFileSync`, which
+ * BLOCKS the event loop for a whole subprocess — while what they wait for is an
+ * async commit that needs that loop and spawns git of its own. Polling as fast as
+ * `flush()` allows therefore starves the work being measured: the observed timeouts
+ * spent ~4.9 ms of every 5 ms inside a spawn, so over 90% of the 15s budget passed
+ * with the loop blocked and the commit never got the time to run. Sleeping between
+ * polls inverts that — the loop is free most of the time and far fewer git
+ * subprocesses compete with the ones the commit itself needs.
+ */
+const POLL_INTERVAL_MS = 10;
+
 async function waitFor(fn: () => boolean, label = "condition", timeoutMs = 15_000): Promise<void> {
   const startedAt = Date.now();
   const deadline = startedAt + timeoutMs;
@@ -54,6 +66,7 @@ async function waitFor(fn: () => boolean, label = "condition", timeoutMs = 15_00
     polls += 1;
     if (polls >= MIN_POLLS && Date.now() >= deadline) break;
     await flush();
+    await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
   }
   throw new Error(
     `Timed out waiting for ${label} after ${polls} polls / ${Date.now() - startedAt}ms`,

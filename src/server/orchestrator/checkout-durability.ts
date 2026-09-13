@@ -1,5 +1,5 @@
 import { lstat } from "node:fs/promises";
-import type { GitManager, UnreadableWorkspace } from "../shared/git.js";
+import type { GitManager, UnreadableWorkspace, WorkingTreeState } from "../shared/git.js";
 import type { SecretFinding } from "../shared/secret-scan.js";
 import type { EvictBlockReason } from "./services/evict-blocked-notice.js";
 
@@ -30,6 +30,49 @@ function describeBlock(r: {
   }
   if (r.unreadable) return { kind: "unreadable", unreadable: r.unreadable };
   return { kind: "unknown" };
+}
+
+/**
+ * Classify an already-inspected tree, plus the sequencer state a clean tree can
+ * still hide (`rebase-merge`, `MERGE_HEAD`, `CHERRY_PICK_HEAD`, `REVERT_HEAD`).
+ * Reads only.
+ */
+async function classifyInspectedTree(
+  git: GitManager,
+  tree: WorkingTreeState,
+): Promise<EvictBlockReason | null> {
+  const rebaseInProgress = await git.isRebaseInProgress();
+  if (
+    tree.conflictedFiles.length > 0
+    || rebaseInProgress
+    || await git.isMergeOrSequencerInProgress()
+  ) {
+    return { kind: "conflict", conflictedFiles: tree.conflictedFiles, rebaseInProgress };
+  }
+  if (tree.unreadable) return { kind: "unreadable", unreadable: tree.unreadable };
+  return null;
+}
+
+/**
+ * The read-only half of the durability question: what, if anything, is wrong with
+ * this checkout that inspecting it can see — without committing, pushing, or
+ * touching a single byte.
+ *
+ * docs/298-broken-workspace-visibility — session activation asks this so a broken
+ * checkout is marked while the user is sitting in it, which `ensureCheckoutDurable`
+ * could never be used for: that one *repairs* durability, so calling it on
+ * activation would commit and push a user's work merely because they opened a tab.
+ * Both callers share one classifier, so there is still one evaluator of the
+ * question (req 2).
+ *
+ * What it cannot decide: `secret` needs `autoCommit`'s scan and both
+ * `blocked-by-push` causes need a push attempt. `unreadable` it decides only
+ * *partly* — `git status` reports an omitted directory but an unreadable FILE
+ * looks merely modified, and only `git add` fails on it. A caller that acts on
+ * the absence of a block must account for all three.
+ */
+export async function inspectCheckoutBlock(git: GitManager): Promise<EvictBlockReason | null> {
+  return await classifyInspectedTree(git, await git.inspectWorkingTree());
 }
 
 // Use the tracking ref: merged branches may be deleted remotely after a successful push.
@@ -87,6 +130,7 @@ export async function ensureCheckoutDurable(
 ): Promise<CheckoutDurability> {
   // A null commit can mean refusal. Recheck work, including paths git cannot read.
   const before = await git.inspectWorkingTree();
+  let tree = before;
   if (!before.clean) {
     const { secretFindings, conflictedFiles, rebaseInProgress, unreadable } =
       await git.autoCommit(commitMessage);
@@ -100,6 +144,7 @@ export async function ensureCheckoutDurable(
         }),
       };
     }
+    tree = after;
   } else if (before.unreadable) {
     return {
       state: "blocked-by-dirty",
@@ -108,13 +153,8 @@ export async function ensureCheckoutDurable(
   }
 
   // A clean working tree can still have uncommitted merge/rebase state inside .git.
-  const rebasing = await git.isRebaseInProgress();
-  if (rebasing || await git.isMergeOrSequencerInProgress()) {
-    return {
-      state: "blocked-by-dirty",
-      reason: { kind: "conflict", conflictedFiles: [], rebaseInProgress: rebasing },
-    };
-  }
+  const residual = await classifyInspectedTree(git, tree);
+  if (residual) return { state: "blocked-by-dirty", reason: residual };
 
   return await ensureBranchTipOnOrigin(git);
 }

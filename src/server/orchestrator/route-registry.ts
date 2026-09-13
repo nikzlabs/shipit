@@ -20,6 +20,7 @@ import { getGitIdentity } from "./git-config.js";
 import { readGlobalSystemPrompt } from "./global-system-prompt.js";
 import { notableFilesForBranch } from "./services/notable-files.js";
 import { emitResetEligible } from "./services/pre-turn-reset.js";
+import { refreshWorkspaceBlockOnActivation } from "./services/workspace-block.js";
 import { AgentTurnAdmissionError, type SessionRunnerInterface } from "./session-runner.js";
 import { registerPreviewProxy } from "./preview-proxy.js";
 import {
@@ -834,6 +835,23 @@ export async function registerRoutes(
           }
         }
         if (dir) void checkGitIdentity(dir);
+        // docs/298 — the janitor only ever sees an idle session, so a checkout the
+        // user is sitting in is marked (or cleared) here instead. Off the critical
+        // path: it is a few git reads, and the sidebar learns via its own broadcast.
+        if (dir) {
+          void refreshWorkspaceBlockOnActivation(
+            {
+              sessionManager,
+              createGitManager,
+              onSessionsChanged: () =>
+                sseBroadcast("session_list", { sessions: sessionManager.list() }),
+            },
+            sid,
+            dir,
+          ).catch((err: unknown) => {
+            console.warn(`[workspace-block] activation check for ${sid} failed:`, getErrorMessage(err));
+          });
+        }
         sendContainerFreshness(sid);
         sendSecretBlock(sid);
         kickDiskEscalation(sid);

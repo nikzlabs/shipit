@@ -816,7 +816,7 @@ describe("escalateDiskTiers", () => {
     let cleanCalls = 0;
     const stubGit = {
       isClean: () => Promise.resolve(cleanCalls > 0),
-      inspectWorkingTree: () => Promise.resolve({ clean: cleanCalls++ > 0, unreadable: null }),
+      inspectWorkingTree: () => Promise.resolve({ clean: cleanCalls++ > 0, conflictedFiles: [], unreadable: null }),
       autoCommit: () => Promise.resolve({
         commitHash: null, conflictedFiles: [], rebaseInProgress: false, secretFindings: [], unreadable: null,
       }),

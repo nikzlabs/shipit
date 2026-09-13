@@ -134,6 +134,13 @@ export type UnreadableWorkspace =
   | { kind: "omitted"; detail: string }
   | { kind: "blocked"; detail: string };
 
+/** What a working tree looks like without changing it. `git status` answers all three. */
+export interface WorkingTreeState {
+  clean: boolean;
+  conflictedFiles: string[];
+  unreadable: UnreadableWorkspace | null;
+}
+
 // simple-git drops exit codes from errors. git-config.ts pins LC_ALL=C for these.
 // Directory omissions exit successfully; their warning is the only failure signal.
 const UNREADABLE_DIR_RE = /could not open directory\s+'([^']+)'/;
@@ -769,12 +776,13 @@ export class GitManager {
   }
 
   // Use before destructive cleanup: isClean() alone can hide unreadable changes.
-  async inspectWorkingTree(): Promise<{ clean: boolean; unreadable: UnreadableWorkspace | null }> {
+  async inspectWorkingTree(): Promise<WorkingTreeState> {
     this.resetStderr();
     const status = await this.git.status();
     const match = UNREADABLE_DIR_RE.exec(this.stderrTail);
     return {
       clean: status.isClean(),
+      conflictedFiles: [...status.conflicted],
       unreadable: match ? { kind: "omitted", detail: match[1] } : null,
     };
   }

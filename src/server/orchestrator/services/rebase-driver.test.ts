@@ -1298,7 +1298,7 @@ describe("rebase-driver: planning#369 up-to-date branch with unpushed commits", 
     const git = {
       isClean: () => Promise.resolve(true),
       isRebaseInProgress: () => Promise.resolve(false),
-      inspectWorkingTree: () => Promise.resolve({ clean: true, unreadable: null }),
+      inspectWorkingTree: () => Promise.resolve({ clean: true, conflictedFiles: [], unreadable: null }),
       // Outlives the deadline, then fails the way an aborted-from-under-it rebase does.
       fetch: async () => {
         await sleep(40);

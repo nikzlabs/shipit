@@ -140,17 +140,18 @@ describe("inspectWorkingTree — the question isClean() cannot answer (planning#
     expect(await mgr.isClean()).toBe(true);
     expect(await mgr.inspectWorkingTree()).toEqual({
       clean: true,
+      conflictedFiles: [],
       unreadable: { kind: "omitted", detail: "pgdata/" },
     });
   });
 
   it("reports an ordinary dirty tree with nothing unreadable", async () => {
     fs.writeFileSync(path.join(repo, "tracked.txt"), "edit\n");
-    expect(await new GitManager(repo).inspectWorkingTree()).toEqual({ clean: false, unreadable: null });
+    expect(await new GitManager(repo).inspectWorkingTree()).toEqual({ clean: false, conflictedFiles: [], unreadable: null });
   });
 
   it("reports a clean, fully readable tree", async () => {
-    expect(await new GitManager(repo).inspectWorkingTree()).toEqual({ clean: true, unreadable: null });
+    expect(await new GitManager(repo).inspectWorkingTree()).toEqual({ clean: true, conflictedFiles: [], unreadable: null });
   });
 });
 
