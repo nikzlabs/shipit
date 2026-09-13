@@ -3175,8 +3175,8 @@ at is the one carrying the provider's code.
   fill in, and a second button beside it is a live control they did not ask for, in the one
   place where a stray click restarts the login they are in the middle of. So the button is
   gone from the start, the wait and the challenge; it returns only when nothing is happening
-  (stopped, or never started), and is **secondary** even then, since the step's own next
-  action is no longer a button. A hung login is recovered the way everything else here is —
+  (stopped, or never started), and is **secondary** even then, since the call to action
+  belongs to the panel and not to the footer. A hung login is recovered the way everything else here is —
   close it and start again. A mode that also takes a key keeps its primary *Sign in*, because
   nothing auto-starts there.
 
@@ -3188,10 +3188,16 @@ pulse alone reads as *stuck* rather than as *working*.
 - `AuthPanel` is the bordered box, and it is the same box in every state — waiting, challenge,
   failure. What changes as a login proceeds is its *contents*, never the page around it.
 - `ChallengePlaceholder` fills it before the code lands, and takes a `shape`, because the box
-  it stands in for differs: a code to read (98px) or a field to paste into (84px). One
-  placeholder could only be right for one of them.
-- **The narration is ShipIt's phase message**, in the slot the link will occupy ("Waiting for
+  it stands in for differs: a code to read, or a field to paste into, and the two are not the
+  same height. One placeholder could only be right for one of them.
+- **The narration is ShipIt's phase message**, in the slot the button will occupy ("Waiting for
   Claude CLI to print an authentication link"), with a pulse for the rest.
+- **Opening the provider's page is a button, not a text link.** It shipped as a bare line of
+  link-coloured text at the top of the panel, which is where a panel puts its *heading* — a
+  user read it as the step's title, waited for a browser that only opens on a click, and said
+  so. It is now a full-width `cta` button with a trailing `ArrowSquareOut`, calm at rest so it
+  does not compete with the solid *Submit code* beside it, and still an `<a>` (`buttonVariants`
+  exists for exactly this) so cmd-click and long-press keep working.
 - **`ClaudeAuthOutput` — the whole buffer, collapsed — lives INSIDE the panel**, in both the
   waiting state and the challenge, so the arrival of the field moves nothing and there is one
   place carrying the sign-in. Its open/closed state is held in the settings store
@@ -3217,7 +3223,7 @@ pulse alone reads as *stuck* rather than as *working*.
   request first — sampled per frame, one frame of blue, seven of nothing, then whatever came
   next, which reads as a control that hung around after the UI had moved on and was then
   swapped for a disabled *Save*. The rule is uniform across both kinds of mode now: while a
-  sign-in is under way there is one button and it says Cancel.
+  sign-in is under way the footer holds one button and it says Cancel.
 - **Save appears with the field it saves.** It used to render from step 1, where there is
   nothing to save: permanently disabled, and — the mode being unknown that early — `primary`,
   so arriving at a mode with an account path *animated* it from blue to grey. Sampled per
@@ -3235,11 +3241,13 @@ which is the cheaper order for anything this visual.
 
 **Waiting looks like what it is waiting for.** The step renders `ChallengePlaceholder` — the
 same `CHALLENGE_BOX` shell as the real challenge, its lines drawn as a pulse — and the two
-measure **98px** each, which is why the first bar is `h-4` rather than the `h-5` the link's
-font size suggests (the link is inline, so its line box is 16). It is keyed off
-`startingSignIn`, not off the account: keyed off the account it arrived one request late, so
-the dialog opened short on a line of prose and then grew by the height of a panel. Measured
-live, step 3 is 326px from its first frame and does not move when the code lands.
+measure the same, which is why the first bar is `h-8` — the slot it stands in for is a
+full-width `md` button. (It was `h-4` while that slot held an inline link, whose line box is
+16.) It is keyed off `startingSignIn`, not off the account: keyed off the account it arrived
+one request late, so the dialog opened short on a line of prose and then grew by the height of
+a panel. Measured live against the dogfood instance, the waiting panel and the challenge are
+**124px** each — the collapsed CLI-output disclosure included, since that slot is reserved from
+the first frame — and step 3 holds one height from the sign-in click to the code landing.
 
 ## The compact card (reqs 19, 20, 21)
 
