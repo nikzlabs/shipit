@@ -85,6 +85,48 @@ function buildDeps(initial: FakeSessionState) {
   };
 }
 
+/**
+ * An Anthropic API key: the catalogue declares it directly callable, while the
+ * same service's subscription is not (`catalogue/services.ts`).
+ */
+function directKeyStore() {
+  return {
+    getNonTurnModel: () => ({ serviceId: "anthropic", billingMode: "key", modelId: "haiku" }),
+    listCredentialRoutes: () => [
+      { id: "anthropic-key", serviceId: "anthropic", billingMode: "key", via: "string" },
+    ],
+    getCredentialSecret: () => "sk-direct",
+    getSelectionMode: () => "ordered",
+    getFailoverCutoffs: () => ({}),
+  } as never;
+}
+
+// The direct clients always call fetch with a string URL and a string body.
+function fakeFetch(
+  respond: () => { status: number; body: string },
+): { impl: typeof fetch; calls: { url: string; body: Record<string, unknown> }[] } {
+  const calls: { url: string; body: Record<string, unknown> }[] = [];
+  const impl = (async (url: string, init: { body: string }) => {
+    calls.push({ url, body: JSON.parse(init.body) as Record<string, unknown> });
+    const { status, body } = respond();
+    return new Response(body, { status, headers: { "content-type": "application/json" } });
+  }) as unknown as typeof fetch;
+  return { impl, calls };
+}
+
+const NAMED_OK = JSON.stringify({
+  content: [{ type: "text", text: '{"slug":"add-login","title":"Add Login Page"}' }],
+  usage: { input_tokens: 120, output_tokens: 18, cache_read_input_tokens: 4 },
+});
+
+// Keeps the real prompt builder and parser while spying on the CLI path.
+async function mockCliNaming(generateSessionName: unknown): Promise<void> {
+  vi.doMock("../session-namer.js", async (importOriginal) => ({
+    ...(await importOriginal<Record<string, unknown>>()),
+    generateSessionName,
+  }));
+}
+
 describe("graduateSession", () => {
   beforeEach(() => {
     vi.resetModules();
@@ -527,6 +569,243 @@ describe("graduateSession", () => {
     await flush(() => state.branchRenamed === true);
 
     expect(recorded).toHaveLength(0);
+  });
+
+  // The shape that made naming fail before the direct path existed: the choice
+  // is reachable ONLY as a direct call, so a harness-only search finds nothing
+  // and reports a stale pin against a credential that is present and working.
+  it("names on a direct-only choice, with no harness installed and no notice", async () => {
+    const generateSessionName = vi.fn(async () => ({ name: null }));
+    vi.doMock("../../shared/installed-harnesses.js", () => ({
+      isHarnessInstalled: () => false,
+      readInstalledHarnesses: () => [],
+    }));
+    await mockCliNaming(generateSessionName);
+    const appended: unknown[] = [];
+    const { graduateSession } = await import("./graduate-session.js");
+    const { deps, state } = buildDeps({
+      id: "s1", title: "placeholder", branch: "shipit/abc123", workspaceDir: "/tmp/ws",
+    });
+    const { impl, calls } = fakeFetch(() => ({ status: 200, body: NAMED_OK }));
+
+    graduateSession(
+      {
+        ...deps,
+        credentialStore: directKeyStore(),
+        fetchImpl: impl,
+        chatHistoryManager: {
+          append: (_s: string, m: unknown) => appended.push(m),
+          replaceInProgress: () => {},
+          updateNonTurnFailureCard: () => true,
+        } as never,
+      },
+      { sessionId: "s1", userText: "Add a login page", agentId: "claude" },
+    );
+
+    await flush(() => state.branchRenamed === true);
+
+    expect(calls).toHaveLength(1);
+    expect(generateSessionName).not.toHaveBeenCalled();
+    expect(state.title).toBe("Add Login Page");
+    expect(appended).toHaveLength(0);
+    vi.doUnmock("../../shared/installed-harnesses.js");
+  });
+
+  // A direct call needs no container, so naming must not wait on one (req 4).
+  it("names through a direct call with no runner for the session", async () => {
+    await mockCliNaming(vi.fn(async () => ({ name: null })));
+    const { graduateSession } = await import("./graduate-session.js");
+    const { deps, state } = buildDeps({
+      id: "s1", title: "placeholder", branch: "shipit/abc123", workspaceDir: "/tmp/ws",
+    });
+    const { impl } = fakeFetch(() => ({ status: 200, body: NAMED_OK }));
+
+    graduateSession(
+      {
+        ...deps,
+        credentialStore: directKeyStore(),
+        fetchImpl: impl,
+        runnerRegistry: { get: () => undefined } as never,
+      },
+      { sessionId: "s1", userText: "Add a login page", agentId: "claude" },
+    );
+
+    await flush(() => state.branchRenamed === true);
+
+    expect(state.title).toBe("Add Login Page");
+  });
+
+  it("still names through the CLI when the choice is a harness-only credential", async () => {
+    const generateSessionName = vi.fn(async (_m: string, _t: unknown) => ({
+      name: { slug: "via-cli", title: "Via CLI" },
+    }));
+    await mockCliNaming(generateSessionName);
+    const { graduateSession } = await import("./graduate-session.js");
+    const { deps, state } = buildDeps({
+      id: "s1", title: "placeholder", branch: "shipit/abc123", workspaceDir: "/tmp/ws",
+    });
+    const { impl, calls } = fakeFetch(() => ({ status: 200, body: NAMED_OK }));
+
+    graduateSession(
+      {
+        ...deps,
+        // Anthropic's subscription token is restricted to Claude Code, so the
+        // catalogue declares no direct call for it (docs/299 reqs 1 and 3).
+        credentialStore: {
+          getNonTurnModel: () => ({ serviceId: "anthropic", billingMode: "sub", modelId: "haiku" }),
+          listCredentialRoutes: () => [
+            { id: "anthropic-sub", serviceId: "anthropic", billingMode: "sub", via: "string" },
+          ],
+          getCredentialRoute: (id: string) => ({ id, serviceId: "anthropic", billingMode: "sub", via: "string" }),
+          getCredentialSecret: () => "tok-sub",
+          getSelectionMode: () => "ordered",
+          getFailoverCutoffs: () => ({}),
+        } as never,
+        fetchImpl: impl,
+      },
+      { sessionId: "s1", userText: "hi", agentId: "claude" },
+    );
+
+    await flush(() => state.branchRenamed === true);
+
+    expect(calls).toHaveLength(0);
+    expect(generateSessionName).toHaveBeenCalledTimes(1);
+    expect(generateSessionName.mock.calls[0]![1]).toMatchObject({ harnessId: "claude", model: "haiku" });
+    expect(state.title).toBe("Via CLI");
+  });
+
+  it("names through a direct provider call, with no harness and no CLI", async () => {
+    const generateSessionName = vi.fn(async () => ({ name: { slug: "cli", title: "From the CLI" } }));
+    await mockCliNaming(generateSessionName);
+    const { graduateSession } = await import("./graduate-session.js");
+    const { deps, spies, state } = buildDeps({
+      id: "s1", title: "placeholder", branch: "shipit/abc123", workspaceDir: "/tmp/ws",
+    });
+    const { impl, calls } = fakeFetch(() => ({ status: 200, body: NAMED_OK }));
+
+    graduateSession(
+      { ...deps, credentialStore: directKeyStore(), fetchImpl: impl },
+      { sessionId: "s1", userText: "Add a login page", agentId: "claude" },
+    );
+
+    await flush(() => state.branchRenamed === true);
+
+    expect(generateSessionName).not.toHaveBeenCalled();
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.url).toBe("https://api.anthropic.com/v1/messages");
+    // The catalogue row is Claude Code's alias; the Messages API takes the vendor id.
+    expect(calls[0]!.body.model).toBe("claude-haiku-4-5");
+    expect(JSON.stringify(calls[0]!.body.messages)).toContain("Add a login page");
+    expect(state.title).toBe("Add Login Page");
+    expect(spies.renameBranch).toHaveBeenCalledWith("shipit/abc123", "shipit/add-login-abc123");
+  });
+
+  it("records a direct naming run as background work billed to the selection", async () => {
+    await mockCliNaming(vi.fn(async () => ({ name: null })));
+    const recorded: { sessionId: string; extra?: Record<string, unknown> }[] = [];
+    const { graduateSession } = await import("./graduate-session.js");
+    const { deps, state } = buildDeps({
+      id: "s1", title: "placeholder", branch: "shipit/abc123", workspaceDir: "/tmp/ws",
+    });
+    const { impl } = fakeFetch(() => ({ status: 200, body: NAMED_OK }));
+
+    graduateSession(
+      {
+        ...deps,
+        credentialStore: directKeyStore(),
+        fetchImpl: impl,
+        usageManager: {
+          record: (sessionId: string, _c: number, _d: number, _i?: number, _o?: number, extra?: Record<string, unknown>) => {
+            recorded.push({ sessionId, extra });
+            return 0;
+          },
+        } as never,
+      },
+      { sessionId: "s1", userText: "hi", agentId: "claude" },
+    );
+
+    await flush(() => state.branchRenamed === true);
+
+    expect(recorded).toHaveLength(1);
+    expect(recorded[0]!.sessionId).toBe("s1");
+    // No harness ran it, so the row says background work in its own field.
+    expect(recorded[0]!.extra?.subAgentId).toBeUndefined();
+    expect(recorded[0]!.extra?.backgroundWork).toBe(true);
+    expect(recorded[0]!.extra?.model).toBe("haiku");
+    expect(recorded[0]!.extra?.attribution).toMatchObject({ serviceId: "anthropic", billingMode: "key" });
+    expect(recorded[0]!.extra?.cacheRead).toBe(4);
+  });
+
+  it("persists exactly one notice when a direct naming call fails", async () => {
+    await mockCliNaming(vi.fn(async () => ({ name: null })));
+    const appended: { nonTurnFailure?: { serviceName?: string; purpose?: string } }[] = [];
+    const { graduateSession } = await import("./graduate-session.js");
+    const { deps, state } = buildDeps({
+      id: "s1", title: "placeholder", branch: "shipit/abc123", workspaceDir: "/tmp/ws",
+    });
+    const { impl } = fakeFetch(() => ({ status: 500, body: '{"error":"overloaded"}' }));
+
+    graduateSession(
+      {
+        ...deps,
+        credentialStore: directKeyStore(),
+        fetchImpl: impl,
+        runnerRegistry: { get: () => undefined } as never,
+        chatHistoryManager: {
+          append: (_s: string, m: unknown) => appended.push(m as never),
+          replaceInProgress: () => {},
+          updateNonTurnFailureCard: () => true,
+        } as never,
+      },
+      { sessionId: "s1", userText: "hi", agentId: "claude" },
+    );
+
+    await flush(() => state.branchRenamed === true);
+
+    expect(appended).toHaveLength(1);
+    expect(appended[0].nonTurnFailure?.purpose).toBe("session-naming");
+    expect(appended[0].nonTurnFailure?.serviceName).toBe("Anthropic");
+    expect(state.title).toBe("hi");
+  });
+
+  it("reports a direct answer that carries no usable title, and still bills it", async () => {
+    await mockCliNaming(vi.fn(async () => ({ name: null })));
+    const appended: { nonTurnFailure?: { detail?: string } }[] = [];
+    const recorded: unknown[] = [];
+    const { graduateSession } = await import("./graduate-session.js");
+    const { deps, state } = buildDeps({
+      id: "s1", title: "placeholder", branch: "shipit/abc123", workspaceDir: "/tmp/ws",
+    });
+    const { impl } = fakeFetch(() => ({
+      status: 200,
+      body: JSON.stringify({
+        content: [{ type: "text", text: "Sorry, I cannot." }],
+        usage: { input_tokens: 90, output_tokens: 6 },
+      }),
+    }));
+
+    graduateSession(
+      {
+        ...deps,
+        credentialStore: directKeyStore(),
+        fetchImpl: impl,
+        runnerRegistry: { get: () => undefined } as never,
+        chatHistoryManager: {
+          append: (_s: string, m: unknown) => appended.push(m as never),
+          replaceInProgress: () => {},
+          updateNonTurnFailureCard: () => true,
+        } as never,
+        usageManager: { record: (...args: unknown[]) => { recorded.push(args); return 0; } } as never,
+      },
+      { sessionId: "s1", userText: "hi", agentId: "claude" },
+    );
+
+    await flush(() => state.branchRenamed === true);
+
+    expect(appended).toHaveLength(1);
+    expect(appended[0].nonTurnFailure?.detail).toContain("no usable title");
+    // The provider billed the run whether or not its answer was usable.
+    expect(recorded).toHaveLength(1);
   });
 
   it("stops naming and persists a notice for a stale pin", async () => {

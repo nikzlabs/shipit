@@ -67,6 +67,13 @@ export async function registerAgentRoutes(
               sseBroadcast: deps.sseBroadcast,
               ...(deps.prStatusPoller ? { prStatusPoller: deps.prStatusPoller } : {}),
               ...(deps.ensureAgentTokenFresh ? { ensureAgentTokenFresh: deps.ensureAgentTokenFresh } : {}),
+              // Without these, naming here resolves no background-work model at
+              // all and silently falls back to the session's own harness.
+              ...(deps.providerAccountManager ? { providerAccountManager: deps.providerAccountManager } : {}),
+              ...(deps.credentialsDir ? { credentialsDir: deps.credentialsDir } : {}),
+              credentialStore: deps.credentialStore,
+              chatHistoryManager: deps.chatHistoryManager,
+              usageManager: deps.usageManager,
             },
             ...(deps.warmSessionForRepo ? { warmSessionForRepo: deps.warmSessionForRepo } : {}),
             wakeSession: (sessionId) => materializeRunner(

@@ -16,6 +16,7 @@ import {
   TestClient,
   StubAuthManager,
   FakeClaudeProcess,
+  waitFor,
   waitForClaude,
   createTestCredentialStore,
   createTestDatabaseManager,
@@ -246,6 +247,36 @@ describe("Integration: POST /api/sessions/:id/agent/dispatch", () => {
     const claude = await waitForClaude(() => lastClaude);
     expect(claude.lastPrompt).toBe("Add a compose block to shipit.yaml");
 
+    client.close();
+  });
+
+  // Graduation here must resolve the background-work choice like every other
+  // entry point. Without the credential store it silently skipped resolution
+  // and named on the session's own harness (docs/299-direct-provider-calls).
+  it("warm session — dispatch graduation resolves the background-work choice", async () => {
+    credentialStore.setNonTurnModel({
+      serviceId: "openai", billingMode: "key", modelId: "gpt-5.4-mini",
+    });
+    const client = await TestClient.connect(port);
+    await client.receive();
+    sessionManager.setWarm(client.sessionId!, true);
+
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${client.sessionId}/agent/dispatch`,
+      payload: { text: "Add a compose block to shipit.yaml" },
+    });
+    expect(res.statusCode).toBe(200);
+
+    // The pinned model does not exist, so resolution reports it. A graduation
+    // that never resolved would name silently and persist nothing.
+    const namingCard = (): AnyMsg => chatHistoryManager
+      .load(client.sessionId!)
+      .find((m) => m.nonTurnFailure?.purpose === "session-naming");
+    await waitFor(() => !!namingCard(), "session-naming notice");
+    expect(namingCard().nonTurnFailure.serviceName).toBe("OpenAI");
+
+    credentialStore.setNonTurnModel(null);
     client.close();
   });
 

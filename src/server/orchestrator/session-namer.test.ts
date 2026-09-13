@@ -1,5 +1,38 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 
+describe("buildSessionNamePrompt", () => {
+  it("carries the message and leaves no unfilled token behind", async () => {
+    const { buildSessionNamePrompt } = await import("./session-namer.js");
+    const prompt = buildSessionNamePrompt("Add a login page");
+
+    expect(prompt).toContain("Add a login page");
+    expect(prompt).not.toContain("{{");
+  });
+
+  it("truncates the message at 200 characters", async () => {
+    const { buildSessionNamePrompt } = await import("./session-namer.js");
+    const prompt = buildSessionNamePrompt("z".repeat(250));
+
+    expect(prompt).toContain("z".repeat(200));
+    expect(prompt).not.toContain("z".repeat(201));
+  });
+});
+
+describe("parseSessionName", () => {
+  it("returns null for a brace run that matches the shape but is not JSON", async () => {
+    const { parseSessionName } = await import("./session-namer.js");
+
+    expect(parseSessionName('{"slug": "a", "title": "b",,}')).toBeNull();
+  });
+
+  it("accepts a correct answer whose keys arrive in the other order", async () => {
+    const { parseSessionName } = await import("./session-namer.js");
+
+    expect(parseSessionName('{"title": "Add Login", "slug": "add-login"}'))
+      .toEqual({ slug: "add-login", title: "Add Login" });
+  });
+});
+
 describe("generateSessionName", () => {
   beforeEach(() => {
     vi.resetModules();
