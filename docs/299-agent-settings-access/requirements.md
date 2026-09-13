@@ -57,6 +57,11 @@ agent is the actor.
    still named, with the reason it cannot be reached.
 6. The capability has no master switch. It is always available, and the click on
    the proposal is what governs it.
+7. Adding a new setting to ShipIt makes it available to the agent
+   automatically, carrying its description. There is no second step that
+   registers a setting for the agent, and no way to ship a setting the agent
+   cannot see. The description the agent reads is the same one the user reads in
+   the dialog.
 
 ## Open questions
 
@@ -82,6 +87,11 @@ agent is the actor.
   in the dialog, chosen over the smaller "only what blocks the agent" list. The
   agent must be able to answer a question about any setting the user names, not
   only the ones it trips over itself. → requirement 5.
+- 2026-09-13 — *How does a setting reach the agent?* The user: *"the design
+  should make the settings to be defined in a way so new settings automatically
+  could be available to the agent, with descriptions."* This replaces the
+  design's hand-maintained mirror of the dialog, whose own risk section admitted
+  it rots. → requirement 7.
 - 2026-09-13 — *Which dialog does req 5 mean?* ShipIt has two: the global
   **Settings** dialog with ten tabs, and the per-repository **Project Settings**
   dialog. The answer is **both**. Project Settings holds two of the things

@@ -20,9 +20,11 @@ Implements [requirements.md](./requirements.md). Requirements are cited as
   **one** change — this setting, from this value, to that value, for this reason
   — and the setting moves only when the user clicks Apply (req 4).
 
-Both go through **one registry** of setting descriptors, so a setting cannot be
-readable under one name and proposable under another, and cannot be proposed with
-a value the apply path will refuse.
+Neither is a second description of ShipIt's settings. Both are generated from the
+**one place a setting is declared** (req 7), which is also where the dialog gets
+its label and help text and where the server gets its type, default and
+validation. Adding a setting makes it visible to the agent because there is no
+separate act of making it visible.
 
 ## Non-goals
 
@@ -38,31 +40,110 @@ a value the apply path will refuse.
 - **Per-session settings.** Sandbox capabilities are set from the sandbox banner
   and per-session egress from the egress prompt card; neither is in a dialog.
 
-## The registry
+## Settings are declared once
 
-`src/server/orchestrator/services/settings-registry.ts`. One descriptor per
-setting:
+Today a single setting is spread over six or seven places: a getter and a setter
+on `CredentialStore` with its default inline (`credential-store.ts:653`), a field
+on `GlobalSettings` (`services/types.ts:25`), a branch of the `if (x !==
+undefined)` chain in `saveGlobalSettings` (`services/settings.ts:244`), a field
+in the route's body type (`api-routes-bootstrap.ts:120`), a field and setter on
+the client store, and hand-written JSX carrying the label and the help text
+(`tabs/AdvancedTab.tsx`). Nothing ties those together. That is why a mirror of
+the dialog maintained by hand — which is what an earlier draft of this design
+proposed — drifts: it would be an eighth place.
+
+So this feature does not add a mirror. It makes **the declaration the source**,
+and derives the rest (req 7).
+
+`src/server/shared/settings-catalogue/`. One `defineSetting` per setting:
 
 ```ts
-interface SettingDescriptor {
-  key: string;                 // stable dotted id: "advanced.enableSubAgents"
-  control: ControlRef;         // the dialog control it mirrors
-  tab: SettingsTab;
-  label: string;               // the dialog's own wording, reused verbatim
-  help: string;                // one line, the dialog's own help text
-  scope: "global" | "project" | "browser";
-  kind: "boolean" | "enum" | "number" | "text" | "collection";
+defineSetting({
+  key: "advanced.enableSubAgents",
+  tab: "advanced",
+  scope: "global",
+  label: "Multi-agent sessions",           // rendered by the dialog
+  description: "Let the agent start child sessions and consult other agents.",
+  type: bool({ default: true }),           // type, default and validation
+  store: credentialStoreKey("enableSubAgents"),
+  emits: plain(),                          // what may leave the server
+  propose: { kind: "yes" },
+})
+```
+
+Five things are then **derived**, not written again:
+
+| Derived | From | Consequence |
+|---|---|---|
+| `GlobalSettings` | a mapped type over the catalogue | a setting that is not declared has no field |
+| the `PUT /api/settings` body type and its validation | the same | an undeclared setting cannot be saved |
+| `CredentialStore` read/write | `store` plus `type`'s default | the per-setting accessor pairs go away |
+| the dialog's standard controls, with their label and help | `label`, `description`, `type` | the user and the agent read the same words |
+| `shipit settings list` / `get` | a walk of the catalogue | **the agent sees a new setting the day it is declared** |
+
+The last row is requirement 7, and it holds **structurally**: the agent's view is
+a projection of the same table the server persists from, so there is no state in
+which a setting exists and the agent cannot see it. No registration step, and no
+guard test standing in for one.
+
+This is a net deletion for the settings it covers — the accessor pairs, the
+`if`-chain branches and the duplicated body type all collapse into the
+declaration — and it is the larger half of this feature's work. See
+[Sequencing](#sequencing).
+
+### Where a declaration is not enough
+
+Two kinds of setting do not get a generated control, and they are handled
+differently:
+
+- **Bespoke panels** — the role editor, credential routing's drag-ordered list,
+  the MCP server panel, the secrets table. These keep their own components, and
+  the component **binds to its catalogue entry** for label, description and
+  validation rather than restating them. The entry still exists, so the agent
+  still sees the setting: what is bespoke is the control, not the declaration.
+- **Browser-local settings** — declared with `scope: "browser"`, which carries no
+  `store` and no server read. The declaration is what lets the agent name the
+  setting and explain that ShipIt's server does not hold it; see
+  [Browser-local settings](#browser-local-settings).
+
+### The residual guard
+
+Derivation removes the drift for anything declared. It cannot stop somebody
+hand-writing a control that was never declared at all, so one test remains as a
+backstop: render each tab, enumerate its interactive elements
+(`input`, `select`, `button`, `[role=switch]`, `textarea`), and fail on any that
+maps to neither a catalogue entry nor a `not-a-setting` exclusion with a reason.
+
+Discovery cannot be "collect the `data-testid`s" — the MCP env/header editor has
+none at all (`McpServerSettings/KvEditor.tsx`) — so the walk keys on the
+accessible name where no test id exists, and adding test ids to the untagged
+controls is part of this work.
+
+This is a much smaller obligation than the earlier draft's hand-maintained
+manifest: it catches an undeclared control, and everything else is impossible
+rather than merely tested.
+
+### The agent-facing half of a declaration
+
+`emits` and `propose` are the two fields on a declaration that exist for the
+agent, and they carry the rules the rest of this document specifies:
+
+```ts
   emits: Projection;           // the ONLY output this setting may ever produce
-  read?(ctx): SettingValue;    // absent for scope "browser"
   propose:
     | { kind: "no"; reason: ProposeRefusal }
     | { kind: "yes";
-        validate(ctx, v): Result;
+        validate?(ctx, v): Result;               // beyond what `type` already checks
         dependents?(ctx, v): DependentChange[];  // computed values, not names
-        apply(ctx, v): Promise<ApplyOutcome> };
-  format(value): string;
-}
+        apply?(ctx, v): Promise<ApplyOutcome> }; // absent ⇒ the derived store write
+  format?(value): string;                        // absent ⇒ the type's formatter
 ```
+
+Only `emits` is mandatory, and for an ordinary declared setting it is one word.
+Everything else has a default from `type`, so a new boolean or enum is
+agent-readable and agent-proposable with no agent-specific code at all. The
+fields earn their keep on the settings that are not ordinary — a collection, a
+setter with dependents, a value that must not leave the server.
 
 ### Output is an allowlist, and free text is never passed through
 
@@ -163,27 +244,6 @@ operations — "add an egress host", "set a role's model". Three rules:
    to drop the others.
 3. **An operation whose complete effect cannot be displayed is refused**
    (`unsafe_to_display`), rather than approved on a partial description.
-
-### The coverage guard measures controls, and test IDs are not enough
-
-A guard over `GlobalSettings` (`services/types.ts:25`) would not work: that
-interface carries derived status that is not a setting, and misses controls that
-are — the repo colour picker (`ProjectSettings.tsx:138`) and a role's standing
-instructions (`Settings/roles/RoleEditor.tsx:229`) are both settings and neither
-is in it.
-
-The guard compares against an explicit **control manifest**: every interactive
-control in either dialog, each mapped to a descriptor key or to a
-`not-a-setting` exclusion with a reason.
-
-Discovery cannot be "collect the `data-testid`s", because a new control need not
-have one — the MCP env/header editor has none at all
-(`McpServerSettings/KvEditor.tsx`). The manifest is therefore built from a
-render-and-walk test: render each tab and enumerate its interactive elements
-(`input`, `select`, `button`, `[role=switch]`, `textarea`), keyed by accessible
-name where no test id exists. An element that appears and is in neither the
-descriptor map nor the exclusion list fails the test. Adding test ids to the
-untagged controls is part of this work, so the keys stay stable.
 
 ## Scope inventory
 
@@ -430,7 +490,11 @@ ShipIt's own UI puts in front of the user.
 
 ## Key files
 
-New: `services/settings-registry.ts` (descriptors, projections, read, validate);
+New: `shared/settings-catalogue/` (the declarations, the `type` constructors with
+their defaults and validation, and the derivations of `GlobalSettings`, the route
+body and the store accessors);
+`services/settings-read.ts` (projection and the catalogue walk behind
+`list`/`get`);
 `services/settings-apply.ts` (shared apply functions extracted from the egress,
 global-settings and MCP routes, the per-key lock, and the new broadcast);
 `services/settings-proposal.ts` (card compile, atomic claim, stale check);
@@ -439,20 +503,43 @@ global-settings and MCP routes, the per-key lock, and the new broadcast);
 `client/hooks/message-handlers/settings-proposal-card.ts` and the card component;
 `shipit-docs/settings.md`.
 
-Changed: `api-routes-egress.ts`, `api-routes-bootstrap.ts`, `api-routes-mcp.ts`
-(call the extracted functions); `session/agent-ops-routes.ts` (relay); the
-session-scoped settings endpoints and their `containerAccessible` config;
-`agent-shim/shipit.ts`; the WS message types; `chat-history.ts` and
-`database.ts`; `visual-elements.ts` and the client message-handler index; test
-ids added to the untagged settings controls.
+Changed: `credential-store.ts` (per-setting accessors replaced by the derived
+read/write); `services/settings.ts` and `services/types.ts` (the `if`-chain and
+the hand-written `GlobalSettings` replaced by derivations);
+`api-routes-bootstrap.ts` (derived body type), `api-routes-egress.ts`,
+`api-routes-mcp.ts` (call the extracted apply functions); the settings tab
+components (render label and help from the declaration; bespoke panels bind to
+their entry); `session/agent-ops-routes.ts` (relay); the session-scoped settings
+endpoints and their `containerAccessible` config; `agent-shim/shipit.ts`; the WS
+message types; `chat-history.ts` and `database.ts`; `visual-elements.ts` and the
+client message-handler index; test ids added to the untagged settings controls.
+
+## Sequencing
+
+This is two shippable pieces, and the first is the larger one:
+
+1. **The catalogue and its derivations**, plus `shipit settings list` / `get`.
+   This is where requirement 7 is satisfied and where the existing duplication
+   collapses. It is useful on its own: the agent stops asking for settings that
+   are already on, and can explain what is blocking it (req 1, req 3, req 5).
+2. **The proposal card** — propose, claim, lock, revalidate, apply, and the
+   transcript card (req 4).
+
+Splitting them keeps a large refactor of shipped settings paths out of the same
+diff as a new transcript card.
 
 ## Testing
 
 Beyond the persistence round-trip tests the recipe requires:
 
-- **Control coverage** — render each tab, enumerate interactive elements, and
-  fail on any that is neither a descriptor nor a reasoned exclusion. This must
-  catch a control with no test id.
+- **Derivation holds** — a setting added to the catalogue and to nothing else is
+  readable by `shipit settings get`, carries its description, round-trips through
+  the route, and appears in `GlobalSettings`, with no other edit. This is the
+  executable form of requirement 7; if it needs a second edit anywhere, the
+  derivation is incomplete.
+- **Residual control coverage** — render each tab, enumerate interactive
+  elements, and fail on any that is neither a catalogue entry nor a reasoned
+  exclusion. This must catch a control with no test id.
 - **Projection safety** — an MCP fixture carrying a token in `args`, `env`,
   `headers` and the URL emits none of them, in text, in `--json`, in a card's
   `from`, and in an error message.
@@ -476,14 +563,18 @@ Beyond the persistence round-trip tests the recipe requires:
 
 ## Risks
 
-- **The registry is a hand-maintained mirror of two dialogs.** The control
-  coverage guard is what keeps it honest; without it this design rots within two
-  features. Write the guard first.
-- **Extracting the route bodies touches shipped paths** — egress, global settings
-  and MCP all move their behaviour into shared functions. Their existing tests
-  are the safety net; run them before and after, not only the new ones.
-- **Collections are where the work is.** If the build runs long, ship proposal
-  support for scalars plus `network.egress.hosts` first. Descriptors for every
-  setting still ship: req 5 is about being able to see and be told about every
-  setting, so deferring a collection's **writes** is acceptable and omitting its
-  **descriptor** is not.
+- **Converting the existing settings is the bulk of the work**, and it touches
+  shipped paths: the store accessors, `saveGlobalSettings`, the route body, and
+  the tab components. The existing settings and route tests are the safety net —
+  run them before and after, not only the new ones. The ~15 global scalars are
+  mechanical; the bespoke panels only need a declaration, not a rewrite.
+- **A partial conversion weakens requirement 7 silently.** Until `GlobalSettings`
+  and the route body are actually derived, an undeclared setting still works and
+  the agent still cannot see it. So the derivation lands as one piece for the
+  global scope rather than tab by tab, and the derivation test above is what says
+  it arrived.
+- **Collections are where the remaining work is.** If the build runs long, ship
+  proposal support for scalars plus `network.egress.hosts` first. Declarations
+  for every setting still ship: req 5 and req 7 are about being able to see and
+  be told about every setting, so deferring a collection's **writes** is
+  acceptable and omitting its **declaration** is not.
