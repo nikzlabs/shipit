@@ -184,7 +184,7 @@ dialog and per-repository **Project Settings**.
 | Services | credential routing order, account selection mode, failover cutoffs, non-turn model pin | yes | yes |
 | Services | provider API keys | configured / not | no — `secret` |
 | Services | provider account connection | connected / not | no — `external_flow` |
-| Services | a provider account's label | yes | yes — renaming needs no OAuth (`Settings/ProviderAccountRows.tsx:761`) |
+| Services | a provider account's label, a stored credential's label | yes | yes — renaming needs no OAuth (`Settings/ProviderAccountRows.tsx:761`, `Settings/ServicesPanel.tsx:805`) |
 | Roles | per role: harness, model, effort, description, standing instructions | yes | yes |
 | Roles | reviewer slots `first` and `second` | yes | yes — these are the settings behind "what the reviewer runs on" |
 | Integrations | create a pull request automatically | yes | yes |
@@ -312,7 +312,9 @@ template: it mutates from the client's message without loading or claiming a
 proposal, safe only because its decision is one idempotent host add.
 
 **Dismiss is its own short path**: load, then one atomic `pending → dismissed`.
-No lock, no re-read, no revalidation — declining cannot be stale and cannot fail.
+No lock, no re-read, no revalidation — declining cannot become stale and cannot
+fail *validation*, whatever the setting is now. Its durable write can still fail,
+like any other.
 
 Apply:
 
@@ -476,7 +478,7 @@ proposing anyway:
 | `stale` / `refused` | may propose again, from the current value |
 | `partial` | says which half landed and proposes the rest |
 | `failed` | may propose again, saying the last attempt failed |
-| `uncertain` | reads the value and says the outcome was not verified |
+| `uncertain` / `unknown` | reads the value and says the outcome was not verified |
 
 It is the last proposal **for the target, from any session** — what the user did
 about a setting is a fact about the setting. It is one record, deliberately: a
