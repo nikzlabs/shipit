@@ -1,11 +1,12 @@
 import type { LoginIntegrationId } from "../../../server/shared/catalogue/types.js";
 import { useState } from "react";
-import { XIcon } from "@phosphor-icons/react";
+import { ArrowSquareOutIcon, XIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../../design-tokens.js";
 import type { AgentOption } from "../../agent-types.js";
 import type { AgentId, CredentialRoute, SubscriptionLimits, SubscriptionLimitsMap } from "../../../server/shared/types.js";
 import { getService, loginIntegrationForService, modeReportsQuota, nativeServiceForHarness, subQuotaRefreshable } from "../../../server/shared/catalogue/index.js";
-import { Button } from "../ui/button.js";
+import { Button, buttonVariants } from "../ui/button.js";
+import { cn } from "../../utils/cn.js";
 import { DropdownMenuItem } from "../ui/dropdown-menu.js";
 import { SubscriptionLimitPill } from "../SubscriptionLimitsBadge.js";
 import { useUiStore } from "../../stores/ui-store.js";
@@ -263,7 +264,7 @@ export function AuthPanel({
  *
  * **`status` is what stops it reading as stuck.** A pulse says "something is
  * loading"; it does not say the thing is still going, and Anthropic's wizard
- * runs about six seconds. So ShipIt's phase message takes the slot the link
+ * runs about six seconds. So ShipIt's phase message takes the slot the button
  * will occupy, and `children` — the collapsed output buffer — sits under it
  * INSIDE the box.
  */
@@ -281,12 +282,14 @@ export function ChallengePlaceholder({
 }) {
   return (
     <AuthPanel busy testId={testId}>
-      {/* `h-4` / `text-xs`: the link above is inline, so its line box is 16px,
-          and the stand-in has to be the same or the box changes height. */}
+      {/* `h-8`: the slot this stands in for is a full-width `md` button, and the
+          stand-in has to be the same height or the box changes height. */}
       {status ? (
-        <p className="truncate text-xs leading-4 text-(--color-text-secondary)">{status}</p>
+        <div className="flex h-8 items-center">
+          <p className="truncate text-xs text-(--color-text-secondary)">{status}</p>
+        </div>
       ) : (
-        <div className={`h-4 w-52 ${PULSE}`} />
+        <div className={`h-8 w-full ${PULSE}`} />
       )}
       {shape === "code" ? (
         <div>
@@ -436,13 +439,18 @@ export function AccountChallenge({
 
   return (
     <AuthPanel testId={`provider-account-challenge-${account.id}`}>
+      {/* A button, not a text link: as a bare line of link-coloured text at the
+          top of the panel it read as the panel's heading, and users waited for a
+          browser that only opens on a click. It stays an `<a>` so cmd-click and
+          long-press still work. */}
       <a
         href={pendingAuth.verificationUri}
         target="_blank"
         rel="noopener noreferrer"
-        className="text-sm font-medium text-(--color-text-link) hover:underline"
+        className={cn(buttonVariants({ variant: "cta", size: "md" }), "w-full")}
       >
         Open {serviceName} authentication page
+        <ArrowSquareOutIcon size={ICON_SIZE.SM} />
       </a>
       {pendingAuth.userCode ? (
         <div>
