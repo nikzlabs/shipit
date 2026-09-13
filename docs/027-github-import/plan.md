@@ -118,25 +118,41 @@ with similar names. A user searching for a repo they own would find nothing.
 
 So every search fetches both halves in parallel and ranks locally:
 
-- `listUserRepos` (`github-auth-repos.ts`) walks **all** pages of
-  `/user/repos?affiliation=owner,collaborator&sort=pushed` (100 per page, bounded
-  at 10 pages so a pathological account can't stall a search) rather than the
-  first 15. It reports `failed: true` when a *page request* failed — distinct
-  from stopping at the page bound, which truncates deterministically — so a walk
-  cut short by an error still serves the current search but is never cached.
-  Entries missing `full_name`/`clone_url` are dropped rather than ranked.
+- `listUserRepos` (`github-auth-repos.ts`) walks **all** pages of `/user/repos`
+  at 100 per page, rather than the first 15. It reports `failed: true` when a
+  *page request* failed — distinct from stopping at a page bound, which truncates
+  deterministically — so a walk cut short by an error still serves the current
+  search but is never cached. Entries missing `full_name`/`clone_url` are dropped
+  rather than ranked.
+- **Two affiliation walks, not one.** `owner,collaborator` (bounded at 10 pages)
+  and `organization_member` (5 pages) are fetched in parallel and concatenated,
+  the account's own repos first, deduplicated by full name because team
+  membership and an explicit collaborator grant can both list the same repo.
+  A single `owner,collaborator,organization_member` request would be simpler and
+  is wrong: it is sorted by push date, so one busy organization fills the page
+  bound and pushes the account's own repos out of it — the exact failure this
+  feature exists to prevent. Only the account's own walk gates caching; an
+  organization walk can be refused durably (a token the organization has not
+  authorized) and treating that as uncacheable would re-walk every page on every
+  search. Note the guarantee is bounded, not absolute: owned and collaborator
+  repos still share one 10-page budget with each other.
 - `rankRepoSearchResults` (`services/repo-search-ranking.ts`) matches that list
   against the query — exact name, then name prefix, then name substring, then
-  owner substring, push-recency within a tier — and places those matches above
-  the search results, deduplicated by full name. At most 10 personal matches, 20
-  results total. An `owner/name` query is split on the slash instead of being
+  owner substring — and places those matches above the search results,
+  deduplicated by full name. Ties inside a rank fall back to the listing's own
+  order: the account's own repos ahead of organization ones, push-recent first
+  within each. At most 10 account matches (organization repos share those slots),
+  20 results total. An `owner/name` query is split on the slash instead of being
   matched against the full name as a substring: `me/ship` must not match
   `acme/ship-cli`, which contains it only by spanning the owner boundary. The
   owner is matched by prefix but ranked on exactness, so `me/ship` can't be
   pushed out of the result cap by repos belonging to `me-1`, `me-2`, ….
 - A query shorter than 2 characters skips search entirely and lists the 15 most
-  recently pushed personal repos, which is also what the dialog shows on open
-  and immediately after a token is connected.
+  recently pushed repos. That is what the dialog shows on open, what it returns
+  to when the query is cleared or deleted back below 2 characters
+  (`AddRepoDialog.handleInputChange`), and what `setGitHubToken` seeds after a
+  token is connected — the last of these by calling `searchGitHubRepos` with an
+  empty query rather than listing separately, so the two cannot drift.
 
 The full list is cached on `GitHubAuthManager` for 5 minutes, keyed by token, so
 a burst of keystrokes costs one fetch and overlapping calls join a single walk.

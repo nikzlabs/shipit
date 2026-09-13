@@ -70,14 +70,16 @@ interface GitHubRepoPayload {
 
 const USER_REPOS_PER_PAGE = 100;
 /** Bounds the walk so an account with thousands of repos can't stall a repo search. */
-const USER_REPOS_MAX_PAGES = 10;
+const OWN_REPOS_MAX_PAGES = 10;
+/** Smaller: one large organization can hold far more repos than the account itself. */
+const ORG_REPOS_MAX_PAGES = 5;
 
 export interface UserRepoListing {
   repos: GitHubRepoSummary[];
   /**
-   * A page request failed, so entries a retry might return are missing. Distinct
-   * from stopping at `USER_REPOS_MAX_PAGES`, which truncates deterministically
-   * and is safe to cache.
+   * A page request for the account's OWN repos failed, so entries a retry might
+   * return are missing. Distinct from stopping at the page bound, which
+   * truncates deterministically and is safe to cache.
    */
   failed: boolean;
 }
@@ -99,17 +101,16 @@ function toRepoSummaries(data: unknown[]): GitHubRepoSummary[] {
   }));
 }
 
-/**
- * Every repo the account owns or collaborates on, most recently pushed first.
- * Paginated in full because repo search ranks these ahead of GitHub's own
- * search results (docs/027-github-import), which drop personal repos.
- */
-export async function listUserRepos(token: string): Promise<UserRepoListing> {
+async function walkUserRepos(
+  token: string,
+  affiliation: string,
+  maxPages: number,
+): Promise<UserRepoListing> {
   const repos: GitHubRepoSummary[] = [];
   try {
-    for (let page = 1; page <= USER_REPOS_MAX_PAGES; page++) {
+    for (let page = 1; page <= maxPages; page++) {
       const res = await fetchGitHub(
-        `https://api.github.com/user/repos?sort=pushed&per_page=${USER_REPOS_PER_PAGE}&page=${page}&affiliation=owner,collaborator`,
+        `https://api.github.com/user/repos?sort=pushed&per_page=${USER_REPOS_PER_PAGE}&page=${page}&affiliation=${affiliation}`,
         token,
       );
       if (!res.ok) return { repos, failed: true };
@@ -124,6 +125,38 @@ export async function listUserRepos(token: string): Promise<UserRepoListing> {
     return { repos, failed: true };
   }
   return { repos, failed: false };
+}
+
+/**
+ * Every repo the account can reach, most recently pushed first, the account's
+ * own ahead of those it reaches through an organization. Paginated in full
+ * because repo search ranks these ahead of GitHub's own search results
+ * (docs/027-github-import), which drop them.
+ *
+ * The two affiliations are walked separately rather than as one
+ * `owner,collaborator,organization_member` request: a single push-sorted walk
+ * lets a busy organization fill the page bound and push the account's own repos
+ * out of it, which is the exact failure this feature exists to prevent.
+ */
+export async function listUserRepos(token: string): Promise<UserRepoListing> {
+  const [own, org] = await Promise.all([
+    walkUserRepos(token, "owner,collaborator", OWN_REPOS_MAX_PAGES),
+    walkUserRepos(token, "organization_member", ORG_REPOS_MAX_PAGES),
+  ]);
+
+  const seen = new Set<string>();
+  const repos = [...own.repos, ...org.repos].filter((repo) => {
+    // Team membership and an explicit collaborator grant can both list a repo.
+    const key = repo.fullName.toLowerCase();
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+
+  // Only the account's own walk gates caching. An organization walk can be
+  // refused durably — a token an org has not authorized — and treating that as
+  // uncacheable would re-walk every page on every search, forever.
+  return { repos, failed: own.failed };
 }
 
 export async function listOrgs(token: string): Promise<{ login: string; avatarUrl: string }[]> {

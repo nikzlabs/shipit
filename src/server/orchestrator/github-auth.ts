@@ -319,9 +319,10 @@ export class GitHubAuthManager extends EventEmitter {
   }
 
   /**
-   * Every repo the account owns or collaborates on. Cached because repo search
-   * fetches the whole list on each keystroke to rank personal repos first, and
-   * the list changes far more slowly than someone types.
+   * Every repo the account can reach — owned, collaborating, or through an
+   * organization. Cached because repo search fetches the whole list on each
+   * keystroke to rank these first, and the list changes far more slowly than
+   * someone types.
    */
   async listUserRepos(): Promise<GitHubRepoSummary[]> {
     const token = this._token;

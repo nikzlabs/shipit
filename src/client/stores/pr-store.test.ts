@@ -633,4 +633,67 @@ describe("pr-store", () => {
       expect(usePrStore.getState().autoMergeBySession.s1?.armedForPrNumber).toBeUndefined();
     });
   });
+
+  describe("searchRepos", () => {
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    function urlOf(input: RequestInfo | URL): string {
+      if (typeof input === "string") return input;
+      return input instanceof URL ? input.href : input.url;
+    }
+
+    function deferredRepoResponse(fullNames: string[]) {
+      let release: () => void = () => {};
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const respond = async () => {
+        await gate;
+        return {
+          json: async () => ({ repos: fullNames.map((fullName) => ({ fullName, description: null, private: false, cloneUrl: `https://github.com/${fullName}.git` })) }),
+        } as unknown as Response;
+      };
+      return { respond, release: () => release() };
+    }
+
+    it("ignores a stale response that settles after a newer one", async () => {
+      const slowQuery = deferredRepoResponse(["other/test-repo"]);
+      const clearedQuery = deferredRepoResponse(["me/recent"]);
+      vi.spyOn(globalThis, "fetch").mockImplementation((input) =>
+        urlOf(input).includes("q=test") ? slowQuery.respond() : clearedQuery.respond(),
+      );
+
+      const searching = usePrStore.getState().searchRepos("test");
+      const clearing = usePrStore.getState().searchRepos("");
+
+      // The cleared query answers first; the abandoned one lands afterwards.
+      clearedQuery.release();
+      await clearing;
+      expect(usePrStore.getState().importSearchResults.map((r) => r.fullName)).toEqual(["me/recent"]);
+
+      slowQuery.release();
+      await searching;
+      expect(usePrStore.getState().importSearchResults.map((r) => r.fullName)).toEqual(["me/recent"]);
+    });
+
+    it("applies the latest response", async () => {
+      const first = deferredRepoResponse(["me/recent"]);
+      const second = deferredRepoResponse(["other/test-repo"]);
+      vi.spyOn(globalThis, "fetch").mockImplementation((input) =>
+        urlOf(input).includes("q=test") ? second.respond() : first.respond(),
+      );
+
+      const clearing = usePrStore.getState().searchRepos("");
+      const searching = usePrStore.getState().searchRepos("test");
+
+      first.release();
+      await clearing;
+      second.release();
+      await searching;
+
+      expect(usePrStore.getState().importSearchResults.map((r) => r.fullName)).toEqual(["other/test-repo"]);
+    });
+  });
 });

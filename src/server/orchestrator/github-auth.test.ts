@@ -997,7 +997,7 @@ describe("GitHubAuthManager.listUserRepos", () => {
     return input instanceof URL ? input.href : input.url;
   }
 
-  function listingResponse(fullNames: string[]): Response {
+  function listing(fullNames: string[]): Response {
     return new Response(
       JSON.stringify(
         fullNames.map((fullName) => ({
@@ -1012,92 +1012,118 @@ describe("GitHubAuthManager.listUserRepos", () => {
     );
   }
 
-  function pageResponse(count: number, prefix: string): Response {
-    const repos = Array.from({ length: count }, (_, i) => ({
-      full_name: `${prefix}/repo-${i}`,
-      description: null,
-      private: false,
-      default_branch: "main",
-      clone_url: `https://github.com/${prefix}/repo-${i}.git`,
-    }));
-    return new Response(JSON.stringify(repos), {
-      status: 200,
-      headers: { "Content-Type": "application/json" },
+  function page(count: number, prefix: string, offset = 0): Response {
+    return listing(Array.from({ length: count }, (_, i) => `${prefix}/repo-${offset + i}`));
+  }
+
+  function affiliationOf(input: RequestInfo | URL): string | null {
+    const url = urlOf(input);
+    if (!url.includes("/user/repos?")) return null;
+    return new URL(url).searchParams.get("affiliation");
+  }
+
+  function pageOf(input: RequestInfo | URL): number {
+    return Number(new URL(urlOf(input)).searchParams.get("page"));
+  }
+
+  type Walk = (pageNumber: number) => Response | Promise<Response>;
+
+  /** Answers the two affiliation walks separately, so no test can confuse them. */
+  function mockWalks(handlers: { own?: Walk; org?: Walk; other?: (url: string) => Response }) {
+    const empty: Walk = () => listing([]);
+    return vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const affiliation = affiliationOf(input);
+      if (affiliation === "owner,collaborator") return (handlers.own ?? empty)(pageOf(input));
+      if (affiliation === "organization_member") return (handlers.org ?? empty)(pageOf(input));
+      if (handlers.other) return handlers.other(urlOf(input));
+      throw new Error(`unexpected fetch: ${urlOf(input)}`);
     });
   }
+
+  function callsFor(spy: ReturnType<typeof mockWalks>, affiliation: string): unknown[] {
+    return spy.mock.calls.filter((c) => affiliationOf(c[0]) === affiliation);
+  }
+
+  const names = (repos: { fullName: string }[]) => repos.map((r) => r.fullName);
 
   it("returns [] when unauthenticated", async () => {
     const mgr = new GitHubAuthManager(tmpDir, new CredentialStore(tmpDir));
     expect(await mgr.listUserRepos()).toEqual([]);
   });
 
-  it("walks every page until a short one ends the list", async () => {
+  it("walks every page of the account's own repos until a short one ends the list", async () => {
     const mgr = authedManager();
-    const fetchSpy = vi
-      .spyOn(globalThis, "fetch")
-      .mockResolvedValueOnce(pageResponse(100, "me"))
-      .mockResolvedValueOnce(pageResponse(30, "also-me"));
+    const fetchSpy = mockWalks({ own: (p) => (p === 1 ? page(100, "me") : page(30, "also-me")) });
 
     const repos = await mgr.listUserRepos();
 
     expect(repos).toHaveLength(130);
-    expect(fetchSpy).toHaveBeenCalledTimes(2);
-    const first = new URL(urlOf(fetchSpy.mock.calls[0][0])).searchParams;
-    const second = new URL(urlOf(fetchSpy.mock.calls[1][0])).searchParams;
+    const own = callsFor(fetchSpy, "owner,collaborator") as [RequestInfo | URL][];
+    expect(own).toHaveLength(2);
+    const first = new URL(urlOf(own[0][0])).searchParams;
     expect(first.get("page")).toBe("1");
-    expect(second.get("page")).toBe("2");
     expect(first.get("per_page")).toBe("100");
+    expect(new URL(urlOf(own[1][0])).searchParams.get("page")).toBe("2");
     expect(repos[0].fullName).toBe("me/repo-0");
     expect(repos[100].fullName).toBe("also-me/repo-0");
   });
 
-  it("stops at the page cap for an account with very many repos", async () => {
+  it("stops at the page bound for an account with very many repos", async () => {
     const mgr = authedManager();
-    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async () => pageResponse(100, "me"));
+    const fetchSpy = mockWalks({ own: (p) => page(100, "me", (p - 1) * 100) });
 
     expect(await mgr.listUserRepos()).toHaveLength(1000);
-    expect(fetchSpy).toHaveBeenCalledTimes(10);
+    expect(callsFor(fetchSpy, "owner,collaborator")).toHaveLength(10);
+  });
+
+  it("includes repos reached only through an organization, after the account's own", async () => {
+    const mgr = authedManager();
+    mockWalks({ own: () => listing(["me/mine"]), org: () => listing(["acme/theirs"]) });
+
+    expect(names(await mgr.listUserRepos())).toEqual(["me/mine", "acme/theirs"]);
+  });
+
+  it("walks the organization affiliation separately, on a smaller bound", async () => {
+    const mgr = authedManager();
+    const fetchSpy = mockWalks({ org: (p) => page(100, "acme", (p - 1) * 100) });
+
+    expect(await mgr.listUserRepos()).toHaveLength(500);
+    expect(callsFor(fetchSpy, "organization_member")).toHaveLength(5);
+    expect(callsFor(fetchSpy, "owner,collaborator")).toHaveLength(1);
+  });
+
+  it("lists a repo once when both affiliations return it", async () => {
+    const mgr = authedManager();
+    mockWalks({ own: () => listing(["me/shared"]), org: () => listing(["Me/Shared"]) });
+
+    expect(names(await mgr.listUserRepos())).toEqual(["me/shared"]);
   });
 
   it("keeps the pages that arrived when a later page fails", async () => {
     const mgr = authedManager();
-    vi.spyOn(globalThis, "fetch")
-      .mockResolvedValueOnce(pageResponse(100, "me"))
-      .mockResolvedValueOnce(new Response("", { status: 502 }));
+    mockWalks({ own: (p) => (p === 1 ? page(100, "me") : new Response("", { status: 502 })) });
 
     expect(await mgr.listUserRepos()).toHaveLength(100);
   });
 
-  it("serves repeat calls from cache so a search burst is one fetch", async () => {
-    const mgr = authedManager();
-    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(pageResponse(3, "me"));
-
-    await mgr.listUserRepos();
-    await mgr.listUserRepos();
-    await mgr.listUserRepos();
-
-    expect(fetchSpy).toHaveBeenCalledTimes(1);
-  });
-
   it("does not cache a failed fetch", async () => {
     const mgr = authedManager();
-    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response("", { status: 502 }));
+    const fetchSpy = mockWalks({ own: () => new Response("", { status: 502 }) });
 
     await mgr.listUserRepos();
     await mgr.listUserRepos();
 
-    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    expect(callsFor(fetchSpy, "owner,collaborator")).toHaveLength(2);
   });
 
   it("does not cache a partial walk, so a recovered page is picked up at once", async () => {
     const mgr = authedManager();
     let failPageTwo = true;
-    vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
-      if (urlOf(url).includes("page=2")) {
-        if (failPageTwo) return new Response("", { status: 502 });
-        return pageResponse(30, "also-me");
-      }
-      return pageResponse(100, "me");
+    mockWalks({
+      own: (p) => {
+        if (p !== 2) return page(100, "me");
+        return failPageTwo ? new Response("", { status: 502 }) : page(30, "also-me");
+      },
     });
 
     expect(await mgr.listUserRepos()).toHaveLength(100);
@@ -1106,66 +1132,79 @@ describe("GitHubAuthManager.listUserRepos", () => {
     expect(await mgr.listUserRepos()).toHaveLength(130);
   });
 
+  it("still caches when only the organization walk fails, which can fail durably", async () => {
+    const mgr = authedManager();
+    const fetchSpy = mockWalks({
+      own: () => listing(["me/mine"]),
+      org: () => new Response("", { status: 403 }),
+    });
+
+    expect(names(await mgr.listUserRepos())).toEqual(["me/mine"]);
+    await mgr.listUserRepos();
+
+    expect(callsFor(fetchSpy, "owner,collaborator")).toHaveLength(1);
+  });
+
   it("caches a genuinely empty account", async () => {
     const mgr = authedManager();
-    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async () => pageResponse(0, "me"));
+    const fetchSpy = mockWalks({});
 
     expect(await mgr.listUserRepos()).toEqual([]);
     await mgr.listUserRepos();
 
-    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(callsFor(fetchSpy, "owner,collaborator")).toHaveLength(1);
   });
 
   it("re-fetches once the cache entry has expired", async () => {
     const mgr = authedManager();
-    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async () => pageResponse(3, "me"));
+    const fetchSpy = mockWalks({ own: () => listing(["me/a"]) });
 
     vi.spyOn(Date, "now").mockReturnValue(1_000_000);
     await mgr.listUserRepos();
     await mgr.listUserRepos();
-    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(callsFor(fetchSpy, "owner,collaborator")).toHaveLength(1);
 
     vi.spyOn(Date, "now").mockReturnValue(1_000_000 + 5 * 60 * 1000 - 1);
     await mgr.listUserRepos();
-    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(callsFor(fetchSpy, "owner,collaborator")).toHaveLength(1);
 
     vi.spyOn(Date, "now").mockReturnValue(1_000_000 + 5 * 60 * 1000 + 1);
     await mgr.listUserRepos();
-    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    expect(callsFor(fetchSpy, "owner,collaborator")).toHaveLength(2);
+  });
+
+  it("drops malformed entries rather than ranking an undefined name", async () => {
+    const mgr = authedManager();
+    mockWalks({
+      own: () =>
+        new Response(JSON.stringify([{}, { full_name: "me/real", clone_url: "c" }, null]), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+    });
+
+    expect(names(await mgr.listUserRepos())).toEqual(["me/real"]);
   });
 
   it("re-fetches after a repo is created so the new repo is searchable", async () => {
     const mgr = authedManager();
     let created = false;
-    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
-      if (!urlOf(url).includes("/user/repos?")) {
+    const fetchSpy = mockWalks({
+      own: () => listing(created ? ["me/repo-0", "me/fresh"] : ["me/repo-0"]),
+      other: () => {
         created = true;
         return new Response(
           JSON.stringify({ name: "fresh", full_name: "me/fresh", html_url: "u", clone_url: "c" }),
           { status: 201, headers: { "Content-Type": "application/json" } },
         );
-      }
-      return listingResponse(created ? ["me/repo-0", "me/fresh"] : ["me/repo-0"]);
+      },
     });
 
-    expect((await mgr.listUserRepos()).map((r) => r.fullName)).not.toContain("me/fresh");
+    expect(names(await mgr.listUserRepos())).not.toContain("me/fresh");
     await mgr.createRepo("fresh");
-    expect((await mgr.listUserRepos()).map((r) => r.fullName)).toContain("me/fresh");
+    expect(names(await mgr.listUserRepos())).toContain("me/fresh");
 
-    expect(fetchSpy.mock.calls.filter((c) => urlOf(c[0]).includes("/user/repos?"))).toHaveLength(2);
-  });
-
-  it("drops malformed entries rather than ranking an undefined name", async () => {
-    const mgr = authedManager();
-    vi.spyOn(globalThis, "fetch").mockImplementation(
-      async () =>
-        new Response(JSON.stringify([{}, { full_name: "me/real", clone_url: "c" }, null]), {
-          status: 200,
-          headers: { "Content-Type": "application/json" },
-        }),
-    );
-
-    expect((await mgr.listUserRepos()).map((r) => r.fullName)).toEqual(["me/real"]);
+    expect(callsFor(fetchSpy, "owner,collaborator")).toHaveLength(2);
   });
 
   it("re-fetches when the same token is reconnected, whose access may have changed", async () => {
@@ -1173,13 +1212,13 @@ describe("GitHubAuthManager.listUserRepos", () => {
     store.setGithubToken("ghp_x");
     const mgr = new GitHubAuthManager(tmpDir, store);
     mgr.checkCredentials();
-    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async () => pageResponse(3, "me"));
+    const fetchSpy = mockWalks({ own: () => listing(["me/a"]) });
 
     await mgr.listUserRepos();
     mgr.checkCredentials();
     await mgr.listUserRepos();
 
-    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    expect(callsFor(fetchSpy, "owner,collaborator")).toHaveLength(2);
   });
 
   it("re-fetches when the same token is re-submitted after its access changed", async () => {
@@ -1187,67 +1226,65 @@ describe("GitHubAuthManager.listUserRepos", () => {
     store.setGithubToken("ghp_x");
     const mgr = new GitHubAuthManager(tmpDir, store);
     mgr.checkCredentials();
-    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
-      if (urlOf(url).endsWith("/user")) {
-        return new Response(
-          JSON.stringify({ login: "me", avatar_url: "a", id: 1, name: null }),
-          { status: 200, headers: { "Content-Type": "application/json" } },
-        );
-      }
-      return listingResponse(["me/repo-0"]);
+    const fetchSpy = mockWalks({
+      own: () => listing(["me/a"]),
+      other: () =>
+        new Response(JSON.stringify({ login: "me", avatar_url: "a", id: 1, name: null }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
     });
 
     await mgr.listUserRepos();
     await mgr.setToken("ghp_x");
     await mgr.listUserRepos();
 
-    expect(fetchSpy.mock.calls.filter((c) => urlOf(c[0]).includes("/user/repos?"))).toHaveLength(2);
+    expect(callsFor(fetchSpy, "owner,collaborator")).toHaveLength(2);
   });
 
   it("joins overlapping calls into one walk of the pages", async () => {
     const mgr = authedManager();
-    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(
-      async () => new Promise((resolve) => setTimeout(() => resolve(pageResponse(3, "me")), 5)),
-    );
+    const fetchSpy = mockWalks({
+      own: () => new Promise((resolve) => setTimeout(() => resolve(listing(["me/a"])), 5)),
+    });
 
     const [a, b] = await Promise.all([mgr.listUserRepos(), mgr.listUserRepos()]);
 
-    expect(fetchSpy).toHaveBeenCalledTimes(1);
-    expect(a).toHaveLength(3);
-    expect(b).toHaveLength(3);
+    expect(callsFor(fetchSpy, "owner,collaborator")).toHaveLength(1);
+    expect(names(a)).toEqual(["me/a"]);
+    expect(names(b)).toEqual(["me/a"]);
   });
 
   it("does not let a walk that started before a repo was created repopulate the cache", async () => {
     const mgr = authedManager();
-    let releaseList: (() => void) | undefined;
-    let listCalls = 0;
-    vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
-      if (urlOf(url).includes("/user/repos?")) {
+    let releaseOwnWalk: (() => void) | undefined;
+    let ownCalls = 0;
+    const fetchSpy = mockWalks({
+      own: async () => {
         // Only the first walk is held open; the post-creation one runs straight through.
-        if (++listCalls === 1) {
+        if (++ownCalls === 1) {
           await new Promise<void>((resolve) => {
-            releaseList = resolve;
+            releaseOwnWalk = resolve;
           });
         }
-        return pageResponse(3, "me");
-      }
-      return new Response(
-        JSON.stringify({ name: "r", full_name: "me/r", html_url: "u", clone_url: "c" }),
-        { status: 201, headers: { "Content-Type": "application/json" } },
-      );
+        return listing(["me/a"]);
+      },
+      other: () =>
+        new Response(
+          JSON.stringify({ name: "r", full_name: "me/r", html_url: "u", clone_url: "c" }),
+          { status: 201, headers: { "Content-Type": "application/json" } },
+        ),
     });
 
-    const listing = mgr.listUserRepos();
-    await vi.waitFor(() => expect(releaseList).toBeDefined());
+    const inFlight = mgr.listUserRepos();
+    await vi.waitFor(() => expect(releaseOwnWalk).toBeDefined());
     await mgr.createRepo("r");
-    releaseList?.();
-    await listing;
+    releaseOwnWalk?.();
+    await inFlight;
 
     // The pre-creation walk must not be serving later searches.
     await mgr.listUserRepos();
-    expect(
-      vi.mocked(globalThis.fetch).mock.calls.filter((c) => urlOf(c[0]).includes("/user/repos?")),
-    ).toHaveLength(2);
+    expect(callsFor(fetchSpy, "owner,collaborator")).toHaveLength(2);
   });
 
   it("drops the cache on logout, so reconnecting the same token re-fetches", async () => {
@@ -1255,16 +1292,16 @@ describe("GitHubAuthManager.listUserRepos", () => {
     store.setGithubToken("ghp_x");
     const mgr = new GitHubAuthManager(tmpDir, store);
     mgr.checkCredentials();
-    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async () => pageResponse(3, "me"));
+    const fetchSpy = mockWalks({ own: () => listing(["me/a"]) });
 
-    expect(await mgr.listUserRepos()).toHaveLength(3);
+    expect(await mgr.listUserRepos()).toHaveLength(1);
 
     mgr.clearCredentials();
     expect(await mgr.listUserRepos()).toEqual([]);
 
     store.setGithubToken("ghp_x");
     mgr.checkCredentials();
-    expect(await mgr.listUserRepos()).toHaveLength(3);
-    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    expect(await mgr.listUserRepos()).toHaveLength(1);
+    expect(callsFor(fetchSpy, "owner,collaborator")).toHaveLength(2);
   });
 });

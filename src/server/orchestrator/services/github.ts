@@ -1673,7 +1673,9 @@ export async function setGitHubToken(
     }
   }
 
-  const repos = (await githubAuthManager.listUserRepos()).slice(0, DEFAULT_REPO_LIST_SIZE);
+  // Through the search service, not a second listing: this seeds the very state
+  // the Add Repository dialog renders, so it must not drift from an empty query.
+  const repos = await searchGitHubRepos(githubAuthManager, "");
   return { status: githubAuthManager.getStatus(), repos };
 }
 
