@@ -50,6 +50,9 @@ where a harness runs the work; what becomes a choice is whether a harness runs i
    [`docs/252-custom-models`](../252-custom-models/requirements.md) req 8 for background work
    alone: session model selection is unchanged, and a key still reaches every harness there.
 
+   *Terminology: what the catalogue calls a service is a **model provider** in every surface the
+   user reads — the Settings tab, its action, the usage split. New copy uses that word.*
+
 4. A direct call needs no session and no container, so background work that runs this way
    succeeds when no session is open and when a session's container has been reclaimed. Today
    background work fails in both cases
@@ -111,7 +114,7 @@ checked rather than taken on trust.
   research. Reqs 1 and 3.
 
 - 2026-09-13 — When a credential permits a direct call, does the selector **also** offer that
-  service's models under a harness? **Chosen: no — the direct call only.** Given by selecting the
+  provider's models under a harness? **Chosen: no — the direct call only.** Given by selecting the
   option labelled *"Direct call only"* over *"Direct call and the harnesses"*, which was
   described as the more faithful reading of "all configured options should be presented" and
   rejected for adding rows that are strictly worse. This is the one place the feature removes an

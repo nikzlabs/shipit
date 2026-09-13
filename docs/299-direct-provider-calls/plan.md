@@ -32,7 +32,8 @@ plan may not, because Z.AI's own documentation restricts it to supported tools.
 The user-facing selection is unchanged: still `{ serviceId, billingMode, modelId }`, still two
 controls, still one write. Execution is derived from that triple plus the catalogue, so there is
 no fourth field. `BackgroundWorkSection.tsx` already renders one derived fact under the controls
-("Runs on Claude Code"); it now renders "Direct call to Anthropic" where that is what happens.
+("Runs on Claude Code"); it now renders "Called directly" where that is what happens. The exact
+copy is settled in the UI section below.
 
 `NonTurnTarget` becomes a discriminated union on `execution`, so the compiler names every
 consumer of the old always-present `harnessId`.
@@ -136,11 +137,18 @@ surface this — nothing about it fails to compile.
 Prototyped in [`mockup.html`](./mockup.html), which draws today's state beside the new one for
 each surface. Four surfaces, and one of them changes by *not* changing.
 
+**Terminology.** What this document calls a *service* — the catalogue concept, `serviceId`,
+`ServicesPanel` — is called a **model provider** everywhere the user can read it: the Settings tab
+is "Model providers" (`Settings.tsx:93`), its action is "Add a model provider"
+(`ServicesPanel.tsx:367`), the usage split heads "by provider" and its unattributed row says "No
+provider recorded" (`UsageModal.tsx:374`). New copy uses the user-facing term; new code keeps the
+existing identifiers.
+
 **Background work (`BackgroundWorkSection.tsx`).** One line and two picker contents. The derived
 line beneath the controls already carries the fact the controls cannot state, so it now reads
 "Called directly · no harness, no container" where that is what happens. The wording deliberately
-avoids "Direct call to Anthropic": the service is named by the control beside it, and what the
-user needs from this line is the consequence, not a repetition. The pickers gain services whose
+avoids "Direct call to Anthropic": the provider is named by the control beside it, and what the
+user needs from this line is the consequence, not a repetition. The pickers gain providers whose
 credential permits a direct call with no harness installed, and lose the harness rows for a model
 already reachable directly (req 3).
 
@@ -151,13 +159,13 @@ few seconds, so a pause does not read as a fault. A dictation is the one place i
 several seconds of silence is indistinguishable from a bug.
 
 **The voice-key adoption notice** is the migration in visible form: an offer to add the existing
-OpenAI voice key as a service credential, with declining leaving cleanup unavailable and saying
-so. It exists because the alternative — silently writing a background-work choice on the user's
+OpenAI voice key as a model-provider credential, with declining leaving cleanup unavailable and
+saying so. It exists because the alternative — silently writing a background-work choice on the user's
 behalf — would decide something req 9 of docs/252 reserves for them.
 
 **Usage (`UsageModal.tsx`).** One new group row for background work belonging to no session,
 install-wide only. It is deliberately *not* the existing unattributed group, which holds volume
-whose service and billing mode are unknown; this row knows both.
+whose provider and billing mode are unknown; this row knows both.
 
 **The composer's context dial does not change**, and the mockup records that state on purpose.
 It is what a regression would look like if the background-work classification were lost: the dial
@@ -219,7 +227,7 @@ target comes from the service credential registry. An install whose only OpenAI 
 one has working cleanup today and would have none after this change, which the requirements'
 preservation preamble does not allow.
 
-So the key is **adopted** as an ordinary OpenAI service credential, following the precedent
+So the key is **adopted** as an ordinary OpenAI model-provider credential, following the precedent
 docs/252 req 20 already set for deployment-supplied environment credentials: visible, renameable,
 removable, and taking part in the same ordering rules. Background work then seeds onto it only if
 nothing is set, matching `seedNonTurnModel`'s existing narrow rule, so adoption can never
