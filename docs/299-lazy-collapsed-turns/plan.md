@@ -1,7 +1,7 @@
 ---
 issue: planning#536
 title: Lazy collapsed turns — design
-description: Collapse every turn but the newest, keep positions stable with placeholder rows, and load a turn's body when it is expanded.
+description: Collapse every turn but the newest, reduce hidden rows in place, and load a turn's body when it is expanded.
 ---
 
 # Design
@@ -18,29 +18,41 @@ in place until this work ships.
 | Tool group with one error | Stays fully visible | Hidden (req 2) |
 | Interrupted / failed turn | Never collapses | Collapses; its error rows stay (req 3, 11) |
 | Attach during a turn | Whole transcript stays full | Earlier turns collapse (req 4) |
-| Cards | All 24 types stay | Hidden (req 5) |
+| Cards | All 24 types stay | Hidden, unless the card still needs the user (req 5, 12) |
 | Expand control | Ghost text button | A real button (req 8) |
 | Hidden content | Loaded, then hidden | Not loaded (req 6, 7) |
 
-## Measure before building the server half
+## The goal is load time on a slow connection
 
-**Step one is a measurement, not code.** The history payload is already smaller
-than it looks, and the design must not claim a saving it does not produce.
+Requirement 13 states the purpose: a big session must open much faster on a
+mobile network. That is what the work is judged against, and it decides where
+the effort goes, so the first step measures it and splits it in two:
 
-Verified at `transcript-projection.ts:299` and `transcript-slice.ts:2-6`: the
-wire projection already slices every tool input and tool result to 40 lines or
-16 KiB, whichever comes first, and `api-routes-lazy-bodies.ts` serves the full
-body on demand. Verified at `transcript-projection.ts:26`: images are replaced
-by a URL, so no image bytes ride in the payload.
+- **Transfer.** The bytes of `GET /api/sessions/:id/history` for a real long
+  session, broken down by row class.
+- **Client work after the bytes arrive.** Parsing the payload, materializing the
+  rows and the first render. `session-data.ts:260` records ~2,000 rows as a real
+  transcript size and **92 ms** just to re-render the list when row identity
+  changes, so this half is not small, and a mobile CPU is slower than the
+  machine that number came from.
 
-So the saving of requirement 6 is not "the tool output". It is the sliced
-remainder — up to 16 KiB per row — plus intermediate prose and card payloads.
-That is still large for a long session (`session-data.ts:260` cites ~2,000 rows
-as a real transcript size), but the number has to be measured on a real session
-and broken down by row class before the server work starts. If the measurement
-shows the win is small, the client half of this design still delivers
-requirements 1 to 5, 8 and 11 on its own, and requirements 6 and 7 can be
-dropped or deferred.
+Reducing the payload helps both halves — fewer bytes to move and fewer rows to
+build — but only the measurement says which dominates. Measure the real endpoint
+against a real long session over a throttled connection. Do not measure a
+synthetic fixture: its row mix would decide the answer.
+
+**The measurement directs the work; it cannot cancel it.** Requirements 6 and 7
+are the user's own, so a modest byte count is a reason to look at the client
+half as well, not a reason to stop.
+
+What the payload is **not** is the raw tool output. Verified at
+`transcript-projection.ts:113` and `:213`: tool results above
+`RESULT_STRIP_FLOOR_BYTES` (200) are sliced or emptied, some tools are exempt
+and ship whole (`shipsResultBodyWhole`), sub-agent reports have their own
+slicer, tool inputs are projected per key (removed, or cut to
+`COMMAND_SUMMARY_CHARS`), and images become URLs (`transcript-projection.ts:26`).
+`api-routes-lazy-bodies.ts` serves the rest on demand. There is no single
+per-row ceiling, and an earlier draft of this plan claimed one.
 
 ## The hazard that shapes everything: positions are wire identity
 
@@ -52,111 +64,172 @@ walking its own array.
 
 So **a payload that omits rows shifts every later index**, and a rewind then
 deletes history or resets code at the wrong point. Requirement 6 must therefore
-never remove a row from the array. It removes only a row's *content*.
+never remove a row from the array. It removes only content from inside a row.
 
-### Placeholder rows
+## One mechanism: a reduced row
 
-A collapsed row ships as a placeholder: the structural fields only, with no
-body.
+A row the user cannot see ships **reduced**: its displayed fields, and nothing
+else.
 
 ```
-{ index, role, placeholder: true, rolledBack?, notice? }
+{ index, role, reduced: true, text, isError?, notice?, rolledBack?, <card field>? }
 ```
 
-- `role` keeps `shouldShowGapBefore` and `previousRoleBefore` correct
+- A row that is fully hidden keeps `role` and `text: ""`. `text` must be a
+  string, not absent: `visual-elements.ts:223` calls `msg.text.trim()` directly.
+- A row kept for its prose keeps `text` whole and loses `toolUse`,
+  `toolResults`, `subagentEvents` and its images.
+- `rolledBack` and `notice` keep the rewind gaps and status panels in place;
+  `role` keeps `shouldShowGapBefore` and `previousRoleBefore` correct
   (`MessageList.tsx:228-245`).
-- `rolledBack` and `notice` keep the rewind gaps and status panels in their
-  right places.
-- Everything else — `content`, `toolUse`, `toolResults`, `images`, `files` and
-  every card field — is absent.
 
-`messages.length` stays exact, so the end-of-transcript rewind point and every
-gap position stay correct without a single change to the rewind code. This is
-the whole reason to prefer placeholders over a sparse array with explicit
-indices.
+**Row selection is not enough — fields must be stripped inside a kept row.**
+Verified at `chat-card-persistence.ts:60-71` and `agent-event.ts:185-195`: one
+persisted row carries `text`, `toolUse` and `toolResults` together, and the live
+merge concatenates prose and tool blocks into the same row. So "the last agent
+message" is frequently also a tool row. Selecting it whole would ship the tool
+payload (breaking requirement 6) and render it (breaking requirement 2). This is
+why the projection is per-field.
 
-## Server: the collapsed projection
+`messages.length` stays exact, so every gap position stays correct with no
+change to the rewind code. That is the whole reason to reduce rows in place
+rather than build a sparse array with explicit indices.
+
+## Display turn, execution turn
 
 A turn has no identity in storage. Verified at `database.ts:13-28`: the
 `messages` table has `session_id`, `role`, `content`, `in_progress` and no turn
-column. A turn is the span from one user row to the next, which is exactly how
-the client already derives a run (`compact-turns.ts:20`). No migration is
+column. A **display turn** is the span from one user row to the next, which is
+how the client already derives a run (`compact-turns.ts:20`). No migration is
 needed.
 
-Put the split and the keep/drop rule in one shared module,
+An **execution** is not the same span. Verified at
+`chat-card-persistence.ts:35`: a steered user message is interleaved into one
+execution, so one execution can contain several display turns; and
+`route-registry.ts:645` snapshots the whole execution on attach.
+
+The rule that reconciles them: **never reduce a row whose `in_progress` is set,
+and never reduce the newest display turn.** Then a `turn_snapshot` always
+describes rows that are full, so its replace-filter (`turn-snapshot.ts:20`,
+which selects on `inProgress`) keeps working untouched. The cost is that a
+steered live execution keeps earlier display turns full until it settles. That
+is bounded — one execution, already being streamed — and it is the deliberate
+price of leaving the live path alone.
+
+## Server: the reduced projection
+
+Put the display-turn split and the keep/drop rule in one shared module,
 `src/server/shared/collapsed-turns.ts`, imported by both sides. The client
 already imports from `server/shared/` (`visual-elements.ts:3`), so this needs no
 new boundary. One module is what keeps the server's projection and the client's
 expand state from drifting apart.
 
-Keep a row whole when any of these holds:
+Keep a row's content when any of these holds:
 
 1. `role === "user"` — requirement 5, with its attachments.
 2. `isError`, or `notice === true` — requirement 11.
-3. It is the turn's **last agent prose**: an assistant row with non-empty text
-   that is not a card carrier and not a notice. This mirrors `lastProse` in
-   `compact-turns.ts:43`.
-4. It belongs to the newest turn, or to a turn that is still in progress —
-   requirement 1.
+3. A card that still needs the user — requirement 12. The card's own resolved
+   state decides: an action checklist not yet submitted, a bug report not yet
+   filed, an issue write still inside its undo window.
+4. It is the display turn's **last agent prose**: an assistant row with
+   non-empty text that is not a card carrier and not a notice. Keep `text`;
+   strip the tool fields.
+5. It is in the newest display turn, or `in_progress` is set.
 
-Everything else becomes a placeholder. Requirement 2 needs no rule of its own: a
-tool row has no prose, so rule 3 never keeps it, and the error carve-out of the
-current classifier (`compact-turns.ts:50`) is simply not carried over.
+Everything else is reduced to `{ role, text: "" }`. Requirement 2 needs no rule
+of its own: a tool row is never kept by rules 1 to 4, and rule 4 strips the
+tools from the row it does keep.
 
 ### The endpoint
 
-`GET /api/sessions/:id/history` gains `?collapsed=1`. Two things must follow it:
+`GET /api/sessions/:id/history` gains `?collapsed=1`. Two things follow it:
 
 - **The ETag inputs.** Verified at `api-routes-session-spawn.ts:120-127`, the
   validator hashes `HISTORY_VALIDATOR_VERSION`, the session id,
   `transcriptRevision` and `rest`. The mode joins that list, or a collapsed body
-  can be served for a full request.
+  can answer a full request.
 - **The client cache key.** Verified at `session-data.ts:209`, `historyCache` is
   keyed by session id alone. The key becomes `sessionId + mode`.
 
-Expanding one turn is a range read: `GET /api/sessions/:id/history?from=&to=`,
-returning the full rows for that span. The client splices them into the same
-positions. A range is the right unit because a turn is a contiguous span, and
-because the reply then needs no turn identity that storage does not have.
+Expanding is a range read: `GET /api/sessions/:id/history?from=&to=&rev=`. The
+client sends the `transcriptRevision` it holds; the server refuses a mismatch
+with `409`, and the client falls back to a full reload. Without that check a
+response that arrives after a rewind would splice old content over unrelated
+rows, and equal lengths cannot detect it. `transcriptRevision` already exists
+(`api-routes-session-spawn.ts:120`), so this needs no new counter.
 
 ## Client
 
-`useCompactConversation` is replaced. The new state is simpler, because the
-server now decides what is collapsed:
+### Expanding, and never reloading wholesale
 
-- A row is `loaded` or `placeholder`.
-- A turn renders collapsed unless it is the newest turn, or the user expanded
+Expanding a turn splices the range response into the same positions. **Loading
+the whole transcript — from the search control, or when the setting is turned
+off — is the same splice over every reduced range, not a call to
+`loadSessionHistory`.**
+
+That matters. Verified at `session-data.ts:410-425`: `loadSessionHistory`
+replaces the message array wholesale, and during a running turn the payload is a
+*subset* of what is on screen. Its safety comes from the attach sequence —
+`historyLoaded` is false for the whole load, `turn_snapshot` is queued behind
+it, and the snapshot restores the live tail. A search-triggered load performs no
+attach, so no snapshot follows it, and the live tail would be erased. Splicing
+avoids the hazard completely rather than guarding against it: reduced rows only
+exist below the live execution, so a splice can never touch the live tail.
+
+### State
+
+- A row is `full` or `reduced`.
+- A display turn renders collapsed unless it is the newest, or the user expanded
   it.
-- Expanding a turn with placeholders fetches the range, splices, then shows it.
-  Expanding an already-loaded turn only shows it.
-- A turn already loaded is never unloaded. When a new turn starts and the
-  previous one collapses, the client hides rows it already holds; it does not
-  refetch them if the user expands again.
+- Expanding a turn that holds reduced rows fetches its range, splices, then
+  shows it. Expanding an already-full turn only shows it.
+- A turn once loaded is never unloaded. When a new turn starts and the previous
+  one collapses, the client hides rows it already holds.
 
-The whole `activeFrom` boundary of `useCompactConversation.ts:20-28` is deleted.
+The `activeFrom` boundary of `useCompactConversation.ts:20-28` is deleted.
 Requirement 4 removes the case it defends against: what is collapsed no longer
 depends on what the viewer observed.
 
-This also removes the defect behind the current "no button at all" reports. Only
-`agent_result` clears the per-row `inProgress` flag (`agent-event.ts:299-311`);
-`agent-interrupted.ts:10` and `error.ts:9` do not, and
-`session-data.ts:297` turns a persisted in-progress row into `streaming: true`.
-Today any of those pins a run open forever. Under this design the server
-classifies from stored rows, so a stale flag cannot pin anything. The flags
-still need fixing for the live view, and that fix is small and independent —
-keep it as its own change.
+**Keep the focus and selection protection** of `useCompactConversation.ts:29-69`
+and the reading-anchor restoration of `CompactLayout.tsx`. Automatic collapse
+still happens while the user reads — another viewer or a queued message can
+start the next turn — and asynchronous expansion moves content under the reader
+in a way the shipped feature never had to handle.
+
+### Group parents must not move
+
+Verified at `MessageList.tsx:369-400`: content-visibility groups are flushed
+every `ROWS_PER_GROUP` (20) anchors and keyed by position, `g-${rowGroups.length}`.
+Splicing rows into the middle therefore re-buckets every later group, moving
+card components to new DOM parents and remounting them. A bug-report card with
+an unsent title and body loses the draft.
+
+Fix: **flush a group at every display-turn boundary**, and key it by the turn's
+first message index rather than by its ordinal. Expanding a turn then changes
+only that turn's own groups. Requirement 12 makes this necessary rather than
+merely tidy: the cards that survive a collapse are exactly the ones holding
+unsent user input.
+
+### Stale in-progress flags
+
+Only `agent_result` clears the per-row `inProgress` flag
+(`agent-event.ts:299-311`); `agent-interrupted.ts:10` and `error.ts:9` do not,
+and `session-data.ts:297` turns a persisted in-progress row into
+`streaming: true`. Today that pins a run open forever, which is why the shipped
+feature sometimes shows no button at all.
+
+This design does **not** make that harmless: rule 5 keeps `in_progress` rows
+full, so a stale flag would keep a dead turn permanently expanded. The flags
+have to be fixed, as their own small change, before or with this work.
 
 ## The expand control (req 8)
 
-One real button per collapsed turn, above the turn's content:
-
-- `Button` with `variant="secondary"` and a `CaretDown` icon at `ICON_SIZE.SM`,
-  not the current ghost text (`MessageList.tsx:331`).
-- The label carries the count: "Show 12 hidden messages". A count tells the user
-  whether expanding is worth it.
-- It keeps `aria-expanded` and `aria-controls`, and it shows a loading state
-  while the range fetch is in flight.
-- A failed turn puts its status beside the button, after the kept error row.
+One real button per collapsed turn, above the turn's content: a `Button` with
+`variant="secondary"` and a `CaretDown` icon at `ICON_SIZE.SM`, not the current
+ghost text (`MessageList.tsx:331`). It keeps `aria-expanded` and
+`aria-controls`, and it shows a loading state while the range fetch is in
+flight. No hidden-row count, and no failure status beside it — requirement 11
+already keeps the error row on screen.
 
 Follow the `design-language` skill: semantic color tokens only, no hardcoded
 palette values, `@phosphor-icons/react` for the icon.
@@ -164,13 +237,18 @@ palette values, `@phosphor-icons/react` for the icon.
 ## Search (req 10)
 
 In-app search keeps matching `msg.text` on the client (`useSearch.ts`), so it
-now misses text in placeholder rows. While a query is active, the search bar
-shows one control — "Search the whole conversation" — which loads the full
-transcript for the session and re-runs the search. It sets no persistent state:
-the next session load is collapsed again.
+misses text in reduced rows. While a query is active, the search bar shows one
+control — "Search the whole conversation" — which loads every reduced range,
+**expands every turn**, and re-runs the search. Expanding every turn is part of
+the action: loading the rows without expanding them would leave a matching turn
+collapsed.
 
-Turning the setting off in Settings remains the way to read the whole transcript
-without searching.
+Keep the shipped behavior where a turn with a match opens automatically
+(`useCompactConversation.ts:96`), so ordinary search results stay navigable.
+
+The control sets no persistent state: the next session load is collapsed again.
+Turning the setting off remains the way to read the whole transcript without
+searching.
 
 ## Non-goals
 
@@ -178,49 +256,52 @@ without searching.
 - No truncation of the kept agent message.
 - No change to the persisted history, to the agent lifecycle, or to the
   turn-event buffer.
-- No change to `turn_snapshot` or to the live WS append path. The live turn is
-  always full, so it needs no projection.
-- User attachments stay whole in the payload. Making them lazy is separate
-  work.
+- No change to `turn_snapshot` or to the live WS append path. The live execution
+  is never reduced, so it needs no projection.
+- User attachments stay whole in the payload. Making them lazy is separate work.
 
 ## Risks
 
-- **Rewind and fork addressing.** The placeholder design exists for this. Any
-  change that drops a row instead of blanking it is a data-loss bug, so the
+- **Rewind and fork addressing.** Reducing rows in place exists for this. Any
+  change that drops a row instead of reducing it is a data-loss bug, so the
   guard test asserts that a collapsed payload and a full payload have the same
   length and the same role at every index.
-- **Card state.** Verified at `session-data.ts:303-330`: the client seeds the
-  bug-report, permission, egress and issue-write card stores from the persisted
-  rows on every load. Hiding card rows removes that seed. This is the open
-  question in the requirements; until it is answered, keep card rows loaded even
-  when they are not displayed.
-- **A measurement that does not justify the work.** Handled by making the
-  measurement step one.
+- **A range response that outlives its history.** Handled by the revision check.
+- **Erasing the live tail.** Handled by splicing rather than reloading.
+- **Remounting a card that holds unsent input.** Handled by the group-parent
+  fix, and verified by a test that types into a bug-report card, expands an
+  older turn, and asserts the draft survives.
 
 ## Simpler alternatives considered
 
-- **Client-only, no server change.** Delivers requirements 1 to 5, 8 and 11 and
-  nothing else. This is the fallback if the measurement is disappointing, and it
-  is also a sound first pull request.
+- **Client-only, no server change.** Delivers requirements 1 to 5, 8, 11 and 12.
+  A sound first pull request, and it is where the display rules get proved — but
+  it does not deliver requirement 13, so it is an intermediate step, not the
+  feature.
 - **Sparse arrays with explicit row indices.** Rejected: it changes every
   consumer of the message array and every position-addressed message, for no
-  gain over placeholders.
-- **A turn id column.** Rejected: user-row boundaries already define a turn on
-  both sides, and a new column would need a backfill migration for existing
-  sessions.
+  gain over reducing rows in place.
+- **A turn id column.** Rejected: user-row boundaries already define a display
+  turn on both sides, and a new column would need a backfill migration.
 
 ## Verification
 
 - A collapsed payload and a full payload have equal length and equal role per
   index. Rewind at a gap in a collapsed transcript targets the same row as in a
   full one.
+- A kept prose row that also carried tools ships without them, and renders
+  without them.
 - Newest turn full; previous turn collapses when a new turn starts.
-- Tool groups hidden whether or not a tool failed; error rows and notices kept.
-- Attach during a running turn: earlier turns collapsed, live turn full.
-- Expand a placeholder turn: one range request, rows spliced at the right
-  positions, no scroll jump.
-- Expand-all from the search bar finds text that was not loaded.
+- Tool groups hidden whether or not a tool failed; error rows and notices kept;
+  an unresolved action card and an unsent bug report kept, with their state.
+- Attach during a running turn, including after a steer: the whole live
+  execution stays full, earlier turns are collapsed.
+- Expand a reduced turn: one range request, rows spliced at the right positions,
+  no scroll jump, no card remount.
+- A range response for a superseded revision is refused and falls back.
+- Expand-all from the search bar during a running turn: the live tail survives,
+  and every turn is expanded.
 - Setting off: the payload and the view are exactly as today.
 - Reload, reconnect, session switch, rewind, fork.
 - `lint:dev`, `typecheck`, affected tests, and browser checks in a light and a
-  dark theme.
+  dark theme, on a throttled mobile profile.

@@ -51,13 +51,16 @@ the significant events.
     turn and loads the full transcript.
 11. A collapsed turn keeps its error rows and its status notices visible. The
     user sees that a turn failed without expanding it.
+12. A card that still needs the user stays visible when its turn collapses, and
+    keeps its state. Examples: an action checklist that is not ticked, a bug
+    report that is not submitted. A card the user has already acted on is
+    hidden with the rest of the turn.
+13. A large session opens much faster on a slow mobile connection than it does
+    today. This is the purpose of requirements 6 and 7.
 
 ## Open questions
 
-- A card can stay actionable after its turn ends: an action checklist, a bug
-  report awaiting submission, an issue-write undo. Requirement 5 hides it, and
-  the client also seeds its card state from the loaded rows, so a hidden card
-  loses both its control and its state. Do unresolved cards stay visible?
+None.
 
 ## Resolved questions
 
@@ -85,3 +88,13 @@ user answered: the whole message. No truncation rule. This is requirement 5.
 2026-09-13 — Does a collapsed turn that failed show anything about that? The
 user answered: keep the red error row visible. The question covered error rows
 and status notices together, so requirement 11 keeps both.
+
+2026-09-13 — A card can still need the user after its turn ends. Does it stay
+visible? The user answered: yes. Action cards and bug reports that are not sent
+yet must be kept. This is requirement 12.
+
+2026-09-13 — What does the measurement of requirement 6 measure? The user
+answered: loading a big session on a mobile network is very slow, and they want
+a significant improvement. The goal is the load time a user feels, not a byte
+count. This is requirement 13, and it means requirements 6 and 7 cannot be
+dropped because a byte measurement looks small.
