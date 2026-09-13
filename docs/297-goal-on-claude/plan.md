@@ -129,11 +129,15 @@ no gain.
   - **A turn is running** → refused, for the concurrency reason above. The
     orchestrator turns that into the "wait for the turn to finish" notice.
     "Running" means the CLI is generating, not that ShipIt dispatched the turn:
-    the flag is set by `run()` / `sendUserMessage()` **and** by any top-level
-    assistant event, which is the only signal a turn the CLI started itself
-    (`startsOwnTurns`) ever gives — the orchestrator adopts on the same
-    condition. A subagent's events, which carry `parent_tool_use_id`, do not set
-    it: those stream while the CLI itself is between turns. Without that second
+    the flag is set by `run()` / `sendUserMessage()` **and** by the events a turn
+    the CLI starts itself (`startsOwnTurns`) announces itself with, since it
+    reaches neither entry point — `indicatesTurnActivity` in the adapter lists
+    them: a top-level assistant message, a `task_notification` (the earliest, and
+    what the orchestrator adopts a self-wake on), and a top-level partial
+    message, which routed providers stream ahead of the assistant event. A
+    repeated `init`, which the CLI emits for a local command it answers without a
+    turn, and anything under `parent_tool_use_id`, which a background subagent
+    streams between the CLI's own turns, deliberately do not. Without that second
     source a `/goal` read reached a working CLI, which handed it to the model as
     "The user sent a new message while you were working: /goal".
   - **A resident CLI is alive** → the command goes down its stdin. Live steering
@@ -181,12 +185,15 @@ CLI's own word (`active`).
   resident CLI is still there and can already be in a turn of its own. The
   adapter's own refusal is the guard, not the ordering. It reads the
   goal only when the session currently *shows* one, so a session without a goal
-  costs nothing and the common case is unaffected. It is best effort: a
-  container that goes away leaves the correction to the next activation read,
-  which docs/154 already does.
+  costs nothing and the common case is unaffected. It is best effort, and the
+  fallback is the *next* goal-bearing turn's read, not the next activation:
+  docs/154's activation read is gated on `agentGoalChecked`, which a stored goal
+  already satisfies, so it skips a session whose chip is stale.
 
-  This is a per-turn extra process, allowed only where the stream genuinely
-  cannot answer. It cannot: the measured behaviour is that a goal set and
+  This is a per-turn read, allowed only where the stream genuinely cannot
+  answer — an extra process only when no resident CLI is alive; with live
+  steering on, which is the default, it is a line down the resident one's stdin.
+  The stream cannot answer: the measured behaviour is that a goal set and
   achieved inside one turn leaves the chip pointing at a goal that lasted
   seconds, with nothing on the stream to correct it. The same gate applies to
   Codex, where the read is a redundant confirmation rather than a behaviour
@@ -194,7 +201,9 @@ CLI's own word (`active`).
   whose only job is to say "this harness reports goal changes".
 
 - **Resolving the agent to ask, without disturbing the session**
-  (`goalAgentFor`). Both reads run outside a turn, where the agent slot may hold
+  (`goalAgentFor`). Both reads are *attempted* outside a ShipIt turn — the
+  resident CLI can still be in one of its own, which is what the adapter's
+  refusal is for — where the agent slot may hold
   the finished turn's proxy or nothing at all. Building a proxy while the slot is
   occupied *displaces* the installed one and settles its turn a second time
   (`supersedeDisplacedAgent`), so an occupied slot is used as it is or left
@@ -211,8 +220,8 @@ CLI's own word (`active`).
 
 Claude Code's goal loop lives inside a turn: the `Stop` hook blocks the stop
 until the evaluator agrees, so a goal keeps *one* turn going rather than
-starting new ones. ShipIt's one-process-per-turn lifecycle therefore needs no
-hold of the kind Codex needed — resuming a session with an active goal starts no
+starting new ones. ShipIt therefore needs no hold of the kind Codex needed —
+resuming a session with an active goal starts no
 turn by itself (measured). The goal persists in the CLI's store and steers every
 turn the user starts, which is what docs/154 settled on for Codex as well.
 

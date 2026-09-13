@@ -1433,7 +1433,20 @@ describe("ClaudeAdapter", () => {
     // A turn the CLI starts itself reaches neither run() nor sendUserMessage(), so
     // the command used to be written into a working CLI, which handed it to the
     // model as "The user sent a new message while you were working: /goal".
-    it("refuses a goal command during a turn the CLI started itself", async () => {
+    it.each<[string, ClaudeEvent]>([
+      ["an assistant message", {
+        type: "assistant",
+        message: { content: [{ type: "text", text: "picking this up myself" }] },
+      } as ClaudeEvent],
+      // The earliest signal of a self-wake: the CLI starts a turn to process it.
+      ["a task notification", {
+        type: "system", subtype: "task_notification", task_id: "t1", status: "completed",
+      } as ClaudeEvent],
+      // Routed providers stream partial messages, which precede the assistant event.
+      ["a partial message", {
+        type: "stream_event", event: { type: "message_start" },
+      } as ClaudeEvent],
+    ])("refuses a goal command during a turn the CLI started itself, announced by %s", async (_label, opener) => {
       const streaming = new StreamingClaudeProcess();
       const writes: string[] = [];
       vi.spyOn(streaming, "writeStdin").mockImplementation((d: string) => { writes.push(d); });
@@ -1441,10 +1454,7 @@ describe("ClaudeAdapter", () => {
       const runGoalControl = vi.fn(async () => ({ goal: null }));
       const adapter = new ClaudeAdapter(streaming as unknown as ClaudeProcess, { runGoalControl });
 
-      streaming.emit("event", {
-        type: "assistant",
-        message: { content: [{ type: "text", text: "picking this up myself" }] },
-      } as ClaudeEvent);
+      streaming.emit("event", opener);
 
       await expect(adapter.goalCommand!("thread-1", { action: "get" }))
         .rejects.toThrow(/only between turns/);
@@ -1458,6 +1468,31 @@ describe("ClaudeAdapter", () => {
       const answered = adapter.goalCommand!("thread-1", { action: "get" });
       await Promise.resolve();
       expect(writes.join("")).toContain("/goal");
+      streaming.emit("event", {
+        type: "assistant",
+        message: { content: [{ type: "text", text: "No goal set" }] },
+        is_meta: true,
+        local_command_source: "<local-command-stdout>No goal set</local-command-stdout>",
+      } as ClaudeEvent);
+      streaming.emit("event", {
+        type: "result", subtype: "success", session_id: "thread-1", num_turns: 0,
+      } as ClaudeEvent);
+      await expect(answered).resolves.toEqual({ goal: null });
+    });
+
+    // A resident CLI repeats its init for a local command it answers without a turn,
+    // so an init must not be read as generation.
+    it("still answers between turns after a repeated init", async () => {
+      const streaming = new StreamingClaudeProcess();
+      vi.spyOn(streaming, "writeStdin").mockImplementation(() => undefined);
+      vi.spyOn(streaming, "alive", "get").mockReturnValue(true);
+      const adapter = new ClaudeAdapter(streaming as unknown as ClaudeProcess);
+
+      streaming.emit("event", {
+        type: "system", subtype: "init", session_id: "thread-1",
+      } as ClaudeEvent);
+
+      const answered = adapter.goalCommand!("thread-1", { action: "get" });
       streaming.emit("event", {
         type: "assistant",
         message: { content: [{ type: "text", text: "No goal set" }] },

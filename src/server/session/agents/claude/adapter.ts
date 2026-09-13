@@ -59,6 +59,22 @@ function textFromUserContent(content: unknown[]): string {
     .join("");
 }
 
+/**
+ * docs/297 — the CLI is generating. A turn it starts itself (`startsOwnTurns`)
+ * reaches neither `run()` nor `sendUserMessage()`, so these events are the only
+ * notice ShipIt gets, and writing a goal command without them hands the model a
+ * mid-turn user message nobody sent. A `task_notification` is the earliest:
+ * the CLI wakes to process it, and the orchestrator adopts a turn on it too.
+ * Excluded on purpose: `init`, which a resident CLI repeats for a local command
+ * it answers without a turn, and anything under `parent_tool_use_id`, which a
+ * background subagent streams while the CLI itself is between turns.
+ */
+function indicatesTurnActivity(raw: ClaudeEvent): boolean {
+  if (raw.type === "system") return raw.subtype === "task_notification";
+  if (raw.type !== "assistant" && raw.type !== "stream_event") return false;
+  return !raw.parent_tool_use_id;
+}
+
 interface PendingGoal {
   resolve: (result: AgentGoalCommandResult) => void;
   reject: (err: Error) => void;
@@ -111,7 +127,7 @@ export class ClaudeAdapter
 
   // docs/297 — a goal control process resumes the live session id, so it must
   // not run beside a turn; and it runs where the turn ran. Tracks the CLI's own
-  // turns too, not just the ones ShipIt dispatched — see the assistant case below.
+  // turns too, not just the ones ShipIt dispatched — see `indicatesTurnActivity`.
   private turnLive = false;
   private lastCwd: string | undefined;
   private spawnHomeOverride: string | undefined;
@@ -140,6 +156,8 @@ export class ClaudeAdapter
       // An answer to a command ShipIt injected belongs to that command, not the
       // transcript: the user typed no message and no turn ran.
       if (this.consumeGoalAnswer(raw)) return;
+
+      if (indicatesTurnActivity(raw)) this.turnLive = true;
 
       if (raw.type === "system" && raw.subtype === "init" && raw.mcp_servers) {
         const statuses = raw.mcp_servers.map(mapCliMcpStatus);
@@ -259,15 +277,7 @@ export class ClaudeAdapter
         return null;
 
       case "assistant":
-        if (!raw.parent_tool_use_id) {
-          this.recordCallContext(raw.message.usage);
-          // A turn the CLI starts itself (`startsOwnTurns`) reaches neither run()
-          // nor sendUserMessage(), so a top-level assistant event is the only
-          // signal that it is generating. Without it a goal command is written to
-          // a busy CLI, which surfaces it to the model as a mid-turn user message
-          // nobody sent. The orchestrator adopts on the same condition.
-          this.turnLive = true;
-        }
+        if (!raw.parent_tool_use_id) this.recordCallContext(raw.message.usage);
         return {
           type: "agent_assistant",
           content: raw.message.content,
