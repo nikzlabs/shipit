@@ -28,6 +28,7 @@ import {
   signOutProvider,
   listCredentialRoutes,
   createStringCredential,
+  adoptVoiceKeyAsCredential,
   updateStringCredential,
   deleteCredentialRoute,
   reorderCredentialRoutes,
@@ -200,6 +201,35 @@ export async function registerBootstrapRoutes(
           return;
         }
         reply.code(500).send({ error: `Failed to save credential: ${getErrorMessage(err)}` });
+      }
+    },
+  );
+
+  /*
+    The Voice tab's adoption offer (docs/299-direct-provider-calls req 5). It
+    sits with the other credential writes because that is what it is: the
+    browser cannot POST the key to `/api/credential-routes` itself, since a
+    voice key is never sent back to it.
+
+    `propagateCredentialChange` is what seeds background work onto the new
+    credential — through `buildAgentListPayload`, which writes only when nothing
+    is set. Nothing here chooses a model for the user.
+  */
+  app.post<{ Body: { provider?: string } }>(
+    "/api/credential-routes/adopt-voice-key",
+    async (request, reply) => {
+      try {
+        const result = adoptVoiceKeyAsCredential(deps.credentialStore, request.body?.provider ?? "openai");
+        propagateCredentialChange();
+        refreshQuotaForCredential(result.route, "seed");
+        deps.sseBroadcast("credential_routes", { routes: result.routes });
+        return result;
+      } catch (err) {
+        if (err instanceof ServiceError) {
+          reply.code(err.statusCode).send({ error: err.message });
+          return;
+        }
+        reply.code(500).send({ error: `Failed to add the voice key as a model provider: ${getErrorMessage(err)}` });
       }
     },
   );

@@ -2,6 +2,8 @@ import type { CredentialStore } from "../credential-store.js";
 import type { ProviderAccountManager } from "../provider-account-manager.js";
 import type { UsageManager } from "../usage.js";
 import type { BackgroundHarnessRunner } from "../background-harness-run.js";
+import type { AgentId } from "../../shared/types.js";
+import { getModel } from "../../shared/catalogue/index.js";
 import {
   resolveNonTurnModel,
   type NonTurnHarnessTarget,
@@ -45,6 +47,9 @@ export interface CleanupPlan extends CleanupRunner {
   execution: NonTurnTarget["execution"];
   serviceName: string;
   modelId: string;
+  /** What the model is called in the Background work control the status line points at. */
+  modelLabel: string;
+  harnessId?: AgentId;
 }
 
 /**
@@ -67,6 +72,7 @@ export function planCleanup(deps: VoiceCleanupDeps): CleanupPlan | null {
   const common = {
     serviceName: target.serviceName,
     modelId: target.selection.modelId,
+    modelLabel: getModel(target.selection)?.label ?? target.selection.modelId,
   };
 
   if (target.execution === "direct") {
@@ -94,6 +100,7 @@ export function planCleanup(deps: VoiceCleanupDeps): CleanupPlan | null {
   return {
     ...common,
     execution: "harness",
+    harnessId: target.harnessId,
     deadlineMs: CLEANUP_HARNESS_TIMEOUT_MS,
     run: (req) => runCleanupOnHarness(deps, harnessRunner, target, req),
   };
