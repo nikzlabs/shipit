@@ -83,7 +83,13 @@ Design only so far. Every open question is answered; implementation can start.
 - [ ] Tests: concurrent decision, snapshot-during-claim, baseline-not-`from`,
       serialization ordering, saved-not-live, restart at both sides of the side
       effect, unbound session, reconnect, broadcast
-- [ ] Outcomes visible to a later `get`
+- [ ] `lastProposal` on `get`: phase, from, proposed, timestamps, owning session,
+      reported per setting rather than per session
+- [ ] `propose` refuses while a proposal for that setting is `pending`, naming
+      the existing card
+- [ ] Tests: a dismissed proposal is visible to a later `get`; a second propose
+      on a pending setting is refused; a proposal made in another session is
+      reported to this one
 
 ## Docs
 

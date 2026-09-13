@@ -586,12 +586,49 @@ not a precondition for this.
 ### How the agent learns the outcome
 
 **From the read surface, not from a notification.** `shipit settings get <key>`
-reports any proposal this session has made against that setting and what became
-of it. The agent must read a setting before proposing anyway — that is where
-`from` comes from — so a dismissal is visible exactly when it matters, and the
-docs say not to re-propose a dismissed change unless asked. A separate
-history-browsing command is not part of this: no requirement asks for one, and
-`get` already answers the question at the moment it is asked.
+carries a `lastProposal` field, and the agent must read a setting before
+proposing anyway — that is where `from` comes from — so an outcome is visible
+exactly when it matters. A separate history-browsing command is not part of this:
+no requirement asks for one, and `get` already answers the question at the moment
+it is asked.
+
+```json
+"lastProposal": {
+  "cardId": "set-7f3a",
+  "phase": "dismissed",
+  "from": false,
+  "proposed": true,
+  "proposedAt": "2026-09-13T11:58:02Z",
+  "resolvedAt": "2026-09-13T12:04:19Z",
+  "sessionId": "…",
+  "reason": "The review you asked for runs as a separate agent…"
+}
+```
+
+`null` when nothing has ever been proposed for the setting. The phase is what the
+agent acts on:
+
+| `phase` | What the agent does |
+|---|---|
+| `pending` | Nothing. A card is already in front of the user. |
+| `dismissed` | Does not re-propose unless the user asks again. |
+| `applied` | Nothing — `value` already reflects it. |
+| `stale` / `refused` | May propose again, from the **current** value. |
+| `failed` | May propose again, and should say the previous attempt failed. |
+| `unknown` | Reads the value and tells the user the earlier outcome is uncertain. |
+
+**It is the last proposal for the setting, not for the session.** A proposal from
+another session is reported too, with its `sessionId`, because "the user already
+declined this change" is a fact about the setting and not about who asked. Scoping
+it per session would let two sessions take turns asking the same dismissed
+question.
+
+**A pending proposal blocks a second one.** `shipit settings propose` on a
+setting whose `lastProposal.phase` is `pending` is refused, naming the existing
+card, rather than posting a second card for the same setting. Two live cards
+proposing different values for one setting would make the first one's approval
+depend on which the user clicked first, and the loser would resolve `stale` with
+no explanation the user could see coming.
 
 A notice injected into the next turn's prompt was considered and cut. No
 numbered requirement asks for unsolicited delivery; it would add an
