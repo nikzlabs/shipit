@@ -16,8 +16,11 @@ in the *same PR*").
 - [x] `mockup.html` — the card's pending and terminal states, both themes
 - [x] Four independent design reviews, each cold, each with a removal brief
 - [x] Review findings verified against the code before being acted on
-- [ ] Scope inventory re-verified control by control against both dialogs — the
-      last review found three rows describing controls that do not exist, so the
-      remaining rows need the same check
+- [x] Scope inventory re-verified control by control against both dialogs. Four
+      errors found in total: three rows for controls that do not exist
+      (installed harnesses, the Skills tab, egress enforcement state) and
+      auto-create-PR filed under the wrong tab. Actions — check for updates,
+      update now, playback test, save — are named as exclusions rather than
+      omitted
 - [ ] Agent-facing doc outline agreed: what `shipit-docs/settings.md` must say
       about reading before proposing, and about saved versus effective

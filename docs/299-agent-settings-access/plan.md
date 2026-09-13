@@ -412,6 +412,7 @@ Both dialogs are in scope (`requirements.md`, resolved 2026-09-13): the global
 | Services | provider accounts | connected / not | no — `external_flow` |
 | Roles | per role: harness, model, effort, description, standing instructions | yes | yes |
 | Roles | the reviewer slots `first` and `second` | yes | yes — these are the settings behind "what the reviewer runs on"; the reserved role's own params are not a setting at all (above), and its description and standing instructions are ordinary role settings |
+| Integrations | create a pull request automatically | yes | yes |
 | Integrations | MCP servers, tracker connections, connected services | derived fields only — name, transport, connected state, URL host | narrow patches yes; credential fields no — `secret`; an OAuth connection `external_flow` |
 | Git | git identity name and email | yes | yes |
 | Instructions | your instructions, agent instructions enabled | yes | yes |
@@ -420,11 +421,16 @@ Both dialogs are in scope (`requirements.md`, resolved 2026-09-13): the global
 | Voice | webhook | configured / not | no — `secret` |
 | Voice | dictation, playback, TTS provider, voice, speed, hands-free | no — `browser_local` | no — `browser_local` |
 | Network | egress on/off, the global allowlist | yes | yes |
-| Advanced | memory budget, live steering, auto-create-PR, auto-resolve conflicts, auto-fix CI, auto-reset merged branch, sub-agents, update channel | yes | yes |
+| Advanced | memory budget, release channel, and the toggles: inject messages mid-turn, auto-fix CI, auto-resolve conflicts, start from the latest base after a merge, multi-agent sessions | yes | yes |
 | Advanced | compact conversation, browser notification, sound | no — `browser_local` | no — `browser_local` |
 | Project · Deployments | the agent-merge permission | yes | yes |
 | Project · Secrets | secret names | names only | no — `secret` |
 | Project · Appearance | repository colour | yes | yes |
+
+Actions are not settings either, and the Advanced tab has two: **Check for
+updates** and **Update now** run something; they do not hold a value. Same for
+the Voice tab's playback test and the Instructions tab's save. The coverage walk
+excludes them by reason, not by silence.
 
 Five things the dialogs appear to contain and do not. Each is a
 `not-a-setting` exclusion with this reason, and each was in an earlier draft of
