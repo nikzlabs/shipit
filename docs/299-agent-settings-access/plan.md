@@ -34,8 +34,8 @@ separate act of making it visible.
   [One change per card](#one-change-per-card).
 - **No server-side view of browser-local values, and no browser-local writes**;
   see [Browser-local settings](#browser-local-settings).
-- **No unsolicited outcome delivery to the agent.** The outcome lives in the read
-  surface, not in a notification subsystem; see
+- **No outcome-polling.** The agent never waits on or polls a card. It is told
+  once at the start of its next turn, and the read surface is authoritative; see
   [How the agent learns the outcome](#how-the-agent-learns-the-outcome).
 - **Per-session settings.** These do have a dialog of their own —
   `SessionSidebar/SessionSettingsDialog.tsx` holds a sandbox's capability grants
@@ -630,14 +630,33 @@ proposing different values for one setting would make the first one's approval
 depend on which the user clicked first, and the loser would resolve `stale` with
 no explanation the user could see coming.
 
-A notice injected into the next turn's prompt was considered and cut. No
-numbered requirement asks for unsolicited delivery; it would add an
-`agentNotified` column and two prompt-prefix integrations
-(`agent-execution.ts`, `dispatched-turn.ts`); and the existing mechanism it would
-copy marks an outcome consumed while the prompt is assembled, so a turn that then
-fails to spawn loses it (`chat-history.ts:519`, `dispatched-turn.ts:209`). A
-subsystem that is both more machinery and less reliable than a read is not worth
-having.
+### And a notice at the start of the next turn
+
+The read surface alone is not enough (req 8). It only helps an agent that thinks
+to read, and nothing prompts it to: after the user applies a card, the agent's
+next turn begins with no idea the world moved, so it reminds the user about a
+change they have already made. So a resolved card also **prefixes the agent's
+next turn**, exactly as a resolved bug report does.
+
+The mechanism is the bug-report one, reused rather than reinvented: an
+`agentNotified` flag on the persisted card, a `consumeUnreportedSettingsOutcomes`
+beside `consumeUnreportedBugOutcomes` (`chat-history.ts:519`), and the text
+joining the same `agentPrefix` chain in `ws-handlers/agent-execution.ts:414` and
+`dispatched-turn.ts:212`. Outcomes resolved since the last turn are **batched into
+one notice**, and the notice **never starts a turn of its own** — it rides the
+user's next message, the same rule `buildBugOutcomeNotice` follows.
+
+The wording states the outcome as fact, marks a dismissed change *do not
+re-propose unless asked*, and says plainly that it is a status line from ShipIt
+rather than part of the user's message.
+
+**The notice prompts; `lastProposal` decides.** Delivery is at-most-once
+*attempted* — the outcome is marked consumed while the prompt is assembled, so a
+turn that then fails to spawn loses it (`dispatched-turn.ts:209`). That is
+acceptable precisely because it is not the source of truth: the agent re-reads
+the setting before proposing anyway, and `lastProposal` is authoritative. A lost
+notice costs a prompt, not a correctness guarantee, and the agent docs say to
+trust the read rather than the notice.
 
 ## Persistence
 

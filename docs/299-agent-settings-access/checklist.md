@@ -90,6 +90,13 @@ Design only so far. Every open question is answered; implementation can start.
 - [ ] Tests: a dismissed proposal is visible to a later `get`; a second propose
       on a pending setting is refused; a proposal made in another session is
       reported to this one
+- [ ] Outcome notice (req 8): `agentNotified` flag and column,
+      `consumeUnreportedSettingsOutcomes`, joined into the `agentPrefix` chain in
+      `agent-execution.ts` and `dispatched-turn.ts`
+- [ ] The notice batches outcomes resolved since the last turn, and never starts
+      a turn of its own
+- [ ] Tests: notice consumed once; two cards resolved before the next message
+      produce one notice; a dismissed outcome carries the do-not-re-propose line
 
 ## Docs
 

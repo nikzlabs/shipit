@@ -65,6 +65,10 @@ agent is the actor.
    registers a setting for the agent, and no way to ship a setting the agent
    cannot see. The description the agent reads is the same one the user reads in
    the dialog.
+8. When the user applies or dismisses a proposal, the agent is told at the start
+   of its next turn. It does not have to work out for itself that something
+   changed, and it does not remind the user about a change they have already
+   dealt with.
 
 ## Open questions
 
@@ -103,6 +107,16 @@ agent is the actor.
   in the dialog, chosen over the smaller "only what blocks the agent" list. The
   agent must be able to answer a question about any setting the user names, not
   only the ones it trips over itself. → requirement 5.
+- 2026-09-13 — *How does the agent find out that the user resolved a card?* The
+  user: *"we need to send the signal that I clicked something on the card, in the
+  next turn. Similar to the bug reports. Otherwise the agent will remind the
+  user, not realizing that it needs to check the status."* An earlier draft cut
+  that notice on the grounds that no requirement asked for it and that the read
+  surface already carried the outcome — but a read only helps an agent that
+  thinks to read, and nothing was prompting it to. → requirement 8. The two are
+  now complementary rather than alternatives: the notice prompts, and
+  `lastProposal` remains the source of truth, so a notice that goes undelivered
+  costs nothing.
 - 2026-09-13 — *Does the settings list carry each setting's option set, or only
   the large ones?* The user: *"every option should be fetched. I.e. when reading,
   the agent gets only the available settings, then they can fetch more details
