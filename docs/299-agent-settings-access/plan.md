@@ -199,24 +199,41 @@ renders from and the route validates with, so there is nothing extra to author:
 | `modelSelection` | the eligible services and models, and the effort levels the resolved harness offers | live state, not a fixed list |
 | `collection` | `operations`, and for an item update the **field keys** that can be patched | the item's own field declarations |
 
-Two consequences worth stating.
+**None of that is in `list`.** The read surface is two steps, and the split is by
+role, never by size:
 
-**Large and live option sets are fetched, not listed.** A model selection's
-options depend on what is installed and what has a usable credential, so they are
-computed at read time and can be long. `list` therefore gives the current value
-and marks the entry as having options; `get <key>` returns them. Dumping every
-model into `list` would bury the ten booleans the agent usually came for.
+- **`list` is the index.** Every setting the agent may see: key, label,
+  description, tab, scope, current value, availability, and whether it is
+  proposable with the refusal reason if not. Nothing else — no options, no
+  bounds, no patchable keys, however short they would be.
+- **`get <key>` is the detail.** The same entry plus everything above: the option
+  set, the bounds, the patchable field keys, saved-versus-effective, and what
+  became of any proposal this session already made for it.
 
-**The option list can go stale between read and apply**, for exactly the reason
-it is live — a harness is uninstalled, a credential is removed. That is not a new
-hazard: apply-time revalidation already re-runs the declaration's validator
-against live state, so a card naming a model that has since disappeared resolves
-`refused` rather than applying something that no longer resolves.
+So the agent's path is always **list → get → propose**, with the same shape for a
+two-member enum and a hundred-model selection. A size threshold would have made
+the response shape depend on how many models happen to be installed, which is a
+rule nobody can hold in their head and a test that passes until someone connects
+a second provider.
 
-The read surface is an **optimization, not the safety net**. Propose-time
+`description` is the one detail that stays in the index, because requirement 7
+says a setting reaches the agent *carrying its description* — a one-line
+description in `list` is what lets the agent pick the right key to `get`.
+
+`get` before `propose` is not a suggestion: the card's `from` comes from that
+read, and so does the outcome of any earlier proposal. That is the same read that
+stops the agent re-proposing something already dismissed.
+
+**Options can go stale between `get` and apply**, for exactly the reason they are
+live — a harness is uninstalled, a credential removed. Not a new hazard:
+apply-time revalidation re-runs the declaration's validator against live state, so
+a card naming a model that has since disappeared resolves `refused` rather than
+applying something that no longer resolves.
+
+And the read surface is an **optimization, not the safety net**. Propose-time
 validation refuses an illegal value with its reason whether or not the agent
-looked first. What the options buy is that the agent does not put a nonsense card
-in front of the user, and does not burn a round trip discovering the range.
+looked first. What `get` buys is that the agent does not put a nonsense card in
+front of the user, and does not burn a round trip discovering the range.
 
 ### Not everything in a dialog is a setting
 
@@ -419,16 +436,23 @@ shipit settings list [--tab network] [--json]
 shipit settings get advanced.enableSubAgents
 ```
 
-`list` prints key, label, tab, the formatted current value, and for anything not
-proposable the refusal reason. Where a setting causes something to be
-unavailable, the read carries the explanation the existing views already compute
-— a role's `RoleUnavailableReason`, a reviewer slot's `pin_unavailable`, egress
-enforcement state — so the agent says *why*, not only *what* (req 3).
+**`list` is the index**: key, label, one-line description, tab, scope, the
+formatted current value, availability, and the refusal reason for anything not
+proposable. It never carries option sets, bounds or patchable field keys — see
+[what "proposable" tells the agent](#what-proposable-tells-the-agent-for-a-non-boolean).
 
-Reads distinguish **saved** from **effective** where they differ: a global egress
-host is saved and applies to containers started afterwards; a change that needs a
-session restart says so. Reporting only the stored value would tell the agent a
-change is live when it is not.
+**`get <key>` is the detail** for one setting: the index entry plus the legal
+value shape, saved-versus-effective, and what became of any proposal this session
+already made for it.
+
+Both carry the explanations the existing views already compute, so the agent says
+*why* and not only *what* (req 3) — a role's `RoleUnavailableReason`, a reviewer
+slot's `pin_unavailable`, egress enforcement state.
+
+`get` distinguishes **saved** from **effective** where they differ: a global
+egress host is saved and applies to containers started afterwards; a change that
+needs a session restart says so. Reporting only the stored value would tell the
+agent a change is live when it is not.
 
 **A setting that cannot be read degrades to an entry, never to an error.** In a
 session with no bound repository the project-scope entries read as *unavailable —

@@ -103,6 +103,15 @@ agent is the actor.
   in the dialog, chosen over the smaller "only what blocks the agent" list. The
   agent must be able to answer a question about any setting the user names, not
   only the ones it trips over itself. → requirement 5.
+- 2026-09-13 — *Does the settings list carry each setting's option set, or only
+  the large ones?* The user: *"every option should be fetched. I.e. when reading,
+  the agent gets only the available settings, then they can fetch more details
+  about the particular setting, then they propose a change."* So the read surface
+  is **list → get → propose**, with the same shape for a two-member enum and a
+  hundred-model selection. An earlier draft put small option sets in the list and
+  fetched only large ones, which made the response shape depend on how many
+  models happen to be installed. Descriptions stay in the list, because
+  requirement 7 says a setting reaches the agent carrying its description.
 - 2026-09-13 — *How does requirement 4 read in local mode, where the click gate
   cannot be enforced?* **Container mode, with the gap documented.** The user
   chose this over two alternatives: authenticating the local-mode API first as
