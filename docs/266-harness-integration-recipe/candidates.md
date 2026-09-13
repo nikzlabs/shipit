@@ -23,7 +23,7 @@ semantics, not a shrug.
 | 2. Streaming schema | ✅ documented NDJSON | ❓ undocumented — capture + conformance test required | ⚠️ documented but coarse; loss bugs (see verdict) | ✅ documented NDJSON, 3 event types *(probed)* |
 | 3. Session resume | ✅ | ✅ | ✅ | ✅ `--conversation <id>`, id in `init` *(probed)* |
 | 4. Full-auto permissions | ✅ `--force` + allow/deny | ✅ `--always-approve` + modes | ✅ `--auto` + config | ✅ `--dangerously-skip-permissions` + allow list *(probed)* |
-| 5. Auth injectable | ⚠️ key env ✅ / subscription ❓ (path undocumented) | ✅ `~/.grok/auth.json`; device-auth *(third-party)* | ✅ plain file; ❌ no Anthropic subscription | ⚠️ key env ✅ *(probed)* / account ❌ keyring-only + **terms forbid it** (see verdict) |
+| 5. Auth injectable | ⚠️ key env ✅ / subscription ❓ (path undocumented) | ✅ `~/.grok/auth.json`; device-auth *(third-party)* | ✅ plain file; ❌ no Anthropic subscription | ⚠️ key env ✅ *(probed)* / account ❓ keyring-only; file fallback broken upstream (see verdict) |
 | 6. Pinnable install | ❌ none documented — policy gate | ⚠️ pinned install script *(third-party)* | ✅ npm exact | ✅ versioned GitHub release tarball; ❌ no npm |
 | 7. Instructions | ✅ AGENTS.md/CLAUDE.md | ✅ AGENTS.md | ✅ AGENTS.md | ✅ AGENTS.md/GEMINI.md + plugin `rules/`; ❌ no flag |
 | 8. MCP | ✅ `mcp.json` | ✅ `config.toml` | ✅ `opencode.json` | ✅ `~/.gemini/config/mcp_config.json` *(probed)* |
@@ -212,7 +212,7 @@ item below is observed output of that binary.
   starts a new one *(probed)*. Store is `~/.gemini/antigravity-cli/
   conversations/<id>.db` plus a `brain/<id>/` transcript tree. Nothing was
   written into the workspace during a print run *(probed)*.
-- **Auth**: two paths, and the terms decide between them.
+- **Auth**: two paths; the account path is unproven in a container.
   - *Metered key*: `GEMINI_API_KEY` + `{"modelProvider":"gemini"}` in
     `~/.gemini/antigravity-cli/settings.json`. Verified live: the request
     reached `generativelanguage.googleapis.com` and came back
@@ -225,12 +225,19 @@ item below is observed output of that binary.
     D-Bus). The file fallback `~/.gemini/antigravity-cli/
     antigravity-oauth-token` is write-only in containers per upstream
     #479 (open, reported on 1.0.10; not re-verified on 1.2.2 — needs a real
-    login). Independently, the Antigravity Additional Terms of Service §6
-    state: *"Using third party software, tools, or services to access the
-    Service (e.g. using OpenClaw with Antigravity OAuth) is a breach of this
-    Agreement"* and *"using the Service in connection with products not
-    provided by us"* is listed as abuse. ShipIt driving `agy` with a user's
-    Antigravity login is exactly that example.
+    login). Settling it takes either a fixed fallback in a newer release or
+    a Secret Service daemon inside the session container.
+  - *Terms*: the Antigravity Additional Terms of Service §6 state *"Using
+    third party software, tools, or services to access the Service (e.g.
+    using OpenClaw with Antigravity OAuth) is a breach of this Agreement"*.
+    The example is a third-party **client** that takes the OAuth token and
+    calls the backend itself (OpenClaw; the `opencode-antigravity-auth`
+    plugin). ShipIt spawns Google's own `agy`, which stays the only client
+    of the Service — the same shape as ShipIt's Claude Code subscription
+    use, and Google documents headless mode for scripts and CI. The same
+    section also lists *"using the Service in connection with products not
+    provided by us"*, which read literally would cover a CI runner too; how
+    far that reaches is a reading for the user, not the agent.
   - No env var relocates the config home; the scoped-home mechanism must
     set `HOME`, which the Claude/Codex adapters already do.
 - **Instructions / MCP / permissions / hooks**: no system-prompt flag.
@@ -264,13 +271,16 @@ item below is observed output of that binary.
   any candidate — documented stream, id-addressed resume, full-auto flag,
   effort levels, token usage, pinnable release asset, and a plugin
   mechanism that carries prompt, MCP and skills from the scoped home. Two
-  things stand in front of any recipe step, and neither is engineering:
-  1. **Account auth is off the table** — keyring-only storage, a broken
-     file fallback, and terms that name third-party OAuth use as a breach.
-     Integration would be **metered `GEMINI_API_KEY` only**, which
-     inverts ShipIt's subscription-first default and needs a sign-off; and
-     even the key path runs the Antigravity binary "in connection with"
-     ShipIt, which §6 also names — a reading for the user, not the agent.
+  things stand in front of any recipe step:
+  1. **Account auth is unproven in a container** — keyring-only storage
+     and a file fallback reported write-only (#479). Until a real login on
+     a current release proves the token survives a fresh process (or a
+     Secret Service daemon is added to the session image), integration
+     would be **metered `GEMINI_API_KEY` only**, which inverts ShipIt's
+     subscription-first default and needs a sign-off. The terms are not
+     the blocker: ShipIt runs Google's own CLI, which is the client the
+     §6 example permits; only the broad "in connection with" phrase is
+     left to the user's reading.
   2. **A new vendor row**: Gemini's `generateContent` wire format is not an
      `ApiStyle`, and docs/272-opencode-inference already notes Gemini
      models are unrepresentable without one — so a Google service +
