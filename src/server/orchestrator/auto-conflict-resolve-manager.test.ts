@@ -526,6 +526,30 @@ describe("AutoConflictResolveManager", () => {
       expect(fx.manager.get("s1")?.nextEligibleAt).toBeDefined();
     });
 
+    // The reason is per-attempt, but state.lastError is sticky: a later deferral that
+    // carries no reason must not inherit this one's exemption from the cooldown.
+    it("hands the cooldown back after the next attempt defers for another reason", async () => {
+      fx = makeFixture({
+        cb: recordingCb((_sessionId, _baseBranch, attempt) => (attempt === 1
+          ? { outcome: "deferred", lastError: AUTO_RESOLVE_DEFER_BACKGROUND_WORK, didWork: false }
+          : { outcome: "deferred", didWork: false })),
+      });
+      const runner = fx.runner!;
+      runner.setBackgroundWork(["npm test"]);
+      await fx.manager.handleTransition("s1", makeSummary({ mergeable: "conflicting" }), "main", "sha1");
+      await tick();
+
+      runner.setBackgroundWork([]);
+      await fx.manager.onRunnerIdle("s1");
+      await tick();
+      expect(fx.cb.count).toBe(2);
+
+      await fx.manager.onRunnerIdle("s1");
+      await tick();
+      expect(fx.cb.count).toBe(2);
+      expect(fx.manager.get("s1")?.nextEligibleAt).toBeDefined();
+    });
+
     it("leaves an ordinary deferral on the transient cooldown", async () => {
       fx = makeFixture({ cb: recordingCb(() => ({ outcome: "deferred", lastError: "dirty_tree", didWork: false })) });
       await fx.manager.handleTransition("s1", makeSummary({ mergeable: "conflicting" }), "main", "sha1");

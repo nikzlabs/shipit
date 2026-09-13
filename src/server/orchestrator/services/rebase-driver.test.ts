@@ -2073,15 +2073,26 @@ describe("rebase-driver: nikzlabs/shipit#2751 auto-resolve against a busy reside
     expect(runner.backgroundWorkDescriptions).toEqual(["npm test"]);
   });
 
-  it("an idle agent with no background work still rebases", async () => {
-    const { git, runner, captured } = conflictedSession();
-    const deps = attemptDeps(git, runner, captured);
+  it("an idle agent with no background work still resolves the conflict", async () => {
+    const { git, workDir, runner, captured } = conflictedSession();
+    const deps = {
+      ...attemptDeps(git, runner, captured),
+      // The gate's absence has to be observable as work, not as the absence of a reason.
+      agentFactory: () => new FakeRebaseAgent((cwd) => {
+        fs.writeFileSync(path.join(cwd, "shared.txt"), "merged\n");
+        return "resolved";
+      }) as unknown as AgentProcess,
+    };
     wireSystemTurnDeps(deps);
+    const headBefore = execSync("git rev-parse HEAD", { cwd: workDir }).toString().trim();
+    const originMainBefore = await git.getRefHash("origin/main");
 
     const result = await runAutoResolveAttempt(deps, "main");
 
-    expect(result).not.toMatchObject({ lastError: "agent_background_work" });
-    expect(await git.getRefHash("origin/main")).not.toBeNull();
+    expect(result).toMatchObject({ outcome: "success", forcePushed: true, didWork: true });
+    expect(await git.getRefHash("origin/main")).not.toBe(originMainBefore);
+    expect(execSync("git rev-parse HEAD", { cwd: workDir }).toString().trim()).not.toBe(headBefore);
+    expect(fs.readFileSync(path.join(workDir, "shared.txt"), "utf8")).toBe("merged\n");
   });
 
   it("work that starts inside the pre-flight window is classified the same way", async () => {

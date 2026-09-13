@@ -36,6 +36,12 @@ interface ConflictSignal {
 export class AutoConflictResolveManager extends AutoRemediationManager<ConflictSignal> {
   private lastKnownMergeable = new Map<string, "mergeable" | "conflicting">();
   private baseBranchCache = new Map<string, string>();
+  /**
+   * The `nextEligibleAt` an in-force background-work deferral wrote. Identity, not a flag:
+   * `state.lastError` is sticky across a later reasonless deferral, so keying the idle
+   * release on the reason released a cooldown that deferral had just set.
+   */
+  private backgroundWorkCooldown = new Map<string, number>();
 
   private rebaseAndResolveCb?: RebaseAndResolveCb;
 
@@ -102,6 +108,7 @@ export class AutoConflictResolveManager extends AutoRemediationManager<ConflictS
   protected override onDelete(sessionId: string): void {
     this.lastKnownMergeable.delete(sessionId);
     this.baseBranchCache.delete(sessionId);
+    this.backgroundWorkCooldown.delete(sessionId);
   }
 
   /**
@@ -110,9 +117,13 @@ export class AutoConflictResolveManager extends AutoRemediationManager<ConflictS
    */
   override async onRunnerIdle(sessionId: string): Promise<void> {
     const state = this.states.get(sessionId);
-    if (state?.status === "deferred" && state.lastError === AUTO_RESOLVE_DEFER_BACKGROUND_WORK) {
+    const waiting = this.backgroundWorkCooldown.get(sessionId);
+    if (state?.status === "deferred" && waiting !== undefined && state.nextEligibleAt === waiting) {
       const runner = this.cfg.getRunner(sessionId);
-      if (!runner || residentBackgroundWork(runner).length === 0) delete state.nextEligibleAt;
+      if (!runner || residentBackgroundWork(runner).length === 0) {
+        delete state.nextEligibleAt;
+        this.backgroundWorkCooldown.delete(sessionId);
+      }
     }
     await super.onRunnerIdle(sessionId);
   }
@@ -191,6 +202,9 @@ export class AutoConflictResolveManager extends AutoRemediationManager<ConflictS
     let emitLastError: string | undefined;
     let pushed = false;
 
+    // Every branch below overwrites nextEligibleAt, so no earlier marker survives this one.
+    this.backgroundWorkCooldown.delete(sessionId);
+
     if (result.outcome === "success") {
       state.attemptCount++;
       if (result.forcePushed) {
@@ -227,11 +241,11 @@ export class AutoConflictResolveManager extends AutoRemediationManager<ConflictS
     } else {
       if (result.lastError !== undefined) state.lastError = result.lastError;
       state.status = "deferred";
+      const persistent = result.lastError === AUTO_RESOLVE_DEFER_BACKGROUND_WORK;
       state.nextEligibleAt = this.now() + (
-        result.lastError === AUTO_RESOLVE_DEFER_BACKGROUND_WORK
-          ? AUTO_RESOLVE_BACKGROUND_WORK_COOLDOWN_MS
-          : AUTO_RESOLVE_DEFERRED_COOLDOWN_MS
+        persistent ? AUTO_RESOLVE_BACKGROUND_WORK_COOLDOWN_MS : AUTO_RESOLVE_DEFERRED_COOLDOWN_MS
       );
+      if (persistent) this.backgroundWorkCooldown.set(sessionId, state.nextEligibleAt);
       emitLastError = result.lastError;
     }
 
