@@ -318,15 +318,35 @@ session, so an untick never rides a later message or another session.
 
 **`!isLoading` — the controls are hidden while a turn runs.** The intent is
 read and spent when a frame goes (`sendUserTurn`), so a tick changed after that
-governs nothing in flight; and the turn under way is the one performing the
-reset and the compaction, which is what ends the eligibility. Left on screen
-they read as live switches over work already happening — the ticked pair sitting
-under a "Compacting context..." status and a queued message. The optimistic hide
-on submit (`setResetEligible(sessionId, false)`) already did this for the common
-case, but only for a send with the reset still **ticked**; this covers every
-send, and the unticked one is exactly where the stale controls were most
-misleading. Hiding them loses nothing: the untick lives in the store, and
+governs nothing in flight. Left on screen they read as live switches over work
+already happening — the reported shape was the ticked pair sitting under a
+"Compacting context..." status and a queued message.
+
+The optimistic hide on submit (`setResetEligible(sessionId, false)`) was meant
+to cover that and does not, because **a truthful server answer lands in the
+middle of the sequence.** `postTurnReArmReset` recomputes and emits
+`reset_eligible` after *every* turn (`ws-handlers/agent-execution.ts`), and the
+compaction is its own turn — so between it and the user's turn the session is
+still genuinely eligible (the reset runs on the user's turn, not the
+compaction's) and `true` goes out, re-showing both controls, re-ticked. Nothing
+is wrong with that answer; it is simply not an answer the composer should act on
+mid-sequence. `!isLoading` covers the whole window rather than racing it, and
+covers the send with the reset **unticked**, for which the optimistic hide never
+fired at all.
+
+Hiding them keeps every choice already made: the untick lives in the store, and
 `mergeContinueFrameFields` carries it whether or not the control is shown.
+
+**The trade.** What it does cost is the chance to make a *new* choice mid-turn.
+Untick both, send a message that changes nothing, and the session is still
+eligible when that turn ends — so a second message queued behind it will be
+reset and compacted at drain (`runQueuedInteractiveMessage` re-decides from the
+queued entry's own flags, and an absent flag follows the setting), with no
+control on screen to opt it out. Req 5 makes each untick govern one message, so
+this is a real lost affordance and not a stale-state bug. It is accepted here
+because it needs the previous send to have unticked the **reset** specifically,
+and because the alternative — keeping the controls up through every turn — is
+the reported defect. Found by review, recorded rather than silently narrowed.
 
 ## The shared setting (req 11)
 
@@ -356,8 +376,12 @@ Advanced description names both.
 
 - **The wait is visible.** Compaction measured 27.7 s on a 22k-token context
   (docs/178) and grows with the context; the user pays it before their turn
-  starts, under the compaction card, with the checkbox there to untick. Req 3
-  rules out shortening it with a size gate.
+  starts, with the agent status bar reading "Compacting context..." — but not
+  with the checkbox there to untick, which is the trade above. Req 3 rules out
+  shortening the wait with a size gate.
+- **No mid-turn opt-out for a queued message.** See the trade under *The
+  composer control*: a message queued behind a turn that left the session
+  eligible is reset and compacted at drain with no control on screen.
 - **Stop reaches the compaction, not the send.** Interrupting during the
   compaction stops that turn; the queued message then runs. Cancelling the
   whole send from inside the compaction is not something a requirement asks for.

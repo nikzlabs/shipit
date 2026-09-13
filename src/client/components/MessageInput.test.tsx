@@ -876,7 +876,7 @@ describe("MessageInput", () => {
       expect(screen.queryByTestId("compact-context-control")).not.toBeInTheDocument();
     });
 
-    it("is hidden while a turn runs, and an untick made before it still rides the send", () => {
+    it("is hidden while a turn runs, and an untick made before it outlives the hide", () => {
       usePrStore.setState({ resetEligibleBySession: { s1: true } });
       useSettingsStore.setState({ autoResetMergedBranch: true });
       const onSend = vi.fn().mockReturnValue(true);
@@ -890,13 +890,16 @@ describe("MessageInput", () => {
       fireEvent.click(screen.getByTestId("compact-context-control")); // untick
 
       rerender(composer(true));
-      // The running turn is the one doing the reset and the compaction, so a
-      // tick changed now governs nothing in flight. Both controls go.
+      // A tick changed now governs nothing in flight — the frame has gone and
+      // spent its intent. Both controls go, not just the compaction one.
       expect(screen.queryByTestId("compact-context-control")).not.toBeInTheDocument();
       expect(screen.queryByTestId("reset-merged-branch-control")).not.toBeInTheDocument();
 
-      // Hiding them must not throw the choice away: the untick lives in the
-      // store, so a message queued behind the turn still carries it.
+      // Hiding them must not throw the choice away. This asserts the STORE,
+      // which is as far as the composer reaches: it hands `onSend` a payload
+      // without the flags, and `sendUserTurn` reads the store to build the
+      // frame (guarded in `send-user-turn.test.ts`). What would be lost here is
+      // the record itself, and it survives.
       typeAndSend();
       expect(onSend).toHaveBeenCalled();
       expect(optOut().compact).toBe(true);
