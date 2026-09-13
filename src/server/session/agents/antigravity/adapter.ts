@@ -160,9 +160,9 @@ export class AntigravityAdapter
       return;
     }
 
+    // Fail closed: spawning would run a caller that asked for no tools with all
+    // of them. Why there is no flag set to apply: `agent-tools-off.ts`.
     if (params.toolsOff) {
-      // Fail closed: spawning anyway would run the caller's prompt with every
-      // tool live while the caller believed it had none.
       this.emit("error", new Error(ANTIGRAVITY_TOOLS_OFF_REFUSAL));
       return;
     }

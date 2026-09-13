@@ -474,8 +474,6 @@ describe("AntigravityAdapter", () => {
       expect(errors[0].message).toContain("no compaction");
     });
 
-    // No flag set has been measured to empty this CLI's tool set, so spawning
-    // would run a caller that asked for no tools with all of them.
     it("refuses a tools-off run instead of spawning with every tool live", () => {
       const errors: Error[] = [];
       adapter.removeAllListeners("error");
