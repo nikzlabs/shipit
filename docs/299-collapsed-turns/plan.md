@@ -126,6 +126,12 @@ selections, its free-text answers and its submitted state in component state
 turn and expands it again loses what they typed. That would contradict this
 design's own promise that nothing holding user input is remounted.
 
+**A hidden subtree still changes the row's height, so the reading anchor has to
+see it.** `CompactLayout` compares a per-row visibility string and does nothing
+when it is unchanged; a turn whose reply is kept and whose tools are hidden
+moves nothing in the row-hidden half. The string therefore carries three states
+per row rather than two.
+
 Instead, wrap the tool subtree in an element that carries the `hidden`
 attribute, exactly as the transcript already hides whole rows while leaving them
 mounted. The subtree keeps its state, and a collapse costs nothing.
@@ -143,17 +149,19 @@ person.
 | A release is proposed but not confirmed | `phase === "proposed"` (`ReleaseLifecycleCard.tsx:173`) |
 | A bug report is not filed | the card store, seeded on every load (`session-data.ts:331`) |
 | An action checklist was never submitted | a new `submittedAt`, below |
-| A question was never answered | the tool has no result (`message-tools.tsx:140` passes `result?.content` as `resolvedAnswer`) |
 
-The last row is the one exception to requirement 2's unconditional tool hiding,
-and requirement 12 is what grants it: an unanswered question is the product
-waiting on a person, whatever kind of element it renders as. A question with a
-result is ordinary history and hides with the rest. A retained row holding an
-unanswered question keeps its **whole** tool subtree rather than each tool being
-decided separately: the only tools that can share a row with prose are the
-standalone ones, so the over-retention is at most a plan banner or a presented
-artifact beside a live question, and per-tool visibility would buy nothing for
-the extra state it would have to thread through the memoized row.
+**No tool is ever kept, and requirement 2 has no exception.** An earlier draft
+carved one out for an unanswered question, reading "the tool has no result" as
+"still waiting on a person". Two things killed it. The signal does not exist on
+both harnesses: for Codex the worker emits the question card itself and the
+adapter drops the matching result (`codex-event-handler.ts`, the
+`isAskUserQuestionTool` early return), so **every** answered question would be
+pinned open for the life of the session — the retain-forever failure that
+removed the issue-write exception below. And the reading was wrong anyway: a
+question, or an unresolved plan approval, reaches a collapsed turn only after
+the user sent a later message, which is what ended the turn it sits in. The
+product is not waiting on it any more. Every case in the table above reads a
+source of truth that says *pending*; the absence of a result is not one.
 
 Two card kinds were considered and rejected. An **issue write** offers Undo
 indefinitely — verified at `issue.ts:96` and `IssueWriteCard.tsx:198`, the
@@ -179,8 +187,13 @@ submitted, which is the correct default.
 
 **One message, recorded where the action is accepted.** The submission already
 sends the composed text as an ordinary message; it carries the card id as
-`actionChecklistCardId`, and `handleSendMessage` sets `submittedAt` once the
-message is past every refusal. The first submission wins — the field records
+`actionChecklistCardId`, and `handleSendMessage` sets `submittedAt` at each of
+its three acceptance points — the steer, the queue and the ordinary dispatch.
+Not once, earlier: the paths do not share a later point, and every refusal after
+such a point (an attachment that will not resolve, a workspace that has gone
+away) would permanently hide a checklist whose message never reached the agent.
+Recording at acceptance fails safe in the other direction — a path that forgot
+the call would leave the card visible, which is requirement 12's default. The first submission wins — the field records
 that the user acted, not how often — and an `action_checklist_update` broadcast
 keeps every attached viewer in step without a reload. Do **not** add a
 second "I submitted" frame from the client: `handleSubmit`'s boolean means only
@@ -287,6 +300,10 @@ agent message and all cards", which this design contradicts
   disagree only after a steer.
 - **Reuse `hideTools` for tools in a retained row.** Rejected: it unmounts the
   subtree and destroys unfinished input.
+- **Keep an unanswered question visible in a collapsed turn.** Rejected: the
+  Codex path records no result for an answered question, so the rule would pin
+  every question in the session open — and a question the user has already sent
+  a later message past is not one the product is waiting on.
 - **A turn id column.** Rejected: user-row boundaries already define a display
   turn, and a new column would need a backfill migration.
 
@@ -301,6 +318,8 @@ agent message and all cards", which this design contradicts
 - A prose row that also carries a standalone tool keeps its prose and hides the
   tool, and the tool keeps its state: type into a question's free-text field,
   collapse the turn, expand it, and the text is still there.
+- Expanding a turn whose only hidden content is a tool subtree restores the
+  reading position.
 - A turn whose last agent message is an image or a file keeps that message.
 - An appended error row does not displace the turn's ordinary reply.
 - A code rollback notice stays visible when its row is hidden.

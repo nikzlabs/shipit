@@ -6,6 +6,7 @@ import { useSettingsStore } from "../../stores/settings-store.js";
 import { useSessionStore } from "../../stores/session-store.js";
 import { useBugReportStore } from "../../stores/bug-report-store.js";
 import { usePermissionStore } from "../../stores/permission-store.js";
+import { useEgressPromptStore } from "../../stores/egress-prompt-store.js";
 import { buildVisualElements } from "../visual-elements.js";
 import { compactRuns, isCompactDetail, shouldCollapseRowTools } from "./compact-turns.js";
 
@@ -16,6 +17,7 @@ afterEach(() => {
   useSessionStore.setState({ sessionId: undefined });
   useBugReportStore.getState().reset();
   usePermissionStore.getState().reset();
+  useEgressPromptStore.getState().reset();
   window.getSelection()?.removeAllRanges();
 });
 const user = (text: string): ChatMessage => ({ role: "user", text });
@@ -184,24 +186,62 @@ describe("collapsed turns", () => {
     expect((title as HTMLInputElement).value).toBe("Edited by hand");
   });
 
-  it("keeps an unanswered question and what the user typed into it (req 12)", () => {
+  it("does not discard an answer typed into a question when its turn collapses", () => {
     compactOn();
     const history = [user("Task"), {
       ...bot("Choose the search scope."),
       toolUse: [{ type: "tool_use" as const, id: "question", name: "AskUserQuestion", input: {
         questions: [{ header: "Scope", question: "Which scope?", options: [{ label: "File names", description: "Names only" }], multiSelect: false }],
       } }],
-    }, bot("Waiting"), bot("Still waiting")] as ChatMessage[];
+    }] as ChatMessage[];
     const { rerender } = render(<MessageList messages={history} isLoading={false} />);
     fireEvent.click(screen.getByTestId("option-other"));
     const input = screen.getByTestId("other-input");
     fireEvent.change(input, { target: { value: "Only the src folder" } });
 
+    // A new turn arrives. Focus is inside this one, so protection keeps it open.
     rerender(<MessageList messages={[...history, user("Next"), bot("Working now")]} isLoading={false} />);
-    expect(screen.getByText("Which scope?")).toBeVisible();
+    expect(input).toBeVisible();
+
+    // Collapsing it by hand hides the subtree — and does not unmount it.
+    fireEvent.click(screen.getByRole("button", { name: /Show compact turn/ }));
     expect(screen.getByTestId("other-input")).toBe(input);
+    expect(input).not.toBeVisible();
+
+    fireEvent.click(screen.getByRole("button", { name: /Show full turn/ }));
+    expect(screen.getByTestId("other-input")).toBe(input);
+    expect(input).toBeVisible();
     expect((input as HTMLTextAreaElement).value).toBe("Only the src folder");
-    expect(screen.getByText("Waiting")).not.toBeVisible();
+  });
+
+  it("restores the reading anchor when only a tool subtree changes height", () => {
+    compactOn();
+    // A turn whose reply is KEPT and whose tools are hidden: expanding it moves
+    // nothing in the row-hidden half, so the layout signal has to carry the
+    // tool state too or `CompactLayout` skips restoration entirely.
+    const data = [user("Plan it"), {
+      ...bot("Here is the plan."),
+      toolUse: [{ type: "tool_use" as const, id: "plan", name: "ExitPlanMode", input: { plan: "Do the work" } }],
+      toolResults: [{ toolUseId: "plan", content: "approved" }],
+    }, user("Next"), bot("Working now")] as ChatMessage[];
+    vi.spyOn(Element.prototype, "getBoundingClientRect")
+      .mockReturnValue(new DOMRect(0, 10, 100, 40));
+    vi.spyOn(window, "requestAnimationFrame").mockImplementation(() => 0);
+    const { container } = render(<MessageList messages={data} isLoading={false} />);
+    const scroll = container.firstElementChild!;
+    const writeScroll = vi.fn();
+    Object.defineProperties(scroll, {
+      scrollTop: { configurable: true, get: () => 400, set: writeScroll },
+      scrollHeight: { configurable: true, get: () => 4000 },
+      clientHeight: { configurable: true, get: () => 500 },
+    });
+    // Scrolled far from the bottom, so the reading anchor is live.
+    fireEvent.scroll(scroll);
+    writeScroll.mockClear();
+
+    fireEvent.click(screen.getByRole("button", { name: /Show full turn/ }));
+    expect(writeScroll).toHaveBeenCalled();
+    vi.restoreAllMocks();
   });
 
   it("hides a kept row's own tool subtree without unmounting it", () => {
@@ -378,14 +418,58 @@ describe("collapsed turns", () => {
   });
 
   it("hides an action checklist once the server has recorded a submission", () => {
+    compactOn();
     const base = { cardId: "a1", actions: [{ id: "1", label: "Open a PR", payload: "Open a PR" }], createdAt: "2026-09-13T00:00:00.000Z" };
     const withCard = (card: typeof base & { submittedAt?: string }): ChatMessage[] =>
       [user("Task"), { ...bot(""), actionChecklist: card }, user("Next"), bot("Working now")];
-    const needsUser = (m: ChatMessage) => !!m.actionChecklist && !m.actionChecklist.submittedAt;
-    const unsubmitted = withCard(base);
-    const submitted = withCard({ ...base, submittedAt: "2026-09-13T01:00:00.000Z" });
-    const element = { kind: "message" as const, index: 1, hideTools: false };
-    expect(isCompactDetail(element, unsubmitted, compactRuns(unsubmitted)[0], needsUser)).toBe(false);
-    expect(isCompactDetail(element, submitted, compactRuns(submitted)[0], needsUser)).toBe(true);
+
+    const { rerender } = render(<MessageList messages={withCard(base)} isLoading={false} />);
+    expect(screen.getByTestId("action-checklist-card")).toBeVisible();
+
+    rerender(<MessageList messages={withCard({ ...base, submittedAt: "2026-09-13T01:00:00.000Z" })} isLoading={false} />);
+    expect(screen.getByTestId("action-checklist-card")).not.toBeVisible();
+  });
+
+  it("reads each pending card's own source of truth (req 12)", () => {
+    compactOn();
+    const release = (phase: "proposed" | "released") => ({
+      sessionId: "s1", cardId: "r1", phase, version: "0.3.0", tag: "v0.3.0", prerelease: false,
+    });
+    const egress = { cardId: "e1", host: "cdn.example.test", phase: "pending" as const };
+    act(() => { useEgressPromptStore.getState().seedCards([egress]); });
+
+    const data = (releasePhase: "proposed" | "released"): ChatMessage[] => [
+      user("Ship it"), { ...bot(""), egressPrompt: egress },
+      { ...bot(""), releaseCard: release(releasePhase) }, bot("Done"), user("Next"), bot("Working now"),
+    ];
+    const { rerender } = render(<MessageList messages={data("proposed")} isLoading={false} />);
+    expect(screen.getByTestId("egress-prompt-card")).toBeVisible();
+    expect(screen.getByText("Release proposed")).toBeVisible();
+
+    act(() => { useEgressPromptStore.getState().setPhase("e1", "added"); });
+    rerender(<MessageList messages={data("released")} isLoading={false} />);
+    expect(screen.getByTestId("egress-prompt-card")).not.toBeVisible();
+    expect(screen.getByText("Released")).not.toBeVisible();
+  });
+
+  it("hides a question and a plan approval that a later message has superseded (req 2)", () => {
+    compactOn();
+    // No tool is kept, not even one with no result: the Codex worker emits the
+    // question card itself and its adapter drops the matching result, so an
+    // absent result cannot mean "unanswered" on both harnesses.
+    const data = [user("Task"), {
+      ...bot("Choose the scope."),
+      toolUse: [{ type: "tool_use" as const, id: "q", name: "AskUserQuestion", input: {
+        questions: [{ header: "Scope", question: "Which scope?", options: [{ label: "File names", description: "Names only" }], multiSelect: false }],
+      } }],
+    }, {
+      ...bot(""),
+      toolUse: [{ type: "tool_use" as const, id: "p", name: "ExitPlanMode", input: { plan: "Do the work" } }],
+    }, bot("Done"), user("Next"), bot("Working now")] as ChatMessage[];
+    render(<MessageList messages={data} isLoading={false} />);
+    expect(screen.getByText("Choose the scope.")).not.toBeVisible();
+    expect(screen.getByTestId("ask-user-question")).not.toBeVisible();
+    expect(screen.getByTestId("plan-approval")).not.toBeVisible();
+    expect(screen.getByText("Done")).toBeVisible();
   });
 });

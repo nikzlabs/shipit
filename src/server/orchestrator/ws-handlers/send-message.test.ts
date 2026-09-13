@@ -21,6 +21,14 @@ function makeCtx(found: ActionChecklistCard | null, dbUpdates: unknown[], flushe
   } as never;
 }
 
+/**
+ * These cover the helper. WHERE it is called from — the three acceptance points
+ * in `handleSendMessage`, never before a refusal — is enforced by placement and
+ * by the closure's own comment, not by a test: reaching those branches needs a
+ * fake of most of the handler's context, and a fake that shape-drifts from the
+ * real one would assert nothing. Forgetting a call fails safe, leaving the card
+ * visible.
+ */
 describe("recordActionChecklistSubmission", () => {
   it("patches the running turn's recorded card, which a database-only write would lose", () => {
     const dbUpdates: unknown[] = [];

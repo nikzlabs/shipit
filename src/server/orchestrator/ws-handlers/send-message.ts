@@ -144,9 +144,19 @@ export async function handleSendMessage(
   const runnerForQueue = resolveRunner(ctx);
   if (runnerForQueue) runnerForQueue.assertCanDispatch();
 
-  if (msg.actionChecklistCardId && runnerForQueue) {
-    recordActionChecklistSubmission(ctx, runnerForQueue, msg.actionChecklistCardId);
-  }
+  /**
+   * docs/299 req 12 — call this at each point the message has been ACCEPTED:
+   * the steer, the queue and the ordinary dispatch. There is no single point
+   * they share, and recording earlier would hide a checklist whose message was
+   * then refused (an unresolvable attachment, a workspace that has gone away).
+   * It is idempotent, and a path that forgets it fails safe — the card stays
+   * visible, which is requirement 12's default.
+   */
+  const checklistAccepted = () => {
+    if (msg.actionChecklistCardId && runnerForQueue) {
+      recordActionChecklistSubmission(ctx, runnerForQueue, msg.actionChecklistCardId);
+    }
+  };
   const heldByMerge = runnerForQueue?.mergeHold === true;
   if (runnerForQueue?.running || runnerForQueue?.systemTurnInProgress || heldByMerge) {
     const actuallyRunning = heldByMerge ? false : await runnerForQueue.verifyRunningState();
@@ -253,6 +263,8 @@ export async function handleSendMessage(
               }))
             : undefined;
 
+          checklistAccepted();
+
           if (capturedSessionId) {
             recordSteeredMessage(runnerForQueue, msg.text, {
               images: historyImages,
@@ -280,6 +292,7 @@ export async function handleSendMessage(
         }
       }
 
+      checklistAccepted();
       runnerForQueue.dispatch(prepareDispatch({
         text: msg.text,
         agentInterface: undefined,
@@ -452,6 +465,10 @@ export async function handleSendMessage(
   }
 
   const uploadPaths = uploadRefs?.map((u) => u.path);
+
+  // Past every refusal on this path: attachments resolved, session and
+  // workspace checked. What follows queues or dispatches the message.
+  checklistAccepted();
 
   const turnRunner = resolveRunner(ctx);
   // A turn or merge can start during the awaits above.

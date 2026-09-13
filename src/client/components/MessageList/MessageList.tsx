@@ -324,7 +324,7 @@ export function MessageList({
                   : <CaretDownIcon size={ICON_SIZE.XS} weight="bold" />}
                 {view.open ? "Show compact turn" : "Show full turn"}
               </Button>
-              {!view.open && !view.run.hasText && <span>Turn ended without an agent reply.</span>}
+              {!view.open && view.run.lastReply < 0 && <span>Turn ended without an agent reply.</span>}
             </div>
           )}
           {view.hidden && isBubble && shouldShowGapBefore(el.index) && renderRewindPoint(el.index)}
@@ -419,7 +419,12 @@ export function MessageList({
           to this scroll container via the ref so it never fires on the composer
           or other panels. */}
       <ChatQuoteReply containerRef={containerRef} />
-      <CompactLayout visibility={compact.rows.map((row) => row.hidden ? "1" : "0").join("")}
+      {/* One character per row, and it has to cover BOTH ways a row can change
+          height: "1" hidden, "t" shown with its tools hidden, "0" shown whole.
+          A turn whose reply is kept but whose tools are collapsed changes
+          nothing in the hidden half, so without "t" expanding it would move the
+          reading position. */}
+      <CompactLayout visibility={compact.rows.map((row) => row.hidden ? "1" : row.collapseTools ? "t" : "0").join("")}
         containerRef={containerRef} canRestoreReadingAnchor={canRestoreReadingAnchor}>
         {rowGroups}
       </CompactLayout>

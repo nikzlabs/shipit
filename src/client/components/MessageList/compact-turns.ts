@@ -1,5 +1,5 @@
 import { isTerminalTranscriptEntry, type VisualElement } from "../visual-elements.js";
-import type { ChatMessage, ToolUseBlock } from "./types.js";
+import type { ChatMessage } from "./types.js";
 
 export function elementMessageIndex(el: VisualElement): number {
   if (el.kind === "message") return el.index;
@@ -12,7 +12,6 @@ export interface CompactRun {
   end: number;
   /** The turn's last agent reply — the one row a collapsed turn keeps (req 5). */
   lastReply: number;
-  hasText: boolean;
 
   identity: ChatMessage;
 }
@@ -28,16 +27,6 @@ export interface CompactRun {
 function isReply(m: ChatMessage): boolean {
   if (m.isError || m.rolledBack || isTerminalTranscriptEntry(m)) return false;
   return !!m.text.trim() || !!m.images?.length || !!m.files?.length;
-}
-
-/** A question the agent asked and nobody answered is the product waiting on a person. */
-function isUnansweredQuestion(tool: ToolUseBlock, result: unknown): boolean {
-  return tool.name === "AskUserQuestion" && result === undefined;
-}
-
-function hasUnansweredQuestion(m: ChatMessage): boolean {
-  return !!m.toolUse?.some((tool) =>
-    isUnansweredQuestion(tool, m.toolResults?.find((r) => r.toolUseId === tool.id)));
 }
 
 /**
@@ -56,14 +45,12 @@ export function compactRuns(messages: ChatMessage[]): CompactRun[] {
   const runs: CompactRun[] = [];
   let start = -1;
   let lastReply = -1;
-  let hasText = false;
   const flush = (end: number, newest: boolean) => {
     if (start >= 0 && !newest) {
-      runs.push({ start, end, lastReply, hasText, identity: messages[start - 1] ?? messages[start] });
+      runs.push({ start, end, lastReply, identity: messages[start - 1] ?? messages[start] });
     }
     start = -1;
     lastReply = -1;
-    hasText = false;
   };
   messages.forEach((m, index) => {
     if (m.role === "user") {
@@ -71,7 +58,6 @@ export function compactRuns(messages: ChatMessage[]): CompactRun[] {
       return;
     }
     if (start < 0) start = index;
-    hasText ||= !!m.text.trim();
     if (isReply(m)) lastReply = index;
   });
   flush(messages.length, true);
@@ -88,6 +74,17 @@ export type NeedsUser = (m: ChatMessage) => boolean;
  * needs the user (req 12), and the turn's last agent reply (req 5). Everything
  * else — every tool group, whether or not a tool failed (req 2), every subagent
  * and task panel, and every intermediate progress message — is hidden.
+ *
+ * **No tool is kept, not even one that looks unfinished.** A question or a plan
+ * approval reaches a collapsed turn only after the user sent a later message,
+ * which ends the turn it sits in — so the product is no longer waiting on it.
+ * The only readable signal for the opposite reading, an absent tool result,
+ * does not exist on both harnesses: the Codex worker emits the question card
+ * itself and its adapter drops the matching result (`codex-event-handler.ts`,
+ * the `isAskUserQuestionTool` early return), so every answered question there
+ * would be pinned open for the life of the session. That is the retain-forever
+ * failure the design rejected for issue-write Undo. Requirement 12's cases all
+ * read a source of truth that says "pending"; absence of state is not one.
  */
 export function isCompactDetail(
   el: VisualElement,
@@ -95,14 +92,12 @@ export function isCompactDetail(
   run: CompactRun,
   needsUser: NeedsUser,
 ): boolean {
-  if (el.kind === "standalone-tool") return !isUnansweredQuestion(el.tool, el.result);
   if (el.kind !== "message") return true;
 
   const m = messages[el.index];
   if (m.role === "user") return false;
   if (m.isError || m.notice) return false;
   if (needsUser(m)) return false;
-  if (!el.hideTools && hasUnansweredQuestion(m)) return false;
   return el.index !== run.lastReply;
 }
 
@@ -113,14 +108,9 @@ export function isCompactDetail(
  * row carrying prose plus a standalone tool — a question, a plan, a presented
  * artifact — stays one element with its tools attached: hiding it would lose
  * the reply, keeping it whole would show the tool. The caller hides the subtree
- * with the `hidden` attribute rather than unmounting it, so an unfinished
- * question keeps what the user typed into it.
- *
- * A row holding an unanswered question keeps its whole subtree: requirement 12
- * outranks requirement 2 there, and per-tool visibility would buy nothing that
- * the rare plan-banner-beside-a-live-question case is worth.
+ * with the `hidden` attribute rather than unmounting it, so a tool holding
+ * user input keeps that input.
  */
 export function shouldCollapseRowTools(el: VisualElement, m: ChatMessage | undefined): boolean {
-  if (el.kind !== "message" || el.hideTools || !m?.toolUse?.length) return false;
-  return !hasUnansweredQuestion(m);
+  return el.kind === "message" && !el.hideTools && !!m?.toolUse?.length;
 }
