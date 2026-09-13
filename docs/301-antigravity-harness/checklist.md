@@ -7,12 +7,15 @@ the expansion of every line, with file pointers and gotchas, is in
 Antigravity-specific is in [plan.md](./plan.md).
 
 **Phase 0 — assess (before any code)**
-- [x] Candidate passes the 15-point capability checklist; start-blockers
-      cleared or explicitly signed off (stream schema: documented and
-      captured; auth: account token file + `GEMINI_API_KEY`; pinnable
-      install: per-version release tarball, read-only install dir stops the
-      updater — signed off 2026-09-13 as "same script as the other
-      harnesses"; reasoning levels: `--effort low|medium|high`)
+- [x] Candidate passes the capability checklist items 1–5, 7–12 (stream
+      schema: documented and captured; auth: account token file +
+      `GEMINI_API_KEY`; reasoning levels: `--effort low|medium|high`); the
+      install mechanism (a non-npm branch of the same script) is the user's
+      decision of 2026-09-13
+- [ ] Item 6, runtime half, still OPEN: updater suppression is proven for
+      the worker uid only; the orchestrator-side spawns run as root, and the
+      gate stays open until suppression is demonstrated as root or the
+      install path is mounted read-only (plan.md, "Install")
 - [x] `supportsCompaction` (item 14) settled by a REAL probe: `/compact` as a
       resumed headless turn's prompt on 1.2.2 reaches the model as text, no
       summary step — `false`, probed (`probes/compact-b.ndjson`)
@@ -67,9 +70,11 @@ Antigravity-specific is in [plan.md](./plan.md).
 - [ ] Revocation: `SUBTREE_STATE_SUBPATHS` entry for `.gemini` with the
       state subpaths under `antigravity-cli/`, plus the test that a revoked
       token is gone and a conversation survives (plan.md, "Credentials")
-- [ ] `POST_PROVISION_CONFIG.antigravity` writes
-      `antigravity-cli/settings.json` (`modelProvider: gemini`) for key-routed
-      homes
+- [ ] Nested token path: `tokenFileNamesForSubtree` returns root-relative
+      paths so `.gemini/antigravity-cli/antigravity-oauth-token` is found by
+      orphan discovery; nested-token orphan-recovery test
+- [ ] `settings.json` (`modelProvider`) derived by the adapter at every
+      spawn from the home's token presence (plan.md, "Credentials")
 - [ ] Updater suppression probed as root for the orchestrator-side spawns
       (sign-in, naming); dropped uid or read-only mount if it writes
 

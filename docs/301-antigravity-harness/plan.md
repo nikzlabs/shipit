@@ -33,12 +33,19 @@ no credential. Each finding cites its capture.
   parameters, output}`, per-step `usage`, `duration_seconds`), terminal
   `result` (`status`, `response`, `error`, `num_turns`, `usage`). Errors also
   print on stderr as an `error:` line; exit 1.
-- **A finished answer can arrive under `status: "ERROR"`.**
-  `plugin-mcp.ndjson`: the tool call and the final text completed
-  (`response` present) and then a side request got a 503, so `result.status`
-  is `ERROR` with `error` set and exit 0. The adapter must treat
-  `response` + `error` together: text present ⇒ the turn's assistant text
-  stands and the error is narrated; text absent ⇒ an error turn.
+- **`result.status` / `result.error` describe the conversation, not the
+  turn.** `plugin-mcp.ndjson`: a 503 hit one request mid-turn, the CLI
+  retried, the tool call and the final text completed (`response`
+  present), and the result still reads `status: "ERROR"` with `error` set,
+  exit 0. Worse, `compact-c.ndjson` (a resumed turn with **no** error step
+  of its own and a correct answer) carries the *previous* turn's 503 in
+  `result.error`. So the adapter derives the turn's outcome from the
+  current stream only: an `error_message` step in this stream with no
+  `agent_response` text ⇒ error turn, text from the stream's `error_message`
+  step or stderr; text present ⇒ success, with any error step of this
+  stream narrated; `result.error` on its own is never a signal. Both
+  captures are fixtures (success after an earlier turn's error is the
+  regression case).
 - **Token accounting, verified on every captured step and result**
   (`plugin-mcp.ndjson`, `compact-b.ndjson`): `total_tokens = input_tokens +
   output_tokens` always; `thinking_tokens` ⊂ `output_tokens`; and
@@ -47,7 +54,8 @@ no credential. Each finding cites its capture.
   is the uncached prompt and context occupancy is `input + cache_read`.
   **A resumed run's `result.usage` is cumulative across the whole
   conversation**, not the turn: `compact-b` (`num_turns: 2`) reports
-  `input_tokens: 21470` while its only new step used 10,836. So the adapter
+  `input_tokens: 12999` while its only new step used 2,567 uncached plus
+  8,099 cached tokens — a context of 10,666 for that call. So the adapter
   sums the turn's `step_update.usage` for the turn total and takes the last
   step's `input + cache_read` as context occupancy; it never maps
   `result.usage` straight through. Cache reads price at the catalogue's
@@ -176,8 +184,10 @@ selected (req 1): pickers, roles and `SHIPIT_HARNESSES` all derive from
   `supportsCompaction: false` — probed; `supportsGoals: false` — not-wired
   (the CLI has a `/goal` command; docs/297 shape, follow-up);
   `skillsDirName: ".claude"` with disclosure through the plugin (below);
-  `skillInvocationPrefix: "/"` (slash commands and skills expand in print
-  mode per `--disable-slash-commands`).
+  `skillInvocationPrefix: "/"` — **probed** (`slash-skill.ndjson`,
+  `slash-skill-transcript_full.jsonl`, `slash-probe.sh`): a print-mode turn
+  whose whole prompt was `/probe-skill`, the bare name of an installed
+  plugin skill, answered that skill's passphrase.
 - `ANTIGRAVITY_TOOL_NAMES`: the 57 names in `probes/flash-test.ndjson`'s
   `init.tools`. The transcript vocabulary normalizer maps `view_file` →
   read, `write_to_file` / `replace_file_content` /
@@ -256,13 +266,27 @@ one non-npm branch, gated on `contains antigravity $selected`:
   removal walks one level deeper for this root — with a test that revokes a
   seeded `.gemini` and asserts the token is gone and a conversation file
   survives.
-- **`settings.json` is provisioning, not a spawn.** The CLI needs
-  `{"modelProvider":"gemini"}` in `antigravity-cli/settings.json` to use the
-  key (probed), and that file lives in the credential root. A
-  `POST_PROVISION_CONFIG.antigravity` hook (the Claude precedent in
-  `session-agent-credentials.ts`) writes it when a key-routed home is
-  provisioned, and an account home carries none; the adapter never writes
-  into the durable directory.
+- **Nested token paths are a second silent site.** `tokenFileNamesForSubtree`
+  (`token-sync-manager.ts`) matches only two-component entries
+  (`<root>/<file>`), so a three-component
+  `.gemini/antigravity-cli/antigravity-oauth-token` is invisible to orphan
+  discovery and leak repair — which would preserve the conversation state
+  and delete the only token copy. The helper returns paths relative to the
+  declared root instead, and the orphan-recovery test gets a nested-token
+  case.
+- **`settings.json` has one owner: the adapter, from the home's own
+  state.** The CLI needs `{"modelProvider":"gemini"}` in
+  `antigravity-cli/settings.json` to use the key (probed), and that file
+  lives in the credential root. At every spawn the adapter derives the
+  value from what the home contains — token file present ⇒ the
+  `modelProvider` key is removed (account wins, the key is scrubbed anyway);
+  token absent and a key routed ⇒ `gemini` — and writes it only when it
+  differs. Idempotent, needs no routing information, and covers every
+  spawn path (turn, brokered run, naming, local mode) with the same code.
+  `POST_PROVISION_CONFIG` was considered and rejected: it receives only a
+  directory, so it cannot know the route, and it does not run for local or
+  naming homes. This is the one file the adapter writes into the durable
+  directory.
 - **Freshness reader** on the token's `expiry` field (ISO-8601 per
   candidates.md; verify on the real file), falling back to the JWT `exp` of
   `id_token`/`access_token` (Codex's shape). Fixture: the real file with
@@ -295,11 +319,10 @@ one non-npm branch, gated on `contains antigravity $selected`:
   no result arrives), which the error row shows. The one exception is a
   missing credential before spawn, where the generic gate is the right
   answer. Same rule carries Google's 429 quota text to the user.
-- **Key mode**: the adapter writes `{"modelProvider":"gemini"}` into the
-  spawn home's `antigravity-cli/settings.json` when the routed credential
-  is the key, and scrubs `GEMINI_API_KEY` when the account file is present
-  (Grok's "file auth wins" rule; `HARNESS_CREDENTIAL_VARS.antigravity =
-  ["GEMINI_API_KEY", "GOOGLE_API_KEY"]`). Egress: sign-in and refresh need
+- **Key mode**: `settings.json` as above, and the adapter scrubs
+  `GEMINI_API_KEY` when the account file is present (Grok's "file auth
+  wins" rule; `HARNESS_CREDENTIAL_VARS.antigravity = ["GEMINI_API_KEY",
+  "GOOGLE_API_KEY"]`). Egress: sign-in and refresh need
   Google's OAuth hosts and account mode talks to a host candidates.md does
   not name — measure both with a signed-in token before the allowlist tests
   are extended.
@@ -333,14 +356,19 @@ one non-npm branch, gated on `contains antigravity $selected`:
   the command; the files it wrote are exactly these), and that a symlinked
   skill directory inside the plugin is followed. Cleanup is `rmSync` on the
   throwaway root. **Why a throwaway root at all, given ShipIt already
-  scopes homes:** a brokered `shipit agent run` gets its own credential copy
-  (`provisionSubAgentSpawnHome`, verified at source), so the orchestrator
-  path never shares a home — but the worker-side `createWorkerAgent` builds
-  a sub-agent adapter with no scoped home (docs/274, the Grok concurrency
-  bug), and in local mode the account root itself is the home. The
-  throwaway root makes `config/` per-process in those two cases; the durable
-  link is what keeps the token, conversations and the MCP schema cache
-  shared. Drop it only if those two paths gain a scoped home of their own.
+  scopes homes:** in container mode every spawn has its own home — a turn
+  runs in the session's credential copy and a same-harness `shipit agent
+  run` gets a provisioned `homeDir` of its own (`services/sub-agent.ts`,
+  forwarded through `agent-controller.ts`; verified at source, the docs/274
+  gap is closed). There the throwaway root duplicates isolation the
+  platform provides. What still needs it is **local mode** (dogfood,
+  `RUNTIME_MODE=local`): a spawn's `HOME` is the account root itself, so a
+  turn and a brokered run on the same harness would both write
+  `config/mcp_config.json` into one directory — the exact race docs/274
+  hit. One code path for both modes is simpler than a mode switch, so the
+  root is built unconditionally, and it is cheap (a directory, one symlink,
+  a few small files). The durable link is what keeps the token,
+  conversations and the MCP schema cache shared.
 - **Event mapping** (`mapEvent`): `init` → `agent_init`; `agent_response`
   deltas → `agent_assistant` text; a `tool` step ACTIVE → tool_use (name +
   normalized input), DONE → `agent_tool_result` (`tool_info.output`);
@@ -370,7 +398,8 @@ one non-npm branch, gated on `contains antigravity $selected`:
 ## Follow-ups tracked on planning#543, not in this feature
 
 Guarded mode via `PreToolUse` (req 8); images (`supportsImages`, probe with
-a negative control); chat-native review (`supportsReview`, depth-0 probe);
-steering via the resident `--input-format stream-json` process; goals via
-the CLI's `/goal`; an account-usage reader if one exists. Each is a `false`
-of the not-wired kind and says so beside the flag.
+a negative control); steering via the resident `--input-format stream-json`
+process; goals via the CLI's `/goal`; an account-usage reader if one
+exists. Each is a `false` of the not-wired kind and says so beside the
+flag. `supportsReview` is not on this list: its probe is part of this
+feature (item 15) and sets the launch value.
