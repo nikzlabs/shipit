@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import { EventEmitter } from "node:events";
-import { ClaudeAdapter, mapCliMcpStatus } from "./adapter.js";
+import { ClaudeAdapter, indicatesTurnActivity, mapCliMcpStatus } from "./adapter.js";
 import { StreamingClaudeProcess, type ClaudeProcess } from "./process.js";
 import type { ClaudeEvent } from "../../../shared/types.js";
 import type { McpServerStatus } from "../../../shared/types/mcp-types.js";
@@ -1428,6 +1428,51 @@ describe("ClaudeAdapter", () => {
       expect(runGoalControl).toHaveBeenCalledWith(
         expect.objectContaining({ threadId: "thread-1", command: { action: "get" }, cwd: "/session-dir" }),
       );
+    });
+
+    // A turn the CLI starts itself reaches neither run() nor sendUserMessage(), so
+    // the command used to be written into a working CLI, which handed it to the
+    // model as "The user sent a new message while you were working: /goal".
+    it("refuses a goal command during a turn the CLI started itself", async () => {
+      const streaming = new StreamingClaudeProcess();
+      const writes: string[] = [];
+      vi.spyOn(streaming, "writeStdin").mockImplementation((d: string) => { writes.push(d); });
+      vi.spyOn(streaming, "alive", "get").mockReturnValue(true);
+      const adapter = new ClaudeAdapter(streaming as unknown as ClaudeProcess);
+
+      streaming.emit("event", {
+        type: "assistant",
+        message: { content: [{ type: "text", text: "picking this up myself" }] },
+      } as ClaudeEvent);
+      await expect(adapter.goalCommand!("thread-1", { action: "get" }))
+        .rejects.toThrow(/only between turns/);
+      expect(writes).toEqual([]);
+
+      streaming.emit("event", {
+        type: "result", subtype: "success", session_id: "thread-1", num_turns: 4,
+      } as ClaudeEvent);
+      const answered = adapter.goalCommand!("thread-1", { action: "get" });
+      await Promise.resolve();
+      expect(writes.join("")).toContain("/goal");
+      streaming.emit("event", {
+        type: "assistant",
+        message: { content: [{ type: "text", text: "No goal set" }] },
+        is_meta: true,
+        local_command_source: "<local-command-stdout>No goal set</local-command-stdout>",
+      } as ClaudeEvent);
+      await expect(answered).resolves.toEqual({ goal: null });
+    });
+
+    it.each<[boolean, string, ClaudeEvent]>([
+      [true, "an assistant message", { type: "assistant", message: { content: [] } }],
+      // The earliest signal of a self-wake, and the one routed providers send first.
+      [true, "a task notification", { type: "system", subtype: "task_notification", task_id: "t1" }],
+      [true, "a partial message", { type: "stream_event", event: { type: "message_start" } }],
+      // A repeated init answers a local command; a subagent streams between the CLI's own turns.
+      [false, "a repeated init", { type: "system", subtype: "init", session_id: "t" }],
+      [false, "subagent output", { type: "assistant", message: { content: [] }, parent_tool_use_id: "toolu_1" }],
+    ] as [boolean, string, ClaudeEvent][])("reads %s from %s", (generating, _label, event) => {
+      expect(indicatesTurnActivity(event)).toBe(generating);
     });
   });
 

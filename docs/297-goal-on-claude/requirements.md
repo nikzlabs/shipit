@@ -13,18 +13,34 @@ Plan: [plan.md](plan.md).
 5. The `/` menu offers a Claude Code session only the goal commands Claude Code
    supports.
 6. The goal shown is correct after an orchestrator restart, a page reload and a
-   session switch.
+   session switch, for every goal ShipIt has seen set.
 7. Serving a goal command never makes the agent do work outside a ShipIt turn.
 8. Codex sessions keep the goal vocabulary and the behaviour they have today.
 9. The backend-support table in
    [docs/154](../154-native-goal-command/plan.md) says what each pinned backend
    actually offers.
+10. ShipIt never reads a Claude Code goal the user did not ask about, except to
+    correct a goal it is already showing.
 
 ## Open questions
 
 - None.
 
 ## Resolved questions
+
+- 2026-09-13 — Should ShipIt read the goal when a Claude session is opened, to
+  catch one it has never seen? No. Nik: "could we just ignore old sessions? I
+  think the agent invented a problem and 'fixed' it [into] more problems." The
+  read is not free: measured on 2.1.260, the CLI records a `/goal` it answers in
+  the thread, so every later resume replays it to the model as a message the user
+  never sent — which a production session saw. It fired in *every* Claude
+  session, and it can find nothing new, since `/goal` is intercepted and a `Goal
+  set:` is read off the stream. Only a `/goal` typed before this feature could
+  hide, and a Claude *model* cannot create a goal at all (`ProposeGoal` is
+  interactive-only, measured), so docs/154's incident cannot arise here.
+  Recorded as req 10; req 6 is narrowed to the goals ShipIt has seen. Accepted
+  cost: a `Goal set:` lost to a crash leaves a goal in force with no chip until
+  the user types `/goal`.
 
 - 2026-09-12 — Must `/goal <condition>` be answered out of band, as Codex's is?
   No. Measured on the pinned CLI: `/goal <condition>` makes Claude Code start
