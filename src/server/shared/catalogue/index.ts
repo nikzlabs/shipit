@@ -7,6 +7,7 @@ import type {
   BillingModeDef,
   CredentialTarget,
   CredentialTargets,
+  DirectCallDef,
   HarnessDef,
   LoginIntegrationId,
   ModeCredential,
@@ -161,6 +162,130 @@ export function resolveEndpoint(harnessId: AgentId, selection: ModelSelection): 
   if (!mode || !model) return undefined;
   const style = resolveModeStyle(harnessId, mode, model);
   return style ? mode.endpoints[style] : undefined;
+}
+
+/**
+ * The path a direct call appends to a service's endpoint base. Bases stop short
+ * of it — "Claude appends /v1/messages; catalogue base URLs omit /v1"
+ * (`harnesses.ts`) — and they are heterogeneous (`/v1`, `/api/v1`,
+ * `/api/paas/v4`), so the join is declared rather than guessed.
+ *
+ * A style appears here only when `orchestrator/direct-provider/` has a client
+ * for it; that file's registry test pins the two sets equal. Gemini is absent
+ * because its path embeds the model id, which is not a constant suffix.
+ */
+export const DIRECT_CALL_PATHS = {
+  "anthropic-messages": "/v1/messages",
+  "openai-chat-completions": "/chat/completions",
+  "openai-responses": "/responses",
+} as const satisfies Partial<Record<ApiStyle, string>>;
+
+/**
+ * Preference order when a model declares several styles, most certain request
+ * shape first: the Messages API and the Responses API each have one spelling of
+ * an output cap, where Chat Completions has two and the newest OpenAI models
+ * reject the older one.
+ */
+const DIRECT_CALL_STYLE_ORDER: ApiStyle[] = [
+  "anthropic-messages",
+  "openai-responses",
+  "openai-chat-completions",
+];
+
+export function directCallPathFor(style: ApiStyle): string | undefined {
+  return (DIRECT_CALL_PATHS as Partial<Record<ApiStyle, string>>)[style];
+}
+
+export function joinEndpoint(baseUrl: string, path: string): string {
+  return `${baseUrl.replace(/\/+$/, "")}${path}`;
+}
+
+export interface DirectCallTarget {
+  style: ApiStyle;
+  /** The service's base; the client appends the style's declared path. */
+  baseUrl: string;
+  apiModelId: string;
+  /** Which stored credential to send. */
+  storageEnv: string;
+  headers?: Record<string, string>;
+}
+
+export function apiModelIdFor(selection: ModelSelection): string | undefined {
+  const model = getModel(selection);
+  return model ? (model.apiId ?? model.id) : undefined;
+}
+
+/**
+ * Whether the vendor's terms permit a direct call with this credential. Say no
+ * to a direct call with `resolveDirectCall`, not with this: a credential may
+ * permit one that no shipped client can make.
+ */
+export function credentialPermitsDirectCall(
+  serviceId: string,
+  billingMode: BillingMode,
+  via: "account" | "string",
+): boolean {
+  const credential = modeCredentialFor(serviceId, billingMode, via);
+  return credential?.via === "string" && credential.directCall !== undefined;
+}
+
+/** Absent means this selection may not, or cannot, be called directly. */
+export function resolveDirectCall(
+  selection: ModelSelection,
+  via: "account" | "string" = "string",
+): DirectCallTarget | undefined {
+  const credential = modeCredentialFor(selection.serviceId, selection.billingMode, via);
+  if (credential?.via !== "string" || !credential.directCall) return undefined;
+  const mode = getMode(selection.serviceId, selection.billingMode);
+  const model = getModel(selection);
+  if (!mode || !model) return undefined;
+  for (const style of DIRECT_CALL_STYLE_ORDER) {
+    const baseUrl = mode.endpoints[style];
+    if (!model.styles.includes(style) || !baseUrl || !directCallPathFor(style)) continue;
+    const headers = directCallHeaders(credential.directCall);
+    return {
+      style,
+      baseUrl,
+      apiModelId: model.apiId ?? model.id,
+      storageEnv: credential.storageEnv,
+      ...(headers ? { headers } : {}),
+    };
+  }
+  return undefined;
+}
+
+// One resolution is one background job, so a per-resolution id is the
+// conversation identity a service asking for one expects.
+function directCallHeaders(def: DirectCallDef): Record<string, string> | undefined {
+  const minted = (def.perCallIdHeaders ?? []).map(
+    (name) => [name, `shipit-${crypto.randomUUID()}`] as const,
+  );
+  if (!def.headers && minted.length === 0) return undefined;
+  return { ...def.headers, ...Object.fromEntries(minted) };
+}
+
+export interface DirectCallEntry {
+  selection: ModelSelection & { serviceId: ServiceId };
+  target: DirectCallTarget;
+}
+
+/** Every shipped selection that may be, and can be, called directly. */
+export function directCallSelections(): DirectCallEntry[] {
+  const out: DirectCallEntry[] = [];
+  for (const service of SERVICES) {
+    for (const mode of service.modes) {
+      for (const model of mode.models) {
+        const selection = {
+          serviceId: service.id,
+          billingMode: mode.kind,
+          modelId: model.id,
+        } as const;
+        const target = resolveDirectCall(selection);
+        if (target) out.push({ selection, target });
+      }
+    }
+  }
+  return out;
 }
 
 export function credentialStorageEnvNames(): string[] {
