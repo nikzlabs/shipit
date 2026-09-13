@@ -113,7 +113,9 @@ live models.dev ✅ and the recorder captures of the CLI itself ✅:
   there. Full paid-turn pair verification still needs a real key (§7).
 - Gemini models stay unrepresentable unless a fourth `ApiStyle` is ever
   justified; they are excluded from the maintained subset (resolved
-  requirements question).
+  requirements question). docs/302 later added that style
+  (`gemini-generate-content`) for Google's own vendor row; Zen's Gemini rows
+  stay excluded here until a harness speaks it.
 
 ## 4. Models and pricing (live models.dev + vendor docs, 2026-08-17)
 

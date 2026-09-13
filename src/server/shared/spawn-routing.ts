@@ -17,6 +17,7 @@ const HARNESS_CREDENTIAL_VARS: Record<AgentId, readonly string[]> = {
     "OPENAI_API_KEY",
     "DEEPSEEK_API_KEY",
     "OPENROUTER_API_KEY",
+    "GEMINI_API_KEY",
   ],
   grok: ["XAI_API_KEY", "GROK_AUTH", "GROK_AUTH_PATH"],
 };

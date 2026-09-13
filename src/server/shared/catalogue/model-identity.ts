@@ -56,6 +56,10 @@ export const MODEL_IDENTITIES = {
   glm53: identity("glm-5.3", "glm"),
 
   gemini37flash: identity("gemini-3.7-flash", "gemini"),
+  gemini38flash: identity("gemini-3.8-flash", "gemini"),
+  // The vendor's id carries "-preview"; kept in the key because the GA model,
+  // when it lands, is a separate row with its own measurements, not a spelling.
+  gemini31proPreview: identity("gemini-3.1-pro-preview", "gemini"),
   grok46: identity("grok-4.6", "grok"),
   grok43: identity("grok-4.3", "grok"),
   grok45: identity("grok-4.5", "grok"),

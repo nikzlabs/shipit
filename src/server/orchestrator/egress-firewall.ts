@@ -15,6 +15,7 @@ export const EGRESS_TIER_A_RESOLVE_HOSTS: readonly string[] = [
   "api.x.ai",
   "auth.x.ai",
   "cli-chat-proxy.grok.com",
+  "generativelanguage.googleapis.com",
   "registry.npmjs.org",
   "registry.yarnpkg.com",
   "pypi.org",
