@@ -142,13 +142,20 @@ function scheduleSessionNaming(deps: ScheduleSessionNamingDeps, opts: ScheduleSe
   const { sessionId, userText, agentId, skipBranchRename } = opts;
 
   // Naming has its own model selection, independent of the session's model.
+  // It asks for a harness because it runs a CLI straight from the orchestrator
+  // (`session-namer.ts`), which a direct-call target has nothing to feed;
+  // docs/299 phase 3 moves naming onto the direct executor.
   const resolution = credentialStore
-    ? resolveNonTurnModel({
-        credentialStore,
-        ...(providerAccountManager ? { providerAccountManager } : {}),
-      })
+    ? resolveNonTurnModel(
+        {
+          credentialStore,
+          ...(providerAccountManager ? { providerAccountManager } : {}),
+        },
+        { harnessOnly: true },
+      )
     : undefined;
-  const target = resolution?.ok ? resolution.target : undefined;
+  const resolvedTarget = resolution?.ok ? resolution.target : undefined;
+  const target = resolvedTarget?.execution === "harness" ? resolvedTarget : undefined;
   // A missing pinned model stops naming; no eligible selection allows the legacy CLI fallback.
   const pinUnavailable = resolution !== undefined && !resolution.ok
     && resolution.reason === "pin_unavailable";

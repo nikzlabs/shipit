@@ -238,7 +238,8 @@ interface SettingsState {
         modelId: string;
         serviceName: string;
         label: string;
-        harnessId: string;
+        // Absent where background work runs as a direct provider call (docs/299 req 2).
+        harnessId?: string;
         source: "pinned" | "default";
       }
     | null;

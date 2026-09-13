@@ -1,6 +1,6 @@
 import { DIRECT_CALL_PATHS, joinEndpoint } from "../../shared/catalogue/index.js";
 import { maxOutputTokens, postJson, requireText, uncachedInput } from "./http.js";
-import type { DirectCall } from "./types.js";
+import type { DirectCall, DirectCallUsage } from "./types.js";
 
 const LABEL = "OpenAI Chat Completions";
 
@@ -34,19 +34,26 @@ export function createOpenAiChatCompletionsCall(fetchImpl: typeof fetch = fetch)
       LABEL,
     )) as ChatCompletionsResponse;
 
+    // A gateway that answers 200 with a shape its own API forbids must still
+    // end as a billed failure, not as a TypeError that loses the counts.
+    const content = data.choices?.[0]?.message?.content;
     const cacheRead = data.usage?.prompt_tokens_details?.cached_tokens;
     const cacheWrite = data.usage?.prompt_tokens_details?.cache_write_tokens;
-    return {
-      text: requireText(
-        (data.choices?.[0]?.message?.content ?? "").trim(),
-        LABEL,
-        data.choices?.[0]?.finish_reason,
-      ),
+    const usage: DirectCallUsage = {
       // prompt_tokens counts the cached portion too; DirectCallResult is disjoint.
       inputTokens: uncachedInput(data.usage?.prompt_tokens, cacheRead, cacheWrite),
       outputTokens: data.usage?.completion_tokens,
       cacheReadTokens: cacheRead,
       cacheCreateTokens: cacheWrite,
+    };
+    return {
+      text: requireText(
+        typeof content === "string" ? content.trim() : "",
+        LABEL,
+        data.choices?.[0]?.finish_reason,
+        usage,
+      ),
+      ...usage,
     };
   };
 }

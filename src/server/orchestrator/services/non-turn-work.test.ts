@@ -7,11 +7,11 @@ import { DatabaseManager } from "../../shared/database.js";
 import { UsageManager } from "../usage.js";
 import { recordNonTurnUsage } from "./non-turn-work.js";
 
-function keyRoute(serviceId: string): CredentialRoute {
+function keyRoute(serviceId: string, billingMode: "key" | "sub" = "key"): CredentialRoute {
   return {
-    id: `${serviceId}-key`,
+    id: `${serviceId}-${billingMode}`,
     serviceId,
-    billingMode: "key",
+    billingMode,
     via: "string",
     status: "ready",
     priority: 0,
@@ -46,7 +46,9 @@ function buildDeps(opts: {
     lastPersistedBufferIndex: 0,
     spawnSubAgent: opts.spawn ?? (() => Promise.reject(new Error("no spawn configured"))),
   };
-  const routes = opts.routes ?? [keyRoute("deepseek")];
+  // Z.AI's coding plan declares no direct call, so the default fixture is a
+  // credential background work has to carry on a harness.
+  const routes = opts.routes ?? [keyRoute("zai", "sub")];
   const deps = {
     credentialStore: {
       getNonTurnModel: () => undefined,
@@ -58,6 +60,8 @@ function buildDeps(opts: {
         ),
       getCredentialSecret: () => "sk-test",
       getCredentialRoute: (id: string) => routes.find((r) => r.id === id),
+      getSelectionMode: () => "strict" as const,
+      getFailoverCutoffs: () => ({ session: 90, weekly: 90 }),
     },
     getRunnerRegistry: () => ({ get: () => (opts.noRunner ? undefined : runner) }),
     chatHistoryManager: {
@@ -122,7 +126,7 @@ describe("makeNonTurnGenerateText", () => {
     expect(text).toBe(OK_RESULT.text);
     const req = (spawn.mock.calls as unknown as [{ agentId: string; model: string; serviceRouting?: unknown }][])[0][0];
     expect(req.agentId).toBe("claude");
-    expect(req.model).toBe("deepseek-flash");
+    expect(req.model).toBe("glm-5.3[1m]");
     expect(req.serviceRouting).toBeTruthy();
   });
 
@@ -140,8 +144,8 @@ describe("makeNonTurnGenerateText", () => {
     const row = h.recorded[0];
     expect(row.sessionId).toBe("s1");
     expect(row.extra?.subAgentId).toBe("claude");
-    expect(row.extra?.attribution).toMatchObject({ serviceId: "deepseek", billingMode: "key" });
-    expect(row.costUsd).toBeGreaterThan(0);
+    expect(row.extra?.attribution).toMatchObject({ serviceId: "zai", billingMode: "sub" });
+    expect(row.costUsd).toBe(0);
     expect(row.extra?.costSource).toBe("per-turn");
   });
 
@@ -176,7 +180,7 @@ describe("makeNonTurnGenerateText", () => {
     expect(h.appended).toHaveLength(1);
     const card = h.appended[0].nonTurnFailure;
     expect(card?.purpose).toBe("pr-description");
-    expect(card?.serviceName).toBe("DeepSeek");
+    expect(card?.serviceName).toBe("GLM (Z.ai)");
     expect(card?.detail).toContain("401");
     expect(h.emitted.some((m) => m.type === "non_turn_failure_card")).toBe(true);
   });
@@ -684,5 +688,238 @@ describe("recordNonTurnUsage — what the selection says, not how it ran (docs/2
     });
 
     expect(rowsOf("s1")[0]).toMatchObject({ sub_agent_id: "claude", background_work: 1 });
+  });
+});
+
+/**
+ * docs/299 reqs 2, 4 and 7. Both cases below fail before this feature: the
+ * no-session one returned the pre-feature fallback, and the reclaimed-container
+ * one reported "The session's container was not running."
+ */
+describe("makeNonTurnGenerateText — a direct call needs no session and no container", () => {
+  beforeEach(() => {
+    vi.resetModules();
+    vi.doMock("../../shared/installed-harnesses.js", () => ({
+      isHarnessInstalled: () => false,
+      readInstalledHarnesses: () => [],
+    }));
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.doUnmock("../../shared/installed-harnesses.js");
+  });
+
+  interface DirectHarness {
+    requests: { url: string; headers: Record<string, string>; body: Record<string, unknown> }[];
+    recorded: {
+      sessionId: string | null;
+      costUsd: number;
+      inputTokens?: number;
+      outputTokens?: number;
+      extra?: Record<string, unknown>;
+    }[];
+    appended: PersistedMessage[];
+  }
+
+  function buildDirectDeps(opts: { reply?: () => Response; noRunner?: boolean } = {}) {
+    const h: DirectHarness = { requests: [], recorded: [], appended: [] };
+    const routes = [keyRoute("anthropic")];
+    const fetchImpl = (async (url: string, init: { headers: Record<string, string>; body: string }) => {
+      h.requests.push({ url, headers: init.headers, body: JSON.parse(init.body) as Record<string, unknown> });
+      return opts.reply?.() ?? new Response(
+        JSON.stringify({
+          content: [{ type: "text", text: "## Summary\n\nDid a thing." }],
+          usage: { input_tokens: 900, output_tokens: 40, cache_read_input_tokens: 10 },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    }) as unknown as typeof fetch;
+    const deps = {
+      credentialStore: {
+        getNonTurnModel: () => ({ serviceId: "anthropic", billingMode: "key", modelId: "haiku" }),
+        listCredentialRoutes: (serviceId?: string, billingMode?: string) =>
+          routes.filter(
+            (r) =>
+              (serviceId === undefined || r.serviceId === serviceId)
+              && (billingMode === undefined || r.billingMode === billingMode),
+          ),
+        getCredentialSecret: () => "sk-direct",
+        getCredentialRoute: (id: string) => routes.find((r) => r.id === id),
+        getSelectionMode: () => "strict" as const,
+        getFailoverCutoffs: () => ({ session: 90, weekly: 90 }),
+      },
+      getRunnerRegistry: () => ({ get: () => undefined }),
+      chatHistoryManager: {
+        append: (_s: string, m: PersistedMessage) => h.appended.push(m),
+        replaceInProgress: () => {},
+        updateNonTurnFailureCard: () => true,
+      },
+      usageManager: {
+        record: (
+          sessionId: string | null,
+          costUsd: number,
+          _d: number,
+          inputTokens?: number,
+          outputTokens?: number,
+          extra?: Record<string, unknown>,
+        ) => {
+          h.recorded.push({ sessionId, costUsd, inputTokens, outputTokens, extra });
+          return costUsd;
+        },
+      },
+      fetchImpl,
+    };
+    return { deps: deps as never, h };
+  }
+
+  it("runs with no session open at all", async () => {
+    const { makeNonTurnGenerateText } = await import("./non-turn-work.js");
+    const { deps, h } = buildDirectDeps();
+    const fallback = vi.fn(async () => "from the fallback");
+    const generate = makeNonTurnGenerateText({ ...(deps as object), fallback } as never);
+
+    const text = await generate("prompt", "/ws", { purpose: "pr-description" });
+
+    expect(text).toContain("Did a thing");
+    expect(fallback).not.toHaveBeenCalled();
+    expect(h.recorded).toHaveLength(1);
+    // Install-level spend: real money that belongs to no session.
+    expect(h.recorded[0].sessionId).toBeNull();
+  });
+
+  it("runs with the session's container reclaimed", async () => {
+    const { makeNonTurnGenerateText } = await import("./non-turn-work.js");
+    const { deps, h } = buildDirectDeps({ noRunner: true });
+    const generate = makeNonTurnGenerateText({
+      ...(deps as object),
+      fallback: async () => "unused",
+    } as never);
+
+    const text = await generate("prompt", "/ws", { sessionId: "s1", purpose: "pr-description" });
+
+    expect(text).toContain("Did a thing");
+    expect(h.appended).toHaveLength(0);
+    expect(h.recorded[0].sessionId).toBe("s1");
+  });
+
+  it("sends the API's model id to the joined endpoint with the resolved key", async () => {
+    const { makeNonTurnGenerateText } = await import("./non-turn-work.js");
+    const { deps, h } = buildDirectDeps();
+    const generate = makeNonTurnGenerateText({
+      ...(deps as object),
+      fallback: async () => "unused",
+    } as never);
+
+    await generate("write a description", "/ws", { sessionId: "s1" });
+
+    expect(h.requests).toHaveLength(1);
+    expect(h.requests[0].url).toBe("https://api.anthropic.com/v1/messages");
+    expect(h.requests[0].headers["x-api-key"]).toBe("sk-direct");
+    expect(h.requests[0].body.model).toBe("claude-haiku-4-5");
+    expect(h.requests[0].body.messages).toEqual([{ role: "user", content: "write a description" }]);
+  });
+
+  it("records what was selected and never a harness that did not run", async () => {
+    const { makeNonTurnGenerateText } = await import("./non-turn-work.js");
+    const { deps, h } = buildDirectDeps();
+    const generate = makeNonTurnGenerateText({
+      ...(deps as object),
+      fallback: async () => "unused",
+    } as never);
+
+    await generate("prompt", "/ws", { sessionId: "s1", purpose: "session-naming" });
+
+    const row = h.recorded[0];
+    expect(row.extra?.subAgentId).toBeUndefined();
+    expect(row.extra?.backgroundWork).toBe(true);
+    expect(row.extra?.attribution).toMatchObject({ serviceId: "anthropic", billingMode: "key" });
+    expect(row.extra?.model).toBe("haiku");
+    expect(row.extra?.cacheRead).toBe(10);
+    expect(row.inputTokens).toBe(900);
+    expect(row.outputTokens).toBe(40);
+    expect(row.costUsd).toBeGreaterThan(0);
+  });
+
+  it("persists a failure notice for the session that asked, and returns nothing", async () => {
+    const { makeNonTurnGenerateText } = await import("./non-turn-work.js");
+    const { deps, h } = buildDirectDeps({
+      reply: () => new Response("no key", { status: 401 }),
+    });
+    const generate = makeNonTurnGenerateText({
+      ...(deps as object),
+      fallback: async () => "unused",
+    } as never);
+
+    expect(await generate("prompt", "/ws", { sessionId: "s1" })).toBe("");
+    expect(h.appended).toHaveLength(1);
+    expect(h.appended[0].nonTurnFailure?.serviceName).toBe("Anthropic");
+    expect(h.appended[0].nonTurnFailure?.detail).toContain("401");
+    expect(h.recorded).toHaveLength(0);
+  });
+
+  it("still records what a textless answer was billed", async () => {
+    // HTTP 200, all the tokens spent, no answer: the run failed and the money
+    // is real, so it has to appear in the totals exactly once (docs/299 req 7).
+    const { makeNonTurnGenerateText } = await import("./non-turn-work.js");
+    const { deps, h } = buildDirectDeps({
+      reply: () => new Response(
+        JSON.stringify({
+          content: [],
+          stop_reason: "max_tokens",
+          usage: { input_tokens: 900, output_tokens: 4000 },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    });
+    const generate = makeNonTurnGenerateText({
+      ...(deps as object),
+      fallback: async () => "unused",
+    } as never);
+
+    expect(await generate("prompt", "/ws", { sessionId: "s1" })).toBe("");
+    expect(h.appended).toHaveLength(1);
+    expect(h.recorded).toHaveLength(1);
+    expect(h.recorded[0].extra?.attribution).toMatchObject({ serviceId: "anthropic" });
+    expect(h.recorded[0].inputTokens).toBe(900);
+    expect(h.recorded[0].outputTokens).toBe(4000);
+    expect(h.recorded[0].costUsd).toBeGreaterThan(0);
+  });
+
+  it("charges a billed failure with no session to the install", async () => {
+    const { makeNonTurnGenerateText } = await import("./non-turn-work.js");
+    const { deps, h } = buildDirectDeps({
+      reply: () => new Response(
+        JSON.stringify({
+          content: [],
+          stop_reason: "max_tokens",
+          usage: { input_tokens: 900, output_tokens: 4000 },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    });
+    const generate = makeNonTurnGenerateText({
+      ...(deps as object),
+      fallback: async () => "unused",
+    } as never);
+
+    expect(await generate("prompt", "/ws")).toBe("");
+    expect(h.appended).toHaveLength(0);
+    expect(h.recorded).toHaveLength(1);
+    expect(h.recorded[0].sessionId).toBeNull();
+    expect(h.recorded[0].outputTokens).toBe(4000);
+  });
+
+  it("writes no card for a failure belonging to no session", async () => {
+    const { makeNonTurnGenerateText } = await import("./non-turn-work.js");
+    const { deps, h } = buildDirectDeps({
+      reply: () => new Response("no key", { status: 401 }),
+    });
+    const generate = makeNonTurnGenerateText({
+      ...(deps as object),
+      fallback: async () => "unused",
+    } as never);
+
+    expect(await generate("prompt", "/ws")).toBe("");
+    expect(h.appended).toHaveLength(0);
   });
 });

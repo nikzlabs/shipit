@@ -1,6 +1,6 @@
 import { DIRECT_CALL_PATHS, joinEndpoint } from "../../shared/catalogue/index.js";
 import { maxOutputTokens, postJson, requireText } from "./http.js";
-import type { DirectCall } from "./types.js";
+import type { DirectCall, DirectCallUsage } from "./types.js";
 
 const ANTHROPIC_VERSION = "2023-06-01";
 const LABEL = "Anthropic Messages";
@@ -41,18 +41,20 @@ export function createAnthropicMessagesCall(fetchImpl: typeof fetch = fetch): Di
       LABEL,
     )) as MessagesResponse;
 
+    // Optional chaining throughout: a block shape the API forbids must end as a
+    // billed failure, not as a TypeError that loses the reported counts.
     const text = (data.content ?? [])
-      .filter((block) => block.type === "text")
+      .filter((block) => block?.type === "text")
       .map((block) => block.text ?? "")
       .join("")
       .trim();
-    return {
-      // This style reports the three input figures disjointly already.
-      text: requireText(text, LABEL, data.stop_reason),
+    // This style reports the three input figures disjointly already.
+    const usage: DirectCallUsage = {
       inputTokens: data.usage?.input_tokens,
       outputTokens: data.usage?.output_tokens,
       cacheReadTokens: data.usage?.cache_read_input_tokens,
       cacheCreateTokens: data.usage?.cache_creation_input_tokens,
     };
+    return { text: requireText(text, LABEL, data.stop_reason, usage), ...usage };
   };
 }

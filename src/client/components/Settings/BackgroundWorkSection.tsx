@@ -148,12 +148,16 @@ export function BackgroundWorkSection({ agentList = [] }: { agentList?: AgentOpt
             What ShipIt runs for its own work, such as naming a session or writing a
             pull-request description.
           </p>
-          {resolved && (
+          {resolved?.harnessId && (
             /*
               The one fact the two controls below do not state. They name the
               service and the model, so repeating those here would be the same
               fact twice; the harness is derived from the model (req 9) and has
               no control of its own, which is exactly why it is said in words.
+
+              No harness means the work runs as a direct provider call (docs/299
+              req 2) and there is no harness to name. The line that states that
+              case in its own words lands with the widened selector.
             */
             <p className="mt-1 text-[11px] text-(--color-text-tertiary)">
               Runs on {agentList.find((a) => a.id === resolved.harnessId)?.name ?? resolved.harnessId}

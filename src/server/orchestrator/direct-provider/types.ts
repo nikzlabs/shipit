@@ -32,12 +32,23 @@ export interface DirectCallResult {
   cacheCreateTokens?: number;
 }
 
+/** What the provider billed, whether or not it produced a usable answer. */
+export type DirectCallUsage = Omit<DirectCallResult, "text">;
+
 export type DirectCall = (req: DirectCallRequest) => Promise<DirectCallResult>;
 
 export class DirectCallError extends Error {
   constructor(
     readonly status: number,
     message: string,
+    /**
+     * The counts the provider reported before the call was judged a failure. A
+     * 200 that stops on its output cap, or writes only reasoning, has been
+     * billed in full — so the spend travels with the failure instead of
+     * vanishing from every total (docs/299 req 7). Absent where the request
+     * never reached a response body.
+     */
+    readonly usage?: DirectCallUsage,
   ) {
     super(message);
     this.name = "DirectCallError";
