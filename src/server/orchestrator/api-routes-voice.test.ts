@@ -253,7 +253,7 @@ describe("GET /api/voice/cleanup/status", () => {
     const { app } = await buildApp();
     const res = await app.inject({ method: "GET", url: "/api/voice/cleanup/status" });
     expect(res.statusCode).toBe(200);
-    expect(res.json()).toEqual({ model: null });
+    expect(res.json()).toEqual({ model: null, adoptableVoiceKey: null });
     await app.close();
   });
 
@@ -267,14 +267,16 @@ describe("GET /api/voice/cleanup/status", () => {
   });
 
   // The OpenAI voice key lives in `voiceProviderKeys`, not in the model-provider
-  // registry, so it is not a credential background work can run on.
-  it("reports no model for an install whose only OpenAI key is the voice one", async () => {
+  // registry, so it is not a credential background work can run on — which is
+  // exactly the install the adoption offer exists for (docs/299 req 5).
+  it("reports no model for an install whose only OpenAI key is the voice one, and offers to adopt it", async () => {
     const credentialStore = makeCredentialStore();
     credentialStore.setVoiceProviderKey("openai", "sk-abc");
     const { app } = await buildApp({ credentialStore });
     const res = await app.inject({ method: "GET", url: "/api/voice/cleanup/status" });
     expect(res.statusCode).toBe(200);
-    expect(res.json()).toEqual({ model: null });
+    expect(res.json().model).toBeNull();
+    expect(res.json().adoptableVoiceKey).toMatchObject({ providerId: "openai" });
     await app.close();
   });
 
@@ -284,7 +286,7 @@ describe("GET /api/voice/cleanup/status", () => {
     const { app } = await buildApp({ credentialStore });
     const res = await app.inject({ method: "GET", url: "/api/voice/cleanup/status" });
     expect(res.statusCode).toBe(200);
-    expect(res.json()).toEqual({ model: null });
+    expect(res.json()).toEqual({ model: null, adoptableVoiceKey: null });
     await app.close();
   });
 });

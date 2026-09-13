@@ -39,6 +39,15 @@ const CLEANUP_UNAVAILABLE =
 interface CleanupModel {
   serviceName: string;
   modelId: string;
+  modelLabel: string;
+  execution: "direct" | "harness";
+  harnessName?: string;
+}
+
+interface VoiceKeyOffer {
+  providerId: string;
+  providerLabel: string;
+  serviceName: string;
 }
 
 // "Nothing can clean" and "couldn't ask" are different facts and the first one
@@ -46,13 +55,39 @@ interface CleanupModel {
 type CleanupStatus =
   | { state: "pending" }
   | { state: "unknown" }
-  | { state: "ready"; model: CleanupModel | null };
+  | { state: "ready"; model: CleanupModel | null; offer: VoiceKeyOffer | null };
 
-function cleanupStatusText(status: CleanupStatus): string | null {
-  if (status.state === "pending") return null;
-  if (status.state === "unknown") return "Couldn't check whether cleanup is available.";
-  if (!status.model) return CLEANUP_UNAVAILABLE;
-  return `Cleanup runs your background-work model: ${status.model.serviceName} ${status.model.modelId}.`;
+/**
+ * Names the user's own choice and links to it — the line it replaced named a
+ * provider ShipIt picked, which described a decision the user could neither see
+ * nor change. The second sentence is the wait: a direct call is quick, and a
+ * harness run is the case worth warning about.
+ */
+function cleanupModelLine(model: CleanupModel) {
+  return (
+    <>
+      Cleaned by {model.modelLabel}, your{" "}
+      <button
+        type="button"
+        onClick={() => useUiStore.getState().setSettingsTab("services")}
+        className="text-(--color-text-link) hover:text-(--color-accent) transition-colors"
+        data-testid="voice-cleanup-background-work-link"
+      >
+        Background work
+      </button>{" "}
+      model.{" "}
+      {model.execution === "direct" ? (
+        "Called directly, so it is quick."
+      ) : (
+        <>
+          <span className="text-(--color-warning)">
+            Runs through {model.harnessName ?? "a harness"}, so it takes a few seconds.
+          </span>{" "}
+          An API key for a model provider would make it quick.
+        </>
+      )}
+    </>
+  );
 }
 
 /**
@@ -62,6 +97,15 @@ function cleanupStatusText(status: CleanupStatus): string | null {
  * list). STT/TTS providers are chosen from the shared catalog. Every other
  * field lives in the client settings-store (localStorage). The cleanup line is
  * read-only: it reports the background-work model, which is chosen elsewhere.
+ *
+ * Two things it says that the model's name does not
+ * (docs/299-direct-provider-calls reqs 5 and 6). **How long a dictation will
+ * wait**, because a harness run takes seconds and several seconds of silence
+ * after speaking is indistinguishable from a fault. And **the voice key that is
+ * not a model provider**: cleanup moved onto the background-work choice, which
+ * cannot see a key stored for speech, so the tab offers to adopt it rather than
+ * writing a background-work choice the user never made (docs/252-custom-models
+ * req 9). Declining leaves cleanup unavailable, and the line then says so.
  */
 export function VoiceTab() {
   const voiceInputEnabled = useSettingsStore((s) => s.voiceInputEnabled);
@@ -95,6 +139,8 @@ export function VoiceTab() {
   const [testState, setTestState] = useState<"idle" | "testing" | "ok" | "error">("idle");
   const [testMessage, setTestMessage] = useState<string | null>(null);
   const [cleanupStatus, setCleanupStatus] = useState<CleanupStatus>({ state: "pending" });
+  const [offerDismissed, setOfferDismissed] = useState(false);
+  const [adoptBusy, setAdoptBusy] = useState(false);
 
   const refreshKeyStatus = async () => {
     try {
@@ -111,10 +157,37 @@ export function VoiceTab() {
     try {
       const res = await fetch("/api/voice/cleanup/status");
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = (await res.json()) as { model: CleanupModel | null };
-      setCleanupStatus({ state: "ready", model: data.model });
+      const data = (await res.json()) as {
+        model: CleanupModel | null;
+        adoptableVoiceKey: VoiceKeyOffer | null;
+      };
+      setCleanupStatus({ state: "ready", model: data.model, offer: data.adoptableVoiceKey ?? null });
     } catch {
       setCleanupStatus({ state: "unknown" });
+    }
+  };
+
+  // The key is server-side and never sent to the browser, so the browser cannot
+  // POST it to /api/credential-routes itself.
+  const adoptVoiceKey = async (providerId: string) => {
+    setAdoptBusy(true);
+    try {
+      const res = await fetch("/api/credential-routes/adopt-voice-key", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ provider: providerId }),
+      });
+      if (!res.ok) {
+        const body = (await res.json().catch(() => ({}))) as { error?: string };
+        throw new Error(body.error ?? `HTTP ${res.status}`);
+      }
+      await refreshCleanupStatus();
+    } catch (err) {
+      useUiStore.getState().setToast({
+        message: err instanceof Error ? err.message : "Couldn't add the key as a model provider",
+      });
+    } finally {
+      setAdoptBusy(false);
     }
   };
 
@@ -192,6 +265,11 @@ export function VoiceTab() {
     await refreshKeyStatus();
     await refreshCleanupStatus();
   };
+
+  // The offer stands alone: it already explains why cleanup cannot run, so the
+  // unavailable line beside it would say the same thing twice. Declining brings
+  // that line back, which is what makes the consequence of declining visible.
+  const cleanupOffer = cleanupStatus.state === "ready" && !offerDismissed ? cleanupStatus.offer : null;
 
   const sttList = sttProviders();
   const ttsList = ttsProviders();
@@ -292,10 +370,50 @@ export function VoiceTab() {
             </div>
             <ToggleSwitch enabled={cleanupEnabled} onToggle={setCleanupEnabled} testId="voice-cleanup-enabled" />
           </div>
-          {cleanupEnabled && cleanupStatusText(cleanupStatus) && (
+          {cleanupEnabled && cleanupStatus.state !== "pending" && !cleanupOffer && (
             <p className="text-xs text-(--color-text-tertiary)" data-testid="voice-cleanup-status">
-              {cleanupStatusText(cleanupStatus)}
+              {cleanupStatus.state === "unknown"
+                ? "Couldn't check whether cleanup is available."
+                : cleanupStatus.model
+                  ? cleanupModelLine(cleanupStatus.model)
+                  : CLEANUP_UNAVAILABLE}
             </p>
+          )}
+          {cleanupEnabled && cleanupOffer && (
+            <div
+              className="space-y-2.5 rounded-lg border border-(--color-border-secondary) border-l-2 border-l-(--color-accent) bg-(--color-bg-secondary) p-3"
+              data-testid="voice-key-adoption-offer"
+            >
+              <p className="text-xs text-(--color-text-secondary)">
+                <span className="font-medium text-(--color-text-primary)">
+                  Use your {cleanupOffer.providerLabel} key for cleanup too?
+                </span>
+                <br />
+                Cleanup now runs on your Background work model. Your {cleanupOffer.providerLabel} key
+                is stored for speech only, so adding it as a model provider lets it clean transcripts as
+                well. It stays visible and removable under Model providers like any other credential.
+              </p>
+              <div className="flex flex-wrap items-center gap-2">
+                <Button
+                  variant="primary"
+                  size="md"
+                  disabled={adoptBusy}
+                  onClick={() => void adoptVoiceKey(cleanupOffer.providerId)}
+                  data-testid="voice-key-adopt"
+                >
+                  {adoptBusy ? "Adding…" : "Add it as a model provider"}
+                </Button>
+                <Button
+                  variant="secondary"
+                  size="md"
+                  disabled={adoptBusy}
+                  onClick={() => setOfferDismissed(true)}
+                  data-testid="voice-key-adopt-decline"
+                >
+                  Not now
+                </Button>
+              </div>
+            </div>
           )}
         </div>
 

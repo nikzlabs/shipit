@@ -4,6 +4,7 @@ import { releaseResidentForCredentialChange } from "./resident-spawn-guard.js";
 import type { AgentId, CredentialBillingMode } from "../shared/types.js";
 import { limitsModeKey } from "../shared/types/usage-limits-types.js";
 import type { ApiDeps } from "./api-routes.js";
+import type { GlobalSettingsPatch } from "../shared/settings-catalogue/index.js";
 import type { ServiceManager } from "./service-manager.js";
 
 import {
@@ -27,9 +28,11 @@ import {
   signOutProvider,
   listCredentialRoutes,
   createStringCredential,
+  adoptVoiceKeyAsCredential,
   updateStringCredential,
   deleteCredentialRoute,
   reorderCredentialRoutes,
+  pickDeclaredSettings,
   ServiceError,
 } from "./services/index.js";
 import {
@@ -104,22 +107,11 @@ export async function registerBootstrapRoutes(
     },
   );
 
-  app.put<{ Body: {
-    gitIdentity?: { name: string; email: string };
-    systemPrompt?: string;
-    systemPromptOps?: string;
-    memoryBudgetMb?: number | null;
-    agentSystemInstructionsEnabled?: boolean;
-    autoCreatePr?: boolean;
-    liveSteering?: boolean;
-    autoResolveConflicts?: boolean;
-    autoFixCi?: boolean;
-    autoResetMergedBranch?: boolean;
-    enableSubAgents?: boolean;
-    voiceDeliveryMode?: "native" | "external" | "both";
+  // The declared settings' half of the body derives from the catalogue, so an
+  // undeclared setting cannot be saved (docs/299-agent-settings-access req 7).
+  app.put<{ Body: GlobalSettingsPatch & {
     failoverCutoffs?: Record<string, { session?: number; weekly?: number }>;
     accountSelectionMode?: Record<string, "strict" | "balanced">;
-    nonTurnModel?: { serviceId: string; billingMode: "sub" | "key"; modelId: string } | null;
     reviewers?: Record<string, unknown>;
     roles?: Record<string, unknown>;
   } }>(
@@ -137,21 +129,9 @@ export async function registerBootstrapRoutes(
           onAutoFixCiEnabled: () => {
             deps.prStatusPoller?.broadcastAllSnapshots();
           },
-          ...(request.body.gitIdentity !== undefined ? { gitIdentity: request.body.gitIdentity } : {}),
-          ...(request.body.systemPrompt !== undefined ? { systemPrompt: request.body.systemPrompt } : {}),
-          ...(request.body.systemPromptOps !== undefined ? { systemPromptOps: request.body.systemPromptOps } : {}),
-          ...(request.body.memoryBudgetMb !== undefined ? { memoryBudgetMb: request.body.memoryBudgetMb } : {}),
-          ...(request.body.agentSystemInstructionsEnabled !== undefined ? { agentSystemInstructionsEnabled: request.body.agentSystemInstructionsEnabled } : {}),
-          ...(request.body.autoCreatePr !== undefined ? { autoCreatePr: request.body.autoCreatePr } : {}),
-          ...(request.body.liveSteering !== undefined ? { liveSteering: request.body.liveSteering } : {}),
-          ...(request.body.autoResolveConflicts !== undefined ? { autoResolveConflicts: request.body.autoResolveConflicts } : {}),
-          ...(request.body.autoFixCi !== undefined ? { autoFixCi: request.body.autoFixCi } : {}),
-          ...(request.body.autoResetMergedBranch !== undefined ? { autoResetMergedBranch: request.body.autoResetMergedBranch } : {}),
-          ...(request.body.enableSubAgents !== undefined ? { enableSubAgents: request.body.enableSubAgents } : {}),
-          ...(request.body.voiceDeliveryMode !== undefined ? { voiceDeliveryMode: request.body.voiceDeliveryMode } : {}),
+          ...pickDeclaredSettings(request.body),
           ...(request.body.failoverCutoffs !== undefined ? { failoverCutoffs: request.body.failoverCutoffs } : {}),
           ...(request.body.accountSelectionMode !== undefined ? { accountSelectionMode: request.body.accountSelectionMode } : {}),
-          ...(request.body.nonTurnModel !== undefined ? { nonTurnModel: request.body.nonTurnModel } : {}),
           ...(request.body.reviewers !== undefined ? { reviewers: request.body.reviewers } : {}),
           ...(request.body.roles !== undefined ? { roles: request.body.roles } : {}),
         });
@@ -221,6 +201,35 @@ export async function registerBootstrapRoutes(
           return;
         }
         reply.code(500).send({ error: `Failed to save credential: ${getErrorMessage(err)}` });
+      }
+    },
+  );
+
+  /*
+    The Voice tab's adoption offer (docs/299-direct-provider-calls req 5). It
+    sits with the other credential writes because that is what it is: the
+    browser cannot POST the key to `/api/credential-routes` itself, since a
+    voice key is never sent back to it.
+
+    `propagateCredentialChange` is what seeds background work onto the new
+    credential — through `buildAgentListPayload`, which writes only when nothing
+    is set. Nothing here chooses a model for the user.
+  */
+  app.post<{ Body: { provider?: string } }>(
+    "/api/credential-routes/adopt-voice-key",
+    async (request, reply) => {
+      try {
+        const result = adoptVoiceKeyAsCredential(deps.credentialStore, request.body?.provider ?? "openai");
+        propagateCredentialChange();
+        refreshQuotaForCredential(result.route, "seed");
+        deps.sseBroadcast("credential_routes", { routes: result.routes });
+        return result;
+      } catch (err) {
+        if (err instanceof ServiceError) {
+          reply.code(err.statusCode).send({ error: err.message });
+          return;
+        }
+        reply.code(500).send({ error: `Failed to add the voice key as a model provider: ${getErrorMessage(err)}` });
       }
     },
   );
