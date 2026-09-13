@@ -27,7 +27,7 @@ export interface GlobalSettings {
   harnessOnboardingCompletedAt?: string;
   gitIdentity: { name: string; email: string };
   systemPrompt: string;
-  /** Sent instead of `systemPrompt` in an ops session (docs/014-system-prompt req 5). */
+  /** Sent instead of `systemPrompt` in an ops session (docs/014-system-prompt req 6). */
   systemPromptOps: string;
   agents: AgentInfo[];
   // null uses the host's memory budget.

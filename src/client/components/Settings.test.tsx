@@ -592,6 +592,19 @@ describe("Settings - Instructions tab", () => {
     await renderOnInstructionsTab({ initialOpsContent: "x".repeat(50_001) });
     expect(screen.getByTestId("settings-save")).toBeDisabled();
   });
+
+  // A rejected save closes the modal and drops the draft, so Ctrl+Enter must
+  // honour the same limit the button does.
+  it("does not save on Ctrl+Enter while a box is over the limit", async () => {
+    const onSaveInstructions = vi.fn();
+    await renderOnInstructionsTab({
+      initialContent: "Be concise.",
+      initialOpsContent: "x".repeat(50_001),
+      onSaveInstructions,
+    });
+    fireEvent.keyDown(screen.getByRole("dialog"), { key: "Enter", ctrlKey: true });
+    expect(onSaveInstructions).not.toHaveBeenCalled();
+  });
 });
 
 describe("Settings - Model providers → OpenAI subscription", () => {

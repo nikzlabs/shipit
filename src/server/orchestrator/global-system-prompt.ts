@@ -5,7 +5,7 @@ const APP_SETTINGS_SUBDIR = ".shipit";
 
 /**
  * An ops session never receives the standard block: ShipIt's own ops instructions
- * contradict ordinary project conventions (docs/014-system-prompt req 5).
+ * contradict ordinary project conventions (docs/014-system-prompt req 6).
  */
 export type SystemPromptScope = "standard" | "ops";
 

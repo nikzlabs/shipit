@@ -16,7 +16,7 @@ project-level; that is no longer what the code does.
 
 ## Two scopes: standard and ops
 
-There are two blocks, and a turn uses exactly one of them (req 5). A session
+There are two blocks, and a turn uses exactly one of them (req 6). A session
 whose `kind` is `ops` uses the **ops** block; every other session — including a
 sandbox — uses the **standard** block (req 7).
 
@@ -27,7 +27,7 @@ conventions that contradict them (req 4).
 
 Replacement is total. An ops session never sees the standard block, and an empty
 ops block means an ops session gets **no** user instructions rather than falling
-back (req 5) — so the interference the split exists to remove is gone before the
+back (req 6) — so the interference the split exists to remove is gone before the
 user writes anything.
 
 ## Storage
@@ -65,8 +65,9 @@ If a file is missing or blank, that scope contributes no user prompt.
    keeps the cross-user prompt cache warm.
 5. **Writing**: `writeGlobalSystemPrompt(appWorkspaceDir, content, scope)` trims
    and writes the file; blank content deletes it, so clearing a box means "no
-   prompt" rather than "an empty prompt". `saveGlobalSettings()` validates the
-   50,000-character maximum per scope before calling it.
+   prompt" rather than "an empty prompt". `saveGlobalSettings()` validates
+   **both** blocks against the 50,000-character maximum before writing either,
+   so one over-long box cannot leave the other half of the tab persisted.
 6. **UI**: the Instructions tab of the Settings modal, which holds both boxes —
    "Your Instructions" and "Ops Session Instructions" — each with its own
    character count against the 50,000 limit, under one Save button that is
@@ -84,8 +85,8 @@ route now.
   scope-to-file map, `globalSystemPromptPath()`, `readGlobalSystemPrompt()`,
   `writeGlobalSystemPrompt()`
 - `src/server/orchestrator/services/settings.ts` — `getGlobalSettings()` exposes
-  `systemPrompt` and `systemPromptOps`; `writeSystemPromptScope()` validates and
-  persists each
+  `systemPrompt` and `systemPromptOps`; `validatedSystemPrompt()` checks each
+  before `saveGlobalSettings()` writes any
 - `src/server/orchestrator/api-routes-bootstrap.ts` — `PUT /api/settings`
 - `src/server/orchestrator/session-agent-run-params.ts` — picks the scope from
   the session kind, then joins the agent instructions and the user prompt into

@@ -2,7 +2,7 @@ import { useState, type RefObject } from "react";
 import { Button } from "../../ui/button.js";
 import { SettingsTabPane } from "../SettingsTabPane.js";
 
-const MAX_LENGTH = 50_000;
+export const MAX_LENGTH = 50_000;
 
 export function InstructionsTab({
   content,

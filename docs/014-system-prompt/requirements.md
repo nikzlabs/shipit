@@ -20,11 +20,11 @@ What the user-written instruction blocks must do. The mechanism lives in
    one. ShipIt gives an ops session internal instructions of its own — the
    read-only host-debugging contract — and the general block can contradict
    them.
-5. An ops session receives only the ops block. It never receives the general
+5. The user writes and edits the ops block in Settings, in the same place as the
+   general block.
+6. An ops session receives only the ops block. It never receives the general
    block. When the ops block is empty, an ops session receives no user
    instructions.
-6. The user writes and edits the ops block in Settings, in the same place as the
-   general block.
 7. Only an ops session has a block of its own. Every other session kind,
    including a sandbox session, receives the general block.
 
@@ -37,6 +37,6 @@ What the user-written instruction blocks must do. The mechanism lives in
 - 2026-09-13 — In an ops session, does the ops block replace the general block
   or add to it, and what happens when the ops block is empty? Answer: replace
   always. An empty ops block means an ops session receives no user
-  instructions, not a fall back to the general block (req 5).
+  instructions, not a fall back to the general block (req 6).
 - 2026-09-13 — A sandbox session also receives internal instructions of its own.
   Does it get a block too? Answer: ops only (req 7).

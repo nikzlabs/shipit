@@ -201,11 +201,7 @@ export async function getGlobalSettings(
     ...(nonTurnModelResolved ? { nonTurnModelResolved } : {}) };
 }
 
-async function writeSystemPromptScope(
-  appWorkspaceDir: string,
-  value: unknown,
-  scope: SystemPromptScope,
-): Promise<void> {
+function validatedSystemPrompt(value: unknown, scope: SystemPromptScope): string {
   const content = typeof value === "string" ? value : "";
   if (content.length > 50_000) {
     throw new ServiceError(
@@ -213,7 +209,7 @@ async function writeSystemPromptScope(
       `${scope === "ops" ? "Ops session prompt" : "System prompt"} too long (max 50,000 characters)`,
     );
   }
-  await writeGlobalSystemPrompt(appWorkspaceDir, content, scope);
+  return content;
 }
 
 export function setGitIdentityService(
@@ -281,12 +277,17 @@ export async function saveGlobalSettings(
     writeGitIdentity(name, email);
   }
 
+  // Validate both blocks before writing either, so one over-long box cannot
+  // leave the other half of the Instructions tab persisted.
+  const promptWrites: [SystemPromptScope, string][] = [];
   if (systemPrompt !== undefined) {
-    await writeSystemPromptScope(appWorkspaceDir, systemPrompt, "standard");
+    promptWrites.push(["standard", validatedSystemPrompt(systemPrompt, "standard")]);
   }
-
   if (systemPromptOps !== undefined) {
-    await writeSystemPromptScope(appWorkspaceDir, systemPromptOps, "ops");
+    promptWrites.push(["ops", validatedSystemPrompt(systemPromptOps, "ops")]);
+  }
+  for (const [scope, content] of promptWrites) {
+    await writeGlobalSystemPrompt(appWorkspaceDir, content, scope);
   }
 
   if (memoryBudgetMb !== undefined) {

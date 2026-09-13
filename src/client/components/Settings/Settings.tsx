@@ -9,7 +9,7 @@ import { KeybindingSettings } from "../KeybindingSettings.js";
 import { useUiStore } from "../../stores/ui-store.js";
 import { ServicesPanel } from "./ServicesPanel.js";
 import { BackgroundWorkSection } from "./BackgroundWorkSection.js";
-import { InstructionsTab } from "./tabs/InstructionsTab.js";
+import { InstructionsTab, MAX_LENGTH } from "./tabs/InstructionsTab.js";
 import { GitTab } from "./tabs/GitTab.js";
 import { VoiceTab } from "./tabs/VoiceTab.js";
 import { AdvancedTab } from "./tabs/AdvancedTab.js";
@@ -69,7 +69,12 @@ export function Settings({
   const savedRef = useRef(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
+  // A rejected save closes the modal and drops the draft, so the keyboard path
+  // enforces the same limit the Save button disables itself on.
+  const saveBlocked = content.length > MAX_LENGTH || opsContent.length > MAX_LENGTH;
+
   const handleSave = () => {
+    if (saveBlocked) return;
     savedRef.current = true;
     onSaveInstructions(content, opsContent);
   };
