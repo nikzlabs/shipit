@@ -1,6 +1,6 @@
 ---
 issue: planning#113
-description: Two-way voice integration. Input — push-to-talk dictation with an LLM cleanup pass (fixes mis-hearings, fillers, capitalisation) before the transcript lands in the textarea. Mode A targets the current MessageInput, Mode B the quick-capture overlay from doc 145. Output — per-assistant-turn Play button that streams TTS of the response so the user can listen while walking around. Cleanup defaults to the user's Claude subscription, falls back to the OpenAI voice key.
+description: Two-way voice integration. Input — push-to-talk dictation with an LLM cleanup pass (fixes mis-hearings, fillers, capitalisation) before the transcript lands in the textarea. Mode A targets the current MessageInput, Mode B the quick-capture overlay from doc 145. Output — per-assistant-turn Play button that streams TTS of the response so the user can listen while walking around. Cleanup runs on the OpenAI voice key.
 ---
 
 # Voice integration (dictation + playback)
@@ -92,27 +92,22 @@ So v1 routes every transcript through a small LLM cleanup call
 user reviews — they verify intent once, in the language they meant,
 not in the language Whisper heard.
 
-**Provider selection (in order of preference):**
+**Provider selection:** the **OpenAI voice key**, and nothing else.
+The cleanup call hits `gpt-4o-mini` (or equivalent small model) so it
+doesn't materially add to the user's STT/TTS spend.
 
-1. **The user's Claude Code subscription** (via the OAuth bearer
-   that `AuthManager.getAccessToken()` returns). Cleanup is a
-   short prompt to a small fast model (Haiku) and easily fits
-   inside the subscription's headroom — no extra key, no extra
-   bill. This is the default when the user has connected Claude
-   Code to ShipIt, which is the overwhelmingly common case for
-   ShipIt users. Selection gates on `getAccessToken()` returning
-   a token (not on `checkCredentials()`, which is also true for
-   API-key-only setups that have no usable OAuth bearer for
-   direct Anthropic calls).
-2. **OpenAI**, via the same voice API key the user already provided
-   for Whisper/TTS. The cleanup call hits `gpt-4o-mini` (or
-   equivalent small model) so it doesn't materially add to their
-   STT/TTS spend.
+This shipped with the user's Claude Code subscription as a preferred
+first choice, calling Anthropic with the OAuth bearer from
+`AuthManager.getAccessToken()`. That adapter was deleted: Anthropic's
+Consumer Terms section 3 permits automated access only under an API
+key, so the subscription token may not be used this way
+([`docs/299-direct-provider-calls`](../299-direct-provider-calls/requirements.md)
+req 1). A user with no OpenAI key therefore has no cleanup at all
+until that feature's phase 4 gives cleanup the background-work model.
 
-Selection is automatic and silent. The Settings UI shows which
-provider is being used as a status string ("Cleanup via your Claude
-subscription" / "Cleanup via your OpenAI key" / "No cleanup
-provider available — raw transcript will be inserted") so the user
+Selection is automatic. The Settings UI shows a status string
+("Cleanup via your OpenAI key" / "Cleanup needs an OpenAI key — add
+one above. Until then the raw transcript is inserted.") so the user
 can see what's happening, but there's no per-call dropdown — the
 chosen pipeline must be predictable.
 
@@ -368,9 +363,9 @@ POST /api/voice/transcribe (orchestrator)
 STT provider (OpenAI Whisper for v1) → raw transcript
         ↓
    orchestrator picks cleanup provider:
-     Claude Code OAuth → OpenAI voice key
+     OpenAI voice key, or none
         ↓
-Cleanup LLM (Haiku / gpt-4o-mini)
+Cleanup LLM (gpt-4o-mini)
         ↓
 { text: "<cleaned>", rawText: "<original>", cleanupProvider?: string }
         ↓
@@ -458,8 +453,7 @@ Three provider directions in v1:
 | Direction | Provider | Endpoint | Auth | Audio path | Notes |
 |---|---|---|---|---|---|
 | **STT** | `openai` | OpenAI `/v1/audio/transcriptions` with `gpt-transcribe` | BYO OpenAI voice key, server-stored | browser → orchestrator → OpenAI | whole-utterance request/response, no streaming partials |
-| **Cleanup** | `claude-oauth` (default) | Anthropic API via Claude Code OAuth | user's Claude Code subscription, OAuth bearer surfaced by `AuthManager.getAccessToken()` | server-only | `claude-haiku-4-5`, ~400 ms, prompt is the fixed cleanup template |
-| **Cleanup** | `openai-cleanup` (fallback) | OpenAI `/v1/chat/completions` | same OpenAI voice key | server-only | `gpt-4o-mini`, same prompt; lets users without Claude auth still get cleanup |
+| **Cleanup** | `openai-cleanup` | OpenAI `/v1/chat/completions` | same OpenAI voice key | server-only | `gpt-4o-mini`, prompt is the fixed cleanup template. The only cleanup route; a `claude-oauth` row shipped beside it and was deleted (docs/299-direct-provider-calls req 1) |
 | **TTS** | `openai-tts` | OpenAI `/v1/audio/speech` (`tts-1` model) | OpenAI voice key | OpenAI → orchestrator → browser | streaming `audio/mpeg` response body, cached server-side by content hash |
 
 Provider abstraction lives in `src/server/orchestrator/voice/providers/*.ts`
@@ -472,12 +466,8 @@ interface TtsProvider { speak(text: string, opts): Promise<ReadableStream<Uint8A
 ```
 
 Cleanup-provider selection lives in a single small `pickCleanupProvider()`
-function inside `services/voice.ts` — it calls
-`AuthManager.getAccessToken()` and falls back to the OpenAI voice key
-in `CredentialStore`, returning the first available adapter. (It must
-gate on a non-null token from `getAccessToken()` rather than on the
-generic `checkCredentials()` boolean, which is true for API-key-only
-setups that don't expose a usable OAuth bearer.) No new DI manager.
+function in `voice/cleanup.ts` — it returns the OpenAI adapter when the
+voice key is in `CredentialStore`, and null otherwise. No new DI manager.
 
 Adding a new provider in any direction means a new adapter file plus a
 settings option.
@@ -807,11 +797,10 @@ subsections sharing one credential:
 - **Clean up transcripts with an LLM** — toggle, default **on**.
   When on, transcripts pass through the cleanup pipeline before
   insertion; when off, the raw Whisper output is inserted directly.
-  Below the toggle, a status string reports which cleanup provider
-  will be used ("Cleanup via your Claude subscription" / "Cleanup
-  via your OpenAI key" / "No cleanup provider available — raw
-  transcript will be inserted"). This is read-only — the
-  orchestrator picks the provider; the user doesn't.
+  Below the toggle, a status string reports whether cleanup can run
+  ("Cleanup via your OpenAI key" / "Cleanup needs an OpenAI key — add
+  one above. Until then the raw transcript is inserted."). This is
+  read-only — the orchestrator picks the provider; the user doesn't.
 - **Mode A hotkey (mic into current input)** — key-capture input,
   default `Ctrl+Shift+Space`. Rebindable. Conflict-detection against
   existing app hotkeys.
@@ -927,12 +916,14 @@ The orchestrator already has the right primitives for everything we need:
   - `voice/providers/whisper.ts` — takes a `Buffer` + key, returns text.
   - `voice/providers/openai-tts.ts` — takes text + key + opts (voice,
     speed, format), returns a `ReadableStream<Uint8Array>`.
-  - `voice/providers/claude-cleanup.ts` — uses the Claude Code OAuth
-    bearer returned by `AuthManager.getAccessToken()` to call Anthropic
-    with the locked cleanup prompt; returns the cleaned string.
   - `voice/providers/openai-cleanup.ts` — uses the OpenAI voice key to
-    call `gpt-4o-mini` with the same locked prompt; returns the cleaned
-    string. Acts as the fallback when neither Claude path is available.
+    call `gpt-4o-mini` with the locked prompt; returns the cleaned
+    string. It is the only cleanup adapter: a Claude adapter calling
+    Anthropic with the subscription OAuth bearer shipped here and was
+    deleted as a terms violation, and
+    [`docs/299-direct-provider-calls`](../299-direct-provider-calls/requirements.md)
+    req 1 is the rule it broke. Without an OpenAI key there is no cleanup
+    until that feature's phase 4 restores it through background work.
 - **Cleanup pipeline** — `voice/cleanup.ts` exports `pickCleanupProvider()`
   and `cleanTranscript()`. `cleanTranscript` runs the chosen adapter
   with a 3 s timeout and a small sanity check (non-empty, length within
@@ -955,8 +946,8 @@ New HTTP routes (registered via the existing dispatcher in `api-routes.ts`):
 - `POST /api/voice/credentials` — body: `{ provider: "openai", apiKey: string }`. Stores the key on `CredentialStore`. Returns `{ ok: true }`.
 - `DELETE /api/voice/credentials` — clears the stored key.
 - `GET /api/voice/credentials/status` — returns `{ configured: boolean, provider?: string }`. Never returns the key.
-- `POST /api/voice/transcribe` — multipart body with `audio` file part, `language` field, and `cleanup` boolean (mirrors the Settings toggle so the server doesn't have to reach into client state). Service-layer function loads the key from `CredentialStore`, calls the STT provider adapter, then — if `cleanup` is true and a cleanup provider is available — runs `cleanTranscript()`. Returns `{ text: string, rawText: string, cleanupProvider?: "claude-oauth" | "openai-cleanup", cleanupErrorCode?: string }`. `text` is always set (cleanup falls through to raw on error). On STT error returns the upstream status code + a sanitized error message via `ServiceError`.
-- `GET /api/voice/cleanup/status` — returns `{ provider: "claude-oauth" | "openai-cleanup" | null }` so the Settings UI can render the read-only status string without leaking credentials.
+- `POST /api/voice/transcribe` — multipart body with `audio` file part, `language` field, and `cleanup` boolean (mirrors the Settings toggle so the server doesn't have to reach into client state). Service-layer function loads the key from `CredentialStore`, calls the STT provider adapter, then — if `cleanup` is true and a cleanup provider is available — runs `cleanTranscript()`. Returns `{ text: string, rawText: string, cleanupProvider?: "openai-cleanup", cleanupErrorCode?: string }`. `text` is always set (cleanup falls through to raw on error). On STT error returns the upstream status code + a sanitized error message via `ServiceError`.
+- `GET /api/voice/cleanup/status` — returns `{ provider: "openai-cleanup" | null }` so the Settings UI can render the read-only status string without leaking credentials.
 - `POST /api/voice/speak` — JSON body `{ text: string, voice: string, speed: number }`. Service-layer function strips markdown via `strip-for-tts.ts`, hashes the result, checks the cache, on miss calls the TTS provider adapter, writes to cache, and streams `audio/mpeg` back to the client. On provider error returns the upstream status code + a sanitized error message via `ServiceError`. If the cleaned text is empty, returns 204 No Content (the client suppresses the Play button in this case anyway).
 
 CORS: not an issue because the audio call now goes orchestrator→OpenAI
@@ -1073,11 +1064,10 @@ Captured here so future readers know they were considered, not forgotten:
 - `src/server/orchestrator/voice/providers/deepgram.ts` — Deepgram STT adapter
 - `src/server/orchestrator/voice/providers/types.ts` — `SttProvider`, `CleanupProvider`, and `TtsProvider` interfaces
 - `src/server/orchestrator/voice/providers/whisper.ts` — OpenAI Whisper STT adapter
-- `src/server/orchestrator/voice/providers/claude-cleanup.ts` — Anthropic cleanup adapter that takes the OAuth bearer returned by `AuthManager.getAccessToken()` and posts the locked prompt to the Anthropic API (or shells out to a one-shot `claude` CLI invocation if the OAuth scope rejects direct API use — see open questions)
-- `src/server/orchestrator/voice/providers/openai-cleanup.ts` — OpenAI `gpt-4o-mini` cleanup adapter
+- `src/server/orchestrator/voice/providers/openai-cleanup.ts` — OpenAI `gpt-4o-mini` cleanup adapter, and the only one
 - `src/server/orchestrator/voice/providers/openai-tts.ts` — OpenAI `/v1/audio/speech` TTS adapter
 - `src/server/orchestrator/voice/cleanup.ts` — `pickCleanupProvider()` + `cleanTranscript()` with timeout, sanity checks, fall-through-to-raw on failure
-- `src/server/orchestrator/voice/cleanup-prompt.ts` — the locked cleanup prompt template (single source of truth used by both adapters and the tests)
+- `src/server/orchestrator/voice/cleanup-prompt.ts` — the locked cleanup prompt template (single source of truth used by the adapter and the tests)
 - `src/server/orchestrator/voice/strip-for-tts.ts` — pure markdown/code stripper, shared by route and tests
 - `src/server/orchestrator/voice/tts-cache.ts` — disk-backed LRU keyed by content hash
 - `src/server/orchestrator/voice/index.ts` — barrel for provider/cache exports
@@ -1110,8 +1100,8 @@ Dictation:
 - **`insert-transcript.test.ts`** — pure logic, cursor splicing, selection replacement, leading-space heuristic.
 - **`use-voice-input.test.ts`** — state machine transitions with `MediaRecorder` mocked, hotkey hold/release behaviour, autorepeat suppression, blur/visibilitychange handling, 250 ms minimum (no max-duration cap), session-switch abort.
 - **`whisper.test.ts`** — STT provider adapter against a fake fetch, error mapping.
-- **`claude-cleanup.test.ts`** / **`openai-cleanup.test.ts`** — cleanup adapters against a fake fetch / fake Anthropic client; assert the locked prompt is used, the output is returned verbatim, and the timeout fires at 3 s.
-- **`cleanup.test.ts`** — `pickCleanupProvider()` selection order under each combination of (Claude OAuth present? OpenAI key present?); `cleanTranscript()` sanity checks: empty cleanup output → fall through to raw; cleanup output >2× input length → fall through; cleanup output starts with "Here is" → fall through; question-shaped input ("how do I add a button") is returned as the same question, not as an answer.
+- **`openai-cleanup.test.ts`** — the cleanup adapter against a fake fetch; asserts the locked prompt is used, the output is returned verbatim, and the caller's abort signal reaches `fetch`.
+- **`cleanup.test.ts`** — `pickCleanupProvider()` with and without the OpenAI key; `cleanTranscript()` sanity checks: empty cleanup output → fall through to raw; cleanup output >2× input length → fall through; cleanup output starts with "Here is" → fall through; a provider that answers only after the deadline → fall through with `timeout`. Whether a question stays a question is prompt behaviour and is covered by manual QA, not here.
 - **`MicButton.test.tsx`** — render in each state, click behaviour. Includes the `transcribing → cleaning` substate.
 
 Playback:
@@ -1135,8 +1125,8 @@ Manual QA covers the parts Vitest can't:
 
 - Real mic capture in Chrome / Firefox / Safari on desktop.
 - Whisper round-trip with a real OpenAI key.
-- Cleanup round-trip with a real Claude Code OAuth (default) — verify a noisy transcript ("um so like add a uh react use effect for the timer") comes back clean ("Add a React useEffect for the timer"); verify a question stays a question; verify a transcript that's already clean comes back identical or near-identical.
-- Cleanup fallback path: temporarily clear Claude auth, confirm Settings status flips to "Cleanup via your OpenAI key", verify the next dictation still cleans.
+- Cleanup round-trip with a real OpenAI voice key — verify a noisy transcript ("um so like add a uh react use effect for the timer") comes back clean ("Add a React useEffect for the timer"); verify a question stays a question; verify a transcript that's already clean comes back identical or near-identical.
+- No-cleanup path: clear the OpenAI key, confirm the Settings status says cleanup needs one, verify the next dictation inserts the raw transcript and the mic button shows its non-fatal warning.
 - Cleanup-disabled path: turn the toggle off, confirm raw Whisper output lands in the textarea unchanged.
 - TTS round-trip with the same OpenAI key: Play a short turn, a long turn (multi-paragraph), a turn that's entirely a tool call (Play should not render), and a turn mixing prose and code blocks (code should not be read).
 - Speed control behavior: 2× audibly faster, position scrubber moves at the right pace.
@@ -1176,16 +1166,15 @@ Manual QA covers the parts Vitest can't:
    may hit OpenAI's per-request length limit. If we trip it during
    QA, segment the cleaned text by paragraph and stitch the resulting
    audio chunks. Don't pre-build that unless we see the limit.
-8. **Claude Code OAuth scope for direct Anthropic calls.** Verify
-   during build that the token `AuthManager` stores can be used to
-   call the Anthropic API directly for cleanup, not only to spawn
-   the `claude` CLI. If the OAuth scope rejects direct API use,
-   shell out to a one-shot `claude` invocation with the cleanup
-   prompt as a workaround — the `CleanupProvider` interface is
-   already shaped to hide that difference from callers. If neither
-   path works, demote Claude OAuth to a follow-up and ship v1 with
-   OpenAI cleanup as the default; the user-visible behavior is the
-   same and the Settings status string just changes.
+8. **Claude Code OAuth scope for direct Anthropic calls.** *Answered,
+   and the answer is no.* The question asked only whether the scope
+   would technically accept the call; it did, so the adapter shipped.
+   What it did not ask is whether the call was permitted, and it is
+   not — Anthropic's Consumer Terms section 3 allows automated access
+   only under an API key. The adapter was deleted and cleanup now runs
+   on the OpenAI key alone; see
+   [`docs/299-direct-provider-calls`](../299-direct-provider-calls/requirements.md)
+   req 1.
 9. **Cleanup prompt drift.** The prompt is locked in
    `cleanup-prompt.ts` and asserted by tests. Changes go through PR
    review; flagging here so the prompt isn't quietly tuned in a
@@ -1206,8 +1195,7 @@ Dictation (input):
 | Step | Effort |
 |---|---|
 | Server: credential field + routes + service + Whisper provider + tests | 1.5 days |
-| Server: cleanup pipeline (`cleanup.ts`, `cleanup-prompt.ts`, Claude + OpenAI cleanup adapters, sanity checks, timeout, tests) | 1.5 days |
-| Server: verify Claude Code OAuth path works for cleanup (and fall back to CLI shell-out if needed) | 0.5 day |
+| Server: cleanup pipeline (`cleanup.ts`, `cleanup-prompt.ts`, OpenAI cleanup adapter, sanity checks, timeout, tests) | 1.5 days |
 | Client: `voice/` input module, MediaRecorder capture, state machine, Mode-A hotkey, tests | 2.5 days |
 | Client: cleanup substate in mic UI + cleanup-status string + warning toast on fall-through | 0.5 day |
 | Client: MicButton, MessageInput wiring (Mode A) | 0.5 day |

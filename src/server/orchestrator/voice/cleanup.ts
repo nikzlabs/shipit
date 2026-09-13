@@ -1,5 +1,3 @@
-import type { AuthManager } from "../agents/claude/auth-manager.js";
-import { createClaudeCleanupProvider } from "./providers/claude-cleanup.js";
 import { createOpenAiCleanupProvider } from "./providers/openai-cleanup.js";
 import type { CleanupProvider } from "./providers/types.js";
 
@@ -26,25 +24,14 @@ export interface CleanupResult {
   cleanupErrorCode?: CleanupErrorCode;
 }
 
-// Pass the account root: migrated OAuth accounts have no singleton-root alias.
-export async function pickCleanupProvider(
-  authManager: AuthManager,
+// The OpenAI voice key is the only credential cleanup may use: a subscription
+// OAuth token may not be used to call its provider's API
+// (docs/299-direct-provider-calls req 1).
+export function pickCleanupProvider(
   openaiKey: string | null,
   fetchImpl: typeof fetch = fetch,
-  credentialDir?: string,
-): Promise<CleanupProvider | null> {
-  try {
-    const token = await authManager.getAccessToken(credentialDir);
-    if (token.token) {
-      return createClaudeCleanupProvider(token.token, fetchImpl);
-    }
-  } catch {
-    // Fall back to OpenAI.
-  }
-  if (openaiKey) {
-    return createOpenAiCleanupProvider(openaiKey, fetchImpl);
-  }
-  return null;
+): CleanupProvider | null {
+  return openaiKey ? createOpenAiCleanupProvider(openaiKey, fetchImpl) : null;
 }
 
 function isSane(raw: string, cleaned: string): CleanupErrorCode | null {

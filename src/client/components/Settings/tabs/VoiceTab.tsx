@@ -32,9 +32,25 @@ const VOICE_LANGUAGES: { code: string; label: string }[] = [
 ];
 
 const CLEANUP_STATUS_LABELS: Record<string, string> = {
-  "claude-oauth": "Cleanup via your Claude subscription",
   "openai-cleanup": "Cleanup via your OpenAI key",
 };
+
+const CLEANUP_UNAVAILABLE =
+  "Cleanup needs an OpenAI key — add one above. Until then the raw transcript is inserted.";
+
+// "No key" and "couldn't ask" are different facts and the first one blames the
+// user, so a failed status fetch must not render as the missing-key line.
+type CleanupStatus =
+  | { state: "pending" }
+  | { state: "unknown" }
+  | { state: "ready"; provider: string | null };
+
+function cleanupStatusText(status: CleanupStatus): string | null {
+  if (status.state === "pending") return null;
+  if (status.state === "unknown") return "Couldn't check whether cleanup is available.";
+  if (!status.provider) return CLEANUP_UNAVAILABLE;
+  return CLEANUP_STATUS_LABELS[status.provider] ?? `Cleanup via ${status.provider}`;
+}
 
 /**
  * "Voice" settings tab (docs/144) — dictation + playback. Each provider that
@@ -75,7 +91,7 @@ export function VoiceTab() {
   const [webhookBusy, setWebhookBusy] = useState(false);
   const [testState, setTestState] = useState<"idle" | "testing" | "ok" | "error">("idle");
   const [testMessage, setTestMessage] = useState<string | null>(null);
-  const [cleanupProvider, setCleanupProvider] = useState<string | null>(null);
+  const [cleanupStatus, setCleanupStatus] = useState<CleanupStatus>({ state: "pending" });
 
   const refreshKeyStatus = async () => {
     try {
@@ -93,9 +109,9 @@ export function VoiceTab() {
       const res = await fetch("/api/voice/cleanup/status");
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = (await res.json()) as { provider: string | null };
-      setCleanupProvider(data.provider);
+      setCleanupStatus({ state: "ready", provider: data.provider });
     } catch {
-      setCleanupProvider(null);
+      setCleanupStatus({ state: "unknown" });
     }
   };
 
@@ -273,11 +289,9 @@ export function VoiceTab() {
             </div>
             <ToggleSwitch enabled={cleanupEnabled} onToggle={setCleanupEnabled} testId="voice-cleanup-enabled" />
           </div>
-          {cleanupEnabled && (
+          {cleanupEnabled && cleanupStatusText(cleanupStatus) && (
             <p className="text-xs text-(--color-text-tertiary)" data-testid="voice-cleanup-status">
-              {cleanupProvider
-                ? CLEANUP_STATUS_LABELS[cleanupProvider] ?? `Cleanup via ${cleanupProvider}`
-                : "No cleanup provider available — raw transcript will be inserted"}
+              {cleanupStatusText(cleanupStatus)}
             </p>
           )}
         </div>

@@ -14,7 +14,7 @@ export interface CleanupOptions {
 }
 
 export interface CleanupProvider {
-  readonly id: "claude-oauth" | "openai-cleanup";
+  readonly id: "openai-cleanup";
   clean(rawTranscript: string, opts: CleanupOptions): Promise<string>;
 }
 
