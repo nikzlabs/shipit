@@ -1,0 +1,303 @@
+<!doctype html>
+<html lang="en" class="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Settings proposal card — docs/299</title>
+<style>
+/* Token values copied from src/client/themes/{light,dark}.css so this file
+   renders standalone. The real component uses the tokens, never these hexes. */
+.light {
+  --color-bg-primary:#ffffff; --color-bg-secondary:#f9fafb; --color-bg-tertiary:#f3f4f6;
+  --color-bg-elevated:#ffffff; --color-bg-hover:rgba(0,0,0,.04);
+  --color-text-primary:#111827; --color-text-secondary:#4b5563; --color-text-tertiary:#9ca3af;
+  --color-border-primary:#dfe1e6; --color-border-secondary:#d1d5db;
+  --color-accent:#2563eb; --color-accent-hover:#1d4ed8; --color-accent-text:#fff;
+  --color-accent-subtle:rgba(37,99,235,.1);
+  --color-success:#16a34a; --color-success-subtle:rgba(22,163,74,.1);
+  --color-error:#dc2626; --color-error-subtle:rgba(220,38,38,.1);
+  --color-warning:#d97706; --color-warning-subtle:rgba(217,119,6,.1);
+  --color-info:#2563eb; --color-info-subtle:rgba(37,99,235,.1);
+}
+.dark {
+  --color-bg-primary:#030712; --color-bg-secondary:#111827; --color-bg-tertiary:#1f2937;
+  --color-bg-elevated:#1f2937; --color-bg-hover:rgba(255,255,255,.05);
+  --color-text-primary:#f3f4f6; --color-text-secondary:#9ca3af; --color-text-tertiary:#6b7280;
+  --color-border-primary:#212c3b; --color-border-secondary:#374151;
+  --color-accent:#3b82f6; --color-accent-hover:#2563eb; --color-accent-text:#fff;
+  --color-accent-subtle:rgba(59,130,246,.15);
+  --color-success:#22c55e; --color-success-subtle:rgba(34,197,94,.15);
+  --color-error:#ef4444; --color-error-subtle:rgba(239,68,68,.15);
+  --color-warning:#f59e0b; --color-warning-subtle:rgba(245,158,11,.15);
+  --color-info:#60a5fa; --color-info-subtle:rgba(96,165,250,.15);
+}
+* { box-sizing:border-box; }
+body {
+  margin:0; padding:28px 20px 64px;
+  font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  background:var(--color-bg-primary); color:var(--color-text-primary);
+}
+.wrap { max-width:720px; margin:0 auto; }
+header { display:flex; align-items:baseline; justify-content:space-between; gap:16px; margin-bottom:4px; }
+h1 { font-size:18px; font-weight:600; margin:0; }
+.eyebrow { font-size:11px; letter-spacing:.08em; text-transform:uppercase; color:var(--color-text-tertiary); margin-bottom:6px; }
+.lede { color:var(--color-text-secondary); margin:0 0 26px; }
+h2 { font-size:13px; font-weight:600; margin:32px 0 4px; }
+h2 + .note { margin-top:0; }
+.note { color:var(--color-text-secondary); font-size:13px; margin:0 0 12px; }
+.divider { height:1px; background:var(--color-border-primary); margin:34px 0 0; }
+
+button.theme {
+  font:inherit; font-size:12px; cursor:pointer; border-radius:8px; padding:5px 10px;
+  border:1px solid var(--color-border-secondary); background:var(--color-bg-tertiary);
+  color:var(--color-text-secondary);
+}
+button.theme:hover { background:var(--color-bg-hover); }
+
+/* ---- chat context ---- */
+.bubble {
+  background:var(--color-bg-tertiary); border-radius:12px; padding:10px 14px;
+  color:var(--color-text-primary); margin-bottom:10px;
+}
+.bubble code { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12.5px;
+  background:var(--color-bg-secondary); border-radius:4px; padding:1px 4px; }
+
+/* ---- the card ---- */
+.card {
+  border-radius:8px; border:1px solid var(--color-border-primary);
+  background:var(--color-bg-elevated); padding:14px 16px;
+}
+.card.pending { border-color:color-mix(in srgb, var(--color-accent) 40%, transparent);
+  background:var(--color-accent-subtle); }
+.row { display:flex; align-items:flex-start; gap:10px; }
+.icon { flex:none; margin-top:1px; }
+.body { min-width:0; flex:1; }
+.title { font-weight:500; }
+.path { font-size:12px; color:var(--color-text-tertiary); margin-top:1px; }
+
+.change {
+  margin-top:10px; border-radius:6px; border:1px solid var(--color-border-secondary);
+  background:var(--color-bg-primary); padding:9px 11px;
+}
+.change .label { font-weight:500; }
+.change .desc { font-size:12.5px; color:var(--color-text-secondary); margin-top:2px; }
+.vals { display:flex; align-items:center; gap:9px; margin-top:8px; font-size:13px; }
+.val { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12.5px;
+  border-radius:4px; padding:2px 7px; }
+.val.from { background:var(--color-bg-tertiary); color:var(--color-text-secondary);
+  text-decoration:line-through; text-decoration-color:var(--color-text-tertiary); }
+.val.to { background:var(--color-success-subtle); color:var(--color-success); font-weight:600; }
+.arrow { color:var(--color-text-tertiary); }
+
+.reason {
+  margin-top:10px; padding-left:10px; border-left:2px solid var(--color-border-secondary);
+  color:var(--color-text-secondary); font-size:13px;
+}
+.reason .who { color:var(--color-text-tertiary); font-size:11.5px; display:block; margin-bottom:2px; }
+
+.actions { display:flex; gap:8px; margin-top:12px; flex-wrap:wrap; }
+.btn { font:inherit; font-size:13px; cursor:pointer; border-radius:8px; padding:5px 12px; border:1px solid transparent; }
+.btn.primary { background:var(--color-accent); color:var(--color-accent-text); }
+.btn.primary:hover { background:var(--color-accent-hover); }
+.btn.ghost { background:transparent; color:var(--color-text-secondary); }
+.btn.ghost:hover { background:var(--color-bg-hover); }
+
+/* ---- resolved (collapsed) states ---- */
+.resolved {
+  border-radius:8px; border:1px solid var(--color-border-primary);
+  background:var(--color-bg-tertiary); padding:8px 12px;
+  color:var(--color-text-secondary); display:flex; align-items:center; gap:8px; flex-wrap:wrap;
+}
+.resolved + .resolved { margin-top:8px; }
+.resolved .sep { color:var(--color-text-tertiary); }
+.resolved .muted { color:var(--color-text-tertiary); }
+.ok { color:var(--color-success); }
+.warn { color:var(--color-warning); }
+.dim { color:var(--color-text-tertiary); }
+.sub { display:block; width:100%; font-size:12.5px; color:var(--color-text-tertiary); padding-left:24px; }
+.legend { font-size:12px; color:var(--color-text-tertiary); margin-top:6px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <div>
+      <div class="eyebrow">ShipIt · docs/299-agent-settings-access</div>
+      <h1>Settings proposal card</h1>
+    </div>
+    <button class="theme" id="t">Dark</button>
+  </header>
+  <p class="lede">
+    One card carries one change. The setting does not move until the user clicks Apply.
+  </p>
+
+  <h2>Pending — what the user sees</h2>
+  <p class="note">Posted by <code style="font-family:ui-monospace,Menlo,monospace">shipit settings propose</code>, after the agent has read the setting.</p>
+
+  <div class="bubble">
+    I can’t start the review — <strong>Multi-agent sessions</strong> is off, so
+    <code>shipit agent run</code> has nothing to run. Here’s the change:
+  </div>
+
+  <div class="card pending">
+    <div class="row">
+      <span class="icon" style="color:var(--color-accent)">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <line x1="4" y1="8" x2="20" y2="8"/><circle cx="9" cy="8" r="2.4" fill="currentColor" stroke="none"/>
+          <line x1="4" y1="16" x2="20" y2="16"/><circle cx="16" cy="16" r="2.4" fill="currentColor" stroke="none"/>
+        </svg>
+      </span>
+      <div class="body">
+        <div class="title">Settings change proposed</div>
+        <div class="path">Settings › Advanced</div>
+
+        <div class="change">
+          <div class="label">Multi-agent sessions</div>
+          <div class="desc">Let the agent start child sessions and consult other agents.</div>
+          <div class="vals">
+            <span class="val from">Off</span>
+            <span class="arrow" aria-hidden="true">→</span>
+            <span class="val to">On</span>
+          </div>
+        </div>
+
+        <div class="reason">
+          <span class="who">The agent’s reason</span>
+          The review you asked for runs as a separate agent, which this setting gates.
+        </div>
+
+        <div class="actions">
+          <button class="btn primary">Apply</button>
+          <button class="btn ghost">Dismiss</button>
+        </div>
+      </div>
+    </div>
+  </div>
+  <p class="legend">
+    The setting name, the path, the description and both values come from the declaration and
+    the server’s own read. Only the quoted reason is the agent’s text — flattened to one line,
+    length-capped, and shown as attributed so it can never look like ShipIt describing the change.
+  </p>
+
+  <div class="divider"></div>
+
+  <h2>After the click — every terminal state</h2>
+  <p class="note">The card collapses in place. It is persisted, so it is still here tomorrow.</p>
+
+  <div class="resolved">
+    <span class="ok" aria-hidden="true">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+           stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><polyline points="8,12.5 11,15.5 16,9.5"/></svg>
+    </span>
+    <span><strong class="ok">Applied</strong> <span class="sep">·</span> Multi-agent sessions is on</span>
+  </div>
+
+  <div class="resolved">
+    <span class="dim" aria-hidden="true">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+           stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><line x1="9" y1="9" x2="15" y2="15"/><line x1="15" y1="9" x2="9" y2="15"/></svg>
+    </span>
+    <span><strong class="dim">Dismissed</strong> <span class="sep">·</span> Multi-agent sessions</span>
+  </div>
+
+  <div class="resolved">
+    <span class="warn" aria-hidden="true">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+           stroke-linecap="round" stroke-linejoin="round"><path d="M12 4.5 21 19.5H3Z"/><line x1="12" y1="10" x2="12" y2="14"/><circle cx="12" cy="16.8" r="1" fill="currentColor" stroke="none"/></svg>
+    </span>
+    <span><strong class="warn">Not applied</strong> <span class="sep">·</span> the setting changed after this was proposed</span>
+    <span class="sub">Its value moved after this card was written. Nothing was applied.</span>
+  </div>
+
+  <div class="resolved">
+    <span class="warn" aria-hidden="true">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+           stroke-linecap="round" stroke-linejoin="round"><path d="M12 4.5 21 19.5H3Z"/><line x1="12" y1="10" x2="12" y2="14"/><circle cx="12" cy="16.8" r="1" fill="currentColor" stroke="none"/></svg>
+    </span>
+    <span><strong class="warn">Not applied</strong> <span class="sep">·</span> the change is no longer valid</span>
+    <span class="sub">Revalidated at apply time — the model this pointed at is no longer available.</span>
+  </div>
+
+  <div class="resolved">
+    <span style="color:var(--color-error)" aria-hidden="true">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+           stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><line x1="12" y1="7.5" x2="12" y2="13"/><circle cx="12" cy="16.4" r="1" fill="currentColor" stroke="none"/></svg>
+    </span>
+    <span><strong style="color:var(--color-error)">Failed</strong> <span class="sep">·</span> the change could not be saved</span>
+    <span class="sub">Nothing was written — the change was rolled back. Multi-agent sessions is still Off.</span>
+  </div>
+
+  <div class="resolved">
+    <span class="warn" aria-hidden="true">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+           stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 3.2a8.8 8.8 0 0 1 0 17.6Z" fill="currentColor" stroke="none"/></svg>
+    </span>
+    <span><strong class="warn">Partly applied</strong> <span class="sep">·</span> Git identity</span>
+    <span class="sub">The name was saved. The email failed — setting the identity is two separate commands.</span>
+  </div>
+
+  <div class="resolved">
+    <span class="muted" aria-hidden="true">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+           stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M9.6 9.3a2.5 2.5 0 1 1 2.9 3v1.2"/><circle cx="12.5" cy="16.6" r="1" fill="currentColor" stroke="none"/></svg>
+    </span>
+    <span><strong>Result not verified</strong> <span class="sep">·</span> the write threw and could not confirm its state</span>
+    <span class="sub">Shown as itself rather than as “applied” or “failed”, because it is neither.</span>
+  </div>
+
+  <div class="resolved">
+    <span class="muted" aria-hidden="true">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+           stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M9.6 9.3a2.5 2.5 0 1 1 2.9 3v1.2"/><circle cx="12.5" cy="16.6" r="1" fill="currentColor" stroke="none"/></svg>
+    </span>
+    <span><strong>Outcome unknown</strong> <span class="sep">·</span> ShipIt restarted while applying this</span>
+    <span class="sub">Check the setting. It is never retried on its own — the write may already have run.</span>
+  </div>
+
+  <div class="divider"></div>
+
+  <h2>Saved is not always live</h2>
+  <p class="note">A collection example, because this is where the distinction shows.</p>
+
+  <div class="resolved">
+    <span class="ok" aria-hidden="true">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+           stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><polyline points="8,12.5 11,15.5 16,9.5"/></svg>
+    </span>
+    <span><strong class="ok">Applied</strong> <span class="sep">·</span> added
+      <code style="font-family:ui-monospace,Menlo,monospace;font-size:12.5px">registry.npmjs.org</code> to the global allowlist</span>
+    <span class="sub">Saved. Applies to sessions started from now on — running containers are unchanged.
+      For a sandbox with network off it would say so instead: no restart grants a contained session the host.</span>
+  </div>
+  <p class="legend">
+    A write can also land <em>partly</em> — changing the git identity is two separate commands, so the name
+    can be saved and the email fail — or land with an outcome the writer cannot verify. Those are reported as
+    themselves rather than squeezed into “applied” or “failed”.
+    Reporting the case above as a plain “Applied” would tell the user the host is reachable now, which it is not.
+    A global allowlist write does no live reload; only a session-scoped one does. The same split covers
+    every write whose follow-up can fail after the value has landed — an update-channel change that then
+    fails to check for updates, an MCP change whose per-session refresh is fire-and-forget.
+  </p>
+
+  <div class="divider"></div>
+  <p class="legend" style="margin-top:18px">
+    Icons here are drawn in Phosphor’s regular style so this file stays self-contained.
+    The real component imports them from <code style="font-family:ui-monospace,Menlo,monospace">@phosphor-icons/react</code>
+    at <code style="font-family:ui-monospace,Menlo,monospace">ICON_SIZE.SM</code> / <code style="font-family:ui-monospace,Menlo,monospace">.MD</code>,
+    and uses tokens rather than the hex values at the top of this file.
+  </p>
+
+</div>
+<script>
+  const b = document.getElementById("t");
+  b.addEventListener("click", () => {
+    const r = document.documentElement;
+    const dark = r.classList.toggle("dark");
+    r.classList.toggle("light", !dark);
+    b.textContent = dark ? "Light" : "Dark";
+  });
+</script>
+</body>
+</html>
