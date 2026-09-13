@@ -110,7 +110,8 @@ export class ClaudeAdapter
   private _permissionPromptTool: string | undefined;
 
   // docs/297 — a goal control process resumes the live session id, so it must
-  // not run beside a turn; and it runs where the turn ran.
+  // not run beside a turn; and it runs where the turn ran. Tracks the CLI's own
+  // turns too, not just the ones ShipIt dispatched — see the assistant case below.
   private turnLive = false;
   private lastCwd: string | undefined;
   private spawnHomeOverride: string | undefined;
@@ -258,7 +259,15 @@ export class ClaudeAdapter
         return null;
 
       case "assistant":
-        if (!raw.parent_tool_use_id) this.recordCallContext(raw.message.usage);
+        if (!raw.parent_tool_use_id) {
+          this.recordCallContext(raw.message.usage);
+          // A turn the CLI starts itself (`startsOwnTurns`) reaches neither run()
+          // nor sendUserMessage(), so a top-level assistant event is the only
+          // signal that it is generating. Without it a goal command is written to
+          // a busy CLI, which surfaces it to the model as a mid-turn user message
+          // nobody sent. The orchestrator adopts on the same condition.
+          this.turnLive = true;
+        }
         return {
           type: "agent_assistant",
           content: raw.message.content,

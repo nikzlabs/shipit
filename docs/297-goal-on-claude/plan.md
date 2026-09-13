@@ -128,6 +128,14 @@ no gain.
 - `ClaudeAdapter.goalCommand(threadId, command)` picks one of three paths:
   - **A turn is running** → refused, for the concurrency reason above. The
     orchestrator turns that into the "wait for the turn to finish" notice.
+    "Running" means the CLI is generating, not that ShipIt dispatched the turn:
+    the flag is set by `run()` / `sendUserMessage()` **and** by any top-level
+    assistant event, which is the only signal a turn the CLI started itself
+    (`startsOwnTurns`) ever gives — the orchestrator adopts on the same
+    condition. A subagent's events, which carry `parent_tool_use_id`, do not set
+    it: those stream while the CLI itself is between turns. Without that second
+    source a `/goal` read reached a working CLI, which handed it to the model as
+    "The user sent a new message while you were working: /goal".
   - **A resident CLI is alive** → the command goes down its stdin. Live steering
     is on by default and keeps one CLI across turns, and the goal lives in *that
     process's* memory: a control process would clear a copy and leave the real
@@ -168,7 +176,10 @@ CLI's own word (`active`).
   arrives while a turn is running is refused with its own notice.
 - **Post-turn read (req 2).** `refreshAgentGoalAfterTurn` in
   `services/agent-goal.ts` runs on the runner's `idle` event — last of all,
-  after commit and PR work, with the agent process already gone. It reads the
+  after commit and PR work. The agent process is *not* necessarily gone: with
+  live steering on, `idle` means ShipIt's turn machinery settled, and the
+  resident CLI is still there and can already be in a turn of its own. The
+  adapter's own refusal is the guard, not the ordering. It reads the
   goal only when the session currently *shows* one, so a session without a goal
   costs nothing and the common case is unaffected. It is best effort: a
   container that goes away leaves the correction to the next activation read,
