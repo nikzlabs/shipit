@@ -46,22 +46,35 @@ Shipped in PR #2760, which resolved three things the design left open. Read
 - **`perCallIdHeaders` mints an id per resolution.** A constant `x-opencode-session` would
   put every background job on every install into one conversation.
 
+- [x] Migration making `usage_turns.session_id` nullable; null means install-level spend.
+- [x] An explicit background-work classification that does **not** depend on a harness id. Guard test: a direct pull-request call with a session id must stay out of `getPerTurnUsage` (`usage.ts:309`) and must not change the composer's context reading (`session-data.ts:471`). Prove the guard red by removing the classification.
+- [x] Usage records service and billing mode from the selection, not from execution. Test OpenCode Go: a `sub` mode called directly stays subscription usage.
+- [x] Install-wide reporting shows install-level rows; a session's own view does not.
+- [x] `UsageModal.tsx` renders the install-level background-work group install-wide, and a session's own view does not.
+
+Shipped in PR #2757. `sub_agent_id` turned out to carry the meaning "not the session's own turn"
+in **four** read paths, not the one the design named: the context dial, the last-credential-route
+lookup, the cumulative-baseline chain, and the cost-source default. All four now read the
+explicit classification. Two findings left for later, because they are outside the feature:
+install-wide usage is reachable only through a session, and the "All sessions" heading now also
+covers work that belongs to no session.
+
 - [ ] `NonTurnTarget` becomes a union on `execution`; fix every consumer the compiler names.
-- [ ] Migration making `usage_turns.session_id` nullable; null means install-level spend.
-- [ ] An explicit background-work classification that does **not** depend on a harness id. Guard test: a direct pull-request call with a session id must stay out of `getPerTurnUsage` (`usage.ts:309`) and must not change the composer's context reading (`session-data.ts:471`). Prove the guard red by removing the classification.
-- [ ] Usage records service and billing mode from the selection, not from execution. Test OpenCode Go: a `sub` mode called directly stays subscription usage.
-- [ ] Install-wide reporting shows install-level rows; a session's own view does not.
 - [ ] Background-work eligibility that does not require an installed harness.
 - [ ] Background-work option list not filtered by `agent.installed` (`model-choice.ts:32`), carried through bootstrap and credential-change updates.
 - [ ] Seeding and save validation in `services/settings.ts` accept an option with no installed harness.
 - [ ] `BackgroundWorkSection.tsx` derived line reads "Called directly · no harness, no container" where that is what runs; render test per state.
-- [ ] `UsageModal.tsx` renders the install-level background-work group install-wide, and a session's own view does not.
 
 ## Phase 3 — Both callers onto the executor
 
 - [ ] Pull-request path: resolve and execute above the no-session and no-runner gates (`non-turn-work.ts:231`, `:252`).
 - [ ] Session naming: extract prompt construction and result parsing from the `execFile` invocation in `session-namer.ts:443`; run the selected executor; keep its failure, usage and branch-finalisation behaviour.
 - [ ] Test that background work now succeeds with no session open and with the container reclaimed.
+
+**Sequencing, decided while shipping rather than in the design.** The union, the direct executor
+and the pull-request caller ship together, ahead of the selector work. A selector that offered a
+direct-call option before a resolver could run it would let the user save a choice that then
+fails, so the server side leads and the option list follows it.
 
 ## Phase 4 — Cleanup container, deadline, voice key
 
