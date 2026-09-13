@@ -7,8 +7,14 @@ description: Collapse every turn but the newest to the request and the reply, so
 # Design
 
 See [requirements](./requirements.md). This replaces the display rules of
-[docs/296-compact-conversation](../296-compact-conversation/plan.md), which stay
-in place until this work ships.
+[docs/296-compact-conversation](../296-compact-conversation/plan.md).
+
+**Implemented.** Key files: `src/client/components/MessageList/compact-turns.ts`
+(the display-turn split and the keep/hide rule),
+`hooks/useCompactConversation.ts` (the row views, the pending-card table and the
+one-way protection guard), `MessageList.tsx` (the expand button and the hoisted
+rollback notice), `TranscriptRow.tsx` (`collapseTools`), and, for the checklist's
+submitted state, `ws-handlers/send-message.ts` and `chat-history.ts`.
 
 Loading speed is designed separately, in
 [docs/300-transcript-load-speed](../300-transcript-load-speed/plan.md). That
@@ -92,10 +98,12 @@ media-bearing messages whole; this keeps that.
 **A code-rollback notice survives its row being hidden.** Verified at
 `rewind-complete.ts:8-12` and `TranscriptRow.tsx:161-167`: a code-only rewind
 sets `rolledBack` on every row from the gap and `codeRollbackHash` on the first
-of them, and the "Code rolled back to …" pill renders inside that row, beside
+of them, and the "Code rolled back to …" pill rendered inside that row, beside
 its bubble rather than within it. It sets neither `notice` nor `isError`, so
-rule 2 does not keep it. Render the pill even when the row's content is hidden,
-the same way docs/296 keeps the rewind gap outside the hidden bubble. Otherwise
+rule 2 does not keep it. The pill moves out of the row altogether, into the same
+between-rows position `MessageList` already uses for the rewind gap — one place
+rather than a copy on each side of a condition, and `shouldShowGapBefore`
+returns false for a rolled-back row so the two never compete. Otherwise
 rewinding code at the start of a multi-message response hides the explanation
 while leaving the reply that describes the reverted changes on screen.
 
@@ -118,6 +126,12 @@ selections, its free-text answers and its submitted state in component state
 turn and expands it again loses what they typed. That would contradict this
 design's own promise that nothing holding user input is remounted.
 
+**A hidden subtree still changes the row's height, so the reading anchor has to
+see it.** `CompactLayout` compares a per-row visibility string and does nothing
+when it is unchanged; a turn whose reply is kept and whose tools are hidden
+moves nothing in the row-hidden half. The string therefore carries three states
+per row rather than two.
+
 Instead, wrap the tool subtree in an element that carries the `hidden`
 attribute, exactly as the transcript already hides whole rows while leaving them
 mounted. The subtree keeps its state, and a collapse costs nothing.
@@ -135,12 +149,19 @@ person.
 | A release is proposed but not confirmed | `phase === "proposed"` (`ReleaseLifecycleCard.tsx:173`) |
 | A bug report is not filed | the card store, seeded on every load (`session-data.ts:331`) |
 | An action checklist was never submitted | a new `submittedAt`, below |
-| A question was never answered | the tool has no result (`message-tools.tsx:140` passes `result?.content` as `resolvedAnswer`) |
 
-The last row is the one exception to requirement 2's unconditional tool hiding,
-and requirement 12 is what grants it: an unanswered question is the product
-waiting on a person, whatever kind of element it renders as. A question with a
-result is ordinary history and hides with the rest.
+**No tool is ever kept, and requirement 2 has no exception.** An earlier draft
+carved one out for an unanswered question, reading "the tool has no result" as
+"still waiting on a person". Two things killed it. The signal does not exist on
+both harnesses: for Codex the worker emits the question card itself and the
+adapter drops the matching result (`codex-event-handler.ts`, the
+`isAskUserQuestionTool` early return), so **every** answered question would be
+pinned open for the life of the session — the retain-forever failure that
+removed the issue-write exception below. And the reading was wrong anyway: a
+question, or an unresolved plan approval, reaches a collapsed turn only after
+the user sent a later message, which is what ended the turn it sits in. The
+product is not waiting on it any more. Every case in the table above reads a
+source of truth that says *pending*; the absence of a result is not one.
 
 Two card kinds were considered and rejected. An **issue write** offers Undo
 indefinitely — verified at `issue.ts:96` and `IssueWriteCard.tsx:198`, the
@@ -165,8 +186,16 @@ column, so the field rides inside that JSON and an older row reads as never
 submitted, which is the correct default.
 
 **One message, recorded where the action is accepted.** The submission already
-sends the composed text as an ordinary message; carry the card id on that
-message and set `submittedAt` when the server accepts it. Do **not** add a
+sends the composed text as an ordinary message; it carries the card id as
+`actionChecklistCardId`, and `handleSendMessage` sets `submittedAt` at each of
+its three acceptance points — the steer, the queue and the ordinary dispatch.
+Not once, earlier: the paths do not share a later point, and every refusal after
+such a point (an attachment that will not resolve, a workspace that has gone
+away) would permanently hide a checklist whose message never reached the agent.
+Recording at acceptance fails safe in the other direction — a path that forgot
+the call would leave the card visible, which is requirement 12's default. The first submission wins — the field records
+that the user acted, not how often — and an `action_checklist_update` broadcast
+keeps every attached viewer in step without a reload. Do **not** add a
 second "I submitted" frame from the client: `handleSubmit`'s boolean means only
 that bytes reached an open socket — `useWebSocket.ts:18` disclaims server
 receipt — so the server can reject the action at its authentication gate
@@ -243,6 +272,14 @@ ghost text (`MessageList.tsx:331`). It keeps `aria-expanded` and
 `aria-controls`. No hidden-row count, and no failure status beside it —
 requirement 11 already keeps the error row on screen.
 
+docs/296's "Turn ended without an agent reply." note survives, on a narrower
+condition: a turn that keeps **nothing**, so its collapsed form is the button
+alone. The shipped rule showed it whenever the turn had no assistant *text*,
+which put the note beside a turn whose reply was an image — and suppressed it
+for a turn whose only content was an error row, where it was redundant anyway.
+Both are decided by the same classification that hides the rows, so the note
+cannot disagree with what is on screen.
+
 Follow the `design-language` skill: semantic color tokens only, no hardcoded
 palette values, `@phosphor-icons/react` for the icon.
 
@@ -271,6 +308,10 @@ agent message and all cards", which this design contradicts
   disagree only after a steer.
 - **Reuse `hideTools` for tools in a retained row.** Rejected: it unmounts the
   subtree and destroys unfinished input.
+- **Keep an unanswered question visible in a collapsed turn.** Rejected: the
+  Codex path records no result for an answered question, so the rule would pin
+  every question in the session open — and a question the user has already sent
+  a later message past is not one the product is waiting on.
 - **A turn id column.** Rejected: user-row boundaries already define a display
   turn, and a new column would need a backfill migration.
 
@@ -285,6 +326,8 @@ agent message and all cards", which this design contradicts
 - A prose row that also carries a standalone tool keeps its prose and hides the
   tool, and the tool keeps its state: type into a question's free-text field,
   collapse the turn, expand it, and the text is still there.
+- Expanding a turn whose only hidden content is a tool subtree restores the
+  reading position.
 - A turn whose last agent message is an image or a file keeps that message.
 - An appended error row does not displace the turn's ordinary reply.
 - A code rollback notice stays visible when its row is hidden.

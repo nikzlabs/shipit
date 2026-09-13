@@ -2,7 +2,9 @@ import { useMemo, useRef, useDeferredValue, type ReactNode } from "react";
 import { CompactLayout } from "./CompactLayout.js";
 import { useCompactConversation } from "./hooks/useCompactConversation.js";
 import { elementMessageIndex } from "./compact-turns.js";
+import { CaretDownIcon, CaretUpIcon } from "@phosphor-icons/react";
 import { Button } from "../ui/button.js";
+import { ICON_SIZE } from "../../design-tokens.js";
 import type { SearchMatch } from "../../hooks/useSearch.js";
 import { buildVisualElements, type VisualElement } from "../visual-elements.js";
 import { RewindPoint, type RewindGapAction } from "../RewindPoint.js";
@@ -19,7 +21,7 @@ import type { ChatMessage } from "./types.js";
 import { useMessageScroll } from "./hooks/useMessageScroll.js";
 import type { AnswerQuestionFn } from "../AskUserQuestion.js";
 import { SubAgentSpawnChipRow } from "./cards/SubAgentCards.js";
-import { TranscriptRow } from "./TranscriptRow.js";
+import { TranscriptRow, CodeRollbackNotice } from "./TranscriptRow.js";
 import { RowHandlersProvider, type RowHandlers } from "./row-context.js";
 import type { TrackerId } from "../../../server/shared/types.js";
 import type { AgentInterfaceProvenance } from "../../../server/shared/agent-interface-sdk/protocol.js";
@@ -88,7 +90,7 @@ export function MessageList({
 
   onAnswerQuestion?: AnswerQuestionFn;
 
-  onSendFollowUp?: (text: string) => boolean;
+  onSendFollowUp?: (text: string, options?: { actionChecklistCardId?: string }) => boolean;
   rewindPreviews?: Record<string, WsRewindPreview>;
   sessionTitle?: string;
   onRequestRewindPreview?: (gapPosition: number, action: RewindGapAction) => void;
@@ -282,7 +284,7 @@ export function MessageList({
 
   // planning#375 — every row is a memoized `TranscriptRow`. This loop must
 
-  const compact = useCompactConversation(messages, isLoading, deferred.sessionId, compactConversation, visualElements, matchesByMessage, containerRef);
+  const compact = useCompactConversation(messages, deferred.sessionId, compactConversation, visualElements, matchesByMessage, containerRef);
   const rows = visualElements.map((el, rowIndex) => {
     const view = compact.rows[rowIndex];
     const anchorIndex = elementMessageIndex(el);
@@ -293,29 +295,40 @@ export function MessageList({
       : el.kind === "standalone-tool" ? `st-${el.tool.id}`
       : `m-${el.index}`;
     const isBubble = el.kind === "message";
+    const anchorMsg = messages[anchorIndex];
+    // docs/299 — the rollback pill explains the response it sits above, so it
+    // lives between the rows rather than inside one a collapsed turn can hide.
+    const rollbackHash = isBubble && anchorMsg?.rolledBack ? anchorMsg.codeRollbackHash : undefined;
+    const showsSomething = !view.hidden || !!view.first || !!rollbackHash
+      || (isBubble && shouldShowGapBefore(el.index));
     return {
       key,
       // planning#491 — a row that can MOVE within the list must not be allowed
 
       movable: el.kind === "task-panel",
-      visible: !view.hidden || !!view.first || (isBubble && shouldShowGapBefore(el.index)),
+      visible: showsSomething,
       node: (
-        <div key={key} hidden={view.hidden && !view.first && !(isBubble && shouldShowGapBefore(el.index))}>
+        <div key={key} hidden={!showsSomething}>
           {view.first && view.run && (
-            <div className="text-xs text-(--color-text-secondary)">
-              <Button variant="ghost" size="sm"
+            <div className="text-xs text-(--color-text-secondary) flex items-center gap-2 py-0.5">
+              {/* req 8 — a real button, not ghost text that reads as content. */}
+              <Button variant="secondary" size="sm"
                 aria-expanded={view.open}
                 aria-controls={view.controls}
                 aria-label={`${view.open ? "Show compact turn" : "Show full turn"}: ${view.run.identity.text.slice(0, 80) || "Agent response"}`}
                 aria-disabled={view.search || undefined}
                 title={view.search ? "Revealed by the active search" : undefined}
                 onClick={() => { if (!view.search) compact.toggle(view.run, view.open); }}>
+                {view.open
+                  ? <CaretUpIcon size={ICON_SIZE.XS} weight="bold" />
+                  : <CaretDownIcon size={ICON_SIZE.XS} weight="bold" />}
                 {view.open ? "Show compact turn" : "Show full turn"}
               </Button>
-              {!view.open && !view.run.hasText && <span className="ml-2">Turn ended without an agent reply.</span>}
+              {!view.open && view.empty && <span>Turn ended without an agent reply.</span>}
             </div>
           )}
           {view.hidden && isBubble && shouldShowGapBefore(el.index) && renderRewindPoint(el.index)}
+          {rollbackHash && <CodeRollbackNotice hash={rollbackHash} />}
           <div id={`compact-row-${rowIndex}`} data-compact-content data-compact-index={anchorIndex} hidden={view.hidden}>
         <TranscriptRow
           el={el}
@@ -332,6 +345,7 @@ export function MessageList({
           rewindPreviews={rewindPreviews}
           showGapBefore={!view.hidden && isBubble && shouldShowGapBefore(el.index)}
           gapPreviousRole={isBubble ? previousRoleBefore(el.index) : null}
+          collapseTools={view.collapseTools}
         />
           </div>
         </div>
@@ -405,7 +419,12 @@ export function MessageList({
           to this scroll container via the ref so it never fires on the composer
           or other panels. */}
       <ChatQuoteReply containerRef={containerRef} />
-      <CompactLayout visibility={compact.rows.map((row) => row.hidden ? "1" : "0").join("")}
+      {/* One character per row, and it has to cover BOTH ways a row can change
+          height: "1" hidden, "t" shown with its tools hidden, "0" shown whole.
+          A turn whose reply is kept but whose tools are collapsed changes
+          nothing in the hidden half, so without "t" expanding it would move the
+          reading position. */}
+      <CompactLayout visibility={compact.rows.map((row) => row.hidden ? "1" : row.collapseTools ? "t" : "0").join("")}
         containerRef={containerRef} canRestoreReadingAnchor={canRestoreReadingAnchor}>
         {rowGroups}
       </CompactLayout>

@@ -18,7 +18,7 @@ import { formatProposalMessage, formatCommentSnapshot } from "../utils/action-ch
 export interface ActionChecklistCardProps {
   card: ActionChecklistCardData;
   /** Returns whether the message was accepted for delivery. */
-  onSubmit?: (text: string) => boolean;
+  onSubmit?: (text: string, options?: { actionChecklistCardId?: string }) => boolean;
 }
 
 const ACK_MS = 5000;
@@ -71,7 +71,9 @@ export function ActionChecklistCard({ card, onSubmit }: ActionChecklistCardProps
   const handleSubmit = useCallback(() => {
     const chosen = isSingle ? card.actions : card.actions.filter((a) => selected.has(a.id));
     if (chosen.length === 0) return;
-    const delivered = onSubmit?.(formatProposalMessage(card, chosen)) ?? false;
+    const delivered =
+      onSubmit?.(formatProposalMessage(card, chosen), { actionChecklistCardId: card.cardId })
+      ?? false;
     if (ackTimer.current) clearTimeout(ackTimer.current);
     if (!delivered) {
       setAckCount(null);

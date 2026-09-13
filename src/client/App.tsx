@@ -671,7 +671,7 @@ export default function App() {
   );
 
   const handleSendFollowUp = useCallback(
-    (text: string): boolean => {
+    (text: string, options?: { actionChecklistCardId?: string }): boolean => {
       const session = useSessionStore.getState();
       const pm = useSettingsStore
         .getState()
@@ -685,6 +685,10 @@ export default function App() {
           text,
           sessionId: session.sessionId,
           permissionMode: pm !== "auto" ? pm : undefined,
+          // docs/299 req 12 — the server marks the card submitted when it accepts this.
+          ...(options?.actionChecklistCardId
+            ? { actionChecklistCardId: options.actionChecklistCardId }
+            : {}),
         },
         bubble: { role: "user", text },
         activity: "Thinking...",

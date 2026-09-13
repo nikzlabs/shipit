@@ -38,7 +38,7 @@ export function ConversationSettings() {
         <span className="text-sm text-(--color-text-primary)">Compact completed turns</span>
         <ToggleSwitch enabled={enabled} onToggle={setEnabled} label="Compact completed turns" testId="settings-compact-conversation" />
       </div>
-      <p className="text-xs text-(--color-text-secondary)">Show the last agent message and all cards. Hide tool output and progress messages in finished turns.</p>
+      <p className="text-xs text-(--color-text-secondary)">Collapse every turn but the newest to your message and the last agent reply. Tool calls, progress messages and cards are hidden; errors stay, and so does a card that still needs you.</p>
       <p className="text-xs text-(--color-text-secondary)">Saved for this browser. Browser Find searches displayed content. In-app search can still find hidden message text.</p>
     </section>
   );

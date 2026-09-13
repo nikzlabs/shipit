@@ -152,6 +152,14 @@ export interface WsActionChecklistCard {
   card: ActionChecklistCard;
 }
 
+/** docs/299 — the server accepted a submission composed from this card. */
+export interface WsActionChecklistUpdate {
+  type: "action_checklist_update";
+  sessionId: string;
+  cardId: string;
+  submittedAt: string;
+}
+
 export interface WsBranchAutoResetCard {
   type: "branch_auto_reset_card";
   sessionId: string;

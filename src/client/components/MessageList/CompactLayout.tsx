@@ -8,6 +8,9 @@ interface Props {
 }
 interface Snapshot { node: HTMLElement; top: number }
 
+/** A row that is about to change height: hidden ("1"), or tools collapsed ("t"). */
+const hasCollapsedRow = (visibility: string) => visibility.includes("1") || visibility.includes("t");
+
 export class CompactLayout extends Component<Props, Record<string, never>, Snapshot | null> {
   private frame: number | undefined;
 
@@ -18,7 +21,7 @@ export class CompactLayout extends Component<Props, Record<string, never>, Snaps
   getSnapshotBeforeUpdate(previous: Props): Snapshot | null {
     const { visibility, containerRef, canRestoreReadingAnchor } = this.props;
     if (previous.visibility === visibility
-      || (!previous.visibility.includes("1") && !visibility.includes("1"))
+      || (!hasCollapsedRow(previous.visibility) && !hasCollapsedRow(visibility))
       || !canRestoreReadingAnchor()) return null;
     const root = containerRef.current;
     if (!root) return null;

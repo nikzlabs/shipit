@@ -25,7 +25,7 @@ export interface RowHandlers {
 
   findPlanContent: (exitPlanMsgIndex: number) => string | undefined;
   onAnswerQuestion?: AnswerQuestionFn;
-  onSendFollowUp?: (text: string) => boolean;
+  onSendFollowUp?: (text: string, options?: { actionChecklistCardId?: string }) => boolean;
   onSubmitBugReport?: (cardId: string, title: string, body: string) => void;
   onDismissBugReport?: (cardId: string) => void;
   onResolvePermission?: (requestId: string, behavior: "allow" | "deny", remember?: boolean) => void;

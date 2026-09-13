@@ -21,6 +21,8 @@ export interface WsSendMessage {
   /** Creation origin on the first message; ignored after warm graduation. */
   issueRef?: IssueRef;
   dictated?: boolean;
+  /** The action checklist this message was composed from; marks it submitted on acceptance. */
+  actionChecklistCardId?: string;
 }
 
 export interface WsAnswerQuestion {
