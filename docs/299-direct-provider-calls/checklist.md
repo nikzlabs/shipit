@@ -24,14 +24,28 @@ cleanup at all.
 
 ## Phase 2 — Catalogue contract, direct clients, usage
 
-- [ ] Per-credential direct-call capability, **absent means no**; author it per shipped service.
-- [ ] Author the two settled cases: Anthropic's API key may; Z.AI's coding plan may not.
-- [ ] API model id per model where it differs from the catalogue id — Anthropic's `haiku` alias is the founding case.
-- [ ] Declared endpoint join: base from the service, path suffix from the style. Cover `/v1`, `/api/v1`, `/api/paas/v4`.
-- [ ] Required request headers per credential, or declare that credential not directly callable. OpenCode Go needs a user agent and `x-opencode-session`.
-- [ ] `direct-provider/types.ts` with `DirectCall`, including cache-read and cache-write counts.
-- [ ] `anthropic-messages.ts` and `openai-chat-completions.ts` seeded from the deleted voice adapters; `openai-responses.ts` new.
-- [ ] Per-style test built from **real catalogue rows** — URL, API model id and headers. A fake-fetch shape assertion cannot fail on any of the three bugs above.
+- [x] Per-credential direct-call capability, **absent means no**; author it per shipped service.
+- [x] Author the two settled cases: Anthropic's API key may; Z.AI's coding plan may not.
+- [x] API model id per model where it differs from the catalogue id — Anthropic's `haiku` alias is the founding case.
+- [x] Declared endpoint join: base from the service, path suffix from the style. Cover `/v1`, `/api/v1`, `/api/paas/v4`.
+- [x] Required request headers per credential, or declare that credential not directly callable. OpenCode Go needs a user agent and `x-opencode-session`.
+- [x] `direct-provider/types.ts` with `DirectCall`, including cache-read and cache-write counts.
+- [x] `anthropic-messages.ts` and `openai-chat-completions.ts` seeded from the deleted voice adapters; `openai-responses.ts` new.
+- [x] Per-style test built from **real catalogue rows** — URL, API model id and headers. A fake-fetch shape assertion cannot fail on any of the three bugs above.
+
+Shipped in PR #2760, which resolved three things the design left open. Read
+`resolveDirectCall` in `src/server/shared/catalogue/index.ts` before building on it.
+
+- **An `account` credential can never declare the capability.** The declaration is still
+  per credential and still fails closed; `via: "string"` is now a necessary condition on
+  top, because every login integration is a credential the vendor issued for its own client
+  application, and a target resolved from one would have no credential to send anyway.
+- **The cache-token contract is a normalisation, not a pass-through.** Both OpenAI styles
+  report an input total that already includes the cached portion, so returning it beside the
+  cache counts would bill cached tokens at the uncached rate. The clients subtract.
+- **`perCallIdHeaders` mints an id per resolution.** A constant `x-opencode-session` would
+  put every background job on every install into one conversation.
+
 - [ ] `NonTurnTarget` becomes a union on `execution`; fix every consumer the compiler names.
 - [ ] Migration making `usage_turns.session_id` nullable; null means install-level spend.
 - [ ] An explicit background-work classification that does **not** depend on a harness id. Guard test: a direct pull-request call with a session id must stay out of `getPerTurnUsage` (`usage.ts:309`) and must not change the composer's context reading (`session-data.ts:471`). Prove the guard red by removing the classification.

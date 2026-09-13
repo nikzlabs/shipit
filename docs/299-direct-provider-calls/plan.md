@@ -25,7 +25,12 @@ the catalogue answers the question:
   client-bound.
 
 So each credential declaration gains a field saying whether it may be used for a direct call, and
-absent means no. Authoring it is per-service research into that vendor's terms — the same kind of
+absent means no. As built, `via: "string"` is a **necessary** condition on top of the declaration
+rather than a substitute for it: every login integration is a credential the vendor issued for its
+own client application, so an `account` credential may never declare the capability, while a
+pasted one still declares it explicitly or does without. `resolveDirectCall`
+(`shared/catalogue/index.ts`) is the single answer; `credentialPermitsDirectCall` says only what
+the terms allow, which is not the same question as what a shipped client can send. Authoring it is per-service research into that vendor's terms — the same kind of
 work as authoring a price. Two are already settled: Anthropic's API key may, and Z.AI's coding
 plan may not, because Z.AI's own documentation restricts it to supported tools.
 
@@ -91,7 +96,10 @@ type DirectCall = (req: {
 
 Cache-read and cache-write counts are separate because pricing treats them separately
 (`shared/codex-token-usage.ts:22`); folding them into `inputTokens` gives a wrong spend figure
-rather than a missing one.
+rather than a missing one. The same hazard runs the other way at the wire, and as built the
+clients normalise for it: both OpenAI styles report an input total that already **includes** the
+cached portion, so passing it through beside the cache counts prices cached tokens at the uncached
+rate.
 
 A fake-`fetch` test that asserts the request shape would pass while sending a harness alias to a
 wrong URL without a required header. So each style also needs a test built from **real catalogue
