@@ -25,7 +25,8 @@ const TABS = ["services", "roles", "integrations", "git", "instructions", "skill
 
 export interface SettingsProps {
   initialContent: string;
-  onSaveInstructions: (content: string) => void;
+  initialOpsContent: string;
+  onSaveInstructions: (content: string, opsContent: string) => void;
   githubStatus: { authenticated: boolean; username?: string; avatarUrl?: string };
   onGitHubTokenSubmit: (token: string) => Promise<void> | void;
   onGitHubLogout: () => void;
@@ -44,6 +45,7 @@ export interface SettingsProps {
 
 export function Settings({
   initialContent,
+  initialOpsContent,
   onSaveInstructions,
   githubStatus,
   onGitHubTokenSubmit,
@@ -63,12 +65,13 @@ export function Settings({
   const activeTab = useUiStore((s) => s.settingsTab) ?? "services";
   const setActiveTab = useUiStore((s) => s.setSettingsTab);
   const [content, setContent] = useState(initialContent);
+  const [opsContent, setOpsContent] = useState(initialOpsContent);
   const savedRef = useRef(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const handleSave = () => {
     savedRef.current = true;
-    onSaveInstructions(content);
+    onSaveInstructions(content, opsContent);
   };
 
   const handleClose = () => {
@@ -141,6 +144,8 @@ export function Settings({
             <InstructionsTab
               content={content}
               onContentChange={setContent}
+              opsContent={opsContent}
+              onOpsContentChange={setOpsContent}
               textareaRef={textareaRef}
               onSave={handleSave}
               onClose={onClose}

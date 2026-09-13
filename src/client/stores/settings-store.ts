@@ -145,6 +145,8 @@ interface SettingsState {
   providerAccountNotices: Partial<Record<LoginIntegrationId, ProviderAccountNotice>>;
   hasSystemPrompt: boolean;
   systemPromptContent: string;
+  /** Sent instead of systemPromptContent in an ops session. */
+  systemPromptOpsContent: string;
   /**
    * Default permission mode used by the pre-session (new-session) view and
    * as a fallback for any session that hasn't made an explicit choice yet.
@@ -282,6 +284,7 @@ interface SettingsState {
   setProviderAccountNotice: (loginId: LoginIntegrationId, notice: ProviderAccountNotice | null) => void;
   setHasSystemPrompt: (has: boolean) => void;
   setSystemPromptContent: (content: string) => void;
+  setSystemPromptOpsContent: (content: string) => void;
   setMemoryBudgetMb: (mb: number | null) => void;
   setAgentSystemInstructionsEnabled: (enabled: boolean) => void;
   setAgentSystemInstructions: (text: string) => void;
@@ -366,7 +369,7 @@ interface SettingsState {
   setPendingFiles: (files: FileContextRef[]) => void;
   reset: () => void;
 
-  saveInstructions: (content: string) => Promise<void>;
+  saveInstructions: (content: string, opsContent: string) => Promise<void>;
   submitGitHubToken: (token: string) => Promise<{
     repos: {
       fullName: string;
@@ -385,6 +388,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   providerAccountNotices: {},
   hasSystemPrompt: false,
   systemPromptContent: "",
+  systemPromptOpsContent: "",
   permissionMode: "auto",
   permissionModeBySession: getSavedPermissionModeBySession(),
   githubStatus: { authenticated: false },
@@ -447,6 +451,8 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   setHasSystemPrompt: (has) => set({ hasSystemPrompt: has }),
 
   setSystemPromptContent: (content) => set({ systemPromptContent: content }),
+
+  setSystemPromptOpsContent: (content) => set({ systemPromptOpsContent: content }),
 
   setMemoryBudgetMb: (mb) => set({ memoryBudgetMb: mb }),
 
@@ -685,18 +691,19 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
 
   reset: () => set({ pendingFiles: [] }),
 
-  saveInstructions: async (content) => {
+  saveInstructions: async (content, opsContent) => {
     const res = await fetch("/api/settings", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ systemPrompt: content }),
+      body: JSON.stringify({ systemPrompt: content, systemPromptOps: opsContent }),
     });
     if (!res.ok) {
       throw new Error(`Failed to save instructions: ${res.status}`);
     }
-    const result = await res.json() as { systemPrompt: string };
+    const result = await res.json() as { systemPrompt: string; systemPromptOps?: string };
     set({
       systemPromptContent: result.systemPrompt,
+      systemPromptOpsContent: result.systemPromptOps ?? "",
       hasSystemPrompt: !!result.systemPrompt,
     });
   },

@@ -9,6 +9,7 @@ import type { UsageManager } from "../usage.js";
 import type { AuthManager } from "../agents/claude/auth-manager.js";
 import type { AgentAuthManager } from "../agent-auth-manager.js";
 import type { PrepareRunParamsFn } from "../agent-run-params-prep.js";
+import type { SystemPromptScope } from "../global-system-prompt.js";
 import type { CredentialStore } from "../credential-store.js";
 import type { ProviderAccountManager } from "../provider-account-manager.js";
 import type { AgentRegistry } from "../../shared/agent-registry.js";
@@ -54,7 +55,7 @@ export interface ConnectionCtx {
   activateSession: (sessionId: string, opts?: ActivateSessionOptions) => void | Promise<void>;
 
   checkGitIdentity: (dir: string) => void;
-  readSystemPrompt: () => Promise<string | undefined>;
+  readSystemPrompt: (scope: SystemPromptScope) => Promise<string | undefined>;
   scheduleAutoPush: (git: GitManager, sessionId?: string) => void;
   clearLogBuffer: () => void;
 }

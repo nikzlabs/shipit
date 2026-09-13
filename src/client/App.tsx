@@ -274,6 +274,7 @@ export default function App() {
   const githubStatus = useSettingsStore((s) => s.githubStatus);
   const hasSystemPrompt = useSettingsStore((s) => s.hasSystemPrompt);
   const systemPromptContent = useSettingsStore((s) => s.systemPromptContent);
+  const systemPromptOpsContent = useSettingsStore((s) => s.systemPromptOpsContent);
   const agentSystemInstructionsEnabled = useSettingsStore(
     (s) => s.agentSystemInstructionsEnabled,
   );
@@ -839,6 +840,7 @@ export default function App() {
             harnessOnboardingCompletedAt?: string;
             gitIdentity: { name: string; email: string };
             systemPrompt: string;
+            systemPromptOps?: string;
             agents: AgentOption[];
             memoryBudgetMb?: number | null;
             agentSystemInstructionsEnabled?: boolean;
@@ -876,6 +878,9 @@ export default function App() {
         useSettingsStore
           .getState()
           .setSystemPromptContent(data.settings.systemPrompt);
+        useSettingsStore
+          .getState()
+          .setSystemPromptOpsContent(data.settings.systemPromptOps ?? "");
         useSettingsStore
           .getState()
           .setHasSystemPrompt(data.settings.systemPrompt.length > 0);
@@ -1201,10 +1206,10 @@ export default function App() {
     [send],
   );
 
-  const handleInstructionsSave = useCallback(async (content: string) => {
+  const handleInstructionsSave = useCallback(async (content: string, opsContent: string) => {
     await useSettingsStore
       .getState()
-      .saveInstructions(content)
+      .saveInstructions(content, opsContent)
       .catch(() => {});
     useUiStore.getState().setSettingsOpen(false);
   }, []);
@@ -1776,6 +1781,7 @@ export default function App() {
         {settingsOpen && (
           <Settings
             initialContent={systemPromptContent}
+            initialOpsContent={systemPromptOpsContent}
             onSaveInstructions={handleInstructionsSave}
             githubStatus={githubStatus}
             onGitHubTokenSubmit={async (token) => {

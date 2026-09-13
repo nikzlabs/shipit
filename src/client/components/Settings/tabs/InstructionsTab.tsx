@@ -7,6 +7,8 @@ const MAX_LENGTH = 50_000;
 export function InstructionsTab({
   content,
   onContentChange,
+  opsContent,
+  onOpsContentChange,
   textareaRef,
   onSave,
   onClose,
@@ -16,6 +18,8 @@ export function InstructionsTab({
 }: {
   content: string;
   onContentChange: (value: string) => void;
+  opsContent: string;
+  onOpsContentChange: (value: string) => void;
   textareaRef: RefObject<HTMLTextAreaElement | null>;
   onSave: () => void;
   onClose: () => void;
@@ -26,7 +30,8 @@ export function InstructionsTab({
   const [instructionsExpanded, setInstructionsExpanded] = useState(false);
 
   const charCount = content.length;
-  const isOverLimit = charCount > MAX_LENGTH;
+  const opsCharCount = opsContent.length;
+  const isOverLimit = charCount > MAX_LENGTH || opsCharCount > MAX_LENGTH;
 
   return (
     <SettingsTabPane
@@ -121,8 +126,35 @@ export function InstructionsTab({
         <span>
           Note: The agent also reads CLAUDE.md from your workspace root automatically.
         </span>
-        <span className={isOverLimit ? "text-(--color-error)" : ""}>
+        <span className={charCount > MAX_LENGTH ? "text-(--color-error)" : ""}>
           {charCount.toLocaleString()} / {MAX_LENGTH.toLocaleString()}
+        </span>
+      </div>
+
+      <div className="border-t border-(--color-border-secondary)" />
+
+      {/* Ops sessions take their own block: ShipIt's read-only host-debugging
+          instructions contradict ordinary project conventions (docs/014-system-prompt req 4). */}
+      <div>
+        <h3 className="text-sm font-medium text-(--color-text-primary) mb-1">Ops Session Instructions</h3>
+        <p className="text-xs text-(--color-text-secondary) mb-2">
+          Sent in an ops session <em>instead of</em> Your Instructions, which can contradict the
+          read-only host-debugging contract an ops session already carries. Leave it empty to send
+          no instructions of your own in an ops session.
+        </p>
+      </div>
+
+      <textarea
+        value={opsContent}
+        onChange={(e) => onOpsContentChange(e.target.value)}
+        placeholder="e.g. Report findings as a timeline. Never propose a host change without naming the evidence."
+        className="flex-1 min-h-20 w-full bg-(--color-bg-secondary) border border-(--color-border-secondary) rounded-md px-3 py-2 text-sm text-(--color-text-primary) placeholder-(--color-text-tertiary) resize-none focus:outline-none focus:border-(--color-border-focus)"
+        data-testid="settings-textarea-ops"
+      />
+
+      <div className="flex items-center justify-end text-xs text-(--color-text-secondary)">
+        <span className={opsCharCount > MAX_LENGTH ? "text-(--color-error)" : ""}>
+          {opsCharCount.toLocaleString()} / {MAX_LENGTH.toLocaleString()}
         </span>
       </div>
     </SettingsTabPane>

@@ -1,4 +1,5 @@
 ---
+issue: planning#545
 title: Your Instructions — user-written agent instructions
 description: What the user's own instructions must do, including a separate block for ops sessions whose internal instructions the general block can contradict.
 ---
@@ -19,18 +20,23 @@ What the user-written instruction blocks must do. The mechanism lives in
    one. ShipIt gives an ops session internal instructions of its own — the
    read-only host-debugging contract — and the general block can contradict
    them.
-5. The user writes and edits the ops block in Settings, in the same place as the
+5. An ops session receives only the ops block. It never receives the general
+   block. When the ops block is empty, an ops session receives no user
+   instructions.
+6. The user writes and edits the ops block in Settings, in the same place as the
    general block.
+7. Only an ops session has a block of its own. Every other session kind,
+   including a sandbox session, receives the general block.
 
 ## Open questions
 
-- In an ops session, does the ops block replace the general block, or is it
-  added to it? And when the ops block is empty, does an ops session receive the
-  general block, or no user instructions at all?
-- A sandbox session also receives internal instructions of its own. Does a
-  sandbox session get its own block too, or is the separate block only for ops
-  sessions?
+- (none)
 
 ## Resolved questions
 
-- (none yet)
+- 2026-09-13 — In an ops session, does the ops block replace the general block
+  or add to it, and what happens when the ops block is empty? Answer: replace
+  always. An empty ops block means an ops session receives no user
+  instructions, not a fall back to the general block (req 5).
+- 2026-09-13 — A sandbox session also receives internal instructions of its own.
+  Does it get a block too? Answer: ops only (req 7).

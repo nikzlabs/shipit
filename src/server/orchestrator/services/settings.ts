@@ -13,7 +13,7 @@ import { listCredentialRoutes, upsertSingleStringCredential } from "./credential
 import type { VoiceDeliveryMode } from "../../shared/types/voice-note-types.js";
 import { getGitIdentity, setGitIdentity as writeGitIdentity } from "../git-config.js";
 import { buildAgentSystemInstructions } from "../agent-instructions.js";
-import { readGlobalSystemPrompt, writeGlobalSystemPrompt } from "../global-system-prompt.js";
+import { readGlobalSystemPrompt, writeGlobalSystemPrompt, type SystemPromptScope } from "../global-system-prompt.js";
 import { ServiceError } from "./types.js";
 import type { AgentInfo, GlobalSettings, NonTurnModelResolved, NonTurnModelSelection, ReviewerPinPatch, ReviewerSlotView } from "./types.js";
 import type { ReviewerPin, ReviewerSlot, RoleView } from "../../shared/types/agent-types.js";
@@ -157,6 +157,7 @@ export async function getGlobalSettings(
     : { name: "", email: "" };
 
   const systemPrompt = (await readGlobalSystemPrompt(appWorkspaceDir)) ?? "";
+  const systemPromptOps = (await readGlobalSystemPrompt(appWorkspaceDir, "ops")) ?? "";
 
   const agents = listAgents(agentRegistry);
   const memoryBudgetMb = credentialStore?.getMemoryBudgetMb() ?? null;
@@ -195,9 +196,24 @@ export async function getGlobalSettings(
   const roles = credentialStore
     ? buildRoleSettings({ credentialStore, ...(providerAccountManager ? { providerAccountManager } : {}) })
     : [];
-  return { canRunTurns, harnessOnboardingCompletedAt, failoverCutoffs, accountSelectionMode, gitIdentity, systemPrompt, agents, memoryBudgetMb, agentSystemInstructionsEnabled, agentSystemInstructions, autoCreatePr, liveSteering, autoResolveConflicts, autoFixCi, autoResetMergedBranch, enableSubAgents, voiceDeliveryMode, voiceWebhookConfigured, providerAccounts, credentialRoutes, reviewers, roles,
+  return { canRunTurns, harnessOnboardingCompletedAt, failoverCutoffs, accountSelectionMode, gitIdentity, systemPrompt, systemPromptOps, agents, memoryBudgetMb, agentSystemInstructionsEnabled, agentSystemInstructions, autoCreatePr, liveSteering, autoResolveConflicts, autoFixCi, autoResetMergedBranch, enableSubAgents, voiceDeliveryMode, voiceWebhookConfigured, providerAccounts, credentialRoutes, reviewers, roles,
     ...(nonTurnModel ? { nonTurnModel } : {}),
     ...(nonTurnModelResolved ? { nonTurnModelResolved } : {}) };
+}
+
+async function writeSystemPromptScope(
+  appWorkspaceDir: string,
+  value: unknown,
+  scope: SystemPromptScope,
+): Promise<void> {
+  const content = typeof value === "string" ? value : "";
+  if (content.length > 50_000) {
+    throw new ServiceError(
+      400,
+      `${scope === "ops" ? "Ops session prompt" : "System prompt"} too long (max 50,000 characters)`,
+    );
+  }
+  await writeGlobalSystemPrompt(appWorkspaceDir, content, scope);
 }
 
 export function setGitIdentityService(
@@ -224,6 +240,8 @@ export interface SaveGlobalSettingsOptions {
   onAutoFixCiEnabled?: () => void;
   gitIdentity?: { name: string; email: string };
   systemPrompt?: string;
+  /** Sent instead of `systemPrompt` in an ops session. */
+  systemPromptOps?: string;
   /** null restores the host-derived budget. */
   memoryBudgetMb?: number | null;
   agentSystemInstructionsEnabled?: boolean;
@@ -247,7 +265,7 @@ export async function saveGlobalSettings(
   const {
     agentRegistry, appWorkspaceDir, credentialStore, providerAccountManager,
     onAutoResolveConflictsEnabled,
-    gitIdentity, systemPrompt, memoryBudgetMb,
+    gitIdentity, systemPrompt, systemPromptOps, memoryBudgetMb,
     agentSystemInstructionsEnabled, autoCreatePr, liveSteering,
     autoResolveConflicts, autoFixCi, autoResetMergedBranch, enableSubAgents, voiceDeliveryMode,
     failoverCutoffs, accountSelectionMode, nonTurnModel, reviewers, roles,
@@ -264,9 +282,11 @@ export async function saveGlobalSettings(
   }
 
   if (systemPrompt !== undefined) {
-    const content = typeof systemPrompt === "string" ? systemPrompt : "";
-    if (content.length > 50_000) throw new ServiceError(400, "System prompt too long (max 50,000 characters)");
-    await writeGlobalSystemPrompt(appWorkspaceDir, content);
+    await writeSystemPromptScope(appWorkspaceDir, systemPrompt, "standard");
+  }
+
+  if (systemPromptOps !== undefined) {
+    await writeSystemPromptScope(appWorkspaceDir, systemPromptOps, "ops");
   }
 
   if (memoryBudgetMb !== undefined) {
