@@ -8,10 +8,12 @@ description: A display preference that hides finished-turn detail and keeps card
 See [requirements](./requirements.md) and [interactive mockup](./mockup.html). The client implementation follows this design.
 
 > The display rules below are superseded by
-> [docs/299-lazy-collapsed-turns](../299-lazy-collapsed-turns/plan.md), which
-> collapses every turn but the newest, hides cards and all tool work, and stops
-> the hidden content from being loaded. That design is not implemented yet, so
-> what this document describes is what currently ships.
+> [docs/299-collapsed-turns](../299-collapsed-turns/plan.md), which collapses
+> every turn but the newest and hides cards and all tool work. Not sending the
+> hidden content is a separate feature,
+> [docs/300-transcript-load-speed](../300-transcript-load-speed/plan.md).
+> Neither is implemented yet, so what this document describes is what currently
+> ships.
 
 ## Experience
 
