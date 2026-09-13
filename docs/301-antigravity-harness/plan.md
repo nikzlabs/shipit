@@ -87,13 +87,18 @@ no credential. Each finding cites its capture.
   where a rule of the same shape was honoured. So for instructions and
   skills the plugin is the only proven path; MCP needs no plugin (the global
   `config/mcp_config.json` worked on its own, `global-mcp.ndjson`).
-- **`/compact` is not compaction** (`compact-b.ndjson`, item 14 probe): sent
-  as the prompt of a resumed conversation it reached the model as
-  `<USER_REQUEST>/compact</USER_REQUEST>`, no summary step ran, the CLI's own
-  transcript kept every step, and the model answered conversationally. The
-  binary compiles no `/compact` (its slash commands are `/status`, `/goal`,
-  `/model`, …) and carries only an automatic `context_summary` pre-invocation
-  hook. `supportsCompaction: false`, probed.
+- **`/compact` is not compaction** (`compact-a/b/c.ndjson`,
+  `compact-transcript_full.jsonl`, `compact-run.txt`; item 14 probe, run on
+  `gemini-3.7-flash-low`, and once before on 3.8 with the same outcome):
+  sent as the prompt of a resumed conversation it reached the model as
+  `<USER_REQUEST>/compact</USER_REQUEST>` (step 2 of the CLI's own
+  transcript, vendored), no summary step ran, every earlier step is still in
+  the transcript, the next turn's input tokens did not fall, and the model
+  answered conversationally ("I have noted the compaction request…").
+  Recall on the following turn worked. The binary compiles no `/compact`
+  (its slash commands are `/status`, `/goal`, `/model`, …; `strings` sweep,
+  not vendored) and carries only an automatic `context_summary`
+  pre-invocation hook. `supportsCompaction: false`, probed.
 - **Resume works and injects a notice** (`compact-b`, `compact-c`):
   `--conversation <id>` continued the conversation and recalled the codeword
   (`TANGERINE`). Every resumed print turn first emits a `system_message`
