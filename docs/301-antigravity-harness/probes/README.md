@@ -66,3 +66,37 @@ captures here come from a binary extracted into a directory sealed with
   lines for the two cases: it skips a non-writable install directory, and
   spawns a background update process for a writable one. The control is what
   shows the seal is doing the work.
+
+## Tools-off: the measurement that found nothing (1.1.27, 2026-09-13)
+
+`tools-off-1127.json`, `tools-off-1127-cli-log.txt`, `tools-off-probe.sh` — the
+search for a mechanism that empties this CLI's tool set, the way every other
+harness's entry in `src/server/shared/agent-tools-off.ts` was established.
+**It found none**, which is why that file refuses a tools-off run here.
+
+The negative control ran first and on purpose: a run with no flags sends **11**
+tool definitions, so a later zero would have been a real zero rather than a
+recorder that never captured a `tools` field. Five further configurations —
+`--mode plan`, `--sandbox`, `--agent`, an `--agent` with an absolute `geminiDir`,
+and a `permissions.deny: ["*"]` settings file with `--dangerously-skip-permissions`
+removed — each sent the same 11.
+
+Three things the captures settle that reading the CLI would not:
+
+- **There is no `--tools` family flag.** 1.1.27's `--help` offers no `--tools`,
+  `--allowed-tools` or `--disallowed-tools`.
+- **The permission layer is an approval gate, not a tool-set switch** — the same
+  trap as Claude's `--allowedTools ""`. The log line in
+  `tools-off-1127-cli-log.txt` shows `permissions=&{Allow:[] Deny:[*] Ask:[]}`
+  loaded and applied, and the body still carried all 11.
+- **An unresolved `--agent` name fails open**, like an unknown name in grok's
+  allowlist: the CLI logs `Agent "notools" not found, falling back to default`
+  and runs with the full set rather than refusing.
+
+`enabledTools` / `disabledTools` do exist in the binary, but on the MCP server
+struct in `mcp_config.json` — they gate MCP servers, and the control already
+sends 11 with no MCP server configured at all, so they cannot reduce it.
+`enable_write_tools` / `enable_mcp_tools` / `enable_subagent_tools` belong to the
+`define_subagent` schema, for subagents the agent spawns at runtime, and the
+binary's own text puts a floor under even those: "all subagents have read tools
+to research the codebase, and tools to communicate with other agents".

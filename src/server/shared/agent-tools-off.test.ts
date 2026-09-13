@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { allHarnesses } from "./catalogue/index.js";
 import {
   ANTIGRAVITY_TOOLS_OFF_REFUSAL,
   CLAUDE_TOOLS_OFF_ARGS,
@@ -64,6 +65,17 @@ describe("tools-off shaping", () => {
   it("antigravity refuses instead of answering with no flags", () => {
     expect(toolsOffRefusal("antigravity")).toBe(ANTIGRAVITY_TOOLS_OFF_REFUSAL);
     expect(() => toolsOffArgs("antigravity")).toThrow(ANTIGRAVITY_TOOLS_OFF_REFUSAL);
+  });
+
+  it("no harness answers tools-off with an empty arg list alone", () => {
+    // The failure the refusal exists to prevent: an empty list compiles and
+    // reads as "tools are off" while the harness keeps every tool. OpenCode is
+    // the only harness whose empty list is a real answer, because its config
+    // file carries the switch; any other must carry a refusal instead.
+    for (const { id } of allHarnesses()) {
+      if (toolsOffRefusal(id)) continue;
+      if (toolsOffArgs(id).length === 0) expect(id).toBe("opencode");
+    }
   });
 
   it("a measured harness carries no refusal", () => {

@@ -3,9 +3,11 @@ import type { AgentId } from "./types/agent-types.js";
 /**
  * Running a one-shot CLI with no tools, per harness (docs/299 req 8).
  *
- * Every entry was measured on 2026-09-13 against the pinned CLIs in
- * `docker/agent-cli/package.json` by pointing each harness at a stand-in API
- * server and counting the tool definitions in the request body it sent. That
+ * Every entry was measured on 2026-09-13 against the pinned CLIs — four in
+ * `docker/agent-cli/package.json`, antigravity in
+ * `docker/agent-cli/install-agent-clis.sh` — by pointing each harness at a
+ * stand-in API server and counting the tool definitions in the request body it
+ * sent. That
  * matters because the help text is not the behaviour: grok documents `--tools`
  * as an allowlist, and `--tools ""` still sent all 27 of its built-ins, while an
  * unrecognised name in the allowlist falls back to the full set rather than
@@ -52,17 +54,20 @@ export const GROK_TOOLS_OFF_ARGS: readonly string[] = [
 export const OPENCODE_TOOLS_OFF_CONFIG: Readonly<Record<string, boolean>> = { "*": false };
 
 /**
- * Antigravity has never been measured the way every entry above was, so ShipIt
- * has no flag set it can claim empties this CLI's tool set (planning#543). An
- * empty arg list would compile and would read as "tools are off" while the
- * harness kept every tool — the exact outcome tools-off exists to prevent — so a
- * tools-off run on this harness is refused instead. Refusing degrades well:
- * docs/299-direct-provider-calls req 9 inserts the raw transcript when a cleanup
- * run cannot finish.
+ * Antigravity was measured the same way and has no mechanism that empties its
+ * tool set, so a tools-off run is refused instead (planning#546). Every
+ * configuration tried on the pinned 1.1.27 sent the same 11 tool definitions as
+ * the no-flags control, including a deny-everything permissions file — that is
+ * an approval gate and leaves the definitions in place, the same trap as
+ * Claude's `--allowedTools ""`. What was tried, and the captures:
+ * `docs/301-antigravity-harness/probes/tools-off-1127.json`. Re-measure only
+ * against a newer pinned version. Refusing degrades well:
+ * docs/299-direct-provider-calls req 9 inserts the raw transcript when a
+ * cleanup run cannot finish.
  */
 export const ANTIGRAVITY_TOOLS_OFF_REFUSAL =
-  "Antigravity has no measured way to run with its tools off, so the run was refused"
-  + " rather than started with every tool live.";
+  "Antigravity has no way to run with its tools off — every configuration measured still"
+  + " sends its full tool set — so the run was refused rather than started with every tool live.";
 
 const TOOLS_OFF_REFUSALS = new Map<AgentId, string>([
   ["antigravity", ANTIGRAVITY_TOOLS_OFF_REFUSAL],
