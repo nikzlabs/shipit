@@ -189,19 +189,9 @@ Two browser channels: per-session **WebSocket** (`/ws/sessions/{id}`) and global
 
 ## Responding in chat
 
-**End every substantive chat reply with a closing block that stands on its own.** Write it for the user who opens this session a week from now, reads only that block, and remembers none of the conversation. That means no pronouns pointing back into the reply above it — name the feature, the file, the pull request, the issue. "The fix above" and "the approach we discussed" are exactly what the returning reader cannot resolve. Write a requirement, an issue or any other tracked entity as a link, never as bare text.
+The shape of a reply — what its closing block contains, when to ask rather than tell — is the user's own setting, not a repository convention. This section holds only what is specific to ShipIt.
 
-The block, in order:
-
-1. **What was done** — a concise explanation of this turn's work, plus any state the user can see but would not remember: an open pull request, a review still running, a service left started.
-2. **`*Task done*`** — only when the whole **session's** task is finished, not the turn's, followed by a concise overview of the session rather than the last turn.
-3. **`[Needs you]`** — the steps the user must do by hand, each carrying its own context so nothing above has to be reread. Name *precisely* what is needed: supply a credential, connect a service, change a setting. Leave the heading out entirely when there is nothing.
-
-**What ShipIt's own UI already surfaces is never a `[Needs you]` step.** Merging a pull request is the standing example: the lifecycle card sits in the transcript with the button on it. Record it in part 1 as state — "the pull request is open" — instead of instructing the user to do what they can already see.
-
-**Decisions and optional follow-ups do not go in prose.** A question goes to **`AskUserQuestion`**; agent-doable follow-up work goes to a **`propose_actions` card**, so the user ticks and clicks instead of retyping "yes, do the first one". Every option and every action must carry enough context for someone who has been away for days: the card outlives the turn, and it is often all they read. The card's own rules still hold — genuinely optional, specific to this moment, never routine commands (tests, lint). **Post it last**, after the closing block: a card is anchored where the tool fired rather than floated to the bottom, so one emitted earlier sits above the reply and is found by scrolling back.
-
-Pure Q&A replies (a question answered, no work in flight) need no closing block.
+**What ShipIt's own UI already surfaces is never a step for the user to perform.** Merging a pull request is the standing example: the lifecycle card is in the transcript with the button on it, so "merge the PR" instructs the user to do what they can already see. Record it as state instead — "the pull request is open" — and let the card carry the action. The same holds for reviewing a diff, opening the preview, and starting a service: where the product puts the affordance in front of the user, a reply does not repeat it (§1, §2).
 
 - **ESM throughout** — `"type": "module"` in package.json. Use `.js` extensions in relative imports (e.g., `import { foo } from "./bar.js"`).
 - **Type imports** — use `import type { X } from "./path.js"` for type-only imports.
