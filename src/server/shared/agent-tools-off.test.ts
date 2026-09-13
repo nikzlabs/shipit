@@ -9,6 +9,7 @@ import {
   toolsOffArgs,
   toolsOffRefusal,
 } from "./agent-tools-off.js";
+import { KNOWN_AGENT_IDS } from "./agent-registry.js";
 
 /**
  * These assert the shape each measurement established, not vendor trivia: every
@@ -82,5 +83,16 @@ describe("tools-off shaping", () => {
     for (const id of ["claude", "codex", "grok", "opencode"] as const) {
       expect(toolsOffRefusal(id)).toBeUndefined();
     }
+  });
+
+  // The two tests above pin which harnesses are measured and what an empty list
+  // may mean; neither fails on a harness nobody considered. Antigravity reached
+  // `main` between this module's branch point and its merge and turned the switch
+  // from exhaustive into a build break, so iterate the registry: a sixth harness
+  // is a decision recorded here.
+  it.each(KNOWN_AGENT_IDS)("%s is measured or refused, never assumed", (agentId) => {
+    const refusal = toolsOffRefusal(agentId);
+    if (refusal === undefined) expect(Array.isArray(toolsOffArgs(agentId))).toBe(true);
+    else expect(() => toolsOffArgs(agentId)).toThrow(refusal);
   });
 });
