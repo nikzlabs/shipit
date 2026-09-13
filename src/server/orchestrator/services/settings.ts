@@ -85,7 +85,10 @@ export function buildNonTurnModelSettings(
         modelId: resolution.target.selection.modelId,
         serviceName: resolution.target.serviceName,
         label: getModel(resolution.target.selection)?.label ?? resolution.target.selection.modelId,
-        harnessId: resolution.target.harnessId,
+        execution: resolution.target.execution,
+        ...(resolution.target.execution === "harness"
+          ? { harnessId: resolution.target.harnessId }
+          : {}),
         source: resolution.target.source,
       }
     : undefined;

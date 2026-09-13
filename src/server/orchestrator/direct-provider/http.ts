@@ -1,4 +1,4 @@
-import { DirectCallError } from "./types.js";
+import { DirectCallError, type DirectCallUsage } from "./types.js";
 
 /**
  * Deliberately generous on the text itself: at roughly four characters per
@@ -28,9 +28,15 @@ export function uncachedInput(
  * refusal, can return HTTP 200 carrying none — which would otherwise reach the
  * user as a silently blank result.
  */
-export function requireText(text: string, label: string, reason?: string): string {
+export function requireText(
+  text: string,
+  label: string,
+  reason?: string,
+  // It was still billed, so the counts ride on the error rather than vanishing.
+  usage?: DirectCallUsage,
+): string {
   if (text) return text;
-  throw new DirectCallError(502, `${label} returned no text${reason ? ` (${reason})` : ""}`);
+  throw new DirectCallError(502, `${label} returned no text${reason ? ` (${reason})` : ""}`, usage);
 }
 
 export async function postJson(

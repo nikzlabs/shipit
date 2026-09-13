@@ -495,7 +495,7 @@ export function useServerEvents(): void {
           modelId: string;
           serviceName: string;
           label: string;
-          harnessId: string;
+          harnessId?: string;
           source: "pinned" | "default";
         } | null;
       };

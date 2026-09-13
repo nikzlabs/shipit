@@ -114,6 +114,43 @@ describe("createOpenAiChatCompletionsCall", () => {
     });
   });
 
+  it("carries what a truncated completion was billed", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          choices: [{ message: { content: "" }, finish_reason: "length" }],
+          usage: {
+            prompt_tokens: 100,
+            completion_tokens: 900,
+            prompt_tokens_details: { cached_tokens: 60 },
+          },
+        }),
+        { status: 200 },
+      ),
+    );
+
+    await expect(callWith(fetchImpl, base)).rejects.toMatchObject({
+      usage: { inputTokens: 40, outputTokens: 900, cacheReadTokens: 60 },
+    });
+  });
+
+  it("treats a content shape the API forbids as a billed failure", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          choices: [{ message: { content: {} } }],
+          usage: { prompt_tokens: 100, completion_tokens: 900 },
+        }),
+        { status: 200 },
+      ),
+    );
+
+    await expect(callWith(fetchImpl, base)).rejects.toMatchObject({
+      name: "DirectCallError",
+      usage: { inputTokens: 100, outputTokens: 900 },
+    });
+  });
+
   it("reports the provider's status on a refusal", async () => {
     const fetchImpl = vi.fn().mockResolvedValue(new Response("nope", { status: 403 }));
 

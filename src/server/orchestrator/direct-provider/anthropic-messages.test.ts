@@ -106,6 +106,25 @@ describe("createAnthropicMessagesCall", () => {
     });
   });
 
+  it("carries what a textless answer was billed", async () => {
+    // The tokens were spent; a caller that dropped them would lose real money
+    // from every total (docs/299 req 7).
+    const fetchImpl = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          content: [],
+          stop_reason: "max_tokens",
+          usage: { input_tokens: 20, output_tokens: 900, cache_read_input_tokens: 60 },
+        }),
+        { status: 200 },
+      ),
+    );
+
+    await expect(callWith(fetchImpl, base)).rejects.toMatchObject({
+      usage: { inputTokens: 20, outputTokens: 900, cacheReadTokens: 60 },
+    });
+  });
+
   it("reports the provider's status on a refusal", async () => {
     const fetchImpl = vi.fn().mockResolvedValue(new Response("nope", { status: 429 }));
 
@@ -113,6 +132,26 @@ describe("createAnthropicMessagesCall", () => {
       name: "DirectCallError",
       status: 429,
     });
+  });
+
+  it("treats a block shape the API forbids as a billed failure", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({ content: [null], usage: { input_tokens: 100, output_tokens: 900 } }),
+        { status: 200 },
+      ),
+    );
+
+    await expect(callWith(fetchImpl, base)).rejects.toMatchObject({
+      name: "DirectCallError",
+      usage: { inputTokens: 100, outputTokens: 900 },
+    });
+  });
+
+  it("carries no counts when the request never reached a response body", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(new Response("nope", { status: 429 }));
+
+    await expect(callWith(fetchImpl, base)).rejects.toMatchObject({ usage: undefined });
   });
 
   it("reports a transport failure as a gateway error", async () => {

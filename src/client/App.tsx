@@ -867,7 +867,7 @@ export default function App() {
               modelId: string;
               serviceName: string;
               label: string;
-              harnessId: string;
+              harnessId?: string;
               source: "pinned" | "default";
             };
             reviewers?: ReviewerSlotView[];

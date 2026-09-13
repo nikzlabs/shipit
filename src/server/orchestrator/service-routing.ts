@@ -174,6 +174,19 @@ function stringSelectionFor(
   if (!harnessCanCarry(harnessId, { ...selection, via: "string" })) {
     return { ok: false, reason: "auth_required" };
   }
+  return stringRouteForSelection(selection, deps, opts);
+}
+
+/**
+ * Which stored string credential a selection would send, with no harness in the
+ * question — a direct provider call has none to carry it (docs/299 req 2), and
+ * must still obey the same ordering, failover cutoffs and refusal memory.
+ */
+export function stringRouteForSelection(
+  selection: ModelSelection,
+  deps: SelectRouteDeps,
+  opts: SelectAccountOptions = {},
+): AccountSelection {
   const exclude = new Set(opts.exclude ?? []);
   const stored = deps.credentialStore
     .listCredentialRoutes(selection.serviceId, selection.billingMode)

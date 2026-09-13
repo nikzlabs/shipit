@@ -73,7 +73,13 @@ export interface NonTurnModelSelection {
 export interface NonTurnModelResolved extends NonTurnModelSelection {
   serviceName: string;
   label: string;
-  harnessId: AgentId;
+  /**
+   * Absent where the work runs as a direct provider call — no harness, no
+   * container (docs/299 req 2). `execution` says which, so the client never has
+   * to read an absence as a state.
+   */
+  harnessId?: AgentId;
+  execution: "harness" | "direct";
   source: "pinned" | "default";
 }
 

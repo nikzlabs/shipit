@@ -128,6 +128,45 @@ describe("createOpenAiResponsesCall", () => {
     await expect(callWith(fetchImpl, base)).rejects.toBeInstanceOf(DirectCallError);
   });
 
+  it("carries what a run that spent its budget on reasoning was billed", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          status: "incomplete",
+          incomplete_details: { reason: "max_output_tokens" },
+          output: [{ type: "reasoning", content: [] }],
+          usage: {
+            input_tokens: 100,
+            output_tokens: 6763,
+            input_tokens_details: { cached_tokens: 60 },
+          },
+        }),
+        { status: 200 },
+      ),
+    );
+
+    await expect(callWith(fetchImpl, base)).rejects.toMatchObject({
+      usage: { inputTokens: 40, outputTokens: 6763, cacheReadTokens: 60 },
+    });
+  });
+
+  it("carries what a completed run that wrote no message item was billed", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          status: "completed",
+          output: [{ type: "reasoning", content: [] }],
+          usage: { input_tokens: 100, output_tokens: 900 },
+        }),
+        { status: 200 },
+      ),
+    );
+
+    await expect(callWith(fetchImpl, base)).rejects.toMatchObject({
+      usage: { inputTokens: 100, outputTokens: 900 },
+    });
+  });
+
   it("fails on a completed run that wrote no message item", async () => {
     const fetchImpl = vi.fn().mockResolvedValue(
       new Response(
@@ -137,6 +176,24 @@ describe("createOpenAiResponsesCall", () => {
     );
 
     await expect(callWith(fetchImpl, base)).rejects.toBeInstanceOf(DirectCallError);
+  });
+
+  it("treats an output shape the API forbids as a billed failure", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          status: "completed",
+          output: [null],
+          usage: { input_tokens: 100, output_tokens: 900 },
+        }),
+        { status: 200 },
+      ),
+    );
+
+    await expect(callWith(fetchImpl, base)).rejects.toMatchObject({
+      name: "DirectCallError",
+      usage: { inputTokens: 100, outputTokens: 900 },
+    });
   });
 
   it("accepts a gateway that reports no status", async () => {

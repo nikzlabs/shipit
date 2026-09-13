@@ -1,6 +1,6 @@
 import { DIRECT_CALL_PATHS, joinEndpoint } from "../../shared/catalogue/index.js";
 import { maxOutputTokens, postJson, requireText, uncachedInput } from "./http.js";
-import { DirectCallError, type DirectCall } from "./types.js";
+import { DirectCallError, type DirectCall, type DirectCallUsage } from "./types.js";
 
 const LABEL = "OpenAI Responses";
 
@@ -45,33 +45,38 @@ export function createOpenAiResponsesCall(fetchImpl: typeof fetch = fetch): Dire
       LABEL,
     )) as ResponsesResponse;
 
-    // A run that stopped early can answer 200 with partial text or none at all,
-    // which is indistinguishable from a short complete answer.
-    if (data.status !== undefined && FAILED_STATUSES.has(data.status)) {
-      throw new DirectCallError(
-        502,
-        `${LABEL} did not complete: ${data.status}${
-          data.incomplete_details?.reason ? ` (${data.incomplete_details.reason})` : ""
-        }`,
-      );
-    }
-
-    const text = (data.output ?? [])
-      .filter((item) => item.type === "message")
-      .flatMap((item) => item.content ?? [])
-      .filter((block) => block.type === "output_text")
-      .map((block) => block.text ?? "")
-      .join("")
-      .trim();
     const cacheRead = data.usage?.input_tokens_details?.cached_tokens;
     const cacheWrite = data.usage?.input_tokens_details?.cache_write_tokens;
-    return {
-      text: requireText(text, LABEL, data.status),
+    const usage: DirectCallUsage = {
       // input_tokens counts both cache portions; DirectCallResult is disjoint.
       inputTokens: uncachedInput(data.usage?.input_tokens, cacheRead, cacheWrite),
       outputTokens: data.usage?.output_tokens,
       cacheReadTokens: cacheRead,
       cacheCreateTokens: cacheWrite,
     };
+
+    // A run that stopped early can answer 200 with partial text or none at all,
+    // which is indistinguishable from a short complete answer. It was billed
+    // either way, so its counts travel with the failure.
+    if (data.status !== undefined && FAILED_STATUSES.has(data.status)) {
+      throw new DirectCallError(
+        502,
+        `${LABEL} did not complete: ${data.status}${
+          data.incomplete_details?.reason ? ` (${data.incomplete_details.reason})` : ""
+        }`,
+        usage,
+      );
+    }
+
+    // Optional chaining throughout: an item shape the API forbids must end as a
+    // billed failure, not as a TypeError that loses the reported counts.
+    const text = (data.output ?? [])
+      .filter((item) => item?.type === "message")
+      .flatMap((item) => item.content ?? [])
+      .filter((block) => block?.type === "output_text")
+      .map((block) => block.text ?? "")
+      .join("")
+      .trim();
+    return { text: requireText(text, LABEL, data.status, usage), ...usage };
   };
 }

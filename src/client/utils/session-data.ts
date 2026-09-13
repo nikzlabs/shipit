@@ -102,7 +102,7 @@ interface BootstrapResponse {
       modelId: string;
       serviceName: string;
       label: string;
-      harnessId: string;
+      harnessId?: string;
       source: "pinned" | "default";
     };
 
