@@ -44,6 +44,16 @@ afterEach(async () => {
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 
+function repo(fullName: string) {
+  return {
+    fullName,
+    description: null,
+    private: false,
+    defaultBranch: "main",
+    cloneUrl: `https://github.com/${fullName}.git`,
+  };
+}
+
 describe("GitHub repo search via HTTP", () => {
   it("returns empty array for short queries", async () => {
     const res = await app.inject({ method: "GET", url: "/api/github/repos?q=a" });
@@ -61,5 +71,52 @@ describe("GitHub repo search via HTTP", () => {
       fullName: "test-user/test-repo",
       cloneUrl: "https://github.com/test-user/test-repo.git",
     });
+  });
+
+  it("includes a personal repo GitHub's search never returned", async () => {
+    await githubAuth.setToken("test-token");
+    githubAuth.setUserRepos([repo("test-user/invoices")]);
+    githubAuth.setSearchRepos([]);
+
+    const res = await app.inject({ method: "GET", url: "/api/github/repos?q=invoices" });
+
+    expect(res.json().repos.map((r: { fullName: string }) => r.fullName)).toEqual(["test-user/invoices"]);
+  });
+
+  it("ranks a matching personal repo above the search results", async () => {
+    await githubAuth.setToken("test-token");
+    githubAuth.setUserRepos([repo("test-user/notes")]);
+    githubAuth.setSearchRepos([repo("popular/notes"), repo("other/notes-app")]);
+
+    const res = await app.inject({ method: "GET", url: "/api/github/repos?q=notes" });
+
+    expect(res.json().repos.map((r: { fullName: string }) => r.fullName)).toEqual([
+      "test-user/notes",
+      "popular/notes",
+      "other/notes-app",
+    ]);
+  });
+
+  it("lists recent personal repos without searching when the query is too short", async () => {
+    await githubAuth.setToken("test-token");
+    githubAuth.setUserRepos([repo("test-user/recent")]);
+
+    for (const q of ["", "a", "%20%20b%20"]) {
+      const res = await app.inject({ method: "GET", url: `/api/github/repos?q=${q}` });
+      expect(res.json().repos.map((r: { fullName: string }) => r.fullName)).toEqual(["test-user/recent"]);
+    }
+    expect(githubAuth.searchReposCalls).toEqual([]);
+  });
+
+  it("caps the default listing, keeping the most recently pushed", async () => {
+    await githubAuth.setToken("test-token");
+    githubAuth.setUserRepos(Array.from({ length: 40 }, (_, i) => repo(`test-user/r-${i}`)));
+
+    const res = await app.inject({ method: "GET", url: "/api/github/repos?q=" });
+
+    const fullNames = res.json().repos.map((r: { fullName: string }) => r.fullName);
+    expect(fullNames).toHaveLength(15);
+    expect(fullNames[0]).toBe("test-user/r-0");
+    expect(fullNames[14]).toBe("test-user/r-14");
   });
 });
