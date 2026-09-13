@@ -59,17 +59,33 @@ explicit classification. Two findings left for later, because they are outside t
 install-wide usage is reachable only through a session, and the "All sessions" heading now also
 covers work that belongs to no session.
 
-- [ ] `NonTurnTarget` becomes a union on `execution`; fix every consumer the compiler names.
-- [ ] Background-work eligibility that does not require an installed harness.
-- [ ] Background-work option list not filtered by `agent.installed` (`model-choice.ts:32`), carried through bootstrap and credential-change updates.
-- [ ] Seeding and save validation in `services/settings.ts` accept an option with no installed harness.
-- [ ] `BackgroundWorkSection.tsx` derived line reads "Called directly · no harness, no container" where that is what runs; render test per state.
+- [x] `NonTurnTarget` becomes a union on `execution`; fix every consumer the compiler names.
+- [x] Background-work eligibility that does not require an installed harness.
+- [x] Background-work option list not filtered by `agent.installed` (`model-choice.ts:32`), carried through bootstrap and credential-change updates.
+- [x] Seeding and save validation in `services/settings.ts` accept an option with no installed harness.
+- [x] `BackgroundWorkSection.tsx` derived line reads "Called directly · no harness, no container" where that is what runs; render test per state.
+
+Shipped in PR #2762 (the union and eligibility) and PR #2766 (the option list, validation and the
+derived line). The selector slice also added a filter nobody planned: `backgroundWorkHarnessFor`
+in `non-turn-model.ts` now skips a harness carrying a `toolsOffRefusal`, so one that cannot run
+with its tools off is never selected for background work at all.
 
 ## Phase 3 — Both callers onto the executor
 
-- [ ] Pull-request path: resolve and execute above the no-session and no-runner gates (`non-turn-work.ts:231`, `:252`).
+- [x] Pull-request path: resolve and execute above the no-session and no-runner gates (`non-turn-work.ts:231`, `:252`).
+- [x] Test that background work now succeeds with no session open and with the container reclaimed.
 - [ ] Session naming: extract prompt construction and result parsing from the `execFile` invocation in `session-namer.ts:443`; run the selected executor; keep its failure, usage and branch-finalisation behaviour.
-- [ ] Test that background work now succeeds with no session open and with the container reclaimed.
+
+**Naming's defect is worse than "it takes the slower route", and the fix must remove both halves.**
+`services/graduate-session.ts` resolves with `harnessOnly: true` — the last caller of that option.
+On an install whose background-work choice resolves direct-only, that yields `pin_unavailable`,
+so the session gets **no generated name** *and* a failure card saying the model's credential or
+harness is gone, while the credential is present and working. The false cause is the damaging
+part: it sends the user to Settings to repair nothing. Found by the selector slice, verified
+against `main`. A second decision rides with it — once `harnessOnly` goes, the new
+`toolsOffRefusal` filter becomes what keeps naming off an unusable harness, but naming's
+orchestrator-side `execFile` path passes no tools-off flag today, so the two paths disagree about
+what "can run background work" means.
 
 **Sequencing, decided while shipping rather than in the design.** The union, the direct executor
 and the pull-request caller ship together, ahead of the selector work. A selector that offered a
