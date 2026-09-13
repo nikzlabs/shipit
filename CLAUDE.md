@@ -187,16 +187,7 @@ Two browser channels: per-session **WebSocket** (`/ws/sessions/{id}`) and global
 - **Update docs when done** — update the relevant `plan.md` with new subsystems, patterns, or key files you added. Mark completed checklist items with `[x]`.
 - **Update shipit-docs when changing agent-facing behavior** — when changing platform behavior visible to the agent inside session containers (preview config, shipit.yaml schema, container environment, GitHub integration), update the corresponding file in `src/server/shipit-docs/`. These docs are baked into the session worker image at `/shipit-docs/` and are the agent's primary reference for the platform.
 
-## Responding in chat
-
-**End every substantive chat reply with a `Next steps` markdown list, and put in it only what a human has to do.** Each item opens with `[needs you]` and names *precisely* what is needed, not just that something is: supply a credential, connect a service, change a setting, answer a question, decide between two designs.
-
-**Two things never go in that list.**
-
-- **What ShipIt's own UI already surfaces.** Merging a pull request is the standing example: the PR lifecycle card is in the transcript with the button on it, so "merge the PR" tells the user what they can already see while making a list that is supposed to be short one item longer. Same for reviewing the diff, opening the preview, or starting a service — where the product puts the affordance in front of the user, the list does not repeat it.
-- **Anything the agent could do itself.** Follow-up work, a spin-off session, a doc to update, a second opinion to fetch: those go in a **`propose_actions` card**, so the user ticks and clicks instead of typing "yes, do the first one" back. A suggestion the user has to retype is one the agent left half-made. The card's own rules still hold — genuinely optional and specific to this moment, never routine commands (tests, lint), and never the same suggestion in both the card and the prose. **Post it last**, after the `Next steps` line: a card is anchored where the tool fired rather than floated to the bottom, so one emitted before the reply sits above it and is found by scrolling back.
-
-When nothing is blocked on the user, write `Next steps: none`. A card of follow-ups is not a reason to skip the line: the two answer different questions — *is anything waiting on me?* and *what else could be done?* Pure Q&A replies (a question answered, no work in flight) need neither.
+## Code style
 
 - **ESM throughout** — `"type": "module"` in package.json. Use `.js` extensions in relative imports (e.g., `import { foo } from "./bar.js"`).
 - **Type imports** — use `import type { X } from "./path.js"` for type-only imports.

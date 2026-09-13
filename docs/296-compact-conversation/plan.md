@@ -7,6 +7,14 @@ description: A display preference that hides finished-turn detail and keeps card
 
 See [requirements](./requirements.md) and [interactive mockup](./mockup.html). The client implementation follows this design.
 
+> The display rules below are superseded by
+> [docs/299-collapsed-turns](../299-collapsed-turns/plan.md), which collapses
+> every turn but the newest and hides cards and all tool work. Not sending the
+> hidden content is a separate feature,
+> [docs/300-transcript-load-speed](../300-transcript-load-speed/plan.md).
+> Neither is implemented yet, so what this document describes is what currently
+> ships.
+
 ## Experience
 
 Add **Conversation** under Settings → Advanced, next to other local preferences. Label: **Compact completed turns**. Help: “Show the last agent message and all cards. Hide tool output and progress messages in finished turns.” Default off. Add a short note: “Saved for this browser. In-app search includes hidden messages. Browser Find searches displayed content in compact mode.” Reuse the existing toggle. A new settings tab for one switch is unnecessary.
