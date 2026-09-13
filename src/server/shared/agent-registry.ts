@@ -16,7 +16,7 @@ import { readInstalledHarnesses } from "./installed-harnesses.js";
 
 const execFileAsync = promisify(execFile);
 
-export { CLAUDE_TOOL_NAMES, CODEX_TOOL_NAMES, GROK_TOOL_NAMES, OPENCODE_TOOL_NAMES } from "./agent-tool-names.js";
+export { ANTIGRAVITY_TOOL_NAMES, CLAUDE_TOOL_NAMES, CODEX_TOOL_NAMES, GROK_TOOL_NAMES, OPENCODE_TOOL_NAMES } from "./agent-tool-names.js";
 
 // Catalogue order determines defaults; these lists are not credential-filtered.
 export const CLAUDE_MODELS = catalogueModelIdsForHarness("claude");
@@ -84,6 +84,7 @@ export function getAgentDisplayName(id: AgentId): string {
 const AUTH_ENV_KEYS: Partial<Record<AgentId, string>> = {
   codex: "OPENAI_API_KEY",
   grok: "XAI_API_KEY",
+  antigravity: "GEMINI_API_KEY",
 };
 
 export function getAuthEnvKey(agentId: AgentId): string | null {

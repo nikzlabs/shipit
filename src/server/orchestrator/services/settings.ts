@@ -6,7 +6,7 @@ import type { AgentRegistry } from "../../shared/agent-registry.js";
 import { isAllowedAgentEnvKey } from "../../shared/agent-registry.js";
 import type { AccountSelectionMode, AgentId, CredentialRoute, FailoverCutoffs } from "../../shared/types.js";
 import { credentialModeKey, DEFAULT_FAILOVER_CUTOFF, DEFAULT_SELECTION_MODE, parseCredentialModeKey } from "../../shared/types.js";
-import { allServices, credentialModeForStorageEnv, getMode, getModel, getService, loginIntegrationForService, nativeServiceForHarness } from "../../shared/catalogue/index.js";
+import { allHarnesses, allServices, credentialModeForStorageEnv, getMode, getModel, getService, loginIntegrationForService, nativeServiceForHarness } from "../../shared/catalogue/index.js";
 import { firstEligibleNonTurnSelection, harnessForNonTurnSelection, resolveNonTurnModel } from "../non-turn-model.js";
 import { listConfiguredCredentials } from "../service-routing.js";
 import { listCredentialRoutes, upsertSingleStringCredential } from "./credential-routes.js";
@@ -723,7 +723,9 @@ function requireSubscriptionModeKey(key: string): { serviceId: string; billingMo
 }
 
 function requireAccountService(provider: AgentId): string {
-  if (provider !== "claude" && provider !== "codex" && provider !== "opencode" && provider !== "grok") {
+  // The catalogue is the list; a hand-maintained one silently rejects every new
+  // harness's sign-in before its auth manager is ever reached.
+  if (!allHarnesses().some((h) => h.id === provider)) {
     throw new ServiceError(400, "Unknown provider");
   }
   // A native service can use keys without supporting account login.

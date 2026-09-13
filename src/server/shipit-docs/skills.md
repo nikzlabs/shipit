@@ -15,6 +15,10 @@ ShipIt surfaces two kinds of skill directories under the workspace:
   `/`-invoked like Claude's. Grok also natively reads `.claude/skills/`
   (verified, docs/274), so on a Grok session both directories' skills are
   disclosed.
+- On an **Antigravity** session, `.claude/skills/` is the only skills directory:
+  the CLI reads no workspace skills at all (probed, docs/301), so ShipIt
+  discloses them through a per-spawn plugin instead. They invoke as
+  `/<name>`, like Claude's.
 - `<workspace>/<agent-dir>/skills/<plugin>__<skill>/SKILL.md` — skills the user
   installed from a marketplace via **Settings → Skills**
   (docs/149). These have a sentinel `.shipit-installed.json` file next to the

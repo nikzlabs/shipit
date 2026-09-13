@@ -4,6 +4,7 @@ import { CLAUDE_PARALLEL_SESSIONS_SECTION } from "./agents/claude/system-prompt.
 import { CODEX_PARALLEL_SESSIONS_SECTION } from "./agents/codex/system-prompt.js";
 import { OPENCODE_PARALLEL_SESSIONS_SECTION } from "./agents/opencode/system-prompt.js";
 import { GROK_PARALLEL_SESSIONS_SECTION } from "./agents/grok/system-prompt.js";
+import { ANTIGRAVITY_PARALLEL_SESSIONS_SECTION } from "./agents/antigravity/system-prompt.js";
 
 // Settings also uses this builder without app dependency injection.
 const PARALLEL_SESSIONS_SECTIONS: ReadonlyMap<AgentId, string> = new Map([
@@ -11,6 +12,7 @@ const PARALLEL_SESSIONS_SECTIONS: ReadonlyMap<AgentId, string> = new Map([
   ["codex", CODEX_PARALLEL_SESSIONS_SECTION],
   ["opencode", OPENCODE_PARALLEL_SESSIONS_SECTION],
   ["grok", GROK_PARALLEL_SESSIONS_SECTION],
+  ["antigravity", ANTIGRAVITY_PARALLEL_SESSIONS_SECTION],
 ]);
 
 export interface AgentSystemInstructionOptions {

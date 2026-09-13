@@ -10,6 +10,7 @@ const PROVIDER_LABEL: Record<AgentId, string> = {
   codex: "Codex",
   opencode: "OpenCode",
   grok: "Grok Build",
+  antigravity: "Antigravity",
 };
 
 export class ProviderRouteUnavailableError extends Error {

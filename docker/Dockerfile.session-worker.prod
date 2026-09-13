@@ -118,7 +118,8 @@ RUN mkdir -p /workspace /credentials /home/shipit /home/shipit/.local/share \
  && ln -s /credentials/.codex /home/shipit/.codex \
  && ln -s /credentials/.local/share/opencode /home/shipit/.local/share/opencode \
  && ln -s /credentials/.grok /home/shipit/.grok \
- && chown -h shipit:shipit /home/shipit/.claude /home/shipit/.claude.json /home/shipit/.codex /home/shipit/.local/share/opencode /home/shipit/.grok \
+ && ln -s /credentials/.gemini /home/shipit/.gemini \
+ && chown -h shipit:shipit /home/shipit/.claude /home/shipit/.claude.json /home/shipit/.codex /home/shipit/.local/share/opencode /home/shipit/.grok /home/shipit/.gemini \
  && chown shipit:shipit /home/shipit/.local /home/shipit/.local/share
 
 ENV HOME=/home/shipit

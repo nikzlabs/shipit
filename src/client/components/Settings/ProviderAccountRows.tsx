@@ -84,6 +84,7 @@ const harnessNames: Record<AgentId, string> = {
   codex: "Codex",
   opencode: "OpenCode",
   grok: "Grok Build",
+  antigravity: "Antigravity",
 };
 
 function NoticeLine({

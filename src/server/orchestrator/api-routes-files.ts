@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import { etagFor, matchesIfNoneMatch } from "./http-etag.js";
 import path from "node:path";
+import { knownAgentId } from "../shared/catalogue/index.js";
 import { createReadStream } from "node:fs";
 import type { FastifyInstance } from "fastify";
 import type { ApiDeps } from "./api-routes.js";
@@ -238,11 +239,7 @@ export async function registerFileRoutes(
       const dir = resolveSessionDir(sessionManager, request.params.id, reply);
       if (!dir) return;
       const session = sessionManager.get(request.params.id);
-      const queryAgent =
-        request.query.agent === "codex" || request.query.agent === "claude"
-        || request.query.agent === "opencode" || request.query.agent === "grok"
-          ? request.query.agent
-          : undefined;
+      const queryAgent = knownAgentId(request.query.agent);
       const agentId = session?.agentId ?? queryAgent ?? defaultAgentId;
 
       const skillsDirName = agentRegistry.get(agentId)?.capabilities.skillsDirName ?? ".claude";

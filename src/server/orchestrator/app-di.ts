@@ -13,6 +13,7 @@ import { gitRemoteCredentialResolver } from "./services/github.js";
 import { AuthManager } from "./agents/claude/auth-manager.js";
 import { CodexAuthManager } from "./agents/codex/auth-manager.js";
 import { XaiAuthManager } from "./agents/grok/auth-manager.js";
+import { AntigravityAuthManager } from "./agents/antigravity/auth-manager.js";
 import { GitHubAuthManager } from "./github-auth.js";
 import { SessionManager } from "./sessions.js";
 import { RepoStore } from "./repo-store.js";
@@ -74,6 +75,7 @@ export interface AppDeps {
   authManager?: AuthManager;
   codexAuthManager?: CodexAuthManager;
   xaiAuthManager?: XaiAuthManager;
+  antigravityAuthManager?: AntigravityAuthManager;
   githubAuthManager?: GitHubAuthManager;
   chatHistoryManager?: ChatHistoryManager;
   usageManager?: UsageManager;
@@ -121,6 +123,7 @@ export interface ManagerSet {
   authManager: AuthManager;
   codexAuthManager: CodexAuthManager;
   xaiAuthManager: XaiAuthManager;
+  antigravityAuthManager: AntigravityAuthManager;
   credentialStore: CredentialStore;
   providerAccountManager: ProviderAccountManager;
   agentRegistry: AgentRegistry;
@@ -282,6 +285,7 @@ export async function initializeManagers(deps: AppDeps): Promise<ManagerSet> {
   console.log("[server] Codex ChatGPT credentials found:", providerAccountManager.hasAnyAuthForProvider("codex"));
 
   const xaiAuthManager = deps.xaiAuthManager ?? new XaiAuthManager();
+  const antigravityAuthManager = deps.antigravityAuthManager ?? new AntigravityAuthManager();
   console.log("[server] xAI subscription credentials found:", providerAccountManager.hasAnyAuthForProvider("grok"));
 
   if (!process.env.GIT_CONFIG_GLOBAL) {
@@ -365,6 +369,7 @@ export async function initializeManagers(deps: AppDeps): Promise<ManagerSet> {
     authManager,
     codexAuthManager,
     xaiAuthManager,
+    antigravityAuthManager,
     credentialStore,
     providerAccountManager,
     agentRegistry,
@@ -381,11 +386,12 @@ export async function initializeManagers(deps: AppDeps): Promise<ManagerSet> {
 
 // Load adapters lazily: the production orchestrator image omits session/.
 async function buildLocalAgentFactory(): Promise<LocalAgentFactory> {
-  const [{ ClaudeAdapter }, { CodexAdapter }, { OpencodeAdapter }, { GrokAdapter }] = await Promise.all([
+  const [{ ClaudeAdapter }, { CodexAdapter }, { OpencodeAdapter }, { GrokAdapter }, { AntigravityAdapter }] = await Promise.all([
     import("../session/agents/claude/adapter.js"),
     import("../session/agents/codex/adapter.js"),
     import("../session/agents/opencode/adapter.js"),
     import("../session/agents/grok/adapter.js"),
+    import("../session/agents/antigravity/adapter.js"),
   ]);
   return (agentId: AgentId, resolveHome?: AgentHomeResolver): AgentProcess => {
     const opts = resolveHome ? { resolveHome } : undefined;
@@ -398,6 +404,8 @@ async function buildLocalAgentFactory(): Promise<LocalAgentFactory> {
         return new OpencodeAdapter(opts);
       case "grok":
         return new GrokAdapter(opts);
+      case "antigravity":
+        return new AntigravityAdapter(opts);
       default: {
         const _exhaustive: never = agentId;
         throw new Error(`No local agent adapter for agentId: ${_exhaustive as string}`);

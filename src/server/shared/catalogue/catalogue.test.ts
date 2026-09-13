@@ -7,6 +7,7 @@ import {
   catalogueEntriesForHarness,
   getHarness,
   getService,
+  knownAgentId,
   reasoningOptionsFor,
   selectionHonoursEffort,
   catalogueContextWindows,
@@ -1026,47 +1027,87 @@ describe("the launch catalogue is a requirement, not a capability (req 15)", () 
   });
 });
 
-describe("a vendor no harness speaks yet (docs/302-gemini-catalogue-vendor req 5)", () => {
+describe("the Gemini vendor row, now that a harness speaks it (docs/301-antigravity-harness req 7)", () => {
   const google = () => getService("google");
   const GEMINI_KEY = { serviceId: "google", billingMode: "key" as const, via: "string" as const };
+  const GEMINI_ACCOUNT = { serviceId: "google", billingMode: "sub" as const, via: "account" as const };
 
-  it("stores its key as a metered credential under the vendor's own variable", () => {
-    expect(google()?.modes.map((m) => m.kind)).toEqual(["key"]);
+  it("offers the free Antigravity account above the metered key", () => {
+    expect(google()?.modes.map((m) => m.kind)).toEqual(["sub", "key"]);
     expect(storageEnvFor("google", "key")).toBe("GEMINI_API_KEY");
     expect(credentialModeForStorageEnv("GEMINI_API_KEY")).toEqual({ serviceId: "google", billingMode: "key" });
   });
 
   it("declares every model under the Gemini style alone, with an endpoint for it", () => {
-    const mode = getMode("google", "key");
-    expect(mode?.endpoints["gemini-generate-content"]).toBe("https://generativelanguage.googleapis.com");
-    expect(mode?.models.length).toBeGreaterThan(0);
-    for (const model of mode?.models ?? []) {
-      expect(model.styles, model.id).toEqual(["gemini-generate-content"]);
-      expect(model.family, model.id).toBe("gemini");
-    }
-  });
-
-  it("joins no shipped harness, so nothing offers or shapes its rows", () => {
-    for (const harness of allHarnesses()) {
-      expect(harnessServiceSupport(harness.id, "google"), harness.id).toBe("none");
-      expect(eligibleEntriesForHarness(harness.id, [GEMINI_KEY]), harness.id).toEqual([]);
-      expect(
-        catalogueEntriesForHarness(harness.id).some((e) => e.service.id === "google"),
-        harness.id,
-      ).toBe(false);
-      for (const model of getMode("google", "key")?.models ?? []) {
-        expect(
-          resolveSpawnShaping(harness.id, { serviceId: "google", billingMode: "key", modelId: model.id }),
-          `${harness.id}/${model.id}`,
-        ).toBeUndefined();
+    for (const billingMode of ["sub", "key"] as const) {
+      const mode = getMode("google", billingMode);
+      expect(mode?.endpoints["gemini-generate-content"], billingMode)
+        .toBe("https://generativelanguage.googleapis.com");
+      expect(mode?.models.length, billingMode).toBeGreaterThan(0);
+      for (const model of mode?.models ?? []) {
+        expect(model.styles, model.id).toEqual(["gemini-generate-content"]);
+        expect(model.family, model.id).toBe("gemini");
       }
     }
   });
 
-  it("carries Google's published input limit, not the gateway rows' rounded one", () => {
-    for (const model of getMode("google", "key")?.models ?? []) {
-      expect(model.contextWindow.default, model.id).toBe(1_048_576);
+  it("joins Antigravity, and only Antigravity", () => {
+    for (const harness of allHarnesses()) {
+      const joins = harness.id === "antigravity";
+      expect(harnessServiceSupport(harness.id, "google") !== "none", harness.id).toBe(joins);
+      expect(eligibleEntriesForHarness(harness.id, [GEMINI_KEY]).length > 0, harness.id).toBe(joins);
+      expect(
+        catalogueEntriesForHarness(harness.id).some((e) => e.service.id === "google"),
+        harness.id,
+      ).toBe(joins);
+      for (const model of getMode("google", "key")?.models ?? []) {
+        expect(
+          resolveSpawnShaping(harness.id, { serviceId: "google", billingMode: "key", modelId: model.id }) !== undefined,
+          `${harness.id}/${model.id}`,
+        ).toBe(joins);
+      }
     }
+  });
+
+  it("carries only the Antigravity account as a sub-mode carrier", () => {
+    expect(eligibleEntriesForHarness("antigravity", [GEMINI_ACCOUNT]).length).toBeGreaterThan(0);
+    for (const harness of allHarnesses()) {
+      if (harness.id === "antigravity") continue;
+      expect(eligibleEntriesForHarness(harness.id, [GEMINI_ACCOUNT]), harness.id).toEqual([]);
+    }
+  });
+
+  it("narrows Pro to the two efforts the CLI offers for it", () => {
+    for (const billingMode of ["sub", "key"] as const) {
+      const pro = getMode("google", billingMode)?.models.find((m) => m.id === "gemini-3.1-pro-preview");
+      expect(pro?.reasoningEfforts, billingMode).toEqual(["low", "high"]);
+      expect(
+        reasoningOptionsFor("antigravity", { serviceId: "google", billingMode, modelId: "gemini-3.1-pro-preview" })
+          .map((o) => o.value),
+      ).toEqual(["low", "high"]);
+    }
+  });
+
+  it("carries Google's published input limit, not the gateway rows' rounded one", () => {
+    for (const billingMode of ["sub", "key"] as const) {
+      for (const model of getMode("google", billingMode)?.models ?? []) {
+        expect(model.contextWindow.default, model.id).toBe(1_048_576);
+      }
+    }
+  });
+});
+
+describe("narrowing an untrusted agent id (docs/266 step 5)", () => {
+  it("accepts every harness the catalogue declares, so a new one is never dropped", () => {
+    for (const harness of allHarnesses()) {
+      expect(knownAgentId(harness.id), harness.id).toBe(harness.id);
+    }
+  });
+
+  it("rejects anything else, including the empty string", () => {
+    expect(knownAgentId("cursor")).toBeUndefined();
+    expect(knownAgentId("")).toBeUndefined();
+    expect(knownAgentId(undefined)).toBeUndefined();
   });
 });
 
@@ -1311,10 +1352,12 @@ describe("credentials", () => {
       const { AuthManager } = await import("../../orchestrator/agents/claude/auth-manager.js");
       const { CodexAuthManager } = await import("../../orchestrator/agents/codex/auth-manager.js");
       const { XaiAuthManager } = await import("../../orchestrator/agents/grok/auth-manager.js");
+      const { AntigravityAuthManager } = await import("../../orchestrator/agents/antigravity/auth-manager.js");
       const { authManagers } = buildAgentRuntime({
         authManager: new AuthManager(),
         codexAuthManager: new CodexAuthManager(),
         xaiAuthManager: new XaiAuthManager(),
+        antigravityAuthManager: new AntigravityAuthManager(),
       });
       for (const loginId of allLoginIntegrations()) {
         expect(authManagers.get(loginId)?.loginId, `no auth manager for ${loginId}`).toBe(loginId);

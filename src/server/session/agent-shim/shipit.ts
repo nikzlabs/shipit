@@ -74,7 +74,7 @@ const HELP = `${SHIM_NAME} — agent-driven session management.
 Supported subcommands:
   shipit session create  --prompt-file FILE --title T
                           [--role NAME | --no-role]
-                          [--agent claude|codex|opencode|grok] [--model M]
+                          [--agent claude|codex|opencode|grok|antigravity] [--model M]
                           [--service S] [--billing-mode sub|key] [--effort E]
                           [--turn ID] [--detached] [--shipit-source] [--approximate] [--json]
                           Name no role and the child inherits what YOU run on —
@@ -234,7 +234,7 @@ Compose services (docs/238 — start the services declared in docker-compose.yml
 
 Sub-agents (docs/144 — spawn another agent for a one-shot sub-task):
   shipit agent run --role NAME [OVERRIDES] --prompt-file FILE [--json]
-  shipit agent run --agent claude|codex|opencode|grok --service S --billing-mode sub|key
+  shipit agent run --agent claude|codex|opencode|grok|antigravity --service S --billing-mode sub|key
                    --model M --effort E --prompt-file FILE [--json]
   shipit agent result [RUN-ID] [--wait [--timeout SECONDS]] [--json]
   shipit agent roles  [--json]     the roles configured on this install

@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -152,7 +153,35 @@ ${opts?.breakBin ? `printf '#!/bin/sh\\nexit 1\\n' > "node_modules/.bin/${opts.b
     return dir;
   }
 
-  function run(selection?: string, opts?: { breakBin?: string }): string {
+  /**
+   * Antigravity is fetched, not npm-installed, so the offline stub is a local
+   * `file://` tarball plus ITS digest — not a bypass. The script keeps one fetch
+   * path and always verifies; only the URL and the expected digest move.
+   */
+  function stubTarball(opts?: { corrupt?: boolean }): Record<string, string> {
+    const src = path.join(tmp, "agy-src");
+    const releases = path.join(tmp, "releases", "1.1.27");
+    fs.mkdirSync(src, { recursive: true });
+    fs.mkdirSync(releases, { recursive: true });
+    fs.writeFileSync(path.join(src, "antigravity"), `#!/bin/sh\necho "1.1.27 (stub)"\n`);
+    fs.chmodSync(path.join(src, "antigravity"), 0o755);
+    const arch = process.arch === "arm64" ? "arm64" : "x64";
+    const tarball = path.join(releases, `agy_cli_linux_${arch}.tar.gz`);
+    execFileSync("tar", ["-czf", tarball, "-C", src, "antigravity"]);
+    const digest = createHash("sha256").update(fs.readFileSync(tarball)).digest("hex");
+    const declared = opts?.corrupt ? digest.replace(/^./, (c) => (c === "0" ? "1" : "0")) : digest;
+    return {
+      ANTIGRAVITY_BASE_URL: `file://${path.join(tmp, "releases")}`,
+      ANTIGRAVITY_SHA256_X64: declared,
+      ANTIGRAVITY_SHA256_ARM64: declared,
+      ANTIGRAVITY_DIR: path.join(tmp, "opt/antigravity"),
+    };
+  }
+
+  function run(
+    selection?: string,
+    opts?: { breakBin?: string; corruptTarball?: boolean },
+  ): string {
     return execFileSync("sh", [SCRIPT], {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
@@ -162,6 +191,7 @@ ${opts?.breakBin ? `printf '#!/bin/sh\\nexit 1\\n' > "node_modules/.bin/${opts.b
         AGENT_CLI_DIR: agentCliDir,
         BIN_DIR: binDir,
         SHIPIT_AGENTS_INSTALL_REPORT: report,
+        ...stubTarball(opts?.corruptTarball ? { corrupt: true } : undefined),
         ...(selection === undefined ? {} : { SHIPIT_HARNESSES: selection }),
       },
     });
@@ -183,6 +213,9 @@ ${opts?.breakBin ? `printf '#!/bin/sh\\nexit 1\\n' > "node_modules/.bin/${opts.b
   });
 
   afterEach(() => {
+    // The antigravity install seals its directory; restore write so cleanup can run.
+    const sealed = path.join(tmp, "opt/antigravity");
+    if (fs.existsSync(sealed)) execFileSync("chmod", ["-R", "u+w", sealed]);
     fs.rmSync(tmp, { recursive: true, force: true });
   });
 
@@ -252,6 +285,36 @@ ${opts?.breakBin ? `printf '#!/bin/sh\\nexit 1\\n' > "node_modules/.bin/${opts.b
     expect(resolved).toBe(path.join(binDir, "grok"));
     expect(resolved).not.toContain("node_modules");
     expect(sh("grok --version")).toContain("grok 9.9.9");
+  });
+
+  it("antigravity: fetches the pinned tarball, verifies it, and seals the install read-only", () => {
+    run("antigravity");
+    expect(declared()).toEqual(["antigravity"]);
+    const installDir = path.join(tmp, "opt/antigravity");
+    const binary = path.join(installDir, "antigravity");
+    expect(fs.readlinkSync(path.join(binDir, "antigravity"))).toBe(binary);
+    // The CLI's auto-updater has no off-switch; a non-writable install is the
+    // only thing that stops it, so this mode bit IS the version pin at runtime.
+    expect(fs.statSync(installDir).mode & 0o222).toBe(0);
+    expect(fs.statSync(binary).mode & 0o222).toBe(0);
+    expect(execFileSync(path.join(binDir, "antigravity"), ["--version"], { encoding: "utf8" }))
+      .toContain("1.1.27");
+    // Not on npm: the sentinel package prefix must remove nothing.
+    expect(exists(path.join(agentCliDir, "node_modules"))).toBe(true);
+  });
+
+  it("antigravity: refuses a tarball whose digest does not match the pin", () => {
+    expect(() => run("antigravity", { corruptTarball: true })).toThrow(/digest mismatch/);
+    expect(exists(report)).toBe(false);
+    expect(exists(path.join(binDir, "antigravity"))).toBe(false);
+  });
+
+  it("antigravity: prunes the fetched install when it is deselected", () => {
+    run("antigravity");
+    expect(exists(path.join(tmp, "opt/antigravity"))).toBe(true);
+    run("codex");
+    expect(exists(path.join(tmp, "opt/antigravity"))).toBe(false);
+    expect(exists(path.join(binDir, "antigravity"))).toBe(false);
   });
 
   it("fails the build when a selected harness's binary does not execute", () => {

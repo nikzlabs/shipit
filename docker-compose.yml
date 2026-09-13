@@ -5,7 +5,7 @@ services:
       dockerfile: docker/Dockerfile.dogfood
       args:
         # Match onboarding: both builds share one image tag.
-        SHIPIT_HARNESSES: claude,codex,opencode,grok
+        SHIPIT_HARNESSES: claude,codex,opencode,grok,antigravity
     image: shipit-dogfood:local
     # Inherit the session UID for git ownership; share agent.install output.
     command: >
@@ -59,7 +59,7 @@ services:
       context: .
       dockerfile: docker/Dockerfile.dogfood
       args:
-        SHIPIT_HARNESSES: claude,codex,opencode,grok
+        SHIPIT_HARNESSES: claude,codex,opencode,grok,antigravity
     image: shipit-dogfood:local
     command: >
       sh -c "

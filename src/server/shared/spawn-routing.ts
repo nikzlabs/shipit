@@ -20,6 +20,8 @@ const HARNESS_CREDENTIAL_VARS: Record<AgentId, readonly string[]> = {
     "GEMINI_API_KEY",
   ],
   grok: ["XAI_API_KEY", "GROK_AUTH", "GROK_AUTH_PATH"],
+  // GOOGLE_API_KEY and the ADC variables can bill a different Google account.
+  antigravity: ["GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_APPLICATION_CREDENTIALS", "AGY_ADC_AUTH"],
 };
 
 export function scrubHarnessEnvCredentials(env: Record<string, string>, harnessId: AgentId): void {

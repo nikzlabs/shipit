@@ -15,6 +15,16 @@ import { disjointCodexTokens } from "../shared/codex-token-usage.js";
 import { ensureCodexHomeInitialized } from "./agents/codex/home-init.js";
 import { opencodeModelArg, opencodeProviderConfig, isOpenCodeAccountRouting, opencodeAccountConfig, prepareOpenCodeAccountEnv } from "../shared/opencode-spawn-shaping.js";
 import { parseOpencodeLine, OpencodeTurnAccumulator } from "../shared/opencode-stream.js";
+import {
+  ANTIGRAVITY_SPAWN_ENV,
+  antigravityCliModelId,
+  hasAntigravityAccountToken,
+  makeAntigravitySpawnHome,
+  syncAntigravityModelProvider,
+} from "../shared/antigravity-home.js";
+
+/** Naming is one short sentence; the cheapest level every offered model accepts. */
+const ANTIGRAVITY_NAMING_EFFORT = "low";
 
 export interface SessionName {
   slug: string;
@@ -228,7 +238,64 @@ async function callAgentCli(prompt: string, target: SessionNamingTarget): Promis
         try { fs.rmSync(grokHomeDir, { recursive: true, force: true }); } catch { /* ignore */ }
       }
     }
+    case "antigravity": {
+      // The naming run takes the same throwaway home as a turn: its config/ must
+      // not collide with a session's, and the durable directory carries the token.
+      const credentialHome = namingHome(target);
+      const usingKey = !hasAntigravityAccountToken(credentialHome);
+      syncAntigravityModelProvider(credentialHome, usingKey);
+      const spawnHome = makeAntigravitySpawnHome({ credentialHome, label: "antigravity-naming" });
+      if (!spawnHome) return { text: null, failure: "Could not create a home for the Antigravity naming run." };
+      const args = ["-p", prompt, "--output-format", "json", "--dangerously-skip-permissions"];
+      if (model) {
+        args.push("--model", antigravityCliModelId(model));
+        // The CLI refuses a base model id without a level.
+        args.push("--effort", ANTIGRAVITY_NAMING_EFFORT);
+      }
+      const extraEnv: Record<string, string> = { ...ANTIGRAVITY_SPAWN_ENV, HOME: spawnHome.home };
+      if (serviceRouting) extraEnv.GOOGLE_GEMINI_BASE_URL = serviceRouting.baseUrl;
+      try {
+        const raw = await callCli("antigravity", args, target, extraEnv);
+        if (raw.text === null) return raw;
+        const parsed = parseAntigravityJson(raw.text);
+        if (!parsed.usage) return { ...raw, text: parsed.text };
+        return { text: parsed.text, usage: { ...parsed.usage, durationMs: raw.usage?.durationMs ?? 0 } };
+      } finally {
+        spawnHome.cleanup();
+      }
+    }
   }
+}
+
+/** `--output-format json` is the bare result object: `response`, `usage`, `status`. */
+function parseAntigravityJson(stdout: string): { text: string | null; usage?: SessionNameUsage } {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(stdout);
+  } catch {
+    return { text: stdout };
+  }
+  if (typeof parsed !== "object" || parsed === null) return { text: stdout };
+  const envelope = parsed as {
+    response?: unknown;
+    usage?: { input_tokens?: unknown; output_tokens?: unknown; cache_read_tokens?: unknown };
+  };
+  const num = (v: unknown): number | undefined => (typeof v === "number" && Number.isFinite(v) ? v : undefined);
+  const input = num(envelope.usage?.input_tokens);
+  const output = num(envelope.usage?.output_tokens);
+  const cacheRead = num(envelope.usage?.cache_read_tokens);
+  const text = typeof envelope.response === "string" ? envelope.response : null;
+  if (text === null) return { text: stdout };
+  if (input === undefined && output === undefined) return { text };
+  return {
+    text,
+    usage: {
+      durationMs: 0,
+      ...(input !== undefined ? { inputTokens: input } : {}),
+      ...(output !== undefined ? { outputTokens: output } : {}),
+      ...(cacheRead !== undefined ? { cacheReadTokens: cacheRead } : {}),
+    },
+  };
 }
 
 // Grok returns text; Claude returns result. Their JSON envelopes are not interchangeable.

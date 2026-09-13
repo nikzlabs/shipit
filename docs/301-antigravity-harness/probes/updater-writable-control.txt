@@ -1,0 +1,1 @@
+ERROR: logging before google.Init: I0913 18:05:00.319919       1 auto_updater.go:305] Spawned background update process with PID 1063097

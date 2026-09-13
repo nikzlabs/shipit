@@ -16,6 +16,8 @@ export const AGENT_CREDENTIAL_PATHS: Record<AgentId, readonly string[]> = {
   codex: [".codex"],
   opencode: [".local/share/opencode"],
   grok: [".grok"],
+  // The token sits a level below, at .gemini/antigravity-cli/antigravity-oauth-token.
+  antigravity: [".gemini"],
 };
 
 // JSON files cannot be scaffolded as empty directories.

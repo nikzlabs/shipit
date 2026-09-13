@@ -104,7 +104,10 @@ export function saveRightTab(tab: SavedRightTab): void {
 export function getSavedAgentId(): AgentId {
   try {
     const saved = localStorage.getItem(AGENT_PREFERENCE_KEY);
-    if (saved === "claude" || saved === "codex" || saved === "opencode" || saved === "grok") return saved;
+    if (
+      saved === "claude" || saved === "codex" || saved === "opencode"
+      || saved === "grok" || saved === "antigravity"
+    ) return saved;
   } catch {
     // localStorage may be unavailable
   }
@@ -161,6 +164,8 @@ export function getParkedHarness(): ParkedHarness | undefined {
         value.agentId !== "claude" && value.agentId !== "codex"
         // eslint-disable-next-line no-restricted-syntax -- same validation, continued across the wrapped condition
         && value.agentId !== "opencode" && value.agentId !== "grok"
+        // eslint-disable-next-line no-restricted-syntax -- same validation, continued across the wrapped condition
+        && value.agentId !== "antigravity"
       ) return undefined;
       return { agentId: value.agentId, ...(value.model ? { model: value.model } : {}) };
     },

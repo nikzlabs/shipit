@@ -17,6 +17,12 @@ export const EGRESS_DEFAULT_ALLOWLIST: readonly string[] = [
   "auth.x.ai",
   "cli-chat-proxy.grok.com",
   "generativelanguage.googleapis.com",
+  // Antigravity's Google sign-in, its token exchange, and the backend its
+  // account mode calls. The last is read from the pinned binary's compiled
+  // hosts, not observed on the wire — no signed-in account was available.
+  "accounts.google.com",
+  "oauth2.googleapis.com",
+  "cloudcode-pa.googleapis.com",
   ".github.com",
   ".githubusercontent.com",
   ".githubassets.com",
@@ -51,6 +57,12 @@ export const EGRESS_LIFELINE_ALLOWLIST: readonly string[] = [
   "auth.x.ai",
   "cli-chat-proxy.grok.com",
   "generativelanguage.googleapis.com",
+  // Antigravity's Google sign-in, its token exchange, and the backend its
+  // account mode calls. The last is read from the pinned binary's compiled
+  // hosts, not observed on the wire — no signed-in account was available.
+  "accounts.google.com",
+  "oauth2.googleapis.com",
+  "cloudcode-pa.googleapis.com",
 ];
 
 export const EGRESS_GITHUB_LIFELINE_HOSTS: readonly string[] = [

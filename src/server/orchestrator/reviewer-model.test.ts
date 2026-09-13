@@ -392,8 +392,8 @@ describe("reviewer harness derivation", () => {
     const { harnessesPreferring } = await import("./non-turn-model.js");
     const all = harnessesPreferring().map((h) => h.id);
 
-    expect(harnessesPreferring("claude").map((h) => h.id)).toEqual(["codex", "opencode", "grok", "claude"]);
-    expect(harnessesPreferring("codex").map((h) => h.id)).toEqual(["claude", "opencode", "grok", "codex"]);
+    expect(harnessesPreferring("claude").map((h) => h.id)).toEqual(["codex", "opencode", "grok", "antigravity", "claude"]);
+    expect(harnessesPreferring("codex").map((h) => h.id)).toEqual(["claude", "opencode", "grok", "antigravity", "codex"]);
     expect(harnessesPreferring("claude").map((h) => h.id).sort()).toEqual([...all].sort());
   });
 

@@ -1,0 +1,70 @@
+.antigravity-light {
+
+  --color-bg-primary: #fbfcff;
+  --color-bg-secondary: #f2f5fc;
+  --color-bg-tertiary: #e7ecf8;
+  --color-bg-elevated: #ffffff;
+  --color-bg-overlay: rgba(20, 26, 44, 0.42);
+  --color-bg-hover: rgba(26, 60, 140, 0.05);
+  --color-bg-active: rgba(26, 60, 140, 0.1);
+
+  --color-text-primary: #131826;
+  --color-text-secondary: #4b5468;
+  --color-text-tertiary: #6f7789;
+  --color-text-inverse: #ffffff;
+  --color-text-link: #1552c4;
+
+  --color-border-primary: #d3dcef;
+  --color-border-secondary: #bfcae3;
+  --color-border-focus: #1a63d8;
+
+  --color-accent: #1a63d8;
+  --color-accent-hover: #1550b4;
+  --color-accent-text: #ffffff;
+  --color-accent-subtle: rgba(26, 99, 216, 0.1);
+
+  --color-success: #10794a;
+  --color-success-subtle: rgba(16, 121, 74, 0.12);
+  --color-success-border: rgba(16, 121, 74, 0.3);
+  --color-error: #c22a22;
+  --color-error-subtle: rgba(194, 42, 34, 0.12);
+  --color-warning: #97650a;
+  --color-warning-subtle: rgba(151, 101, 10, 0.12);
+  --color-info: #1552c4;
+  --color-info-subtle: rgba(21, 82, 196, 0.12);
+
+  --color-pr: #6b42c4;
+  --color-pr-subtle: rgba(107, 66, 196, 0.12);
+  --color-pr-border: rgba(107, 66, 196, 0.3);
+  --color-folder: #4b5468;
+  --color-autofix: #1552c4;
+  --color-attention: #a35a06;
+  --color-attention-text: #985305;
+
+  --color-context-ok: #10794a;
+  --color-context-mid: #97650a;
+  --color-context-high: #ab5410;
+  --color-context-full: #c22a22;
+
+  --color-scrollbar-thumb: rgba(60, 76, 116, 0.28);
+  --color-scrollbar-thumb-hover: rgba(40, 56, 96, 0.42);
+
+  --color-syntax-base: #131826;
+  --color-syntax-bg: #f2f5fc;
+  --color-syntax-keyword: #6b42c4;
+  --color-syntax-title: #1552c4;
+  --color-syntax-attr: #1a63d8;
+  --color-syntax-string: #0d6b42;
+  --color-syntax-string-regexp: #1552c4;
+  --color-syntax-builtin: #97650a;
+  --color-syntax-comment: #6f7789;
+  --color-syntax-tag: #6b42c4;
+  --color-syntax-section: #1552c4;
+  --color-syntax-bullet: #1a63d8;
+  --color-syntax-addition: #0d6b42;
+  --color-syntax-addition-bg: #e4f4ea;
+  --color-syntax-deletion: #c22a22;
+  --color-syntax-deletion-bg: #fbe6e4;
+
+  --font-size-code: 13px;
+}

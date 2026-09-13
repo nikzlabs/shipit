@@ -26,7 +26,7 @@ const dir = path.dirname(fileURLToPath(import.meta.url));
 const cssPath = path.join(dir, "index.css");
 const themesDir = path.join(dir, "themes");
 
-const DARK_THEMES = ["dark", "midnight", "forest", "rose", "claude", "codex", "opencode", "grok", "solarized", "high-contrast"];
+const DARK_THEMES = ["dark", "midnight", "forest", "rose", "claude", "codex", "opencode", "grok", "antigravity", "solarized", "high-contrast"];
 
 const HOT_TOKENS = ["--color-pr", "--color-success", "--color-sandbox"];
 

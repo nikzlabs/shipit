@@ -34,6 +34,7 @@ const PROVIDER_LABEL: Record<AgentId, string> = {
   codex: "Codex",
   opencode: "OpenCode",
   grok: "Grok Build",
+  antigravity: "Antigravity",
 };
 
 const LEGACY_CREDENTIAL_PATHS: Record<AgentId, readonly LegacyCredentialPath[]> = {
@@ -41,6 +42,7 @@ const LEGACY_CREDENTIAL_PATHS: Record<AgentId, readonly LegacyCredentialPath[]> 
   codex: [{ rel: ".codex", kind: "dir" }],
   opencode: [],
   grok: [],
+  antigravity: [],
 };
 
 interface LegacyCredentialPath {
@@ -58,6 +60,7 @@ const LEGACY_CREDENTIAL_MARKERS: Record<AgentId, readonly string[]> = {
   codex: [path.join(".codex", "auth.json")],
   opencode: [],
   grok: [],
+  antigravity: [],
 };
 
 export interface ProviderRoute {

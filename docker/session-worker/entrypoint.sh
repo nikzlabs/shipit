@@ -148,6 +148,10 @@ if ! gosu "${UID_GID}:${WORKER_GID}" mkdir -p /credentials/.grok 2>/dev/null; th
   echo "[shipit] warning: could not prepare /credentials/.grok for UID ${UID_GID}; Grok turns will fail (dangling ~/.grok symlink)" >&2
 fi
 
+if ! gosu "${UID_GID}:${WORKER_GID}" mkdir -p /credentials/.gemini/antigravity-cli 2>/dev/null; then
+  echo "[shipit] warning: could not prepare /credentials/.gemini for UID ${UID_GID}; Antigravity turns will fail (dangling ~/.gemini symlink)" >&2
+fi
+
 if ! (mkdir -p /plugin-bin && chown "${UID_GID}:${WORKER_GID}" /plugin-bin) 2>/dev/null; then
   echo "[shipit] warning: could not prepare /plugin-bin for UID ${UID_GID}; plugin commands will not be on PATH" >&2
 fi
@@ -160,6 +164,8 @@ if [ "${SHIPIT_READONLY_HOME:-0}" = "1" ]; then
     ln -sfn /credentials/.codex       /home/shipit/.codex
     mkdir -p /home/shipit/.local/share
     ln -sfn /credentials/.local/share/opencode /home/shipit/.local/share/opencode
+    ln -sfn /credentials/.grok        /home/shipit/.grok
+    ln -sfn /credentials/.gemini      /home/shipit/.gemini
     mkdir -p /home/shipit/.npm-global /home/shipit/.npm
   '
 fi

@@ -1,6 +1,12 @@
 // Keep installer rows in docker/agent-cli/install-agent-clis.sh in sync.
-import { CLAUDE_PERMISSION_MODES, GROK_PERMISSION_MODES } from "../types/agent-types.js";
-import { CLAUDE_TOOL_NAMES, CODEX_TOOL_NAMES, GROK_TOOL_NAMES, OPENCODE_TOOL_NAMES } from "../agent-tool-names.js";
+import { ANTIGRAVITY_PERMISSION_MODES, CLAUDE_PERMISSION_MODES, GROK_PERMISSION_MODES } from "../types/agent-types.js";
+import {
+  ANTIGRAVITY_TOOL_NAMES,
+  CLAUDE_TOOL_NAMES,
+  CODEX_TOOL_NAMES,
+  GROK_TOOL_NAMES,
+  OPENCODE_TOOL_NAMES,
+} from "../agent-tool-names.js";
 import type { HarnessDef } from "./types.js";
 
 export const HARNESSES = [
@@ -190,6 +196,64 @@ export const HARNESSES = [
       // and resume run the planner, implementer and verifier, so they need a turn.
       goalActions: { get: "control", pause: "control", clear: "control", set: "turn", resume: "turn" },
       skillsDirName: ".grok",
+      skillInvocationPrefix: "/",
+    },
+  },
+  {
+    id: "antigravity",
+    name: "Antigravity",
+    binary: "antigravity",
+    nativeService: "google",
+    // The CLI appends /v1beta/models/<id>:streamGenerateContent; the catalogue
+    // base URL is the bare host (docs/302).
+    styles: ["gemini-generate-content"],
+    spawn: {
+      credential: {
+        // The key alone is not enough: the adapter also writes
+        // {"modelProvider":"gemini"} into the spawn home's settings.json.
+        string: { kind: "env", name: "GEMINI_API_KEY" },
+        // A plain token file under the linked .gemini root.
+        account: { kind: "scoped-home" },
+      },
+      model: { kind: "flag", flag: "--model" },
+      endpoint: { kind: "env", name: "GOOGLE_GEMINI_BASE_URL" },
+    },
+    capabilities: {
+      supportsResume: true,
+      // not-wired — no image flag and the <attached_images> block is untested;
+      // planning#543 tracks the negative-control probe.
+      supportsImages: false,
+      // Standing instructions ride the per-spawn plugin's rules/AGENTS.md.
+      supportsSystemPrompt: true,
+      supportsPermissionModes: true,
+      supportedPermissionModes: ANTIGRAVITY_PERMISSION_MODES,
+      toolNames: [...ANTIGRAVITY_TOOL_NAMES],
+      reasoning: {
+        label: "Reasoning",
+        options: [
+          { value: "low", label: "Low" },
+          { value: "medium", label: "Medium" },
+          { value: "high", label: "High" },
+        ],
+      },
+      // not-wired — the docs/266 item-15 depth-0 probe has NOT run: it needs a
+      // live session on this harness, and no credential that can fund a review
+      // turn was available. Everything the flow needs is in `init.tools`
+      // (`run_command` + `command_status`, `invoke_subagent`, `view_file`), so
+      // this is expected to flip to true; planning#543 tracks the probe. A
+      // `false` hides the file-viewer button and leaves `/review` working.
+      supportsReview: false,
+      // structural — one process per turn, so there is no channel to steer.
+      supportsSteering: false,
+      // structural — the process exits at turn end.
+      startsOwnTurns: false,
+      // probed on 1.2.2 — /compact reaches the model as plain user text and no
+      // summary step runs (docs/301 probes/compact-b.ndjson).
+      supportsCompaction: false,
+      // not-wired — the CLI has a /goal command; planning#543 tracks the docs/297 shape.
+      supportsGoals: false,
+      // The CLI reads no workspace skills; disclosure runs through the plugin.
+      skillsDirName: ".claude",
       skillInvocationPrefix: "/",
     },
   },

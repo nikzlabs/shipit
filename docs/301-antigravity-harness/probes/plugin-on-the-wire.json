@@ -1,0 +1,20 @@
+[
+  {
+    "body_bytes": 46916,
+    "excerpts": {
+      "plugin rule (rules/AGENTS.md)": "following instructions.\\nReview them carefully and always take them into account when you generate responses and code:\\n\\u003cRULE[/persist/agy-login-test/sealedhome/.gemini/config/plugins/shipit/rules/AGENTS.md]\\u003e\\nSEALED-PIN-RULE-LYCHEE: proves the plugin loads on the sealed pinned binary.\\n\\n\\u003c/RULE[/persist/agy-login-test/sealedhome/.gemini/config/plugins/shipit/rul",
+      "symlinked skill, description": "ow to use, configure, or customize Antigravity, AGY, the agy CLI, the Antigravity IDE, or Antigravity 2.0.\\n- linked-skill (/persist/agy-login-test/sealedhome/.gemini/config/plugins/shipit/skills/linked-skill/SKILL.md): TAMARIND-LINKED-SKILL proves a symlinked skill directory is followed.\\n\\n\\n\\u003c/skills\\u003e\\n\\u003cmessaging\\u003e\\nYou are connected to a messaging system w",
+      "symlinked skill, name": "s, and customizations (skills, rules, MCP, sidecars). Activate this skill when the user asks questions about how to use, configure, or customize Antigravity, AGY, the agy CLI, the Antigravity IDE, or Antigravity 2.0.\\n- linked-skill (/persist/agy-login-test/sealedhome/.gemini/config/plugins/shipit/skills/linked-skill/SKILL.md): TAMARIND-LINKED-SKILL proves a symlinked skill dir",
+      "global MCP server tool": "` tool.\\nThe following MCP servers and their available tools are listed below, following this format:\\n```\\n# \\u003cserverName\\u003e\\nEager:\\n\\u003ctoolName\\u003e\\nLazy:\\n\\u003ctoolName\\u003e\\n```\\n# globalprobe\\nLazy:\\nglobal_probe\\n\\u003c/mcp_servers\\u003e\\n\\u003cuser_rules\\u003e\\nThe following are user-defined rules that you MUST ALWAYS FOLLOW WITHOUT ANY EXCEPTION. These ru"
+    }
+  },
+  {
+    "body_bytes": 45798,
+    "excerpts": {
+      "plugin rule (rules/AGENTS.md)": "following instructions.\\nReview them carefully and always take them into account when you generate responses and code:\\n\\u003cRULE[/persist/agy-login-test/sealedhome/.gemini/config/plugins/shipit/rules/AGENTS.md]\\u003e\\nSEALED-PIN-RULE-LYCHEE: proves the plugin loads on the sealed pinned binary.\\n\\n\\u003c/RULE[/persist/agy-login-test/sealedhome/.gemini/config/plugins/shipit/rul",
+      "symlinked skill, description": "ow to use, configure, or customize Antigravity, AGY, the agy CLI, the Antigravity IDE, or Antigravity 2.0.\\n- linked-skill (/persist/agy-login-test/sealedhome/.gemini/config/plugins/shipit/skills/linked-skill/SKILL.md): TAMARIND-LINKED-SKILL proves a symlinked skill directory is followed.\\n\\n\\n\\u003c/skills\\u003e\\n\\u003cmessaging\\u003e\\nYou are connected to a messaging system w",
+      "symlinked skill, name": "s, and customizations (skills, rules, MCP, sidecars). Activate this skill when the user asks questions about how to use, configure, or customize Antigravity, AGY, the agy CLI, the Antigravity IDE, or Antigravity 2.0.\\n- linked-skill (/persist/agy-login-test/sealedhome/.gemini/config/plugins/shipit/skills/linked-skill/SKILL.md): TAMARIND-LINKED-SKILL proves a symlinked skill dir",
+      "global MCP server tool": "` tool.\\nThe following MCP servers and their available tools are listed below, following this format:\\n```\\n# \\u003cserverName\\u003e\\nEager:\\n\\u003ctoolName\\u003e\\nLazy:\\n\\u003ctoolName\\u003e\\n```\\n# globalprobe\\nLazy:\\nglobal_probe\\n\\u003c/mcp_servers\\u003e\\n\\u003cuser_rules\\u003e\\nThe following are user-defined rules that you MUST ALWAYS FOLLOW WITHOUT ANY EXCEPTION. These ru"
+    }
+  }
+]

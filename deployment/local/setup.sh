@@ -184,6 +184,7 @@ HARNESS_ROWS=(
   "codex|Codex|OpenAI's CLI"
   "opencode|OpenCode|open-source, bring your own provider"
   "grok|Grok Build|xAI's CLI"
+  "antigravity|Antigravity|Google's CLI"
 )
 SUPPORTED_HARNESSES=""
 for _row in "${HARNESS_ROWS[@]}"; do
