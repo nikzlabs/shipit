@@ -12,6 +12,7 @@ import {
   BACKGROUND_HARNESS_MAX_OUTPUT_CHARS,
   BACKGROUND_HARNESS_TIMEOUT_MS,
   failedRun,
+  refuseIfToolsStayOn,
   withSpawnHome,
   type BackgroundHarnessRun,
   type BackgroundHarnessRunner,
@@ -176,6 +177,10 @@ export class CleanupContainerManager implements BackgroundHarnessRunner {
     if (req.signal?.aborted) {
       return failedRun("The cleanup run was abandoned before it started.", startedAt);
     }
+    // Before ensure(), so an unusable harness never starts a container for a run
+    // that cannot happen.
+    const refusal = refuseIfToolsStayOn(req.harnessId, startedAt);
+    if (refusal) return refusal;
     const sc = await this.ensure();
     if (!sc) {
       return failedRun(

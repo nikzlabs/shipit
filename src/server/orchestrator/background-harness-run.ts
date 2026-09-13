@@ -13,6 +13,7 @@ import {
   subAgentSpawnHomeDir,
 } from "./session-credentials.js";
 import { getErrorMessage } from "./validation.js";
+import { toolsOffRefusal } from "../shared/agent-tools-off.js";
 
 /** Cleanup prompts are one paragraph of tidied transcript, not a report. */
 export const BACKGROUND_HARNESS_MAX_OUTPUT_CHARS = 8_000;
@@ -52,6 +53,22 @@ export interface BackgroundHarnessRun {
  */
 export interface BackgroundHarnessRunner {
   run(req: BackgroundHarnessRun): Promise<SubAgentRunResult>;
+}
+
+/**
+ * Answer a harness with no measured tools-off configuration here, where the run
+ * still costs nothing. The adapter already fails closed on one
+ * (`agent-tools-off.ts`), so this is not the safety net — it is what stops the
+ * cleanup container being created, and a spawn home provisioned, for a run that
+ * cannot happen, and what turns the refusal into an ordinary failed result
+ * instead of an adapter error event.
+ */
+export function refuseIfToolsStayOn(
+  harnessId: AgentId,
+  startedAt: number,
+): SubAgentRunResult | undefined {
+  const refusal = toolsOffRefusal(harnessId);
+  return refusal === undefined ? undefined : failedRun(refusal, startedAt);
 }
 
 export function failedRun(error: string, startedAt = Date.now()): SubAgentRunResult {
@@ -125,6 +142,8 @@ export class LocalBackgroundHarnessRunner implements BackgroundHarnessRunner {
   async run(req: BackgroundHarnessRun): Promise<SubAgentRunResult> {
     const startedAt = Date.now();
     if (req.signal?.aborted) return failedRun("The cleanup run was abandoned before it started.", startedAt);
+    const refusal = refuseIfToolsStayOn(req.harnessId, startedAt);
+    if (refusal) return refusal;
     try {
       return await withSpawnHome(
         this.deps.credentialsDir,

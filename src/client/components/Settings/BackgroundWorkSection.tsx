@@ -6,9 +6,8 @@
  * Three things the requirement asks of this control, and each one is a decision
  * you can see in the markup:
  *
- *  - **It is a model choice like any other** (req 3), so it lists the same
- *    `(service, billing mode, model)` triples the composer's picker offers.
- *    Not a harness picker.
+ *  - **It is a model choice like any other** (req 3), so it lists
+ *    `(service, billing mode, model)` triples. Not a harness picker.
  *  - **The harness is derived, never chosen** (req 9). It is shown as a fact —
  *    "runs on Claude Code" — rather than offered as a second control, because a
  *    model offered on two installed harnesses must not become a second decision
@@ -39,6 +38,13 @@
  * No reasoning control here, and that is not an omission: non-turn work has no
  * level to set. Adding one would make this file a second source of requirements
  * for a setting docs/252 owns.
+ *
+ * **docs/299 phase 2d widened what it offers, and only here.** The options are
+ * the server's `backgroundWorkModels`, not `eligibleModelsOf(agentList)`, which
+ * is the union over INSTALLED harnesses: background work can run as a direct
+ * provider call, so a model provider with no harness belongs in these two
+ * pickers and in no other picker in ShipIt. `agentList` is left as the way to
+ * name a harness in the derived line, and for nothing else.
  */
 
 import { useRef, useState } from "react";
@@ -47,7 +53,6 @@ import { useUiStore } from "../../stores/ui-store.js";
 import { Picker, PickerOption } from "../pickers/Picker.js";
 import { ServiceSelector } from "../pickers/ServiceSelector.js";
 import {
-  eligibleModelsOf,
   modelAfterServiceChange,
   modelsOfService,
   servicesOf,
@@ -65,7 +70,7 @@ interface Pin {
 export function BackgroundWorkSection({ agentList = [] }: { agentList?: AgentOption[] }) {
   const pinned = useSettingsStore((s) => s.nonTurnModel);
   const resolved = useSettingsStore((s) => s.nonTurnModelResolved);
-  const models = eligibleModelsOf(agentList);
+  const models = useSettingsStore((s) => s.backgroundWorkModels);
   const services = servicesOf(models);
 
   const latestWrite = useRef(0);
@@ -127,6 +132,17 @@ export function BackgroundWorkSection({ agentList = [] }: { agentList?: AgentOpt
     ?? pinned
     ?? undefined;
 
+  // The one fact the controls cannot state: HOW the work runs, which has no
+  // control of its own. One string, not two conditional elements, so the two
+  // states cannot both render.
+  const executionLine = !resolved
+    ? undefined
+    : resolved.execution === "direct"
+      ? "Called directly · no harness, no container"
+      : resolved.harnessId
+        ? `Runs on ${agentList.find((a) => a.id === resolved.harnessId)?.name ?? resolved.harnessId}`
+        : undefined;
+
   const changeService = (service: ServiceChoice) => {
     const next = modelAfterServiceChange(currentModel, modelsOfService(models, service));
     if (!next) return;
@@ -148,19 +164,12 @@ export function BackgroundWorkSection({ agentList = [] }: { agentList?: AgentOpt
             What ShipIt runs for its own work, such as naming a session or writing a
             pull-request description.
           </p>
-          {resolved?.harnessId && (
-            /*
-              The one fact the two controls below do not state. They name the
-              service and the model, so repeating those here would be the same
-              fact twice; the harness is derived from the model (req 9) and has
-              no control of its own, which is exactly why it is said in words.
-
-              No harness means the work runs as a direct provider call (docs/299
-              req 2) and there is no harness to name. The line that states that
-              case in its own words lands with the widened selector.
-            */
-            <p className="mt-1 text-[11px] text-(--color-text-tertiary)">
-              Runs on {agentList.find((a) => a.id === resolved.harnessId)?.name ?? resolved.harnessId}
+          {executionLine && (
+            <p
+              className="mt-1 text-[11px] text-(--color-text-tertiary)"
+              data-testid="background-work-execution"
+            >
+              {executionLine}
             </p>
           )}
           {!resolved && pinnedIsStale && pinned && (
