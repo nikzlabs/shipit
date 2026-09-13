@@ -170,12 +170,12 @@ export function BackgroundWorkSection({ agentList = [] }: { agentList?: AgentOpt
             */
             <p className="mt-1 text-[11px] text-(--color-warning)">
               {pinned.modelId} is no longer available — its credential or its harness is gone.
-              Background work is failing until you pick another service.
+              Background work is failing until you pick another provider.
             </p>
           )}
           {!resolved && !pinnedIsStale && (
             <p className="mt-1 text-[11px] text-(--color-text-tertiary)">
-              Nothing to run it on yet — add a service credential above.
+              Nothing to run it on yet — add a provider credential above.
             </p>
           )}
         </div>
@@ -192,7 +192,7 @@ export function BackgroundWorkSection({ agentList = [] }: { agentList?: AgentOpt
             onChange={changeService}
             disabled={busy}
             idPrefix="background-work"
-            fallbackLabel={pinnedIsStale && pinned ? pinned.serviceId : "No service"}
+            fallbackLabel={pinnedIsStale && pinned ? pinned.serviceId : "No provider"}
           />
           {serviceModels.length > 0 && (
             <Picker

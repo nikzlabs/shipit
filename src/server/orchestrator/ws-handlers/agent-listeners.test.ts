@@ -848,7 +848,7 @@ describe("wireAgentListeners", () => {
           | { text?: string }
           | undefined;
         expect(appended?.text).toContain("DeepSeek");
-        expect(appended?.text).toContain("Settings → Services");
+        expect(appended?.text).toContain("Settings → Model providers");
         expect(appended?.text).not.toContain("sign in");
         runner.dispose({ force: true });
       });

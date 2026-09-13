@@ -340,7 +340,7 @@ export function RoleEditor({
             </Field>
           ) : (
             <p className="text-xs text-(--color-warning)" data-testid="role-editor-no-models">
-              Nothing to run a role on yet — add a service credential under Services first.
+              Nothing to run a role on yet — add a credential under Model providers first.
             </p>
           )}
 

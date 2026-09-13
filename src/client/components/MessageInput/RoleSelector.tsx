@@ -118,7 +118,7 @@ export function roleUnavailableDetail(role: RoleView): string | undefined {
     case "stranded":
       return "Needs fixing in Settings";
     case "disconnected":
-      return "Its service is disconnected";
+      return "Its provider is disconnected";
     case "quota_exhausted":
       return "Its quota is spent";
     default:

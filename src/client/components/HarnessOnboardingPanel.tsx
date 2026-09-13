@@ -8,7 +8,7 @@ const FEATURES = [
   {
     Icon: RobotIcon,
     tint: "bg-(--color-accent-subtle) text-(--color-accent)",
-    label: "Any service ShipIt ships with",
+    label: "Any model provider ShipIt ships with",
   },
   {
     Icon: KeyIcon,
@@ -33,7 +33,7 @@ export function HarnessOnboardingPanel({ agentList }: { agentList: AgentOption[]
           <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
             <Logo size="md" textClassName="text-(--color-text-primary)" />
             <h1 className="text-lg font-semibold leading-snug text-(--color-text-primary)">
-              Add a service, and the chat starts working.
+              Add a model provider, and the chat starts working.
             </h1>
           </div>
           <p className="text-sm leading-snug text-(--color-text-secondary)">

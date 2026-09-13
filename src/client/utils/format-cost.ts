@@ -34,7 +34,7 @@ export const RUNNING_FIGURE_TITLE: Record<RunningFigureKind, string> = {
   metered: "Metered spend — ShipIt's estimate of what you were charged",
 
   "at-api-rates":
-    "Covered by a subscription, not billed — shown at this service's API rates, for comparison. Metered spend is listed separately.",
+    "Covered by a subscription, not billed — shown at this provider's API rates, for comparison. Metered spend is listed separately.",
   earlier: "Recorded before ShipIt tracked where usage went — earlier accounting",
 };
 

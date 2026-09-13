@@ -220,7 +220,7 @@ export function warnAboutAmbientAuth(candidates: readonly CredentialCandidate[])
       `credentials: ⚠ metered (billed per token): ${metered.map((c) => c.envName).join(", ")}.`
       + " ShipIt's background work (session naming, PR descriptions) follows the"
       + " first eligible model in catalogue order unless it is pinned — check"
-      + " Settings → Services → Background work.",
+      + " Settings → Model providers → Background work.",
     );
   }
 

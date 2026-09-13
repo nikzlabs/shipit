@@ -382,7 +382,7 @@ function CredentialAttention({ attention }: { attention: CredentialStatusWord })
       className={`inline-flex items-center gap-1 whitespace-nowrap hover:underline ${
         attention.tone === "error" ? "text-(--color-error)" : "text-(--color-warning)"
       }`}
-      title="Open Settings → Services to fix this credential"
+      title="Open Settings → Model providers to fix this credential"
       data-credential-attention={attention.text}
     >
       <WarningCircleIcon size={ICON_SIZE.XS} weight="fill" />
