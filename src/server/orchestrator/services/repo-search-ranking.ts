@@ -71,7 +71,9 @@ export function rankRepoSearchResults(
   const personalMatches = personalRepos
     .map((repo, index) => ({ repo, index, match: matchRepo(normalized, repo) }))
     .filter((entry): entry is { repo: GitHubRepoSummary; index: number; match: RepoMatch } => entry.match !== null)
-    // The input is already sorted by push recency, so the index breaks rank ties.
+    // The index breaks rank ties, and carries the caller's ordering: the
+    // account's own repos ahead of organization ones, push-recent first inside
+    // each. Both share the match slots below.
     .sort(
       (a, b) =>
         a.match.ownerRank - b.match.ownerRank ||

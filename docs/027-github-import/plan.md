@@ -132,14 +132,17 @@ So every search fetches both halves in parallel and ranks locally:
   is wrong: it is sorted by push date, so one busy organization fills the page
   bound and pushes the account's own repos out of it — the exact failure this
   feature exists to prevent. Only the account's own walk gates caching; an
-  organization walk can fail durably (a token without `read:org`, an org behind
-  unauthorized SSO) and treating that as uncacheable would re-walk every page on
-  every search.
+  organization walk can be refused durably (a token the organization has not
+  authorized) and treating that as uncacheable would re-walk every page on every
+  search. Note the guarantee is bounded, not absolute: owned and collaborator
+  repos still share one 10-page budget with each other.
 - `rankRepoSearchResults` (`services/repo-search-ranking.ts`) matches that list
   against the query — exact name, then name prefix, then name substring, then
-  owner substring, push-recency within a tier — and places those matches above
-  the search results, deduplicated by full name. At most 10 personal matches, 20
-  results total. An `owner/name` query is split on the slash instead of being
+  owner substring — and places those matches above the search results,
+  deduplicated by full name. Ties inside a rank fall back to the listing's own
+  order: the account's own repos ahead of organization ones, push-recent first
+  within each. At most 10 account matches (organization repos share those slots),
+  20 results total. An `owner/name` query is split on the slash instead of being
   matched against the full name as a substring: `me/ship` must not match
   `acme/ship-cli`, which contains it only by spanning the owner boundary. The
   owner is matched by prefix but ranked on exactness, so `me/ship` can't be

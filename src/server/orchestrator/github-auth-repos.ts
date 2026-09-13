@@ -77,9 +77,9 @@ const ORG_REPOS_MAX_PAGES = 5;
 export interface UserRepoListing {
   repos: GitHubRepoSummary[];
   /**
-   * A page request failed, so entries a retry might return are missing. Distinct
-   * from stopping at the page bound, which truncates deterministically and is
-   * safe to cache.
+   * A page request for the account's OWN repos failed, so entries a retry might
+   * return are missing. Distinct from stopping at the page bound, which
+   * truncates deterministically and is safe to cache.
    */
   failed: boolean;
 }
@@ -153,9 +153,9 @@ export async function listUserRepos(token: string): Promise<UserRepoListing> {
     return true;
   });
 
-  // Only the account's own walk gates caching. An organization walk can fail
-  // durably — a token without `read:org`, or an org behind unauthorized SSO —
-  // and treating that as uncacheable would re-walk every page on every search.
+  // Only the account's own walk gates caching. An organization walk can be
+  // refused durably — a token an org has not authorized — and treating that as
+  // uncacheable would re-walk every page on every search, forever.
   return { repos, failed: own.failed };
 }
 

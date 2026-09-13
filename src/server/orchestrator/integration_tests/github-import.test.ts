@@ -108,18 +108,20 @@ describe("GitHub repo search via HTTP", () => {
     expect(githubAuth.searchReposCalls).toEqual([]);
   });
 
-  it("seeds the same capped listing when a token is connected", async () => {
+  it("seeds exactly the empty-query listing when a token is connected", async () => {
     githubAuth.setUserRepos(Array.from({ length: 40 }, (_, i) => repo(`test-user/r-${i}`)));
 
-    const res = await app.inject({
+    const seeded = await app.inject({
       method: "POST",
       url: "/api/github/token",
       payload: { token: "test-token" },
     });
+    const listed = await app.inject({ method: "GET", url: "/api/github/repos?q=" });
 
-    const fullNames = res.json().repos.map((r: { fullName: string }) => r.fullName);
-    expect(fullNames).toHaveLength(15);
-    expect(fullNames[0]).toBe("test-user/r-0");
+    // Byte-for-byte, not just the same length: the seed must not drift from the
+    // listing the dialog would fetch for itself.
+    expect(seeded.json().repos).toEqual(listed.json().repos);
+    expect(seeded.json().repos).toHaveLength(15);
     expect(githubAuth.searchReposCalls).toEqual([]);
   });
 

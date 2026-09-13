@@ -223,6 +223,13 @@ const initialState = {
   importSearchResults: [] as ImportSearchResult[],
 };
 
+/**
+ * Monotonic id for the in-flight repo search. Module-scoped rather than store
+ * state: it must not be reset by `reset()` mid-flight, or an abandoned response
+ * would become current again.
+ */
+let repoSearchGeneration = 0;
+
 export const usePrStore = create<PrState>((set, get) => ({
   ...initialState,
 
@@ -948,6 +955,10 @@ export const usePrStore = create<PrState>((set, get) => ({
   reset: () => set(initialState),
 
   searchRepos: async (query) => {
+    // Claimed before the await: responses can settle out of order, and a slow
+    // reply to an abandoned query must not overwrite a newer one — which is how
+    // clearing the search box could end up redisplaying the old query's results.
+    const generation = ++repoSearchGeneration;
     const res = await fetch(
       `/api/github/repos?q=${encodeURIComponent(query)}`,
       {
@@ -956,6 +967,7 @@ export const usePrStore = create<PrState>((set, get) => ({
       },
     );
     const data = await res.json() as { repos: ImportSearchResult[] };
+    if (generation !== repoSearchGeneration) return;
     set({ importSearchResults: data.repos });
   },
 }));
