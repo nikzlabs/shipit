@@ -1,4 +1,5 @@
 ---
+issue: planning#536
 title: Lazy collapsed turns — requirements
 description: Collapse every earlier turn, hide all tool work, and load a collapsed turn's content only when it is expanded.
 ---
@@ -34,8 +35,9 @@ the significant events.
 4. Opening a session shows every earlier turn collapsed. It does not matter
    whether the agent was working at that moment, or whether the viewer attached
    during a turn.
-5. A collapsed turn shows the user's own message and the last agent message. It
-   shows no cards, so the user reads only the request and the reply.
+5. A collapsed turn shows the user's own message and the last agent message,
+   complete. It shows no cards, so the user reads only the request and the
+   reply.
 6. The server does not send the hidden content of a collapsed turn. Loading a
    session transfers only the content that is displayed.
 7. Expanding one turn loads that turn's full content at that moment, and shows
@@ -44,16 +46,18 @@ the significant events.
    the user can tell it apart from the content of the turn.
 
 9. The feature stays off by default. The user turns it on in Settings.
-10. A control expands every collapsed turn at once and loads the full
-    transcript. In-app search stays on the client and searches the content that
-    is loaded.
+10. In-app search stays on the client and searches the content that is loaded.
+    While a search is active, the search bar offers a control that expands every
+    turn and loads the full transcript.
+11. A collapsed turn keeps its error rows and its status notices visible. The
+    user sees that a turn failed without expanding it.
 
 ## Open questions
 
-- Requirement 5 keeps the last agent message. How much of it — the whole
-  message, or only its last paragraphs?
-- Where does the expand-everything control of requirement 10 go?
-- Does a collapsed interrupted or failed turn show a status marker?
+- A card can stay actionable after its turn ends: an action checklist, a bug
+  report awaiting submission, an issue-write undo. Requirement 5 hides it, and
+  the client also seeds its card state from the loaded rows, so a hidden card
+  loses both its control and its state. Do unresolved cards stay visible?
 
 ## Resolved questions
 
@@ -70,3 +74,14 @@ last agent message. This changed requirement 5.
 answered: do not make search server-side, because that is a can of worms. Add a
 control that expands all turns and loads the whole transcript instead. This is
 requirement 10.
+
+2026-09-13 — Where does that control go? The user answered: in the search bar,
+only while a search is active. Turning the setting off remains the way to read
+the whole transcript without searching. This is part of requirement 10.
+
+2026-09-13 — How much of the last agent message does a collapsed turn show? The
+user answered: the whole message. No truncation rule. This is requirement 5.
+
+2026-09-13 — Does a collapsed turn that failed show anything about that? The
+user answered: keep the red error row visible. The question covered error rows
+and status notices together, so requirement 11 keeps both.
