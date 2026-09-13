@@ -1990,6 +1990,181 @@ describe("rebase-driver: planning#338 displacement + queue hold", () => {
   });
 });
 
+// The auto-resolve loop ran 55 times in 68 minutes against a session whose resident agent
+// held an open background poll. Every cycle fetched, rebased and aborted under that agent,
+// and wrote the same warning into the chat.
+describe("rebase-driver: nikzlabs/shipit#2751 auto-resolve against a busy resident agent", () => {
+  let tmpDir: string;
+  let origGitConfigGlobal: string | undefined;
+  let origGitEditor: string | undefined;
+
+  beforeEach(() => {
+    vi.mocked(handWorkspaceBackToWorker).mockClear();
+    vi.mocked(restoreLfsAfterTreeRewrite).mockClear();
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-rebase-busy-agent-"));
+    origGitConfigGlobal = process.env.GIT_CONFIG_GLOBAL;
+    origGitEditor = process.env.GIT_EDITOR;
+    initGlobalGitConfig(path.join(tmpDir, "credentials"));
+    setGitIdentity("Test User", "test@test.com");
+    process.env.GIT_EDITOR = "true";
+  });
+
+  afterEach(() => {
+    if (origGitConfigGlobal !== undefined) process.env.GIT_CONFIG_GLOBAL = origGitConfigGlobal;
+    else delete process.env.GIT_CONFIG_GLOBAL;
+    if (origGitEditor !== undefined) process.env.GIT_EDITOR = origGitEditor;
+    else delete process.env.GIT_EDITOR;
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  function conflictedSession(): {
+    git: GitManager;
+    workDir: string;
+    runner: SessionRunner;
+    captured: { role: string; text: string }[];
+  } {
+    const { workDir, bareDir, git } = setupRepoWithRemote(tmpDir);
+    createConflictingDivergence(bareDir, workDir);
+    execSync("git push -u origin feature", { cwd: workDir, stdio: "pipe" });
+    const runner = new SessionRunner({ sessionId: "s1", sessionDir: workDir, defaultAgentId: "claude" });
+    return { git, workDir, runner, captured: [] };
+  }
+
+  function attemptDeps(
+    git: GitManager,
+    runner: SessionRunner,
+    captured: { role: string; text: string }[],
+  ) {
+    return {
+      git,
+      githubAuthManager: makeStubAuth(true),
+      runner,
+      sessionManager: makeStubSessionManager(),
+      chatHistoryManager: makeStubHistory(captured),
+      agentFactory: () => new FakeRebaseAgent(() => "should not run") as unknown as AgentProcess,
+      usageManager: makeStubUsageManager(),
+      sseBroadcast: () => {},
+    };
+  }
+
+  it("defers on the pre-flight without fetching, rebasing or warning", async () => {
+    const { git, workDir, runner, captured } = conflictedSession();
+    runner.setAgent(new FakeRebaseAgent(() => "resident") as unknown as AgentProcess);
+    runner.isStreamingActive = true;
+    runner.setBackgroundTasks([{ id: "bg-1", description: "npm test" }]);
+
+    const headBefore = execSync("git rev-parse HEAD", { cwd: workDir }).toString().trim();
+    // Un-fetched: the upstream commit is in the bare repo but not in this remote-tracking ref.
+    const originMainBefore = await git.getRefHash("origin/main");
+
+    const deps = attemptDeps(git, runner, captured);
+    wireSystemTurnDeps(deps);
+    const result = await runAutoResolveAttempt(deps, "main");
+
+    expect(result).toEqual({
+      outcome: "deferred",
+      lastError: "agent_background_work",
+      didWork: false,
+    });
+    expect(await git.getRefHash("origin/main")).toBe(originMainBefore);
+    expect(execSync("git rev-parse HEAD", { cwd: workDir }).toString().trim()).toBe(headBefore);
+    expect(await git.isRebaseInProgress()).toBe(false);
+    expect(captured).toEqual([]);
+    expect(runner.backgroundWorkDescriptions).toEqual(["npm test"]);
+  });
+
+  it("an idle agent with no background work still rebases", async () => {
+    const { git, runner, captured } = conflictedSession();
+    const deps = attemptDeps(git, runner, captured);
+    wireSystemTurnDeps(deps);
+
+    const result = await runAutoResolveAttempt(deps, "main");
+
+    expect(result).not.toMatchObject({ lastError: "agent_background_work" });
+    expect(await git.getRefHash("origin/main")).not.toBeNull();
+  });
+
+  it("work that starts inside the pre-flight window is classified the same way", async () => {
+    const { git, runner, captured } = conflictedSession();
+    const deps = attemptDeps(git, runner, captured);
+    wireSystemTurnDeps(deps);
+    // The gate is clear at pre-flight and closed by the time the resolution turn dispatches.
+    const realFetch = git.fetch.bind(git);
+    git.fetch = async (remote: string) => {
+      runner.setAgent(new FakeRebaseAgent(() => "resident") as unknown as AgentProcess);
+      runner.isStreamingActive = true;
+      runner.setBackgroundTasks([{ id: "bg-1", description: "npm test" }]);
+      return realFetch(remote);
+    };
+
+    const result = await runAutoResolveAttempt(deps, "main");
+
+    expect(result).toEqual({
+      outcome: "deferred",
+      lastError: "agent_background_work",
+      didWork: false,
+    });
+  });
+
+  describe("the interruption notice", () => {
+    // No system-turn deps: the resolution turn is refused, which is the abort-notice path.
+    const failingDeps = (
+      git: GitManager,
+      runner: SessionRunner,
+      captured: { role: string; text: string }[],
+      recordSyncCard?: boolean,
+    ) => ({
+      git,
+      githubAuthManager: makeStubAuth(false),
+      runner,
+      sessionManager: makeStubSessionManager(),
+      chatHistoryManager: makeStubHistory(captured),
+      usageManager: makeStubUsageManager(),
+      sseBroadcast: () => {},
+      ...(recordSyncCard ? { recordSyncCard } : {}),
+    });
+
+    const interruptions = (captured: { text: string }[]) =>
+      captured.filter((m) => m.text.includes("was interrupted before the conflicts"));
+
+    it("is written once when the automatic path retries the same refusal", async () => {
+      const { git, runner, captured } = conflictedSession();
+
+      for (let i = 0; i < 5; i++) {
+        await expect(runRebaseFlow(failingDeps(git, runner, captured), "main"))
+          .rejects.toMatchObject({ statusCode: 409 });
+      }
+
+      expect(interruptions(captured)).toHaveLength(1);
+    });
+
+    it("is re-armed by any other ending, so a later recurrence is still reported", async () => {
+      const { git, runner, captured } = conflictedSession();
+
+      await expect(runRebaseFlow(failingDeps(git, runner, captured), "main"))
+        .rejects.toMatchObject({ statusCode: 409 });
+      // Fails before the conflict loop, so it says nothing about the interruption.
+      await expect(runRebaseFlow(failingDeps(git, runner, captured), "no-such-base"))
+        .rejects.toMatchObject({ statusCode: 400 });
+      await expect(runRebaseFlow(failingDeps(git, runner, captured), "main"))
+        .rejects.toMatchObject({ statusCode: 409 });
+
+      expect(interruptions(captured)).toHaveLength(2);
+    });
+
+    it("answers every manual sync, which is one deliberate click each time", async () => {
+      const { git, runner, captured } = conflictedSession();
+
+      for (let i = 0; i < 3; i++) {
+        await expect(runRebaseFlow(failingDeps(git, runner, captured, true), "main"))
+          .rejects.toMatchObject({ statusCode: 409 });
+      }
+
+      expect(interruptions(captured)).toHaveLength(3);
+    });
+  });
+});
+
 describe("rebase-driver: pre-rebase workspace preparation", () => {
   let tmpDir: string;
   let origGitConfigGlobal: string | undefined;

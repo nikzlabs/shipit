@@ -1,5 +1,5 @@
 import type { PrStatusSummary, PrMergeableState } from "../shared/types/github-types.js";
-import type { SessionRunnerInterface } from "./session-runner.js";
+import { residentBackgroundWork, type SessionRunnerInterface } from "./session-runner.js";
 import { getErrorMessage } from "./validation.js";
 import { AutoRemediationManager } from "./auto-remediation-manager.js";
 import type { RemediationArbiter } from "./auto-remediation-arbiter.js";
@@ -8,6 +8,14 @@ export const MAX_AUTO_RESOLVE_ATTEMPTS = 3;
 export const AUTO_RESOLVE_COOLDOWN_MS = 5 * 60 * 1000;
 export const AUTO_RESOLVE_DEFERRED_COOLDOWN_MS = 60 * 1000;
 export const AUTO_RESOLVE_SETTLE_MS = 60 * 1000;
+
+/**
+ * The one deferral reason that is not transient: a system turn cannot displace a resident
+ * agent running background work, and that work can last an hour. Retrying it on the
+ * ordinary deferred cooldown is an unbounded loop (nikzlabs/shipit#2751).
+ */
+export const AUTO_RESOLVE_DEFER_BACKGROUND_WORK = "agent_background_work";
+export const AUTO_RESOLVE_BACKGROUND_WORK_COOLDOWN_MS = 15 * 60 * 1000;
 
 export type AutoResolveResult =
   | { outcome: "success"; forcePushed: boolean; didWork: true }
@@ -94,6 +102,19 @@ export class AutoConflictResolveManager extends AutoRemediationManager<ConflictS
   protected override onDelete(sessionId: string): void {
     this.lastKnownMergeable.delete(sessionId);
     this.baseBranchCache.delete(sessionId);
+  }
+
+  /**
+   * The background-work cooldown is a rate bound, not the recovery path: the moment the
+   * work it waits on is gone, the retry is eligible again.
+   */
+  override async onRunnerIdle(sessionId: string): Promise<void> {
+    const state = this.states.get(sessionId);
+    if (state?.status === "deferred" && state.lastError === AUTO_RESOLVE_DEFER_BACKGROUND_WORK) {
+      const runner = this.cfg.getRunner(sessionId);
+      if (!runner || residentBackgroundWork(runner).length === 0) delete state.nextEligibleAt;
+    }
+    await super.onRunnerIdle(sessionId);
   }
 
   handleTransition(
@@ -206,7 +227,11 @@ export class AutoConflictResolveManager extends AutoRemediationManager<ConflictS
     } else {
       if (result.lastError !== undefined) state.lastError = result.lastError;
       state.status = "deferred";
-      state.nextEligibleAt = this.now() + AUTO_RESOLVE_DEFERRED_COOLDOWN_MS;
+      state.nextEligibleAt = this.now() + (
+        result.lastError === AUTO_RESOLVE_DEFER_BACKGROUND_WORK
+          ? AUTO_RESOLVE_BACKGROUND_WORK_COOLDOWN_MS
+          : AUTO_RESOLVE_DEFERRED_COOLDOWN_MS
+      );
       emitLastError = result.lastError;
     }
 

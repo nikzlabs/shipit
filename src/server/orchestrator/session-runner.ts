@@ -180,6 +180,16 @@ export interface DispatchAdmission {
   whenBusy: "queue" | "refuse";
 }
 
+/**
+ * Background work a system turn would destroy by replacing the resident process. Callers
+ * that pre-flight this gate must read it here, or their check drifts from the gate's.
+ */
+export function residentBackgroundWork(
+  runner: Pick<SessionRunnerInterface, "getAgent" | "backgroundWorkDescriptions">,
+): string[] {
+  return runner.getAgent() !== null ? runner.backgroundWorkDescriptions : [];
+}
+
 export function dispatchOnRunner(
   runner: SessionRunnerInterface,
   deps: SystemTurnDeps | null,
@@ -229,14 +239,11 @@ export function dispatchOnRunner(
   if (runner.mergeHold) return enqueueOrRefuse("a merge is being held for this session");
 
   // System turns replace the resident process, which would destroy its background work.
-  if (
-    opts.systemTurn
-    && runner.getAgent() !== null
-    && runner.backgroundWorkDescriptions.length > 0
-  ) {
+  const residentWork = opts.systemTurn ? residentBackgroundWork(runner) : [];
+  if (residentWork.length > 0) {
     return enqueueOrRefuse(
       "the resident agent has background work in flight "
-      + `(${runner.backgroundWorkDescriptions.join(", ")}), which a system turn would destroy`,
+      + `(${residentWork.join(", ")}), which a system turn would destroy`,
     );
   }
 

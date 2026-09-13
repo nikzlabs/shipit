@@ -5,7 +5,7 @@ import type { AgentProcess, AgentId, BranchSyncedCard } from "../../shared/types
 import type { ChatHistoryManager } from "../chat-history.js";
 import type { SessionManager } from "../sessions.js";
 import type { UsageManager } from "../usage.js";
-import type { SessionRunnerInterface } from "../session-runner.js";
+import { residentBackgroundWork, type SessionRunnerInterface } from "../session-runner.js";
 import { ServiceError } from "./types.js";
 import { agentLogAppend } from "../log-emit.js";
 import { emitNoticePostTurn } from "../chat-card-persistence.js";
@@ -15,7 +15,10 @@ import { withWorkspaceLock } from "./marketplace.js";
 import { getErrorMessage } from "../validation.js";
 import { handWorkspaceBackToWorker } from "../session-worker-uid.js";
 import { restoreLfsAfterTreeRewrite } from "../git-lfs.js";
-import type { AutoResolveResult } from "../auto-conflict-resolve-manager.js";
+import {
+  AUTO_RESOLVE_DEFER_BACKGROUND_WORK,
+  type AutoResolveResult,
+} from "../auto-conflict-resolve-manager.js";
 import { prepareDispatch } from "../prepared-dispatch.js";
 import { onWorkspaceRewritten } from "../workspace-rewrite.js";
 
@@ -180,6 +183,35 @@ function refuseSync(deps: RebaseDriverDeps, baseBranch: string, reason: string):
   return explained ? markSyncFailureExplained(err) : err;
 }
 
+/**
+ * The automatic path retries the same interruption on a timer, so an identical warning per
+ * retry is noise rather than information (nikzlabs/shipit#2751). Keyed by runner object so
+ * the entry dies with the session and a re-created runner reports afresh.
+ */
+const lastAbortNotice = new WeakMap<SessionRunnerInterface, string>();
+
+// Returns whether the failure is explained in the transcript, not whether it wrote a row.
+function persistAbortNotice(deps: RebaseDriverDeps, message: string): boolean {
+  const { runner } = deps;
+  // A manual sync is one deliberate click; it always gets its own answer.
+  const dedupe = !deps.recordSyncCard;
+  if (dedupe && lastAbortNotice.get(runner) === message) return true;
+  try {
+    emitNoticePostTurn(
+      (m) => runner.emitMessage(m),
+      deps.chatHistoryManager,
+      runner.sessionId,
+      message,
+      "warn",
+    );
+  } catch (err) {
+    console.error("[rebase] abort notice failed:", getErrorMessage(err));
+    return false;
+  }
+  if (dedupe) lastAbortNotice.set(runner, message);
+  return true;
+}
+
 function persistSyncNotice(deps: RebaseDriverDeps, message: string): boolean {
   if (!deps.recordSyncCard) return false;
   try {
@@ -276,6 +308,8 @@ export async function runRebaseFlow(
   const { git, runner } = deps;
   const recordSync = deps.recordSyncCard ?? false;
   let worktreeRewritten = false;
+  // Any other ending re-arms the notice, so a later recurrence is reported again.
+  let abortNoticeReached = false;
 
   if (runner.running) {
     throw new ServiceError(409, "Cannot rebase while an agent turn is in progress");
@@ -381,7 +415,6 @@ export async function runRebaseFlow(
       } catch (err) {
         // Abort before rethrowing; verify failures before reporting the branch unchanged.
         let stillInProgress = false;
-        let explained = false;
         try {
           await git.rebaseAbort();
         } catch {
@@ -394,18 +427,11 @@ export async function runRebaseFlow(
         const outcomeText = stillInProgress
           ? "Aborting the rebase FAILED — the workspace is still mid-rebase; run `git rebase --abort` to recover."
           : "The rebase was aborted — the branch is unchanged.";
-        try {
-          emitNoticePostTurn(
-            (m) => runner.emitMessage(m),
-            deps.chatHistoryManager,
-            runner.sessionId,
-            `Rebase onto \`${baseBranch}\` was interrupted before the conflicts were resolved (${getErrorMessage(err)}). ${outcomeText}`,
-            "warn",
-          );
-          explained = true;
-        } catch (noticeErr) {
-          console.error("[rebase] abort notice failed:", getErrorMessage(noticeErr));
-        }
+        abortNoticeReached = true;
+        const explained = persistAbortNotice(
+          deps,
+          `Rebase onto \`${baseBranch}\` was interrupted before the conflicts were resolved (${getErrorMessage(err)}). ${outcomeText}`,
+        );
         throw explained ? markSyncFailureExplained(err) : err;
       }
 
@@ -432,6 +458,7 @@ export async function runRebaseFlow(
     runner.emitMessage({ type: "rebase_complete", sessionId: runner.sessionId, forcePushed });
     return { status: "conflicts_resolved", iterations: iter, forcePushed };
   } finally {
+    if (!abortNoticeReached) lastAbortNotice.delete(runner);
     // Aborts also restore LFS pointers; recover content before releasing queued turns.
     if (worktreeRewritten) await restoreLfsForSync(deps, baseBranch);
     // Consume successful or prohibited pushes; a fallback on base would bypass the PR.
@@ -628,6 +655,12 @@ export async function runAutoResolveAttempt(
     return { outcome: "deferred", lastError: "no_github_auth", didWork: false };
   }
 
+  // The resolution turn would be refused anyway; without this the flow fetches, rebases
+  // and aborts under a running agent once per retry (nikzlabs/shipit#2751).
+  if (residentBackgroundWork(runner).length > 0) {
+    return { outcome: "deferred", lastError: AUTO_RESOLVE_DEFER_BACKGROUND_WORK, didWork: false };
+  }
+
   try {
     const clean = await git.isClean();
     if (!clean) {
@@ -687,7 +720,11 @@ export async function runAutoResolveAttempt(
       return { outcome: "success", forcePushed: result.status !== "aborted" && "forcePushed" in result ? result.forcePushed : false, didWork: true };
     } catch (err) {
       if (err instanceof ServiceError && err.statusCode === 409) {
-        return { outcome: "deferred", didWork: false };
+        // Background work started inside the pre-flight window: the same persistent
+        // refusal, so it takes the same long cooldown rather than the transient one.
+        return residentBackgroundWork(runner).length > 0
+          ? { outcome: "deferred", lastError: AUTO_RESOLVE_DEFER_BACKGROUND_WORK, didWork: false }
+          : { outcome: "deferred", didWork: false };
       }
       if (!didSpawn) {
         return { outcome: "deferred", lastError: getErrorMessage(err), didWork: false };

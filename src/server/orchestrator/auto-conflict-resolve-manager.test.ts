@@ -5,6 +5,8 @@ import {
   AUTO_RESOLVE_COOLDOWN_MS,
   AUTO_RESOLVE_DEFERRED_COOLDOWN_MS,
   AUTO_RESOLVE_SETTLE_MS,
+  AUTO_RESOLVE_BACKGROUND_WORK_COOLDOWN_MS,
+  AUTO_RESOLVE_DEFER_BACKGROUND_WORK,
   MAX_AUTO_RESOLVE_ATTEMPTS,
   type AutoResolveResult,
   type RebaseAndResolveCb,
@@ -18,6 +20,9 @@ type RunnerStub = EventEmitter & {
   emitMessage: (msg: unknown) => void;
   emitted: unknown[];
   onVerify?: () => Promise<boolean> | boolean;
+  backgroundWorkDescriptions: string[];
+  getAgent: () => unknown;
+  setBackgroundWork: (descriptions: string[]) => void;
 };
 
 function makeRunner(running = false): RunnerStub {
@@ -28,6 +33,15 @@ function makeRunner(running = false): RunnerStub {
   r.verifyRunningState = async () => {
     if (r.onVerify) return await r.onVerify();
     return r.running;
+  };
+  // Background work only counts while a resident process holds it — mirror that here,
+  // or the stub reports work in flight for a session with no agent at all.
+  let agent: unknown = null;
+  r.backgroundWorkDescriptions = [];
+  r.getAgent = () => agent;
+  r.setBackgroundWork = (descriptions: string[]) => {
+    agent = descriptions.length > 0 ? { resident: true } : null;
+    r.backgroundWorkDescriptions = descriptions;
   };
   return r;
 }
@@ -440,6 +454,87 @@ describe("AutoConflictResolveManager", () => {
     expect(fx.manager.get("s1")?.settleUntil).toBeUndefined();
     expect(fx.manager.get("s1")?.nextEligibleAt).toBeUndefined();
     expect(fx.manager.get("s1")?.attemptCount).toBe(0);
+  });
+
+  // nikzlabs/shipit#2751: a session whose resident agent held a background poll loop retried
+  // the resolution 55 times in 68 minutes on the transient deferred cooldown.
+  describe("nikzlabs/shipit#2751: a refusal that is not transient", () => {
+    function backgroundWorkFixture(): Fixture {
+      return makeFixture({
+        cb: recordingCb(() => ({
+          outcome: "deferred",
+          lastError: AUTO_RESOLVE_DEFER_BACKGROUND_WORK,
+          didWork: false,
+        })),
+      });
+    }
+
+    it("does not retry on the transient deferred cooldown", async () => {
+      fx = backgroundWorkFixture();
+      fx.runner!.setBackgroundWork(["npm test"]);
+      await fx.manager.handleTransition("s1", makeSummary({ mergeable: "conflicting" }), "main", "sha1");
+      await tick();
+      expect(fx.cb.count).toBe(1);
+
+      // The cadence that produced 55 attempts: one poll per deferred cooldown.
+      const step = AUTO_RESOLVE_DEFERRED_COOLDOWN_MS + 1;
+      let elapsed = 0;
+      for (; elapsed + step < AUTO_RESOLVE_BACKGROUND_WORK_COOLDOWN_MS; elapsed += step) {
+        fx.advance(step);
+        await fx.manager.handleTransition("s1", makeSummary({ mergeable: "conflicting" }), "main", "sha1");
+        await tick();
+      }
+      // Guard the guard: a window this loop cannot reach into would prove nothing.
+      expect(elapsed).toBeGreaterThan(AUTO_RESOLVE_DEFERRED_COOLDOWN_MS * 10);
+      expect(fx.cb.count).toBe(1);
+    });
+
+    it("retries once the long cooldown expires — the wait is a rate bound, not a surrender", async () => {
+      fx = backgroundWorkFixture();
+      fx.runner!.setBackgroundWork(["npm test"]);
+      await fx.manager.handleTransition("s1", makeSummary({ mergeable: "conflicting" }), "main", "sha1");
+      await tick();
+      fx.advance(AUTO_RESOLVE_BACKGROUND_WORK_COOLDOWN_MS + 1);
+      await fx.manager.handleTransition("s1", makeSummary({ mergeable: "conflicting" }), "main", "sha1");
+      await tick();
+      expect(fx.cb.count).toBe(2);
+    });
+
+    it("an idle runner whose background work has cleared retries at once", async () => {
+      fx = backgroundWorkFixture();
+      const runner = fx.runner!;
+      runner.setBackgroundWork(["npm test"]);
+      await fx.manager.handleTransition("s1", makeSummary({ mergeable: "conflicting" }), "main", "sha1");
+      await tick();
+      expect(fx.cb.count).toBe(1);
+
+      runner.setBackgroundWork([]);
+      await fx.manager.onRunnerIdle("s1");
+      await tick();
+      expect(fx.cb.count).toBe(2);
+    });
+
+    it("an idle runner still holding the work waits out the cooldown", async () => {
+      fx = backgroundWorkFixture();
+      fx.runner!.setBackgroundWork(["npm test"]);
+      await fx.manager.handleTransition("s1", makeSummary({ mergeable: "conflicting" }), "main", "sha1");
+      await tick();
+
+      await fx.manager.onRunnerIdle("s1");
+      await tick();
+      expect(fx.cb.count).toBe(1);
+      expect(fx.manager.get("s1")?.nextEligibleAt).toBeDefined();
+    });
+
+    it("leaves an ordinary deferral on the transient cooldown", async () => {
+      fx = makeFixture({ cb: recordingCb(() => ({ outcome: "deferred", lastError: "dirty_tree", didWork: false })) });
+      await fx.manager.handleTransition("s1", makeSummary({ mergeable: "conflicting" }), "main", "sha1");
+      await tick();
+      fx.advance(AUTO_RESOLVE_DEFERRED_COOLDOWN_MS + 1);
+      await fx.manager.handleTransition("s1", makeSummary({ mergeable: "conflicting" }), "main", "sha1");
+      await tick();
+      expect(fx.cb.count).toBe(2);
+    });
   });
 
   it("pendingReset: writeBack landing after a reset gives the user a fresh budget", async () => {
