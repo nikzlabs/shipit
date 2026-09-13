@@ -14,7 +14,20 @@
 - [x] Correct the design against it: drop the per-row flags from the classifier,
       keep the rollback notice, suppress tools on a kept prose row, delete the
       issue-write undo exception, and restore the `lastProse` exclusions.
-- [ ] Answer the open question about action-checklist resolution state.
+- [x] Answer the open question about action-checklist resolution state: add and
+      store a submitted flag.
+
+## Checklist submitted state
+
+- [ ] Add `submittedAt` to `ActionChecklistCard`; it rides inside the existing
+      `action_checklist` JSON column, so no migration.
+- [ ] Send `action_checklist_submitted` from the card once the message is
+      delivered.
+- [ ] Add `updateActionChecklistCard` to `ChatHistoryManager`, mirroring
+      `updateIssueWriteCard`.
+- [ ] Emit `action_checklist_update` to every attached viewer, and register the
+      type in `TRANSCRIPT_SCOPED_MESSAGES`.
+- [ ] Test the round trip: submit, reload, and the flag survives.
 
 ## Implementation
 

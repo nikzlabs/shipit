@@ -114,24 +114,26 @@ rather than build a sparse array with explicit indices.
 
 ## What must never be reduced
 
-Never reduce a row whose `in_progress` is set, and never reduce the newest
+**The newest display turn.** That is the whole rule, and it is the same one
+docs/299 uses to decide what is collapsed. The server reads no `in_progress`
+column for this.
+
+An earlier draft added "never reduce a row whose `in_progress` is set", to keep
+the live execution whole. It is unnecessary. Verified at
+`chat-card-persistence.ts:35`, a steered user message is interleaved into one
+execution, so an execution can contain several display turns, and
+`route-registry.ts:645` snapshots the whole execution on attach — but that
+snapshot **replaces** every in-progress row it finds
+(`turn-snapshot.ts:20`, `prev.filter((m) => !m.inProgress)`) with its own full
+rows. A reduced row from an earlier display turn of the live execution is
+therefore replaced with the full one, not left short. The client then collapses
+it again for display, because docs/299 collapses everything but the newest
 display turn.
 
-Verified at `chat-card-persistence.ts:35`: a steered user message is interleaved
-into one execution, so one execution can contain several display turns; and
-`route-registry.ts:645` snapshots the whole execution on attach. Keeping every
-in-progress row full means a `turn_snapshot` always describes full rows, so its
-replace-filter (`turn-snapshot.ts:20`, which selects on `inProgress`) keeps
-working untouched. The cost is that a steered live execution keeps earlier
-display turns full until it settles — bounded to one execution that is already
-being streamed, and the deliberate price of leaving the live path alone.
-
-This rule reads the persisted `in_progress` column, which is authoritative,
-rather than the client's per-row flags, which disagree between a viewer who
-watched the turn and one who reconnected (see docs/299, "the one signal this
-design trusts"). A turn whose row stayed `in_progress` after a crash would
-therefore be sent full forever, so the flag-clearing fix in docs/299's checklist
-is a dependency of this work, though not of docs/299 itself.
+One rule across both documents is also what keeps them from disagreeing: what is
+sent and what is shown are decided by the same test. Dropping this rule removes
+the last reason for this work to depend on the stale-flag fix; that bug stays
+worth fixing on its own account.
 
 ## The endpoint
 

@@ -58,12 +58,7 @@ need their own messages and the significant events.
 
 ## Open questions
 
-- Requirement 12 says a card the user has already acted on is hidden. An action
-  checklist has no record that it was submitted: the card is an immutable,
-  reusable composer, and submitting changes nothing that survives a reload. So
-  either every action checklist stays visible for the life of the session, or a
-  submitted flag is added and persisted. Which? A bug report is not affected —
-  its state is authoritative and already restored on load.
+None.
 
 ## Resolved questions
 
@@ -86,6 +81,12 @@ and status notices together, so requirement 11 keeps both.
 2026-09-13 — A card can still need the user after its turn ends. Does it stay
 visible? The user answered: yes. Action cards and bug reports that are not sent
 yet must be kept. This is requirement 12.
+
+2026-09-13 — Requirement 12 hides a card the user has already acted on, but an
+action checklist keeps no record that it was submitted. Keep every checklist
+visible, or add and store a submitted flag? The user answered: add and store the
+flag. It is designed in [plan.md](./plan.md) as one optional field on the card,
+with no new database column.
 
 2026-09-13 — Is loading speed part of this feature? The user answered: no. The
 motivation here is that a big session is hard to scroll and to understand.

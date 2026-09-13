@@ -114,12 +114,13 @@ earlier draft asserted it without checking. What the code actually offers:
   lives in the card store, which `loadSessionHistory` seeds on every load
   (`session-data.ts:303-330`). So the classifier can honour requirement 12 for
   bug reports by reading the store, not the row.
-- **Action checklists have no resolved state at all.** Verified at
-  `chat.ts:71`: the card is documented as an "immutable, reusable message
-  composer; submitting actions does not lock the card", and it has no
+- **Action checklists have no resolved state at all**, so this feature adds one.
+  Verified at `chat.ts:71`: the card is documented as an "immutable, reusable
+  message composer; submitting actions does not lock the card", and it has no
   `submitted` field. Submission changes component-local selection and a
-  five-second acknowledgement (`ActionChecklistCard.tsx:71`). After a reload the
-  classifier cannot tell a submitted checklist from an untouched one.
+  five-second acknowledgement (`ActionChecklistCard.tsx:71`), so after a reload
+  the classifier cannot tell a submitted checklist from an untouched one. The
+  user chose to add and persist the flag; the design is below.
 - **Issue writes have no undo expiry.** Verified at `issue.ts:96` and
   `IssueWriteCard.tsx:198`: the states are `available`, `undoing`, `undone` and
   `failed`, and Undo is offered indefinitely. The earlier draft treated an
@@ -127,8 +128,42 @@ earlier draft asserted it without checking. What the code actually offers:
   card in the session forever. **That exception is deleted.** An optional
   reversal of a completed operation is not an unfinished interaction.
 
-The checklist gap is a requirement-level question, not a design choice, and it
-is open in [requirements](./requirements.md).
+### Recording that a checklist was submitted
+
+`ActionChecklistCard` gains one optional field, `submittedAt: string`, set the
+first time the user submits anything from that card. The classifier hides a
+checklist that has it.
+
+**No migration and no new column.** Verified at `chat-history.ts:203` and
+`:354`: the card is already persisted as JSON in its own `action_checklist`
+column, so an optional field rides inside that JSON. An older row simply lacks
+it and reads as never submitted, which is the correct default.
+
+**The persistence path already exists, for another card.** Verified at
+`chat-history.ts:700-719`: `updateIssueWriteCard(sessionId, cardId, patch)`
+finds the row carrying that `cardId`, merges the patch into the card, and
+rewrites the row inside a transaction. Verified at
+`issue-write-handlers.ts:52-78`: the handler emits a `issue_write_update`
+message to every attached viewer and persists the same transition. Mirror both:
+
+- a client-to-server `action_checklist_submitted { cardId }`, sent from
+  `handleSubmit` once the message is delivered (`ActionChecklistCard.tsx:71`);
+- a handler that calls a new `updateActionChecklistCard` and emits
+  `action_checklist_update { sessionId, cardId, submittedAt }`;
+- a client handler that patches the row, with the new message type added to
+  `TRANSCRIPT_SCOPED_MESSAGES` (`message-handlers/index.ts`), because it names
+  one session's transcript and must be dropped by any other.
+
+**The card stays reusable.** `submittedAt` records that the user acted; it locks
+nothing and disables nothing, so the documented contract at `chat.ts:71` still
+holds. Expanding the turn brings the card back in full working order.
+
+**The accepted cost.** A user who ticks one action now and means to tick another
+later finds the card collapsed after the first submission. Any finer rule —
+recording which action ids were submitted, and keeping the card visible while
+one is unclaimed — keeps a partly-used checklist on screen for the life of the
+session, which is exactly the retain-forever failure that removed the
+issue-write exception above. One submission means acted upon.
 
 ## Client
 
@@ -192,8 +227,8 @@ agent message and all cards", which this design contradicts
 - No change to the persisted history, the agent lifecycle, or the turn-event
   buffer.
 - No change to `turn_snapshot` or the live WS append path.
-- No new persisted card state. If requirement 12 needs a submitted flag on
-  action checklists, that is its own change.
+- No new database column. The one new piece of persisted state, a checklist's
+  `submittedAt`, rides inside the card JSON that is already stored.
 
 ## Simpler alternatives considered
 

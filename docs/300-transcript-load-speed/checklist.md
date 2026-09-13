@@ -16,7 +16,8 @@
 - [ ] Key the client history cache by session id and mode.
 - [ ] Emit reduced rows that keep index, role, `text` and the structural flags.
 - [ ] Strip tool fields from a row kept for its prose.
-- [ ] Never reduce a row with `in_progress` set, or the newest display turn.
+- [ ] Never reduce the newest display turn. That is the only exception, and it
+      is the same test docs/299 uses to decide what is collapsed.
 - [ ] Add the range read with a `transcriptRevision` check and a `409` refusal.
 - [ ] Guard test: collapsed and full payloads have equal length and equal role
       per index.
