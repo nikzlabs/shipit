@@ -103,6 +103,13 @@ export interface SessionInfo {
   previousMergedPr?: PreviousMergedPr;
   /** PR head.sha, never local HEAD at detection; reset fails closed if missing. */
   mergedHeadSha?: string;
+  /**
+   * docs/218 — identifies the merge whose continuation the user declined
+   * (`mergeContinueAnchor`). Holds an identity rather than a flag so a LATER
+   * merge re-offers by itself: the offer belongs to one merge, and this says
+   * which one is spent.
+   */
+  mergeContinueDeclinedAnchor?: string;
   /** Durable, last-write-wins notice consumed atomically by the next interactive turn. */
   pendingAgentNotice?: string;
   /** Pair witnessed by ShipIt opening the PR; never derive from general PR status. */

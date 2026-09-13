@@ -305,6 +305,7 @@ without the card — the same loss a review queued behind a merge hold has today
 ## The composer control (req 1, req 2, req 3, req 10)
 
 ```
+showResetControl   = resetEligible && autoResetMergedBranch && !isLoading
 showCompactControl = showResetControl && supportsCompaction
 ```
 
@@ -314,6 +315,39 @@ subordinate second line inside the existing control block — one line, no
 description — so the block that appears at the moment the user wants to type
 does not double in weight. Both tick states re-tick on send, and are keyed by
 session, so an untick never rides a later message or another session.
+
+**`!isLoading` — the controls are hidden while a turn runs.** The intent is
+read and spent when a frame goes (`sendUserTurn`), so a tick changed after that
+governs nothing in flight. Left on screen they read as live switches over work
+already happening — the reported shape was the ticked pair sitting under a
+"Compacting context..." status and a queued message.
+
+The optimistic hide on submit (`setResetEligible(sessionId, false)`) was meant
+to cover that and does not, because **a truthful server answer lands in the
+middle of the sequence.** `postTurnReArmReset` recomputes and emits
+`reset_eligible` after *every* turn (`ws-handlers/agent-execution.ts`), and the
+compaction is its own turn — so between it and the user's turn the session is
+still genuinely eligible (the reset runs on the user's turn, not the
+compaction's) and `true` goes out, re-showing both controls, re-ticked. Nothing
+is wrong with that answer; it is simply not an answer the composer should act on
+mid-sequence. `!isLoading` covers the whole window rather than racing it, and
+covers the send with the reset **unticked**, for which the optimistic hide never
+fired at all.
+
+Hiding them keeps every choice already made: the untick lives in the store, and
+`mergeContinueFrameFields` carries it whether or not the control is shown.
+
+**There is nothing left to opt out of.** Review raised a real cost of the hide:
+untick both, send a message that changes nothing, and the session used to still
+be eligible when that turn ended — so a second message queued behind it was
+reset and compacted at drain (`runQueuedInteractiveMessage` re-decides from the
+queued entry's own flags, and an absent flag follows the setting), with no
+control on screen to stop it. That was a genuine lost affordance, and the fix
+was not to restore the control but to stop the second message triggering
+anything: [docs/218 req 6](../218-auto-reset-merged-branch-on-continue/requirements.md)
+now ends the offer at the first answer, and `shouldCompactBeforeTurn` reads the
+same `isResetEligible` predicate, so the compaction stands down with the reset.
+One merge, one offer, one compaction.
 
 ## The shared setting (req 11)
 
@@ -343,12 +377,19 @@ Advanced description names both.
 
 - **The wait is visible.** Compaction measured 27.7 s on a 22k-token context
   (docs/178) and grows with the context; the user pays it before their turn
-  starts, under the compaction card, with the checkbox there to untick. Req 3
-  rules out shortening it with a size gate.
+  starts, with the agent status bar reading "Compacting context..." — but not
+  with the checkbox there to untick, which is the trade above. Req 3 rules out
+  shortening the wait with a size gate.
+- **No mid-turn opt-out for a queued message** — and nothing that needs one:
+  docs/218 req 6 ends the offer at the first answer, so a later message on the
+  same merge compacts nothing. A message queued behind the *offered* turn is the
+  one already covered by req 12's "one compaction".
 - **Stop reaches the compaction, not the send.** Interrupting during the
   compaction stops that turn; the queued message then runs. Cancelling the
   whole send from inside the compaction is not something a requirement asks for.
 - **A refused reset compacts again next time.** Eligibility is the composer's
-  own signal, so while a reset keeps being refused (no network, say) the box
-  keeps appearing ticked and each message compacts first. Consistent with what
-  the user sees; untick to skip.
+  own signal, so while a reset keeps being *refused* (no network, say) the box
+  keeps appearing ticked and each message compacts first. A refusal is not a
+  decline — docs/218 req 6 ends the offer only on an answer the user gave — so
+  this one survives that change. Consistent with what the user sees; untick to
+  skip, which now ends the offer.

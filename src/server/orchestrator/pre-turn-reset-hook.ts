@@ -1,6 +1,10 @@
 import { randomUUID } from "node:crypto";
 import type { BranchAutoResetCard, WsServerMessage } from "../shared/types.js";
-import { autoResetMergedBranchOnContinue, clearResetSkipEpisode } from "./services/pre-turn-reset.js";
+import {
+  autoResetMergedBranchOnContinue,
+  clearResetSkipEpisode,
+  mergeContinueAnchor,
+} from "./services/pre-turn-reset.js";
 import { recheckMergeBeforeTurn } from "./services/pre-turn-merge-recheck.js";
 import { detectAndReArmResetSession, type ReArmDeps } from "./services/pr-rearm.js";
 import {
@@ -76,6 +80,26 @@ export async function applyPreTurnReset(args: {
     sessionDir,
     intent,
   );
+
+  // docs/218 req 6 — the offer belongs to this merge, and the user just answered
+  // it. Recorded here rather than inside the reset service because the service's
+  // deps are read-only. The post-turn `emitResetEligible` then answers false for
+  // every later message, which also stands the compaction down.
+  if (reset.skip?.clause === "opted-out") {
+    const anchor = mergeContinueAnchor(deps.sessionManager.get(sessionId));
+    if (anchor) {
+      deps.sessionManager.setMergeContinueDeclined(sessionId, anchor);
+      runner.emitMessage({ type: "reset_eligible", sessionId, eligible: false });
+    } else {
+      // Unreachable: `mergeContinueAnchor` needs only `mergedAt`, and the skip
+      // above proves the session is merged. Say so rather than dropping the
+      // user's choice in silence if that ever stops being true.
+      console.error(
+        `[pre-turn-reset] ${sessionId} declined the post-merge continuation but has no merge `
+          + "anchor to record it against — the offer will be made again on the next message",
+      );
+    }
+  }
 
   if (!reset.moved && !reset.skip) return NO_RESET;
 

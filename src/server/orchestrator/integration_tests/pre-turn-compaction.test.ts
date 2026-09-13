@@ -150,7 +150,11 @@ describe("Integration: the pre-turn compaction of a merged session (docs/295)", 
     const client = await TestClient.connect(port, SESSION_ID);
     await client.receive();
 
-    client.send({ type: "send_message", text: "first", compactContext: false, resetMergedBranch: false });
+    // No `resetMergedBranch: false` on this setup turn: an untick is an ANSWER
+    // and ends the offer for this merge (docs/218 req 6), which would stand the
+    // second message's compaction down. The fixture has no origin, so the reset
+    // fails instead — a failure, not a decline, so eligibility holds.
+    client.send({ type: "send_message", text: "first", compactContext: false });
     const first = await waitForClaude(() => spawns.at(-1) ?? (null as never));
     expect(first.lastPrompt).toContain("first");
     first.initSession("agent-a");
@@ -170,6 +174,36 @@ describe("Integration: the pre-turn compaction of a merged session (docs/295)", 
     expect(userTurn.lastPrompt).toContain("second");
     expect(userTurn.lastCompact).toBeFalsy();
     expect(spawns).toHaveLength(3);
+
+    client.close();
+  });
+
+  /**
+   * docs/218 req 6 — only the first message after the merge can trigger either
+   * action. The declined turn leaves the session merged, clean and still on
+   * `mergedHeadSha`, which is exactly the eligible state, so before the decline
+   * was recorded the NEXT message reset the branch and compacted the context —
+   * with no control on screen by then to stop it.
+   */
+  it("does not compact a later message once the user declined this merge (docs/218 req 6)", async () => {
+    const client = await TestClient.connect(port, SESSION_ID);
+    await client.receive();
+
+    client.send({ type: "send_message", text: "first", compactContext: false, resetMergedBranch: false });
+    const first = await waitForClaude(() => spawns.at(-1) ?? (null as never));
+    first.initSession("agent-a");
+    first.finish("agent-a");
+    await client.receiveType("session_status");
+
+    // No flags at all: its control is gone, so an absent `compactContext` would
+    // otherwise fall back to the global setting, which is on.
+    client.send({ type: "send_message", text: "second" });
+    const next = await waitForClaude(() => spawns.at(-1) ?? (null as never), first);
+    expect(next.lastCompact).toBeFalsy();
+    expect(next.lastPrompt).toContain("second");
+    // Assert the compaction, not the spawn count: a finished turn also produces
+    // a promptless spawn of its own, which is not what this is about.
+    expect(spawns.some((s) => s.lastCompact)).toBe(false);
 
     client.close();
   });
@@ -214,7 +248,8 @@ describe("Integration: the pre-turn compaction of a merged session (docs/295)", 
     const client = await TestClient.connect(port, SESSION_ID);
     await client.receive();
 
-    client.send({ type: "send_message", text: "warm up", compactContext: false, resetMergedBranch: false });
+    // See "compacts a message that had to QUEUE": no untick on a setup turn.
+    client.send({ type: "send_message", text: "warm up", compactContext: false });
     const resident = await waitForClaude(() => spawns.at(-1) ?? (null as never));
     expect(resident.lastUseStreaming).toBe(true);
     resident.initSession("agent-a");
@@ -241,7 +276,8 @@ describe("Integration: the pre-turn compaction of a merged session (docs/295)", 
     const client = await TestClient.connect(port, SESSION_ID);
     await client.receive();
 
-    client.send({ type: "send_message", text: "warm up", compactContext: false, resetMergedBranch: false });
+    // See "compacts a message that had to QUEUE": no untick on a setup turn.
+    client.send({ type: "send_message", text: "warm up", compactContext: false });
     const resident = await waitForClaude(() => spawns.at(-1) ?? (null as never));
     resident.initSession("agent-a");
     resident.emit("event", { type: "result", subtype: "success", session_id: "agent-a" });

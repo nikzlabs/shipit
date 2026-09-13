@@ -41,6 +41,7 @@ import { useMessageDraft } from "./hooks/useMessageDraft.js";
 import { useUploadBackend } from "./hooks/useUploadBackend.js";
 import { isLargePaste, buildPastedTextFile } from "./large-paste.js";
 import { isCompactCommand } from "../../../server/shared/compact-command.js";
+import { isGoalCommand } from "../../../server/shared/goal-command.js";
 import type { PermissionMode, FileContextRef, FileTreeNode, AgentId, SkillInfo, UploadRef } from "../../../server/shared/types.js";
 import type { UploadItem } from "../../hooks/useFileUpload.js";
 import type { AgentOption, ModelChoice } from "../../agent-types.js";
@@ -310,7 +311,13 @@ export function MessageInput({
   // Correctness is server-side; the checkbox is intent.
   const autoResetMergedBranch = useSettingsStore((s) => s.autoResetMergedBranch);
   const resetEligible = usePrStore((s) => (sessionId ? s.resetEligibleBySession[sessionId] ?? false : false));
-  const showResetControl = resetEligible && autoResetMergedBranch;
+  // Hidden while a turn runs: the intent is read and spent when a frame goes, so
+  // a tick changed now governs nothing in flight, and the reset and compaction
+  // the running turn is performing are what end the eligibility anyway. Shown
+  // mid-turn the controls read as switches over work already under way. Any
+  // untick outlives the hide (it lives in the store, not in the control), so a
+  // send made while they are away still carries it.
+  const showResetControl = resetEligible && autoResetMergedBranch && !isLoading;
 
   // docs/295 — offered whenever the reset control is (reqs 1, 3, 11), if the
   // backend can compact (req 10). No occupancy threshold (req 3).
@@ -603,7 +610,20 @@ export function MessageInput({
 
     if (!onSend(payload)) return;
 
-    if (showResetControl && resetChecked && sessionId) {
+    // docs/218 req 6 — either answer ends the offer, so the optimistic hide no
+    // longer depends on which one it was: ticked resets the branch, unticked is
+    // recorded as declined for this merge. It used to be `&& resetChecked`,
+    // which is why an unticked send left both controls standing.
+    //
+    // A control command answers nothing: the server skips the whole reset hook
+    // for `/compact` and for a `/goal` that rides the turn, and a `/goal` that
+    // does not ride one starts no turn at all — so hiding the controls here
+    // would leave the user unable to re-tick a choice nothing had spent. Same
+    // exclusion the untick itself already has, for the same reason. Predicting
+    // nothing is safe in only one direction: a control that lingers is
+    // corrected by the post-turn recompute, one that vanished wrongly is not.
+    const startsContinuation = !isCompact && !isGoalCommand(trimmed);
+    if (showResetControl && sessionId && startsContinuation) {
       usePrStore.getState().setResetEligible(sessionId, false);
     }
     // NOT cleared here. `sendUserTurn` spends the untick when the frame goes,

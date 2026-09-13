@@ -707,15 +707,41 @@ describe("MessageInput", () => {
       expect(screen.queryByTestId("reset-merged-branch-control")).not.toBeInTheDocument();
     });
 
-    it("keeps eligibility (control stays armed) on an unticked send", () => {
+    it("clears eligibility on an UNTICKED send too (docs/218 req 6)", () => {
       usePrStore.setState({ resetEligibleBySession: { s1: true } });
       useSettingsStore.setState({ autoResetMergedBranch: true });
       render(<MessageInput onSend={vi.fn().mockReturnValue(true)} disabled={false} sessionId="s1" />);
-      fireEvent.click(screen.getByTestId("reset-merged-branch-control"));          
+      fireEvent.click(screen.getByTestId("reset-merged-branch-control")); // untick
       typeAndSend();
-      // No reset will run, so the signal must not be optimistically cleared —
+
+      // The offer belongs to the merge, not to the message, and declining is an
+      // answer to it. This used to keep the signal, on the reasoning that no
+      // reset would run — which left the control standing and reset the branch
+      // on the NEXT message instead.
+      expect(usePrStore.getState().resetEligibleBySession.s1).toBeUndefined();
+      expect(screen.queryByTestId("reset-merged-branch-control")).not.toBeInTheDocument();
+    });
+
+    /**
+     * A control command answers nothing, so it must not hide the offer.
+     * `runSend` reports `/goal clear` as accepted, but it starts no continuation
+     * — the server skips the whole reset hook — and nothing would recompute
+     * eligibility afterwards, so the user would be left unable to re-tick a
+     * choice nothing had spent. The untick itself already has this exclusion.
+     * Found by review.
+     */
+    it("does not hide the offer for a control command that answers nothing", () => {
+      usePrStore.setState({ resetEligibleBySession: { s1: true } });
+      useSettingsStore.setState({ autoResetMergedBranch: true });
+      render(<MessageInput onSend={vi.fn().mockReturnValue(true)} disabled={false} sessionId="s1" />);
+      fireEvent.click(screen.getByTestId("reset-merged-branch-control")); // untick
+
+      const textarea = screen.getByPlaceholderText("Describe what to build... (type @ to attach files)");
+      fireEvent.change(textarea, { target: { value: "/goal clear" } });
+      fireEvent.click(screen.getByLabelText("Send message"));
 
       expect(usePrStore.getState().resetEligibleBySession.s1).toBe(true);
+      expect(screen.getByTestId("reset-merged-branch-control")).toBeInTheDocument();
     });
 
     it("keeps the untick when eligibility flickers between the untick and the send", () => {
@@ -876,6 +902,35 @@ describe("MessageInput", () => {
       expect(screen.queryByTestId("compact-context-control")).not.toBeInTheDocument();
     });
 
+    it("is hidden while a turn runs, and an untick made before it outlives the hide", () => {
+      usePrStore.setState({ resetEligibleBySession: { s1: true } });
+      useSettingsStore.setState({ autoResetMergedBranch: true });
+      const onSend = vi.fn().mockReturnValue(true);
+      const composer = (isLoading: boolean) => (
+        <MessageInput
+          onSend={onSend} disabled={false} sessionId="s1" isLoading={isLoading}
+          agents={compactingAgent} activeAgentId="claude"
+        />
+      );
+      const { rerender } = render(composer(false));
+      fireEvent.click(screen.getByTestId("compact-context-control")); // untick
+
+      rerender(composer(true));
+      // A tick changed now governs nothing in flight — the frame has gone and
+      // spent its intent. Both controls go, not just the compaction one.
+      expect(screen.queryByTestId("compact-context-control")).not.toBeInTheDocument();
+      expect(screen.queryByTestId("reset-merged-branch-control")).not.toBeInTheDocument();
+
+      // Hiding them must not throw the choice away. This asserts the STORE,
+      // which is as far as the composer reaches: it hands `onSend` a payload
+      // without the flags, and `sendUserTurn` reads the store to build the
+      // frame (guarded in `send-user-turn.test.ts`). What would be lost here is
+      // the record itself, and it survives.
+      typeAndSend();
+      expect(onSend).toHaveBeenCalled();
+      expect(optOut().compact).toBe(true);
+    });
+
     it("is hidden when the backend cannot compact (req 10)", () => {
       usePrStore.setState({ resetEligibleBySession: { s1: true } });
       useSettingsStore.setState({ autoResetMergedBranch: true });
@@ -936,7 +991,15 @@ describe("MessageInput", () => {
       expect(optOut()).toEqual({ reset: true, compact: true });
       // The send spends it (`sendUserTurn`, tested there); the composer's job is
       // to show that immediately, without a re-render trigger of its own.
-      act(() => { usePrStore.getState().clearMergeContinueOptOut("s1"); });
+      //
+      // "The next merged session that continues shows the control ticked again"
+      // (req 5) means the next MERGE, not the next message: docs/218 req 6 ends
+      // this merge's offer, so the server's signal is what brings the control
+      // back, and it does so re-ticked.
+      act(() => {
+        usePrStore.getState().clearMergeContinueOptOut("s1");
+        usePrStore.setState({ resetEligibleBySession: { s1: true } });
+      });
       expect(screen.getByTestId("compact-context-control")).toHaveAttribute("aria-pressed", "true");
       expect(screen.getByTestId("reset-merged-branch-control")).toHaveAttribute("aria-pressed", "true");
     });

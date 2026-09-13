@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { applyPreTurnReset, type PreTurnResetHookDeps, type PreTurnResetRunner } from "./pre-turn-reset-hook.js";
-import { clearResetSkipEpisode } from "./services/pre-turn-reset.js";
+import { clearResetSkipEpisode, mergeContinueAnchor } from "./services/pre-turn-reset.js";
 import { MERGE_RECHECK_TIMEOUT_MS } from "./services/pre-turn-merge-recheck.js";
 import type { GitManager } from "../shared/git.js";
 import type { SessionInfo, WsServerMessage } from "../shared/types.js";
@@ -101,6 +101,7 @@ function makeHarness(over: {
       get: () => session,
       getPrStatus: () => prStatus ?? null,
       clearMerged: vi.fn(),
+      setMergeContinueDeclined: vi.fn(),
     },
     prStatusPoller: { getStatus: () => prStatus ?? null, reArm: vi.fn() },
     createGitManager: () => over.git ?? makeGit(),
@@ -288,6 +289,49 @@ describe("applyPreTurnReset — the branch did not move", () => {
 
     result.afterUserMessagePersisted!("s1");
     expect(h.appended.find((m) => m.notice === true)?.noticeLevel).toBe("info");
+  });
+
+  /**
+   * docs/218 req 6 — recording the decline is what ends the offer. The session
+   * is still merged, still clean and still on the merged tip afterwards, so
+   * nothing else distinguishes it from one that has never been asked.
+   */
+  it("records the untick against the merge it answers, and hides the control", async () => {
+    const h = makeHarness();
+    await run(h, false);
+
+    expect(h.deps.sessionManager.setMergeContinueDeclined).toHaveBeenCalledWith(
+      "s1",
+      mergeContinueAnchor(makeSession()),
+    );
+    expect(h.emitted).toContainEqual({ type: "reset_eligible", sessionId: "s1", eligible: false });
+  });
+
+  /**
+   * The anchor needs only `mergedAt`, which the skip above already proves is
+   * set — so this path is unreachable. It is asserted because the alternative
+   * to shouting is dropping the user's choice in silence: without a recorded
+   * decline the offer returns on the next message and resets their branch.
+   */
+  it("records a decline even for a session with no merged head sha", async () => {
+    const noAnchor = makeSession();
+    delete noAnchor.mergedHeadSha;
+    const h = makeHarness({ session: noAnchor });
+    await run(h, false);
+
+    expect(h.deps.sessionManager.setMergeContinueDeclined).toHaveBeenCalledWith(
+      "s1",
+      mergeContinueAnchor(noAnchor),
+    );
+  });
+
+  it("records nothing when the reset was refused rather than declined", async () => {
+    const h = makeHarness({ git: makeGit({ isClean: vi.fn().mockResolvedValue(false) }) });
+    await run(h);
+
+    // A dirty tree is an obstacle, not an answer: docs/218 re-evaluates it every
+    // turn and the notice tells the user to clear it and send again.
+    expect(h.deps.sessionManager.setMergeContinueDeclined).not.toHaveBeenCalled();
   });
 
   it("is completely silent on a session with no merged PR", async () => {

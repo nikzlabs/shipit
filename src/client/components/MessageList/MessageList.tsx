@@ -3,7 +3,6 @@ import { CompactLayout } from "./CompactLayout.js";
 import { useCompactConversation } from "./hooks/useCompactConversation.js";
 import { elementMessageIndex } from "./compact-turns.js";
 import { Button } from "../ui/button.js";
-import { Spinner } from "../Spinner.js";
 import type { SearchMatch } from "../../hooks/useSearch.js";
 import { buildVisualElements, type VisualElement } from "../visual-elements.js";
 import { RewindPoint, type RewindGapAction } from "../RewindPoint.js";
@@ -30,16 +29,6 @@ const NO_MATCHES_BY_MESSAGE = new Map<number, SearchMatch[]>();
 function defaultSessionNameFor(value: string): string {
   const cleaned = value.trim().replace(/\s+/g, " ").slice(0, 80);
   return cleaned || "Fork from here";
-}
-
-function compactingIndicatorIndex(
-  elements: VisualElement[],
-  anchor: number | null,
-  indicator: ReactNode,
-): number {
-  if (!indicator) return -1;
-  const found = anchor === null ? -1 : elements.findIndex((el) => elementMessageIndex(el) >= anchor);
-  return found === -1 ? elements.length : found;
 }
 
 /**
@@ -148,8 +137,6 @@ export function MessageList({
   const voicePlaybackEnabled = useSettingsStore((s) => s.voicePlaybackEnabled);
 
   const activeSessionId = liveSessionId;
-  const compacting = useSessionStore((s) => s.compacting);
-  const compactingAnchor = useSessionStore((s) => s.compactingAnchor);
 
   const subAgentSpawns = useSessionStore((s) => s.subAgentSpawns);
 
@@ -293,18 +280,6 @@ export function MessageList({
     onRewindAtGap,
   };
 
-  // "Compacting…" indicator should never outlive the turn. This backstops any
-
-  const compactingIndicator =
-    compacting && isLoading ? (
-      <div key="compacting-indicator" className="flex justify-start" data-testid="compacting-indicator">
-        <div className="flex items-center gap-2 rounded-lg border border-(--color-border-primary) bg-(--color-bg-tertiary) px-3 py-2 text-xs text-(--color-text-secondary)">
-          <Spinner size={14} className="text-(--color-text-tertiary)" />
-          Compacting context…
-        </div>
-      </div>
-    ) : null;
-
   // planning#375 — every row is a memoized `TranscriptRow`. This loop must
 
   const compact = useCompactConversation(messages, isLoading, deferred.sessionId, compactConversation, visualElements, matchesByMessage, containerRef);
@@ -366,7 +341,6 @@ export function MessageList({
 
   // FRONT, and that is the load-bearing detail. A row that changes group changes
 
-  const indicatorAt = compactingIndicatorIndex(visualElements, compactingAnchor, compactingIndicator);
   const rowGroups: ReactNode[] = [];
   let anchorsSeen = 0;
   let current: { visible: number; children: ReactNode[] } | null = null;
@@ -391,10 +365,9 @@ export function MessageList({
     );
     current = null;
   };
-  rows.forEach((row, i) => {
+  rows.forEach((row) => {
     if (!row.movable && anchorsSeen > 0 && anchorsSeen % ROWS_PER_GROUP === 0) flushGroup();
     const group = (current ??= { visible: 0, children: [] });
-    if (i === indicatorAt) { group.children.push(compactingIndicator); group.visible++; }
     if (row.visible) group.visible++;
     if (!row.movable) {
       anchorsSeen++;
@@ -436,11 +409,6 @@ export function MessageList({
         containerRef={containerRef} canRestoreReadingAnchor={canRestoreReadingAnchor}>
         {rowGroups}
       </CompactLayout>
-      {/* An indicator anchored past the last row belongs after every group, not
-          inside one — the same end-of-list placement `compactingIndicatorIndex`
-          returns for a null anchor. */}
-      {indicatorAt >= rows.length ? compactingIndicator : null}
-
       {/*
         planning#280 — the durable pending consult card (inline, at the call site) is
         now the primary in-flight surface. The transient chip is only shown for a

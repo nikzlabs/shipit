@@ -1769,52 +1769,6 @@ describe("MessageList", () => {
     });
   });
 
-  describe("compacting indicator placement (docs/178)", () => {
-    afterEach(() => {
-      useSessionStore.setState({ compacting: false, compactingAnchor: null });
-    });
-
-    it("renders above a message the user sent while the compaction was running", () => {
-
-      useSessionStore.setState({ compacting: true, compactingAnchor: 1 });
-
-      render(
-        <MessageList
-          messages={[msg("user", "/compact"), msg("user", "go ahead with phase 1")]}
-          isLoading={true}
-        />,
-      );
-
-      const indicator = screen.getByTestId("compacting-indicator");
-      const compactBubble = screen.getByText("/compact");
-      const laterBubble = screen.getByText("go ahead with phase 1");
-      expect(compactBubble.compareDocumentPosition(indicator) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-      expect(indicator.compareDocumentPosition(laterBubble) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    });
-
-    it("renders at the end when nothing was appended after the compaction started", () => {
-      useSessionStore.setState({ compacting: true, compactingAnchor: 2 });
-
-      render(
-        <MessageList messages={[msg("user", "/compact"), msg("assistant", "working")]} isLoading={true} />,
-      );
-
-      const indicator = screen.getByTestId("compacting-indicator");
-      const last = screen.getByText("working");
-      expect(last.compareDocumentPosition(indicator) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    });
-
-    it("falls back to the end of the list when no anchor was captured", () => {
-      useSessionStore.setState({ compacting: true, compactingAnchor: null });
-
-      render(<MessageList messages={[msg("user", "/compact"), msg("user", "later")]} isLoading={true} />);
-
-      const indicator = screen.getByTestId("compacting-indicator");
-      const last = screen.getByText("later");
-      expect(last.compareDocumentPosition(indicator) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    });
-  });
-
   // streaming after the prompt) used to be disabled because the question's
 
   describe("AskUserQuestion clickability", () => {
