@@ -1293,3 +1293,32 @@ describe("GrokAdapter — goals", () => {
     expect(events.filter((e) => e.type === "agent_goal_updated")).toEqual([]);
   });
 });
+
+/**
+ * docs/299 — measured: `--tools ""` alone still sent all 27 built-ins, and an
+ * unknown name in the allowlist falls back to the full set. Both halves are
+ * required, and the allowlisted name must be a tool grok actually has.
+ */
+describe("GrokAdapter — tools off", () => {
+  const homes: string[] = [];
+  afterEach(() => {
+    for (const h of homes.splice(0)) fs.rmSync(h, { recursive: true, force: true });
+  });
+
+  it("pairs a real allowlist entry with a denylist that removes it", () => {
+    const h = makeHarness({ toolsOff: true });
+    homes.push(h.home);
+    expect(h.args[h.args.indexOf("--tools") + 1]).toBe("read_file");
+    expect(h.args[h.args.indexOf("--disallowed-tools") + 1])
+      .toBe("read_file,search_tool,use_tool,Agent");
+    h.child.close(0);
+  });
+
+  it("leaves an ordinary turn's tools alone", () => {
+    const h = makeHarness();
+    homes.push(h.home);
+    expect(h.args).not.toContain("--tools");
+    expect(h.args).not.toContain("--disallowed-tools");
+    h.child.close(0);
+  });
+});

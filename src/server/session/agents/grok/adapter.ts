@@ -6,6 +6,7 @@ import { randomUUID } from "node:crypto";
 import { spawn as nodeSpawn, type ChildProcess, type SpawnOptions } from "node:child_process";
 import { killChild, killProcessTree } from "../../../shared/kill-child.js";
 import { GROK_TOOL_NAMES } from "../../../shared/agent-registry.js";
+import { GROK_TOOLS_OFF_ARGS } from "../../../shared/agent-tools-off.js";
 import { HARNESSES } from "../../../shared/catalogue/harnesses.js";
 import { GROK_PERMISSION_MODES } from "../../../shared/types/agent-types.js";
 /**
@@ -240,6 +241,8 @@ export class GrokAdapter
     }
 
     if (params.model) args.push("-m", params.model);
+
+    if (params.toolsOff) args.push(...GROK_TOOLS_OFF_ARGS);
 
     if (params.reasoningEffort) args.push("--reasoning-effort", params.reasoningEffort);
 

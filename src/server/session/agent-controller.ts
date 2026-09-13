@@ -144,10 +144,24 @@ export class AgentController {
       return { killed: true };
     });
 
-    app.post<{ Body: { agentId: AgentId; prompt: string; spawnId: string; depth?: number; model?: string; serviceRouting?: ServiceRouting; homeDir?: string; reasoningEffort?: string; timeoutMs?: number; maxOutputChars?: number } }>(
+    // Cancel one spawn without disturbing any other run in this container (docs/299 req 9).
+    // /agent/kill targets the resident primary agent and is not this.
+    app.post<{ Body: { spawnId?: string } | null }>("/agent/spawn/cancel", async (request, reply) => {
+      const spawnId = request.body?.spawnId;
+      if (typeof spawnId !== "string" || !spawnId) {
+        return reply.code(400).send({ error: "spawnId is required" });
+      }
+      const handle = this.spawnedAgents.get(spawnId);
+      if (!handle) return { cancelled: false, unknownSpawn: true };
+      console.warn(`[sub-agent] worker cancelling spawn=${spawnId} (caller abandoned the run)`);
+      handle.cancel();
+      return { cancelled: true };
+    });
+
+    app.post<{ Body: { agentId: AgentId; prompt: string; spawnId: string; depth?: number; model?: string; serviceRouting?: ServiceRouting; homeDir?: string; reasoningEffort?: string; timeoutMs?: number; maxOutputChars?: number; toolsOff?: boolean; credentialSecret?: string } }>(
       "/agent/spawn",
       async (request, reply) => {
-        const { agentId, prompt, spawnId, depth, model, serviceRouting, homeDir, reasoningEffort, timeoutMs, maxOutputChars } = request.body ?? {};
+        const { agentId, prompt, spawnId, depth, model, serviceRouting, homeDir, reasoningEffort, timeoutMs, maxOutputChars, toolsOff, credentialSecret } = request.body ?? {};
         if (!agentId || typeof prompt !== "string" || !spawnId) {
           console.warn("[sub-agent] worker rejected spawn: agentId, prompt, and spawnId are required");
           return reply.code(400).send({ error: "agentId, prompt, and spawnId are required" });
@@ -178,13 +192,20 @@ export class AgentController {
           ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
           ...(timeoutMs !== undefined ? { timeoutMs } : {}),
           ...(maxOutputChars !== undefined ? { maxOutputChars } : {}),
+          ...(toolsOff !== undefined ? { toolsOff } : {}),
         };
         const handle = runAgentToCompletion(agent, runOpts, Date.now());
         this.spawnedAgents.set(spawnId, handle);
         try {
           // The child captures this depth synchronously; the orchestrator uses it to reject recursion.
           const childDepth = String((depth ?? 0) + 1);
-          this.withTemporaryEnv({ SHIPIT_AGENT_DEPTH: childDepth }, () => {
+          // A caller whose container has no credential environment of its own
+          // (docs/299's cleanup container) sends the routed secret with the
+          // spawn. Adapters read it inside run(), synchronously.
+          const routedCredential = credentialSecret && serviceRouting?.credentialSourceEnv
+            ? { [serviceRouting.credentialSourceEnv]: credentialSecret }
+            : {};
+          this.withTemporaryEnv({ SHIPIT_AGENT_DEPTH: childDepth, ...routedCredential }, () => {
             agent.run(buildSubAgentRunParams(runOpts));
           });
           const result = await handle.promise;
