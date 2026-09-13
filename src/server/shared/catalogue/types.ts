@@ -46,6 +46,8 @@ export interface ContextWindow {
 export interface ModelDef {
   harnesses?: HarnessId[];
   id: string;
+  /** The id this service's API expects, where the row's id is a harness alias. Defaults to id. */
+  apiId?: string;
   label: string;
   canonicalModelKey: CanonicalModelKey;
   family: ModelFamily;
@@ -68,6 +70,17 @@ export type CredentialTarget =
   | { kind: "env"; name: string }
   | { kind: "config-file"; path: string; pointer: string };
 
+/**
+ * What a direct call with this credential must send. Its presence is the whole
+ * capability: absent means the credential may not be called directly (docs/299
+ * req 3), and the field is authored per credential because neither the billing
+ * mode nor the credential's delivery answers the question.
+ */
+export interface DirectCallDef {
+  /** Added to the style's own auth and content headers, and override them. */
+  headers?: Record<string, string>;
+}
+
 export type ModeCredential =
   | {
       via: "account";
@@ -83,6 +96,12 @@ export type ModeCredential =
       targetOverride?: Partial<Record<HarnessId, CredentialTarget>>;
       /** Absent permits any compatible string target; subscription tokens may need restrictions. */
       carriers?: HarnessId[];
+      /**
+       * Absent means no. Only a string credential can carry this: an account
+       * credential is issued for the vendor's own client application, which
+       * docs/299 req 1 permits only a harness to run.
+       */
+      directCall?: DirectCallDef;
     };
 
 interface ModeCommon {

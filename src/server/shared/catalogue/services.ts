@@ -141,25 +141,30 @@ export const SERVICES = [
             storageEnv: "ANTHROPIC_AUTH_TOKEN",
             targetOverride: { claude: { kind: "env", name: "ANTHROPIC_AUTH_TOKEN" } },
             carriers: ["claude"],
+            // No directCall: the token is restricted to Claude Code, and the
+            // Consumer Terms permit automated access only under an API key.
           },
         ],
         retired: [{ id: "claude-fable-5", styles: [A_MSG], successors: { [A_MSG]: "claude-fable-5-1" } }],
         models: [
           { id: "claude-opus-5", label: "Opus 5", ...MODEL_IDENTITIES.opus5, styles: [A_MSG], contextWindow: ONE_M, price: ANTHROPIC_PRICES.opus5 },
           { id: "claude-sonnet-5", label: "Sonnet 5", ...MODEL_IDENTITIES.sonnet5, styles: [A_MSG], contextWindow: ONE_M, price: ANTHROPIC_PRICES.sonnet5 },
-          { id: "haiku", label: "Haiku 4.5", ...MODEL_IDENTITIES.haiku45, styles: [A_MSG], contextWindow: { default: 200_000 }, price: ANTHROPIC_PRICES.haiku45 },
+          // The row id is Claude Code's alias; the Messages API takes the vendor id.
+          { id: "haiku", apiId: "claude-haiku-4-5", label: "Haiku 4.5", ...MODEL_IDENTITIES.haiku45, styles: [A_MSG], contextWindow: { default: 200_000 }, price: ANTHROPIC_PRICES.haiku45 },
           { id: "claude-fable-5-1", label: "Fable 5.1", ...MODEL_IDENTITIES.fable51, styles: [A_MSG], contextWindow: ONE_M, price: ANTHROPIC_PRICES.fable51 },
         ],
       },
       {
         kind: "key",
         endpoints: { [A_MSG]: "https://api.anthropic.com" },
-        credentials: [{ via: "string", storageEnv: "ANTHROPIC_API_KEY" }],
+        // An API key is the credential the Consumer Terms name for automated access.
+        credentials: [{ via: "string", storageEnv: "ANTHROPIC_API_KEY", directCall: {} }],
         retired: [{ id: "claude-fable-5", styles: [A_MSG], successors: { [A_MSG]: "claude-fable-5-1" } }],
         models: [
           { id: "claude-opus-5", label: "Opus 5", ...MODEL_IDENTITIES.opus5, styles: [A_MSG], contextWindow: ONE_M, price: ANTHROPIC_PRICES.opus5 },
           { id: "claude-sonnet-5", label: "Sonnet 5", ...MODEL_IDENTITIES.sonnet5, styles: [A_MSG], contextWindow: ONE_M, price: ANTHROPIC_PRICES.sonnet5 },
-          { id: "haiku", label: "Haiku 4.5", ...MODEL_IDENTITIES.haiku45, styles: [A_MSG], contextWindow: { default: 200_000 }, price: ANTHROPIC_PRICES.haiku45 },
+          // The row id is Claude Code's alias; the Messages API takes the vendor id.
+          { id: "haiku", apiId: "claude-haiku-4-5", label: "Haiku 4.5", ...MODEL_IDENTITIES.haiku45, styles: [A_MSG], contextWindow: { default: 200_000 }, price: ANTHROPIC_PRICES.haiku45 },
           { id: "claude-fable-5-1", label: "Fable 5.1", ...MODEL_IDENTITIES.fable51, styles: [A_MSG], contextWindow: ONE_M, price: ANTHROPIC_PRICES.fable51 },
         ],
       },
@@ -192,7 +197,7 @@ export const SERVICES = [
       {
         kind: "key",
         endpoints: { [O_RESP]: "https://api.openai.com/v1", [O_CC]: "https://api.openai.com/v1" },
-        credentials: [{ via: "string", storageEnv: "OPENAI_API_KEY" }],
+        credentials: [{ via: "string", storageEnv: "OPENAI_API_KEY", directCall: {} }],
         retired: [{ id: "gpt-5.6", styles: [O_RESP], successors: { [O_RESP]: "gpt-5.6-sol" } }],
         models: [
           { id: "gpt-5.6-sol", label: "GPT-5.6 Sol", ...MODEL_IDENTITIES.gpt56sol, styles: [O_RESP, O_CC], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.sol },
@@ -233,7 +238,7 @@ export const SERVICES = [
           [O_CC]: "https://api.x.ai/v1",
           [O_RESP]: "https://api.x.ai/v1",
         },
-        credentials: [{ via: "string", storageEnv: "XAI_API_KEY" }],
+        credentials: [{ via: "string", storageEnv: "XAI_API_KEY", directCall: {} }],
         retired: [],
         models: [
           { id: "grok-4.6", label: "Grok 4.6", ...MODEL_IDENTITIES.grok46, styles: [O_CC, O_RESP], contextWindow: HALF_M, price: XAI_PRICES.grok46 },
@@ -251,7 +256,9 @@ export const SERVICES = [
       {
         kind: "key",
         endpoints: { [G_GC]: "https://generativelanguage.googleapis.com" },
-        credentials: [{ via: "string", storageEnv: "GEMINI_API_KEY" }],
+        // The key permits a direct call; no client speaks G_GC yet, so
+        // resolveDirectCall still answers no (docs/302 req 5).
+        credentials: [{ via: "string", storageEnv: "GEMINI_API_KEY", directCall: {} }],
         retired: [],
         // No shipped harness speaks G_GC, so these rows join nothing until one
         // does (docs/302 req 5). Model ids are Google's own, 2026-09-13.
@@ -273,7 +280,7 @@ export const SERVICES = [
           [O_RESP]: "https://api.deepseek.com/v1",
           [A_MSG]: "https://api.deepseek.com/anthropic",
         },
-        credentials: [{ via: "string", storageEnv: "DEEPSEEK_API_KEY" }],
+        credentials: [{ via: "string", storageEnv: "DEEPSEEK_API_KEY", directCall: {} }],
         // ✅ 2026-09-10 — V4 Flash is RETIRED at DeepSeek's own endpoint, per the
         // vendor table these prices come from: the old id is "still accepted",
         // served by V4.1 Flash and billed at its rate. That is why the row could
@@ -328,6 +335,8 @@ export const SERVICES = [
             // The plan requires Bearer; OpenCode's x-api-key path cannot carry it.
             targetOverride: { claude: { kind: "env", name: "ANTHROPIC_AUTH_TOKEN" } },
             carriers: ["claude"],
+            // No directCall: Z.AI's own documentation restricts the coding plan
+            // to supported tools.
           },
         ],
         retired: [],
@@ -343,7 +352,7 @@ export const SERVICES = [
           [O_CC]: "https://api.z.ai/api/paas/v4",
           [A_MSG]: "https://api.z.ai/api/anthropic",
         },
-        credentials: [{ via: "string", storageEnv: "ZAI_API_KEY" }],
+        credentials: [{ via: "string", storageEnv: "ZAI_API_KEY", directCall: {} }],
         retired: [],
         models: [
           // Only the Anthropic path was verified for 5.3; Chat Completions probes hung.
@@ -364,7 +373,7 @@ export const SERVICES = [
           [O_RESP]: "https://openrouter.ai/api/v1",
           [A_MSG]: "https://openrouter.ai/api",
         },
-        credentials: [{ via: "string", storageEnv: "OPENROUTER_API_KEY" }],
+        credentials: [{ via: "string", storageEnv: "OPENROUTER_API_KEY", directCall: {} }],
         retired: [
           {
             id: "anthropic/claude-fable-5",
@@ -416,7 +425,7 @@ export const SERVICES = [
           [O_RESP]: "https://ai-gateway.vercel.sh/v1",
           [A_MSG]: "https://ai-gateway.vercel.sh",
         },
-        credentials: [{ via: "string", storageEnv: "VERCEL_AI_GATEWAY_API_KEY" }],
+        credentials: [{ via: "string", storageEnv: "VERCEL_AI_GATEWAY_API_KEY", directCall: {} }],
         retired: [
           {
             id: "anthropic/claude-fable-5",
@@ -473,6 +482,7 @@ export const SERVICES = [
             storageEnv: "OPENCODE_ZEN_API_KEY",
             // Claude Code's context_management request field is rejected by Zen.
             carriers: ["opencode", "codex"],
+            directCall: {},
           },
         ],
         // V4 Pro left on 2026-09-10; these rows are `openai-chat-completions` only.
@@ -513,6 +523,14 @@ export const SERVICES = [
             // Same secret as Zen, separate delivery name for the subscription route.
             storageEnv: "OPENCODE_GO_KEY",
             carriers: ["opencode", "codex"],
+            // Go refused a generic HTTP-library agent with 403/1010 and a
+            // session-less request with 400 MissingSessionID when docs/252
+            // measured it, so a direct call names ShipIt and carries a session.
+            // Probed again 2026-09-13: both now answer 401 before either check,
+            // so the headers cannot be re-verified without a live key.
+            directCall: {
+              headers: { "User-Agent": "ShipIt", "x-opencode-session": "shipit-background-work" },
+            },
           },
         ],
         // V4 Pro left on 2026-09-10; these rows are `openai-chat-completions` only.
