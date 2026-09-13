@@ -61,7 +61,7 @@ export function credentialFailureStopMessage(policy: CredentialFailurePolicy): s
   return (
     `Authentication failed for ${subject}, so this turn stopped. `
     + `ShipIt does not retry or re-authenticate an API key — check the credential in `
-    + `Settings → Services, then resend your message.`
+    + `Settings → Model providers, then resend your message.`
   );
 }
 

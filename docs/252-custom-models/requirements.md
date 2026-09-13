@@ -358,6 +358,16 @@ _None._
 
 ## Resolved questions
 
+- 2026-09-13 — **What is this surface called on screen?** *"people get confused by 'services'
+  term, maybe rename to 'model providers'?"* The word already means a Docker Compose service
+  everywhere else in the product — the preview drawer, `shipit service`, `compose.md` — and
+  that meaning is Docker's, so it cannot move. **Chosen: the UI says "Model providers"; the
+  code keeps `service`.** The Settings tab, the panel, the add flow, the usage grouping and
+  every message pointing at them read *provider*; `ServiceDef`, `serviceId`, the catalogue
+  module, `/api/credential-routes` and the `service_id` columns are unchanged, because
+  renaming ~1300 references and migrating a column buys the user nothing. Requirements below
+  keep saying *service* for the same reason: they describe the model, not the label.
+
 - 2026-08-20 — Which figure does the running surface show for a **mixed** session? Req 16 named
   the subscription case and the metered case; the implementation resolved the overlap
   money-first, unconditionally. **Chosen: money first, yielding only to a figure larger in

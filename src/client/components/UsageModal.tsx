@@ -371,7 +371,7 @@ function UsageGroupRow({
       <span className="flex-1 min-w-0">
         <span className="flex items-center gap-2 flex-wrap">
           <span className="text-(--color-text-primary)">
-            {legacy ? "No service recorded" : serviceLabel(group.serviceId!)}
+            {legacy ? "No provider recorded" : serviceLabel(group.serviceId!)}
           </span>
           <span className="text-[10px] px-1.5 py-px rounded-full border border-(--color-border-primary) text-(--color-text-secondary)">
             {legacy ? "Unattributed" : billingModeLabel(group.billingMode!)}
@@ -577,7 +577,7 @@ export function UsageModal({ currentSessionUsage, allUsage, sessions, onClose, m
           {/* The split — one row per (service, billing mode), legacy last */}
           {currentSessionUsage?.groups && currentSessionUsage.groups.length > 0 && (
             <UsageSplitSection
-              heading="This session — by service"
+              heading="This session — by provider"
               groups={currentSessionUsage.groups}
               limits={subscriptionLimits}
               testId="usage-session-split"
@@ -585,7 +585,7 @@ export function UsageModal({ currentSessionUsage, allUsage, sessions, onClose, m
           )}
           {allUsage && allUsage.groups.length > 0 && (
             <UsageSplitSection
-              heading="All sessions — by service"
+              heading="All sessions — by provider"
               groups={allUsage.groups}
               limits={subscriptionLimits}
               testId="usage-all-split"

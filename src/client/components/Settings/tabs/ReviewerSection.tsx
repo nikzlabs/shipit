@@ -209,7 +209,7 @@ export function ReviewerSection({
           Who ShipIt asks for a second opinion when an agent requests a review. Two of them, so
           reviewing works whichever model is implementing — ShipIt uses whichever is furthest
           from the model that wrote the work, preferring a different model family above
-          everything else. Left alone, a reviewer follows this install: add a service and it
+          everything else. Left alone, a reviewer follows this install: add a provider and it
           improves on its own.
         </p>
       </div>
@@ -424,7 +424,7 @@ function ReviewerSlotCard({
                   gone. Reviews fall through to the other reviewer until you pick another.
                 </span>
               ) : (
-                <span>Nothing to review with yet — add a service credential under Services.</span>
+                <span>Nothing to review with yet — add a credential under Model providers.</span>
               )}
             </div>
           </div>

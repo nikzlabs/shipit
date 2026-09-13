@@ -80,7 +80,7 @@ export function verifyExplicitSelection(
       message:
         `${selection.modelId} on ${selection.serviceId} has no credential `
         + `${agent?.name ?? "this harness"} can use. `
-        + "Add one in Settings → Services, or pick another model.",
+        + "Add one in Settings → Model providers, or pick another model.",
     };
   }
   return { ok: true, selection };

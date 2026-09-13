@@ -243,7 +243,7 @@ export function resolveRoleByName(
     throw new ServiceError(
       400,
       `The role "${name}" cannot run: neither configured reviewer has a credential that can run `
-        + "right now. Connect a service in Settings, or wait for the quota to reset.",
+        + "right now. Connect a provider in Settings, or wait for the quota to reset.",
     );
   }
   const base: RolePinnedParams = {

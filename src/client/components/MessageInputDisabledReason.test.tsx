@@ -34,7 +34,7 @@ vi.mock("../voice/use-voice-input.js", () => ({
 
 const { MessageInput } = await import("./MessageInput/MessageInput.js");
 
-const REASON = "Add a service to start chatting";
+const REASON = "Add a model provider to start chatting";
 const LIVE_PLACEHOLDER = "Describe what to build... (type @ to attach files)";
 const DRAFT_KEY_PREFIX = "shipit-draft-message:";
 

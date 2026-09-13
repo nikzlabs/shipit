@@ -1010,7 +1010,7 @@ export async function registerRoutes(
             if (!info.hasRunnableModels) {
               send({
                 type: "error",
-                message: `${info.name} has no models available. Add a credential for a service it can reach in Settings → Services.`,
+                message: `${info.name} has no models available. Add a credential for a provider it can reach in Settings → Model providers.`,
               });
               return;
             }

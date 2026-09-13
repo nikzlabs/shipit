@@ -101,10 +101,10 @@ describe("resolveUserRole refuses rather than substituting (req 8)", () => {
     expect(() => resolveUserRole("deep dive", deps([stranded]))).toThrow(/Settings → Roles/);
   });
 
-  it("refuses a disconnected role by pointing at the SERVICE, because the role is correct (req 9)", async () => {
+  it("refuses a disconnected role by pointing at the PROVIDER, because the role is correct (req 9)", async () => {
     const { resolveUserRole } = await import("./session-role.js");
     expect(() => resolveUserRole("deep dive", deps([DEEP_DIVE], []))).toThrow(
-      /Reconnect the service/,
+      /Reconnect the provider/,
     );
   });
 
