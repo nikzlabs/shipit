@@ -48,40 +48,47 @@ agent is the actor.
 3. When a ShipIt setting is what blocks the work, the agent can tell the user
    which setting it is, what it is currently set to, and what it has to become —
    instead of a generic "change it in Settings".
+4. The agent's only write path is a proposal. It posts a card that names the
+   exact change, and the setting does not move until the user clicks. This holds
+   for every setting: there is no class of setting the agent may change on its
+   own, however small or reversible the change is.
+5. Every setting the Settings dialog shows is in scope, not only the ones that
+   block the agent. A setting the dialog shows but this feature cannot reach is
+   still named, with the reason it cannot be reached.
+6. The capability has no master switch. It is always available, and the click on
+   the proposal is what governs it.
 
 ## Open questions
 
-- **Which capabilities does this cover beyond reading?** Candidates, each of
-  which is a separate build: (a) read only; (b) the agent writes a clickable
-  pointer that opens Settings at the exact control, reusing the `shipit-preview:`
-  / `shipit-present:` link machinery from docs/258-chat-links; (c) the agent
-  proposes a specific change as an inline card the user applies in one click,
-  like the bug-report and release-proposal cards; (d) the agent applies the
-  change itself and the card is the record, with Undo, like `shipit issue create`.
-- **What is the write posture, and does it differ per setting?** A flat
-  "everything is proposed, the user clicks" is one answer. A tier split is
-  another: reversible preferences with no spend and no security consequence
-  (auto-create-PR, live steering, voice delivery) written directly, while
-  anything touching money, blast radius or the security boundary (egress hosts
-  and containment, memory budget, agent-merge permission, model and billing
-  routing, enabling sub-agents) is proposed and never applied without a click.
-  Note that repository files, web pages and tool output are untrusted input; a
-  human click is the only thing that stops ingested text from steering a
-  settings change.
-- **Does the user get a master switch for this, and what is its default?**
-  Off / propose-only / on. Related: most settings are global, so an agent in one
-  session changing one affects every other session and every future one.
-- **Which settings are in scope for a first version?** Everything in the
-  Settings dialog, or only the ones the agent demonstrably hits — sub-agents,
-  roles and reviewer, egress hosts, trackers, skills, memory budget, agent-merge?
-- **Per-session settings too, or global only?** Sandbox capabilities and the
-  egress allowlist are per-session (docs/279-mutable-sandbox-capabilities,
-  docs/285-network-mode-at-session-creation) and already emit a settings-change
-  card; global settings have no such card.
-- **What replaces the `[needs you]` prose line?** If the agent can point or
-  propose, is prose still written alongside, or does the card become the only
-  form so the instruction is never duplicated?
+- (none)
 
 ## Resolved questions
 
-- (none yet)
+- 2026-09-13 — *Which capabilities does this cover beyond reading?* The user
+  chose **reading** plus a **proposal card the user applies with one click**.
+  Two candidates were offered and not chosen: a clickable pointer that opens
+  Settings at the exact control, and the agent applying a change itself with an
+  Undo. Both are non-goals — a pointer is not a substitute for the card, and
+  nothing is applied without a click. → requirement 4.
+- 2026-09-13 — *What is the write posture, and does it differ per setting?*
+  "Every write needs a click", chosen over a tier split that would have applied
+  harmless preferences directly. One rule, no tier table to maintain, and the
+  defence against a repository file or web page steering a settings change is
+  uniform. → requirement 4.
+- 2026-09-13 — *Does the user get a master switch, and what is its default?*
+  No master switch. The per-change click is the whole gate, and the Settings
+  dialog gains no control for this feature. → requirement 6.
+- 2026-09-13 — *Which settings are in scope for a first version?* Every setting
+  in the dialog, chosen over the smaller "only what blocks the agent" list. The
+  agent must be able to answer a question about any setting the user names, not
+  only the ones it trips over itself. → requirement 5.
+- 2026-09-13 — *Per-session settings too, or global only?* Answered by the scope
+  choice above: the dialog is the boundary. Per-session sandbox capabilities are
+  set from the sandbox banner rather than the dialog, so they are out of scope
+  here; the egress allowlist is in the dialog's Network tab, so it is in.
+- 2026-09-13 — *What replaces the `[needs you]` prose line?* Withdrawn, not a
+  decision for the user: `CLAUDE.md` → "Responding in chat" already rules that
+  the list never repeats an affordance ShipIt's own UI puts in front of the
+  user. An applied-with-one-click card is such an affordance, so the card
+  replaces the prose line wherever the agent can propose, and prose remains only
+  where it cannot — a secret value the user has to type.
