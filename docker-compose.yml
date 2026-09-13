@@ -50,6 +50,7 @@ services:
       - { name: OPENCODE_ZEN_API_KEY }
       - { name: OPENCODE_GO_KEY }
       - { name: XAI_API_KEY, agent: true }
+      - { name: GEMINI_API_KEY }
 
   # Keep service credentials absent so first-run onboarding remains reachable.
   onboarding:

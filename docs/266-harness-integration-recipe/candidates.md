@@ -294,7 +294,8 @@ with an invalid `GEMINI_API_KEY`, then one real Google sign-in. Every
      verified mitigation (read-only install path) or a sign-off.
   2. **A new vendor row**: Gemini's `generateContent` wire format is not an
      `ApiStyle` (docs/272-opencode-inference notes Gemini models are
-     unrepresentable without one); catalogue row before harness row.
+     unrepresentable without one); catalogue row before harness row —
+     done in docs/302-gemini-catalogue-vendor.
   3. **Terms**: the user's reading above, recorded, not decided here.
   Carried requirement: account-level refusals surface verbatim. Unprobed,
   for Phase 10: `/compact` on a resumed session, plugin-based

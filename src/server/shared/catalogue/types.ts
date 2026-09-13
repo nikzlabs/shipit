@@ -3,10 +3,12 @@ import type { AgentId } from "../types/agent-types.js";
 import type { AgentCapabilities } from "../types/agent-types.js";
 import type { CanonicalModelKey, ModelFamily } from "./model-identity.js";
 
+// gemini-generate-content: POST <base>/v1beta/models/<id>:streamGenerateContent (docs/302).
 export type ApiStyle =
   | "anthropic-messages"
   | "openai-responses"
-  | "openai-chat-completions";
+  | "openai-chat-completions"
+  | "gemini-generate-content";
 
 /** Allowance versus metered billing; independent of credential delivery. */
 export type BillingMode = "sub" | "key";

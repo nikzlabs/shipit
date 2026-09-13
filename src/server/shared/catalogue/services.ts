@@ -4,6 +4,7 @@ import type { ServiceDef } from "./types.js";
 const A_MSG = "anthropic-messages" as const;
 const O_RESP = "openai-responses" as const;
 const O_CC = "openai-chat-completions" as const;
+const G_GC = "gemini-generate-content" as const;
 
 // USD per million tokens. Rates below are estimates; gateway rates can differ from upstream.
 // Anthropic pricing and prompt-caching docs, 2026-08-09; 5-minute cache writes.
@@ -106,6 +107,17 @@ const XAI_PRICES = {
   grok43: { input: 1.25, output: 2.5, cacheRead: 0.2, cacheWrite: 1.25 },
   grok420: { input: 1.25, output: 2.5, cacheRead: 0.2, cacheWrite: 1.25 },
 } as const;
+
+// ai.google.dev/gemini-api/docs/pricing, 2026-09-13 — provenance in docs/302's plan.
+// Introductory rates billed through 2026-12-31; Flash doubles to 1.5/7.5 from
+// 2027-01-01. Pro is the ≤200K tier (4/18 above it). Cache write is 0 because
+// Google bills cache STORAGE per hour, which a token count cannot express.
+const GEMINI_PRICES = {
+  gemini38flash: { input: 0.75, output: 3.75, cacheRead: 0.075, cacheWrite: 0 },
+  gemini31proPreview: { input: 2, output: 12, cacheRead: 0.2, cacheWrite: 0 },
+} as const;
+// Google's published input limit for the Gemini 3 line; the gateway Gemini rows keep theirs.
+const GEMINI_WINDOW = { default: 1_048_576 } as const;
 
 // Match the app-server's assigned window, not the larger advertised API maximum.
 const CODEX_WINDOW = { default: 272_000 } as const;
@@ -228,6 +240,24 @@ export const SERVICES = [
           { id: "grok-4.3", label: "Grok 4.3", ...MODEL_IDENTITIES.grok43, styles: [O_CC, O_RESP], contextWindow: ONE_M, price: XAI_PRICES.grok43 },
           { id: "grok-4.20-0309-reasoning", label: "Grok 4.20 (reasoning)", ...MODEL_IDENTITIES.grok420Reasoning, styles: [O_CC, O_RESP], contextWindow: ONE_M, price: XAI_PRICES.grok420 },
           { id: "grok-4.20-0309-non-reasoning", label: "Grok 4.20", ...MODEL_IDENTITIES.grok420NonReasoning, styles: [O_CC, O_RESP], contextWindow: ONE_M, price: XAI_PRICES.grok420 },
+        ],
+      },
+    ],
+  },
+  {
+    id: "google",
+    name: "Gemini (Google)",
+    modes: [
+      {
+        kind: "key",
+        endpoints: { [G_GC]: "https://generativelanguage.googleapis.com" },
+        credentials: [{ via: "string", storageEnv: "GEMINI_API_KEY" }],
+        retired: [],
+        // No shipped harness speaks G_GC, so these rows join nothing until one
+        // does (docs/302 req 5). Model ids are Google's own, 2026-09-13.
+        models: [
+          { id: "gemini-3.8-flash", label: "Gemini 3.8 Flash", ...MODEL_IDENTITIES.gemini38flash, styles: [G_GC], contextWindow: GEMINI_WINDOW, price: GEMINI_PRICES.gemini38flash },
+          { id: "gemini-3.1-pro-preview", label: "Gemini 3.1 Pro (preview)", ...MODEL_IDENTITIES.gemini31proPreview, styles: [G_GC], contextWindow: GEMINI_WINDOW, price: GEMINI_PRICES.gemini31proPreview },
         ],
       },
     ],

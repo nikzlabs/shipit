@@ -256,6 +256,11 @@ Since docs/272 the union also carries `"opencode-go-usage"`, and it is the case 
 at all, so Go's integration ships with **no reader by decision** rather than by backlog — the
 mode reports nothing and ShipIt reacts to the service's own 429 instead.
 
+Since docs/302 `ApiStyle` also carries a fourth member, `"gemini-generate-content"` —
+Google's own wire format, declared by the Gemini vendor row and, at that change, by no
+harness. The row exists so the key can be stored and the vendor represented before the
+harness that speaks it lands; until then its models join nothing.
+
 **GLM is the case that forces this, and it is the launch subscription** (req 15): its coding
 plan is billed as a *plan* — an allowance, not per-token — while being authenticated with an
 ordinary API key, which for Claude Code goes in `ANTHROPIC_AUTH_TOKEN` rather than
