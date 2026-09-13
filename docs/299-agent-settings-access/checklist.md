@@ -1,36 +1,41 @@
 # Agent access to ShipIt settings — checklist
 
-Design only so far. Every open question is answered; implementation can start.
+Design only. **One open question blocks implementation** — how requirement 4
+reads in `RUNTIME_MODE=local`, where the click gate is unenforceable for reasons
+that predate this feature. See `requirements.md` → Open questions.
 
 ## Design
 
 - [x] `requirements.md` written from the user's words, open questions raised
-- [x] Open questions answered and recorded with dated receipts
+- [x] Scope and posture questions answered, with dated receipts
 - [x] `plan.md` written against the numbered requirements
-- [x] First design review, with a removal brief — two elements cut, six claims corrected
-- [x] Second design review — outcome-notice subsystem and browser-local writes cut,
+- [x] First review — two elements cut, six claims corrected
+- [x] Second review — outcome-notice subsystem and browser-local writes cut,
       inventory corrected, claim and serialization defined
 - [x] Requirement 7 added: a declared setting reaches the agent automatically,
-      with its description. The hand-maintained mirror is replaced by derivation
-- [ ] Third design review of the revised design
+      with its description. The hand-maintained mirror replaced by derivation
+- [x] Third review — dependents machinery, the proposals command and the test-id
+      obligation cut; field-level declarations, server-only baseline, writer
+      inventory, restart ordering and reconnect sync added
+- [ ] Answer the local-mode question for requirement 4
 
 ## Phase 1 — the catalogue and the read path
 
 - [ ] `shared/settings-catalogue/`: `defineSetting`, the `type` constructors
       (`bool`, `enum`, `number`, `text`, `collection`) with defaults and validation
 - [ ] Declare the ~15 global scalar settings
-- [ ] Derive `GlobalSettings` from the catalogue; delete the hand-written interface
+- [ ] Derive `GlobalSettings`; delete the hand-written interface
 - [ ] Derive the `PUT /api/settings` body type and its validation
-- [ ] Derive `CredentialStore` read/write; delete the per-setting accessor pairs
+- [ ] Derive `CredentialStore` read/write; drop the duplicated defaults and
+      validation, keeping a named accessor only where it reads better
 - [ ] Render the standard dialog controls from `label` and `description`
-- [ ] Bespoke panels bind to their catalogue entry: roles, credential routing,
-      MCP, secrets, egress
+- [ ] **Field-level** declarations for the bespoke panels, with each control
+      bound to its own field: roles, credential routing, MCP, secrets, egress
 - [ ] Declare browser-local settings with `scope: "browser"` and no store
 - [ ] **Derivation test**: a setting added to the catalogue and nowhere else is
       readable, described, route-round-tripped and typed, with no other edit
-- [ ] Residual control-coverage test: render each tab, enumerate interactive
-      elements, fail on any that is neither a declaration nor a reasoned exclusion
-- [ ] Add test ids to the untagged settings controls (MCP env/header editor)
+- [ ] Field-level test: a new MCP form field bound to the panel entry fails
+- [ ] Residual control-coverage test, exercising conditional and nested forms
 - [ ] Projections emit derived values only; `user_text` marks are justified
 - [ ] Projection guard: an MCP fixture with a token in `args`, `env`, `headers`
       and the URL leaks none of them anywhere
@@ -40,19 +45,23 @@ Design only so far. Every open question is answered; implementation can start.
 - [ ] `agent-ops-routes.ts` relay
 - [ ] `shipit settings list` / `get` in the shim
 - [ ] Saved-versus-effective reporting where the two differ
-- [ ] Project scope: agent-merge permission, secret names, repository colour,
-      resolved from the session's binding
+- [ ] Unreadable entries degrade per entry; `list` never aborts
+- [ ] Project scope: agent-merge permission, secret names, repository colour
 
 ## Phase 2 — the proposal card
 
-- [ ] Extract the egress add-host route body into a shared apply function
-      (unsuppress default, broadcast, session-only live reload, fail-closed)
-- [ ] Extract the global-settings save, with the callbacks the route supplies
-- [ ] Extract the MCP writes, including `refreshAgentEnvForAllSessions`
-- [ ] Per-setting-key async lock in the shared layer, used by routes and cards
+- [ ] Extract every writer into the shared apply layer: `PUT /api/settings`,
+      the egress routes **and** the egress card handler's global add,
+      `/api/updates/channel`, the repo settings route including merge-revoke's
+      request cancellation and `repo_list` broadcast, and the MCP writes with
+      `refreshAgentEnvForAllSessions`
+- [ ] Per-setting-key async lock in the shared layer, used by every writer
 - [ ] New: broadcast an applied settings change to open viewers
-- [ ] Existing egress, settings and MCP route tests pass before and after
-- [ ] `dependents()` returning computed before/after values
+- [ ] Refetch settings on reconnect; an open editor keeps its draft and warns
+- [ ] Existing egress, settings, updates, repo and MCP route tests pass before
+      and after the extraction
+- [ ] `baseline(ctx)` per declaration — a server-only revision over the whole
+      stored value, never emitted
 - [ ] Collection item operations as narrow patches, never whole-list replacement
 - [ ] `shipit settings propose` — one change, validated at propose time, returns
       the card id without waiting
@@ -63,14 +72,17 @@ Design only so far. Every open question is answered; implementation can start.
 - [ ] History round-trip and no-duplicate-on-replay tests
 - [ ] Atomic claim: conditional persisted flip plus recorded-card sync, before
       any await, not via `persistCardTransition`
-- [ ] Decision handler: load from persisted state, claim, lock, re-read,
-      recompute dependents, revalidate, apply, terminal phase
-- [ ] `unknown` phase recovery on restart, with no automatic retry
-- [ ] Apply completes without a viewer attached
+- [ ] Decision handler: load by owning session plus card id, claim, lock,
+      re-read against `baseline`, revalidate, apply, terminal phase
+- [ ] Boot recovery converts interrupted claims to `unknown` before the decision
+      handler accepts anything; no automatic retry
+- [ ] Settlement independent of a surviving runner; take the post-turn work lease
+      where a step needs one
 - [ ] Frozen project target: a card written against repo A refused after a rebind
-- [ ] Tests: concurrent decision, snapshot-during-claim, per-key serialization,
-      stale, moved dependent, saved-not-live, broadcast
-- [ ] `shipit settings proposals`, and outcomes visible to a later `get`
+- [ ] Tests: concurrent decision, snapshot-during-claim, baseline-not-`from`,
+      serialization ordering, saved-not-live, restart at both sides of the side
+      effect, unbound session, reconnect, broadcast
+- [ ] Outcomes visible to a later `get`
 
 ## Docs
 

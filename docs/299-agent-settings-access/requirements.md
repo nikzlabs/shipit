@@ -65,7 +65,19 @@ agent is the actor.
 
 ## Open questions
 
-- (none)
+- **Requirement 4 cannot be enforced in `RUNTIME_MODE=local`, and the design
+  cannot grant itself the exception.** In local mode there is no container
+  manager, so the orchestrator's container guard returns without checking
+  (`api-container-guard.ts:135`) and the WebSocket origin check passes a
+  handshake that sends no Origin (`api-origin-guard.ts:245`). A local-mode agent
+  is an ordinary local process: it can already call `PUT /api/settings`
+  **directly**, with no card and no click, and it can do so today without this
+  feature. So the click gate is a real guarantee in container mode and an
+  unenforceable one in local mode, for reasons that predate this design and that
+  this design cannot fix. Which is it: (a) req 4 is read as "in container mode",
+  with the local-mode position written down as a known limitation of local mode
+  generally; or (b) local-mode API authentication is required first, as separate
+  work this feature would then depend on?
 
 ## Resolved questions
 
