@@ -14,9 +14,13 @@
 
 ## Measurement
 
+- [ ] Check whether the history response is compressed on the path the user
+      actually uses, before assuming the payload must shrink.
 - [ ] Measure how long a big session takes to open on a throttled mobile
       profile, split into transfer bytes and client work after the bytes
       arrive.
+- [ ] Write the target number into the plan before building, and re-measure
+      with the same script afterwards.
 - [ ] Break the payload down by row class, from the real endpoint on a real
       session.
 - [ ] Record the numbers in the plan, and use them to direct the work.

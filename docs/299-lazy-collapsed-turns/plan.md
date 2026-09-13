@@ -45,6 +45,16 @@ synthetic fixture: its row mix would decide the answer.
 are the user's own, so a modest byte count is a reason to look at the client
 half as well, not a reason to stop.
 
+**Check compression first, because it can be most of the win for one line.** The
+orchestrator registers no compression plugin: there is no `@fastify/compress` in
+`package.json` and none in `buildApp()`. A deployed instance sits behind a
+Cloudflare Tunnel (`deployment/vps/cloudflare.sh`), which compresses at the
+edge, but a Tailscale or loopback client has no edge in front of it and receives
+raw JSON. A transcript is highly compressible text, so the measurement must
+record the bytes **as the client actually receives them** on the path the user
+uses, and must answer whether compression is applied at all before anyone
+concludes that the payload has to shrink.
+
 What the payload is **not** is the raw tool output. Verified at
 `transcript-projection.ts:113` and `:213`: tool results above
 `RESULT_STRIP_FLOOR_BYTES` (200) are sliced or emptied, some tools are exempt
