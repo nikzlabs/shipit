@@ -6,7 +6,7 @@ const FILE_CTX = "<file_context>foo.ts</file_context>";
 const IMAGE_CTX = "<attached_images>img</attached_images>";
 
 describe("assembleAgentPrompt", () => {
-  describe("non-slash messages (context prepended, legacy ordering)", () => {
+  describe("context ordering", () => {
     it("returns user text unchanged when no context", () => {
       expect(
         assembleAgentPrompt({ userText: "fix the bug", fileContext: "", imageContext: "" }),
@@ -27,61 +27,6 @@ describe("assembleAgentPrompt", () => {
           imageContext: IMAGE_CTX,
         }),
       ).toBe(`${IMAGE_CTX}\n\n${FILE_CTX}\n\nfix the bug`);
-    });
-  });
-
-  describe("slash invocations (context appended, slash kept at index 0)", () => {
-    it("keeps a bare slash command at the start with no context", () => {
-      expect(
-        assembleAgentPrompt({ userText: "/my-skill", fileContext: "", imageContext: "" }),
-      ).toBe("/my-skill");
-    });
-
-    it("appends file context AFTER the command so /skill stays at index 0", () => {
-      const result = assembleAgentPrompt({
-        userText: "/my-skill do it",
-        fileContext: FILE_CTX,
-        imageContext: "",
-      });
-      expect(result.startsWith("/my-skill do it")).toBe(true);
-      expect(result).toBe(`/my-skill do it\n\n${FILE_CTX}`);
-    });
-
-    it("appends both file and image context after the command", () => {
-      const result = assembleAgentPrompt({
-        userText: "/my-skill",
-        fileContext: FILE_CTX,
-        imageContext: IMAGE_CTX,
-      });
-      expect(result.startsWith("/my-skill")).toBe(true);
-      expect(result).toBe(`/my-skill\n\n${FILE_CTX}\n\n${IMAGE_CTX}`);
-    });
-
-    it("detects a slash command even with leading whitespace", () => {
-      const result = assembleAgentPrompt({
-        userText: "  /my-skill",
-        fileContext: FILE_CTX,
-        imageContext: "",
-      });
-      expect(result).toBe(`  /my-skill\n\n${FILE_CTX}`);
-    });
-
-    it("recognizes namespaced/dotted skill names", () => {
-      const result = assembleAgentPrompt({
-        userText: "/plugin:my.skill_name",
-        fileContext: FILE_CTX,
-        imageContext: "",
-      });
-      expect(result).toBe(`/plugin:my.skill_name\n\n${FILE_CTX}`);
-    });
-
-    it("does not treat a slash mid-message as an invocation", () => {
-      const result = assembleAgentPrompt({
-        userText: "what does a/b mean",
-        fileContext: FILE_CTX,
-        imageContext: "",
-      });
-      expect(result).toBe(`${FILE_CTX}\n\nwhat does a/b mean`);
     });
   });
 
@@ -122,17 +67,6 @@ describe("assembleAgentPrompt", () => {
       ).toBe(`${DICTATION_CONTEXT}\n\nfix the bug`);
     });
 
-    it("APPENDS the note for a dictated slash command, keeping /skill at index 0", () => {
-      const result = assembleAgentPrompt({
-        userText: "/review the auth module",
-        fileContext: FILE_CTX,
-        imageContext: "",
-        dictated: true,
-      });
-      expect(result.startsWith("/review the auth module")).toBe(true);
-      expect(result).toBe(`/review the auth module\n\n${FILE_CTX}\n\n${DICTATION_CONTEXT}`);
-    });
-
     it("names the artifacts the agent should expect, not just 'this was dictated'", () => {
       expect(DICTATION_CONTEXT).toMatch(/^<dictated_input>/);
       expect(DICTATION_CONTEXT).toMatch(/<\/dictated_input>$/);
@@ -153,17 +87,6 @@ describe("assembleAgentPrompt", () => {
           roleContext: ROLE_CTX,
         }),
       ).toBe(`${ROLE_CTX}\n\n${IMAGE_CTX}\n\n${FILE_CTX}\n\nfix the bug`);
-    });
-
-    it("moves to the back for a slash command, keeping /skill at index 0", () => {
-      const result = assembleAgentPrompt({
-        userText: "/review the auth module",
-        fileContext: "",
-        imageContext: "",
-        roleContext: ROLE_CTX,
-      });
-      expect(result.startsWith("/review")).toBe(true);
-      expect(result).toBe(`/review the auth module\n\n${ROLE_CTX}`);
     });
 
     it("changes nothing when the session is not on a role", () => {

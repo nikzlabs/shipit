@@ -4,7 +4,8 @@ import type { ConnectionCtx, RunnerCtx, AppCtx } from "./types.js";
 import { validateImages, imageAttachmentRefusal, resolveFileAttachments, resolveUploadRefs, formatFileContext } from "../validation.js";
 import { parseCompactCommand } from "../../shared/compact-command.js";
 import { parseGoalCommand } from "../../shared/goal-command.js";
-import { emitGoalNotice, handleGoalCommand } from "./goal-command.js";
+import { handleGoalCommand } from "./goal-command.js";
+import { isCommandInvocation } from "../../shared/command-invocation.js";
 import { modelSelectionOf } from "../session-agent-env.js";
 import { graduateSession } from "../services/graduate-session.js";
 import { pinIssueSeededSession } from "../services/issue-seeded-session.js";
@@ -47,6 +48,27 @@ export async function handleSendMessage(
   // docs/154 — before the auth gate: reading or clearing a goal starts no turn.
   const goalCommand = parseGoalCommand(msg.text);
   const caps = ctx.agentRegistry.get(ctx.getActiveAgentId())?.capabilities;
+
+  // docs/299 — the harness reads its own command only when the message is exactly
+  // the command (measured: a prefix means no command at all, a suffix corrupts the
+  // argument). Attachments have nowhere to go, so refuse here, before the message
+  // can be queued, steered or answered out of band. An upload becomes a validated
+  // file downstream, so it would append context like the rest.
+  //
+  // Refused as an `error`, not as a notice: the browser has already added an
+  // optimistic bubble and a spinner for this send, and only the error handler
+  // settles them. A notice alone leaves the session "Thinking…" for ever.
+  const nativeCommand = isCommandInvocation(msg.text, caps?.skillInvocationPrefix);
+  if (nativeCommand && (msg.images?.length || msg.files?.length || msg.uploads?.length)) {
+    ctx.send({
+      type: "error",
+      message:
+        `\`${msg.text.trimStart().split(/\s/, 1)[0]}\` reaches the agent's CLI as a command, so it `
+        + "cannot carry attachments. Send them in a separate message.",
+      ...(msg.requestId ? { requestId: msg.requestId } : {}),
+    });
+    return;
+  }
   const mode = goalCommand
     ? (caps?.goalActions ? caps.goalActions[goalCommand.action] : "control")
     : undefined;
@@ -59,24 +81,6 @@ export async function handleSendMessage(
       return;
     }
     await handleGoalCommand(ctx, goalCommand, activeSessionId);
-    return;
-  }
-
-  // docs/297 — a "turn" action rides the turn path, and the CLI reads it as its
-  // own command only when the prompt is exactly the command (measured: a prefix
-  // sets no goal at all, a suffix lands inside the objective). Attachments have
-  // nowhere to go, so the message is refused rather than silently mangled. An
-  // upload becomes a validated file below, so it appends context like the rest.
-  if (goalCommand && mode === "turn" && (msg.images?.length || msg.files?.length || msg.uploads?.length)) {
-    const sessionId = ctx.getActiveAppSessionId() ?? undefined;
-    if (sessionId) {
-      emitGoalNotice(
-        ctx,
-        sessionId,
-        "A `/goal` command cannot carry attachments. Send them in a separate message.",
-        "warn",
-      );
-    }
     return;
   }
 
@@ -185,12 +189,16 @@ export async function handleSendMessage(
           const imageContext = steerImages && steerImages.length > 0
             ? saveImagesToUploadsDir(steerImages, steerDir)
             : "";
-          const steerPrompt = assembleAgentPrompt({
-            userText: msg.text,
-            fileContext,
-            imageContext,
-            dictated: msg.dictated,
-          });
+          // docs/299 — a steered message reaches the resident CLI's stdin as a user
+          // message, so a command invocation has to arrive alone here too.
+          const steerPrompt = nativeCommand
+            ? msg.text.trim()
+            : assembleAgentPrompt({
+                userText: msg.text,
+                fileContext,
+                imageContext,
+                dictated: msg.dictated,
+              });
           // Steering bypasses turn setup; update permission mode before sending.
           if (
             runnerForQueue.appliedPermissionMode !== msg.permissionMode &&

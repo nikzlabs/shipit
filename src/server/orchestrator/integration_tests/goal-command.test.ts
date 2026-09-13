@@ -105,6 +105,14 @@ async function waitUntil(check: () => boolean, timeoutMs = 3000): Promise<void> 
   }
 }
 
+async function receiveError(client: TestClient, timeoutMs = 3000): Promise<string> {
+  const deadline = Date.now() + timeoutMs;
+  while (true) {
+    const msg = await client.receive(Math.max(1, deadline - Date.now())) as WsServerMessage;
+    if (msg.type === "error") return msg.message;
+  }
+}
+
 async function receiveNotice(client: TestClient, timeoutMs = 3000): Promise<string> {
   const deadline = Date.now() + timeoutMs;
   while (true) {
@@ -339,6 +347,8 @@ describe("Integration: /goal (docs/154)", () => {
   );
 
   // docs/298 — measured: text after the command stops Grok reading it as a command at all.
+  // docs/299 — the refusal is an `error`, which settles the optimistic bubble and
+  // spinner the browser has already shown for a "turn" action; a notice cannot.
   it("refuses a /goal that carries attachments rather than breaking the command", async () => {
     const client = await TestClient.connect(port, undefined, { agent: "grok" });
     await client.receive();
@@ -348,7 +358,7 @@ describe("Integration: /goal (docs/154)", () => {
       text: "/goal ship it",
       files: [{ path: "src/a.ts" }],
     });
-    expect(await receiveNotice(client)).toMatch(/cannot carry attachments/);
+    expect(await receiveError(client)).toMatch(/cannot carry attachments/);
     expect(groks.flatMap((g) => (g.lastPrompt === null ? [] : [g.lastPrompt]))).toEqual([]);
     client.close();
   });
@@ -481,7 +491,7 @@ describe("Integration: /goal (docs/154)", () => {
         text: "/goal the suite is green",
         images: [{ data: "aGk=", mediaType: "image/png" }],
       });
-      expect(await receiveNotice(client)).toMatch(/cannot carry attachments/);
+      expect(await receiveError(client)).toMatch(/cannot carry attachments/);
 
       // Measured: an appended context block lands inside the condition, so the
       // message must not reach the CLI at all.
