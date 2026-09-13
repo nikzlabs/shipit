@@ -14,11 +14,14 @@ Implements [requirements.md](./requirements.md). Requirements are cited as
 - **A read command.** `shipit settings list` / `shipit settings get <key>` gives
   the agent the current value of every setting both settings dialogs show
   (req 1, req 5), with credential material reduced to "configured" or "not
-  configured" (req 2), and with the outcome of any proposal the agent has
-  already made against that setting.
+  configured" (req 2), and with the outcome of the last proposal made against
+  that setting.
 - **A proposal card.** `shipit settings propose` posts an inline card naming
   **one** change — this setting, from this value, to that value, for this reason
   — and the setting moves only when the user clicks Apply (req 4).
+- **A notice on the next turn.** When the user resolves a card, the agent is told
+  at the start of its next turn, so it does not remind them about a change they
+  have already dealt with (req 8).
 
 Neither is a second description of ShipIt's settings. Both are generated from the
 **one place a setting is declared** (req 7), which is also where the dialog gets
@@ -442,8 +445,8 @@ proposable. It never carries option sets, bounds or patchable field keys — see
 [what "proposable" tells the agent](#what-proposable-tells-the-agent-for-a-non-boolean).
 
 **`get <key>` is the detail** for one setting: the index entry plus the legal
-value shape, saved-versus-effective, and what became of any proposal this session
-already made for it.
+value shape, saved-versus-effective, and `lastProposal` — the most recent
+proposal against that setting from **any** session, and what became of it.
 
 Both carry the explanations the existing views already compute, so the agent says
 *why* and not only *what* (req 3) — a role's `RoleUnavailableReason`, a reviewer
@@ -472,10 +475,10 @@ click much later, or never.
 
 ### One change per card
 
-One card carries one change, plus whatever `dependents()` computes for it. A
-multi-change card was considered: its claimed benefit is that the user cannot
-apply half a coherent ask, and the moment any change can fail independently that
-benefit is gone. Two settings means two cards and two clicks.
+One card carries exactly one change. A multi-change card was considered: its
+claimed benefit is that the user cannot apply half a coherent ask, and the moment
+any change can fail independently that benefit is gone. Two settings means two
+cards and two clicks.
 
 ### Validated when proposed, and again when applied
 
@@ -496,6 +499,13 @@ dependents come from the registry and the server's own read. That separation is
 what stops a reason string from describing a different change than the button
 applies. Flattening is presentation hygiene; it is not a secret defence, and the
 projection rules are.
+
+### What the card looks like
+
+[`mockup.html`](./mockup.html) — the pending card, every terminal state, and the
+saved-versus-effective case, in both themes. It is a prototype: token values are
+copied in so it renders standalone, and its icons are drawn in Phosphor's style
+rather than imported, both of which the real component does properly.
 
 ### Applying
 
