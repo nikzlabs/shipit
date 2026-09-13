@@ -99,9 +99,10 @@ plan's own three-way split. The response keeps both halves: the stored half is
 derived from the catalogue, the computed half stays hand-assembled beside it. The
 wire shape does not change; only where the stored half comes from does.
 
-This is a net deletion for the settings it covers — the accessor pairs, the
-`if`-chain branches and the duplicated body type all collapse into the
-declaration — and it is the larger half of this feature's work. See
+For the settings it covers this should be close to a wash or better — the
+duplicated defaults, the `if`-chain branches and the duplicated body type collapse
+into the declaration — but that is an expectation, not a measured result, and it
+is the larger half of this feature's work either way. See
 [Sequencing](#sequencing).
 
 ### Where a declaration is not enough
@@ -167,7 +168,7 @@ Only `emits` is mandatory, and for an ordinary declared setting it is one word.
 Everything else has a default from `type`, so a new boolean or enum is
 agent-readable and agent-proposable with no agent-specific code at all. The
 fields earn their keep on the settings that are not ordinary — a collection, a
-setter with dependents, a value that must not leave the server.
+value that must not leave the server, an operation whose effect cannot be shown.
 
 ### Output is an allowlist, and free text is never passed through
 
@@ -354,8 +355,42 @@ refetch hangs off **the global connection's recovery**, not the session's.
 An editor left open with unsaved edits is not silently rewritten under the user —
 it keeps the draft and says the underlying value changed.
 
-**The shared layer serializes per setting key — which buys ordering, not conflict
-detection.** A card claim stops two clicks on one card; it does nothing about a
+### "Saved" has to mean saved
+
+`CredentialStore.save()` catches its disk-write failure, logs it, and returns
+`void` (`credential-store.ts:255`). The value stays in memory and every caller
+sees success — so an apply would report *saved* for a change that disappears at
+the next restart. That is the worst outcome this card can produce: the user
+clicked, ShipIt said yes, and the setting silently reverts.
+
+The store already knows better in one place. `stampHarnessOnboardingCompleted`
+writes, and on failure **rolls the in-memory value back** and returns `undefined`,
+with the comment *"memory-only completion would vanish at restart"*
+(`credential-store.ts:268`). That is the contract the apply path needs, and this
+feature generalises it rather than inventing one: a declared write reports
+success or failure, and a failed disk write restores the previous in-memory value
+before returning. `failed` then means nothing changed, which is what the card
+says.
+
+This is new work on a shipped store, and it is the first item of the apply
+extraction rather than an afterthought — every other guarantee here is worthless
+if "applied" can be false.
+
+### The lock domain is the thing written, not the key proposed
+
+**The shared layer serializes per conflict domain — which buys ordering, not
+conflict detection.**
+
+A per-key lock is not enough, because different operations write overlapping
+state: a role's model tuple, an edit to that role's reasoning effort, and the
+role dialog saving the whole role all touch one stored role. Locking those on
+three different keys would let them interleave. So the lock is taken on the
+**conflict domain** — the stored object an operation writes, named by the
+declaration — and every operation that touches a role takes that role's domain,
+including the dialog's whole-object save.
+
+The domain is coarser than the target: the target identifies what a card is
+about, the domain identifies what must not be written concurrently. A card claim stops two clicks on one card; it does nothing about a
 second card or the dialog writing the same setting, and the underlying writes
 yield (`writeGlobalSystemPrompt` is an async file write,
 `global-system-prompt.ts:21`). Read, validate and write therefore run inside a
@@ -372,7 +407,7 @@ as solving it.
 
 ### Collections are patched, never replaced
 
-`roles`, `egress.hosts`, `mcp.servers`, `skills.installed`, `credentialRoutes`
+`roles`, `egress.hosts`, `mcp.servers`, `credentialRoutes`, provider accounts
 and `secrets` (names only) are `kind: "collection"` with domain-specific item
 operations — "add an egress host", "set a role's model". Three rules:
 
@@ -409,17 +444,20 @@ Both dialogs are in scope (`requirements.md`, resolved 2026-09-13): the global
 |---|---|---|---|
 | Services | credential routing order, account selection mode, failover cutoffs, non-turn model pin | yes | yes |
 | Services | provider API keys | configured / not | no — `secret` |
-| Services | provider accounts | connected / not | no — `external_flow` |
+| Services | provider accounts — connection | connected / not | no — `external_flow` |
+| Services | a provider account's label | yes | yes — renaming an account is a plain edit and needs no OAuth (`Settings/ProviderAccountRows.tsx:761`) |
 | Roles | per role: harness, model, effort, description, standing instructions | yes | yes |
 | Roles | the reviewer slots `first` and `second` | yes | yes — these are the settings behind "what the reviewer runs on"; the reserved role's own params are not a setting at all (above), and its description and standing instructions are ordinary role settings |
 | Integrations | create a pull request automatically | yes | yes |
-| Integrations | MCP servers, tracker connections, connected services | derived fields only — name, transport, connected state, URL host | narrow patches yes; credential fields no — `secret`; an OAuth connection `external_flow` |
+| Integrations | MCP servers | derived fields only — name, transport, connected state, URL host | narrow patches yes; credential fields no — `secret` |
+| Integrations | the Linear tracker panel | configured / not | no — `secret`. The panel holds an API token and nothing else; which team a repository's Issues tab shows is that repository's own declaration, not a setting here (`SettingsTrackers.tsx:13`–`18`) |
+| Integrations | connected services | connected / not | no — `external_flow` |
 | Git | git identity name and email | yes | yes |
 | Instructions | your instructions, agent instructions enabled | yes | yes |
 | Keyboard | keybindings | no — `browser_local` | no — `browser_local` |
 | Voice | delivery mode | yes | yes |
 | Voice | webhook | configured / not | no — `secret` |
-| Voice | dictation, playback, TTS provider, voice, speed, hands-free | no — `browser_local` | no — `browser_local` |
+| Voice | dictation on/off, speech-to-text provider, transcript cleanup, language, playback on/off, TTS provider, voice, speed, hands-free | no — `browser_local` | no — `browser_local` |
 | Network | egress on/off, the global allowlist | yes | yes |
 | Advanced | memory budget, release channel, and the toggles: inject messages mid-turn, auto-fix CI, auto-resolve conflicts, start from the latest base after a merge, multi-agent sessions | yes | yes |
 | Advanced | compact conversation, browser notification, sound | no — `browser_local` | no — `browser_local` |
@@ -575,7 +613,7 @@ role validators check against live state (`services/roles.ts:102`, `:128`).
 Flattened to one line and length-capped, as bug-report titles are
 (`services/bug-report.ts:72`), and rendered as **attributed** text — the agent's
 words shown as the agent's words. The setting name, the `from`, the `to` and the
-dependents come from the registry and the server's own read. That separation is
+come from the registry and the server's own read. That separation is
 what stops a reason string from describing a different change than the button
 applies. Flattening is presentation hygiene; it is not a secret defence, and the
 projection rules are.
@@ -620,10 +658,22 @@ Apply is the longer path:
    (`chat-card-persistence.ts:176`–`183`) — exactly the case that needs it.
 3. **Inside the shared layer's per-key lock**: re-read, compare against the
    card's stored **baseline**, and revalidate the target. Any mismatch resolves
-   the card `stale` and applies nothing. The check is against state, never an
+   the card `stale` and applies nothing. Note this is a comparison, not a
+   difference: a second card that proposes the value the setting already holds
+   compares equal and applies as a no-op, which is correct — "the second apply is
+   always stale" would be too strong. The check is against state, never an
    observed transition, so it is correct for a viewer that was not connected when
    the value changed.
 4. **Apply**, then write the terminal phase.
+
+**The snapshot is taken once, by the server, when the card is written.** The
+agent's earlier `get` informs what it proposes; it does not supply the card's
+`from`. If it did, a setting that moved between that `get` and the `propose`
+would give the card a `from` of A while the baseline captured B — and the apply
+would compare B against B, pass, and overwrite a value the card never showed. So
+`propose` reads the current value itself and captures the displayed `from` and
+the private baseline in the same read. The `get` remains the agent's way to see
+the legal shape and the last outcome; it is not part of the correctness chain.
 
 **The baseline is not the displayed `from`, and conflating them would be a
 silent bug.** `from` is what the projection is allowed to show, and projections
@@ -699,7 +749,7 @@ not a precondition for this.
 
 ### How the agent learns the outcome
 
-**From the read surface, not from a notification.** `shipit settings get <key>`
+Two channels, and they do different jobs. **The read surface is authoritative.** `shipit settings get <key>`
 carries a `lastProposal` field, and the agent must read a setting before
 proposing anyway — that is where `from` comes from — so an outcome is visible
 exactly when it matters. A separate history-browsing command is not part of this:
@@ -771,14 +821,26 @@ The wording states the outcome as fact, marks a dismissed change *do not
 re-propose unless asked*, and says plainly that it is a status line from ShipIt
 rather than part of the user's message.
 
-**The notice is carried until a turn actually receives it.** This is the one
+**The notice is carried until the worker accepts the prompt.** This is the one
 place the bug-report mechanism is copied with a change rather than as-is. There,
 an outcome is marked notified while the prompt is assembled, so a turn that then
 fails to spawn loses it permanently (`chat-history.ts:519`,
-`dispatched-turn.ts:209`). Requirement 8 says the agent *is* told, so that
-behaviour would not satisfy it: the outcome is instead marked notified only once
-a turn has started with the notice in its prompt, and an outcome whose turn never
-started is carried to the next eligible turn.
+`dispatched-turn.ts:209`). Requirement 8 says the agent *is* told, so that is not
+good enough.
+
+**"Once the turn starts" is not good enough either**, and it has to be named
+precisely or the same bug survives behind a later-looking flag. The turn-start
+broadcast fires before submission, and the proxy's submission methods both return
+before their worker request completes: `run()` calls
+`_startAgentViaProxy(...).catch(…)` and returns, and `sendUserMessage()` is a
+`void`-ed async call (`proxy-agent-process.ts:77`, `:91`). Neither proves the
+prompt arrived.
+
+The acceptance boundary is the **resolution of that awaited worker request** —
+the same point whose rejection emits `error` on those two paths. An outcome is
+marked notified there, on both the fresh-process and resident-process paths, and
+the flag records which outcomes that prompt carried. Anything that fails before
+it leaves the outcome pending for the next eligible turn.
 
 The cost of getting this wrong is the exact failure requirement 8 exists to
 prevent — the agent believing nothing changed and reminding the user about a
@@ -802,9 +864,30 @@ no-duplicate-on-replay tests.
 Emission goes through **`emitChatCard`** (`chat-card-persistence.ts:110`), never
 a bare `emitMessage`: a `shipit settings propose` from a backgrounded
 `shipit agent run` can land after the turn ends, and `emitChatCard` decides
-between riding the in-progress turn and appending a final row
-(`:128`). Phase transitions after the claim use `persistCardTransition` (`:156`);
-the claim itself does not, for the reason in step 2 above.
+between riding the in-progress turn and appending a final row (`:128`).
+
+**One transition contract, and it is not `persistCardTransition`.** Every phase
+change — claim, dismiss, terminal, and the notified flag — goes through a single
+transition function of this feature's own: it writes the durable row
+unconditionally, and *then*, only if a runner exists, synchronizes the recorded
+card and emits to viewers. `persistCardTransition` cannot be that function. It
+requires a runner (`:156`), and it runs its database callback **only** when it
+did not patch an in-flight recorded card (`:174`) — so a card can end a turn
+durable-but-unsynchronized, or synchronized-but-not-durable. It may be called
+*by* the transition function for the runner-present half; it may not be the
+contract.
+
+An earlier draft specified the runner-less path in one section and
+`persistCardTransition` in another. Those are different behaviours, and an
+implementer following both gets neither.
+
+**The private baseline is not a card field.** The card is a `PersistedMessage`,
+and transcript projection returns a message's fields as they are unless something
+explicitly strips them (`transcript-projection.ts:358`), so a baseline stored on
+the card would travel to every viewer, every history fetch and every replay.
+Calling it "server-only" does not make it so. It lives in a **separate proposal
+row**, keyed by card id, that no transcript path reads — the card carries what
+the user is shown, and the proposal row carries what the server compares.
 
 **The apply completes without a viewer.** Session and repository context is
 captured when the decision arrives; the apply, the broadcast and the terminal
@@ -870,7 +953,7 @@ from the declaration; bespoke panels bind per field);
 `session/agent-ops-routes.ts` (relay); the session-scoped settings endpoints and
 their `containerAccessible` config; `agent-shim/shipit.ts`; the WS message types;
 `chat-history.ts` and `database.ts`; `visual-elements.ts` and the client
-message-handler index; `useConnectionSync.ts` (refetch settings on reconnect).
+message-handler index; `useServerEvents.ts` (refetch settings when the global connection recovers).
 
 ## Sequencing
 

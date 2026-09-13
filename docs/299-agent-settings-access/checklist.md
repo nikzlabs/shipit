@@ -14,7 +14,7 @@ in the *same PR*").
 - [x] Requirement 8 — the agent is told on its next turn when a card is resolved
 - [x] Local-mode limitation put to the user and recorded
 - [x] `mockup.html` — the card's pending and terminal states, both themes
-- [x] Four independent design reviews, each cold, each with a removal brief
+- [x] Five independent design reviews, each cold, each with a removal brief
 - [x] Review findings verified against the code before being acted on
 - [x] Scope inventory re-verified control by control against both dialogs. Four
       errors found in total: three rows for controls that do not exist

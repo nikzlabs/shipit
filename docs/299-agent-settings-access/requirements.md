@@ -8,9 +8,9 @@ description: The agent can read ShipIt's own settings from inside a session, and
 
 The user's words: *"Work on design for agent access to Shipit settings."*
 
-One sentence, so most of this document is open questions. What follows under
-"Requirements" is the part the sentence settles; the part it does not settle is
-under `## Open questions` and blocks implementation code.
+The feature began with that one sentence, so nearly everything here was raised as
+an open question and answered by the user. The receipts are at the bottom, dated;
+nothing is open now.
 
 ## Why this exists
 
