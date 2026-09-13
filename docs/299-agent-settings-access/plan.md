@@ -294,11 +294,9 @@ says which and why rather than failing at apply time (req 5):
 
 ### No dependent-change machinery
 
-An earlier draft carried a `dependents()` mechanism, for setters that move more
-than the key they are named for. Its only worked example was the TTS provider
-re-picking voice and speed (`stores/settings-store.ts:508`) — and that setting is
-`browser_local`, so it is not proposable at all. A mechanism whose sole
-justification is an out-of-scope setting does not ship. If an in-scope setting
+There is no mechanism for "this field also moves those fields". The one candidate
+was the TTS provider re-picking voice and speed (`stores/settings-store.ts:508`),
+and that setting is `browser_local`, so it is not proposable at all. If an in-scope setting
 turns out to have dependents, the honest first answer is
 `propose: { kind: "no", reason: "unsafe_to_display" }`, which already exists.
 
@@ -411,11 +409,12 @@ declaration — and every operation that touches a role takes that role's domain
 including the dialog's whole-object save.
 
 The domain is coarser than the target: the target identifies what a card is
-about, the domain identifies what must not be written concurrently. A card claim stops two clicks on one card; it does nothing about a
-second card or the dialog writing the same setting, and the underlying writes
-yield (`writeGlobalSystemPrompt` is an async file write,
-`global-system-prompt.ts:21`). Read, validate and write therefore run inside a
-per-key async lock.
+about, the domain identifies what must not be written concurrently.
+
+A card claim stops two clicks on one card; it does nothing about a second card or
+the dialog writing the same object, and the underlying writes yield
+(`writeGlobalSystemPrompt` is an async file write, `global-system-prompt.ts:21`).
+Read, validate and write therefore run inside the domain's async lock.
 
 Be precise about what that does **not** fix. The MCP editor captures the whole
 server object when it opens and submits a complete configuration
@@ -493,9 +492,8 @@ the Voice tab's playback test and the Instructions tab's save. The coverage walk
 excludes them by reason, not by silence.
 
 Five things the dialogs appear to contain and do not. Each is a
-`not-a-setting` exclusion with this reason, and each was in an earlier draft of
-this table — the inventory is the part of this design most likely to be wrong,
-which is what the coverage walk is for.
+`not-a-setting` exclusion with this reason,. The inventory is the part of this
+design most likely to be wrong, which is what the coverage walk is for.
 
 - **Installed harnesses.** The Services tab's harness rows are explicitly *"a
   statement, not a control"* — harnesses are installed in the image, not from the
@@ -824,10 +822,13 @@ agent acts on:
 | `phase` | What the agent does |
 |---|---|
 | `pending` | Nothing. A card is already in front of the user. |
+| `applying` | Nothing. It is mid-apply; the next read tells the agent how it ended. |
 | `dismissed` | Does not re-propose unless the user asks again. |
 | `applied` | Nothing — `value` already reflects it. |
 | `stale` / `refused` | May propose again, from the **current** value. |
+| `partial` | Reads the value, says which half landed, and proposes only the rest. |
 | `failed` | May propose again, and should say the previous attempt failed. |
+| `uncertain` | Reads the value and tells the user the write could not be verified. |
 | `unknown` | Reads the value and tells the user the earlier outcome is uncertain. |
 
 **It is the last proposal for the target, not for the session.** A proposal from
@@ -955,10 +956,6 @@ durable-but-unsynchronized, or synchronized-but-not-durable. It may be called
 *by* the transition function for the runner-present half; it may not be the
 contract.
 
-An earlier draft specified the runner-less path in one section and
-`persistCardTransition` in another. Those are different behaviours, and an
-implementer following both gets neither.
-
 **The private baseline is not a card field.** The card is a `PersistedMessage`,
 and transcript projection returns a message's fields as they are unless something
 explicitly strips them (`transcript-projection.ts:358`), so a baseline stored on
@@ -1013,7 +1010,7 @@ body and the store accessors);
 `services/settings-read.ts` (projection and the catalogue walk behind
 `list`/`get`);
 `services/settings-apply.ts` (shared apply functions extracted from the egress,
-global-settings and MCP routes, the per-key lock, and the new broadcast);
+global-settings and MCP routes, the conflict-domain lock, and the new broadcast);
 `services/settings-proposal.ts` (card compile, atomic claim, stale check);
 `ws-handlers/settings-proposal-handlers.ts`;
 `session/agent-shim/shipit-settings.ts`;
@@ -1074,8 +1071,8 @@ Beyond the persistence round-trip tests the recipe requires:
 - **Baseline, not `from`** — a card whose stored value changed **only in a field
   the projection drops** resolves `stale`. Compare against `from` instead and
   this test goes green with the bug present, which is the point of it.
-- **Per-key serialization** — a card apply and a dialog PUT on the same setting
-  do not interleave. The test asserts ordering only; it does **not** assert that
+- **Conflict-domain serialization** — a card apply, a dialog PUT and an edit to a
+  neighbouring field of the same stored object do not interleave. The test asserts ordering only; it does **not** assert that
   the later write loses, because the lock does not detect a stale full-object
   submit and this feature does not claim to fix that.
 - **Saved versus effective** — a global egress add reports restart-dependent for

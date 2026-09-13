@@ -183,10 +183,8 @@ button.theme:hover { background:var(--color-bg-hover); }
 
   <div class="divider"></div>
 
-  <h2>After the click</h2>
-  <p class="note">The card collapses in place. It is persisted, so it is still here tomorrow.
-    A write that lands only partly, or whose result the writer cannot verify, reports itself as such
-    rather than as one of these.</p>
+  <h2>After the click — every terminal state</h2>
+  <p class="note">The card collapses in place. It is persisted, so it is still here tomorrow.</p>
 
   <div class="resolved">
     <span class="ok" aria-hidden="true">
@@ -229,6 +227,24 @@ button.theme:hover { background:var(--color-bg-hover); }
     </span>
     <span><strong style="color:var(--color-error)">Failed</strong> <span class="sep">·</span> the change could not be saved</span>
     <span class="sub">Nothing was written — the change was rolled back. Multi-agent sessions is still Off.</span>
+  </div>
+
+  <div class="resolved">
+    <span class="warn" aria-hidden="true">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+           stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 3.2a8.8 8.8 0 0 1 0 17.6Z" fill="currentColor" stroke="none"/></svg>
+    </span>
+    <span><strong class="warn">Partly applied</strong> <span class="sep">·</span> Git identity</span>
+    <span class="sub">The name was saved. The email failed — setting the identity is two separate commands.</span>
+  </div>
+
+  <div class="resolved">
+    <span class="muted" aria-hidden="true">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+           stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M9.6 9.3a2.5 2.5 0 1 1 2.9 3v1.2"/><circle cx="12.5" cy="16.6" r="1" fill="currentColor" stroke="none"/></svg>
+    </span>
+    <span><strong>Result not verified</strong> <span class="sep">·</span> the write threw and could not confirm its state</span>
+    <span class="sub">Shown as itself rather than as “applied” or “failed”, because it is neither.</span>
   </div>
 
   <div class="resolved">
