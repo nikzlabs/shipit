@@ -327,3 +327,180 @@ describe("resolveNonTurnModel — a direct call where the credential permits one
     expect(result.ok).toBe(false);
   });
 });
+
+describe("backgroundWorkOptions — what the selector may offer (docs/299 req 3)", () => {
+  beforeEach(() => {
+    vi.resetModules();
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  const credential = (
+    serviceId: string,
+    billingMode: "sub" | "key",
+    via: "string" | "account" = "string",
+  ) => ({ serviceId, billingMode, via });
+
+  const noHarness = { isInstalled: () => false };
+
+  it("offers a model provider whose credential permits a direct call, with nothing installed", async () => {
+    const { backgroundWorkOptions } = await import("./non-turn-model.js");
+    const options = backgroundWorkOptions([credential("deepseek", "key")], noHarness);
+
+    expect(options.length).toBeGreaterThan(0);
+    expect(options.every((o) => o.serviceId === "deepseek" && o.billingMode === "key")).toBe(true);
+    expect(options[0]).toEqual(
+      expect.objectContaining({ serviceName: expect.any(String), label: expect.any(String) }),
+    );
+  });
+
+  /**
+   * The terms rule, visible in the picker: ANTHROPIC_AUTH_TOKEN is restricted to
+   * Claude Code, so its models are offered only where a harness can carry them.
+   */
+  it("offers nothing for a credential that may not be called directly and has no harness", async () => {
+    const { backgroundWorkOptions } = await import("./non-turn-model.js");
+    expect(backgroundWorkOptions([credential("anthropic", "sub")], noHarness)).toEqual([]);
+  });
+
+  it("offers that same credential's models once a harness that carries them is installed", async () => {
+    const { backgroundWorkOptions } = await import("./non-turn-model.js");
+    const options = backgroundWorkOptions([credential("anthropic", "sub")], {
+      isInstalled: (id) => id === "claude",
+    });
+
+    expect(options.length).toBeGreaterThan(0);
+    expect(options.every((o) => o.serviceId === "anthropic" && o.billingMode === "sub")).toBe(true);
+  });
+
+  /**
+   * req 3's "only that call" at the level the user sees it: one triple is one
+   * row. A direct call and every installed harness all reaching the same model
+   * must not become three rows offering the same place.
+   */
+  it("offers one row per triple, however many ways reach it", async () => {
+    const { backgroundWorkOptions } = await import("./non-turn-model.js");
+    // Anthropic's key: directly callable AND carried by an installed harness.
+    const options = backgroundWorkOptions([credential("anthropic", "key")], {
+      isInstalled: () => true,
+    });
+
+    const keys = options.map((o) => `${o.serviceId}:${o.billingMode}:${o.modelId}`);
+    expect(keys.length).toBeGreaterThan(1);
+    expect(keys).toEqual([...new Set(keys)]);
+  });
+
+  /**
+   * req 3's "only that call" at the level that decides what runs, and the half
+   * a uniqueness check cannot see: a single row saying "direct" and a single row
+   * saying "harness" look identical in the list.
+   *
+   * Stated over whatever the catalogue happens to declare rather than over named
+   * rows, because "may be called directly" is the catalogue's answer and moves
+   * with it. `resolveDirectCall` is the authority on BOTH halves — a credential
+   * the vendor permits AND an API style a shipped client speaks — so a row whose
+   * credential permits a call ShipIt cannot yet make is a harness row here, and
+   * correctly so: the alternative offers the user nothing at all.
+   */
+  it("gives every directly callable row a direct call, and never a harness", async () => {
+    const { backgroundWorkOptions, runnerForNonTurnSelection } = await import("./non-turn-model.js");
+    const { allServices, resolveDirectCall } = await import("../shared/catalogue/index.js");
+    const installed = { isInstalled: () => true };
+
+    let directRows = 0;
+    for (const service of allServices()) {
+      for (const mode of service.modes) {
+        const credentials = [credential(service.id, mode.kind)];
+        for (const option of backgroundWorkOptions(credentials, installed)) {
+          const runner = runnerForNonTurnSelection(option, credentials, installed);
+          const expected = resolveDirectCall(option) ? "direct" : "harness";
+          expect(runner?.execution, `${service.id}/${mode.kind}/${option.modelId}`).toBe(expected);
+          if (expected === "direct") directRows += 1;
+        }
+      }
+    }
+    expect(directRows, "no directly callable row in the catalogue — this proves nothing")
+      .toBeGreaterThan(0);
+  });
+
+  it("offers nothing at all when no credential is configured", async () => {
+    const { backgroundWorkOptions } = await import("./non-turn-model.js");
+    expect(backgroundWorkOptions([], { isInstalled: () => true })).toEqual([]);
+  });
+
+  /**
+   * Background work runs a harness one-shot with its tools off, so a harness
+   * that has no measured way to do that must not be offered at all — a row the
+   * user can pick and that then refuses at run time is the state this replaces.
+   *
+   * Derived from `toolsOffRefusal` rather than naming a harness, so measuring
+   * one (planning#546) widens the list here instead of failing this test.
+   */
+  it("never offers a row whose only carrier cannot run with its tools off", async () => {
+    const { backgroundWorkOptions } = await import("./non-turn-model.js");
+    const { toolsOffRefusal } = await import("../shared/agent-tools-off.js");
+    const { allHarnesses, allServices, resolveDirectCall } = await import("../shared/catalogue/index.js");
+
+    const refusing = allHarnesses().map((h) => h.id).filter((id) => toolsOffRefusal(id));
+    expect(refusing.length, "no harness refuses tools-off — this proves nothing")
+      .toBeGreaterThan(0);
+
+    for (const service of allServices()) {
+      for (const mode of service.modes) {
+        const credentials = [credential(service.id, mode.kind)];
+        const options = backgroundWorkOptions(credentials, {
+          isInstalled: (id) => refusing.includes(id),
+        });
+        // Whatever survives with only those installed must be a direct call.
+        for (const option of options) {
+          expect(resolveDirectCall(option), `${service.id}/${mode.kind}/${option.modelId}`)
+            .toBeDefined();
+        }
+      }
+    }
+  });
+
+  it("resolves onto a harness that can run with its tools off, never one that cannot", async () => {
+    const { backgroundWorkOptions, runnerForNonTurnSelection } = await import("./non-turn-model.js");
+    const { toolsOffRefusal } = await import("../shared/agent-tools-off.js");
+    const { allServices } = await import("../shared/catalogue/index.js");
+    const installed = { isInstalled: () => true };
+
+    for (const service of allServices()) {
+      for (const mode of service.modes) {
+        const credentials = [credential(service.id, mode.kind)];
+        for (const option of backgroundWorkOptions(credentials, installed)) {
+          const runner = runnerForNonTurnSelection(option, credentials, installed);
+          if (runner?.execution !== "harness") continue;
+          expect(toolsOffRefusal(runner.harnessId), `${service.id}/${mode.kind}/${option.modelId}`)
+            .toBeUndefined();
+        }
+      }
+    }
+  });
+
+  /**
+   * The option list and the resolver are one search, so a pin the picker offers
+   * is one `resolveNonTurnModel` can run — the drift this slice exists to close.
+   */
+  it("offers exactly what the resolver would accept as a pin", async () => {
+    const { backgroundWorkOptions, resolveNonTurnModel } = await import("./non-turn-model.js");
+    const routes = [route({ serviceId: "deepseek", billingMode: "key" })];
+    const options = backgroundWorkOptions(
+      [credential("deepseek", "key")],
+      { isInstalled: () => false },
+    );
+
+    expect(options.length).toBeGreaterThan(0);
+    for (const option of options) {
+      const pin = {
+        serviceId: option.serviceId,
+        billingMode: option.billingMode,
+        modelId: option.modelId,
+      };
+      expect(resolveNonTurnModel({ credentialStore: storeWith(routes, pin), env: {} }).ok, pin.modelId)
+        .toBe(true);
+    }
+  });
+});

@@ -79,6 +79,7 @@ export async function getBootstrapData(deps: {
         voiceWebhookConfigured: false,
         providerAccounts: [],
         credentialRoutes: [],
+        backgroundWorkModels: [],
         reviewers: [
           { slot: "first", source: "auto", unavailableReason: "nothing_eligible" },
           { slot: "second", source: "auto", unavailableReason: "nothing_eligible" },

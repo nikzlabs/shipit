@@ -15,6 +15,8 @@ import {
   type ModelSelection,
 } from "../shared/catalogue/index.js";
 import { isHarnessInstalled } from "../shared/installed-harnesses.js";
+import { toolsOffRefusal } from "../shared/agent-tools-off.js";
+import type { EligibleModel } from "../shared/agent-registry.js";
 import {
   credentialSecretForRoute,
   listConfiguredCredentials,
@@ -125,8 +127,26 @@ export function runnerForNonTurnSelection(
     const direct = directRunnerFor(selection, credentials, opts.directKeyFor);
     if (direct) return direct;
   }
-  const harness = harnessForSelection(selection, credentials, opts);
+  const harness = backgroundWorkHarnessFor(selection, credentials, opts);
   return harness ? { execution: "harness", ...harness } : undefined;
+}
+
+/**
+ * Background work runs a harness one-shot with its tools off, so a harness with
+ * no measured way to do that cannot carry it — and must not be offered, rather
+ * than refused once the user has chosen it (`agent-tools-off.ts`).
+ *
+ * Filtered here and NOT in `harnessesForSelection`, which the reviewer and the
+ * role resolver share: those run an ordinary turn with tools live, where the
+ * refusal says nothing about whether the harness can do the work.
+ */
+function backgroundWorkHarnessFor(
+  selection: ModelSelection,
+  credentials: readonly ConfiguredCredential[],
+  opts: HarnessSearchOpts,
+): { harnessId: AgentId; selection: ModelSelection } | undefined {
+  return harnessesForSelection(selection, credentials, opts)
+    .find((candidate) => !toolsOffRefusal(candidate.harnessId));
 }
 
 function directRunnerFor(
@@ -229,6 +249,45 @@ export function firstEligibleNonTurnSelection(
   return undefined;
 }
 
+/**
+ * Every triple background work can run on this install — a direct call where
+ * the credential permits one, a harness where it does not (docs/299 req 3).
+ *
+ * The selector cannot reuse `eligibleModelsOf(agentList)`: that is the union
+ * over INSTALLED harnesses, so a model provider reachable only by a direct call
+ * is invisible there however well the resolver answers. Built from the same
+ * `runnerForNonTurnSelection` the resolver uses, so the options offered and the
+ * thing that runs cannot disagree — including req 3's "only that call": one
+ * triple is one row, and which execution it gets is the resolver's answer, not
+ * a second row for the user to choose between.
+ *
+ * Eligibility only: no `directKeyFor`, so a provider whose key is configured is
+ * offered without reading the secret.
+ */
+export function backgroundWorkOptions(
+  credentials: readonly ConfiguredCredential[],
+  opts: HarnessSearchOpts = {},
+): EligibleModel[] {
+  const out: EligibleModel[] = [];
+  for (const service of allServices()) {
+    for (const mode of service.modes) {
+      for (const model of mode.models) {
+        const selection = { serviceId: service.id, billingMode: mode.kind, modelId: model.id };
+        if (!runnerForNonTurnSelection(selection, credentials, opts)) continue;
+        out.push({
+          serviceId: service.id,
+          serviceName: service.name,
+          billingMode: mode.kind,
+          modelId: model.id,
+          label: model.label,
+          canonicalModelKey: model.canonicalModelKey,
+        });
+      }
+    }
+  }
+  return out;
+}
+
 export function resolveNonTurnModel(
   deps: NonTurnModelDeps,
   opts: Pick<NonTurnSearchOpts, "harnessOnly"> = {},
@@ -276,7 +335,7 @@ export function resolveNonTurnModel(
   // listed and being read; a harness on the same selection still answers.
   const harnessId = resolved.execution === "harness"
     ? resolved.harnessId
-    : harnessForSelection(selection, credentials)?.harnessId;
+    : backgroundWorkHarnessFor(selection, credentials, {})?.harnessId;
   if (!harnessId) {
     return pinned
       ? { ok: false, reason: "pin_unavailable", serviceName: common.serviceName, selection }

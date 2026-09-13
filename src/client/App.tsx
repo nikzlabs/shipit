@@ -122,7 +122,7 @@ import { SecretBlockBanner } from "./components/SecretBlockBanner.js";
 import { QueueIndicator } from "./components/QueueIndicator.js";
 import { AgentStatusBar } from "./components/AgentStatusBar.js";
 import { StaleContainerBanner } from "./components/StaleContainerBanner.js";
-import type { AgentOption, ModelChoice } from "./agent-types.js";
+import type { AgentOption, EligibleModelOption, ModelChoice } from "./agent-types.js";
 import type {
   AgentId,
   CredentialRoute,
@@ -868,8 +868,10 @@ export default function App() {
               serviceName: string;
               label: string;
               harnessId?: string;
+              execution?: "harness" | "direct";
               source: "pinned" | "default";
             };
+            backgroundWorkModels?: EligibleModelOption[];
             reviewers?: ReviewerSlotView[];
             roles?: RoleView[];
           };
@@ -946,6 +948,10 @@ export default function App() {
           data.settings.nonTurnModel ?? null,
           data.settings.nonTurnModelResolved ?? null,
         );
+        if (data.settings.backgroundWorkModels)
+          {useSettingsStore
+            .getState()
+            .setBackgroundWorkModels(data.settings.backgroundWorkModels);}
         if (data.settings.reviewers)
           {useSettingsStore.getState().setReviewers(data.settings.reviewers);}
         if (data.settings.roles) {useSettingsStore.getState().setRoles(data.settings.roles);}

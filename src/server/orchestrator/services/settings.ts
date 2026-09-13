@@ -2,12 +2,12 @@ import path from "node:path";
 import { revokeOpenCodeSource } from "../openai-account-delivery.js";
 
 import type { CredentialStore } from "../credential-store.js";
-import type { AgentRegistry } from "../../shared/agent-registry.js";
+import type { AgentRegistry, EligibleModel } from "../../shared/agent-registry.js";
 import { isAllowedAgentEnvKey } from "../../shared/agent-registry.js";
 import type { AccountSelectionMode, AgentId, CredentialRoute, FailoverCutoffs } from "../../shared/types.js";
 import { credentialModeKey, DEFAULT_FAILOVER_CUTOFF, DEFAULT_SELECTION_MODE, parseCredentialModeKey } from "../../shared/types.js";
 import { allHarnesses, allServices, credentialModeForStorageEnv, getMode, getModel, getService, loginIntegrationForService, nativeServiceForHarness } from "../../shared/catalogue/index.js";
-import { firstEligibleNonTurnSelection, harnessForNonTurnSelection, resolveNonTurnModel } from "../non-turn-model.js";
+import { backgroundWorkOptions, firstEligibleNonTurnSelection, resolveNonTurnModel, runnerForNonTurnSelection } from "../non-turn-model.js";
 import { listConfiguredCredentials } from "../service-routing.js";
 import { listCredentialRoutes, upsertSingleStringCredential } from "./credential-routes.js";
 import type { VoiceDeliveryMode } from "../../shared/types/voice-note-types.js";
@@ -69,7 +69,11 @@ export function buildNonTurnModelSettings(
   agentRegistry: AgentRegistry,
   credentialStore: CredentialStore | undefined,
   providerAccountManager: ProviderAccountManager | undefined,
-): { nonTurnModel?: NonTurnModelSelection; nonTurnModelResolved?: NonTurnModelResolved } {
+): {
+  nonTurnModel?: NonTurnModelSelection;
+  nonTurnModelResolved?: NonTurnModelResolved;
+  backgroundWorkModels: EligibleModel[];
+} {
   seedNonTurnModel(credentialStore, agentRegistry);
   const nonTurnModel = credentialStore?.getNonTurnModel();
   const resolution = credentialStore
@@ -95,7 +99,20 @@ export function buildNonTurnModelSettings(
   return {
     ...(nonTurnModel ? { nonTurnModel } : {}),
     ...(nonTurnModelResolved ? { nonTurnModelResolved } : {}),
+    backgroundWorkModels: backgroundWorkModelOptions(agentRegistry, credentialStore),
   };
+}
+
+// The harness half still needs an installed harness; the direct half needs none.
+function backgroundWorkModelOptions(
+  agentRegistry: AgentRegistry,
+  credentialStore: CredentialStore | undefined,
+): EligibleModel[] {
+  if (!credentialStore) return [];
+  const installed = new Set(agentRegistry.list().filter((a) => a.installed).map((a) => a.id));
+  return backgroundWorkOptions(listConfiguredCredentials(credentialStore), {
+    isInstalled: (harnessId) => installed.has(harnessId),
+  });
 }
 
 /** Shared agent_list payload so credential changes refresh all derived settings. */
@@ -111,6 +128,7 @@ export function buildAgentListPayload(
   roles: RoleView[];
   nonTurnModel: NonTurnModelSelection | null;
   nonTurnModelResolved: NonTurnModelResolved | null;
+  backgroundWorkModels: EligibleModel[];
 } {
   const nonTurn = buildNonTurnModelSettings(agentRegistry, credentialStore, providerAccountManager);
   return {
@@ -126,6 +144,7 @@ export function buildAgentListPayload(
     // Omission preserves client state; null explicitly clears stale values.
     nonTurnModel: nonTurn.nonTurnModel ?? null,
     nonTurnModelResolved: nonTurn.nonTurnModelResolved ?? null,
+    backgroundWorkModels: nonTurn.backgroundWorkModels,
   };
 }
 
@@ -193,13 +212,13 @@ export async function getGlobalSettings(
   const { canRunTurns, harnessOnboardingCompletedAt } =
     resolveHarnessOnboarding(agentRegistry, credentialStore);
   const credentialRoutes = credentialStore ? listCredentialRoutes(credentialStore) : [];
-  const { nonTurnModel, nonTurnModelResolved } =
+  const { nonTurnModel, nonTurnModelResolved, backgroundWorkModels } =
     buildNonTurnModelSettings(agentRegistry, credentialStore, providerAccountManager);
   const reviewers = buildReviewerSettings({ credentialStore, providerAccountManager });
   const roles = credentialStore
     ? buildRoleSettings({ credentialStore, ...(providerAccountManager ? { providerAccountManager } : {}) })
     : [];
-  return { canRunTurns, harnessOnboardingCompletedAt, failoverCutoffs, accountSelectionMode, gitIdentity, systemPrompt, systemPromptOps, agents, memoryBudgetMb, agentSystemInstructionsEnabled, agentSystemInstructions, autoCreatePr, liveSteering, autoResolveConflicts, autoFixCi, autoResetMergedBranch, enableSubAgents, voiceDeliveryMode, voiceWebhookConfigured, providerAccounts, credentialRoutes, reviewers, roles,
+  return { canRunTurns, harnessOnboardingCompletedAt, failoverCutoffs, accountSelectionMode, gitIdentity, systemPrompt, systemPromptOps, agents, memoryBudgetMb, agentSystemInstructionsEnabled, agentSystemInstructions, autoCreatePr, liveSteering, autoResolveConflicts, autoFixCi, autoResetMergedBranch, enableSubAgents, voiceDeliveryMode, voiceWebhookConfigured, providerAccounts, credentialRoutes, reviewers, roles, backgroundWorkModels,
     ...(nonTurnModel ? { nonTurnModel } : {}),
     ...(nonTurnModelResolved ? { nonTurnModelResolved } : {}) };
 }
@@ -345,14 +364,17 @@ export async function saveGlobalSettings(
       credentialStore.setNonTurnModel(null);
       seedNonTurnModel(credentialStore, agentRegistry);
     } else {
-      const runnable = harnessForNonTurnSelection(
+      // Not `harnessForNonTurnSelection`: a model provider whose credential
+      // permits a direct call needs no installed harness (docs/299 req 3), and
+      // asking for one here refused by hand exactly what seeding accepts.
+      const runnable = runnerForNonTurnSelection(
         nonTurnModel,
         listConfiguredCredentials(credentialStore),
       );
       if (!runnable) {
         throw new ServiceError(
           400,
-          `No installed harness can run ${nonTurnModel.serviceId}/${nonTurnModel.billingMode}/${nonTurnModel.modelId} with the credentials configured`,
+          `Nothing can run ${nonTurnModel.serviceId}/${nonTurnModel.billingMode}/${nonTurnModel.modelId} with the credentials configured — no installed harness carries it, and its credential may not be called directly`,
         );
       }
       credentialStore.setNonTurnModel(nonTurnModel);

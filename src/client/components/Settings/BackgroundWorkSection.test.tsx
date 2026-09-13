@@ -3,62 +3,50 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { BackgroundWorkSection } from "./BackgroundWorkSection.js";
 import { useSettingsStore } from "../../stores/settings-store.js";
-import type { AgentOption } from "../../agent-types.js";
+import type { AgentOption, EligibleModelOption } from "../../agent-types.js";
 
+/**
+ * The agent list is here for ONE thing: naming the harness in the derived line.
+ * The options come from the server's `backgroundWorkModels` (docs/299 req 3),
+ * which is why Claude Code below declares no eligible models and the pickers
+ * are full anyway — that mismatch is the feature.
+ */
 const agents: AgentOption[] = [
   {
     id: "claude",
     name: "Claude Code",
     installed: true,
     hasRunnableModels: true,
-    models: ["deepseek-flash", "deepseek-v4"],
-    eligibleModels: [
-      {
-        serviceId: "deepseek",
-        serviceName: "DeepSeek",
-        billingMode: "key",
-        modelId: "deepseek-flash",
-        label: "V4.1 Flash",
-        canonicalModelKey: "deepseek-v4.1-flash",
-      },
-      {
-        serviceId: "deepseek",
-        serviceName: "DeepSeek",
-        billingMode: "key",
-        modelId: "deepseek-v4",
-        label: "V4",
-        canonicalModelKey: "deepseek-v4",
-      },
-      {
-        serviceId: "anthropic",
-        serviceName: "Anthropic",
-        billingMode: "sub",
-        modelId: "claude-opus-5",
-        label: "Opus 5",
-        canonicalModelKey: "claude-opus-5",
-      },
-    ],
+    models: [],
+    eligibleModels: [],
     supportsReview: true,
   },
-  {
-    id: "codex",
-    name: "Codex",
-    installed: true,
-    hasRunnableModels: true,
-    models: ["deepseek-flash"],
+];
 
-    // (req 9), so this must not become a second row the user picks between.
-    eligibleModels: [
-      {
-        serviceId: "deepseek",
-        serviceName: "DeepSeek",
-        billingMode: "key",
-        modelId: "deepseek-flash",
-        label: "V4.1 Flash",
-        canonicalModelKey: "deepseek-v4.1-flash",
-      },
-    ],
-    supportsReview: true,
+const OPTIONS: EligibleModelOption[] = [
+  {
+    serviceId: "deepseek",
+    serviceName: "DeepSeek",
+    billingMode: "key",
+    modelId: "deepseek-flash",
+    label: "V4.1 Flash",
+    canonicalModelKey: "deepseek-v4.1-flash",
+  },
+  {
+    serviceId: "deepseek",
+    serviceName: "DeepSeek",
+    billingMode: "key",
+    modelId: "deepseek-v4",
+    label: "V4",
+    canonicalModelKey: "deepseek-v4",
+  },
+  {
+    serviceId: "anthropic",
+    serviceName: "Anthropic",
+    billingMode: "sub",
+    modelId: "claude-opus-5",
+    label: "Opus 5",
+    canonicalModelKey: "claude-opus-5",
   },
 ];
 
@@ -69,6 +57,7 @@ const RESOLVED_FLASH = {
   serviceName: "DeepSeek",
   label: "V4.1 Flash",
   harnessId: "claude",
+  execution: "harness" as const,
   source: "default" as const,
 };
 
@@ -79,6 +68,7 @@ function bodyOf(fetchMock: ReturnType<typeof vi.fn>, call = 0): { nonTurnModel: 
 
 beforeEach(() => {
   useSettingsStore.getState().setNonTurnModel(null, null);
+  useSettingsStore.getState().setBackgroundWorkModels(OPTIONS);
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
@@ -120,6 +110,55 @@ describe("BackgroundWorkSection", () => {
 
     // description carries only what they cannot.
     expect(section.textContent).not.toContain("Currently:");
+  });
+
+  /**
+   * docs/299 req 3 — the pickers are the server's background-work list, not the
+   * union of the installed harnesses' models. `agents` here declares no eligible
+   * models at all, so a picker with rows in it can only have got them from the
+   * store: that is exactly the install where a model provider is reachable by a
+   * direct call and by nothing else.
+   */
+  it("offers a model provider no installed harness can reach", async () => {
+    const user = userEvent.setup();
+    useSettingsStore.getState().setNonTurnModel(null, {
+      ...RESOLVED_FLASH,
+      harnessId: undefined,
+      execution: "direct",
+    });
+
+    render(<BackgroundWorkSection agentList={agents} />);
+    await user.click(screen.getByTestId("background-work-service-trigger"));
+
+    expect(screen.getByTestId("background-work-service-option-deepseek:key")).toBeTruthy();
+  });
+
+  /**
+   * The line carries the consequence, not the provider — the control beside it
+   * already names that. Both states are rendered from one field, so neither can
+   * be read off the absence of the other.
+   */
+  it("says the work is called directly where no harness runs it", () => {
+    useSettingsStore.getState().setNonTurnModel(null, {
+      ...RESOLVED_FLASH,
+      harnessId: undefined,
+      execution: "direct",
+    });
+
+    render(<BackgroundWorkSection agentList={agents} />);
+
+    expect(screen.getByTestId("background-work-execution").textContent)
+      .toBe("Called directly · no harness, no container");
+    expect(screen.queryByText(/Runs on/)).toBeNull();
+  });
+
+  it("keeps naming the harness where one runs it", () => {
+    useSettingsStore.getState().setNonTurnModel(null, RESOLVED_FLASH);
+
+    render(<BackgroundWorkSection agentList={agents} />);
+
+    expect(screen.getByTestId("background-work-execution").textContent).toBe("Runs on Claude Code");
+    expect(screen.queryByText(/Called directly/)).toBeNull();
   });
 
   // The derivation is stated as a fact, never offered as a control.

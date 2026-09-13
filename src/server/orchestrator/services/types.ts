@@ -46,6 +46,12 @@ export interface GlobalSettings {
   // Absence means follow the install; keep the stored pin separate from its resolution.
   nonTurnModel?: NonTurnModelSelection;
   nonTurnModelResolved?: NonTurnModelResolved;
+  /**
+   * docs/299 req 3 — what the background-work selector may offer, which is NOT
+   * the union of the installed harnesses' `eligibleModels`: a model provider
+   * reachable only by a direct call belongs here and appears in no harness.
+   */
+  backgroundWorkModels: EligibleModel[];
   voiceDeliveryMode: VoiceDeliveryMode;
   voiceWebhookConfigured: boolean;
   providerAccounts: CredentialRoute[];

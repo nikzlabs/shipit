@@ -88,8 +88,11 @@ function triggersOnEverySurface(): Record<string, HTMLButtonElement> {
     serviceName: "Anthropic",
     label: "Opus 5",
     harnessId: "claude",
+    execution: "harness",
     source: "default",
   });
+  // Background work takes its options from the server, not from `agents`.
+  useSettingsStore.getState().setBackgroundWorkModels(agents[0]!.eligibleModels!);
   render(<BackgroundWorkSection agentList={agents} />);
   found["background service"] = screen.getByTestId("background-work-service-trigger") as HTMLButtonElement;
   found["background model"] = screen.getByTestId("background-work-model") as HTMLButtonElement;
@@ -101,6 +104,7 @@ function triggersOnEverySurface(): Record<string, HTMLButtonElement> {
 beforeEach(() => {
   useSettingsStore.getState().setReviewers([]);
   useSettingsStore.getState().setNonTurnModel(null, null);
+  useSettingsStore.getState().setBackgroundWorkModels([]);
 });
 
 describe("picker consistency (req 13)", () => {
