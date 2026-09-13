@@ -67,10 +67,8 @@ export function goalAgentFor(
  * docs/154 req 6 — read a goal that was never read, without a turn. Best
  * effort: a container that is not up yet leaves it for the next turn.
  *
- * docs/297 — skipped where the read costs a message in the model's context
- * (`goalReadEntersContext`). It fires once in every session of such a harness,
- * and since docs/297 it can only find a goal ShipIt already learned from the
- * stream, so the price bought nothing. The user reads the goal with `/goal`.
+ * docs/297 req 10 — not where the read costs a message in the model's own
+ * context, which it then carries for the rest of the session.
  */
 export async function reconcileAgentGoal(
   deps: AgentGoalDeps & { sessionManager: Pick<SessionManager, "agentGoalChecked"> },

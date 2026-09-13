@@ -16,8 +16,7 @@
 - [x] docs/154's backend-support table corrected for Claude, Grok and OpenCode, with the capability-gate note
 - [x] `npm run typecheck`, `npm run lint:dev`, full `npm test`
 - [x] Independent review, findings folded in
-- [x] `turnLive` tracks the CLI's own turns, so a goal command is never written to a working CLI
-- [x] `goalReadEntersContext` — no activation read for Claude Code (req 10), with docs/154's read left intact for Codex
+- [x] No goal command written to a working CLI, and no activation read at all (req 10)
 
 ## Known limits, deliberately not built
 

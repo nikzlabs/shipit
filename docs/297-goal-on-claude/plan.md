@@ -1,6 +1,6 @@
 ---
 title: "`/goal` on Claude Code"
-description: "Claude Code's own `/goal` store behind ShipIt's goal pipeline: `/goal` and `/goal clear` answered out of band, `/goal <condition>` riding the turn, and the chip kept honest by a turnless read after each goal-bearing turn — and by no read at all in a session that shows no goal."
+description: "Claude Code's own `/goal` store behind ShipIt's goal pipeline: `/goal` and `/goal clear` answered out of band, `/goal <condition>` riding the turn, and the chip kept honest by a read after a goal-bearing turn — and by no read at all otherwise."
 issue: planning#528
 ---
 
@@ -128,18 +128,12 @@ no gain.
 - `ClaudeAdapter.goalCommand(threadId, command)` picks one of three paths:
   - **A turn is running** → refused, for the concurrency reason above. The
     orchestrator turns that into the "wait for the turn to finish" notice.
-    "Running" means the CLI is generating, not that ShipIt dispatched the turn:
-    the flag is set by `run()` / `sendUserMessage()` **and** by the events a turn
-    the CLI starts itself (`startsOwnTurns`) announces itself with, since it
-    reaches neither entry point — `indicatesTurnActivity` in the adapter lists
-    them: a top-level assistant message, a `task_notification` (the earliest, and
-    what the orchestrator adopts a self-wake on), and a top-level partial
-    message, which routed providers stream ahead of the assistant event. A
-    repeated `init`, which the CLI emits for a local command it answers without a
-    turn, and anything under `parent_tool_use_id`, which a background subagent
-    streams between the CLI's own turns, deliberately do not. Without that second
-    source a `/goal` read reached a working CLI, which handed it to the model as
-    "The user sent a new message while you were working: /goal".
+    "Running" means the CLI is generating, not that ShipIt dispatched the turn: a
+    turn it starts itself (`startsOwnTurns`) reaches neither `run()` nor
+    `sendUserMessage()`, so the flag is also set from the stream, by
+    `indicatesTurnActivity`. Reading ShipIt's dispatch alone let a `/goal` reach a
+    working CLI, which handed it to the model as "The user sent a new message
+    while you were working: /goal".
   - **A resident CLI is alive** → the command goes down its stdin. Live steering
     is on by default and keeps one CLI across turns, and the goal lives in *that
     process's* memory: a control process would clear a copy and leave the real
@@ -149,13 +143,11 @@ no gain.
     so neither reaches ShipIt's transcript or the turn machinery, where a
     `result` reads as a CLI-started turn.
 
-    It does **not** stay out of the *model's* context, and nothing in ShipIt can
-    put it there. Measured on 2.1.260 by running this exact invocation against a
-    throwaway thread: the CLI records the command in the thread as two `user`
-    entries — a `<local-command-caveat>` and a `<command-name>/goal</command-name>`
-    — so every later resume replays it to the model as a message the user never
-    sent. The cost of a read is therefore not zero in the way "0 turns, 0 cost"
-    suggests (both measured, and both true).
+    It does not stay out of the *model's* context, and nothing in ShipIt can put
+    it there. Measured on 2.1.260: the CLI records the command in the thread as a
+    `<local-command-caveat>` plus a `<command-name>/goal</command-name>`, so every
+    later resume replays it as a message the user never sent. "0 turns, 0 cost" is
+    true and is not the whole price — hence req 10.
   - **Otherwise** → `runClaudeGoalControl`.
   - `set` is refused on every path. Nothing routes one here (`goalActions` marks
     it `"turn"`), and refusing rather than running it is what keeps requirement 7
@@ -188,32 +180,19 @@ CLI's own word (`active`).
   arrives while a turn is running is refused with its own notice.
 - **Post-turn read (req 2).** `refreshAgentGoalAfterTurn` in
   `services/agent-goal.ts` runs on the runner's `idle` event — last of all,
-  after commit and PR work. The agent process is *not* necessarily gone: with
-  live steering on, `idle` means ShipIt's turn machinery settled, and the
-  resident CLI is still there and can already be in a turn of its own. The
-  adapter's own refusal is the guard, not the ordering. It reads the
-  goal only when the session currently *shows* one, so a session without a goal
-  is never read at all (req 10) and the common case is unaffected. It is best
-  effort, and the fallback is the *next* goal-bearing turn's read. There is no
-  activation read to fall back on — see below.
+  after commit and PR work — but not with the agent process gone: a resident CLI
+  outlives the turn and can already be in one of its own, so the adapter's
+  refusal is the guard, not the ordering. It reads the goal only when the session
+  currently *shows* one, so a session without one is never read at all (req 10).
+  Best effort, and the fallback is the next goal-bearing turn's read.
 
 - **No read on open (req 10).** `reconcileAgentGoal` returns early for a harness
-  that marks `goalReadEntersContext`, which Claude Code does. docs/154 built the
-  read for a session carrying a goal ShipIt had never seen, and for Codex it is
-  free. Here it is not: the CLI records a `/goal` it answers in the thread, so the
-  read plants a user message the user never sent in every later resume's context,
-  and it fired once in *every* Claude session rather than only the pre-feature
-  ones. Since this feature shipped there is also nothing left for it to find —
-  `send-message.ts` intercepts every `/goal`, and `goalSetFromEvent` reads the
-  `Goal set:` acknowledgement off the stream. The residue it gives up: an
-  acknowledgement lost to a crash leaves a goal in force with no chip, until the
-  user types `/goal`. The full trade is the 2026-09-13 receipt in
-  [requirements.md](requirements.md).
-
-  A migration marking existing sessions "checked" was considered and rejected.
-  The capability gate already means no activation read can reach a Claude CLI,
-  and the column is shared: stamping it would suppress the read for existing
-  *Codex* sessions, which is the one population docs/154 was written for.
+  marking `goalReadEntersContext`, which Claude Code does; docs/154's read is free
+  for Codex and is not here. What it costs and earns: the 2026-09-13 receipt in
+  [requirements.md](requirements.md). Rejected alternative — stamping existing
+  sessions "checked" by migration: the capability already stops every activation
+  read, and `agent_goal` is one column for all harnesses, so a stamp would
+  suppress the read for existing *Codex* sessions.
 
   This is a per-turn read, allowed only where the stream genuinely cannot
   answer — an extra process only when no resident CLI is alive; with live
@@ -223,16 +202,13 @@ CLI's own word (`active`).
   seconds, with nothing on the stream to correct it. The same gate applies to
   Codex, where the read is a redundant confirmation rather than a behaviour
   change; one mechanism for every harness was preferred to a capability bit whose
-  only job is to say "this harness reports goal changes". (`goalReadEntersContext`
-  below is not that bit: it records what a read *costs*, and its only reader
-  declines to read at all.)
+  only job is to say "this harness reports goal changes".
 
 - **Resolving the agent to ask, without disturbing the session**
-  (`goalAgentFor`). Both reads are *attempted* outside a ShipIt turn — the
-  resident CLI can still be in one of its own, which is what the adapter's
-  refusal is for — where the agent slot may hold
-  the finished turn's proxy or nothing at all. Building a proxy while the slot is
-  occupied *displaces* the installed one and settles its turn a second time
+  (`goalAgentFor`). The read is *attempted* outside a ShipIt turn — the resident
+  CLI can still be in one of its own, which the adapter refuses — where the agent
+  slot may hold the finished turn's proxy or nothing at all. Building one while
+  the slot is occupied *displaces* the installed one and settles its turn a second time
   (`supersedeDisplacedAgent`), so an occupied slot is used as it is or left
   alone; an empty one — which is what a one-shot turn leaves behind, before idle
   fires — is filled, where nothing can be superseded.
@@ -248,9 +224,8 @@ CLI's own word (`active`).
 Claude Code's goal loop lives inside a turn: the `Stop` hook blocks the stop
 until the evaluator agrees, so a goal keeps *one* turn going rather than
 starting new ones. ShipIt therefore needs no hold of the kind Codex needed —
-resuming a session with an active goal starts no
-turn by itself (measured). The goal persists in the CLI's store and steers every
-turn the user starts, which is what docs/154 settled on for Codex as well.
+resuming a session with an active goal starts no turn by itself (measured). The
+goal persists in the CLI's store and steers every turn the user starts, which is what docs/154 settled on for Codex as well.
 
 ## Key files
 
@@ -259,7 +234,6 @@ turn the user starts, which is what docs/154 settled on for Codex as well.
 - `src/server/shared/catalogue/harnesses.ts` — the `claude` capability block.
 - `src/server/shared/types/agent-types.ts` — `goalActions`, `goalReadEntersContext`.
 - `src/server/orchestrator/ws-handlers/send-message.ts`, `goal-command.ts` — interception and refusals.
-- `src/server/orchestrator/services/agent-goal.ts` — `refreshAgentGoalAfterTurn`, and the
-  activation read this harness opts out of.
+- `src/server/orchestrator/services/agent-goal.ts` — `refreshAgentGoalAfterTurn`; the activation read this harness opts out of.
 - `src/server/orchestrator/runner-registry-factory.ts` — the idle hook.
 - `src/client/components/MessageInput/MessageInput.tsx` — the `/` menu filter.

@@ -60,16 +60,13 @@ function textFromUserContent(content: unknown[]): string {
 }
 
 /**
- * docs/297 — the CLI is generating. A turn it starts itself (`startsOwnTurns`)
- * reaches neither `run()` nor `sendUserMessage()`, so these events are the only
- * notice ShipIt gets, and writing a goal command without them hands the model a
- * mid-turn user message nobody sent. A `task_notification` is the earliest:
- * the CLI wakes to process it, and the orchestrator adopts a turn on it too.
- * Excluded on purpose: `init`, which a resident CLI repeats for a local command
- * it answers without a turn, and anything under `parent_tool_use_id`, which a
- * background subagent streams while the CLI itself is between turns.
+ * docs/297 — the CLI is generating. A turn it starts itself reaches neither
+ * `run()` nor `sendUserMessage()`, so this is the only notice; without it a goal
+ * command is written to a working CLI, which hands the model a mid-turn user
+ * message nobody sent. Excluded: `init`, repeated for a local command answered
+ * without a turn, and a subagent stream, which runs between the CLI's own turns.
  */
-function indicatesTurnActivity(raw: ClaudeEvent): boolean {
+export function indicatesTurnActivity(raw: ClaudeEvent): boolean {
   if (raw.type === "system") return raw.subtype === "task_notification";
   if (raw.type !== "assistant" && raw.type !== "stream_event") return false;
   return !raw.parent_tool_use_id;

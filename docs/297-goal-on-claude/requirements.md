@@ -31,21 +31,16 @@ Plan: [plan.md](plan.md).
 - 2026-09-13 — Should ShipIt read the goal when a Claude session is opened, to
   catch one it has never seen? No. Nik: "could we just ignore old sessions? I
   think the agent invented a problem and 'fixed' it [into] more problems." The
-  read was not free as req 3 and the plan implied. Measured on 2.1.260: the CLI
-  records a `/goal` it answers locally in the thread as a
-  `<local-command-caveat>` plus a `<command-name>/goal</command-name>`, so every
-  later resume replays it to the model as a message the user never sent — which
-  is what a production session saw. It fired once in *every* Claude session, not
-  only sessions predating this feature, and since this feature shipped it can
-  only find a goal ShipIt already learned from the stream. The only sessions it
-  could help are ones where a user typed `/goal <condition>` into a Claude
-  session before this feature, when the `/` menu offered no such command — and
-  on Claude Code a *model* cannot create one at all (`ProposeGoal` is
-  interactive-only, measured), so docs/154's incident shape cannot arise here.
-  Recorded as req 10, and req 6 is narrowed to the goals ShipIt has seen. The
-  cost: a `Goal set:` acknowledgement lost to a crash leaves a goal in force
-  with no chip until the user types `/goal`. Accepted — that is one keystroke,
-  against a message in every session's context.
+  read is not free: measured on 2.1.260, the CLI records a `/goal` it answers in
+  the thread, so every later resume replays it to the model as a message the user
+  never sent — which a production session saw. It fired in *every* Claude
+  session, and it can find nothing new, since `/goal` is intercepted and a `Goal
+  set:` is read off the stream. Only a `/goal` typed before this feature could
+  hide, and a Claude *model* cannot create a goal at all (`ProposeGoal` is
+  interactive-only, measured), so docs/154's incident cannot arise here.
+  Recorded as req 10; req 6 is narrowed to the goals ShipIt has seen. Accepted
+  cost: a `Goal set:` lost to a crash leaves a goal in force with no chip until
+  the user types `/goal`.
 
 - 2026-09-12 — Must `/goal <condition>` be answered out of band, as Codex's is?
   No. Measured on the pinned CLI: `/goal <condition>` makes Claude Code start
