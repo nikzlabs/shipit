@@ -1,39 +1,33 @@
 ---
 issue: planning#542
 title: Direct provider calls for background work — design
-description: How a credential's origin decides between a harness and a direct API call, the per-style direct clients and their catalogue contract, the always-on background-work container, and the removal of the Claude OAuth cleanup provider.
+description: How a per-credential catalogue capability decides between a harness and a direct API call, the per-style direct clients and their request contract, the always-on cleanup container, and the removal of the Claude OAuth cleanup provider.
 ---
 
 # 299 — Direct provider calls for background work: design
 
 This implements [`requirements.md`](./requirements.md).
 
-An independent review (run `c24cf98a`) rejected the first version of this design. Its central
-claim — that the billing mode decides how background work runs — was false on the catalogue
-ShipIt already ships. What survived and what changed is recorded below rather than quietly
-rewritten, because the wrong rule is an easy one to reach for again.
+Two independent reviews each refuted a simpler version of the central rule. The receipts in
+`requirements.md` record what was tried; this file states only what survived.
 
 ## What decides how background work runs
 
-**Not the billing mode.** `BillingMode` is "independent of credential delivery" by the
-catalogue's own definition (`src/server/shared/catalogue/types.ts:11`), and two shipped services
-prove it: GLM's coding plan is a `sub` mode whose credential is a pasted string carried by
-Claude Code (`services.ts:290`), and a ChatGPT subscription is carried by both Codex and
-OpenCode (`services.ts:164`).
+**A per-credential capability, declared in the catalogue, failing closed.** Nothing already in
+the catalogue answers the question:
 
-**The credential's `via` decides** (req 3), and it is already in the catalogue:
+- Not the **billing mode** — GLM's coding plan is a `sub` mode carried by Claude Code
+  (`catalogue/services.ts:290`), and `BillingMode` is documented as "independent of credential
+  delivery" (`catalogue/types.ts:11`).
+- Not the credential's **`via`** — Anthropic's subscription accepts a pasted
+  `ANTHROPIC_AUTH_TOKEN` restricted to Claude Code (`services.ts:124`), and deployment-supplied
+  OAuth tokens enter eligibility as strings (`service-routing.ts:95`). A pasted credential can be
+  client-bound.
 
-| Credential | How background work runs |
-|---|---|
-| `via: "account"` — obtained by signing in to the vendor's own application | The harnesses listed in its `carriers`, derived as today (docs/252 req 9) |
-| `via: "string"` — pasted by the user or supplied by the deployment | A direct call, when the catalogue says that credential may be used for one |
-
-The second row needs a new per-credential catalogue field, and it **fails closed**: a string
-credential is direct-callable only where the catalogue says so. GLM's coding plan is the case
-that forces this. It is a pasted token, so nothing technical stops a direct call, but whether
-Z.AI's plan permits use outside a coding client is a question about Z.AI's terms that the
-catalogue must answer per service — exactly the question req 1 asks. Until someone reads those
-terms, GLM stays harness-only and behaves as it does today.
+So each credential declaration gains a field saying whether it may be used for a direct call, and
+absent means no. Authoring it is per-service research into that vendor's terms — the same kind of
+work as authoring a price. Two are already settled: Anthropic's API key may, and Z.AI's coding
+plan may not, because Z.AI's own documentation restricts it to supported tools.
 
 The user-facing selection is unchanged: still `{ serviceId, billingMode, modelId }`, still two
 controls, still one write. Execution is derived from that triple plus the catalogue, so there is
@@ -43,41 +37,50 @@ no fourth field. `BackgroundWorkSection.tsx` already renders one derived fact un
 `NonTurnTarget` becomes a discriminated union on `execution`, so the compiler names every
 consumer of the old always-present `harnessId`.
 
-## Where dispatch goes — above the session gates, not inside the spawn
+## Two callers, not one
 
-The first draft put dispatch in `runNonTurnSpawn`. That is unreachable for the case reqs 2 and 4
-exist to fix: `makeNonTurnGenerateText` returns the pre-feature fallback when there is no
-`sessionId` (`services/non-turn-work.ts:231`) and emits a failure when there is no runner
-(`:252`). A direct call needs neither.
+`makeNonTurnGenerateText` is the pull-request path. **Session naming does not go through it**: it
+calls `generateSessionName` (`services/graduate-session.ts:234`), which runs a CLI directly from
+the orchestrator with `execFile` and `cwd: "/tmp"` (`session-namer.ts:443`). Both need the new
+executor, and neither can reach it by a change in the other.
 
-So resolution and execution move **above** both gates. The executor takes a target and a prompt
-and nothing else; a session id, where one exists, is reporting context passed alongside rather
-than a precondition. `runNonTurnSpawn` keeps only what it is for — running a harness in a
-container.
+For the pull-request path, resolution and execution move **above** two existing gates:
+`makeNonTurnGenerateText` returns the pre-feature fallback when there is no `sessionId`
+(`services/non-turn-work.ts:231`) and fails when there is no runner (`:252`). A direct call needs
+neither. A session id, where one exists, is reporting context passed alongside rather than a
+precondition.
+
+For naming, the integration is to extract its prompt construction and result parsing from its CLI
+invocation, run the selected executor, and keep its existing failure, usage and
+branch-finalisation behaviour. Its `/tmp` working directory is not a session container, so naming
+already does not depend on one.
+
+Both prompts were checked: naming and both pull-request-description prompts supply their own
+inputs and none instructs the model to read the repository, so tools-off execution is safe for
+them.
 
 ## The direct clients, and the contract they need
 
 Three styles are declared (`catalogue/types.ts:6`): `anthropic-messages`,
-`openai-chat-completions`, `openai-responses`. Two request shapes already exist as voice
-adapters and are the seed for the first two. **Parameterising them is not enough**, and the
-review named the two ways a naive port breaks:
+`openai-chat-completions`, `openai-responses`. Two request shapes exist as voice adapters and seed
+the first two. **Parameterising them is not enough**, in three ways:
 
 - **The catalogue's model id is not always the API's.** Anthropic's row is `haiku`
-  (`services.ts:150`), which is a harness alias; the Messages API needs the dated identifier. So
-  a model needs an explicit API id in the catalogue, defaulting to the catalogue id where they
-  agree, and the direct client must never send the alias.
-- **Endpoint bases are heterogeneous.** Anthropic is `https://api.anthropic.com`, OpenAI is
-  `https://api.openai.com/v1`, OpenRouter is `.../api/v1`, GLM's chat-completions base is
-  `.../api/paas/v4`. Appending a fixed `/v1/chat/completions` produces wrong URLs. The path
-  suffix belongs to the style and the base to the service, and the join must be declared rather
-  than assumed.
-
-The client interface is therefore:
+  (`services.ts:150`), a harness alias; the Messages API needs the dated identifier. A model needs
+  an explicit API id, defaulting to the catalogue id where they agree.
+- **Endpoint bases are heterogeneous.** `https://api.anthropic.com`, `https://api.openai.com/v1`,
+  OpenRouter's `/api/v1`, GLM's `/api/paas/v4`. The base belongs to the service and the path
+  suffix to the style, and the join must be declared rather than assumed.
+- **Some services require specific request metadata.** OpenCode Go answers `403 error code: 1010`
+  to a generic user agent and `400 MissingSessionID` without an `x-opencode-session` header
+  (`docs/252-custom-models/pair-verification.md:487`). A generic adapter fails there even with a
+  correct URL and model. Either the credential is declared not directly callable, or the
+  catalogue carries its required headers.
 
 ```ts
 type DirectCall = (req: {
-  baseUrl: string; apiModelId: string; apiKey: string; prompt: string;
-  maxOutputChars: number; signal: AbortSignal;
+  baseUrl: string; apiModelId: string; apiKey: string; headers?: Record<string, string>;
+  prompt: string; maxOutputChars: number; signal: AbortSignal;
 }) => Promise<{
   text: string;
   inputTokens?: number; outputTokens?: number;
@@ -85,41 +88,50 @@ type DirectCall = (req: {
 }>;
 ```
 
-Cache-read and cache-write counts are separate fields because pricing treats them separately —
-`shared/codex-token-usage.ts:22` normalises them for exactly that reason, and folding them into
-`inputTokens` produces a wrong spend figure rather than a missing one.
+Cache-read and cache-write counts are separate because pricing treats them separately
+(`shared/codex-token-usage.ts:22`); folding them into `inputTokens` gives a wrong spend figure
+rather than a missing one.
 
-Tests against a fake `fetch` that assert the request shape would pass while sending a harness
-alias to a wrong URL. So each style also needs a test that the URL and the model id are built
-from real catalogue rows, one per shipped service.
+A fake-`fetch` test that asserts the request shape would pass while sending a harness alias to a
+wrong URL without a required header. So each style also needs a test built from **real catalogue
+rows**, one per shipped service that declares a direct call.
 
-## Usage for work that belongs to no session
+## Usage
 
-`usage_turns.session_id` is `TEXT NOT NULL` (`shared/database.ts:550`), and `recordNonTurnUsage`
-requires both a session id and a harness id (`services/non-turn-work.ts:73`). Neither holds for a
-dictation cleaned with no session open.
+Three separate things, and only the first is about the session id.
 
-The column becomes nullable, and a null session id means install-level spend (req 7). That is a
-migration plus every read path that groups by session — the usage modal, the per-session cost,
-the by-spend ranking — each of which must render the install-level row rather than skip it or
-crash on a null. `harnessId` moves into the same union as `NonTurnTarget`: a direct call reports
-its service and model and no harness, which is a true statement rather than a placeholder.
+**Install-level spend.** `usage_turns.session_id` is `TEXT NOT NULL` (`shared/database.ts:550`)
+and `recordNonTurnUsage` requires both a session id and a harness id
+(`services/non-turn-work.ts:73`). Neither holds for a dictation cleaned with no session open. The
+column becomes nullable, and null means install-level spend (req 7). Those rows belong to
+install-wide reporting; a session's own view must not show them, since they are not that
+session's spend. Every read path that groups by session must skip a null cleanly rather than
+crash on one.
 
-This is deliberately the expensive answer. Attributing the spend to whichever session happened to
-be active is one line and charges a session for work that was not its turn; recording nothing
-makes req 7 false for the one kind of background work that runs most often.
+**The background-work marker must survive losing the harness id.** Today `recordNonTurnUsage`
+writes `subAgentId: harnessId` (`services/non-turn-work.ts:121`), and `getPerTurnUsage` excludes
+background work from the session's context dial **solely** through that field —
+`if (r.sub_agent_id !== null) continue` (`usage.ts:309`). The client then reads the last remaining
+row for the composer's context and model (`client/utils/session-data.ts:471`). So a direct
+pull-request call that carries a session id and no harness id would be counted as a primary turn,
+and the composer would report the background model's context occupancy. The classification must
+therefore be explicit and independent of whether a harness exists.
+
+**Billing mode comes from the selection, not the execution.** OpenCode Go is a `sub` mode with a
+pasted key and ordinary API endpoints (`services.ts:474`), so a direct call there is subscription
+usage with an at-API-rates comparison, not money spent. `turn-attribution.ts:52` already keeps
+that distinction; the union must not lose it by treating "direct" as "metered".
 
 ## Selector eligibility reaches further than the resolver
 
 `BackgroundWorkSection` gets its options from `eligibleModelsOf(agentList)`, which skips every
-uninstalled harness (`client/components/pickers/model-choice.ts:32`). A server-side resolver
-that accepts a key-only service therefore changes nothing the user can see: the row is still
-absent. Background work needs its own option list, carried through the same bootstrap and
-credential-change paths the current list uses, plus the matching changes to seeding and save
-validation in `services/settings.ts`. The union change will not surface this — nothing about it
-fails to compile.
+uninstalled harness (`client/components/pickers/model-choice.ts:32`). A server-side resolver that
+accepts a key-only service therefore changes nothing the user can see. Background work needs its
+own option list, carried through the same bootstrap and credential-change paths, plus matching
+changes to seeding and save validation in `services/settings.ts`. The union change will not
+surface this — nothing about it fails to compile.
 
-## The background-work container
+## The cleanup container
 
 One container per install, holding no repository and no resident harness process. Each request
 spawns a one-shot CLI with tools off and exits, so the steady-state cost is the container rather
@@ -130,46 +142,56 @@ than a loaded agent.
 - **Tools off is `--tools ""`, not `--allowedTools ""`.** The second is a permission allowlist and
   leaves the tool set populated; `claude-goal.ts:119` records the measurement. Each harness needs
   its own equivalent.
-- **All harness-run background work goes here**, not only cleanup. The review asked which parts
-  of this design nobody would miss, and answered: the branch between "use the live session's
-  container" and "use the shared one". Removing it also removes the credential-borrowing dance in
-  `runNonTurnSpawn` — `provisionSubAgentSpawnHome` exists only to isolate background work from a
-  live primary CLI **in the same container**, which no longer happens. Per-request credential
-  isolation is still needed inside the shared container.
-- **`RUNTIME_MODE=local` has no container manager at all** (`app-lifecycle.ts:141` returns
-  `containerManager: null`). The dogfood inner instance therefore cannot have this container, and
-  harness-run background work there must keep running the way it does today. A design that
-  assumes the container exists breaks the loop this repository is developed in.
-
-One thing to verify before moving session naming and pull-request descriptions here: their
-prompts must be self-contained. Today they run with `AUTO_TOOLS` and a working directory, so a
-prompt that expects the harness to read the tree would break under tools off.
+- **Cleanup only.** An earlier draft moved *all* harness-run background work here, on the first
+  review's advice that the branch between the session container and this one served no
+  requirement. The second review refuted the premise: `provisionSubAgentSpawnHome` is not merely
+  isolation from a co-resident primary CLI — it creates OpenCode's private ChatGPT credential
+  projection and records credential provenance (`session-agent-credentials.ts:367`), and its
+  release publishes refreshed tokens and keeps the home when deleting it would lose the only
+  rotated token (`:397`). Those guarantees have no replacement in this design, and no requirement
+  asks for the move. Session naming and pull-request descriptions stay where they are.
+- Concurrent cleanup requests inside the container still need isolated homes, so the existing
+  machinery is reused here rather than reimplemented.
+- **`RUNTIME_MODE=local` has no container manager** (`app-lifecycle.ts:141` returns
+  `containerManager: null`). There is no existing session-independent harness path to fall back
+  to either — local cleanup today uses the direct voice adapters. So in local mode a
+  harness-execution choice runs the CLI from the orchestrator the way `session-namer.ts` already
+  does, which is the only session-independent harness invocation ShipIt has.
 
 ## Bounding a cleanup that does not answer
 
-Req 9 exists because changing a constant does not bound anything. `cleanTranscript` aborts on an
+Req 9 exists because changing a constant bounds nothing. `cleanTranscript` aborts on an
 `AbortSignal`, but `spawnSubAgent` exposes no caller signal and enforces its own transport
-deadline, which defaults to 35 minutes (`container-session-runner.ts:346`). Passing a shorter
-execution timeout to the worker does not help if the worker stops answering.
+deadline defaulting to 35 minutes (`container-session-runner.ts:346`), and aborting `workerPost`
+does not cancel the worker's spawn — `/agent/spawn` awaits its own handle
+(`session/agent-controller.ts:182`).
 
-So the deadline is the orchestrator's: cancel at the deadline, insert the raw transcript, and
-tear the spawned process down. `CLEANUP_TIMEOUT_MS` splits into a direct budget near today's
-3000 ms and a harness budget of roughly 15 seconds, but those numbers are tuning. The deadline
-being enforced where the caller can feel it is the requirement.
+Two separable things follow. **Returning the raw transcript** is the orchestrator's own deadline
+and must not wait for anything downstream. **Cancelling the run** is a new worker operation
+addressed by spawn id; the existing `/agent/kill` targets the primary agent and is not it. Killing
+the container to enforce one dictation's deadline is not available, because it would interrupt
+every other request in flight (req 9).
 
-## Voice cleanup, and a credential that does not carry over
+`CLEANUP_TIMEOUT_MS` splits into a direct budget near today's 3000 ms and a harness budget of
+roughly 15 seconds, but those numbers are tuning; the enforced deadline is the requirement.
+
+## Voice cleanup, and the key that does not carry over
 
 `voice/cleanup.ts` loses `pickCleanupProvider`; cleanup asks for the background-work target and
-runs it (req 5). `isSane` stays exactly as it is — its three checks guard against a model's
-behaviour, not a provider's.
+runs it (req 5). `isSane` stays as it is — its three checks guard against a model's behaviour, not
+a provider's.
 
 **The OpenAI voice key is not a service credential.** It lives in `voiceProviderKeys`
-(`credential-store.ts:569`) and is read by `services/voice.ts:126`, while `resolveNonTurnModel`
-reads the service credential registry. So an install whose only OpenAI key is the voice one has
-working cleanup today and would have none after this change. That transition must be explicit:
-either the voice key is offered for adoption as an OpenAI service credential, or the user is told
-cleanup is unavailable and why. What it must not do is silently stop working, and it must not
-silently write a background-work pin the user did not choose.
+(`credential-store.ts:569`) and is read by `services/voice.ts:126`, while the background-work
+target comes from the service credential registry. An install whose only OpenAI key is the voice
+one has working cleanup today and would have none after this change, which the requirements'
+preservation preamble does not allow.
+
+So the key is **adopted** as an ordinary OpenAI service credential, following the precedent
+docs/252 req 20 already set for deployment-supplied environment credentials: visible, renameable,
+removable, and taking part in the same ordering rules. Background work then seeds onto it only if
+nothing is set, matching `seedNonTurnModel`'s existing narrow rule, so adoption can never
+overwrite a choice the user made.
 
 Req 6 keeps the rest: a failure inserts the raw transcript, the mic button shows its transient
 warning, and nothing reaches the chat transcript. That last point is why cleanup cannot reuse
@@ -189,37 +211,41 @@ Taken 2026-09-13 in a warm session container, CLI 2.1.260, `--tools ""`, `claude
 | Today's direct API call (`docs/144-voice-input/plan.md:185`) | 400–800 ms |
 
 **What these do and do not show.** Both one-shot rows include CLI boot, so their difference
-isolates generation, not boot — an earlier version of this file claimed otherwise and was wrong.
-The minimal row bounds boot plus a minimal completion at about 1.93 s; boot alone is not measured
-here. Container start is in neither row, since both ran in a container that was already up, which
-is why persisting the container helps the first dictation after a pause and nothing else.
+isolates generation, not boot. The minimal row bounds boot plus a minimal completion at about
+1.93 s; boot alone is not measured. Container start is in neither row, since both ran in a
+container already up — which is why persisting the container helps the first dictation after a
+pause and nothing else. All of it is one harness on one model, so it bounds nothing about Codex,
+OpenCode or Grok.
 
 ## Key files
 
-- `src/server/shared/catalogue/` — a per-credential direct-callable flag, and an API model id per
-  model where it differs from the catalogue id.
+- `src/server/shared/catalogue/` — a per-credential direct-call capability, an API model id where
+  it differs from the catalogue id, the endpoint join, and any required request headers.
 - `src/server/orchestrator/non-turn-model.ts` — `NonTurnTarget` union; background-work eligibility
   that does not require an installed harness.
-- `src/server/orchestrator/direct-provider/` — new. One client per API style, plus the shared
-  `DirectCall` type and the endpoint join.
+- `src/server/orchestrator/direct-provider/` — new. One client per API style plus the shared type.
 - `src/server/orchestrator/services/non-turn-work.ts` — dispatch above the session and runner
-  gates; `emitNonTurnFailure` out of the shared path.
-- `src/server/orchestrator/services/settings.ts` — seeding and save validation for options with no
-  installed harness.
-- `src/client/components/pickers/model-choice.ts` — a background-work option list that is not
-  filtered by installed harnesses.
+  gates; an explicit background-work classification for usage; `emitNonTurnFailure` out of the
+  shared path.
+- `src/server/orchestrator/session-namer.ts`, `services/graduate-session.ts` — naming's own path
+  onto the same executor.
+- `src/server/orchestrator/usage.ts`, `src/server/shared/database.ts` — nullable session id and
+  the context-dial exclusion that must not depend on a harness id.
+- `src/server/orchestrator/services/settings.ts`, `src/client/components/pickers/model-choice.ts`
+  — background-work options not filtered by installed harnesses.
 - `src/server/orchestrator/voice/cleanup.ts` — drop `pickCleanupProvider`; keep `isSane`.
 - `src/server/orchestrator/voice/providers/claude-cleanup.ts`, `openai-cleanup.ts` — deleted;
   their request shapes seed the direct clients.
 - `src/client/components/Settings/BackgroundWorkSection.tsx`, `tabs/VoiceTab.tsx` — the derived
-  execution line, and the cleanup status that now names the background-work choice.
+  execution line, and the cleanup status naming the background-work choice.
 
 ## Phases
 
 1. **Stop the violation.** Delete the Claude OAuth cleanup provider, so cleanup falls to the
    OpenAI voice key. Shippable on its own and does not wait for the rest.
-2. Catalogue contract — the direct-callable flag and API model ids — then the three direct
-   clients, the eligibility widening, the selector option list, and the `NonTurnTarget` union.
-3. The background-work container, including the `RUNTIME_MODE=local` path that has none.
-4. Voice cleanup onto the background-work target, the end-to-end deadline, the voice-key
-   transition, and the Settings copy in both tabs.
+2. Catalogue contract — the direct-call capability, API model ids, endpoint joins, request headers
+   — then the three direct clients, the `NonTurnTarget` union, the usage changes, the eligibility
+   widening and the selector option list.
+3. Both callers onto the executor: the pull-request path above its gates, and session naming.
+4. The cleanup container, the end-to-end deadline and spawn-id cancellation, the voice-key
+   adoption, and the Settings copy in both tabs.

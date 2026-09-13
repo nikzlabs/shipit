@@ -4,11 +4,11 @@ Design in [`plan.md`](./plan.md), requirements in [`requirements.md`](./requirem
 
 ## Phase 0 — Requirements and design
 
-- [x] Write `requirements.md` from the user's direction; record both answers as dated receipts.
+- [x] Write `requirements.md` from the user's direction; record every answer as a dated receipt.
 - [x] Measure one-shot harness latency against the cleanup budget.
 - [x] Write `plan.md`.
-- [x] Independent review; fold its findings back into both documents.
-- [x] Answer the open question on how a dictation's spend appears in usage.
+- [x] First independent review; fold its findings in.
+- [x] Second independent review of the corrected design; fold its findings in.
 
 ## Phase 1 — Stop the terms violation
 
@@ -17,43 +17,45 @@ Design in [`plan.md`](./plan.md), requirements in [`requirements.md`](./requirem
 - [ ] Update `GET /api/voice/cleanup/status` and the `CLEANUP_STATUS_LABELS` entry in `VoiceTab.tsx`.
 - [ ] Confirm no other caller uses `AuthManager.getAccessToken()` for inference. `limits-provider.ts` reads the user's own usage and runs none — leave it and say why.
 
-## Phase 2 — Catalogue contract and direct clients
+## Phase 2 — Catalogue contract, direct clients, usage
 
-- [ ] Per-credential direct-callable flag, defaulting to **not** callable; author it per shipped service.
-- [ ] Research whether GLM's coding plan permits direct API use; until then it stays harness-only.
+- [ ] Per-credential direct-call capability, **absent means no**; author it per shipped service.
+- [ ] Author the two settled cases: Anthropic's API key may; Z.AI's coding plan may not.
 - [ ] API model id per model where it differs from the catalogue id — Anthropic's `haiku` alias is the founding case.
-- [ ] Declared endpoint join: base from the service, path suffix from the style. Cover the `/v1`, `/api/v1` and `/api/paas/v4` bases.
-- [ ] `direct-provider/types.ts` with `DirectCall`, including cache-read and cache-write token counts.
+- [ ] Declared endpoint join: base from the service, path suffix from the style. Cover `/v1`, `/api/v1`, `/api/paas/v4`.
+- [ ] Required request headers per credential, or declare that credential not directly callable. OpenCode Go needs a user agent and `x-opencode-session`.
+- [ ] `direct-provider/types.ts` with `DirectCall`, including cache-read and cache-write counts.
 - [ ] `anthropic-messages.ts` and `openai-chat-completions.ts` seeded from the deleted voice adapters; `openai-responses.ts` new.
-- [ ] Per-style test that the URL and the API model id are built from **real catalogue rows**, one per shipped service — a fake-fetch shape assertion cannot fail on either bug.
+- [ ] Per-style test built from **real catalogue rows** — URL, API model id and headers. A fake-fetch shape assertion cannot fail on any of the three bugs above.
 - [ ] `NonTurnTarget` becomes a union on `execution`; fix every consumer the compiler names.
-- [ ] Migration making `usage_turns.session_id` nullable; a null means install-level spend.
-- [ ] `recordNonTurnUsage` accepts no session id and no harness id for a direct call.
-- [ ] Every usage read path that groups by session renders the install-level row instead of skipping it or failing on a null — usage modal, per-session cost, by-spend ranking.
+- [ ] Migration making `usage_turns.session_id` nullable; null means install-level spend.
+- [ ] An explicit background-work classification that does **not** depend on a harness id. Guard test: a direct pull-request call with a session id must stay out of `getPerTurnUsage` (`usage.ts:309`) and must not change the composer's context reading (`session-data.ts:471`). Prove the guard red by removing the classification.
+- [ ] Usage records service and billing mode from the selection, not from execution. Test OpenCode Go: a `sub` mode called directly stays subscription usage.
+- [ ] Install-wide reporting shows install-level rows; a session's own view does not.
 - [ ] Background-work eligibility that does not require an installed harness.
-- [ ] Background-work option list that is not filtered by `agent.installed` (`model-choice.ts:32`), carried through bootstrap and credential-change updates.
+- [ ] Background-work option list not filtered by `agent.installed` (`model-choice.ts:32`), carried through bootstrap and credential-change updates.
 - [ ] Seeding and save validation in `services/settings.ts` accept an option with no installed harness.
 - [ ] `BackgroundWorkSection.tsx` states "Direct call to <service>" where that is what runs.
 
-## Phase 3 — Background-work container
+## Phase 3 — Both callers onto the executor
 
-- [ ] Create it at orchestrator start; recreate it from the health monitor.
+- [ ] Pull-request path: resolve and execute above the no-session and no-runner gates (`non-turn-work.ts:231`, `:252`).
+- [ ] Session naming: extract prompt construction and result parsing from the `execFile` invocation in `session-namer.ts:443`; run the selected executor; keep its failure, usage and branch-finalisation behaviour.
+- [ ] Test that background work now succeeds with no session open and with the container reclaimed.
+
+## Phase 4 — Cleanup container, deadline, voice key
+
+- [ ] Create the cleanup container at orchestrator start; recreate it from the health monitor.
 - [ ] Exempt it from `steady-state-reclaim` / the idle enforcer; test that a memory-pressure pass leaves it alone.
 - [ ] One-shot spawn with tools off — `--tools ""` for Claude, the equivalent per harness.
-- [ ] Per-request credential isolation inside the shared container.
-- [ ] Move all harness-run background work here; delete the live-session branch and the `provisionSubAgentSpawnHome` borrow it existed for.
-- [ ] Verify session-naming and pull-request-description prompts are self-contained under tools off.
-- [ ] `RUNTIME_MODE=local` has no container manager (`app-lifecycle.ts:141`) — keep today's behaviour there and test it.
-- [ ] Test that the `non-turn-work.ts:252` container-gone failure no longer occurs.
-
-## Phase 4 — Voice cleanup
-
-- [ ] Resolve and execute above the session and runner gates, so a direct call needs neither.
-- [ ] Remove `pickCleanupProvider`; keep `isSane`.
-- [ ] Orchestrator-side deadline with cancellation and process teardown; prove the raw transcript still arrives when the worker stops answering.
+- [ ] Reuse the existing spawn-home machinery for per-request isolation; do **not** delete `provisionSubAgentSpawnHome`, which also builds OpenCode's ChatGPT credential projection and publishes rotated tokens (`session-agent-credentials.ts:367`, `:397`).
+- [ ] `RUNTIME_MODE=local`: run the harness from the orchestrator as `session-namer.ts` does; test it, since local cleanup has no container path today.
+- [ ] Orchestrator-side deadline returning the raw transcript, not waiting on teardown.
+- [ ] Worker cancellation addressed by spawn id; `/agent/kill` targets the primary agent and is not it. Never kill the shared container to enforce one request's deadline.
 - [ ] Split the cleanup budget into a direct value and a harness value.
+- [ ] Remove `pickCleanupProvider`; keep `isSane`.
 - [ ] Move `emitNonTurnFailure` out of the shared path so cleanup writes nothing to chat (req 6).
-- [ ] Voice-key transition: offer the existing `voiceProviderKeys.openai` for adoption as a service credential, or say cleanup is unavailable. Never silently write a background-work pin.
+- [ ] Adopt `voiceProviderKeys.openai` as an ordinary OpenAI service credential, per docs/252 req 20's precedent. Seed background work onto it only when nothing is set.
 - [ ] `VoiceTab.tsx` status names the background-work choice and links to that setting.
 - [ ] Test: cleanup failure inserts the raw transcript and persists no chat card.
 
