@@ -19,4 +19,9 @@
 - [x] `recordWorkspaceBlock` moved to `services/workspace-block.ts` so both writers share the change-only write and the broadcast
 - [x] Activation raises and withdraws `conflict` only; a marker of any other kind is the janitor's and is neither cleared nor overwritten
 - [x] Marker re-read after the inspection's await; overlapping activations deduplicated by session
+- [x] Startup sweep: one pass after boot over every checkout still on disk, a third *caller* of `inspectCheckoutBlock` and `recordWorkspaceBlock`
+- [x] Sweep shares activation's ownership predicate rather than copying it; skips evicted, workspace-less, `.git`-less, unreadable-`.git` and ops/sandbox sessions
+- [x] Sweep prints its summary unconditionally, unlike its change-only neighbours
+- [x] A session evicted (or deleted) while the inspection ran is never marked from that stale answer
+- [x] Each new guard proven red with its production change reverted, including both write guards under a substituted `ensureCheckoutDurable`
 - [ ] Follow-up: a click-to-repair action on the surfaced state — planning#533

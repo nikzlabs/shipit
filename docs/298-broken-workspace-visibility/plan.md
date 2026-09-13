@@ -62,10 +62,12 @@ janitor re-evaluates it every pass, and only a real change broadcasts.
 
 ### Who writes it
 
-**The disk janitor** (`tier-escalation.ts`) **and session activation**
-(`route-registry.ts` → `services/workspace-block.ts`). Both go through one
-writer, `recordWorkspaceBlock`, so both inherit its two behaviours: it writes
-only on a real change, and it re-broadcasts the session list when it does.
+**The disk janitor** (`tier-escalation.ts`), **session activation**
+(`route-registry.ts` → `services/workspace-block.ts`), and **a one-shot sweep at
+orchestrator startup** (`startup-monitors.ts` → the same module). All three go
+through one writer, `recordWorkspaceBlock`, so all three inherit its two
+behaviours: it writes only on a real change, and it re-broadcasts the session
+list when it does.
 
 The janitor is the place that already runs `ensureCheckoutDurable` against an
 idle session and already knows the answer.
@@ -173,12 +175,58 @@ with an answer this check cannot reach. Overlapping activations (reconnect
 bursts) are deduplicated by session, so two checks cannot settle in the order
 they happened to finish.
 
-**One accepted limit remains.** A session nobody opens, and that never descends
-the ladder (pinned, or holding a preview reservation), is still not evaluated:
-its marker is neither raised nor withdrawn until one of those changes. A
-periodic health pass that runs independently of eviction eligibility would cover
-it and was deliberately not built — it would be a second evaluator of the same
-question, which req 2's "one mechanism" is meant to avoid.
+### The startup sweep
+
+The two event-driven writers leave a gap between them, and it is the incident's
+own shape. `escalateDiskTiers` passes over any session not currently eligible to
+descend and never inspects a checkout it is not about to evict; activation needs
+the user to open the tab. A session that is `hot` because it was viewed
+yesterday is reached by neither — `diskIdleAgeMs` takes the later of `lastUsedAt`
+and `lastViewedAt`, so a single evening's viewing restarts the 24h `lightAfterMs`
+clock. After the 2026-09-13 redeploy the janitor ran twice over the incident
+session and logged `hot→light=0` both times; its marker stayed unset until the
+user opened the session by hand.
+
+So `sweepWorkspaceBlocksAtStartup` runs **once, after boot**, over every checkout
+still on disk. A redeploy is the event at which the user already expects the
+system to re-establish the truth, which is what makes it the right trigger — and
+it is bounded, unlike a timer. A **periodic** health pass was considered for the
+same gap and deliberately not built.
+
+It is a third *caller*, never a third classifier (req 2): `inspectCheckoutBlock`
+for the read (never `ensureCheckoutDurable` — a redeploy must not commit and push
+anybody's uncommitted work) and `recordWorkspaceBlock` for the write, with
+`logTag: "startup"` so the log says which trigger fired. Activation's ownership
+rule is *shared*, not copied: both go through `evaluateCheckout`, so the sweep
+also raises and withdraws `conflict` only.
+
+Sharing that path also **widened** the rule, because the sweep runs beside the
+boot janitor pass in a way activation never could: an activated session has a
+viewer, so `canAutoDescend` refuses and it cannot be evicted mid-inspection. A
+swept one can. So `inspectionMayWrite` now refuses a session that is gone or has
+reached `evicted` — the same reasoning as the janitor's own clear after
+`setDiskTier("evicted")`: every later pass skips an evicted session, so an answer
+landing after its checkout was wiped would stick to the row for good, which is
+the "marker that outlived its cause" req 6 rules out.
+
+It inspects only what it can: it skips `evicted` sessions (no checkout), sessions
+with no `workspaceDir`, an absent `.git`, and the ops/sandbox kinds
+`autoCommitAllowed` rejects. A `.git` in the `unknown` state is "could not ask",
+which is not evidence of health, so an existing marker is left alone. On the
+production host that is ~24 checkouts out of ~400 sessions — the work scales with
+checkouts, not sessions — and it is paced like `escalateDiskTiers` and runs off
+the critical path.
+
+**Its summary line prints on every run**, unlike its neighbours: both
+`recordWorkspaceBlock` and the tier-escalation summary are deliberately quiet
+when nothing changed, which is right for an hourly loop and wrong for a boot
+pass — a redeploy is exactly when an operator needs "it ran, it checked N, it
+found nothing" to be a statement they can read rather than an absence they have
+to interpret.
+
+**One accepted limit remains.** The sweep re-syncs at boot but does not watch: a
+session nobody opens, and that never descends the ladder (pinned, or holding a
+preview reservation), still has its marker frozen between redeploys.
 
 ### How it surfaces
 
@@ -220,11 +268,11 @@ what to do. A repair affordance is tracked as planning#533.
 | `src/server/shared/database.ts` | `sessions.workspace_block` column |
 | `src/server/orchestrator/sessions.ts` | `SessionRow.workspace_block`; `fromRow`; `setWorkspaceBlock`; the `filterVisibleInSidebar` exemption |
 | `src/server/orchestrator/tier-escalation.ts` | set in `blockedEvict`, clear on the durable path; `onSessionsChanged` dep |
-| `src/server/orchestrator/services/workspace-block.ts` | `recordWorkspaceBlock` (the one writer); `refreshWorkspaceBlockOnActivation` |
+| `src/server/orchestrator/services/workspace-block.ts` | `recordWorkspaceBlock` (the one writer); `evaluateCheckout` (the shared ownership rule); `refreshWorkspaceBlockOnActivation`; `sweepWorkspaceBlocksAtStartup` |
 | `src/server/orchestrator/checkout-durability.ts` | `inspectCheckoutBlock` — the read-only classifier both callers share |
 | `src/server/shared/git.ts` | `inspectWorkingTree` also reports `conflictedFiles` (`WorkingTreeState`) |
 | `src/server/orchestrator/route-registry.ts` | `activateSession` runs the open-time check off the critical path |
-| `src/server/orchestrator/startup-monitors.ts` | wires `onSessionsChanged` to `sseBroadcast("session_list", …)` |
+| `src/server/orchestrator/startup-monitors.ts` | wires `onSessionsChanged` to `sseBroadcast("session_list", …)`; runs the boot sweep off the critical path |
 | `src/server/orchestrator/ws-handlers/post-turn.ts` | `clearWorkspaceBlockIfRepaired` — the auto-commit result plus the janitor's own two sequencer questions; optional `sseBroadcast` on the ctx |
 | `src/server/orchestrator/services/post-interrupt-commit.ts` | carries `sseBroadcast` so the interrupt path publishes its clear |
 | `src/server/orchestrator/services/session.ts` | `restoreSessionWorkspace` clears the marker on a fresh clone |

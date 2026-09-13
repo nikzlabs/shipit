@@ -18,6 +18,7 @@ import { downComposeStackByProject, reapSurvivingComposeStacks } from "./compose
 import { liveWorkAfterRestart, unprobedAfterRestart } from "./restart-turn-reattach.js";
 import { serializeStackOp } from "./stack-op-queue.js";
 import { startWarmTierSweep } from "./warm-tier-sweep.js";
+import { sweepWorkspaceBlocksAtStartup } from "./services/workspace-block.js";
 import { stopWarmPreview } from "./warm-preview.js";
 
 export interface StartupMonitors {
@@ -231,6 +232,21 @@ export async function startStartupMonitors(
     })();
   };
   kickDiskEscalation();
+
+  // docs/298 — the janitor above never inspects a checkout it is not about to evict,
+  // so a broken session that stays hot is invisible until someone opens it. Off the
+  // critical path, and read-only: a redeploy must not commit anybody's work.
+  if (!isTestMode) {
+    void sweepWorkspaceBlocksAtStartup({
+      sessionManager,
+      createGitManager,
+      onSessionsChanged: () =>
+        sseBroadcast("session_list", { sessions: sessionManager.list() }),
+      paceMs: escalationPaceMs,
+    }).catch((err: unknown) => {
+      console.error("[startup] workspace sweep failed:", err);
+    });
+  }
 
   // Reclaim must still run when a full disk prevents new session activations.
   const diskEscalationIntervalMs = parseFloat(process.env.DISK_ESCALATION_INTERVAL_MS ?? "")
