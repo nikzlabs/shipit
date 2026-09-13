@@ -457,6 +457,26 @@ describe("Integration: /goal (docs/154)", () => {
       client.close();
     });
 
+    // The Codex counterpart above reads on open. Claude Code must not: the CLI
+    // records a `/goal` it answers in the thread, so an unprompted read plants a
+    // user message the user never sent in every later resume's context.
+    it("reads no goal when the session is opened", async () => {
+      const first = await TestClient.connect(port, undefined, { agent: "claude", model: "claude-opus-5" });
+      await first.receive();
+      const sessionId = first.sessionId;
+      first.close();
+      sessions.setAgentSessionId(sessionId, "claude-thread-old");
+      claudeGoalAnswer = { goal: GOAL };
+
+      const client = await TestClient.connect(port, sessionId, { agent: "claude", model: "claude-opus-5" });
+      await client.receive();
+      await new Promise((r) => setTimeout(r, 150));
+
+      expect(claudeGoalCalls).toEqual([]);
+      expect(sessions.get(sessionId)?.agentGoal).toBeUndefined();
+      client.close();
+    });
+
     it("answers /goal and /goal clear out of band (req 3)", async () => {
       const client = await claudeSession();
       claudeGoalAnswer = { goal: GOAL };

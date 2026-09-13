@@ -117,6 +117,7 @@ export class ClaudeAdapter
     // starts work at once, so it has to ride the turn.
     supportsGoals: true,
     goalActions: { get: "control", clear: "control", set: "turn" },
+    goalReadEntersContext: true,
     skillsDirName: ".claude",
     skillInvocationPrefix: "/",
   };

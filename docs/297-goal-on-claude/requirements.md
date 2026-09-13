@@ -13,18 +13,39 @@ Plan: [plan.md](plan.md).
 5. The `/` menu offers a Claude Code session only the goal commands Claude Code
    supports.
 6. The goal shown is correct after an orchestrator restart, a page reload and a
-   session switch.
+   session switch, for every goal ShipIt has seen set.
 7. Serving a goal command never makes the agent do work outside a ShipIt turn.
 8. Codex sessions keep the goal vocabulary and the behaviour they have today.
 9. The backend-support table in
    [docs/154](../154-native-goal-command/plan.md) says what each pinned backend
    actually offers.
+10. ShipIt never reads a Claude Code goal the user did not ask about, except to
+    correct a goal it is already showing.
 
 ## Open questions
 
 - None.
 
 ## Resolved questions
+
+- 2026-09-13 — Should ShipIt read the goal when a Claude session is opened, to
+  catch one it has never seen? No. Nik: "could we just ignore old sessions? I
+  think the agent invented a problem and 'fixed' it [into] more problems." The
+  read was not free as req 3 and the plan implied. Measured on 2.1.260: the CLI
+  records a `/goal` it answers locally in the thread as a
+  `<local-command-caveat>` plus a `<command-name>/goal</command-name>`, so every
+  later resume replays it to the model as a message the user never sent — which
+  is what a production session saw. It fired once in *every* Claude session, not
+  only sessions predating this feature, and since this feature shipped it can
+  only find a goal ShipIt already learned from the stream. The only sessions it
+  could help are ones where a user typed `/goal <condition>` into a Claude
+  session before this feature, when the `/` menu offered no such command — and
+  on Claude Code a *model* cannot create one at all (`ProposeGoal` is
+  interactive-only, measured), so docs/154's incident shape cannot arise here.
+  Recorded as req 10, and req 6 is narrowed to the goals ShipIt has seen. The
+  cost: a `Goal set:` acknowledgement lost to a crash leaves a goal in force
+  with no chip until the user types `/goal`. Accepted — that is one keystroke,
+  against a message in every session's context.
 
 - 2026-09-12 — Must `/goal <condition>` be answered out of band, as Codex's is?
   No. Measured on the pinned CLI: `/goal <condition>` makes Claude Code start

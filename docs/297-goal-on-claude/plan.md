@@ -1,6 +1,6 @@
 ---
 title: "`/goal` on Claude Code"
-description: "Claude Code's own `/goal` store behind ShipIt's goal pipeline: `/goal` and `/goal clear` answered out of band, `/goal <condition>` riding the turn, and the chip kept honest by a zero-cost read after each goal-bearing turn."
+description: "Claude Code's own `/goal` store behind ShipIt's goal pipeline: `/goal` and `/goal clear` answered out of band, `/goal <condition>` riding the turn, and the chip kept honest by a turnless read after each goal-bearing turn — and by no read at all in a session that shows no goal."
 issue: planning#528
 ---
 
@@ -193,10 +193,27 @@ CLI's own word (`active`).
   resident CLI is still there and can already be in a turn of its own. The
   adapter's own refusal is the guard, not the ordering. It reads the
   goal only when the session currently *shows* one, so a session without a goal
-  costs nothing and the common case is unaffected. It is best effort, and the
-  fallback is the *next* goal-bearing turn's read, not the next activation:
-  docs/154's activation read is gated on `agentGoalChecked`, which a stored goal
-  already satisfies, so it skips a session whose chip is stale.
+  is never read at all (req 10) and the common case is unaffected. It is best
+  effort, and the fallback is the *next* goal-bearing turn's read. There is no
+  activation read to fall back on — see below.
+
+- **No read on open (req 10).** `reconcileAgentGoal` returns early for a harness
+  that marks `goalReadEntersContext`, which Claude Code does. docs/154 built the
+  read for a session carrying a goal ShipIt had never seen, and for Codex it is
+  free. Here it is not: the CLI records a `/goal` it answers in the thread, so the
+  read plants a user message the user never sent in every later resume's context,
+  and it fired once in *every* Claude session rather than only the pre-feature
+  ones. Since this feature shipped there is also nothing left for it to find —
+  `send-message.ts` intercepts every `/goal`, and `goalSetFromEvent` reads the
+  `Goal set:` acknowledgement off the stream. The residue it gives up: an
+  acknowledgement lost to a crash leaves a goal in force with no chip, until the
+  user types `/goal`. The full trade is the 2026-09-13 receipt in
+  [requirements.md](requirements.md).
+
+  A migration marking existing sessions "checked" was considered and rejected.
+  The capability gate already means no activation read can reach a Claude CLI,
+  and the column is shared: stamping it would suppress the read for existing
+  *Codex* sessions, which is the one population docs/154 was written for.
 
   This is a per-turn read, allowed only where the stream genuinely cannot
   answer — an extra process only when no resident CLI is alive; with live
@@ -205,8 +222,10 @@ CLI's own word (`active`).
   achieved inside one turn leaves the chip pointing at a goal that lasted
   seconds, with nothing on the stream to correct it. The same gate applies to
   Codex, where the read is a redundant confirmation rather than a behaviour
-  change; one mechanism for every harness was preferred to a capability bit
-  whose only job is to say "this harness reports goal changes".
+  change; one mechanism for every harness was preferred to a capability bit whose
+  only job is to say "this harness reports goal changes". (`goalReadEntersContext`
+  below is not that bit: it records what a read *costs*, and its only reader
+  declines to read at all.)
 
 - **Resolving the agent to ask, without disturbing the session**
   (`goalAgentFor`). Both reads are *attempted* outside a ShipIt turn — the
@@ -238,8 +257,9 @@ turn the user starts, which is what docs/154 settled on for Codex as well.
 - `src/server/session/agents/claude/claude-goal.ts` — answer parsing and the control process.
 - `src/server/session/agents/claude/adapter.ts` — `goalCommand`, the set acknowledgement, `supportsGoals`.
 - `src/server/shared/catalogue/harnesses.ts` — the `claude` capability block.
-- `src/server/shared/types/agent-types.ts` — `goalActions`.
+- `src/server/shared/types/agent-types.ts` — `goalActions`, `goalReadEntersContext`.
 - `src/server/orchestrator/ws-handlers/send-message.ts`, `goal-command.ts` — interception and refusals.
-- `src/server/orchestrator/services/agent-goal.ts` — `refreshAgentGoalAfterTurn`.
+- `src/server/orchestrator/services/agent-goal.ts` — `refreshAgentGoalAfterTurn`, and the
+  activation read this harness opts out of.
 - `src/server/orchestrator/runner-registry-factory.ts` — the idle hook.
 - `src/client/components/MessageInput/MessageInput.tsx` — the `/` menu filter.

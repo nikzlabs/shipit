@@ -168,6 +168,14 @@ builds; these supersede them.
   is read once through the same `goalCommand` path, without a turn. Best
   effort: if the container is not up yet, the next open or turn does it.
 
+  Not for every harness. A harness that marks `goalReadEntersContext` is
+  skipped, because for it "without a turn" does not mean "without a trace":
+  the read is a message in the model's own context. Claude Code is the case,
+  and the reasoning is in
+  [docs/297](../297-goal-on-claude/plan.md). Codex is unaffected — its read is
+  a real API call, and its model can create a goal by itself, which is the
+  incident this read was built for.
+
 ### Client
 
 - `SessionInfo.agentGoal` drives `GoalChip`, shown above the composer while

@@ -183,6 +183,10 @@ export interface AgentCapabilities {
    *  = answered out of band, "turn" = the user's text rides the turn. An absent
    *  action is refused; an absent field means every action is "control". */
   goalActions?: Readonly<Partial<Record<AgentGoalCommand["action"], "control" | "turn">>>;
+  /** docs/297 — a "control" read costs a message in the model's own context, because
+   *  the harness has no interface but its conversation. Absent is false. ShipIt then
+   *  never reads a goal the user did not ask about: see `reconcileAgentGoal`. */
+  goalReadEntersContext?: boolean;
   skillsDirName: string;
   skillInvocationPrefix: string;
 }
