@@ -38,8 +38,10 @@ Design only so far. Every open question is answered; implementation can start.
 - [ ] Projections emit derived values only; `user_text` marks are justified
 - [ ] Projection guard: an MCP fixture with a token in `args`, `env`, `headers`
       and the URL leaks none of them anywhere
-- [ ] Refusal reasons: `read_only`, `secret`, `external_flow`, `browser_local`,
+- [ ] Refusal reasons: `secret`, `external_flow`, `browser_local`,
       `unsafe_to_display`
+- [ ] `not-a-setting` exclusions with reasons: derived status, and explanatory
+      copy such as the reserved reviewer role's params note
 - [ ] Session-scoped orchestrator endpoints, with `containerAccessible` set
 - [ ] `agent-ops-routes.ts` relay
 - [ ] `shipit settings list` / `get` in the shim

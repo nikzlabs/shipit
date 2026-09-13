@@ -183,13 +183,76 @@ field not declared; a fixture MCP entry carrying a token in `args`, `env`,
 `headers` and the URL emits none of them, in text output, in `--json`, in a
 card's `from` and in an error message.
 
+### What "proposable" tells the agent for a non-boolean
+
+`propose: { allowed: true }` is a complete answer only for a boolean, where the
+other value is implied. For every other kind the agent also needs the **shape of
+a legal value**, and that comes from `type` — the same constructor the dialog
+renders from and the route validates with, so there is nothing extra to author:
+
+| `type` | What the read adds | Source |
+|---|---|---|
+| `bool` | nothing | — |
+| `enum` | `options: [{ value, label }]` | the type's members |
+| `number` | `min`, `max`, `step`, `unit` | the type's bounds — the failover cutoffs are integers 1–100 (`services/settings.ts:300`) |
+| `text` | `maxLength`, and any format rule | the type's constraints — the system prompt caps at 50,000 (`:268`) |
+| `modelSelection` | the eligible services and models, and the effort levels the resolved harness offers | live state, not a fixed list |
+| `collection` | `operations`, and for an item update the **field keys** that can be patched | the item's own field declarations |
+
+Two consequences worth stating.
+
+**Large and live option sets are fetched, not listed.** A model selection's
+options depend on what is installed and what has a usable credential, so they are
+computed at read time and can be long. `list` therefore gives the current value
+and marks the entry as having options; `get <key>` returns them. Dumping every
+model into `list` would bury the ten booleans the agent usually came for.
+
+**The option list can go stale between read and apply**, for exactly the reason
+it is live — a harness is uninstalled, a credential is removed. That is not a new
+hazard: apply-time revalidation already re-runs the declaration's validator
+against live state, so a card naming a model that has since disappeared resolves
+`refused` rather than applying something that no longer resolves.
+
+The read surface is an **optimization, not the safety net**. Propose-time
+validation refuses an illegal value with its reason whether or not the agent
+looked first. What the options buy is that the agent does not put a nonsense card
+in front of the user, and does not burn a round trip discovering the range.
+
+### Not everything in a dialog is a setting
+
+A dialog holds three kinds of thing, and only one of them is declared:
+
+- **Settings** — a stored value with a control. Declared.
+- **Derived status** — computed from settings and the world, editable by nobody:
+  egress enforcement state, whether turns can run, which harnesses are installed,
+  update availability. Not declared.
+- **Explanatory copy** — prose that tells the user where the real control is.
+  Not declared.
+
+The reserved `reviewer` role's parameters are the worked example of the third
+kind, and the one that nearly became a declaration. It looks like a setting —
+it has a value, the server refuses to write it, and it sits in the role editor.
+But the editor renders **no control** for it, only a paragraph saying ShipIt
+picks per review and pointing at the two reviewer slots
+(`Settings/roles/RoleEditor.tsx:245`); the component's own comment explains that
+a control there would have to pick one of the two slots and would misreport the
+other. The settings are the slots. The paragraph is a signpost.
+
+ShipIt's built-in agent instructions are the same shape: the displayed text is
+content, and the setting on that tab is the toggle that turns it on.
+
+Both go in the coverage walk's `not-a-setting` exclusions with that reason. An
+earlier draft had a `read_only` refusal reason for exactly these two, which was
+the wrong answer to the right observation: a value nobody can edit is not a
+setting the agent is refused, it is information that was never a setting. Nothing
+is lost for the agent — it reads `reviewers.first` and `reviewers.second`, which
+are declared and proposable, and answers from those.
+
 ### `propose: { kind: "no" }` is a first-class answer
 
-Not everything a dialog shows can be changed by a click, and the registry says
-which and why rather than failing at apply time (req 5):
+Some declared settings still cannot be changed by a click, and the declaration
+says which and why rather than failing at apply time (req 5):
 
-- `read_only` — displayed but not editable. ShipIt's built-in agent instructions
-  are shown and expandable, not edited (`tabs/InstructionsTab.tsx:82`).
 - `secret` — credential material the agent does not have and must not carry.
 - `external_flow` — needs an OAuth or device-code flow on the provider's own
   site. That is a §3 exception in CLAUDE.md's principles; no service call turns
@@ -298,11 +361,10 @@ Both dialogs are in scope (`requirements.md`, resolved 2026-09-13): the global
 | Services | provider API keys | configured / not | no — `secret` |
 | Services | provider accounts | connected / not | no — `external_flow` |
 | Roles | per role: harness, model, effort, description, standing instructions | yes | yes |
-| Roles | the reserved `reviewer` role's parameters | yes | no — `read_only`; they must stay `auto` (`services/role-settings.ts:113`). Its description and standing instructions are editable, and the **reviewer slots** (`first`, `second`) are separate settings |
+| Roles | the reviewer slots `first` and `second` | yes | yes — these are the settings behind "what the reviewer runs on"; the reserved role's own params are not a setting at all (above), and its description and standing instructions are ordinary role settings |
 | Integrations | MCP servers, tracker connections, connected services | derived fields only — name, transport, connected state, URL host | narrow patches yes; credential fields no — `secret`; an OAuth connection `external_flow` |
 | Git | git identity name and email | yes | yes |
 | Instructions | your instructions, agent instructions enabled | yes | yes |
-| Instructions | ShipIt's built-in agent instructions | yes | no — `read_only` |
 | Skills | installed skills, marketplaces | yes | yes |
 | Keyboard | keybindings | no — `browser_local` | no — `browser_local` |
 | Voice | delivery mode | yes | yes |
