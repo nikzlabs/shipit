@@ -39,13 +39,23 @@ no credential. Each finding cites its capture.
   present), and the result still reads `status: "ERROR"` with `error` set,
   exit 0. Worse, `compact-c.ndjson` (a resumed turn with **no** error step
   of its own and a correct answer) carries the *previous* turn's 503 in
-  `result.error`. So the adapter derives the turn's outcome from the
-  current stream only: an `error_message` step in this stream with no
-  `agent_response` text ⇒ error turn, text from the stream's `error_message`
-  step or stderr; text present ⇒ success, with any error step of this
-  stream narrated; `result.error` on its own is never a signal. Both
-  captures are fixtures (success after an earlier turn's error is the
-  regression case).
+  `result.error`. And an `error_message` step carries no text at all (only
+  `state: DONE`); the text is on **stderr**, as an `error:` line printed by
+  this process. So the outcome rule uses only process-local signals: the
+  **exit code** decides — non-zero, or no `result` event, ⇒ error turn;
+  zero with a `result` ⇒ success with the stream's `agent_response` text —
+  and the error text, whether for the error row or for narrating a
+  recovered `error_message` step, comes from this process's stderr
+  `error:` lines. `result.status` and `result.error` are never read. In
+  every observed run the exit code tracked the real outcome: 0 for the two
+  recovered runs and for the resumed turn carrying a stale error
+  (`probe-run.txt`, `compact-run.txt`), and 1 for every run Google refused
+  outright with a 429 and an empty `response` — eight of them in the first,
+  unpaced attempt, whose log was not kept, so that half is observed but not
+  vendored and the implementation captures one. Fixtures: `plugin-mcp.ndjson`
+  (recovered), `compact-c.ndjson` (stale error, success) and a
+  failure-after-partial-output case to capture at implementation (none
+  observed yet; the rule must not assume text implies success).
 - **Token accounting, verified on every captured step and result**
   (`plugin-mcp.ndjson`, `compact-b.ndjson`): `total_tokens = input_tokens +
   output_tokens` always; `thinking_tokens` ⊂ `output_tokens`; and
@@ -315,8 +325,9 @@ one non-npm branch, gated on `contains antigravity $selected`:
   renders in the sign-in card as-is. At turn time: the adapter does **not**
   classify an `error:` line as `auth_required` (that path replaces the text
   with `AGENT_NOT_AUTHENTICATED_MESSAGE` in `agent-auth-handler.ts`); it ends
-  the turn as an error whose text is `result.error` (or the stderr line when
-  no result arrives), which the error row shows. The one exception is a
+  the turn as an error whose text is this process's stderr `error:` line
+  (never `result.error`, which can be stale — see the outcome rule in
+  Phase 0), which the error row shows. The one exception is a
   missing credential before spawn, where the generic gate is the right
   answer. Same rule carries Google's 429 quota text to the user.
 - **Key mode**: `settings.json` as above, and the adapter scrubs
@@ -356,19 +367,17 @@ one non-npm branch, gated on `contains antigravity $selected`:
   the command; the files it wrote are exactly these), and that a symlinked
   skill directory inside the plugin is followed. Cleanup is `rmSync` on the
   throwaway root. **Why a throwaway root at all, given ShipIt already
-  scopes homes:** in container mode every spawn has its own home — a turn
-  runs in the session's credential copy and a same-harness `shipit agent
-  run` gets a provisioned `homeDir` of its own (`services/sub-agent.ts`,
-  forwarded through `agent-controller.ts`; verified at source, the docs/274
-  gap is closed). There the throwaway root duplicates isolation the
-  platform provides. What still needs it is **local mode** (dogfood,
-  `RUNTIME_MODE=local`): a spawn's `HOME` is the account root itself, so a
-  turn and a brokered run on the same harness would both write
-  `config/mcp_config.json` into one directory — the exact race docs/274
-  hit. One code path for both modes is simpler than a mode switch, so the
-  root is built unconditionally, and it is cheap (a directory, one symlink,
-  a few small files). The durable link is what keeps the token,
-  conversations and the MCP schema cache shared.
+  scopes homes:** a same-harness `shipit agent run` gets a provisioned
+  `homeDir` of its own (`services/sub-agent.ts`, verified at source), but
+  that is the only case: a **cross-harness** run — an Antigravity reviewer
+  spawned from a Claude session — borrows the session's credential subtree,
+  so two such runs, or a run and a later turn, would share one
+  `config/mcp_config.json`; and in **local mode** (dogfood,
+  `RUNTIME_MODE=local`) a spawn's `HOME` is the account root itself, so a
+  turn and a brokered run collide the same way — the exact race docs/274
+  hit. The throwaway root makes `config/` per-process in both cases; the
+  durable link is what keeps the token, conversations and the MCP schema
+  cache shared. Built unconditionally (one code path), and cheap.
 - **Event mapping** (`mapEvent`): `init` → `agent_init`; `agent_response`
   deltas → `agent_assistant` text; a `tool` step ACTIVE → tool_use (name +
   normalized input), DONE → `agent_tool_result` (`tool_info.output`);

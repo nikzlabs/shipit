@@ -7,11 +7,15 @@ the expansion of every line, with file pointers and gotchas, is in
 Antigravity-specific is in [plan.md](./plan.md).
 
 **Phase 0 — assess (before any code)**
-- [x] Candidate passes the capability checklist items 1–5, 7–12 (stream
-      schema: documented and captured; auth: account token file +
+- [x] Candidate passes the capability checklist items 1–5, 7–10 and 12
+      (stream schema: documented and captured; auth: account token file +
       `GEMINI_API_KEY`; reasoning levels: `--effort low|medium|high`); the
       install mechanism (a non-npm branch of the same script) is the user's
       decision of 2026-09-13
+- [ ] Item 11 still OPEN: the API style to a *redirected* endpoint —
+      `GOOGLE_GEMINI_BASE_URL` is vendor-documented and unprobed; run the
+      CLI against a local recorder before the `spawn.endpoint` override is
+      declared
 - [ ] Item 6, runtime half, still OPEN: updater suppression is proven for
       the worker uid only; the orchestrator-side spawns run as root, and the
       gate stays open until suppression is demonstrated as root or the
@@ -20,10 +24,11 @@ Antigravity-specific is in [plan.md](./plan.md).
       resumed headless turn's prompt on 1.2.2 reaches the model as text, no
       summary step — `false`, probed (`probes/compact-b.ndjson`)
 - [ ] `supportsReview` (item 15) settled by a depth-0 probe with the real
-      composed review message on the first session the implementation can
-      open — the flag is set from that probe, not declared beforehand;
-      `run_command`/`command_status` + `invoke_subagent` exist in
-      `init.tools`, so the expectation is `true`
+      composed review message. The probe needs a ShipIt session on the
+      harness, so it runs inside the implementation PR, before the flag is
+      declared and before that PR merges — never after; `run_command` /
+      `command_status` + `invoke_subagent` exist in `init.tools`, so the
+      expectation is `true`
 - [x] Every capability `false` (item 13) says WHY beside it (plan.md,
       "Catalogue row")
 
