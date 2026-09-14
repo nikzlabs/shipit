@@ -17,6 +17,7 @@ import {
 } from "../../shared/settings-catalogue/index.js";
 import type {
   AnySettingDeclaration,
+  OwnRouteSettingKey,
   RefusalReason,
   SettingAddress,
   SettingScope,
@@ -27,7 +28,7 @@ import { backgroundWorkOptions, resolveNonTurnModel } from "../non-turn-model.js
 import { readChannel } from "../release-channel.js";
 import { listConfiguredCredentials } from "../service-routing.js";
 import { readStoredGlobalSettings } from "./settings-derivation.js";
-import { BESPOKE_READERS, StoreReadCache } from "./settings-store-readers.js";
+import { StoreReadCache, bespokeReader } from "./settings-store-readers.js";
 import type { ItemName, StoreReadContext, StoredItem } from "./settings-store-readers.js";
 import type { SettingsReadDeps } from "./settings-read-deps.js";
 import type { SettingsProposalRow } from "../settings-proposal-store.js";
@@ -74,7 +75,11 @@ export type SettingEffectState = SettingsEffectState;
  */
 export interface SettingEffect {
   state: SettingEffectState;
-  /** Why it is not live, in words the agent can repeat to the user. */
+  /**
+   * Why it is not live — or, where the stored value IS what the next use reads
+   * and that use fails, what being live costs. Both are words the agent repeats
+   * to the user, which is the point of req 3.
+   */
   detail?: string;
 }
 
@@ -219,6 +224,25 @@ function oneLine(text: string): string {
 }
 
 /**
+ * A key or tab name the CALLER supplied, echoed back so its error says which
+ * one it means.
+ *
+ * This is reflected input, not a stored value: `key` and `tab` arrive on the
+ * agent's own query string, so nothing ShipIt persists can reach here and req 2
+ * — "reading a setting never exposes secret material" — is not engaged. What it
+ * is engaged by is presentation: an unbounded echo with newlines in it garbles
+ * the CLI output and the transcript. So it is flattened and capped, exactly as
+ * a proposal's `--reason` is (plan.md → `--reason` is untrusted), and for the
+ * same reason: hygiene, not a secret defence. The projections are that.
+ */
+const SUPPLIED_ECHO_MAX = 80;
+
+function echoSupplied(supplied: string): string {
+  const flat = oneLine(supplied);
+  return flat.length > SUPPLIED_ECHO_MAX ? `${flat.slice(0, SUPPLIED_ECHO_MAX)}…` : flat;
+}
+
+/**
  * The first sentence of the declared description. A period is a sentence end
  * only before a capital or the string's end, so "(e.g. a second opinion)" does
  * not cut the summary in half.
@@ -239,11 +263,14 @@ type OwnRouteReader = (deps: SettingsReadDeps) => Promise<ReadOutcome> | ReadOut
 
 /**
  * A declaration names the route that WRITES an own-route setting, not how to
- * read one back, so the read is supplied here. A setting with no reader is
- * reported unreadable rather than defaulted: reporting a made-up default as the
- * live value is worse than saying ShipIt cannot see it.
+ * read one back, so the read is supplied here.
+ *
+ * Keyed by `OwnRouteSettingKey`, derived from the catalogue: a declaration
+ * added with an `own-route` store and no reader here is a compile error, not a
+ * setting that reports itself unreadable forever (req 7). Same contract as
+ * `BESPOKE_READERS`.
  */
-export const OWN_ROUTE_READERS: Record<string, OwnRouteReader> = {
+export const OWN_ROUTE_READERS: Record<OwnRouteSettingKey, OwnRouteReader> = {
   "advanced.releaseChannel": async (deps) => ({
     ok: true,
     kind: "value",
@@ -254,6 +281,11 @@ export const OWN_ROUTE_READERS: Record<string, OwnRouteReader> = {
       ? { ok: true, kind: "value", value: deps.egressAllowlistStore.getGlobalEnabled() }
       : { ok: false, reason: "read_failed", note: "This install has no egress allowlist store, so the containment setting cannot be read." },
 };
+
+/** The reader for a key held as a plain string; present for every own-route one. */
+function ownRouteReader(key: string): OwnRouteReader | undefined {
+  return (OWN_ROUTE_READERS as Record<string, OwnRouteReader | undefined>)[key];
+}
 
 function proposeView(declaration: AnySettingDeclaration): SettingProposeView {
   if (declaration.propose.kind === "yes") return { allowed: true };
@@ -310,9 +342,15 @@ function projectionNotes(declaration: AnySettingDeclaration): string[] {
     case "configured_only":
       return ["ShipIt reports only whether this is configured, never its value."];
     case "user_text":
+    case "user_name":
       return [declaration.emits.reason];
     case "derived":
-      return [`ShipIt emits ${declaration.emits.describes}, and nothing else of this value.`];
+      return [
+        `ShipIt emits ${declaration.emits.describes}, and nothing else of this value.`,
+        // The `user_text` mark on a derived projection, said out loud: what the
+        // function emits is the user's own words, not something ShipIt computed.
+        ...(declaration.emits.userText ? [declaration.emits.userText] : []),
+      ];
     default:
       return [];
   }
@@ -325,19 +363,64 @@ function enforcementStatus(deps: SettingsReadDeps): EgressEnforcementStatus {
 }
 
 /**
+ * What an install-wide enforcement status does to a containment question, or
+ * `null` when it decides nothing and the session's own state does.
+ *
+ * The two statuses are NOT interchangeable, and treating them as one was wrong
+ * in the case req 3 exists for. `disabled` (`SESSION_EGRESS_ENFORCE=0`) means
+ * `container-lifecycle.ts` never installs a firewall, so nothing is contained
+ * whatever the setting says. `no-sidecar` means enforcement is ON with no
+ * sidecar image, and a session that resolves contained **throws and refuses to
+ * start** (`container-lifecycle.ts:747`) — so the setting is not irrelevant, it
+ * is the thing blocking the container, and turning it off is what unblocks it.
+ */
+function enforcementDisabledEffect(
+  deps: SettingsReadDeps,
+  restricts: string,
+): SettingEffect | null {
+  return enforcementStatus(deps) === "disabled"
+    ? {
+        state: "excluded",
+        detail: `Egress enforcement is switched off on this install (SESSION_EGRESS_ENFORCE=0), so no session is contained and ${restricts}.`,
+      }
+    : null;
+}
+
+/** The sentence a `no-sidecar` install owes a session that resolves contained. */
+const NO_SIDECAR_REFUSAL =
+  "Egress enforcement is on but this install has no egress sidecar image "
+  + "(SESSION_EGRESS_SIDECAR_IMAGE is unset), so ShipIt refuses to start a contained session at "
+  + "all. Turning containment off, or the install providing the sidecar image, is what lets this "
+  + "session run.";
+
+/**
+ * The refusal, as a suffix on whatever else is true.
+ *
+ * It is a suffix and never a branch of its own because it answers a DIFFERENT
+ * question from the rest of the probe: those say what is true of the session
+ * now — a container's start-time topology, a per-session override, a capability
+ * it cannot change — and this says what its next start does. Both can be true at
+ * once, and the first version of this fix returned early on the refusal and so
+ * dropped the sandbox, override and running-container answers.
+ */
+function startupRefusal(deps: SettingsReadDeps, contained: boolean): string {
+  return contained && enforcementStatus(deps) === "no-sidecar" ? ` ${NO_SIDECAR_REFUSAL}` : "";
+}
+
+function withRefusal(effect: SettingEffect, refusal: string): SettingEffect {
+  if (!refusal) return effect;
+  return { state: effect.state, detail: `${effect.detail ?? ""}${refusal}`.trim() };
+}
+
+/**
  * "Saved, applies after a restart" is a false promise for a sandbox whose
  * containment is already fixed, which is exactly the case the user is
  * unblocking — so containment is resolved against what is running rather than
  * inferred from whether a reload ran (plan.md → Saved is not effective).
  */
 function egressContainmentEffect(deps: SettingsReadDeps, sessionId: string): SettingEffect {
-  const status = enforcementStatus(deps);
-  if (status !== "active") {
-    return {
-      state: "excluded",
-      detail: `Egress enforcement is not running on this install (${status}), so no session is contained whatever this is set to.`,
-    };
-  }
+  const disabled = enforcementDisabledEffect(deps, "this setting changes nothing");
+  if (disabled) return disabled;
   const store = deps.egressAllowlistStore;
   if (!store) {
     return { state: "uncertain", detail: "This install has no egress allowlist store to resolve containment against." };
@@ -346,39 +429,42 @@ function egressContainmentEffect(deps: SettingsReadDeps, sessionId: string): Set
   // capability is off is contained by `sandboxLifelineEgressConfig` no matter
   // what the global setting says, and it marks that with `userHostsExcluded`.
   const config = deps.containerManager?.resolveEgress(sessionId);
+  const resolved = config?.contained ?? store.resolveContained(sessionId);
+  const blocked = startupRefusal(deps, resolved);
   if (config?.userHostsExcluded) {
-    return {
+    // Blocked still rides this one: granting the capability leaves global
+    // containment on, so the start is refused for the second reason too.
+    return withRefusal({
       state: "excluded",
       detail: "This session's own network capability decides its containment, and no restart makes the global setting apply to it. The session's network capability is what has to change.",
-    };
+    }, blocked);
   }
   const override = store.getSessionOverride(sessionId);
   if (override !== null) {
-    return {
+    return withRefusal({
       state: "excluded",
       detail: `This session sets its own network mode (${override ? "contained" : "open"}), which wins over the global setting. Changing the global one does not change this session.`,
-    };
+    }, blocked);
   }
   const container = deps.containerManager?.get(sessionId);
-  const resolved = config?.contained ?? store.resolveContained(sessionId);
   if (container?.status === "running") {
     const startedContained = container.egressContainedAtStart;
     // A rediscovered container has no recorded boot policy, which
     // `session-container.ts` treats as unknown rather than as the current one.
     if (startedContained === undefined) {
-      return {
+      return withRefusal({
         state: "uncertain",
         detail: "This session's container was rediscovered after a ShipIt restart, so ShipIt does not know which network mode it started under. Restarting the session is what makes the stored value certain.",
-      };
+      }, blocked);
     }
     if (startedContained !== resolved) {
-      return {
+      return withRefusal({
         state: "restart-dependent",
         detail: `This session's container started ${startedContained ? "contained" : "open"} and stays that way until it is restarted.`,
-      };
+      }, blocked);
     }
   }
-  return { state: "live" };
+  return withRefusal({ state: "live" }, blocked);
 }
 
 /**
@@ -389,37 +475,42 @@ function egressContainmentEffect(deps: SettingsReadDeps, sessionId: string): Set
  * about, which is the case they are asking about.
  */
 function egressAllowlistEffect(deps: SettingsReadDeps, sessionId: string): SettingEffect {
-  const status = enforcementStatus(deps);
-  if (status !== "active") {
-    return {
-      state: "excluded",
-      detail: `Egress enforcement is not running on this install (${status}), so nothing is contained and the allowlist restricts nothing.`,
-    };
-  }
+  const disabled = enforcementDisabledEffect(deps, "the allowlist restricts nothing");
+  if (disabled) return disabled;
   const store = deps.egressAllowlistStore;
   if (!store) {
     return { state: "uncertain", detail: "This install has no egress allowlist store to resolve containment against." };
   }
   const config = deps.containerManager?.resolveEgress(sessionId);
+  const contained = config?.contained ?? store.resolveContained(sessionId);
+  /*
+    The refusal is a suffix here for the same reason it is on the containment
+    probe: it answers what the NEXT start does, and a container that was already
+    running when the sidecar image went away keeps the firewall and the
+    allowlist it started with. `container-lifecycle.ts:747` governs creation,
+    not an existing container, so "this changes nothing until it can run" would
+    be wrong for exactly that session.
+  */
+  const blocked = startupRefusal(deps, contained);
   if (config?.userHostsExcluded) {
-    return {
+    return withRefusal({
       state: "excluded",
       detail: "This session's own network capability excludes it from the allowlist, and no restart makes a host here reachable from it. The session's network capability is what has to change.",
-    };
+    }, blocked);
   }
-  if (!(config?.contained ?? store.resolveContained(sessionId))) {
+  if (!contained) {
     return {
       state: "excluded",
       detail: "This session is not contained, so its network access does not depend on the allowlist.",
     };
   }
   if (deps.containerManager?.get(sessionId)?.status === "running") {
-    return {
+    return withRefusal({
       state: "restart-dependent",
       detail: "This session's container took its allowlist when it started; a change here applies the next time it starts.",
-    };
+    }, blocked);
   }
-  return { state: "live" };
+  return withRefusal({ state: "live" }, blocked);
 }
 
 /**
@@ -596,11 +687,12 @@ async function readValue(
     // `omitWhenNull` drops the field rather than sending null; the pin is unset.
     return { ok: true, kind: "value", value: raw === undefined ? declaration.type.defaultValue : raw };
   }
-  const ownRoute = OWN_ROUTE_READERS[declaration.key];
+  const ownRoute = ownRouteReader(declaration.key);
   if (ownRoute) return ownRoute(deps);
-  const bespoke = BESPOKE_READERS[declaration.key];
+  const bespoke = bespokeReader(declaration.key);
   if (!bespoke) {
-    // Unreachable while `settings-store-readers.test.ts` passes; kept so a
+    // Unreachable: both reader tables are keyed by a type derived from the
+    // catalogue, so every non-payload declaration has one. Kept so a
     // declaration that slipped through says so instead of reporting a default.
     return {
       ok: false,
@@ -859,7 +951,10 @@ export async function listSettingsForAgent(
   const declarations = allDeclarations();
   const tabs = [...new Set(declarations.map((d) => d.tab))].sort();
   if (opts.tab !== undefined && !tabs.includes(opts.tab as SettingTab)) {
-    throw new ServiceError(400, `Unknown settings tab: ${opts.tab}. Tabs with settings: ${tabs.join(", ")}`);
+    throw new ServiceError(
+      400,
+      `Unknown settings tab: ${echoSupplied(opts.tab)}. Tabs with settings: ${tabs.join(", ")}`,
+    );
   }
   const state = await readState(deps, sessionId);
   const wanted = opts.tab ? declarations.filter((d) => d.tab === opts.tab) : declarations;
@@ -927,7 +1022,10 @@ export async function getSettingForAgent(
 ): Promise<SettingDetailEntry> {
   const declaration = findSetting(key);
   if (!declaration) {
-    throw new ServiceError(404, `No ShipIt setting is called "${key}". List them with \`shipit settings list\`.`);
+    throw new ServiceError(
+      404,
+      `No ShipIt setting is called "${echoSupplied(key)}". List them with \`shipit settings list\`.`,
+    );
   }
   const state = await readState(deps, sessionId);
   const { entry, items } = await buildEntry(declaration, deps, state, true);

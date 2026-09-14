@@ -404,6 +404,16 @@ Stdio MCP servers are typically distributed as npm packages (e.g., `@linear/mcp-
 
 For non-npm servers (binary, Python, etc.), users can specify a `setup` command that runs before the server starts. The `setup` command runs in the agent container's working directory with the same privileges and at the same lifecycle point as the npm install.
 
+> **Update (docs/299): `setup` was never built, and the field is gone.** Only the
+> stored type and the validator shipped — no panel wrote it and no spawn ran it,
+> so a value stored there had no effect. `MCP_SERVER_FIELD_SETTINGS`
+> (`settings-catalogue/integrations-settings.ts`) found it as a stored field with
+> no declaration, and it was removed rather than declared as a setting the agent
+> could read. The design above still stands if the feature is wanted; building it
+> means deciding the security gate it never had, since `setup` would run arbitrary
+> shell in the agent container while `command` is validated against shell
+> metacharacters (`services/mcp.ts`).
+
 A future optimization (Phase 3) pre-installs popular servers in the base image to skip the activation-time install for the common case.
 
 ### Data model
@@ -485,7 +495,7 @@ interface McpStdioServerConfig {
   args?: string[];
   env?: Record<string, string>;
   npmPackage?: string;
-  setup?: string;
+  setup?: string;   // removed in docs/299 — never read; see the update above
   enabled: boolean;
 }
 

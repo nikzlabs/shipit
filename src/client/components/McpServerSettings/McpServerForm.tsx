@@ -1,4 +1,6 @@
+import type { ReactNode } from "react";
 import { Button } from "../ui/button.js";
+import type { SettingKey } from "../../../server/shared/settings-catalogue/index.js";
 import { bindSetting, settingCopy } from "../Settings/setting-binding.js";
 import { inputClass } from "./shared.js";
 import { McpTypeSelector } from "./McpTypeSelector.js";
@@ -11,7 +13,40 @@ import type { FormState } from "./utils/payload.js";
  * (docs/299-agent-settings-access, plan.md → Bespoke panels declare per field).
  * One binding for the panel would let a field be added, bound to it, and shipped
  * with no description, no projection rule and no refusal reason.
+ *
+ * **And every box renders the declaration's DESCRIPTION, not only its label**
+ * (req 7: the description the agent reads is the one the user reads). The
+ * labels used to carry hand-written suffixes — "(space-separated)", "(optional —
+ * installed at session start)" — which is a second authorship of exactly the
+ * thing the declaration exists to hold; those sentences moved into the
+ * declarations. The copy is marked with `data-setting-label` /
+ * `data-setting-description`, so `settings-coverage.test.tsx` compares what is
+ * on screen against the catalogue and a box that starts writing its own words
+ * fails.
  */
+function McpField({
+  settingKey,
+  children,
+}: {
+  settingKey: SettingKey;
+  children: ReactNode;
+}) {
+  const { label, description } = settingCopy(settingKey);
+  return (
+    <label className="flex flex-col gap-1">
+      <span className="text-xs text-(--color-text-secondary)" data-setting-label={settingKey}>
+        {label}
+      </span>
+      <span
+        className="text-[11px] text-(--color-text-tertiary)"
+        data-setting-description={settingKey}
+      >
+        {description}
+      </span>
+      {children}
+    </label>
+  );
+}
 export function McpServerForm({
   form,
   formError,
@@ -36,10 +71,7 @@ export function McpServerForm({
         {form.editingId ? `Edit "${form.editingId}"` : "Add MCP Server"}
       </h4>
 
-      <label className="flex flex-col gap-1">
-        <span className="text-xs text-(--color-text-secondary)">
-          {settingCopy("mcp.servers[].name").label}
-        </span>
+      <McpField settingKey="mcp.servers[].name">
         <input
           className={inputClass}
           value={form.name}
@@ -47,16 +79,13 @@ export function McpServerForm({
           onChange={(e) => onUpdate({ name: e.target.value })}
           {...bindSetting("mcp.servers[].name")}
         />
-      </label>
+      </McpField>
 
       <McpTypeSelector value={form.type} onChange={(type) => onUpdate({ type })} />
 
       {form.type === "stdio" ? (
         <>
-          <label className="flex flex-col gap-1">
-            <span className="text-xs text-(--color-text-secondary)">
-              {settingCopy("mcp.servers[].command").label}
-            </span>
+          <McpField settingKey="mcp.servers[].command">
             <input
               className={inputClass}
               value={form.command}
@@ -64,11 +93,8 @@ export function McpServerForm({
               onChange={(e) => onUpdate({ command: e.target.value })}
               {...bindSetting("mcp.servers[].command")}
             />
-          </label>
-          <label className="flex flex-col gap-1">
-            <span className="text-xs text-(--color-text-secondary)">
-              {settingCopy("mcp.servers[].args").label} (space-separated)
-            </span>
+          </McpField>
+          <McpField settingKey="mcp.servers[].args">
             <input
               className={inputClass}
               value={form.args}
@@ -76,11 +102,8 @@ export function McpServerForm({
               onChange={(e) => onUpdate({ args: e.target.value })}
               {...bindSetting("mcp.servers[].args")}
             />
-          </label>
-          <label className="flex flex-col gap-1">
-            <span className="text-xs text-(--color-text-secondary)">
-              {settingCopy("mcp.servers[].npmPackage").label} (optional — installed at session start)
-            </span>
+          </McpField>
+          <McpField settingKey="mcp.servers[].npmPackage">
             <input
               className={inputClass}
               value={form.npmPackage}
@@ -88,13 +111,10 @@ export function McpServerForm({
               onChange={(e) => onUpdate({ npmPackage: e.target.value })}
               {...bindSetting("mcp.servers[].npmPackage")}
             />
-          </label>
+          </McpField>
         </>
       ) : (
-        <label className="flex flex-col gap-1">
-          <span className="text-xs text-(--color-text-secondary)">
-            {settingCopy("mcp.servers[].url").label}
-          </span>
+        <McpField settingKey="mcp.servers[].url">
           <input
             className={inputClass}
             value={form.url}
@@ -102,7 +122,7 @@ export function McpServerForm({
             onChange={(e) => onUpdate({ url: e.target.value })}
             {...bindSetting("mcp.servers[].url")}
           />
-        </label>
+        </McpField>
       )}
 
       <KvEditor

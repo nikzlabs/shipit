@@ -60,12 +60,25 @@ export type ProposeDescriptor =
 export type Projection =
   | { readonly kind: "plain" }
   | { readonly kind: "user_text"; readonly reason: string }
+  /**
+   * The user's own name for something, emitted only when it is shaped like a
+   * name — `user_text` plus the shape gate `projection.ts` documents. Every
+   * name a collection ADDRESSES an item by is one of these.
+   */
+  | { readonly kind: "user_name"; readonly reason: string }
   | { readonly kind: "configured_only" }
   | {
       readonly kind: "derived";
       /** What the function emits, for a reader checking it against the value. */
       readonly describes: string;
       readonly project: (raw: unknown) => unknown;
+      /**
+       * Present when what the function emits is the user's own text rather than
+       * something ShipIt computed — the same mark `user_text` carries, for the
+       * same reason: it is what review reads. A `derived` projection without one
+       * claims its output is ShipIt's own.
+       */
+      readonly userText?: string;
     }
   | { readonly kind: "withheld"; readonly reason: RefusalReason };
 
@@ -248,13 +261,28 @@ export function userText(reason: string): Projection {
   return { kind: "user_text", reason };
 }
 
+/**
+ * The user's own name for something, shown because naming it is the point —
+ * and only when it is shaped like a name, so a pasted URL is named by nothing.
+ */
+export function userName(reason: string): Projection {
+  return { kind: "user_name", reason };
+}
+
 export function configuredOnly(): Projection {
   return { kind: "configured_only" };
 }
 
-/** Emits what the function returns and nothing else. */
-export function derived(describes: string, project: (raw: unknown) => unknown): Projection {
-  return { kind: "derived", describes, project };
+/**
+ * Emits what the function returns and nothing else. `userText` marks a function
+ * whose output is the user's own text rather than something ShipIt computed.
+ */
+export function derived(
+  describes: string,
+  project: (raw: unknown) => unknown,
+  opts: { userText?: string } = {},
+): Projection {
+  return { kind: "derived", describes, project, ...(opts.userText ? { userText: opts.userText } : {}) };
 }
 
 /** The read has no value to give: a browser-local setting, or secret material. */

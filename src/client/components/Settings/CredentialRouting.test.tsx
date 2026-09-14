@@ -16,6 +16,7 @@ import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
 import { render, screen, cleanup, fireEvent, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { FailoverCutoffControls, CredentialSelectionModeControl } from "./CredentialRouting.js";
+import { settingCopy, settingOptions } from "./setting-binding.js";
 import { ProviderAccountRows } from "./ProviderAccountRows.js";
 import { useSettingsStore } from "../../stores/settings-store.js";
 import { useUiStore } from "../../stores/ui-store.js";
@@ -292,6 +293,37 @@ describe("the routing band keeps all four of its strings (docs/252 req 19)", () 
     noun: "account",
   } as const;
 
+  /*
+    docs/299 req 7 — **every one of those four strings now comes from the
+    catalogue.** They were authored in `CredentialRouting.tsx` as well, while
+    each setting's declaration carried its own sentence saying the same thing,
+    so the agent read one and the user read the other and nothing kept them
+    together. The assertions below therefore derive from `ALL_SETTINGS` rather
+    than restating the prose: docs/252's guarantee is that the copy stays
+    REACHABLE, which is preserved, and pinning a literal here would recreate the
+    second authorship it is meant to have removed.
+
+    The one edit the band makes to declared copy is the collective noun — the
+    declaration says "credentials", a card of provider accounts says "accounts"
+    — which is docs/252 req 19's "names them the way the card does".
+
+    **What this proves is that the two cannot DIVERGE, not that the component
+    reads the catalogue.** The declared text was written verbatim equal to the
+    tooltips it replaced, deliberately, so docs/252's own assertions kept their
+    meaning — which means these assertions would also pass against the old
+    literals. No test can tell "sourced from X" from "identical copy of X".
+    Divergence is the failure mode that actually happened, and divergence is what
+    goes red here the moment either side is edited alone.
+  */
+  const declaredOption = (value: string): { label: string; description: string } => {
+    const option = settingOptions("services.accountSelectionMode").find((o) => o.value === value);
+    if (!option?.description) throw new Error(`No declared copy for the ${value} option`);
+    return { label: option.label, description: option.description };
+  };
+
+  const forAccounts = (text: string) =>
+    text.replace(/\bcredentials\b/g, "accounts").replace(/\bcredential\b/g, "account");
+
   it("keeps the band title as the group's accessible name", () => {
     render(<CredentialSelectionModeControl {...SELECTION_PROPS} />);
     expect(
@@ -307,28 +339,36 @@ describe("the routing band keeps all four of its strings (docs/252 req 19)", () 
 
     await user.hover(screen.getByTestId(`credential-selection-mode-${ROUTING_KEY}-strict`));
     expect(await screen.findAllByText(
-      "New sessions start on the first account with quota left. Best when they differ — "
-      + "a bigger plan first, a smaller one as backup.",
+      forAccounts(declaredOption("strict").description),
     )).not.toHaveLength(0);
 
     await user.unhover(screen.getByTestId(`credential-selection-mode-${ROUTING_KEY}-strict`));
     await user.hover(screen.getByTestId(`credential-selection-mode-${ROUTING_KEY}-balanced`));
 
-    expect(await screen.findAllByText("Spread across accounts")).not.toHaveLength(0);
     expect(await screen.findAllByText(
-      "New sessions go to whichever account has been used least, so quota drains evenly. "
-      + "Best when they are equivalent.",
+      forAccounts(declaredOption("balanced").label),
+    )).not.toHaveLength(0);
+    expect(await screen.findAllByText(
+      forAccounts(declaredOption("balanced").description),
     )).not.toHaveLength(0);
   });
 
-  it("keeps the cutoff explanation on the fields it explains", async () => {
+  it("keeps each cutoff's explanation on the field it explains, in the declared words", async () => {
     const user = userEvent.setup();
-    render(<FailoverCutoffControls {...CUTOFF_PROPS} />);
-
-    await user.hover(screen.getByTestId(`failover-cutoff-${ROUTING_KEY}-session`));
-    expect(await screen.findAllByText(
-      "Start new work on the next account once an account passes these. Accounts past their "
-      + "cutoff are still used when no other account is below one, so nothing is stranded.",
-    )).not.toHaveLength(0);
+    // The paragraph used to be one string covering the pair, written here. Each
+    // field now shows its own declaration's, which names the window it governs.
+    for (const [field, key] of [
+      ["session", "services.failoverCutoff.session"],
+      ["weekly", "services.failoverCutoff.weekly"],
+    ] as const) {
+      // Rendered with the stored noun, so this asserts the DECLARED words
+      // verbatim rather than re-implementing the substitution the band makes.
+      render(<FailoverCutoffControls {...CUTOFF_PROPS} />);
+      await user.hover(screen.getByTestId(`failover-cutoff-${ROUTING_KEY}-${field}`));
+      const copy = settingCopy(key);
+      expect(await screen.findAllByText(copy.label)).not.toHaveLength(0);
+      expect(await screen.findAllByText(copy.description)).not.toHaveLength(0);
+      cleanup();
+    }
   });
 });

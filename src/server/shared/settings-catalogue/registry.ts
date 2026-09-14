@@ -51,6 +51,36 @@ export type SettingKey =
   | keyof typeof PROJECT_SETTINGS
   | keyof typeof BROWSER_SETTINGS;
 
+/** Every declaration, as one type, so a key set can be derived by store kind. */
+type EverySetting =
+  & typeof GLOBAL_SETTINGS
+  & typeof SERVICES_SETTINGS
+  & typeof ROLES_SETTINGS
+  & typeof INTEGRATIONS_SETTINGS
+  & typeof NETWORK_SETTINGS
+  & typeof VOICE_SETTINGS
+  & typeof PROJECT_SETTINGS
+  & typeof BROWSER_SETTINGS;
+
+type KeysStoredBy<Kind extends string> = {
+  [K in keyof EverySetting]: EverySetting[K] extends { store: { kind: Kind } } ? K : never;
+}[keyof EverySetting];
+
+/**
+ * The declarations a panel of its own stores, and the ones a route of their own
+ * writes — **derived from the catalogue, not restated**.
+ *
+ * Neither kind is carried by the settings payload, so each needs a reader to be
+ * read back at all, and a reader set keyed independently would be the eighth
+ * place this feature exists to remove (plan.md → Settings are declared once): a
+ * declaration added without one would simply report itself unreadable. Typing
+ * the reader tables `Record<BespokeSettingKey, …>` makes both halves a compile
+ * error instead — a declaration with no reader is a missing property, and a
+ * reader for a setting nobody declared is an unknown one.
+ */
+export type BespokeSettingKey = KeysStoredBy<"bespoke">;
+export type OwnRouteSettingKey = KeysStoredBy<"own-route">;
+
 const BY_KEY = new Map(ALL_SETTINGS.map((declaration) => [declaration.key, declaration]));
 
 export function findSetting(key: string): AnySettingDeclaration | undefined {

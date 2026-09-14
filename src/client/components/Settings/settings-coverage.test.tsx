@@ -15,6 +15,17 @@
  * it cannot decide — a bespoke panel's visible wording unless the panel marks
  * it, and whether a `wholeTab` exemption is honest — are claims made in prose
  * and checked by review.
+ *
+ * **And a third, which is not prose but a different guard.** This walk reads the
+ * rendered DOM, so it can establish that a control names *a* declaration and
+ * never that the declaration is the one whose property the handler saves: a new
+ * box bound to `mcp.servers[].command` while writing something else passes here.
+ * What the DOM cannot say, the STORED TYPE can —
+ * `MCP_SERVER_FIELD_SETTINGS` (`settings-catalogue/integrations-settings.ts`) is
+ * keyed by `keyof McpServerConfig`, so a field added to the persisted shape is a
+ * compile error until it is declared or explained. The two guards run in
+ * opposite directions: this one finds a control nobody declared, that one finds
+ * a stored field nobody declared.
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
@@ -521,6 +532,12 @@ describe("every control in the Settings dialog is declared or excused", () => {
     const pane = await renderGlobalTab("integrations");
     for (const result of await walkBothMcpTransports(pane)) {
       expect(result.unaccounted).toEqual([]);
+      // The form is bespoke and reached only by opening it, so its copy is
+      // compared here rather than by the per-tab drift walk — which renders the
+      // pane without the form and would pass whatever the form says. Asserted
+      // beside `unaccounted` so a hand-written label names itself, instead of
+      // surfacing as a count in the vacuity test below.
+      expect(result.drift).toEqual([]);
     }
   });
 
@@ -594,6 +611,16 @@ const EXPLAINED_IN_THE_DIALOG: readonly string[] = [
   "instructions.opsInstructions",
   "instructions.userInstructions",
   "integrations.autoCreatePr",
+  // The MCP form's boxes. They rendered the declared LABEL and no description
+  // until docs/299 — while the labels carried hand-written suffixes of their
+  // own ("(space-separated)") that the declaration is supposed to hold. Those
+  // sentences moved into the declarations and the form renders them, so the
+  // drift check above now compares the MCP copy against the catalogue too.
+  "mcp.servers[].args",
+  "mcp.servers[].command",
+  "mcp.servers[].name",
+  "mcp.servers[].npmPackage",
+  "mcp.servers[].url",
   "network.egress.hosts",
   "network.egressContained",
   "project.allowAgentMerge",

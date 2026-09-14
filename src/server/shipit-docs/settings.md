@@ -97,6 +97,14 @@ not text the user typed into a field that could hold a credential. Where the
 text *is* the point — the user's own instructions, their git identity — you get
 it, and the read says so.
 
+A **name** the user chose is the point too, so you get it: naming the missing
+secret or the role that does not exist is most of what you have to tell them.
+But only when it is shaped like a name. A secret or a role called
+`https://user:token@host/?token=…` is a name nothing stops the user storing, so
+ShipIt does not repeat it back — that entry produces no item at all, and the
+read says how many it left out. If you need to talk about one of those, describe
+it rather than asking ShipIt to name it.
+
 ## Saved is not the same as in effect
 
 A stored value and its live effect can differ, so the read says which it is
@@ -114,6 +122,11 @@ networking until it restarts, and a session that sets its own network mode
 ignores the global one entirely. Telling that user "saved, restart and it will
 work" would be a false promise. `list` marks any setting that is not `live`;
 `get` always states it.
+
+`detail` is worth reading even on a `live` setting. An install with network
+containment on and no egress sidecar image **refuses to start a contained
+session at all** — the setting is not irrelevant there, it is the thing blocking
+the container, and `detail` says so and says what has to change.
 
 ## Changing a setting: propose, and the user clicks
 

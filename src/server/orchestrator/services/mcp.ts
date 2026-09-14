@@ -51,12 +51,10 @@ export function validateMcpServerConfig(raw: unknown): McpServerConfig {
     const env = validateStringRecord(cfg.env, "env");
     const npmPackage =
       typeof cfg.npmPackage === "string" ? cfg.npmPackage.trim() || undefined : undefined;
-    const setup = typeof cfg.setup === "string" ? cfg.setup.trim() || undefined : undefined;
     const out: McpStdioServerConfig = { name, type: "stdio", command, enabled };
     if (args) out.args = args;
     if (env) out.env = env;
     if (npmPackage) out.npmPackage = npmPackage;
-    if (setup) out.setup = setup;
     return out;
   }
 

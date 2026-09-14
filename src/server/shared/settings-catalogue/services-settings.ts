@@ -58,16 +58,32 @@ export const SERVICES_SETTINGS = {
     scope: "global",
     address: MODE_ADDRESS,
     label: "How ShipIt picks between these credentials",
-    description:
-      "Use in order: new sessions start on the first credential with quota left — best when they "
-      + "differ, a bigger plan first and a smaller one as backup. Spread across credentials: new "
-      + "sessions go to whichever has been used least, so quota drains evenly — best when they are "
-      + "equivalent.",
+    // Deliberately says nothing the two options do not, because the band has no
+    // room for a description paragraph and renders them instead: novel copy here
+    // would be explanation the agent reads and the user cannot (req 7).
+    description: "Which credential a new session starts on. Each option explains itself.",
+    // The band renders these two option descriptions as the tooltip on each
+    // segment (`Settings/CredentialRouting.tsx`), so the sentence the user reads
+    // there and the one the agent reads here are one sentence (req 7). They are
+    // worded around "credentials", which is what the setting stores; a card
+    // showing provider accounts swaps that noun and edits nothing else.
     type: enumOf({
       default: "strict",
       options: [
-        { value: "strict", label: "Use in order" },
-        { value: "balanced", label: "Spread across credentials" },
+        {
+          value: "strict",
+          label: "Use in order",
+          description:
+            "New sessions start on the first credential with quota left. Best when they differ — "
+            + "a bigger plan first, a smaller one as backup.",
+        },
+        {
+          value: "balanced",
+          label: "Spread across credentials",
+          description:
+            "New sessions go to whichever credential has been used least, so quota drains evenly. "
+            + "Best when they are equivalent.",
+        },
       ],
     }),
     store: { kind: "bespoke", ownedBy: "credential-store.accountSelectionMode, keyed by (service, billing mode)" },

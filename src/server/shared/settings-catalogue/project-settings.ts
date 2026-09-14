@@ -5,11 +5,18 @@ import {
   derived,
   plain,
   repositoryItemAddress,
-  userText,
+  userName,
 } from "./types.js";
 import type { AnySettingDeclaration } from "./types.js";
+import { userNameProjection } from "./projection.js";
 import { REPO_COLOR_COUNT } from "../repo-colors.js";
 import { bool, collection, numeric, text } from "./value-types.js";
+
+/** The store hands back a list of names; the route body is keyed by them. */
+function secretNames(raw: unknown): string[] {
+  if (Array.isArray(raw)) return raw.filter((name): name is string => typeof name === "string");
+  return Object.keys(raw ?? {});
+}
 
 /**
  * The per-repository **Project Settings** dialog, which req 5 names alongside
@@ -55,15 +62,23 @@ export const PROJECT_SETTINGS = {
     type: collection<string>({ operations: ["set", "remove"], patchableFields: [] }),
     store: { kind: "bespoke", ownedBy: "the repository secrets store (PUT /api/secrets)" },
     // Names only (plan.md → Scope inventory): the name says what is missing,
-    // which is the whole of what the agent needs to ask the user for.
-    // The names are the user's own text and are emitted deliberately — naming
-    // the missing secret is the whole of what the agent has to tell them. The
+    // which is the whole of what the agent needs to ask the user for. The
     // projection's work is dropping the value column, which no field-name rule
     // would do for a record the user keys.
-    emits: derived("the secret names that are set, never a value", (raw) =>
-      Array.isArray(raw)
-        ? raw.filter((name): name is string => typeof name === "string")
-        : Object.keys((raw ?? {}) as Record<string, unknown>)),
+    //
+    // `PUT /api/secrets` takes any string as a key, so the names go through the
+    // same shape gate the allowlist entries do — this is the collection an
+    // item's ADDRESS is projected through, so a name emitted here is a name the
+    // agent repeats back in every output path.
+    emits: derived(
+      "the secret names that are set, never a value; a name not shaped like one is dropped, since "
+      + "it can carry a credential and cannot be an environment variable anyway",
+      (raw) => secretNames(raw).map(userNameProjection).filter((name) => name !== null),
+      {
+        userText: "The names are the user's own. Naming the missing secret is the whole of what the "
+          + "agent has to tell them, so the names are emitted deliberately and the values never are.",
+      },
+    ),
     propose: { kind: "no", reason: "secret" },
   }),
 
@@ -78,7 +93,7 @@ export const PROJECT_SETTINGS = {
       + "docker-compose.yml and its plugins declare the ones they need; the user may add others.",
     type: text({ maxLength: 200, noun: "Secret name", required: true, trim: true }),
     store: { kind: "bespoke", ownedBy: "the repository secrets store (PUT /api/secrets)" },
-    emits: userText(
+    emits: userName(
       "The name the user gave their own secret. It is what the agent must be able to name when it "
       + "asks for one to be set, and it is already shown in the dialog and to every service.",
     ),

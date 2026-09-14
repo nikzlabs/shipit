@@ -593,6 +593,7 @@ function ServiceModeCard({
           serviceId={service.id}
           billingMode={billingMode}
           serviceName={service.name}
+          noun={routedNoun}
           {...(provider ? { provider } : {})}
         />
       )}
