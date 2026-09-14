@@ -59,6 +59,19 @@ prompt and nothing else.
 Arming with no window open is refused by the CLI with the reason: ShipIt only
 carries a note across a rebase it is driving.
 
+**The timeout closes what is already open AND what opens afterwards.** Closing on the
+deadline is not enough on its own: if the deadline fires before the flow reaches its first
+conflict — during `fetch`, say — there is no window yet to close, and the uncancelled flow
+can open one later with no deadline left to clean it up. So `onFollowupWindowOpened` closes
+the window immediately when the attempt has already timed out.
+
+**Arming is keyed by session, not by attempt.** The CLI request carries no attempt identity
+and has no way to learn one, so a `continue-after-rebase` still in flight from a superseded
+attempt appends to whichever window is open. Attempt-keyed *closing* is what stops a note
+being delivered by a rebase that did not conclude; it does not isolate a late arm. Accepted:
+the superseded agent has been killed, so the window is narrow, and a note about work to do
+after a rebase is usually still true of the next one.
+
 ## The command
 
 `shipit session continue-after-rebase --note "<what to do once the rebase lands>"`
@@ -126,6 +139,12 @@ editing a tree still being rewritten.
   (`rebase-driver.ts:491`, `queue-drain.ts:26`) — it does not drain the queue, so
   the follow-up must be admitted through the queue like any other turn rather than
   assume an empty one.
+- **Queueing inherits planning#562**: the drain paths run a queued dispatched turn without
+  re-reading `dispatchOnRunner`'s resident-background-work gate, so a follow-up draining
+  behind a user turn that left background work in flight kills that work. The hole predates
+  this feature and already applies to merge-watch wake turns; this makes it reachable a second
+  way. Refusing instead of queueing would avoid it and cost req 1 whenever a user types during
+  a rebase, which is the worse trade.
 
 ### `pendingAgentNotice` needs no special handling
 
@@ -141,14 +160,33 @@ turn runs first gets the notice; there is no duplication to prevent.
 outcome and never rejects (`turn-settlement.ts:53`), so a synchronous `try/catch`
 would miss a setup failure that arrives later. Observe the handle instead.
 
-On `refused`, `dropped` or `errored` **before the prompt reached the agent**, re-park
-the notes with `appendPendingAgentNotice` — **not** `setPendingAgentNotice`, which
+Re-park the notes with `appendPendingAgentNotice` — **not** `setPendingAgentNotice`, which
 replaces and would clobber a newer branch notice (`sessions.ts:379`). The work then
 waits for the user's next message: today's behaviour, and explicitly **not**
 fulfilment of req 1 — it is damage limitation on a path that should be rare.
 
+**Which outcomes re-park is narrower than "not completed".** `refused` and `dropped` both
+mean the turn produced no result. **`errored` does not**: an agent can run the follow-up and
+only then emit an adapter error, which `turn-executor.ts` settles as `errored` — re-parking
+that repeats work the agent already did. The one `errored` that does mean the prompt never
+arrived is the dispatch setup failure, so `session-runner.ts` exports
+`DISPATCH_SETUP_FAILURE` as the detail prefix and delivery matches on it rather than on the
+status alone.
+
 Do **not** re-park after `interrupted`. A user who stops a delivered follow-up turn
 has decided against it.
+
+### What the fallback still does not cover
+
+Both are accepted, not solved; both are confined to the already-degraded failure path.
+
+- **A later Sync can erase a parked note.** `recordAgentNotice` uses `setPendingAgentNotice`,
+  which replaces deliberately — a branch movement supersedes earlier notices. A note parked by
+  a failed dispatch and not yet consumed is replaced with it. Making the parked note survive
+  would mean changing that replacement semantics for every caller.
+- **`dropped` after the prompt arrived.** It means no result was seen, not that nothing ran.
+  The follow-up prompt's own closing line — say so if the work is already done — is the
+  mitigation.
 
 Observing the handle must not hold the rebase attempt open. Otherwise the
 auto-resolve deadline ends up supervising a completely unrelated turn.

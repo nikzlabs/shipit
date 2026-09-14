@@ -2710,6 +2710,7 @@ describe("rebase-driver: docs/303 post-rebase follow-up", () => {
 
     // Arms, then hangs: the resolution turn settles only through its completion callback, so
     // the flow's `finally` never runs and cannot be what closes the window.
+    let armed = false;
     const hangingAgent = () => Object.assign(new EventEmitter(), {
       agentId: "claude" as const,
       capabilities: {
@@ -2717,7 +2718,10 @@ describe("rebase-driver: docs/303 post-rebase follow-up", () => {
         supportsPermissionModes: false, supportedPermissionModes: [], toolNames: [],
         models: [], supportsReview: true,
       },
-      run: () => { armFollowupNote("s6", "would wake on someone else's rebase"); },
+      run: () => {
+        armFollowupNote("s6", "would wake on someone else's rebase");
+        armed = true;
+      },
       kill: () => {},
     }) as unknown as AgentProcess;
 
@@ -2730,7 +2734,53 @@ describe("rebase-driver: docs/303 post-rebase follow-up", () => {
     const result = await runAutoResolveAttempt(attemptDeps, "main");
 
     expect(result).toMatchObject({ outcome: "error", lastError: "timeout" });
+    // Without this the deadline could have expired before a window ever opened, and the
+    // assertion below would hold for the wrong reason.
+    expect(armed).toBe(true);
     expect(followupWindowOpen("s6")).toBe(false);
+  });
+
+  it("req 3: a window the flow opens AFTER the deadline fired is closed at once", async () => {
+    // The flow is raced, not cancelled, so it can reach its first conflict after the attempt
+    // already returned "timeout" — with no deadline left to close what it opens.
+    const workDir = fs.mkdtempSync(path.join(tmpDir, "late-window-"));
+    const runner = new SessionRunner({ sessionId: "s8", sessionDir: workDir, defaultAgentId: "claude" });
+    const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+    let openedLate = false;
+    const attemptDeps = {
+      ...baseDeps(new GitManager(workDir), runner, () => "unused"),
+      git: {
+        isClean: () => Promise.resolve(true),
+        isRebaseInProgress: () => Promise.resolve(false),
+        inspectWorkingTree: () => Promise.resolve({ clean: true, conflictedFiles: [], unreadable: null }),
+        // Outlives the deadline, so everything after it runs on a timed-out attempt.
+        fetch: async () => { await sleep(60); },
+        resolveBaseBranchRef: () => Promise.resolve("base-sha"),
+        getHeadHash: () => Promise.resolve("head-sha"),
+        getRefHash: () => Promise.resolve(null),
+        isAncestor: () => Promise.resolve(false),
+        rebase: () => Promise.resolve({ status: "conflicts", conflicts: [{ path: "shared.txt", content: "" }] }),
+        rebaseAbort: () => Promise.resolve(),
+      } as unknown as GitManager,
+      agentFactory: () => Object.assign(new EventEmitter(), {
+        agentId: "claude" as const,
+        capabilities: {
+          supportsResume: true, supportsImages: false, supportsSystemPrompt: true,
+          supportsPermissionModes: false, supportedPermissionModes: [], toolNames: [],
+          models: [], supportsReview: true,
+        },
+        run: () => { openedLate = true; },
+        kill: () => {},
+      }) as unknown as AgentProcess,
+      timeoutMs: 20,
+    };
+    wireSystemTurnDeps(attemptDeps);
+    const result = await runAutoResolveAttempt(attemptDeps, "main");
+
+    expect(result).toMatchObject({ outcome: "error", lastError: "timeout" });
+    await vi.waitFor(() => expect(openedLate).toBe(true));
+    expect(followupWindowOpen("s8")).toBe(false);
   });
 
   it("the automatic path delivers only after its own LFS restore and queue drain", async () => {

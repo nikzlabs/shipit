@@ -1,9 +1,9 @@
 // Carries a note the agent wrote during conflict resolution across the rest of the rebase,
 // and plays it back as a turn once the rebase concludes (docs/303-post-rebase-followup).
 import { randomUUID } from "node:crypto";
-import type { SessionRunnerInterface } from "../session-runner.js";
+import { DISPATCH_SETUP_FAILURE, type SessionRunnerInterface } from "../session-runner.js";
 import type { SessionManager } from "../sessions.js";
-import type { TurnHandle } from "../turn-settlement.js";
+import type { TurnHandle, TurnOutcome } from "../turn-settlement.js";
 import { loadPrompt, fillPromptTokens } from "../load-prompt.js";
 import { prepareDispatch } from "../prepared-dispatch.js";
 import { getErrorMessage } from "../validation.js";
@@ -94,8 +94,18 @@ export function buildFollowupPrompt(followup: RebaseFollowup): string {
   });
 }
 
-// The note reached the agent on every other outcome, so re-parking it would duplicate the work.
-const REPARK_STATUSES = new Set(["refused", "dropped", "errored"]);
+/**
+ * Outcomes where the turn produced no result. `errored` is deliberately absent: an agent can
+ * run the follow-up and only then emit an adapter error, and re-delivering that would repeat
+ * work the agent already did. The one exception is the dispatch setup failure, which is
+ * `errored` but means the prompt never reached the agent at all.
+ */
+const REPARK_STATUSES = new Set(["refused", "dropped"]);
+
+function shouldRepark(outcome: TurnOutcome): boolean {
+  if (REPARK_STATUSES.has(outcome.status)) return true;
+  return outcome.status === "errored" && (outcome.detail?.startsWith(DISPATCH_SETUP_FAILURE) ?? false);
+}
 
 /**
  * Never throws and never awaits the turn: the caller is a rebase attempt, and holding it open
@@ -144,7 +154,7 @@ export function deliverRebaseFollowup(deps: RebaseFollowupDeps, followup: Rebase
   // rather than as a throw above.
   void (async () => {
     const outcome = await handle.settled;
-    if (!REPARK_STATUSES.has(outcome.status)) return;
+    if (!shouldRepark(outcome)) return;
     console.warn(
       `[rebase-followup] the follow-up turn for ${runner.sessionId} ended as "${outcome.status}"`
       + `${outcome.detail ? ` — ${outcome.detail}` : ""}; parking the note for the next turn`,

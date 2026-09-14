@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import type { SessionRunnerInterface } from "../session-runner.js";
+import { DISPATCH_SETUP_FAILURE, type SessionRunnerInterface } from "../session-runner.js";
 import type { PreparedDispatch } from "../prepared-dispatch.js";
 import type { DispatchAdmission } from "../session-runner.js";
 import type { TurnOutcome } from "../turn-settlement.js";
@@ -154,8 +154,13 @@ describe("rebase-followup: delivery", () => {
   });
 
   it("parks the note for the next turn when the dispatch never reached the agent", async () => {
-    for (const status of ["refused", "dropped", "errored"] as const) {
-      const { deps, appendPendingAgentNotice } = fakeDeps(settled({ status, errored: true }));
+    const never: TurnOutcome[] = [
+      { status: "refused", errored: true, detail: "a system turn is in progress" },
+      { status: "dropped", errored: true, detail: "runner disposed mid-turn" },
+      { status: "errored", errored: true, detail: `${DISPATCH_SETUP_FAILURE}: no worker` },
+    ];
+    for (const outcome of never) {
+      const { deps, appendPendingAgentNotice } = fakeDeps(settled(outcome));
 
       deliverRebaseFollowup(deps, FOLLOWUP);
       await vi.waitFor(() => expect(appendPendingAgentNotice).toHaveBeenCalledTimes(1));
@@ -164,12 +169,29 @@ describe("rebase-followup: delivery", () => {
     }
   });
 
+  it("does NOT park a turn that errored after running — the agent may have done the work", async () => {
+    // An adapter error settles `errored` for a turn the agent executed, so the status alone
+    // cannot mean "never delivered"; only the setup-failure detail can.
+    const ran = fakeDeps(settled({ status: "errored", errored: true, detail: "Agent error" }));
+    deliverRebaseFollowup(ran.deps, FOLLOWUP);
+    const control = fakeDeps(settled({
+      status: "errored",
+      errored: true,
+      detail: `${DISPATCH_SETUP_FAILURE}: no worker`,
+    }));
+    deliverRebaseFollowup(control.deps, FOLLOWUP);
+
+    await vi.waitFor(() => expect(control.appendPendingAgentNotice).toHaveBeenCalled());
+
+    expect(ran.appendPendingAgentNotice).not.toHaveBeenCalled();
+  });
+
   it("does NOT park a turn the user interrupted — stopping it was a decision", async () => {
     const interrupted = fakeDeps(settled({ status: "interrupted", errored: false }));
     deliverRebaseFollowup(interrupted.deps, FOLLOWUP);
     // A control delivery settling the same way proves the wait below is long enough to
     // have seen a park, so "not called" is an observation rather than a race.
-    const control = fakeDeps(settled({ status: "errored", errored: true }));
+    const control = fakeDeps(settled({ status: "dropped", errored: true }));
     deliverRebaseFollowup(control.deps, FOLLOWUP);
 
     await vi.waitFor(() => expect(control.appendPendingAgentNotice).toHaveBeenCalled());

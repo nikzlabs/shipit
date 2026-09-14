@@ -733,17 +733,25 @@ export async function runAutoResolveAttempt(
   }
 
   let didSpawn = false;
+  let settled = false;
+  let timedOut = false;
   const followupAttempt: { id: string | null } = { id: null };
   const wrappedDeps: RebaseDriverDeps = {
     ...deps,
     onAgentSpawned: () => { didSpawn = true; },
-    onFollowupWindowOpened: (attemptId) => { followupAttempt.id = attemptId; },
+    onFollowupWindowOpened: (attemptId) => {
+      // The deadline may already have fired: the flow is raced, not cancelled, so it can reach
+      // its first conflict afterwards, with no deadline left to close what it opens.
+      if (timedOut) {
+        closeFollowupWindow(runner.sessionId, attemptId);
+        return;
+      }
+      followupAttempt.id = attemptId;
+    },
   };
 
   const timeoutMs = deps.timeoutMs ?? AUTO_RESOLVE_ATTEMPT_TIMEOUT_MS;
 
-  let settled = false;
-  let timedOut = false;
   let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
   const timeoutPromise = new Promise<AutoResolveResult>((resolve) => {
     timeoutHandle = setTimeout(() => {
