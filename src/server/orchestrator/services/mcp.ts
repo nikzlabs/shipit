@@ -233,6 +233,8 @@ function reconcileSecrets(
 
   // Nothing in one server's namespace is private to it: a config may refer to a
   // key stored under another server's name, and this edit is not that server's.
+  // Only implicit cleanup defers to that — a save that names the key and submits
+  // an empty value has asked for it, and is answered.
   const usedElsewhere = new Set(
     Object.values(credentialStore.getAllMcpServers())
       .filter((s) => s.name !== oldName && s.name !== config.name)
@@ -243,7 +245,7 @@ function reconcileSecrets(
     (key) =>
       (key.startsWith(oldPrefix) || key.startsWith(newPrefix))
       && !keep.has(key)
-      && !usedElsewhere.has(key),
+      && (!usedElsewhere.has(key) || key in secrets),
   );
   return { keep, cleared };
 }

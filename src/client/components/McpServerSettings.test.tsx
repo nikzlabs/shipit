@@ -360,10 +360,11 @@ describe("McpServerSettings (docs/088)", () => {
     expect(body.config.headers).toEqual({ Authorization: "Bearer $platform:notion_oauth" });
   });
 
-  it("stops claiming a value is unchanged once its key is edited (planning#565)", async () => {
+  it("keeps the credential when only the row's key is renamed (planning#565)", async () => {
     const fake = new FakeFetch();
     fake.on("GET", /^\/api\/mcp-servers$/, () => ({ servers: [stdioConfig] }));
     fake.on("GET", /\/oauth\/providers$/, () => ({ providers: [] }));
+    fake.on("PUT", /\/api\/mcp-servers\/linear$/, () => ({ server: stdioConfig }));
     fake.install();
 
     render(<McpServerSettings hasActiveSession={false} />);
@@ -372,14 +373,23 @@ describe("McpServerSettings (docs/088)", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: "Edit linear" }));
 
-    // A renamed key refers to a secret that was never stored, so "(unchanged)"
-    // would promise a value the save cannot carry over.
+    // The key names the variable the server reads, not the secret behind it.
     fireEvent.change(screen.getByDisplayValue("LINEAR_API_KEY"), {
       target: { value: "LINEAR_TOKEN" },
     });
+    fireEvent.click(screen.getByRole("button", { name: "Save MCP server" }));
 
-    expect(screen.queryByPlaceholderText("(unchanged)")).toBeNull();
-    expect(screen.getAllByPlaceholderText("value")).toHaveLength(1);
+    await waitFor(() => {
+      expect(fake.calls.some((c) => c.method === "PUT")).toBe(true);
+    });
+    const body = fake.calls.find((c) => c.method === "PUT")!.body as {
+      config: { env: Record<string, string> };
+      secrets: Record<string, string>;
+    };
+    expect(body.config.env).toEqual({
+      LINEAR_TOKEN: "$secret:mcp__linear__LINEAR_API_KEY",
+    });
+    expect(body.secrets).toEqual({});
   });
 
   it("folds an OAuth-managed server into the connection card and hides the duplicate row", async () => {

@@ -8,18 +8,12 @@ export interface KvRow {
   key: string;
   value: string;
   /**
-   * The key this row was loaded with, absent on a row the user added. A blank
-   * value means "unchanged" only while the key still matches it: the stored
-   * secret is named after the key, so editing the key points the row at a
-   * secret that was never stored (planning#565).
-   */
-  originalKey?: string;
-  /**
-   * The reference expression this row was loaded with. The form shows only the
-   * key, so re-deriving the value would flatten anything it cannot represent —
-   * a `Bearer ` prefix, a secret named unlike its key, an OAuth `$platform:`
-   * link — and the save would then delete the credential it stopped referring
-   * to (planning#565).
+   * The reference expression this row was loaded with, absent on a row the user
+   * added. The form shows only the key, so re-deriving the value would flatten
+   * anything it cannot represent — a `Bearer ` prefix, a secret named unlike its
+   * key, an OAuth `$platform:` link — and the save would then delete the
+   * credential it stopped referring to (planning#565). The key names the
+   * variable the MCP server reads, so renaming it moves nothing.
    */
   originalValue?: string;
 }
@@ -79,10 +73,9 @@ export function buildPayload(form: FormState): {
     const derived = `mcp__${form.name}__${k}`;
     // A row loaded from the server keeps the expression it came with, so a shape
     // the form cannot show survives an edit that does not touch it.
-    const carried =
-      row.originalKey === k && row.originalValue
-        ? moveSecretNamespace(row.originalValue, form.editingId, form.name)
-        : null;
+    const carried = row.originalValue
+      ? moveSecretNamespace(row.originalValue, form.editingId, form.name)
+      : null;
     // A typed value replaces the secret THIS row refers to; naming it after the
     // row's key would land it on whatever else is called that. With no reference
     // to fill — a new row, an OAuth-managed header — the key derives one, as before.
@@ -133,7 +126,6 @@ export function formFromServer(server: McpServerConfig): FormState {
     kv: Object.entries(kvSource).map(([key, expression]) => ({
       key,
       value: "",
-      originalKey: key,
       originalValue: expression,
     })),
     enabled: server.enabled,

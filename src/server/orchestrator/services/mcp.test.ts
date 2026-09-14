@@ -303,6 +303,27 @@ describe("services/mcp (docs/088)", () => {
       expect(clearedSecretKeys).toEqual([]);
     });
 
+    it("updateMcpServer clears a shared secret when the save explicitly empties it", () => {
+      const cs = store();
+      addMcpServer(
+        cs,
+        { ...stdioConfig, env: { A: "$secret:mcp__linear__SHARED" } },
+        { mcp__linear__SHARED: "shared" },
+      );
+      addMcpServer(
+        cs,
+        { ...stdioConfig, name: "sentry", env: { B: "$secret:mcp__linear__SHARED" } },
+        {},
+      );
+
+      const { clearedSecretKeys } = updateMcpServer(cs, "linear", { ...stdioConfig, env: {} }, {
+        mcp__linear__SHARED: "",
+      });
+
+      expect(cs.getAgentEnv("mcp__linear__SHARED")).toBeUndefined();
+      expect(clearedSecretKeys).toEqual(["mcp__linear__SHARED"]);
+    });
+
     it("updateMcpServer keeps a secret referenced only from args", () => {
       const cs = store();
       // `args` values are substituted too (session/mcp-resolve.ts), so a
