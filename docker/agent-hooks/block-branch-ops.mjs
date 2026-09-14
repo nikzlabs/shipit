@@ -1,10 +1,18 @@
 #!/usr/bin/env node
-/** Blocks branch changes and destructive git during merged-branch recovery. */
+/**
+ * ShipIt's PreToolUse guard for the Bash tool. It refuses two shapes: branch
+ * changes and destructive git during merged-branch recovery, and a wait loop
+ * whose own process pattern matches the command it is written in.
+ */
 
 import { readFileSync } from "node:fs";
+import { runInNewContext } from "node:vm";
 
-// Sandbox sessions own their branches.
-if (process.env.SHIPIT_SANDBOX === "1") process.exit(0);
+// Sandbox sessions own their branches (docs/211). That exemption is about
+// branch ownership and nothing else, so it scopes the git checks below rather
+// than the whole hook — a loop that cannot terminate hangs a sandbox session
+// exactly as it hangs any other.
+const sandboxSession = process.env.SHIPIT_SANDBOX === "1";
 
 let payload;
 try {
@@ -142,10 +150,218 @@ function offendsDestructive(seg) {
   return null;
 }
 
+// A wait loop whose own `pgrep -f` test can only ever be true. The Bash tool
+// runs a command as `bash -c '<the whole command>'`, so every literal in it is
+// part of the command line of the process running it, and `pgrep -f` matches
+// full command lines. What this judges is that test, not the loop's control
+// flow: a deadline or a `break` elsewhere can still end the loop, and the test
+// is broken either way.
+
+/**
+ * Options that cannot change whether the calling shell is among the matches.
+ * Anything else — `-x` exact, `-A` ignore-ancestors, `-P` parent, `-v` inverse,
+ * a uid or session filter, an option procps adds next year — is a deliberate
+ * way to exclude the caller or to invert the test, and the honest answer there
+ * is no answer at all.
+ */
+const HARMLESS_LONG = new Set([
+  "--full", "--list-full", "--list-name", "--count", "--ignore-case",
+  "--lightweight", "--newest", "--oldest",
+]);
+const HARMLESS_LONG_WITH_VALUE = new Set(["--delimiter", "--signal"]);
+const HARMLESS_SHORT = new Set(["f", "a", "l", "c", "i", "w", "n", "o"]);
+const HARMLESS_SHORT_WITH_VALUE = new Set(["d"]);
+
+/** A heredoc body is data the shell feeds a program, never something it runs. */
+function withoutHeredocBodies(line) {
+  const kept = [];
+  let terminator = null;
+  for (const one of line.split("\n")) {
+    if (terminator !== null) {
+      if (one.trim() === terminator) terminator = null;
+      continue;
+    }
+    kept.push(one);
+    const opener = /<<-?\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\1/.exec(one);
+    if (opener) terminator = opener[2];
+  }
+  return kept.join("\n");
+}
+
+/**
+ * Tokens, each marked with whether the shell would have quoted it away.
+ * Quoting is the difference between code and data: `printf '%s' 'while pgrep
+ * -f x; do ...'` runs nothing, and refusing it would refuse ordinary work.
+ * Null when the quoting never closes — what cannot be read is not judged.
+ */
+function tokenize(text) {
+  const tokens = [];
+  let value = null;
+  let quoted = false;
+  let quote = null;
+  const push = () => {
+    if (value !== null) tokens.push({ value, quoted });
+    value = null;
+    quoted = false;
+  };
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (quote) {
+      if (ch === quote) { quote = null; continue; }
+      // Only a double-quoted context honours a backslash escape.
+      if (quote === '"' && ch === "\\" && i + 1 < text.length) { value += text[++i]; continue; }
+      value += ch;
+      continue;
+    }
+    if (ch === "'" || ch === '"') { quote = ch; value ??= ""; quoted = true; continue; }
+    if (/\s/.test(ch)) { push(); continue; }
+    if (";|&()".includes(ch)) {
+      push();
+      const doubled = (ch === "&" || ch === "|") && text[i + 1] === ch;
+      if (doubled) i++;
+      tokens.push({ value: doubled ? ch + ch : ch, quoted: false, operator: true });
+      continue;
+    }
+    if (ch === "\\" && i + 1 < text.length) { value = (value ?? "") + text[++i]; continue; }
+    value = (value ?? "") + ch;
+  }
+  push();
+  return quote ? null : tokens;
+}
+
+/** Where this invocation's arguments stop: an operator, or a redirection. */
+function endsArguments(token) {
+  return token.operator === true || (!token.quoted && /^\d*[<>]/.test(token.value));
+}
+
+/**
+ * The pattern this `pgrep` / `pkill` tests full command lines against, or null
+ * for every shape that cannot be read unambiguously. Null is the important
+ * half: an option this does not know, or a second operand, means a guess — and
+ * a guess here refuses correct work, which a hook has no way to undo.
+ */
+function fullCommandLinePattern(args, program) {
+  let full = false;
+  const operands = [];
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === "--") {
+      operands.push(...args.slice(i + 1));
+      break;
+    }
+    if (arg.startsWith("--")) {
+      const [name, inline] = arg.split(/=(.*)/s);
+      if (HARMLESS_LONG.has(name)) {
+        if (name === "--full") full = true;
+        continue;
+      }
+      if (HARMLESS_LONG_WITH_VALUE.has(name)) {
+        if (inline === undefined) i++;
+        continue;
+      }
+      return null;
+    }
+    if (arg.startsWith("-") && arg.length > 1) {
+      // A signal names what pkill sends, not what it matches.
+      if (program === "pkill" && /^-(\d+|[A-Z]{2,})$/.test(arg)) continue;
+      const chars = [...arg.slice(1)];
+      let takesNext = false;
+      let unknown = false;
+      for (const [at, ch] of chars.entries()) {
+        if (HARMLESS_SHORT.has(ch)) {
+          if (ch === "f") full = true;
+          continue;
+        }
+        // A value-taking option swallows the rest of the cluster, or the next token.
+        if (HARMLESS_SHORT_WITH_VALUE.has(ch)) {
+          takesNext = at === chars.length - 1;
+          break;
+        }
+        unknown = true;
+        break;
+      }
+      if (unknown) return null;
+      if (takesNext) i++;
+      continue;
+    }
+    operands.push(arg);
+  }
+  return full && operands.length === 1 ? operands[0] : null;
+}
+
+/** Every readable `pgrep -f` / `pkill -f` pattern among these tokens. */
+function fullMatchPatterns(tokens) {
+  const patterns = [];
+  for (let i = 0; i < tokens.length; i++) {
+    // An absolute path still names the program, and so does a quoted one:
+    // quoting stops `while` being a keyword, and does not stop `pgrep` being
+    // a command.
+    const program = /^(?:.*\/)?(pgrep|pkill)$/.exec(tokens[i].value)?.[1];
+    if (!program) continue;
+    const args = [];
+    for (let j = i + 1; j < tokens.length && !endsArguments(tokens[j]); j++) args.push(tokens[j].value);
+    const pattern = fullCommandLinePattern(args, program);
+    if (pattern !== null) patterns.push(pattern);
+  }
+  return patterns;
+}
+
+/**
+ * The tokens of each `until` / `while` condition, up to that loop's `do`.
+ * A quoted keyword is not a keyword — bash refuses `wh"ile" x; do y; done` as
+ * a syntax error — so quoting is what separates a loop from a word about one.
+ */
+function loopConditions(tokens) {
+  const out = [];
+  for (let i = 0; i < tokens.length; i++) {
+    if (tokens[i].quoted || !/^(?:until|while)$/.test(tokens[i].value)) continue;
+    let end = i + 1;
+    while (end < tokens.length && !(!tokens[end].quoted && tokens[end].value === "do")) end++;
+    out.push(tokens.slice(i + 1, end));
+  }
+  return out;
+}
+
+// A pattern is the agent's own text rather than anything hostile, but
+// catastrophic backtracking does not care: `a(a+)+$` over 26 characters takes
+// seconds, and a `try` cannot interrupt it. A hook that stalls is the failure
+// this one exists to prevent, so the match runs under a deadline it can lose.
+const MATCH_TIMEOUT_MS = 100;
+
+/**
+ * Whether a pattern matches the command it is written in. Matching the command
+ * TEXT is the sound half of the question: the harness embeds that text in the
+ * process's command line, so a match here is a match there. A pattern that
+ * matches only the wrapper around it — `bash`, say — is missed, and a miss
+ * costs nothing a refusal would have saved.
+ */
+function matchesOwnCommand(pattern, line) {
+  if (!pattern) return false;
+  try {
+    return runInNewContext("new RegExp(p).test(s)", { p: pattern, s: line }, {
+      timeout: MATCH_TIMEOUT_MS,
+    }) === true;
+  } catch {
+    // Not a regex this runtime reads, or too slow to decide inside the deadline.
+    return false;
+  }
+}
+
+function offendsSelfMatchingWatcher(line) {
+  const tokens = tokenize(withoutHeredocBodies(line));
+  if (!tokens) return null;
+  for (const condition of loopConditions(tokens)) {
+    for (const pattern of fullMatchPatterns(condition)) {
+      if (matchesOwnCommand(pattern, line)) return pattern;
+    }
+  }
+  return null;
+}
+
 // The orchestrator enables this only during merged-branch recovery.
 const guardDestructiveGit = process.env.SHIPIT_GUARD_DESTRUCTIVE_GIT === "1";
 
-for (const seg of segments(command)) {
+for (const seg of sandboxSession ? [] : segments(command)) {
   const reason = offends(seg);
   if (reason) {
     process.stderr.write(
@@ -184,6 +400,40 @@ for (const seg of segments(command)) {
     );
     process.exit(2);
   }
+}
+
+// Last, and behind a catch: a guard that throws must not refuse correct work,
+// and must not cost the git checks above either.
+let selfMatched = null;
+try {
+  selfMatched = offendsSelfMatchingWatcher(command);
+} catch {
+  selfMatched = null;
+}
+
+if (selfMatched) {
+  process.stderr.write(
+    `Blocked: this wait loop tests for \`${selfMatched}\`, which is text in this very command.\n\n` +
+      "The Bash tool runs a command as `bash -c '<the whole command>'`, so every " +
+      "literal you write is part of the command line of the process that runs it — " +
+      "and `pgrep -f` matches full command lines. This test matches ITSELF, so it is " +
+      "true whatever the processes are doing: the loop waits for something that has " +
+      "already happened, or never notices that it did.\n\n" +
+      "Three ways out, best first.\n\n" +
+      "1. Do not poll for work this harness already tracks. A command started with " +
+      "the Bash tool's background mode notifies you when it exits, so there is " +
+      "nothing to wait for.\n\n" +
+      "2. Wait on the artifact, not the process. Its output has a definite end " +
+      "state and matching it reads no process list at all:\n" +
+      "     until grep -qE '^(PASS|FAIL)' /tmp/run.log; do sleep 5; done\n\n" +
+      "3. If you must match processes, exclude yourself. Any of these is enough, " +
+      "and each is left alone here:\n" +
+      "     pgrep -A  -f 'vitest run src/...'   # ignore this shell's ancestors\n" +
+      "     pgrep -f '[v]itest run src/...'     # a pattern that cannot match itself\n\n" +
+      "Bound the wait either way, so a mistake costs minutes and not the session:\n" +
+      "     timeout 600 bash -c 'until ...; done'\n",
+  );
+  process.exit(2);
 }
 
 process.exit(0);
