@@ -3,8 +3,10 @@ FROM node:24-slim@sha256:4e6b70dd6cbfc88c8157ba19aa3d9f9cce6ba4703576d55459e45ef
 
 WORKDIR /workspace
 
+# openssh-client is here for `ssh-keyscan` alone (docs/305 req 13): the
+# orchestrator observes a destination's host key before pinning it.
 RUN apt-get update \
-    && apt-get install -y acl git git-lfs curl python3 make g++ zip unzip ripgrep bubblewrap \
+    && apt-get install -y acl git git-lfs curl python3 make g++ zip unzip ripgrep bubblewrap openssh-client \
     && rm -rf /var/lib/apt/lists/*
 
 RUN git lfs install --system --skip-repo --skip-smudge

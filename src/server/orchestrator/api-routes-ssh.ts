@@ -293,7 +293,7 @@ export async function registerSshRoutes(app: FastifyInstance, deps: ApiDeps): Pr
         return;
       }
       try {
-        return signSshRequest(serviceDeps, request.params.id, {
+        return await signSshRequest(serviceDeps, request.params.id, {
           keyBlob,
           data,
           ...(typeof bind === "string" ? { bind } : {}),

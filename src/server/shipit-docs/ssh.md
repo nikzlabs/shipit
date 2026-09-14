@@ -30,7 +30,7 @@ If `~/.ssh/config` contains no `Host` block, this session has no destination gra
 When `ssh` needs a signature it asks ShipIt, which signs only if all of the following hold:
 
 - the destination is granted to **this** session;
-- the connection really reached the server whose host key ShipIt recorded — the server proves this by signing the session identifier, which no relay can fake;
+- the connection really reached the server whose host key ShipIt recorded — the server proves this by signing the session identifier, which no relay can fake, and ShipIt recorded that key only after seeing it at the destination's address itself;
 - the connection does not declare itself a forwarded agent;
 - the thing being signed is an SSH public-key authentication request (plain or host-bound) for that connection, with this destination's key, as its configured user.
 
@@ -38,7 +38,9 @@ Anything else is refused. Every attempt that reaches the signer is one line in t
 
 ## Host keys
 
-The first connection to a destination records the server's host key and shows its fingerprint in a card in the chat. The record is made only once the whole request has passed every check, so a failed attempt cannot pin the wrong key.
+The first connection to a destination records the server's host key and shows its fingerprint in a card in the chat. Before recording it, ShipIt looks at the destination's own address and port from the orchestrator and records the key only if the same key answers there. The record is made only once the whole request has passed every check, so a failed attempt cannot pin the wrong key.
+
+**So a first connection can be refused even though everything in this container is correct.** If the address is wrong, the port is wrong, the server is down, or a firewall sits between ShipIt and the host, the check finds nothing and `ssh` fails with "Permission denied (publickey)"; a card in the chat says what ShipIt saw at the address. There is nothing to fix from here — tell the user which destination it was, and that ShipIt could not see that host key at its configured address.
 
 Later connections require that key, and it is enforced in two places. ShipIt writes it into `~/.ssh/known_hosts`, so a changed key usually makes **`ssh` itself** refuse with its own loud host-key warning before ShipIt is asked for anything. The signer refuses a mismatch too, and posts a warning card — that is the backstop for the case where `known_hosts` has been edited.
 
@@ -55,5 +57,5 @@ A **network-off sandbox** is the one deliberate exception to "no user host widen
 - **Revoking a grant stops new authentications, and closes the address to new connections.** A connection that already authenticated continues until it closes — the firewall accepts established flows.
 - **ShipIt cannot limit what you do once the server accepts you.** Bound that on the server side with a restricted user or a forced command. The public line ShipIt shows the user carries `no-agent-forwarding,no-port-forwarding,no-X11-forwarding`.
 - **Nothing is installed on the remote host** and no agent or model credential is stored there. It receives commands; that is all.
-- **Local runtime mode is different.** When ShipIt runs with `RUNTIME_MODE=local` the agent is an in-process child of the orchestrator with no mount boundary, so "the key is out of reach" does not hold. Nor does it hold if a destination is the ShipIt host itself, which hands you a path to the store from the outside.
+- **Local runtime mode is different.** When ShipIt runs with `RUNTIME_MODE=local` the agent is an in-process child of the orchestrator with no mount boundary, so "the key is out of reach" does not hold. Nor does it hold if a destination is the ShipIt host itself, which hands you a path to the store from the outside. Local mode may also have no `ssh-keyscan`, in which case no destination can record its first host key at all.
 - **Tailscale SSH bypasses this.** A peer running Tailscale SSH authenticates the *node*, and every session looks like the ShipIt host node. Keep key-based `sshd` auth on peers and do not grant the ShipIt host node in Tailscale SSH policies.

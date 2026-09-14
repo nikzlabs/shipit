@@ -26,6 +26,11 @@ import {
   verifyHostKeySignature,
 } from "../ssh-hosts.js";
 import { blobType } from "../../shared/ssh-wire.js";
+import {
+  scanSshHostKey,
+  type SshHostKeyScanResult,
+  type SshHostKeyScanner,
+} from "../ssh-keyscan.js";
 import type { SshHostKeyCard, SshHostPublic } from "../../shared/types.js";
 
 /**
@@ -41,6 +46,8 @@ export interface SshServiceDeps {
   sessionManager: Pick<SessionManager, "get">;
   runnerRegistry?: Pick<SessionRunnerRegistry, "get">;
   chatHistoryManager?: Pick<ChatHistoryManager, "append" | "replaceInProgress" | "hasInProgress">;
+  /** Injected in tests; production spawns `ssh-keyscan` (req 13). */
+  scanHostKey?: SshHostKeyScanner;
   now?: () => number;
 }
 
@@ -56,6 +63,7 @@ export type SshRefusalReason =
   | "bad-bind"
   | "forwarding"
   | "host-key-mismatch"
+  | "host-key-unverified"
   | "not-userauth"
   | "wrong-algorithm"
   | "hostbound-mismatch"
@@ -75,12 +83,13 @@ export interface SshSignRequest {
 /**
  * Rule 5 — bound a compromised agent to a nuisance rather than an oracle.
  *
- * The rate is the whole bound, because **concurrency is one by construction**:
- * {@link signSshRequest} is synchronous end to end, so Node cannot interleave
- * two of them and a counter beside this one could never reach two. A future
- * change that makes any step here `await` — an HSM, a remote signer — removes
- * that guarantee silently, and is the point at which a concurrency bound has to
- * be added back.
+ * The rate slot is taken synchronously, before the one step that can suspend
+ * (the req 13 host-key scan), so a flood is bounded whether or not requests
+ * interleave. Concurrency is bounded where it can actually cost something: the
+ * scan is deduplicated per destination by {@link scansInFlight}, so N concurrent
+ * first connections spawn one `ssh-keyscan`, not N. Every other step is
+ * synchronous, and the stretch from re-reading the pin to recording it contains
+ * no `await` — which is what makes the check-then-record atomic.
  */
 const RATE_WINDOW_MS = 60_000;
 const MAX_ATTEMPTS_PER_WINDOW = 60;
@@ -98,6 +107,40 @@ function takeRateSlot(sessionId: string, now: number): boolean {
   if (recent.length >= MAX_ATTEMPTS_PER_WINDOW) return false;
   recent.push(now);
   return true;
+}
+
+/**
+ * One scan in flight per *scan*, not per destination: the key is everything
+ * that decides what a scan answers — address, port and key family. Sharing
+ * across any of those would hand one request an answer about a different
+ * question: a different family's keys, or the endpoint the destination had
+ * before it was edited.
+ *
+ * Cleared when it settles, and the result is never cached: a scan that saw
+ * nothing must be retried on the next connection rather than remembered as a
+ * verdict.
+ */
+const scansInFlight = new Map<string, Promise<SshHostKeyScanResult>>();
+
+/** Test hook; the map is process-lived by design. */
+export function _resetSshScanState(): void {
+  scansInFlight.clear();
+}
+
+function scanOnce(
+  deps: SshServiceDeps,
+  host: SshHostPublic,
+  keyType: string,
+): Promise<SshHostKeyScanResult> {
+  const key = `${host.id} ${host.address} ${String(host.port)} ${keyType}`;
+  const existing = scansInFlight.get(key);
+  if (existing) return existing;
+  const scanner = deps.scanHostKey ?? scanSshHostKey;
+  const pending = scanner({ address: host.address, port: host.port, keyType })
+    .catch((): SshHostKeyScanResult => ({ keys: [], failure: "scan-failed" }))
+    .finally(() => scansInFlight.delete(key));
+  scansInFlight.set(key, pending);
+  return pending;
 }
 
 export function grantedSshHosts(deps: SshServiceDeps, sessionId: string): SshHostPublic[] {
@@ -190,17 +233,44 @@ function refuse(
   throw new ServiceError(403, message);
 }
 
+/** Reached from both sides of the scan, so the pin cannot move under a race. */
+function refuseHostKeyMismatch(
+  deps: SshServiceDeps,
+  sessionId: string,
+  host: SshHostPublic,
+  seenFingerprint: string,
+  keyType: string,
+  recordedFingerprint = host.hostKeyFingerprint,
+): never {
+  emitHostKeyCard(deps, sessionId, {
+    cardId: `ssh-host-key-${randomUUID()}`,
+    hostId: host.id,
+    label: host.label,
+    address: host.address,
+    kind: "mismatch",
+    fingerprint: seenFingerprint,
+    keyType,
+    ...(recordedFingerprint ? { recordedFingerprint } : {}),
+    createdAt: new Date().toISOString(),
+  });
+  refuse(
+    deps,
+    { sessionId, host, reason: "host-key-mismatch", detail: seenFingerprint },
+    `The host key ${host.address} presented does not match the one ShipIt recorded.`,
+  );
+}
+
 /**
  * Sign, or refuse. Returns base64 of the SSH signature blob.
  *
  * The endpoint is stateless: the bind travels with every request, so nothing
  * here depends on which socket connection the worker held it on.
  */
-export function signSshRequest(
+export async function signSshRequest(
   deps: SshServiceDeps,
   sessionId: string,
   request: SshSignRequest,
-): { signature: string } {
+): Promise<{ signature: string }> {
   const now = deps.now?.() ?? Date.now();
 
   // Rule 1 — the session's grant includes the destination whose key is asked for.
@@ -253,7 +323,8 @@ export function signSshRequest(
     );
   }
 
-  // Rule 3 — the host key is the recorded one, or this bind records it (TOFU).
+  // Rule 3 — the host key is the recorded one, or this bind is a candidate for
+  // the first recording, which the orchestrator's own scan decides (req 13).
   const seenFingerprint = fingerprintOf(bind.hostKeyBlob);
   const keyType = blobType(Buffer.from(bind.hostKeyBlob, "base64")) ?? "unknown";
   const pinned = deps.credentialStore.getSshHostSigningKey(host.id);
@@ -264,29 +335,12 @@ export function signSshRequest(
       "That SSH destination no longer exists.",
     );
   }
-  // Recording is DEFERRED to the end of this function, after rule 4 has passed.
-  // The pin is account-wide and permanent, and a request that is about to be
-  // refused must not be able to set it: a caller that posts a bind it minted
-  // itself plus junk to sign would otherwise pin its own key as this
-  // destination's and break every granted session's next connection.
+  // Recording is DEFERRED to the end of this function, after rule 4 has passed
+  // and the scan has confirmed the key. The pin is account-wide and permanent,
+  // and a request that is about to be refused must not be able to set it.
   const recordPinNow = !pinned.hostKeyBlob;
   if (pinned.hostKeyBlob && pinned.hostKeyBlob !== bind.hostKeyBlob) {
-    emitHostKeyCard(deps, sessionId, {
-      cardId: `ssh-host-key-${randomUUID()}`,
-      hostId: host.id,
-      label: host.label,
-      address: host.address,
-      kind: "mismatch",
-      fingerprint: seenFingerprint,
-      keyType,
-      ...(host.hostKeyFingerprint ? { recordedFingerprint: host.hostKeyFingerprint } : {}),
-      createdAt: new Date().toISOString(),
-    });
-    refuse(
-      deps,
-      { sessionId, host, reason: "host-key-mismatch", detail: seenFingerprint },
-      `The host key ${host.address} presented does not match the one ShipIt recorded.`,
-    );
+    refuseHostKeyMismatch(deps, sessionId, host, seenFingerprint, keyType);
   }
 
   // Rule 4 — userauth publickey only, for this connection, as this user.
@@ -335,21 +389,94 @@ export function signSshRequest(
     );
   }
 
-  // Trust on first use, once every other rule has passed (req 9).
-  if (recordPinNow && deps.credentialStore.recordSshHostKey(host.id, bind.hostKeyBlob, {
-    fingerprint: seenFingerprint,
-    keyType,
-  })) {
-    emitHostKeyCard(deps, sessionId, {
-      cardId: `ssh-host-key-${randomUUID()}`,
-      hostId: host.id,
-      label: host.label,
-      address: host.address,
-      kind: "recorded",
-      fingerprint: seenFingerprint,
-      keyType,
-      createdAt: new Date().toISOString(),
-    });
+  // req 13 — the first recording. The scan is sequenced here, after every other
+  // rule, so a request that is going to be refused anyway spawns no process.
+  if (recordPinNow) {
+    const scan = await scanOnce(deps, host, keyType);
+
+    // The scan is the only step that suspends, and every rule above read state
+    // the user can change while it waits: the grant can be revoked, the
+    // destination deleted, its address, port or user edited, a concurrent
+    // request can record a key. So re-read all of it and refuse on any
+    // difference, rather than authenticating against a configuration that no
+    // longer holds. Everything from here to the record is synchronous.
+    const current = grantedSshHosts(deps, sessionId).find((h) => h.id === host.id);
+    const afterScan = deps.credentialStore.getSshHostSigningKey(host.id);
+    if (!current || !afterScan) {
+      refuse(
+        deps,
+        { sessionId, host, reason: "not-granted", detail: "revoked-during-scan" },
+        "That SSH destination is no longer granted to this session.",
+      );
+    }
+    // Rule 4 compared the request's user against the one configured before the
+    // scan; signing now would authenticate as an account just taken away.
+    if (current.user !== host.user) {
+      refuse(
+        deps,
+        { sessionId, host: current, user: parsed.user, reason: "user-mismatch", detail: "user-changed-during-scan" },
+        `That SSH destination's user changed while ShipIt was verifying its host key; it now authenticates as ${current.user}.`,
+      );
+    }
+    // A key observed at the old endpoint says nothing about the new one, so the
+    // scan's answer is void — whatever it found, and whichever request started it.
+    if (current.address !== host.address || current.port !== host.port) {
+      refuse(
+        deps,
+        { sessionId, host: current, reason: "host-key-unverified", detail: "endpoint-changed-during-scan" },
+        "That SSH destination's address changed while ShipIt was verifying its host key; try again.",
+      );
+    }
+    if (afterScan.hostKeyBlob && afterScan.hostKeyBlob !== bind.hostKeyBlob) {
+      refuseHostKeyMismatch(
+        deps, sessionId, host, seenFingerprint, keyType,
+        host.hostKeyFingerprint ?? fingerprintOf(afterScan.hostKeyBlob),
+      );
+    }
+    if (!afterScan.hostKeyBlob) {
+      if (!scan.keys.includes(bind.hostKeyBlob)) {
+        const scannedFingerprint = scan.keys[0] ? fingerprintOf(scan.keys[0]) : undefined;
+        emitHostKeyCard(deps, sessionId, {
+          cardId: `ssh-host-key-${randomUUID()}`,
+          hostId: host.id,
+          label: host.label,
+          address: host.address,
+          kind: "unverified",
+          fingerprint: seenFingerprint,
+          keyType,
+          ...(scannedFingerprint ? { scannedFingerprint } : {}),
+          ...(scan.failure ? { scanFailure: scan.failure } : {}),
+          createdAt: new Date().toISOString(),
+        });
+        refuse(
+          deps,
+          {
+            sessionId,
+            host,
+            reason: "host-key-unverified",
+            detail: scannedFingerprint
+              ? `scanned=${scannedFingerprint}`
+              : `scan=${scan.failure ?? "no-answer"}`,
+          },
+          `ShipIt could not observe that host key at ${host.address}:${String(host.port)}, so it will not record it.`,
+        );
+      }
+      if (deps.credentialStore.recordSshHostKey(host.id, bind.hostKeyBlob, {
+        fingerprint: seenFingerprint,
+        keyType,
+      })) {
+        emitHostKeyCard(deps, sessionId, {
+          cardId: `ssh-host-key-${randomUUID()}`,
+          hostId: host.id,
+          label: host.label,
+          address: host.address,
+          kind: "recorded",
+          fingerprint: seenFingerprint,
+          keyType,
+          createdAt: new Date().toISOString(),
+        });
+      }
+    }
   }
 
   const signature = signWithHostKey(pinned.privateKeyPem, Buffer.from(request.data, "base64"));
