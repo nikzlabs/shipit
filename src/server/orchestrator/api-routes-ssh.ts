@@ -26,10 +26,16 @@ import type { SessionSettingsChangeEntry, SshHostPublic } from "../shared/types.
 const MAX_LABEL = 200;
 const HOSTNAME = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$/i;
 
+// A control character in a label would break the audit line, which is
+// whitespace-delimited and is the only account of a refusal (req 10).
+// eslint-disable-next-line no-control-regex -- the point is to reject exactly these
+const CONTROL_CHARS = /[\x00-\x1f\x7f]/;
+
 function requireText(value: unknown, field: string, max: number): string {
   const text = typeof value === "string" ? value.trim() : "";
   if (!text) throw new ServiceError(400, `${field} is required`);
   if (text.length > max) throw new ServiceError(400, `${field} is too long`);
+  if (CONTROL_CHARS.test(text)) throw new ServiceError(400, `${field} must not contain control characters`);
   return text;
 }
 

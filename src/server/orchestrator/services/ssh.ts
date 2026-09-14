@@ -68,37 +68,32 @@ export interface SshSignRequest {
   bind?: string;
 }
 
-/** Bounds a compromised agent to a nuisance rather than an oracle (rule 5). */
+/**
+ * Rule 5 — bound a compromised agent to a nuisance rather than an oracle.
+ *
+ * The rate is the whole bound, because **concurrency is one by construction**:
+ * {@link signSshRequest} is synchronous end to end, so Node cannot interleave
+ * two of them and a counter beside this one could never reach two. A future
+ * change that makes any step here `await` — an HSM, a remote signer — removes
+ * that guarantee silently, and is the point at which a concurrency bound has to
+ * be added back.
+ */
 const RATE_WINDOW_MS = 60_000;
 const MAX_ATTEMPTS_PER_WINDOW = 60;
-const MAX_CONCURRENT = 4;
 
-interface RateState {
-  attempts: number[];
-  inFlight: number;
-}
-
-const rateBySession = new Map<string, RateState>();
+const attemptsBySession = new Map<string, number[]>();
 
 /** Test hook; the map is process-lived by design. */
 export function _resetSshRateLimits(): void {
-  rateBySession.clear();
+  attemptsBySession.clear();
 }
 
 function takeRateSlot(sessionId: string, now: number): boolean {
-  const state = rateBySession.get(sessionId) ?? { attempts: [], inFlight: 0 };
-  rateBySession.set(sessionId, state);
-  state.attempts = state.attempts.filter((t) => now - t < RATE_WINDOW_MS);
-  if (state.attempts.length >= MAX_ATTEMPTS_PER_WINDOW) return false;
-  if (state.inFlight >= MAX_CONCURRENT) return false;
-  state.attempts.push(now);
-  state.inFlight++;
+  const recent = (attemptsBySession.get(sessionId) ?? []).filter((t) => now - t < RATE_WINDOW_MS);
+  attemptsBySession.set(sessionId, recent);
+  if (recent.length >= MAX_ATTEMPTS_PER_WINDOW) return false;
+  recent.push(now);
   return true;
-}
-
-function releaseRateSlot(sessionId: string): void {
-  const state = rateBySession.get(sessionId);
-  if (state && state.inFlight > 0) state.inFlight--;
 }
 
 export function grantedSshHosts(deps: SshServiceDeps, sessionId: string): SshHostPublic[] {
@@ -129,6 +124,17 @@ interface AuditFields {
 }
 
 /**
+ * One field of the audit line. Two of the values are attacker-influenceable —
+ * the `user` comes off the wire on a mismatch refusal, and the destination's
+ * label is free text the user typed — and the line is whitespace-delimited, so
+ * an unescaped newline would forge a whole second entry in the very log that
+ * exists to explain a refusal.
+ */
+function auditField(value: string | number): string {
+  return String(value).replace(/[^\x20-\x7e]/g, "?").replace(/\s/g, "_");
+}
+
+/**
  * One line per authentication attempt (req 10). It records an *attempt*: the
  * orchestrator never learns whether the server accepted the signature, so a
  * "signed" line followed by a failing `ssh` points at the server side.
@@ -138,15 +144,15 @@ interface AuditFields {
  */
 function audit(fields: AuditFields): void {
   const parts = [
-    `session=${fields.sessionId}`,
-    `destination=${fields.host ? `${fields.host.label}[${fields.host.id}]` : "unknown"}`,
-    `address=${fields.host ? `${fields.host.address}:${fields.host.port}` : "unknown"}`,
-    `user=${fields.user ?? fields.host?.user ?? "unknown"}`,
+    `session=${auditField(fields.sessionId)}`,
+    `destination=${fields.host ? `${auditField(fields.host.label)}[${auditField(fields.host.id)}]` : "unknown"}`,
+    `address=${fields.host ? `${auditField(fields.host.address)}:${auditField(fields.host.port)}` : "unknown"}`,
+    `user=${auditField(fields.user ?? fields.host?.user ?? "unknown")}`,
     `at=${new Date().toISOString()}`,
     `outcome=${fields.outcome}`,
   ];
   if (fields.reason) parts.push(`reason=${fields.reason}`);
-  if (fields.detail) parts.push(`detail=${fields.detail}`);
+  if (fields.detail) parts.push(`detail=${auditField(fields.detail)}`);
   console.log(`[ssh-sign] ${parts.join(" ")}`);
 }
 
@@ -212,114 +218,110 @@ export function signSshRequest(
     );
   }
 
-  try {
-    // Rule 2 — a real key exchange with a real server, not a forwarded agent.
-    if (!request.bind) {
-      refuse(
-        deps,
-        { sessionId, host, reason: "no-bind" },
-        "ShipIt signs only for a connection bound to its server's host key.",
-      );
-    }
-    const bind = parseSessionBind(Buffer.from(request.bind, "base64"));
-    if (!bind) {
-      refuse(
-        deps,
-        { sessionId, host, reason: "bad-bind" },
-        "The session binding was not a well-formed session-bind@openssh.com message.",
-      );
-    }
-    if (bind.isForwarding) {
-      refuse(
-        deps,
-        { sessionId, host, reason: "forwarding" },
-        "ShipIt refuses to sign for a forwarded agent connection.",
-      );
-    }
-    if (!verifyHostKeySignature(bind)) {
-      refuse(
-        deps,
-        { sessionId, host, reason: "bad-bind", detail: "host-key-signature" },
-        "The server's signature over the session identifier did not verify.",
-      );
-    }
+  // Rule 2 — a real key exchange with a real server, not a forwarded agent.
+  if (!request.bind) {
+    refuse(
+      deps,
+      { sessionId, host, reason: "no-bind" },
+      "ShipIt signs only for a connection bound to its server's host key.",
+    );
+  }
+  const bind = parseSessionBind(Buffer.from(request.bind, "base64"));
+  if (!bind) {
+    refuse(
+      deps,
+      { sessionId, host, reason: "bad-bind" },
+      "The session binding was not a well-formed session-bind@openssh.com message.",
+    );
+  }
+  if (bind.isForwarding) {
+    refuse(
+      deps,
+      { sessionId, host, reason: "forwarding" },
+      "ShipIt refuses to sign for a forwarded agent connection.",
+    );
+  }
+  if (!verifyHostKeySignature(bind)) {
+    refuse(
+      deps,
+      { sessionId, host, reason: "bad-bind", detail: "host-key-signature" },
+      "The server's signature over the session identifier did not verify.",
+    );
+  }
 
-    // Rule 3 — the host key is the recorded one, or this bind records it (TOFU).
-    const seenFingerprint = fingerprintOf(bind.hostKeyBlob);
-    const keyType = blobType(Buffer.from(bind.hostKeyBlob, "base64")) ?? "unknown";
-    const pinned = deps.credentialStore.getSshHostSigningKey(host.id);
-    if (!pinned) {
-      refuse(
-        deps,
-        { sessionId, host, reason: "not-granted", detail: "destination-removed" },
-        "That SSH destination no longer exists.",
-      );
-    }
-    if (!pinned.hostKeyBlob) {
-      const recorded = deps.credentialStore.recordSshHostKey(host.id, bind.hostKeyBlob, {
-        fingerprint: seenFingerprint,
-        keyType,
-      });
-      if (recorded) {
-        emitHostKeyCard(deps, sessionId, {
-          cardId: `ssh-host-key-${randomUUID()}`,
-          hostId: host.id,
-          label: host.label,
-          address: host.address,
-          kind: "recorded",
-          fingerprint: seenFingerprint,
-          keyType,
-          createdAt: new Date().toISOString(),
-        });
-      }
-    } else if (pinned.hostKeyBlob !== bind.hostKeyBlob) {
+  // Rule 3 — the host key is the recorded one, or this bind records it (TOFU).
+  const seenFingerprint = fingerprintOf(bind.hostKeyBlob);
+  const keyType = blobType(Buffer.from(bind.hostKeyBlob, "base64")) ?? "unknown";
+  const pinned = deps.credentialStore.getSshHostSigningKey(host.id);
+  if (!pinned) {
+    refuse(
+      deps,
+      { sessionId, host, reason: "not-granted", detail: "destination-removed" },
+      "That SSH destination no longer exists.",
+    );
+  }
+  if (!pinned.hostKeyBlob) {
+    const recorded = deps.credentialStore.recordSshHostKey(host.id, bind.hostKeyBlob, {
+      fingerprint: seenFingerprint,
+      keyType,
+    });
+    if (recorded) {
       emitHostKeyCard(deps, sessionId, {
         cardId: `ssh-host-key-${randomUUID()}`,
         hostId: host.id,
         label: host.label,
         address: host.address,
-        kind: "mismatch",
+        kind: "recorded",
         fingerprint: seenFingerprint,
         keyType,
-        ...(host.hostKeyFingerprint ? { recordedFingerprint: host.hostKeyFingerprint } : {}),
         createdAt: new Date().toISOString(),
       });
-      refuse(
-        deps,
-        { sessionId, host, reason: "host-key-mismatch", detail: seenFingerprint },
-        `The host key ${host.address} presented does not match the one ShipIt recorded.`,
-      );
     }
-
-    // Rule 4 — userauth publickey only, for this connection, as this user.
-    const parsed = parseUserauthRequest(Buffer.from(request.data, "base64"));
-    if (parsed?.service !== "ssh-connection" || parsed.method !== "publickey"
-      || !parsed.hasSignature || parsed.publicKeyBlob !== host.publicKeyBlob) {
-      refuse(
-        deps,
-        { sessionId, host, reason: "not-userauth" },
-        "ShipIt signs only an SSH publickey authentication request for this destination.",
-      );
-    }
-    if (!parsed.sessionId.equals(bind.sessionId)) {
-      refuse(
-        deps,
-        { sessionId, host, reason: "session-id-mismatch" },
-        "The request to sign belongs to a different SSH connection than the bound one.",
-      );
-    }
-    if (parsed.user !== host.user) {
-      refuse(
-        deps,
-        { sessionId, host, user: parsed.user, reason: "user-mismatch" },
-        `This destination authenticates as ${host.user}, not ${parsed.user}.`,
-      );
-    }
-
-    const signature = signWithHostKey(pinned.privateKeyPem, Buffer.from(request.data, "base64"));
-    audit({ sessionId, host, user: parsed.user, outcome: "signed" });
-    return { signature: signature.toString("base64") };
-  } finally {
-    releaseRateSlot(sessionId);
+  } else if (pinned.hostKeyBlob !== bind.hostKeyBlob) {
+    emitHostKeyCard(deps, sessionId, {
+      cardId: `ssh-host-key-${randomUUID()}`,
+      hostId: host.id,
+      label: host.label,
+      address: host.address,
+      kind: "mismatch",
+      fingerprint: seenFingerprint,
+      keyType,
+      ...(host.hostKeyFingerprint ? { recordedFingerprint: host.hostKeyFingerprint } : {}),
+      createdAt: new Date().toISOString(),
+    });
+    refuse(
+      deps,
+      { sessionId, host, reason: "host-key-mismatch", detail: seenFingerprint },
+      `The host key ${host.address} presented does not match the one ShipIt recorded.`,
+    );
   }
+
+  // Rule 4 — userauth publickey only, for this connection, as this user.
+  const parsed = parseUserauthRequest(Buffer.from(request.data, "base64"));
+  if (parsed?.service !== "ssh-connection" || parsed.method !== "publickey"
+    || !parsed.hasSignature || parsed.publicKeyBlob !== host.publicKeyBlob) {
+    refuse(
+      deps,
+      { sessionId, host, reason: "not-userauth" },
+      "ShipIt signs only an SSH publickey authentication request for this destination.",
+    );
+  }
+  if (!parsed.sessionId.equals(bind.sessionId)) {
+    refuse(
+      deps,
+      { sessionId, host, reason: "session-id-mismatch" },
+      "The request to sign belongs to a different SSH connection than the bound one.",
+    );
+  }
+  if (parsed.user !== host.user) {
+    refuse(
+      deps,
+      { sessionId, host, user: parsed.user, reason: "user-mismatch" },
+      `This destination authenticates as ${host.user}, not ${parsed.user}.`,
+    );
+  }
+
+  const signature = signWithHostKey(pinned.privateKeyPem, Buffer.from(request.data, "base64"));
+  audit({ sessionId, host, user: parsed.user, outcome: "signed" });
+  return { signature: signature.toString("base64") };
 }

@@ -336,4 +336,31 @@ describe("the audit line", () => {
       expect(line).not.toContain(h.privateKeyPem.split("\n")[1]);
     }
   });
+
+  /**
+   * The line is whitespace-delimited and the refused `user` comes off the wire,
+   * so an unescaped newline would forge a second entry in the only record of
+   * why ShipIt refused.
+   */
+  it("cannot be split into a second line by a user name off the wire", () => {
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const h = harness();
+    expect(() => signSshRequest(h.deps, SESSION, {
+      ...validRequest(h),
+      data: buildUserauthData({
+        sessionId: SSH_SESSION_ID,
+        user: "root\n[ssh-sign] session=sess-1 outcome=signed",
+        publicKeyBlob: h.host.publicKeyBlob,
+      }),
+    })).toThrow(/authenticates as deploy/);
+
+    // One line, and one ` outcome=` field on it: whitespace is what separates a
+    // field and a line, so escaping it is what keeps the forgery inside `user=`.
+    const lines = log.mock.calls.map((c) => String(c[0])).filter((l) => l.startsWith("[ssh-sign]"));
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).not.toContain("\n");
+    expect(lines[0].split(" outcome=")).toHaveLength(2);
+    expect(lines[0]).toContain(" outcome=refused");
+    expect(lines[0]).toContain("reason=user-mismatch");
+  });
 });

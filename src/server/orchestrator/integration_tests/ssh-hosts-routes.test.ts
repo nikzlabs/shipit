@@ -109,6 +109,17 @@ describe("Integration: SSH host routes", () => {
       expect(res.statusCode).toBe(400);
     });
 
+    // The audit line is whitespace-delimited and carries the label, so a
+    // newline in it would forge an entry in the only record of a refusal.
+    it("rejects a label carrying a control character", async () => {
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/ssh-hosts",
+        payload: { label: "prod\n[ssh-sign] outcome=signed", address: "prod.example.com", user: "deploy" },
+      });
+      expect(res.statusCode).toBe(400);
+    });
+
     it("rejects a port outside the valid range", async () => {
       const res = await app.inject({
         method: "POST",
