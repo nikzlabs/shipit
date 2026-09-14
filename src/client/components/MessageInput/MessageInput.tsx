@@ -974,7 +974,10 @@ export function MessageInput({
               returns the moment the install becomes runnable. */}
           <textarea
             ref={textareaRef}
-            data-chat-input
+            // Carries the surface so a hotkey can tell the conversation
+            // composer from the quick-capture overlay's copy of it
+            // (`useChatSearchHotkey`).
+            data-chat-input={surface}
             value={inert ? "" : text}
             disabled={inert}
             onChange={handleTextChange}

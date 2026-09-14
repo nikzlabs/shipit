@@ -1,4 +1,5 @@
 import type { Dispatch, SetStateAction } from "react";
+import { useChatSearchHotkey } from "./useChatSearchHotkey.js";
 import { useKeyboardShortcuts } from "./useKeyboardShortcuts.js";
 import { useQuickCaptureHotkey } from "./useQuickCaptureHotkey.js";
 import { useKeybinding } from "../keybindings/use-keybinding.js";
@@ -8,7 +9,7 @@ import { useUiStore } from "../stores/ui-store.js";
  * App-level keyboard wiring: the shortcuts overlay + new-session chord
  * (`useKeyboardShortcuts`), the text quick-capture hotkey, and the voice
  * quick-capture hotkey (docs/144 Mode B — opens the overlay AND auto-starts the
- * mic, only when voice input is enabled).
+ * mic, only when voice input is enabled), plus the chat-search chord.
  *
  * The resolved chords (`quickCaptureHotkey`, `voiceHotkeyModeB`) and
  * `voiceInputEnabled` are passed in so their `useKeybinding`/store selectors
@@ -20,13 +21,16 @@ export function useAppKeyboardShortcuts(params: {
   quickCaptureHotkey: string;
   voiceInputEnabled: boolean;
   voiceHotkeyModeB: string;
+  openChatSearch: () => void;
 }): void {
-  const { setShortcutsOpen, handleNewSessionShortcut, quickCaptureHotkey, voiceInputEnabled, voiceHotkeyModeB } = params;
+  const { setShortcutsOpen, handleNewSessionShortcut, quickCaptureHotkey, voiceInputEnabled, voiceHotkeyModeB, openChatSearch } = params;
 
   useKeyboardShortcuts({
     setShortcutsOpen: (updater) => setShortcutsOpen(updater),
     handleNewSession: handleNewSessionShortcut,
   });
+
+  useChatSearchHotkey(openChatSearch);
 
   useQuickCaptureHotkey(quickCaptureHotkey, () => {
     useUiStore.getState().setQuickCaptureOpen(true);

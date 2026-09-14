@@ -88,7 +88,7 @@ import {
   type InteractiveTerminalHandle,
 } from "./components/InteractiveTerminal.js";
 import { PreviewServicesDrawer } from "./components/PreviewServicesDrawer.js";
-import { SearchBar } from "./components/SearchBar.js";
+import { ConversationSearch } from "./components/ConversationSearch.js";
 import { TopPanelBanner } from "./components/TopPanelBanner.js";
 import { KeyboardShortcutsOverlay } from "./components/KeyboardShortcutsOverlay.js";
 import { HomeScreen } from "./components/HomeScreen.js";
@@ -373,6 +373,8 @@ export default function App() {
   const {
     searchOpen,
     setSearchOpen,
+    openSearch,
+    searchFocusKey,
     shortcutsOpen,
     setShortcutsOpen,
     githubOrgs,
@@ -742,6 +744,7 @@ export default function App() {
     quickCaptureHotkey,
     voiceInputEnabled,
     voiceHotkeyModeB,
+    openChatSearch: openSearch,
   });
 
   const handleTabChange = useCallback(
@@ -1541,7 +1544,8 @@ export default function App() {
   const chatPanel = (
     <>
       {searchOpen && (
-        <SearchBar
+        <ConversationSearch
+          focusKey={searchFocusKey}
           query={search.query}
           onQueryChange={search.setQuery}
           matches={search.matches}
@@ -1580,7 +1584,7 @@ export default function App() {
             }}
             onCreatePr={handleCreatePr}
             canAutoMerge={!!currentSession?.remoteUrl}
-            onSearch={() => setSearchOpen(true)}
+            onSearch={openSearch}
           />
         ))}
       {isMobile && (
