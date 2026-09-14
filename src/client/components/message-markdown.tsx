@@ -117,6 +117,15 @@ const ShipitPointerSessionContext = createContext<string | null>(null);
 export const ShipitPointerSessionProvider = ShipitPointerSessionContext.Provider;
 
 /**
+ * The session a pointer on screen belongs to, for a surface that resolves an
+ * href itself rather than through {@link ShipitPointer} — a presented artifact
+ * reporting a click out of its own frame (req 14). `null` means unscoped.
+ */
+export function useShipitPointerSession(): string | null {
+  return useContext(ShipitPointerSessionContext);
+}
+
+/**
  * An agent-authored pointer into the user's own app or a presented artifact
  * (docs/258). All three forms — inline link, badge, block button — parse,
  * resolve and click **identically**; the form the agent picked selects styling
@@ -408,7 +417,7 @@ export const markdownComponents: Components = {
  * are stable module constants, and building one per render would silently
  * reinstate the O(messages × tokens) re-parse that memo exists to prevent.
  */
-const shipitLinkComponents: Components = {
+export const shipitLinkComponents: Components = {
   ...markdownComponents,
   a({ href, title, children }) {
     return (
@@ -425,7 +434,7 @@ const remarkPlugins = [remarkGfm, remarkBreaks, remarkLinkifyPaths, remarkLinkif
 
 // and the browser cannot load it) but a direct contradiction of the invariant
 
-function urlTransform(url: string, key: string): string {
+export function urlTransform(url: string, key: string): string {
   if (url.startsWith(ISSUE_LINK_SCHEME)) return url;
   if (key === "href" && isShipitLinkHref(url)) return url;
   return defaultUrlTransform(url);

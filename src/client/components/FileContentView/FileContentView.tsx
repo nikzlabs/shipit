@@ -18,6 +18,12 @@ export interface FileContentViewProps {
   codeComments: { id: string; kind: "line"; line: number; text: string }[];
   agentInterfaceFrameRef?: Ref<HTMLIFrameElement>;
   scrollTo?: string;
+  /**
+   * Make agent-authored ShipIt pointers inside the content live (docs/258
+   * req 14). Only a **presented** artifact sets it: the file-preview dialog
+   * renders repo files, which ShipIt did not author.
+   */
+  shipitLinks?: boolean;
 }
 
 export function FileContentView({
@@ -32,6 +38,7 @@ export function FileContentView({
   codeComments,
   agentInterfaceFrameRef,
   scrollTo,
+  shipitLinks = false,
 }: FileContentViewProps) {
   const readOnly = !reviewable;
 
@@ -44,6 +51,7 @@ export function FileContentView({
           sessionId={sessionId}
           comments={markdownComments}
           readOnly={readOnly}
+          shipitLinks={shipitLinks}
         />
       </div>
     );
@@ -64,6 +72,7 @@ export function FileContentView({
         kind="html"
         content={content}
         enableAgentInterface={!!agentInterfaceFrameRef}
+        shipitLinks={shipitLinks}
         frameRef={agentInterfaceFrameRef}
         scrollTo={scrollTo}
       />

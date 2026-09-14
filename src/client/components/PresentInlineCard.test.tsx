@@ -6,6 +6,8 @@ import { PresentInlineCard } from "./PresentInlineCard.js";
 import { usePresentStore } from "../stores/present-store.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { useUiStore } from "../stores/ui-store.js";
+import { usePreviewStore } from "../stores/preview-store.js";
+import { ShipitPointerSessionProvider } from "./message-markdown.js";
 import type { PresentInlineCard as PresentInlineCardData } from "../../server/shared/types.js";
 
 const PRESENT_ID = "pres_abc";
@@ -43,6 +45,8 @@ function seedArtifact(over: Partial<PresentInlineCardData> = {}, content?: strin
 afterEach(() => {
   cleanup();
   usePresentStore.getState().reset();
+  usePreviewStore.setState({ services: [], previewLinkIntent: null, selectedPort: null });
+  useUiStore.setState({ toast: null });
   vi.restoreAllMocks();
 });
 
@@ -120,6 +124,122 @@ describe("PresentInlineCard", () => {
     await vi.waitFor(() =>
       expect(document.querySelector("iframe")?.getAttribute("srcdoc")).toContain("fetched"),
     );
+  });
+
+  describe("pointers the artifact itself carries (req 14)", () => {
+    it("opens the Preview for a pointer the inline frame reports", () => {
+      usePreviewStore.setState({
+        services: [{ name: "web", status: "running", port: 5173, preview: "auto" }],
+        previewLinkIntent: null,
+        selectedPort: null,
+      });
+      useSessionStore.setState({ sessionId: "s1" });
+      render(<PresentInlineCard card={seedArtifact({}, '<a href="shipit-preview://web/x">go</a>')} />);
+
+      const frame = document.querySelector("iframe")!;
+      expect(frame.getAttribute("srcdoc")).toContain("link_click");
+      window.dispatchEvent(new MessageEvent("message", {
+        data: { source: "shipit-preview", type: "link_click", href: "shipit-preview://web/x" },
+        source: frame.contentWindow,
+        origin: "null",
+      }));
+
+      expect(usePreviewStore.getState().previewLinkIntent?.targetPath).toBe("/x");
+    });
+
+    it("refuses a pointer from a card scrolled off screen", () => {
+      usePreviewStore.setState({
+        services: [{ name: "web", status: "running", port: 5173, preview: "auto" }],
+        previewLinkIntent: null,
+        selectedPort: null,
+      });
+      useSessionStore.setState({ sessionId: "s1" });
+      // A frame can post `link_click` with no click behind it, so a card far up
+      // the transcript must not be able to move the user's workspace.
+      class OffScreenObserver {
+        constructor(private readonly cb: IntersectionObserverCallback) {}
+        observe() {
+          this.cb([{ isIntersecting: false } as IntersectionObserverEntry], this as unknown as IntersectionObserver);
+        }
+        disconnect() { /* no-op */ }
+      }
+      vi.stubGlobal("IntersectionObserver", OffScreenObserver);
+
+      render(<PresentInlineCard card={seedArtifact({}, '<a href="shipit-preview://web/x">go</a>')} />);
+      const frame = document.querySelector("iframe")!;
+      window.dispatchEvent(new MessageEvent("message", {
+        data: { source: "shipit-preview", type: "link_click", href: "shipit-preview://web/x" },
+        source: frame.contentWindow,
+        origin: "null",
+      }));
+
+      expect(usePreviewStore.getState().previewLinkIntent).toBeNull();
+      vi.unstubAllGlobals();
+    });
+
+    it("acts on a click from the transcript that is on screen", () => {
+      usePreviewStore.setState({
+        services: [{ name: "web", status: "running", port: 5173, preview: "auto" }],
+        previewLinkIntent: null,
+        selectedPort: null,
+      });
+      useSessionStore.setState({ sessionId: "s1" });
+      render(
+        <ShipitPointerSessionProvider value="s1">
+          <PresentInlineCard card={seedArtifact({}, '<a href="shipit-preview://web/x">go</a>')} />
+        </ShipitPointerSessionProvider>,
+      );
+
+      const frame = document.querySelector("iframe")!;
+      window.dispatchEvent(new MessageEvent("message", {
+        data: { source: "shipit-preview", type: "link_click", href: "shipit-preview://web/x" },
+        source: frame.contentWindow,
+        origin: "null",
+      }));
+
+      expect(usePreviewStore.getState().previewLinkIntent?.targetPath).toBe("/x");
+    });
+
+    it("refuses a click from a card belonging to another session's transcript", () => {
+      usePreviewStore.setState({
+        services: [{ name: "web", status: "running", port: 5173, preview: "auto" }],
+        previewLinkIntent: null,
+        selectedPort: null,
+      });
+      useSessionStore.setState({ sessionId: "s1" });
+      render(
+        <ShipitPointerSessionProvider value="sess-OLD">
+          <PresentInlineCard card={seedArtifact({}, '<a href="shipit-preview://web/x">go</a>')} />
+        </ShipitPointerSessionProvider>,
+      );
+
+      const frame = document.querySelector("iframe")!;
+      window.dispatchEvent(new MessageEvent("message", {
+        data: { source: "shipit-preview", type: "link_click", href: "shipit-preview://web/x" },
+        source: frame.contentWindow,
+        origin: "null",
+      }));
+
+      expect(usePreviewStore.getState().previewLinkIntent).toBeNull();
+      expect(useUiStore.getState().toast).toBeNull();
+    });
+
+    it("makes a pointer in an inline markdown artifact clickable", () => {
+      usePreviewStore.setState({
+        services: [{ name: "web", status: "running", port: 5173, preview: "auto" }],
+        previewLinkIntent: null,
+        selectedPort: null,
+      });
+      useSessionStore.setState({ sessionId: "s1" });
+      const c = seedArtifact(
+        { mimeType: "text/markdown", filePath: "/persist/notes.md" },
+        "See [run 1](shipit-preview://web/runs/1).",
+      );
+      render(<PresentInlineCard card={c} />);
+
+      fireEvent.click(screen.getByRole("button", { name: "run 1" }));
+      expect(usePreviewStore.getState().previewLinkIntent?.targetPath).toBe("/runs/1");
+    });
   });
 
   it("opens the artifact in the Present tab", () => {

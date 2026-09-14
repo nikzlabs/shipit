@@ -42,7 +42,8 @@ import { useSessionStore } from "../stores/session-store.js";
 import { loadPresentContent } from "../utils/present-content-fetch.js";
 import { kindFromMimeType } from "../utils/file-content-kind.js";
 import { RenderedFrame } from "./FileContentView/RenderedFrame.js";
-import { MarkdownContent } from "./message-markdown.js";
+import { MarkdownContent, useShipitPointerSession } from "./message-markdown.js";
+import { openShipitLinkHref } from "../utils/open-shipit-link.js";
 import { handleAgentInterfaceRequest } from "../agent-interface-sdk/handle-request.js";
 import { useEventListener } from "../hooks/useEventListener.js";
 import { revealWorkspaceTab } from "../utils/reveal-workspace-tab.js";
@@ -60,6 +61,9 @@ export interface PresentInlineCardProps {
 
 export function PresentInlineCard({ card, onAgentInterfaceMessage }: PresentInlineCardProps) {
   const sessionId = useSessionStore((s) => s.sessionId);
+  // The card sits in a deferred transcript, so a pointer it carries is scoped to
+  // the session those messages belong to — see `ShipitPointerSessionProvider`.
+  const owningSession = useShipitPointerSession();
 
   const entry = usePresentStore((s) => s.presentations.find((p) => p.presentId === card.presentId));
   const content = entry?.content;
@@ -72,7 +76,11 @@ export function PresentInlineCard({ card, onAgentInterfaceMessage }: PresentInli
   const kind = kindFromMimeType(card.mimeType, card.filePath);
 
   const missing = !entry;
-  const sdkActive = onScreen && kind === "html" && !!onAgentInterfaceMessage;
+  // Both channels out of the frame are gated on the card being on screen: an
+  // artifact scrolled far up the transcript is not a surface the user is
+  // looking at, so it may neither message the agent nor move their workspace.
+  const linksActive = onScreen && kind === "html";
+  const sdkActive = linksActive && !!onAgentInterfaceMessage;
 
   // eslint-disable-next-line no-restricted-syntax -- lazy content fetch keyed on visibility
   useEffect(() => {
@@ -100,8 +108,14 @@ export function PresentInlineCard({ card, onAgentInterfaceMessage }: PresentInli
   useEventListener(window, "message", (event) => {
     const iframe = frameRef.current;
     if (!iframe?.contentWindow || event.source !== iframe.contentWindow || event.origin !== "null") return;
-    const data = event.data as { source?: string; type?: string; height?: number } | undefined;
+    const data = event.data as
+      | { source?: string; type?: string; height?: number; href?: unknown }
+      | undefined;
     if (data?.source !== "shipit-preview") return;
+    if (data.type === "link_click") {
+      if (linksActive) openShipitLinkHref(data.href, owningSession);
+      return;
+    }
     if (data.type === "content_height" && typeof data.height === "number") {
       setFrameHeight(Math.min(MAX_FRAME_H, Math.max(MIN_FRAME_H, Math.ceil(data.height))));
       return;
@@ -213,6 +227,7 @@ function PresentInlineBody({
           content={content}
 
           enableAgentInterface={kind === "html" && sdkActive}
+          shipitLinks={kind === "html"}
           reportHeight
           frameRef={frameRef}
         />
@@ -239,7 +254,7 @@ function PresentInlineBody({
         style={{ maxHeight: MAX_FRAME_H }}
         className="overflow-auto px-3 py-2 text-sm text-(--color-text-primary)"
       >
-        <MarkdownContent text={content} />
+        <MarkdownContent text={content} shipitLinks />
       </div>
     );
   }

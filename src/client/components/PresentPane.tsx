@@ -13,6 +13,7 @@ import { ICON_SIZE } from "../design-tokens.js";
 import { usePresentStore, type Presentation } from "../stores/present-store.js";
 import { useUiStore } from "../stores/ui-store.js";
 import { slugifyHeading } from "../utils/shipit-link.js";
+import { openShipitLinkHref } from "../utils/open-shipit-link.js";
 import { PresentGallery } from "./PresentGallery.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { FileContentView } from "./FileContentView/FileContentView.js";
@@ -72,8 +73,17 @@ export function PresentPane({ isActiveTab, onSendComments, onAskAgentReview, onA
   useEventListener(window, "message", (event) => {
     const iframe = agentInterfaceFrameRef.current;
     if (!iframe?.contentWindow || event.source !== iframe.contentWindow || event.origin !== "null") return;
-    const data = event.data as { source?: string; type?: string } | undefined;
+    const data = event.data as { source?: string; type?: string; href?: unknown } | undefined;
     if (data?.source !== "shipit-preview") return;
+    // A pointer the artifact carries in its own markup (req 14), resolved
+    // exactly as the same pointer in chat is. Gated on the same "this artifact
+    // is the surface the user is looking at" condition as the SDK channel: a
+    // frame can post this without a click, so an artifact that is not on screen
+    // must not be able to move the user's workspace.
+    if (data.type === "link_click") {
+      if (agentInterfaceActive) openShipitLinkHref(data.href);
+      return;
+    }
     if (data.type === "ready") {
       iframe.contentWindow?.postMessage({
         source: "shipit-preview",
@@ -353,6 +363,7 @@ export function PresentPane({ isActiveTab, onSendComments, onAskAgentReview, onA
                 markdownComments={review.markdownComments}
                 codeComments={review.codeComments}
                 agentInterfaceFrameRef={kind === "html" ? agentInterfaceFrameRef : undefined}
+                shipitLinks
                 scrollTo={
                   linkTargetIsActive && kind === "html" ? linkTarget?.fragment : undefined
                 }

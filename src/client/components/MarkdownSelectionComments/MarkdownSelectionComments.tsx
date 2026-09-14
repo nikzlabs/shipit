@@ -28,6 +28,8 @@ export interface MarkdownSelectionCommentsProps {
   onDeleteComment: (commentId: string) => void;
   readOnly?: boolean;
   onComposingChange?: (composing: boolean) => void;
+  /** Render agent-authored ShipIt pointers as pointers (docs/258 req 14). */
+  shipitLinks?: boolean;
 }
 
 export function MarkdownSelectionComments({
@@ -38,6 +40,7 @@ export function MarkdownSelectionComments({
   onDeleteComment,
   readOnly = false,
   onComposingChange,
+  shipitLinks = false,
 }: MarkdownSelectionCommentsProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [pendingSelection, setPendingSelection] = useState<PendingSelection | null>(null);
@@ -120,7 +123,7 @@ export function MarkdownSelectionComments({
         const topMargin = idx === 0 ? "" : TOP_MARGIN_CLASS[block.topSpacing];
         return (
           <div key={idx} className={topMargin} data-markdown-block-index={idx}>
-            <MarkdownBlock source={block.source} />
+            <MarkdownBlock source={block.source} shipitLinks={shipitLinks} />
             {blockComments.map((comment) => (
               <CommentCard
                 key={comment.id}

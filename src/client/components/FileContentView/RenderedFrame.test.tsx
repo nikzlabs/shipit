@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach } from "vitest";
 import { render, cleanup, screen } from "@testing-library/react";
-import { RenderedFrame } from "./RenderedFrame.js";
+import { LINK_CLICK_SCRIPT, RenderedFrame } from "./RenderedFrame.js";
 
 afterEach(cleanup);
 
@@ -64,6 +64,130 @@ describe("RenderedFrame — fragment scrolling", () => {
     render(<RenderedFrame kind="svg" content="<svg/>" scrollTo="x" />);
     expect(screen.getByTitle("Rendered content").getAttribute("srcdoc"))
       .not.toContain("scrollIntoView");
+  });
+
+  describe("ShipIt pointers inside an artifact (req 14)", () => {
+    function srcDocFor(shipitLinks: boolean, kind: "html" | "svg" = "html") {
+      cleanup();
+      render(
+        <RenderedFrame kind={kind} content="<html><head></head><body>x</body></html>" shipitLinks={shipitLinks} />,
+      );
+      return screen.getByTitle("Rendered content").getAttribute("srcdoc") ?? "";
+    }
+
+    it("is off by default — a repo file rendered in the dialog is not agent-authored", () => {
+      expect(srcDocFor(false)).not.toContain("link_click");
+    });
+
+    it("injects the interceptor inside <head> when the surface opts in", () => {
+      const html = srcDocFor(true);
+      expect(html).toContain("link_click");
+      expect(html.indexOf("link_click")).toBeLessThan(html.indexOf("</head>"));
+      expect(html).toContain("Content-Security-Policy");
+    });
+
+    it("leaves SVG alone — only HTML and markdown artifacts carry pointers", () => {
+      expect(srcDocFor(true, "svg")).not.toContain("link_click");
+    });
+  });
+
+  /**
+   * The interceptor runs inside a sandboxed frame jsdom never executes, so the
+   * script is evaluated here against a real DOM. A string assertion could not
+   * fail on a broken anchor walk or a scheme pattern that matches nothing.
+   */
+  describe("the injected interceptor, executed", () => {
+    /**
+     * A fresh document per case: the script installs document-level listeners,
+     * and a shared one would let an earlier case's listener answer for a later
+     * one's — which is how a repeat-count assertion stops meaning anything.
+     */
+    function mount(body: string) {
+      const doc = document.implementation.createHTMLDocument("artifact");
+      doc.body.innerHTML = body;
+      const posted: unknown[] = [];
+      const targets: unknown[] = [];
+      const js = LINK_CLICK_SCRIPT.replace(/^<script>/, "").replace(/<\/script>$/, "");
+      // eslint-disable-next-line @typescript-eslint/no-implied-eval -- runs the very script shipped into the frame, against a document this test owns
+      const run = new Function("document", "parent", js) as (d: Document, p: unknown) => void;
+      run(doc, {
+        postMessage: (msg: unknown, target: unknown) => {
+          posted.push(msg);
+          targets.push(target);
+        },
+      });
+      const fire = (type: "click" | "auxclick", button = 0) => {
+        const target = doc.querySelector("[data-hit]") ?? doc.querySelector("a");
+        const event = new MouseEvent(type, { bubbles: true, cancelable: true, button });
+        target?.dispatchEvent(event);
+        return event;
+      };
+      return { doc, posted, targets, fire };
+    }
+
+    it("reports a preview pointer and stops the frame navigating to a scheme it cannot load", () => {
+      const { posted, targets, fire } = mount('<a href="shipit-preview://web/runs/1?focus=7#s">go</a>');
+      const event = fire("click");
+      expect(posted).toEqual([
+        { source: "shipit-preview", type: "link_click", href: "shipit-preview://web/runs/1?focus=7#s" },
+      ]);
+      // The href is the artifact's own text, and `parent` reaches only the
+      // embedder — matching the height report beside it.
+      expect(targets).toEqual(["*"]);
+      expect(event.defaultPrevented).toBe(true);
+    });
+
+    it("trims an href the way the HTML URL parser does", () => {
+      // The browser resolves ` shipit-preview://web/x ` — so an untrimmed match
+      // leaves the pointer dead, and an untrimmed forward addresses "/x ".
+      const { posted, fire } = mount('<a href=" shipit-preview://web/x ">go</a>');
+      const event = fire("click");
+      expect(posted).toEqual([
+        { source: "shipit-preview", type: "link_click", href: "shipit-preview://web/x" },
+      ]);
+      expect(event.defaultPrevented).toBe(true);
+    });
+
+    it("finds an anchor inside an open shadow root, where the target is the host", () => {
+      const { doc, posted } = mount("<my-card></my-card>");
+      const host = doc.querySelector("my-card")!;
+      host.attachShadow({ mode: "open" }).innerHTML =
+        '<a href="shipit-preview://web/x"><span>go</span></a>';
+      const inner = host.shadowRoot!.querySelector("span")!;
+      inner.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, composed: true }));
+      expect(posted).toHaveLength(1);
+    });
+
+    it("reports a click on an element nested inside the anchor", () => {
+      const { posted, fire } = mount(
+        '<a href="shipit-present:/persist/r.html#req-7"><span data-hit>REQ-7</span></a>',
+      );
+      fire("click");
+      expect(posted).toHaveLength(1);
+    });
+
+    it("leaves the artifact's own links completely alone", () => {
+      for (const href of ["https://example.com", "#section", "/local/path"]) {
+        const { posted, fire } = mount(`<a href="${href}">x</a>`);
+        const event = fire("click");
+        expect(posted, href).toEqual([]);
+        expect(event.defaultPrevented, href).toBe(false);
+      }
+    });
+
+    it("blocks a middle-click without opening it — a custom scheme must not reach the OS handler", () => {
+      const { posted, fire } = mount('<a href="shipit-preview://web/x">go</a>');
+      const event = fire("auxclick", 1);
+      expect(event.defaultPrevented).toBe(true);
+      expect(posted).toEqual([]);
+    });
+
+    it("survives a page that stops propagation on its own links", () => {
+      const { doc, posted, fire } = mount('<a href="shipit-preview://web/x">go</a>');
+      doc.querySelector("a")?.addEventListener("click", (e) => e.stopPropagation());
+      fire("click");
+      expect(posted).toHaveLength(1);
+    });
   });
 
   describe("height reporting", () => {

@@ -9,6 +9,7 @@ import {
 import { usePresentStore } from "../stores/present-store.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { useUiStore } from "../stores/ui-store.js";
+import { usePreviewStore } from "../stores/preview-store.js";
 
 vi.mock("monaco-editor", () => ({
   editor: {
@@ -355,6 +356,122 @@ describe("PresentPane — agent-authored pointers", () => {
     usePresentStore.getState().setLinkTarget({ presentId: "p1", fragment: "top", clickId: 4 });
 
     await screen.findByTitle("Rendered content");
+  });
+});
+
+describe("PresentPane — pointers the artifact itself carries (req 14)", () => {
+  function fromFrame(href: unknown) {
+    const iframe = screen.getByTitle("Rendered content") as HTMLIFrameElement;
+    window.dispatchEvent(new MessageEvent("message", {
+      data: { source: "shipit-preview", type: "link_click", href },
+      source: iframe.contentWindow,
+      origin: "null",
+    }));
+  }
+
+  async function renderHtmlArtifact(content = '<a href="shipit-preview://web/runs/1">go</a>') {
+    useSessionStore.getState().setSessionId("sess-1");
+    usePresentStore.getState().hydrate([meta({ presentId: "p1", filePath: "/persist/a.html" })]);
+    mockContentFetch({ p1: content });
+    render(<PresentPane isActiveTab />);
+    await screen.findByTitle("Rendered content");
+  }
+
+  it("injects the interceptor into a presented artifact", async () => {
+    await renderHtmlArtifact();
+    expect(screen.getByTitle("Rendered content").getAttribute("srcdoc")).toContain("link_click");
+  });
+
+  it("opens the Preview for a pointer the artifact reports", async () => {
+    usePreviewStore.setState({
+      services: [{ name: "web", status: "running", port: 5173, preview: "auto" }],
+      previewLinkIntent: null,
+      selectedPort: null,
+    });
+    await renderHtmlArtifact();
+
+    fromFrame("shipit-preview://web/runs/1?focus=7#step-4");
+
+    expect(usePreviewStore.getState().previewLinkIntent?.service).toBe("web");
+    expect(usePreviewStore.getState().previewLinkIntent?.targetPath).toBe("/runs/1?focus=7#step-4");
+  });
+
+  it("explains an unopenable pointer instead of doing nothing (req 10)", async () => {
+    usePreviewStore.setState({ services: [], previewLinkIntent: null, selectedPort: null });
+    await renderHtmlArtifact();
+
+    fromFrame("shipit-preview://nosuch/x");
+
+    expect(useUiStore.getState().toast?.variant).toBe("error");
+    expect(useUiStore.getState().toast?.message).toContain("nosuch");
+  });
+
+  it("ignores a link_click from anything but the artifact frame", async () => {
+    usePreviewStore.setState({
+      services: [{ name: "web", status: "running", port: 5173, preview: "auto" }],
+      previewLinkIntent: null,
+      selectedPort: null,
+    });
+    await renderHtmlArtifact();
+    const iframe = screen.getByTitle("Rendered content") as HTMLIFrameElement;
+    const data = { source: "shipit-preview", type: "link_click", href: "shipit-preview://web/x" };
+
+    // Another window entirely, and the right frame claiming a real origin —
+    // an artifact is opaque-origin, so a named origin is not one of ours.
+    window.dispatchEvent(new MessageEvent("message", { data, source: window, origin: "null" }));
+    window.dispatchEvent(new MessageEvent("message", {
+      data, source: iframe.contentWindow, origin: "https://evil.example",
+    }));
+
+    expect(usePreviewStore.getState().previewLinkIntent).toBeNull();
+  });
+
+  it("refuses a pointer from an artifact that is not the surface on screen", async () => {
+    usePreviewStore.setState({
+      services: [{ name: "web", status: "running", port: 5173, preview: "auto" }],
+      previewLinkIntent: null,
+      selectedPort: null,
+    });
+    useSessionStore.getState().setSessionId("sess-1");
+    usePresentStore.getState().hydrate([meta({ presentId: "p1", filePath: "/persist/a.html" })]);
+    mockContentFetch({ p1: "<p>x</p>" });
+    // A frame can post `link_click` with no click behind it, so an artifact the
+    // user is not looking at must not be able to move their workspace.
+    render(<PresentPane isActiveTab={false} />);
+    await screen.findByTitle("Rendered content");
+
+    fromFrame("shipit-preview://web/x");
+
+    expect(usePreviewStore.getState().previewLinkIntent).toBeNull();
+  });
+
+  it("ignores an href that is not a ShipIt scheme — the artifact's own links are its business", async () => {
+    usePreviewStore.setState({ services: [], previewLinkIntent: null, selectedPort: null });
+    await renderHtmlArtifact();
+
+    fromFrame("https://example.com/x");
+    fromFrame(42);
+
+    expect(useUiStore.getState().toast).toBeNull();
+    expect(usePreviewStore.getState().previewLinkIntent).toBeNull();
+  });
+
+  it("makes a pointer in a presented markdown artifact clickable", async () => {
+    usePreviewStore.setState({
+      services: [{ name: "web", status: "running", port: 5173, preview: "auto" }],
+      previewLinkIntent: null,
+      selectedPort: null,
+    });
+    useSessionStore.getState().setSessionId("sess-1");
+    usePresentStore.getState().hydrate([
+      meta({ presentId: "p1", filePath: "/persist/reqs.md", mimeType: "text/markdown" }),
+    ]);
+    mockContentFetch({ p1: "See [run 1](shipit-preview://web/runs/1).\n" }, "text/markdown");
+    render(<PresentPane isActiveTab />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "run 1" }));
+
+    expect(usePreviewStore.getState().previewLinkIntent?.targetPath).toBe("/runs/1");
   });
 });
 
