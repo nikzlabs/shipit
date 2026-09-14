@@ -104,9 +104,11 @@ there are two:
 
 - **How ShipIt picks between them.** *Use in order* starts new sessions on the
   first credential with quota left — right when the plans differ, a bigger one
-  first and a smaller one as backup. *Spread across credentials* sends new
-  sessions to whichever has been used least, so quota drains evenly — right when
-  they are equivalent.
+  first and a smaller one as backup. *Spread evenly* sends each new session to
+  the credential used **longest ago** — right when the plans are equivalent.
+  Worth knowing when a user expects it to even out and it does not: it rotates
+  by last use, not by how much each has left, so wildly unequal sessions still
+  drain unequally.
 - **Cutoffs**, as a percentage of a reported quota: a short-window (5h) one and
   a weekly (7d) one. Past its cutoff a credential stops taking *new* work while
   another is below one — and is still used when none is, so nothing is stranded.
@@ -114,6 +116,14 @@ there are two:
 
 API keys get neither control, on purpose: they do not fail over, so there is
 nothing to order and nothing to spread.
+
+**One exception, and it is the one that generates the bug report.** Signed-in
+accounts and pasted secrets on the same service are **two separate pools, not
+one**. The routing controls describe the accounts; when the accounts are all
+exhausted ShipIt reports that rather than falling through to the token beside
+them, and the token's row cannot be dragged into the order. So if a user says
+their backup never runs, check whether the "backup" is a different kind of
+credential from the one that ran out.
 
 Each row's menu carries **Rename**, and then either **Reconnect** /
 **Disconnect** for an account or **Replace secret** / **Remove** for a key. A
@@ -141,18 +151,20 @@ sit on one screen for exactly that reason.
 
 ## Choosing what a session runs on
 
-The controls are in the **composer**, not in Settings: harness, model, reasoning
-level, and role. Below 700px of the **composer's own** width — not the window's
-— they collapse into one settings control that drills down to the same four.
+The controls are in the **composer**, not in Settings: harness, model and
+reasoning level, plus a role control once the user has created a role. Below
+700px of the **composer's own** width — not the window's — they collapse into
+one settings control that drills down to the same set.
 
 Three rules the user asks about:
 
 - **The harness is fixed after the session's first message**, and stays fixed
   for the session's life. Credentials are isolated per harness, so it cannot be
   swapped underneath a running session. The control says so and shows a lock.
-- **The model stays switchable** for the whole session. The menu groups models
-  by service, with the billing mode beside each group heading, so it always says
-  who is paying.
+- **The model stays switchable** for the session's life, between turns. The menu
+  groups models by service, with the billing mode beside each group heading, so
+  it always says who is paying. Every control in the row goes inert while a turn
+  is running — that is the turn, not a lock.
 - **Reasoning levels come from the harness, for that model and billing mode** —
   not from a fixed list. A harness may declare levels and honour none of them on
   a given row, and the menu offers only the ones that survive. Some harnesses
@@ -175,9 +187,13 @@ a control: name, what it is for, and what it resolves to.
 
 Two ways a role is used, and you own the second:
 
-- The user picks one in the composer, before the session's first message. Like
-  the harness, the **choice of role locks at the first turn** — what stays is
-  *Adjust parameters…*, which brings the model and level back into the row.
+- The user picks one in the composer, before the session's first message. The
+  control is **absent until at least one role exists** — the reserved reviewer
+  does not count — and selecting a role *replaces* the harness, model and level
+  controls with the role's name, since those three are what it is made of.
+  *Adjust parameters…*, inside the same menu, brings them back. Like the
+  harness, the **choice of role locks at the first turn**; a session that took
+  its first turn with no role selected loses the control entirely.
 - You start one with `shipit agent run --role NAME`, or hand one to a child
   session with `shipit session create --role NAME`. **Read the role's
   description before you write the prompt** — it is what says which role an
@@ -225,15 +241,22 @@ Below the credential cards, **Background work** pins the model ShipIt uses for
 its own jobs — naming a session, writing a pull-request description. It is a
 model choice like any other; the harness is derived and shown as a fact, and
 some of this work runs as a direct provider call with no harness and no
-container at all. It offers a wider set than the composer does, because a
-provider with no installed harness can still answer a direct call.
+container at all.
+
+**Its list is not the composer's list, in both directions.** A provider with no
+installed harness still appears here, because a direct call needs none. And a
+harness with no measured way to run one-shot with its tools switched off is
+excluded here while remaining perfectly usable for a turn. So do not answer
+"anything you can chat with" — if a model the user expects is missing from one
+list or the other, that asymmetry is why.
 
 ## Usage and subscription limits
 
-**In the app header**, one pill per subscription credential, with up to two
-meters: a short **5h** window and a **7d** window — whichever the plan actually
-has. A pill also carries a thin marker showing how far through the window the
-clock is, so a number can be read against its own pace.
+**In the app header**, a pill per subscription credential ShipIt has something
+to report about, with up to two meters: a short **5h** window and a **7d**
+window — whichever the plan actually has. A pill also carries a thin marker
+showing how far through the window the clock is, so a number can be read against
+its own pace.
 
 What the meters say when they have no figure, and the three are different:
 
@@ -243,9 +266,11 @@ What the meters say when they have no figure, and the three are different:
 | `5h · reset` | The window rolled over; the cached number is meaningless |
 | `5h · —` | The provider has not reported one — asking again may fill it |
 
-Some plans publish no usage figure at all, and there the credential gets **no
-pill**, rather than blanks that will never fill. API keys never get one either:
-there is no allowance to meter.
+**A missing pill is not a broken one.** Three credentials correctly have none: a
+plan whose provider publishes no usage figure at all, a pasted subscription
+token that has not yet produced a reading (a signed-in account gets its pill
+straight away and fills it later), and any API key — there is no allowance to
+meter. ShipIt would rather show nothing than blanks that will never fill.
 
 Where a service supports an on-demand refresh, a button sits beside the meters.
 Not all do: a provider that pushes its numbers rather than answering a query has
@@ -261,9 +286,11 @@ On a narrow window the whole status group collapses into a gauge button that
 opens the same pills in a popover, and opening it refreshes them.
 
 **Usage Summary** is the other half, opened from the cost line in the composer's
-context dial: this session and all sessions, spend split per provider, context
-window, token totals, the largest turns, and a weekly trend chart that toggles
-between metered spend, spend at API rates, and tokens.
+**context dial**: this session and all sessions, spend split per provider,
+context window, token totals, every turn listed newest first, and a weekly trend
+chart that toggles between metered spend, spend at API rates, and tokens. The
+dial's own popover — before you open the dialog — carries the context bar and a
+*Largest turns* top three.
 
 ## Themes
 
@@ -276,9 +303,12 @@ a harness's own look (Claude, Codex, OpenCode, Grok, Antigravity), and there is
 a High Contrast one.
 
 The choice is **saved in the browser**, so it does not follow the user to
-another device; until one is chosen, ShipIt follows the operating system's
-light/dark preference. It is not a declared setting, so `shipit settings` does
-not list it at all — you cannot tell which theme anyone is on.
+another device. On a browser that has never had one, ShipIt picks a light or
+dark default **once**, from the operating system's preference at that moment,
+and saves it — it does not keep tracking the OS afterwards, so a user who later
+switches their system to dark mode and expects ShipIt to follow has to pick a
+theme. It is not a declared setting either, so `shipit settings` does not list
+it at all and you cannot tell which theme anyone is on.
 
 ## Keyboard shortcuts
 
@@ -287,15 +317,17 @@ The user presses *Change* on a row and then presses the keys they want; a row
 that has been changed grows a reset arrow back to its default.
 
 **Six bindings are rebindable and four are fixed.** The fixed ones are editor
-keys — Enter to send, Shift+Enter for a newline, Ctrl+F to search the chat, Esc
-to close an overlay — shown for reference with no control. Rebindable ones cover
-showing the shortcut list, starting a new session, quick capture, the "needs
-you" view, and the two dictation modes.
+keys — Enter to send, Shift+Enter for a newline, Ctrl+F to search the chat while
+its input is focused, Esc to close an overlay — shown for reference with no
+control. Rebindable ones cover showing the shortcut list, starting a new
+session, quick capture, the "needs you" view, and the two dictation modes.
 
 Two rules the dialog enforces: a chord needs Ctrl/Cmd plus a key, and one that
 fires **while the user is typing** — quick capture, the mic — needs a second
 modifier as well, so a stray keypress mid-sentence cannot trigger it. A chord
-another command already uses is flagged as a conflict.
+another *rebindable* command already uses is flagged as a conflict — the fixed
+four are not in that check, so nothing stops a user binding a command to Ctrl+F
+and then wondering why chat search stopped behaving.
 
 Like the theme, these are **saved per browser** and ShipIt's server never holds
 them. The header's question-mark button shows the current list, whatever it has
