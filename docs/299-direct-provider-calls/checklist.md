@@ -158,20 +158,34 @@ the code before being acted on, and each one has a fix in flight.
 
 ## Conformance follow-ups
 
-- [ ] **Req 3 and the notice — say why background work cannot run.**
-      `services/graduate-session.ts` emits "its credential or harness is gone" on any
-      `pin_unavailable`, so the tools-off filter now produces that card while the credential and
-      the harness are both present and working. It is the same false-cause defect PR #2769
-      removed, reached through a different door, and the damaging half is unchanged: it sends the
-      user to Settings to repair nothing. The resolution must say *why* it failed rather than
-      leaving each caller to guess; `reportUnrunnable` in `services/non-turn-work.ts` carries the
-      same string.
-- [ ] **Req 3's guard cannot fail on a missing provider.** The "every directly callable row" test
-      iterates only the options the implementation returned and derives its expectation from the
-      resolver under test, so a provider omitted entirely leaves nothing to assert. That is why
-      the Google omission was invisible. It must start from the catalogue instead. Removing
-      `harnessForNonTurnSelection` rides with it: no caller remains, and it still answers harness
-      execution for selections the background-work rule sends to a direct call.
+- [x] **Req 3 and the notice — say why background work cannot run.**
+- [x] **Req 3's guard cannot fail on a missing provider**, and `harnessForNonTurnSelection` goes
+      with it.
+
+Shipped in PR #2778. `NonTurnResolution`'s `pin_unavailable` variant now carries a **cause**, and
+`emitNonTurnFailure` derives both the sentence and the advice from it, so a new caller cannot
+reintroduce a guess and a new cause is a compile error in the copy table. Rewording the sentence
+was rejected as the fix: a message stating a cause nobody checked is wrong again the next time a
+reason to refuse is added, which is precisely how this one became wrong.
+
+- **Three causes, not the two the finding described.** The slice found a third by looking: a
+  sign-in that exists but failed is dropped by `listConfiguredCredentials`, which is
+  indistinguishable from "no credential" unless the route list is read. `credential_gone` is
+  repaired by adding a credential, `credential_unusable` by reconnecting the account, and
+  `no_background_carrier` is not repaired in Settings at all — the user picks another model.
+- **The Settings panel carried the same false sentence** at the very destination the failure card
+  sends people to. `BackgroundWorkSection.tsx` now states the observable fact — the pin is not
+  among the offered options — and claims no cause, because the client genuinely cannot tell them
+  apart.
+- **The rewritten guard asserts the Gemini gap rather than passing over it.** Starting from
+  `allServices()` and `credentialPermitsDirectCall`, the one legitimate empty answer is a vendor
+  whose wire format no shipped client speaks. That branch now asserts the missing client, so it
+  turns red the day a Gemini client ships without the rows appearing.
+
+The same unchecked sentence survives at
+`src/client/components/Settings/tabs/ReviewerSection.tsx:423` for a stale reviewer pin. It
+resolves through `reviewer-model.ts`, a different resolver, so it was left alone rather than
+patched blind: [planning#548](https://github.com/nikzlabs/shipit-planning/issues/548).
 - [ ] **Req 8 — the cleanup container does not survive a restart.** `app-lifecycle.ts` builds the
       orphan-cleanup id set from session rows, and the reserved cleanup id has none by design, so
       `container-discovery.ts` stops and removes it at every boot; recreation is asynchronous, so
@@ -184,6 +198,15 @@ the code before being acted on, and each one has a fix in flight.
       error carrying no usage on abort, and `runNonTurnDirect` records only errors that carry
       some, so a call the provider had already begun billing when cleanup's deadline fired appears
       nowhere. Cleanup runs with no session, so this is install-level spend nobody can see.
+      *In flight as PR #2777.* Measurement settled the open part: all three direct clients post a
+      single non-streaming request, so usage exists only in the terminal body and there is nothing
+      to salvage from an earlier frame. The row therefore carries **unknown** counts rather than a
+      request-side estimate, because an estimate becomes a dollar figure indistinguishable from a
+      measured one while the output half stays unknown regardless. It also closes a wider hole
+      than the finding named: a body lost after an HTTP 200, where the 200 proves the model ran.
+      Rendering that unknown honestly is
+      [planning#549](https://github.com/nikzlabs/shipit-planning/issues/549) — today it draws as
+      0 tokens and $0.00, which reads as measured.
 
 **Not a docs/299 defect, but reachable through it:**
 [planning#547](https://github.com/nikzlabs/shipit-planning/issues/547) — a Google API key with
