@@ -608,11 +608,9 @@ function ttsChoicesDetail(): Record<string, unknown> {
  * declared shape, so this is extra detail and never a second place to register a
  * setting.
  *
- * **A function here is resolved even for a setting whose VALUE is withheld**, so
- * each one is a req 2 surface in its own right: `deps` reaches every store, and
- * what makes these safe is that each returns catalogue and registry data only —
- * `nonTurnModelDetail` names model ids, a service name and a refusal reason, and
- * never the credential it resolved against.
+ * **Resolved even for a setting whose VALUE is withheld**, so each function here
+ * is a req 2 surface in its own right: `deps` reaches every store, and what
+ * makes one safe is what it RETURNS — catalogue and registry data only.
  */
 const LIVE_DETAILS: Record<string, LiveDetail> = {
   "services.nonTurnModel": nonTurnModelDetail,
@@ -1057,12 +1055,9 @@ export async function getSettingForAgent(
   }
   const state = await readState(deps, sessionId);
   const { entry, items } = await buildEntry(declaration, deps, state, true);
-  // Not gated on `readable`: the live detail says what this setting's OPTIONS
-  // are, which is a different question from what it is set to — and a setting
-  // whose value is withheld is exactly one whose options the agent still has to
-  // be able to name (req 1, req 3). What keeps that safe is each function's
-  // RETURN, not its argument: `deps` reaches every store, so LIVE_DETAILS is
-  // where req 2 is checked for these, one function at a time.
+  // Not gated on `readable`: the options are a different question from the
+  // value, and a withheld setting is exactly one whose options the agent still
+  // has to name (req 1). `LIVE_DETAILS` carries what that costs.
   const live = resolveLiveDetail(declaration.key, deps, entry);
   // A per-repository setting's proposals are addressed by repository, and the
   // repository is the session's own binding — never anything a caller supplies.

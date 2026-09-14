@@ -525,6 +525,28 @@ describe("MCP servers", () => {
     const item = (await detail("mcp.servers[].args")).items?.find((i) => i.address === "mixed");
     expect(item?.display).toBe("not configured");
     expect(item?.notes?.join(" ")).toContain("cannot start until it is set");
+    // …and the other thing wrong with the field is still said. Two references
+    // fail for two different reasons and one branch would report one of them.
+    expect(item?.notes?.join(" ")).toContain("this read cannot say which");
+  });
+
+  it("says both things when one argument carries a stored reference AND an unknown one", async () => {
+    addMcpServer(
+      credentialStore,
+      {
+        name: "both",
+        type: "stdio",
+        command: "npx",
+        args: ["$secret:mcp__both__TOKEN@$secret:PROJECT_HOST"],
+        enabled: true,
+      },
+      {},
+    );
+
+    const item = (await detail("mcp.servers[].args")).items?.find((i) => i.address === "both");
+    expect(item?.display).toBe("not configured");
+    expect(item?.notes?.join(" ")).toContain("cannot start until it is set");
+    expect(item?.notes?.join(" ")).toContain("this read cannot say which");
   });
 
   it("reports an env bag as configured once the secret it refers to is stored", async () => {

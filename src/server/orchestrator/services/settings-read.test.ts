@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { CredentialStore } from "../credential-store.js";
-import { providerSpeeds, providerVoices, ttsProviders } from "../../shared/voice-catalog.js";
+import { getVoiceProvider, providerSpeeds, providerVoices, ttsProviders } from "../../shared/voice-catalog.js";
 import { addMcpServer } from "./mcp.js";
 import { writeGlobalSystemPrompt } from "../global-system-prompt.js";
 import {
@@ -592,11 +592,18 @@ describe("getSettingForAgent", () => {
           providers: { providerId: string; voices: unknown[]; speeds: number[] }[];
         };
         expect(live.providers.map((p) => p.providerId)).toEqual(expected.map((p) => p.id));
-        for (const provider of live.providers) {
+        for (const provider of live.providers as (typeof live.providers[number] & {
+          speedRange?: { min: number; max: number };
+        })[]) {
           expect(provider.voices).toEqual(providerVoices(provider.providerId));
           expect(provider.speeds).toEqual(providerSpeeds(provider.providerId));
           expect(provider.voices.length).toBeGreaterThan(0);
           expect(provider.speeds.length).toBeGreaterThan(0);
+          // The bounds are the reason this is live at all: the declaration holds
+          // one pair for every provider, so a dropped or borrowed range is the
+          // defect, not a detail.
+          expect(provider.speedRange).toEqual(getVoiceProvider(provider.providerId)?.speedRange);
+          expect(provider.speedRange).toBeDefined();
         }
       }
     });

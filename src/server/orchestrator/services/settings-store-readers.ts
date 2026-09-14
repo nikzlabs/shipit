@@ -406,16 +406,19 @@ const ENTRIES = { one: "entry", many: "entries" };
 const ARGUMENTS = { one: "argument", many: "arguments" };
 
 /**
- * A reference ShipIt STORES the value of: `mcp__<server>__<KEY>`, which
- * `validateMcpSecrets` is the only writer of, and `MCP_PLATFORM_<SOURCE>`, which
- * an MCP OAuth flow holds. These two are the whole of what this read can decide,
- * and they are the only two the panel writes.
+ * The two shapes the MCP panel writes and ShipIt keeps the value of:
+ * `mcp__<server>__<KEY>` (`validateMcpSecrets` requires that prefix) and
+ * `MCP_PLATFORM_<SOURCE>` from an OAuth flow. Absent here, the likely truth is
+ * the one the panel produces — a key row left blank — so this read answers.
  *
- * Anything else — a hand-written `$secret:PROJECT_TOKEN`, or `$secret:PATH` — is
- * resolved in the worker out of an environment the orchestrator cannot see: the
- * pushed set is a Compose secrets snapshot this read has no handle on, and the
- * worker AUGMENTS its `process.env` rather than replacing it
- * (`session-worker.ts:277`), so the container's own variables resolve too.
+ * **Not an ownership claim, and it cannot be one.** A project secret may carry
+ * either name and reaches the worker ahead of the account values
+ * (`service-secrets-resolver.ts:179` merges project over account, reserving no
+ * prefix), so a definite answer here is a judgement about which case is real,
+ * not a guarantee. Every OTHER name is not even that: it resolves out of an
+ * environment the orchestrator cannot see at all — a Compose snapshot this read
+ * has no handle on, plus whatever the container already had, since the worker
+ * AUGMENTS its `process.env` rather than replacing it (`session-worker.ts:277`).
  */
 function shipItStoresReference(envKey: string): boolean {
   return envKey.startsWith("mcp__") || envKey.startsWith("MCP_PLATFORM_");
@@ -439,10 +442,15 @@ function shipItStoresReference(envKey: string): boolean {
  *
  * **A reference ShipIt does not store is not a blocker it may report.** This
  * read cannot see the worker's environment (see {@link shipItStoresReference}),
- * so calling such a reference missing states a blocker the server does not have
- * — the same failure as reporting a declared default in place of a value it
- * could not read. It says it cannot tell instead, which is what the agent has to
- * repeat to the user.
+ * so calling such a reference missing states a blocker the server does not have.
+ * It says it cannot tell instead, and leans to `configured`, because of the two
+ * ways to be wrong about an unknown this is the one that does not send the user
+ * to set something already set.
+ *
+ * The two counts are independent and BOTH notes are emitted: a field carrying a
+ * blank key row and a reference to the session's environment has two different
+ * things wrong with it, and counting them in one branch drops whichever came
+ * second. plan.md → *A reader reads the store the declaration names*.
  */
 function mcpReferences(
   ctx: StoreReadContext,
@@ -456,29 +464,24 @@ function mcpReferences(
     const unresolved: string[] = [];
     substituteMcpPlaceholders(value, env, unresolved);
     if (unresolved.some(shipItStoresReference)) missingStored++;
-    else if (unresolved.length > 0) undecidable++;
+    if (unresolved.some((key) => !shipItStoresReference(key))) undecidable++;
   }
   const total = field.values.length;
   const named = (n: number): string => `${n} of ${total} ${total === 1 ? field.noun.one : field.noun.many}`;
+  const notes: string[] = [];
   if (missingStored > 0) {
-    return {
-      raw: null,
-      notes: [
-        `${named(missingStored)} refers to a stored value ShipIt does not have, so this server `
-          + "cannot start until it is set.",
-      ],
-    };
+    notes.push(
+      `${named(missingStored)} refers to a stored value ShipIt does not have, so this server `
+        + "cannot start until it is set.",
+    );
   }
   if (undecidable > 0) {
-    return {
-      raw: field.raw,
-      notes: [
-        `${named(undecidable)} refers to a value ShipIt does not store, so it is supplied — or not `
-          + "— by the session's own environment, and this read cannot say which.",
-      ],
-    };
+    notes.push(
+      `${named(undecidable)} refers to a value ShipIt does not store, so it is supplied — or not `
+        + "— by the session's own environment, and this read cannot say which.",
+    );
   }
-  return { raw: field.raw, notes: [] };
+  return { raw: missingStored > 0 ? null : field.raw, notes };
 }
 
 /** An environment or header bag: every value of it may be a reference. */

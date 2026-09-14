@@ -403,9 +403,16 @@ on the NORMALIZED row rather than on the stored string, so the advertised addres
 names its own row either way. Rows that normalize alike are the same host, so
 removing all of them is right.
 
-A removal that matches no row still reports `applied` (`applyEgressHostRemove`
-discards `removeHost`'s boolean) — a separate defect, and one this design's
-*"Saved" has to mean saved* rule already condemns.
+**The apply path has a defect of its own that this does not reach, and it is
+worse than the documented one.** `applyEgressHostRemove` reports `applied`
+whatever `removeHost` returns, which *"Saved" has to mean saved* already
+condemns — but it also branches on `isBuiltinDefault(host)` FIRST, so removing a
+host that is both a shipped default and an explicit global row only suppresses
+the default and leaves the row effective. The read then advertises that row again
+as `user-global`, `removable: true`, and every further removal reports success
+while changing nothing. `.github.com` is the worked case. Fixing it belongs with
+that file's owner: the branch has to try the explicit row before suppressing the
+default, and report what the store actually did.
 
 Reading a setting a panel of its own owns needs a reader per owner
 (`services/settings-store-readers.ts`), because a `bespoke` declaration names
@@ -439,22 +446,32 @@ orchestrator may not import `session/` and neither side's own unit test can hold
 both answers.
 
 **A reference ShipIt does not store is not a blocker it may report.** The check
-can only decide the two references ShipIt holds the value of — `mcp__<server>__…`,
-whose one writer is `validateMcpSecrets`, and an MCP OAuth `$platform:` source —
-and those are also the only two the panel writes, so the state req 3 exists for
-stays a definite answer. Every other reference resolves in the worker out of an
-environment the orchestrator cannot see: the pushed set is a Compose secrets
-snapshot this read has no handle on, and the worker AUGMENTS its `process.env`
-rather than replacing it, so the container's own variables resolve too. Calling
-such a reference missing states a blocker the server does not have — the same
-failure as reporting a declared default in place of a value that could not be
-read — so the read says it cannot tell, and the agent repeats that instead.
+answers for the two shapes the MCP panel writes and ShipIt keeps the value of —
+`mcp__<server>__…` and an OAuth `$platform:` source — so the state req 3 exists
+for, a key row the user left blank, stays a definite answer. Every other
+reference resolves in the worker out of an environment the orchestrator cannot
+see: the pushed set is a Compose secrets snapshot this read has no handle on, and
+the worker AUGMENTS its `process.env` rather than replacing it, so the
+container's own variables resolve too. Calling such a reference missing states a
+blocker the server does not have, so the read says it cannot tell instead.
 
-That cuts both ways, which is why the answer is neither a wider environment nor a
-narrower one. Widening to the account env fixes `$secret:OPENAI_API_KEY` and then
-reports a stale non-MCP `agentEnv` key as configured where the real pushed
-snapshot omits it. No environment the orchestrator can assemble is the worker's,
-so the read stops claiming one.
+**Even the definite answer is a judgement, not a guarantee**, and the code says
+so rather than claiming a prefix nobody else may use: project secrets merge over
+account values reserving no prefix (`service-secrets-resolver.ts:179`), so a
+project secret named `mcp__demo__TOKEN` would resolve while this read calls it
+blank. What makes answering right anyway is which case is real — the panel writes
+that name for every key row, blank or not.
+
+The uncertainty leans to `configured`, because of the two ways to be wrong about
+an unknown, that is the one that does not send the user to set something already
+set. And the two counts are independent: a field can carry a blank key row AND a
+reference to the session's environment, which are two different things wrong with
+it, so both notes are emitted rather than whichever branch ran first.
+
+No wider environment fixes this, which is why the read stops claiming one.
+Widening to the account env fixes `$secret:OPENAI_API_KEY` and then reports a
+stale non-MCP `agentEnv` key as configured where the real pushed snapshot omits
+it.
 
 ### Saved is not effective
 
