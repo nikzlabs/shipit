@@ -25,25 +25,33 @@ Session mechanics — the health strip, idle reclaim, archiving, pins — are in
 ## "The preview is blank" / "it won't load"
 
 The preview panel replaces the app with an overlay that states which of these it
-is. Ask which one, or look at the panel yourself after starting a service. In
-the order the panel resolves them:
+is. Ask which one, or look at the panel yourself after starting a service. Only
+one overlay shows at a time, roughly in this order — a Compose error or a
+missing preview configuration suppresses the startup steps above them:
 
 | What they see | What it is | What you do |
 |---|---|---|
 | A list of startup steps — *Fetching latest changes*, *Installing dependencies*, *Starting dev server* — one with an orange mark | A startup step failed. The failing step prints its message and the tail of its log right there | Read the log lines, fix the cause (usually `agent.install` in `shipit.yaml` or a broken lockfile), and start the service again |
-| **Docker Compose error**, with the raw error in a box | The stack could not come up. For four causes the panel already adds a plain-language hint: Docker out of network address space, a port already allocated, no disk space left, an image that could not be pulled | The port and image causes are yours — fix `docker-compose.yml` or `shipit.yaml`. The address-space and disk ones are on the **host**, outside every session; say so rather than trying |
+| **Docker Compose error**, with the raw error in a box | Usually the stack failing to come up, but the same overlay carries configuration problems ShipIt found in `shipit.yaml`/`docker-compose.yml` before anything started. For four causes the panel adds a plain-language hint: Docker out of network address space, a port already allocated, no disk space left, an image that could not be pulled | Read the raw error, not the headline. The port, image and configuration causes are yours — fix `docker-compose.yml` or `shipit.yaml`. The address-space and disk ones are on the **host**, outside every session; say so rather than trying |
 | **Your app can run here** — an invitation to set up a preview | The project declares no preview at all | If the repo really is a web or Android app, write the `docker-compose.yml` (`/shipit-docs/compose.md`). If it is a library or a CLI, say so — "no" is a correct answer here |
 | **`<service>` is not running**, or *Waiting for `<service>`…* | The pane is parked on a named Compose service that is stopped or still starting. It stays parked deliberately and returns by itself | `shipit service start <name>`. If it will not stay up, see "a service won't start" below |
 | **No preview running. Start a service to launch it.** | Every declared service is `x-shipit-preview: manual`, so nothing started on its own | Start the one the task needs — that decision is yours, not the user's |
-| **This repository is not trusted yet** | A newly added repo, covered below | |
 | **Preview not available over this host** | The user is reaching ShipIt on a hostname that cannot carry wildcard subdomains. Previews are served at `{session}--{port}.<host>` | Theirs: open ShipIt over `localhost`, a domain with a `*` DNS record, or Tailscale with MagicDNS. The overlay suggests a working host for their case when it can. Detail in [installing-and-updating.md](installing-and-updating.md) |
-| **Preview authentication required** | A reverse proxy in front of ShipIt demands its own auth for preview subdomains | Theirs: **Open in new tab** on the overlay, authenticate once, then **Retry** |
+| **Preview authentication required** | A guess, not a diagnosis: the page never reported back within the retry window, and ShipIt's best explanation is a reverse proxy demanding its own auth for preview subdomains. A page that simply failed to load produces the same overlay | Theirs: **Open in new tab** on the overlay, authenticate once, then **Retry**. If that tab shows no login either, treat it as a failure to load and check the service's logs |
 | A **required secrets** row across the top of the panel | The project declares secrets marked required and they have no value | Theirs: **Configure** on that row opens the project's Secrets. You can say exactly which names are missing; you cannot supply them |
 
+**This repository is not trusted yet** is a separate overlay drawn over the
+whole frame rather than one of the states above, so it wins regardless of what
+the stack is doing. It is covered below.
+
 If the app itself is loading but throwing, that is the **error panel** at the
-bottom of the preview: runtime errors and `console.error`/`warn` from the page,
-with **Send to Agent** on the group and **Fix** on one. Those arrive to you as a
-normal message — treat them as a bug report with a stack trace.
+bottom of the preview: runtime errors and `console.error`/`warn` from the page.
+It starts **closed** — the preview toolbar shows an error count that opens it,
+and only then do **Send to Agent** (on the group) and **Fix** (on one) exist. So
+a user reporting "there's a red number up there" has errors ShipIt is holding
+but has not sent you. Ask them to open it and send, or ask what it says. When
+they arrive they come as a normal message — treat them as a bug report with a
+stack trace.
 
 ## "The agent is stuck" / "it's not responding"
 
@@ -64,8 +72,11 @@ stale* / *Agent state out of sync* / *Worker unreachable* / *Container
 \<state\>*. Read it and say what it shows before anyone restarts anything. Its
 controls, in increasing order of violence — **Diagnostics**, **Kill agent**,
 **Restart agent**, **Rescue session** — are covered in
-[sessions.md](sessions.md). **Kill agent** is offered only while an agent
-process is actually running.
+[sessions.md](sessions.md). All four are always on the strip, but **Kill agent**
+is greyed out unless the worker is reachable *and* reports an agent actually
+running, and all of them grey out while a restart is in progress. A greyed
+**Kill agent** on an apparently busy session is itself a finding: it means the
+worker is not answering, so say that rather than waiting for the button.
 
 A restart that fixes nothing twice is worth a bug report, not a third: the
 **Diagnostics** panel has a copy button that yields the whole payload as JSON,
@@ -75,21 +86,30 @@ which is what `/shipit-docs/bug-filing.md` wants.
 
 A pill appears in the header (under it on a phone) for the websocket:
 *Reconnecting to server...*, or *Connection lost* with a **Reconnect now**
-button, and a green *Reconnected* flash when it comes back. It waits about a
-second and a half before announcing a disconnect, so a blink shows nothing.
+button — **Reconnect** on a phone — and a green *Reconnected* flash when it
+comes back. It waits about a second and a half before announcing a disconnect,
+so a blink shows nothing.
 
-This is transport only. It never stops the server, the agent, the container or
-the commit — a turn running when the browser dropped keeps running and the
-transcript is replayed on reconnect. Say that plainly; users assume they lost
-the work.
+The pill only ever appears after the socket has connected successfully at least
+once. A page that never connected at all shows no pill and no reconnect button,
+which is a different problem: ShipIt itself is unreachable from that browser.
+See [installing-and-updating.md](installing-and-updating.md) for access.
 
-The composer is disabled for exactly three reasons, and each says which:
+Once it has connected, this is transport only. It never stops the server, the
+agent, the container or the commit — a turn running when the browser dropped
+keeps running, and the transcript is replayed on reconnect. Say that plainly;
+users assume they lost the work.
 
-| Placeholder or notice | Cause | Whose move |
+"Greyed out" is two different states, and only the first actually disables the
+text box:
+
+| What they see | Cause | Whose move |
 |---|---|---|
-| *Add a model provider to start chatting* | The install has no provider it can run a turn with | Theirs — **Settings → Model providers**, then **Add a model provider** |
-| A **This repository is not trusted yet** card above the box | Untrusted repo (below) | Theirs — the button on that card |
-| No placeholder change, just inert | The websocket is not open | Wait, or **Reconnect now** on the pill |
+| The box is inert and reads *Add a model provider to start chatting* | The install has no provider it can run a turn with | Theirs — **Settings → Model providers**, then **Add a model provider** |
+| They can type, but the send button will not go | The websocket is not open, or the repository is untrusted (below), or an attachment is still uploading or has failed | Wait, **Reconnect now** on the pill, trust the repo, or drop the failed attachment |
+
+That distinction matters when a user says "I typed it and nothing happened" —
+their text is still there, and it is the send that was refused, not the typing.
 
 ## "It won't respond on this repo" / "nothing runs after I added it"
 
@@ -118,9 +138,13 @@ the provider's own text. Three shapes:
   **Settings → Model providers**. What the install actually has is
   `shipit agent params` and `shipit agent roles`; never quote a limit from
   memory.
-- **A credential that stopped working.** The account's card in **Settings →
-  Model providers** says *reconnect needed* (or *credential rejected* for a
-  pasted key) and carries a **Reconnect** button. That sign-in is theirs.
+- **A credential that stopped working.** The account's row in **Settings →
+  Model providers** says *reconnect needed*, or *credential rejected* for a
+  pasted key. The recovery is in that row's own overflow menu, not a button on
+  the row, and it is labelled for the state it is in: **Connect** for an
+  account that is not working, **Reconnect** for one that is (a deliberate
+  re-login), and **Replace secret** for a pasted credential. Name the menu, the
+  row and the item; the sign-in itself is theirs.
 - **Anything else** — the error text is the provider's. Read it before
   retrying.
 
@@ -149,13 +173,19 @@ is on the remote — see [sessions.md](sessions.md).
 
 ## "The branch won't push" / "it says my branch diverged"
 
-**Branch is behind `<base>`. Update to resolve.** — the session's branch and its
-remote have diverged, usually because the base moved. The banner's **Update
-branch** button rebases onto the repository's real default branch, and ShipIt
-withholds that button when the force-push it implies could discard commits that
-exist only on the remote. Conflicts during that rebase are listed by path, with
-**Abort rebase**, and can be handed to you to resolve in the session rather than
-locally.
+**Branch is behind `<base>`. Update to resolve.** — the auto-push was rejected
+as non-fast-forward, which means **this session's branch and its own remote ref
+have diverged**: the remote carries commits the local branch does not. A base
+branch merely moving ahead does not do this on its own, so do not diagnose it as
+that. ShipIt measures which side carries what before it says anything, and
+**withholds the button entirely** when the force-push behind it could discard
+commits that exist only on the remote — so a divergence with no button offered
+is the dangerous shape, and worth saying so.
+
+The **Update branch** button rebases onto the repository's real default branch
+(a `master` repo is never told it is behind `main`). Conflicts during that
+rebase are listed by path, with **Abort rebase**, and can be handed to you to
+resolve in the session rather than locally.
 
 Two neighbouring causes that look the same:
 
@@ -173,12 +203,15 @@ The PR card in the conversation shows **Failed to create PR** with GitHub's own
 message, and a **Retry**. When the cause is authentication it adds *"Your GitHub
 token is missing or expired — reconnect to keep pushing"* and a **Sign in to
 GitHub** button that opens **Settings → Integrations**. That reconnection is
-theirs; the retry is yours.
+theirs; the retry is yours, and it is greyed out while a turn is running.
 
-If the card instead reprints a PR URL and exits cleanly, read its stderr rather
-than the URL: a merged or closed PR being reprinted means the work is **not**
-shipped. `/shipit-docs/github.md` has the three branch shapes and which one
-needs `shipit branch reset-to-base`.
+A different shape has no card at all: your own `gh pr create` prints an existing
+PR's URL and exits 0. That is the command, not the card, and its **stderr** is
+the part that matters — it names the PR's state. A merged or closed PR being
+reprinted means the branch has nowhere to put new work and it is **not**
+shipped; the branch's tree simply matching the base means there is genuinely
+nothing new to open one for. `/shipit-docs/github.md` has the branch shapes and
+which one needs `shipit branch reset-to-base`.
 
 **GitHub API rate-limited** is a different thing entirely — a bar across the top
 counting down to the reset, saying PR and CI status updates are paused. Nothing
@@ -190,10 +223,15 @@ The PR card's CI chip is the first read, and each state means something
 different:
 
 - **CI n/m** in red — checks failed. The card lists the failing checks by name
-  with a one-line summary under them (capped, with "and N more").
-- **No checks** in grey — a *terminal* state, not a pending one: no workflow
-  matched the pull-request event. Nothing will ever arrive. Check the repo's
-  `.github/workflows/` triggers.
+  with a one-line summary under them (capped, with "and N more") — **except
+  while auto-fix is running**, which hides the list. A red chip with no
+  explanation under it usually means auto-fix already has it.
+- **No checks** in grey — ShipIt has stopped expecting any. Usually no workflow
+  matched the pull-request event, but it also appears when checks were expected
+  and none arrived before ShipIt's grace window closed. So report it as an
+  observed absence, not as proof: check the repo's `.github/workflows/`
+  triggers, and if a workflow *should* match, look at GitHub's own run list
+  (`gh run list -b <branch>`) before telling the user nothing will come.
 - A spinner with no counts — the checks have not started yet.
 
 The summaries are short by design. The detail is yours to fetch:
@@ -225,25 +263,37 @@ strip. Read the error; it is usually the host — disk, image, or network space.
 
 **Update available for this session.** Not a failure at all: the session's agent
 container predates the running ShipIt build. **Restart agent** on that banner
-recreates just the agent container and leaves the Compose stack up, and while a
-turn is running it politely reads *Restart after turn*.
+recreates just the agent container and leaves the Compose stack up. While a turn
+is running the button is **disabled** and reads *Restart after turn* — that is a
+label, not a promise: nothing is queued, and someone has to press it once the
+turn ends.
 
-A container that simply *stopped* is neither of these — that is idle reclaim,
-and it is in [sessions.md](sessions.md).
+A container that has simply *stopped* is not automatically one of these. It may
+be idle reclaim, which is normal and explained in [sessions.md](sessions.md), or
+it may have exited on its own. The health strip's **Diagnostics** carries the
+exit code; read it before calling it either.
 
 ## "Everything's getting slow" / "my sessions keep stopping"
 
-**Docker memory: X / Y (n%)** across the top of the app, amber and then red.
-It measures every running container on the host, not only ShipIt's, and it names
-whether Y is the user's configured memory budget or the whole machine — the two
-call for different reactions. Above the threshold ShipIt reclaims idle
-containers, longest-idle first.
+**Docker memory: X / Y (n%)** across the top of the app, amber or red. It
+measures every running container on the host, not only ShipIt's, and it says
+whether Y is a memory **budget** or the whole machine — the two call for
+different reactions, and "80% of the machine" is a milder fact than "at the
+budget you set". Above the threshold ShipIt reclaims idle containers,
+longest-idle first.
 
-The banner fires before reclaim starts, deliberately, so the user gets to choose
-what goes. Theirs: close or archive inactive sessions; the budget itself is in
-**Settings → Advanced**. What reclaim takes, in what order, and which exemptions
-hold is [sessions.md](sessions.md) — answer from there, because users conflate
-the memory ladder with the disk one constantly.
+Two details worth having straight. The word *budget* does not mean the user
+chose one — some installs get an automatic budget without anyone configuring it,
+so do not tell them to go and look at a value they never set; `shipit settings
+list` is the live answer. And the banner is not always amber first: against a
+budget it appears at the same level that renders it red, so a red bar is not
+necessarily a situation that was ignored while amber.
+
+The banner still fires before reclaim starts, deliberately, so the user gets to
+choose what goes. Theirs: close or archive inactive sessions; the budget itself
+is in **Settings → Advanced**. What reclaim takes, in what order, and which
+exemptions hold is [sessions.md](sessions.md) — answer from there, because users
+conflate the memory ladder with the disk one constantly.
 
 ## "It can't download anything" / "it can't reach the internet"
 
@@ -259,18 +309,33 @@ workspace default is **Settings → Network**. Both are covered in
 [sessions.md](sessions.md), and the agent-side view is
 `/shipit-docs/environment.md`.
 
-One failure mode worth knowing: **Contained — NOT enforced on this
-deployment**, a warning in Settings → Network. The containment policy is on but
-this host cannot enforce it, and contained sessions then **fail to start**. That
-is an install-level fix on the host, not something a session can repair.
+One warning worth knowing, because it means two opposite things: **Contained —
+NOT enforced on this deployment**, in Settings → Network. The containment policy
+is on and the install cannot apply it — and which way that falls depends on how
+the host is configured.
+
+- **Enforcement is on but the egress sidecar image is missing.** Contained
+  sessions **fail to start**, with an error naming the missing image. Loud, and
+  obvious.
+- **Enforcement was switched off at the deployment.** Sessions start fine and
+  run with **open egress** — no allowlist, no prompts, nothing blocked. This is
+  the one to surface: the user believes their sessions are contained and they
+  are not, and nothing else on screen says so.
+
+Either way the fix is on the host, not in a session — see
+[installing-and-updating.md](installing-and-updating.md). If a user is
+surprised that a session reached the internet freely, check this warning before
+looking anywhere else.
 
 ## "A service won't start" / "it says crashed"
 
 The Services drawer under the preview shows each service with a coloured rail
 and a word: *Running*, *Starting…*, *Stopped*, or **Crashed**. A crashed one
-expands with its error and an **Ask the agent to fix →** link; a container the
-kernel killed for memory gets an **OOM** tag, whose fix is the service's own
-memory limit in `docker-compose.yml`.
+expands with its error and an **Ask the agent to fix →** link. In the
+multi-service list, a container the kernel killed for memory also gets an **OOM**
+tag — the drawer's single-service layout has no such tag, so never rule memory
+out just because the user does not see one. `shipit service logs <name>` settles
+it. The fix is the service's own memory limit in `docker-compose.yml`.
 
 Do the work rather than reading the drawer out: `shipit service logs <name>`,
 then fix the compose file or the app, then `shipit service start <name>`. A
@@ -306,5 +371,3 @@ before anything is sent.
 | Trusts a repository | Nothing — this one is consent, not configuration |
 | Closes sessions under memory pressure | Say which are idle and which are still doing something |
 | Chooses to widen the host's memory or disk | Everything inside the session that could avoid needing it |
-</content>
-</invoke>
