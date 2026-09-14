@@ -5,9 +5,9 @@ import type { SessionRunnerRegistry } from "./session-runner.js";
 import {
   ServiceError,
   listMcpServers,
-  addMcpServer,
-  updateMcpServer,
-  removeMcpServer,
+  applyMcpServerAdd,
+  applyMcpServerUpdate,
+  applyMcpServerRemove,
   startOAuthFlow,
   handleOAuthCallback,
   listMcpOAuthProviders,
@@ -15,6 +15,7 @@ import {
   InMemoryOAuthStateStore,
   refreshOAuthTokens,
 } from "./services/index.js";
+import type { McpApplyDeps } from "./services/settings-apply.js";
 import {
   isAgentSecretsCapable,
   refreshAgentEnvForAllSessions,
@@ -27,6 +28,7 @@ export interface McpRoutesDeps {
   credentialStore: CredentialStore;
   runnerRegistry: SessionRunnerRegistry;
   serviceManagers: Map<string, ServiceManager>;
+  sseBroadcast: (event: string, data: unknown) => void;
   oauthStateStore?: InMemoryOAuthStateStore;
   oauthRedirectUri?: string;
   oauthFetchImpl?: typeof fetch;
@@ -98,6 +100,11 @@ export async function registerMcpRoutes(
     oauthFetchImpl,
   } = deps;
   const oauthStateStore = deps.oauthStateStore ?? new InMemoryOAuthStateStore();
+  const applyDeps: McpApplyDeps = {
+    credentialStore,
+    serviceManagers,
+    sseBroadcast: deps.sseBroadcast,
+  };
 
   app.get("/api/mcp-servers", async () => {
     return { servers: listMcpServers(credentialStore) };
@@ -108,8 +115,11 @@ export async function registerMcpRoutes(
     async (request, reply) => {
       const { config, secrets } = request.body ?? {};
       try {
-        const saved = addMcpServer(credentialStore, config, secrets);
-        refreshAgentEnvForAllSessions(serviceManagers);
+        const { value: saved, outcome } = await applyMcpServerAdd(applyDeps, config, secrets);
+        if (outcome.status !== "applied") {
+          reply.code(500);
+          return { error: outcome.detail ?? "Failed to save the MCP server", outcome };
+        }
         return { server: saved };
       } catch (err) {
         if (err instanceof ServiceError) {
@@ -126,14 +136,17 @@ export async function registerMcpRoutes(
     async (request, reply) => {
       const { config, secrets } = request.body ?? {};
       try {
-        const { config: saved } = updateMcpServer(
-          credentialStore,
+        const { value, outcome } = await applyMcpServerUpdate(
+          applyDeps,
           request.params.id,
           config,
           secrets,
         );
-        refreshAgentEnvForAllSessions(serviceManagers);
-        return { server: saved };
+        if (outcome.status !== "applied") {
+          reply.code(500);
+          return { error: outcome.detail ?? "Failed to save the MCP server", outcome };
+        }
+        return { server: value.config };
       } catch (err) {
         if (err instanceof ServiceError) {
           reply.code(err.statusCode);
@@ -148,8 +161,11 @@ export async function registerMcpRoutes(
     "/api/mcp-servers/:id",
     async (request, reply) => {
       try {
-        removeMcpServer(credentialStore, request.params.id);
-        refreshAgentEnvForAllSessions(serviceManagers);
+        const { outcome } = await applyMcpServerRemove(applyDeps, request.params.id);
+        if (outcome.status !== "applied") {
+          reply.code(500);
+          return { error: outcome.detail ?? "Failed to remove the MCP server", outcome };
+        }
         return { deleted: true };
       } catch (err) {
         if (err instanceof ServiceError) {

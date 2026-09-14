@@ -382,6 +382,7 @@ describe("MCP route OAuth refresh retry", () => {
       credentialStore,
       runnerRegistry: runnerRegistry as never,
       serviceManagers: new Map(),
+      sseBroadcast: () => {},
       oauthFetchImpl: fetchImpl,
     });
 

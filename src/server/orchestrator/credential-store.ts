@@ -35,7 +35,8 @@ import {
   storageEnvFor,
 } from "../shared/catalogue/index.js";
 import type { ModelSelection } from "../shared/catalogue/index.js";
-import { credentialStoreField, GLOBAL_SETTINGS } from "../shared/settings-catalogue/index.js";
+import { APPLIED, applyFailed, combineOutcomes, credentialStoreField, GLOBAL_SETTINGS } from "../shared/settings-catalogue/index.js";
+import type { ApplyOutcome } from "../shared/settings-catalogue/index.js";
 import type {
   AnySettingDeclaration,
   CredentialStoreSettingField,
@@ -98,11 +99,16 @@ export class CredentialStore {
   private filePath: string;
   private data: CredentialData = {};
   private cipher?: SecretCipher;
+  /** The last serialization known to be on disk — what `save()` rolls back to. */
+  private persisted = "{}";
+  /** Set while a {@link transact} group is open; each `save()` reports into it. */
+  private writeReport: ApplyOutcome[] | null = null;
 
   constructor(credentialsDir?: string, cipher?: SecretCipher) {
     this.filePath = path.join(credentialsDir ?? DEFAULT_CREDENTIALS_DIR, FILENAME);
     this.cipher = cipher;
     this.load();
+    this.persisted = JSON.stringify(this.data, null, 2);
     this.migrateProviderAccountsToRoutes();
     this.migrateAgentEnvKeysToRoutes();
     this.migrateRoutingSettingsKeys();
@@ -250,13 +256,56 @@ export class CredentialStore {
     fs.writeFileSync(this.filePath, payload, { mode: 0o600 });
     // writeFileSync's mode does not repair existing file permissions.
     fs.chmodSync(this.filePath, 0o600);
+    this.persisted = serialized;
   }
 
-  private save(): void {
+  /**
+   * Persist the mutation the caller has already made in memory, or undo it.
+   *
+   * A value reported saved that vanishes at the next restart is a lie nothing
+   * downstream can detect, so a failed write rolls the store back to what is
+   * actually on disk and says `failed` (docs/299-agent-settings-access →
+   * "Saved" has to mean saved). Rolling back to the last persisted serialization
+   * rather than to a per-call snapshot is what keeps every one of the callers
+   * unchanged: each mutates and calls this immediately, so the two states differ
+   * by exactly the write that failed.
+   */
+  private save(): ApplyOutcome {
+    let outcome: ApplyOutcome;
     try {
       this.writeToDisk();
+      outcome = APPLIED;
     } catch (err) {
+      this.data = JSON.parse(this.persisted) as CredentialData;
       console.error("[credential-store] Failed to save:", getErrorMessage(err));
+      outcome = applyFailed(
+        "ShipIt could not write its credential store, so the change was rolled back and nothing was saved.",
+      );
+    }
+    this.writeReport?.push(outcome);
+    return outcome;
+  }
+
+  /**
+   * Run a group of mutations as one reported write. Every setter inside saves
+   * exactly as it does today; this collects whether each of those saves reached
+   * disk, so a caller may say `applied` only when they all did — and hears
+   * `partial` when an earlier write landed and a later one was rolled back.
+   *
+   * Synchronous mutations only. An `await` inside would let an unrelated write
+   * from elsewhere in the process be counted as part of this group, which is the
+   * one way this can report something that never happened.
+   */
+  transact<T>(mutate: () => T): { value: T; outcome: ApplyOutcome } {
+    const outer = this.writeReport;
+    const report = outer ?? [];
+    const from = report.length;
+    this.writeReport = report;
+    try {
+      const value = mutate();
+      return { value, outcome: combineOutcomes(report.slice(from)) };
+    } finally {
+      this.writeReport = outer;
     }
   }
 
@@ -265,22 +314,12 @@ export class CredentialStore {
     return typeof value === "string" && value.length > 0 ? value : undefined;
   }
 
-  // Roll back failed writes; memory-only completion would vanish at restart.
+  // Memory-only completion would vanish at restart, so a failed write reports none.
   stampHarnessOnboardingCompleted(at: string): string | undefined {
     const existing = this.getHarnessOnboardingCompletedAt();
     if (existing) return existing;
     this.data.harnessOnboardingCompletedAt = at;
-    try {
-      this.writeToDisk();
-    } catch (err) {
-      delete this.data.harnessOnboardingCompletedAt;
-      console.error(
-        "[credential-store] Failed to record harness onboarding completion:",
-        getErrorMessage(err),
-      );
-      return undefined;
-    }
-    return at;
+    return this.save().status === "applied" ? at : undefined;
   }
 
   // Storage order; ProviderAccountManager derives selection order and primary status.
@@ -766,7 +805,7 @@ export class CredentialStore {
     this.setDeclaredSetting("services.nonTurnModel", selection);
   }
 
-  // A failed seed must not remain in memory as a saved setting; save() would swallow the error.
+  // A failed seed must not remain in memory as a saved setting.
   stampNonTurnModel(selection: ModelSelection): ModelSelection | undefined {
     const existing = this.getNonTurnModel();
     if (existing) return existing;
@@ -776,17 +815,7 @@ export class CredentialStore {
       );
     }
     this.data.nonTurnModel = { ...selection };
-    try {
-      this.writeToDisk();
-    } catch (err) {
-      delete this.data.nonTurnModel;
-      console.error(
-        "[credential-store] Failed to record the background-work model:",
-        getErrorMessage(err),
-      );
-      return undefined;
-    }
-    return { ...selection };
+    return this.save().status === "applied" ? { ...selection } : undefined;
   }
 
   getReviewerPin(slot: ReviewerSlot): ReviewerPin | undefined {

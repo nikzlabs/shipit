@@ -5,7 +5,6 @@ import { isEgressHostAllowed, shouldCardEgressHost } from "./egress-policy.js";
 import {
   normalizeHost,
   buildEffectiveAllowlist,
-  isBuiltinDefault,
 } from "./egress-allowlist.js";
 import { egressHostReach } from "./egress-host-reach.js";
 import { EGRESS_GLOBAL_SCOPE } from "./egress-allowlist-store.js";
@@ -21,6 +20,13 @@ import type {
 } from "../shared/types.js";
 import { computeEgressGrantOutcome } from "./egress-grant-outcome.js";
 import { emitSessionSettingsChangeCard } from "./services/session-settings.js";
+import {
+  applyEgressDefaultsRestore,
+  applyEgressGlobalEnabled,
+  applyEgressHostAdd,
+  applyEgressHostRemove,
+} from "./services/settings-apply.js";
+import type { EgressApplyDeps } from "./services/settings-apply.js";
 import { serializeNetworkModeWrite } from "./services/network-mode-writes.js";
 import type { PersistedEgressPrompt } from "./chat-history.js";
 
@@ -120,6 +126,15 @@ export async function registerEgressRoutes(app: FastifyInstance, deps: ApiDeps):
 
   // Keep mutations browser-only so contained agents cannot grant themselves access.
   if (store) {
+    const applyDeps: EgressApplyDeps = {
+      sseBroadcast: deps.sseBroadcast,
+      egressAllowlistStore: store,
+      containerManager: deps.containerManager,
+      broadcastEgressSettings: () => {
+        deps.sseBroadcast("egress_settings", globalSettings(store, enforcement));
+      },
+    };
+
     app.get("/api/egress/settings", async () => globalSettings(store, enforcement));
 
     app.get<{ Querystring: { session?: string } }>(
@@ -135,8 +150,7 @@ export async function registerEgressRoutes(app: FastifyInstance, deps: ApiDeps):
       "/api/egress/settings",
       async (request) => {
         if (typeof request.body?.globalEnabled === "boolean") {
-          store.setGlobalEnabled(request.body.globalEnabled);
-          deps.sseBroadcast("egress_settings", globalSettings(store, enforcement));
+          await applyEgressGlobalEnabled(applyDeps, request.body.globalEnabled);
         }
         return globalSettings(store, enforcement);
       },
@@ -165,25 +179,20 @@ export async function registerEgressRoutes(app: FastifyInstance, deps: ApiDeps):
             startedContained: reportSession ? liveContained(reportSession) : null,
             reach: reachFor(reportSession, host),
           });
-        if (scope === EGRESS_GLOBAL_SCOPE && isBuiltinDefault(host)) {
-          store.unsuppressDefault(host);
-        } else {
-          store.addHost(scope, host);
+        // The unsuppress-or-add, the broadcast and the session-only live reload
+        // are one act in the shared layer, so a second caller of the store
+        // cannot get the row without the rest (docs/299 → Apply goes through a
+        // shared layer).
+        const written = await applyEgressHostAdd(applyDeps, scope, host);
+        if (written.reloadError !== undefined) {
+          reply.code(503);
+          return {
+            error: "allowlist saved, but live service refresh failed closed",
+            settings: sessionSettings(store, scope, enforcement, liveContained(scope)),
+          };
         }
-        deps.sseBroadcast("egress_settings", globalSettings(store, enforcement));
         if (!isGlobal) {
-          let reloaded: boolean;
-          try {
-            reloaded = (await deps.containerManager?.reloadEgress(scope)) === true;
-          } catch (error) {
-            console.error(`[egress:${scope}] allowlist saved but live refresh failed closed:`, error);
-            reply.code(503);
-            return {
-              error: "allowlist saved, but live service refresh failed closed",
-              settings: sessionSettings(store, scope, enforcement, liveContained(scope)),
-            };
-          }
-          return { ...sessionSettings(store, scope, enforcement, liveContained(scope)), grant: grant(reloaded) };
+          return { ...sessionSettings(store, scope, enforcement, liveContained(scope)), grant: grant(written.reloaded) };
         }
         return { ...globalSettings(store, enforcement), grant: grant(false) };
       },
@@ -198,12 +207,7 @@ export async function registerEgressRoutes(app: FastifyInstance, deps: ApiDeps):
           reply.code(400);
           return { error: "host is required" };
         }
-        if (scope === EGRESS_GLOBAL_SCOPE && isBuiltinDefault(host)) {
-          store.suppressDefault(host);
-        } else {
-          store.removeHost(scope, host);
-        }
-        deps.sseBroadcast("egress_settings", globalSettings(store, enforcement));
+        await applyEgressHostRemove(applyDeps, scope, host);
         return scope === EGRESS_GLOBAL_SCOPE
           ? globalSettings(store, enforcement)
           : sessionSettings(store, scope, enforcement, liveContained(scope));
@@ -211,8 +215,7 @@ export async function registerEgressRoutes(app: FastifyInstance, deps: ApiDeps):
     );
 
     app.post("/api/egress/defaults/restore", async () => {
-      store.restoreDefaults();
-      deps.sseBroadcast("egress_settings", globalSettings(store, enforcement));
+      await applyEgressDefaultsRestore(applyDeps);
       return allowlistView(store, deps.credentialStore, undefined, enforcement, null);
     });
 

@@ -8,9 +8,13 @@ import type { GlobalSettingsPatch } from "../shared/settings-catalogue/index.js"
 import type { ServiceManager } from "./service-manager.js";
 
 import {
+  applyCredentialRouteOrder,
+  applyCredentialUpdate,
+  applyGitIdentity,
+  applyGlobalSettings,
+  applyProviderAccountLabel,
+  applyProviderAccountOrder,
   getBootstrapData,
-  setGitIdentityService,
-  saveGlobalSettings,
   setAgent,
   setAgentEnv,
   setApiKey,
@@ -19,8 +23,6 @@ import {
   fullReset,
   listProviderAccounts,
   createProviderAccount,
-  renameProviderAccount,
-  reorderProviderAccounts,
   deleteProviderAccount,
   startProviderAccountLogin,
   cancelProviderAccountLogin,
@@ -29,9 +31,7 @@ import {
   listCredentialRoutes,
   createStringCredential,
   adoptVoiceKeyAsCredential,
-  updateStringCredential,
   deleteCredentialRoute,
-  reorderCredentialRoutes,
   pickDeclaredSettings,
   ServiceError,
 } from "./services/index.js";
@@ -96,7 +96,15 @@ export async function registerBootstrapRoutes(
     "/api/settings/git-identity",
     async (request, reply) => {
       try {
-        return setGitIdentityService(request.body.name, request.body.email);
+        const { identity, outcome } = await applyGitIdentity(deps, request.body.name, request.body.email);
+        // A half-written identity is not a saved one: the name can land and the
+        // email throw, and answering 200 would report a change that did not
+        // happen (docs/299 → "Saved" has to mean saved).
+        if (outcome.status !== "applied") {
+          reply.code(500).send({ error: outcome.detail ?? "Failed to set git identity", outcome });
+          return;
+        }
+        return identity;
       } catch (err) {
         if (err instanceof ServiceError) {
           reply.code(err.statusCode).send({ error: err.message });
@@ -118,7 +126,7 @@ export async function registerBootstrapRoutes(
     "/api/settings",
     async (request, reply) => {
       try {
-        return await saveGlobalSettings({
+        const { settings, outcome } = await applyGlobalSettings(deps, {
           agentRegistry: deps.agentRegistry,
           appWorkspaceDir: deps.workspaceDir,
           credentialStore: deps.credentialStore,
@@ -135,6 +143,20 @@ export async function registerBootstrapRoutes(
           ...(request.body.reviewers !== undefined ? { reviewers: request.body.reviewers } : {}),
           ...(request.body.roles !== undefined ? { roles: request.body.roles } : {}),
         });
+        // A save touches the credential store, the instructions files and the
+        // git config, and any of the three can fail on its own. Answering 200
+        // for a save that partly landed is the defect docs/299 ("Saved" has to
+        // mean saved) removes — so the settings still come back, because they
+        // say what actually persisted, but the status says not to trust it.
+        if (outcome.status !== "applied") {
+          reply.code(500).send({
+            error: outcome.detail ?? "Failed to save settings",
+            outcome,
+            settings,
+          });
+          return;
+        }
+        return settings;
       } catch (err) {
         if (err instanceof ServiceError) {
           reply.code(err.statusCode).send({ error: err.message });
@@ -238,10 +260,20 @@ export async function registerBootstrapRoutes(
     "/api/credential-routes/:routeId",
     async (request, reply) => {
       try {
-        const result = updateStringCredential(deps.credentialStore, request.params.routeId, request.body ?? {});
+        const { outcome, ...result } = await applyCredentialUpdate(
+          deps,
+          request.params.routeId,
+          request.body ?? {},
+        );
         propagateCredentialChange();
-        if (request.body?.secret !== undefined) refreshQuotaForCredential(result.route, "manual");
+        if (request.body?.secret !== undefined && result.route) {
+          refreshQuotaForCredential(result.route, "manual");
+        }
         deps.sseBroadcast("credential_routes", { routes: result.routes });
+        if (outcome.status !== "applied") {
+          reply.code(500).send({ error: outcome.detail ?? "Failed to update credential", outcome });
+          return;
+        }
         return result;
       } catch (err) {
         if (err instanceof ServiceError) {
@@ -277,14 +309,18 @@ export async function registerBootstrapRoutes(
     "/api/credential-routes/:serviceId/:billingMode/order",
     async (request, reply) => {
       try {
-        const result = reorderCredentialRoutes(
-          deps.credentialStore,
+        const { outcome, ...result } = await applyCredentialRouteOrder(
+          deps,
           request.params.serviceId,
           request.params.billingMode,
           request.body?.routeIds,
         );
         propagateCredentialChange();
         deps.sseBroadcast("credential_routes", { routes: result.routes });
+        if (outcome.status !== "applied") {
+          reply.code(500).send({ error: outcome.detail ?? "Failed to reorder credentials", outcome });
+          return;
+        }
         return result;
       } catch (err) {
         if (err instanceof ServiceError) {
@@ -321,13 +357,17 @@ export async function registerBootstrapRoutes(
     "/api/provider-accounts/:provider/:accountId",
     async (request, reply) => {
       try {
-        const result = renameProviderAccount(
-          deps.providerAccountManager,
+        const { outcome, ...result } = await applyProviderAccountLabel(
+          deps,
           request.params.provider,
           request.params.accountId,
           request.body.label,
         );
         deps.sseBroadcast("provider_accounts", { accounts: result.accounts });
+        if (outcome.status !== "applied") {
+          reply.code(500).send({ error: outcome.detail ?? "Failed to rename provider account", outcome });
+          return;
+        }
         return result;
       } catch (err) {
         if (err instanceof ServiceError) {
@@ -343,12 +383,16 @@ export async function registerBootstrapRoutes(
     "/api/provider-accounts/:provider/order",
     async (request, reply) => {
       try {
-        const result = reorderProviderAccounts(
-          deps.providerAccountManager,
+        const { outcome, ...result } = await applyProviderAccountOrder(
+          deps,
           request.params.provider,
           request.body?.accountIds,
         );
         deps.sseBroadcast("provider_accounts", { accounts: result.accounts });
+        if (outcome.status !== "applied") {
+          reply.code(500).send({ error: outcome.detail ?? "Failed to reorder provider accounts", outcome });
+          return;
+        }
         return result;
       } catch (err) {
         if (err instanceof ServiceError) {

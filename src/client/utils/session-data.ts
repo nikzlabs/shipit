@@ -555,6 +555,34 @@ export async function loadBootstrapData(): Promise<void> {
     username: data.githubStatus.username,
     avatarUrl: data.githubStatus.avatarUrl,
   });
+  applyGlobalSettings(data.settings);
+  useUiStore.getState().setRuntimeMode(data.runtimeMode ?? "containerized");
+  useUiStore.getState().setTailnetPreviewHost(data.tailnetPreviewHost ?? null);
+  useUiStore.getState().setBootstrapLoaded(true);
+}
+
+/**
+ * Re-read the global settings after one of them changed elsewhere
+ * (docs/299-agent-settings-access, plan.md → Apply goes through a shared layer).
+ *
+ * The server broadcasts that a setting moved rather than pushing its value, and
+ * this is the other half. It hangs off the GLOBAL connection's recovery as well
+ * as the broadcast, because a broadcast does not reach a viewer that was away
+ * and the dialog can be open on the home screen, where the session-scoped
+ * hydration path never runs at all.
+ *
+ * Only the settings half is applied: the session list, the repository list and
+ * the agent list have their own pushes, and re-applying them here would reset
+ * state a viewer is in the middle of.
+ */
+export async function refreshGlobalSettings(): Promise<void> {
+  const res = await fetch("/api/bootstrap");
+  if (!res.ok) throw new Error(`Settings refresh failed: ${res.status}`);
+  applyGlobalSettings((await res.json() as BootstrapResponse).settings);
+}
+
+function applyGlobalSettings(settings: BootstrapResponse["settings"]): void {
+  const data = { settings };
   useGitStore.getState().setIdentity(data.settings.gitIdentity);
   if (!data.settings.gitIdentity.name && !data.settings.gitIdentity.email) {
     useGitStore.getState().setIdentityNeeded(true);
@@ -603,7 +631,4 @@ export async function loadBootstrapData(): Promise<void> {
   if (data.settings.reviewers) useSettingsStore.getState().setReviewers(data.settings.reviewers);
 
   if (data.settings.roles) useSettingsStore.getState().setRoles(data.settings.roles);
-  useUiStore.getState().setRuntimeMode(data.runtimeMode ?? "containerized");
-  useUiStore.getState().setTailnetPreviewHost(data.tailnetPreviewHost ?? null);
-  useUiStore.getState().setBootstrapLoaded(true);
 }

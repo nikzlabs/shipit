@@ -243,7 +243,7 @@ export async function registerApiRoutes(
       serviceManagers,
     });
   }
-  await registerUpdateRoutes(app);
+  await registerUpdateRoutes(app, { sseBroadcast: deps.sseBroadcast });
   await registerAgentRoutes(app, deps);
   await registerAgentSettingsRoutes(app, deps);
   await registerVoiceRoutes(app, deps);
@@ -266,6 +266,7 @@ export async function registerApiRoutes(
     credentialStore: deps.credentialStore,
     runnerRegistry: deps.runnerRegistry,
     serviceManagers: deps.serviceManagers ?? new Map<string, ServiceManager>(),
+    sseBroadcast: deps.sseBroadcast,
     ...(deps.mcpOAuthFetchImpl !== undefined
       ? { oauthFetchImpl: deps.mcpOAuthFetchImpl }
       : {}),

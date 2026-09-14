@@ -70,7 +70,9 @@ describe("global system prompt (app-scope)", () => {
 
     await writeGlobalSystemPrompt(appRoot, "   \n  ");
     expect(fs.existsSync(globalSystemPromptPath(appRoot))).toBe(false);
-    await expect(writeGlobalSystemPrompt(appRoot, "")).resolves.toBeUndefined();
+    // Clearing what is already clear is applied, not a failure: the file is
+    // missing, which is the state the caller asked for.
+    await expect(writeGlobalSystemPrompt(appRoot, "")).resolves.toEqual({ status: "applied" });
 
     fs.mkdirSync(path.dirname(globalSystemPromptPath(appRoot)), { recursive: true });
     fs.writeFileSync(globalSystemPromptPath(appRoot), "\n \n");

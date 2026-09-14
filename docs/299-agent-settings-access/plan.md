@@ -598,16 +598,21 @@ derivations, `exclusions.ts`); `client/components/Settings/setting-binding.ts`
 `client/components/Settings/settings-coverage.test.tsx` (the residual guard);
 `services/settings-read.ts` and `api-routes-settings-agent.ts` (the two
 session-scoped, container-accessible reads `GET /api/sessions/:id/settings` and
-`…/settings/detail?key=`); `services/settings-apply.ts` (the shared writers, the
-conflict-domain lock, the broadcast); `services/settings-proposal.ts` (compile,
-claim, baseline, transition); `ws-handlers/settings-proposal-handlers.ts`;
+`…/settings/detail?key=`); `services/settings-apply.ts` (the shared writers and
+the broadcast), `services/settings-conflict-domain.ts` (the lock) and
+`services/settings-baseline.ts` (the per-declaration revision);
+`shared/settings-catalogue/apply-outcome.ts` (the four outcomes);
+`services/settings-proposal.ts` (compile, claim, transition);
+`ws-handlers/settings-proposal-handlers.ts`;
 `session/agent-shim/shipit-settings.ts`; the client card handler and component;
 `shipit-docs/settings.md`.
 
-Changed: `credential-store.ts`, `services/settings.ts`, `services/types.ts`,
+Changed: `credential-store.ts`, `global-system-prompt.ts`, `git-config.ts`,
+`services/settings.ts`, `services/settings-derivation.ts`, `services/types.ts`,
 `api-routes-bootstrap.ts`, `api-routes-egress.ts`, `api-routes-mcp.ts`,
 `api-routes-updates.ts`, `api-routes-session-repos.ts`,
-`ws-handlers/egress-handlers.ts`, the settings tab components and the bespoke
+`ws-handlers/egress-handlers.ts`, `client/utils/session-data.ts`
+(`refreshGlobalSettings`), the settings tab components and the bespoke
 panels they host (`ServicesPanel`, `CredentialRouting`, `ProviderAccountRows`,
 `RoleEditor`, `ReviewerSection`, `McpServerSettings/*`, `SettingsEgress`,
 `SettingsTrackers`, `GitHubTokenForm`, `KeybindingSettings`, `SecretsTab`,

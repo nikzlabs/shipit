@@ -16,6 +16,7 @@ export function InstructionsTab({
   agentSystemInstructionsEnabled,
   agentSystemInstructions,
   onToggleAgentSystemInstructions,
+  changedElsewhere,
 }: {
   content: string;
   onContentChange: (value: string) => void;
@@ -27,6 +28,8 @@ export function InstructionsTab({
   agentSystemInstructionsEnabled: boolean;
   agentSystemInstructions: string;
   onToggleAgentSystemInstructions: (enabled: boolean) => void;
+  /** The stored instructions moved while these edits were unsaved. */
+  changedElsewhere?: boolean;
 }) {
   const [instructionsExpanded, setInstructionsExpanded] = useState(false);
 
@@ -60,6 +63,16 @@ export function InstructionsTab({
         </>
       }
     >
+      {changedElsewhere && (
+        <p
+          className="rounded-md border border-(--color-border-secondary) bg-(--color-bg-secondary) px-3 py-2 text-xs text-(--color-text-secondary)"
+          data-testid="instructions-changed-elsewhere"
+        >
+          These instructions changed somewhere else while you were editing. Your edits are
+          still here; saving replaces what is stored now.
+        </p>
+      )}
+
       {/* Agent system instructions (built-in) */}
       <div className="rounded-lg border border-(--color-border-secondary) bg-(--color-bg-secondary) p-3 space-y-2" data-testid="agent-system-instructions">
         <DeclaredToggle
