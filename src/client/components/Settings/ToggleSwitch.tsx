@@ -1,6 +1,20 @@
+import { bindSetting } from "./setting-binding.js";
+import type { SettingKey } from "../../../server/shared/settings-catalogue/index.js";
 
-
-export function ToggleSwitch({ enabled, onToggle, testId, label }: { enabled: boolean; onToggle: (v: boolean) => void; testId?: string; label?: string }) {
+export function ToggleSwitch({
+  enabled,
+  onToggle,
+  testId,
+  label,
+  settingKey,
+}: {
+  enabled: boolean;
+  onToggle: (v: boolean) => void;
+  testId?: string;
+  label?: string;
+  /** The declaration this switch is the control for (docs/299 req 7). */
+  settingKey?: SettingKey;
+}) {
   return (
     <button
       onClick={() => onToggle(!enabled)}
@@ -11,6 +25,7 @@ export function ToggleSwitch({ enabled, onToggle, testId, label }: { enabled: bo
       aria-label={label}
       aria-checked={enabled}
       data-testid={testId}
+      {...(settingKey ? bindSetting(settingKey) : {})}
     >
       <span
         className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${

@@ -5,7 +5,12 @@ import { Button } from "../../ui/button.js";
 import { Alert } from "../../ui/banner.js";
 import { useUiStore } from "../../../stores/ui-store.js";
 import { useSettingsStore } from "../../../stores/settings-store.js";
-import { ToggleSwitch } from "../ToggleSwitch.js";
+import {
+  DeclaredEnumCards,
+  DeclaredToggle,
+  SettingCopy,
+  bindSetting,
+} from "../declared.js";
 
 interface UpdateStatusResult {
   available: boolean;
@@ -34,11 +39,14 @@ export function ConversationSettings() {
   return (
     <section className="space-y-3" aria-label="Conversation">
       <h3 className="text-sm font-medium text-(--color-text-primary)">Conversation</h3>
-      <div className="flex items-center justify-between gap-3">
-        <span className="text-sm text-(--color-text-primary)">Compact completed turns</span>
-        <ToggleSwitch enabled={enabled} onToggle={setEnabled} label="Compact completed turns" testId="settings-compact-conversation" />
-      </div>
-      <p className="text-xs text-(--color-text-secondary)">Collapse every turn but the newest to your message and the last agent reply. Tool calls, progress messages and cards are hidden; errors stay, and so does a card that still needs you.</p>
+      <DeclaredToggle
+        settingKey="advanced.compactConversation"
+        enabled={enabled}
+        onToggle={setEnabled}
+        testId="settings-compact-conversation"
+      />
+      {/* Not part of the setting's description: it is about the browser, not
+          about what compacting does, and the agent has no use for it. */}
       <p className="text-xs text-(--color-text-secondary)">Saved for this browser. Browser Find searches displayed content. In-app search can still find hidden message text.</p>
     </section>
   );
@@ -58,20 +66,18 @@ function NotificationSettings() {
         CI fails, or a PR has merge conflicts. The same conditions that highlight a session in the sidebar.
       </p>
       <div className="space-y-2">
-        <div className="flex items-center justify-between py-1">
-          <div>
-            <span className="text-sm text-(--color-text-primary)">Browser notification</span>
-            <p className="text-xs text-(--color-text-tertiary)">Show a desktop notification when the tab is in the background</p>
-          </div>
-          <ToggleSwitch enabled={notifyOnFinish} onToggle={setNotifyOnFinish} testId="settings-notify-on-finish" />
-        </div>
-        <div className="flex items-center justify-between py-1">
-          <div>
-            <span className="text-sm text-(--color-text-primary)">Sound</span>
-            <p className="text-xs text-(--color-text-tertiary)">Play a chime when a session needs attention</p>
-          </div>
-          <ToggleSwitch enabled={soundOnFinish} onToggle={setSoundOnFinish} testId="settings-sound-on-finish" />
-        </div>
+        <DeclaredToggle
+          settingKey="advanced.notifyOnFinish"
+          enabled={notifyOnFinish}
+          onToggle={setNotifyOnFinish}
+          testId="settings-notify-on-finish"
+        />
+        <DeclaredToggle
+          settingKey="advanced.soundOnFinish"
+          enabled={soundOnFinish}
+          onToggle={setSoundOnFinish}
+          testId="settings-sound-on-finish"
+        />
       </div>
     </div>
   );
@@ -100,13 +106,12 @@ function LiveSteeringSettings() {
     <div className="space-y-3">
       <h3 className="text-sm font-medium text-(--color-text-primary)">Live Steering</h3>
       <div className="space-y-2">
-        <div className="flex items-center justify-between py-1 gap-4">
-          <div>
-            <span className="text-sm text-(--color-text-primary)">Inject messages mid-turn</span>
-            <p className="text-xs text-(--color-text-tertiary)">Send a message while the agent is running to steer it without waiting for the turn to finish. On by default — it also keeps the agent process alive across interrupts so answering an AskUserQuestion or continuing after a stop works cleanly. Toggle off to return to the queue-based mode (one process per turn).</p>
-          </div>
-          <ToggleSwitch enabled={liveSteering} onToggle={(v) => void handleToggle(v)} testId="settings-live-steering" />
-        </div>
+        <DeclaredToggle
+          settingKey="advanced.liveSteering"
+          enabled={liveSteering}
+          onToggle={(v) => void handleToggle(v)}
+          testId="settings-live-steering"
+        />
       </div>
     </div>
   );
@@ -157,27 +162,24 @@ function PrAutomationsSettings() {
     <div className="space-y-3">
       <h3 className="text-sm font-medium text-(--color-text-primary)">PR automations</h3>
       <div className="space-y-2">
-        <div className="flex items-center justify-between py-1 gap-4">
-          <div>
-            <span className="text-sm text-(--color-text-primary)">Auto-fix CI when checks fail</span>
-            <p className="text-xs text-(--color-text-tertiary)">When a PR&rsquo;s checks fail and the agent isn&rsquo;t busy, fetches the failing logs and asks the agent to fix them. Retries up to three times per commit.</p>
-          </div>
-          <ToggleSwitch enabled={autoFixCi} onToggle={(v) => void handleFixToggle(v)} testId="settings-auto-fix-ci" />
-        </div>
-        <div className="flex items-center justify-between py-1 gap-4">
-          <div>
-            <span className="text-sm text-(--color-text-primary)">Auto-resolve conflicts when the base branch moves</span>
-            <p className="text-xs text-(--color-text-tertiary)">Detects when the PR can no longer merge cleanly. When the agent isn&rsquo;t busy, runs a rebase and asks the agent to fix any conflicts. Force-pushes the result.</p>
-          </div>
-          <ToggleSwitch enabled={autoResolveConflicts} onToggle={(v) => void handleResolveToggle(v)} testId="settings-auto-resolve-conflicts" />
-        </div>
-        <div className="flex items-center justify-between py-1 gap-4">
-          <div>
-            <span className="text-sm text-(--color-text-primary)">Start from the latest base after a merge</span>
-            <p className="text-xs text-(--color-text-tertiary)">When you continue a session whose PR already merged and the branch hasn&rsquo;t moved since, this does two things before the next turn: resets the branch to the latest base, so the agent builds on current code, and compacts the agent&rsquo;s context, so the shipped work stops filling it. A per-message checkbox lets you skip either one for any one send.</p>
-          </div>
-          <ToggleSwitch enabled={autoResetMergedBranch} onToggle={(v) => void handleResetMergedToggle(v)} testId="settings-auto-reset-merged-branch" />
-        </div>
+        <DeclaredToggle
+          settingKey="advanced.autoFixCi"
+          enabled={autoFixCi}
+          onToggle={(v) => void handleFixToggle(v)}
+          testId="settings-auto-fix-ci"
+        />
+        <DeclaredToggle
+          settingKey="advanced.autoResolveConflicts"
+          enabled={autoResolveConflicts}
+          onToggle={(v) => void handleResolveToggle(v)}
+          testId="settings-auto-resolve-conflicts"
+        />
+        <DeclaredToggle
+          settingKey="advanced.autoResetMergedBranch"
+          enabled={autoResetMergedBranch}
+          onToggle={(v) => void handleResetMergedToggle(v)}
+          testId="settings-auto-reset-merged-branch"
+        />
       </div>
     </div>
   );
@@ -205,18 +207,12 @@ function MultiAgentSettings() {
   return (
     <div className="space-y-3">
       <h3 className="text-sm font-medium text-(--color-text-primary)">Multi-agent sessions</h3>
-      <div className="flex items-center justify-between py-1 gap-4">
-        <div>
-          <span className="text-sm text-(--color-text-primary)">Allow spawning another agent for a sub-task</span>
-          <p className="text-xs text-(--color-text-tertiary)">
-            Lets the agent in a session spawn another agent for a one-shot sub-task (e.g. a
-            second-opinion review from a different model). The spawned agent runs with full tool
-            access and its work is committed under your session&rsquo;s agent. Enabling this means
-            a session container can briefly hold credentials for both agents.
-          </p>
-        </div>
-        <ToggleSwitch enabled={enableSubAgents} onToggle={(v) => void handleToggle(v)} testId="settings-enable-sub-agents" />
-      </div>
+      <DeclaredToggle
+        settingKey="advanced.enableSubAgents"
+        enabled={enableSubAgents}
+        onToggle={(v) => void handleToggle(v)}
+        testId="settings-enable-sub-agents"
+      />
     </div>
   );
 }
@@ -283,60 +279,38 @@ export function AdvancedTab({
           </p>
         )}
 
-        {/* Release-channel selector (feature 162) */}
+        {/* Release-channel selector (feature 162) — each option's own words come
+            from the declaration, so the agent reads what the card says. */}
         <div className="space-y-1.5">
-          <span className="text-xs font-medium text-(--color-text-secondary)">Release channel</span>
-          <div className="flex gap-2" role="group" aria-label="Release channel">
-            {([
-              { id: "stable" as const, label: "Stable", desc: "Vetted releases, fewer updates." },
-              { id: "edge" as const, label: "Edge", desc: "Latest changes from main, updated continuously." },
-            ]).map((opt) => {
-              const active = selectedChannel === opt.id;
-              return (
-                <button
-                  key={opt.id}
-                  type="button"
-                  disabled={channelSwitching || updateApplying}
-                  aria-pressed={active}
-                  data-testid={`settings-channel-${opt.id}`}
-                  onClick={async () => {
-                    if (active || channelSwitching) return;
-                    setChannelSwitching(true);
-                    setUpdateError(null);
-                    try {
-                      const res = await fetch("/api/updates/channel", {
-                        method: "POST",
-                        headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify({ channel: opt.id }),
-                      });
-                      if (!res.ok) {
-                        const body = await res.json().catch(() => ({})) as { error?: string };
-                        throw new Error(body.error ?? `HTTP ${res.status}`);
-                      }
-                      setUpdateStatus(await res.json() as UpdateStatusResult);
-                    } catch (err) {
-                      setUpdateError((err as Error).message);
-                    } finally {
-                      setChannelSwitching(false);
-                    }
-                  }}
-                  className={`flex-1 rounded-md border px-3 py-2 text-left transition-colors disabled:opacity-50 ${
-                    active
-                      ? "border-(--color-accent) bg-(--color-accent-subtle)"
-                      : "border-(--color-border-secondary) hover:border-(--color-border-primary)"
-                  }`}
-                >
-                  <span className="block text-sm font-medium text-(--color-text-primary)">
-                    {opt.label}
-                    {opt.id === "stable" && (
-                      <span className="ml-1.5 text-xs font-normal text-(--color-text-tertiary)">recommended</span>
-                    )}
-                  </span>
-                  <span className="block text-xs text-(--color-text-tertiary)">{opt.desc}</span>
-                </button>
-              );
-            })}
-          </div>
+          <DeclaredEnumCards
+            settingKey="advanced.releaseChannel"
+            value={selectedChannel}
+            disabled={channelSwitching || updateApplying}
+            testIdPrefix="settings-channel"
+            onChange={(channel) => {
+              if (channel === selectedChannel || channelSwitching) return;
+              void (async () => {
+                setChannelSwitching(true);
+                setUpdateError(null);
+                try {
+                  const res = await fetch("/api/updates/channel", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ channel }),
+                  });
+                  if (!res.ok) {
+                    const body = await res.json().catch(() => ({})) as { error?: string };
+                    throw new Error(body.error ?? `HTTP ${res.status}`);
+                  }
+                  setUpdateStatus(await res.json() as UpdateStatusResult);
+                } catch (err) {
+                  setUpdateError((err as Error).message);
+                } finally {
+                  setChannelSwitching(false);
+                }
+              })();
+            }}
+          />
           {channelSwitching && (
             <p className="text-xs text-(--color-text-tertiary)">Switching channel…</p>
           )}
@@ -551,29 +525,35 @@ export function AdvancedTab({
           unit: an idle shell and a Postgres service cost the machine very
           different amounts, and memory is what the user is actually out of. */}
       <div className="space-y-3">
-        <h3 className="text-sm font-medium text-(--color-text-primary)">Memory Budget</h3>
-        <p className="text-sm text-(--color-text-secondary)">
-          Memory ShipIt may use in total, in GB — sessions, previews and all. Inside the budget
-          nothing is stopped for being idle, so an idle session keeps its preview running. Over it,
-          the longest-idle session gives up its agent container first, its preview only if that was
-          not enough. Leave empty for this install's default{effectiveBudgetGb ? ` (${effectiveBudgetGb} GB)` : ""} —
-          half the machine on a local install, the whole machine on a server.
-        </p>
+        <SettingCopy
+          settingKey="advanced.memoryBudgetMb"
+          heading
+          detail={
+            effectiveBudgetGb ? (
+              <p className="mt-1 text-xs text-(--color-text-tertiary)" data-testid="settings-memory-budget-effective">
+                Currently following the install default of {effectiveBudgetGb} GB.
+              </p>
+            ) : undefined
+          }
+        />
         <div className="flex items-center gap-3">
           <input
             type="number"
             min={0}
             step={0.5}
             placeholder="whole machine"
+            aria-label="Memory budget"
             value={memoryBudgetGb}
             onChange={(e) => { setMemoryBudgetGb(e.target.value); setMemoryBudgetSaved(false); }}
             className="w-36 rounded-lg bg-(--color-bg-secondary) border border-(--color-border-secondary) px-3 py-2 text-sm text-(--color-text-primary) focus:outline-none focus:border-(--color-border-focus)"
             data-testid="settings-memory-budget"
+            {...bindSetting("advanced.memoryBudgetMb")}
           />
           <span className="text-sm text-(--color-text-secondary)">GB</span>
           <Button
             variant="primary"
             size="md"
+            aria-label={memoryBudgetSaved ? "Memory budget saved" : "Save memory budget"}
             onClick={() => {
               const gb = Number(memoryBudgetGb);
               onMemoryBudgetSave(memoryBudgetGb.trim() === "" || !(gb > 0) ? null : Math.round(gb * 1024));
@@ -581,6 +561,7 @@ export function AdvancedTab({
             }}
             className="rounded-md"
             data-testid="settings-memory-budget-save"
+            {...bindSetting("advanced.memoryBudgetMb")}
           >
             {memoryBudgetSaved ? "Saved" : "Save"}
           </Button>

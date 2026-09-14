@@ -756,7 +756,7 @@ describe("Settings - Advanced tab", () => {
 
   it("renders the Memory Budget section, empty when no budget is set", async () => {
     await renderOnAdvancedTab();
-    expect(screen.getByText("Memory Budget")).toBeInTheDocument();
+    expect(screen.getByText("Memory budget")).toBeInTheDocument();
     expect(screen.getByTestId("settings-memory-budget")).toHaveValue(null);
   });
 

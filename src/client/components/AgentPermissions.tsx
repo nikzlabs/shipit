@@ -1,11 +1,13 @@
 import { GitMergeIcon } from "@phosphor-icons/react";
 import { useRepoStore } from "../stores/repo-store.js";
 import { ICON_SIZE } from "../design-tokens.js";
+import { bindSetting, settingCopy } from "./Settings/setting-binding.js";
 
 export function AgentPermissions({ repoUrl }: { repoUrl: string }) {
   const repo = useRepoStore((s) => s.repos.find((r) => r.url === repoUrl));
   const setAllow = useRepoStore((s) => s.setRepoAllowAgentMerge);
   const allowed = repo?.allowAgentMerge === true;
+  const { label, description } = settingCopy("project.allowAgentMerge");
 
   return (
     <div className="space-y-3">
@@ -21,21 +23,26 @@ export function AgentPermissions({ repoUrl }: { repoUrl: string }) {
           <GitMergeIcon size={ICON_SIZE.SM} />
         </span>
         <div className="flex-1 min-w-0">
-          <div className="text-[13.5px] font-semibold text-(--color-text-primary)">
-            Allow agents to merge their own pull requests
+          <div
+            className="text-[13.5px] font-semibold text-(--color-text-primary)"
+            data-setting-label="project.allowAgentMerge"
+          >
+            {label}
           </div>
-          <p className="text-xs text-(--color-text-secondary) mt-0.5">
-            An agent may merge only the pull request its own session opened, and only when
-            every check has passed. Branch protection and required reviews are still
-            enforced by GitHub. Off for every repository until you turn it on.
+          <p
+            className="text-xs text-(--color-text-secondary) mt-0.5"
+            data-setting-description="project.allowAgentMerge"
+          >
+            {description}
           </p>
         </div>
         <button
           type="button"
           role="switch"
           aria-checked={allowed}
-          aria-label="Allow agents to merge their own pull requests"
+          aria-label={label}
           data-testid="allow-agent-merge-toggle"
+          {...bindSetting("project.allowAgentMerge")}
           onClick={() => void setAllow(repoUrl, !allowed)}
           className={`relative w-9.5 h-5.5 rounded-full shrink-0 mt-0.5 transition-colors border ${
             allowed

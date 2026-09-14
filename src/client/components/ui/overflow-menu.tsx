@@ -2,6 +2,8 @@ import type { ReactNode } from "react";
 import { DotsThreeVerticalIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../../design-tokens.js";
 import { cn } from "../../utils/cn.js";
+import { bindSetting } from "../Settings/setting-binding.js";
+import type { SettingKey } from "../../../server/shared/settings-catalogue/index.js";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -24,6 +26,9 @@ interface OverflowMenuProps {
   portaled?: boolean;
 
   onOpenChange?: (open: boolean) => void;
+
+  /** The declaration whose operations this menu offers, where it has one. */
+  settingKey?: SettingKey;
 }
 
 export function OverflowMenu({
@@ -35,6 +40,7 @@ export function OverflowMenu({
   triggerClassName,
   portaled = true,
   onOpenChange,
+  settingKey,
 }: OverflowMenuProps) {
   return (
     <DropdownMenu modal={false} onOpenChange={onOpenChange}>
@@ -46,6 +52,7 @@ export function OverflowMenu({
           )}
           title={label}
           aria-label={label}
+          {...(settingKey ? bindSetting(settingKey) : {})}
         >
           <DotsThreeVerticalIcon size={ICON_SIZE.SM} weight="bold" />
         </button>

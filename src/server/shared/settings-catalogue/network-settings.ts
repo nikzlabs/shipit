@@ -45,8 +45,7 @@ export const NETWORK_SETTINGS = {
     address: HOST_ADDRESS,
     label: "Host",
     description:
-      "One entry of the allowlist — `api.example.com`, or `.example.com` to match subdomains as "
-      + "well.",
+      "One entry of the allowlist — api.example.com, or .example.com to match subdomains as well.",
     type: text({ maxLength: 253, noun: "Host", required: true, trim: true }),
     store: { kind: "bespoke", ownedBy: "the egress allowlist store, global scope (/api/egress/hosts)" },
     // The host is the whole subject of the setting and a card shows it in full,

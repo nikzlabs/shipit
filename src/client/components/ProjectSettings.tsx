@@ -8,7 +8,19 @@ import type { SecretsSavePayload } from "./SecretsTab.js";
 
 const mobileTabClass = "max-md:w-auto max-md:whitespace-nowrap max-md:rounded-md max-md:px-3 max-md:py-1.5 max-md:text-xs";
 
-type Tab = "deployments" | "secrets" | "appearance";
+/**
+ * Every tab this dialog renders, in order. Exported for the same reason as
+ * `SETTINGS_TABS`: the coverage guard walks each one.
+ */
+export const PROJECT_SETTINGS_TABS = ["secrets", "deployments", "appearance"] as const;
+
+type Tab = (typeof PROJECT_SETTINGS_TABS)[number];
+
+const TAB_LABEL: Record<Tab, string> = {
+  secrets: "Secrets",
+  deployments: "Deployments",
+  appearance: "Appearance",
+};
 
 export interface ProjectSettingsProps {
 
@@ -62,15 +74,11 @@ export function ProjectSettings({
           orientation="vertical"
         >
           <TabsList className="md:w-40 md:shrink-0 md:border-r md:py-2 max-md:flex-row max-md:overflow-x-auto max-md:border-b max-md:px-2 max-md:py-1.5 max-md:gap-1 max-md:shrink-0 border-(--color-border-secondary)">
-            <TabsTrigger value="secrets" data-testid="project-tab-secrets" className={mobileTabClass}>
-              Secrets
-            </TabsTrigger>
-            <TabsTrigger value="deployments" data-testid="project-tab-deployments" className={mobileTabClass}>
-              Deployments
-            </TabsTrigger>
-            <TabsTrigger value="appearance" data-testid="project-tab-appearance" className={mobileTabClass}>
-              Appearance
-            </TabsTrigger>
+            {PROJECT_SETTINGS_TABS.map((tab) => (
+              <TabsTrigger key={tab} value={tab} data-testid={`project-tab-${tab}`} className={mobileTabClass}>
+                {TAB_LABEL[tab]}
+              </TabsTrigger>
+            ))}
           </TabsList>
 
           <TabsContent value="deployments">

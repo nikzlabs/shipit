@@ -17,11 +17,14 @@ import { RolesTab } from "./tabs/RolesTab.js";
 
 const mobileTabClass = "max-md:w-auto max-md:whitespace-nowrap max-md:rounded-md max-md:px-3 max-md:py-1.5 max-md:text-xs";
 
-type Tab = "services" | "roles" | "integrations" | "git" | "instructions" | "skills" | "keyboard" | "voice" | "network" | "advanced";
+/**
+ * Every tab this dialog renders, in order. Exported because
+ * `settings-coverage.test.tsx` walks each one: a tab added here but not there
+ * would be a pane the coverage guard never sees.
+ */
+export const SETTINGS_TABS = ["services", "roles", "integrations", "git", "instructions", "skills", "keyboard", "voice", "network", "advanced"] as const;
 
-// docs/261 phase 3 — this tab sits directly after `services`, because it is the
-
-const TABS = ["services", "roles", "integrations", "git", "instructions", "skills", "keyboard", "voice", "network", "advanced"] as const;
+type Tab = (typeof SETTINGS_TABS)[number];
 
 export interface SettingsProps {
   initialContent: string;
@@ -137,7 +140,7 @@ export function Settings({
         }} className="flex max-md:flex-col flex-1 min-h-0" orientation="vertical">
           {/* Tab list — vertical sidebar on desktop, horizontal scroll on mobile */}
           <TabsList className="md:w-40 md:shrink-0 md:min-h-0 md:overflow-y-auto md:border-r md:py-2 max-md:flex-row max-md:overflow-x-auto max-md:border-b max-md:px-2 max-md:py-1.5 max-md:gap-1 max-md:shrink-0 border-(--color-border-secondary)">
-            {TABS.map((tab) => (
+            {SETTINGS_TABS.map((tab) => (
               <TabsTrigger key={tab} value={tab} data-testid={`settings-tab-${tab}`} className={mobileTabClass}>
                 {tabLabel(tab)}
               </TabsTrigger>

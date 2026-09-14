@@ -50,8 +50,8 @@ export const ROLES_SETTINGS = {
     address: ROLE_ADDRESS,
     label: "Name",
     description:
-      "What the role is called, and what `--role` takes. `reviewer` is reserved: ShipIt picks what "
-      + "it runs on per review, so that role's name cannot be changed.",
+      "What the role is called, and what --role takes. The reviewer role is reserved: ShipIt picks "
+      + "what it runs on per review, so its name cannot be changed.",
     type: text({ maxLength: 64, noun: "Role name", required: true, trim: true }),
     store: { kind: "bespoke", ownedBy: "credential-store roles (PUT /api/settings `roles`)" },
     emits: userText("The name the user gave their own role, and the name the agent addresses it by."),

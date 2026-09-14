@@ -8,6 +8,7 @@ import { getService, loginIntegrationForService, modeReportsQuota, nativeService
 import { Button, buttonVariants } from "../ui/button.js";
 import { cn } from "../../utils/cn.js";
 import { DropdownMenuItem } from "../ui/dropdown-menu.js";
+import { bindSetting } from "./setting-binding.js";
 import { SubscriptionLimitPill } from "../SubscriptionLimitsBadge.js";
 import { useUiStore } from "../../stores/ui-store.js";
 import type { ProviderAccountNotice } from "../../stores/settings-store.js";
@@ -471,12 +472,14 @@ export function AccountChallenge({
             placeholder="Paste authorization code"
             aria-label={`Authorization code for ${account.label}`}
             className="min-w-0 flex-1 rounded-md border border-(--color-border-secondary) bg-(--color-bg-secondary) px-2 py-1.5 text-sm text-(--color-text-primary) focus:border-(--color-border-focus) focus:outline-none"
+            {...bindSetting("services.providerAccounts[].connection")}
           />
           <Button
             variant="primary"
             size="md"
             disabled={busy || !code.trim()}
             onClick={() => void submit()}
+            {...bindSetting("services.providerAccounts[].connection")}
           >
             Submit code
           </Button>
@@ -697,6 +700,7 @@ export function ProviderAccountRows({
                 {...(credentialStatusWord(account) ? { status: credentialStatusWord(account) } : {})}
                 drag={dragFor(account.id)}
                 menuLabel={`Manage ${account.label}`}
+                menuSettingKey="services.providerAccounts"
                 quota={
 
                   billingMode === "sub"
@@ -780,6 +784,7 @@ export function ProviderAccountRows({
                     className="mt-1 w-full rounded border border-(--color-border-secondary) bg-(--color-bg-primary) px-1.5 py-0.5 text-xs text-(--color-text-primary) focus:border-(--color-border-focus) focus:outline-none"
                     aria-label={`${serviceName} account label`}
                     data-testid={`provider-account-rename-input-${account.id}`}
+                    {...bindSetting("services.providerAccounts[].label")}
                   />
                 )}
               </CredentialRowShell>
@@ -856,6 +861,7 @@ function ClearStoredCredentials({
         disabled={clearing}
         className="mt-0.5 text-xs text-(--color-text-link) transition-colors hover:text-(--color-accent) disabled:cursor-not-allowed disabled:opacity-50"
         data-testid={`provider-clear-credentials-${provider}`}
+        {...bindSetting("services.providerAccounts")}
       >
         {clearing ? "Clearing..." : `Clear every stored ${serviceName} credential`}
       </button>

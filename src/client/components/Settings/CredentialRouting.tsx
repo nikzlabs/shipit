@@ -60,6 +60,7 @@ import { credentialModeKey } from "../../../server/shared/types/domain-types/cre
 import type { BillingMode } from "../../../server/shared/catalogue/index.js";
 import { useSettingsStore } from "../../stores/settings-store.js";
 import { WithTooltip } from "../ui/tooltip.js";
+import { bindSetting } from "./setting-binding.js";
 
 function TitledHint({ title, hint }: { title: string; hint: string }) {
   return (
@@ -130,6 +131,8 @@ export function CredentialSelectionModeControl({
         aria-checked={mode === value}
         disabled={saving}
         onClick={() => void save(value)}
+        aria-label={fullName}
+        {...bindSetting("services.accountSelectionMode")}
         className={`rounded px-2 py-0.5 text-[11px] transition-colors disabled:opacity-50 ${
           mode === value
             ? "bg-(--color-bg-elevated) text-(--color-text-primary) shadow-sm"
@@ -296,6 +299,7 @@ export function FailoverCutoffControls({
           aria-label={`${serviceName} ${longLabel} failover cutoff, percent`}
           className="w-11 rounded border border-(--color-border-secondary) bg-(--color-bg-primary) px-1 py-0.5 text-right text-[11px] text-(--color-text-primary) focus:border-(--color-border-focus) focus:outline-none"
           data-testid={`failover-cutoff-${key}-${name}`}
+          {...bindSetting(name === "session" ? "services.failoverCutoff.session" : "services.failoverCutoff.weekly")}
         />
         %
       </label>

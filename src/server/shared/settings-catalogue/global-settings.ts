@@ -129,7 +129,9 @@ export const GLOBAL_SETTINGS = {
     type: enumOf({
       default: "stable",
       options: [
-        { value: "stable", label: "Stable", description: "Vetted releases, fewer updates." },
+        // "Recommended" rides in the option's own words: the dialog renders
+        // these, so a badge beside them would be copy with no declaration.
+        { value: "stable", label: "Stable", description: "Vetted releases, fewer updates. Recommended." },
         { value: "edge", label: "Edge", description: "Latest changes from main, updated continuously." },
       ],
     }),

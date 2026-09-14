@@ -33,6 +33,24 @@ export const ALL_SETTINGS: readonly AnySettingDeclaration[] = SOURCES.flatMap(
   (source) => Object.values(source),
 );
 
+/**
+ * Every declared key, as a type.
+ *
+ * It is what makes "a field with no declaration has nothing to bind to"
+ * (plan.md → Bespoke panels declare per field) a compile error rather than a
+ * runtime one: a dialog control binds by naming a `SettingKey`, so a control
+ * nobody declared cannot name anything.
+ */
+export type SettingKey =
+  | keyof typeof GLOBAL_SETTINGS
+  | keyof typeof SERVICES_SETTINGS
+  | keyof typeof ROLES_SETTINGS
+  | keyof typeof INTEGRATIONS_SETTINGS
+  | keyof typeof NETWORK_SETTINGS
+  | keyof typeof VOICE_SETTINGS
+  | keyof typeof PROJECT_SETTINGS
+  | keyof typeof BROWSER_SETTINGS;
+
 const BY_KEY = new Map(ALL_SETTINGS.map((declaration) => [declaration.key, declaration]));
 
 export function findSetting(key: string): AnySettingDeclaration | undefined {

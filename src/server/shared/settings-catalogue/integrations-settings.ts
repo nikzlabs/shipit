@@ -81,9 +81,11 @@ export const INTEGRATIONS_SETTINGS = {
       "How ShipIt reaches this server: a local command over stdio, or an HTTP endpoint.",
     type: enumOf({
       default: "stdio",
+      // The dialog renders these, so each one says what it is rather than
+      // naming a transport the user has no reason to know.
       options: [
-        { value: "stdio", label: "Command (stdio)" },
-        { value: "http", label: "HTTP" },
+        { value: "stdio", label: "stdio — a command ShipIt spawns" },
+        { value: "http", label: "http — a remote endpoint" },
       ],
     }),
     store: { kind: "bespoke", ownedBy: "credential-store MCP servers (/api/mcp-servers)" },
@@ -237,9 +239,9 @@ export const INTEGRATIONS_SETTINGS = {
     scope: "global",
     label: "Linear",
     description:
-      "An API token for Linear, so issues render inline and `shipit issue` can reach them. Which "
-      + "team a repository's Issues tab shows is that repository's own declaration, not a setting "
-      + "here.",
+      "An API token for Linear, so issues render inline and the shipit issue command can reach "
+      + "them. Which team a repository's Issues tab shows is that repository's own declaration, "
+      + "not a setting here.",
     type: text({ maxLength: 500, noun: "Linear API token" }),
     store: { kind: "bespoke", ownedBy: "the Linear credential (POST /api/trackers/linear/token)" },
     emits: configuredOnly(),

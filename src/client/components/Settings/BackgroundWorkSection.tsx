@@ -60,6 +60,7 @@ import {
   type ServiceChoice,
 } from "../pickers/model-choice.js";
 import type { AgentOption } from "../../agent-types.js";
+import { SettingCopy } from "./declared.js";
 
 interface Pin {
   serviceId: string;
@@ -152,18 +153,12 @@ export function BackgroundWorkSection({ agentList = [] }: { agentList?: AgentOpt
   return (
     <div className="space-y-2.5 py-1" data-testid="background-work-section">
         <div className="min-w-0">
-          <h3 className="text-sm font-medium text-(--color-text-primary)">Background work</h3>
           {/*
-            The examples are examples. "Naming a session or writing a
-            pull-request description" is what ShipIt does outside a turn today
-            and is not meant as the list — so the sentence names the category
-            and gives two of them, rather than reading as a promise that no
-            third one exists.
+            The examples in the declared description are examples. "Naming a
+            session or writing a pull-request description" is what ShipIt does
+            outside a turn today and is not meant as the list.
           */}
-          <p className="text-xs text-(--color-text-tertiary)">
-            What ShipIt runs for its own work, such as naming a session or writing a
-            pull-request description.
-          </p>
+          <SettingCopy settingKey="services.nonTurnModel" heading />
           {executionLine && (
             <p
               className="mt-1 text-[11px] text-(--color-text-tertiary)"
@@ -211,6 +206,7 @@ export function BackgroundWorkSection({ agentList = [] }: { agentList?: AgentOpt
             disabled={busy}
             idPrefix="background-work"
             fallbackLabel={pinnedIsStale && pinned ? pinned.serviceId : "No provider"}
+            settingKey="services.nonTurnModel"
           />
           {serviceModels.length > 0 && (
             <Picker
@@ -223,6 +219,7 @@ export function BackgroundWorkSection({ agentList = [] }: { agentList?: AgentOpt
               menuWidth="w-72"
               align="start"
               disabled={busy}
+              settingKey="services.nonTurnModel"
             >
               {/*
                 The models, and nothing else. This menu used to open on a

@@ -12,6 +12,7 @@ import {
   type KeybindingGroup,
 } from "../keybindings/registry.js";
 import { KeybindingCapture } from "./KeybindingCapture.js";
+import { bindSetting, settingCopy } from "./Settings/setting-binding.js";
 
 const GROUP_ORDER: KeybindingGroup[] = ["General", "Sessions", "Chat", "Search", "Voice"];
 
@@ -69,9 +70,12 @@ export function KeybindingSettings() {
 
   return (
     <div className="px-5 py-4 flex flex-col gap-6 overflow-y-auto h-full">
+      <p className="text-sm text-(--color-text-secondary)" data-setting-description="keyboard.keybindings">
+        {settingCopy("keyboard.keybindings").description}
+      </p>
+      {/* Not the setting's own words: how to operate the control. */}
       <p className="text-sm text-(--color-text-secondary)">
-        Customize keyboard shortcuts. Click <span className="text-(--color-text-primary)">Change</span> and press the
-        keys you want. Editor keys like Enter and Esc are fixed.
+        Click <span className="text-(--color-text-primary)">Change</span> and press the keys you want.
       </p>
 
       {grouped.map(({ group, defs }) => (
@@ -85,6 +89,7 @@ export function KeybindingSettings() {
                     <span className="text-sm text-(--color-text-primary)">{def.label}</span>
                     <div className="flex items-center gap-1.5">
                       <KeybindingCapture
+                        label={def.label}
                         value={resolve(def)}
                         onCapture={(chord) => handleCapture(def, chord)}
                         invalid={!!errors[def.id] || isConflicting(def)}
@@ -96,6 +101,7 @@ export function KeybindingSettings() {
                           className="h-7 w-7 p-0"
                           aria-label={`Reset ${def.label} to default`}
                           title={`Reset to ${getKeybindingDef(def.id).defaultBinding}`}
+                          {...bindSetting("keyboard.keybindings")}
                           onClick={() => {
                             setErrors((e) => {
                               const next = { ...e };
