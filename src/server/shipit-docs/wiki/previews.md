@@ -29,8 +29,8 @@ Three consequences worth stating when they come up:
   (`/shipit-docs/deployment.md`), not about this.
 
 Edits hot-reload; nothing has to be restarted for a source change. Switching to
-another tab does not reload it — the document stays mounted, so coming back is
-instant and the scroll position and form state survive.
+another tab does not reload the preview either — its document stays mounted
+behind the other tabs, so coming back is instant rather than a fresh load.
 
 ## Which sessions have a preview at all
 
