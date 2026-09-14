@@ -71,8 +71,23 @@ function collectUploadPaths(messages: PersistedMessage[]): string[] {
   return [...paths];
 }
 
-async function deleteUploadsFromMessages(messages: PersistedMessage[], uploadsDir: string): Promise<void> {
-  await Promise.all(collectUploadPaths(messages).map((p) => fs.unlink(path.join(uploadsDir, path.basename(p))).catch(() => {})));
+/**
+ * An upload can be referenced by more than one message — it stays in the Files
+ * tab and can be re-attached — so a discarded reference only earns a delete
+ * when no retained message still points at the same file.
+ */
+async function deleteUploadsFromMessages(
+  removed: PersistedMessage[],
+  retained: PersistedMessage[],
+  uploadsDir: string,
+): Promise<void> {
+  const stillReferenced = new Set(collectUploadPaths(retained).map((p) => path.basename(p)));
+  await Promise.all(
+    collectUploadPaths(removed)
+      .map((p) => path.basename(p))
+      .filter((name) => !stillReferenced.has(name))
+      .map((name) => fs.unlink(path.join(uploadsDir, name)).catch(() => {})),
+  );
 }
 
 async function copyUploadsForFork(messages: PersistedMessage[], sourceUploadsDir: string, targetUploadsDir: string): Promise<void> {
@@ -195,7 +210,7 @@ export async function handleRewindAtGap(ctx: RewindCtx, msg: WsRewindAtGap): Pro
       const truncated = allMessages.slice(0, gapPosition);
       const removed = allMessages.slice(gapPosition);
       const snapshot = ctx.chatHistoryManager.createRewindSnapshot(sessionId, { action: "chat", messages: allMessages });
-      if (sessionDir) await deleteUploadsFromMessages(removed, path.join(path.dirname(sessionDir), "uploads"));
+      if (sessionDir) await deleteUploadsFromMessages(removed, truncated, path.join(path.dirname(sessionDir), "uploads"));
       ctx.chatHistoryManager.saveMessages(sessionId, truncated);
       const replay = buildConversationReplay(truncated);
       if (replay) ctx.sessionManager.setConversationReplay(sessionId, replay);
@@ -290,7 +305,7 @@ export async function handleRewindAtGap(ctx: RewindCtx, msg: WsRewindAtGap): Pro
         const truncated = allMessages.slice(0, gapPosition);
         const removed = allMessages.slice(gapPosition);
         const snapshot = ctx.chatHistoryManager.createRewindSnapshot(sessionId, { action: "chat", messages: allMessages });
-        if (sessionDir) await deleteUploadsFromMessages(removed, path.join(path.dirname(sessionDir), "uploads"));
+        if (sessionDir) await deleteUploadsFromMessages(removed, truncated, path.join(path.dirname(sessionDir), "uploads"));
         ctx.chatHistoryManager.saveMessages(sessionId, truncated);
         const replay = buildConversationReplay(truncated);
         if (replay) ctx.sessionManager.setConversationReplay(sessionId, replay);
@@ -349,7 +364,7 @@ export async function handleRewindAtGap(ctx: RewindCtx, msg: WsRewindAtGap): Pro
       await rollbackAndRestoreLfs(ctx.getActiveGitManager(), sessionDir, rollbackHash, ctx.getRunnerRegistry().get(sessionId));
       const truncated = allMessages.slice(0, gapPosition);
       const removed = allMessages.slice(gapPosition);
-      if (sessionDir) await deleteUploadsFromMessages(removed, path.join(path.dirname(sessionDir), "uploads"));
+      if (sessionDir) await deleteUploadsFromMessages(removed, truncated, path.join(path.dirname(sessionDir), "uploads"));
       ctx.chatHistoryManager.saveMessages(sessionId, truncated);
       ctx.chatHistoryManager.append(sessionId, {
         role: "assistant",

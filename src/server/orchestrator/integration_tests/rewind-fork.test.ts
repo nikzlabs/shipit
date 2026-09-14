@@ -207,6 +207,43 @@ describe("Integration: rewind and fork", () => {
     client.close();
   });
 
+  it("keeps an upload a retained message still references", async () => {
+    const { sessionId, sessionDir } = await createSession();
+    const uploadsDir = path.join(sessionDir, "uploads");
+    fs.mkdirSync(uploadsDir, { recursive: true });
+    fs.writeFileSync(path.join(uploadsDir, "shared.txt"), "uploaded\n");
+
+    chatHistoryManager.append(sessionId, {
+      role: "user",
+      text: "look at this",
+      files: [{ path: "/uploads/shared.txt", contentPreview: "uploaded" }],
+      uploadPaths: ["/uploads/shared.txt"],
+    });
+    chatHistoryManager.append(sessionId, { role: "assistant", text: "kept response" });
+    // The same upload re-attached later, which is what the Files tab's "Add to
+    // chat" and the `@` menu produce.
+    chatHistoryManager.append(sessionId, {
+      role: "user",
+      text: "and again",
+      files: [{ path: "/uploads/shared.txt", contentPreview: "uploaded" }],
+      uploadPaths: ["/uploads/shared.txt"],
+    });
+
+    const client = await TestClient.connect(port, sessionId);
+    await client.receiveType("preview_status");
+
+    client.send({ type: "rewind_at_gap", gapPosition: 2, action: "chat" });
+    await expect(client.receiveType("rewind_complete")).resolves.toMatchObject({
+      type: "rewind_complete",
+      action: "chat",
+      droppedMessageCount: 1,
+    });
+
+    expect(fs.existsSync(path.join(uploadsDir, "shared.txt"))).toBe(true);
+
+    client.close();
+  });
+
   it("stores a chat rewind snapshot and restores it on request", async () => {
     const { sessionId } = await createSession();
     chatHistoryManager.append(sessionId, { role: "user", text: "keep" });
