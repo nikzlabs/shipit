@@ -240,7 +240,11 @@ container is created and re-mounted onto the same host clone at `/workspace`.
 **Memory pressure**, the steady-state one: ShipIt reclaims when it is over its
 **memory budget** (Settings → Advanced). With none set, the default is the whole
 machine on a server deployment and half of it on a local install, where the user
-is working on the same machine. It takes the longest-idle session first. Two tiers, in
+is working on the same machine. `shipit settings get advanced.memoryBudgetMb`
+reads what the user configured — a number, or `not set` meaning the default
+above. It is the configured value, not the enforced one: ShipIt clamps a budget
+larger than the host's memory, so quote the number as what was set rather than
+as what is in force (`/shipit-docs/settings.md`). It takes the longest-idle session first. Two tiers, in
 order: the session's **agent container** goes first and its Compose services
 keep running — an idle session's preview stays up and reachable — and only if
 that did not free enough does the **preview stack** stop too. So a session you

@@ -506,6 +506,8 @@ const GOLDEN_CONTAINER_ROUTES = [
   "GET /api/sessions/:id/agent/result",
   "GET /api/sessions/:id/agent/roles",
   "GET /api/sessions/:id/agent/params",
+  "GET /api/sessions/:id/settings",
+  "GET /api/sessions/:id/settings/detail",
   "POST /api/sessions/:parentId/spawn",
   "GET /api/sessions/:parentId/children",
   "GET /api/sessions/:parentId/children/:childId",

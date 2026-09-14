@@ -252,7 +252,11 @@ resolution with `UnknownHostException` / "Could not resolve host". That's an
 **egress** block, not a toolchain problem. The fix is to add the host to the
 session's egress allowlist (Settings → Network, or the durable allowlist) — tell
 the user which host is blocked and let them approve it; don't try to route around
-the firewall.
+the firewall. Check `shipit settings get network.egressContained` first: it says
+whether this session is contained at all, and whether a change reaches a running
+container or waits for a restart, so you name the real blocker instead of
+sending the user to a control that would not have helped
+(`/shipit-docs/settings.md`).
 
 ## Quick reference
 

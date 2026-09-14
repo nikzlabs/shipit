@@ -49,6 +49,7 @@ import {
   handleServiceStop,
 } from "./shipit-service.js";
 import { handleReleasePlan, handleReleasePrepare } from "./shipit-release.js";
+import { handleSettingsGet, handleSettingsList } from "./shipit-settings.js";
 import {
   handleSourceBlame,
   handleSourceCat,
@@ -291,6 +292,27 @@ Sub-agents (docs/144 — spawn another agent for a one-shot sub-task):
   1 the lookup failed (bad run id, unreachable) · 2 bad flags. Branch on those,
   never on grepping the output for "pending" — a finished review can say it.
 
+ShipIt's own settings (docs/299 — read what the user configured):
+  shipit settings list   [--tab NAME] [--json]
+  shipit settings get    <key> [--json]
+
+  Answer "what is this setting set to?" yourself instead of asking the user to
+  read a value out of the Settings dialog. 'list' is the index — every setting
+  ShipIt lets you see, with its key, what it is for, and what it is set to now.
+  'get' details ONE: its whole description in the user's own words, the values
+  it accepts, and what it resolves to on this install right now.
+
+  Read before you claim a setting is the blocker. When one genuinely is, say
+  WHICH setting, what it is set to, and what it has to become — never a bare
+  "change it in Settings". Some values ShipIt will not show you (a secret is
+  reported as configured / not configured, never as its value) and some it
+  cannot (a browser preference is not on ShipIt's server); each says so, with
+  the reason, instead of going missing.
+
+  A value can be saved and still not in effect — a container that started under
+  a different network mode keeps it until restart. Both commands say so where
+  it applies, so don't promise the user a restart will fix something it cannot.
+
 Ops-only (read-only ShipIt source, docs/162):
   shipit source status   [--json]
   shipit source tree     [PATH] [--json]
@@ -490,6 +512,7 @@ const ISSUE_HANDLERS: Record<
 };
 
 const COMMAND_DOCS: Record<string, string> = {
+  settings: "/shipit-docs/settings.md",
   session: "/shipit-docs/sessions.md",
   source: "/shipit-docs/ops-session.md",
   issue: "/shipit-docs/issues.md",
@@ -544,6 +567,14 @@ const RELEASE_HANDLERS: Record<
 > = {
   plan: handleReleasePlan,
   prepare: handleReleasePrepare,
+};
+
+const SETTINGS_HANDLERS: Record<
+  string,
+  (args: string[], deps: RunDeps) => Promise<void>
+> = {
+  list: handleSettingsList,
+  get: handleSettingsGet,
 };
 
 const SOURCE_HANDLERS: Record<
@@ -604,6 +635,11 @@ export async function runShim(
 
   if (command === "release") {
     await dispatchRelease(args.slice(1), deps, io);
+    return;
+  }
+
+  if (command === "settings" || command === "setting") {
+    await dispatchSettings(args.slice(1), deps, io);
     return;
   }
 
@@ -757,6 +793,42 @@ async function dispatchService(args: string[], deps: RunDeps, io: ShimIO): Promi
   }
   if (requestsHelp(args.slice(1))) {
     success(io, commandHelp("service", sub));
+    return;
+  }
+  await handler(args.slice(1), deps);
+}
+
+const REJECTED_SETTINGS_SUBCOMMANDS = new Set([
+  "set",
+  "save",
+  "write",
+  "update",
+  "change",
+  "enable",
+  "disable",
+  "reset",
+]);
+
+async function dispatchSettings(args: string[], deps: RunDeps, io: ShimIO): Promise<void> {
+  const sub = args[0];
+  if (!sub || sub === "--help" || sub === "-h" || sub === "help") {
+    success(io, HELP);
+    return;
+  }
+  if (REJECTED_SETTINGS_SUBCOMMANDS.has(sub)) {
+    fail(
+      io,
+      `${SHIM_NAME} does not support \`shipit settings ${sub}\` — a ShipIt setting is the user's to change.\n`
+        + "Read it with `shipit settings get <key>`, then tell the user which setting it is, what it is\n"
+        + "set to, and what it has to become. See /shipit-docs/settings.md.",
+    );
+  }
+  const handler = SETTINGS_HANDLERS[sub];
+  if (!handler) {
+    fail(io, `Unsupported shipit settings subcommand: ${sub}\n${REJECTED_HELP}`);
+  }
+  if (requestsHelp(args.slice(1))) {
+    success(io, commandHelp("settings", sub));
     return;
   }
   await handler(args.slice(1), deps);

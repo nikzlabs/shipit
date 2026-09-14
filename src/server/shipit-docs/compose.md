@@ -621,9 +621,14 @@ session, ShipIt starts services on an internal-only session network, installs
 the standard egress allowlist in each service network namespace, and then gives
 the service its controlled internet route. An unlisted destination is blocked
 from a service in the same way that it is blocked from the agent container.
-Add required package or API hosts through Settings → Network. An Open session,
-or a deployment with containment explicitly disabled, keeps normal Docker
-egress.
+Required package or API hosts are added through Settings → Network. Before you
+send the user there, read the network settings yourself —
+`shipit settings list --tab network`, then `shipit settings get
+network.egressContained` — so you can say whether this session is contained at
+all, and whether a change would take effect now or only after the container
+restarts. A session that started open, or a deployment with containment
+explicitly disabled, keeps normal Docker egress and needs no allowlist entry;
+the read says which case you are in (`/shipit-docs/settings.md`).
 
 This protection applies to running Compose services, not Dockerfile build
 steps. BuildKit runs build commands in daemon-managed containers before the
