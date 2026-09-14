@@ -102,6 +102,18 @@ HTTP endpoints and the real dispatcher:
 
 Each was checked red by making that one edit alone.
 
+## Known residuals
+
+**The drain reads no git state, so a failed abort can still hand a queued turn a
+mid-rebase tree** — filed as planning#566. `releaseQueuedTurn`'s gates are
+`runner.running`, `systemTurnInProgress`, `mergeHold` and an empty queue; none of
+them knows whether `git rebase --abort` succeeded. The flow already computes that
+verdict when it reports "the workspace is still mid-rebase", and then discards it.
+The same shape lets the driver's drain outrun the abort endpoint's own LFS restore.
+Both predate this change — the old `!runner.running` release drained on every one of
+those paths too — and the obvious guard swaps a turn on a broken tree for a queue
+nothing will ever drain, which is a decision rather than a fix.
+
 ## Key files
 
 - `src/server/orchestrator/services/rebase-driver.ts` — `DriverHold`,
