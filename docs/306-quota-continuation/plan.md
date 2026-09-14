@@ -51,13 +51,22 @@ executor two ways: as an `agent_result` whose text or error carries the provider
 notice, and as an adapter `error`. docs/140 only ever handled the first, so an
 adopted turn that died the second way got no bench, no notice and no failover.
 `willRetryOnQuotaError` now detects the refusal *before* it asks whether a retry
-is allowed, and on a "no" hands a CLI-started turn to the same stand-down. It
-stamps the bench itself, because the listener that stamps one on the result path
-has no result to work from here — without it the notice's "ShipIt has set that
-account aside" would be false and the continuation could land straight back on
-the spent credential. The stand-down is synchronous by contract there (the
-listener calls the predicate inline), so it is wrapped in its own try/catch, and
-`onError`'s terminal sequence gained the same `quota-continuation` step.
+is allowed, and on a "no" hands a CLI-started turn to the same stand-down,
+passing the bench deadline with it — the listener that stamps one on the result
+path has no result to work from here, and without a bench the notice's "ShipIt
+has set that account aside" would be false and the continuation could land
+straight back on the spent credential.
+
+**The stamp sits behind the stand-down's two gates, not in front of them.** A
+"no" from `quotaRetryAllowed()` has two causes — a CLI-started turn, and a
+metered key — and only the first is this feature's. Stamping before the gates
+benches a metered key, which req 5 and docs/140 both forbid; it is why
+`retireOnSpentAccount` takes `benchUntil` rather than the caller stamping and
+then delegating. Caught by `credential-failure-retry.test.ts`'s *"does not fail
+over from an adapter error on a metered key"*, which this change had to keep
+green. The stand-down is synchronous by contract there (the listener calls the
+predicate inline), so it is wrapped in its own try/catch, and `onError`'s
+terminal sequence gained the same `quota-continuation` step.
 
 The continuation itself runs as the LAST step of the turn's terminal sequence,
 after drain, commit, PR flow and idle:
@@ -230,6 +239,11 @@ implementation and re-running.
   work committed); *"does not re-dispatch a CLI-started turn whose quota limit
   leaves no credential free"* (docs/140's case, with the notice's new wording and
   no continuation).
+- `credential-failure-retry.test.ts` — unchanged, and load-bearing for the error
+  path: *"does not fail over from an adapter error on a metered key"* is what
+  keeps the new bench stamp behind the stand-down's gates. Every test importing
+  `turn-executor.ts` was run, not only the affected set the dev-loop selector
+  offered.
 
 An independent cross-model review (`shipit agent run --role reviewer`, run
 `a6b9ca93`) found the string-credential routing defect, the sweep's

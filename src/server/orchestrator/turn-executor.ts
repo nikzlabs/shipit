@@ -453,7 +453,11 @@ export async function executeAgentTurn(
   let quotaContinuationPending = false;
 
   // A declined retry still needs an explanation, and quota text must not become a commit subject.
-  const retireOnSpentAccount = (opts: { summaryIsTheNotice: boolean }): void => {
+  const retireOnSpentAccount = (opts: {
+    summaryIsTheNotice: boolean;
+    /** Error path only: the result path's bench is stamped by the listener. */
+    benchUntil?: number;
+  }): void => {
     if (opts.summaryIsTheNotice) {
       if (runner) runner.turnSummary = "";
       resultTurnSummary = "";
@@ -464,6 +468,10 @@ export async function executeAgentTurn(
       deps.listenerDeps.sessionManager.get(sessionId),
     )) return;
     const routeId = capturedCredentialRoute?.providerRouteId;
+    // Behind both gates: a metered key is never benched, so the stamp cannot precede them.
+    if (opts.benchUntil !== undefined) {
+      deps.listenerDeps.markSessionAccountExhausted?.(sessionId, opts.benchUntil, routeId);
+    }
     const label = routeId ? (deps.routeLabel?.(routeId) ?? routeId) : "This account";
     // The turn's prompt cannot be replayed, but ShipIt can start a turn of its own, so ask
     // the router before deciding what to tell the user (docs/306-quota-continuation, superseding docs/140).
@@ -507,17 +515,15 @@ export async function executeAgentTurn(
     const exhausted = detectHardExhaustion(err.message);
     if (!exhausted) return false;
     if (!quotaRetryAllowed()) {
-      // The same refusal, reported as an adapter error rather than a result. Unlike the
-      // result path there is no listener stamping the bench, so do it here, then stand down
-      // (the stand-down self-gates on adoption and on a metered key). Synchronous by
-      // contract: a throw here would take the listener's error handling with it.
+      // The same refusal, reported as an adapter error rather than a result. The stand-down
+      // self-gates on adoption and on a metered key, and carries the bench because no
+      // listener stamps one here. Synchronous by contract: a throw would take the
+      // listener's error handling with it.
       try {
-        deps.listenerDeps.markSessionAccountExhausted?.(
-          sessionId,
-          exhaustionLockoutUntil(exhausted),
-          capturedCredentialRoute?.providerRouteId,
-        );
-        retireOnSpentAccount({ summaryIsTheNotice: false });
+        retireOnSpentAccount({
+          summaryIsTheNotice: false,
+          benchUntil: exhaustionLockoutUntil(exhausted),
+        });
       } catch (standDownErr) {
         console.error("[turn] quota stand-down on the error path failed:", standDownErr);
       }
