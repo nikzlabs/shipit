@@ -20,7 +20,7 @@ you never touch, so it is the only place you can learn it. Start at
 | [preview.md](preview.md) | Preview system — port detection, HMR, browser tools |
 | [compose.md](compose.md) | Writing `docker-compose.yml` for ShipIt, and controlling the services in it — `shipit service list/start/stop/restart/logs` |
 | [secrets.md](secrets.md) | Per-service env var declaration via `x-shipit-secrets` |
-| [deployment.md](deployment.md) | Deploy targets (Vercel, Cloudflare) |
+| [deployment.md](deployment.md) | Deploy targets, and what you can do about a failed deploy — Actions run logs and the one re-run you are allowed |
 | [github.md](github.md) | Branches, PRs, auto-push, CI |
 | [sessions.md](sessions.md) | Agent-spawned sibling sessions — `shipit session create`, when to use it |
 | [sandbox-session.md](sandbox-session.md) | Sandbox session — empty `/workspace`, the git/docker/network capabilities, how to clone & open PRs per-repo, persistence |
