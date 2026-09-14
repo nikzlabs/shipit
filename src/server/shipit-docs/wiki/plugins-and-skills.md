@@ -20,16 +20,17 @@ out. When it is a control, name the control and the panel and stop.
 ## Skills
 
 A skill is a directory holding a `SKILL.md` — a name, a one-line description,
-and instructions you follow when the task calls for it. It costs nothing until
-it is used: the description is what you see all the time, the body only when
-the skill is invoked.
+and instructions you follow when the task calls for it. The description is what
+tells you a skill is worth loading; the instructions are the part you read once
+it is. The install sheet shows a rough context cost per skill for exactly that
+reason.
 
 Three kinds coexist, and users conflate them. They differ in who owns the
 files, where they came from, and who can invoke them:
 
 | Kind | Lives in | Invoked as | Who may edit it |
 |---|---|---|---|
-| **Written here** | `.claude/skills/<name>/` in the project (`.codex/skills/` on a Codex session, `.grok/skills/` on Grok, `.opencode/skills/` on OpenCode) | `/<name>` | Anyone — it is an ordinary file in the repository |
+| **Written here** | `.claude/skills/<name>/` in the project — on a Codex session `.codex/skills/`, on Grok `.grok/skills/`, on OpenCode `.opencode/skills/`, and on Antigravity `.claude/skills/` again | `/<name>` | Anyone — it is an ordinary file in the repository |
 | **Installed from a catalogue** | `<agent dir>/skills/<plugin>__<skill>/`, with a `.shipit-installed.json` marker recording its source, version and a checksum of the body | `/<plugin>:<skill>` | Leave it alone — fork it into a new directory instead |
 | **Brought by a plugin** | Materialized by ShipIt outside git, marked `.shipit-plugin-skill.json` | `<alias>/<skill>` — **yours to run, not the user's** | Nobody here: fix it in the plugin's own repository |
 
@@ -41,14 +42,14 @@ lists the skills that CLI bundles, alongside the project's own.
 changelog" is a skill; the user says it once in chat and you write
 `.claude/skills/<name>/SKILL.md` on the branch, like any other file. It works
 on the next turn. So is removing one — delete the directory and commit. There
-is no add-a-skill form and no uninstall button, deliberately (CLAUDE.md §5):
-chat is the input surface.
+is no add-a-skill form and no uninstall button, deliberately: chat is the input
+surface and you are the actor.
 
 **"Why isn't my skill showing up?"** — four real causes, in the order worth
 checking:
 
-1. It is in the wrong directory for the harness this session runs on. The table
-   above has the four.
+1. It is in the wrong directory for the harness this session runs on — the table
+   above has them.
 2. Its frontmatter says `user-invocable: false`, which hides it from the menu on
    purpose. You can still use it.
 3. Its frontmatter `name:` differs from its directory name. The `name:` is what
@@ -138,8 +139,9 @@ name>`, which the declaration alone grants).
 
 ## The Plugins tab
 
-**It exists only when this project's `shipit.yaml` has a `plugins:` block** — or
-when something in that file is malformed enough to report. It is not a global
+**It exists only when this project's `shipit.yaml` has a `plugins:` block** —
+plus the one other case, where ShipIt could not read or parse `shipit.yaml` at
+all and the tab appears to say so. It is not a global
 tab and it is not somewhere in Settings; it is one of the tabs in the right-hand
 panel, beside Files and Docs, and it is absent in most projects. Do not promise
 it before checking `shipit.yaml`.
@@ -160,7 +162,7 @@ nine-character commit that is live, and then:
 | *stale* | A refresh failed; **the previous commit is still live and working** |
 | *unavailable* | No working version at all; the session continues without it |
 | *self · live working tree* | This repository consuming its own exports — the plugin author's case |
-| *N problems* | Named, one row each: a plugin missing from the manifest, a command withheld because two plugins claim the name, a rejected service fragment, an install's own error output |
+| Problem rows | One per problem, named: a plugin missing from the manifest, a command withheld because two plugins claim the name, a rejected service fragment, an install's own error output. Counted in an *N problems* chip when the card carries no other status |
 | *N needs* | Something the user must set — see below |
 | An hourglass row | A cost, not a problem: this plugin's install does not qualify for ShipIt's shared dependency store, so every session reinstalls it |
 
@@ -232,13 +234,15 @@ the user's act and cannot be done for them: pressing **Connect** opens a popup
 on the provider's own site, they sign in and approve there, and ShipIt stores
 the tokens and creates the matching server entry itself. Things to recognise:
 
-- A **blocked popup** is the most common failure, and the panel says so.
+- A **blocked popup** stops the flow before it begins; the panel says so, and
+  allowing popups for ShipIt is the fix.
 - **"Authentication required — reconnect"** on a connected card means the stored
   token is no longer accepted. ShipIt tries a refresh by itself when a test
   fails this way; when that does not work, **Reconnect** on that card is the
   only route.
-- **Disconnect** revokes ShipIt's copy of the tokens. A server entry it created
-  stays visible so it can be deleted.
+- **Disconnect** deletes ShipIt's copy of the tokens; it does not revoke them at
+  the provider, which is done on the provider's own site. A server entry the
+  connection created stays visible afterwards so it can be deleted.
 
 **Any other server** is added with **+ Add MCP Server**: a name, then either
 **stdio** (a command and arguments, optionally an npm package ShipIt installs
