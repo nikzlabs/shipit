@@ -65,7 +65,7 @@ line telling the agent the status is on screen and it can end its turn.
   whatever the reason — a question, an actions card, a user stop, a crash, an
   ignored nudge. Only a `silent` compaction turn leaves it alone: no work
   happened. One rule, two writers, no third state. A dispatched nudge leaves the
-  card amber until the nudge turn writes; that is the honest reading of that
+  card dimmed until the nudge turn writes; that is the honest reading of that
   window.
 - `SessionInfo.sessionStatus?: SessionStatus` (`domain-types/session.ts`),
   read in `sessions.ts` `toRow`/`fromRow`, written by
@@ -198,24 +198,23 @@ in `App.tsx` in the column that already holds `GoalChip`, between the message
 list and the composer. Reads `currentSession.sessionStatus`; renders nothing
 until the session has one.
 
-Layout, `text-xs`, semantic tokens only, no new theme values:
+Layout, `text-xs`, semantic tokens only, no new theme values, no header row:
 
 ```
-▌ Current · updated this turn
-▌ Where it stands   Billing service: routes and tests done; PR #212 open for review.
-▌ Next              Merge after review; then wire the webhook.
-▌ Needs you         Add the Stripe test key in Settings → Secrets.
+Where it stands   Billing service: routes and tests done; PR #212 open for review.
+Next              Merge after review; then wire the Stripe webhook.
+Needs you         Add the Stripe test key in Settings → Secrets.
 ```
 
-- **Freshness (req 14).** Two states, one visual language: **current**
-  (`--color-success`, label "Current") and **may be behind**
-  (`--color-attention`, label "May be behind · last turn did not update it").
-  Color never carries the state alone: the label does too, and the
-  `--color-attention-text` token keeps the amber legible on light themes
-  (the contrast lesson of docs/260-attention-sidebar-view). The variants are
-  drawn in [mockup.html](mockup.html) — a colored left rail, a dot before
-  the label, and a tinted header — for both states on a light and a dark
-  theme; the chosen one is recorded here once picked.
+- **Freshness (req 14).** Two states, carried by appearance alone. A current
+  card is a regular card. A card that may be behind is the same card at
+  **70% opacity** (`opacity-70`). No state word, no color, no icon: the
+  title space is not spent on it. Opacity is invisible to assistive
+  technology, so the stale card also carries `aria-description`
+  "May be behind: the last turn did not update it", and the same sentence
+  as its `title` tooltip for a pointer user who wonders what the dimming
+  means. Both states are drawn on a light and a dark theme in
+  [mockup.html](mockup.html).
 - `Needs you` is omitted when empty.
 - No button, no collapse: the limits keep it short (req 2), and the composer
   is the control.
@@ -255,7 +254,7 @@ the section is composed in, not its wording.
   no follow-up until the successor ends; the streaming `agent_result` + `done`
   pair → one decision, not two.
 - `SessionStatusCard.test.tsx` — three rows, hidden `Needs you` when empty,
-  the two freshness states with their labels.
+  the stale state's opacity class and `aria-description`.
 - `services/session-status.test.ts` also covers `fresh`: the route sets it,
   a question turn clears it, an ignored nudge clears it, a later update sets
   it again; the broadcast fires only on change.

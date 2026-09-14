@@ -62,8 +62,9 @@ taken inside one session, without building an agent that talks to many.
     did not update it — because that turn ended with a question or an actions
     card, or because the agent ignored the nudge — the card is visibly marked
     as possibly stale, in one visual language shared by both cases, so it is
-    always clear to the user. The direction is a color: amber-like for stale,
-    green-like for current. The exact visual is chosen from a prototype.
+    always clear to the user. The state is carried by the card's appearance
+    only, never by title text: a current card looks like a regular card; a
+    stale card is shown at 70% opacity.
 15. ShipIt nudges once per missing update. If the agent ignores the nudge,
     ShipIt does not nudge again for that turn; the card is marked stale
     (req 14) and the next ordinary turn is checked afresh.
@@ -74,6 +75,12 @@ taken inside one session, without building an agent that talks to many.
 
 ## Resolved questions
 
+- 2026-09-14 — How is freshness shown? The prototype drew three variants
+  (left rail, dot, tinted header), each with a header reading "Current" or
+  "May be behind · the last turn did not update it". Nik: it is wasteful to
+  spend the whole title on this state; the state should be represented by
+  appearance only — up-to-date: the regular card color; stale: 70% opacity.
+  This replaces the earlier amber/green direction. → req 14.
 - 2026-09-14 — The agent ignores the nudge too: one attempt or two? One. Nik
   added the part the design lacked: the card needs "some visual language for
   saying that the card is potentially stale", shown in this case and equally
@@ -83,7 +90,6 @@ taken inside one session, without building an agent that talks to many.
   also settles what the earlier receipt about staleness meant: a stale card
   presented as current is what has no value; a stale card that says so is
   required.
-
 - 2026-09-14 — A turn ends with no card update, no question and no actions
   card: nudge, or show the previous card marked older? Nudge. Nik: a stale
   card "doesn't make any sense"; if it is stale the user has to read what the
