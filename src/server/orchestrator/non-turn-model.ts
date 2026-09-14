@@ -9,6 +9,7 @@ import {
   isSelectionEligible,
   resolveDirectCall,
   retirementSuccessor,
+  type BillingMode,
   type ConfiguredCredential,
   type DirectCallTarget,
   type HarnessDef,
@@ -72,10 +73,51 @@ export interface NonTurnDirectTarget extends NonTurnTargetCommon {
  */
 export type NonTurnTarget = NonTurnHarnessTarget | NonTurnDirectTarget;
 
+/**
+ * Why a pinned selection cannot run background work, answered where the search
+ * happened rather than guessed by each caller. The three ask different things
+ * of the user: a credential that is gone is theirs to add back, a sign-in that
+ * failed is theirs to reconnect, and a selection no carrier can run as
+ * background work is not repaired in Settings at all — a Google pin carried
+ * only by Antigravity, which refuses a tools-off run, is that last case
+ * (docs/299-direct-provider-calls req 3, `agent-tools-off.ts`).
+ */
+export type NonTurnUnavailableCause =
+  | "credential_gone"
+  | "credential_unusable"
+  | "no_background_carrier";
+
+export interface NonTurnPinUnavailable {
+  ok: false;
+  reason: "pin_unavailable";
+  cause: NonTurnUnavailableCause;
+  serviceName: string;
+  selection: ModelSelection;
+}
+
 export type NonTurnResolution =
   | { ok: true; target: NonTurnTarget }
-  | { ok: false; reason: "pin_unavailable"; serviceName: string; selection: ModelSelection }
+  | NonTurnPinUnavailable
   | { ok: false; reason: "nothing_eligible" };
+
+/** What a failure notice names, built from the resolution so the cause travels with it. */
+export interface NonTurnUnavailable {
+  serviceName: string;
+  serviceId: string;
+  billingMode: BillingMode;
+  modelId: string;
+  cause: NonTurnUnavailableCause;
+}
+
+export function unavailableFrom(resolution: NonTurnPinUnavailable): NonTurnUnavailable {
+  return {
+    serviceName: resolution.serviceName,
+    serviceId: resolution.selection.serviceId,
+    billingMode: resolution.selection.billingMode,
+    modelId: resolution.selection.modelId,
+    cause: resolution.cause,
+  };
+}
 
 export interface NonTurnModelDeps {
   credentialStore: Pick<CredentialStore, "getNonTurnModel"> & ServiceRoutingCredentialSource;
@@ -173,14 +215,6 @@ function directSuccessorsOf(selection: ModelSelection): ModelSelection[] {
     ...selection,
     modelId,
   }));
-}
-
-export function harnessForNonTurnSelection(
-  selection: ModelSelection,
-  credentials: readonly ConfiguredCredential[],
-  opts: HarnessSearchOpts = {},
-): { harnessId: AgentId; selection: ModelSelection } | undefined {
-  return harnessForSelection(selection, credentials, opts);
 }
 
 export function harnessForSelection(
@@ -297,12 +331,7 @@ export function resolveNonTurnModel(deps: NonTurnModelDeps): NonTurnResolution {
 
   if (!resolved) {
     if (!pinned) return { ok: false, reason: "nothing_eligible" };
-    return {
-      ok: false,
-      reason: "pin_unavailable",
-      serviceName: getService(pinned.serviceId)?.name ?? pinned.serviceId,
-      selection: pinned,
-    };
+    return pinUnavailable(pinned, unavailableCause(deps, pinned, credentials));
   }
 
   const { selection } = resolved;
@@ -325,8 +354,9 @@ export function resolveNonTurnModel(deps: NonTurnModelDeps): NonTurnResolution {
     ? resolved.harnessId
     : backgroundWorkHarnessFor(selection, credentials, {})?.harnessId;
   if (!harnessId) {
+    // Only that unreadable-key case reaches here, so the credential really has gone.
     return pinned
-      ? { ok: false, reason: "pin_unavailable", serviceName: common.serviceName, selection }
+      ? pinUnavailable(selection, "credential_gone")
       : { ok: false, reason: "nothing_eligible" };
   }
 
@@ -348,6 +378,44 @@ export function resolveNonTurnModel(deps: NonTurnModelDeps): NonTurnResolution {
       ...(secret ? { credentialSecret: secret } : {}),
     },
   };
+}
+
+function pinUnavailable(
+  selection: ModelSelection,
+  cause: NonTurnUnavailableCause,
+): NonTurnPinUnavailable {
+  return {
+    ok: false,
+    reason: "pin_unavailable",
+    cause,
+    serviceName: getService(selection.serviceId)?.name ?? selection.serviceId,
+    selection,
+  };
+}
+
+/**
+ * A credential the user still has is never reported as gone. Since background
+ * work skips a harness that cannot run with its tools off, a pin whose
+ * credential is present and whose harness is installed can fail here too, and
+ * telling that user to repair a credential sends them to fix nothing.
+ *
+ * Absence from the configured list is not enough to say "gone" either: it drops
+ * an account whose sign-in failed (`listConfiguredCredentials`), and that
+ * account is still there to be reconnected.
+ */
+function unavailableCause(
+  deps: NonTurnModelDeps,
+  selection: ModelSelection,
+  credentials: readonly ConfiguredCredential[],
+): NonTurnUnavailableCause {
+  const configured = credentials.some(
+    (c) => c.serviceId === selection.serviceId && c.billingMode === selection.billingMode,
+  );
+  if (configured) return "no_background_carrier";
+  const signIn = deps.credentialStore
+    .listCredentialRoutes(selection.serviceId, selection.billingMode)
+    .some((r) => r.via === "account");
+  return signIn ? "credential_unusable" : "credential_gone";
 }
 
 // Optimistic: a benched subscription key is still the credential this call must

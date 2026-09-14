@@ -16,6 +16,10 @@ function route(over: Pick<CredentialRoute, "serviceId" | "billingMode">): Creden
   };
 }
 
+function accountRoute(over: Pick<CredentialRoute, "serviceId" | "billingMode">): CredentialRoute {
+  return { ...route(over), via: "account", status: "ready" };
+}
+
 function storeWith(routes: CredentialRoute[], pinned?: ModelSelection) {
   return {
     getNonTurnModel: () => pinned,
@@ -172,6 +176,93 @@ describe("resolveNonTurnModel", () => {
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.reason).toBe("nothing_eligible");
+  });
+});
+
+/**
+ * docs/299-direct-provider-calls req 3. A refused pin says WHY it was refused,
+ * because the two causes ask different things of the user and only one of them
+ * is repaired in Settings.
+ */
+describe("resolveNonTurnModel — why a pin cannot run background work", () => {
+  beforeEach(() => {
+    vi.resetModules();
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.doUnmock("../shared/installed-harnesses.js");
+  });
+
+  it("reports a credential that really is gone as gone", async () => {
+    vi.doMock("../shared/installed-harnesses.js", () => ({
+      isHarnessInstalled: () => true,
+      readInstalledHarnesses: () => ["claude", "codex"],
+    }));
+    const { resolveNonTurnModel } = await import("./non-turn-model.js");
+    const result = resolveNonTurnModel({
+      credentialStore: storeWith([], {
+        serviceId: "openai",
+        billingMode: "key",
+        modelId: "gpt-5.4-mini",
+      }),
+      env: {},
+    });
+
+    if (result.ok || result.reason !== "pin_unavailable") throw new Error("expected pin_unavailable");
+    expect(result.cause).toBe("credential_gone");
+  });
+
+  /**
+   * An account whose sign-in failed is dropped from the configured list
+   * (`listConfiguredCredentials`), so absence there does not mean gone: the
+   * account is still in Settings, waiting to be reconnected.
+   */
+  it("reports a sign-in that failed as unusable, not as gone", async () => {
+    vi.doMock("../shared/installed-harnesses.js", () => ({
+      isHarnessInstalled: () => true,
+      readInstalledHarnesses: () => ["codex"],
+    }));
+    const { resolveNonTurnModel } = await import("./non-turn-model.js");
+    const account = accountRoute({ serviceId: "openai", billingMode: "sub" });
+    const pin = { serviceId: "openai", billingMode: "sub" as const, modelId: "gpt-5.4-mini" };
+    // The same pin on the same account runs while the sign-in is ready, so what
+    // fails below is the status and not the selection.
+    expect(resolveNonTurnModel({ credentialStore: storeWith([account], pin), env: {} }).ok).toBe(true);
+
+    const result = resolveNonTurnModel({
+      credentialStore: storeWith([{ ...account, status: "auth_failed" }], pin),
+      env: {},
+    });
+
+    if (result.ok || result.reason !== "pin_unavailable") throw new Error("expected pin_unavailable");
+    expect(result.cause).toBe("credential_unusable");
+  });
+
+  /**
+   * The case that made the fixed sentence wrong: a Gemini subscription carried
+   * only by Antigravity, which refuses a tools-off run. The credential is
+   * present, the harness is installed and eligible, and background work still
+   * cannot use it — so nothing in Settings repairs this.
+   */
+  it("never reports a present credential on an installed harness as gone", async () => {
+    vi.doMock("../shared/installed-harnesses.js", () => ({
+      isHarnessInstalled: () => true,
+      readInstalledHarnesses: () => ["antigravity"],
+    }));
+    const { resolveNonTurnModel, harnessesForSelection } = await import("./non-turn-model.js");
+    const selection = { serviceId: "google", billingMode: "sub" as const, modelId: "gemini-3.8-flash" };
+    const credentials = [{ serviceId: "google", billingMode: "sub" as const, via: "account" as const }];
+    // Without this the pin would fail for want of a harness, and the assertion
+    // below would pass on a case that proves nothing.
+    expect(harnessesForSelection(selection, credentials)).toHaveLength(1);
+
+    const result = resolveNonTurnModel({
+      credentialStore: storeWith([accountRoute(selection)], selection),
+      env: {},
+    });
+
+    if (result.ok || result.reason !== "pin_unavailable") throw new Error("expected pin_unavailable");
+    expect(result.cause).toBe("no_background_carrier");
   });
 });
 
@@ -363,34 +454,65 @@ describe("backgroundWorkOptions — what the selector may offer (docs/299 req 3)
 
   /**
    * req 3's "only that call" at the level that decides what runs, and the half
-   * a uniqueness check cannot see: a single row saying "direct" and a single row
-   * saying "harness" look identical in the list.
+   * a uniqueness check cannot see: one row saying "direct" and one row saying
+   * "harness" look identical in the list.
    *
-   * Stated over whatever the catalogue happens to declare rather than over named
-   * rows, because "may be called directly" is the catalogue's answer and moves
-   * with it. `resolveDirectCall` is the authority on BOTH halves — a credential
-   * the vendor permits AND an API style a shipped client speaks — so a row whose
-   * credential permits a call ShipIt cannot yet make is a harness row here, and
-   * correctly so: the alternative offers the user nothing at all.
+   * The expectation starts from the **catalogue** and never from the list under
+   * test, so a model provider missing from `backgroundWorkOptions` altogether
+   * fails here instead of leaving nothing to assert. Every credential the
+   * catalogue declares directly callable must be offered, and the ONE excuse for
+   * offering nothing is that no shipped client speaks that vendor's wire format
+   * — Gemini's key is that state today, declared ahead of its client
+   * (docs/302-gemini-catalogue-vendor req 5), and it stops being an excuse the
+   * day a client ships.
    */
-  it("gives every directly callable row a direct call, and never a harness", async () => {
+  it("offers every credential the catalogue declares directly callable", async () => {
     const { backgroundWorkOptions, runnerForNonTurnSelection } = await import("./non-turn-model.js");
-    const { allServices, resolveDirectCall } = await import("../shared/catalogue/index.js");
-    const installed = { isInstalled: () => true };
+    const { allServices, credentialPermitsDirectCall, directCallPathFor, resolveDirectCall } =
+      await import("../shared/catalogue/index.js");
+    const noHarness = { isInstalled: () => false };
+    const everyHarness = { isInstalled: () => true };
 
-    let directRows = 0;
+    let checked = 0;
     for (const service of allServices()) {
       for (const mode of service.modes) {
+        if (!credentialPermitsDirectCall(service.id, mode.kind, "string")) continue;
+        const where = `${service.id}/${mode.kind}`;
         const credentials = [credential(service.id, mode.kind)];
-        for (const option of backgroundWorkOptions(credentials, installed)) {
-          const runner = runnerForNonTurnSelection(option, credentials, installed);
-          const expected = resolveDirectCall(option) ? "direct" : "harness";
-          expect(runner?.execution, `${service.id}/${mode.kind}/${option.modelId}`).toBe(expected);
-          if (expected === "direct") directRows += 1;
+        const select = (modelId: string) => ({
+          serviceId: service.id,
+          billingMode: mode.kind,
+          modelId,
+        });
+        const offered = backgroundWorkOptions(credentials, noHarness).map((o) => o.modelId);
+        const callable = mode.models
+          .filter((m) => resolveDirectCall(select(m.id)))
+          .map((m) => m.id);
+
+        if (callable.length === 0) {
+          const speaks = mode.models
+            .flatMap((m) => m.styles)
+            .some((style) => directCallPathFor(style) && mode.endpoints[style]);
+          expect(speaks, `${where}: a client speaks this wire format, so it must be offered`)
+            .toBe(false);
+          expect(offered, where).toEqual([]);
+          continue;
         }
+
+        expect([...offered].sort(), where).toEqual([...callable].sort());
+        for (const modelId of offered) {
+          const selection = select(modelId);
+          expect(runnerForNonTurnSelection(selection, credentials, noHarness)?.execution, `${where}/${modelId}`)
+            .toBe("direct");
+          // And still the direct call with every harness installed: req 3 drops
+          // the harness row rather than preferring it when both exist.
+          expect(runnerForNonTurnSelection(selection, credentials, everyHarness)?.execution, `${where}/${modelId}`)
+            .toBe("direct");
+        }
+        checked += offered.length;
       }
     }
-    expect(directRows, "no directly callable row in the catalogue — this proves nothing")
+    expect(checked, "no directly callable row in the catalogue — this proves nothing")
       .toBeGreaterThan(0);
   });
 

@@ -842,4 +842,55 @@ describe("graduateSession", () => {
     expect(appended[0].nonTurnFailure?.serviceName).toBe("OpenAI");
     expect(appended[0].nonTurnFailure?.purpose).toBe("session-naming");
   });
+
+  /**
+   * docs/299-direct-provider-calls req 3. Naming inherits the tools-off filter
+   * deliberately, so a Gemini subscription carried only by Antigravity — which
+   * refuses a tools-off run — loses its session name with the credential
+   * present and the harness installed. The notice must not send that user to
+   * Settings to repair a credential that is working.
+   */
+  it("does not blame the credential when naming stops on a carrier that cannot run tools-off", async () => {
+    const generateSessionName = vi.fn(async () => ({ name: { slug: "s", title: "T" } }));
+    vi.doMock("../session-namer.js", () => ({ generateSessionName }));
+    vi.doMock("../../shared/installed-harnesses.js", () => ({
+      isHarnessInstalled: () => true,
+      readInstalledHarnesses: () => ["antigravity"],
+    }));
+    const appended: { nonTurnFailure?: { serviceName?: string; detail?: string } }[] = [];
+    const { graduateSession } = await import("./graduate-session.js");
+    const { deps, state } = buildDeps({
+      id: "s1", title: "placeholder", branch: "shipit/abc123", workspaceDir: "/tmp/ws",
+    });
+
+    graduateSession(
+      {
+        ...deps,
+        credentialStore: {
+          getNonTurnModel: () => ({ serviceId: "google", billingMode: "sub", modelId: "gemini-3.8-flash" }),
+          listCredentialRoutes: () => [
+            { id: "google-sub", serviceId: "google", billingMode: "sub", via: "account", status: "ready" },
+          ],
+          getCredentialSecret: () => undefined,
+          getSelectionMode: () => "ordered",
+          getFailoverCutoffs: () => ({}),
+        } as never,
+        chatHistoryManager: {
+          append: (_s: string, m: unknown) => appended.push(m as never),
+          replaceInProgress: () => {},
+          updateNonTurnFailureCard: () => true,
+        } as never,
+      },
+      { sessionId: "s1", userText: "hi", agentId: "claude" },
+    );
+
+    await flush(() => state.branchRenamed === true);
+
+    expect(generateSessionName).not.toHaveBeenCalled();
+    expect(appended).toHaveLength(1);
+    expect(appended[0].nonTurnFailure?.serviceName).toBe("Gemini (Google)");
+    expect(appended[0].nonTurnFailure?.detail).toMatch(/still configured/);
+    expect(appended[0].nonTurnFailure?.detail).not.toMatch(/Model providers/);
+    vi.doUnmock("../../shared/installed-harnesses.js");
+  });
 });

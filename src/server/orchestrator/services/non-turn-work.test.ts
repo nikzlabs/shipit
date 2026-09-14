@@ -235,6 +235,46 @@ describe("makeNonTurnGenerateText", () => {
     expect(h.appended[0].nonTurnFailure?.serviceName).toBe("OpenAI");
     expect(h.appended[0].nonTurnFailure?.pinned).toBe(true);
   });
+
+  /**
+   * docs/299-direct-provider-calls req 3. The notice states the cause the
+   * resolver reported. A Gemini subscription carried only by Antigravity —
+   * which refuses a tools-off run — fails with its credential present and its
+   * harness installed, and the damaging half of the old fixed sentence was
+   * sending that user to Settings to repair something that is fine.
+   */
+  it("never tells a user whose credential is present and working that it is gone", async () => {
+    const { makeNonTurnGenerateText } = await import("./non-turn-work.js");
+    const detailFor = async (routes: CredentialRoute[], pin: Record<string, string>) => {
+      const { deps, h } = buildDeps({ routes });
+      Object.assign((deps as { credentialStore: Record<string, unknown> }).credentialStore, {
+        getNonTurnModel: () => pin,
+      });
+      const generate = makeNonTurnGenerateText({
+        ...(deps as object),
+        fallback: async () => "unused",
+      } as never);
+      expect(await generate("prompt", "/ws", { sessionId: "s1" })).toBe("");
+      expect(h.appended).toHaveLength(1);
+      return h.appended[0].nonTurnFailure?.detail ?? "";
+    };
+
+    const carrier = await detailFor(
+      [{ ...keyRoute("google", "sub"), via: "account" }],
+      { serviceId: "google", billingMode: "sub", modelId: "gemini-3.8-flash" },
+    );
+    const gone = await detailFor([], {
+      serviceId: "openai",
+      billingMode: "key",
+      modelId: "gpt-5.4-mini",
+    });
+
+    expect(carrier).not.toBe(gone);
+    expect(gone).toMatch(/Model providers/);
+    expect(carrier).toMatch(/still configured/);
+    // Nothing under Model providers repairs this one.
+    expect(carrier).not.toMatch(/Model providers/);
+  });
 });
 
 // Own properties bypass real accessors while preserving instanceof for credential provisioning.
