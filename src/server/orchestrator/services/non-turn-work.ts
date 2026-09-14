@@ -82,7 +82,7 @@ export interface NonTurnTelemetry {
 
 /**
  * Unattributed runs record token volume without a price; absent telemetry creates
- * no row.
+ * no row, unless `spendUnknown` says the run was billed an amount nobody can read.
  *
  * A null session id is install-level spend — background work belonging to no
  * session, which is reported install-wide rather than charged to whichever
@@ -100,6 +100,12 @@ export function recordNonTurnUsage(
     target?: Pick<NonTurnTarget, "selection"> | undefined;
     purpose: NonTurnPurpose;
     telemetry: NonTurnTelemetry;
+    /**
+     * The run was billed but its amount cannot be read — a call cut off in
+     * flight. The row is written with no counts, so the run is visible without
+     * a figure being invented for it (docs/299-direct-provider-calls req 7).
+     */
+    spendUnknown?: boolean | undefined;
   },
 ): void {
   const { usageManager } = deps;
@@ -110,7 +116,7 @@ export function recordNonTurnUsage(
     || telemetry.outputTokens !== undefined
     || telemetry.cacheReadTokens !== undefined
     || telemetry.cacheCreateTokens !== undefined;
-  if (!hasTokens && (!target || telemetry.costUsd === undefined)) {
+  if (!hasTokens && !args.spendUnknown && (!target || telemetry.costUsd === undefined)) {
     const where = target
       ? `on ${target.selection.serviceId}/${target.selection.billingMode}`
       : "with no model resolved";
@@ -372,6 +378,15 @@ export async function runNonTurnDirect(
       },
     });
   };
+  const recordSpendUnknown = (): void => {
+    recordNonTurnUsage(deps, {
+      sessionId,
+      target,
+      purpose,
+      spendUnknown: true,
+      telemetry: { durationMs: Date.now() - startedAt },
+    });
+  };
   const fail = (detail: string): NonTurnOutcome => {
     console.warn(
       `[non-turn] ${purpose} direct call failed session=${sessionId ?? "-"} `
@@ -401,6 +416,11 @@ export async function runNonTurnDirect(
     // A run that stopped on its output cap, or wrote only reasoning, fails and
     // is billed. Record what it spent before reporting it (docs/299-direct-provider-calls req 7).
     if (err instanceof DirectCallError && err.usage) record(err.usage);
+    // A call cut off before its body could be read may have been billed, and
+    // its counts were only ever going to arrive in that body. Record the run
+    // without them, rather than let cleanup's own deadline erase real spend
+    // from every total.
+    else if (err instanceof DirectCallError && err.spendUnknown) recordSpendUnknown();
     return fail(getErrorMessage(err));
   }
 }

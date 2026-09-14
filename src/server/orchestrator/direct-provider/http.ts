@@ -56,6 +56,9 @@ export async function postJson(
   signal: AbortSignal,
   label: string,
 ): Promise<unknown> {
+  // Read before the send: a signal that had already fired reached no transport
+  // at all, so that failure is not a run.
+  const abortedBeforeSend = signal.aborted;
   let res: Response;
   try {
     res = await fetchImpl(url, {
@@ -65,11 +68,36 @@ export async function postJson(
       body: JSON.stringify(body),
     });
   } catch (err) {
-    throw new DirectCallError(502, `${label} request failed: ${(err as Error).message}`);
+    // Cancelled after the request was handed to the transport. Whether it ever
+    // reached the provider is NOT observable through `fetch` — measured: an
+    // abort landing during connect sends nothing and looks identical here. So
+    // this over-reports rather than under-reports, deliberately: counting a run
+    // that may have cost nothing misstates no money, while dropping one erases
+    // money that was spent (docs/299-direct-provider-calls req 7).
+    throw new DirectCallError(
+      502,
+      `${label} request failed: ${(err as Error).message}`,
+      undefined,
+      signal.aborted && !abortedBeforeSend,
+    );
   }
   if (!res.ok) {
     const detail = await res.text().catch(() => "");
     throw new DirectCallError(res.status, `${label} returned ${res.status}: ${detail.slice(0, 500)}`);
   }
-  return await res.json();
+  try {
+    return await res.json();
+  } catch (err) {
+    // The provider answered 200, so it ran the model. A body lost part-way —
+    // an abort, or a dropped socket — was billed with its counts among the
+    // bytes that never arrived, and the ones that did are unreadable. Measured:
+    // that fails as a TypeError, while a SyntaxError means the whole body did
+    // arrive and simply was not JSON, which no model wrote.
+    throw new DirectCallError(
+      502,
+      `${label} returned an unreadable body: ${(err as Error).message}`,
+      undefined,
+      !(err instanceof SyntaxError),
+    );
+  }
 }
