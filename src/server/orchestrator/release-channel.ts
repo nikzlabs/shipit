@@ -48,12 +48,35 @@ function normalizeChannel(raw: string | undefined): ReleaseChannel {
   return raw?.trim() === "stable" ? "stable" : DEFAULT_CHANNEL;
 }
 
-export async function readChannel(file: string = CHANNEL_FILE): Promise<ReleaseChannel> {
+/**
+ * An absent file means the default channel is in force; anything else means
+ * ShipIt could not tell. Collapsing the two answered a failed read with `edge`,
+ * which is a real channel — so an install tracking `stable` whose channel file
+ * became unreadable READ as `edge` (docs/299-agent-settings-access req 1).
+ */
+export type ReleaseChannelRead =
+  | { ok: true; channel: ReleaseChannel }
+  | { ok: false; error: unknown };
+
+export async function readChannelOutcome(file: string = CHANNEL_FILE): Promise<ReleaseChannelRead> {
   try {
-    return normalizeChannel(await readFile(file, "utf-8"));
-  } catch {
-    return DEFAULT_CHANNEL;
+    return { ok: true, channel: normalizeChannel(await readFile(file, "utf-8")) };
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return { ok: true, channel: DEFAULT_CHANNEL };
+    return { ok: false, error: err };
   }
+}
+
+/**
+ * The channel to act on. For callers that have to pick one either way — the
+ * updater, the version banner — where the default is the safe choice. A caller
+ * that REPORTS the channel wants {@link readChannelOutcome}.
+ */
+export async function readChannel(file: string = CHANNEL_FILE): Promise<ReleaseChannel> {
+  const read = await readChannelOutcome(file);
+  if (read.ok) return read.channel;
+  console.error(`[release-channel] reading ${file} failed; using ${DEFAULT_CHANNEL}:`, read.error);
+  return DEFAULT_CHANNEL;
 }
 
 export async function writeChannel(channel: ReleaseChannel, file: string = CHANNEL_FILE): Promise<void> {

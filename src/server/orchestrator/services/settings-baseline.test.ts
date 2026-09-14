@@ -2,6 +2,7 @@ import { describe, it, expect, afterEach, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { execFileSync } from "node:child_process";
 import { findSetting, projectSetting } from "../../shared/settings-catalogue/index.js";
 import { CredentialStore } from "../credential-store.js";
 import { DatabaseManager } from "../../shared/database.js";
@@ -154,6 +155,45 @@ describe("settingBaseline", () => {
 
     expect(unreadable.kind).toBe("unknown");
     expect(baselineMatches(unreadable, absent)).toBe(false);
+  });
+
+  it("moves when a HALF-set git identity's set half changes", async () => {
+    // Through real git, not a stubbed reader: the collapse this guards was in
+    // the reader. Every half-set state used to read as "no identity", so two
+    // different ones hashed alike and an apply took that as unchanged —
+    // overwriting a name the user had changed since the card was written. An
+    // unset identity also has to have a revision at all, or a card proposing one
+    // is permanently stale.
+    const d = deps(new CredentialStore(tmpDir()));
+    const key = "git.identity";
+    const configFile = path.join(tmpDir(), ".gitconfig");
+    const previous = process.env.GIT_CONFIG_GLOBAL;
+    process.env.GIT_CONFIG_GLOBAL = configFile;
+    const setName = (name: string) =>
+      execFileSync("git", ["config", "--global", "user.name", name]);
+    try {
+      const unset = await settingBaseline(d, { key });
+      expect(unset.kind).toBe("revision");
+
+      setName("Ada");
+      const ada = await settingBaseline(d, { key });
+      setName("Grace");
+      const grace = await settingBaseline(d, { key });
+
+      expect(baselineMatches(ada, unset)).toBe(false);
+      expect(baselineMatches(ada, grace)).toBe(false);
+
+      vi.spyOn(console, "error").mockImplementation(() => {});
+      fs.chmodSync(configFile, 0o000);
+      try {
+        expect((await settingBaseline(d, { key })).kind).toBe("unknown");
+      } finally {
+        fs.chmodSync(configFile, 0o644);
+      }
+    } finally {
+      if (previous === undefined) delete process.env.GIT_CONFIG_GLOBAL;
+      else process.env.GIT_CONFIG_GLOBAL = previous;
+    }
   });
 
   it("has none for a browser-local setting, because the server holds no value", async () => {

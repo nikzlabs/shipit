@@ -8,6 +8,8 @@ import {
   setGlobalCredentialHelper,
   clearGlobalCredentialHelper,
   setGitIdentity,
+  getGitIdentity,
+  readGitIdentity,
   writeContainerGitConfig,
   CONTAINER_CREDENTIAL_HELPER,
   FALLBACK_CONTAINER_GIT_IDENTITY,
@@ -611,6 +613,80 @@ describe("git-config: GitHub SSH→HTTPS rewrite (docs/200)", () => {
       expect(resolved).toBe("https://github.com/nikzlabs/shipit.git");
     } finally {
       fs.rmSync(repo, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("git-config: reading the identity (docs/299-agent-settings-access req 1)", () => {
+  let tmpDir: string;
+  let origGitConfigGlobal: string | undefined;
+  let origGitConfigSystem: string | undefined;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-git-identity-"));
+    origGitConfigGlobal = process.env.GIT_CONFIG_GLOBAL;
+    origGitConfigSystem = process.env.GIT_CONFIG_SYSTEM;
+    process.env.GIT_CONFIG_GLOBAL = path.join(tmpDir, ".gitconfig");
+    // Otherwise the host's own /etc/gitconfig can supply an identity.
+    process.env.GIT_CONFIG_SYSTEM = "/dev/null";
+  });
+
+  afterEach(() => {
+    if (origGitConfigGlobal !== undefined) process.env.GIT_CONFIG_GLOBAL = origGitConfigGlobal;
+    else delete process.env.GIT_CONFIG_GLOBAL;
+    if (origGitConfigSystem !== undefined) process.env.GIT_CONFIG_SYSTEM = origGitConfigSystem;
+    else delete process.env.GIT_CONFIG_SYSTEM;
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("reads a configured identity", () => {
+    setGitIdentity("Ada", "ada@example.com");
+    expect(readGitIdentity()).toEqual({ ok: true, identity: { name: "Ada", email: "ada@example.com" } });
+  });
+
+  it("answers `nothing set` for an absent config, not a read failure", () => {
+    expect(readGitIdentity()).toEqual({ ok: true, identity: { name: "", email: "" } });
+  });
+
+  it("keeps a half-set identity's set half, rather than collapsing it to nothing", () => {
+    // Two different half-set states must not read alike: the agent would report
+    // an unset name that is set, and `settings-baseline` would hash both to the
+    // same revision — so a name changing under an unset email would read as no
+    // change and let an older proposal overwrite it.
+    execSync(`git config --global user.name Ada`);
+    expect(readGitIdentity()).toEqual({ ok: true, identity: { name: "Ada", email: "" } });
+    execSync(`git config --global user.name Grace`);
+    expect(readGitIdentity()).toEqual({ ok: true, identity: { name: "Grace", email: "" } });
+    // But there is still no identity ShipIt can commit with.
+    expect(getGitIdentity()).toBeNull();
+  });
+
+  it("says it could not tell when the config is unreadable, never `no identity`", () => {
+    // git exits 1 for an unset key AND for a config it cannot open, so the exit
+    // status alone collapses the two. The agent states what it reads to the user
+    // as fact, so "no git identity" for a config ShipIt could not open is a
+    // made-up default reported as the truth.
+    setGitIdentity("Ada", "ada@example.com");
+    fs.chmodSync(process.env.GIT_CONFIG_GLOBAL!, 0o000);
+    try {
+      expect(readGitIdentity().ok).toBe(false);
+    } finally {
+      fs.chmodSync(process.env.GIT_CONFIG_GLOBAL!, 0o644);
+    }
+  });
+
+  it("says it could not tell when the config is malformed", () => {
+    fs.writeFileSync(process.env.GIT_CONFIG_GLOBAL!, "this is [not valid\n");
+    expect(readGitIdentity().ok).toBe(false);
+  });
+
+  it("still answers null for callers that act the same way either way", () => {
+    setGitIdentity("Ada", "ada@example.com");
+    fs.chmodSync(process.env.GIT_CONFIG_GLOBAL!, 0o000);
+    try {
+      expect(getGitIdentity()).toBeNull();
+    } finally {
+      fs.chmodSync(process.env.GIT_CONFIG_GLOBAL!, 0o644);
     }
   });
 });

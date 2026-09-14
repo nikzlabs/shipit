@@ -182,7 +182,10 @@ export async function getGlobalSettings(
   // Seeds the pin before the stored half is read, so a first read returns it.
   const { nonTurnModelResolved, backgroundWorkModels } =
     buildNonTurnModelSettings(agentRegistry, credentialStore, providerAccountManager);
-  const storedSettings = await readStoredGlobalSettings({
+  // The dialog needs a complete payload, so a setting ShipIt could not read
+  // renders as its declared default here. The agent's read surface is the one
+  // that must not do that (`settings-read.ts`, docs/299 req 1).
+  const { values: storedSettings } = await readStoredGlobalSettings({
     appWorkspaceDir,
     ...(credentialStore ? { credentialStore } : {}),
   });

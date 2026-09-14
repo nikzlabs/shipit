@@ -636,12 +636,53 @@ describe("the global egress allowlist", () => {
     const entry = await detail("network.egress.hosts", {
       egressEnforcementStatus: "active",
       containerManager: {
-        get: () => ({ status: "running" }),
+        get: () => ({ status: "running", egressContainedAtStart: true }),
         resolveEgress: () => ({ contained: true }),
       },
     });
     expect(entry.effect.state).toBe("restart-dependent");
     expect(entry.effect.detail).toContain("next time it starts");
+  });
+
+  it("does not tell a still-contained session the allowlist stopped applying to it", async () => {
+    // Global containment was switched off after this container started, so the
+    // resolver answers for its NEXT start while the running one still enforces
+    // the list. "Its network access does not depend on the allowlist" is the
+    // answer the user is unblocking against, and it would be false here.
+    const entry = await detail("network.egress.hosts", {
+      egressEnforcementStatus: "active",
+      containerManager: {
+        get: () => ({ status: "running", egressContainedAtStart: true }),
+        resolveEgress: () => ({ contained: false }),
+      },
+    });
+    expect(entry.effect.state).toBe("restart-dependent");
+    expect(entry.effect.detail).not.toContain("does not depend on the allowlist");
+    expect(entry.effect.detail).toContain("still enforcing");
+  });
+
+  it("says the allowlist does not restrict a running container that started open", async () => {
+    const entry = await detail("network.egress.hosts", {
+      egressEnforcementStatus: "active",
+      containerManager: {
+        get: () => ({ status: "running", egressContainedAtStart: false }),
+        resolveEgress: () => ({ contained: true }),
+      },
+    });
+    expect(entry.effect.state).toBe("restart-dependent");
+    expect(entry.effect.detail).toContain("started open");
+  });
+
+  it("says it cannot tell for a container rediscovered after a ShipIt restart", async () => {
+    const entry = await detail("network.egress.hosts", {
+      egressEnforcementStatus: "active",
+      containerManager: {
+        get: () => ({ status: "running" }),
+        resolveEgress: () => ({ contained: true }),
+      },
+    });
+    expect(entry.effect.state).toBe("uncertain");
+    expect(entry.effect.detail).toContain("rediscovered");
   });
 
   it("says the allowlist is excluded for a session nothing contains", async () => {
@@ -660,7 +701,7 @@ describe("the global egress allowlist", () => {
     const entry = await detail("network.egress.hosts[].host", {
       egressEnforcementStatus: "active",
       containerManager: {
-        get: () => ({ status: "running" }),
+        get: () => ({ status: "running", egressContainedAtStart: true }),
         resolveEgress: () => ({ contained: true, userHostsExcluded: true }),
       },
     });

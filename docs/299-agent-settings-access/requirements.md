@@ -71,10 +71,12 @@ agent is the actor.
 8. When the user applies or dismisses a proposal, the agent is told at the start
    of its next turn. It does not have to work out for itself that something
    changed, and it does not remind the user about a change they have already
-   dealt with. The next turn means the next turn that can read a prompt: a
-   **compaction** turn is excluded, which the user decided and the receipt below
-   records, and a harness command delivered verbatim has no place to carry the
-   notice at all, which is recorded below as a known limitation. In both the
+   dealt with. The next turn means the next turn that can read a prompt, and
+   three kinds are not one. A **compaction** turn is excluded, which the user
+   decided and the receipt below records. A **harness command delivered
+   verbatim** has no place to carry the notice at all. And a turn the **CLI wakes
+   itself for** is one ShipIt composed no prompt for, so there is no place there
+   either. The last two are recorded below as known limitations. In all three the
    outcome waits for the turn after rather than being lost.
 
 ## Open questions
@@ -98,6 +100,26 @@ agent is the actor.
   and the user was not asked about it: there was nothing to decide. The
   at-least-once carry covers it — the outcome stays pending and reaches the agent
   on the following turn.
+- **A turn the CLI wakes itself for carries no outcome notice either, and nothing
+  can make it.** Background work finishing wakes a resident CLI, which starts a
+  turn ShipIt composed no prompt for: the wake reaches ShipIt as an event the CLI
+  emits (`agent_self_wake`), *after* the CLI has already resumed. ShipIt observes
+  that turn rather than composing it, so there is no prefix slot and no moment
+  before it to put one in. This is the ShipIt-dispatched wake's opposite, and not
+  the one the 2026-09-14 receipt below lists among the automatic turns that do
+  carry the notice. Structural rather than a choice, like the verbatim command
+  above.
+
+  Live steering is the only channel into a resident CLI, and it is not a delivery
+  path here for four separate reasons: it lands **mid-turn**, which is not the
+  start of a turn; it is gated on a setting the user may have switched off; three
+  of the five harnesses drop it outright; and it perturbs the very turn
+  bookkeeping the adoption path reads.
+
+  The at-least-once carry covers it, and covers it exactly: the receipt binds to
+  the **dispatched** turn, so a woken turn cannot spend one, and the outcome
+  reaches the agent on the next dispatched turn. Delayed by one turn, never
+  dropped.
 
 ## Resolved questions
 

@@ -24,16 +24,48 @@ export function globalSystemPromptPath(
   return path.join(appWorkspaceDir, APP_SETTINGS_SUBDIR, PROMPT_FILES[scope]);
 }
 
+/**
+ * `ok` with no content means there are no instructions; `ok: false` means ShipIt
+ * could not tell. The two used to be one answer, and a read of the setting then
+ * reported an `EACCES` on an existing file as *empty instructions*
+ * (docs/299-agent-settings-access req 1) — a made-up default the agent states to
+ * the user as fact.
+ */
+export type GlobalSystemPromptRead =
+  | { ok: true; content: string | undefined }
+  | { ok: false; error: unknown };
+
 export async function readGlobalSystemPrompt(
   appWorkspaceDir: string,
   scope: SystemPromptScope = "standard",
-): Promise<string | undefined> {
+): Promise<GlobalSystemPromptRead> {
   try {
     const content = await fs.readFile(globalSystemPromptPath(appWorkspaceDir, scope), "utf-8");
-    return content.trim() || undefined;
-  } catch {
-    return undefined;
+    return { ok: true, content: content.trim() || undefined };
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return { ok: true, content: undefined };
+    return { ok: false, error: err };
   }
+}
+
+/**
+ * The instructions to send with a turn, or none. Separate from the read above
+ * because it answers a different question: a turn still has to run when the file
+ * cannot be read, while a READ of the setting has to say it could not be read.
+ * Loud on purpose — dropping the user's global instructions silently is how this
+ * failure went unnoticed.
+ */
+export async function globalSystemPromptForTurn(
+  appWorkspaceDir: string,
+  scope: SystemPromptScope = "standard",
+): Promise<string | undefined> {
+  const read = await readGlobalSystemPrompt(appWorkspaceDir, scope);
+  if (read.ok) return read.content;
+  console.error(
+    `[global-system-prompt] reading the ${scope} instructions failed; this turn carries none:`,
+    read.error,
+  );
+  return undefined;
 }
 
 /**

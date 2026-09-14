@@ -17,7 +17,7 @@ import type { WsClientMessage, WsServerMessage, WsLogRecord, LogSource } from ".
 import { agentLogAppend } from "./log-emit.js";
 import { getErrorMessage } from "./validation.js";
 import { getGitIdentity } from "./git-config.js";
-import { readGlobalSystemPrompt, type SystemPromptScope } from "./global-system-prompt.js";
+import { globalSystemPromptForTurn, type SystemPromptScope } from "./global-system-prompt.js";
 import { notableFilesForBranch } from "./services/notable-files.js";
 import { emitResetEligible } from "./services/pre-turn-reset.js";
 import { refreshWorkspaceBlockOnActivation } from "./services/workspace-block.js";
@@ -928,7 +928,7 @@ export async function registerRoutes(
 
       // The global prompt belongs to the orchestrator workspace.
       const readSystemPrompt = (scope: SystemPromptScope): Promise<string | undefined> =>
-        readGlobalSystemPrompt(workspaceDir, scope);
+        globalSystemPromptForTurn(workspaceDir, scope);
 
       const sessionBroadcastLog = (source: LogSource, text: string) => {
         broadcastLog(sessionId, source, text);

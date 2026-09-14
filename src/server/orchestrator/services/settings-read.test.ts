@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { CredentialStore } from "../credential-store.js";
 import { getVoiceProvider, providerSpeeds, providerVoices, ttsProviders } from "../../shared/voice-catalog.js";
 import { addMcpServer } from "./mcp.js";
-import { writeGlobalSystemPrompt } from "../global-system-prompt.js";
+import { globalSystemPromptPath, writeGlobalSystemPrompt } from "../global-system-prompt.js";
 import {
   ALL_SETTINGS,
   GLOBAL_SETTINGS,
@@ -212,12 +212,14 @@ describe("listSettingsForAgent", () => {
     expect(settings.find((s) => s.key === "advanced.autoFixCi")?.readable).toBe(true);
   });
 
-  it("degrades the payload settings together when the bulk stored read fails, and still reads the rest", async () => {
-    // The stored half is one read, so its failure costs every payload setting —
-    // but not the own-route ones, and not the call.
+  it("degrades the payload settings whose store failed, and still reads the rest", async () => {
+    // The credential store is one store behind many declarations, so its failure
+    // costs all of them — but not the own-route ones, not the payload settings
+    // held elsewhere, and not the call.
     const broken = {
       getDeclaredSetting: () => { throw new Error("credentials file is unreadable"); },
     } as unknown as CredentialStore;
+    await writeGlobalSystemPrompt(tmpDir, "Always use TypeScript.");
     const { settings } = await listSettingsForAgent(
       deps({ credentialStore: broken, egressAllowlistStore: egressStore({ globalEnabled: false }) }),
       "s1",
@@ -226,9 +228,32 @@ describe("listSettingsForAgent", () => {
       readable: false,
       unreadableReason: "read_failed",
     });
+    expect(settings.find((s) => s.key === "instructions.userInstructions")?.value)
+      .toBe("Always use TypeScript.");
     expect(settings.find((s) => s.key === "network.egressContained")?.value).toBe(false);
     expect(settings.find((s) => s.key === "advanced.releaseChannel")?.value).toBe("edge");
     expect(JSON.stringify(settings)).not.toContain("credentials file is unreadable");
+  });
+
+  it("reports an unreadable instructions file as unreadable, never as empty instructions", async () => {
+    // docs/299-agent-settings-access req 1. The file exists and holds the user's
+    // instructions; ShipIt cannot open it. Answering with the declaration's
+    // empty-string default makes `shipit settings get` report "no instructions"
+    // as fact, and the agent then tells the user so.
+    await writeGlobalSystemPrompt(tmpDir, "Always use TypeScript.");
+    const file = globalSystemPromptPath(tmpDir);
+    fs.chmodSync(file, 0o000);
+    try {
+      const entry = await getSettingForAgent(deps(), "s1", "instructions.userInstructions");
+      expect(entry).toMatchObject({ readable: false, unreadableReason: "read_failed" });
+      expect(entry.value).toBeNull();
+      expect(entry.display).toBe("unknown");
+      // And one unreadable file costs no other setting its value.
+      const { settings } = await listSettingsForAgent(deps(), "s1");
+      expect(settings.find((s) => s.key === "advanced.autoFixCi")?.readable).toBe(true);
+    } finally {
+      fs.chmodSync(file, 0o644);
+    }
   });
 
   it("reads an own-route setting through its reader", async () => {
