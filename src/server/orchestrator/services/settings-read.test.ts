@@ -535,7 +535,7 @@ describe("saved is not effective", () => {
         "network.egress.hosts",
       );
       expect(entry.effect.state).toBe("restart-dependent");
-      expect(entry.effect.detail).toContain("took its allowlist when it started");
+      expect(entry.effect.detail).toContain("took its allowlist when it was last given one");
       expect(entry.effect.detail).toContain("SESSION_EGRESS_SIDECAR_IMAGE");
     });
   });

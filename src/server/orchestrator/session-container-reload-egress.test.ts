@@ -109,7 +109,8 @@ describe("reloadEgress — the return value is the agent's reload (planning#380)
     const manager = await buildManager({
       contained: true, extraHosts: [], base: ["lifeline.example"], userHostsExcluded: true,
     });
-    // Rediscovered, so nothing is recorded until something is applied.
+    // A container known to have a firewall; rediscovery records neither field.
+    manager.get(SESSION_ID)!.egressContainedAtStart = true;
     expect(manager.get(SESSION_ID)?.egressUserHostsExcluded).toBeUndefined();
 
     await manager.reloadEgress(SESSION_ID);
@@ -119,14 +120,64 @@ describe("reloadEgress — the return value is the agent's reload (planning#380)
 
   it("records the ordinary allowlist coming back, not only the sealing", async () => {
     const manager = await buildManager({ contained: true, extraHosts: ["fal.run"] });
+    manager.get(SESSION_ID)!.egressContainedAtStart = true;
+
+    await manager.reloadEgress(SESSION_ID);
+
+    expect(manager.get(SESSION_ID)?.egressUserHostsExcluded).toBe(false);
+  });
+
+  it("records nothing for a container whose own containment ShipIt cannot tell", async () => {
+    // Rediscovered after a ShipIt restart: a reload establishes what the
+    // sidecars hold, never whether this container's traffic reaches them.
+    const manager = await buildManager({
+      contained: true, extraHosts: [], base: ["lifeline.example"], userHostsExcluded: true,
+    });
+    expect(manager.get(SESSION_ID)?.egressContainedAtStart).toBeUndefined();
+
+    await manager.reloadEgress(SESSION_ID);
+
+    expect(manager.get(SESSION_ID)?.egressUserHostsExcluded).toBeUndefined();
+  });
+
+  it("records no sealing on a container that has no firewall to seal it", async () => {
+    // A reload launches the resolver and proxy; the redirect that routes the
+    // container's traffic through them is installed at creation. So sidecars on
+    // a container that started OPEN change nothing, and recording a sealing
+    // here would have the settings read call a container that reaches
+    // everything sealed.
+    const manager = await buildManager({
+      contained: true, extraHosts: [], base: ["lifeline.example"], userHostsExcluded: true,
+    });
+    manager.get(SESSION_ID)!.egressContainedAtStart = false;
+
+    await manager.reloadEgress(SESSION_ID);
+
+    expect(reloadEgressSidecars).toHaveBeenCalledTimes(1);
+    expect(manager.get(SESSION_ID)?.egressUserHostsExcluded).toBeUndefined();
+  });
+
+  it("leaves the record unknown when the replacement failed part-way", async () => {
+    // `reloadEgressSidecars` replaces the resolver and then the proxy, so a
+    // throw leaves the container enforcing neither policy whole. Keeping the
+    // previous value would be a confident wrong answer about a container whose
+    // DNS has already changed.
+    const manager = await buildManager({ contained: true, extraHosts: ["fal.run"] });
+    manager.get(SESSION_ID)!.egressContainedAtStart = true;
     await manager.reloadEgress(SESSION_ID);
     expect(manager.get(SESSION_ID)?.egressUserHostsExcluded).toBe(false);
+
+    reloadEgressSidecars.mockRejectedValueOnce(new Error("proxy launch failed"));
+    await expect(manager.reloadEgress(SESSION_ID)).rejects.toThrow("proxy launch failed");
+
+    expect(manager.get(SESSION_ID)?.egressUserHostsExcluded).toBeUndefined();
   });
 
   it("records nothing when no reload reached the container", async () => {
     const manager = await buildManager({
       contained: true, extraHosts: [], userHostsExcluded: true,
     });
+    manager.get(SESSION_ID)!.egressContainedAtStart = true;
     manager.get(SESSION_ID)!.status = "stopped";
 
     await manager.reloadEgress(SESSION_ID);

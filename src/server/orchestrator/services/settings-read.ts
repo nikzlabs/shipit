@@ -398,6 +398,17 @@ function enforcementDisabledEffect(
     : null;
 }
 
+/**
+ * What a sealed session's relationship to this list actually is. NOT "no host
+ * here is reachable": `EGRESS_LIFELINE_ALLOWLIST` is a subset of this list's
+ * shipped defaults and a granted SSH destination is composed into the sealed
+ * policy (`egress-allowlist.ts` → `sandboxLifelineEgressConfig`), so hosts on
+ * the list ARE reachable. What the list does not do is widen it.
+ */
+const ADDS_NOTHING =
+  "this list adds nothing to what it can reach: only ShipIt's own lifeline hosts, "
+  + "and any SSH destination granted to it.";
+
 /** The sentence a `no-sidecar` install owes a session that resolves contained. */
 const NO_SIDECAR_REFUSAL =
   "Egress enforcement is on but this install has no egress sidecar image "
@@ -563,13 +574,19 @@ function egressAllowlistEffect(deps: SettingsReadDeps, sessionId: string): Setti
   const running = container?.status === "running";
   // Only a running container shuts anything out; with none, the resolved policy
   // answers both halves. Undefined is UNKNOWN and never `false`: a container
-  // rediscovered after a ShipIt restart recorded nothing.
+  // rediscovered after a ShipIt restart recorded nothing, and `reloadEgress`
+  // leaves it unknown where a replacement failed part-way or where the container
+  // has no firewall for the reloaded sidecars to act through.
   const excludedNow = running ? container?.egressUserHostsExcluded : undefined;
   if (config?.userHostsExcluded) {
+    // "Adds nothing", never "no host here is reachable": the lifeline base is a
+    // SUBSET of this list's shipped defaults, so `.anthropic.com` is on the list
+    // and is reachable from a sealed session. What is true is that nothing added
+    // here widens it.
     if (excludedNow === true || !running) {
       return alsoSay({
         state: "excluded",
-        detail: "This session's own network capability excludes it from the allowlist, and no restart makes a host here reachable from it. The session's network capability is what has to change.",
+        detail: `This session's own network capability shuts it out of the allowlist: ${ADDS_NOTHING} No restart changes that, and the session's network capability is what has to.`,
       }, blocked);
     }
     // A container ShipIt has no record for gets no history invented for it: the
@@ -577,8 +594,8 @@ function egressAllowlistEffect(deps: SettingsReadDeps, sessionId: string): Setti
     return alsoSay({
       state: "excluded",
       detail: excludedNow === undefined
-        ? `${allowlistInForce(container)} This session's network capability is off, so no restart makes a host here reachable from it either.`
-        : `${allowlistInForce(container)} This session's network capability has been switched off since, so restarting it seals the session and no restart makes a host here reachable from it.`,
+        ? `${allowlistInForce(container)} This session's network capability is off, so adding a host here does not reach it after a restart either.`
+        : `${allowlistInForce(container)} This session's network capability has been switched off since, so restarting it seals the session — and adding a host here does not reach it then either.`,
     }, blocked);
   }
   if (excludedNow === true) {
@@ -586,7 +603,7 @@ function egressAllowlistEffect(deps: SettingsReadDeps, sessionId: string): Setti
     // was applied, so it is still sealed to ShipIt's own lifeline hosts. The list
     // is not empty to it — a lifeline host is on the list too — it just adds
     // nothing, which is the claim the user can act on.
-    const now = "This session's container is running under its network capability switched off, so this list adds nothing to what it can reach: only ShipIt's own lifeline hosts, and any SSH destination granted to it.";
+    const now = `This session's container is running under its network capability switched off, so ${ADDS_NOTHING}`;
     return alsoSay(
       contained
         ? {
@@ -627,8 +644,8 @@ function egressAllowlistEffect(deps: SettingsReadDeps, sessionId: string): Setti
     return alsoSay({
       state: "restart-dependent",
       detail: contained
-        ? "This session's container took its allowlist when it started; a change here applies the next time it starts."
-        : "This session's container started contained and is still enforcing the allowlist it took then. It starts open next time, and the allowlist stops applying to it.",
+        ? "This session's container took its allowlist when it was last given one; a change here applies the next time it starts."
+        : "This session's container started contained and is still enforcing the allowlist it has. It starts open next time, and the allowlist stops applying to it.",
     }, blocked);
   }
   if (!contained) {
@@ -647,7 +664,7 @@ function allowlistInForce(container: { egressContainedAtStart?: boolean } | unde
     return "This session's container was rediscovered after a ShipIt restart, so ShipIt does not know whether it is enforcing the allowlist.";
   }
   return startedContained
-    ? "This session's container started contained and is still enforcing the allowlist it took then."
+    ? "This session's container started contained and is still enforcing the allowlist it has."
     : "This session's container started open, so the allowlist does not restrict it.";
 }
 

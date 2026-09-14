@@ -520,6 +520,11 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
 
     if (!reloadResolver && !reloadProxy) return cidrsChanged;
     if (agentRunning && sc?.id) {
+      // The replacement is destructive and sequential — resolver, then proxy —
+      // so from here until it returns the container enforces neither policy
+      // whole. A definite record through that window is a confident wrong
+      // answer in `services/settings-read.ts`.
+      delete sc.egressUserHostsExcluded;
       await reloadEgressSidecars({
         docker: this.docker,
         agentContainerId: sc.id,
@@ -533,8 +538,14 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
         reloadResolver,
         reloadProxy,
       });
-      // The container now enforces THIS policy, not the one it started with.
-      sc.egressUserHostsExcluded = cfg.userHostsExcluded === true;
+      // Only where this container HAS a firewall. A reload launches the resolver
+      // and proxy, but the redirect that routes traffic through them is
+      // installed at creation, so sidecars on a container that started open
+      // change nothing — recording a sealing here would call a container that
+      // reaches everything sealed.
+      if (sc.egressContainedAtStart === true) {
+        sc.egressUserHostsExcluded = cfg.userHostsExcluded === true;
+      }
     }
     try {
       await this.containComposeServices(sessionId, this.composeServiceNames.get(sessionId) ?? [], true);

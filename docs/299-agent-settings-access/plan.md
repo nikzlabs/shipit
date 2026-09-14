@@ -598,9 +598,22 @@ container's egress is configured: creation (`container-lifecycle.ts`, beside
 capabilities are wrong for this twice over — `app-lifecycle.ts` snapshots them
 *before* creation resolves egress, and a reload re-applies the current policy to
 a *running* container, so a session host add after a capability grant puts it
-back under the ordinary allowlist with no restart at all. Undefined means
-unknown, exactly as for `egressContainedAtStart`, and the two are recorded
-together so a rediscovered container is unknown in both.
+back under the ordinary allowlist with no restart at all.
+
+**It is true only where a sealing policy was really installed**, which is three
+conditions and not one. At creation: enforcement on AND the container contained —
+with `SESSION_EGRESS_ENFORCE=0` nothing is applied, so recording the resolved
+value would describe a policy that does not exist. At a reload: the container's
+own boot containment known-true, because a reload launches the resolver and proxy
+but the redirect that routes traffic through them is installed at creation — so
+sidecars on a container that started open, or on a rediscovered one whose
+containment ShipIt cannot tell, change nothing, and recording a sealing there
+would call a container that reaches everything sealed. And the record is
+**invalidated for the duration of a reload**: `reloadEgressSidecars` replaces the
+resolver and then the proxy, so a throw part-way leaves the container enforcing
+neither policy whole, and a definite value through that window is a confident
+wrong answer. Undefined therefore means unknown throughout — a rediscovered
+container, a failed replacement, or a reload with no firewall to act through.
 
 - **Which setting DECIDES containment is the STORED capability.**
   `sandboxLifelineEgressConfig` intercepts a network-off sandbox at every
@@ -641,6 +654,13 @@ together so a rediscovered container is unknown in both.
   are on the list and are reachable. The claim is that the list *adds* nothing
   beyond the lifeline and any granted SSH destination, which is the part the user
   can act on.
+
+**Still unaddressed: the probes do not know whether DNS control is deployed.**
+With it off, a contained container enforces only the fixed Tier A policy, so no
+allowlist entry can be made effective at all and "the allowlist applies from its
+next start" overstates what a restart buys. `egress-host-reach.ts` takes that
+distinction (`dnsControlDeployed`) and these probes do not; it predates this work
+and applies to every branch, shipped ones included.
 
 **The refusal is a suffix on every branch, never a branch of its own.** It
 answers a different question from the rest of the probe: those say what is true

@@ -746,7 +746,8 @@ describe("the global egress allowlist", () => {
       // What is in force: nothing restricts it, and the user is owed that first.
       expect(entry.effect.detail).toContain("started open");
       // And what the next start does, which is why the state is still excluded.
-      expect(entry.effect.detail).toContain("no restart makes a host here reachable");
+      expect(entry.effect.detail).toContain("switched off since");
+      expect(entry.effect.detail).toContain("does not reach it then either");
     });
 
     it("says a still-contained container is enforcing the list it took, before the sealing", async () => {
@@ -771,7 +772,7 @@ describe("the global egress allowlist", () => {
       expect(entry.effect.state).toBe("excluded");
       expect(entry.effect.detail).toContain("rediscovered");
       expect(entry.effect.detail).not.toContain("since");
-      expect(entry.effect.detail).toContain("no restart makes a host here reachable");
+      expect(entry.effect.detail).toContain("after a restart either");
     });
 
     it("says the list adds nothing to a sealed container, once the capability is back", async () => {
@@ -805,24 +806,13 @@ describe("the global egress allowlist", () => {
         { status: "running", egressContainedAtStart: true, egressUserHostsExcluded: true },
         { contained: true, userHostsExcluded: true },
       ));
-      expect(entry.effect).toEqual({
-        state: "excluded",
-        detail: "This session's own network capability excludes it from the allowlist, and no restart makes a host here reachable from it. The session's network capability is what has to change.",
-      });
-    });
-
-    it("follows a live reload rather than the policy the container started with", async () => {
-      // `reloadEgress` re-applies the currently resolved policy to a RUNNING
-      // container (`session-container.ts`), so a session host add after the
-      // capability was granted puts it back under the ordinary allowlist
-      // without a restart. Reading a start-time capability snapshot would still
-      // be reporting it sealed.
-      const entry = await detail("network.egress.hosts", applied(
-        { status: "running", egressContainedAtStart: true, egressUserHostsExcluded: false },
-        { contained: true },
-      ));
-      expect(entry.effect.state).toBe("restart-dependent");
-      expect(entry.effect.detail).not.toContain("adds nothing to what it can reach");
+      expect(entry.effect.state).toBe("excluded");
+      // Not "no host here is reachable": the lifeline base is a subset of this
+      // list's shipped defaults, so hosts on the list ARE reachable from a
+      // sealed session. What the list does not do is widen what it reaches.
+      expect(entry.effect.detail).toContain("shuts it out of the allowlist");
+      expect(entry.effect.detail).toContain("adds nothing to what it can reach");
+      expect(entry.effect.detail).toContain("network capability is what has to");
     });
   });
 
