@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import type { AgentRole, CredentialRoute } from "../../shared/types.js";
 import type { RolePinnedParams } from "../../shared/types/agent-types.js";
+import type { ApplyOutcome } from "../../shared/settings-catalogue/index.js";
 import { applyRoleWrites, parseRoleWrite, planRoleWrites } from "./role-settings.js";
 import { ServiceError } from "./types.js";
 
@@ -28,10 +29,11 @@ function storeWith(roles: AgentRole[] = [], routes: CredentialRoute[] = [DEEPSEE
   const writes: { name: string; role: AgentRole | null }[] = [];
   const store = {
     getRole: (name: string) => byName.get(name),
-    setRole: (name: string, role: AgentRole | null) => {
+    setRole: (name: string, role: AgentRole | null): ApplyOutcome => {
       writes.push({ name, role });
       if (role === null) byName.delete(name);
       else byName.set(name, role);
+      return { status: "applied" };
     },
     listCredentialRoutes: (serviceId?: string, billingMode?: string) =>
       routes.filter(

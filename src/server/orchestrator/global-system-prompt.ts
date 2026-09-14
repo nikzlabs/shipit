@@ -37,12 +37,18 @@ export async function readGlobalSystemPrompt(
 }
 
 /**
- * Reports whether the instructions are what the caller asked for. Clearing them
- * used to swallow the `unlink` error, so "cleared" could be false while the old
- * instructions were still being sent to every agent — the defect docs/299
- * ("Saved" has to mean saved) generalises away. A missing file is already
- * cleared; anything else that stops the unlink leaves the old content in place,
- * which is a verified `failed`.
+ * Reports whether the instructions are what the caller asked for, and never
+ * throws for a write it could not do (docs/299 → "Saved" has to mean saved).
+ *
+ * Clearing used to swallow the `unlink` error, so "cleared" could be false while
+ * the old instructions were still being sent to every agent. A write used to
+ * throw, which was worse than swallowing in a different way: it abandoned a
+ * multi-setting save part-way, losing both the outcomes already collected and
+ * the broadcast for the settings that had landed.
+ *
+ * The content is staged and renamed over the target, so a failure part-way
+ * cannot leave a truncated file — which is what lets a failure claim `failed`
+ * rather than `uncertain`: the previous instructions are verifiably still there.
  */
 export async function writeGlobalSystemPrompt(
   appWorkspaceDir: string,
@@ -55,6 +61,8 @@ export async function writeGlobalSystemPrompt(
     try {
       await fs.unlink(filePath);
     } catch (err) {
+      // A missing file is already cleared, so answering `failed` for that would
+      // make every repeat clear look like a failure.
       if ((err as NodeJS.ErrnoException).code === "ENOENT") return APPLIED;
       console.error(`[global-system-prompt] clearing ${filePath} failed:`, err);
       return applyFailed(
@@ -63,7 +71,17 @@ export async function writeGlobalSystemPrompt(
     }
     return APPLIED;
   }
-  await fs.mkdir(path.dirname(filePath), { recursive: true });
-  await fs.writeFile(filePath, `${trimmed}\n`, "utf-8");
-  return APPLIED;
+  const staging = `${filePath}.${process.pid}.tmp`;
+  try {
+    await fs.mkdir(path.dirname(filePath), { recursive: true });
+    await fs.writeFile(staging, `${trimmed}\n`, "utf-8");
+    await fs.rename(staging, filePath);
+    return APPLIED;
+  } catch (err) {
+    console.error(`[global-system-prompt] writing ${filePath} failed:`, err);
+    await fs.rm(staging, { force: true }).catch(() => undefined);
+    return applyFailed(
+      "ShipIt could not write the instructions file, so the previous instructions are still in place.",
+    );
+  }
 }

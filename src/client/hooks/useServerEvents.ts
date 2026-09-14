@@ -783,6 +783,10 @@ export function useServerEvents(): void {
       void refreshGlobalSettings().catch((err: unknown) => {
         console.error("[settings] refresh after reconnecting failed:", err);
       });
+      // The allowlist and the containment toggle are not in that payload, and a
+      // viewer that was away missed their broadcast too.
+      const egress = useEgressStore.getState();
+      if (egress.loaded) void egress.refresh().catch(() => {});
     };
 
     es.onerror = () => {

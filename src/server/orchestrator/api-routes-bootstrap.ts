@@ -1,7 +1,7 @@
 import { loginIntegrationForService, nativeServiceForHarness } from "../shared/catalogue/index.js";
 import type { FastifyInstance } from "fastify";
 import { releaseResidentForCredentialChange } from "./resident-spawn-guard.js";
-import type { AgentId, CredentialBillingMode } from "../shared/types.js";
+import type { AgentId, CredentialBillingMode, CredentialRoute } from "../shared/types.js";
 import { limitsModeKey } from "../shared/types/usage-limits-types.js";
 import type { ApiDeps } from "./api-routes.js";
 import type { GlobalSettingsPatch } from "../shared/settings-catalogue/index.js";
@@ -79,6 +79,25 @@ export async function registerBootstrapRoutes(
     void deps.refreshSubscriptionLimits(limitsModeKey(route), reason, route.id).catch((err: unknown) => {
       console.warn(`[limits] quota refresh for ${route.id} failed:`, getErrorMessage(err));
     });
+  };
+
+  // The layer owns the whole credential write, so its two required side effects
+  // are supplied once here rather than remembered at four call sites.
+  const credentialApplyDeps = {
+    sseBroadcast: deps.sseBroadcast,
+    credentialStore: deps.credentialStore,
+    propagateCredentialChange,
+    broadcastCredentialRoutes: (routes: CredentialRoute[]) => {
+      deps.sseBroadcast("credential_routes", { routes });
+    },
+  };
+  const providerAccountApplyDeps = {
+    sseBroadcast: deps.sseBroadcast,
+    credentialStore: deps.credentialStore,
+    providerAccountManager: deps.providerAccountManager,
+    broadcastProviderAccounts: (accounts: CredentialRoute[]) => {
+      deps.sseBroadcast("provider_accounts", { accounts });
+    },
   };
 
   const forgetQuotaForCredential = (
@@ -261,15 +280,13 @@ export async function registerBootstrapRoutes(
     async (request, reply) => {
       try {
         const { outcome, ...result } = await applyCredentialUpdate(
-          deps,
+          credentialApplyDeps,
           request.params.routeId,
           request.body ?? {},
         );
-        propagateCredentialChange();
         if (request.body?.secret !== undefined && result.route) {
           refreshQuotaForCredential(result.route, "manual");
         }
-        deps.sseBroadcast("credential_routes", { routes: result.routes });
         if (outcome.status !== "applied") {
           reply.code(500).send({ error: outcome.detail ?? "Failed to update credential", outcome });
           return;
@@ -310,13 +327,11 @@ export async function registerBootstrapRoutes(
     async (request, reply) => {
       try {
         const { outcome, ...result } = await applyCredentialRouteOrder(
-          deps,
+          credentialApplyDeps,
           request.params.serviceId,
           request.params.billingMode,
           request.body?.routeIds,
         );
-        propagateCredentialChange();
-        deps.sseBroadcast("credential_routes", { routes: result.routes });
         if (outcome.status !== "applied") {
           reply.code(500).send({ error: outcome.detail ?? "Failed to reorder credentials", outcome });
           return;
@@ -358,12 +373,11 @@ export async function registerBootstrapRoutes(
     async (request, reply) => {
       try {
         const { outcome, ...result } = await applyProviderAccountLabel(
-          deps,
+          providerAccountApplyDeps,
           request.params.provider,
           request.params.accountId,
           request.body.label,
         );
-        deps.sseBroadcast("provider_accounts", { accounts: result.accounts });
         if (outcome.status !== "applied") {
           reply.code(500).send({ error: outcome.detail ?? "Failed to rename provider account", outcome });
           return;
@@ -384,11 +398,10 @@ export async function registerBootstrapRoutes(
     async (request, reply) => {
       try {
         const { outcome, ...result } = await applyProviderAccountOrder(
-          deps,
+          providerAccountApplyDeps,
           request.params.provider,
           request.body?.accountIds,
         );
-        deps.sseBroadcast("provider_accounts", { accounts: result.accounts });
         if (outcome.status !== "applied") {
           reply.code(500).send({ error: outcome.detail ?? "Failed to reorder provider accounts", outcome });
           return;

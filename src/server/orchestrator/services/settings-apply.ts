@@ -55,8 +55,7 @@ import {
   withConflictDomains,
 } from "./settings-conflict-domain.js";
 import type { ConflictDomain } from "./settings-conflict-domain.js";
-import { readChannel } from "../release-channel.js";
-import { setChannel } from "./updates.js";
+import { checkForUpdates, writeReleaseChannel } from "./updates.js";
 import type { GlobalSettings } from "./types.js";
 import { ServiceError } from "./types.js";
 
@@ -74,10 +73,18 @@ import { ServiceError } from "./types.js";
  * agent-merge cancels pending merge requests in the route, not in the store.
  *
  * So an operation here is **the whole act**: the durable write, everything the
- * shipped route did around it, the conflict-domain lock, and one settings
- * broadcast. A caller that reached for the underlying service and remembered to
- * do the rest by hand is exactly the omission this removes — the centralisation
- * has to be of the act, not of a helper each caller must remember to call.
+ * shipped route did to make that write take effect, the conflict-domain lock,
+ * and one settings broadcast. A caller that reached for the underlying service
+ * and remembered to do the rest by hand is exactly the omission this removes —
+ * the centralisation has to be of the act, not of a helper each caller must
+ * remember to call. Where an operation needs something only its caller can
+ * build — the credential propagation, a broadcast carrying status this layer
+ * does not resolve — it is a **required** field of that operation's deps, so a
+ * second caller cannot omit it. Optional would mean forgettable.
+ *
+ * What stays with the caller is what is not part of the write taking effect:
+ * the quota refresh a replaced secret schedules, and the response body each
+ * route shapes.
  *
  * Every operation reports an {@link ApplyOutcome} rather than returning `void`,
  * because "applied" must not be able to be false (plan.md → "Saved" has to mean
@@ -186,6 +193,22 @@ export async function applyGitIdentity(
 // Credential routing and provider accounts
 // ---------------------------------------------------------------------------
 
+/**
+ * What a credential write needs beyond the store.
+ *
+ * `propagateCredentialChange` and `broadcastCredentialRoutes` are **required**,
+ * not optional: they are half of what the shipped route did, and an optional
+ * field is a field a second caller forgets. Making them part of the operation's
+ * type is what stops the layer from being a helper each caller must remember to
+ * pair with two more calls.
+ */
+export interface CredentialApplyDeps extends SettingsBroadcastDeps {
+  credentialStore: CredentialStore;
+  /** Refresh every harness's auth, push agent env, release idle resident CLIs. */
+  propagateCredentialChange: () => void;
+  broadcastCredentialRoutes: (routes: CredentialRoute[]) => void;
+}
+
 export interface CredentialRoutesWriteResult {
   routes: CredentialRoute[];
   route?: CredentialRoute;
@@ -193,7 +216,7 @@ export interface CredentialRoutesWriteResult {
 }
 
 export async function applyCredentialRouteOrder(
-  deps: SettingsBroadcastDeps & { credentialStore: CredentialStore },
+  deps: CredentialApplyDeps,
   serviceId: string,
   billingMode: string,
   routeIds: unknown,
@@ -202,6 +225,8 @@ export async function applyCredentialRouteOrder(
     const { value, outcome } = deps.credentialStore.transact(() =>
       reorderCredentialRoutes(deps.credentialStore, serviceId, billingMode, routeIds),
     );
+    deps.propagateCredentialChange();
+    deps.broadcastCredentialRoutes(value.routes);
     broadcastSettingsChanged(deps, ["services.credentialRouting"]);
     return { ...value, outcome };
   });
@@ -209,20 +234,34 @@ export async function applyCredentialRouteOrder(
 
 /**
  * A stored credential's label — and, on the same route, its secret. Both are one
- * stored object, so both take that credential's domain.
+ * stored object, so both take that credential's domain, AND the ordering domain
+ * for its service and mode: a reorder rewrites the same row's priority.
  */
 export async function applyCredentialUpdate(
-  deps: SettingsBroadcastDeps & { credentialStore: CredentialStore },
+  deps: CredentialApplyDeps,
   routeId: string,
   patch: { label?: string; secret?: string },
 ): Promise<CredentialRoutesWriteResult> {
-  return withConflictDomains([credentialRouteDomain(routeId)], () => {
+  const route = deps.credentialStore.getCredentialRoute(routeId);
+  const domains = [
+    credentialRouteDomain(routeId),
+    ...(route ? [credentialRoutesDomain(route.serviceId, route.billingMode)] : []),
+  ];
+  return withConflictDomains(domains, () => {
     const { value, outcome } = deps.credentialStore.transact(() =>
       updateStringCredential(deps.credentialStore, routeId, patch),
     );
+    deps.propagateCredentialChange();
+    deps.broadcastCredentialRoutes(value.routes);
     broadcastSettingsChanged(deps, ["services.credentialLabel"]);
     return { ...value, outcome };
   });
+}
+
+export interface ProviderAccountApplyDeps extends SettingsBroadcastDeps {
+  credentialStore: CredentialStore;
+  providerAccountManager: ProviderAccountManager;
+  broadcastProviderAccounts: (accounts: CredentialRoute[]) => void;
 }
 
 export interface ProviderAccountsWriteResult {
@@ -231,30 +270,43 @@ export interface ProviderAccountsWriteResult {
   outcome: ApplyOutcome;
 }
 
+/**
+ * A provider account IS a credential route — `via: "account"`, billing mode
+ * `sub` — so an account operation takes that service's routing domain as well
+ * as the accounts domain. Ordering accounts and ordering credentials rewrite the
+ * same rows' priorities, and under two separate locks a later reorder could
+ * overtake an earlier one.
+ */
+function providerAccountDomains(serviceId: string): ConflictDomain[] {
+  return [providerAccountsDomain, credentialRoutesDomain(serviceId, "sub")];
+}
+
 export async function applyProviderAccountOrder(
-  deps: SettingsBroadcastDeps & { providerAccountManager: ProviderAccountManager; credentialStore: CredentialStore },
+  deps: ProviderAccountApplyDeps,
   provider: AgentId,
   accountIds: unknown,
 ): Promise<ProviderAccountsWriteResult> {
-  return withConflictDomains([providerAccountsDomain], () => {
+  return withConflictDomains(providerAccountDomains(provider), () => {
     const { value, outcome } = deps.credentialStore.transact(() =>
       reorderProviderAccounts(deps.providerAccountManager, provider, accountIds),
     );
+    deps.broadcastProviderAccounts(value.accounts);
     broadcastSettingsChanged(deps, ["services.providerAccountOrder"]);
     return { ...value, outcome };
   });
 }
 
 export async function applyProviderAccountLabel(
-  deps: SettingsBroadcastDeps & { providerAccountManager: ProviderAccountManager; credentialStore: CredentialStore },
+  deps: ProviderAccountApplyDeps,
   provider: AgentId,
   accountId: string,
   label: string,
 ): Promise<ProviderAccountsWriteResult> {
-  return withConflictDomains([providerAccountsDomain], () => {
+  return withConflictDomains(providerAccountDomains(provider), () => {
     const { value, outcome } = deps.credentialStore.transact(() =>
       renameProviderAccount(deps.providerAccountManager, provider, accountId, label),
     );
+    deps.broadcastProviderAccounts(value.accounts);
     broadcastSettingsChanged(deps, ["services.providerAccountLabel"]);
     return { ...value, outcome };
   });
@@ -389,34 +441,25 @@ export interface ReleaseChannelWriteResult<T> {
 }
 
 /**
- * `setChannel` writes the channel and then calls `checkForUpdates`, which can
- * throw after the write has landed — so a throw from the second half is not a
- * failed write, and reporting it as one would tell the user their channel did
- * not change when it did.
+ * The write and the update check are composed here rather than inside one
+ * service call, because only that separates them. `checkForUpdates` throws a
+ * 503 of its own when fetching fails — long after the channel has landed — and
+ * a single call could not tell that from a channel that never moved.
+ *
+ * A failed check is therefore NOT a failed write: the change is broadcast and
+ * then the read's own error is re-raised, which is what the route answered
+ * before and what a caller expecting an update status needs to hear.
  */
 export async function applyReleaseChannel(
   deps: SettingsBroadcastDeps,
   channel: "stable" | "edge",
-): Promise<ReleaseChannelWriteResult<Awaited<ReturnType<typeof setChannel>> | null>> {
+): Promise<ReleaseChannelWriteResult<Awaited<ReturnType<typeof checkForUpdates>>>> {
   return withConflictDomains([releaseChannelDomain], async () => {
-    try {
-      const status = await setChannel(channel);
-      broadcastSettingsChanged(deps, ["advanced.releaseChannel"]);
-      return { status, outcome: APPLIED };
-    } catch (err) {
-      if (err instanceof ServiceError && err.statusCode !== 500) throw err;
-      broadcastSettingsChanged(deps, ["advanced.releaseChannel"]);
-      // Which half failed is not something the error says, and guessing would
-      // report a channel that did move as unchanged. What is on disk says it.
-      const stored = await readChannel().catch(() => null);
-      const detail = `ShipIt could not complete the release channel change: ${getErrorMessage(err)}`;
-      return {
-        status: null,
-        outcome: stored === channel
-          ? applyUncertain(`The channel was set to ${channel}. ${detail}`)
-          : applyFailed(`The channel is still ${stored ?? "unchanged"}. ${detail}`),
-      };
-    }
+    // A refused write — an unknown channel, no host repo — changed nothing and
+    // stays the caller's 4xx.
+    await writeReleaseChannel(channel);
+    broadcastSettingsChanged(deps, ["advanced.releaseChannel"]);
+    return { status: await checkForUpdates(), outcome: APPLIED };
   });
 }
 
@@ -492,10 +535,25 @@ export async function applyRepoSettings(
         if (result === "not-found") {
           return { repo: null, outcome: combineOutcomes(outcomes), notFound: true };
         }
-        // Revoke before cancellation; the executor rechecks the grant if cancellation fails.
-        if (!patch.allowAgentMerge) cancelAgentMergeRequests(deps, repoId(url) ?? "");
+        // The permission is durable here, and recorded here — a failure in the
+        // cancellation below must not report it as unchanged, because it did
+        // change.
         outcomes.push(APPLIED);
         keys.push("project.allowAgentMerge");
+        // Revoke before cancellation; the executor rechecks the grant if cancellation fails.
+        if (!patch.allowAgentMerge) {
+          try {
+            cancelAgentMergeRequests(deps, repoId(url) ?? "");
+          } catch (err) {
+            console.error(`[settings-apply] cancelling merge requests for ${url} failed:`, err);
+            // The executor rechecks the grant, so a claim left pending will not
+            // merge — but this cannot promise the cancellation notices landed.
+            outcomes.push(applyUncertain(
+              "Agent merging is off for this repository, but ShipIt could not cancel the merge requests "
+              + "already claimed under it. They will not merge, and the sessions holding them were not told.",
+            ));
+          }
+        }
       }
     } catch (err) {
       console.error(`[settings-apply] writing repository settings for ${url} failed:`, err);

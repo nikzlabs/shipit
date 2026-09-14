@@ -28,6 +28,11 @@ export async function handleEgressDecision(ctx: EgressCtx, msg: WsEgressDecision
   if (msg.action === "allow-once" || msg.action === "add") {
     allowEgressHost(sessionId, host);
   }
+  // "add" means the host was added to the durable list. A write that did not
+  // land leaves the live grant in place and nothing else, so the card says
+  // `allowed-once` — which is exactly what happened, rather than a promise the
+  // next container start would break.
+  let added = msg.action === "add";
   if (msg.action === "add") {
     // The card writes a GLOBAL host, so it goes through the shared layer for the
     // same three things the route gets — the built-in default is unsuppressed
@@ -41,13 +46,17 @@ export async function handleEgressDecision(ctx: EgressCtx, msg: WsEgressDecision
       // Awaited, so the durable row is in place before the card is resolved:
       // the phase says the host was added, and it must not be able to say so
       // ahead of the write.
-      await applyEgressHostAdd(
+      const written = await applyEgressHostAdd(
         { sseBroadcast: ctx.sseBroadcast, egressAllowlistStore: store },
         EGRESS_GLOBAL_SCOPE,
         host,
       ).catch((error: unknown) => {
         console.error(`[egress:${sessionId}] adding ${host} from the prompt card failed:`, error);
+        return null;
       });
+      if (written?.outcome.status !== "applied") added = false;
+    } else {
+      added = false;
     }
     void ctx.containerManager?.reloadEgress(sessionId).catch((error: unknown) => {
       const message = `Allowlist saved, but running services were stopped because policy refresh failed: ${error instanceof Error ? error.message : String(error)}`;
@@ -57,7 +66,7 @@ export async function handleEgressDecision(ctx: EgressCtx, msg: WsEgressDecision
     });
   }
   const phase: PersistedEgressPrompt["phase"] =
-    msg.action === "deny" ? "denied" : msg.action === "add" ? "added" : "allowed-once";
+    msg.action === "deny" ? "denied" : added ? "added" : "allowed-once";
 
   // Update recorded cards too, so turn finalization cannot restore the pending phase.
   persistCardTransition(

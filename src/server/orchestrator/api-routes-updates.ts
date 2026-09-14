@@ -28,10 +28,7 @@ export async function registerUpdateRoutes(app: FastifyInstance, deps: UpdateRou
     }
     try {
       const { status, outcome } = await applyReleaseChannel(deps, channel);
-      // `setChannel` writes the channel and then checks for updates, which can
-      // throw after the write landed — so a failure there is `uncertain`, not a
-      // channel that stayed where it was.
-      if (status === null) {
+      if (outcome.status !== "applied") {
         reply.code(500).send({ error: outcome.detail ?? "Failed to set channel", outcome });
         return;
       }

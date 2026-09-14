@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, afterEach, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -6,6 +6,7 @@ import { findSetting, projectSetting } from "../../shared/settings-catalogue/ind
 import { CredentialStore } from "../credential-store.js";
 import { DatabaseManager } from "../../shared/database.js";
 import { EgressAllowlistStore, EGRESS_GLOBAL_SCOPE } from "../egress-allowlist-store.js";
+import { globalSystemPromptPath, writeGlobalSystemPrompt } from "../global-system-prompt.js";
 import { settingBaseline, baselineMatches } from "./settings-baseline.js";
 import type { SettingBaselineDeps } from "./settings-baseline.js";
 
@@ -24,6 +25,7 @@ function tmpDir(): string {
 }
 
 afterEach(() => {
+  vi.restoreAllMocks();
   while (dirs.length) fs.rmSync(dirs.pop()!, { recursive: true, force: true });
 });
 
@@ -129,6 +131,30 @@ describe("settingBaseline", () => {
 
     const undeclared = await settingBaseline(d, { key: "not.a.setting" });
     expect(undeclared.kind).toBe("unknown");
+  });
+
+  it("tells an ABSENT instructions file from an unreadable one", async () => {
+    const workspace = tmpDir();
+    const d = { ...deps(new CredentialStore(tmpDir())), appWorkspaceDir: workspace };
+    const key = "instructions.userInstructions";
+
+    const absent = await settingBaseline(d, { key });
+    expect(absent.kind).toBe("revision");
+
+    await writeGlobalSystemPrompt(workspace, "Be brief.");
+    const written = await settingBaseline(d, { key });
+    expect(baselineMatches(absent, written)).toBe(false);
+
+    // The display reader answers "no instructions" for an unreadable file, which
+    // is a real value. Baselining that would make two failed reads compare equal.
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const file = globalSystemPromptPath(workspace);
+    fs.chmodSync(file, 0o000);
+    const unreadable = await settingBaseline(d, { key });
+    fs.chmodSync(file, 0o600);
+
+    expect(unreadable.kind).toBe("unknown");
+    expect(baselineMatches(unreadable, absent)).toBe(false);
   });
 
   it("has none for a browser-local setting, because the server holds no value", async () => {

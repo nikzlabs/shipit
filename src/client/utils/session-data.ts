@@ -631,4 +631,13 @@ function applyGlobalSettings(settings: BootstrapResponse["settings"]): void {
   if (data.settings.reviewers) useSettingsStore.getState().setReviewers(data.settings.reviewers);
 
   if (data.settings.roles) useSettingsStore.getState().setRoles(data.settings.roles);
+
+  // Per service and mode rather than one value, which is why they are set one at
+  // a time; they are in the payload and were the two the refetch used to miss.
+  for (const [modeKey, cutoffs] of Object.entries(data.settings.failoverCutoffs ?? {})) {
+    useSettingsStore.getState().setFailoverCutoffs(modeKey, cutoffs);
+  }
+  for (const [modeKey, mode] of Object.entries(data.settings.accountSelectionMode ?? {})) {
+    useSettingsStore.getState().setAccountSelectionMode(modeKey, mode);
+  }
 }

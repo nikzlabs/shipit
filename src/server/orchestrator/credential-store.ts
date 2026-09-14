@@ -248,14 +248,34 @@ export class CredentialStore {
     }
   }
 
+  /**
+   * Write through a temporary file and rename over the target.
+   *
+   * The rename is what makes a failed save provable (docs/299 → "Saved" has to
+   * mean saved): the old file is untouched until one atomic step replaces it, so
+   * nothing that throws — a short write, a refused `chmod`, a full disk — can
+   * leave the new contents on disk while `save()` reports that nothing changed.
+   * Writing in place could, and did: `chmod` runs AFTER the bytes are written.
+   */
   private writeToDisk(): void {
     const dir = path.dirname(this.filePath);
     fs.mkdirSync(dir, { recursive: true });
     const serialized = JSON.stringify(this.data, null, 2);
     const payload = this.cipher ? this.cipher.encrypt(serialized) : serialized;
-    fs.writeFileSync(this.filePath, payload, { mode: 0o600 });
-    // writeFileSync's mode does not repair existing file permissions.
-    fs.chmodSync(this.filePath, 0o600);
+    const staging = `${this.filePath}.${process.pid}.tmp`;
+    try {
+      fs.writeFileSync(staging, payload, { mode: 0o600 });
+      // writeFileSync's mode does not repair an existing file's permissions.
+      fs.chmodSync(staging, 0o600);
+      fs.renameSync(staging, this.filePath);
+    } catch (err) {
+      try {
+        fs.rmSync(staging, { force: true });
+      } catch {
+        // A leftover staging file is harmless; the next write overwrites it.
+      }
+      throw err;
+    }
     this.persisted = serialized;
   }
 
@@ -292,9 +312,12 @@ export class CredentialStore {
    * disk, so a caller may say `applied` only when they all did — and hears
    * `partial` when an earlier write landed and a later one was rolled back.
    *
-   * Synchronous mutations only. An `await` inside would let an unrelated write
-   * from elsewhere in the process be counted as part of this group, which is the
-   * one way this can report something that never happened.
+   * **Synchronous mutations only, and an async one is refused rather than
+   * mis-reported.** The report is closed when `mutate` returns, so an `await`
+   * inside would have the group answer `applied` before its own writes ran —
+   * and would count an unrelated write from elsewhere in the process while it
+   * was suspended. Both are ways to report something that never happened, which
+   * is the one thing this must not do.
    */
   transact<T>(mutate: () => T): { value: T; outcome: ApplyOutcome } {
     const outer = this.writeReport;
@@ -303,6 +326,9 @@ export class CredentialStore {
     this.writeReport = report;
     try {
       const value = mutate();
+      if (typeof (value as { then?: unknown } | undefined)?.then === "function") {
+        throw new Error("CredentialStore.transact takes synchronous mutations only");
+      }
       return { value, outcome: combineOutcomes(report.slice(from)) };
     } finally {
       this.writeReport = outer;
@@ -892,8 +918,12 @@ export class CredentialStore {
     };
   }
 
-  // Callers must validate pinned params through services/roles.ts before storing them.
-  setRole(name: string, role: AgentRole | null): void {
+  /**
+   * Callers must validate pinned params through services/roles.ts before storing
+   * them. Reports whether the write is durable, because a rename deletes the old
+   * name only once the new one has landed.
+   */
+  setRole(name: string, role: AgentRole | null): ApplyOutcome {
     // Test blankness without normalizing the stored name.
     if (!name.trim()) throw new Error("A role name cannot be blank");
     if (name.length > MAX_ROLE_NAME_LENGTH) {
@@ -903,14 +933,13 @@ export class CredentialStore {
       if (name === RESERVED_ROLE_NAME) {
         throw new Error(`The "${RESERVED_ROLE_NAME}" role cannot be deleted (docs/264-agent-roles req 2)`);
       }
-      if (!this.data.roles?.[name]) return;
+      if (!this.data.roles?.[name]) return APPLIED;
       const next: Record<string, StoredRole> = {};
       for (const [key, value] of Object.entries(this.data.roles)) {
         if (key !== name) next[key] = value;
       }
       this.data.roles = next;
-      this.save();
-      return;
+      return this.save();
     }
     if (name === RESERVED_ROLE_NAME) {
       if (role.params.kind !== "auto") {
@@ -946,7 +975,7 @@ export class CredentialStore {
         ...(role.params.kind === "pinned" ? { params: { ...role.params } } : {}),
       },
     };
-    this.save();
+    return this.save();
   }
 
   private reviewerRole(): AgentRole {

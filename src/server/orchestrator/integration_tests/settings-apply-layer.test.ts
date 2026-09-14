@@ -233,6 +233,69 @@ describe("the shared settings apply layer", () => {
     expect(sse.frames.map((f) => f.event)).toContain("repo_list");
   });
 
+  it("answers 500 rather than 200 when a write did not land", async () => {
+    // The shipped routes got this for free — a store error threw and Fastify
+    // answered 500. The layer turns that throw into an outcome, so a route that
+    // ignored it would answer 200 for a write that never happened.
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const failing = vi.spyOn(fs, "renameSync").mockImplementation(() => {
+      throw new Error("EROFS: read-only file system");
+    });
+
+    const res = await app.inject({
+      method: "PUT",
+      url: "/api/settings",
+      payload: { enableSubAgents: false },
+    });
+    failing.mockRestore();
+    vi.restoreAllMocks();
+
+    expect(res.statusCode).toBe(500);
+    expect((res.json() as { outcome: { status: string } }).outcome.status).toBe("failed");
+    // Rolled back, so the value the client re-reads is the one a restart gives.
+    expect(credentialStore.getDeclaredSetting("advanced.enableSubAgents")).toBe(true);
+  });
+
+  it("does not lose a role when a rename's create is rolled back", async () => {
+    await app.inject({
+      method: "POST",
+      url: "/api/credential-routes",
+      payload: { serviceId: "deepseek", billingMode: "key", secret: "sk-test", label: "test" },
+    });
+    const pinned = {
+      kind: "pinned", harnessId: "claude", serviceId: "deepseek",
+      billingMode: "key", modelId: "deepseek-flash",
+    };
+    await app.inject({
+      method: "PUT",
+      url: "/api/settings",
+      payload: { roles: { writer: { description: "drafts", params: pinned } } },
+    });
+    expect(credentialStore.getRole("writer")).toBeDefined();
+
+    // The create is rolled back and the delete of the old name would otherwise
+    // still run — leaving neither copy of the role.
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    let writes = 0;
+    const realRename = fs.renameSync;
+    const spy = vi.spyOn(fs, "renameSync").mockImplementation(((...args: unknown[]) => {
+      writes += 1;
+      if (writes === 1) throw new Error("EROFS: read-only file system");
+      return (realRename as (...a: unknown[]) => unknown)(...args);
+    }) as typeof fs.renameSync);
+
+    const res = await app.inject({
+      method: "PUT",
+      url: "/api/settings",
+      payload: { roles: { author: { previousName: "writer", description: "drafts", params: pinned } } },
+    });
+    spy.mockRestore();
+    vi.restoreAllMocks();
+
+    expect(res.statusCode).toBe(500);
+    expect(credentialStore.getRole("writer")).toBeDefined();
+  });
+
   it("still answers 4xx for a refused write rather than reporting a failed one", async () => {
     // Validation changed nothing on purpose, so it is not an outcome: turning it
     // into one would answer 500 for a request the caller can fix.

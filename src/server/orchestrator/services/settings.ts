@@ -422,28 +422,38 @@ export async function saveGlobalSettings(
     outcomes.push(await writeDeclaredSetting(write, derivationCtx));
     hook?.after?.(write.value, previous, hookCtx);
   }
-  outcomes.push(credentialStore.transact(() => {
-    for (const { target, patch } of cutoffWrites) {
-      credentialStore.setFailoverCutoffs(target.serviceId, target.billingMode, patch);
-    }
-    for (const { target, mode } of selectionWrites) {
-      credentialStore.setSelectionMode(target.serviceId, target.billingMode, mode);
-    }
-    for (const [slot, pin] of reviewerWrites) credentialStore.setReviewerPin(slot, pin);
-    if (roleWrites) {
-      // Re-planned here rather than reused from the validation pass above: a role
-      // plan carries an existence check, and another save can land in an await
-      // between the two. Planning and applying in one synchronous run is what the
-      // shipped `applyRoleWrites` gave for free.
-      for (const plan of planRoleWrites(roleWrites, credentialStore, { credentialStore })) {
-        // Create before deleting the old name so a crash cannot lose both copies.
-        credentialStore.setRole(plan.name, plan.role);
-        if (plan.previousName && plan.previousName !== plan.name) {
-          credentialStore.setRole(plan.previousName, null);
+  // Folded in only when there IS bespoke work: an empty group reports `applied`,
+  // and an `applied` standing for no write would make a lone failed scalar read
+  // as a partial save.
+  const hasBespokeWrites = cutoffWrites.length > 0 || selectionWrites.length > 0
+    || reviewerWrites.length > 0 || roleWrites !== undefined;
+  if (hasBespokeWrites) {
+    outcomes.push(credentialStore.transact(() => {
+      for (const { target, patch } of cutoffWrites) {
+        credentialStore.setFailoverCutoffs(target.serviceId, target.billingMode, patch);
+      }
+      for (const { target, mode } of selectionWrites) {
+        credentialStore.setSelectionMode(target.serviceId, target.billingMode, mode);
+      }
+      for (const [slot, pin] of reviewerWrites) credentialStore.setReviewerPin(slot, pin);
+      if (roleWrites) {
+        // Re-planned here rather than reused from the validation pass above: a role
+        // plan carries an existence check, and another save can land in an await
+        // between the two. Planning and applying in one synchronous run is what the
+        // shipped `applyRoleWrites` gave for free.
+        for (const plan of planRoleWrites(roleWrites, credentialStore, { credentialStore })) {
+          // Create before deleting the old name so a crash cannot lose both
+          // copies — and only delete once the create is DURABLE, because a
+          // rolled-back create followed by a successful delete loses the role
+          // outright.
+          const created = credentialStore.setRole(plan.name, plan.role);
+          if (created.status === "applied" && plan.previousName && plan.previousName !== plan.name) {
+            credentialStore.setRole(plan.previousName, null);
+          }
         }
       }
-    }
-  }).outcome);
+    }).outcome);
+  }
 
   return {
     settings: await getGlobalSettings(agentRegistry, appWorkspaceDir, credentialStore, providerAccountManager),

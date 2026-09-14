@@ -44,10 +44,20 @@ export function applyUncertain(detail: string): ApplyOutcome {
 }
 
 /**
- * One outcome for an operation made of several writes. The worst answer wins,
- * because a caller acts on the weakest guarantee it was given — but a `failed`
- * beside anything that landed is a `partial`, since "nothing changed" is then
- * untrue of the operation as a whole.
+ * One outcome for an operation made of several writes. The weakest answer wins,
+ * because a caller acts on the weakest guarantee it was given.
+ *
+ * Two cases are easy to get backwards, and both would claim more than the parts
+ * support. A `failed` beside anything that landed is a **`partial`** — "nothing
+ * changed" is then untrue of the operation as a whole. A `failed` beside an
+ * `uncertain` is **`uncertain`**, not `failed`: `failed` means VERIFIED nothing
+ * changed, and a write that could not say whether it landed leaves nothing to
+ * verify.
+ *
+ * An empty group is `applied` by definition — nothing was asked for, so nothing
+ * is outstanding. A caller with nothing to write must not fold this in beside
+ * real outcomes, because an `applied` that stands for no write makes a lone
+ * `failed` read as a `partial`.
  */
 export function combineOutcomes(outcomes: readonly ApplyOutcome[]): ApplyOutcome {
   const details = outcomes.map((o) => o.detail).filter((d): d is string => !!d);
@@ -55,7 +65,10 @@ export function combineOutcomes(outcomes: readonly ApplyOutcome[]): ApplyOutcome
   const landed = outcomes.some((o) => o.status === "applied" || o.status === "partial");
   if (outcomes.some((o) => o.status === "partial")) return { status: "partial", ...detail };
   if (outcomes.some((o) => o.status === "failed")) {
-    return { status: landed ? "partial" : "failed", ...detail };
+    if (landed) return { status: "partial", ...detail };
+    return outcomes.some((o) => o.status === "uncertain")
+      ? { status: "uncertain", ...detail }
+      : { status: "failed", ...detail };
   }
   if (outcomes.some((o) => o.status === "uncertain")) return { status: "uncertain", ...detail };
   return outcomes.length === 0 ? APPLIED : { status: "applied", ...detail };
