@@ -42,28 +42,89 @@ is. Nobody says "rewind" or "Tailscale" until after they have learned to.
 | "what is this thing / how does it work" | [how-shipit-works.md](how-shipit-works.md) |
 | "can it do X?" — anything at all | [how-shipit-works.md](how-shipit-works.md) has the capability census; start there |
 | "why is it building a new branch every time" | [how-shipit-works.md](how-shipit-works.md) |
+| "it's broken", "something's wrong", "why did that fail" | [troubleshooting.md](troubleshooting.md) — indexed by symptom |
 | "can I run two of these at once", "work on something else meanwhile" | [sessions.md](sessions.md) |
-| "go back to before that change", "undo all this", "start again from there" | [sessions.md](sessions.md) — rewind and fork |
+| "go back to before that change", "undo all this", "start again from there" | [sessions.md](sessions.md) — rewind and fork; [pull-requests.md](pull-requests.md) for what it does to the branch on GitHub |
 | "why did my session stop / go grey", "it lost my preview" | [sessions.md](sessions.md) — idle reclaim |
 | "stop nagging me about this one", "get it out of my list" | [sessions.md](sessions.md) — mute, pin, archive |
 | "keep this one at the top" | [sessions.md](sessions.md) — pin |
 | "keep the app running while I'm away", "don't kill my dev server" | [sessions.md](sessions.md) — Keep preview running |
 | "what needs me right now" | [sessions.md](sessions.md) — the Needs you view |
 | "where did my session go", "it disappeared from the list" | [sessions.md](sessions.md) — the sidebar cap and All sessions |
-| "it's stuck", "it's not responding", "restart it" | [sessions.md](sessions.md) — the health strip in the Terminal tab |
+| "it's stuck", "it's not responding", "restart it" | [sessions.md](sessions.md) — the health strip in the Terminal tab, then [troubleshooting.md](troubleshooting.md) |
+| "it keeps restarting", "it says the session is disabled" | [troubleshooting.md](troubleshooting.md) — out of memory, creation failure, stale build |
+| "everything's slow", "my sessions keep stopping" | [troubleshooting.md](troubleshooting.md) — memory pressure |
 | "if I archive this do I lose it?", "can I get my branch back" | [sessions.md](sessions.md) — archiving |
 | "rename this chat", "save this conversation", "bring back one I archived" | [sessions.md](sessions.md) — the session menu |
-| "let it reach the internet", "it can't download anything" | [sessions.md](sessions.md) — Session settings, and Settings → Network for the workspace default |
-| "change the colours", "dark mode", "it's too bright" | The palette button in the app header — 20 themes, light and dark |
+| "let it reach the internet", "it can't download anything", "it says egress blocked" | [sessions.md](sessions.md) — Session settings, and Settings → Network for the workspace default; [troubleshooting.md](troubleshooting.md) for the allowlist prompt |
+| "I can't type", "the message box is greyed out" | [troubleshooting.md](troubleshooting.md) — the three reasons the composer is disabled |
+| "my dictation broke" | [troubleshooting.md](troubleshooting.md) — the voice error panel |
+| "show me the app", "why is the preview blank", "it's just white" | [previews.md](previews.md), then [troubleshooting.md](troubleshooting.md) for the overlay states |
+| "set up a preview for this", "why is there no preview tab" | [previews.md](previews.md) |
+| "it keeps saying connecting to the dev server" | [previews.md](previews.md) |
+| "my changes don't show up", "it's not reloading" | [previews.md](previews.md) — hot reload needs polling across containers |
+| "start the database", "my database isn't running", "it says crashed" | [previews.md](previews.md) — services, `shipit service list` for what this project has; [troubleshooting.md](troubleshooting.md) for a service that will not start |
+| "where are the logs for my app" | [previews.md](previews.md) — the Services drawer, and `shipit service logs` |
+| "what does it look like on a phone", "check it at tablet size" | [previews.md](previews.md) — device viewports |
+| "the preview doesn't work when I open it on my server's address" | [previews.md](previews.md) — a raw IP cannot carry preview subdomains |
+| "can I send someone this preview link" | [previews.md](previews.md) — a preview has no login of its own |
+| "merge it", "ship it", "can you merge it yourself" | [pull-requests.md](pull-requests.md) — merging, and the repository permission that lets the agent do it |
+| "open a PR", "why is there no PR yet", "change the title" | [pull-requests.md](pull-requests.md) — opening one, and the PR tab |
+| "what's failing", "why is it red", "fix the build" | [pull-requests.md](pull-requests.md) — CI and auto-fix; [troubleshooting.md](troubleshooting.md) when no checks ever ran |
+| "it says conflicts", "it won't merge", "my branch is behind" | [pull-requests.md](pull-requests.md) — merge conflicts |
+| "it says my branch diverged", "it won't push" | [troubleshooting.md](troubleshooting.md) — the rebase banner |
+| "did anyone review it", "answer that comment", "mark that resolved" | [pull-requests.md](pull-requests.md) — review threads |
+| "let me comment on this bit", "send them my notes" | [pull-requests.md](pull-requests.md) — the user's own review |
+| "merge it when the tests pass", "don't wait for me" | [pull-requests.md](pull-requests.md) — auto-merge |
+| "scrap it", "close it", "it's a draft" | [pull-requests.md](pull-requests.md) — closing, reopening, marking ready |
+| "my PR merged, what now" | [pull-requests.md](pull-requests.md) — after it merges |
+| "cut a release", "tag a version", "publish it" | [pull-requests.md](pull-requests.md) — cutting a release |
+| "where are my issues", "connect my Linear", "I connected Linear and nothing showed up" | [issues-and-docs.md](issues-and-docs.md) — the Issues tab and how a tracker is declared |
+| "work on this ticket", "start from this issue" | [issues-and-docs.md](issues-and-docs.md) — Start session from an issue |
+| "close the ticket when this lands", "why is that issue still open" | [issues-and-docs.md](issues-and-docs.md) — Closes / Refs in the PR body |
+| "change the priority", "assign this to me", "add a label", "file a ticket for that" | [issues-and-docs.md](issues-and-docs.md) — who changes what |
+| "I can't find my issue", "where did that ticket go" | [issues-and-docs.md](issues-and-docs.md) — the list is a window over the tracker |
+| "where are my design docs", "show me the spec", "why did that doc disappear from the list" | [issues-and-docs.md](issues-and-docs.md) — the Docs tab and its grouping |
+| "let me comment on this paragraph", "mark up this doc" | [issues-and-docs.md](issues-and-docs.md) — selection comments |
+| "add my repo", "work on a different project" | [repos-and-sandboxes.md](repos-and-sandboxes.md) — **Add Repository**, in the repository switcher at the top of the sidebar |
+| "start a new project", "make me a new repo" | [repos-and-sandboxes.md](repos-and-sandboxes.md) — Create new repository |
+| "why won't it let me type", "it says the repo isn't trusted", "nothing runs since I added it" | [repos-and-sandboxes.md](repos-and-sandboxes.md) — trust |
+| "my app needs an API key", "it needs a database password", "it says a secret is missing" | [repos-and-sandboxes.md](repos-and-sandboxes.md) — secrets |
+| "it stopped committing, something about a secret" | [repos-and-sandboxes.md](repos-and-sandboxes.md) — secrets; [troubleshooting.md](troubleshooting.md) — a likely secret in the working tree |
+| "can it merge the PR by itself" | [repos-and-sandboxes.md](repos-and-sandboxes.md) — Project Settings, Deployments; [pull-requests.md](pull-requests.md) for what it then does |
+| "get this project out of my list", "delete this repo", "if I remove the repo do I lose my code" | [repos-and-sandboxes.md](repos-and-sandboxes.md) — hiding and removing |
+| "put my projects in my own order" | [repos-and-sandboxes.md](repos-and-sandboxes.md) — ordering |
+| "make this project a different colour", "I can't tell my projects apart" | [repos-and-sandboxes.md](repos-and-sandboxes.md) — Appearance |
+| "I just want to try something", "give me a blank workspace", "no repo" | [repos-and-sandboxes.md](repos-and-sandboxes.md) — sandbox sessions |
+| "why can't it use docker here", "it can't clone my private repo in this one" | [repos-and-sandboxes.md](repos-and-sandboxes.md) — sandbox capability switches |
+| "teach it to always do X", "make that a reusable thing" | [plugins-and-skills.md](plugins-and-skills.md) — skills |
+| "install that skill", "add a skill from the list" | [plugins-and-skills.md](plugins-and-skills.md) — Settings → Skills |
+| "why can't it see the skill I installed" | [plugins-and-skills.md](plugins-and-skills.md) — the install PR has to merge onto the branch |
+| "use the tools from our other repo", "share this setup across projects" | [plugins-and-skills.md](plugins-and-skills.md) — plugin repositories |
+| "what's this Plugins tab", "it says something needs a key" | [plugins-and-skills.md](plugins-and-skills.md) — the Plugins tab |
+| "get the latest version of that plugin", "it's out of date" | [plugins-and-skills.md](plugins-and-skills.md) — refreshing |
+| "connect Notion", "let it read our Sentry", "add my own tools" | [plugins-and-skills.md](plugins-and-skills.md) — MCP servers |
+| "it can't see my Notion pages any more" | [plugins-and-skills.md](plugins-and-skills.md) — reconnect an expired MCP connection |
+| "connect my Claude account", "sign in to ChatGPT", "where do I put my provider key" | [settings-and-accounts.md](settings-and-accounts.md) — connecting a provider |
+| "I've run out", "how much have I got left", "what's my limit", "it says quota" | [settings-and-accounts.md](settings-and-accounts.md) — usage and subscription limits; [troubleshooting.md](troubleshooting.md) for a turn that failed on it |
+| "what's this costing me" | [settings-and-accounts.md](settings-and-accounts.md) — Usage Summary |
+| "add a second account so it doesn't run out", "why didn't it fall back" | [settings-and-accounts.md](settings-and-accounts.md) — several credentials on one service |
+| "use a different model", "make it think harder" | [settings-and-accounts.md](settings-and-accounts.md) — choosing what a session runs on |
+| "why can't I change the model", "it's stuck on the wrong one" | [settings-and-accounts.md](settings-and-accounts.md) — the harness locks at the first message |
+| "can it run GPT / Gemini / Grok" | [settings-and-accounts.md](settings-and-accounts.md) — harnesses are a build input, and `shipit agent params` |
+| "who's reviewing this", "get a different reviewer" | [settings-and-accounts.md](settings-and-accounts.md) — the reviewer |
+| "set up a researcher I can call", "what are these roles" | [settings-and-accounts.md](settings-and-accounts.md) — roles |
+| "tell it to always do X", "give it standing instructions" | [settings-and-accounts.md](settings-and-accounts.md) — Settings → Instructions, and roles for a per-job brief |
+| "that key does the wrong thing", "change my shortcuts" | [settings-and-accounts.md](settings-and-accounts.md) — keyboard shortcuts |
+| "why does it name my sessions", "what writes the PR description" | [settings-and-accounts.md](settings-and-accounts.md) — background work |
+| "change the colours", "dark mode", "it's too bright" | The palette button in the app header — 20 themes, light and dark. [settings-and-accounts.md](settings-and-accounts.md) — themes |
 | "install it", "set it up on my server", "update it", "get the new version" | [installing-and-updating.md](installing-and-updating.md) |
 | "will updating interrupt my work", "get rid of it", "uninstall" | [installing-and-updating.md](installing-and-updating.md) |
-| "add my repo", "work on a different project" | **Add Repository**, in the repository switcher at the top of the sidebar |
 | "open it on my phone", "reach it from my laptop", "is it safe to expose" | [installing-and-updating.md](installing-and-updating.md) — access |
 | "how much RAM does this need" | [installing-and-updating.md](installing-and-updating.md) — sizing |
-| "why can't it reach the internet" | `/shipit-docs/environment.md`, and the Network tab in Settings |
-| "show me the app", "why is the preview blank" | `/shipit-docs/preview.md`, `/shipit-docs/compose.md` |
-| "merge it", "what's failing in CI", "did it deploy" | `/shipit-docs/github.md` |
-| "what am I allowed to change in settings" | `shipit settings list` — the live answer, never a page here |
+| "how do I back this up", "move it to a new machine", "what if the disk dies" | [installing-and-updating.md](installing-and-updating.md) — backing up, and moving to another machine |
+| "did it deploy" | `/shipit-docs/deployment.md` |
+| "what am I allowed to change in settings" | `shipit settings list` — the live answer, never a page here; [settings-and-accounts.md](settings-and-accounts.md) for what the tabs are for |
 | "what agents/roles can this run" | `shipit agent roles` for the roles, `shipit agent params` for the harnesses, models and effort levels this install has. Neither reports which model *this* conversation is on — that is the picker in the composer |
 | "file that as a bug in ShipIt itself" | `/shipit-docs/bug-filing.md` |
 
@@ -74,11 +135,16 @@ is. Nobody says "rewind" or "Tailscale" until after they have learned to.
 | [how-shipit-works.md](how-shipit-works.md) | The model — repo, session, container, branch, preview, pull request — and a census of every capability, each pointing at its page |
 | [sessions.md](sessions.md) | A session's whole life: creating, forking, rewinding, pinning, muting, archiving, children, and what idle reclaim does to it |
 | [installing-and-updating.md](installing-and-updating.md) | Installing ShipIt on a machine, updating it, reaching it from another device, sizing the host. Written for an agent with a shell, outside ShipIt |
+| [repos-and-sandboxes.md](repos-and-sandboxes.md) | Adding a repository and what ShipIt does with it, repository trust, per-repository settings and secrets, hiding and removing a project, and sandbox sessions with their capability switches |
+| [previews.md](previews.md) | The preview pane and Compose services: what a preview is, which sessions have one, what the project must declare, the Services drawer, device viewports, the Errors panel, and why a preview goes blank |
+| [pull-requests.md](pull-requests.md) | The GitHub loop: the pull-request card, reviews and threads, the user's own review, CI and auto-fix, conflicts, merging and auto-merge, rollback, and cutting a release |
+| [issues-and-docs.md](issues-and-docs.md) | The Issues panel and the Docs tab: trackers and how one is declared, filtering and sorting, starting a session from an issue, closing one on merge, the docs list, and commenting on a selection in a document |
+| [settings-and-accounts.md](settings-and-accounts.md) | The two settings dialogs and their tabs: connecting a provider, several credentials on one service, choosing what a session runs on, roles and the reviewer, background work, usage limits, themes and keyboard shortcuts |
+| [plugins-and-skills.md](plugins-and-skills.md) | Skills and where they come from, installing one from a catalogue, plugin repositories and the Plugins tab, and MCP servers |
+| [troubleshooting.md](troubleshooting.md) | Indexed by the symptom the user describes: a blank preview, a stuck agent, a disabled composer, blocked commits, a diverged branch, silent CI, a dying container, blocked egress, a crashed service |
 
-Areas with no page here yet — the chat surface, previews and services, the
-git and pull-request loop, issues and docs, settings and accounts, repos and
-sandboxes, plugins and skills, deploys, troubleshooting — are covered from your
-own side by the operating docs listed in
+Areas with no page here yet — the chat surface itself, and deploys — are
+covered from your own side by the operating docs listed in
 [`/shipit-docs/README.md`](../README.md). Answer from those, and say plainly
 when something is outside what you can confirm rather than inventing a feature.
 

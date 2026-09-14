@@ -62,10 +62,11 @@ with a link.
 - **Right — a tabbed panel.** Files, Docs, Issues, Terminal, History, Present,
   and, conditionally, Preview or Host, PR, and Plugins. **Which tabs exist
   depends on the session**, so check before promising one: Host appears only in
-  an Ops session and Preview does not; PR appears once the session has a pull
-  request, and never in an Ops or sandbox session; Plugins appears only when the
-  project declares them. A diff view opens over the panel when a change is
-  tapped.
+  an Ops session, where Preview does not — and Preview is missing from a sandbox
+  session and from a local-mode install too; PR appears once the session has a
+  pull request, and never in an Ops or sandbox session; Plugins appears only
+  when the project declares them. A diff view opens over the panel when a change
+  is tapped.
 
 On a phone the middle and the preview swap rather than sit side by side, and
 dictation replaces typing.
@@ -80,7 +81,11 @@ in `/shipit-docs/`, or a live command to run rather than a page to read.
 
 | Capability | Where |
 |---|---|
-| Add a repository, so sessions can be started against it | **Add Repository**, in the repository switcher at the top of the sidebar. Added once; ShipIt keeps a shared bare clone so each new session is cheap |
+| Add a repository, so sessions can be started against it | [repos-and-sandboxes.md](repos-and-sandboxes.md) — **Add Repository**, in the repository switcher at the top of the sidebar. Added once; ShipIt keeps a shared bare clone so each new session is cheap |
+| Create a new repository on GitHub from a template | [repos-and-sandboxes.md](repos-and-sandboxes.md) |
+| Trust a repository once, before ShipIt runs any of its code | [repos-and-sandboxes.md](repos-and-sandboxes.md) |
+| Hide a repository from the sidebar, or remove it and keep its sessions | [repos-and-sandboxes.md](repos-and-sandboxes.md) |
+| Reorder repositories in the sidebar | [repos-and-sandboxes.md](repos-and-sandboxes.md) |
 | Many sessions at once, isolated by container and branch | [sessions.md](sessions.md) |
 | Start a session from a repo, an issue, or a blank prompt | [sessions.md](sessions.md) |
 | Find a session that has dropped out of the sidebar | [sessions.md](sessions.md) — All sessions |
@@ -94,14 +99,14 @@ in `/shipit-docs/`, or a live command to run rather than a page to read.
 | "Needs you" view — only the sessions waiting on the user | [sessions.md](sessions.md) |
 | Child sessions you spawn, nested under this one, each with its own PR | `/shipit-docs/sessions.md` |
 | A one-shot consult with a different model, answering into this session | `/shipit-docs/agent.md` |
-| Sandbox sessions — an empty workspace with its own capabilities | `/shipit-docs/sandbox-session.md` |
+| Sandbox sessions — an empty workspace with its own capabilities | [repos-and-sandboxes.md](repos-and-sandboxes.md), and `/shipit-docs/sandbox-session.md` for your own contract |
 
 ### Talking to the agent
 
 | Capability | Where |
 |---|---|
 | Attach files and images to a message; drop in uploads | `/shipit-docs/environment.md` (`/uploads`) |
-| Reference a file with `@`, a skill with `/` | Settings → Skills, `/shipit-docs/skills.md` |
+| Reference a file with `@`, a skill with `/` (`$` on a Codex session) | [plugins-and-skills.md](plugins-and-skills.md) |
 | Interrupt a running turn, or queue the next message behind it | This page — the queued message can be cancelled before it runs |
 | Answer a question or a permission prompt inline | No wiki page yet — the capability is real, the detail is not written down |
 | Dictate by voice, on desktop and phone | Settings → Voice |
@@ -117,11 +122,12 @@ in `/shipit-docs/`, or a live command to run rather than a page to read.
 
 | Capability | Where |
 |---|---|
-| Live preview per session, hot-reloading as files change | `/shipit-docs/preview.md` |
-| Full Docker Compose stacks — databases, queues, workers | `/shipit-docs/compose.md` |
-| Start, stop, restart a service and read its logs | `shipit service list` / `start` / `stop` / `logs` |
-| Per-service environment and secrets | `/shipit-docs/secrets.md` |
-| Phone and tablet viewports, and freeform sizes | `/shipit-docs/preview.md` |
+| Live preview per session, hot-reloading as files change | [previews.md](previews.md) |
+| Full Docker Compose stacks — databases, queues, workers | [previews.md](previews.md), and `/shipit-docs/compose.md` to write one |
+| Start, stop, restart a service and read its logs | [previews.md](previews.md) — `shipit service list` / `start` / `stop` / `logs` |
+| Per-service environment and secrets | [repos-and-sandboxes.md](repos-and-sandboxes.md), `/shipit-docs/secrets.md` |
+| Phone and tablet viewports, and freeform sizes | [previews.md](previews.md) |
+| Send the preview's browser errors to the agent, by hand or automatically | [previews.md](previews.md) — the Errors panel and the Auto-fix switch |
 | Android — build, snapshot-test, and drive an emulator as a service | `/shipit-docs/android.md` |
 | A browser you can drive yourself to check your own work | `/shipit-docs/preview.md` |
 
@@ -130,47 +136,57 @@ in `/shipit-docs/`, or a live command to run rather than a page to read.
 | Capability | Where |
 |---|---|
 | A branch per session, commits and pushes after every turn | This page, and `/shipit-docs/github.md` |
-| Open a pull request, edit its title and body | `/shipit-docs/github.md` |
-| The PR card in the conversation: status, checks, deploys, changed docs | `/shipit-docs/github.md` |
-| Read and reply to review threads, resolve them, without leaving ShipIt | `/shipit-docs/github.md` |
-| Review the user's own way — draft file comments, then send as one review | `/shipit-docs/github.md` |
-| Merge, choose the merge method, or arm auto-merge | `/shipit-docs/github.md` |
-| Mark ready, close, reopen | `/shipit-docs/github.md` |
-| CI runs listed inline, re-run a failed one, or have the agent fix it | `/shipit-docs/github.md` |
-| Merge conflicts resolved in the session rather than locally | `/shipit-docs/github.md` |
-| Branch history, and rolling back to an earlier commit | [sessions.md](sessions.md) |
+| Open a pull request, edit its title and body | [pull-requests.md](pull-requests.md) |
+| The PR card above the conversation: status, checks, deploys, changed docs | [pull-requests.md](pull-requests.md) — a strip that never scrolls away |
+| Read and reply to review threads, resolve them, without leaving ShipIt | [pull-requests.md](pull-requests.md) |
+| Review the user's own way — draft file comments, then send as one review | [pull-requests.md](pull-requests.md) |
+| Merge, choose the merge method, or arm auto-merge | [pull-requests.md](pull-requests.md) |
+| Let the agent merge the pull request its own session opened | [pull-requests.md](pull-requests.md), and [repos-and-sandboxes.md](repos-and-sandboxes.md) — Project Settings → Deployments |
+| Mark ready, close, reopen | [pull-requests.md](pull-requests.md) |
+| CI runs listed inline, re-run a failed one, or have the agent fix it | [pull-requests.md](pull-requests.md) |
+| Re-run a CI workflow run without pushing an empty commit | [pull-requests.md](pull-requests.md), and `/shipit-docs/github.md` |
+| Merge conflicts resolved in the session rather than locally | [pull-requests.md](pull-requests.md) |
+| Branch history, and rolling back to an earlier commit | [sessions.md](sessions.md) — rewind; [pull-requests.md](pull-requests.md) for what it does to the branch on GitHub |
 | Be woken when a pull request merges, instead of watching it | `shipit session notify-on-merge` |
-| Cut a release — version bump, branch, tag, published notes | `/shipit-docs/release.md` |
+| Cut a release — version bump, branch, tag, published notes | [pull-requests.md](pull-requests.md), and `/shipit-docs/release.md` for your own steps |
 | Deploy targets and deploy status on the card | `/shipit-docs/deployment.md` |
 
 ### Issues and documents
 
 | Capability | Where |
 |---|---|
-| GitHub Issues and Linear, in one panel and one command | `/shipit-docs/issues.md` |
-| Read, comment, label, re-prioritise, assign, change status, create | `shipit issue --help` |
-| Start a session directly from an issue | `/shipit-docs/issues.md` |
-| Close an issue by merging the PR that names it | `/shipit-docs/issues.md` |
-| Every markdown file in the repo, browsable, with tracked docs grouped | `/shipit-docs/design-docs.md` |
-| Comment on a selection inside a document | No wiki page yet — the capability is real, the detail is not written down |
+| GitHub Issues and Linear, in one panel and one command | [issues-and-docs.md](issues-and-docs.md) |
+| Read, comment, label, re-prioritise, assign, change status, create | [issues-and-docs.md](issues-and-docs.md), and `shipit issue --help` |
+| Sort, group and filter the issue list; nest Linear sub-issues under their parent | [issues-and-docs.md](issues-and-docs.md) |
+| Start a session directly from an issue | [issues-and-docs.md](issues-and-docs.md) |
+| Close an issue by merging the PR that names it | [issues-and-docs.md](issues-and-docs.md) |
+| An issue reference in chat, a PR card or a doc's frontmatter opens inline | [issues-and-docs.md](issues-and-docs.md) |
+| Every markdown file in the repo, browsable, with tracked docs grouped | [issues-and-docs.md](issues-and-docs.md), and `/shipit-docs/design-docs.md` to write one |
+| Comment on a selection inside a document | [issues-and-docs.md](issues-and-docs.md) |
 
 ### Configuring it
 
 | Capability | Where |
 |---|---|
-| Ten settings tabs: Model providers, Roles, Integrations, Git, Instructions, Skills, Keyboard, Voice, Network, Advanced | `shipit settings list` for the live values |
-| Several agent harnesses — Claude Code, Codex, OpenCode, Grok, Antigravity | `shipit agent roles` |
-| Sign in with an existing subscription, or an API key as a fallback | Settings → Model providers — **not** Integrations, which holds GitHub, Linear and MCP servers |
-| Several accounts per provider, in a fallback order | Settings → Model providers |
-| Usage and subscription limits, visible before they bite | No wiki page yet — the capability is real, the detail is not written down |
-| Pick the model, the reasoning effort, and the role per session | `shipit agent params` |
-| Named roles that bundle harness, model and effort — including the reviewer | `/shipit-docs/agent.md` |
+| Ten settings tabs: Model providers, Roles, Integrations, Git, Instructions, Skills, Keyboard, Voice, Network, Advanced | [settings-and-accounts.md](settings-and-accounts.md), and `shipit settings list` for the live values |
+| Project Settings, per repository — secrets, agent permissions, sidebar colour | [repos-and-sandboxes.md](repos-and-sandboxes.md) |
+| Several agent harnesses — Claude Code, Codex, OpenCode, Grok, Antigravity | [settings-and-accounts.md](settings-and-accounts.md), and `shipit agent params` |
+| Sign in with an existing subscription, or an API key as a fallback | [settings-and-accounts.md](settings-and-accounts.md) — Settings → Model providers, **not** Integrations, which holds GitHub, Linear and MCP servers |
+| Several accounts per provider, in a fallback order | [settings-and-accounts.md](settings-and-accounts.md) — Settings → Model providers |
+| Usage and subscription limits, visible before they bite | [settings-and-accounts.md](settings-and-accounts.md) |
+| Pick the model, the reasoning effort, and the role per session | [settings-and-accounts.md](settings-and-accounts.md), and `shipit agent params` |
+| Named roles that bundle harness, model and effort — including the reviewer | [settings-and-accounts.md](settings-and-accounts.md), and `/shipit-docs/agent.md` |
+| Which model does ShipIt's own background work — session names, PR descriptions | [settings-and-accounts.md](settings-and-accounts.md) — background work |
 | Per-session network access: contained, or open | Session settings, `/shipit-docs/environment.md` |
 | Project configuration — install command, ports, resources | `/shipit-docs/shipit-yaml.md` |
-| Skills, plugin repositories, and MCP servers | `/shipit-docs/plugins.md`, `/shipit-docs/skills.md` |
-| Custom instructions applied to every session | Settings → Instructions |
-| Twenty themes, light and dark | The palette button in the app header — **not** in Settings |
-| Rebindable keyboard shortcuts | Settings → Keyboard |
+| Skills, plugin repositories, and MCP servers | [plugins-and-skills.md](plugins-and-skills.md) |
+| Install a skill from a catalogue — as a pull request, into a repo you choose | [plugins-and-skills.md](plugins-and-skills.md) |
+| Pull a whole toolkit — services, commands, skills — from another repository | [plugins-and-skills.md](plugins-and-skills.md) |
+| The Plugins tab: which commit is live, what it needs, and a Refresh button | [plugins-and-skills.md](plugins-and-skills.md) — exists only when the project declares plugins |
+| Connect an MCP server, or a one-click provider, for every session | [plugins-and-skills.md](plugins-and-skills.md) |
+| Custom instructions applied to every session | [settings-and-accounts.md](settings-and-accounts.md) — Settings → Instructions |
+| Twenty themes, light and dark | The palette button in the app header — **not** in Settings. [settings-and-accounts.md](settings-and-accounts.md) — themes |
+| Rebindable keyboard shortcuts | [settings-and-accounts.md](settings-and-accounts.md) — Settings → Keyboard |
 
 ### Running the thing itself
 
@@ -181,7 +197,8 @@ in `/shipit-docs/`, or a live command to run rather than a page to read.
 | Reach it from a phone over Tailscale or a Cloudflare tunnel | [installing-and-updating.md](installing-and-updating.md) |
 | Host overview — memory, disk, uptime, what is running | The Host tab, which exists only in an Ops session |
 | A memory budget that decides what idle sessions keep | [sessions.md](sessions.md) |
-| Session diagnostics when a container misbehaves | The session's overflow menu |
+| Session diagnostics when a container misbehaves | [sessions.md](sessions.md) — the health strip at the top of the Terminal tab. The overflow menu's **Investigate in Ops session** is a different thing |
+| Work out why something is broken, from the symptom the user describes | [troubleshooting.md](troubleshooting.md) |
 | File a bug against ShipIt itself, redacted, with the user's consent | `/shipit-docs/bug-filing.md` |
 
 ## Two things ShipIt will not do, on purpose
