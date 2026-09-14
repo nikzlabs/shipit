@@ -64,6 +64,13 @@ orchestrator, gated by `gitCredentialAllowed(session)` in `pr-target.ts`).
   stream stdin and terminals over two HTTP hops, and reimplement `scp`, `rsync`, and git
   transport one by one. The agent-socket path needs none of that (req 2).
 
+| Option | Agent can read key? | Harness-agnostic? | scp / git / rsync work? | Fails closed? | New binaries |
+|---|---|---|---|---|---|
+| **A. Agent socket + orchestrator signing** (chosen) | No — only challenges and signatures cross | Yes — plain `ssh` in PATH + `~/.ssh/config` | Yes | Yes — an unreachable host makes `ssh` error | `openssh-client` in the worker image |
+| B. Brokered `ssh` shim (orchestrator runs ssh) | No | Only for the commands the shim reimplements | No — each needs its own shim | Yes | `openssh-client` in the orchestrator image; stdin/tty over two HTTP hops |
+| C. Key file in `/credentials` (docs/228 as written) | **Yes** — same uid (docs/138, docs/150) | Yes | Yes | Yes | `openssh-client` in the worker image |
+| D. Repo secret in Settings → Secrets | **Yes** — `agent: true`, or a service that prints its env (docs/087) | Yes | Yes | Yes | `openssh-client` in the worker image |
+
 ## Harness-agnostic by construction (req 2)
 
 `openssh-client` is added to `docker/Dockerfile.session-worker.prod` and `.dev` — the only
