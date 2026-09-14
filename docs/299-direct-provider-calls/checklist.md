@@ -151,3 +151,44 @@ guarantee held.
 
 - [x] Re-review the branch diff against every numbered requirement.
 - [x] Comment the outcome on [planning#542](https://github.com/nikzlabs/shipit-planning/issues/542).
+
+**The review found the feature not fully conformant: six requirements met, three partly met.** It
+read all thirteen commits cold against `requirements.md`. Every finding below was verified against
+the code before being acted on, and each one has a fix in flight.
+
+## Conformance follow-ups
+
+- [ ] **Req 3 and the notice — say why background work cannot run.**
+      `services/graduate-session.ts` emits "its credential or harness is gone" on any
+      `pin_unavailable`, so the tools-off filter now produces that card while the credential and
+      the harness are both present and working. It is the same false-cause defect PR #2769
+      removed, reached through a different door, and the damaging half is unchanged: it sends the
+      user to Settings to repair nothing. The resolution must say *why* it failed rather than
+      leaving each caller to guess; `reportUnrunnable` in `services/non-turn-work.ts` carries the
+      same string.
+- [ ] **Req 3's guard cannot fail on a missing provider.** The "every directly callable row" test
+      iterates only the options the implementation returned and derives its expectation from the
+      resolver under test, so a provider omitted entirely leaves nothing to assert. That is why
+      the Google omission was invisible. It must start from the catalogue instead. Removing
+      `harnessForNonTurnSelection` rides with it: no caller remains, and it still answers harness
+      execution for selections the background-work rule sends to a direct call.
+- [ ] **Req 8 — the cleanup container does not survive a restart.** `app-lifecycle.ts` builds the
+      orphan-cleanup id set from session rows, and the reserved cleanup id has none by design, so
+      `container-discovery.ts` stops and removes it at every boot; recreation is asynchronous, so
+      an early dictation pays the start the requirement forbids. A missed Docker exit event does
+      the same: `forgetIfGone` clears the tracked container and never schedules revival. This is a
+      **third** sweep the container was never exempted from, after the idle enforcer and the boot
+      credential sweep — which is the argument for one place that answers "is this ShipIt's own
+      container?" rather than a fourth exemption.
+- [ ] **Req 7 — an aborted direct call records no usage.** `direct-provider/http.ts` raises an
+      error carrying no usage on abort, and `runNonTurnDirect` records only errors that carry
+      some, so a call the provider had already begun billing when cleanup's deadline fired appears
+      nowhere. Cleanup runs with no session, so this is install-level spend nobody can see.
+
+**Not a docs/299 defect, but reachable through it:**
+[planning#547](https://github.com/nikzlabs/shipit-planning/issues/547) — a Google API key with
+only Antigravity installed is offered no background-work option at all. Its two causes are owned
+by docs/302 (no client speaks Gemini's API style) and
+[planning#546](https://github.com/nikzlabs/shipit-planning/issues/546) (Antigravity's tools-off is
+unmeasured, so the filter skips it). Either fix closes it; neither owner covers the combination,
+which is why it needed an issue of its own.
