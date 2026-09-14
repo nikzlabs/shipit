@@ -219,6 +219,261 @@ describe("McpServerSettings (docs/088)", () => {
     expect((valueInputs[0] as HTMLInputElement).value).toBe("");
   });
 
+  it("submits a rename with no secrets at all, so the server must carry them (planning#565)", async () => {
+    const fake = new FakeFetch();
+    fake.on("GET", /^\/api\/mcp-servers$/, () => ({ servers: [stdioConfig] }));
+    fake.on("GET", /\/oauth\/providers$/, () => ({ providers: [] }));
+    fake.on("PUT", /\/api\/mcp-servers\/linear$/, () => ({ server: stdioConfig }));
+    fake.install();
+
+    render(<McpServerSettings hasActiveSession={false} />);
+    await waitFor(() => {
+      expect(screen.getByTestId("mcp-server-linear")).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Edit linear" }));
+
+    fireEvent.change(screen.getByDisplayValue("linear"), { target: { value: "linearprod" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save MCP server" }));
+
+    await waitFor(() => {
+      expect(fake.calls.some((c) => c.method === "PUT")).toBe(true);
+    });
+    const put = fake.calls.find((c) => c.method === "PUT")!;
+    const body = put.body as {
+      config: { env: Record<string, string> };
+      secrets: Record<string, string>;
+    };
+    expect(body.config.env).toEqual({
+      LINEAR_API_KEY: "$secret:mcp__linearprod__LINEAR_API_KEY",
+    });
+    expect(body.secrets).toEqual({});
+  });
+
+  it("keeps a reference expression the form cannot represent, moving it on rename", async () => {
+    // A header whose value wraps the reference, under a key that is not the
+    // secret's name — the shape an agent-written config has.
+    const sentry: McpServerConfig = {
+      name: "sentry",
+      type: "http",
+      url: "https://mcp.sentry.dev/mcp",
+      headers: { Authorization: "Bearer $secret:mcp__sentry__TOKEN" },
+      enabled: true,
+    };
+    const fake = new FakeFetch();
+    fake.on("GET", /^\/api\/mcp-servers$/, () => ({ servers: [sentry] }));
+    fake.on("GET", /\/oauth\/providers$/, () => ({ providers: [] }));
+    fake.on("PUT", /\/api\/mcp-servers\/sentry$/, () => ({ server: sentry }));
+    fake.install();
+
+    render(<McpServerSettings hasActiveSession={false} />);
+    await waitFor(() => {
+      expect(screen.getByTestId("mcp-server-sentry")).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Edit sentry" }));
+
+    fireEvent.change(screen.getByDisplayValue("sentry"), { target: { value: "sentryprod" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save MCP server" }));
+
+    await waitFor(() => {
+      expect(fake.calls.some((c) => c.method === "PUT")).toBe(true);
+    });
+    const body = fake.calls.find((c) => c.method === "PUT")!.body as {
+      config: { headers: Record<string, string> };
+    };
+    expect(body.config.headers).toEqual({
+      Authorization: "Bearer $secret:mcp__sentryprod__TOKEN",
+    });
+  });
+
+  it("writes a typed value to the secret its own row refers to", async () => {
+    // Two rows whose keys are not their secrets' names: deriving the target
+    // from the key would write this row's value into the other row's secret.
+    const aliased: McpServerConfig = {
+      name: "linear",
+      type: "stdio",
+      command: "npx",
+      env: {
+        API_KEY: "$secret:mcp__linear__TOKEN",
+        BACKUP: "$secret:mcp__linear__API_KEY",
+      },
+      enabled: true,
+    };
+    const fake = new FakeFetch();
+    fake.on("GET", /^\/api\/mcp-servers$/, () => ({ servers: [aliased] }));
+    fake.on("GET", /\/oauth\/providers$/, () => ({ providers: [] }));
+    fake.on("PUT", /\/api\/mcp-servers\/linear$/, () => ({ server: aliased }));
+    fake.install();
+
+    render(<McpServerSettings hasActiveSession={false} />);
+    await waitFor(() => {
+      expect(screen.getByTestId("mcp-server-linear")).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Edit linear" }));
+
+    fireEvent.change(screen.getByLabelText("Environment variables — value 1"), {
+      target: { value: "rotated" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save MCP server" }));
+
+    await waitFor(() => {
+      expect(fake.calls.some((c) => c.method === "PUT")).toBe(true);
+    });
+    const body = fake.calls.find((c) => c.method === "PUT")!.body as {
+      config: { env: Record<string, string> };
+      secrets: Record<string, string>;
+    };
+    expect(body.secrets).toEqual({ mcp__linear__TOKEN: "rotated" });
+    expect(body.config.env).toEqual(aliased.env);
+  });
+
+  it("gives a new row its own secret when the derived name is already referenced", async () => {
+    // The state a key rename leaves behind: the row is called TOKEN, its secret
+    // is still called API_KEY. Adding an API_KEY row must not land on it.
+    const renamedRow: McpServerConfig = {
+      name: "linear",
+      type: "stdio",
+      command: "npx",
+      env: { TOKEN: "$secret:mcp__linear__API_KEY" },
+      enabled: true,
+    };
+    const fake = new FakeFetch();
+    fake.on("GET", /^\/api\/mcp-servers$/, () => ({ servers: [renamedRow] }));
+    fake.on("GET", /\/oauth\/providers$/, () => ({ providers: [] }));
+    fake.on("PUT", /\/api\/mcp-servers\/linear$/, () => ({ server: renamedRow }));
+    fake.install();
+
+    render(<McpServerSettings hasActiveSession={false} />);
+    await waitFor(() => {
+      expect(screen.getByTestId("mcp-server-linear")).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Edit linear" }));
+
+    fireEvent.click(screen.getByRole("button", { name: "+ Add variable" }));
+    fireEvent.change(screen.getByLabelText("Environment variables — name 2"), {
+      target: { value: "API_KEY" },
+    });
+    fireEvent.change(screen.getByLabelText("Environment variables — value 2"), {
+      target: { value: "fresh" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save MCP server" }));
+
+    await waitFor(() => {
+      expect(fake.calls.some((c) => c.method === "PUT")).toBe(true);
+    });
+    const body = fake.calls.find((c) => c.method === "PUT")!.body as {
+      config: { env: Record<string, string> };
+      secrets: Record<string, string>;
+    };
+    expect(body.config.env.TOKEN).toBe("$secret:mcp__linear__API_KEY");
+    expect(body.secrets).toEqual({ mcp__linear__API_KEY_2: "fresh" });
+    expect(body.config.env.API_KEY).toBe("$secret:mcp__linear__API_KEY_2");
+  });
+
+  it("rotates the right secret when one expression names it more than once", async () => {
+    const repeated: McpServerConfig = {
+      name: "linear",
+      type: "stdio",
+      command: "npx",
+      env: {
+        API_KEY: "$secret:mcp__linear__TOKEN $secret:mcp__linear__TOKEN",
+        BACKUP: "$secret:mcp__linear__API_KEY",
+      },
+      enabled: true,
+    };
+    const fake = new FakeFetch();
+    fake.on("GET", /^\/api\/mcp-servers$/, () => ({ servers: [repeated] }));
+    fake.on("GET", /\/oauth\/providers$/, () => ({ providers: [] }));
+    fake.on("PUT", /\/api\/mcp-servers\/linear$/, () => ({ server: repeated }));
+    fake.install();
+
+    render(<McpServerSettings hasActiveSession={false} />);
+    await waitFor(() => {
+      expect(screen.getByTestId("mcp-server-linear")).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Edit linear" }));
+
+    fireEvent.change(screen.getByLabelText("Environment variables — value 1"), {
+      target: { value: "rotated" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save MCP server" }));
+
+    await waitFor(() => {
+      expect(fake.calls.some((c) => c.method === "PUT")).toBe(true);
+    });
+    const body = fake.calls.find((c) => c.method === "PUT")!.body as {
+      config: { env: Record<string, string> };
+      secrets: Record<string, string>;
+    };
+    expect(body.secrets).toEqual({ mcp__linear__TOKEN: "rotated" });
+    expect(body.config.env).toEqual(repeated.env);
+  });
+
+  it("keeps an OAuth $platform: reference through an unrelated edit", async () => {
+    const notion: McpServerConfig = {
+      name: "notion",
+      type: "http",
+      url: "https://mcp.notion.com/mcp",
+      headers: { Authorization: "Bearer $platform:notion_oauth" },
+      enabled: true,
+    };
+    const fake = new FakeFetch();
+    fake.on("GET", /^\/api\/mcp-servers$/, () => ({ servers: [notion] }));
+    fake.on("GET", /\/oauth\/providers$/, () => ({ providers: [] }));
+    fake.on("PUT", /\/api\/mcp-servers\/notion$/, () => ({ server: notion }));
+    fake.install();
+
+    render(<McpServerSettings hasActiveSession={false} />);
+    await waitFor(() => {
+      expect(screen.getByTestId("mcp-server-notion")).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Edit notion" }));
+
+    fireEvent.change(screen.getByDisplayValue("https://mcp.notion.com/mcp"), {
+      target: { value: "https://mcp.notion.com/v1/mcp" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save MCP server" }));
+
+    await waitFor(() => {
+      expect(fake.calls.some((c) => c.method === "PUT")).toBe(true);
+    });
+    const body = fake.calls.find((c) => c.method === "PUT")!.body as {
+      config: { headers: Record<string, string> };
+    };
+    expect(body.config.headers).toEqual({ Authorization: "Bearer $platform:notion_oauth" });
+  });
+
+  it("keeps the credential when only the row's key is renamed (planning#565)", async () => {
+    const fake = new FakeFetch();
+    fake.on("GET", /^\/api\/mcp-servers$/, () => ({ servers: [stdioConfig] }));
+    fake.on("GET", /\/oauth\/providers$/, () => ({ providers: [] }));
+    fake.on("PUT", /\/api\/mcp-servers\/linear$/, () => ({ server: stdioConfig }));
+    fake.install();
+
+    render(<McpServerSettings hasActiveSession={false} />);
+    await waitFor(() => {
+      expect(screen.getByTestId("mcp-server-linear")).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Edit linear" }));
+
+    // The key names the variable the server reads, not the secret behind it.
+    fireEvent.change(screen.getByDisplayValue("LINEAR_API_KEY"), {
+      target: { value: "LINEAR_TOKEN" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save MCP server" }));
+
+    await waitFor(() => {
+      expect(fake.calls.some((c) => c.method === "PUT")).toBe(true);
+    });
+    const body = fake.calls.find((c) => c.method === "PUT")!.body as {
+      config: { env: Record<string, string> };
+      secrets: Record<string, string>;
+    };
+    expect(body.config.env).toEqual({
+      LINEAR_TOKEN: "$secret:mcp__linear__LINEAR_API_KEY",
+    });
+    expect(body.secrets).toEqual({});
+  });
+
   it("folds an OAuth-managed server into the connection card and hides the duplicate row", async () => {
     const notionServer: McpServerConfig = {
       name: "notion",

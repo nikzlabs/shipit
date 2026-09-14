@@ -4,6 +4,7 @@ import type {
   McpStdioServerConfig,
   McpHttpServerConfig,
 } from "../../shared/types/mcp-types.js";
+import { secretKeysReferencedIn } from "../../shared/mcp-placeholders.js";
 import { ServiceError } from "./types.js";
 
 export const MAX_ENABLED_MCP_SERVERS = 10;
@@ -156,6 +157,99 @@ export function addMcpServer(
   return config;
 }
 
+/**
+ * The keys under `prefix` that this config's `$secret:` references point at.
+ * Every string in the config is scanned, not just the `env` / `headers` bag: a
+ * reference also resolves inside `args` (`session/mcp-resolve.ts`), and a
+ * reference missed here is a credential deleted as unreferenced.
+ */
+function referencedSecretKeys(config: McpServerConfig, prefix: string): string[] {
+  return configStrings(config)
+    .flatMap((value) => secretKeysReferencedIn(value))
+    .filter((key) => key.startsWith(prefix));
+}
+
+function configStrings(value: unknown): string[] {
+  if (typeof value === "string") return [value];
+  if (Array.isArray(value)) return value.flatMap(configStrings);
+  if (value && typeof value === "object") return Object.values(value).flatMap(configStrings);
+  return [];
+}
+
+function mapConfigStrings(value: unknown, fn: (s: string) => string): unknown {
+  if (typeof value === "string") return fn(value);
+  if (Array.isArray(value)) return (value as unknown[]).map((v) => mapConfigStrings(v, fn));
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value).map(([k, v]) => [k, mapConfigStrings(v, fn)]),
+    );
+  }
+  return value;
+}
+
+/**
+ * A renamed server's own references follow it. The caller is not required to
+ * rewrite them — the edit form cannot rewrite the ones in `args` at all — and a
+ * reference left under the old name would be read as unreferenced and cleared.
+ * References into *another* server's namespace are left alone.
+ */
+function renameOwnReferences(config: McpServerConfig, oldName: string): McpServerConfig {
+  const from = `$secret:mcp__${oldName}__`;
+  const to = `$secret:mcp__${config.name}__`;
+  return mapConfigStrings(config, (s) => s.replaceAll(from, () => to)) as McpServerConfig;
+}
+
+/**
+ * Reconciles a server's stored secrets to the keys its new config refers to,
+ * plus whatever the save explicitly submits. A value comes from the submitted
+ * secrets, else from the same key under the old name, else from what is already
+ * stored; anything else in either namespace is dropped and reported as cleared.
+ *
+ * The carry-over is what makes a rename non-destructive. The edit form blanks
+ * stored values and labels them "(unchanged)", so a renamed server submits no
+ * replacement for them — deleting the old namespace outright lost credentials
+ * the user could no longer see, and the form could not re-enter (planning#565).
+ */
+function reconcileSecrets(
+  credentialStore: CredentialStore,
+  oldName: string,
+  config: McpServerConfig,
+  secrets: Record<string, string>,
+): { keep: Map<string, string>; cleared: string[] } {
+  const oldPrefix = `mcp__${oldName}__`;
+  const newPrefix = `mcp__${config.name}__`;
+  const env = credentialStore.getAllAgentEnv();
+
+  const keep = new Map<string, string>();
+  for (const key of new Set([
+    ...referencedSecretKeys(config, newPrefix),
+    ...Object.keys(secrets),
+  ])) {
+    // An explicitly submitted empty value clears the secret rather than carrying one.
+    const value =
+      key in secrets ? secrets[key] : env[oldPrefix + key.slice(newPrefix.length)] ?? env[key];
+    if (value) keep.set(key, value);
+  }
+
+  // Nothing in one server's namespace is private to it: a config may refer to a
+  // key stored under another server's name, and this edit is not that server's.
+  // Only implicit cleanup defers to that — a save that names the key and submits
+  // an empty value has asked for it, and is answered.
+  const usedElsewhere = new Set(
+    Object.values(credentialStore.getAllMcpServers())
+      .filter((s) => s.name !== oldName && s.name !== config.name)
+      .flatMap((s) => configStrings(s).flatMap(secretKeysReferencedIn)),
+  );
+
+  const cleared = Object.keys(env).filter(
+    (key) =>
+      (key.startsWith(oldPrefix) || key.startsWith(newPrefix))
+      && !keep.has(key)
+      && (!usedElsewhere.has(key) || key in secrets),
+  );
+  return { keep, cleared };
+}
+
 /** Push clearedSecretKeys to the worker as empty strings to remove stale environment values. */
 export function updateMcpServer(
   credentialStore: CredentialStore,
@@ -167,11 +261,12 @@ export function updateMcpServer(
   if (!existing) {
     throw new ServiceError(404, `MCP server "${id}" not found`);
   }
-  const config = validateMcpServerConfig(rawConfig);
-  const isRename = config.name !== id;
-  if (isRename && credentialStore.getMcpServer(config.name)) {
-    throw new ServiceError(409, `An MCP server named "${config.name}" already exists`);
+  const validated = validateMcpServerConfig(rawConfig);
+  const isRename = validated.name !== id;
+  if (isRename && credentialStore.getMcpServer(validated.name)) {
+    throw new ServiceError(409, `An MCP server named "${validated.name}" already exists`);
   }
+  const config = isRename ? renameOwnReferences(validated, id) : validated;
   const secrets = validateMcpSecrets(config.name, rawSecrets);
 
   if (config.enabled && countEnabled(credentialStore, id) + 1 > MAX_ENABLED_MCP_SERVERS) {
@@ -181,21 +276,17 @@ export function updateMcpServer(
     );
   }
 
-  const clearedSecretKeys: string[] = [];
-  if (isRename) {
-    const prefix = `mcp__${id}__`;
-    for (const key of Object.keys(credentialStore.getAllAgentEnv())) {
-      if (key.startsWith(prefix)) clearedSecretKeys.push(key);
-    }
-    credentialStore.deleteMcpServer(id);
-    credentialStore.deleteMcpSecretsForServer(id);
+  const { keep, cleared } = reconcileSecrets(credentialStore, id, config, secrets);
+  if (isRename) credentialStore.deleteMcpServer(id);
+  for (const key of cleared) {
+    credentialStore.deleteMcpSecret(key);
   }
 
   credentialStore.setMcpServer(config.name, config);
-  for (const [k, v] of Object.entries(secrets)) {
+  for (const [k, v] of keep) {
     credentialStore.setMcpSecret(k, v);
   }
-  return { config, clearedSecretKeys };
+  return { config, clearedSecretKeys: cleared };
 }
 
 export function removeMcpServer(
