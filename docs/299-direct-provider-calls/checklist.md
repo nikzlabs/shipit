@@ -186,14 +186,29 @@ The same unchecked sentence survives at
 `src/client/components/Settings/tabs/ReviewerSection.tsx:423` for a stale reviewer pin. It
 resolves through `reviewer-model.ts`, a different resolver, so it was left alone rather than
 patched blind: [planning#548](https://github.com/nikzlabs/shipit-planning/issues/548).
-- [ ] **Req 8 — the cleanup container does not survive a restart.** `app-lifecycle.ts` builds the
-      orphan-cleanup id set from session rows, and the reserved cleanup id has none by design, so
-      `container-discovery.ts` stops and removes it at every boot; recreation is asynchronous, so
-      an early dictation pays the start the requirement forbids. A missed Docker exit event does
-      the same: `forgetIfGone` clears the tracked container and never schedules revival. This is a
-      **third** sweep the container was never exempted from, after the idle enforcer and the boot
-      credential sweep — which is the argument for one place that answers "is this ShipIt's own
-      container?" rather than a fourth exemption.
+- [x] **Req 8 — the cleanup container does not survive a restart.**
+
+Shipped in PR #2779, and it took the structural route rather than a third exemption.
+`shipit-own-sessions.ts` is now the one place that answers "is this a session id ShipIt reserves
+for itself?", and every sweep that infers abandonment from a **missing session row** asks it —
+which turned out to be five call sites, not the two the finding named: two in
+`container-discovery.ts`, two in `startup-janitor.ts`, and the idle enforcer. The egress reaper is
+deliberately *not* exempted, and the module says why: it verifies actual death rather than
+inferring it from an absent row, so an exemption there would be a bug.
+
+`forgetIfGone` now schedules the recreation instead of leaving it to the next dictation, so a
+missed Docker exit event costs no request at all rather than failing one and slowing the next.
+
+Two things the slice added beyond the brief, both following from the requirement rather than from
+the finding:
+
+- **A restart now adopts the surviving container** rather than merely declining to destroy it,
+  which is what actually removes the container start from the first dictation after a restart.
+- **Adoption is provisional.** "Running" under the build this orchestrator made does not prove the
+  worker still answers or that its egress sidecars outlived the gap, and nothing repairs that
+  later, because a wedged container stays running for ever while `forgetIfGone` acts only on
+  death. The first transport failure against an adopted container replaces it — once, so an
+  unrelated failure does not tear down a container that answers.
 - [x] **Req 7 — an aborted direct call records no usage.**
 
 Shipped in PR #2777. A call cut off in flight now writes a row with **unknown** token counts —
