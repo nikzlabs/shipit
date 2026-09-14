@@ -259,7 +259,19 @@ export class CredentialStore {
     let raw: string;
     try {
       raw = fs.readFileSync(this.filePath, "utf-8");
-    } catch {
+    } catch (err) {
+      // Only a missing file is a first run. Anything else is a file that exists
+      // and could not be read: fail closed as the encrypted branch below does,
+      // because the constructor's own migrations save an empty store straight
+      // back over it (planning#573).
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+        throw new Error(
+          `[credential-store] Failed to read ${this.filePath}: ${getErrorMessage(err)}. ` +
+            "Refusing to start with an empty store that would overwrite it. Repair the " +
+            "file's permissions or ownership, or move it aside to start fresh.",
+          { cause: err },
+        );
+      }
       this.data = {};
       return;
     }

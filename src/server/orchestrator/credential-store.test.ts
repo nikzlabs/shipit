@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
@@ -569,6 +569,73 @@ describe("CredentialStore", () => {
 
       new CredentialStore(dir, new SecretCipher(crypto.randomBytes(32)));
       expect(fs.statSync(file).mode & 0o777).toBe(0o600);
+    });
+  });
+
+  describe("an unreadable store (planning#573)", () => {
+    // Mode bits cannot produce EACCES for a root test runner, so the failure is injected.
+    // Writes stay real, so a preserved file proves the guard and not a denied write.
+    function withUnreadable(file: string, code: string, run: () => void): void {
+      const real = fs.readFileSync.bind(fs);
+      const spy = vi
+        .spyOn(fs, "readFileSync")
+        .mockImplementation(((target: fs.PathOrFileDescriptor, ...rest: unknown[]) => {
+          if (target === file) {
+            const err: NodeJS.ErrnoException = new Error(`${code}: read failed, open '${file}'`);
+            err.code = code;
+            throw err;
+          }
+          return (real as (...args: unknown[]) => unknown)(target, ...rest);
+        }) as unknown as typeof fs.readFileSync);
+      try {
+        run();
+      } finally {
+        spy.mockRestore();
+      }
+    }
+
+    // Every non-ENOENT code, not just the permission one the report named.
+    it.each(["EACCES", "EIO", "EPERM", "EISDIR"])(
+      "fails closed on %s rather than leaving a store that flattens the file",
+      (code) => {
+        const dir = createTmpDir();
+        const file = path.join(dir, "shipit-credentials.json");
+        const store = new CredentialStore(dir);
+        store.setGithubToken("ghp_secret");
+        store.setMcpServer("linear", {
+          name: "linear",
+          type: "stdio",
+          command: "npx",
+          args: ["linear-mcp"],
+          enabled: true,
+        });
+        const before = fs.readFileSync(file, "utf-8");
+
+        withUnreadable(file, code, () => {
+          // Both calls throw before anything is written, so neither disturbs the file.
+          const attempt = () => new CredentialStore(dir);
+          expect(attempt).toThrow(code);
+          expect(attempt).toThrow(/shipit-credentials\.json/);
+        });
+
+        expect(fs.readFileSync(file, "utf-8")).toBe(before);
+        const reloaded = new CredentialStore(dir);
+        expect(reloaded.getGithubToken()).toBe("ghp_secret");
+        expect(reloaded.getMcpServer("linear")?.name).toBe("linear");
+      },
+    );
+
+    it("still treats a missing file as a first run", () => {
+      const dir = createTmpDir();
+      const file = path.join(dir, "shipit-credentials.json");
+      expect(fs.existsSync(file)).toBe(false);
+
+      const store = new CredentialStore(dir);
+      expect(store.getGithubToken()).toBeNull();
+      expect(store.listCredentialRoutes()).toEqual([]);
+
+      store.setGithubToken("ghp_first_run");
+      expect(new CredentialStore(dir).getGithubToken()).toBe("ghp_first_run");
     });
   });
 });
