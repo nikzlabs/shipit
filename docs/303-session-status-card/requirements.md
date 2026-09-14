@@ -35,35 +35,51 @@ taken inside one session, without building an agent that talks to many.
 4. The card has three fields: where it stands, what comes next, and what needs
    the user.
 5. The agent writes the card at the end of its turn, with a tool call.
-6. The card sits at the bottom of the conversation, just above the input
+6. The card sits at the bottom of the conversation, stuck to the input
    field: the place where the user already reads the agent's last sentences.
+   It is a separate element, always visible, not a message in the transcript.
 7. The card does not appear in the session sidebar. The sidebar already
    carries a lot, and one more line per session would not read at a glance.
-8. The card is one of the end-of-turn cards, together with the question card
-   and the follow-up-actions card. The last card in the conversation is what
-   the user looks at, and it is always at the bottom.
+8. The card is always shown, also on a turn that ends with a question card
+   or a follow-up-actions card. Those cards are the last thing in the
+   conversation; the status card stays below them, at the input field.
 9. The card does not make a session "need attention". The needs-attention
    indicator works today; the user reads the card after the agent has
    finished, when they already know the session needs them.
 10. The card is there whenever the user opens the session, however long after
     the turn that wrote it.
-11. ShipIt checks at the end of each turn that the agent issued an end-of-turn
-    card. A turn that ended with a question card or a follow-up-actions card
-    counts as complete.
+11. The card is always up to date. A stale card has no value: the user would
+    have to read what the agent did anyway.
+12. ShipIt checks at the end of each turn that the agent updated the card. If
+    it did not, ShipIt sends the agent a further turn that asks for the
+    update, on every harness alike. That turn is visible in the conversation,
+    as a regular turn, for transparency.
+13. A turn that ended with a question card or a follow-up-actions card is
+    complete without a card update. This is the one case where the card may
+    lag by a turn; updating it there would waste tokens and turns.
 
 ## Open questions
 
-- A turn ends with no end-of-turn card at all. Does the user wait for ShipIt
-  to nudge the agent into an extra turn that writes the card, or does the
-  conversation show the previous status card marked as older than the last
-  turn? The nudge is what the user first proposed; its cost differs per
-  harness.
-- A turn ends with a question card or a follow-up-actions card. Does the
-  status card also appear on that turn, above them, or does the question or
-  actions card stand alone? The user raised this themselves and left it open.
+- None.
 
 ## Resolved questions
 
+- 2026-09-14 — A turn ends with no card update, no question and no actions
+  card: nudge, or show the previous card marked older? Nudge. Nik: a stale
+  card "doesn't make any sense"; if it is stale the user has to read what the
+  agent did, "spend a lot of time and mental effort", so the card is always
+  up to date. On mechanism: the Claude Stop hook "is essentially another
+  turn", so ShipIt sends the turn itself, universally, and makes it visible
+  as a regular turn for transparency. Asked twice; the second time was a
+  mistake — the first answer already ruled out any stale state. → reqs 11–12.
+- 2026-09-14 — Does the card also appear on a turn that ends with a question
+  or actions card? Yes; it is always shown. Nik reframed it: perhaps not a
+  regular card but "a separate UI element that's always at the bottom, stuck
+  to the input field, because it is what the session is about". The top of
+  the conversation was considered and rejected: people look at the latest
+  messages, so the bottom is already the attention field. On such a turn the
+  card may be stale; updating it would waste tokens and turns. → reqs 6, 8,
+  13.
 - 2026-09-14 — Should a card that the agent did not write be filled from the
   turn's last message? No. Nik: the last turn is already on screen, so a card
   showing it "would be literally no different from what we have today". What
