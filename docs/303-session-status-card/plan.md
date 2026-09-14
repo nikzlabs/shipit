@@ -81,8 +81,10 @@ both need.
 | `replaceActions` | optional boolean, default false | `false`: add the given actions to the offered list; an item whose `id` is already offered replaces that item. `true`: the given list replaces the offered list; an empty list clears it (req 17). |
 
 Actions are never cleared by a turn (req 17): a call without `actions`
-leaves the offered list as it is. Only `replaceActions: true`, or the user
-taking an action, changes it. An empty `actions` is valid only with
+leaves the offered list as it is. Only the agent changes the list —
+`replaceActions: true` replaces it, an add with a known `id` replaces one
+item. The user taking an action does not remove it: it stays, marked taken,
+until the agent removes it (req 17). An empty `actions` is valid only with
 `replaceActions: true`. The offered list holds at most
 `MAX_OFFERED_ACTIONS = 10` items — a bound against a runaway agent, not a
 design target (req 18 wants every relevant one shown); a call that would
@@ -117,7 +119,8 @@ line telling the agent the status is on screen and it can end its turn.
 
 - `sessions.session_status` column, JSON
   `{ status, needsYou?, actions: OfferedAction[], fresh, version, branch?, headSha? }`,
-  where `OfferedAction` is the item shape plus `offerId` and `offeredAt`.
+  where `OfferedAction` is the item shape plus `offerId`, `offeredAt` and
+  `takenAt?`.
   `version` increments on every write and is the guard the post-turn step
   uses (below). `branch`/`headSha` are captured at write time exactly as
   `api-routes-propose-actions.ts` does today, because the submit message
@@ -137,7 +140,8 @@ line telling the agent the status is on screen and it can end its turn.
   `SessionManager.setSessionStatus`.
 - `services/session-status.ts` `recordSessionStatus(deps, sessionId, write)`,
   `markSessionStatusStale(deps, sessionId, ifVersion)` and
-  `takeOfferedActions(deps, sessionId, offerIds)`: each runs inside
+  `takeOfferedActions(deps, sessionId, offerIds)` (stamps `takenAt`, removes
+  nothing): each runs inside
   `runStatusExclusive` (the `runGoalExclusive` chain from `agent-goal.ts`,
   copied — one status operation per session at a time), writes, then
   `sseBroadcast("session_list", …)` when something shown changed. The stale
@@ -167,12 +171,13 @@ Lifecycle (agent decisions, see the end):
 - **New session.** No card until the first status write. A first turn that
   ends with a question leaves no card (req 13); the first ordinary turn
   writes one.
-- **Dismissal.** The user has no control on the card to drop an offer;
-  ShipIt's control is the composer (CLAUDE.md §5). "Drop the retry idea" is
-  a message; the prompt tells the agent to answer it with
-  `replaceActions`. The agent also reads the offered list back: the route's
-  reply to any `session_status` call, and the nudge prompt, include the
-  current offers, so a fresh context after a reset knows what is on the card.
+- **Dismissal and taken offers.** The user has no control on the card to
+  drop an offer; ShipIt's control is the composer (CLAUDE.md §5). "Drop the
+  retry idea" is a message; the prompt tells the agent to answer it with
+  `replaceActions`, and to drop taken offers the same way once they are
+  done. The agent reads the offered list back with each item's taken state:
+  the route's reply to any `session_status` call, and the nudge prompt,
+  include it, so a fresh context after a reset knows what is on the card.
 
 ## Turn-end accounting (req 11–13)
 
@@ -330,10 +335,12 @@ Needs you   Add the Stripe test key in Settings → Secrets.
   change silently; and the pinned wrapper passes the card's stored
   `branch`/`headSha`/`offeredAt` to `formatProposalMessage`, which needs
   them. The "Add comment…" path carries the ticked `offerIds` too, so a
-  qualified approval also clears what it approved. Submitting composes the
-  same user message as today and starts a turn; the ticked offers leave the
-  list on acceptance (below), the unticked ones stay (req 17). Every offered
-  action is shown (req 18).
+  qualified approval also marks what it approved. Submitting composes the
+  same user message as today and starts a turn; on acceptance (below) the
+  ticked offers are stamped taken and render greyed out and unselected, the
+  unticked ones stay as they were (req 17). A taken offer cannot be ticked
+  again; it leaves the card only when the agent removes it with
+  `replaceActions`. Every offered action is shown (req 18).
 
 - **Freshness (req 14).** Two states, no title text spent on them. A current
   card is a regular card. A card that may be behind carries a small
@@ -386,9 +393,9 @@ off, and never aliased:
   queued and ordinary dispatch — and stamps the card `submittedAt`
   (`send-message.ts:55`). The pinned card's submit carries
   `sessionStatusOfferIds` on the same message, and the same callback calls
-  `takeOfferedActions` for them. Removing on acceptance, not before and not
-  at execution, is what review asked for: a refused message keeps its offers,
-  and a queued approval does not stay offered while it waits.
+  `takeOfferedActions` for them. Marking on acceptance, not before and not
+  at execution, is what review asked for: a refused message leaves its offers
+  untaken, and a queued approval does not stay selectable while it waits.
   (docs/207's statement that a submission has no persisted lifecycle
   predates `submittedAt`; a note there points here.)
 
@@ -417,8 +424,7 @@ the section is composed in, not its wording.
   action items validated by the shared validator, an empty list only with
   `replaceActions`, the offered-list bound.
 - `services/session-status.test.ts` — offer semantics: add, same-`id`
-  replacement issues a new `offerId`, replace, clear; `takeOfferedActions`
-  with a stale `offerId` removes nothing; writes serialize per session;
+  replacement issues a new `offerId`, replace, clear; `takeOfferedActions` stamps `takenAt` and with a stale `offerId` marks nothing; writes serialize per session;
   `markSessionStatusStale` with an old version is a no-op.
 - `api-routes-session-status.test.ts` — validate → persist → `session_list`
   broadcast → accumulator flag set; 409 when the runner is not active.
@@ -439,8 +445,11 @@ the section is composed in, not its wording.
   rendered, selection keyed by `offerId` survives a replacement as a new
   unselected item, submit composes the same message as the transcript card
   and sends the ticked `offerIds`, the comment path sends them too.
-- `send-message.test.ts` — `checklistAccepted` takes the offers on each
-  acceptance path and not on refusal; old cards still get `submittedAt`.
+- `send-message.test.ts` — `checklistAccepted` marks the offers taken on
+  each acceptance path and not on refusal; old cards still get `submittedAt`.
+- `SessionStatusCard.test.tsx` also: a taken offer renders greyed out,
+  unselected and not selectable; it disappears after a `replaceActions`
+  write that omits it.
 - `ActionChecklistCard.test.tsx` — existing behavior unchanged after the split.
 - Flag tests: with `advanced.sessionStatusCard` off, the tool lists, the
   prompt, the post-turn step and the client are exactly today's (a snapshot
