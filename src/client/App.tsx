@@ -742,6 +742,7 @@ export default function App() {
     quickCaptureHotkey,
     voiceInputEnabled,
     voiceHotkeyModeB,
+    openChatSearch: () => setSearchOpen(true),
   });
 
   const handleTabChange = useCallback(

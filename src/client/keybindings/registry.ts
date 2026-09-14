@@ -103,7 +103,10 @@ export const KEYBINDINGS: readonly KeybindingDef[] = [
     id: "chat-search",
     label: "Search the chat (when chat input is focused)",
     group: "Search",
-    defaultBinding: "",
+    // Not rebindable, but it still needs a real chord: `useChatSearchHotkey`
+    // matches against it. `mod` so ⌘F works on macOS too — the hint stays
+    // "Ctrl+F" because Ctrl+F works on every platform.
+    defaultBinding: "mod+f",
     editable: false,
     fixedHint: "Ctrl+F",
   },
