@@ -223,6 +223,11 @@ first. One of the three did not hold as stated and is recorded as such.
       next turn* and names no kind. Compaction and a verbatim harness command
       stay out because neither carries any agent prefix at all, and the outcome
       rides the turn after
+- [x] The compaction exclusion taken to the user rather than encoded, and their
+      answer written back as a dated receipt under `requirements.md` →
+      *Resolved questions*. The verbatim harness command is recorded beside it as
+      a **known limitation**, not a decision: there is no prefix slot at all, and
+      the user was not asked because there was nothing to decide
 - [x] The reviewer's third claim did **not** hold as stated: `BESPOKE_READERS`
       detects a missing reader rather than deriving one, and a reader is
       per-owner code that cannot be generated. Recorded in `plan.md` as detection
