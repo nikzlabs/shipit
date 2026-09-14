@@ -5,7 +5,8 @@ import type { AgentProcess, AgentId, BranchSyncedCard } from "../../shared/types
 import type { ChatHistoryManager } from "../chat-history.js";
 import type { SessionManager } from "../sessions.js";
 import type { UsageManager } from "../usage.js";
-import { residentBackgroundWork, type SessionRunnerInterface } from "../session-runner.js";
+import type { SessionRunnerInterface } from "../session-runner.js";
+import { residentBackgroundWork } from "../turn-admission.js";
 import { ServiceError } from "./types.js";
 import { agentLogAppend } from "../log-emit.js";
 import { emitNoticePostTurn } from "../chat-card-persistence.js";
@@ -29,15 +30,6 @@ import {
 } from "./rebase-followup.js";
 
 export const MAX_REBASE_ITERATIONS = 10;
-
-/** The driver's own claim on `runner.systemTurnInProgress`, re-minted at every acquisition. */
-interface DriverHold { seq: number }
-
-/** One entry point, so no acquisition can forget to capture the ticket it releases on. */
-function takeSystemHold(runner: SessionRunnerInterface, hold: DriverHold): void {
-  runner.systemTurnInProgress = true;
-  hold.seq = runner.systemHoldSeq;
-}
 
 export interface RebaseDriverDeps {
   git: GitManager;
@@ -192,6 +184,47 @@ export function buildBranchSyncAgentNotice(opts: {
 // The container's file watcher may miss a rewrite from the orchestrator.
 function reevaluateSessionAfterRewrite(runner: SessionRunnerInterface): void {
   onWorkspaceRewritten(runner, "rebase");
+}
+
+/**
+ * Between resolution turns, and from the last one through the force-push and the
+ * branch-synced card, `running` is false — so only this lease keeps the runner out of
+ * the idle enforcer's reach. It feeds `agentBusy` and the non-forced `dispose()` guards
+ * from one flag, which is what CLAUDE.md's post-turn invariant 5 asks of post-turn-shaped
+ * work (planning#556). It is dropped while a resolution turn runs, where `running`
+ * guards instead.
+ *
+ * `take()` re-arms at every segment boundary rather than holding once: POST_TURN_HOLD_MAX_MS
+ * caps a hold at 120s, and `PostTurnHold` counts depth with no per-holder identity — past
+ * the deadline `begin()` zeroes the count, so neither our flag nor the aggregate proves we
+ * still contribute one. The cover is therefore bounded: a SINGLE segment that outruns the
+ * deadline reads idle again until the next boundary.
+ */
+class RebaseRunnerHold {
+  private held = false;
+  constructor(private readonly runner: SessionRunnerInterface) {}
+  take(): void {
+    if (this.held && this.runner.postTurnWorkInFlight) return;
+    this.held = true;
+    this.runner.beginPostTurnWork();
+  }
+  release(): void {
+    if (!this.held) return;
+    this.held = false;
+    this.runner.endPostTurnWork();
+  }
+}
+
+/**
+ * The driver's own claim on `runner.systemTurnInProgress`, separate from the disposal lease
+ * above: every write of `true` mints a new `systemHoldSeq`, and the release compares (docs/304).
+ */
+interface SystemHoldTicket { seq: number }
+
+/** One entry point, so no acquisition can forget to capture the ticket it releases on. */
+function takeSystemHold(runner: SessionRunnerInterface, ticket: SystemHoldTicket): void {
+  runner.systemTurnInProgress = true;
+  ticket.seq = runner.systemHoldSeq;
 }
 
 // The runner is no longer running; hold it against disposal during restoration.
@@ -351,18 +384,20 @@ export async function runRebaseFlow(
   }
 
   // Keep user turns queued between resolution turns and through the final push.
-  const hold: DriverHold = { seq: 0 };
-  takeSystemHold(runner, hold);
+  const systemHold: SystemHoldTicket = { seq: 0 };
+  takeSystemHold(runner, systemHold);
 
   // Defer auto-push so it cannot race the force-push. The object avoids TS callback narrowing.
   const pendingPush: { arm: (() => void) | null } = { arm: null };
   // Object-held so the `finally` reads what the conflict loop wrote.
   const followupAttempt: { id: string | null } = { id: null };
+  const hold = new RebaseRunnerHold(runner);
   let published = false;
   let pushProhibited = false;
   let savedCommit: string | null = null;
 
   try {
+    hold.take();
     savedCommit = (await prepareWorkspaceForRebase(
       deps,
       baseBranch,
@@ -412,6 +447,9 @@ export async function runRebaseFlow(
     });
 
     if (result.status === "clean") {
+      // Nothing refreshed the lease since the flow started; fetch and rebase alone can
+      // outrun POST_TURN_HOLD_MAX_MS on a large repo.
+      hold.take();
       reevaluateSessionAfterRewrite(runner);
       const forcePushed = await tryForcePush(deps);
       published = forcePushed;
@@ -451,7 +489,7 @@ export async function runRebaseFlow(
 
       const prompt = buildRebaseConflictPrompt(baseBranch, result.conflicts);
       try {
-        await runRebaseResolutionTurn(deps, prompt, hold);
+        await runRebaseResolutionTurn(deps, prompt, hold, systemHold);
       } catch (err) {
         // Abort before rethrowing; verify failures before reporting the branch unchanged.
         let stillInProgress = false;
@@ -487,6 +525,7 @@ export async function runRebaseFlow(
       }
     }
 
+    hold.take();
     reevaluateSessionAfterRewrite(runner);
     const forcePushed = await tryForcePush(deps);
     published = forcePushed;
@@ -518,48 +557,56 @@ export async function runRebaseFlow(
         : {}),
     };
   } finally {
-    // Any other ending discards the arm: an unconcluded rebase leaves nothing to follow up.
-    if (followupAttempt.id) closeFollowupWindow(runner.sessionId, followupAttempt.id);
-    if (!abortNoticeReached) lastAbortNotice.delete(runner);
-    // Aborts also restore LFS pointers; recover content before releasing queued turns.
-    if (worktreeRewritten) await restoreLfsForSync(deps, baseBranch);
-    // Consume successful or prohibited pushes; a fallback on base would bypass the PR.
-    if (published) {
-      pendingPush.arm = null;
-    } else if (pushProhibited) {
-      pendingPush.arm = null;
-      if (savedCommit) {
-        persistSyncNotice(
-          deps,
-          `Your uncommitted changes were saved as a local commit (${savedCommit.slice(0, 7)}), but it was `
-          + `NOT pushed: this session is checked out on \`${baseBranch}\` itself, and pushing from a sync `
-          + "would put the commit straight on that branch without a pull request. Push it deliberately "
-          + "when you mean to.",
-        );
-      }
-    } else {
-      const arm = pendingPush.arm;
-      pendingPush.arm = null;
-      if (arm) {
-        try {
-          arm();
-        } catch (err) {
-          console.error("[rebase] arming the auto-push for the pre-sync commit failed:", getErrorMessage(err));
+    // Released last, so a throw in this teardown cannot strand the lease. Re-taken
+    // first: restoreLfsForSync's own begin/end would otherwise zero an expired depth
+    // and then drop it, leaving the handback and the queue drain uncovered.
+    try {
+      hold.take();
+      // Any other ending discards the arm: an unconcluded rebase leaves nothing to follow up.
+      if (followupAttempt.id) closeFollowupWindow(runner.sessionId, followupAttempt.id);
+      if (!abortNoticeReached) lastAbortNotice.delete(runner);
+      // Aborts also restore LFS pointers; recover content before releasing queued turns.
+      if (worktreeRewritten) await restoreLfsForSync(deps, baseBranch);
+      // Consume successful or prohibited pushes; a fallback on base would bypass the PR.
+      if (published) {
+        pendingPush.arm = null;
+      } else if (pushProhibited) {
+        pendingPush.arm = null;
+        if (savedCommit) {
+          persistSyncNotice(
+            deps,
+            `Your uncommitted changes were saved as a local commit (${savedCommit.slice(0, 7)}), but it was `
+            + `NOT pushed: this session is checked out on \`${baseBranch}\` itself, and pushing from a sync `
+            + "would put the commit straight on that branch without a pull request. Push it deliberately "
+            + "when you mean to.",
+          );
+        }
+      } else {
+        const arm = pendingPush.arm;
+        pendingPush.arm = null;
+        if (arm) {
+          try {
+            arm();
+          } catch (err) {
+            console.error("[rebase] arming the auto-push for the pre-sync commit failed:", getErrorMessage(err));
+          }
         }
       }
-    }
-    handWorkspaceBackToWorker(runner.sessionDir);
-    // Clear on the hold's own ticket: a turn that displaced the driver, or another owner that
-    // took over mid-flow, minted one of its own. Keying this on `runner.running` left a hold a
-    // CLI-started turn was adopted under set with no owner at all (planning#554).
-    if (runner.systemHoldSeq === hold.seq) runner.systemTurnInProgress = false;
-    // The drain is NOT conditional on that: the queue can also be left by a hold that changed
-    // hands, and `releaseQueuedTurn` declines on its own while a turn, a hold or a merge holds
-    // the session — so it starts a turn only when nothing else can.
-    try {
-      releaseQueuedTurn(runner);
-    } catch (releaseErr) {
-      console.error("[rebase] post-flow queue release failed:", getErrorMessage(releaseErr));
+      handWorkspaceBackToWorker(runner.sessionDir);
+      // Clear on the hold's own ticket: a turn that displaced the driver, or another owner that
+      // took over mid-flow, minted one of its own. Keying this on `runner.running` left a hold a
+      // CLI-started turn was adopted under set with no owner at all (planning#554).
+      if (runner.systemHoldSeq === systemHold.seq) runner.systemTurnInProgress = false;
+      // The drain is NOT conditional on that: the queue can also be left by a hold that changed
+      // hands, and `releaseQueuedTurn` declines on its own while a turn, a hold or a merge holds
+      // the session — so it starts a turn only when nothing else can.
+      try {
+        releaseQueuedTurn(runner);
+      } catch (releaseErr) {
+        console.error("[rebase] post-flow queue release failed:", getErrorMessage(releaseErr));
+      }
+    } finally {
+      hold.release();
     }
   }
 }
@@ -646,10 +693,26 @@ function notifyPrStatusPollerOfPush(deps: RebaseDriverDeps): void {
   }
 }
 
-function runRebaseResolutionTurn(
+async function runRebaseResolutionTurn(
   deps: RebaseDriverDeps,
   prompt: string,
-  hold: DriverHold,
+  hold: RebaseRunnerHold,
+  systemHold: SystemHoldTicket,
+): Promise<void> {
+  try {
+    await dispatchRebaseResolutionTurn(deps, prompt, hold, systemHold);
+  } finally {
+    // The turn executor releases its own lease as this continuation is queued, so by
+    // here it has let go — and if it had already expired, it took ours with it.
+    hold.take();
+  }
+}
+
+function dispatchRebaseResolutionTurn(
+  deps: RebaseDriverDeps,
+  prompt: string,
+  hold: RebaseRunnerHold,
+  systemHold: SystemHoldTicket,
 ): Promise<void> {
   const { runner } = deps;
 
@@ -682,8 +745,10 @@ function runRebaseResolutionTurn(
         // Late duplicate callbacks must not re-lock the runner after the flow releases it.
         if (turnSettled) return;
         turnSettled = true;
-        // Restore the flow's hold synchronously after finishTurn clears the per-turn flag.
-        if (!runner.running) takeSystemHold(runner, hold);
+        // Restore the flow's holds synchronously after finishTurn clears the per-turn
+        // flag; an unexpired turn lease is still held here, so nothing reads idle between.
+        if (!runner.running) takeSystemHold(runner, systemHold);
+        hold.take();
         if (outcome.status === "completed") {
           resolve();
           return;
@@ -703,6 +768,10 @@ function runRebaseResolutionTurn(
         ));
       },
     }), { whenBusy: "refuse" });
+
+    // dispatch claims the turn synchronously, so `running` now says whether it started.
+    // A refusal settled inside the call above, and its hold must survive to the flow.
+    if (runner.running && !turnSettled) hold.release();
   });
 }
 
@@ -776,13 +845,21 @@ export async function runAutoResolveAttempt(
       // `finally` never runs. Without this the arm would wake on a later, unrelated rebase.
       if (followupAttempt.id) closeFollowupWindow(runner.sessionId, followupAttempt.id);
       void (async () => {
-        try { runner.getAgent()?.kill(); } catch { /* defensive */ }
-        runner.setAgent(null);
-        runner.running = false;
-        runner.systemTurnInProgress = false;
-        runner.onAgentFinished();
-        try { await git.rebaseAbort(); } catch { /* may already be aborted */ }
-        runner.emitMessage({ type: "rebase_aborted", sessionId: runner.sessionId });
+        // The flow dropped its lease when the turn started, so `running` was the only
+        // cover; clearing it below hands the runner to the idle enforcer, which
+        // onAgentFinished() invokes synchronously through the runner's `idle` event.
+        runner.beginPostTurnWork();
+        try {
+          try { runner.getAgent()?.kill(); } catch { /* defensive */ }
+          runner.setAgent(null);
+          runner.running = false;
+          runner.systemTurnInProgress = false;
+          runner.onAgentFinished();
+          try { await git.rebaseAbort(); } catch { /* may already be aborted */ }
+          runner.emitMessage({ type: "rebase_aborted", sessionId: runner.sessionId });
+        } finally {
+          runner.endPostTurnWork();
+        }
         resolve({ outcome: "error", lastError: "timeout", didWork: true });
       })();
     }, timeoutMs);

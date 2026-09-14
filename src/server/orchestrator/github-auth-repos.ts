@@ -170,21 +170,26 @@ export async function listOrgs(token: string): Promise<{ login: string; avatarUr
   }
 }
 
+/**
+ * `reachable` answers a different question from `canWrite`: whether the account
+ * can SEE the repository at all. A caller that only needs a checkout (docs/303)
+ * must not treat read-only access as a missing repository.
+ */
 export async function checkRepoWriteAccess(
   token: string,
   owner: string,
   repo: string,
-): Promise<{ canWrite: boolean; reason?: string }> {
+): Promise<{ canWrite: boolean; reachable: boolean; reason?: string }> {
   try {
     const res = await fetchGitHub(
       `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`,
       token,
     );
     if (res.status === 404) {
-      return { canWrite: false, reason: `Repository ${owner}/${repo} is not visible to this account.` };
+      return { canWrite: false, reachable: false, reason: `Repository ${owner}/${repo} is not visible to this account.` };
     }
     if (!res.ok) {
-      return { canWrite: false, reason: await parseGitHubError(res) };
+      return { canWrite: false, reachable: false, reason: await parseGitHubError(res) };
     }
     const data = (await res.json()) as {
       permissions?: { push?: boolean; maintain?: boolean; admin?: boolean };
@@ -192,10 +197,14 @@ export async function checkRepoWriteAccess(
     const perms = data.permissions ?? {};
     const canWrite = Boolean(perms.push || perms.maintain || perms.admin);
     return canWrite
-      ? { canWrite: true }
-      : { canWrite: false, reason: `The authenticated account has read-only access to ${owner}/${repo}.` };
+      ? { canWrite: true, reachable: true }
+      : {
+          canWrite: false,
+          reachable: true,
+          reason: `The authenticated account has read-only access to ${owner}/${repo}.`,
+        };
   } catch (err) {
-    return { canWrite: false, reason: getErrorMessage(err) };
+    return { canWrite: false, reachable: false, reason: getErrorMessage(err) };
   }
 }
 

@@ -164,6 +164,7 @@ function TranscriptRowInner({
     onEgressDecision: handlers.onEgressDecision,
     onResolvePermission: handlers.onResolvePermission,
     onUndoIssueWrite: handlers.onUndoIssueWrite,
+    onStartRepoSession: handlers.onStartRepoSession,
     onOpenIssue: handlers.onOpenIssue,
     onSendFollowUp: handlers.onSendFollowUp,
     onReleaseConfirm: handlers.onReleaseConfirm,

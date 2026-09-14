@@ -38,6 +38,7 @@ function useNeedsUser(): NeedsUser {
       const phase = egress[m.egressPrompt.cardId]?.phase ?? m.egressPrompt.phase;
       return phase === "pending";
     }
+    if (m.settingsProposal) return m.settingsProposal.phase === "pending";
     if (m.releaseCard) return m.releaseCard.phase === "proposed";
     if (m.actionChecklist) return !m.actionChecklist.submittedAt;
     return false;

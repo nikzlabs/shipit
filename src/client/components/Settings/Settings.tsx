@@ -14,6 +14,9 @@ import { GitTab } from "./tabs/GitTab.js";
 import { VoiceTab } from "./tabs/VoiceTab.js";
 import { AdvancedTab } from "./tabs/AdvancedTab.js";
 import { RolesTab } from "./tabs/RolesTab.js";
+// One map for the dialog's own tab strip and for anything else that names where
+// a setting lives, so the two cannot say different words for the same tab.
+import { SETTING_TAB_LABELS } from "../../../server/shared/settings-catalogue/index.js";
 
 const mobileTabClass = "max-md:w-auto max-md:whitespace-nowrap max-md:rounded-md max-md:px-3 max-md:py-1.5 max-md:text-xs";
 
@@ -71,6 +74,28 @@ export function Settings({
   const [opsContent, setOpsContent] = useState(initialOpsContent);
   const savedRef = useRef(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  /*
+    What the drafts were seeded from. A settings write elsewhere — another tab,
+    or an agent's applied proposal — refetches the stored value into the store
+    and so into these props, while the drafts stay where the user left them
+    (docs/299-agent-settings-access → Apply goes through a shared layer).
+
+    An UNTOUCHED box adopts the new value: it would otherwise keep showing what
+    was stored when the dialog opened and write it back on Save, silently
+    reverting a change the user never saw. A box being edited keeps its draft and
+    says the stored value moved, because adopting there would throw away typing.
+  */
+  const seededRef = useRef({ content: initialContent, ops: initialOpsContent });
+  if (initialContent !== seededRef.current.content && content === seededRef.current.content) {
+    seededRef.current = { ...seededRef.current, content: initialContent };
+    setContent(initialContent);
+  }
+  if (initialOpsContent !== seededRef.current.ops && opsContent === seededRef.current.ops) {
+    seededRef.current = { ...seededRef.current, ops: initialOpsContent };
+    setOpsContent(initialOpsContent);
+  }
+  const changedElsewhere =
+    initialContent !== seededRef.current.content || initialOpsContent !== seededRef.current.ops;
 
   // A rejected save closes the modal and drops the draft, so the keyboard path
   // enforces the same limit the Save button disables itself on.
@@ -96,21 +121,6 @@ export function Settings({
     if (activeTab === "instructions" && e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
       e.preventDefault();
       handleSave();
-    }
-  };
-
-  const tabLabel = (tab: Tab) => {
-    switch (tab) {
-      case "services": return "Model providers";
-      case "roles": return "Roles";
-      case "integrations": return "Integrations";
-      case "git": return "Git";
-      case "instructions": return "Instructions";
-      case "skills": return "Skills";
-      case "keyboard": return "Keyboard";
-      case "voice": return "Voice";
-      case "network": return "Network";
-      case "advanced": return "Advanced";
     }
   };
 
@@ -142,7 +152,7 @@ export function Settings({
           <TabsList className="md:w-40 md:shrink-0 md:min-h-0 md:overflow-y-auto md:border-r md:py-2 max-md:flex-row max-md:overflow-x-auto max-md:border-b max-md:px-2 max-md:py-1.5 max-md:gap-1 max-md:shrink-0 border-(--color-border-secondary)">
             {SETTINGS_TABS.map((tab) => (
               <TabsTrigger key={tab} value={tab} data-testid={`settings-tab-${tab}`} className={mobileTabClass}>
-                {tabLabel(tab)}
+                {SETTING_TAB_LABELS[tab]}
               </TabsTrigger>
             ))}
           </TabsList>
@@ -160,6 +170,7 @@ export function Settings({
               agentSystemInstructionsEnabled={agentSystemInstructionsEnabled}
               agentSystemInstructions={agentSystemInstructions}
               onToggleAgentSystemInstructions={onToggleAgentSystemInstructions}
+              changedElsewhere={changedElsewhere}
             />
           </TabsContent>
 

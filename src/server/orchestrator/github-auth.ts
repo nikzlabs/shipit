@@ -367,9 +367,16 @@ export class GitHubAuthManager extends EventEmitter {
     return searchReposImpl(this._token, query);
   }
 
-  async checkRepoWriteAccess(owner: string, repo: string): Promise<{ canWrite: boolean; reason?: string }> {
+  async checkRepoWriteAccess(
+    owner: string,
+    repo: string,
+  ): Promise<{ canWrite: boolean; reachable: boolean; reason?: string }> {
     if (!this._token) {
-      return { canWrite: false, reason: "GitHub is not connected — cannot verify write access." };
+      return {
+        canWrite: false,
+        reachable: false,
+        reason: "GitHub is not connected — cannot verify access.",
+      };
     }
     return checkRepoWriteAccessImpl(this._token, owner, repo);
   }

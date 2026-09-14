@@ -113,3 +113,36 @@ export function reorderRepos(
   repoStore.setOrder(urls);
   return repoStore.list();
 }
+
+export interface EnsureRepoReadyDeps {
+  repoStore: {
+    get(url: string): { status: string } | undefined;
+    add(url: string): unknown;
+    setReady(url: string): void;
+    list(): { url: string }[];
+  };
+  getSharedRepoDir: (url: string) => string;
+  ensureBareCache: (cacheDir: string, url: string) => Promise<unknown>;
+}
+
+/**
+ * Register a repository and clone its bare cache, synchronously, so a claim can
+ * follow immediately — `claimSession` refuses anything not already `ready`.
+ * Used where a session must start on a repository ShipIt may never have seen:
+ * Ops fix sessions (docs/162) and cross-repo session proposals (docs/303).
+ */
+export async function ensureRepoReady(
+  url: string,
+  deps: EnsureRepoReadyDeps,
+): Promise<string> {
+  const clean = stripUrlCredentials(url);
+  const wanted = canonicalRepoKey(url);
+  const existing = deps.repoStore.list().find((r) => canonicalRepoKey(r.url) === wanted);
+  // Claims need the existing store key even when an equivalent URL has another spelling.
+  const key = existing?.url ?? clean;
+  if (deps.repoStore.get(key)?.status === "ready") return key;
+  deps.repoStore.add(key);
+  await deps.ensureBareCache(deps.getSharedRepoDir(key), key);
+  deps.repoStore.setReady(key);
+  return key;
+}

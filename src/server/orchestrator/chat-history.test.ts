@@ -53,6 +53,18 @@ const EVERY_OPTIONAL_FIELD_MESSAGE: PersistedMessage = {
     headSha: "abc12345",
     createdAt: "2026-06-05T00:00:00.000Z",
   },
+  repoSessionProposal: {
+    cardId: "rsp1",
+    repo: "acme/api",
+    repoUrl: "https://github.com/acme/api.git",
+    registered: true,
+    title: "Add cursor pagination to /events",
+    prompt: "Add cursor pagination to GET /events. The web client in acme/web depends on it.",
+    createdAt: "2026-09-14T00:00:00.000Z",
+    state: "started",
+    startedSessionId: "ses_child",
+    startedAt: "2026-09-14T00:01:00.000Z",
+  },
   presentInline: {
     presentId: "pres_0123456789abcdef0123456789abcdef",
     filePath: "/persist/chart.svg",
@@ -94,6 +106,22 @@ const EVERY_OPTIONAL_FIELD_MESSAGE: PersistedMessage = {
     ],
     pendingRestart: true,
     createdAt: "2026-06-05T00:00:00.000Z",
+  },
+  settingsProposal: {
+    cardId: "set-1",
+    target: { key: "advanced.enableSubAgents", repoUrl: "https://github.com/o/r", item: "notion" },
+    label: "Multi-agent sessions",
+    description: "Let the agent start child sessions and consult other agents.",
+    path: "Settings › Advanced",
+    from: "off",
+    to: "on",
+    reason: "The review you asked for runs as a separate agent.",
+    phase: "applied",
+    createdAt: "2026-06-05T00:00:00.000Z",
+    resolvedAt: "2026-06-05T00:01:00.000Z",
+    outcome: "Multi-agent sessions is on",
+    outcomeDetail: "Applies to sessions started from now on.",
+    effect: { state: "restart-dependent", detail: "Running containers are unchanged." },
   },
   issueWrite: {
     cardId: "iw1",
@@ -977,6 +1005,72 @@ describe("ChatHistoryManager", () => {
           `add it to EVERY_OPTIONAL_FIELD_MESSAGE and wire its column + toRow/fromRow so it survives a reload.`,
       ).toBeDefined();
     }
+  });
+
+  describe("settings proposal card persistence (docs/299-agent-settings-access)", () => {
+    const proposal = (cardId: string): PersistedMessage => ({
+      role: "assistant",
+      text: "",
+      settingsProposal: {
+        cardId,
+        target: { key: "advanced.enableSubAgents" },
+        label: "Multi-agent sessions",
+        description: "Let the agent start child sessions.",
+        path: "Settings › Advanced",
+        from: "off",
+        to: "on",
+        phase: "pending",
+        createdAt: "2026-06-05T00:00:00.000Z",
+      },
+    });
+
+    it("finds a card by id, and only that card", () => {
+      const mgr = new ChatHistoryManager(dbManager);
+      mgr.append("sess-1", proposal("set-a"));
+      mgr.append("sess-1", proposal("set-b"));
+      expect(mgr.getSettingsProposalCard("sess-1", "set-b")?.cardId).toBe("set-b");
+      expect(mgr.getSettingsProposalCard("sess-1", "set-c")).toBeUndefined();
+      // Cards are per session: another session's id must not resolve here.
+      expect(mgr.getSettingsProposalCard("sess-2", "set-a")).toBeUndefined();
+    });
+
+    it("merges a phase patch into the stored card and returns what it stored", () => {
+      const mgr = new ChatHistoryManager(dbManager);
+      mgr.append("sess-1", proposal("set-a"));
+
+      const merged = mgr.updateSettingsProposalCard("sess-1", "set-a", {
+        phase: "applied",
+        resolvedAt: "2026-06-05T00:05:00.000Z",
+        outcome: "Multi-agent sessions is on",
+      });
+
+      expect(merged).toMatchObject({
+        cardId: "set-a",
+        phase: "applied",
+        resolvedAt: "2026-06-05T00:05:00.000Z",
+        outcome: "Multi-agent sessions is on",
+        // The patch must not drop the fields it does not name.
+        label: "Multi-agent sessions",
+        from: "off",
+        to: "on",
+      });
+      expect(mgr.load("sess-1")[0].settingsProposal).toEqual(merged);
+    });
+
+    it("returns null for a card it does not hold, so a caller cannot emit a phantom card", () => {
+      const mgr = new ChatHistoryManager(dbManager);
+      mgr.append("sess-1", proposal("set-a"));
+      expect(mgr.updateSettingsProposalCard("sess-1", "set-missing", { phase: "applied" })).toBeNull();
+    });
+
+    it("skips an unparseable row rather than losing the readable cards beside it", () => {
+      const mgr = new ChatHistoryManager(dbManager);
+      dbManager.db
+        .prepare("INSERT INTO messages (session_id, role, content, settings_proposal) VALUES (?, 'assistant', '', ?)")
+        .run("sess-1", "{not json");
+      mgr.append("sess-1", proposal("set-a"));
+      expect(mgr.getSettingsProposalCard("sess-1", "set-a")?.cardId).toBe("set-a");
+    });
   });
 
   describe("issue-write card persistence (docs/177)", () => {

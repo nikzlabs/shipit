@@ -251,9 +251,15 @@ export function MessageInput({
 
   const [pendingRole, setPendingRole] = useState<string | undefined>(() => getSavedRoleName());
 
-  // The seed may name a role this session never took — it is chosen for the
-
-  const roleInForce = hasActiveSession ? sessionRoleName : (sessionRoleName ?? pendingRole);
+  // The seed may name a role this session never took — it is chosen for the NEXT
+  // one — so a live session's row is the only authority over it (req 13). A warm
+  // session has no row (`SessionManager.list()` filters `warm = 0`), and "no row"
+  // is not an answer of "no role": until one exists the seed still shows, which
+  // is optimistic and can outlive a seed the server refused (docs/272 plan, "the
+  // seed is the display").
+  const sessionRowKnown = useSessionStore((s) => s.sessions.some((row) => row.id === sessionId));
+  const sessionAnswered = hasActiveSession && sessionRowKnown;
+  const roleInForce = sessionAnswered ? sessionRoleName : (sessionRoleName ?? pendingRole);
 
   const leavePendingRole = () => {
     setPendingRole(undefined);

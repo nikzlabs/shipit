@@ -14,10 +14,12 @@ import { CompactionCard } from "../../CompactionCard.js";
 import { IssueWriteCard } from "../../IssueWriteCard.js";
 import { IssueRefCard } from "../../IssueRefCard.js";
 import { ActionChecklistCard } from "../../ActionChecklistCard.js";
+import { RepoSessionProposalCard } from "../../RepoSessionProposalCard.js";
 import { PresentInlineCard } from "../../PresentInlineCard.js";
 import { BranchUpdatedCard } from "../../BranchUpdatedCard.js";
 import { SessionRenamedCard } from "../../SessionRenamedCard.js";
 import { SessionSettingsChangeCard } from "../../SessionSettingsChangeCard.js";
+import { SettingsProposalCard } from "../../SettingsProposalCard.js";
 import { BranchSyncedCard } from "../../BranchSyncedCard.js";
 import { ReleaseLifecycleCard } from "../../ReleaseLifecycleCard.js";
 import type { ChatMessage } from "../types.js";
@@ -51,6 +53,10 @@ export interface MessageCardCallbacks {
   }) => void;
 
   onSendFollowUp?: (text: string, options?: { actionChecklistCardId?: string }) => boolean;
+  /** docs/299-agent-settings-access req 4 — the click that moves a setting. */
+  onSettingsProposalDecision?: (cardId: string, action: "apply" | "dismiss") => void;
+
+  onStartRepoSession?: (cardId: string) => Promise<void>;
 
   onReleaseConfirm?: (version: string, mechanism: ReleaseMechanism) => void;
 
@@ -277,6 +283,20 @@ export function renderMessageCard(msg: ChatMessage, cb: MessageCardCallbacks): R
     );
   }
 
+  if (msg.repoSessionProposal) {
+    return (
+      <div className="flex justify-start">
+        <div className="max-w-2xl w-full">
+          <RepoSessionProposalCard
+            card={msg.repoSessionProposal}
+            onStart={cb.onStartRepoSession}
+            onOpenSession={cb.onResumeSession}
+          />
+        </div>
+      </div>
+    );
+  }
+
   // in place. Wider than the other cards because an artifact needs room to read.
   if (msg.presentInline) {
     return (
@@ -316,6 +336,19 @@ export function renderMessageCard(msg: ChatMessage, cb: MessageCardCallbacks): R
       <div className="flex justify-start">
         <div className="max-w-2xl w-full">
           <SessionSettingsChangeCard card={msg.sessionSettingsChange} />
+        </div>
+      </div>
+    );
+  }
+
+  if (msg.settingsProposal) {
+    return (
+      <div className="flex justify-start">
+        <div className="max-w-2xl w-full">
+          <SettingsProposalCard
+            card={msg.settingsProposal}
+            {...(cb.onSettingsProposalDecision ? { onDecide: cb.onSettingsProposalDecision } : {})}
+          />
         </div>
       </div>
     );

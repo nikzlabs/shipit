@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { ServiceError } from "./types.js";
 import { resolveBuildId } from "../build-id.js";
-import { stripUrlCredentials, canonicalRepoKey } from "../git-utils.js";
+import { stripUrlCredentials } from "../git-utils.js";
 import { gitArgsWithHooksDisabled } from "../../shared/git-hooks-guard.js";
 import { gitSpawnOverridesForTree } from "../../shared/git-tree-uid.js";
 
@@ -540,33 +540,6 @@ export async function resolveShipitFixTarget(
     repoUrl: status.remoteUrl,
     ...(status.refSource ? { refSource: status.refSource } : {}),
   };
-}
-
-export interface EnsureRepoReadyDeps {
-  repoStore: {
-    get(url: string): { status: string } | undefined;
-    add(url: string): unknown;
-    setReady(url: string): void;
-    list(): { url: string }[];
-  };
-  getSharedRepoDir: (url: string) => string;
-  ensureBareCache: (cacheDir: string, url: string) => Promise<unknown>;
-}
-
-export async function ensureShipitSourceRepoReady(
-  url: string,
-  deps: EnsureRepoReadyDeps,
-): Promise<string> {
-  const clean = stripUrlCredentials(url);
-  const wanted = canonicalRepoKey(url);
-  const existing = deps.repoStore.list().find((r) => canonicalRepoKey(r.url) === wanted);
-  // Claims need the existing store key even when an equivalent URL has another spelling.
-  const key = existing?.url ?? clean;
-  if (deps.repoStore.get(key)?.status === "ready") return key;
-  deps.repoStore.add(key);
-  await deps.ensureBareCache(deps.getSharedRepoDir(key), key);
-  deps.repoStore.setReady(key);
-  return key;
 }
 
 export function buildShipitFixPrompt(opts: {

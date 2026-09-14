@@ -18,7 +18,7 @@ import { applyPreTurnReset, type PreTurnResetHookResult } from "../pre-turn-rese
 import { buildBugOutcomeNotice } from "../services/bug-report.js";
 import { routeVoiceNote } from "../voice/voice-note-router.js";
 import type { SessionRunnerInterface, SystemTurnDeps, QueuedMessage } from "../session-runner.js";
-import { startQueuedMessage } from "../queue-drain.js";
+import { startQueuedMessage, takeRunnableQueuedTurn } from "../queue-drain.js";
 import {
   prepareSessionAgentEnvironment,
   finalizeSessionAgentEnvironment,
@@ -87,7 +87,9 @@ export async function drainNextQueuedMessage(
   }
   if (messageQueue.length === 0) return;
 
-  const next = messageQueue.shift()!;
+  // Gate before the entry leaves the queue: past this point it is claimed, not queued.
+  const next = takeRunnableQueuedTurn(runner);
+  if (!next) return;
   emit({
     type: "queue_updated",
     queue: messageQueue.map((item, idx) => ({ text: item.text, position: idx + 1 })),

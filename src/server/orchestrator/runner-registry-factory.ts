@@ -1,8 +1,8 @@
 import { readSessionAccountMarker, readSessionResidentRoute } from "./session-credentials.js";
-import { queuedMessageToDispatchOptions } from "./prepared-dispatch.js";
+import { releaseQueuedTurn } from "./queue-drain.js";
 import type { GitManager } from "../shared/git.js";
 import type { SessionRunnerFactory } from "./session-runner.js";
-import { AgentTurnAdmissionError, SessionRunnerRegistry, dispatchOnRunner } from "./session-runner.js";
+import { AgentTurnAdmissionError, SessionRunnerRegistry } from "./session-runner.js";
 import type { SessionRunnerInterface, SystemTurnDeps } from "./session-runner.js";
 import type { SessionManager } from "./sessions.js";
 import { billingModeForRoute } from "./sessions.js";
@@ -193,18 +193,9 @@ export function createRunnerRegistry(
           sessionId: runner.sessionId,
           backgroundTasks: runner.backgroundWorkDescriptions,
         });
-        // Re-enter dispatch to preserve the queued entry's settlement callback.
-        if (
-          runner.backgroundWorkDescriptions.length === 0
-          && !runner.running
-          && runner.queueLength > 0
-        ) {
-          const next = runner.dequeue();
-          if (next) {
-            runner.emitMessage({ type: "queue_updated", queue: runner.getQueueSnapshot() });
-            dispatchOnRunner(runner, systemTurnDeps, queuedMessageToDispatchOptions(next));
-          }
-        }
+        // The release re-enters dispatch, preserving the entry's settlement callback, and
+        // leaves it queued in order if another gate (a system hold) still holds.
+        if (runner.backgroundWorkDescriptions.length === 0) releaseQueuedTurn(runner);
       });
       wireResetEligibleOnFileChange(
         {

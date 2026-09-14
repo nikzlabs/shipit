@@ -12,6 +12,7 @@ import type {
   AgentProcess,
   LimitsRefreshResult,
   EgressEnforcementStatus,
+  VersionInfo,
 } from "../shared/types.js";
 import type { ReconcileEgressOutcome } from "./services/reconcile-session-egress.js";
 import type { UsageManager } from "./usage.js";
@@ -65,6 +66,7 @@ import { registerMarketplaceRoutes } from "./api-routes-marketplace.js";
 import { registerVoiceRoutes } from "./api-routes-voice.js";
 import { registerBugReportRoutes } from "./api-routes-bug-report.js";
 import { registerProposeActionsRoutes } from "./api-routes-propose-actions.js";
+import { registerProposeRepoSessionRoutes } from "./api-routes-propose-repo-session.js";
 import { registerEgressRoutes } from "./api-routes-egress.js";
 import { registerIssueRoutes } from "./api-routes-issues.js";
 import { registerPluginRepoRoutes } from "./api-routes-plugin-repos.js";
@@ -167,6 +169,8 @@ export interface ApiDeps {
   trackerFetchImpl?: typeof fetch;
   /** Runs background work that needs a harness but no session (docs/299-direct-provider-calls req 8). */
   backgroundHarnessRunner?: BackgroundHarnessRunner | null;
+  /** The running build, for the update notice's anchor (docs/304). */
+  version?: VersionInfo;
 }
 
 export function resolveSessionDir(
@@ -243,12 +247,17 @@ export async function registerApiRoutes(
       serviceManagers,
     });
   }
-  await registerUpdateRoutes(app);
+  await registerUpdateRoutes(app, {
+    credentialStore: deps.credentialStore,
+    sseBroadcast: deps.sseBroadcast,
+    ...(deps.version ? { version: deps.version } : {}),
+  });
   await registerAgentRoutes(app, deps);
   await registerAgentSettingsRoutes(app, deps);
   await registerVoiceRoutes(app, deps);
   await registerBugReportRoutes(app, deps);
   await registerProposeActionsRoutes(app, deps);
+  await registerProposeRepoSessionRoutes(app, deps2);
   await registerEgressRoutes(app, deps);
   await registerIssueRoutes(app, deps);
   await registerPluginRepoRoutes(app, deps);
@@ -266,6 +275,7 @@ export async function registerApiRoutes(
     credentialStore: deps.credentialStore,
     runnerRegistry: deps.runnerRegistry,
     serviceManagers: deps.serviceManagers ?? new Map<string, ServiceManager>(),
+    sseBroadcast: deps.sseBroadcast,
     ...(deps.mcpOAuthFetchImpl !== undefined
       ? { oauthFetchImpl: deps.mcpOAuthFetchImpl }
       : {}),

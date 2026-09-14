@@ -4,6 +4,7 @@ import { readGlobalSystemPrompt, writeGlobalSystemPrompt } from "../global-syste
 import { payloadDeclarations } from "../../shared/settings-catalogue/index.js";
 import type {
   AnyPayloadDeclaration,
+  ApplyOutcome,
   CredentialStoreSettingKey,
   GlobalSettingsPatch,
   StoredGlobalSettings,
@@ -75,26 +76,31 @@ export function validateDeclaredSettings(values: GlobalSettingsPatch): DeclaredS
   return writes;
 }
 
+/**
+ * Each store answers for its own durability (docs/299 → "Saved" has to mean
+ * saved): the credential store rolls a failed disk write back, clearing the
+ * instructions can fail with the old file still in place, and the git identity
+ * is two writes of which the first can land alone.
+ */
 export async function writeDeclaredSetting(
   write: DeclaredSettingWrite,
   ctx: SettingsDerivationContext,
-): Promise<void> {
+): Promise<ApplyOutcome> {
   const { declaration, value } = write;
   const { store } = declaration;
   switch (store.kind) {
-    case "credential-store":
+    case "credential-store": {
       if (!ctx.credentialStore) throw new ServiceError(500, "No credential store is configured");
-      ctx.credentialStore.setDeclaredSetting(
-        declaration.key as CredentialStoreSettingKey,
-        value,
-      );
-      return;
+      const credentialStore = ctx.credentialStore;
+      return credentialStore.transact(() => {
+        credentialStore.setDeclaredSetting(declaration.key as CredentialStoreSettingKey, value);
+      }).outcome;
+    }
     case "system-prompt-file":
-      await writeGlobalSystemPrompt(ctx.appWorkspaceDir, value as string, store.promptScope);
-      return;
+      return writeGlobalSystemPrompt(ctx.appWorkspaceDir, value as string, store.promptScope);
     case "git-config": {
       const identity = value as { name: string; email: string };
-      writeGitIdentity(identity.name, identity.email);
+      return writeGitIdentity(identity.name, identity.email);
     }
   }
 }

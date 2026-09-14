@@ -50,6 +50,12 @@ export interface WsModelSelectionChanged {
   modelId: string | null;
   reasoningEffort: string | null;
   roleName: string | null;
+  /**
+   * Set when ShipIt, not the user, dropped the role — connect-time reconciliation
+   * moved a parameter the role set. The browser remembers the role the user last
+   * SELECTED (docs/272 req 12), so this clear must not delete that default.
+   */
+  roleAutoCleared?: boolean;
   /** Explains changes the server made beyond the user's selection. */
   notice?: string;
 }

@@ -5,7 +5,6 @@ import { isEgressHostAllowed, shouldCardEgressHost } from "./egress-policy.js";
 import {
   normalizeHost,
   buildEffectiveAllowlist,
-  isBuiltinDefault,
 } from "./egress-allowlist.js";
 import { egressHostReach } from "./egress-host-reach.js";
 import { EGRESS_GLOBAL_SCOPE } from "./egress-allowlist-store.js";
@@ -21,7 +20,15 @@ import type {
 } from "../shared/types.js";
 import { computeEgressGrantOutcome } from "./egress-grant-outcome.js";
 import { emitSessionSettingsChangeCard } from "./services/session-settings.js";
+import {
+  applyEgressDefaultsRestore,
+  applyEgressGlobalEnabled,
+  applyEgressHostAdd,
+  applyEgressHostRemove,
+} from "./services/settings-apply.js";
+import type { EgressApplyDeps } from "./services/settings-apply.js";
 import { serializeNetworkModeWrite } from "./services/network-mode-writes.js";
+import type { ApplyOutcome } from "../shared/settings-catalogue/index.js";
 import type { PersistedEgressPrompt } from "./chat-history.js";
 
 function egressModeLabel(override: boolean | null | undefined): string {
@@ -120,6 +127,15 @@ export async function registerEgressRoutes(app: FastifyInstance, deps: ApiDeps):
 
   // Keep mutations browser-only so contained agents cannot grant themselves access.
   if (store) {
+    const applyDeps: EgressApplyDeps = {
+      sseBroadcast: deps.sseBroadcast,
+      egressAllowlistStore: store,
+      containerManager: deps.containerManager,
+      broadcastEgressSettings: () => {
+        deps.sseBroadcast("egress_settings", globalSettings(store, enforcement));
+      },
+    };
+
     app.get("/api/egress/settings", async () => globalSettings(store, enforcement));
 
     app.get<{ Querystring: { session?: string } }>(
@@ -131,12 +147,25 @@ export async function registerEgressRoutes(app: FastifyInstance, deps: ApiDeps):
       },
     );
 
+    /*
+      Each of these answers the write's outcome rather than assuming it worked.
+      The shipped routes got that for free: a store error threw, and Fastify
+      answered 500. The shared layer turns that throw into an outcome, so
+      ignoring it here would be the one regression the extraction could cause —
+      a 200 for a write that did not happen.
+    */
+    const refuseUnapplied = (outcome: ApplyOutcome, reply: FastifyReply, fallback: string): boolean => {
+      if (outcome.status === "applied") return false;
+      reply.code(500).send({ error: outcome.detail ?? fallback, outcome });
+      return true;
+    };
+
     app.put<{ Body: { globalEnabled?: boolean } }>(
       "/api/egress/settings",
-      async (request) => {
+      async (request, reply) => {
         if (typeof request.body?.globalEnabled === "boolean") {
-          store.setGlobalEnabled(request.body.globalEnabled);
-          deps.sseBroadcast("egress_settings", globalSettings(store, enforcement));
+          const outcome = await applyEgressGlobalEnabled(applyDeps, request.body.globalEnabled);
+          if (refuseUnapplied(outcome, reply, "Failed to save the network setting")) return;
         }
         return globalSettings(store, enforcement);
       },
@@ -165,25 +194,23 @@ export async function registerEgressRoutes(app: FastifyInstance, deps: ApiDeps):
             startedContained: reportSession ? liveContained(reportSession) : null,
             reach: reachFor(reportSession, host),
           });
-        if (scope === EGRESS_GLOBAL_SCOPE && isBuiltinDefault(host)) {
-          store.unsuppressDefault(host);
-        } else {
-          store.addHost(scope, host);
+        // The unsuppress-or-add, the broadcast and the session-only live reload
+        // are one act in the shared layer, so a second caller of the store
+        // cannot get the row without the rest (docs/299 → Apply goes through a
+        // shared layer).
+        const written = await applyEgressHostAdd(applyDeps, scope, host);
+        if (written.outcome.status === "failed") {
+          if (refuseUnapplied(written.outcome, reply, "Failed to add the host")) return;
         }
-        deps.sseBroadcast("egress_settings", globalSettings(store, enforcement));
+        if (written.reloadError !== undefined) {
+          reply.code(503);
+          return {
+            error: "allowlist saved, but live service refresh failed closed",
+            settings: sessionSettings(store, scope, enforcement, liveContained(scope)),
+          };
+        }
         if (!isGlobal) {
-          let reloaded: boolean;
-          try {
-            reloaded = (await deps.containerManager?.reloadEgress(scope)) === true;
-          } catch (error) {
-            console.error(`[egress:${scope}] allowlist saved but live refresh failed closed:`, error);
-            reply.code(503);
-            return {
-              error: "allowlist saved, but live service refresh failed closed",
-              settings: sessionSettings(store, scope, enforcement, liveContained(scope)),
-            };
-          }
-          return { ...sessionSettings(store, scope, enforcement, liveContained(scope)), grant: grant(reloaded) };
+          return { ...sessionSettings(store, scope, enforcement, liveContained(scope)), grant: grant(written.reloaded) };
         }
         return { ...globalSettings(store, enforcement), grant: grant(false) };
       },
@@ -198,21 +225,17 @@ export async function registerEgressRoutes(app: FastifyInstance, deps: ApiDeps):
           reply.code(400);
           return { error: "host is required" };
         }
-        if (scope === EGRESS_GLOBAL_SCOPE && isBuiltinDefault(host)) {
-          store.suppressDefault(host);
-        } else {
-          store.removeHost(scope, host);
-        }
-        deps.sseBroadcast("egress_settings", globalSettings(store, enforcement));
+        const outcome = await applyEgressHostRemove(applyDeps, scope, host);
+        if (refuseUnapplied(outcome, reply, "Failed to remove the host")) return;
         return scope === EGRESS_GLOBAL_SCOPE
           ? globalSettings(store, enforcement)
           : sessionSettings(store, scope, enforcement, liveContained(scope));
       },
     );
 
-    app.post("/api/egress/defaults/restore", async () => {
-      store.restoreDefaults();
-      deps.sseBroadcast("egress_settings", globalSettings(store, enforcement));
+    app.post("/api/egress/defaults/restore", async (_request, reply) => {
+      const outcome = await applyEgressDefaultsRestore(applyDeps);
+      if (refuseUnapplied(outcome, reply, "Failed to restore the default allowlist")) return;
       return allowlistView(store, deps.credentialStore, undefined, enforcement, null);
     });
 

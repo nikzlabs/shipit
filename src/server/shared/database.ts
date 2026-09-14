@@ -904,6 +904,43 @@ const MIGRATIONS: Migration[] = [
       CREATE INDEX IF NOT EXISTS idx_usage_session ON usage_turns(session_id);
     `);
   },
+  // docs/299-agent-settings-access req 4 — the transcript card the user clicks.
+  (db) => {
+    const columns = db.prepare("PRAGMA table_info(messages)").all() as { name: string }[];
+    if (columns.some((c) => c.name === "settings_proposal")) return;
+    db.exec("ALTER TABLE messages ADD COLUMN settings_proposal TEXT");
+  },
+  // The private half of a proposal, keyed by card id and never projected to a
+  // viewer: transcript projection returns a message's fields unless something
+  // strips them, so a baseline carried on the card would reach every viewer and
+  // every replay. The phase is duplicated here on purpose — this row is what a
+  // decision loads and claims, and the card is what the user reads.
+  (db) => {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS settings_proposals (
+        card_id      TEXT PRIMARY KEY,
+        session_id   TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+        setting_key  TEXT NOT NULL,
+        repo_url     TEXT,
+        item         TEXT,
+        phase        TEXT NOT NULL,
+        from_json    TEXT,
+        proposed_json TEXT,
+        baseline_json TEXT,
+        created_at   TEXT NOT NULL,
+        resolved_at  TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_settings_proposals_target
+        ON settings_proposals(setting_key, repo_url, item, created_at);
+    `);
+  },
+  // docs/303 — the cross-repository session proposal card. Appended after the
+  // docs/299 migrations, which deployed installs have already run.
+  (db) => {
+    const columns = db.prepare("PRAGMA table_info(messages)").all() as { name: string }[];
+    if (columns.some((c) => c.name === "repo_session_proposal")) return;
+    db.exec("ALTER TABLE messages ADD COLUMN repo_session_proposal TEXT");
+  },
 ];
 
 /** Guard tests that rewind user_version and replay later migrations. */

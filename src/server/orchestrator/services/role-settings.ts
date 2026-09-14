@@ -80,9 +80,12 @@ export function applyRoleWrites(
   // Validate the whole batch before any write.
   const plans = planRoleWrites(roles as Record<string, unknown>, store, deps);
   for (const plan of plans) {
-    // Create before deleting the old name so a crash cannot lose both copies.
-    store.setRole(plan.name, plan.role);
-    if (plan.previousName && plan.previousName !== plan.name) {
+    // Create before deleting the old name so a crash cannot lose both copies —
+    // and only delete once the create is DURABLE, because a rolled-back create
+    // followed by a successful delete loses the role outright (docs/299 →
+    // "Saved" has to mean saved).
+    const created = store.setRole(plan.name, plan.role);
+    if (created.status === "applied" && plan.previousName && plan.previousName !== plan.name) {
       store.setRole(plan.previousName, null);
     }
   }

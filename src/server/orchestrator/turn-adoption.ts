@@ -2,7 +2,11 @@ import type { AgentId, AgentProcess } from "../shared/types.js";
 import type { SessionRunnerInterface, SystemTurnDeps } from "./session-runner.js";
 import { executeAgentTurn } from "./turn-executor.js";
 import { buildTurnMessages } from "./chat-card-persistence.js";
-import { startQueuedMessage, queuedMessageToDispatchOptions } from "./queue-drain.js";
+import {
+  startQueuedMessage,
+  queuedMessageToDispatchOptions,
+  takeRunnableQueuedTurn,
+} from "./queue-drain.js";
 
 export interface InFlightTurnInfo {
   agentId: AgentId;
@@ -34,7 +38,7 @@ export async function adoptInFlightTurn(
   const drainNext = async (): Promise<void> => {
     // A rebase flow releases the queue when it settles.
     if (runner.systemTurnInProgress) return;
-    const next = runner.dequeue();
+    const next = takeRunnableQueuedTurn(runner);
     if (!next) return;
     runner.emitMessage({ type: "queue_updated", queue: runner.getQueueSnapshot() });
     await startQueuedMessage(runner, next, (queued) => {

@@ -9,7 +9,7 @@ import { useSettingsStore } from "../stores/settings-store.js";
 import { useEgressStore } from "../stores/egress-store.js";
 import type { ToastData } from "../components/Toast.js";
 import { fullResetAllStores } from "../stores/actions/session-actions.js";
-import type { AgentId, SessionInfo, RepoInfo, PrStatusSummary, DockerMemoryStats, SystemInfo, SubscriptionLimitsMap, PermissionMode, CredentialRoute, EgressSettings } from "../../server/shared/types.js";
+import type { AgentId, SessionInfo, RepoInfo, PrStatusSummary, DockerMemoryStats, SystemInfo, SubscriptionLimitsMap, PermissionMode, CredentialRoute, EgressSettings, UpdateNotice } from "../../server/shared/types.js";
 import type { ReviewerSlotView, RoleView } from "../../server/shared/types/agent-types.js";
 import type { EligibleModelOption, GoalActionModes } from "../agent-types.js";
 import { getLoadedClientBuildId, shouldReloadForServerBuild } from "../utils/client-build.js";
@@ -21,6 +21,7 @@ import {
   saveModelId,
   saveParkedHarness,
 } from "../utils/local-storage.js";
+import { refreshGlobalSettings } from "../utils/session-data.js";
 import { persistHarnessPick } from "../utils/harness-seed.js";
 import { newSessionAgentId } from "../utils/new-session-agent.js";
 import { resolveAuthedSelection, resolveParkedRestore } from "../utils/resolve-authed-selection.js";
@@ -130,6 +131,8 @@ export function useServerEvents(): void {
   const [connectAttempt, setConnectAttempt] = useState(0);
   const reconnectAttemptRef = useRef(0);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** Every open after the first is a recovery, whatever closed the last one. */
+  const hasConnectedRef = useRef(false);
 
   // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {
@@ -643,6 +646,28 @@ export function useServerEvents(): void {
       void store.refresh().catch(() => {});
     });
 
+    /*
+      A setting moved — here, in another tab, or through the shared apply layer
+      on the server (docs/299-agent-settings-access). The event names the keys
+      and carries no values: the settings payload is large and partly computed,
+      so re-reading it is both simpler and the only way to pick up what a write
+      derived. An editor with unsaved edits keeps its draft — the drafts live in
+      component state, which this does not touch — and says the underlying value
+      changed.
+    */
+    es.addEventListener("settings_changed", (e: MessageEvent) => {
+      const data = JSON.parse(e.data as string) as { keys?: string[] };
+      void refreshGlobalSettings().catch((err: unknown) => {
+        console.error("[settings] refresh after a settings change failed:", err);
+      });
+      // The allowlist and the containment toggle are not in that payload; the
+      // egress store reads them, and only when something is looking at them.
+      if (!data.keys?.some((key) => key.startsWith("network."))) return;
+      const egress = useEgressStore.getState();
+      if (!egress.loaded) return;
+      void egress.refresh().catch(() => {});
+    });
+
     es.addEventListener("pr_status", (e: MessageEvent) => {
       const data = JSON.parse(e.data as string) as {
         updates: PrStatusSummary[];
@@ -683,6 +708,12 @@ export function useServerEvents(): void {
       useUiStore.getState().setProcessStartedAt(data.processStartedAt);
       if (data.version) useUiStore.getState().setVersion(data.version);
       useUiStore.getState().setUpdateMode(data.updateMode ?? "manual");
+    });
+
+    // null clears: it is how a reconnect says the install has since been updated.
+    es.addEventListener("update_notice", (e: MessageEvent) => {
+      const data = JSON.parse(e.data as string) as UpdateNotice | null;
+      useUiStore.getState().setUpdateNotice(data);
     });
 
     es.addEventListener("session_status", (e: MessageEvent) => {
@@ -741,6 +772,27 @@ export function useServerEvents(): void {
 
     es.onopen = () => {
       reconnectAttemptRef.current = 0;
+      /*
+        The recovery refetch (docs/299 → Apply goes through a shared layer). A
+        broadcast does not reach a viewer that was away, and hanging the catch-up
+        off chat-history hydration is not enough: that path needs an active
+        session, while the Settings dialog can be open on the home screen. So it
+        hangs off THIS connection's recovery — the global one — which is the only
+        signal every viewer gets.
+
+        Not on the first open: the bootstrap fetch has just read the same values.
+      */
+      if (!hasConnectedRef.current) {
+        hasConnectedRef.current = true;
+        return;
+      }
+      void refreshGlobalSettings().catch((err: unknown) => {
+        console.error("[settings] refresh after reconnecting failed:", err);
+      });
+      // The allowlist and the containment toggle are not in that payload, and a
+      // viewer that was away missed their broadcast too.
+      const egress = useEgressStore.getState();
+      if (egress.loaded) void egress.refresh().catch(() => {});
     };
 
     es.onerror = () => {

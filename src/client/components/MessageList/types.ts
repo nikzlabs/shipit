@@ -4,11 +4,13 @@ import type {
   CompactionCard as CompactionCardData,
   SubAgentConsultCard as SubAgentConsultCardData,
   ActionChecklistCard as ActionChecklistCardData,
+  RepoSessionProposalCard as RepoSessionProposalCardData,
   PresentInlineCard as PresentInlineCardData,
   BranchAutoResetCard as BranchAutoResetCardData,
   BranchSyncedCard as BranchSyncedCardData,
   SessionRenamedCard as SessionRenamedCardData,
   SessionSettingsChangeCard as SessionSettingsChangeCardData,
+  SettingsProposalCard as SettingsProposalCardData,
   SelfMergeWatchCard as SelfMergeWatchCardData,
   AiReviewCard,
 } from "../../../server/shared/types.js";
@@ -292,6 +294,9 @@ export interface ChatMessage {
    */
   actionChecklist?: ActionChecklistCardData;
 
+  /** docs/303 — work the agent says belongs in a different repository. */
+  repoSessionProposal?: RepoSessionProposalCardData;
+
   presentInline?: PresentInlineCardData;
 
   branchAutoReset?: BranchAutoResetCardData;
@@ -301,6 +306,14 @@ export interface ChatMessage {
   sessionRenamed?: SessionRenamedCardData;
 
   sessionSettingsChange?: SessionSettingsChangeCardData;
+  /**
+   * docs/299-agent-settings-access req 4 — a ShipIt setting the agent proposes
+   * changing. The setting does not move until the user clicks, and every phase
+   * from `pending` to a terminal answer rides on this field: there is no client
+   * store, so the card renders identically live and after a reload, and the
+   * server is the only thing that ever moves it on.
+   */
+  settingsProposal?: SettingsProposalCardData;
 }
 
 export interface TextSegment {

@@ -1,4 +1,6 @@
 export * from "./types.js";
+export * from "./apply-outcome.js";
+export * from "./tabs.js";
 export * from "./value-types.js";
 export * from "./projection.js";
 export * from "./global-settings.js";

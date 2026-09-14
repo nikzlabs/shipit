@@ -16,6 +16,47 @@ when the user explicitly asks for *another session*, *a parallel branch*, or
 > so `shipit session create` is refused. See
 > [sandbox-session.md](sandbox-session.md).
 
+## Work that belongs in a DIFFERENT repository — `propose_repo_session`
+
+Everything else on this page is about sessions on **your own** repository. When
+the work belongs somewhere else — the API repo you consume, a shared library,
+an infrastructure repo — `shipit session create` cannot do it: a spawn always
+claims the parent's repo, and there is no `--repo` flag.
+
+Use the **`propose_repo_session`** MCP tool instead. It posts a card in the
+chat; one click starts an ordinary session on that repository with your prompt
+already sent, so the user does not copy your instruction into a session they
+make by hand.
+
+```
+propose_repo_session({
+  repo:   "acme/api",                          // owner/repo, or a clone URL
+  title:  "Add cursor pagination to /events",  // the sidebar name, ≤60 chars
+  prompt: "…",                                 // the first message, ≤4000 chars
+})
+```
+
+Four things to know:
+
+- **You name the repository, and ShipIt verifies it before the card exists.**
+  The call is refused — to you, in the same turn — if the name is not a GitHub
+  repository, if it is the repository you are already in, or if the user's
+  connected GitHub account cannot write to it. So a name you got wrong is yours
+  to correct, not the user's to discover on the click.
+- **The prompt must stand alone.** The session that receives it has a different
+  repository checked out and none of this conversation. State the goal, the
+  constraints and what to read there; say which repository the request came
+  from, so that agent can look at the other half of the contract. Name files,
+  docs and issues rather than pasting their contents.
+- **The started session is independent.** It is not a child: you cannot
+  `message`, `wait` on, or be woken by it. Everything it needs goes in the
+  prompt.
+- **It is non-blocking.** Post the card and end your turn; do not repeat the
+  proposal in prose.
+
+If the repository is one ShipIt has never seen, that is fine — the card says so,
+and starting it registers the repository. Nothing is added until the user clicks.
+
 ## When to spawn a sibling session
 
 Spawn a new session when **the user has asked for it**. Concretely, when the
@@ -116,6 +157,7 @@ override the parent.
 
 | Subcommand | Notes |
 |---|---|
+| `shipit session create` … | **Same repository only.** There is no `--repo`/`--owner`; a spawn claims the parent's repo. For work in a *different* repository, use `propose_repo_session` (top of this page). |
 | `shipit session create --prompt-file FILE --title T [--role NAME\|--no-role] [OVERRIDE…] [--turn ID] [--detached] [--json]` | Spawn a sibling session with the prompt from `FILE` (or `-` for stdin) as its first user message. The child always branches off the parent repo's freshly-fetched `origin/main`, so a change you just merged (e.g. a design doc) is visible to it — there is no `--base` to pin it elsewhere. `--title` is **required** — you name the session. There is no inline `-p`/`--prompt` — the prompt must come from a file or stdin so backticks and `$(...)` aren't evaluated by the shell. The child's branch is auto-generated (`shipit/<random>`) — you cannot name it. `--detached` makes the new session **completely separate** instead of a child — see *Child vs detached* below. Returns the child's id, branch, and status on stdout. **What the child runs on** is named the same way as for `shipit agent run` — see *What the child runs on* below. |
 | `shipit session list [--turn ID] [--json]` | List sessions spawned by this parent. With `--turn`, sessions spawned in the given turn bubble to the top. |
 | `shipit session view <id> [--json]` | Read a child session: status (`running`/`idle`/`error`), branch, queue length, spawn timestamp, latest assistant message preview, PR URL when available, and the resolved `agent` + `model` the child actually runs on (use these to confirm the backend/model rather than trusting the child's own self-report, which models are unreliable at). |

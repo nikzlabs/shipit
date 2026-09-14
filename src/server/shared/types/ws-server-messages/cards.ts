@@ -5,11 +5,13 @@ import type {
   CompactionCard,
   SubAgentConsultCard,
   ActionChecklistCard,
+  RepoSessionProposalCard,
   PresentInlineCard,
   BranchAutoResetCard,
   BranchSyncedCard,
   SessionRenamedCard,
   SessionSettingsChangeCard,
+  SettingsProposalCard,
   NonTurnFailureCard,
 } from "../domain-types.js";
 import type { ReleaseStatusSummary } from "../release-types.js";
@@ -160,6 +162,24 @@ export interface WsActionChecklistUpdate {
   submittedAt: string;
 }
 
+/** docs/303 — work the agent says belongs in a different repository. */
+export interface WsRepoSessionProposalCard {
+  type: "repo_session_proposal_card";
+  sessionId: string;
+  card: RepoSessionProposalCard;
+}
+
+/** docs/303 — the user started it: starting → started, or failed. */
+export interface WsRepoSessionProposalUpdate {
+  type: "repo_session_proposal_update";
+  sessionId: string;
+  cardId: string;
+  state: "starting" | "started" | "failed";
+  startedSessionId?: string;
+  startedAt?: string;
+  errorMessage?: string;
+}
+
 export interface WsBranchAutoResetCard {
   type: "branch_auto_reset_card";
   sessionId: string;
@@ -182,6 +202,25 @@ export interface WsSessionSettingsChangeCard {
   type: "session_settings_change_card";
   sessionId: string;
   card: SessionSettingsChangeCard;
+}
+
+/** docs/299-agent-settings-access req 4 — a settings change the user has to click. */
+export interface WsSettingsProposalCard {
+  type: "settings_proposal_card";
+  sessionId: string;
+  card: SettingsProposalCard;
+}
+
+/**
+ * A phase change on a card already in the transcript. Carries the whole card
+ * rather than a patch: a viewer that attached after the card was posted has
+ * nothing to patch, and the durable row is the source of truth either way.
+ */
+export interface WsSettingsProposalUpdate {
+  type: "settings_proposal_update";
+  sessionId: string;
+  cardId: string;
+  card: SettingsProposalCard;
 }
 
 export interface WsNonTurnFailureCard {

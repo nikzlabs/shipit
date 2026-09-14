@@ -943,3 +943,50 @@ describe("declared settings keep the field names shipped installs wrote", () => 
     }
   });
 });
+
+describe("CredentialStore — update notice (docs/304)", () => {
+  let dir: string;
+
+  afterEach(() => {
+    if (dir) fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  function store(): CredentialStore {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-cred-update-"));
+    return new CredentialStore(dir);
+  }
+
+  it("persists the record for the build that wrote it", () => {
+    const s = store();
+    s.setUpdateNotice({
+      anchor: "abc123",
+      lastCheckedAt: "2026-09-14T09:00:00.000Z",
+      dismissed: true,
+      result: { available: true, latestVersion: "v1.5.0" },
+    });
+
+    expect(new CredentialStore(dir).getUpdateNotice("abc123")).toEqual({
+      anchor: "abc123",
+      lastCheckedAt: "2026-09-14T09:00:00.000Z",
+      dismissed: true,
+      result: { available: true, latestVersion: "v1.5.0" },
+    });
+  });
+
+  it("discards a record left by a different build, dismissal and all", () => {
+    const s = store();
+    s.setUpdateNotice({
+      anchor: "abc123",
+      dismissed: true,
+      result: { available: true, latestVersion: "v1.5.0" },
+    });
+
+    expect(s.getUpdateNotice("def456")).toBeNull();
+    // Dropped from disk too, so the next build does not re-read it.
+    expect(new CredentialStore(dir).getUpdateNotice("abc123")).toBeNull();
+  });
+
+  it("has nothing to report before the first check", () => {
+    expect(store().getUpdateNotice("abc123")).toBeNull();
+  });
+});

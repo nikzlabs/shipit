@@ -118,11 +118,15 @@ import type {
   WsSubAgentConsultCard,
   WsActionChecklistCard,
   WsActionChecklistUpdate,
+  WsRepoSessionProposalCard,
+  WsRepoSessionProposalUpdate,
   WsPresentInlineCard,
   WsBranchAutoResetCard,
   WsBranchSyncedCard,
   WsSessionRenamedCard,
   WsSessionSettingsChangeCard,
+  WsSettingsProposalCard,
+  WsSettingsProposalUpdate,
   WsNonTurnFailureCard,
   WsNonTurnFailureDismissed,
 } from "./cards.js";
@@ -158,11 +162,15 @@ export type WsServerMessage =
   | WsSubAgentConsultCard
   | WsActionChecklistCard
   | WsActionChecklistUpdate
+  | WsRepoSessionProposalCard
+  | WsRepoSessionProposalUpdate
   | WsPresentInlineCard
   | WsBranchAutoResetCard
   | WsBranchSyncedCard
   | WsSessionRenamedCard
   | WsSessionSettingsChangeCard
+  | WsSettingsProposalCard
+  | WsSettingsProposalUpdate
   | WsNonTurnFailureCard
   | WsNonTurnFailureDismissed
   | WsBugReportCard

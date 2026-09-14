@@ -12,8 +12,8 @@ import { listConfiguredCredentials } from "../service-routing.js";
 import { listCredentialRoutes, upsertSingleStringCredential } from "./credential-routes.js";
 import { setGitIdentity as writeGitIdentity } from "../git-config.js";
 import { buildAgentSystemInstructions } from "../agent-instructions.js";
-import { GLOBAL_SETTINGS } from "../../shared/settings-catalogue/index.js";
-import type { GlobalSettingKey, GlobalSettingsPatch } from "../../shared/settings-catalogue/index.js";
+import { combineOutcomes, GLOBAL_SETTINGS } from "../../shared/settings-catalogue/index.js";
+import type { ApplyOutcome, GlobalSettingKey, GlobalSettingsPatch } from "../../shared/settings-catalogue/index.js";
 import {
   currentDeclaredValue,
   readStoredGlobalSettings,
@@ -275,15 +275,20 @@ const SAVE_HOOKS: Partial<Record<GlobalSettingKey, SaveHook>> = {
   },
 };
 
+/**
+ * Two `git config` calls, so the write reports which of them landed rather than
+ * returning as if both did (docs/299 → "Saved" has to mean saved). Go through
+ * `applyGitIdentity` (`settings-apply.ts`), not this: the lock and the settings
+ * broadcast live there.
+ */
 export function setGitIdentityService(
   name: string,
   email: string,
-): { name: string; email: string } {
+): { identity: { name: string; email: string }; outcome: ApplyOutcome } {
   const declaration = GLOBAL_SETTINGS["git.identity"];
   const checked = declaration.type.validate({ name, email }, declaration.label);
   if (!checked.ok) throw new ServiceError(400, checked.message);
-  writeGitIdentity(checked.value.name, checked.value.email);
-  return checked.value;
+  return { identity: checked.value, outcome: writeGitIdentity(checked.value.name, checked.value.email) };
 }
 
 export interface SaveGlobalSettingsOptions extends GlobalSettingsPatch {
@@ -358,9 +363,25 @@ function requireRolesObject(roles: unknown): Record<string, unknown> {
   return roles as Record<string, unknown>;
 }
 
+export interface SaveGlobalSettingsResult {
+  settings: GlobalSettings;
+  /**
+   * Whether every part of the save is durable. A save writes to the credential
+   * store, the instructions files and the git config, and any of the three can
+   * fail on its own — so this is the whole save's answer, not the last write's
+   * (docs/299 → "Saved" has to mean saved).
+   */
+  outcome: ApplyOutcome;
+}
+
+/**
+ * Go through `applyGlobalSettings` (`settings-apply.ts`) rather than calling
+ * this: the conflict-domain lock and the settings broadcast live there, and this
+ * function raises neither.
+ */
 export async function saveGlobalSettings(
   opts: SaveGlobalSettingsOptions,
-): Promise<GlobalSettings> {
+): Promise<SaveGlobalSettingsResult> {
   const {
     agentRegistry, appWorkspaceDir, credentialStore, providerAccountManager,
     failoverCutoffs, accountSelectionMode, reviewers, roles,
@@ -389,36 +410,55 @@ export async function saveGlobalSettings(
   const roleWrites = roles === undefined ? undefined : requireRolesObject(roles);
   if (roleWrites) planRoleWrites(roleWrites, credentialStore, { credentialStore });
 
+  // Each write reports for itself, and the weakest answer is the save's answer:
+  // the credential store, the instructions files and the git config fail
+  // independently, so one durable write says nothing about the next.
+  const outcomes: ApplyOutcome[] = [];
   for (const write of declaredWrites) {
     const hook = SAVE_HOOKS[write.declaration.key as GlobalSettingKey];
     const previous = hook?.after
       ? currentDeclaredValue(write.declaration, credentialStore)
       : undefined;
-    await writeDeclaredSetting(write, derivationCtx);
+    outcomes.push(await writeDeclaredSetting(write, derivationCtx));
     hook?.after?.(write.value, previous, hookCtx);
   }
-  for (const { target, patch } of cutoffWrites) {
-    credentialStore.setFailoverCutoffs(target.serviceId, target.billingMode, patch);
-  }
-  for (const { target, mode } of selectionWrites) {
-    credentialStore.setSelectionMode(target.serviceId, target.billingMode, mode);
-  }
-  for (const [slot, pin] of reviewerWrites) credentialStore.setReviewerPin(slot, pin);
-  if (roleWrites) {
-    // Re-planned here rather than reused from the validation pass above: a role
-    // plan carries an existence check, and another save can land in an await
-    // between the two. Planning and applying in one synchronous run is what the
-    // shipped `applyRoleWrites` gave for free.
-    for (const plan of planRoleWrites(roleWrites, credentialStore, { credentialStore })) {
-      // Create before deleting the old name so a crash cannot lose both copies.
-      credentialStore.setRole(plan.name, plan.role);
-      if (plan.previousName && plan.previousName !== plan.name) {
-        credentialStore.setRole(plan.previousName, null);
+  // Folded in only when there IS bespoke work: an empty group reports `applied`,
+  // and an `applied` standing for no write would make a lone failed scalar read
+  // as a partial save.
+  const hasBespokeWrites = cutoffWrites.length > 0 || selectionWrites.length > 0
+    || reviewerWrites.length > 0 || roleWrites !== undefined;
+  if (hasBespokeWrites) {
+    outcomes.push(credentialStore.transact(() => {
+      for (const { target, patch } of cutoffWrites) {
+        credentialStore.setFailoverCutoffs(target.serviceId, target.billingMode, patch);
       }
-    }
+      for (const { target, mode } of selectionWrites) {
+        credentialStore.setSelectionMode(target.serviceId, target.billingMode, mode);
+      }
+      for (const [slot, pin] of reviewerWrites) credentialStore.setReviewerPin(slot, pin);
+      if (roleWrites) {
+        // Re-planned here rather than reused from the validation pass above: a role
+        // plan carries an existence check, and another save can land in an await
+        // between the two. Planning and applying in one synchronous run is what the
+        // shipped `applyRoleWrites` gave for free.
+        for (const plan of planRoleWrites(roleWrites, credentialStore, { credentialStore })) {
+          // Create before deleting the old name so a crash cannot lose both
+          // copies — and only delete once the create is DURABLE, because a
+          // rolled-back create followed by a successful delete loses the role
+          // outright.
+          const created = credentialStore.setRole(plan.name, plan.role);
+          if (created.status === "applied" && plan.previousName && plan.previousName !== plan.name) {
+            credentialStore.setRole(plan.previousName, null);
+          }
+        }
+      }
+    }).outcome);
   }
 
-  return getGlobalSettings(agentRegistry, appWorkspaceDir, credentialStore, providerAccountManager);
+  return {
+    settings: await getGlobalSettings(agentRegistry, appWorkspaceDir, credentialStore, providerAccountManager),
+    outcome: combineOutcomes(outcomes),
+  };
 }
 
 export function setAgent(
