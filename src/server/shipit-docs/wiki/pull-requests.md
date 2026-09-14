@@ -48,10 +48,12 @@ icons leave too little room beside it.
 
 Clicking anywhere on the card that is not a control opens the **PR** tab.
 
-Two more controls sit at the card's top right. A **files** toggle expands a
-strip of the issues this pull request references — `Closes`, `Refs`, or the
-issue the session started from — together with the notable docs, config files
-and images it changes, each a chip that opens the file. And a **⋮** menu:
+Two more controls sit at the card's top right. A **files** toggle — present only
+when there is something to show — expands a strip of the issues this pull
+request references (`Closes`, `Refs`, or the issue the session started from)
+together with the notable docs, config files and images it changes. A file chip
+opens that file; an issue chip opens it in the Issues panel when its tracker is
+known here. And a **⋮** menu:
 
 | Menu item | Appears |
 |---|---|
@@ -100,12 +102,17 @@ It holds five sections:
   verdict; the merge, auto-merge, fix-CI and resolve-conflicts controls; the
   same **⋮** menu as the card; and any deployment environments with their state
   and URL.
-- **Conversation** — every issue-style comment and every inline review thread,
-  with a box to add a comment.
+- **Conversation** — the issue-style comments and the inline review threads,
+  with a box to add a comment. The read is bounded — the most recent 30
+  comments, 30 threads, and 50 comments within a thread — so on a very busy pull
+  request it is a recent view rather than the complete history.
 - **Files** — each changed path with its status and line counts, and **View full
   diff**, which opens the diff viewer.
 
-The card and the panel are two views of one model, so they never disagree.
+Card and panel read the same state, so a status can never differ between them.
+Which *controls* are offered does differ: the panel's merge cluster and its
+**⋮** menu render only while the pull request is open, and it hides the
+auto-merge switch once checks have failed, where the card still offers it.
 
 ## Reviews that come back
 
@@ -205,9 +212,11 @@ Two related things a user will ask about:
 
 **Merging is the user's act.** The green merge button on the card — labelled
 with the chosen method, so **Squash and merge** by default — and the same button
-in the PR tab's Status section appear while the pull request is open and
-mergeable: checks passed (or the repository runs none), no conflicts, and no
-review is outstanding. It is disabled while you are still working, and
+in the PR tab's Status section appear while the pull request is open, mergeable
+and **not already armed for auto-merge**: checks passed (or the repository runs
+none), no conflicts, no review outstanding, and no auto-merge — arming that
+replaces the button rather than sitting beside it. It is disabled while you are
+still working, and
 while the session holds commits GitHub has not received, because merging then
 would ship the branch without them.
 
@@ -258,11 +267,19 @@ merged tip, which is no use for more work, so before anything else run
 onto the base.
 
 ShipIt usually does that reset for the user. Settings → Advanced carries
-*"Start from the latest base after a merge"*; with it on, continuing a merged
-session resets the branch to the latest base and compacts the conversation
-before the next message runs, and the composer grows two tick boxes —
-**Start from the latest base** and **Compact the context** — so either can be
-skipped for one message. A card in the transcript records what moved.
+*"Start from the latest base after a merge"*; with it on, and once ShipIt has
+confirmed the branch really is safe to move, the composer grows a **Start from
+the latest base** tick box before the next message — and, where the session's
+harness can compact, a **Compact the context** tick box under it. Both are
+hidden while a turn is running. Sent ticked, the branch resets to the latest
+base and the conversation is compacted before the message runs, and a card in
+the transcript records what moved.
+
+The two ticks are not symmetrical, which surprises people. Unticking **Compact
+the context** applies to that one message. Unticking **Start from the latest
+base** *answers the offer for that merge*: ShipIt records the decision, and
+neither control comes back — so the compaction stands down with it — until the
+next pull request merges.
 
 A session works one pull request at a time, so a second one is a fresh start on
 the same session, not two open at once.
@@ -290,15 +307,30 @@ where a pushed `vX.Y.Z` tag starts it. Read `/shipit-docs/release.md` before
 running anything — it is your operating manual for the whole ritual.
 
 What the user sees is a **release lifecycle card** in the conversation, which
-tracks the whole run: *proposed* → the release pull request or the tag →
-*publishing* → *released*, with the release gate's check count beside it, any
-deployments, and an overflow menu carrying the two links out to GitHub.
+tracks the run: *proposed* → *tagging*, or a release pull request open and
+waiting to be merged → *publishing* → *released*, with the release gate's check
+count beside it and, once there is a pull request or a published release, an
+overflow menu with the link out to each.
 
-The one step that is theirs is the first: you propose a version, and the card
-offers **Confirm & publish** and **Cancel**. Publishing is outward-facing and
-effectively irreversible, so nothing happens until they press it. After that,
-**CI** creates the tag and publishes the notes — never you, and never
-`gh release`, which is blocked.
+**The first step is theirs.** You propose a version and stop; the proposed card
+is the only one that carries buttons, **Confirm & publish** and **Cancel**.
+Pressing confirm sends you a message approving that version — it does not
+release anything by itself — and the user can equally just say yes in chat.
+Publishing is outward-facing and effectively irreversible, so nothing is
+published before that answer.
+
+What happens after the answer depends on the mechanism, and getting this wrong
+ships the wrong thing:
+
+- **Release-branch** — you open the version-bump pull request and stop.
+  **Merging it is the release**: CI derives the tag from the merged commit,
+  gates on a green build, and pushes the tag and the GitHub Release itself. Do
+  not hand-push a final tag here.
+- **Tag-triggered** — you bump, commit, and push the annotated `vX.Y.Z` tag
+  yourself. The repo's own workflow then publishes the GitHub Release.
+
+Either way the **GitHub Release** is published by the repository's CI, never by
+you: `gh release` is blocked on purpose.
 
 One thing to tell the user if they ask for anything else mid-release: a session
 that has run `shipit release` belongs to that release. It stays on the release
@@ -316,5 +348,5 @@ work needs its own session.
 | Replies inside a review thread, and resolves it | Read the whole review, and change the code it asks about |
 | Comments on lines in the diff, then sends them | Address each comment, or post them to GitHub as one review on request |
 | Presses Resolve conflicts, or leaves it to auto-resolve | Resolve the conflicted files |
-| Confirms a release on its card | Propose the version and run the mechanics; CI publishes |
+| Confirms a release on its card, and merges the release PR where there is one | Propose the version, then run that mechanism's mechanics; CI publishes the Release |
 | Decides the session is finished | Suggest archiving it once the pull request has merged |
