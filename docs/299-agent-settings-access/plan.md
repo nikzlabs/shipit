@@ -211,6 +211,13 @@ Guard: a fixture MCP entry carrying a token in `args`, `env`, `headers` and the
 URL emits none of them — in text, in `--json`, in a card's `from`, in an error.
 And a secret and a role *named* like one emit nothing of it either.
 
+**"In an error" is the clause that gets forgotten**, so it is the rule rather
+than an instance: *no message may interpolate a stored value that did not come
+through the projection door.* A refusal listing the roles on the install read
+them straight off the store, which disclosed exactly the name the index leaves
+out — the gate with a second door beside it. A message naming stored entries
+names the ones the projection emits and counts the rest.
+
 **Reflected input is not this rule's business.** `list --tab` and `get <key>`
 echo the caller's own string back when it names nothing, and that string arrives
 on the agent's own query — nothing ShipIt persists reaches it, so req 2 ("reading
@@ -555,6 +562,18 @@ host, so the card would either display less than it changes or echo a path the
 agent may not read back. The test is not size; it is whether the card can show
 all of it.
 
+**The patch has to be narrow in the WRITE, not only on the card.** Reading the
+stored object and handing it back to a whole-object writer looks like the same
+thing and is not: `updateMcpServer` reconciles the server's stored secrets
+against the config it is given (`services/mcp.ts` → `reconcileSecrets`), so the
+`enabled` toggle passing the stored server through it deleted every secret the
+configuration does not `$secret:`-reference — a card proposing one boolean
+destroying a credential it never named. So a narrow operation gets a narrow
+writer: `setMcpServerEnabled` / `applyMcpServerEnabled` write the one field.
+Every other collection operation was checked against this shape and already
+patches (a role write carries the stored object's every field, a reviewer pin
+leaves the other slot, a failover cutoff merges per window).
+
 ### What a card can apply today
 
 A declaration says a setting MAY be proposed; `services/settings-operations.ts`
@@ -630,6 +649,14 @@ a writer that can prove rollback may claim it; **partial** means some of a
 multi-write operation landed; **uncertain** means the writer cannot say. This is
 the first item of the apply extraction — every other guarantee is worthless if
 "applied" can be false.
+
+A write followed by a **read** needs the same separation, and a throw is what
+collapses it. `applyReleaseChannel` writes the channel and then checks for
+updates; re-raising the check's own 503 made the card report a change that was
+stored as `refused`, and told the agent the same thing on its next turn. The
+check's error is therefore **returned** beside an `applied` outcome that says
+what could not be confirmed, and the route that answers with an update status is
+what raises it.
 
 ## How the agent learns the outcome
 
@@ -842,7 +869,7 @@ breadcrumb share);
 `shipit-docs/settings.md`.
 
 Changed: `credential-store.ts`, `global-system-prompt.ts`, `git-config.ts`,
-`services/settings.ts`, `services/settings-derivation.ts`, `services/types.ts`,
+`services/mcp.ts` (the narrow `setMcpServerEnabled`), `services/settings.ts`, `services/settings-derivation.ts`, `services/types.ts`,
 `api-routes-bootstrap.ts`, `api-routes-egress.ts`, `api-routes-mcp.ts`,
 `api-routes-updates.ts`, `api-routes-session-repos.ts`,
 `ws-handlers/egress-handlers.ts`, `turn-settlement.ts` (`NoticeDelivery`),
