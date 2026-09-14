@@ -15,6 +15,7 @@ import {
   MAX_REBASE_ITERATIONS,
   syncFailureAlreadyExplained,
 } from "./rebase-driver.js";
+import { armFollowupNote, followupWindowOpen } from "./rebase-followup.js";
 import { withWorkspaceLock } from "./marketplace.js";
 import { handWorkspaceBackToWorker } from "../session-worker-uid.js";
 import { releaseQueuedTurn } from "../queue-drain.js";
@@ -1637,6 +1638,12 @@ describe("rebase-driver: buildRebaseConflictPrompt", () => {
     ]);
     expect(prompt).toContain("1 conflict to resolve");
   });
+
+  it("discloses continue-after-rebase — an armable command the agent never hears about is never used", () => {
+    const prompt = buildRebaseConflictPrompt("main", [{ path: "single.ts", content: "" }]);
+    expect(prompt).toContain("shipit session continue-after-rebase --note");
+    expect(prompt).toContain("This turn ends BEFORE the rebase does");
+  });
 });
 
 describe("rebase-driver: constants", () => {
@@ -2549,5 +2556,268 @@ describe("rebase-driver: pre-sync save — publication and handoff", () => {
 
     expect(syncFailureAlreadyExplained(new Error("fetch died"))).toBe(false);
     expect(syncFailureAlreadyExplained(null)).toBe(false);
+  });
+});
+
+describe("rebase-driver: docs/303 post-rebase follow-up", () => {
+  let tmpDir: string;
+  let origGitConfigGlobal: string | undefined;
+  let origGitEditor: string | undefined;
+
+  beforeEach(() => {
+    vi.mocked(handWorkspaceBackToWorker).mockClear();
+    vi.mocked(restoreLfsAfterTreeRewrite).mockClear();
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-rebase-followup-"));
+    origGitConfigGlobal = process.env.GIT_CONFIG_GLOBAL;
+    origGitEditor = process.env.GIT_EDITOR;
+    initGlobalGitConfig(path.join(tmpDir, "credentials"));
+    setGitIdentity("Test User", "test@test.com");
+    process.env.GIT_EDITOR = "true";
+  });
+
+  afterEach(() => {
+    if (origGitConfigGlobal !== undefined) process.env.GIT_CONFIG_GLOBAL = origGitConfigGlobal;
+    else delete process.env.GIT_CONFIG_GLOBAL;
+    if (origGitEditor !== undefined) process.env.GIT_EDITOR = origGitEditor;
+    else delete process.env.GIT_EDITOR;
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  // Two feature commits over one upstream commit on the same file: the rebase replays them
+  // one at a time, so each conflicts in its own round.
+  function createTwoRoundConflict(bareDir: string, workDir: string) {
+    execSync("git checkout -b feature", { cwd: workDir, stdio: "pipe" });
+    fs.writeFileSync(path.join(workDir, "shared.txt"), "feature edit one\n");
+    execSync("git add -A && git commit -m 'Feature one'", { cwd: workDir, stdio: "pipe" });
+    fs.writeFileSync(path.join(workDir, "shared.txt"), "feature edit two\n");
+    execSync("git add -A && git commit -m 'Feature two'", { cwd: workDir, stdio: "pipe" });
+
+    const tempClone = path.join(path.dirname(workDir), "temp-clone-2");
+    fs.mkdirSync(tempClone, { recursive: true });
+    execSync(`git clone ${bareDir} .`, { cwd: tempClone, stdio: "pipe" });
+    execSync("git checkout main", { cwd: tempClone, stdio: "pipe" });
+    fs.writeFileSync(path.join(tempClone, "shared.txt"), "upstream edit\n");
+    execSync("git add -A && git commit -m 'Upstream change'", { cwd: tempClone, stdio: "pipe" });
+    execSync("git push", { cwd: tempClone, stdio: "pipe" });
+    fs.rmSync(tempClone, { recursive: true, force: true });
+  }
+
+  function baseDeps(git: GitManager, runner: SessionRunner, resolve: (cwd: string) => string) {
+    return {
+      git,
+      githubAuthManager: makeStubAuth(true),
+      runner,
+      sessionManager: makeStubSessionManager(),
+      chatHistoryManager: makeStubHistory([]),
+      agentFactory: () => new FakeRebaseAgent(resolve) as unknown as AgentProcess,
+      usageManager: makeStubUsageManager(),
+      sseBroadcast: () => {},
+    };
+  }
+
+  it("an arm made while resolving conflicts rides the concluded rebase", async () => {
+    const { workDir, bareDir, git } = setupRepoWithRemote(tmpDir);
+    createConflictingDivergence(bareDir, workDir);
+    execSync("git push -u origin feature", { cwd: workDir, stdio: "pipe" });
+    const runner = new SessionRunner({ sessionId: "s1", sessionDir: workDir, defaultAgentId: "claude" });
+
+    const result = await runFlow(baseDeps(git, runner, (cwd) => {
+      armFollowupNote("s1", "re-run codegen over the merged result");
+      fs.writeFileSync(path.join(cwd, "shared.txt"), "merged result\n");
+      return "Resolved.";
+    }), "main");
+
+    expect(result.status).toBe("conflicts_resolved");
+    expect(result).toHaveProperty("followup");
+    if (result.status === "conflicts_resolved") {
+      expect(result.followup?.notes).toEqual(["re-run codegen over the merged result"]);
+      expect(result.followup?.baseBranch).toBe("main");
+      expect(result.followup?.forcePushed).toBe(true);
+      expect(result.followup?.headFrom).not.toBe(result.followup?.headTo);
+    }
+    // Consumed at the conclusion, so a later rebase cannot inherit it.
+    expect(followupWindowOpen("s1")).toBe(false);
+  });
+
+  it("notes armed in different conflict rounds all arrive", async () => {
+    const { workDir, bareDir, git } = setupRepoWithRemote(tmpDir);
+    createTwoRoundConflict(bareDir, workDir);
+    execSync("git push -u origin feature", { cwd: workDir, stdio: "pipe" });
+    const runner = new SessionRunner({ sessionId: "s2", sessionDir: workDir, defaultAgentId: "claude" });
+
+    let round = 0;
+    const result = await runFlow(baseDeps(git, runner, (cwd) => {
+      round++;
+      armFollowupNote("s2", `note from round ${round}`);
+      fs.writeFileSync(path.join(cwd, "shared.txt"), `resolved round ${round}\n`);
+      return "Resolved.";
+    }), "main");
+
+    expect(round).toBeGreaterThan(1);
+    expect(result.status).toBe("conflicts_resolved");
+    if (result.status === "conflicts_resolved") {
+      expect(result.followup?.notes).toEqual(
+        Array.from({ length: round }, (_, i) => `note from round ${i + 1}`),
+      );
+    }
+  });
+
+  it("a clean rebase carries no notes and opens no window — its turn never runs", async () => {
+    const { workDir, bareDir, git } = setupRepoWithRemote(tmpDir);
+    createCleanDivergence(bareDir, workDir);
+    execSync("git push -u origin feature", { cwd: workDir, stdio: "pipe" });
+    const runner = new SessionRunner({ sessionId: "s3", sessionDir: workDir, defaultAgentId: "claude" });
+
+    const result = await runFlow(baseDeps(git, runner, () => "should not run"), "main");
+
+    expect(result.status).toBe("rebased");
+    expect(result).not.toHaveProperty("followup");
+    expect(followupWindowOpen("s3")).toBe(false);
+  });
+
+  it("an up-to-date branch carries no notes", async () => {
+    const { workDir, git } = setupRepoWithRemote(tmpDir);
+    execSync("git checkout -b feature", { cwd: workDir, stdio: "pipe" });
+    execSync("git push -u origin feature", { cwd: workDir, stdio: "pipe" });
+    const runner = new SessionRunner({ sessionId: "s4", sessionDir: workDir, defaultAgentId: "claude" });
+
+    const result = await runFlow(baseDeps(git, runner, () => "should not run"), "main");
+
+    expect(result.status).toBe("up_to_date");
+    expect(result).not.toHaveProperty("followup");
+    expect(followupWindowOpen("s4")).toBe(false);
+  });
+
+  it("an aborted rebase discards the arm — the branch is unchanged, so nothing follows", async () => {
+    const { workDir, bareDir, git } = setupRepoWithRemote(tmpDir);
+    createConflictingDivergence(bareDir, workDir);
+    execSync("git push -u origin feature", { cwd: workDir, stdio: "pipe" });
+    const runner = new SessionRunner({ sessionId: "s5", sessionDir: workDir, defaultAgentId: "claude" });
+
+    await expect(runFlow(baseDeps(git, runner, () => {
+      armFollowupNote("s5", "never delivered");
+      throw new Error("agent blew up mid-resolution");
+    }), "main")).rejects.toThrow();
+
+    expect(followupWindowOpen("s5")).toBe(false);
+  });
+
+  it("req 3: an attempt that times out with a hanging agent leaves no window", async () => {
+    const { workDir, bareDir, git } = setupRepoWithRemote(tmpDir);
+    createConflictingDivergence(bareDir, workDir);
+    execSync("git push -u origin feature", { cwd: workDir, stdio: "pipe" });
+    const runner = new SessionRunner({ sessionId: "s6", sessionDir: workDir, defaultAgentId: "claude" });
+
+    // Arms, then hangs: the resolution turn settles only through its completion callback, so
+    // the flow's `finally` never runs and cannot be what closes the window.
+    let armed = false;
+    const hangingAgent = () => Object.assign(new EventEmitter(), {
+      agentId: "claude" as const,
+      capabilities: {
+        supportsResume: true, supportsImages: false, supportsSystemPrompt: true,
+        supportsPermissionModes: false, supportedPermissionModes: [], toolNames: [],
+        models: [], supportsReview: true,
+      },
+      run: () => {
+        armFollowupNote("s6", "would wake on someone else's rebase");
+        armed = true;
+      },
+      kill: () => {},
+    }) as unknown as AgentProcess;
+
+    const attemptDeps = {
+      ...baseDeps(git, runner, () => "unused"),
+      agentFactory: hangingAgent,
+      timeoutMs: 250,
+    };
+    wireSystemTurnDeps(attemptDeps);
+    const result = await runAutoResolveAttempt(attemptDeps, "main");
+
+    expect(result).toMatchObject({ outcome: "error", lastError: "timeout" });
+    // Without this the deadline could have expired before a window ever opened, and the
+    // assertion below would hold for the wrong reason.
+    expect(armed).toBe(true);
+    expect(followupWindowOpen("s6")).toBe(false);
+  });
+
+  it("req 3: a window the flow opens AFTER the deadline fired is closed at once", async () => {
+    // The flow is raced, not cancelled, so it can reach its first conflict after the attempt
+    // already returned "timeout" — with no deadline left to close what it opens.
+    const workDir = fs.mkdtempSync(path.join(tmpDir, "late-window-"));
+    const runner = new SessionRunner({ sessionId: "s8", sessionDir: workDir, defaultAgentId: "claude" });
+    const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+    let openedLate = false;
+    const attemptDeps = {
+      ...baseDeps(new GitManager(workDir), runner, () => "unused"),
+      git: {
+        isClean: () => Promise.resolve(true),
+        isRebaseInProgress: () => Promise.resolve(false),
+        inspectWorkingTree: () => Promise.resolve({ clean: true, conflictedFiles: [], unreadable: null }),
+        // Outlives the deadline, so everything after it runs on a timed-out attempt.
+        fetch: async () => { await sleep(60); },
+        resolveBaseBranchRef: () => Promise.resolve("base-sha"),
+        getHeadHash: () => Promise.resolve("head-sha"),
+        getRefHash: () => Promise.resolve(null),
+        isAncestor: () => Promise.resolve(false),
+        rebase: () => Promise.resolve({ status: "conflicts", conflicts: [{ path: "shared.txt", content: "" }] }),
+        rebaseAbort: () => Promise.resolve(),
+      } as unknown as GitManager,
+      agentFactory: () => Object.assign(new EventEmitter(), {
+        agentId: "claude" as const,
+        capabilities: {
+          supportsResume: true, supportsImages: false, supportsSystemPrompt: true,
+          supportsPermissionModes: false, supportedPermissionModes: [], toolNames: [],
+          models: [], supportsReview: true,
+        },
+        run: () => { openedLate = true; },
+        kill: () => {},
+      }) as unknown as AgentProcess,
+      timeoutMs: 20,
+    };
+    wireSystemTurnDeps(attemptDeps);
+    const result = await runAutoResolveAttempt(attemptDeps, "main");
+
+    expect(result).toMatchObject({ outcome: "error", lastError: "timeout" });
+    await vi.waitFor(() => expect(openedLate).toBe(true));
+    expect(followupWindowOpen("s8")).toBe(false);
+  });
+
+  it("the automatic path delivers only after its own LFS restore and queue drain", async () => {
+    const { workDir, bareDir, git } = setupRepoWithRemote(tmpDir);
+    createConflictingDivergence(bareDir, workDir);
+    execSync("git push -u origin feature", { cwd: workDir, stdio: "pipe" });
+    const runner = new SessionRunner({ sessionId: "s7", sessionDir: workDir, defaultAgentId: "claude" });
+
+    const order: string[] = [];
+    vi.mocked(restoreLfsAfterTreeRewrite).mockImplementation(() => {
+      order.push("restore");
+      return Promise.resolve({ status: "not-an-lfs-repo" as const, usesLfs: false });
+    });
+
+    // Recorded at dispatch, not when the agent process starts: turn setup is async, so an
+    // agent-side marker lands after this path's cleanup however the delivery is ordered.
+    const realDispatch = runner.dispatch.bind(runner);
+    (runner as unknown as { dispatch: typeof runner.dispatch }).dispatch = (opts, admission) => {
+      if (opts.text.includes("you resolved conflicts for")) order.push("followup");
+      return realDispatch(opts, admission);
+    };
+
+    const attemptDeps = {
+      ...baseDeps(git, runner, (cwd) => {
+        order.push("resolve");
+        armFollowupNote("s7", "re-run the tests");
+        fs.writeFileSync(path.join(cwd, "shared.txt"), "merged result\n");
+        return "Resolved.";
+      }),
+      drainQueue: () => { order.push("drain"); },
+    };
+    wireSystemTurnDeps(attemptDeps);
+    const result = await runAutoResolveAttempt(attemptDeps, "main");
+
+    expect(result).toMatchObject({ outcome: "success" });
+    await vi.waitFor(() => expect(order).toContain("followup"));
+    expect(order.lastIndexOf("restore")).toBeLessThan(order.indexOf("followup"));
+    expect(order.indexOf("drain")).toBeLessThan(order.indexOf("followup"));
   });
 });

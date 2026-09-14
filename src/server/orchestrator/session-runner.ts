@@ -190,6 +190,13 @@ export function residentBackgroundWork(
   return runner.getAgent() !== null ? runner.backgroundWorkDescriptions : [];
 }
 
+/**
+ * Prefix of the only `errored` outcome that means the prompt never reached the agent. Every
+ * other `errored` can describe a turn the agent ran and then failed, so a consumer deciding
+ * whether to re-deliver must tell the two apart rather than reading the status alone.
+ */
+export const DISPATCH_SETUP_FAILURE = "dispatched turn failed to start";
+
 export function dispatchOnRunner(
   runner: SessionRunnerInterface,
   deps: SystemTurnDeps | null,
@@ -301,7 +308,7 @@ export function dispatchOnRunner(
     }
     // Notify callback consumers too, but preserve an outcome the executor already settled.
     if (!settlement.isSettled) {
-      chained.onTurnComplete?.(turnErrored(`dispatched turn failed to start: ${detail}`));
+      chained.onTurnComplete?.(turnErrored(`${DISPATCH_SETUP_FAILURE}: ${detail}`));
     }
     if (runner.queueLength > 0) {
       const next = runner.dequeue();

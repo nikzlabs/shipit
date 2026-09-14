@@ -515,6 +515,7 @@ const GOLDEN_CONTAINER_ROUTES = [
   "POST /api/sessions/:parentId/children/:childId/archive",
   "POST /api/sessions/:parentId/children/:childId/notify-on-merge",
   "POST /api/sessions/:sessionId/notify-on-merge-self",
+  "POST /api/sessions/:sessionId/continue-after-rebase",
   "POST /api/sessions/:id/branch/reset-to-base",
   "GET /api/sessions/:sessionId/cohort",
   "POST /api/sessions/:sessionId/report",

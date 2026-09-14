@@ -602,6 +602,11 @@ export function registerAgentOpsRoutes(
     async (_request, reply) => relay("POST", "/notify-on-merge-self", {}, reply),
   );
 
+  app.post<{ Body: { note?: string } }>(
+    "/agent-ops/session/continue-after-rebase",
+    async (request, reply) => relay("POST", "/continue-after-rebase", request.body ?? {}, reply),
+  );
+
   app.post<{ Body: { title?: string } }>(
     "/agent-ops/session/rename",
     async (request, reply) => relay("POST", "/rename", request.body ?? {}, reply),

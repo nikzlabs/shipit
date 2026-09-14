@@ -16,6 +16,7 @@ import {
   handleSessionList,
   handleSessionLogs,
   handleSessionMessage,
+  handleSessionContinueAfterRebase,
   handleSessionNotifyOnMerge,
   handleSessionRename,
   handleSessionReport,
@@ -89,6 +90,11 @@ Supported subcommands:
   shipit session wait    <id...> [--timeout SECONDS] [--any|--all] [--json]
   shipit session notify-on-merge <id> [--json]
   shipit session notify-on-merge --self [--json]
+  shipit session continue-after-rebase --note "TEXT" [--json]
+                          Arm follow-up work while you are resolving a rebase's
+                          conflicts. That turn ends BEFORE the rebase does;
+                          ShipIt gives your note back as a turn once the rebase
+                          concludes. A rebase that is aborted delivers nothing.
   shipit session archive <id> [--json]
   shipit session whoami  [--json]
   shipit session rename  --title T [--json]
@@ -490,6 +496,7 @@ const SESSION_HANDLERS: Record<
   wait: handleSessionWait,
   archive: handleSessionArchive,
   "notify-on-merge": handleSessionNotifyOnMerge,
+  "continue-after-rebase": handleSessionContinueAfterRebase,
   report: handleSessionReport,
   whoami: handleSessionWhoami,
   rename: handleSessionRename,
