@@ -56,24 +56,27 @@ export function turnInterrupted(detail?: string): TurnOutcome {
 }
 
 /**
- * A notice riding a turn's prompt whose delivery is written off only once the
- * agent has actually produced a result for that prompt
- * (docs/299-agent-settings-access req 8).
+ * A notice riding a turn's prompt, written off only once the agent has produced
+ * a result for that prompt (docs/299-agent-settings-access req 8, whose
+ * `plan.md` carries the argument).
  *
- * The alternative — marking at prompt assembly, as the bug-report notice does —
- * loses the notice for good on a turn the agent never saw. Nothing downstream
- * proves the agent read a prompt, so this is a **positive** signal and not a
- * verdict over `TurnOutcome`: `delivered()` is called from exactly one place,
- * where the executor has a real agent result in hand and has already decided not
- * to fail over. Everything else — a crash, an interruption, a provider refusal,
- * a turn that never spawned — simply never calls it, and the outcome rides the
- * next turn. `completed` is NOT the test: a quota refusal on a route that cannot
- * fail over arrives as an ordinary `agent_result` and settles the turn
- * `completed` with nothing having run.
+ * A **positive** signal, deliberately, and not a verdict over `TurnOutcome`: a
+ * provider refusal on a route that cannot fail over settles the turn `completed`
+ * with nothing having run, and a resident streaming turn settles no turn at all.
  */
 export interface NoticeDelivery {
   /** Idempotent: a turn may reach this point once, and must not need to. */
   delivered(): void;
+}
+
+/**
+ * Whether a turn result is the agent's own work rather than a report that its
+ * prompt did not run. No shipped adapter sets `error` on a non-`error` status,
+ * so the first clause is a guard against one that does: the cost of being wrong
+ * here is a notice consumed by a turn the agent never processed.
+ */
+export function resultIsTheAgentsOwn(result: { status?: string; error?: string }): boolean {
+  return !result.error && result.status !== "error";
 }
 
 /** Never admitted: the dispatch asked to fail rather than wait in the queue. */

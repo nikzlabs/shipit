@@ -45,7 +45,7 @@ import { formatSecretScanNotice } from "./services/secret-scan-notice.js";
 import { formatUnreadableWorkspaceNotice } from "./services/unreadable-workspace-notice.js";
 import { sessionAutoCommitAllowed } from "./services/auto-commit-gate.js";
 import { emitChatCard, emitNoticeInTurn, emitNoticePostTurn } from "./chat-card-persistence.js";
-import { TURN_COMPLETED, turnErrored, turnInterrupted, turnNoResult, type NoticeDelivery, type TurnOutcome } from "./turn-settlement.js";
+import { TURN_COMPLETED, resultIsTheAgentsOwn, turnErrored, turnInterrupted, turnNoResult, type NoticeDelivery, type TurnOutcome } from "./turn-settlement.js";
 import type { AgentInterfaceProvenance } from "../shared/agent-interface-sdk/protocol.js";
 import { getAgentCapabilities } from "../shared/agent-registry.js";
 
@@ -138,6 +138,9 @@ export async function executeAgentTurn(
       console.error("[turn] arming the post-turn auto-push failed:", err);
     }
   };
+
+  // Set once this turn's prompt has actually reached the process.
+  let promptSubmitted = false;
 
   const notePromptDelivered = (): void => {
     for (const delivery of input.noticeDeliveries ?? []) {
@@ -914,11 +917,14 @@ export async function executeAgentTurn(
     // The one point at which anything riding this prompt has been delivered: a
     // result is in hand, and the failover decision above is already made. A
     // refusal is not a result — `exhausted` is the provider turning the turn
-    // away (including as successful-looking text), and an error result is a
-    // prompt that did not run — so both leave the notice for the next turn. This
-    // must stay HERE and not in `settleTurn`: a resident streaming turn settles
-    // no turn at all, and its listeners are discarded by the next reuse.
-    if (!exhausted && !event.error && event.status !== "error") notePromptDelivered();
+    // away, including as successful-looking text — so it leaves the notice for
+    // the next turn. `promptSubmitted` is what ties the result to THIS prompt: on
+    // a resident process these listeners are live before env preparation
+    // finishes, so a CLI-started turn of its own can land a result in the gap,
+    // and preparation can then fail with the prompt never sent. And this must
+    // stay HERE rather than in `settleTurn`: a resident streaming turn settles no
+    // turn at all, and its listeners are discarded by the next reuse.
+    if (promptSubmitted && !exhausted && resultIsTheAgentsOwn(event)) notePromptDelivered();
     // Retry decisions still need adoption state; finalization after a result does not.
     servingAdoptedTurn = false;
     if (useStreaming) {
@@ -1144,6 +1150,7 @@ export async function executeAgentTurn(
         runner.appliedPermissionMode = input.permissionMode;
       }
       agent.sendUserMessage(prompt);
+      promptSubmitted = true;
     } else {
       if (input.deliveryId !== undefined) agent.setDeliveryId?.(input.deliveryId);
       const paramsBegan = Date.now();
@@ -1156,6 +1163,7 @@ export async function executeAgentTurn(
       );
       console.log(`[turn] build-run-params for ${sessionId} took ${Date.now() - paramsBegan}ms; spawning agent`);
       agent.run(input.useStreaming !== undefined ? { ...runParams, useStreaming: input.useStreaming } : runParams);
+      promptSubmitted = true;
       if (runner) runner.appliedPermissionMode = input.permissionMode;
       if (runner) {
         runner.appliedSpawnIdentity = desiredSpawnIdentity(

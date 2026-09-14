@@ -337,4 +337,44 @@ describe("a resident streaming turn, which settles no turn of its own", () => {
     await waitForTurn(() => agents[0]!.sendUserMessage.mock.calls.length > 0, "steered second turn");
     expect(String(agents[0]!.sendUserMessage.mock.calls[0]?.[0])).toBe("and again");
   });
+
+  it("does not acknowledge a result that arrives before its prompt is sent", async () => {
+    // These listeners go live BEFORE environment preparation finishes, and a
+    // resident CLI can complete a turn of its own in that gap. Acknowledging on
+    // any result from the process loses the outcome for good when preparation
+    // then fails and the prompt is never sent.
+    postAndResolve("set-a", "applied");
+
+    runner.dispatch(testDispatch({ text: "first" }));
+    await waitForTurn(
+      () => agents.length > 0 && agents[0]!.run.mock.calls.length > 0,
+      "resident agent running",
+    );
+    agents[0]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+    await waitForTurn(
+      () => proposals.listUnnotifiedResolved(SESSION).length === 0,
+      "the first outcome acknowledged",
+    );
+
+    // A second card, and a second turn whose environment preparation hangs.
+    postAndResolve("set-b", "dismissed");
+    let releasePrep: () => void = () => {};
+    const prepBegan = { count: 0 };
+    (deps.prepareAgentEnv as unknown) = vi.fn(async () => {
+      prepBegan.count += 1;
+      await new Promise<void>((resolve) => { releasePrep = resolve; });
+      return undefined;
+    });
+
+    runner.dispatch(testDispatch({ text: "second" }));
+    await waitForTurn(() => prepBegan.count === 1, "the second turn's env preparation");
+    expect(agents[0]!.sendUserMessage.mock.calls).toHaveLength(0);
+
+    agents[0]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+    await waitForTurn(() => true, "flush");
+    expect(proposals.listUnnotifiedResolved(SESSION).map((r) => r.target.key)).toEqual([KEY]);
+
+    releasePrep();
+    await waitForTurn(() => agents[0]!.sendUserMessage.mock.calls.length > 0, "the prompt sent");
+  });
 });

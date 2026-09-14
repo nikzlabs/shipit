@@ -703,13 +703,40 @@ shipped shapes rule that out, both found in review:
   settlement is lost for good and the notice repeats on every turn forever.
 
 So `delivered()` is called from **one place**: the `agent_result` handler, after
-the `exhausted` check and the failover decision, and only for a result that is
-neither exhausted nor an error (`event.error` or `status === "error"`). That is
-what puts the acknowledgement after ShipIt's credential-failure classification
-and failover retry (`quotaRetryInProgress`) — a retry re-dispatches the same
-prompt, carrying the same receipt, so only the attempt that actually ran
-acknowledges. Every other path — a crash, an interruption, the all-refused
-report, a turn that never spawned — simply never calls it.
+the `exhausted` check and the failover decision, and under three conditions —
+the result is not a refusal, it `resultIsTheAgentsOwn` (neither `event.error` nor
+`status === "error"`), and **`promptSubmitted`**. That last one ties the result to
+*this* prompt: the executor's listeners go live before its `await
+prepareAgentEnv`, and on a **resident** process a CLI-started turn of the agent's
+own can land a result in that gap — so acknowledging on any result from the
+process loses the outcome for good when preparation then fails and the prompt is
+never sent (found in review, guarded by
+`integration_tests/settings-outcome-notice.test.ts`).
+
+Sequencing after the failover decision is what puts the acknowledgement past
+ShipIt's credential-failure classification (`quotaRetryInProgress`): a retry
+re-dispatches the same prompt carrying the same receipt, so only the attempt that
+actually ran acknowledges. Every other path — a crash, an interruption, the
+all-refused report, a turn that never spawned — simply never calls it.
+
+**The notice carries no values, and that is a trust decision rather than
+brevity.** `from`/`to` are formatted values and a `user_text` projection keeps
+what the user or the agent supplied; `outcome` and `outcomeDetail` can
+incorporate a value, an address or a raw exception message
+(`settings-decision.ts` → `getErrorMessage`). Interpolating any of them would put
+text that entered as somebody else's into a line the agent reads as ShipIt's —
+so a *dismissed* proposal would replay its own proposed instructions into the
+next prompt, laundered through the platform's voice. The notice states the
+setting, the instance, the phase and what to do, and the read is the authority
+for everything else. The one field ShipIt did not author is the instance
+address, which stays because a notice that cannot say *which* role or server says
+nothing useful; it is quoted, and the closing line tells the agent it is data.
+
+**A system turn carries no notice**, matching the bug-report notice at both call
+sites. An outcome resolved before an automatic turn (CI fix, conflict
+resolution, compaction) waits rather than being dropped, and reaches the agent on
+its next ordinary turn. Nothing is lost, and a settings notice inside a
+conflict-resolution prompt could only distract.
 
 **`agentNotified` is a column on the private proposal row, not a card field** —
 it is ShipIt's bookkeeping about a delivery, and nothing a viewer reads.
