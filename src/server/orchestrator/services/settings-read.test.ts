@@ -4,8 +4,16 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { CredentialStore } from "../credential-store.js";
 import { writeGlobalSystemPrompt } from "../global-system-prompt.js";
-import { GLOBAL_SETTINGS, configuredOnly, text, userText } from "../../shared/settings-catalogue/index.js";
-import type { Projection } from "../../shared/settings-catalogue/index.js";
+import {
+  ALL_SETTINGS,
+  GLOBAL_SETTINGS,
+  REPOSITORY_ADDRESS,
+  findSetting,
+  isPayloadDeclaration,
+} from "../../shared/settings-catalogue/index.js";
+
+/** The two own-route settings this read has a reader for. */
+const OWN_ROUTE_READ_KEYS = ["advanced.releaseChannel", "network.egressContained"];
 import {
   getSettingForAgent,
   listSettingsForAgent,
@@ -53,9 +61,35 @@ afterEach(() => {
 });
 
 describe("listSettingsForAgent", () => {
-  it("indexes every declaration, so a setting declared once is readable with no edit here", async () => {
+  it("indexes the whole REGISTRY, not just the payload scalars (req 5, req 7)", async () => {
+    // Against ALL_SETTINGS, never GLOBAL_SETTINGS: the same assertion written
+    // against the payload source passes while `list` returns a fifth of what
+    // req 5 names, because it restates the implementation's own source.
     const { settings } = await listSettingsForAgent(deps(), "s1");
-    expect(settings.map((s) => s.key).sort()).toEqual(Object.keys(GLOBAL_SETTINGS).sort());
+    expect(settings.map((s) => s.key).sort()).toEqual(
+      ALL_SETTINGS.map((d) => d.key).sort(),
+    );
+    // The payload scalars are a strict subset, so equality above is load-bearing.
+    expect(ALL_SETTINGS.length).toBeGreaterThan(Object.keys(GLOBAL_SETTINGS).length);
+  });
+
+  it("names every scope and every store kind, so req 5 covers both dialogs", async () => {
+    const { settings } = await listSettingsForAgent(deps(), "s1");
+    expect(new Set(settings.map((e) => e.scope))).toEqual(new Set(["global", "project", "browser"]));
+    // A browser value is named with its own reason, never as "no reader yet".
+    const browser = settings.filter((e) => e.scope === "browser");
+    expect(browser.length).toBeGreaterThan(0);
+    expect(browser.every((e) => e.unreadableReason === "browser_local")).toBe(true);
+  });
+
+  it("says a per-item setting is per-item, without growing the index per item", async () => {
+    const { settings } = await listSettingsForAgent(deps(), "s1");
+    // One entry per DECLARATION (req 1): the index length is the catalogue's,
+    // whatever number of roles or MCP servers the user happens to have.
+    expect(settings).toHaveLength(ALL_SETTINGS.length);
+    const perItem = settings.filter((e) => e.address.kind === "item");
+    expect(perItem.length).toBeGreaterThan(0);
+    expect(perItem.every((e) => e.address.noun && e.notes.some((n) => n.includes("per item")))).toBe(true);
   });
 
   it("carries the declared label and the description's first sentence", async () => {
@@ -72,7 +106,9 @@ describe("listSettingsForAgent", () => {
     credentialStore.setDeclaredSetting("advanced.autoFixCi", true);
     const { settings } = await listSettingsForAgent(deps(), "s1");
     const entry = settings.find((s) => s.key === "advanced.autoFixCi");
-    expect(entry).toMatchObject({ value: true, display: "true", readable: true });
+    // `on` rather than `true`: the catalogue's formatter renders it, not a
+    // second formatter here (req 2 — one door for every emitted value).
+    expect(entry).toMatchObject({ value: true, display: "on", readable: true });
   });
 
   it("shows a user_text setting that is not one string, rather than reading it as empty", async () => {
@@ -95,14 +131,46 @@ describe("listSettingsForAgent", () => {
     await expect(listSettingsForAgent(deps(), "ghost")).rejects.toMatchObject({ statusCode: 404 });
   });
 
-  it("degrades one entry rather than aborting when a setting cannot be read", async () => {
-    // No egress allowlist store: containment has no reader on this install.
+  it("degrades per entry rather than aborting, naming the reason for each kind", async () => {
     const { settings } = await listSettingsForAgent(deps(), "s1");
-    const contained = settings.find((s) => s.key === "network.egressContained");
-    expect(contained).toMatchObject({ readable: false, unreadableReason: "no_reader" });
-    expect(contained?.effect.state).toBe("uncertain");
-    // Every other global setting still came back.
-    expect(settings.filter((s) => s.readable).length).toBe(settings.length - 1);
+    const by = (key: string) => settings.find((s) => s.key === key);
+
+    // No egress allowlist store: containment has no reader on this install.
+    expect(by("network.egressContained")).toMatchObject({
+      readable: false,
+      unreadableReason: "no_reader",
+    });
+    expect(by("network.egressContained")?.effect.state).toBe("uncertain");
+    // Bespoke-stored: named and described, with no value until the readers land.
+    expect(by("roles[].model")).toMatchObject({ readable: false, unreadableReason: "no_reader" });
+    // Browser-local: its own reason, from the declaration, not "no reader yet".
+    expect(by("advanced.soundOnFinish")).toMatchObject({
+      readable: false,
+      unreadableReason: "browser_local",
+    });
+    // Per-repository, in a session that binds none.
+    expect(by("project.allowAgentMerge")).toMatchObject({
+      readable: false,
+      unreadableReason: "no_repository",
+    });
+
+    // The payload settings still read, and the call returned every declaration.
+    expect(by("advanced.autoFixCi")?.readable).toBe(true);
+    expect(settings).toHaveLength(ALL_SETTINGS.length);
+  });
+
+  it("reads every setting the settings payload stores, and only those", async () => {
+    const { settings } = await listSettingsForAgent(
+      deps({ egressAllowlistStore: egressStore({}) }),
+      "s1",
+    );
+    const readable = settings.filter((s) => s.readable).map((s) => s.key).sort();
+    // 13 payload declarations plus the two own-route readers below.
+    const expected = ALL_SETTINGS
+      .filter((d) => isPayloadDeclaration(d) || OWN_ROUTE_READ_KEYS.includes(d.key))
+      .map((d) => d.key)
+      .sort();
+    expect(readable).toEqual(expected);
   });
 
   it("degrades the one entry whose read throws, and still returns the rest", async () => {
@@ -162,17 +230,25 @@ describe("listSettingsForAgent", () => {
 });
 
 describe("scopeUnreadableReason", () => {
-  it("names a browser setting instead of dropping it", () => {
-    expect(scopeUnreadableReason({ scope: "browser" }, true)).toBe("browser_local");
-  });
-
   it("degrades a per-repository setting only where no repository is bound", () => {
     expect(scopeUnreadableReason({ scope: "project" }, false)).toBe("no_repository");
     expect(scopeUnreadableReason({ scope: "project" }, true)).toBeNull();
   });
 
+  it("catches a repository ADDRESS even on a setting whose scope is not project", () => {
+    expect(
+      scopeUnreadableReason({ scope: "global", address: REPOSITORY_ADDRESS }, false),
+    ).toBe("no_repository");
+  });
+
   it("leaves a global setting alone in an unbound session", () => {
     expect(scopeUnreadableReason({ scope: "global" }, false)).toBeNull();
+  });
+
+  it("does not decide browser-local here — the declaration's projection does", () => {
+    // One place makes that judgement, and it is the `withheld` projection, so a
+    // browser setting cannot read as browser-local in one path and not another.
+    expect(scopeUnreadableReason({ scope: "browser" }, true)).toBeNull();
   });
 });
 
@@ -272,13 +348,15 @@ describe("saved is not effective", () => {
     expect(entry.effect.detail).toContain("no-sidecar");
   });
 
-  it("leaves every other setting live", async () => {
+  it("leaves every READABLE setting live; an unreadable one claims no effect", async () => {
     const { settings } = await listSettingsForAgent(
       deps({ egressAllowlistStore: egressStore({}), egressEnforcementStatus: "active" }),
       "s1",
     );
-    const notLive = settings.filter((s) => s.effect.state !== "live").map((s) => s.key);
-    expect(notLive).toEqual([]);
+    const notLive = settings.filter((s) => s.readable && s.effect.state !== "live");
+    expect(notLive.map((s) => s.key)).toEqual([]);
+    // And a value ShipIt could not read never carries an effect claim.
+    expect(settings.filter((s) => !s.readable).every((s) => s.effect.state === "uncertain")).toBe(true);
   });
 });
 
@@ -353,33 +431,94 @@ describe("getSettingForAgent", () => {
   });
 });
 
-// Req 2: reading never exposes secret material. No declaration uses these
-// projections yet, so the guard runs against the projection itself rather than
-// against whichever setting happens to be declared today.
-describe("projectSettingValue", () => {
-  const declaration = (emits: Projection) => ({ emits, type: text({ maxLength: 100 }) });
+/**
+ * Req 2 through THIS read's own output paths. The sibling slice's
+ * `projection.test.ts` proves the door is safe; this proves the read goes
+ * through it, over the real declarations rather than over a synthetic one.
+ */
+describe("req 2 — nothing of a secret-bearing value reaches the agent", () => {
+  const TOKEN = "SENTINEL-CREDENTIAL-MUST-NOT-BE-EMITTED";
 
-  it("emits only whether a credential is configured, never the credential", () => {
-    const projected = projectSettingValue(
-      declaration(configuredOnly()),
-      "sk-ant-super-secret",
-      true,
-    );
-    expect(projected.value).toEqual({ configured: true });
-    expect(projected.display).toBe("configured");
-    expect(JSON.stringify(projected)).not.toContain("sk-ant-super-secret");
+  // Every shape a stored value can take, each carrying the sentinel somewhere a
+  // formatter that skipped the door would print.
+  const POISON: unknown[] = [
+    TOKEN,
+    [TOKEN],
+    { command: TOKEN, args: [`--token=${TOKEN}`], env: { A: TOKEN }, headers: { Authorization: TOKEN } },
+    [{ secret: TOKEN, accessToken: TOKEN, prompt: TOKEN }],
+  ];
+
+  const withEmits = (kind: string) => ALL_SETTINGS.filter((d) => d.emits.kind === kind);
+
+  it("covers every configured_only and withheld declaration the catalogue has", () => {
+    // A count, so a new secret-bearing declaration cannot arrive uncovered.
+    expect(withEmits("configured_only").length).toBeGreaterThan(0);
+    expect(withEmits("withheld").length).toBeGreaterThan(0);
   });
 
-  it("says not configured for an empty credential, still without the field's value", () => {
-    const projected = projectSettingValue(declaration(configuredOnly()), "   ", false);
-    expect(projected.value).toEqual({ configured: false });
-    expect(projected.display).toBe("not configured");
+  it("a configured_only setting says only whether it is configured", () => {
+    for (const declaration of withEmits("configured_only")) {
+      for (const raw of POISON) {
+        for (const detail of [false, true]) {
+          const projected = projectSettingValue(declaration, raw, detail);
+          expect(projected.value, declaration.key).toEqual({ configured: true });
+          expect(projected.display, declaration.key).toBe("configured");
+          expect(JSON.stringify(projected), declaration.key).not.toContain(TOKEN);
+        }
+      }
+    }
   });
 
-  it("carries user_text only where the declaration marked it, with its reason", () => {
-    const reason = "The user's own prose, shown because it is theirs.";
-    const projected = projectSettingValue(declaration(userText(reason)), "my words", true);
-    expect(projected.value).toBe("my words");
-    expect(projected.notes).toContain(reason);
+  it("a withheld setting emits nothing of the value at all", () => {
+    for (const declaration of withEmits("withheld")) {
+      for (const raw of POISON) {
+        const projected = projectSettingValue(declaration, raw, true);
+        expect(projected.value, declaration.key).toBeNull();
+        expect(JSON.stringify(projected), declaration.key).not.toContain(TOKEN);
+      }
+    }
+  });
+
+  it("an MCP URL emits its scheme and host, never userinfo, path, query or fragment", () => {
+    const declaration = findSetting("mcp.servers[].url");
+    expect(declaration).toBeDefined();
+    // Assembled part by part rather than written as one literal: a
+    // `scheme://user:pass@host` string in the source reads as a real credential
+    // to any scanner, whatever the value happens to be.
+    const url = new URL("https://mcp.example.com");
+    url.username = "svc";
+    url.password = TOKEN;
+    url.pathname = `/v1/${TOKEN}`;
+    url.search = `api_key=${TOKEN}`;
+    url.hash = TOKEN;
+
+    const projected = projectSettingValue(declaration!, url.toString(), true);
+    expect(url.toString()).toContain(TOKEN);
+    expect(projected.value).toEqual({ scheme: "https", host: "mcp.example.com" });
+    expect(JSON.stringify(projected)).not.toContain(TOKEN);
+  });
+
+  it("user_text is the ONE declared exception, and it is a short, named list", () => {
+    // Named rather than blanket-excluded: these emit the user's own prose
+    // because it is theirs, and review reads the declaration's reason.
+    const keys = withEmits("user_text").map((d) => d.key).sort();
+    expect(keys.length).toBeGreaterThan(0);
+    for (const declaration of withEmits("user_text")) {
+      expect(declaration.emits, declaration.key).toHaveProperty("reason");
+    }
+  });
+
+  it("a setting ShipIt cannot read emits nothing of its stored value, end to end", async () => {
+    // Every MCP field is bespoke-stored, so this read has no reader for it. The
+    // entry must still be named, and must carry nothing of what is stored.
+    const listed = await listSettingsForAgent(deps(), "s1");
+    const mcp = listed.settings.filter((e) => e.key.startsWith("mcp.servers"));
+    expect(mcp.length).toBeGreaterThan(0);
+    expect(mcp.every((e) => !e.readable)).toBe(true);
+    expect(JSON.stringify(listed)).not.toContain(TOKEN);
+
+    const detail = await getSettingForAgent(deps(), "s1", "mcp.servers[].env");
+    expect(detail.readable).toBe(false);
+    expect(JSON.stringify(detail)).not.toContain(TOKEN);
   });
 });

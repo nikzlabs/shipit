@@ -92,9 +92,12 @@ describe("Integration: agent settings access (docs/299)", () => {
     const { stdout, exitCode } = await runSettingsShim(["settings", "list"]);
 
     expect(exitCode).toBe(0);
-    expect(stdout).toContain("advanced.autoFixCi = true");
-    expect(stdout).toContain("advanced.enableSubAgents = true");
+    expect(stdout).toContain("advanced.autoFixCi = on");
+    expect(stdout).toContain("advanced.enableSubAgents = on");
     expect(stdout).toContain("Auto-fix CI when checks fail —");
+    // Both dialogs, not just the payload scalars (req 5).
+    expect(stdout).toContain("roles[].model");
+    expect(stdout).toContain("project.allowAgentMerge");
   });
 
   it("answers the setting behind a blocked sub-agent run, not a generic pointer", async () => {
@@ -104,7 +107,7 @@ describe("Integration: agent settings access (docs/299)", () => {
     ]);
 
     expect(exitCode).toBe(0);
-    expect(stdout).toContain("Value: false");
+    expect(stdout).toContain("Value: off");
     expect(stdout).toContain("Allow spawning another agent for a sub-task");
     // The whole description, the same words the dialog shows (req 7).
     expect(stdout).toContain("second-opinion review from a different model");
@@ -117,9 +120,12 @@ describe("Integration: agent settings access (docs/299)", () => {
       tabs: string[];
     };
 
-    const { GLOBAL_SETTINGS } = await import("../../shared/settings-catalogue/index.js");
-    expect(body.settings.map((s) => s.key).sort()).toEqual(Object.keys(GLOBAL_SETTINGS).sort());
+    const { ALL_SETTINGS } = await import("../../shared/settings-catalogue/index.js");
+    expect(body.settings.map((s) => s.key).sort()).toEqual(
+      ALL_SETTINGS.map((d) => d.key).sort(),
+    );
     expect(body.tabs).toContain("network");
+    expect(body.tabs).toContain("keyboard");
   });
 
   it("narrows to one tab", async () => {

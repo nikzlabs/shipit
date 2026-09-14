@@ -15,12 +15,16 @@ interface SettingEntry {
   unreadableReason?: string;
   propose?: { allowed?: boolean; refusal?: string; explanation?: string };
   effect?: { state?: string; detail?: string };
+  address?: { kind?: string; noun?: string };
   notes?: string[];
 }
 
 function effectMarker(entry: SettingEntry): string {
   const state = entry.effect?.state;
   if (!state || state === "live") return "";
+  // An unreadable entry already says why on the value line; repeating it as an
+  // effect marker makes the index unreadable for the reader, not just for ShipIt.
+  if (!entry.readable) return "";
   const detail = entry.effect?.detail ? ` — ${entry.effect.detail}` : "";
   return `  [${state}${detail}]`;
 }
@@ -129,14 +133,22 @@ export async function handleSettingsGet(args: string[], deps: RunDeps): Promise<
   ];
   const state = entry.effect?.state;
   const detail = entry.effect?.detail ? `: ${entry.effect.detail}` : "";
-  if (state === "live") {
-    lines.push("In effect: yes — the stored value is what ShipIt uses next.");
-  } else if (state === "uncertain") {
-    // ShipIt said it could not confirm the effect, which is not the same as
-    // saying the setting has none. Do not tell the user it is not working.
-    lines.push(`In effect: UNCONFIRMED — ShipIt cannot tell${detail}`);
-  } else if (state) {
-    lines.push(`In effect: NO — ${state}${detail}`);
+  // With no value there is nothing for an effect line to be about.
+  if (entry.readable) {
+    if (state === "live") {
+      lines.push("In effect: yes — the stored value is what ShipIt uses next.");
+    } else if (state === "uncertain") {
+      // ShipIt said it could not confirm the effect, which is not the same as
+      // saying the setting has none. Do not tell the user it is not working.
+      lines.push(`In effect: UNCONFIRMED — ShipIt cannot tell${detail}`);
+    } else if (state) {
+      lines.push(`In effect: NO — ${state}${detail}`);
+    }
+  }
+  if (entry.address?.kind === "item" || entry.address?.kind === "repository-item") {
+    lines.push(`Exists once per item, addressed by ${asString(entry.address.noun) || "an item id"}.`);
+  } else if (entry.address?.kind === "repository") {
+    lines.push("Exists once per repository — this session's own, never another.");
   }
   const refusal = refusalLine(entry);
   if (refusal) lines.push(refusal);
@@ -147,7 +159,7 @@ export async function handleSettingsGet(args: string[], deps: RunDeps): Promise<
   if (entry.live && Object.keys(entry.live).length > 0) {
     lines.push("", `Resolved now: ${JSON.stringify(entry.live)}`);
   }
-  for (const note of entry.notes ?? []) lines.push("", `Note: ${note}`);
+  for (const note of new Set(entry.notes ?? [])) lines.push("", `Note: ${note}`);
 
   success(deps.io, lines.join("\n"));
 }

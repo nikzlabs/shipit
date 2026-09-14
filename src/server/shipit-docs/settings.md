@@ -35,11 +35,16 @@ are both indexed in `list` and both detailed in `get`.
 $ shipit settings get advanced.enableSubAgents
 advanced.enableSubAgents — Allow spawning another agent for a sub-task
 Tab: advanced · Scope: global · Type: bool
-Value: false
+Value: off
 In effect: yes — the stored value is what ShipIt uses next.
 
 Lets the agent in a session spawn another agent for a one-shot sub-task …
 ```
+
+**Some settings exist once per item** — a role, an MCP server, a secret name.
+`list` shows one entry per setting whatever the item count is, and says what
+names an instance ("a role name"); `get` is where the items themselves belong.
+There is no `--item` flag: the read is two steps, and a third would not be.
 
 ## What the read will and will not show you
 
@@ -57,7 +62,15 @@ the reason, rather than coming back with a number it invented:
 | `configured` / `not configured` | Credential material — an API key, a token, a webhook secret. You learn whether it is set, never the value. |
 | `unreadable (browser_local)` | The value lives in the user's browser, not on ShipIt's server. |
 | `unreadable (no_repository)` | A per-repository setting, read from a session that binds no repository. |
-| `unreadable (no_reader)` | ShipIt could not read the stored value on this install. Say that; do not fall back to what you think the default is. |
+| `unreadable (no_reader)` | ShipIt cannot read the stored value yet. Say that; do not fall back to what you think the default is. |
+
+**Right now `no_reader` covers a lot of ground.** The settings owned by their own
+panel — roles, reviewer slots, credential routing, MCP servers, provider
+accounts, the per-repository settings, the voice keys — are named, described and
+refusal-tagged, and ShipIt does not yet read their values back. So you can tell
+the user what a setting is, what it accepts and whether they may change it, and
+you cannot tell them what it is currently set to. Say which of those you are
+doing; do not guess the value.
 
 Degrading is per entry. A session with no repository still gets every global
 setting in the same listing, and one setting ShipIt cannot read costs you no
@@ -92,7 +105,7 @@ work" would be a false promise. `list` marks any setting that is not `live`;
 the write verbs are refused rather than quietly ignored. What you do instead is
 say exactly what has to change, with the value you read:
 
-> Sub-agent runs are off — `advanced.enableSubAgents` is `false`. Turning it on
+> Sub-agent runs are off — `advanced.enableSubAgents` is `off`. Turning it on
 > under Settings → Advanced ("Allow spawning another agent for a sub-task") is
 > what unblocks the review you asked for.
 
@@ -108,13 +121,14 @@ same declaration the Settings dialog renders its label and help text from. So a
 setting added to ShipIt appears here carrying the user's description, and there
 is no second list of ShipIt's settings that could fall behind.
 
+A boolean reads as `on` / `off`, an unset value as `not set`, and a credential
+as `configured` / `not configured`.
+
 Two things the dialogs show are **not** settings and are correctly absent:
 **derived status** (whether egress enforcement is running, which harnesses this
 image installed, whether an update is available) and **actions** (*Check for
 updates*, installing a skill). Nobody can set those, so there is nothing to read.
 
-But absence is not proof. `list` shows what is declared, and ShipIt's settings
-are being brought under that declaration over several releases, so a control the
-user can see in the dialog may not be in `list` yet. **Never report a setting's
-value from memory or from a default you assume** — if `list` does not name it,
-say ShipIt does not expose it to you and let the user read it out.
+**Never report a setting's value from memory or from a default you assume.** If
+`list` does not name a setting, or names it without a value, say so and let the
+user read it out.

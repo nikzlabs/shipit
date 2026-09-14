@@ -129,6 +129,8 @@ describe("shipit settings list", () => {
     const res = await run(["settings", "list"], { "GET /agent-ops/settings/list": LIST });
 
     expect(res.stdout).toContain("voice.speed = unreadable (browser_local)");
+    // The reason is on the value line; an effect marker would repeat it.
+    expect(res.stdout).not.toContain("[uncertain");
   });
 
   it("passes --tab through to the relay", async () => {
@@ -215,6 +217,44 @@ describe("shipit settings get", () => {
 
     expect(res.stdout).toContain("Cannot be changed on your behalf (secret).");
     expect(res.stdout).toContain("The user enters it in Settings.");
+  });
+
+  it("says a per-item setting is per-item, and what names one instance", async () => {
+    const { run } = makeRunner();
+    const res = await run(["settings", "get", "roles[].model"], {
+      "GET /agent-ops/settings/get": {
+        status: 200,
+        body: {
+          ...DETAIL.body,
+          key: "roles[].model",
+          address: { kind: "item", noun: "a role name" },
+          items: [],
+        },
+      },
+    });
+
+    expect(res.stdout).toContain("Exists once per item, addressed by a role name.");
+  });
+
+  it("prints no effect line for a value it could not read", async () => {
+    const { run } = makeRunner();
+    const res = await run(["settings", "get", "roles[].model"], {
+      "GET /agent-ops/settings/get": {
+        status: 200,
+        body: {
+          ...DETAIL.body,
+          key: "roles[].model",
+          readable: false,
+          unreadableReason: "no_reader",
+          effect: { state: "uncertain" },
+          notes: ["ShipIt cannot read this setting's stored value yet."],
+        },
+      },
+    });
+
+    // The value line already said so; an effect line would say it twice.
+    expect(res.stdout).toContain("Value: unreadable (no_reader)");
+    expect(res.stdout).not.toContain("In effect");
   });
 
   it("does not read `uncertain` as `not in effect`", async () => {

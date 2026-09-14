@@ -1,9 +1,18 @@
 import type { AgentRegistry } from "../../shared/agent-registry.js";
 import type { EgressEnforcementStatus } from "../../shared/types.js";
-import { GLOBAL_SETTINGS, isPayloadDeclaration } from "../../shared/settings-catalogue/index.js";
+import {
+  ALL_SETTINGS,
+  addressesARepository,
+  findSetting,
+  formatSetting,
+  isPayloadDeclaration,
+  projectSetting,
+  refusalSentence,
+} from "../../shared/settings-catalogue/index.js";
 import type {
   AnySettingDeclaration,
-  ProposeRefusal,
+  RefusalReason,
+  SettingAddress,
   SettingScope,
   SettingTab,
   SettingValueKind,
@@ -25,11 +34,19 @@ import { ServiceError } from "./types.js";
  * the catalogue, and a newly declared setting is INDEXED here — key, label,
  * description, shape, refusal — with no edit to this file.
  *
- * Its VALUE is too, where the settings payload stores it. A declaration whose
- * store is `own-route` names only the route that writes it, so reading one back
- * needs an adapter below; without one the entry says it cannot be read rather
- * than reporting a default as the live value. That is the deliberate limit of
- * the derivation, not a place a setting can be forgotten.
+ * Its VALUE comes from the catalogue too, where the settings payload stores it.
+ * A declaration whose store is NOT the payload names only where the value lives,
+ * so reading one back needs a reader: `own-route` has two below, and the 42
+ * `bespoke` declarations have none yet, so they report that ShipIt cannot read
+ * the value rather than passing off a default as the live one. Req 5 and req 7
+ * hold — every setting is named, described and refusal-tagged — and req 3 is
+ * what degrades until the bespoke readers land in the next slice.
+ *
+ * **Every emitted value goes through `projectSetting` / `formatSetting`
+ * (`settings-catalogue/projection.ts`), and nothing here formats a stored value
+ * directly** (req 2). An MCP entry takes arbitrary `args`, `env`, `headers` and
+ * a URL, so a token lives in a field called `args`; a second formatter beside
+ * that door is exactly how one escapes in the output path nobody re-checks.
  *
  * Two steps by ROLE, never by size: `list` is the index — what a setting is and
  * what it is set to — and `get` is the detail, carrying the value's shape and
@@ -50,19 +67,42 @@ export interface SettingEffect {
   detail?: string;
 }
 
-/** Why ShipIt cannot show the agent this setting's value. */
+/**
+ * Why ShipIt cannot show the agent this setting's value. The catalogue's four
+ * refusal reasons carry through from a `withheld` projection; the two below them
+ * are this read's own.
+ */
 export type SettingUnreadableReason =
-  /** The value is in the user's browser, not on ShipIt's server. */
-  | "browser_local"
+  | RefusalReason
   /** A per-repository setting read from a session that binds no repository. */
   | "no_repository"
-  /** Written by a route of its own that this install cannot read back. */
+  /** Stored somewhere this read has no reader for yet. */
   | "no_reader";
 
 export interface SettingProposeView {
   allowed: boolean;
-  refusal?: ProposeRefusal;
+  refusal?: RefusalReason;
   explanation?: string;
+}
+
+/**
+ * What identifies one instance of a setting. `list` says a setting is per-item;
+ * `get` is where the items themselves belong (req 1: the index, then the detail
+ * of one). The index never grows an entry per item — its length must not depend
+ * on how many roles or MCP servers someone happens to have.
+ */
+export interface SettingAddressView {
+  kind: SettingAddress["kind"];
+  /** What names one instance, e.g. "a role name". */
+  noun?: string;
+}
+
+/** One addressed instance of an item-addressed setting, in `get` only. */
+export interface SettingItemView {
+  /** How a change names this instance. */
+  address: string;
+  value: unknown;
+  display: string;
 }
 
 export interface SettingIndexEntry {
@@ -72,6 +112,7 @@ export interface SettingIndexEntry {
   summary: string;
   tab: SettingTab;
   scope: SettingScope;
+  address: SettingAddressView;
   /** Projected through the declaration's `emits`; null when unreadable. */
   value: unknown;
   /** The value on one line, in the form a change to it would name. */
@@ -92,6 +133,8 @@ export interface SettingDetailEntry extends SettingIndexEntry {
   shape: Record<string, unknown>;
   /** Facts a declaration cannot hold, resolved at read time. */
   live?: Record<string, unknown>;
+  /** Present for an item-addressed setting: one entry per instance. */
+  items?: SettingItemView[];
 }
 
 export interface SettingsIndex {
@@ -119,12 +162,13 @@ export interface SettingsReadDeps {
 }
 
 /**
- * Every declaration the read projects. `GLOBAL_SETTINGS` is the whole catalogue
- * today; the project and browser scopes land as further declaration records and
- * join here, so nothing in this file depends on which scope a setting is in.
+ * Every declaration the read projects — the registry, which is every source the
+ * catalogue has. NOT `GLOBAL_SETTINGS`, which is only the 13 settings the global
+ * payload stores: sourcing the index from it returns a fifth of what req 5 names
+ * and looks correct in every test that restates the same source.
  */
-function allDeclarations(): AnySettingDeclaration[] {
-  return Object.values(GLOBAL_SETTINGS);
+function allDeclarations(): readonly AnySettingDeclaration[] {
+  return ALL_SETTINGS;
 }
 
 const SUMMARY_MAX = 200;
@@ -169,81 +213,66 @@ const OWN_ROUTE_READERS: Record<string, OwnRouteReader> = {
       : { ok: false, reason: "no_reader", note: "This install has no egress allowlist store, so the containment setting cannot be read." },
 };
 
-const PROPOSE_EXPLANATIONS: Record<ProposeRefusal, string> = {
-  secret: "This holds credential material. ShipIt never shows the agent the value and never changes it on the agent's behalf — the user enters it in Settings.",
-  external_flow: "Changing this needs a sign-in flow on the provider's own site, which only the user can complete.",
-  browser_local: "This value is set in the user's browser; ShipIt's server does not hold it.",
-  unsafe_to_display: "ShipIt cannot show the full effect of this change, so it is not one the agent can ask the user to approve.",
-};
-
 function proposeView(declaration: AnySettingDeclaration): SettingProposeView {
   if (declaration.propose.kind === "yes") return { allowed: true };
   const { reason } = declaration.propose;
-  return { allowed: false, refusal: reason, explanation: PROPOSE_EXPLANATIONS[reason] };
-}
-
-function isConfigured(raw: unknown): boolean {
-  if (raw === null || raw === undefined || raw === false) return false;
-  if (typeof raw === "string") return raw.trim().length > 0;
-  if (Array.isArray(raw)) return raw.length > 0;
-  return true;
-}
-
-function formatPlain(raw: unknown, declaration: Pick<AnySettingDeclaration, "type">): string {
-  if (raw === null || raw === undefined) return "not set";
-  if (typeof raw === "boolean" || typeof raw === "number") {
-    const unit = declaration.type.shape.unit;
-    return typeof unit === "string" && typeof raw === "number" ? `${raw} ${unit}` : String(raw);
-  }
-  if (typeof raw === "string") return raw.length === 0 ? "empty" : raw;
-  return JSON.stringify(raw);
+  // The catalogue owns the sentence, so a refused read and a refused change say
+  // the same thing about the same setting.
+  return { allowed: false, refusal: reason, explanation: refusalSentence(reason) };
 }
 
 export interface ProjectedValue {
   value: unknown;
   display: string;
   notes: string[];
+  /** A `withheld` projection: the declaration gives the read no value at all. */
+  withheld?: RefusalReason;
 }
 
 /**
- * The only output a setting may produce (plan.md → `emits` is an allowlist of
- * derived values). `detail` carries the user's own prose whole; the index caps
- * it, because an index is for scanning.
+ * The emitted value for one setting — ALWAYS through the catalogue's door
+ * (`projectSetting`, then `formatSetting` on the outcome rather than on the
+ * stored value). Nothing here touches `raw` again afterwards except to shorten
+ * an already-projected string.
  */
 export function projectSettingValue(
-  declaration: Pick<AnySettingDeclaration, "emits" | "type">,
+  declaration: AnySettingDeclaration,
   raw: unknown,
   detail: boolean,
 ): ProjectedValue {
+  const outcome = projectSetting(declaration, raw);
+  const display = formatSetting(declaration, outcome);
+  if (!outcome.readable) {
+    return { value: null, display, notes: [outcome.explanation], withheld: outcome.reason };
+  }
+  const notes = projectionNotes(declaration);
+  // Shortening applies to what the door emitted, never to the stored value, and
+  // only to prose: a git identity is a `user_text` value that is not one string.
+  if (detail || typeof outcome.value !== "string" || outcome.value.length <= LIST_TEXT_MAX) {
+    return { value: outcome.value, display, notes };
+  }
+  const shortened = `${outcome.value.slice(0, LIST_TEXT_MAX).trimEnd()}…`;
+  return {
+    value: shortened,
+    display: oneLine(shortened),
+    notes: [
+      ...notes,
+      `Shortened to ${LIST_TEXT_MAX} characters here; the whole value is ${outcome.value.length} characters and comes back from a read of this one setting.`,
+    ],
+  };
+}
+
+/** What the declaration says about its own output, for a reader checking it. */
+function projectionNotes(declaration: AnySettingDeclaration): string[] {
   switch (declaration.emits.kind) {
-    case "configured_only": {
-      const configured = isConfigured(raw);
-      return {
-        value: { configured },
-        display: configured ? "configured" : "not configured",
-        notes: ["ShipIt reports only whether this is configured, never its value."],
-      };
-    }
-    case "user_text": {
-      const notes = [declaration.emits.reason];
-      // A `user_text` setting need not be one string: a git identity is the
-      // user's own name and email, and shortening only applies to the prose.
-      if (typeof raw !== "string") {
-        return { value: raw ?? null, display: formatPlain(raw, declaration), notes };
-      }
-      const text = raw;
-      if (detail || text.length <= LIST_TEXT_MAX) {
-        return { value: text, display: text.length === 0 ? "empty" : oneLine(text), notes };
-      }
-      const truncated = `${text.slice(0, LIST_TEXT_MAX).trimEnd()}…`;
-      return {
-        value: truncated,
-        display: oneLine(truncated),
-        notes: [...notes, `Shortened to ${LIST_TEXT_MAX} characters here; the whole value is ${text.length} characters and comes back from a read of this one setting.`],
-      };
-    }
-    case "plain":
-      return { value: raw ?? null, display: formatPlain(raw, declaration), notes: [] };
+    case "configured_only":
+      return ["ShipIt reports only whether this is configured, never its value."];
+    case "user_text":
+      return [declaration.emits.reason];
+    case "derived":
+      return [`ShipIt emits ${declaration.emits.describes}, and nothing else of this value.`];
+    default:
+      return [];
   }
 }
 
@@ -364,10 +393,11 @@ const LIVE_DETAILS: Record<string, LiveDetail> = {
   "services.nonTurnModel": nonTurnModelDetail,
 };
 
-const UNREADABLE_NOTES: Record<SettingUnreadableReason, string> = {
-  browser_local: "Set in the browser; ShipIt's server does not hold this value, so it cannot be read here.",
+// Only this read's own two reasons; the catalogue's four come from
+// `refusalSentence`, so a withheld setting says the same thing everywhere.
+const UNREADABLE_NOTES: Record<"no_repository" | "no_reader", string> = {
   no_repository: "This is a per-repository setting and this session binds no repository.",
-  no_reader: "ShipIt cannot read this setting's stored value on this install.",
+  no_reader: "ShipIt cannot read this setting's stored value yet.",
 };
 
 interface ReadState {
@@ -390,18 +420,41 @@ function readFailureNote(key: string, err: unknown): string {
 }
 
 /**
- * Whether a setting's SCOPE puts it out of the server's reach, before anything
- * is read. Browser settings are named and explained and nothing more; a
- * per-repository setting degrades to an entry in a session that binds no
- * repository, so `list` still returns every global setting beside it.
+ * Whether a setting's ADDRESS puts it out of this session's reach, before
+ * anything is read. A per-repository setting degrades to an entry in a session
+ * that binds no repository, so `list` still returns every other setting beside
+ * it — and the repository is the session's own binding, never anything the agent
+ * supplies. A browser-local value is not decided here: its declaration says so
+ * itself with a `withheld` projection, which is the one place that judgement
+ * lives.
  */
 export function scopeUnreadableReason(
-  declaration: Pick<AnySettingDeclaration, "scope">,
+  declaration: Pick<AnySettingDeclaration, "scope" | "address">,
   repoBound: boolean,
-): SettingUnreadableReason | null {
-  if (declaration.scope === "browser") return "browser_local";
-  if (declaration.scope === "project" && !repoBound) return "no_repository";
-  return null;
+): "no_repository" | null {
+  const perRepository = declaration.scope === "project" || addressesARepository(declaration.address);
+  return perRepository && !repoBound ? "no_repository" : null;
+}
+
+/** What `list` says about how a setting is addressed; `get` carries the items. */
+function addressView(declaration: AnySettingDeclaration): SettingAddressView {
+  const address = declaration.address ?? { kind: "none" as const };
+  const noun = "noun" in address ? address.noun : undefined;
+  return { kind: address.kind, ...(noun ? { noun } : {}) };
+}
+
+function isItemAddressed(declaration: AnySettingDeclaration): boolean {
+  const kind = declaration.address?.kind;
+  return kind === "item" || kind === "repository-item";
+}
+
+/** Where a value lives, for a reader following an entry that has no value yet. */
+function storeLocation(declaration: AnySettingDeclaration): string {
+  const { store } = declaration;
+  if (store.kind === "own-route") return `written by ${store.route}`;
+  if (store.kind === "bespoke") return `owned by ${store.ownedBy}`;
+  if (store.kind === "browser") return `kept in the browser under ${store.localStorageKey}`;
+  return "stored by ShipIt";
 }
 
 async function readValue(
@@ -409,6 +462,13 @@ async function readValue(
   deps: SettingsReadDeps,
   state: ReadState,
 ): Promise<ReadOutcome> {
+  // A `withheld` declaration answers for itself, and its reason beats anything
+  // this read would infer: a browser-local value is not "ShipIt has no reader
+  // yet", it is a value ShipIt's server never holds.
+  if (declaration.emits.kind === "withheld") {
+    const { reason } = declaration.emits;
+    return { ok: false, reason, note: refusalSentence(reason) };
+  }
   const scoped = scopeUnreadableReason(declaration, state.repoBound);
   if (scoped) return { ok: false, reason: scoped, note: UNREADABLE_NOTES[scoped] };
   if (isPayloadDeclaration(declaration)) {
@@ -426,7 +486,7 @@ async function readValue(
     return {
       ok: false,
       reason: "no_reader",
-      note: `${UNREADABLE_NOTES.no_reader} It is written by ${declaration.store.kind === "own-route" ? declaration.store.route : "a route of its own"}.`,
+      note: `${UNREADABLE_NOTES.no_reader} It is ${storeLocation(declaration)}.`,
     };
   }
   return reader(deps);
@@ -452,8 +512,11 @@ async function buildEntry(
     summary: firstSentence(declaration.description),
     tab: declaration.tab,
     scope: declaration.scope,
+    address: addressView(declaration),
     propose: proposeView(declaration),
   };
+  // `get` says the same thing with the items themselves, so this is list-only.
+  const indexNotes = detail ? [] : [itemNote(declaration)].filter((n): n is string => !!n);
   if (!outcome.ok) {
     return {
       ...base,
@@ -461,9 +524,10 @@ async function buildEntry(
       display: "unknown",
       readable: false,
       unreadableReason: outcome.reason,
-      // An unreadable value cannot carry an effect claim; saying so is the point.
-      effect: { state: "uncertain", detail: outcome.note },
-      notes: [outcome.note],
+      // An unreadable value cannot carry an effect claim. The reason is in
+      // `notes` and must not be repeated here — it is one fact, not three.
+      effect: { state: "uncertain" },
+      notes: [outcome.note, ...indexNotes],
     };
   }
   const projected = projectSettingValue(declaration, outcome.value, detail);
@@ -482,8 +546,22 @@ async function buildEntry(
     display: projected.display,
     readable: true,
     effect,
-    notes: projected.notes,
+    notes: [...projected.notes, ...indexNotes],
   };
+}
+
+/**
+ * The index says a setting is per-item; it never grows an entry per item
+ * (req 1 — the index, then the detail of one). Its length must not depend on how
+ * many roles or MCP servers someone has, for the same reason option sets live in
+ * `get`.
+ */
+function itemNote(declaration: AnySettingDeclaration): string | null {
+  if (!isItemAddressed(declaration)) return null;
+  const noun = "noun" in (declaration.address ?? {})
+    ? (declaration.address as { noun: string }).noun
+    : "an item";
+  return `One of these exists per item, addressed by ${noun}. \`shipit settings get ${declaration.key}\` is where the items are.`;
 }
 
 async function readState(deps: SettingsReadDeps, sessionId: string): Promise<ReadState> {
@@ -555,18 +633,39 @@ export async function getSettingForAgent(
   sessionId: string,
   key: string,
 ): Promise<SettingDetailEntry> {
-  const declaration = allDeclarations().find((d) => d.key === key);
+  const declaration = findSetting(key);
   if (!declaration) {
     throw new ServiceError(404, `No ShipIt setting is called "${key}". List them with \`shipit settings list\`.`);
   }
   const state = await readState(deps, sessionId);
   const entry = await buildEntry(declaration, deps, state, true);
   const live = entry.readable ? resolveLiveDetail(declaration.key, deps, entry) : undefined;
+  const items = itemsFor(declaration, entry);
   return {
     ...entry,
     description: oneLine(declaration.description),
     valueType: declaration.type.kind,
     shape: declaration.type.shape,
     ...(live ? { live } : {}),
+    ...(items ? { items } : {}),
   };
+}
+
+/**
+ * The instances of an item-addressed setting. Enumerating them needs a reader
+ * for the panel that owns the items, and the 42 `bespoke` declarations have none
+ * yet — so the shape is here and empty, with the reason, and the next slice
+ * fills it rather than changing the contract. The address each item is named by
+ * is spelled when there are items to spell it for.
+ */
+function itemsFor(
+  declaration: AnySettingDeclaration,
+  entry: SettingIndexEntry,
+): SettingItemView[] | undefined {
+  if (!isItemAddressed(declaration)) return undefined;
+  entry.notes.push(
+    "This setting exists once per item, and ShipIt cannot enumerate the items yet — "
+      + "it can say what the setting is, not what any one item is set to.",
+  );
+  return [];
 }
