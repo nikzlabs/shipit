@@ -188,6 +188,83 @@ Each finding re-verified at the code before being acted on.
       removable and every further removal reports success. `plan.md` carries the
       reproduction (`.github.com`); the fix belongs with `settings-apply.ts`
 
+## Conformance against reqs 7 and 8 — the closing review
+
+Three findings from a closing conformance review, each verified at the code
+first. One of the three did not hold as stated and is recorded as such.
+
+- [x] req 7 — a declared global boolean generates its **save wiring**: the
+      optimistic write, the `PUT /api/settings` payload, the rollback and the
+      toast all come from `wire` and `label`, so
+      `<DeclaredToggle settingKey="…" />` is the whole of a new toggle. Seven
+      hand-written copies of that block removed, including the one threaded
+      through `App.tsx` as a prop
+- [x] req 7 — what the derivation does NOT reach is named rather than implied:
+      the browser store field is hand-written, so a declaration missing its field
+      or setter drops out of `DeclaredBooleanKey` and binding a control to it
+      without the two props is a compile error. `plan.md` → *Settings are
+      declared once* carries the derived/detected split as a table
+- [x] req 7 — a control may bind only a declaration **from its own tab**; before
+      this the walk asked only whether the named declaration existed, so a role
+      field bound to `advanced.liveSteering` passed
+- [x] req 7 — `ROLE_FIELD_SETTINGS` / `ROLE_PARAMS_FIELD_SETTINGS`, the role's
+      half of what `MCP_SERVER_FIELD_SETTINGS` does: a field added to `AgentRole`
+      or `RolePinnedParams` is a compile error until it is declared under its own
+      name, with `partOf` confined to the roles family for the model tuple and
+      the harness
+- [x] req 8 — the read renders `lastProposal` in the **plain** output, phase
+      headline and instruction included. It reached `--json` and nothing else,
+      so a dismissed card was invisible to the command the notice tells the agent
+      to run, and the agent re-proposed a value the user had declined
+- [x] The phase table moved to `shared/settings-proposal-guidance.ts`, read by
+      both the notice and the shim, so the two surfaces cannot word a phase
+      differently
+- [x] req 8 — an automatic turn carries the notice: the requirement says *the
+      next turn* and names no kind. Compaction and a verbatim harness command
+      stay out because neither carries any agent prefix at all, and the outcome
+      rides the turn after
+- [x] The compaction exclusion taken to the user rather than encoded, and their
+      answer written back as a dated receipt under `requirements.md` →
+      *Resolved questions*. The verbatim harness command is recorded beside it as
+      a **known limitation**, not a decision: there is no prefix slot at all, and
+      the user was not asked because there was nothing to decide
+- [x] The reviewer's third claim did **not** hold as stated: `BESPOKE_READERS`
+      detects a missing reader rather than deriving one, and a reader is
+      per-owner code that cannot be generated. Recorded in `plan.md` as detection
+      rather than changed
+- [x] Every new guard proven red on its own: the plain-`get` rendering removed
+      fails three of its four tests (the fourth is the negative control), the
+      system-turn exclusion restored fails the automatic-turn test, the tab
+      check removed fails the cross-tab test, and a field added to `AgentRole` or
+      `RolePinnedParams` fails `tsc` in both maps
+
+### The independent review of those fixes
+
+Three findings, each verified at the code and each a defect rather than taste.
+
+- [x] A **superseded** turn no longer acknowledges its notice. A retired process
+      can emit a result for its own prompt after a successor took the agent slot;
+      the turn settles `interrupted` with its work discarded, and the receipt was
+      spent on it. Failover and the quota retry deliberately keep acknowledging,
+      since those re-dispatch the same prompt
+- [x] **Overlapping saves.** Reverting a failed save to the opposite of its own
+      requested value is wrong the moment it is not the only save: off-then-on
+      with both failing left the server on and the browser off. A failure now
+      reverts to the value the server last accepted, and only from the newest
+      request. Pre-existing in all seven hand-written copies; centralising them
+      is what made one fix cover it
+- [x] The role map's `partOf` narrowed from *any key in the roles family* to an
+      enumerated allowlist of the two aggregates, and `fieldsDeclaredIn` from any
+      string to the one map's name — the prose claimed a restriction the types
+      did not make, and `{ partOf: "roles[].description" }` typechecked
+- [x] Three test gaps the review named, closed: two saves held pending at once,
+      a superseded turn with a late result, and the `agent-execution.ts` line
+      that no test can distinguish, which says so in a comment
+- [x] Each new guard proven red alone, and one candidate guard **dropped** rather
+      than kept: pinning the server's confirmed value to the newest successful
+      request has no interleaving where the right answer is knowable, so there
+      was nothing a test could assert
+
 ## Phase 2, slice 3 — the outcome notice (req 8)
 
 - [x] `agent_notified` on the private proposal row, with

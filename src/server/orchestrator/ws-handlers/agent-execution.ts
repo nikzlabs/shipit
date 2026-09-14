@@ -420,9 +420,20 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
   // Read, never consumed here (docs/299-agent-settings-access req 8): the receipt
   // below is settled by the turn, so an outcome that never reaches the agent
   // rides the next turn instead of being lost.
+  //
+  // Not gated on `systemTurn`: req 8 says "the next turn" and names no kind, so
+  // an automatic turn carries it too. The two exclusions left are turns with
+  // nowhere to put it — compaction, whose prompt is an instruction to summarise
+  // and whose result replaces the context, and a verbatim command, which the
+  // harness reads only when the prompt is exactly the command.
+  //
+  // No test distinguishes this line from the one it replaced, and cannot: the
+  // only caller that reaches here with `systemTurn` is `runCompactionAhead`,
+  // which sets `compact` as well. It changes with the other call site so a
+  // future system turn on this path is not silently excluded.
   const settingsOutcome =
     capturedSessionId && ctx.settingsProposals
-      && !opts.compact && !opts.systemTurn && !ridesTurnAsCommand
+      && !opts.compact && !ridesTurnAsCommand
       ? prepareSettingsOutcomeNotice(
           { proposals: ctx.settingsProposals, chatHistoryManager: ctx.chatHistoryManager },
           capturedSessionId,

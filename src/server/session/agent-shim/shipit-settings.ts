@@ -1,4 +1,8 @@
 import { asString, fail, parseFlags, success } from "./shim-common.js";
+import {
+  proposalPhaseGuidance,
+  proposalPhaseHeadline,
+} from "../../shared/settings-proposal-guidance.js";
 import { REJECTED_HELP, formatError, type RunDeps } from "./shipit.js";
 
 // ShipIt's own settings from inside a session (docs/299-agent-settings-access):
@@ -20,11 +24,66 @@ interface SettingEntry {
   notes?: string[];
 }
 
+/**
+ * What the user last did about this setting, from any session
+ * (docs/299-agent-settings-access req 8).
+ *
+ * Rendered in the TEXT output and not only in `--json`: the next-turn notice
+ * deliberately carries no values and sends the agent here, so a phase visible
+ * only to `--json` would leave plain `get` unable to answer the one question the
+ * notice asked it to — whether the user has already dealt with this change.
+ */
+interface LastProposal {
+  cardId?: string;
+  phase?: string;
+  operation?: string;
+  item?: string;
+  from?: unknown;
+  proposed?: unknown;
+  proposedAt?: string;
+  resolvedAt?: string;
+  sessionId?: string;
+}
+
 /** One addressed instance of a per-item setting; `get` carries them, `list` names them. */
 interface SettingItem {
   address?: string;
   display?: string;
   notes?: string[];
+  lastProposal?: LastProposal;
+}
+
+/** A projected value on one line. Both fields are `unknown`, so JSON is the honest form. */
+function proposalValue(value: unknown): string {
+  if (value === undefined) return "(not recorded)";
+  if (typeof value === "string") return value;
+  try {
+    return JSON.stringify(value) ?? "(not representable)";
+  } catch {
+    return "(not representable)";
+  }
+}
+
+/**
+ * The last proposal about one target, indented under whatever it belongs to.
+ * Empty when there is none — a setting nobody has proposed a change to says
+ * nothing about proposals.
+ */
+function proposalLines(proposal: LastProposal | undefined, indent: string): string[] {
+  if (!proposal) return [];
+  const phase = asString(proposal.phase);
+  const card = asString(proposal.cardId);
+  const lines = [
+    `${indent}Last proposal: ${proposalPhaseHeadline(phase)}${card ? ` (card ${card})` : ""}`,
+  ];
+  const change = `${proposalValue(proposal.from)} → ${proposalValue(proposal.proposed)}`;
+  const when = proposal.proposedAt ? ` on ${asString(proposal.proposedAt)}` : "";
+  const resolved = proposal.resolvedAt ? `, resolved ${asString(proposal.resolvedAt)}` : "";
+  const operation = proposal.operation ? `${asString(proposal.operation)}: ` : "";
+  lines.push(`${indent}  ${operation}${change}${when}${resolved}`);
+  const guidance = proposalPhaseGuidance(phase);
+  if (guidance) lines.push(`${indent}  ${guidance}`);
+  return lines;
 }
 
 function itemLines(entry: SettingEntry & { items?: SettingItem[] }): string[] {
@@ -36,6 +95,7 @@ function itemLines(entry: SettingEntry & { items?: SettingItem[] }): string[] {
   for (const item of items) {
     lines.push(`  ${asString(item.address)} = ${asString(item.display)}`);
     for (const note of item.notes ?? []) lines.push(`      ${note}`);
+    lines.push(...proposalLines(item.lastProposal, "      "));
   }
   return lines;
 }
@@ -240,6 +300,7 @@ export async function handleSettingsGet(args: string[], deps: RunDeps): Promise<
     shape?: Record<string, unknown>;
     live?: Record<string, unknown>;
     items?: SettingItem[];
+    lastProposal?: LastProposal;
   };
   const lines = [
     `${entry.key} — ${entry.label}`,
@@ -273,6 +334,7 @@ export async function handleSettingsGet(args: string[], deps: RunDeps): Promise<
   }
   const refusal = refusalLine(entry);
   if (refusal) lines.push(refusal);
+  lines.push(...proposalLines(entry.lastProposal, ""));
   lines.push("", asString(entry.description));
   lines.push(...itemLines(entry));
   if (entry.shape && Object.keys(entry.shape).length > 0) {

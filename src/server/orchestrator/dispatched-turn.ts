@@ -219,7 +219,14 @@ async function runDispatchedTurnInner(
   // A settings outcome is NOT consumed here (docs/299 req 8): the receipt rides
   // the turn and is settled by it, so a turn that never reaches the agent leaves
   // the outcome for the next one.
-  const settingsOutcome = opts.systemTurn || isCompactRequest
+  //
+  // It rides an automatic turn too — a CI fix, a conflict resolution, a wake —
+  // because req 8 says "the next turn" and names no kind. Only compaction is
+  // left out, and not as this feature's carve-out: compaction carries NO prefix
+  // at all (the pending notice, the bug outcome and the dependency gap are all
+  // excluded above), because its prompt is an instruction to summarise and its
+  // result replaces the context a notice would have been read in.
+  const settingsOutcome = isCompactRequest
     ? null
     : deps.settingsOutcomeNotice?.(runner.sessionId) ?? null;
 

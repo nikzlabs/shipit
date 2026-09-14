@@ -71,7 +71,11 @@ agent is the actor.
 8. When the user applies or dismisses a proposal, the agent is told at the start
    of its next turn. It does not have to work out for itself that something
    changed, and it does not remind the user about a change they have already
-   dealt with.
+   dealt with. The next turn means the next turn that can read a prompt: a
+   **compaction** turn is excluded, which the user decided and the receipt below
+   records, and a harness command delivered verbatim has no place to carry the
+   notice at all, which is recorded below as a known limitation. In both the
+   outcome waits for the turn after rather than being lost.
 
 ## Open questions
 
@@ -86,6 +90,14 @@ agent is the actor.
   authenticating the orchestrator's API against local callers, which is separate
   work on a shared surface. The user accepted this on 2026-09-13 (receipt below);
   `plan.md` → *Who can resolve a card* carries the mechanics.
+- **A harness command delivered verbatim carries no outcome notice, and nothing
+  can make it.** When the prompt is a native harness command (docs/297,
+  `ridesTurnAsCommand`), the CLI reads it as its own command only when the prompt
+  is *exactly* the command — so there is no prefix slot for a notice, or for any
+  of the other things ShipIt prefixes. This is structural rather than a choice,
+  and the user was not asked about it: there was nothing to decide. The
+  at-least-once carry covers it — the outcome stays pending and reaches the agent
+  on the following turn.
 
 ## Resolved questions
 
@@ -158,3 +170,25 @@ agent is the actor.
   user. An applied-with-one-click card is such an affordance, so the card
   replaces the prose line wherever the agent can propose, and prose remains only
   where it cannot — a secret value the user has to type.
+- 2026-09-14 — *Requirement 8 says "the next turn" and names no kind of turn. Does
+  a compaction turn carry the outcome notice?* The user: **exclude compaction.**
+  Every other turn carries it, automatic ones included — a CI fix, a conflict
+  resolution, a rebase follow-up, a credential remediation, a wake. The
+  constraint this carries is that "the next turn" means the next turn that can
+  read a prompt, and compaction is not one. → requirement 8's closing clause.
+
+  Three things carried the answer, and they are the reasoning rather than a
+  preference for consistency. A compaction turn's prompt is an instruction to
+  summarise and its result **replaces the context** a notice would have been read
+  in, so consuming an outcome there risks the agent that does the user's actual
+  work never seeing it — which is the precise failure requirement 8 exists to
+  prevent. ShipIt already suppresses every prefix on a compaction turn: the
+  pending-agent notice, the bug-report outcome and the dependency gap, all
+  verified at `dispatched-turn.ts` rather than taken from a summary. And nothing
+  is lost — the outcome stays pending and rides the following turn, so the agent
+  is told one turn later, and only when the next turn happens to be a compaction.
+
+  An earlier draft excluded **every** automatic turn on the grounds that a
+  settings notice inside a conflict-resolution prompt could only distract. That
+  was a restriction the requirement's wording did not carry, and it made an
+  outcome wait for an ordinary turn that may be hours away and may never come.

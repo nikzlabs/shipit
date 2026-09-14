@@ -25,9 +25,7 @@ const props: SettingsProps = {
   onGitIdentitySave: vi.fn(),
   memoryBudgetMb: null,
   onMemoryBudgetSave: vi.fn(),
-  agentSystemInstructionsEnabled: true,
   agentSystemInstructions: "",
-  onToggleAgentSystemInstructions: vi.fn(),
   hasActiveSession: false,
   onClose: vi.fn(),
 };

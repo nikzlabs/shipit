@@ -83,101 +83,36 @@ function NotificationSettings() {
   );
 }
 
+/*
+  Every toggle below reads and writes itself from its declaration
+  (`declared-setting.ts`, req 7). Each one used to select its own store field,
+  build its own PUT body, roll back by hand and write its own toast — and a new
+  setting needed one more copy of that block, which is the second registration
+  req 7 says must not exist.
+*/
 function LiveSteeringSettings() {
-  const liveSteering = useSettingsStore((s) => s.liveSteering);
-
-  const handleToggle = async (v: boolean) => {
-    useSettingsStore.getState().setLiveSteering(v);
-    try {
-      const res = await fetch("/api/settings", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ liveSteering: v }),
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    } catch (err) {
-      useSettingsStore.getState().setLiveSteering(!v);
-      useUiStore.getState().setToast({ message: "Failed to update live steering setting" });
-      console.error("[settings] toggle liveSteering failed:", err);
-    }
-  };
-
   return (
     <div className="space-y-3">
       <h3 className="text-sm font-medium text-(--color-text-primary)">Live Steering</h3>
       <div className="space-y-2">
-        <DeclaredToggle
-          settingKey="advanced.liveSteering"
-          enabled={liveSteering}
-          onToggle={(v) => void handleToggle(v)}
-          testId="settings-live-steering"
-        />
+        <DeclaredToggle settingKey="advanced.liveSteering" testId="settings-live-steering" />
       </div>
     </div>
   );
 }
 
 function PrAutomationsSettings() {
-  const autoResolveConflicts = useSettingsStore((s) => s.autoResolveConflicts);
-  const autoFixCi = useSettingsStore((s) => s.autoFixCi);
-  const autoResetMergedBranch = useSettingsStore((s) => s.autoResetMergedBranch);
-
-  const makeToggle = (
-    key: "autoResolveConflicts" | "autoFixCi" | "autoResetMergedBranch",
-    setter: (v: boolean) => void,
-    label: string,
-  ) => async (v: boolean) => {
-    setter(v);
-    try {
-      const res = await fetch("/api/settings", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ [key]: v }),
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    } catch (err) {
-      setter(!v);
-      useUiStore.getState().setToast({ message: `Failed to update ${label} setting` });
-      console.error(`[settings] toggle ${key} failed:`, err);
-    }
-  };
-
-  const handleResolveToggle = makeToggle(
-    "autoResolveConflicts",
-    (v) => useSettingsStore.getState().setAutoResolveConflicts(v),
-    "auto-resolve",
-  );
-  const handleFixToggle = makeToggle(
-    "autoFixCi",
-    (v) => useSettingsStore.getState().setAutoFixCi(v),
-    "auto-fix",
-  );
-  const handleResetMergedToggle = makeToggle(
-    "autoResetMergedBranch",
-    (v) => useSettingsStore.getState().setAutoResetMergedBranch(v),
-    "start from latest base",
-  );
-
   return (
     <div className="space-y-3">
       <h3 className="text-sm font-medium text-(--color-text-primary)">PR automations</h3>
       <div className="space-y-2">
-        <DeclaredToggle
-          settingKey="advanced.autoFixCi"
-          enabled={autoFixCi}
-          onToggle={(v) => void handleFixToggle(v)}
-          testId="settings-auto-fix-ci"
-        />
+        <DeclaredToggle settingKey="advanced.autoFixCi" testId="settings-auto-fix-ci" />
         <DeclaredToggle
           settingKey="advanced.autoResolveConflicts"
-          enabled={autoResolveConflicts}
-          onToggle={(v) => void handleResolveToggle(v)}
           testId="settings-auto-resolve-conflicts"
         />
         <DeclaredToggle
           settingKey="advanced.autoResetMergedBranch"
-          enabled={autoResetMergedBranch}
-          onToggle={(v) => void handleResetMergedToggle(v)}
           testId="settings-auto-reset-merged-branch"
         />
       </div>
@@ -186,33 +121,10 @@ function PrAutomationsSettings() {
 }
 
 function MultiAgentSettings() {
-  const enableSubAgents = useSettingsStore((s) => s.enableSubAgents);
-
-  const handleToggle = async (v: boolean) => {
-    useSettingsStore.getState().setEnableSubAgents(v);
-    try {
-      const res = await fetch("/api/settings", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ enableSubAgents: v }),
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    } catch (err) {
-      useSettingsStore.getState().setEnableSubAgents(!v);
-      useUiStore.getState().setToast({ message: "Failed to update multi-agent setting" });
-      console.error("[settings] toggle enableSubAgents failed:", err);
-    }
-  };
-
   return (
     <div className="space-y-3">
       <h3 className="text-sm font-medium text-(--color-text-primary)">Multi-agent sessions</h3>
-      <DeclaredToggle
-        settingKey="advanced.enableSubAgents"
-        enabled={enableSubAgents}
-        onToggle={(v) => void handleToggle(v)}
-        testId="settings-enable-sub-agents"
-      />
+      <DeclaredToggle settingKey="advanced.enableSubAgents" testId="settings-enable-sub-agents" />
     </div>
   );
 }

@@ -4,6 +4,10 @@ import type {
   SettingsProposalPhase,
 } from "../../shared/types.js";
 import { findSetting } from "../../shared/settings-catalogue/index.js";
+import {
+  proposalPhaseGuidance,
+  proposalPhaseHeadline,
+} from "../../shared/settings-proposal-guidance.js";
 import type { SettingsProposalStore } from "../settings-proposal-store.js";
 import type { NoticeDelivery } from "../turn-settlement.js";
 
@@ -103,35 +107,8 @@ export function pendingSettingsOutcomes(
   });
 }
 
-/**
- * The eight terminal phases `shipit-docs/settings.md` tabulates, in two parts: a
- * headline, and — where the phase changes what to do next — one sentence saying
- * so. Neither restates a value: that is the read's.
- */
-const PHASE_HEADLINE: Record<string, string> = {
-  applied: "APPLIED",
-  dismissed: "DISMISSED by the user",
-  partial: "PARTIALLY applied",
-  failed: "FAILED",
-  uncertain: "NOT VERIFIED",
-  stale: "NOT applied",
-  refused: "NOT applied",
-  unknown: "NOT VERIFIED",
-};
-
-const PHASE_GUIDANCE: Record<string, string> = {
-  dismissed: "Do not propose that value again unless they ask.",
-  partial: "Say which half landed, and propose the rest.",
-  failed: "ShipIt verified that nothing changed; you may propose again, saying so.",
-  uncertain: "ShipIt cannot say what this change did, or whether it ran at all — read the value,"
-    + " and never claim it worked.",
-  stale: "The setting had moved since the card was written; propose again from the current value.",
-  refused: "The change was no longer valid when the user clicked; you may propose again.",
-  unknown: "ShipIt restarted mid-apply, and never retries one — read the value.",
-};
-
 function describe(outcome: ResolvedSettingsOutcome): string {
-  const headline = PHASE_HEADLINE[outcome.phase] ?? outcome.phase.toUpperCase();
+  const headline = proposalPhaseHeadline(outcome.phase);
   // A card whose transcript row has gone still has a setting, so the notice
   // falls back to the declaration's label and never to a bare key alone.
   const name = oneLine(outcome.card?.label) || findSetting(outcome.key)?.label || outcome.key;
@@ -141,7 +118,7 @@ function describe(outcome: ResolvedSettingsOutcome): string {
     outcome.card?.effectState && outcome.card.effectState !== "live"
       ? `In effect: ${outcome.card.effectState}.`
       : "";
-  const sentences = [PHASE_GUIDANCE[outcome.phase] ?? "", effect].filter(Boolean).join(" ");
+  const sentences = [proposalPhaseGuidance(outcome.phase), effect].filter(Boolean).join(" ");
   return `- ${name}${instance}${where} — ${headline}.`
     + `${sentences ? ` ${sentences}` : ""} Key: \`${outcome.key}\`.`;
 }
