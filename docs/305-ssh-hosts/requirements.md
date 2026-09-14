@@ -33,6 +33,11 @@ description: The agent runs commands on a remote server over SSH from any sessio
 
 ## Open questions
 
+- Req 10 says each SSH *connection* is recorded. The orchestrator signs the authentication
+  request and can record destination, user, and time for each attempt, but it never learns
+  whether the server accepted it. Is one log line per authentication attempt what req 10
+  means, or does it require confirmed connections, which this design cannot see?
+
 ## Resolved questions
 
 - 2026-09-14 — What does the registry hold? Destinations, one key each (req 11). Shared keys
