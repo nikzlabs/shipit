@@ -3,8 +3,10 @@ import { EventEmitter } from "node:events";
 import {
   runAgentToCompletion,
   DEFAULT_SUB_AGENT_TIMEOUT_MS,
+  SUB_AGENT_EXIT_GRACE_MS,
   SUB_AGENT_TRANSPORT_TIMEOUT_MS,
 } from "./sub-agent-run.js";
+import { TREE_KILL_GRACE_MS } from "./kill-child.js";
 import type { AgentEvent } from "./types.js";
 
 class FakeAgent extends EventEmitter {
@@ -13,6 +15,16 @@ class FakeAgent extends EventEmitter {
     this.killed = true;
     queueMicrotask(() => this.emit("done", 0));
   });
+}
+
+/**
+ * `kill()` is a SIGTERM with a grace period before SIGKILL, so the real thing
+ * stays alive — and keeps holding its home — after the kill returns. FakeAgent
+ * exits in the same tick and so cannot fail on that at all.
+ */
+class SlowToDieAgent extends EventEmitter {
+  kill = vi.fn(() => { /* the process tree is still running */ });
+  exit(code = 143): void { this.emit("done", code); }
 }
 
 function assistant(text: string, isStreamCompletion = false): AgentEvent {
@@ -272,6 +284,73 @@ describe("runAgentToCompletion", () => {
 
   it("keeps the transport backstop above the run's own cap", () => {
     expect(SUB_AGENT_TRANSPORT_TIMEOUT_MS).toBeGreaterThan(DEFAULT_SUB_AGENT_TIMEOUT_MS);
+  });
+
+  // The result is what tells callers the CLI has gone, and withSpawnHome answers
+  // it by deleting the home holding the only copy of a token it rotated.
+  it("holds a timed-out result until the killed CLI has actually exited", async () => {
+    vi.useFakeTimers();
+    try {
+      const agent = new SlowToDieAgent();
+      const handle = runAgentToCompletion(agent as never, { prompt: "p", cwd: "/w", timeoutMs: 50 }, Date.now());
+      let settled = false;
+      void (async () => { await handle.promise; settled = true; })();
+      agent.emit("event", assistant("slow partial"));
+
+      await vi.advanceTimersByTimeAsync(60);
+      expect(agent.kill).toHaveBeenCalled();
+      expect(settled).toBe(false);
+
+      // Still inside SIGTERM's grace period, where the CLI writes its rotated token.
+      await vi.advanceTimersByTimeAsync(TREE_KILL_GRACE_MS - 1);
+      expect(settled).toBe(false);
+
+      agent.exit();
+      const res = await handle.promise;
+      expect(res.status).toBe("timeout");
+      expect(res.text).toBe("slow partial");
+      expect(res.truncated).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("settles a timed-out run anyway when the exit never confirms", async () => {
+    vi.useFakeTimers();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      const agent = new SlowToDieAgent();
+      const handle = runAgentToCompletion(agent as never, { prompt: "p", cwd: "/w", timeoutMs: 50 }, Date.now());
+      agent.emit("event", assistant("slow partial"));
+
+      await vi.advanceTimersByTimeAsync(60 + SUB_AGENT_EXIT_GRACE_MS);
+      const res = await handle.promise;
+      expect(res.status).toBe("timeout");
+      expect(warn.mock.calls.join(" ")).toContain("did not confirm its exit");
+    } finally {
+      warn.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it("leaves the exit grace past the SIGKILL sweep a killed tree waits on", () => {
+    expect(SUB_AGENT_EXIT_GRACE_MS).toBeGreaterThan(TREE_KILL_GRACE_MS);
+  });
+
+  // A dying CLI can raise a teardown error; that is the timeout, not a new verdict.
+  it("keeps the timeout verdict when the adapter errors during its teardown", async () => {
+    vi.useFakeTimers();
+    try {
+      const agent = new SlowToDieAgent();
+      const handle = runAgentToCompletion(agent as never, { prompt: "p", cwd: "/w", timeoutMs: 50 }, Date.now());
+      await vi.advanceTimersByTimeAsync(60);
+      agent.emit("error", new Error("stdout closed"));
+      const res = await handle.promise;
+      expect(res.status).toBe("timeout");
+      expect(res.error).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

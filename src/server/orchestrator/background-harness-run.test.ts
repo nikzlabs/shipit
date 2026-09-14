@@ -14,11 +14,49 @@ class FakeAgent extends EventEmitter {
   readonly agentId = "claude" as const;
   lastParams: AgentRunParams | null = null;
   killed = 0;
+  /**
+   * A real `kill()` is a SIGTERM the CLI answers on its own schedule, and this is
+   * where it rotates and rewrites its token. Modelling the exit as instant is how
+   * a fixture stops being able to fail on a home released too early, so the delay
+   * and the write during it are the point of this double, not decoration.
+   */
+  shutdownMs = 0;
+  onShutdown: (() => void) | null = null;
+  private dying = false;
   // Real adapters read the routed credential out of the environment here.
   run(params: AgentRunParams): void { this.lastParams = params; agentsReadEnv?.(); }
   writeStdin(): void {}
-  kill(): void { this.killed += 1; setImmediate(() => this.emit("done", 0)); }
+  kill(): void {
+    this.killed += 1;
+    if (this.dying) return;
+    this.dying = true;
+    if (this.shutdownMs === 0) {
+      setImmediate(() => this.emit("done", 0));
+      return;
+    }
+    setTimeout(() => {
+      this.onShutdown?.();
+      this.emit("done", 143);
+    }, this.shutdownMs);
+  }
   interrupt(): void {}
+}
+
+const CLAUDE_TOKEN_REL = path.join(".claude", ".credentials.json");
+
+function claudeCredential(expiresAt: number): string {
+  return JSON.stringify({
+    claudeAiOauth: {
+      accessToken: `sk-ant-oat01-FIXTURE-${String(expiresAt)} gitleaks:allow`,
+      refreshToken: "sk-ant-ort01-FIXTURE gitleaks:allow",
+      expiresAt,
+    },
+  });
+}
+
+function claudeExpiry(file: string): number {
+  const parsed = JSON.parse(fs.readFileSync(file, "utf-8")) as { claudeAiOauth: { expiresAt: number } };
+  return parsed.claudeAiOauth.expiresAt;
 }
 
 /**
@@ -99,6 +137,39 @@ describe("LocalBackgroundHarnessRunner", () => {
 
     const homes = path.join(credentialsDir, "sessions", CLEANUP_CONTAINER_SESSION_ID, SUB_AGENT_HOME_SUBDIR);
     expect(fs.readdirSync(homes)).toEqual([]);
+  });
+
+  /**
+   * The timeout kills the CLI and the kill is a SIGTERM with a grace period, so
+   * the run's result once arrived while the process was still shutting down —
+   * and the release it triggers deletes the home holding the only copy of a
+   * token rotated during that window (planning#542).
+   */
+  it("keeps the spawn home until a timed-out CLI has gone, publishing what it rotated on the way out", async () => {
+    const sourceToken = path.join(credentialsDir, CLAUDE_TOKEN_REL);
+    fs.mkdirSync(path.dirname(sourceToken), { recursive: true });
+    fs.writeFileSync(sourceToken, claudeCredential(1_700_000_000_000));
+
+    const runner = makeRunner();
+    const run = runner.run({
+      harnessId: "claude", prompt: "clean this up", model: "haiku", timeoutMs: 30,
+    });
+    await vi.waitFor(() => { expect(agents).toHaveLength(1); });
+
+    const homeDir = String(agents[0]!.lastParams?.homeDir);
+    expect(claudeExpiry(path.join(homeDir, CLAUDE_TOKEN_REL))).toBe(1_700_000_000_000);
+
+    // The CLI takes 40ms to answer SIGTERM, and refreshes its token on the way out.
+    agents[0]!.shutdownMs = 40;
+    agents[0]!.onShutdown = () => {
+      fs.mkdirSync(path.join(homeDir, ".claude"), { recursive: true });
+      fs.writeFileSync(path.join(homeDir, CLAUDE_TOKEN_REL), claudeCredential(1_700_000_999_000));
+    };
+
+    const result = await run;
+    expect(result.status).toBe("timeout");
+    expect(claudeExpiry(sourceToken)).toBe(1_700_000_999_000);
+    expect(fs.existsSync(homeDir)).toBe(false);
   });
 
   it("cancels the CLI when the caller abandons the run", async () => {

@@ -17,7 +17,8 @@ export interface ProcessIdentity {
   startTime: number;
 }
 
-const TREE_KILL_GRACE_MS = 5_000;
+/** SIGTERM's window before the SIGKILL sweep: a killed tree can outlive `kill()` by this long. */
+export const TREE_KILL_GRACE_MS = 5_000;
 
 function readProcStat(
   pid: number,

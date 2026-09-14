@@ -9,7 +9,7 @@ import { workerPost } from "./worker-http.js";
 import { getContainerFreshness } from "./container-freshness.js";
 import { getErrorMessage } from "./validation.js";
 import { CLEANUP_CONTAINER_SESSION_ID } from "./shipit-own-sessions.js";
-import type { SubAgentRunResult } from "../shared/sub-agent-run.js";
+import { SUB_AGENT_EXIT_GRACE_MS, type SubAgentRunResult } from "../shared/sub-agent-run.js";
 import {
   BACKGROUND_HARNESS_MAX_OUTPUT_CHARS,
   BACKGROUND_HARNESS_TIMEOUT_MS,
@@ -31,8 +31,13 @@ export const CREATE_INTERVAL_MS = 15_000;
 
 export const MAX_REVIVE_ATTEMPTS = 5;
 
-/** Lets the worker's own timer settle a slow run before the socket gives up. */
-const SPAWN_TRANSPORT_HEADROOM_MS = 10_000;
+/**
+ * Lets the worker's own timer settle a slow run before the socket gives up. A
+ * timed-out run settles up to `SUB_AGENT_EXIT_GRACE_MS` past its cap, waiting on
+ * the CLI's real exit, so the headroom is that plus slack — a transport that
+ * gave up first would release the spawn home while the CLI was still shutting down.
+ */
+const SPAWN_TRANSPORT_HEADROOM_MS = SUB_AGENT_EXIT_GRACE_MS + 10_000;
 
 export interface CleanupContainerDeps {
   containerManager: SessionContainerManager;
@@ -285,8 +290,10 @@ export class CleanupContainerManager implements BackgroundHarnessRunner {
     const timeoutMs = req.timeoutMs ?? BACKGROUND_HARNESS_TIMEOUT_MS;
     // Abandoning the run cancels it by spawn id, disturbing no other request in
     // this shared container. The transport is deliberately NOT aborted: the
-    // caller's own deadline is what returns early, and this request must keep
-    // waiting so the spawn home is released only once the CLI has actually gone.
+    // caller's own deadline is what returns early, and this request keeps waiting
+    // for the worker's answer, which the worker withholds until the CLI's process
+    // has gone (`sub-agent-run.ts`) or the exit grace runs out. Giving up on the
+    // socket instead would release the spawn home with the CLI still shutting down.
     const onAbort = (): void => { void this.cancelSpawn(sc, spawnId); };
     req.signal?.addEventListener("abort", onAbort, { once: true });
     try {

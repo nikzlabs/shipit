@@ -86,8 +86,14 @@ export function failedRun(error: string, startedAt = Date.now()): SubAgentRunRes
  * Borrow credentials into a private home for the duration of one spawn, and
  * publish anything the CLI rotated on the way out. Never bypass this:
  * `provisionSubAgentSpawnHome` also builds OpenCode's access-only ChatGPT
- * projection, and its release keeps the home when deleting it would destroy the
- * only copy of a refreshed token (`session-agent-credentials.ts`).
+ * projection, and its release keeps the home when publishing a token it finds
+ * there fails (`session-agent-credentials.ts`).
+ *
+ * That retention covers a publish that failed, NOT a CLI that is still running:
+ * the release reads the home once and then deletes it, so a rotation written
+ * after that read is lost, whatever the outcome flag said. `body` owes this the
+ * CLI's real exit, which is why the timeout path in `runAgentToCompletion` waits
+ * for it rather than settling on the kill.
  */
 export async function withSpawnHome<T>(
   credentialsDir: string,

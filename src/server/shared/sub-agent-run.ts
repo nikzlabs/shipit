@@ -1,9 +1,27 @@
 import type { AgentProcess, AgentRunParams, AgentEvent, AgentId, ServiceRouting } from "./types.js";
+import { TREE_KILL_GRACE_MS } from "./kill-child.js";
 
 export const DEFAULT_SUB_AGENT_TIMEOUT_MS = parseTimeoutEnv(
   process.env.SHIPIT_SUB_AGENT_TIMEOUT_MS,
   30 * 60_000,
 );
+
+/**
+ * How long a timed-out run waits for its CLI to actually exit before settling
+ * anyway. `kill()` is a SIGTERM with a grace period before the SIGKILL sweep
+ * (`kill-child.ts`), so the process tree routinely outlives the decision to time
+ * it out — while the result is what tells every caller the CLI has gone, and
+ * `withSpawnHome` (`background-harness-run.ts`) answers it by deleting the
+ * private home holding the only copy of any token the CLI rotated. The margin
+ * past the sweep is for the adapter's terminal event to arrive after SIGKILL.
+ *
+ * Settling at this bound is not a claim that the tree died: `done` rides the
+ * child's `close`, which a descendant holding an inherited pipe can keep pending
+ * for ever (`antigravity/adapter.ts`). It is the point past which waiting buys
+ * nothing, because SIGKILL has already been delivered to every process the sweep
+ * could see.
+ */
+export const SUB_AGENT_EXIT_GRACE_MS = TREE_KILL_GRACE_MS + 2_000;
 
 // The worker timer dies with its container; bound the transport independently.
 export const SUB_AGENT_TRANSPORT_TIMEOUT_MS = DEFAULT_SUB_AGENT_TIMEOUT_MS + 5 * 60_000;
@@ -114,10 +132,12 @@ export function runAgentToCompletion(
       try { agent.kill(); } catch { /* best-effort */ }
     },
     promise: new Promise<SubAgentRunResult>((resolve) => {
+      let exitGraceTimer: NodeJS.Timeout | undefined;
       const finish = (statusOverride?: SubAgentRunStatus) => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
+        if (exitGraceTimer) clearTimeout(exitGraceTimer);
 
         let text = (completedMessages.length > 0 ? completedMessages.join("\n\n") : lastFullText) || "";
         let truncated = false;
@@ -149,7 +169,18 @@ export function runAgentToCompletion(
       const timer = setTimeout(() => {
         timedOut = true;
         try { agent.kill(); } catch { /* best-effort */ }
-        finish("timeout");
+        // Settling here would report the CLI as gone while SIGTERM's grace period
+        // is still running, and callers read this result as permission to delete
+        // its home. The adapter's terminal event marks the real exit; below is
+        // only the backstop for one that never arrives.
+        exitGraceTimer = setTimeout(() => {
+          console.warn(
+            "[sub-agent] a timed-out CLI did not confirm its exit within "
+            + `${String(SUB_AGENT_EXIT_GRACE_MS)}ms of SIGTERM — settling without it`,
+          );
+          finish("timeout");
+        }, SUB_AGENT_EXIT_GRACE_MS);
+        exitGraceTimer.unref?.();
       }, timeoutMs);
       if (typeof timer === "object" && timer && "unref" in timer) {
         (timer as { unref?: () => void }).unref?.();
@@ -203,6 +234,11 @@ export function runAgentToCompletion(
         finish();
       });
       agent.on("error", (err: Error) => {
+        // A teardown failure raised by the kill we issued is the timeout, reported late.
+        if (timedOut) {
+          finish("timeout");
+          return;
+        }
         resultStatus = "error";
         resultError = err.message;
         finish("error");

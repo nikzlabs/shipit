@@ -30,6 +30,7 @@ import {
 import { OVERLAY_VERIFY_FAILURE } from "./overlay-volume.js";
 import type { HostMount } from "../shared/shipit-config.js";
 import { TEST_CREDENTIALS_DIR } from "./credentials-test-helpers.js";
+import { provisionSubAgentSpawnHome, subAgentSpawnHomeDir } from "./session-credentials.js";
 
 function baseConfig(overrides?: Partial<ContainerConfig>): ContainerConfig {
   return {
@@ -1580,5 +1581,112 @@ describe("destroyContainer — previewsStopped flag on container_destroyed", () 
     await destroyContainer(deps, "sess-x", { preserveChildResources: true });
 
     expect(events).toEqual([{ sessionId: "sess-x", previewsStopped: false }]);
+  });
+});
+
+/**
+ * A container that outlived this orchestrator holds the session id until
+ * `removeStaleContainer` takes it, so the spawn homes under that id are still
+ * owned by CLIs inside it. The sweep used to run more than a hundred lines
+ * earlier, under a comment claiming no worker was running (planning#542).
+ */
+describe("createContainer — spawn-home sweep against a surviving container", () => {
+  const SESSION = "3f6d1497-c466-4b2c-b9af-0f1800fbf759";
+  const OLD_EXPIRY = 1_700_000_000_000;
+  const ROTATED_EXPIRY = 1_700_000_999_000;
+  const TOKEN_REL = path.join(".claude", ".credentials.json");
+
+  const tmpDirs: string[] = [];
+  afterEach(() => {
+    for (const d of tmpDirs.splice(0)) fs.rmSync(d, { recursive: true, force: true });
+  });
+
+  function credential(expiresAt: number): string {
+    return JSON.stringify({
+      claudeAiOauth: {
+        accessToken: `sk-ant-oat01-FIXTURE-${String(expiresAt)} gitleaks:allow`,
+        refreshToken: "sk-ant-ort01-FIXTURE gitleaks:allow",
+        expiresAt,
+      },
+    });
+  }
+
+  function expiryOf(file: string): number {
+    const parsed = JSON.parse(fs.readFileSync(file, "utf-8")) as { claudeAiOauth: { expiresAt: number } };
+    return parsed.claudeAiOauth.expiresAt;
+  }
+
+  // The survivor's CLI refreshes its token as the stop that ends it arrives.
+  function survivorDaemon(onStop: () => void) {
+    const order: string[] = [];
+    const docker = {
+      listContainers: async () => [],
+      listNetworks: async () => [],
+      listVolumes: async () => ({ Volumes: [] }),
+      getNetwork: () => ({ remove: async () => {} }),
+      getVolume: () => ({ remove: async () => {} }),
+      getContainer: () => ({
+        inspect: async () => ({ State: { Running: true } }),
+        stop: async () => { order.push("stop"); onStop(); },
+        remove: async () => { order.push("remove"); },
+      }),
+      createContainer: async () => {
+        order.push("create");
+        return {
+          id: "cid-new",
+          start: async () => {},
+          inspect: async () => ({
+            Config: { Labels: {} },
+            NetworkSettings: { Networks: { "shipit-net": { IPAddress: "172.20.0.9" } } },
+          }),
+        };
+      },
+    } as unknown as Docker;
+    return { docker, order };
+  }
+
+  it("publishes a token the survivor's CLI rotated as it was stopped", async () => {
+    const credentialsDir = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-sweep-cred-"));
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-sweep-"));
+    tmpDirs.push(credentialsDir, tmp);
+    fs.mkdirSync(path.join(tmp, "session", "workspace"), { recursive: true });
+
+    const sourceToken = path.join(credentialsDir, TOKEN_REL);
+    fs.mkdirSync(path.dirname(sourceToken), { recursive: true });
+    fs.writeFileSync(sourceToken, credential(OLD_EXPIRY));
+
+    const spawnId = "spawn-still-running";
+    provisionSubAgentSpawnHome(credentialsDir, SESSION, spawnId, "claude");
+    const home = subAgentSpawnHomeDir(credentialsDir, SESSION, spawnId);
+
+    const { docker, order } = survivorDaemon(() => {
+      fs.mkdirSync(path.join(home, ".claude"), { recursive: true });
+      fs.writeFileSync(path.join(home, TOKEN_REL), credential(ROTATED_EXPIRY));
+    });
+
+    const deps = {
+      docker,
+      containers: new Map(),
+      standbySessionIds: new Set<string>(),
+      destroyEpochs: new Map<string, number>(),
+      emitter: new EventEmitter(),
+      baseLabels: () => ({ "shipit-managed": "true" }),
+      networkName: "shipit-net",
+      workerPort: 9100,
+      imageName: "shipit-worker:test",
+      skipHealthCheck: true,
+    } as unknown as LifecycleDeps;
+
+    await createContainer(deps, baseConfig({
+      sessionId: SESSION,
+      sessionDir: path.join(tmp, "session"),
+      workspaceDir: path.join(tmp, "session", "workspace"),
+      sessionStateDir: path.join(tmp, "session", "state"),
+      credentialsDir,
+    }));
+
+    expect(order).toEqual(["stop", "remove", "create"]);
+    expect(expiryOf(sourceToken)).toBe(ROTATED_EXPIRY);
+    expect(fs.existsSync(home)).toBe(false);
   });
 });

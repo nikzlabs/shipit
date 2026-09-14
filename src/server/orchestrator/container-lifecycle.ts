@@ -550,8 +550,6 @@ export async function createContainer(
 
   try {
     ensureSessionCredentialsScaffold(config.credentialsDir, config.sessionId);
-    // No worker is running yet. Release orphaned homes while preserving rotated credentials.
-    sweepSubAgentSpawnHomes(config.credentialsDir, config.sessionId);
   } catch (err) {
     console.warn(
       `[containers] credentials scaffold failed for ${config.sessionId}:`,
@@ -675,6 +673,20 @@ export async function createContainer(
     }
 
     await removeStaleContainer(deps.docker, `agent-${shortId}`);
+
+    // Only now is no worker running: a container that outlived this orchestrator
+    // holds this session's id until the removal above, and a spawn home is owned
+    // by a CLI inside it. Sweeping earlier published a half-written token and
+    // deleted the home out from under a live rotation. Releasing preserves what
+    // each orphan holds; homes it cannot publish are kept for the next create.
+    try {
+      sweepSubAgentSpawnHomes(config.credentialsDir, config.sessionId);
+    } catch (err) {
+      console.warn(
+        `[containers] spawn-home sweep failed for ${config.sessionId}:`,
+        err instanceof Error ? err.message : String(err),
+      );
+    }
 
     abortIfTornDown("before createContainer");
 
