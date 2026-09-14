@@ -138,8 +138,8 @@ Two things do not work today and are implementation items here:
 - **IP literals.** The per-session allowlist is name-based: an address lands in the Tier A
   ipset only through dnsmasq's `ipset=/<domain>/` pinning when a query for that name is
   answered. `ssh 100.83.12.47` issues no query, so the packet is dropped. An SSH host entry
-  whose hostname is an IP literal must be added to the session's ipset directly at grant time
-  (the `EGRESS_ALLOWED_CIDRS` input exists but is fed by GitHub's ranges only,
+  whose address is an IP literal (req 12) is added to the session's ipset directly at grant
+  time (the `EGRESS_ALLOWED_CIDRS` input exists but is fed by GitHub's ranges only,
   `egress-firewall-install.ts:78`).
 
 **Tailscale SSH caveat.** If a peer runs Tailscale SSH, it authenticates the *node*, not a
@@ -154,8 +154,9 @@ authorized_keys line ShipIt shows carries `no-agent-forwarding,no-port-forwardin
 
 ## Grant model (req 4, req 6)
 
-- **Host entry** (account-wide, `CredentialStore.sshHosts`): id, label, hostname, port, user,
-  private key (PKCS8 PEM, never leaves the store), public line, optional pinned host key.
+- **Host entry** (account-wide, `CredentialStore.sshHosts`, req 11): id, label, address
+  (hostname or IP, req 12), port, user, private key (PKCS8 PEM, never leaves the store),
+  public line, recorded host key once learned.
   Browser-only CRUD routes, never `containerAccessible`. Settings → Services, beside GitHub
   and Linear. Settings reads that reach the agent (docs/299) expose only the public line and
   fingerprint.

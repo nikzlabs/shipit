@@ -1,6 +1,6 @@
 # Checklist — SSH hosts
 
-Design only so far. All questions in `requirements.md` are resolved; implementation is unblocked.
+Design only so far. All twelve requirements are resolved; implementation is unblocked.
 
 - [ ] `openssh-client` in both session-worker Dockerfiles
 - [ ] `CredentialStore.sshHosts` + key generation + public-line derivation

@@ -26,14 +26,19 @@ description: The agent runs commands on a remote server over SSH from any sessio
     and time. No transcript card per connection; the commands are already in the transcript
     as the agent's tool calls.
 
+11. The registry is a list of destinations, account-wide for the ShipIt instance. Each
+    destination has its own generated key. A session is granted one or more destinations.
+12. A destination's address may be a hostname or an IP address. An IP destination is
+    reachable from a granted session even though no DNS lookup happens for it.
+
 ## Open questions
 
-- Registry shape. Is the registry a list of destinations, each with its own generated key
-  (one key trusted by one server), or a list of keys that several destinations can share?
-- IP destinations. May a destination be given as an IP address? A Tailscale peer must be,
-  because MagicDNS names do not resolve inside a session (see plan.md, Tailnet destinations).
-
 ## Resolved questions
+
+- 2026-09-14 — What does the registry hold? Destinations, one key each (req 11). Shared keys
+  were declined because one key would then open several servers.
+- 2026-09-14 — May a destination be an IP address? Yes, hostname or IP (req 12). Needed for
+  Tailscale peers, whose MagicDNS names do not resolve inside a session.
 
 - 2026-09-14 — How is the host key verified? Accept on first connect and show the fingerprint
   (req 9). Pasting the host public key to pin it was declined as one more manual step per
