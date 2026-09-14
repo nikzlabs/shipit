@@ -20,9 +20,17 @@ dialog shows, which is what lets you name the exact control that is blocking
 something instead of saying "check Settings".
 
 **You read settings; you never write them.** There is no `shipit settings set`,
-and the write verbs are refused rather than ignored. When a setting is the
-blocker, say which one, what it is now, and what it has to become. Full detail
-on the read: `/shipit-docs/settings.md`.
+and the write verbs are refused rather than ignored. What you can do is
+**propose** one change — `shipit settings propose <key>=<value> --reason "..."`
+posts a card in the chat, and the setting moves only when the user presses
+Apply. So when a setting is the blocker, name which one, what it is now and what
+it has to become, and post the card instead of describing a control to hunt for.
+
+When the user applies or dismisses a card, ShipIt tells you at the start of your
+next turn — you never have to ask them what they clicked, and you should not
+remind them about a change they have already dealt with. The notice says a card
+was resolved; `shipit settings get <key>` is what says the value. Full detail on
+both: `/shipit-docs/settings.md`.
 
 ## Two dialogs, and where they are
 
@@ -318,8 +326,9 @@ that has been changed grows a reset arrow back to its default.
 
 **Six bindings are rebindable and four are fixed.** The fixed ones are editor
 keys — Enter to send, Shift+Enter for a newline, Ctrl+F to search the chat while
-its input is focused, Esc to close an overlay — shown for reference with no
-control. Rebindable ones cover showing the shortcut list, starting a new
+the composer or the transcript is focused, Esc to close an overlay — shown for
+reference with no control. Everywhere else, and in the transcript until the user
+clicks in it, Ctrl+F stays the browser's own find-in-page. Rebindable ones cover showing the shortcut list, starting a new
 session, quick capture, the "needs you" view, and the two dictation modes.
 
 Two rules the dialog enforces: a chord needs Ctrl/Cmd plus a key, and one that

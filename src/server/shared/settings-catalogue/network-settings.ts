@@ -34,6 +34,7 @@ export const NETWORK_SETTINGS = {
       "the allowed hosts; an entry that is not shaped like a host is dropped, since it can match "
       + "nothing anyway",
       (raw) => (Array.isArray(raw) ? raw.map(hostEntryProjection).filter((host) => host !== null) : []),
+      { userText: "The hosts are the user's own, and naming them is the whole of the setting." },
     ),
     propose: { kind: "yes" },
   }),

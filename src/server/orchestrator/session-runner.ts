@@ -9,6 +9,7 @@ import type { ServiceManager } from "./service-manager.js";
 import type { DependencyGap } from "./dependency-staleness.js";
 import type { AgentListenerDeps } from "./ws-handlers/agent-listeners.js";
 import type { PersistedMessage, ResolvedBugReport } from "./chat-history.js";
+import type { SettingsOutcomeNotice } from "./services/settings-outcome-notice.js";
 import type { SecretFinding } from "../shared/secret-scan.js";
 import type { UnreadableWorkspace } from "../shared/git.js";
 import type { SubAgentSpawnRequest, SubAgentRunResult, SubAgentRunHandle } from "../shared/sub-agent-run.js";
@@ -400,6 +401,13 @@ export interface SystemTurnDeps {
   restorePendingAgentNotice?: (sessionId: string, notice: string) => void;
   /** At-most-once; unlike workspace notices, bug outcomes are not restored after setup failure. */
   consumeBugOutcomes?: (sessionId: string) => ResolvedBugReport[];
+  /**
+   * At-LEAST-once, and the difference from the line above is the point
+   * (docs/299-agent-settings-access req 8): this reads the outcomes without
+   * marking them, and the returned receipt is settled by the turn rather than by
+   * prompt assembly. `null` when nothing is owed.
+   */
+  settingsOutcomeNotice?: (sessionId: string) => SettingsOutcomeNotice | null;
   /** Consumes the role's first-turn instructions; subsequent calls return an empty string. */
   takeRoleInstructions?: (sessionId: string) => string;
   finalizeAgentEnv?: (
@@ -420,6 +428,18 @@ export interface SystemTurnDeps {
     },
   ) => Promise<{ turnRoute?: { kind: ProviderRouteKind; id: string } } | undefined>;
   needsAccountFailover?: (sessionId: string, agentId: AgentId) => boolean;
+  /**
+   * A quota refusal stopped a turn the CLI started on its own. Reports whether another
+   * credential can continue the work now; when none can, the session is recorded so it is
+   * resumed once one is free (docs/306-quota-continuation).
+   */
+  recordQuotaStandDown?: (args: {
+    sessionId: string;
+    agentId: AgentId;
+    benchedRouteId?: string;
+  }) => { continues: boolean };
+  /** Start the continuation turn. Runs after the stood-down turn's terminal sequence. */
+  continueAfterQuotaStandDown?: (sessionId: string) => Promise<void>;
   recoverResidentRoute?: (sessionId: string, agentId: AgentId) => { kind: ProviderRouteKind; id: string } | undefined;
   routeLabel?: (routeId: string) => string | undefined;
   routeProfile?: (

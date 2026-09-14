@@ -358,14 +358,122 @@ describe("saved is not effective", () => {
     expect(entry.effect.detail).toContain("own network mode");
   });
 
-  it("says excluded, not restart-dependent, when nothing enforces containment at all", async () => {
+  it("says excluded when enforcement is switched off, which does contain nothing", async () => {
+    // `SESSION_EGRESS_ENFORCE=0` means `container-lifecycle.ts` installs no
+    // firewall at all, so the setting really does decide nothing.
     const entry = await getSettingForAgent(
-      deps({ egressAllowlistStore: egressStore({}), egressEnforcementStatus: "no-sidecar" }),
+      deps({ egressAllowlistStore: egressStore({}), egressEnforcementStatus: "disabled" }),
       "s1",
       "network.egressContained",
     );
     expect(entry.effect.state).toBe("excluded");
-    expect(entry.effect.detail).toContain("no-sidecar");
+    expect(entry.effect.detail).toContain("SESSION_EGRESS_ENFORCE=0");
+  });
+
+  /*
+    The two non-active statuses are NOT the same answer, and reading them as one
+    was wrong in the case req 3 exists for. `no-sidecar` means enforcement is on
+    with no sidecar image, and `container-lifecycle.ts:747` THROWS rather than
+    start a contained session — so this setting is not irrelevant, it is what is
+    blocking the container, and turning it off is what unblocks it. Saying
+    "excluded — no session is contained whatever this is set to" sent the agent
+    to look somewhere else.
+  */
+  describe("a no-sidecar install refuses to start a contained session", () => {
+    const noSidecar = (
+      over: Parameters<typeof egressStore>[0] = {},
+      container?: { status?: string; egressContainedAtStart?: boolean },
+    ) =>
+      deps({
+        egressAllowlistStore: egressStore(over),
+        egressEnforcementStatus: "no-sidecar",
+        containerManager: { get: () => container, resolveEgress: () => undefined },
+      });
+
+    it("names the refusal on the containment setting rather than calling it irrelevant", async () => {
+      const entry = await getSettingForAgent(noSidecar(), "s1", "network.egressContained");
+      expect(entry.effect.state).not.toBe("excluded");
+      expect(entry.effect.detail).toContain("SESSION_EGRESS_SIDECAR_IMAGE");
+      expect(entry.effect.detail).toContain("refuses to start a contained session");
+      // req 3's "what it has to become": this setting, or the install's image.
+      expect(entry.effect.detail).toContain("Turning containment off");
+    });
+
+    it("still says a running container keeps its own mode, and that a restart is refused", async () => {
+      const entry = await getSettingForAgent(
+        noSidecar({ globalEnabled: true }, { status: "running", egressContainedAtStart: false }),
+        "s1",
+        "network.egressContained",
+      );
+      expect(entry.effect.state).toBe("restart-dependent");
+      expect(entry.effect.detail).toContain("started open");
+      expect(entry.effect.detail).toContain("SESSION_EGRESS_SIDECAR_IMAGE");
+    });
+
+    it("says nothing of the refusal once the session resolves uncontained", async () => {
+      const entry = await getSettingForAgent(
+        noSidecar({ globalEnabled: false }),
+        "s1",
+        "network.egressContained",
+      );
+      expect(entry.effect).toEqual({ state: "live" });
+    });
+
+    it("points the allowlist at the setting that is blocking, not at 'nothing is contained'", async () => {
+      const entry = await getSettingForAgent(noSidecar(), "s1", "network.egress.hosts");
+      // The agent has to be able to say WHICH setting is blocking, and the
+      // allowlist is not it.
+      expect(entry.effect.detail).toContain("SESSION_EGRESS_SIDECAR_IMAGE");
+    });
+
+    /*
+      The refusal answers what the NEXT start does, which is a different question
+      from what is true of the session now — so it rides the other answers rather
+      than replacing them. Each case below lost its own diagnosis when an earlier
+      version of this fix returned early on the refusal.
+    */
+    it("still names the sandbox capability, and the refusal that survives granting it", async () => {
+      const entry = await getSettingForAgent(
+        deps({
+          egressAllowlistStore: egressStore({ globalEnabled: true }),
+          egressEnforcementStatus: "no-sidecar",
+          containerManager: {
+            get: () => undefined,
+            resolveEgress: () => ({ contained: true, userHostsExcluded: true }),
+          },
+        }),
+        "s1",
+        "network.egressContained",
+      );
+      expect(entry.effect.state).toBe("excluded");
+      expect(entry.effect.detail).toContain("network capability");
+      expect(entry.effect.detail).toContain("SESSION_EGRESS_SIDECAR_IMAGE");
+    });
+
+    it("still names a per-session override, and the refusal it does not escape", async () => {
+      const entry = await getSettingForAgent(
+        noSidecar({ globalEnabled: false, override: true }),
+        "s1",
+        "network.egressContained",
+      );
+      expect(entry.effect.state).toBe("excluded");
+      expect(entry.effect.detail).toContain("own network mode");
+      expect(entry.effect.detail).toContain("SESSION_EGRESS_SIDECAR_IMAGE");
+    });
+
+    it("does not tell a session that is already running that it cannot run", async () => {
+      // The sidecar image can go away while a contained container is up:
+      // `container-lifecycle.ts:747` governs creation, not an existing
+      // container, which keeps the firewall and allowlist it started with.
+      const entry = await getSettingForAgent(
+        noSidecar({ globalEnabled: true }, { status: "running", egressContainedAtStart: true }),
+        "s1",
+        "network.egress.hosts",
+      );
+      expect(entry.effect.state).toBe("restart-dependent");
+      expect(entry.effect.detail).toContain("took its allowlist when it started");
+      expect(entry.effect.detail).toContain("SESSION_EGRESS_SIDECAR_IMAGE");
+    });
   });
 
   it("leaves every READABLE setting live; an unreadable one claims no effect", async () => {

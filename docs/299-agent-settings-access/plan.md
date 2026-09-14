@@ -83,7 +83,14 @@ hand-assembled beside it. The wire shape is unchanged.
 ### Bespoke panels declare per field
 
 The role editor, credential routing, the MCP panel and the secrets table keep
-their own components, but **a declaration is per field, not per panel**. One
+their own components, but **a declaration is per field, not per panel** — and
+each field renders the declaration's **description**, not only its label. A
+bespoke panel that shows a label and writes its own help text beside it is the
+drift req 7 forbids, in the one place the coverage walk's copy comparison has
+nothing to compare: the MCP form's suffixes ("(space-separated)") and the routing
+band's tooltips were both authored twice, and the agent read the copy the user
+could not see. Both now render `settingCopy`, and the band's one licence is to
+swap the collective noun the card shows (docs/252 req 19) and edit nothing else. One
 entry for `mcp.servers` would let a developer add a field, bind it to that entry,
 pass every test, and ship a field with no description, no projection rule and no
 refusal reason. So each editable field is its own declaration
@@ -121,6 +128,32 @@ things it cannot decide are stated there rather than implied: a bespoke panel's
 visible wording is a review matter unless the panel marks it, and a `wholeTab`
 exemption is a claim `exclusions.ts` makes in prose.
 
+**And a third, which the type system decides instead.** The walk reads rendered
+DOM, so it can establish that a control names *a* declaration and never that the
+declaration is the one whose property the handler saves — a box bound to
+`mcp.servers[].command` while writing something else passes it. The stored shape
+can say what the DOM cannot: `MCP_SERVER_FIELD_SETTINGS` is keyed by
+`keyof McpServerConfig`, so a field added to the persisted type is a compile
+error until it is declared or explained as not a setting. **The declaration it
+may name is derived from the field's own name** — `mcp.servers[].${F}`, not any
+existing key — because "mapped to something that exists" is the same pass the DOM
+walk gives, and it is the loophole being closed. The two guards run in opposite
+directions: the walk finds a control nobody declared, the map finds a stored
+field nobody declared.
+
+`setup` is what the map found — a pre-start command for non-npm stdio servers,
+designed in `docs/088-mcp-integration/plan.md:405`, whose type and validator
+shipped and whose reader never did. It is **deleted**, not declared: a stored
+value with no effect is not a setting the agent should report. docs/088 still
+holds the design, and re-adding the field fails the map until it is declared.
+
+**The reader tables are the same kind of derivation.** `BESPOKE_READERS` and
+`OWN_ROUTE_READERS` are keyed by `BespokeSettingKey` / `OwnRouteSettingKey`,
+computed from the catalogue by store kind, so a declaration with no reader is a
+missing property and a reader for a setting nobody declared is an unknown one —
+both at compile time. They were two runtime tests, which is the eighth place this
+design exists to remove; restating a `tsc` refusal at run time buys nothing.
+
 ## What a declaration says to the agent
 
 ```ts
@@ -147,10 +180,43 @@ A field-name deny-list cannot work: an MCP server entry takes arbitrary `env`,
 An MCP server emits its name, transport, connected state, and its URL's host with
 userinfo and query stripped — not args, env, headers or the URL. Where showing
 text the user typed is the point (their own instructions, a git identity), the
-field is marked `user_text` with a reason, and that mark is what review reads.
+field is marked `user_text` with a reason, and that mark is what review reads. A
+`derived` projection whose function returns the user's words rather than
+ShipIt's carries the same reason, on the same grounds: without it, `derived`
+claims the output is ShipIt's own.
+
+**A NAME the user typed is emitted only when it is shaped like a name.** Naming a
+role, an MCP server or a missing secret is the whole of what the agent has to
+tell the user, so these are emitted deliberately — but nothing constrains what
+they are made of: `PUT /api/secrets` takes any string as a key and a role name is
+checked only for being non-blank and short enough, so
+`https://user:token@host/?token=…` is a storable name. An item's **address** is
+where it would leave. So the four collections an address is projected through —
+`roles`, `mcp.servers`, `project.secrets`, `network.egress.hosts` — apply one
+rule between them, the one `hostEntryProjection` and `mcpUrlProjection` already
+made: a URL carries a credential in its userinfo and query as a matter of
+routine, so an entry wearing that shape is named by nothing and produces no item,
+and the read says how many it left out.
+
+**This is not a credential scanner and must not be read as one.** `Bearer ghp_…`
+typed into a name box passes it, because nothing separates that from a name
+someone meant — and content-matching a field is the deny-list this section opens
+by rejecting. Emitting a name is the user's own decision (`requirements.md`,
+resolved 2026-09-13), the dialog and every service already show it, and the
+`user_name` mark records that a human chose it. The gate's claim is narrower: the
+one shape that carries a credential *without* anyone choosing to is not repeated
+back.
 
 Guard: a fixture MCP entry carrying a token in `args`, `env`, `headers` and the
 URL emits none of them — in text, in `--json`, in a card's `from`, in an error.
+And a secret and a role *named* like one emit nothing of it either.
+
+**Reflected input is not this rule's business.** `list --tab` and `get <key>`
+echo the caller's own string back when it names nothing, and that string arrives
+on the agent's own query — nothing ShipIt persists reaches it, so req 2 ("reading
+a setting never exposes secret material") is not engaged. What it is engaged by
+is presentation, so the echo is flattened and capped exactly as `--reason` is:
+hygiene, not a secret defence.
 
 ### Refusals are first-class
 
@@ -316,6 +382,33 @@ DNS-control deployment, and the route returns it as `reach`
 (`api-routes-egress.ts:110`–`119`). Four answers: **live**;
 **restart-dependent**; **excluded for this session**, with the reason (here, the
 session's network capability is what must change); **uncertain**.
+
+**An install that cannot enforce containment is not an install where containment
+is irrelevant.** The enforcement status has three values and only one of them
+means nothing is decided: `disabled` (`SESSION_EGRESS_ENFORCE=0`) installs no
+firewall, so the setting really does change nothing. `no-sidecar` is enforcement
+ON with no sidecar image, and `container-lifecycle.ts:747` **throws rather than
+start a contained session** — so the setting is not irrelevant, it is what is
+blocking the container, and req 3 is precisely the requirement that the read say
+so. `detail` therefore carries either why a value is not live **or** what its
+being live costs.
+
+**The refusal is a suffix on every branch, never a branch of its own.** It
+answers a different question from the rest of the probe: those say what is true
+of the session now — a container's start-time topology, a per-session override, a
+capability it cannot change — and the refusal says what its next start does. Both
+are true at once, and returning early on the refusal silently drops the other
+answer: a sandbox read would stop at "your network capability must change" when
+granting it still leaves global containment on, and a container already running
+when the sidecar image went away would be told it cannot run. That container
+keeps the firewall and the allowlist it started with;
+`container-lifecycle.ts:747` governs creation, not an existing container.
+
+**And a `live` detail has to survive the CLI.** `shipit settings list` marks only
+the settings that are *not* live, and `get` printed "In effect: yes" and dropped
+the detail — so the refusal reached `--json` and nothing else, which is the half
+of the output the agent actually reads. A `live` entry carries a detail in
+exactly one case and it is this one, so both renderers print it.
 
 The same four apply to any setting whose stored value and live effect can differ,
 and the gap is not only egress: `setChannel` writes the channel then calls
@@ -573,29 +666,97 @@ longer matches resolves `stale`.
 ### And a notice on the next turn
 
 The read only helps an agent that thinks to read (req 8). So a resolved card also
-prefixes the agent's next turn, reusing the bug-report machinery: an
-`agentNotified` flag, a `consumeUnreportedSettingsOutcomes` beside
-`consumeUnreportedBugOutcomes` (`chat-history.ts:519`), joining the same
-`agentPrefix` chain (`ws-handlers/agent-execution.ts:414`,
-`dispatched-turn.ts:212`). Outcomes batch into one notice, and it never starts a
-turn of its own.
+prefixes the agent's next turn: `services/settings-outcome-notice.ts` joins the
+same `agentPrefix` chain the bug-report notice does
+(`ws-handlers/agent-execution.ts`, `dispatched-turn.ts`), outcomes batch into one
+notice, and it never starts a turn of its own.
 
-**Delivery is at-least-once, deliberately.** No layer here proves the agent read
-a prompt: the turn-start broadcast precedes submission, the proxy's submission
-methods return before their worker request completes
+**Delivery is at-least-once, deliberately** — and that is the one thing NOT
+copied from the bug-report machinery, which marks an outcome told *before*
+delivery (`chat-history.ts` → `consumeUnreportedBugOutcomes`) and so loses one
+for good when the turn then fails to spawn. Acceptable for a convenience; not for
+a requirement that says the agent *is* told. No layer here proves the agent read
+a prompt either: the turn-start broadcast precedes submission, the proxy's
+submission methods return before their worker request completes
 (`proxy-agent-process.ts:77`, `:91`), and a worker HTTP success can still be
 followed by a failed spawn or dead stdin.
 
-An outcome is marked notified only when its turn **settled as a real agent
-turn** — after ShipIt's credential-failure classification and failover retry
-(`credential-failure-policy.ts`, `quotaRetryInProgress` in `turn-executor.ts`).
-"Produced output" is not the test: when every account refuses for quota,
-`turn-executor.ts:30` emits assistant text saying so, and a rule keyed on output
-would consume the outcome on a turn the agent never saw. Raw
-`agent_result.status === "success"` is insufficient for the same reason.
+So the read and the acknowledgement are two calls, not one.
+`prepareSettingsOutcomeNotice` reads the session's resolved-but-untold cards
+**without marking any**, and hands back a `NoticeDelivery`
+(`turn-settlement.ts`) whose `delivered()` the executor calls.
 
-A duplicate notice costs a line of prompt; a lost one is the failure req 8
-exists to prevent. **The notice prompts; `lastProposal` decides.**
+**The signal is positive, and it is not a verdict over `TurnOutcome`.** Two
+shipped shapes rule that out, both found in review:
+
+- A quota refusal on a route that **cannot fail over** — `stopsOnFailure` is
+  `billingMode === "key"` (`credential-failure-policy.ts`) — arrives as an
+  ordinary `agent_result` and falls through to normal teardown, so the turn
+  settles **`completed`** with nothing having run. Neither "produced output" nor
+  `agent_result.status === "success"` is the test either: the CLI reports its own
+  limit as final text on a `success` result, which
+  `detectHardExhaustionInTurnText` is there to catch.
+- A **resident streaming** turn settles no turn at all: the streaming
+  `agent_result` branch runs its post-turn work and never calls `finishTurn`,
+  because the CLI stays alive and emits no `done` — and the next reuse discards
+  that executor's listeners (`dispatched-turn.ts`), so a receipt waiting on
+  settlement is lost for good and the notice repeats on every turn forever.
+
+So `delivered()` is called from **one place**: the `agent_result` handler, after
+the `exhausted` check and the failover decision, and under three conditions —
+the result is not a refusal, it `resultIsTheAgentsOwn` (neither `event.error` nor
+`status === "error"` — a conservative filter, since an error result can follow
+partial work, not proof the prompt never ran), and **`promptSubmitted`**.
+
+`promptSubmitted` is the nearest thing to prompt ownership available here, and it
+took two review rounds to get right. The executor's listeners go live before its
+`await prepareAgentEnv`, so on a **resident** process a CLI-started turn of the
+agent's own can land a result in that gap and preparation can then fail with the
+prompt never sent. Returning from the submission is not enough either:
+`ProxyAgentProcess.run` / `.sendUserMessage` post to the session worker and
+return before the answer (`proxy-agent-process.ts`), so a result in *that* window
+would be written off against a prompt the worker went on to reject. So the proxy
+exposes `submissionSettled()` and the executor waits for it; a synchronous
+submission has none and is landed when the call returns. What this still does not
+give is identity between a result and a prompt — a result that beats the
+confirmation leaves the notice for the next turn, which is the safe direction.
+
+Sequencing after the failover decision is what puts the acknowledgement past
+ShipIt's credential-failure classification (`quotaRetryInProgress`): a retry
+re-dispatches the same prompt carrying the same receipt, so only the attempt that
+actually ran acknowledges. Every other path — a crash, an interruption, the
+all-refused report, a turn that never spawned — simply never calls it.
+
+**The notice carries no values, and that is a trust decision rather than
+brevity.** `from`/`to` are formatted values and a `user_text` projection keeps
+what the user or the agent supplied; `outcome` and `outcomeDetail` can
+incorporate a value, an address or a raw exception message
+(`settings-decision.ts` → `getErrorMessage`). Interpolating any of them would put
+text that entered as somebody else's into a line the agent reads as ShipIt's —
+so a *dismissed* proposal would replay its own proposed instructions into the
+next prompt, laundered through the platform's voice. The notice states the
+setting, the instance, the phase and what to do, and the read is the authority
+for everything else. The one field ShipIt did not author is the instance
+address, which stays because a notice that cannot say *which* role or server says
+nothing useful; it is quoted, and the closing line tells the agent it is data.
+
+**A system turn carries no notice**, excluded explicitly at both call sites —
+`dispatched-turn.ts` and `ws-handlers/agent-execution.ts`, where the condition is
+this feature's own rather than the bug-report notice's (which relies on `compact`
+catching its only system-turn caller). An outcome resolved before an automatic
+turn (CI fix, conflict resolution, compaction) waits rather than being dropped,
+and reaches the agent on its next ordinary turn. Nothing is lost, and a settings
+notice inside a conflict-resolution prompt could only distract.
+
+**`agentNotified` is a column on the private proposal row, not a card field** —
+it is ShipIt's bookkeeping about a delivery, and nothing a viewer reads.
+
+Duplicates remain possible by design: a turn that ran and was interrupted, and a
+turn queued behind one that has not yet acknowledged, both carry the notice
+again. That is the safe direction: a duplicate costs a line of prompt; a lost one
+is the failure req 8 exists to prevent. **The notice prompts; `lastProposal`
+decides** — so its closing line sends the agent to the read rather than inviting
+it to trust that it was told once.
 
 ## Persistence
 
@@ -612,7 +773,7 @@ after the turn ends, and it decides between riding the turn and appending a fina
 row (`:128`).
 
 **One transition contract, and it is not `persistCardTransition`.** Every phase
-change — claim, dismiss, terminal, notified — goes through one function of this
+change — claim, dismiss, terminal — goes through one function of this
 feature's own: write the durable row unconditionally, then, only if a runner
 exists, sync the recorded card and emit. `persistCardTransition` requires a
 runner (`:156`) and runs its database callback **only** when it did not patch an
@@ -673,7 +834,8 @@ propose path and its refusals); `services/settings-operations.ts` (what an Apply
 button runs, per declared operation); `services/settings-decision.ts` (claim,
 lock, baseline, apply, and the boot pass that resolves an interrupted one);
 `services/settings-proposal-deps.ts` (one assembly both callers share);
-`ws-handlers/settings-proposal-handlers.ts`;
+`services/settings-outcome-notice.ts` (the next-turn notice and its deferred
+receipt); `ws-handlers/settings-proposal-handlers.ts`;
 `shared/settings-catalogue/tabs.ts` (the tab labels the dialog and a card's
 breadcrumb share);
 `session/agent-shim/shipit-settings.ts`; the client card handler and component;
@@ -683,7 +845,11 @@ Changed: `credential-store.ts`, `global-system-prompt.ts`, `git-config.ts`,
 `services/settings.ts`, `services/settings-derivation.ts`, `services/types.ts`,
 `api-routes-bootstrap.ts`, `api-routes-egress.ts`, `api-routes-mcp.ts`,
 `api-routes-updates.ts`, `api-routes-session-repos.ts`,
-`ws-handlers/egress-handlers.ts`, `client/utils/session-data.ts`
+`ws-handlers/egress-handlers.ts`, `turn-settlement.ts` (`NoticeDelivery`),
+`turn-executor.ts` (`noticeDeliveries`, acknowledged from the `agent_result`
+handler), `dispatched-turn.ts`, `session-runner.ts`,
+`runner-registry-factory.ts`, `bootstrap-managers.ts`,
+`client/utils/session-data.ts`
 (`refreshGlobalSettings`), the settings tab components and the bespoke
 panels they host (`ServicesPanel`, `CredentialRouting`, `ProviderAccountRows`,
 `RoleEditor`, `ReviewerSection`, `McpServerSettings/*`, `SettingsEgress`,

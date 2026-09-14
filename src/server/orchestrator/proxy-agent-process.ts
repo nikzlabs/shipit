@@ -61,6 +61,7 @@ export class ProxyAgentProcess extends EventEmitter<{
   deliveryId: string | undefined;
 
   private runner: ProxyAgentRunner;
+  private lastSubmission: Promise<unknown> | null = null;
 
   constructor(agentId: AgentId, runner: ProxyAgentRunner, opts?: { runToken?: string; deliveryId?: string }) {
     super();
@@ -75,7 +76,11 @@ export class ProxyAgentProcess extends EventEmitter<{
   }
 
   run(params: AgentRunParams): void {
-    this.runner._startAgentViaProxy(this.agentId, params, this.runToken, this.deliveryId).catch((err: unknown) => {
+    const started = this.runner
+      ._startAgentViaProxy(this.agentId, params, this.runToken, this.deliveryId);
+    // Tracked before the catch, so a caller awaiting it sees the rejection.
+    this.lastSubmission = started;
+    started.catch((err: unknown) => {
       this.emit("error", describeWorkerError(err, "start"));
     });
   }
@@ -92,18 +97,29 @@ export class ProxyAgentProcess extends EventEmitter<{
     console.log(
       `[steer-proxy] agentId=${this.agentId} → /agent/message (bytes=${text.length}, text=${JSON.stringify(text.slice(0, 80))})`,
     );
-    void this._sendAgentMessageWithLogging(text);
+    const accepted = this.runner.sendAgentMessage(text);
+    this.lastSubmission = accepted;
+    void this._logSubmission(accepted);
   }
 
-  private async _sendAgentMessageWithLogging(text: string): Promise<void> {
+  private async _logSubmission(accepted: Promise<unknown>): Promise<void> {
     try {
-      await this.runner.sendAgentMessage(text);
+      await accepted;
       console.log(`[steer-proxy] /agent/message accepted (agentId=${this.agentId})`);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       console.warn(`[steer-proxy] /agent/message FAILED (agentId=${this.agentId}): ${msg}`);
       this.emit("error", describeWorkerError(err, "stdin"));
     }
+  }
+
+  /**
+   * These submissions return before the worker has answered, so returning from
+   * one proves nothing about the prompt having landed. A caller that must know
+   * awaits this instead (docs/299-agent-settings-access req 8).
+   */
+  submissionSettled(): Promise<unknown> | null {
+    return this.lastSubmission;
   }
 
   interrupt(): void {

@@ -58,9 +58,40 @@ import { loginForProvider } from "./ProviderAccountRows.js";
 import type { AgentId } from "../../../server/shared/types.js";
 import { credentialModeKey } from "../../../server/shared/types/domain-types/credential-route.js";
 import type { BillingMode } from "../../../server/shared/catalogue/index.js";
+import type { SettingKey } from "../../../server/shared/settings-catalogue/index.js";
 import { useSettingsStore } from "../../stores/settings-store.js";
 import { WithTooltip } from "../ui/tooltip.js";
-import { bindSetting } from "./setting-binding.js";
+import { bindSetting, settingCopy, settingOptions } from "./setting-binding.js";
+
+/**
+ * The declaration's words, with its collective noun swapped for the one this
+ * card shows.
+ *
+ * **Every sentence in this band comes from the catalogue** (docs/299 req 7 — the
+ * description the agent reads is the one the user reads). The catalogue writes
+ * them about "credentials", which is what the setting stores, while docs/252
+ * req 19 requires the band to name them the way the card does — a card of
+ * provider accounts says accounts. This substitution is the one edit the dialog
+ * may make to declared copy, and it makes no other.
+ */
+function withNoun(text: string, noun: string): string {
+  return text.replace(/\b(credential)(s?)\b/gi, (match: string, _stem: string, plural: string) => {
+    const swapped = `${noun}${plural ? "s" : ""}`;
+    const capitalized = /^[A-Z]/.test(match);
+    return capitalized ? `${swapped.charAt(0).toUpperCase()}${swapped.slice(1)}` : swapped;
+  });
+}
+
+/**
+ * One declared option, with no fallback: the segments render this setting's
+ * declaration and an empty tooltip would be exactly the missing copy this band
+ * is being fixed for, so an option that lost its words has to say so.
+ */
+function declaredOption(value: string): { label: string; description: string } {
+  const option = settingOptions("services.accountSelectionMode").find((o) => o.value === value);
+  if (!option?.description) throw new Error(`No declared copy for the "${value}" routing option`);
+  return { label: option.label, description: option.description };
+}
 
 function TitledHint({ title, hint }: { title: string; hint: string }) {
   return (
@@ -123,27 +154,34 @@ export function CredentialSelectionModeControl({
     }
   };
 
-  const option = (value: "strict" | "balanced", label: string, fullName: string, hint: string) => (
-    <WithTooltip side="top" label={<TitledHint title={fullName} hint={hint} />}>
-      <button
-        type="button"
-        role="radio"
-        aria-checked={mode === value}
-        disabled={saving}
-        onClick={() => void save(value)}
-        aria-label={fullName}
-        {...bindSetting("services.accountSelectionMode")}
-        className={`rounded px-2 py-0.5 text-[11px] transition-colors disabled:opacity-50 ${
-          mode === value
-            ? "bg-(--color-bg-elevated) text-(--color-text-primary) shadow-sm"
-            : "text-(--color-text-tertiary) hover:text-(--color-text-secondary)"
-        }`}
-        data-testid={`credential-selection-mode-${key}-${value}`}
+  const option = (value: "strict" | "balanced", label: string) => {
+    const declared = declaredOption(value);
+    const fullName = withNoun(declared.label, noun);
+    return (
+      <WithTooltip
+        side="top"
+        label={<TitledHint title={fullName} hint={withNoun(declared.description, noun)} />}
       >
-        {label}
-      </button>
-    </WithTooltip>
-  );
+        <button
+          type="button"
+          role="radio"
+          aria-checked={mode === value}
+          disabled={saving}
+          onClick={() => void save(value)}
+          aria-label={fullName}
+          {...bindSetting("services.accountSelectionMode")}
+          className={`rounded px-2 py-0.5 text-[11px] transition-colors disabled:opacity-50 ${
+            mode === value
+              ? "bg-(--color-bg-elevated) text-(--color-text-primary) shadow-sm"
+              : "text-(--color-text-tertiary) hover:text-(--color-text-secondary)"
+          }`}
+          data-testid={`credential-selection-mode-${key}-${value}`}
+        >
+          {label}
+        </button>
+      </WithTooltip>
+    );
+  };
 
   return (
     <div className="flex min-w-0 items-center gap-2">
@@ -154,22 +192,19 @@ export function CredentialSelectionModeControl({
       */}
       <div
         role="radiogroup"
-        aria-label={`How ShipIt picks between these ${noun}s`}
+        aria-label={withNoun(settingCopy("services.accountSelectionMode").label, noun)}
         className="flex shrink-0 items-center gap-0.5 rounded-md bg-(--color-bg-primary) p-0.5"
         data-testid={`credential-selection-mode-${key}`}
       >
-        {option(
-          "strict",
-          "Use in order",
-          "Use in order",
-          `New sessions start on the first ${noun} with quota left. Best when they differ — a bigger plan first, a smaller one as backup.`,
-        )}
-        {option(
-          "balanced",
-          "Spread evenly",
-          `Spread across ${noun}s`,
-          `New sessions go to whichever ${noun} has been used least, so quota drains evenly. Best when they are equivalent.`,
-        )}
+        {/*
+          Only the second segment reads shorter than its declared name: it sits
+          in a 470px row beside the cutoffs. docs/252 req 19 keeps the full name
+          as its tooltip's first line, so nothing is available only in the short
+          form — and the short form is a truncation of the declared label, not a
+          second sentence about the setting.
+        */}
+        {option("strict", "Use in order")}
+        {option("balanced", "Spread evenly")}
       </div>
       {error && (
         <p className="min-w-0 truncate text-[11px] text-(--color-error)" role="alert">{error}</p>
@@ -178,17 +213,19 @@ export function CredentialSelectionModeControl({
   );
 }
 
-/**
- * The paragraph that used to sit above the two cutoff fields, kept whole as
- * their tooltip. Named because both fields carry the same one — it explains the
- * pair, not either half.
- */
-const CUTOFF_EXPLANATION =
-  "Start new work on the next account once an account passes these. Accounts past their "
-  + "cutoff are still used when no other account is below one, so nothing is stranded.";
-
 const CUTOFF_KEYS = ["session", "weekly"] as const;
 type CutoffKey = (typeof CUTOFF_KEYS)[number];
+
+/**
+ * Each cutoff's declaration — its tooltip copy as well as its binding. The two
+ * fields carry a sentence each rather than one shared paragraph, because a
+ * declaration is per field and each one names the window it governs (docs/299
+ * req 7).
+ */
+const CUTOFF_SETTINGS = {
+  session: "services.failoverCutoff.session",
+  weekly: "services.failoverCutoff.weekly",
+} as const satisfies Record<CutoffKey, SettingKey>;
 
 const DEFAULT_CUTOFFS: Record<CutoffKey, number> = { session: 90, weekly: 90 };
 
@@ -242,6 +279,7 @@ export function FailoverCutoffControls({
   billingMode,
   serviceName,
   provider,
+  noun = "credential",
 }: {
   serviceId: string;
   billingMode: BillingMode;
@@ -254,6 +292,8 @@ export function FailoverCutoffControls({
    * have no harness to report against.
    */
   provider?: AgentId;
+  /** What this card calls them, for {@link withNoun}; the stored word otherwise. */
+  noun?: string;
 }) {
   const key = credentialModeKey(serviceId, billingMode);
   const stored = useSettingsStore((s) => s.failoverCutoffs[key]);
@@ -281,30 +321,36 @@ export function FailoverCutoffControls({
     void saveCutoff(key, provider, serviceName, field, raw);
   };
 
-  const field = (name: CutoffKey, label: string, longLabel: string) => (
-    <WithTooltip side="top" label={<TitledHint title={`${longLabel} cutoff`} hint={CUTOFF_EXPLANATION} />}>
-      <label className="flex shrink-0 items-center gap-1 text-[11px] text-(--color-text-tertiary)">
-        {label}
-        <input
-          type="number"
-          min={1}
-          max={100}
-          value={drafts[name] ?? String(cutoffs[name])}
-          onChange={(e) => {
-            const next = e.target.value;
-            setDrafts((current) => ({ ...current, [name]: next }));
-          }}
-          onKeyDown={(e) => { if (e.key === "Enter") commit(name); }}
-          onBlur={() => commit(name)}
-          aria-label={`${serviceName} ${longLabel} failover cutoff, percent`}
-          className="w-11 rounded border border-(--color-border-secondary) bg-(--color-bg-primary) px-1 py-0.5 text-right text-[11px] text-(--color-text-primary) focus:border-(--color-border-focus) focus:outline-none"
-          data-testid={`failover-cutoff-${key}-${name}`}
-          {...bindSetting(name === "session" ? "services.failoverCutoff.session" : "services.failoverCutoff.weekly")}
-        />
-        %
-      </label>
-    </WithTooltip>
-  );
+  const field = (name: CutoffKey, label: string, longLabel: string) => {
+    const copy = settingCopy(CUTOFF_SETTINGS[name]);
+    return (
+      <WithTooltip
+        side="top"
+        label={<TitledHint title={copy.label} hint={withNoun(copy.description, noun)} />}
+      >
+        <label className="flex shrink-0 items-center gap-1 text-[11px] text-(--color-text-tertiary)">
+          {label}
+          <input
+            type="number"
+            min={1}
+            max={100}
+            value={drafts[name] ?? String(cutoffs[name])}
+            onChange={(e) => {
+              const next = e.target.value;
+              setDrafts((current) => ({ ...current, [name]: next }));
+            }}
+            onKeyDown={(e) => { if (e.key === "Enter") commit(name); }}
+            onBlur={() => commit(name)}
+            aria-label={`${serviceName} ${longLabel} failover cutoff, percent`}
+            className="w-11 rounded border border-(--color-border-secondary) bg-(--color-bg-primary) px-1 py-0.5 text-right text-[11px] text-(--color-text-primary) focus:border-(--color-border-focus) focus:outline-none"
+            data-testid={`failover-cutoff-${key}-${name}`}
+            {...bindSetting(CUTOFF_SETTINGS[name])}
+          />
+          %
+        </label>
+      </WithTooltip>
+    );
+  };
 
   return (
     <div className="flex items-center gap-2" data-testid={`failover-cutoffs-${key}`}>

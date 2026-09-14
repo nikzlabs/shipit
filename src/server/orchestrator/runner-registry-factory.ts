@@ -14,6 +14,7 @@ import type { ServiceManager } from "./service-manager.js";
 import type { SessionContainerManager } from "./session-container.js";
 import type { CredentialStore } from "./credential-store.js";
 import type { SecretStore } from "./secret-store.js";
+import type { SettingsProposalStore } from "./settings-proposal-store.js";
 import type { PrStatusPoller } from "./pr-status-poller.js";
 import type { AutoConflictResolveManager } from "./auto-conflict-resolve-manager.js";
 import type { AgentId, AgentProcess, LogSource, SubscriptionLimitsMap, SessionInfo } from "../shared/types.js";
@@ -27,6 +28,7 @@ import type { SystemPromptScope } from "./global-system-prompt.js";
 import type { ProviderAccountManager } from "./provider-account-manager.js";
 import type { TurnOutcome } from "./turn-settlement.js";
 import type { AutoPushScheduler } from "./services/auto-push-scheduler.js";
+import type { QuotaContinuationManager } from "./services/quota-continuation.js";
 import { applyShipitConfigChange, emitPluginReposUpdated, setupServiceManager, type ServiceSetupDeps } from "./service-manager-setup.js";
 import { emitNoticeInTurn } from "./chat-card-persistence.js";
 import { clearActivationState } from "./services/plugin-activation.js";
@@ -45,6 +47,7 @@ import { emitResetEligible } from "./services/pre-turn-reset.js";
 import { wireResetEligibleOnFileChange } from "./reset-eligible-watch.js";
 import { postTurnCommit } from "./ws-handlers/post-turn.js";
 import { takeRoleStandingInstructions } from "./services/session-role.js";
+import { prepareSettingsOutcomeNotice } from "./services/settings-outcome-notice.js";
 import { routeVoiceNote } from "./voice/voice-note-router.js";
 import type { VoiceNotePayload, VoiceNoteSource } from "../shared/types/voice-note-types.js";
 import { getAgentCapabilities } from "../shared/agent-registry.js";
@@ -102,6 +105,8 @@ export interface RunnerRegistryDeps {
   ) => void;
   getSubscriptionLimitsSnapshot?: () => SubscriptionLimitsMap;
   markSessionAccountExhausted?: (sessionId: string, until: number, routeId?: string) => void;
+  /** Lazy: the continuation manager wakes through this registry, so it is built after it. */
+  getQuotaContinuation?: () => QuotaContinuationManager | undefined;
   markCredentialRouteAuthFailed?: (routeId: string) => void;
   clearCredentialRouteAuthFailed?: (routeId: string) => void;
   nudgeClaudeOAuthRefresh?: () => void;
@@ -120,6 +125,8 @@ export interface RunnerRegistryDeps {
     onSettled?: (sessionId: string) => void,
   ) => void;
   resolvePluginServices?: ServiceSetupDeps["resolvePluginServices"];
+  /** Absent in minimal setups; without it a turn simply carries no settings notice. */
+  settingsProposals?: SettingsProposalStore;
 }
 
 export function assertSessionCanDispatch(
@@ -148,12 +155,14 @@ export function createRunnerRegistry(
     isAgentMergeInFlight,
     usageManager, recordAgentRateLimits, getSubscriptionLimitsSnapshot,
     markSessionAccountExhausted,
+    getQuotaContinuation,
     markCredentialRouteAuthFailed,
     clearCredentialRouteAuthFailed,
     nudgeClaudeOAuthRefresh, onAgentAuthRequired, ensureAgentTokenFresh, runParamsPreps,
     publishOverlayBases,
     activatePluginRepos,
     resolvePluginServices,
+    settingsProposals,
   } = registryDeps;
 
   return new SessionRunnerRegistry({
@@ -351,6 +360,16 @@ export function createRunnerRegistry(
               ...(providerAccountManager ? { providerAccountManager } : {}),
             }),
         } : {}),
+        ...(getQuotaContinuation ? {
+          recordQuotaStandDown: (args: {
+            sessionId: string;
+            agentId: AgentId;
+            benchedRouteId?: string;
+          }) => getQuotaContinuation()?.recordStandDown(args) ?? { continues: false },
+          continueAfterQuotaStandDown: async (sessionId: string) => {
+            await getQuotaContinuation()?.continueNow(sessionId);
+          },
+        } : {}),
         commitTurn: ({ sessionDir, sessionId, summary, turnStartHeadHash, runner: turnRunner, emit, deferPushArm }) =>
           postTurnCommit(
             {
@@ -415,6 +434,12 @@ export function createRunnerRegistry(
         },
         consumePendingAgentNotice: (sessionId) => sessionManager.consumePendingAgentNotice(sessionId),
         consumeBugOutcomes: (sessionId) => chatHistoryManager.consumeUnreportedBugOutcomes(sessionId),
+        ...(settingsProposals
+          ? {
+              settingsOutcomeNotice: (sessionId: string) =>
+                prepareSettingsOutcomeNotice({ proposals: settingsProposals, chatHistoryManager }, sessionId),
+            }
+          : {}),
         ...(credentialStore
           ? { takeRoleInstructions: (sessionId: string) =>
               takeRoleStandingInstructions(sessionId, { sessionManager, credentialStore }) }

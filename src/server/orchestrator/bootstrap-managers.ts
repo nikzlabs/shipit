@@ -3,6 +3,7 @@ import { perSessionCredentialsDir } from "./session-credentials-scaffold.js";
 import { restoreOpenCodeAccount } from "./openai-account-delivery.js";
 import { accountOwnerHarness } from "./provider-account-manager.js";
 import { AgentMergeClaimStore } from "./agent-merge-claims.js";
+import { SettingsProposalStore } from "./settings-proposal-store.js";
 import { reconcileAgentMergeClaims } from "./services/agent-merge-settlement.js";
 import { AgentMergeExecutor } from "./services/agent-merge-executor.js";
 import { serviceForLoginIntegration } from "../shared/catalogue/index.js";
@@ -60,6 +61,7 @@ import { reportAbandonedRebases } from "./abandoned-rebase-sweep.js";
 import { reconcileOrphanedConsultCards } from "./consult-card-reconcile.js";
 import { createOomCircuitBreaker } from "./oom-circuit-breaker.js";
 import { MergeWatchManager } from "./merge-watch.js";
+import { QuotaContinuationManager } from "./services/quota-continuation.js";
 import { createSessionLoopDetector } from "./loop-detector.js";
 import { CleanupContainerManager, CLEANUP_CONTAINER_SESSION_ID } from "./cleanup-container.js";
 import {
@@ -564,6 +566,11 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
   };
 
   const agentMergeClaims = new AgentMergeClaimStore(databaseManager);
+  // A second handle over the same table as the routes' own: the store holds a
+  // database and no state, and a turn needs it before the route layer exists.
+  const settingsProposals = new SettingsProposalStore(databaseManager);
+
+  const quotaContinuationRef: { ref: QuotaContinuationManager | null } = { ref: null };
 
   const runnerRegistry = createRunnerRegistry({
     effectiveRunnerFactory, sessionManager, repoStore, createGitManager,
@@ -573,6 +580,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     credentialStore, secretStore, runtimeMode, broadcastLog,
     usageManager, runParamsPreps,
     markSessionAccountExhausted,
+    getQuotaContinuation: () => quotaContinuationRef.ref ?? undefined,
     markCredentialRouteAuthFailed,
     clearCredentialRouteAuthFailed,
     nudgeClaudeOAuthRefresh,
@@ -581,6 +589,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     publishOverlayBases,
     activatePluginRepos,
     resolvePluginServices,
+    settingsProposals,
     logStore,
     ...(dockerSecretsConfig ? { dockerSecretsConfig } : {}),
     serviceEnvDir,
@@ -616,6 +625,21 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     if (!runner) return;
     releaseQueuedTurn(runner);
   };
+
+  const quotaContinuationManager = new QuotaContinuationManager({
+    sessionManager,
+    runnerRegistry,
+    defaultAgentId,
+    credentialsDir,
+    credentialStore,
+    providerAccountManager,
+    containerManager,
+    restoreWorkspace: (sessionId: string) =>
+      restoreSessionWorkspace(
+        sessionManager, createRepoGit, getBareCacheDir, githubAuthManager, repoStore, sessionId,
+      ),
+  });
+  quotaContinuationRef.ref = quotaContinuationManager;
 
   const mergeWatchManager = new MergeWatchManager({
     sessionManager,
@@ -986,6 +1010,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     repoPrefetcher,
     drainQueueForSession,
     mergeWatchManager,
+    quotaContinuationManager,
     prStatusPoller,
     releaseStatusPoller,
     limitsRegistry,

@@ -25,10 +25,12 @@ Provide a setting, off by default, that shows only the last agent message and re
 - Keep all existing transcript cards in version one. Do not guess relevance from text or use an LLM filter.
 - Store the preference for this browser, across sessions, like other display preferences. No repository or agent setting is changed.
 - Preserve the existing in-app search scope: message text, including hidden progress prose. Tool inputs/results and card bodies are not newly searchable.
-- Browser Find and select-all cover displayed content while compact mode is enabled. The user approved this scope on 2026-09-08. Switching compact mode off restores the full scope.
+- Browser Find and select-all cover displayed content while compact mode is enabled. The user approved this scope on 2026-09-08. Switching compact mode off restores the full scope. Since 2026-09-14 a click inside the transcript gives Ctrl+F to ShipIt's own search in both views; Find is still reached by pressing it without clicking there first.
 - Keep chronological order, including cards before the final reply. Do not collect cards into a new end-of-turn tray.
 
 ## Resolved decisions
+
+2026-09-14: The `chat-search` chord (Ctrl+F / ⌘F) was extended from the composer to the transcript, so a reader who clicks in the conversation gets ShipIt's in-app search rather than the browser's find-in-page. The user was asked because the 2026-09-08 decision below keeps full view's Find contract whole and holds in-app search to message text, which cannot see tool output. **The user chose to keep the transcript shortcut and narrow the contract.** In-app search keeps its message-text scope; widening it to tool inputs, results and card bodies was offered and not taken.
 
 2026-09-08: The user chose “Allow displayed content only” in response to the browser Find/select-all question. The opt-in compact view may limit these to displayed content; full view retains its existing contract. In-app search retains its existing message-text scope, including hidden progress prose.
 

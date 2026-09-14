@@ -12,11 +12,9 @@ import { addMcpServer } from "./mcp.js";
 import {
   getSettingForAgent,
   listSettingsForAgent,
-  OWN_ROUTE_READERS,
   type SettingDetailEntry,
 } from "./settings-read.js";
 import type { SettingsReadDeps } from "./settings-read-deps.js";
-import { BESPOKE_READERS } from "./settings-store-readers.js";
 
 /**
  * Req 3 through the readers: what a setting a panel of its own owns is actually
@@ -103,29 +101,17 @@ afterEach(() => {
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 
-describe("every declaration has a reader", () => {
-  it("covers the whole registry, so a new setting cannot arrive unreadable", () => {
-    // The check that lets `settings-read.ts` have no "ShipIt has no reader"
-    // reason: a declaration added without one fails here, by name, instead of
-    // shipping an entry the agent reports as unreadable forever.
-    const unread = ALL_SETTINGS.filter(
-      (d) =>
-        d.store.kind !== "credential-store"
-        && d.store.kind !== "system-prompt-file"
-        && d.store.kind !== "git-config"
-        && d.emits.kind !== "withheld"
-        && !OWN_ROUTE_READERS[d.key]
-        && !BESPOKE_READERS[d.key],
-    );
-    expect(unread.map((d) => d.key)).toEqual([]);
-  });
+/*
+  "Every declaration has a reader" used to be two runtime checks here. It is now
+  a TYPE: `BESPOKE_READERS` and `OWN_ROUTE_READERS` are keyed by
+  `BespokeSettingKey` / `OwnRouteSettingKey`, derived from the catalogue itself
+  (`settings-catalogue/registry.ts`). A declaration added without a reader is a
+  missing property and a reader for a setting nobody declared is an unknown one,
+  both at compile time — so the reader tables are a projection of the registry
+  rather than a second registry beside it (req 7). Restating that at run time
+  would only pin what `tsc` already refuses to compile.
+*/
 
-  it("has no reader for a setting nobody declared", () => {
-    // A reader with no declaration is dead code that reads as coverage.
-    const declared = new Set(ALL_SETTINGS.map((d) => d.key));
-    expect(Object.keys(BESPOKE_READERS).filter((key) => !declared.has(key))).toEqual([]);
-  });
-});
 
 describe("roles", () => {
   beforeEach(() => {
@@ -178,6 +164,28 @@ describe("roles", () => {
     // No credential is configured in this fixture, so the role resolves to
     // nothing — the explanation the existing role view already computes.
     expect(item?.notes?.join(" ")).toMatch(/cannot run|out of quota|edited/);
+  });
+
+  it("does not repeat back a role NAME that is shaped like a credential", async () => {
+    // A role name is checked only for being non-blank and short enough
+    // (`services/role-settings.ts:200`), so it is the same hole the secret
+    // names were, reached through the same door: an item's address.
+    const canary = new URL("https://host.test/path");
+    canary.username = "user";
+    canary.password = "SENTINEL";
+    credentialStore.setRole(canary.toString(), {
+      name: canary.toString(),
+      params: { kind: "pinned", harnessId: "codex", ...selection },
+    });
+    const everything = JSON.stringify([
+      await detail("roles"),
+      await detail("roles[].name"),
+      await detail("roles[].model"),
+    ]);
+    expect(everything).not.toContain("SENTINEL");
+    expect(everything).not.toContain("host.test");
+    // The roles that ARE named still come back.
+    expect((await detail("roles")).value).toEqual(expect.arrayContaining(["deep-dive"]));
   });
 
   it("reports unreadable, never an empty role list, with no credential store", async () => {
@@ -578,6 +586,40 @@ describe("Project Settings", () => {
     const values = await itemDisplays("project.secrets[].value");
     expect(values).toEqual({ DATABASE_URL: "configured", EMPTY_ONE: "not configured" });
     expect(JSON.stringify([names, values])).not.toContain("SENTINEL");
+  });
+
+  it("does not repeat back a secret NAME that is shaped like a credential", async () => {
+    /*
+      `PUT /api/secrets` takes any string as a key, and an item's ADDRESS is
+      projected through this collection — so before the shape gate a secret
+      called `https://user:TOKEN@host/path?token=TOKEN` came back whole: in the
+      index, in each item's address, in the one-line display and in `--json`.
+      The value column was hidden the whole time; the name was not.
+
+      Assembled rather than written as one literal, for the reason the MCP
+      fixture gives.
+    */
+    const canary = new URL("https://host.test/path");
+    canary.username = "user";
+    canary.password = "SENTINEL";
+    canary.search = "token=SENTINEL";
+    secrets = { DATABASE_URL: "postgres://db/app", [canary.toString()]: "x" };
+
+    const names = await detail("project.secrets");
+    const { settings } = await listSettingsForAgent(deps(), SESSION);
+    const everything = JSON.stringify([
+      names,
+      settings,
+      await detail("project.secrets[].name"),
+      await detail("project.secrets[].value"),
+    ]);
+
+    expect(everything).not.toContain("SENTINEL");
+    expect(everything).not.toContain("host.test");
+    // The one name that IS a name still comes back — dropping the emission
+    // entirely would cost the agent the thing it needs to ask the user for.
+    expect(names.value).toEqual(["DATABASE_URL"]);
+    expect(names.notes.join(" ")).toMatch(/not shaped like|does not repeat it back/);
   });
 
   it("reports read_failed rather than false when ShipIt has no record of the repository", async () => {

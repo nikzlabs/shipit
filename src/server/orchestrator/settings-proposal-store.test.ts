@@ -50,6 +50,7 @@ describe("SettingsProposalStore", () => {
       proposed: true,
       baseline: { kind: "revision", revision: "abc" },
       createdAt: "2026-06-05T00:00:00.000Z",
+      agentNotified: false,
     });
   });
 
@@ -134,6 +135,68 @@ describe("SettingsProposalStore", () => {
 
     it("returns null for a target nothing has proposed", () => {
       expect(store.latestForTarget({ key: "git.identity" })).toBeNull();
+    });
+  });
+
+  describe("listUnnotifiedResolved (docs/299-agent-settings-access req 8)", () => {
+    it("holds back the two phases that are still waiting on somebody", () => {
+      create({ cardId: "set-pending", phase: "pending" });
+      create({ cardId: "set-applying", phase: "applying" });
+      create({ cardId: "set-applied", phase: "applied" });
+      create({ cardId: "set-dismissed", phase: "dismissed" });
+      create({ cardId: "set-failed", phase: "failed" });
+
+      expect(store.listUnnotifiedResolved(SESSION).map((r) => r.cardId))
+        .toEqual(["set-applied", "set-dismissed", "set-failed"]);
+    });
+
+    it("is oldest first, so several outcomes read in the order they happened", () => {
+      create({ cardId: "set-b", phase: "applied", createdAt: "2026-06-05T00:02:00.000Z" });
+      create({ cardId: "set-a", phase: "dismissed", createdAt: "2026-06-05T00:01:00.000Z" });
+
+      expect(store.listUnnotifiedResolved(SESSION).map((r) => r.cardId)).toEqual(["set-a", "set-b"]);
+    });
+
+    it("answers for one session only", () => {
+      sessions.track("sess-2", "Another session");
+      create({ cardId: "set-mine", phase: "applied" });
+      create({ cardId: "set-theirs", sessionId: "sess-2", phase: "applied" });
+
+      expect(store.listUnnotifiedResolved(SESSION).map((r) => r.cardId)).toEqual(["set-mine"]);
+      expect(store.listUnnotifiedResolved("sess-2").map((r) => r.cardId)).toEqual(["set-theirs"]);
+    });
+
+    it("stops reporting a card once it is marked, and reading it never marks it", () => {
+      create({ cardId: "set-a", phase: "applied" });
+
+      // Two reads in a row: the read is not a consume.
+      expect(store.listUnnotifiedResolved(SESSION)).toHaveLength(1);
+      expect(store.listUnnotifiedResolved(SESSION)).toHaveLength(1);
+
+      store.markAgentNotified(SESSION, ["set-a"]);
+      expect(store.listUnnotifiedResolved(SESSION)).toEqual([]);
+      expect(store.get("set-a")?.agentNotified).toBe(true);
+    });
+
+    it("refuses a mark from a session that does not own the card", () => {
+      sessions.track("sess-2", "Another session");
+      create({ cardId: "set-a", phase: "applied" });
+
+      store.markAgentNotified("sess-2", ["set-a"]);
+      expect(store.get("set-a")?.agentNotified).toBe(false);
+      expect(store.listUnnotifiedResolved(SESSION)).toHaveLength(1);
+    });
+
+    it("marks only the caller's own cards out of a mixed batch", () => {
+      sessions.track("sess-2", "Another session");
+      create({ cardId: "set-mine", phase: "applied" });
+      create({ cardId: "set-also-mine", phase: "dismissed" });
+      create({ cardId: "set-theirs", sessionId: "sess-2", phase: "applied" });
+
+      store.markAgentNotified(SESSION, ["set-mine", "set-theirs", "set-also-mine"]);
+      expect(store.get("set-mine")?.agentNotified).toBe(true);
+      expect(store.get("set-also-mine")?.agentNotified).toBe(true);
+      expect(store.get("set-theirs")?.agentNotified).toBe(false);
     });
   });
 

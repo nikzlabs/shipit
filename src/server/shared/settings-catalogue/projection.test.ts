@@ -35,6 +35,19 @@ const MCP_FIXTURE: Record<string, unknown> = {
 };
 
 /**
+ * A name the user could store that carries a credential.
+ *
+ * **This is what the fixtures were blind to.** Every one of them planted the
+ * token in a field's VALUE, so a projection that emitted a NAME unchanged passed
+ * the whole suite — and `project.secrets` did exactly that, in the index, in
+ * every item's address, in text and in `--json`, because an item's address is
+ * projected through its collection. Nothing stops the user storing this: the
+ * secrets route takes any string as a key and a role name is checked only for
+ * being non-blank and short enough.
+ */
+const CREDENTIAL_NAME = `https://user:${TOKEN}@host.example.com/path?token=${TOKEN}`; // gitleaks:allow
+
+/**
  * The same sentinel, planted in every OTHER projection that derives its output.
  * A `derived` projection is an arbitrary function, so no structural rule can say
  * it is safe — a fixture per projection is what can, and the coverage test below
@@ -44,13 +57,17 @@ const DERIVED_FIXTURES: Record<string, unknown> = {
   "mcp.servers": [
     { name: "notion", type: "http", url: `https://x@h/${TOKEN}`, headers: { A: TOKEN } },
     { name: "sentry", type: "stdio", command: "npx", args: [`--token=${TOKEN}`] },
+    { name: CREDENTIAL_NAME, type: "stdio", command: "npx" },
   ],
   "services.credentials": [
     { id: "route-1", label: "Personal", secret: TOKEN },
     { id: "route-2", label: "Work", secret: TOKEN },
   ],
   "services.providerAccounts": [{ id: "acct-1", label: "Work", accessToken: TOKEN }],
-  "roles": [{ name: "deep-dive", prompt: `Use ${TOKEN}`, params: { modelId: "m" } }],
+  "roles": [
+    { name: "deep-dive", prompt: `Use ${TOKEN}`, params: { modelId: "m" } },
+    { name: CREDENTIAL_NAME, params: { modelId: "m" } },
+  ],
   "reviewers": [
     { slot: "first", source: "pinned", pin: { modelId: `m-${TOKEN}` } },
     { slot: "second", source: "auto" },
@@ -61,7 +78,19 @@ const DERIVED_FIXTURES: Record<string, unknown> = {
     `https://svc:${TOKEN}@example.com/hook?token=${TOKEN}`, // gitleaks:allow
   ],
   "network.egress.hosts[].host": `https://svc:${TOKEN}@example.com/hook?token=${TOKEN}`, // gitleaks:allow
-  "project.secrets": { SENTRY_DSN: TOKEN, DATABASE_URL: TOKEN },
+  "project.secrets": { SENTRY_DSN: TOKEN, DATABASE_URL: TOKEN, [CREDENTIAL_NAME]: "x" },
+};
+
+/**
+ * The `user_name` declarations: the user's own name for one item, emitted
+ * because naming it is what the agent has to do, and only when it is shaped
+ * like a name. Same fixture discipline as the derived ones — a new `user_name`
+ * declaration without an entry fails the coverage test below.
+ */
+const USER_NAME_FIXTURES: Record<string, unknown> = {
+  "roles[].name": CREDENTIAL_NAME,
+  "mcp.servers[].name": CREDENTIAL_NAME,
+  "project.secrets[].name": CREDENTIAL_NAME,
 };
 
 function declarationFor(key: string): AnySettingDeclaration {
@@ -173,7 +202,68 @@ describe("every other derived projection", () => {
       DERIVED_FIXTURES["project.secrets"],
     );
 
+    // The two that are names come back; the one shaped like a credential does
+    // not, so it produces no item for `settings-read.ts` to address either.
     expect(outcome).toEqual({ readable: true, value: ["SENTRY_DSN", "DATABASE_URL"] });
+  });
+
+  it("keeps the roles and servers whose names ARE names", () => {
+    expect(projectSetting(declarationFor("roles"), DERIVED_FIXTURES.roles))
+      .toEqual({ readable: true, value: ["deep-dive"] });
+    expect(projectSetting(declarationFor("mcp.servers"), DERIVED_FIXTURES["mcp.servers"]))
+      .toEqual({ readable: true, value: ["notion", "sentry"] });
+  });
+});
+
+/**
+ * req 2 through the one path the fixtures above could not see: an item's
+ * ADDRESS. It is projected through the collection that owns the key, so a name
+ * that gets out here gets out in the index, in the address, in text and in
+ * `--json` at once.
+ */
+describe("a name the user typed", () => {
+  it("has a leak fixture for every declaration that emits one", () => {
+    const keys = ALL_SETTINGS.filter((d) => d.emits.kind === "user_name").map((d) => d.key);
+
+    expect(keys.sort()).toEqual(Object.keys(USER_NAME_FIXTURES).sort());
+  });
+
+  for (const [key, raw] of Object.entries(USER_NAME_FIXTURES)) {
+    it(`emits no credential material from ${key}`, () => {
+      for (const output of outputsOf(key, raw)) {
+        expect(output).not.toContain(TOKEN);
+        expect(output).not.toContain("host.example.com");
+      }
+    });
+  }
+
+  it("still emits the names people actually use", () => {
+    const role = declarationFor("roles[].name");
+    for (const name of ["reviewer", "deep-dive", "Deep Dive", "code_review (fast)", "ops.v2"]) {
+      expect(projectSetting(role, name)).toEqual({ readable: true, value: name });
+    }
+  });
+
+  it("drops a name carrying URL punctuation, whitespace-padded or not", () => {
+    const secret = declarationFor("project.secrets[].name");
+    for (const name of [
+      `  ${CREDENTIAL_NAME}  `,
+      "user@host",
+      "a/b",
+      "a?b=c",
+      "a#b",
+      "%2e%2e",
+      "",
+      "   ",
+      "x".repeat(201),
+    ]) {
+      expect(projectSetting(secret, name)).toEqual({ readable: true, value: null });
+    }
+    // …and stops exactly at the cap rather than one short of it.
+    expect(projectSetting(secret, "x".repeat(200))).toEqual({
+      readable: true,
+      value: "x".repeat(200),
+    });
   });
 
   it("refuses a browser-local read with the sentence the dialog's user would recognise", () => {

@@ -196,6 +196,62 @@ describe("shipit settings get", () => {
     expect(res.stdout).toContain("edge");
   });
 
+  /*
+    A `live` effect normally has nothing to add, and marking every one of them
+    would bury the settings that do — but `live` WITH a detail means the stored
+    value is what the next use reads and that use FAILS. The case is an install
+    whose network containment is on with no egress sidecar image: it refuses to
+    start a contained session, and the read names that.
+
+    Dropping the detail here made the plain output say the opposite of the JSON
+    — "In effect: yes", with no mention of the refusal — while every test at the
+    service layer stayed green, because they read the structured entry and not
+    the text the agent is actually handed.
+  */
+  const BLOCKED_DETAIL = "ShipIt refuses to start a contained session. Provide the sidecar image.";
+
+  it("carries a live effect's detail, which is the one case a live setting has one", async () => {
+    const { run } = makeRunner();
+    const res = await run(["settings", "get", "network.egressContained"], {
+      "GET /agent-ops/settings/get": {
+        status: 200,
+        body: { ...DETAIL.body, effect: { state: "live", detail: BLOCKED_DETAIL } },
+      },
+    });
+
+    expect(res.exitCode).toBe(0);
+    expect(res.stdout).toContain("In effect: yes");
+    expect(res.stdout).toContain(BLOCKED_DETAIL);
+  });
+
+  it("carries it in the index too, where a plain live setting is left unmarked", async () => {
+    const { run } = makeRunner();
+    const res = await run(["settings", "list"], {
+      "GET /agent-ops/settings/list": {
+        status: 200,
+        body: {
+          tabs: ["network"],
+          settings: [
+            {
+              key: "network.egressContained", label: "Contain", summary: "s", tab: "network",
+              scope: "global", value: true, display: "on", readable: true,
+              propose: { allowed: true }, notes: [],
+              effect: { state: "live", detail: BLOCKED_DETAIL },
+            },
+            {
+              key: "advanced.autoFixCi", label: "Fix CI", summary: "s", tab: "advanced",
+              scope: "global", value: true, display: "on", readable: true,
+              propose: { allowed: true }, notes: [], effect: { state: "live" },
+            },
+          ],
+        },
+      },
+    });
+
+    expect(res.stdout).toContain(BLOCKED_DETAIL);
+    expect(res.stdout).toMatch(/advanced\.autoFixCi[^\n]*on\s*$/m);
+  });
+
   it("says a setting cannot be changed on the agent's behalf, and why", async () => {
     const { run } = makeRunner();
     const res = await run(["settings", "get", "voice.webhook"], {
