@@ -5,24 +5,32 @@ for a reason: **ShipIt does not deploy.** The hosting platform does, and ShipIt'
 part is two things — it pushes the branch, and it reads the platform's result
 back and renders it.
 
-Say that plainly when the user asks. There is no deploy button, no deploy
-command, no ShipIt-side build, and no way for either of you to start, cancel,
-promote or roll back a deployment from here. What there is, is a loop that
-happens on its own.
+Say that plainly when the user asks. There is no deploy button, no ShipIt deploy
+command, and no ShipIt-side build; nothing here cancels, promotes or rolls back
+a deployment. What there is, is a loop that happens on its own — plus one
+re-run you can perform yourself, below.
 
 ## The loop
 
 1. The user connects the repository to a hosting platform, once. Their act —
    see below.
-2. ShipIt commits and pushes the session's branch after **every turn**.
+2. ShipIt commits and pushes the session's branch after **every turn that left
+   something to commit**.
 3. The platform sees the push and runs its own build and deploy.
 4. The platform records a GitHub Deployment against the commit.
 5. ShipIt polls GitHub, finds it, and shows it on the pull request.
 
-Step 2 is the trigger. There is no other one. "Deploy now" means "push", and a
-push happens when a turn ends with something to commit — so the way to redeploy
-is to make a change, or to use the platform's own redeploy control on its
-dashboard.
+Step 2 is the trigger. "Deploy now" means "push", so the ordinary way to
+redeploy is to make a change and let the turn end.
+
+There is **one** exception, and it is yours to use. Where the deploy is a
+**GitHub Actions workflow in this repository**, `gh run rerun` re-runs it
+without any code change — but only a run on the branch you are on, at the commit
+you are on, that a push or a pull request triggered. A run on another branch is
+refused by design, precisely because re-running it could re-execute a deploy.
+`gh workflow run` and `gh run cancel` are not available at all. For a hosted
+platform's own build there is no ShipIt control: the redeploy button on their
+dashboard is the user's.
 
 ## Targets, and what each one needs
 
@@ -35,19 +43,27 @@ the whole of ShipIt's knowledge of them.
 
 That tab is in **Project Settings**, on a repository group's overflow menu in
 the sidebar — so it exists per repository, and a sandbox session, which has no
-repository, has no such menu. (The same tab carries the per-repository **Agent
-permissions** toggle governing whether an agent may merge on its own; that
+repository, has no such menu. (The same tab opens with an **Agent permissions**
+section, whose one toggle — *Allow agents to merge their own pull requests* —
 belongs to `/shipit-docs/github.md`, not here.)
 
-Before a deploy can happen at all:
+What has to be true. The first four are what makes a deploy happen at all, and
+they are all settings on the platform or in the user's account; the last is only
+what lets ShipIt show you the result.
 
 | Needs | Whose | Why |
 |---|---|---|
 | The repository imported on the platform, using the platform's own Git integration | **The user's.** ShipIt holds no platform credential and stores nothing for it. This is one of the few things that genuinely happens in another tab — the platform owns its own account and billing pages | Without it nothing is watching the push |
-| GitHub connected in ShipIt — Settings → Integrations | **The user's** | With no GitHub auth ShipIt still commits after every turn but does **not** push, so the branch never reaches GitHub and nothing can deploy |
+| GitHub connected in ShipIt — Settings → Integrations | **The user's** | With no GitHub auth ShipIt still commits but does **not** push, so the branch never reaches GitHub and nothing can deploy |
 | The platform configured to build this branch | **The user's**, on the platform | Session branches are not the default branch. A platform set to build only production will produce nothing for a session |
 | Build command, output directory, framework, environment variables | **The user's**, on the platform | These are platform settings. They are not in `shipit.yaml`, and ShipIt's own secrets (`/shipit-docs/secrets.md`) go to the session's Compose services, never to the platform's build |
 | A pull request for the session | **Yours** — you open it | The status row attaches to a pull request. A branch with no PR still pushes and still deploys; ShipIt just has nowhere to show it |
+
+That whole table describes a **hosted platform**. A repository that deploys
+itself from a GitHub Actions workflow needs no import and no platform account —
+the workflow is a file in the repository, so writing it, fixing it and reading
+its logs are all your work rather than the user's. Rows appear for it just the
+same.
 
 ## Where deploy status appears
 
@@ -56,32 +72,42 @@ Two places, both fed by the same poll of GitHub:
 - **The pull request card in the conversation**, while the PR is open. One row
   per deployment, under the checks.
 - **The PR tab's Status section**, which shows the same rows without the "via"
-  attribution. That tab exists once the session has a pull request.
+  attribution. That tab appears in an ordinary repository session once its pull
+  request exists — open, merged or closed — and never in an Ops or sandbox
+  session.
 
-Each row is: the environment name the platform chose, a state icon, and a link
-to the deployed URL (the user's own app — opening it is not a link-out to
-GitHub). ShipIt shows the **three most recent** deployments of the pull
-request's head commit.
+Each row is: the environment name the platform chose, a state icon, and — when
+the platform supplied one — a link to the deployed URL. That link is the user's
+own app, not a bounce to GitHub. ShipIt shows the **three most recent**
+deployments of the pull request's head commit.
 
 | The row shows | GitHub's state | Means |
 |---|---|---|
-| Amber spinner | queued, pending, in_progress | The platform has it and is working |
-| Green globe | success, active | Live at the URL on the row |
+| Amber spinner | queued, waiting, pending, in_progress | The platform has it and is working. Anything ShipIt cannot recognise reads as pending too |
+| Green globe | success, active | GitHub reports it live, at the URL on the row |
 | Red cross | failure, error | The build or the deploy failed |
-| Grey globe | inactive, destroyed, abandoned | Superseded by a later deployment |
+| Grey globe | inactive, destroyed, abandoned | No longer serving. Usually superseded by a later deployment, but the state does not say why |
 
 **Freshness.** For five minutes after each push ShipIt polls every 15 seconds —
-which is the window a deploy normally starts in. A quiet pull request falls back
-to roughly every two minutes, so a build that takes longer than five minutes can
-show its result a couple of minutes late. Nothing is wrong; it has not been
-missed.
+the window a deploy normally starts in. After that a quiet pull request falls
+back to roughly every two minutes, so a build longer than five minutes can
+report a couple of minutes late. Pending checks and armed automation hold it at
+the fast rate.
+
+Polling also **stops entirely** when nobody has the session open and no
+automation needs it, shortly after the last viewer leaves. So a row that looks
+frozen after the user has been away is not a lost deploy — opening the session
+starts the poll again and the row catches up.
 
 **Two honest gaps**, worth stating rather than working around:
 
 - **Merging ends ShipIt's view.** Once the pull request merges, ShipIt stops
   following it, and the card's open phase — with it, the deployment rows — is
-  replaced. The production deploy that the merge triggers is not shown anywhere
-  in ShipIt. The platform's dashboard is the only place it exists.
+  replaced. Nothing in ShipIt *renders* the production deploy that the merge
+  triggers. That is a rendering gap, not a blindness: where production deploys
+  from a GitHub Actions workflow, `gh run list --branch <base>` and
+  `gh run view <id> --log-failed` still let you look, on any branch. Only a
+  hosted platform's build is genuinely out of reach.
 - **A deployment never gates a merge, on ShipIt's side.** Auto-merge and the
   CI auto-fix read the pull request's *checks* and never its deployments, so a
   red deployment row blocks nothing by itself. Many platforms publish a check
@@ -90,28 +116,33 @@ missed.
 
 ## When a deploy fails
 
-ShipIt has the state and the URL and nothing else — GitHub's deployment record
-carries no build log, so there is none to render. Do not send the user hunting;
-do the work instead.
+The row itself carries no reason — GitHub's deployment record has no build log
+in it, so there is none to render. Do not send the user hunting; do the work
+instead.
 
-1. **Reproduce it in the session.** The failing build is the project's own
-   build. Run it here — the same command the platform runs, from the project's
-   config — and read the error yourself. This is the fastest path and it is
-   entirely yours.
-2. **Check what differs between here and there.** A build that passes in the
+1. **If it is a GitHub Actions deploy, read the log.** `gh run list --branch
+   <branch>` then `gh run view <id> --log-failed` gives you the actual failure,
+   on any branch, without leaving the session. Start here whenever the
+   deployment came from a workflow in this repository.
+2. **Otherwise, reproduce it in the session.** A hosted platform's build is the
+   project's own build. Run it here — the same command the platform runs, from
+   the project's config — and read the error yourself.
+3. **Check what differs between here and there.** A build that passes in the
    session and fails on the platform is usually an environment variable set only
    on the platform, a dependency present in the container but not in a clean
    install, or a build command configured differently there. Say which of the
    three it looks like.
-3. **Fix and end the turn.** The push redeploys. There is nothing else to press.
-4. **Only then, the build log.** If the failure cannot be reproduced here, the
-   log is on the platform's dashboard and only the user can open it. Ask for the
-   error text; do not ask them to debug it.
+4. **Fix and end the turn.** The push redeploys. There is nothing else to press.
+5. **Only then, the platform's own log.** If a hosted build cannot be reproduced
+   here, that log lives on the platform's dashboard and only the user can open
+   it. Ask for the error text; do not ask them to debug it.
 
 **No row at all** is a different problem from a failed row. In order of
-likelihood: the session has no pull request yet; GitHub is not connected, so
-nothing was pushed; the platform is not configured to build this branch; or the
-platform does not record GitHub Deployments at all — in which case no row will
+likelihood: the session has no pull request yet; nothing was pushed — check that
+the commit actually reached GitHub before blaming anyone's configuration, since
+a push is skipped when GitHub is not connected and refused for work stacked on
+an already-merged branch; the platform is not configured to build this branch;
+or nothing records GitHub Deployments here at all — in which case no row will
 ever appear, and that is not a ShipIt fault to chase.
 
 ## Who does what
@@ -120,5 +151,5 @@ ever appear, and that is not a ShipIt fault to chase.
 |---|---|
 | Imports the repository on the platform, once | Explain what the platform needs and why; never claim ShipIt can do it |
 | Sets build settings and environment variables on the platform | Reproduce the build in the session and fix what is broken in the code |
-| Opens the build log when a failure cannot be reproduced here | Ask for the error text, then fix it |
-| Merges, which is what triggers a production deploy | Open and maintain the pull request; say plainly that ShipIt does not show the post-merge deploy |
+| Opens a **hosted** build's log, which only they can reach | Read an **Actions** run's log yourself, and ask for the error text only in the hosted case |
+| Merges from the pull request card — or lets armed auto-merge do it, or grants an agent the toggle in Project Settings → Deployments | Open and maintain the pull request; say plainly that ShipIt renders nothing about the deploy the merge triggers |
