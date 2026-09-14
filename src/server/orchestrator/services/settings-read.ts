@@ -30,6 +30,7 @@ import { readStoredGlobalSettings } from "./settings-derivation.js";
 import { BESPOKE_READERS, StoreReadCache } from "./settings-store-readers.js";
 import type { ItemName, StoreReadContext, StoredItem } from "./settings-store-readers.js";
 import type { SettingsReadDeps } from "./settings-read-deps.js";
+import type { SettingsProposalRow } from "../settings-proposal-store.js";
 import { ServiceError } from "./types.js";
 
 export type { SettingsReadDeps };
@@ -169,6 +170,8 @@ export interface SettingProposalSummary {
   cardId: string;
   phase: SettingsProposalPhase;
   operation: SettingsProposalOperation;
+  /** The instance it was about, where the setting has more than one. */
+  item?: string;
   /** Both as the proposal recorded them: the projected value, never the stored one. */
   from: unknown;
   proposed: unknown;
@@ -898,12 +901,16 @@ function lastProposalFor(
   deps: SettingsReadDeps,
   target: SettingsProposalTarget,
 ): SettingProposalSummary | undefined {
-  const row = deps.proposals?.latestForTarget(target);
+  return summarize(deps.proposals?.latestForTarget(target) ?? null);
+}
+
+function summarize(row: SettingsProposalRow | null): SettingProposalSummary | undefined {
   if (!row) return undefined;
   return {
     cardId: row.cardId,
     phase: row.phase,
     operation: row.operation,
+    ...(row.target.item ? { item: row.target.item } : {}),
     from: row.from,
     proposed: row.proposed,
     proposedAt: row.createdAt,
@@ -932,7 +939,11 @@ export async function getSettingForAgent(
     key: declaration.key,
     ...(perRepository && state.repoUrl ? { repoUrl: state.repoUrl } : {}),
   };
-  const last = lastProposalFor(deps, base);
+  // Keyed by SETTING rather than by target: an item-addressed lookup answers
+  // nothing for an entry that does not exist yet (a pending host addition) or no
+  // longer does (one a card removed), and those are exactly the cards an agent
+  // told to read before proposing has to see.
+  const last = summarize(deps.proposals?.latestForKey(base.key, base.repoUrl) ?? null);
   const withProposals = items?.map((item) => {
     const proposal = lastProposalFor(deps, { ...base, item: item.address });
     return proposal ? { ...item, lastProposal: proposal } : item;

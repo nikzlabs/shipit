@@ -4,7 +4,8 @@ import {
   findSetting,
   isPayloadDeclaration,
 } from "../../shared/settings-catalogue/index.js";
-import { findOperation, operationsFor } from "./settings-operations.js";
+import { withConflictDomains } from "./settings-conflict-domain.js";
+import { findOperation, operationsFor, registeredOperationKeys } from "./settings-operations.js";
 import { proposalFixture, type ProposalFixture } from "./settings-proposal-test-helpers.js";
 
 /**
@@ -30,16 +31,18 @@ afterEach(() => {
 
 describe("the operation registry", () => {
   it("only names declared settings that are proposable", () => {
-    const named = ALL_SETTINGS.filter((declaration) =>
-      KINDS.some((kind) => findOperation(declaration, kind) !== undefined));
-    expect(named.length).toBeGreaterThan(0);
-    for (const declaration of named) {
-      expect(declaration.propose.kind).toBe("yes");
+    const keys = registeredOperationKeys();
+    expect(keys.length).toBeGreaterThan(0);
+    // Read off the registry's OWN keys, not off the declarations: enumerating
+    // declarations drops a misspelled key silently, and the operation it names
+    // is then one no proposal can ever reach.
+    for (const key of keys) {
+      const [settingKey, kind] = key.split("::");
+      expect(KINDS).toContain(kind);
+      const declaration = findSetting(settingKey!);
+      expect(declaration, `${key} names no declared setting`).toBeDefined();
+      expect(declaration!.propose.kind, `${key} is declared unproposable`).toBe("yes");
     }
-    // Written against the registry rather than a list of keys: a key naming no
-    // declaration produces no entry here and would pass a list-shaped test.
-    const declaredKeys = new Set(ALL_SETTINGS.map((d) => d.key));
-    for (const declaration of named) expect(declaredKeys.has(declaration.key)).toBe(true);
   });
 
   it("covers every declared payload scalar with no entry of its own (req 7)", () => {
@@ -88,12 +91,14 @@ describe("a collection entry is patched, never replaced", () => {
       },
     });
     const operation = findOperation(findSetting("roles[].description")!, "set")!;
+    const target = { key: "roles[].description", item: "deep-dive" };
 
-    const outcome = await operation.apply(
-      fx.deps.operations,
-      { key: "roles[].description", item: "deep-dive" },
-      "what it is for, in one line",
-    );
+    // Under the domains the operation DECLARES, exactly as the decision handler
+    // holds them: the lock refuses a nested acquisition its caller does not
+    // hold, so a `domains()` that is not a superset of what the write takes
+    // throws here instead of quietly working in a test that skipped the hold.
+    const outcome = await withConflictDomains(operation.domains(target), () =>
+      operation.apply(fx.deps.operations, target, "what it is for, in one line"));
 
     expect(outcome.status).toBe("applied");
     const role = fx.credentialStore.getRole("deep-dive");

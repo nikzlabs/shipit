@@ -43,5 +43,6 @@ export interface SettingsReadDeps {
    */
   proposals?: {
     latestForTarget(target: SettingsProposalTarget): SettingsProposalRow | null;
+    latestForKey(key: string, repoUrl?: string): SettingsProposalRow | null;
   } | undefined;
 }

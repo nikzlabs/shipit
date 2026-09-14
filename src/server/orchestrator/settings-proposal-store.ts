@@ -138,6 +138,24 @@ export class SettingsProposalStore {
   }
 
   /**
+   * The last proposal about a SETTING, whatever instance it named.
+   *
+   * An item-addressed lookup cannot answer for an entry that does not exist yet
+   * or no longer does — a pending card to add an allowlist host names a host the
+   * read does not list, and a card that removed one names a host that has gone.
+   * Reporting the setting's own last proposal is what keeps those visible to an
+   * agent told to read before it proposes.
+   */
+  latestForKey(key: string, repoUrl?: string): SettingsProposalRow | null {
+    const row = this.db.prepare(
+      `SELECT * FROM settings_proposals
+       WHERE setting_key = ? AND repo_url IS ?
+       ORDER BY created_at DESC, rowid DESC LIMIT 1`,
+    ).get(key, repoUrl ?? null) as ProposalRow | undefined;
+    return row ? fromRow(row) : null;
+  }
+
+  /**
    * Run `fn` with this row and the transcript row committing together. Both live
    * in the same database, and a phase that lands in one and not the other is the
    * split the transition contract exists to prevent: a private row left

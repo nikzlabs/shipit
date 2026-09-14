@@ -11,6 +11,7 @@ import type { SessionRunnerRegistry } from "../session-runner.js";
 import type { SettingsProposalStore } from "../settings-proposal-store.js";
 import { settingBaseline } from "./settings-baseline.js";
 import type { SettingBaseline, SettingBaselineDeps } from "./settings-baseline.js";
+import { withConflictDomains } from "./settings-conflict-domain.js";
 import { findOperation, operationsFor } from "./settings-operations.js";
 import type {
   SettingsOperation,
@@ -347,21 +348,29 @@ export async function proposeSettingChange(
   const { declaration, operation, target } = resolved;
   const kind = input.operation ?? "set";
 
-  const current = await readCurrent(deps, sessionId, resolved);
-  const change = kind === "set"
-    ? valueChange(declaration, input, current, target)
-    : membershipChange(operation, kind, current, target);
-  // After the read, so a setting whose instance does not exist is refused by the
-  // read — which can name the instances that DO — rather than by the operation,
-  // which only knows the one it was asked about. The apply runs it the other way
-  // round, where there is no card to name anything on.
-  const refusal = operation.preflight?.(deps.operations, target, change.proposedValue);
-  if (refusal) refuse(refusal);
-
-  requireShowable(declaration, "current", change.from);
-  requireShowable(declaration, "proposed", change.to);
-
-  const baseline = await requireBaseline(deps, resolved);
+  // The displayed value and the private baseline are ONE snapshot, taken under
+  // the target's own lock. Reading them separately lets a write land in
+  // between, which gives the card a `from` the baseline never saw: the user
+  // approves what the card shows, and the apply compares against something else
+  // and overwrites it (plan.md → Proposing: "the server takes the snapshot").
+  const { change, baseline } = await withConflictDomains(
+    operation.domains(target),
+    async () => {
+      const current = await readCurrent(deps, sessionId, resolved);
+      const computed = kind === "set"
+        ? valueChange(declaration, input, current, target)
+        : membershipChange(operation, kind, current, target);
+      // After the read, so a setting whose instance does not exist is refused by
+      // the read — which can name the instances that DO — rather than by the
+      // operation, which only knows the one it was asked about. The apply runs
+      // it the other way round, where there is no card to name anything on.
+      const refusal = operation.preflight?.(deps.operations, target, computed.proposedValue);
+      if (refusal) refuse(refusal);
+      requireShowable(declaration, "current", computed.from);
+      requireShowable(declaration, "proposed", computed.to);
+      return { change: computed, baseline: await requireBaseline(deps, resolved) };
+    },
+  );
 
   const runner = deps.getRunnerRegistry()?.get(sessionId);
   if (!runner) {

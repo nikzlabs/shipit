@@ -140,6 +140,19 @@ async function runApply(
   declaration: AnySettingDeclaration,
   operation: SettingsOperation,
 ): Promise<Terminal> {
+  // The card froze its repository when it was written, and the session can have
+  // been rebound since. The permission belongs to the repository the user was
+  // looking at, so a card for another one is refused rather than applied to a
+  // repository nobody asked about (plan.md → The target, and the lock).
+  const bound = deps.read.sessionManager.get(sessionId)?.remoteUrl || null;
+  if (row.target.repoUrl && row.target.repoUrl !== bound) {
+    const nowBinds = bound ? `now binds ${bound}` : "no longer binds a repository";
+    return {
+      phase: "refused",
+      outcome: `This card is about ${row.target.repoUrl}, and this session ${nowBinds}.`,
+    };
+  }
+
   const approved = storedBaseline(row);
   if (!approved) {
     return {
@@ -205,13 +218,15 @@ export async function resolveSettingsProposal(
   const operation = findOperation(declaration, row.operation);
   if (!operation) {
     // A card written when ShipIt could apply this change, clicked after it
-    // could not. Nothing ran, so the card says so rather than claiming a write.
-    const refused = transitionSettingsProposal(deps, sessionId, cardId, {
+    // could not. Nothing ran, so the card says so rather than claiming a write —
+    // and it is claimed out of `pending` like any other transition, so a card
+    // that already applied or was dismissed keeps the outcome it has.
+    const refused = claimSettingsProposal(deps, sessionId, cardId, "pending", {
       phase: "refused",
       resolvedAt: now(),
       outcome: `ShipIt can no longer apply a change to ${declaration.key} from a card.`,
     });
-    return { card: refused ?? currentCard(deps, sessionId, cardId), acted: false };
+    return { card: refused ?? currentCard(deps, sessionId, cardId), acted: refused !== null };
   }
 
   const claimed = claimSettingsProposal(deps, sessionId, cardId, "pending", { phase: "applying" });

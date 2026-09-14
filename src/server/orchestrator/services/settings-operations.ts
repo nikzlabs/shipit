@@ -1,5 +1,5 @@
 import type { AgentRegistry } from "../../shared/agent-registry.js";
-import { reasoningOptionsFor } from "../../shared/catalogue/index.js";
+import { allHarnesses, reasoningOptionsFor } from "../../shared/catalogue/index.js";
 import type { ModelSelection } from "../../shared/catalogue/types.js";
 import {
   findSetting,
@@ -15,11 +15,17 @@ import { EGRESS_GLOBAL_SCOPE } from "../egress-allowlist-store.js";
 import type { EgressAllowlistStore } from "../egress-allowlist-store.js";
 import type { AgentMergeClaimStore } from "../agent-merge-claims.js";
 import { harnessesForSelection } from "../non-turn-model.js";
+import { resolveReviewerPinPatch } from "./reviewer-settings.js";
+import { checkRolePinnedParams } from "./roles.js";
+import type { RoleValidatorDeps } from "./roles.js";
+import type { ReviewerPinPatch } from "./types.js";
 import type { ProviderAccountManager } from "../provider-account-manager.js";
 import type { RepoStore } from "../repo-store.js";
 import type { ServiceManager } from "../service-manager.js";
 import type { SessionRunnerRegistry } from "../session-runner.js";
 import { listConfiguredCredentials } from "../service-routing.js";
+import { buildEffectiveAllowlist } from "../egress-allowlist.js";
+import { MAX_ENABLED_MCP_SERVERS } from "./mcp.js";
 import {
   applyEgressGlobalEnabled,
   applyEgressHostAdd,
@@ -389,6 +395,45 @@ function reviewerPin(deps: SettingsOperationDeps, slot: string): Record<string, 
   return pin ? { ...pin } : null;
 }
 
+/**
+ * Why a reviewer slot cannot take this level, if it cannot.
+ *
+ * `resolveReviewerPinPatch` is the shipped writer's own resolver, and it
+ * SUBSTITUTES a default for a level the selection does not offer rather than
+ * refusing one. That is right for the dialog, whose picker only offers real
+ * levels, and wrong for a card: the card would say "is banana" and the store
+ * would hold "high". So the resolver is run here first and its answer compared
+ * with what was asked for — the write is refused when the two differ, rather
+ * than applied as something the card did not describe.
+ */
+function reviewerLevelRefusal(
+  deps: SettingsOperationDeps,
+  patch: Record<string, unknown>,
+  requested: string | undefined,
+): string | null {
+  const credentialStore = requireCredentialStore(deps);
+  let resolved;
+  try {
+    resolved = resolveReviewerPinPatch(patch as unknown as ReviewerPinPatch, credentialStore);
+  } catch (err) {
+    if (err instanceof ServiceError) return err.message;
+    throw err;
+  }
+  if (requested === undefined || resolved.reasoningEffort === requested) return null;
+  const selection = {
+    serviceId: resolved.serviceId,
+    billingMode: resolved.billingMode,
+    modelId: resolved.modelId,
+  };
+  const [runnable] = harnessesForSelection(selection, listConfiguredCredentials(credentialStore));
+  const offered = runnable
+    ? reasoningOptionsFor(runnable.harnessId, selection).map((o) => o.value)
+    : [];
+  return offered.length > 0
+    ? `"${requested}" is not a reasoning level this model offers. It offers: ${offered.join(", ")}.`
+    : "This model offers no reasoning levels, so a reviewer slot on it cannot name one.";
+}
+
 function reviewerOperation(
   patch: (pin: Record<string, unknown> | null, value: unknown) => Record<string, unknown> | null,
   preflight?: SettingsOperation["preflight"],
@@ -479,13 +524,14 @@ const OPERATIONS: Record<string, SettingsOperation> = {
       if (typeof selection?.serviceId !== "string") {
         return "A model names a serviceId, a billingMode and a modelId.";
       }
-      // The level the pin carries may not be one the new model offers; the
-      // writer would substitute a default, so the change is refused here rather
-      // than applied as something the card did not say.
+      // The selection has to be one this install can run a reviewer on — that
+      // is what the writer refuses. The level the pin carries is NOT compared:
+      // the card is about the model, and a level the new model does not offer
+      // is re-derived exactly as the dialog's own picker re-derives it.
       return reviewerLevelRefusal(
         deps,
         { ...selection, ...(pin?.reasoningEffort ? { reasoningEffort: pin.reasoningEffort } : {}) },
-        typeof pin?.reasoningEffort === "string" ? pin.reasoningEffort : undefined,
+        undefined,
       );
     },
   ),
@@ -557,7 +603,7 @@ const OPERATIONS: Record<string, SettingsOperation> = {
   },
   "network.egress.hosts[].host::remove": {
     domains: () => [egressScopeDomain(EGRESS_GLOBAL_SCOPE)],
-    preflight: (_deps, target) => hostPreflight(target.item),
+    preflight: (deps, target) => hostPreflight(target.item) ?? removableRefusal(deps, target.item ?? ""),
     apply: (deps, target) => applyEgressHostRemove(egressDeps(deps), EGRESS_GLOBAL_SCOPE, target.item ?? ""),
     wording: { from: "allowed", to: "not allowed" },
     normalizeItem: normalizeHostEntry,
@@ -568,10 +614,19 @@ const OPERATIONS: Record<string, SettingsOperation> = {
   // field of a server is refused by its declaration.
   "mcp.servers[].enabled::set": {
     domains: (target) => [mcpServerDomain(target.item ?? "")],
-    preflight: (deps, target) =>
-      deps.credentialStore?.getMcpServer(target.item ?? "")
-        ? null
-        : `No MCP server named "${target.item ?? ""}".`,
+    preflight: (deps, target, value) => {
+      const server = deps.credentialStore?.getMcpServer(target.item ?? "");
+      if (!server) return `No MCP server named "${target.item ?? ""}".`;
+      if (value !== true || server.enabled) return null;
+      // The writer refuses the eleventh, so a card offering it would only ever
+      // resolve `refused` (`services/mcp.ts` → MAX_ENABLED_MCP_SERVERS).
+      const enabled = Object.values(deps.credentialStore?.getAllMcpServers() ?? {})
+        .filter((s) => s.enabled && s.name !== server.name).length;
+      return enabled + 1 > MAX_ENABLED_MCP_SERVERS
+        ? `${MAX_ENABLED_MCP_SERVERS} MCP servers are already enabled, which is the limit. `
+          + "Turning another one off is what makes room for this."
+        : null;
+    },
     async apply(deps, target, value) {
       const credentialStore = requireCredentialStore(deps);
       const existing = credentialStore.getMcpServer(target.item ?? "");
@@ -609,11 +664,39 @@ function hostPreflight(host: string | undefined): string | null {
   if (!host) return "Name the host to add or remove.";
   // The allowlist's own projection drops anything not shaped like a host, so an
   // entry shaped otherwise is one the card could not show back (plan.md → an
-  // operation whose full effect cannot be displayed is refused).
+  // operation whose full effect cannot be displayed is refused). The entry is
+  // NOT quoted back: what was typed can be a URL carrying a token, and this
+  // message reaches the transcript as tool output.
   return hostEntryProjection(host) !== null
     ? null
-    : `"${host}" is not shaped like a host name, so a card could not show what it would allow. `
-      + "Use a host such as registry.npmjs.org, or .example.com for a whole subtree.";
+    : "That entry is not shaped like a host name, so a card could not show what it would allow. "
+      + "Name a host such as registry.npmjs.org, or .example.com for a whole subtree.";
+}
+
+/**
+ * Whether the allowlist can actually drop this entry.
+ *
+ * The list the read shows is the EFFECTIVE one: ShipIt's built-in defaults, the
+ * hosts an operator set in the environment, and the hosts the configured MCP
+ * servers need, on top of the user's own. Only the user's own and the built-in
+ * defaults can be removed — `applyEgressHostRemove` deletes a row or suppresses
+ * a default, and neither reaches the other two — so removing one of those would
+ * report "off the allowlist" about a host that is still on it.
+ */
+function removableRefusal(deps: SettingsOperationDeps, host: string): string | null {
+  const store = deps.egressAllowlistStore;
+  if (!store) return null;
+  const entry = buildEffectiveAllowlist({
+    ...(deps.credentialStore ? { credentialStore: deps.credentialStore } : {}),
+    globalHosts: store.listHosts(EGRESS_GLOBAL_SCOPE),
+    suppressedDefaults: store.listSuppressedDefaults(),
+  }).find((candidate) => candidate.host === host);
+  if (!entry || entry.removable) return null;
+  return entry.source === "mcp"
+    ? `${host} is on the allowlist because a configured MCP server needs it, so removing it here `
+      + "would not take it off. Removing the server is what removes the host."
+    : `${host} is on the allowlist because this deployment's operator put it there, so ShipIt `
+      + "cannot take it off.";
 }
 
 function repoOperation(field: "allowAgentMerge" | "colorIndex"): SettingsOperation {
@@ -663,6 +746,16 @@ function payloadOperation(declaration: AnySettingDeclaration): SettingsOperation
     // object — and so a domain — of its own.
     () => domainsOfSave({ [wire]: null }),
   );
+}
+
+/**
+ * The registry's own keys, exactly as written. A test that enumerates
+ * declarations instead cannot see a MISSPELLED key — it simply drops out of the
+ * enumeration and everything passes, while the operation it names is one propose
+ * can never reach.
+ */
+export function registeredOperationKeys(): string[] {
+  return Object.keys(OPERATIONS);
 }
 
 export function findOperation(

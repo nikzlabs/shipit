@@ -4,6 +4,8 @@ import { addMcpServer } from "./mcp.js";
 import { SETTINGS_CHANGED_EVENT } from "./settings-apply.js";
 import { recoverInterruptedProposals, resolveSettingsProposal } from "./settings-decision.js";
 import { proposeSettingChange } from "./settings-propose.js";
+import { settingsPayloadDomain, withConflictDomains } from "./settings-conflict-domain.js";
+import { ServiceError } from "./types.js";
 import { claimSettingsProposal } from "./settings-proposal.js";
 import { proposalFixture, type ProposalFixture } from "./settings-proposal-test-helpers.js";
 
@@ -29,6 +31,17 @@ function post(over: Partial<Parameters<typeof proposeSettingChange>[2]> = {}) {
 
 function decide(cardId: string, action: "apply" | "dismiss" = "apply") {
   return resolveSettingsProposal(fx.deps, fx.sessionId, cardId, action);
+}
+
+/** A proposal refused before any card exists; the message is the agent's answer. */
+async function proposeRefusal(over: Partial<Parameters<typeof post>[0]>): Promise<string> {
+  try {
+    await post(over);
+  } catch (err) {
+    if (err instanceof ServiceError) return err.message;
+    throw err;
+  }
+  throw new Error("expected the proposal to be refused");
 }
 
 function settingsBroadcasts(): unknown[] {
@@ -168,7 +181,59 @@ describe("resolveSettingsProposal — stale", () => {
   });
 });
 
+describe("the lock spans the check and the write", () => {
+  it("waits for a competing write, then sees it — instead of reading in front of it", async () => {
+    const card = await post();
+    let wrote = false;
+
+    // A dialog save, already holding the payload's domain when the click
+    // arrives. Without the decision taking that same lock around its baseline
+    // check, it reads the old value while this is still running and overwrites
+    // the save it never saw.
+    const rival = withConflictDomains([settingsPayloadDomain], async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      fx.credentialStore.setEnableSubAgents(false);
+      wrote = true;
+    });
+    const decision = decide(card.cardId);
+
+    const [, { card: resolved }] = await Promise.all([rival, decision]);
+
+    expect(wrote).toBe(true);
+    expect(resolved.phase).toBe("stale");
+  });
+});
+
 describe("resolveSettingsProposal — refused", () => {
+  it("refuses a card for a repository this session no longer binds", async () => {
+    fx.close();
+    fx = proposalFixture({ remoteUrl: "https://github.com/o/a" });
+    const card = await post({ key: "project.allowAgentMerge", valueText: "true", item: undefined });
+    // The card froze repository A; the session is rebound to B before the click.
+    fx.repoStore.add("https://github.com/o/b");
+    fx.sessions.setRemoteUrl(fx.sessionId, "https://github.com/o/b");
+
+    const { card: resolved } = await decide(card.cardId);
+
+    expect(resolved.phase).toBe("refused");
+    expect(resolved.outcome).toContain("https://github.com/o/a");
+    expect(fx.repoStore.get("https://github.com/o/a")?.allowAgentMerge).toBeFalsy();
+  });
+
+  it("refuses a reviewer level the slot cannot take, before any card exists", async () => {
+    // The shipped resolver SUBSTITUTES a default for a level a selection does
+    // not offer rather than refusing it, which would leave a card saying
+    // "banana" and a store holding something else. Refusing is what keeps the
+    // card's words and the write the same change.
+    const message = await proposeRefusal({
+      key: "reviewers[].reasoningEffort",
+      item: "first",
+      valueText: "banana",
+    });
+    expect(message).toMatch(/reasoning level|pins no model|harness/);
+    expect(fx.proposals.latestForKey("reviewers[].reasoningEffort")).toBeNull();
+  });
+
   it("refuses at apply time what propose accepted, when the target has gone", async () => {
     addMcpServer(fx.credentialStore, { name: "notion", type: "stdio", command: "notion-mcp" }, {});
     const card = await post({ key: "mcp.servers[].enabled", item: "notion", valueText: "false" });
@@ -185,7 +250,7 @@ describe("resolveSettingsProposal — refused", () => {
 });
 
 describe("resolveSettingsProposal — dismiss", () => {
-  it("resolves without a lock, a re-read or a write", async () => {
+  it("resolves the card and writes nothing at all", async () => {
     const card = await post();
 
     const { card: resolved, acted } = await decide(card.cardId, "dismiss");
