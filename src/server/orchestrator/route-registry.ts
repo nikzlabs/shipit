@@ -518,8 +518,13 @@ export async function registerRoutes(
           }
         } catch { /* ignore */ }
       }
+      // A role in force decided the level, including deciding it has none
+      // (docs/272-user-selectable-roles req 2). The `?reasoning=` seed is the
+      // browser's GLOBAL last pick, so filling that hole from it reads as a
+      // parameter change below and unnames a role that is still running exactly
+      // what it set — once per reconnect, silently.
       const requestedReasoning =
-        !session.agentPinned && typeof request.query.reasoning === "string"
+        !session.agentPinned && !session.roleName && typeof request.query.reasoning === "string"
           ? request.query.reasoning
           : undefined;
       let selectedReasoning: string | undefined = session.reasoningEffort ?? requestedReasoning;
@@ -539,13 +544,24 @@ export async function registerRoutes(
         }
       }
       // Remove the role name if reconciliation changed its parameters.
-      if (
-        session.roleName
-        && (perConnectionAgentId !== session.agentId
-          || selectedModel !== session.model
-          || (selectedReasoning ?? undefined) !== (session.reasoningEffort ?? undefined))
-      ) {
-        try { sessionManager.setRoleName(sessionId, null); } catch { /* ignore */ }
+      const movedByReconciliation = session.roleName
+        ? [
+            perConnectionAgentId !== session.agentId ? "harness" : null,
+            selectedModel !== session.model ? "model" : null,
+            (selectedReasoning ?? undefined) !== (session.reasoningEffort ?? undefined)
+              ? "reasoning level"
+              : null,
+          ].filter((name): name is string => name !== null)
+        : [];
+      let autoClearedRole: string | undefined;
+      if (movedByReconciliation.length > 0) {
+        try {
+          sessionManager.setRoleName(sessionId, null);
+          autoClearedRole = session.roleName;
+          console.log(
+            `[role] ${sessionId}: cleared "${session.roleName}" — connect reconciliation moved the ${movedByReconciliation.join(", ")}`,
+          );
+        } catch { /* ignore */ }
       }
 
       // Apply a role last so its parameters replace the separate browser seeds.
@@ -553,12 +569,23 @@ export async function registerRoutes(
         typeof request.query.role === "string" && request.query.role.length > 0
           ? request.query.role
           : undefined;
+      // The clear above rewrote the row this block reads. Read it again: against
+      // the connect-time snapshot a connect that cleared a role could never
+      // repair itself, so the seed re-applied it on the NEXT connect and the one
+      // after that cleared it again.
+      const reconciled = sessionManager.get(sessionId) ?? session;
+      // …but the re-read may only REPAIR. The URL is memoized per session, so it
+      // can still name a role the user has since replaced with another; letting
+      // that one in would answer "this role had to be dropped" with a different
+      // role's standing instructions, which nothing authorised.
+      const repairsItsOwnClear = !autoClearedRole || requestedRole === autoClearedRole;
       // A stale WebSocket URL must not restore a role the user explicitly cleared.
       let seededRoleApplied = false;
       if (
         requestedRole
-        && !session.agentPinned
-        && !session.roleName
+        && repairsItsOwnClear
+        && !reconciled.agentPinned
+        && !reconciled.roleName
         && !sessionManager.roleExplicitlyCleared(sessionId)
       ) {
         try {
@@ -571,6 +598,13 @@ export async function registerRoutes(
         } catch {
           // An unavailable browser seed does not prevent connection.
         }
+      }
+      // A clear that was NOT repaired is recorded the way the user's own clear is
+      // (req 18's `''` sentinel), because `NULL` says only "no role" and the next
+      // connect's memoized URL is then free to start a role this session never
+      // ran — one reconnect later than `repairsItsOwnClear` refused it.
+      if (autoClearedRole && !seededRoleApplied) {
+        try { sessionManager.clearRoleName(sessionId); } catch { /* ignore */ }
       }
 
       let attachedRunner: SessionRunnerInterface | null = null;
@@ -601,7 +635,13 @@ export async function registerRoutes(
       };
 
       // Report persisted values without buffering a selection that could become stale.
-      const sendSelectionChanged = (agentId: AgentId, notice?: string): void => {
+      const sendSelectionChanged = (
+        agentId: AgentId,
+        notice?: string,
+        // Distinguishes a clear ShipIt decided from one the user picked: only the
+        // latter is what the browser remembers for the next new session (req 12).
+        roleAutoCleared?: boolean,
+      ): void => {
         const session = activeAppSessionId ? sessionManager.get(activeAppSessionId) : undefined;
         if (!activeAppSessionId || !session) {
           if (notice) send({ type: "error", message: notice });
@@ -617,6 +657,7 @@ export async function registerRoutes(
           reasoningEffort: session.reasoningEffort ?? null,
           roleName: session.roleName ?? null,
           ...(notice ? { notice } : {}),
+          ...(roleAutoCleared ? { roleAutoCleared: true } : {}),
         });
       };
 
@@ -938,6 +979,14 @@ export async function registerRoutes(
       void activateSession(sessionId);
 
       if (seededRoleApplied) sendSelectionChanged(perConnectionAgentId);
+      else if (autoClearedRole) {
+        // A role that vanished with no word for it reads as a fault in ShipIt.
+        sendSelectionChanged(
+          perConnectionAgentId,
+          `The "${autoClearedRole}" role no longer names this session: its ${movedByReconciliation.join(" and ")} had to change.`,
+          true,
+        );
+      }
 
       send({
         type: "log_snapshot",

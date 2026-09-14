@@ -423,25 +423,57 @@ describe("the composer before a session is active (docs/272 reqs 5, 12)", () => 
     expect(screen.getByTestId("role-selector-trigger")).toHaveTextContent("deep dive");
   });
 
-  it("ignores the seed once a session IS active — the server is the only authority (req 13)", () => {
+  /*
+    The two states a live session can be in, and the composer must tell them
+    apart: a row that SAYS this session has no role, and no row at all.
 
-    // session would name a role that session never took.
+    The second is the first message of every new session. `hasActiveSession` flips
+    true while the session is still warm, and `SessionManager.list()` filters
+    `warm = 0` — so until the refresh that graduates it there is nothing to read,
+    and reading that silence as an answer blanked the pill for seconds.
+  */
+  const composer = () => (
+    <MessageInput
+      onSend={vi.fn().mockReturnValue(true)}
+      disabled={false}
+      agents={[claude]}
+      activeAgentId="claude"
+      onAgentChange={vi.fn()}
+      onModelChange={vi.fn()}
+      onReasoningChange={vi.fn()}
+      onRoleChange={vi.fn()}
+      hasActiveSession
+      sessionId={SESSION_ID}
+    />
+  );
+
+  it("ignores the seed once the session's row has answered (req 13)", () => {
+    // The seed is chosen for the NEXT session, so reading it for a live one
+    // would name a role that session never took.
     localStorage.setItem("shipit-role-name", "deep dive");
     setRoles([DEEP_DIVE]);
-    render(
-      <MessageInput
-        onSend={vi.fn().mockReturnValue(true)}
-        disabled={false}
-        agents={[claude]}
-        activeAgentId="claude"
-        onAgentChange={vi.fn()}
-        onModelChange={vi.fn()}
-        onReasoningChange={vi.fn()}
-        onRoleChange={vi.fn()}
-        hasActiveSession
-        sessionId={SESSION_ID}
-      />,
-    );
+    useSessionStore.setState({
+      sessionId: SESSION_ID,
+      sessions: [{ id: SESSION_ID, name: "s", agentId: "claude" }] as never,
+    });
+    render(composer());
+    expect(screen.getByTestId("role-selector-trigger").textContent).toBe("");
+  });
+
+  it("keeps naming the seed while the session has no row to answer with", () => {
+    localStorage.setItem("shipit-role-name", "deep dive");
+    setRoles([DEEP_DIVE]);
+    useSessionStore.setState({ sessionId: SESSION_ID, sessions: [] });
+    const { rerender } = render(composer());
+    expect(screen.getByTestId("role-selector-trigger")).toHaveTextContent("deep dive");
+
+    // And it yields the moment a row exists and says this session has no role.
+    act(() => {
+      useSessionStore.setState({
+        sessions: [{ id: SESSION_ID, name: "s", agentId: "claude" }] as never,
+      });
+    });
+    rerender(composer());
     expect(screen.getByTestId("role-selector-trigger").textContent).toBe("");
   });
 

@@ -105,6 +105,20 @@ describe("handleModelSelectionChanged", () => {
       expect(localStorage.getItem("shipit-role-name")).toBeNull();
     });
 
+    it("is left alone when SHIPIT dropped the role, not the user (req 12)", () => {
+      // A connect-time clear says a parameter of THIS session had to move. It
+      // says nothing about what the user wants to start their next session on,
+      // and writing it here took their default role away over one session's
+      // retired model — while still clearing the role from the row it names.
+      useSessionStore.setState({
+        sessions: [session({ roleName: "deep dive" }), session({ id: "s2" })],
+      });
+      handleModelSelectionChanged(ctx, message({ roleName: null, roleAutoCleared: true }));
+      expect(localStorage.getItem("shipit-role-name")).toBe("deep dive");
+      expect(useSessionStore.getState().sessions.find((s) => s.id === "s1")?.roleName)
+        .toBeUndefined();
+    });
+
     it("is left alone once the session has started", () => {
 
       useSessionStore.setState({ sessions: [session({ agentPinned: true }), session({ id: "s2" })] });
