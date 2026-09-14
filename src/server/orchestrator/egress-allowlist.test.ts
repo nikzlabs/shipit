@@ -65,6 +65,21 @@ describe("makeAllowlist", () => {
   });
 });
 
+/**
+ * Entries are EXACT unless they start with a dot, so the bare host does not
+ * cover a prefixed one — which is how account-mode Antigravity was left
+ * unreachable: the allowlist carried `cloudcode-pa.googleapis.com`, read from
+ * the binary's compiled hosts, and a real account turn (2026-09-14, 1.1.27)
+ * sent every `loadCodeAssist` and `streamGenerateContent` to
+ * `daily-cloudcode-pa.googleapis.com` instead.
+ */
+describe("the hosts an agent CLI must reach to run at all", () => {
+  it("allows the backend Antigravity's account mode was observed calling", () => {
+    const allow = makeAllowlist(EGRESS_DEFAULT_ALLOWLIST);
+    expect(allow.isAllowed("daily-cloudcode-pa.googleapis.com")).toBe(true);
+  });
+});
+
 describe("parseAllowlistEnv", () => {
   it("splits on commas and whitespace, trims, drops blanks", () => {
     expect(parseAllowlistEnv("a.com, b.com   c.com,,")).toEqual(["a.com", "b.com", "c.com"]);

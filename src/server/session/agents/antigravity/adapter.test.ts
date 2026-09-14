@@ -136,6 +136,18 @@ describe("AntigravityAdapter", () => {
     });
 
     /**
+     * Probed on 1.1.27: the CLI's tools ignore the process cwd and run under
+     * HOME — which the adapter sets to a throwaway /tmp directory — so without
+     * `--add-dir` a turn reads and writes an empty scratch home and the
+     * repository is never touched. `init.cwd` echoes the spawn cwd regardless.
+     */
+    it("names the repository as a workspace directory, not only as the spawn cwd", () => {
+      run();
+      expect(spawned[0].opts.cwd).toBe(cwd);
+      expect(spawned[0].args[spawned[0].args.indexOf("--add-dir") + 1]).toBe(cwd);
+    });
+
+    /**
      * Measured on a WRITABLE install so mode bits could not be doing the work:
      * `=true` keeps the pinned binary, `=1` lets the updater replace it with no
      * error anywhere. The read-only install cannot cover root, so this does.
@@ -268,6 +280,33 @@ describe("AntigravityAdapter", () => {
       expect(result.content[0].content).toBe("12 lines");
     });
 
+    /**
+     * A rejected tool argument ends the step at `ERROR`, never `DONE` — observed
+     * twice in the 1.1.27 tour captures. Without a result the card stays
+     * "running" for the rest of the session and the CLI's reason is never shown.
+     */
+    it("closes a failed tool step with its error text, not with silence", () => {
+      run();
+      feed([step({
+        step_index: 4, state: "ACTIVE", step_type: "tool", tool_name: "run_command",
+        tool_info: { name: "run_command", parameters: { CommandLine: "find / -name a.ts" } },
+      })]);
+      feed([step({
+        step_index: 4, state: "ERROR", step_type: "tool", tool_name: "run_command",
+        tool_info: {
+          name: "run_command",
+          error: { type: "TOOL_ERROR", message: "invalid arguments:\n- at '/WaitMsBeforeAsync': got string, want integer" },
+        },
+      })]);
+      const call = events[0] as { content: { id: string }[] };
+      const result = events[1] as unknown as {
+        content: { tool_use_id: string; content: string; is_error?: boolean }[];
+      };
+      expect(result.content[0].tool_use_id).toBe(call.content[0].id);
+      expect(result.content[0].content).toContain("WaitMsBeforeAsync");
+      expect(result.content[0].is_error).toBe(true);
+    });
+
     // Google's "subagents stopped due to server restart" notice opens every
     // resumed print turn and describes the spawn, not the turn.
     it("drops the resume notice and the textless error step", () => {
@@ -347,6 +386,56 @@ describe("AntigravityAdapter", () => {
         expect(result.status, name).toBe("success");
         expect(result.error, name).toBeUndefined();
       }
+    });
+
+    /**
+     * Replayed byte for byte from the 1.1.27 capture, with the exit code its
+     * `.meta` recorded. This is the failure-after-partial-output case the
+     * outcome rule is written for: the CLI produced two real paragraphs, then
+     * timed out, and said so ONLY in `result.error` — `stderr_bytes: 0`. Text
+     * before the failure must not make the turn a success.
+     */
+    it("replays a captured timeout as a failed turn that keeps its partial text", () => {
+      run();
+      proc.stdout.write(fs.readFileSync(path.join(PROBES, "partial-fail.ndjson"), "utf8"));
+      close(1);
+      const text = events
+        .filter((e): e is Extract<AgentEvent, { type: "agent_assistant" }> => e.type === "agent_assistant")
+        .flatMap((e) => e.content)
+        .filter((b): b is { type: "text"; text: string } => b.type === "text")
+        .map((b) => b.text)
+        .join("");
+      expect(text).toContain("token");
+      const result = events.at(-1) as { type: string; status: string; error?: string };
+      expect(result.type).toBe("agent_result");
+      expect(result.status).toBe("error");
+      expect(result.error).toContain("timeout waiting for response");
+    });
+
+    /**
+     * The tour capture behind the docs/272 run record, replayed so a CLI change
+     * that drops a step or renames a field fails here rather than in a session.
+     */
+    it("replays the captured tour into the transcript vocabulary the cards read", () => {
+      run();
+      proc.stdout.write(fs.readFileSync(path.join(PROBES, "tour2.ndjson"), "utf8"));
+      close(0);
+      const calls = events
+        .filter((e): e is Extract<AgentEvent, { type: "agent_assistant" }> => e.type === "agent_assistant")
+        .flatMap((e) => e.content)
+        .filter((b): b is { type: "tool_use"; id: string; name: string; input: Record<string, unknown> } =>
+          b.type === "tool_use");
+      expect(new Set(calls.map((c) => c.name)))
+        .toEqual(new Set(["Write", "Edit", "Read", "Bash", "Grep", "Glob"]));
+      expect(calls.find((c) => c.name === "Grep")?.input)
+        .toMatchObject({ pattern: "conversion-probe", path: expect.stringContaining("tour-repo") });
+      // Every call is answered: an unpaired id is a card that never stops spinning.
+      const answered = new Set(events
+        .filter((e): e is Extract<AgentEvent, { type: "agent_tool_result" }> => e.type === "agent_tool_result")
+        .flatMap((e) => e.content as { tool_use_id: string }[])
+        .map((b) => b.tool_use_id));
+      expect(calls.map((c) => c.id).filter((id) => !answered.has(id))).toEqual([]);
+      expect((events.at(-1) as { status: string }).status).toBe("success");
     });
 
     /**

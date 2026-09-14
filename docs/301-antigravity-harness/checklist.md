@@ -25,11 +25,13 @@ Antigravity-specific is in [plan.md](./plan.md).
       round's 1.2.2 and the pinned 1.1.27: `/compact` as a resumed headless
       turn's prompt reaches the model as text, no summary step — `false`,
       probed (`probes/compact-b.ndjson`, `probes/compact-1127.ndjson`)
-- [ ] `supportsReview` (item 15) NOT settled. The depth-0 probe needs a live
-      session on this harness with a credential that can fund a review turn;
-      only a free-tier key (5 req/min) was available. Declared `false` with a
-      **not-wired** basis rather than `true` unprobed; flipping it is one line
-      once the probe runs. Tracked on planning#543
+- [x] `supportsReview` (item 15) settled `true` by the REAL depth-0 probe on
+      1.1.27, once the key became billable (2026-09-14): the verbatim
+      `composeReviewMessage` run inside a ShipIt session container, the CLI
+      running `shipit agent run --role reviewer` itself, reading the markdown off
+      stdout and applying the fixes (`probes/review.ndjson`, 419 s, exit 0). The
+      duration half is measured separately — a 250 s `run_command` is
+      backgrounded and polled, never killed (`probes/longcmd.ndjson`)
 - [x] Every capability `false` (item 13) says WHY beside it (`harnesses.ts`)
 
 **1 — Types**
@@ -115,20 +117,41 @@ Antigravity-specific is in [plan.md](./plan.md).
       adapter test whose guards were each proved red by mutation
 
 **10 — Verify empirically**
-- [ ] One dogfood turn per auth mode (billing route), `shipit agent run` both
-      directions, and every declared capability flag confirmed against a real
-      session. Blocked on a credential: the saved `GEMINI_API_KEY` is
-      free-tier (5 req/min, zero quota on Pro)
-- [ ] Event-conversion verification: the docs/272 recipe
-      (`docs/272-harness-conversion-verification/verification-checklist.md`)
-- [ ] Two fixtures still to capture from a real session: a failure **after
-      partial output** (never observed; the outcome rule deliberately does not
-      assume text implies success), and a real account token file to replace
-      the reconstructed freshness fixture
+- [x] KEY mode verified on 2026-09-14 against the now-billable
+      `GEMINI_API_KEY`: real Pro turns through ShipIt's own adapter in the
+      dogfood, and `shipit agent run --role reviewer` driven BY the harness
+      (`probes/review.ndjson`). This is what found the `--add-dir` defect below
+- [x] ACCOUNT mode verified on 2026-09-14 after a real Google sign-in. Getting
+      there needed a fix of its own: the CLI starts an interactive login only
+      when stdin is a character device and ShipIt spawned it on a pipe, so no
+      sign-in could complete (`probes/signin-stdin-shape.md`). With the pty in
+      place the sign-in completed, and a turn on `route=account:<id>` read the
+      repository and answered — no key, credentials scrubbed. It found three
+      more defects, all fixed: the token file's real shape, the absent identity,
+      and the egress host (all below)
+- [ ] Event-conversion verification: the docs/272 recipe, run and recorded at
+      `docs/272-harness-conversion-verification/runs/2026-09-14-1050-antigravity-1.1.27.md`
+      — **PARTIAL**. Steps 1, 2, 3 and 5 in full; three defects found and fixed.
+      Three gaps left: the subagent surface has no observed driver (the model
+      answers the tour's step 7 with a shell command), Step 4's UI-snapshot and
+      reload half was not taken, and no run exercised ACCOUNT mode
+- [x] The failure **after partial output** fixture captured
+      (`probes/partial-fail.ndjson`): exit 1, `result.status: "ERROR"`, empty
+      stderr, after a complete `agent_response` step
+- [x] The freshness fixture is now a REAL capture, and it corrected the reader:
+      a sign-in writes `{auth_method, token:{…}}`, so the credential fields sit
+      one level down. Read at the top level, freshness was `null` for every real
+      token — `token-freshness=unorderable outcome=stranded-rotation`, so a
+      refreshed token was never published back. The reconstructed fixture was
+      flat and carried an `id_token`, which is why the pre-existing guard
+      (`token-freshness-guard.test.ts`, planning#449) could not fail
+- [x] Account identity is honestly ABSENT: a `consumer` sign-in's token has no
+      `id_token` at all — only an opaque `access_token`, a `refresh_token`,
+      `token_type` and `expiry` — so no email or external id can be shown. The
+      reader still handles a nested `id_token` for a method not yet seen
 
 ## Still open
 
-- **`supportsReview`** — see Phase 0 above.
 - **Concurrent spawns share one durable directory.** Two Antigravity runs
   against the same session's credential subtree — a key-mode and an account-mode
   consult, or local mode — can change each other's credentials and
@@ -136,10 +159,15 @@ Antigravity-specific is in [plan.md](./plan.md).
   per-spawn HOME isolates `config/` and deliberately not the durable directory,
   which is where the token and conversations live; the cause is ShipIt's
   cross-harness BORROW path, which provisions one subtree per session without
-  serializing runs or reference-counting cleanup. The settings write is atomic,
-  which stops a torn read and fixes nothing else. This is not Antigravity-specific
-  and is not fixed here.
-- **The account-mode host is inferred, not observed.** The egress allowlist
-  gains `cloudcode-pa.googleapis.com` from the pinned binary's compiled host
-  list, because no signed-in account was available to watch. Re-measure on the
-  first real account turn and correct the entry if it is wrong.
+  serializing the runs. PR #2772 fixed the cleanup half — the ledger now tracks
+  the spawns holding a subtree, so an earlier release no longer wipes a consult
+  still running — and the OVERWRITE half is untouched: a second borrow still
+  replaces the first's credentials while it runs. The settings write is atomic,
+  which stops a torn read and fixes nothing else. This is not Antigravity-specific.
+- ~~**The account-mode host is inferred, not observed.**~~ **Measured 2026-09-14
+  and it WAS wrong.** A real account turn sent every `loadCodeAssist` and
+  `streamGenerateContent` to `daily-cloudcode-pa.googleapis.com`; the bare
+  `cloudcode-pa.googleapis.com` the binary's compiled hosts named appeared
+  nowhere. Allowlist entries are exact unless they start with a dot, so the bare
+  entry did not cover it and account mode would have been blocked wherever
+  egress is enforced. Both are now listed.

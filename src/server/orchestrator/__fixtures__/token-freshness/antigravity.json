@@ -1,8 +1,9 @@
 {
-  "access_token": "ya29.REDACTED-FIXTURE-ACCESS-TOKEN",
-  "token_type": "Bearer",
-  "refresh_token": "1//REDACTED-FIXTURE-REFRESH-TOKEN",
-  "expiry": "2026-09-13T17:00:00.482173911Z",
-  "id_token": "eyJhbGciOiJSUzI1NiIsImtpZCI6IlJFREFDVEVEIiwidHlwIjoiSldUIn0.eyJpc3MiOiJodHRwczovL2FjY291bnRzLmdvb2dsZS5jb20iLCJhenAiOiJSRURBQ1RFRC5hcHBzLmdvb2dsZXVzZXJjb250ZW50LmNvbSIsImF1ZCI6IlJFREFDVEVELmFwcHMuZ29vZ2xldXNlcmNvbnRlbnQuY29tIiwic3ViIjoiMTA0OTM4MjcxNjUwMjg0OTE3MzY1IiwiZW1haWwiOiJzb21lb25lQGV4YW1wbGUuY29tIiwiZW1haWxfdmVyaWZpZWQiOnRydWUsImlhdCI6MTc4OTA1NjAwMCwiZXhwIjoxNzg5MDU5NjAwfQ.REDACTED-SIGNATURE gitleaks:allow",
-  "auth_method": "oauth"
+  "auth_method": "consumer",
+  "token": {
+    "access_token": "ya29.REDACTED-FIXTURE-ACCESS-TOKEN",
+    "token_type": "Bearer",
+    "refresh_token": "1//REDACTED-FIXTURE-REFRESH-TOKEN",
+    "expiry": "2026-09-14T13:45:34.180907488Z"
+  }
 }

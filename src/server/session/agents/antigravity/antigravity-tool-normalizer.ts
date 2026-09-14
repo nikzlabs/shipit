@@ -46,8 +46,12 @@ const INPUT_KEY_RENAMES: Record<string, string> = {
   AbsolutePath: "file_path",
   TargetFile: "file_path",
   SearchDirectory: "path",
+  // grep_search spells its root SearchPath, find_by_name spells its glob Pattern
+  // — both observed on 1.1.27, and each is the one field its card is about.
+  SearchPath: "path",
   DirectoryPath: "path",
   Query: "pattern",
+  Pattern: "pattern",
   SearchTerm: "pattern",
   CommandLine: "command",
   Command: "command",

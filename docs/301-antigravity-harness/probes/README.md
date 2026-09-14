@@ -100,3 +100,78 @@ sends 11 with no MCP server configured at all, so they cannot reduce it.
 `define_subagent` schema, for subagents the agent spawns at runtime, and the
 binary's own text puts a floor under even those: "all subagents have read tools
 to research the codebase, and tools to communicate with other agents".
+
+## 2026-09-14 — the billable-key runs (1.1.27, `gemini-3.1-pro`, effort `high`)
+
+Every capture above was made on a free-tier key, which has **zero** quota on Pro
+and 5 requests/minute on flash. On 2026-09-14 the key became billable
+(`serviceTier: "standard"` on `gemini-3.1-pro-preview`), so the four items that
+were blocked on a credential were measured. `review-probe.sh` is the runner — it
+reproduces ShipIt's exact spawn argv and takes the prompt on stdin as a
+`stream-json` user frame, the way the adapter does.
+
+Each capture has a `.meta` beside it recording the CLI version, model, exit code,
+wall time and stderr size. Those are process-local facts the stream cannot carry,
+and they are exactly what the adapter's outcome rule turns on — a capture without
+them cannot show whether its turn succeeded.
+
+- **`review.ndjson` — `supportsReview`, item 15, settled `true`.** The docs/266
+  depth-0 probe, run inside a real ShipIt session container so `shipit agent run`
+  is genuinely brokered and the caller-depth guard sees depth 0. The prompt is
+  `review-message.txt`, the verbatim output of
+  `composeReviewMessage("rate-limit.ts", { mode: "role" })`. The CLI composed the
+  heredoc itself, ran `shipit agent run --role reviewer --prompt-file -` (twice —
+  the first attempt gave a relative path the reviewer could not resolve), polled
+  the backgrounded command with `manage_task {Action: "status"}`, read the
+  reviewer's markdown off stdout, and then applied the fixes. One turn, 419 s,
+  exit 0, no MCP tool. That is the whole composed flow, including
+  `parentFollowUp()`.
+
+- **`tour-no-add-dir.ndjson` vs `tour2.ndjson` — the workspace-root defect.**
+  The same docs/272 tour prompt (`tour-prompt.txt`), spawned the same way, the
+  only difference being `--add-dir`. Without it every file tool addressed
+  `$HOME`: `view_file` on the repo's `package.json` ended `ERROR` because the CLI
+  looked under the home, `grep_search` and `find_by_name` took the home as their
+  search root, and `probe-note.md` was written into the home. With it, all of
+  them address the repository. `pwd-probe.ndjson` and `adddir.ndjson` are the
+  minimal pair behind that: `run_command`'s own `pwd` prints `$HOME` without
+  `--add-dir` and the repository with it. `init.cwd` echoes the spawn cwd in
+  **all four**, so nothing in the stream distinguishes the two states — only the
+  tool arguments do.
+
+- **`partial-fail.ndjson` — a failure AFTER partial output**, the fixture
+  docs/301's checklist listed as never observed. Forced with `--print-timeout
+  45s` against a turn told to `sleep 400`. The capture holds a complete
+  `agent_response` step (two real paragraphs), then an `ACTIVE` `run_command`
+  with no terminal event, then `result` with `status: "ERROR"` and
+  `error: "timeout waiting for response"`; the process exits **1** and stderr is
+  **empty**. It confirms the adapter's outcome rule from the other side: text
+  never implies success, and under `--output-format stream-json` there is nothing
+  on stderr to read.
+
+- **`state: "ERROR"` is a real terminal tool state.** It appears in two of the
+  runs above, on two different tools and with two different messages — a
+  `run_command` whose arguments the CLI rejects
+  (`invalid arguments: at '/WaitMsBeforeAsync': got string, want integer`,
+  `review.ndjson`) and a `view_file` the permission layer refuses to convert
+  (`tour-no-add-dir.ndjson`) — so it is not one tool's quirk. Such a step ends at
+  `ERROR` with `tool_info.error` and never at `DONE`. None of the 1.2.2 captures
+  contained a failed tool, which is why the stream types declared only
+  `ACTIVE | DONE`.
+
+- **`longcmd.ndjson` — the shell tool's timeout behaviour**, which item 15 says
+  to check rather than assume. A `run_command` told to run for 250 s is
+  **backgrounded**, not killed: `manage_task {Action: "list"}` reports it as a
+  running background task, `{Action: "status"}` reads its log while it runs, and
+  the step still ends `DONE` carrying the command's real stdout
+  (`LONGCMD-NONCE-7731-COMPLETE`). Turn total 272 s, exit 0. This is the
+  property a review depends on — a real review turn took 240 s on the harnesses
+  probed for docs/266 — and it is measured here rather than inferred from
+  `--print-timeout`.
+
+- **`resume-add-dir-a.ndjson` / `resume-add-dir-b.ndjson` — `--add-dir` on a
+  resumed turn.** The flag is passed on every spawn, including the
+  `--conversation <id>` resumes, so the pair checks that a resumed conversation
+  does not carry a stale workspace of its own: `pwd` returns the repository on
+  the first turn and on the resume, and `ls -1` on the resume lists the
+  repository's files.

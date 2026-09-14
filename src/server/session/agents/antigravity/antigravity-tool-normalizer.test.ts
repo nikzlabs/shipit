@@ -25,6 +25,20 @@ describe("the Antigravity tool vocabulary", () => {
     })).toEqual({ name: "Write", input: { file_path: "/workspace/a.ts", content: "export const a = 1;" } });
   });
 
+  /**
+   * The two search tools spell their fields differently from each other, and the
+   * first tour capture on 1.1.27 caught both: a Grep card whose path was dropped
+   * and a Glob card with no pattern at all — the one thing each card is about.
+   */
+  it("renames the search fields each search tool actually sends", () => {
+    expect(normalizeAntigravityToolCall("grep_search", {
+      Query: "conversion-probe", SearchPath: "/workspace",
+    })).toEqual({ name: "Grep", input: { pattern: "conversion-probe", path: "/workspace" } });
+    expect(normalizeAntigravityToolCall("find_by_name", {
+      Pattern: "package.json", SearchDirectory: "/workspace",
+    })).toEqual({ name: "Glob", input: { pattern: "package.json", path: "/workspace" } });
+  });
+
   it("carries an edit's before and after text, so the diff renders", () => {
     expect(normalizeAntigravityToolCall("replace_file_content", {
       AbsolutePath: "/workspace/a.ts", TargetContent: "old", ReplacementContent: "new",

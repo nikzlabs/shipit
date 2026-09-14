@@ -22,7 +22,8 @@ export type AntigravityStepType =
 export interface AntigravityStepUpdate {
   conversation_id?: string;
   step_index?: number;
-  state?: "ACTIVE" | "DONE";
+  /** `ERROR` is terminal like `DONE`, and carries `tool_info.error` in place of `output`. */
+  state?: "ACTIVE" | "DONE" | "ERROR";
   step_type?: AntigravityStepType;
   text_delta?: string;
   tool_name?: string;
@@ -30,6 +31,7 @@ export interface AntigravityStepUpdate {
     name?: string;
     parameters?: Record<string, unknown>;
     output?: string;
+    error?: { type?: string; message?: string };
   };
   usage?: AntigravityUsage;
   duration_seconds?: number;

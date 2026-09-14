@@ -1,8 +1,6 @@
 import { EventEmitter } from "node:events";
-import { spawn } from "node:child_process";
-import type { ChildProcess } from "node:child_process";
+import * as pty from "node-pty";
 import { existsSync, readFileSync, statSync } from "node:fs";
-import { killChild } from "../../../shared/kill-child.js";
 import { scrubHarnessEnvCredentials } from "../../../shared/spawn-routing.js";
 import {
   ANTIGRAVITY_SPAWN_ENV,
@@ -25,8 +23,8 @@ const DEFAULT_HOME = "/root";
 
 /**
  * The CLI has no `login` subcommand: sign-in happens inside a print run, which
- * puts the Google URL on stderr and then reads the authorization code from plain
- * stdin. The window is the CLI's own 60 seconds and ShipIt cannot extend it, so
+ * puts the Google URL on the terminal and then reads the authorization code
+ * back from it. The window is the CLI's own 60 seconds and ShipIt cannot extend it, so
  * this timeout only bounds a process that never printed anything.
  */
 const SIGN_IN_TIMEOUT_MS = 3 * 60 * 1000;
@@ -34,7 +32,7 @@ const SIGN_IN_TIMEOUT_MS = 3 * 60 * 1000;
 /** The prompt is irrelevant; the run exists to carry the OAuth exchange. */
 const SIGN_IN_PROMPT = "Reply with the single word pong.";
 
-// The CLI prints its sign-in link on stderr; match either host it can use.
+// Match either host the sign-in link can use.
 export const GOOGLE_AUTH_URL_PATTERN = /https:\/\/(?:accounts\.google\.com|antigravity\.google)\/[^\s"']+/;
 
 /** The same URL, but only once something after it proves it is complete. */
@@ -76,8 +74,23 @@ function jwtPayload(jwt: unknown): Record<string, unknown> | null {
   }
 }
 
+/**
+ * A real sign-in writes `{auth_method, token: {…}}` — the credential fields sit
+ * one level down, under `token` (captured 2026-09-14 from a `consumer`
+ * sign-in). Reading only the top level made freshness `null` for every real
+ * token, so nothing about an Antigravity credential was ever orderable and a
+ * refreshed one could not be recognized as newer and synced back.
+ */
+function credentialFields(obj: Record<string, unknown>): Record<string, unknown> {
+  const nested = obj.token;
+  return nested && typeof nested === "object" && !Array.isArray(nested)
+    ? (nested as Record<string, unknown>)
+    : obj;
+}
+
 /** `expiry` is ISO-8601; the id/access token's JWT `exp` is the fallback. */
-export function readAntigravityTokenFreshness(obj: Record<string, unknown>): number | null {
+export function readAntigravityTokenFreshness(raw: Record<string, unknown>): number | null {
+  const obj = credentialFields(raw);
   const iso = obj.expiry ?? obj.expires_at ?? obj.expiresAt;
   if (typeof iso === "string") {
     const at = Date.parse(iso);
@@ -103,10 +116,19 @@ export function readAntigravityTokenFreshnessFile(file: string): number | null {
   }
 }
 
-/** The preview is free, so the row carries no plan name (docs/274 honest absence). */
+/**
+ * The preview is free, so the row carries no plan name (docs/274 honest absence)
+ * — and a `consumer` sign-in carries no identity either: the captured file holds
+ * only `access_token` (opaque, not a JWT), `refresh_token`, `token_type` and
+ * `expiry`, with no `id_token` to name the account. So this returns null for the
+ * one auth method that has been observed, and the account row shows no email.
+ * Kept because the reader is right for a file that does carry one, and a
+ * business sign-in has not been seen.
+ */
 export function extractAntigravityIdentity(
-  obj: Record<string, unknown>,
+  raw: Record<string, unknown>,
 ): { externalId: string; email?: string } | null {
+  const obj = credentialFields(raw);
   const payload = jwtPayload(obj.id_token);
   const sub = payload?.sub;
   if (typeof sub !== "string" || sub.length === 0) return null;
@@ -114,15 +136,36 @@ export function extractAntigravityIdentity(
   return { externalId: sub, ...(typeof email === "string" && email.length > 0 ? { email } : {}) };
 }
 
+/**
+ * The sign-in runs on a PTY, and that is not cosmetic: the CLI decides whether
+ * it may start an interactive login by asking whether stdin is a CHARACTER
+ * DEVICE, not whether a real terminal exists. On a pipe it logs
+ * `not logged in and no controlling terminal` and exits with
+ * `Error: authentication required. Run 'antigravity' to log in, then retry.`
+ * — and a pipe is exactly what ShipIt must use to deliver the pasted code, so
+ * the flow could never complete. Measured on 1.1.27 by varying stdin alone
+ * (docs/301-antigravity-harness/probes/signin-stdin-shape.md). The Claude
+ * manager spawns on a pty for the same family of reasons.
+ */
+export interface SignInProcess {
+  onData: (cb: (data: string) => void) => void;
+  /** `signal` is load-bearing: node-pty reports SIGTERM as `exitCode: 0`. */
+  onExit: (cb: (e: { exitCode: number; signal?: number }) => void) => void;
+  write: (data: string) => void;
+  kill: () => void;
+}
+
 export type SpawnFn = (
   command: string,
   args: readonly string[],
-  options: Parameters<typeof spawn>[2],
-) => ChildProcess;
+  options: { name: string; cols: number; rows: number; env: Record<string, string> },
+) => SignInProcess;
 
 export interface AntigravityAuthManagerOptions {
   spawn?: SpawnFn;
   timeoutMs?: number;
+  /** Overridden only so a test can drive the REAL spawn against a stub CLI. */
+  command?: string;
 }
 
 export class AntigravityAuthManager
@@ -131,10 +174,10 @@ export class AntigravityAuthManager
 {
   readonly loginId: LoginIntegrationId = "google-antigravity-oauth";
 
-  private proc: ChildProcess | null = null;
+  private proc: SignInProcess | null = null;
   private timeoutHandle: ReturnType<typeof setTimeout> | null = null;
   private stderrBuffer = "";
-  /** stdout and stderr combined: the link can arrive on either, in any chunking. */
+  /** The pty's combined output: the link arrives in arbitrary chunking. */
   private outputBuffer = "";
   private lastPendingDetails: AgentAuthPendingDetails | null = null;
   private activeCredentialDir: string | null = null;
@@ -142,11 +185,13 @@ export class AntigravityAuthManager
   private terminalEmitted = false;
   private readonly spawnFn: SpawnFn;
   private readonly timeoutMs: number;
+  private readonly command: string;
 
   constructor(opts: AntigravityAuthManagerOptions = {}) {
     super();
-    this.spawnFn = opts.spawn ?? spawn;
+    this.spawnFn = opts.spawn ?? ((cmd, args, o) => pty.spawn(cmd, [...args], o));
     this.timeoutMs = opts.timeoutMs ?? SIGN_IN_TIMEOUT_MS;
+    this.command = opts.command ?? "antigravity";
   }
 
   private homeFor(dir?: string | null): string {
@@ -195,12 +240,12 @@ export class AntigravityAuthManager
     // An ambient GEMINI_API_KEY (or ADC) would authenticate the run instead.
     scrubHarnessEnvCredentials(env, "antigravity");
 
-    let proc: ChildProcess;
+    let proc: SignInProcess;
     try {
       proc = this.spawnFn(
-        "antigravity",
+        this.command,
         ["-p", SIGN_IN_PROMPT, "--output-format", "text", "--dangerously-skip-permissions"],
-        { env, stdio: ["pipe", "pipe", "pipe"] },
+        { name: "xterm-color", cols: 80, rows: 40, env },
       );
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -210,26 +255,23 @@ export class AntigravityAuthManager
     }
 
     this.proc = proc;
-    // The CLI reads the code within 60 seconds and then closes stdin; a write
-    // after that raises EPIPE asynchronously, which is fatal if unhandled.
-    proc.stdin?.on("error", (err: Error) => {
-      console.warn(`[antigravity-auth] the CLI stopped reading the authorization code: ${err.message}`);
-    });
-    proc.stdout?.on("data", (chunk: Buffer) => { this.handleOutput(chunk.toString("utf-8")); });
-    proc.stderr?.on("data", (chunk: Buffer) => {
-      const text = chunk.toString("utf-8");
-      this.stderrBuffer += text;
-      this.handleOutput(text);
+    // A pty merges the two streams, so this buffer is also what req 4's error
+    // sentence is read from.
+    proc.onData((chunk) => {
+      this.stderrBuffer += chunk;
+      this.handleOutput(chunk);
     });
 
-    proc.on("error", (err: Error) => { this.fail("error", err.message); });
-
-    proc.on("close", (code) => {
+    proc.onExit(({ exitCode, signal }) => {
       if (this.proc !== proc) return;
       this.proc = null;
       this.lastPendingDetails = null;
       this.clearTimeout();
-      if (code === 0 && tokenExistsAt(home)) {
+      // A killed run is never a success. node-pty reports SIGTERM as
+      // `exitCode: 0`, so cancelling a flow that found an OLD token on disk
+      // would otherwise announce a sign-in that never happened — the child
+      // process path this replaced reported a null code and could not.
+      if (exitCode === 0 && signal === undefined && tokenExistsAt(home)) {
         if (!this.claimTerminal()) return;
         this.emit("complete");
         this.clearActiveScope();
@@ -237,10 +279,7 @@ export class AntigravityAuthManager
       }
       // req 4 — Google's own sentence, not ShipIt's generic copy. The
       // eligibility refusal is the case this exists for.
-      const message = antigravityStderrErrorText(this.stderrBuffer)
-        ?? (this.lastPendingDetails
-          ? "Sign-in did not complete. The CLI reads the authorization code within 60 seconds of printing the link — start again and paste it promptly."
-          : `The Antigravity CLI exited with code ${String(code)} without starting a sign-in.`);
+      const message = antigravityStderrErrorText(this.stderrBuffer) ?? this.exitMessage(exitCode, signal);
       this.fail("error", message);
     });
 
@@ -268,13 +307,24 @@ export class AntigravityAuthManager
     this.emit("pending", details);
   }
 
+  private exitMessage(exitCode: number, signal?: number): string {
+    if (signal !== undefined) return `The Antigravity sign-in was stopped (signal ${String(signal)}).`;
+    if (this.lastPendingDetails) {
+      return "Sign-in did not complete. The CLI reads the authorization code within 60 seconds of"
+        + " printing the link — start again and paste it promptly.";
+    }
+    return `The Antigravity CLI exited with code ${String(exitCode)} without starting a sign-in.`;
+  }
+
   submitCode(code: string): void {
-    if (!this.proc?.stdin) {
+    if (!this.proc) {
       console.warn("[antigravity-auth] submitCode with no sign-in process; the code was dropped");
       return;
     }
     try {
-      this.proc.stdin.write(`${code.trim()}\n`);
+      // What a terminal sends when the user presses Enter; the line discipline
+      // maps it to a newline, so the CLI reads one submitted line.
+      this.proc.write(`${code.trim()}\r`);
     } catch (err) {
       console.warn(`[antigravity-auth] could not deliver the authorization code: ${String(err)}`);
     }
@@ -296,7 +346,7 @@ export class AntigravityAuthManager
     const proc = this.proc;
     this.proc = null;
     this.lastPendingDetails = null;
-    if (proc) killChild(proc, "SIGTERM");
+    if (proc) proc.kill();
   }
 
   private claimTerminal(): boolean {
