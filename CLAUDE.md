@@ -57,13 +57,17 @@ npm install
 
 - **`npm run test:dev`** — **dev default.** Only tests affected by uncommitted, staged, and untracked (newly created) changes + smoke tests (`-- --list` to dry-run). Use while iterating.
 - `npm run test:smoke` — smoke tests only (core connectivity, HTTP bootstrap, git, one client component).
-- `npm test` — full suite. Sparingly — CI runs it on every PR; run locally only if you suspect wide breakage. Single file: `npx vitest run <file>.test.ts`.
+- `npm test` — full suite. **The exception, not the habit** — CI runs it on every PR; the paragraph below this list says when it is warranted. Targeted run: `npx vitest run <file>.test.ts`.
 - **`npm run lint:dev`** — **dev default.** ESLint over files changed vs `origin/main` + uncommitted + untracked (newly created) (`-- --list` to dry-run). The full lint loads all ~700 TS files (~50 s, ~2.85 GiB); CI runs it, so this is the inner loop.
 - `npm run lint` — full ESLint on `src/` (cached; warm re-run near-instant). Sparingly — when you suspect a cross-file rule (e.g. `no-deprecated`) tripped elsewhere.
 - `npm run typecheck` — `tsc --noEmit`, incremental (warm ~5 s). Whole-project by design, no per-file variant.
 - `npm run build` — Vite client build. (`npm run dev` is the Vite/tsx dev server, but **don't start it in bash to preview** — ShipIt serves the preview via the `dev` Compose service in `docker-compose.yml`, which runs `npm run dev` itself; see [Dogfooding ShipIt in ShipIt](#dogfooding-shipit-in-shipit). A bash-started server is also reaped when the container goes idle.)
 
-Session containers are sized from host capacity (docs/229), so `npm test` and the integration tests **can** run in-box. Still prefer the fast loop (typecheck, `lint:dev`, affected co-located tests); reach for the full suite on suspected wide breakage. A genuine OOM means the host is undersized — raise `DEFAULT_SESSION_MEMORY_MB` rather than concluding the suite can't run locally.
+Session containers are sized from host capacity (docs/229), so `npm test` and the integration tests **can** run in-box — but "can" is not "should". A full run holds a pool of workers for minutes (`vitest.config.ts` caps it at 8 on a host with more cores than that, because an uncapped pool sizes itself from the container's visible cores). Many sessions share one host with the orchestrator, whose single main thread is what serves the UI: three concurrent full runs on a 16-core host pushed load to ~75 and made static `GET /` take 12–14 s, which every user of the instance saw as "Reconnecting to server".
+
+So **run the affected tests, not the suite**: `npm run test:dev`, or `npx vitest run <files>` for a target you already know. The full suite is for CI, the release gate, an explicit request from the user, or a change you have reason to believe is wide — a shared type, a manager used everywhere, a new required field on an interface test fakes implement. "I'm about to call this done" is not one of those reasons.
+
+A genuine OOM means the host is undersized — raise `DEFAULT_SESSION_MEMORY_MB` rather than concluding the suite can't run locally.
 
 **Always kill child processes via `killChild()` (`shared/kill-child.ts`), never `child.kill()`** — on a spawn that never exec'd, `child.kill()` signals an arbitrary unrelated pid (full mechanism: that file's docstring). **An agent CLI takes `killProcessTree()` instead**, from the same file: it is the root of a tree (MCP servers, and a Playwright browser under those), and a pid-only kill leaves that tree running on pid 1 for the container's lifetime — docs/289-agent-process-tree-teardown. Diagnose before naming an OOM: a suite dying part-way at exit **143** is that friendly fire, not memory; a real OOM is exit **137** and is recorded at `/sys/fs/cgroup/memory.events` → `oom_kill`.
 
