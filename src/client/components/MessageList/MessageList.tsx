@@ -399,9 +399,16 @@ export function MessageList({
   return (
     <ShipitPointerSessionProvider value={deferred.sessionId ?? null}>
     <RowHandlersProvider value={rowHandlers}>
+    {/* `tabIndex` makes the transcript the focus target for a click on message
+        text, which is otherwise not focusable and leaves focus on `<body>` —
+        indistinguishable from a click on any other panel. `useChatSearchHotkey`
+        reads the marker to take Ctrl+F here and nowhere else; -1 keeps the
+        transcript out of the tab order, so the click is the only way in. */}
     <div
       ref={containerRef}
-      className="flex-1 min-h-0 overflow-y-auto px-3 sm:px-6 py-3 sm:py-4"
+      data-chat-transcript=""
+      tabIndex={-1}
+      className="flex-1 min-h-0 overflow-y-auto px-3 sm:px-6 py-3 sm:py-4 focus:outline-none"
     >
     {/* The messages live in their own element rather than directly in the
         scroll container, so that one ResizeObserver on it reports every change

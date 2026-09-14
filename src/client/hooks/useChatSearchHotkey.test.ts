@@ -17,6 +17,17 @@ function chatInput(): HTMLTextAreaElement {
   return el;
 }
 
+/** The scroll container `MessageList` marks, with one message bubble in it. */
+function transcript(): { root: HTMLElement; bubble: HTMLElement } {
+  const root = document.createElement("div");
+  root.setAttribute("data-chat-transcript", "");
+  root.tabIndex = -1;
+  const bubble = document.createElement("div");
+  root.appendChild(bubble);
+  document.body.appendChild(root);
+  return { root, bubble };
+}
+
 describe("useChatSearchHotkey", () => {
   it("opens chat search and takes the key from the browser when the composer is focused", () => {
     const onOpen = vi.fn();
@@ -39,6 +50,33 @@ describe("useChatSearchHotkey", () => {
 
     expect(onOpen).toHaveBeenCalledTimes(1);
     el.remove();
+  });
+
+  it("opens chat search when the reader is in the transcript, not the composer", () => {
+    const onOpen = vi.fn();
+    renderHook(() => useChatSearchHotkey(onOpen));
+    const { root, bubble } = transcript();
+    root.focus();
+
+    const e = pressFindIn(bubble);
+
+    expect(onOpen).toHaveBeenCalledTimes(1);
+    expect(e.defaultPrevented).toBe(true);
+    root.remove();
+  });
+
+  it("leaves the key to the browser's own Find when focus is on the page body", () => {
+    const onOpen = vi.fn();
+    renderHook(() => useChatSearchHotkey(onOpen));
+    // What a click on the sidebar, a tab or the preview leaves behind. The
+    // transcript is on the page — being open is not being focused.
+    const { root } = transcript();
+
+    const e = pressFindIn(document.body);
+
+    expect(onOpen).not.toHaveBeenCalled();
+    expect(e.defaultPrevented).toBe(false);
+    root.remove();
   });
 
   it("leaves the key to the browser's own Find outside the composer", () => {
