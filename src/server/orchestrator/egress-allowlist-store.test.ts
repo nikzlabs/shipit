@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { DatabaseManager } from "../shared/database.js";
 import { EgressAllowlistStore, EGRESS_GLOBAL_SCOPE } from "./egress-allowlist-store.js";
+import { normalizeHost } from "./egress-allowlist.js";
 
 describe("EgressAllowlistStore", () => {
   let dbManager: DatabaseManager;
@@ -29,6 +30,19 @@ describe("EgressAllowlistStore", () => {
       store.addHost(EGRESS_GLOBAL_SCOPE, "API.Example.Com.");
       store.addHost(EGRESS_GLOBAL_SCOPE, ".Sub.Example.com");
       expect(store.listHosts(EGRESS_GLOBAL_SCOPE)).toEqual(["api.example.com", ".sub.example.com"]);
+    });
+
+    it("stores a host the settings read can address back, however many trailing dots it had", () => {
+      // The settings read normalizes the stored row AGAIN on the way out
+      // (`buildEffectiveAllowlist`), so a stripping pass that is not idempotent
+      // advertises an address this store no longer holds
+      // (docs/299-agent-settings-access req 1).
+      store.addHost(EGRESS_GLOBAL_SCOPE, "review-example.test..");
+      const [stored] = store.listHosts(EGRESS_GLOBAL_SCOPE);
+
+      expect(stored).toBe(normalizeHost(stored!));
+      expect(store.removeHost(EGRESS_GLOBAL_SCOPE, stored!)).toBe(true);
+      expect(store.listHosts(EGRESS_GLOBAL_SCOPE)).toEqual([]);
     });
 
     it("is idempotent — re-adding a host returns false and does not duplicate", () => {

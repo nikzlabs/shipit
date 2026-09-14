@@ -1,6 +1,6 @@
 import { allServices } from "../../shared/catalogue/index.js";
 import { substituteMcpPlaceholders } from "../../shared/mcp-placeholders.js";
-import { collectMcpAgentEnv } from "../secret-resolver.js";
+import { selectAgentEnvForPush } from "../session-agent-env.js";
 import { buildEffectiveAllowlist } from "../egress-allowlist.js";
 import { EGRESS_GLOBAL_SCOPE } from "../egress-allowlist-store.js";
 import { keyRequiringProviders } from "../../shared/voice-catalog.js";
@@ -418,17 +418,25 @@ const ARGUMENTS = { one: "argument", many: "arguments" };
  *
  * **Three fields carry references, not two.** `resolveMcpServer` substitutes a
  * stdio server's `args` and `env` and an HTTP one's `headers`
- * (`session/mcp-resolve.ts:30`, `:31`, `:37`) — a provider's token is routinely
- * passed as an argument, which is why `mcp.servers[].args` is a `secretBag` in
- * the first place. `command`, `url` and `npmPackage` are NOT substituted, so a
- * reference written into one of them is literal text and blocks nothing.
+ * (`session/mcp-resolve.ts:30`, `:31`, `:37`); `command`, `url` and `npmPackage`
+ * are not, so a reference in one of them is literal text and blocks nothing.
+ *
+ * **And the environment has to be the one the WORKER resolves against.** It
+ * writes the whole pushed set into its `process.env` (`session-worker.ts:283`)
+ * and `resolveMcpServer` defaults to that, so checking only the `mcp__*` keys
+ * calls a server blocked that starts perfectly well. One gap is left: with a
+ * ServiceManager the pushed set is the Compose secrets snapshot, which this read
+ * has no handle on, so a reference to a project secret still reads as missing.
  */
 function mcpReferences(
   ctx: StoreReadContext,
   field: McpReferringField | null,
 ): { raw: unknown; notes: string[] } {
   if (!field || field.values.length === 0) return { raw: null, notes: [] };
-  const env = ctx.deps.credentialStore ? collectMcpAgentEnv(ctx.deps.credentialStore) : {};
+  const credentialStore = ctx.deps.credentialStore;
+  const env = credentialStore
+    ? selectAgentEnvForPush({ serviceManager: null, credentialStore })
+    : {};
   const unresolved = field.values.filter((value) => {
     const missing: string[] = [];
     substituteMcpPlaceholders(value, env, missing);

@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { CredentialStore } from "../credential-store.js";
+import { providerSpeeds, providerVoices, ttsProviders } from "../../shared/voice-catalog.js";
 import { addMcpServer } from "./mcp.js";
 import { writeGlobalSystemPrompt } from "../global-system-prompt.js";
 import {
@@ -575,17 +576,26 @@ describe("getSettingForAgent", () => {
       expect(options.map((o) => o.value)).toContain("ja");
     });
 
-    it("resolves a provider-dependent option set live, per provider", async () => {
-      const entry = await getSettingForAgent(deps(), "s1", "voice.ttsVoice");
-      const live = entry.live as {
-        providers: { providerId: string; voices: unknown[]; speeds: number[] }[];
-      };
-      expect(live.providers.length).toBeGreaterThan(0);
-      expect(live.providers.every((p) => p.voices.length > 0)).toBe(true);
-      // The speeds too, because the declaration holds ONE pair of bounds while
-      // each provider offers its own set.
-      const speeds = await getSettingForAgent(deps(), "s1", "voice.ttsSpeed");
-      expect((speeds.live as typeof live).providers.every((p) => p.speeds.length > 0)).toBe(true);
+    it("resolves each provider's OWN voices and speeds, not one provider's for all", async () => {
+      // Asserted against the catalogue helpers rather than against named voices,
+      // which move — but per provider, so handing every provider the first one's
+      // list (or an empty list, which `.every` would wave through) fails.
+      const expected = ttsProviders();
+      expect(expected.length).toBeGreaterThan(0);
+
+      for (const key of ["voice.ttsVoice", "voice.ttsSpeed"]) {
+        const entry = await getSettingForAgent(deps(), "s1", key);
+        const live = entry.live as {
+          providers: { providerId: string; voices: unknown[]; speeds: number[] }[];
+        };
+        expect(live.providers.map((p) => p.providerId)).toEqual(expected.map((p) => p.id));
+        for (const provider of live.providers) {
+          expect(provider.voices).toEqual(providerVoices(provider.providerId));
+          expect(provider.speeds).toEqual(providerSpeeds(provider.providerId));
+          expect(provider.voices.length).toBeGreaterThan(0);
+          expect(provider.speeds.length).toBeGreaterThan(0);
+        }
+      }
     });
   });
 });

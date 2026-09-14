@@ -7,6 +7,7 @@ import type { ModelSelection } from "../../shared/catalogue/index.js";
 import { MCP_OAUTH_PROVIDERS } from "../mcp-oauth-providers.js";
 import { ALL_SETTINGS } from "../../shared/settings-catalogue/index.js";
 import type { McpStdioServerConfig } from "../../shared/types/mcp-types.js";
+import { collectAccountAgentEnv } from "../secret-resolver.js";
 import { CredentialStore } from "../credential-store.js";
 import { ProviderAccountManager } from "../provider-account-manager.js";
 import { addMcpServer } from "./mcp.js";
@@ -480,6 +481,50 @@ describe("MCP servers", () => {
     const entry = await detail("mcp.servers[].args");
     expect(entry.items?.find((i) => i.address === "armed")?.display).toBe("configured");
     expect(JSON.stringify(entry)).not.toContain(TOKEN);
+  });
+
+  it("checks references against the environment the WORKER gets, not only the mcp__ keys", async () => {
+    // `resolveMcpServer` defaults to the worker's `process.env`, which the
+    // worker fills from the whole pushed set (`session-worker.ts` PUT /secrets)
+    // — service credentials included. Checking a narrower environment reports a
+    // server that starts perfectly well as blocked, which is req 3's failure
+    // mode pointing the other way.
+    credentialStore.upsertCredentialRouteWithSecret(
+      {
+        id: "route-fixture",
+        serviceId: selection.serviceId,
+        billingMode: "key",
+        via: "string",
+        status: "ready",
+        priority: 0,
+        isPrimary: true,
+        label: "fixture",
+        createdAt: 0,
+        updatedAt: 0,
+      },
+      "sk-SENTINEL-NOT-EMITTED",
+    );
+    // Named from the environment itself rather than pinned: which variable a
+    // service stores under is catalogue data and moves.
+    const delivered = Object.keys(collectAccountAgentEnv(credentialStore))
+      .filter((name) => !name.startsWith("mcp__"));
+    expect(delivered.length).toBeGreaterThan(0);
+
+    addMcpServer(
+      credentialStore,
+      {
+        name: "wired",
+        type: "stdio",
+        command: "npx",
+        args: ["--token", `$secret:${delivered[0]}`],
+        enabled: true,
+      },
+      {},
+    );
+
+    const entry = await detail("mcp.servers[].args");
+    expect(entry.items?.find((i) => i.address === "wired")?.display).toBe("configured");
+    expect(JSON.stringify(entry)).not.toContain("sk-SENTINEL-NOT-EMITTED");
   });
 
   it("reports an env bag as configured once the secret it refers to is stored", async () => {

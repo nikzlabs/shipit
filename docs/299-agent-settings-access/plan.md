@@ -394,6 +394,15 @@ already drops — no item, counted in the read's "not listed" note.
 puts every entry through `normalizeHost` on the way in AND on the way to a
 match.
 
+**That second arrangement needs the normalizer to be idempotent, and it was
+not.** `normalizeHost` stripped one trailing dot, so `a.test..` stored as
+`a.test.`, the read normalized the stored row again and advertised `a.test`, and
+removing that address matched no row. It now strips every trailing dot, which is
+what makes "the store normalizes identically" true rather than nearly true. A
+removal that matches no row still reports `applied` (`applyEgressHostRemove`
+discards `removeHost`'s boolean) — a separate defect, and one this design's
+*"Saved" has to mean saved* rule already condemns.
+
 Reading a setting a panel of its own owns needs a reader per owner
 (`services/settings-store-readers.ts`), because a `bespoke` declaration names
 where its value lives and not how to read one back. A reader returns the stored
@@ -424,6 +433,16 @@ nothing. That the two layers agree on one configuration is pinned across the
 layer boundary in `integration_tests/agent-settings-access.test.ts`, because the
 orchestrator may not import `session/` and neither side's own unit test can hold
 both answers.
+
+**The environment checked against is the worker's, not the MCP keys.** The worker
+writes the whole pushed set into its `process.env` and `resolveMcpServer`
+defaults to that, so a reference to a service credential resolves at run time —
+and checking only `mcp__*` called such a server blocked when it starts perfectly
+well, which is req 3 failing in the other direction. The check therefore uses
+`selectAgentEnvForPush`, the selector that decides what the worker receives. One
+gap remains and is stated rather than papered over: with a ServiceManager the
+pushed set is the Compose secrets snapshot, which this read has no handle on, so
+a reference to a *project* secret still reads as missing.
 
 ### Saved is not effective
 

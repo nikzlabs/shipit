@@ -85,9 +85,17 @@ export function sandboxLifelineBase(opts: { git: boolean }): string[] {
   ];
 }
 
+/**
+ * Every trailing dot, not one: the result is normalized AGAIN downstream —
+ * `buildEffectiveAllowlist` and `hostMatchesEntry` both call this on a value
+ * `addHost` already stored — so a pass that is not idempotent advertises an
+ * address the store does not hold. `a.test..` stored as `a.test.` reads back as
+ * `a.test`, and removing that address matches no row
+ * (docs/299-agent-settings-access req 1).
+ */
 export function normalizeHost(host: string): string {
   let h = host.trim().toLowerCase();
-  if (h.endsWith(".")) h = h.slice(0, -1);
+  while (h.endsWith(".")) h = h.slice(0, -1);
   return h;
 }
 

@@ -129,17 +129,12 @@ export function formatSetting(declaration: AnySettingDeclaration, outcome: Proje
  * the user's own words. What it excludes is URL-shaped punctuation
  * (`:` `/` `@` `?` `#` `%` `&` `=`) and a length no name has.
  *
- * **The name is emitted VERBATIM, never normalized.** The name a collection
- * emits is the ADDRESS the agent is told to name a change by, and every store
- * behind one looks an item up exactly: `getRole` reads `roles[name]`
- * (`credential-store.ts`), a secret is a record key, and neither write path
- * normalizes what it stores (`services/role-settings.ts` → `requireStorableName`
- * checks blankness and length and nothing else). So a projection that trimmed
- * would advertise an address that resolves to a DIFFERENT item or to none, and
- * `" helper "` beside `"helper"` would emit one address twice. A name that
- * cannot be emitted as itself — one padded with whitespace — is therefore
- * named by nothing, exactly like a URL-shaped one: it produces no item, and
- * `settings-read.ts` reports how many it left out.
+ * **Emitted VERBATIM, never normalized.** The name is the ADDRESS a change
+ * names, and the stores behind one look an item up exactly (`getRole` reads
+ * `roles[name]`; a secret is a record key) while neither write path normalizes.
+ * Trimming would advertise an address resolving to a different item or to none,
+ * and `" helper "` beside `"helper"` would emit one address twice. A padded name
+ * is therefore named by nothing, like a URL-shaped one.
  */
 const NAME_MAX = 200;
 const USER_NAME = /^[\p{L}\p{N}][\p{L}\p{N} ._+()[\]-]*$/u;
@@ -177,11 +172,10 @@ export function userNamesProjection(raw: unknown): string[] {
  * emitting nothing for it loses the reader nothing and keeps a pasted credential
  * out of every output.
  *
- * Unlike {@link userNameProjection} this one may normalize, because the store on
- * the other side normalizes identically: `EgressAllowlistStore.addHost` puts
- * every entry through `normalizeHost` before storing it and `removeHost` does
- * the same before matching (`egress-allowlist-store.ts:29`, `:38`), so an
- * emitted entry is byte-identical to the stored row and addresses it back.
+ * Unlike {@link userNameProjection} this one may normalize, because the store
+ * normalizes identically: `EgressAllowlistStore` puts every entry through
+ * `normalizeHost` on the way in and on the way to a match, so an emitted entry
+ * is the stored row and addresses it back.
  */
 const HOST_ENTRY = /^\.?[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)*$/;
 
