@@ -25,6 +25,7 @@ import { getErrorMessage } from "../validation.js";
 import {
   addMcpServer,
   removeMcpServer,
+  setMcpServerEnabled,
   updateMcpServer,
 } from "./mcp.js";
 import {
@@ -440,8 +441,16 @@ export async function applyEgressGlobalEnabled(
 // ---------------------------------------------------------------------------
 
 export interface ReleaseChannelWriteResult<T> {
-  status: T;
+  /** The check that ran under the new channel, or null when it failed. */
+  status: T | null;
   outcome: ApplyOutcome;
+  /**
+   * The update check after the write threw. The channel is durable either way,
+   * so this is the check's failure and never the write's: a caller that needs
+   * an update status re-raises it, and a caller that only changed the setting
+   * reports the change it made.
+   */
+  checkError?: Error;
 }
 
 /**
@@ -450,9 +459,11 @@ export interface ReleaseChannelWriteResult<T> {
  * 503 of its own when fetching fails — long after the channel has landed — and
  * a single call could not tell that from a channel that never moved.
  *
- * A failed check is therefore NOT a failed write: the change is broadcast and
- * then the read's own error is re-raised, which is what the route answered
- * before and what a caller expecting an update status needs to hear.
+ * A failed check is therefore NOT a failed write (plan.md → "Saved" has to mean
+ * saved). Re-raising it here would lose that distinction for every caller: the
+ * channel would be stored and the proposal card would report the change
+ * refused. So the check's error is *returned* beside an `applied` outcome, and
+ * the route that wants an update status raises it itself.
  */
 export async function applyReleaseChannel(
   deps: SettingsBroadcastDeps,
@@ -463,7 +474,20 @@ export async function applyReleaseChannel(
     // stays the caller's 4xx.
     await writeReleaseChannel(channel);
     broadcastSettingsChanged(deps, ["advanced.releaseChannel"]);
-    return { status: await checkForUpdates(), outcome: APPLIED };
+    try {
+      return { status: await checkForUpdates(), outcome: APPLIED };
+    } catch (err) {
+      console.error("[settings-apply] the release channel was written; checking for updates failed:", err);
+      return {
+        status: null,
+        outcome: {
+          status: "applied",
+          detail: "The channel was written. ShipIt could not check for updates afterwards, so it "
+            + "cannot yet say which release this install is on.",
+        },
+        checkError: err instanceof Error ? err : new Error(getErrorMessage(err)),
+      };
+    }
   });
 }
 
@@ -634,6 +658,25 @@ export async function applyMcpServerUpdate(
   return withConflictDomains([mcpServerDomain(id), mcpServerDomain(renamedTo)], () => {
     const { value, outcome } = deps.credentialStore.transact(() =>
       updateMcpServer(deps.credentialStore, id, config, secrets),
+    );
+    refreshAfterMcpWrite(deps);
+    return { value, outcome };
+  });
+}
+
+/**
+ * A server's `enabled` flag on its own. It is a separate operation rather than
+ * an update carrying the stored config, because an update reconciles the
+ * server's secrets to the config it is given — see {@link setMcpServerEnabled}.
+ */
+export async function applyMcpServerEnabled(
+  deps: McpApplyDeps,
+  id: string,
+  enabled: boolean,
+): Promise<McpWriteResult<McpServerConfig>> {
+  return withConflictDomains([mcpServerDomain(id)], () => {
+    const { value, outcome } = deps.credentialStore.transact(() =>
+      setMcpServerEnabled(deps.credentialStore, id, enabled),
     );
     refreshAfterMcpWrite(deps);
     return { value, outcome };

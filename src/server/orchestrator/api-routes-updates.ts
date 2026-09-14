@@ -63,10 +63,17 @@ export async function registerUpdateRoutes(app: FastifyInstance, deps: UpdateRou
       // update as if it were this one's (docs/304).
       const noticeDeps = updateNoticeDeps(deps);
       invalidateUpdateResult(noticeDeps);
-      const { status, outcome } = await applyReleaseChannel(deps, channel);
+      const { status, outcome, checkError } = await applyReleaseChannel(deps, channel);
       if (outcome.status !== "applied") {
         reply.code(500).send({ error: outcome.detail ?? "Failed to set channel", outcome });
         return;
+      }
+      // The channel is stored by now. This endpoint answers with an update
+      // status, so a check that failed is still this request's error — it is
+      // raised here rather than inside the write, where it would also reach the
+      // callers that only changed the setting.
+      if (!status) {
+        throw checkError ?? new ServiceError(503, "Failed to check for updates on the new channel");
       }
       // That write ran its own check under the new channel; record it rather
       // than paying for a second fetch.

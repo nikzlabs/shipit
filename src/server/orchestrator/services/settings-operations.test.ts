@@ -4,6 +4,7 @@ import {
   findSetting,
   isPayloadDeclaration,
 } from "../../shared/settings-catalogue/index.js";
+import { addMcpServer } from "./mcp.js";
 import { withConflictDomains } from "./settings-conflict-domain.js";
 import { findOperation, operationsFor, registeredOperationKeys } from "./settings-operations.js";
 import { proposalFixture, type ProposalFixture } from "./settings-proposal-test-helpers.js";
@@ -107,5 +108,64 @@ describe("a collection entry is patched, never replaced", () => {
     // stored object has to survive its own proposal.
     expect(role?.prompt).toBe("standing instructions the agent wrote nothing about");
     expect(role?.params).toMatchObject({ harnessId: "claude", modelId: "claude-opus-5", reasoningEffort: "high" });
+  });
+
+  it("turns a server off without clearing a secret its configuration does not name", async () => {
+    // Both are stored secrets of this server; only one is referenced by the
+    // config. `addMcpServer` accepts the other, and it is what an update-shaped
+    // write treats as unreferenced and deletes.
+    addMcpServer(
+      fx.credentialStore,
+      {
+        name: "notion",
+        type: "http",
+        url: "https://mcp.notion.com/mcp",
+        headers: { Authorization: "Bearer $secret:mcp__notion__TOKEN" },
+        enabled: true,
+      },
+      { mcp__notion__TOKEN: "ntn_referenced", mcp__notion__LEGACY: "ntn_unreferenced" },
+    );
+    const operation = findOperation(findSetting("mcp.servers[].enabled")!, "set")!;
+    const target = { key: "mcp.servers[].enabled", item: "notion" };
+
+    const outcome = await withConflictDomains(operation.domains(target), () =>
+      operation.apply(fx.deps.operations, target, false));
+
+    expect(outcome.status).toBe("applied");
+    expect(fx.credentialStore.getMcpServer("notion")?.enabled).toBe(false);
+    // The card proposed one boolean, so one boolean is what the write may
+    // change: a credential the user would have to fetch again is not part of it.
+    expect(fx.credentialStore.getAgentEnv("mcp__notion__TOKEN")).toBe("ntn_referenced");
+    expect(fx.credentialStore.getAgentEnv("mcp__notion__LEGACY")).toBe("ntn_unreferenced");
+  });
+});
+
+describe("a refusal names stored values only through the projection that emits them", () => {
+  const pinned = {
+    kind: "pinned",
+    harnessId: "claude",
+    serviceId: "anthropic",
+    billingMode: "sub",
+    modelId: "claude-opus-5",
+  } as const;
+
+  it("does not repeat a role name shaped like a credential-bearing URL (req 2)", () => {
+    const urlName = "https://user:CANARY@example.com/?token=CANARY";
+    fx.credentialStore.setRole(urlName, { name: urlName, params: pinned });
+    fx.credentialStore.setRole("deep-dive", { name: "deep-dive", params: pinned });
+    const operation = findOperation(findSetting("roles[].description")!, "set")!;
+
+    const message = operation.preflight!(
+      fx.deps.operations,
+      { key: "roles[].description", item: "helper" },
+      "what it is for",
+    );
+
+    // The read emits no item for such a name, so the error path must not be the
+    // second door out of the same store.
+    expect(message).toContain("deep-dive");
+    expect(message).not.toContain("CANARY");
+    expect(message).not.toContain("https");
+    expect(message).toContain("1 ShipIt does not name back");
   });
 });

@@ -5,6 +5,7 @@ import {
   findSetting,
   hostEntryProjection,
   isPayloadDeclaration,
+  userNameProjection,
 } from "../../shared/settings-catalogue/index.js";
 import type { AnySettingDeclaration, ApplyOutcome } from "../../shared/settings-catalogue/index.js";
 import type { AgentRole, AgentId, RolePinnedParams } from "../../shared/types/agent-types.js";
@@ -31,7 +32,7 @@ import {
   applyEgressHostAdd,
   applyEgressHostRemove,
   applyGlobalSettings,
-  applyMcpServerUpdate,
+  applyMcpServerEnabled,
   applyReleaseChannel,
   applyRepoSettings,
   domainsForSettingsSave,
@@ -166,8 +167,48 @@ function settingIs(
   display: string,
   declaration: AnySettingDeclaration,
 ): string {
-  const instance = target.item ? ` · ${target.item}` : "";
+  const instance = target.item ? ` · ${echoSupplied(target.item)}` : "";
   return `${declaration.label}${instance} is ${display}`;
+}
+
+/**
+ * An address the CALLER supplied, echoed back so the refusal says which one it
+ * means.
+ *
+ * Reflected input, not a stored value — it arrives on the agent's own request —
+ * so req 2 is not engaged and it is flattened and capped for presentation only,
+ * exactly as the read echoes a key it does not know (`settings-read.ts` →
+ * `echoSupplied`) and for the same reason. The projections are the secret
+ * defence; this is hygiene.
+ */
+const SUPPLIED_ECHO_MAX = 80;
+
+export function echoSupplied(supplied: string): string {
+  const flat = supplied.replace(/\s+/g, " ").trim();
+  return flat.length > SUPPLIED_ECHO_MAX ? `${flat.slice(0, SUPPLIED_ECHO_MAX)}…` : flat;
+}
+
+/**
+ * Stored names an error message may repeat, and how many it may not
+ * (req 2, plan.md → `emits` is an allowlist of derived values).
+ *
+ * **No error may interpolate a stored value that did not come through the
+ * projection door.** Listing `getRoles()` directly disclosed exactly what the
+ * read withholds: a role name is arbitrary user text, `PUT /api/roles` accepts
+ * `https://user:token@host/?token=…` as one, and `settings-read.ts` emits no
+ * item at all for a name wearing that shape. An error path that named them
+ * anyway was the read's gate with a second door beside it.
+ */
+function namesForMessage(names: string[]): string {
+  const shown = names
+    .map(userNameProjection)
+    .filter((name): name is string => name !== null);
+  const withheld = names.length - shown.length;
+  const rest = withheld > 0
+    ? `${shown.length > 0 ? ", and " : ""}${withheld} ShipIt does not name back`
+    : "";
+  if (shown.length === 0 && withheld === 0) return "none";
+  return `${shown.join(", ")}${rest}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -274,8 +315,8 @@ function rolePreflight(patch: RolePatch): NonNullable<SettingsOperation["preflig
   return (deps, target, value) => {
     const role = storedRole(deps, target.item);
     if (!role) {
-      const known = deps.credentialStore?.getRoles().map((r) => r.name).join(", ") ?? "";
-      return `No role named "${target.item ?? ""}" — roles on this install: ${known || "none"}.`;
+      const known = namesForMessage(deps.credentialStore?.getRoles().map((r) => r.name) ?? []);
+      return `No role named "${echoSupplied(target.item ?? "")}" — roles on this install: ${known}.`;
     }
     let params: AgentRole["params"];
     try {
@@ -297,7 +338,7 @@ function roleValidatorDeps(deps: SettingsOperationDeps): RoleValidatorDeps {
 function rolePatchOperation(patch: RolePatch): SettingsOperation {
   const build: SaveBuilder = (deps, target, value) => {
     const role = storedRole(deps, target.item);
-    if (!role) throw new ServiceError(400, `No role named "${target.item ?? ""}".`);
+    if (!role) throw new ServiceError(400, `No role named "${echoSupplied(target.item ?? "")}".`);
     return { roles: { [role.name]: roleWrite(role, patch(role, value, deps)) } };
   };
   return savingOperation(
@@ -311,7 +352,7 @@ function pinnedParams(role: AgentRole, target: SettingsOperationTarget): RolePin
   if (role.params.kind !== "pinned") {
     throw new ServiceError(
       400,
-      `The "${target.item ?? role.name}" role resolves its model itself and pins nothing, so there `
+      `The "${echoSupplied(target.item ?? role.name)}" role resolves its model itself and pins nothing, so there `
         + "is no model, harness or level on it to change.",
     );
   }
@@ -446,7 +487,7 @@ function reviewerOperation(
     {
       preflight: (deps, target, value) => {
         if (target.item !== "first" && target.item !== "second") {
-          return `A reviewer slot is "first" or "second", not "${target.item ?? ""}".`;
+          return `A reviewer slot is "first" or "second", not "${echoSupplied(target.item ?? "")}".`;
         }
         return preflight ? preflight(deps, target, value) : null;
       },
@@ -459,7 +500,7 @@ function reviewerOperation(
 /** The `service:mode` key the Services panel stores these under. */
 function modeKey(target: SettingsOperationTarget): string {
   if (!target.item?.includes(":")) {
-    throw new ServiceError(400, `A service setting is addressed by "service:billingMode", not "${target.item ?? ""}".`);
+    throw new ServiceError(400, `A service setting is addressed by "service:billingMode", not "${echoSupplied(target.item ?? "")}".`);
   }
   return target.item;
 }
@@ -540,7 +581,7 @@ const OPERATIONS: Record<string, SettingsOperation> = {
     (deps, target, value) => {
       const pin = reviewerPin(deps, target.item ?? "");
       if (!pin) {
-        return `The "${target.item ?? ""}" reviewer slot pins no model, so it has no level of its own. `
+        return `The "${echoSupplied(target.item ?? "")}" reviewer slot pins no model, so it has no level of its own. `
           + "Pin a model on the slot first.";
       }
       return reviewerLevelRefusal(deps, { ...pin, reasoningEffort: asText(value) }, asText(value));
@@ -565,23 +606,15 @@ const OPERATIONS: Record<string, SettingsOperation> = {
   ),
 
   // The release channel writes through its own route, and the update check that
-  // follows it can fail long after the channel landed.
+  // follows it can fail long after the channel landed. `applyReleaseChannel`
+  // keeps the two apart, so what throws here is the write itself — a refusal
+  // that stored nothing — and a failed check arrives as an applied outcome
+  // carrying what it could not confirm.
   "advanced.releaseChannel::set": {
     domains: () => [releaseChannelDomain],
     async apply(deps, _target, value) {
-      try {
-        const { outcome } = await applyReleaseChannel(deps, value as "stable" | "edge");
-        return outcome;
-      } catch (err) {
-        if (err instanceof ServiceError) throw err;
-        // The channel is written before the check runs, so a check that threw
-        // cannot report the write as failed.
-        return {
-          status: "uncertain",
-          detail: "The channel was written, but ShipIt could not check for updates afterwards, "
-            + "so it cannot confirm what this install now follows.",
-        };
-      }
+      const { outcome } = await applyReleaseChannel(deps, value as "stable" | "edge");
+      return outcome;
     },
     applied: settingIs,
   },
@@ -616,7 +649,7 @@ const OPERATIONS: Record<string, SettingsOperation> = {
     domains: (target) => [mcpServerDomain(target.item ?? "")],
     preflight: (deps, target, value) => {
       const server = deps.credentialStore?.getMcpServer(target.item ?? "");
-      if (!server) return `No MCP server named "${target.item ?? ""}".`;
+      if (!server) return `No MCP server named "${echoSupplied(target.item ?? "")}".`;
       if (value !== true || server.enabled) return null;
       // The writer refuses the eleventh, so a card offering it would only ever
       // resolve `refused` (`services/mcp.ts` → MAX_ENABLED_MCP_SERVERS).
@@ -629,24 +662,23 @@ const OPERATIONS: Record<string, SettingsOperation> = {
     },
     async apply(deps, target, value) {
       const credentialStore = requireCredentialStore(deps);
-      const existing = credentialStore.getMcpServer(target.item ?? "");
-      if (!existing) throw new ServiceError(400, `No MCP server named "${target.item ?? ""}".`);
-      // The whole stored server with one field replaced, and no secrets: the
-      // config's own `$secret:` references ride through untouched, which is how
-      // a change the agent cannot see the inside of is still safe to write.
-      const { outcome } = await applyMcpServerUpdate(
+      // One field, through a write that touches one field. Handing the stored
+      // server back to `applyMcpServerUpdate` looks equivalent and is not: that
+      // reconciles the server's stored secrets against the config it is given,
+      // so a secret the configuration does not reference is deleted by a card
+      // that proposed a boolean.
+      const { outcome } = await applyMcpServerEnabled(
         {
           sseBroadcast: deps.sseBroadcast,
           credentialStore,
           serviceManagers: deps.serviceManagers ?? new Map<string, ServiceManager>(),
         },
-        existing.name,
-        { ...existing, enabled: value === true },
-        undefined,
+        target.item ?? "",
+        value === true,
       );
       return outcome;
     },
-    applied: (target, display) => `the ${target.item ?? ""} MCP server is ${display}`,
+    applied: (target, display) => `the ${echoSupplied(target.item ?? "")} MCP server is ${display}`,
   },
 
   // Project settings. The repository is the session's own binding, frozen on

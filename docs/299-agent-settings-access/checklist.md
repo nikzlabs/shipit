@@ -101,6 +101,30 @@ requirements; each finding verified at the code before being acted on.
       claim narrowed to what it does — it removes a URL, it is not a credential
       scanner, and the design rejected scanners
 
+## Conformance against reqs 2 and 4 — the card names its whole change
+
+A closing independent review of the shipped feature; each finding verified at the
+code before being acted on.
+
+- [x] req 4 — the MCP `enabled` toggle writes one field through
+      `setMcpServerEnabled` instead of a whole-object update, which reconciled
+      the server's secrets and deleted the ones its config does not reference
+- [x] req 4 — every other collection operation checked for the same shape: roles,
+      reviewer pins, failover cutoffs, selection mode and the repository row all
+      patch already
+- [x] req 2 — no error message interpolates a stored value that did not come
+      through the projection door; the role refusal names what the read names and
+      counts what it withholds
+- [x] req 4 — a release-channel switch whose update check fails reports the
+      change it made, not a refusal: `applyReleaseChannel` returns the check's
+      error instead of raising it, and the route raises it
+- [x] Every new guard proven red on its own, with the defect restored
+
+Known and not fixed here: the MCP panel's own Enable/Disable button saves the
+whole server through `PUT /api/mcp/servers/:id`, so it clears an unreferenced
+secret the same way. That is the user's own dialog rather than a proposal card,
+and fixing it needs a narrow route and a client change.
+
 ## Phase 2, slice 3 — the outcome notice (req 8)
 
 - [x] `agent_notified` on the private proposal row, with
