@@ -16,13 +16,23 @@ export interface TurnOutcome {
   readonly detail?: string;
 }
 
+/**
+ * How the dispatch entered the runner, decided synchronously. `"queued"` is the one a
+ * caller cannot otherwise see: the turn has NOT started, and it settles only once
+ * whatever holds the session releases it.
+ */
+export type TurnAdmission = "started" | "queued" | "steered" | "refused";
+
 export interface TurnHandle {
   readonly settled: Promise<TurnOutcome>;
+  /** Admission only: pre-turn compaction can still re-queue a dispatch reported "started". */
+  readonly admitted: TurnAdmission;
 }
 
 export interface TurnSettlement extends TurnHandle {
   /** Only the first call resolves the handle. */
   settle(outcome: TurnOutcome): void;
+  noteAdmission(admitted: TurnAdmission): void;
   readonly isSettled: boolean;
 }
 
@@ -55,9 +65,14 @@ export function createTurnSettlement(): TurnSettlement {
   let resolve!: (outcome: TurnOutcome) => void;
   const promise = new Promise<TurnOutcome>((res) => { resolve = res; });
   let settled = false;
+  let admitted: TurnAdmission = "started";
   return {
     settled: promise,
     get isSettled() { return settled; },
+    get admitted() { return admitted; },
+    noteAdmission(next: TurnAdmission): void {
+      admitted = next;
+    },
     settle(outcome: TurnOutcome): void {
       if (settled) return;
       settled = true;

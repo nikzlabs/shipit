@@ -509,12 +509,19 @@ export class MergeWatchManager {
       : outcome === "merged" ? "Resuming after child PR merged…" : "Reassessing after child PR closed…";
 
     // Carry settlement through both queued and immediate dispatch; the durable id survives restart.
-    await wakeSessionWithTurn(this.deps, parent, {
+    const handle = await wakeSessionWithTurn(this.deps, parent, {
       text,
       activity,
       ...(onSettled ? { onSettled } : {}),
       ...(deliveryId !== undefined ? { deliveryId } : {}),
     });
+    // Delivered marks the dispatch, not the turn; say which one this was.
+    if (handle.admitted !== "started") {
+      console.log(
+        `[merge-watch] the wake for ${parent.id} about ${child.id} was ${handle.admitted}; `
+        + "no turn has started on it yet",
+      );
+    }
   }
 }
 

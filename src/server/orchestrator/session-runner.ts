@@ -211,6 +211,7 @@ export function dispatchOnRunner(
   // of them — including a gate added later.
   const enqueueOrRefuse = (reason: string): TurnHandle => {
     if (admission?.whenBusy === "refuse") {
+      settlement.noteAdmission("refused");
       console.warn(`[dispatch] refused the dispatch for ${runner.sessionId} — ${reason}`);
       // Settles either way: the throw is the consumer's, not a failure of the dispatch.
       try {
@@ -220,7 +221,13 @@ export function dispatchOnRunner(
       }
       return settlement;
     }
+    settlement.noteAdmission("queued");
     const position = runner.enqueue(toQueuedMessage(withSettlement(opts, settlement)));
+    // A queued system dispatch looks delivered to its caller; say that no turn started.
+    console.log(
+      `[dispatch] queued the ${opts.systemTurn ? "system " : ""}dispatch for ${runner.sessionId} `
+      + `at position ${position} — ${reason}`,
+    );
     runner.emitMessage({ type: "message_queued", text: opts.text, position });
     return settlement;
   };
@@ -230,6 +237,7 @@ export function dispatchOnRunner(
     if (admission?.whenBusy !== "refuse") {
       // Test steering before attaching settlement: a completion callback makes a dispatch unsteerable.
       if (deps && trySteerDispatch(runner, opts, deps)) {
+        settlement.noteAdmission("steered");
         settlement.settle(TURN_STEERED);
         return settlement;
       }
@@ -504,6 +512,12 @@ export interface SessionRunnerInterface extends EventEmitter<SessionRunnerEvents
   running: boolean;
   /** A system driver owns the turn or the interval between its turns; suppress live steering. */
   systemTurnInProgress: boolean;
+  /**
+   * Identifies the CURRENT hold on systemTurnInProgress: every write of `true` mints a
+   * new value. A turn captures it when it takes the hold and releases only on a match,
+   * so it cannot release a hold that changed hands while it ran (docs/304).
+   */
+  readonly systemHoldSeq: number;
   /** Separate from systemTurnInProgress so a turn's cleanup cannot release an in-flight merge. */
   mergeHold: boolean;
   wasInterrupted: boolean;
@@ -628,6 +642,7 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
   private _agentId: AgentId;
   private _isRunning = false;
   private _systemTurnInProgress = false;
+  private _systemHoldSeq = 0;
   private _mergeHold = false;
   private _wasInterrupted = false;
   turnEpoch = 0;
@@ -681,7 +696,12 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
   get running(): boolean { return this._isRunning; }
   set running(v: boolean) { this._isRunning = v; }
   get systemTurnInProgress(): boolean { return this._systemTurnInProgress; }
-  set systemTurnInProgress(v: boolean) { this._systemTurnInProgress = v; }
+  set systemTurnInProgress(v: boolean) {
+    // Every acquisition is a new hold, including one taken while the flag is already set.
+    if (v) this._systemHoldSeq += 1;
+    this._systemTurnInProgress = v;
+  }
+  get systemHoldSeq(): number { return this._systemHoldSeq; }
   get mergeHold(): boolean { return this._mergeHold; }
   set mergeHold(v: boolean) { this._mergeHold = v; }
   get wasInterrupted(): boolean { return this._wasInterrupted; }

@@ -2,7 +2,7 @@
 
 import type { SubAgentConsultCard } from "../../shared/types.js";
 import type { SessionRunnerRegistry } from "../session-runner.js";
-import type { TurnOutcome } from "../turn-settlement.js";
+import type { TurnAdmission, TurnHandle, TurnOutcome } from "../turn-settlement.js";
 import { wakeSessionWithTurn, type WakeSessionDeps } from "../wake-session.js";
 
 export interface ConsultDeliveryStore {
@@ -26,7 +26,7 @@ export interface ConsultResultDeliveryRequest {
 }
 
 export type ConsultDeliveryDecision =
-  | { woken: true }
+  | { woken: true; admitted: TurnAdmission }
   | {
       woken: false;
       reason:
@@ -91,8 +91,9 @@ async function decideAndDeliver(
     return { woken: false, reason: "already-delivered" };
   }
 
+  let handle: TurnHandle;
   try {
-    await wakeSessionWithTurn(deps, session, {
+    handle = await wakeSessionWithTurn(deps, session, {
       text: buildConsultWakePrompt(card),
       activity: "Reading a finished background consult…",
       onSettled: (outcome: TurnOutcome) => {
@@ -117,11 +118,13 @@ async function decideAndDeliver(
   // Stamp after acceptance so a crash before dispatch does not suppress delivery.
   stampDelivery(deps, sessionId, card.cardId, { at: new Date().toISOString(), outcome: "queued" });
 
+  // "queued" means no turn started: the session holds the result behind something else.
+  const what = handle.admitted === "started" ? "woke" : `${handle.admitted} a wake for`;
   console.log(
-    `[consult-delivery] woke session=${sessionId} spawn=${card.spawnId} `
+    `[consult-delivery] ${what} session=${sessionId} spawn=${card.spawnId} `
     + `card=${card.cardId} status=${card.status}`,
   );
-  return { woken: true };
+  return { woken: true, admitted: handle.admitted };
 }
 
 function readStoredCard(
