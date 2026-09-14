@@ -77,17 +77,26 @@ orchestrator, gated by `gitCredentialAllowed(session)` in `pr-target.ts`).
   1. The session's grant includes the destination whose key is requested.
   2. A `session-bind@openssh.com` message is present, its `is_forwarding` is false, and its
      host-key signature over the session identifier verifies (PROTOCOL.agent: `string hostkey,
-     string session identifier, string signature, bool is_forwarding`). The agent cannot forge
-     this: it needs the server's host private key, so a valid bind proves a real key exchange
-     with that server.
+     string session identifier, string signature, bool is_forwarding`). What this proves,
+     exactly: the caller completed a key exchange with *whoever holds the private half of the
+     supplied host key*. The host key is caller-supplied and the server signs only the session
+     identifier, so the bind does not tie that key to the destination's configured address,
+     and `is_forwarding` is an unsigned byte the caller controls. Both limits are
+     PROTOCOL.agent's, not this implementation's; their consequences are stated below.
   3. The bind's host key equals the destination's recorded host key. If the destination has
-     none yet, this bind records it (TOFU, req 9) — from the server's own signature, never from
-     a file in the container — and a persisted card shows the fingerprint. A later mismatch is
-     refused and a persisted warning card says so.
-  4. The data to sign parses as an SSH userauth publickey request — `string session id, byte
-     50, string user, string "ssh-connection", string "publickey", bool true, string alg, string
-     pubkey` — whose session id equals the bind's and whose `user` equals the destination's
-     configured user. Nothing else is ever signed, so the endpoint is not a signing oracle.
+     none yet, this bind records it (TOFU, req 9) — but only after every other rule has
+     passed, so a request that is about to be refused can never set the account-wide pin
+     (`services/ssh.ts`, "Recording is DEFERRED"). A persisted card shows the fingerprint. A
+     later mismatch is refused and a persisted warning card says so. The host entry in Settings
+     has a "forget host key" action that clears the pin so the next valid bind records afresh.
+  4. The data to sign parses as an SSH userauth publickey request whose session id equals the
+     bind's, whose `user` equals the destination's configured user, whose public key is the
+     destination's, and whose algorithm is `ssh-ed25519`. Two layouts are accepted: the
+     classic `string session id, byte 50, string user, string "ssh-connection", string
+     "publickey", bool true, string alg, string pubkey`, and
+     `publickey-hostbound-v00@openssh.com` (what every OpenSSH 8.9+ client sends to an sshd
+     that offers it), which appends `string server host key`; that appended key must equal the
+     bound one. Nothing else is ever signed, so the endpoint is not a signing oracle.
   5. A per-session rate and concurrency bound is not exceeded.
   Then it signs with `node:crypto` (ed25519: `crypto.sign(null, data, key)`, blob
   `string "ssh-ed25519" || string sig`). Every attempt, signed or refused, logs one line:
@@ -97,13 +106,24 @@ orchestrator, gated by `gitCredentialAllowed(session)` in `pr-target.ts`).
   the server side (`authorized_keys`, restricted user), never at the signer.
 
 What this contract buys, stated without overclaiming: the private key stays secret (req 3);
-the key authenticates only to the pinned host, as the configured user — a relay through
-another machine cannot produce that host's signature; agent forwarding is refused at the
-signer, whatever `ForwardAgent` says in an editable config. What it does not do: it cannot
-stop the agent from running any command the server allows once authenticated (host-side
-restricted user), and revoking a grant stops *new* authentications only — an already
-authenticated connection continues until it closes (the firewall accepts established flows,
-`init-firewall.sh:104`).
+once a destination's host key is recorded, the key authenticates only to that host, as the
+configured user — a relay through another machine cannot produce that host's signature.
+What it does not do:
+- It cannot stop the agent from running any command the server allows once authenticated
+  (host-side restricted user), and revoking a grant stops *new* authentications only — an
+  already authenticated connection continues until it closes (the firewall accepts
+  established flows, `init-firewall.sh:104`).
+- **First-use trust is the session's word.** Before the first recorded key, a granted session
+  can post a bind it minted itself, with junk of the right shape to sign, and pin its own key
+  as the destination's. The private key is not exposed by this and no other server becomes
+  reachable; the damage is a denial of service on that one destination for every granted
+  session, plus a wrong fingerprint in the card and the host entry, recovered by "forget host
+  key". How ShipIt should learn the real key is an open question in `requirements.md`.
+- **The `is_forwarding` refusal stops honest and accidental forwarding only** — a
+  `ForwardAgent yes` in the editable config, or `ssh -A`. A hostile in-container agent can
+  clear the byte. What a forwarded socket then yields is a signature for the pinned host as
+  the configured user, which the session can already obtain directly, so the residual is
+  nothing new reachable. The check stays because it is free and catches the realistic case.
 - **Why not a brokered `ssh` shim.** It would need `openssh-client` in the orchestrator image,
   stream stdin and terminals over two HTTP hops, and reimplement `scp`, `rsync`, and git
   transport one by one. The agent-socket path needs none of that (req 2).
@@ -144,8 +164,9 @@ Host prod
 `IdentityFile` may name a `.pub` when the private half is in an agent, so only public material
 is on disk; `IdentitiesOnly` keeps a session with several grants from offering unrelated keys
 and exhausting the server's attempt limit. The host key is learned by the signer from the
-server's own `session-bind` signature (signer contract, step 3), never from `known_hosts`,
-which the agent can write. Once recorded, the orchestrator provisions that key into
+`session-bind` carried by the first fully valid sign request (signer contract, step 3, with
+the first-use limit stated there), never from `known_hosts`, which the agent can write. Once
+recorded, the orchestrator provisions that key into
 `known_hosts` for every granted session and the signer refuses any other, so a changed host
 key fails at both ends. Before the first connection there is no line yet: the client's own
 prompt is answered by `accept-new` semantics on that first connect only, and the recorded key
@@ -302,8 +323,10 @@ Two implementation choices worth naming, both inside the design rather than chan
 - Agent protocol framing and refusal of every message that is not identities, bind, or sign.
 - Signer contract, each rule red alone: no bind → refuse; `is_forwarding` → refuse; bad
   host-key signature → refuse; host key ≠ recorded → refuse + warning card; data that is not a
-  userauth request, or a different session id, or a different user → refuse; first bind
-  records the key. Signature round trip verified with `ssh-keygen -Y verify`.
+  userauth request, or a different session id, or a different user, or a different algorithm,
+  or a host-bound request naming a different server → refuse; the first *fully valid* request
+  records the key and a refused one never does. Signature round trip verified with
+  `ssh-keygen -Y verify`.
 - Grant gate: a session without the host gets `SSH_AGENT_FAILURE`; an ungranted key id 403s;
   a direct call from the container to its own session's route is accepted, a cross-session
   one is not.

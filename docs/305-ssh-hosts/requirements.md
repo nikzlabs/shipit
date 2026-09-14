@@ -34,6 +34,16 @@ description: The agent runs commands on a remote server over SSH from any sessio
 
 ## Open questions
 
+- How does ShipIt learn a destination's real host key (req 9)? The first `session-bind`
+  proves a key exchange with whoever holds the supplied host key, not with the configured
+  address, so before the first real connection a granted session can pin a key of its own.
+  The private key is not exposed; the effect is that the destination stops working for every
+  granted session until "forget host key" is used, with a wrong fingerprint shown meanwhile.
+  Candidates: the orchestrator scans the address itself (`ssh-keyscan`, needs
+  `openssh-client` in the orchestrator image) and pins only a matching key; accept the risk as
+  stated and keep the current narrowing; or the user confirms the fingerprint card before
+  signing starts.
+
 ## Resolved questions
 
 - 2026-09-14 — Does req 10 mean confirmed connections or authentication attempts? The user
