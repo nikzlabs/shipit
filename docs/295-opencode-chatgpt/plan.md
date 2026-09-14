@@ -1,4 +1,5 @@
 ---
+issue: planning#569
 title: ChatGPT subscriptions in OpenCode
 description: Reuse OpenAI login and quota, with an access-token projection for OpenCode.
 ---
