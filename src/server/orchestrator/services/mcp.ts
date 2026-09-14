@@ -176,11 +176,34 @@ function configStrings(value: unknown): string[] {
   return [];
 }
 
+function mapConfigStrings(value: unknown, fn: (s: string) => string): unknown {
+  if (typeof value === "string") return fn(value);
+  if (Array.isArray(value)) return (value as unknown[]).map((v) => mapConfigStrings(v, fn));
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value).map(([k, v]) => [k, mapConfigStrings(v, fn)]),
+    );
+  }
+  return value;
+}
+
 /**
- * Reconciles a server's stored secrets to exactly the keys its new config refers
- * to. A value comes from the submitted secrets, else from the same key under the
- * old name, else from what is already stored; anything else in either namespace
- * is dropped and reported as cleared.
+ * A renamed server's own references follow it. The caller is not required to
+ * rewrite them — the edit form cannot rewrite the ones in `args` at all — and a
+ * reference left under the old name would be read as unreferenced and cleared.
+ * References into *another* server's namespace are left alone.
+ */
+function renameOwnReferences(config: McpServerConfig, oldName: string): McpServerConfig {
+  const from = `$secret:mcp__${oldName}__`;
+  const to = `$secret:mcp__${config.name}__`;
+  return mapConfigStrings(config, (s) => s.replaceAll(from, () => to)) as McpServerConfig;
+}
+
+/**
+ * Reconciles a server's stored secrets to the keys its new config refers to,
+ * plus whatever the save explicitly submits. A value comes from the submitted
+ * secrets, else from the same key under the old name, else from what is already
+ * stored; anything else in either namespace is dropped and reported as cleared.
  *
  * The carry-over is what makes a rename non-destructive. The edit form blanks
  * stored values and labels them "(unchanged)", so a renamed server submits no
@@ -208,8 +231,19 @@ function reconcileSecrets(
     if (value) keep.set(key, value);
   }
 
+  // Nothing in one server's namespace is private to it: a config may refer to a
+  // key stored under another server's name, and this edit is not that server's.
+  const usedElsewhere = new Set(
+    Object.values(credentialStore.getAllMcpServers())
+      .filter((s) => s.name !== oldName && s.name !== config.name)
+      .flatMap((s) => configStrings(s).flatMap(secretKeysReferencedIn)),
+  );
+
   const cleared = Object.keys(env).filter(
-    (key) => (key.startsWith(oldPrefix) || key.startsWith(newPrefix)) && !keep.has(key),
+    (key) =>
+      (key.startsWith(oldPrefix) || key.startsWith(newPrefix))
+      && !keep.has(key)
+      && !usedElsewhere.has(key),
   );
   return { keep, cleared };
 }
@@ -225,11 +259,12 @@ export function updateMcpServer(
   if (!existing) {
     throw new ServiceError(404, `MCP server "${id}" not found`);
   }
-  const config = validateMcpServerConfig(rawConfig);
-  const isRename = config.name !== id;
-  if (isRename && credentialStore.getMcpServer(config.name)) {
-    throw new ServiceError(409, `An MCP server named "${config.name}" already exists`);
+  const validated = validateMcpServerConfig(rawConfig);
+  const isRename = validated.name !== id;
+  if (isRename && credentialStore.getMcpServer(validated.name)) {
+    throw new ServiceError(409, `An MCP server named "${validated.name}" already exists`);
   }
+  const config = isRename ? renameOwnReferences(validated, id) : validated;
   const secrets = validateMcpSecrets(config.name, rawSecrets);
 
   if (config.enabled && countEnabled(credentialStore, id) + 1 > MAX_ENABLED_MCP_SERVERS) {

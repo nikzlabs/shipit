@@ -248,6 +248,61 @@ describe("services/mcp (docs/088)", () => {
       expect(clearedSecretKeys).toEqual([]);
     });
 
+    it("updateMcpServer rename moves references the caller left under the old name", () => {
+      const cs = store();
+      const before = {
+        name: "linear",
+        type: "stdio",
+        command: "npx",
+        args: ["--token", "$secret:mcp__linear__TOKEN"],
+        env: { LINEAR_API_KEY: "$secret:mcp__linear__LINEAR_API_KEY" },
+        enabled: true,
+      };
+      addMcpServer(cs, before, {
+        mcp__linear__TOKEN: "tok",
+        mcp__linear__LINEAR_API_KEY: "key",
+      });
+
+      // A caller that renames the server without rewriting its own references —
+      // the form cannot rewrite `args` at all.
+      const { config } = updateMcpServer(cs, "linear", { ...before, name: "linearprod" }, {});
+
+      expect((config as { args?: string[] }).args).toEqual([
+        "--token",
+        "$secret:mcp__linearprod__TOKEN",
+      ]);
+      expect((config as { env?: Record<string, string> }).env).toEqual({
+        LINEAR_API_KEY: "$secret:mcp__linearprod__LINEAR_API_KEY",
+      });
+      expect(cs.getAgentEnv("mcp__linearprod__TOKEN")).toBe("tok");
+      expect(cs.getAgentEnv("mcp__linearprod__LINEAR_API_KEY")).toBe("key");
+      expect(cs.getAgentEnv("mcp__linear__TOKEN")).toBeUndefined();
+    });
+
+    it("updateMcpServer does not clear a secret another server still refers to", () => {
+      const cs = store();
+      addMcpServer(
+        cs,
+        { ...stdioConfig, env: { A: "$secret:mcp__linear__SHARED" } },
+        { mcp__linear__SHARED: "shared" },
+      );
+      addMcpServer(
+        cs,
+        { ...stdioConfig, name: "sentry", env: { B: "$secret:mcp__linear__SHARED" } },
+        {},
+      );
+
+      const { clearedSecretKeys } = updateMcpServer(
+        cs,
+        "linear",
+        { ...stdioConfig, env: {} },
+        {},
+      );
+
+      expect(cs.getAgentEnv("mcp__linear__SHARED")).toBe("shared");
+      expect(clearedSecretKeys).toEqual([]);
+    });
+
     it("updateMcpServer keeps a secret referenced only from args", () => {
       const cs = store();
       // `args` values are substituted too (session/mcp-resolve.ts), so a

@@ -48,10 +48,23 @@ export const EMPTY_FORM: FormState = {
   enabled: true,
 };
 
-/** The server carries the stored values across a rename; the references move with them. */
+/**
+ * The server carries the stored values across a rename and moves the references
+ * in the config it stores; the submitted secret keys have to move with them,
+ * because the API accepts only keys in the server's own namespace.
+ */
 function moveSecretNamespace(expression: string, from: string, to: string): string {
   if (!from || from === to) return expression;
   return expression.replaceAll(`$secret:mcp__${from}__`, () => `$secret:mcp__${to}__`);
+}
+
+/** The one key in this server's namespace an expression refers to, if it refers to just one. */
+function soleSecretKey(expression: string, serverName: string): string | null {
+  const prefix = `mcp__${serverName}__`;
+  const keys = [...expression.matchAll(/\$secret:([A-Za-z_][A-Za-z0-9_]*)/g)]
+    .map((m) => m[1])
+    .filter((key) => key.startsWith(prefix));
+  return keys.length === 1 ? keys[0] : null;
 }
 
 export function buildPayload(form: FormState): {
@@ -63,18 +76,19 @@ export function buildPayload(form: FormState): {
   for (const row of form.kv) {
     const k = row.key.trim();
     if (!k) continue;
-    const secretKey = `mcp__${form.name}__${k}`;
-    if (row.value) {
-      placeholders[k] = `$secret:${secretKey}`;
-      secrets[secretKey] = row.value;
-      continue;
-    }
-    // Blank means unchanged, so the row keeps the expression it was loaded with
-    // — a rename only moves it into the new namespace.
-    placeholders[k] =
+    const derived = `mcp__${form.name}__${k}`;
+    // A row loaded from the server keeps the expression it came with, so a shape
+    // the form cannot show survives an edit that does not touch it.
+    const carried =
       row.originalKey === k && row.originalValue
         ? moveSecretNamespace(row.originalValue, form.editingId, form.name)
-        : `$secret:${secretKey}`;
+        : null;
+    // A typed value replaces the secret THIS row refers to; naming it after the
+    // row's key would land it on whatever else is called that. With no reference
+    // to fill — a new row, an OAuth-managed header — the key derives one, as before.
+    const target = carried && row.value ? soleSecretKey(carried, form.name) : null;
+    placeholders[k] = carried && (!row.value || target) ? carried : `$secret:${derived}`;
+    if (row.value) secrets[target ?? derived] = row.value;
   }
 
   if (form.type === "stdio") {
