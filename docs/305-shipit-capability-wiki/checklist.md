@@ -36,7 +36,7 @@ census in `how-shipit-works.md`.
       sessions and their capabilities, secrets
 - [ ] `plugins-and-skills.md` — what the user sees, marketplaces, MCP servers
 - [ ] `deploying.md` — targets, prerequisites, status on the card
-- [ ] `troubleshooting.md` — the questions users actually ask when it misbehaves
+- [x] `troubleshooting.md` — the questions users actually ask when it misbehaves
 - [ ] Backing up and moving an installation — no page and no section covers it;
       it belongs in `installing-and-updating.md` once the facts are verified
 
