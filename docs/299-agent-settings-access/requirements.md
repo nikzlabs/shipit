@@ -71,7 +71,11 @@ agent is the actor.
 8. When the user applies or dismisses a proposal, the agent is told at the start
    of its next turn. It does not have to work out for itself that something
    changed, and it does not remind the user about a change they have already
-   dealt with.
+   dealt with. The next turn means the next turn that can read a prompt: a
+   **compaction** turn is excluded, which the user decided and the receipt below
+   records, and a harness command delivered verbatim has no place to carry the
+   notice at all, which is recorded below as a known limitation. In both the
+   outcome waits for the turn after rather than being lost.
 
 ## Open questions
 
@@ -171,7 +175,7 @@ agent is the actor.
   Every other turn carries it, automatic ones included — a CI fix, a conflict
   resolution, a rebase follow-up, a credential remediation, a wake. The
   constraint this carries is that "the next turn" means the next turn that can
-  read a prompt, and compaction is not one.
+  read a prompt, and compaction is not one. → requirement 8's closing clause.
 
   Three things carried the answer, and they are the reasoning rather than a
   preference for consistency. A compaction turn's prompt is an instruction to
