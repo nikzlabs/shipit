@@ -342,6 +342,28 @@ explicitly declined to ship in v1:
 If you try one, the shim exits non-zero with an error pointing back to this
 file.
 
+### When a spawn fails to answer
+
+A `shipit session create` that ends in a transport error — "Could not reach
+orchestrator", or any 502/503/504 — has **not** told you that no session was
+created. It may have spawned one and lost only the reply. Two rules follow.
+
+**The shim retries once for you, under a key derived from the request**, so a
+lost reply resolves itself: the retry returns the session the first attempt
+made, rather than making a second one. If it says
+`the first attempt did reach ShipIt`, that is what happened — the session in the
+output is the one you already asked for, not an extra.
+
+**If it says it could not confirm, do not just run the command again.** Check
+first — `shipit session list` for a child, the sidebar for a `--detached` spawn,
+which is not a child and appears in no children list. The key is held for ten
+minutes, so a prompt retry is still safe, but a retry after the orchestrator has
+restarted is not, and that is exactly the case the message is warning about.
+
+This costs real cleanup when ignored: duplicate children have to be told to stop
+mid-turn and then archived, because a running child cannot be archived
+(docs/306-spawn-retry-safety).
+
 ### Coordinating with a spawned session
 
 After spawning, you have four downward coordination levers — `wait`, `message`,

@@ -4,6 +4,7 @@ import type { FastifyInstance } from "fastify";
 import type { ApiDeps } from "./api-routes.js";
 import { emitChatCard } from "./chat-card-persistence.js";
 import { prepareShipitFixSpawn } from "./api-routes-shipit-fix.js";
+import { SpawnClaims } from "./services/spawn-idempotency.js";
 
 import {
   getGitLog,
@@ -40,6 +41,15 @@ import { getErrorMessage } from "./validation.js";
 // without a data write; transcriptRevision cannot invalidate those cached responses.
 const HISTORY_VALIDATOR_VERSION = 1;
 
+type SpawnResult = Awaited<ReturnType<typeof spawnChildSession>>;
+
+interface SpawnOutcome {
+  sessionId: SpawnResult["sessionId"];
+  branch: SpawnResult["branch"];
+  status: "running";
+  session: SpawnResult["session"];
+}
+
 export async function registerSessionSpawnRoutes(
   app: FastifyInstance,
   deps: ApiDeps,
@@ -60,6 +70,9 @@ export async function registerSessionSpawnRoutes(
     chatHistoryManager: deps.chatHistoryManager,
     usageManager: deps.usageManager,
   };
+
+  // Collapses a retry of a spawn whose response was lost. docs/306-spawn-retry-safety.
+  const spawnClaims = new SpawnClaims<SpawnOutcome>();
 
   // Share the claim service: its per-repo lock lives in the instance's closure.
   const claimSessionService = deps.claimSessionService ?? createClaimSessionService({
@@ -207,6 +220,7 @@ export async function registerSessionSpawnRoutes(
       detached?: boolean;
       shipitSource?: boolean;
       approximateSource?: boolean;
+      idempotencyKey?: string;
     };
   }>(
     "/api/sessions/:parentId/spawn",
@@ -216,7 +230,11 @@ export async function registerSessionSpawnRoutes(
       const parentAgentId = sessionManager.get(request.params.parentId)?.agentId;
       const effectiveAgentId =
         ((body.agentId ?? body.agent) as AgentId | undefined) ?? parentAgentId ?? deps.defaultAgentId;
-      try {
+      // Scoped by parent: one agent's key must never collapse onto another's spawn.
+      const claimKey = body.idempotencyKey
+        ? `${request.params.parentId}:${body.idempotencyKey}`
+        : null;
+      const runSpawn = async (): Promise<SpawnOutcome> => {
         const { effectivePrompt, sourceBase, repoUrlOverride, shipitFixMeta } =
           await prepareShipitFixSpawn(deps, request.params.parentId, body);
 
@@ -291,6 +309,14 @@ export async function registerSessionSpawnRoutes(
           status: "running" as const,
           session: result.session,
         };
+      };
+
+      try {
+        if (!claimKey) return await runSpawn();
+        const { result, deduplicated } = await spawnClaims.run(claimKey, runSpawn);
+        // The caller is retrying a spawn whose response it never saw; tell it so, so it
+        // can report the session as created rather than as newly created.
+        return deduplicated ? { ...result, deduplicated: true } : result;
       } catch (err) {
         const statusCode = err instanceof ServiceError ? err.statusCode : 500;
         const errorMessage = err instanceof ServiceError

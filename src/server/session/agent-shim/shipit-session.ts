@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
   asString,
   fail,
@@ -9,6 +10,9 @@ import {
 import { INLINE_PROMPT_FLAGS, REJECTED_HELP, formatError, type RunDeps } from "./shipit.js";
 
 const MAX_WAIT_TIMEOUT_SECS = 60 * 60;
+
+// Long enough for an orchestrator that is restarting rather than gone.
+const CREATE_RETRY_DELAY_MS = 1_000;
 
 const WAIT_DEFAULT_OVERALL_SECS = 5 * 60;
 const WAIT_SEGMENT_SECS = 25;
@@ -144,9 +148,40 @@ export async function handleSessionCreate(args: string[], deps: RunDeps): Promis
   if (parsed.booleans.has("shipitSource")) payload.shipitSource = true;
   if (parsed.booleans.has("approximate")) payload.approximateSource = true;
 
-  const res = await deps.call("POST", "/agent-ops/session/create", payload, deps.env);
-  if (res.status < 200 || res.status >= 300) {
+  payload.idempotencyKey = deriveIdempotencyKey(payload);
+
+  const detached = parsed.booleans.has("detached");
+  let res = await deps.call("POST", "/agent-ops/session/create", payload, deps.env);
+  const firstWasLost = isTransientStatus(res.status);
+  if (firstWasLost) {
+    // A transient status cannot distinguish a request that never arrived from one that
+    // spawned a session and lost its response. Retrying under the same key is safe for
+    // both: it either returns that session or creates the one that never existed.
+    await deps.sleep(CREATE_RETRY_DELAY_MS);
+    res = await deps.call("POST", "/agent-ops/session/create", payload, deps.env);
+  }
+
+  const answered = res.status >= 200 && res.status < 300;
+  // A 200 whose body was lost parses to {}, which would otherwise print an empty id.
+  if (answered && !asString(res.body.sessionId)) {
+    fail(deps.io, uncertainCreateMessage(res, detached, "empty"), 1);
+  }
+  if (!answered) {
+    if (isTransientStatus(res.status)) {
+      fail(deps.io, uncertainCreateMessage(res, detached, "no-answer"), 1);
+    }
+    // A refusal on the retry says nothing about the lost first attempt — it may even be
+    // caused by it, when the session it created is what exhausted the quota.
+    if (firstWasLost) {
+      fail(deps.io, uncertainCreateMessage(res, detached, "refused-after-loss"), 1);
+    }
     fail(deps.io, formatError(res, "Failed to create spawned session"), 1);
+  }
+  if (res.body.deduplicated === true) {
+    deps.io.stderr(
+      "shipit session create: the first attempt did reach ShipIt — its reply was lost, not the request. "
+        + "This is that same session, not a second one.\n",
+    );
   }
 
   if (parsed.booleans.has("json")) {
@@ -174,6 +209,43 @@ export async function handleSessionCreate(args: string[], deps: RunDeps): Promis
 
 async function readPromptFile(promptFile: string, deps: RunDeps): Promise<string> {
   return readBodyFromFileOrStdin(promptFile, deps.io, "shipit session create", "prompt file");
+}
+
+// Derived from the request, never invented: the retry is a fresh process, so a key it
+// generated itself would be new every time and would collapse nothing.
+function deriveIdempotencyKey(payload: Record<string, unknown>): string {
+  const canonical = JSON.stringify(
+    Object.fromEntries(Object.entries(payload).sort(([a], [b]) => (a < b ? -1 : 1))),
+  );
+  return createHash("sha256").update(canonical).digest("hex");
+}
+
+type UncertainReason = "no-answer" | "empty" | "refused-after-loss";
+
+const UNCERTAIN_CAUSE: Record<UncertainReason, string> = {
+  "no-answer": "Two attempts both failed before ShipIt answered.",
+  empty: "ShipIt answered, but the reply carried no session id — the body was lost in transit.",
+  "refused-after-loss":
+    "The first attempt was lost and the retry was refused. A refusal describes the retry, "
+    + "not the attempt before it — and a session the first attempt created is one possible "
+    + "cause of the refusal.",
+};
+
+function uncertainCreateMessage(
+  res: { status: number; body: Record<string, unknown> },
+  detached: boolean,
+  reason: UncertainReason,
+): string {
+  const where = detached
+    ? "a detached session is not a child, so it appears in the sidebar rather than in `shipit session list`"
+    : "run `shipit session list`";
+  return (
+    "shipit session create: could not confirm whether the session was created.\n"
+    + `${formatError(res, "the orchestrator did not answer")}\n`
+    + `${UNCERTAIN_CAUSE[reason]} That does NOT mean no session exists: `
+    + "the request may have been carried out and only its reply lost. "
+    + `Check before trying again — ${where}.`
+  );
 }
 
 async function runHostSessionQuery(

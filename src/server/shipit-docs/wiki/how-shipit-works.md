@@ -27,6 +27,17 @@ every turn it commits what changed and pushes it. The commit message comes from
 the turn's summary. This is why work appears on a branch the user never made,
 and why there is nothing to "save".
 
+**So what a lost host costs is usually the conversation and the configuration,
+not the work** — the sessions, the rewind points, the sign-ins and the settings
+live only on that machine, while the code went to GitHub. Say it with its two
+conditions attached, every time. The push does **nothing** when GitHub is not
+connected, and a push that **fails** leaves the commit in local history; in both
+cases the work is intact but on one host only, and the session says so. A
+project's own Compose volumes — a development database, an upload directory —
+are outside all of this and were never durable: archiving the session deletes
+them. Detail, and how to take a copy:
+[installing-and-updating.md](installing-and-updating.md).
+
 **The app runs inside the session.** Services declared in the project's
 `docker-compose.yml` run as real containers next to the agent container, and
 the preview pane shows the one marked for it. Every session gets its own

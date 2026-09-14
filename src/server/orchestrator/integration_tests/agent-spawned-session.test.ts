@@ -172,6 +172,61 @@ describe("Integration: agent-spawned sessions (docs/117)", () => {
     expect(reloaded?.branch).toBe(body.branch);
   });
 
+  it(
+    "docs/306 — a repeated idempotencyKey spawns one child, not two",
+    { timeout: 20_000 },
+    async () => {
+      const parentId = await createParentSession();
+      const payload = {
+        prompt: "Port API to TS",
+        title: "Port API",
+        spawnedByTurn: "turn-1",
+        idempotencyKey: "key-abc",
+      };
+
+      const first = await app.inject({
+        method: "POST",
+        url: `/api/sessions/${parentId}/spawn`,
+        payload,
+      });
+      // The retry a lost response provokes: same key, same body.
+      const second = await app.inject({
+        method: "POST",
+        url: `/api/sessions/${parentId}/spawn`,
+        payload,
+      });
+
+      expect(first.statusCode).toBe(200);
+      expect(second.statusCode).toBe(200);
+      const a = first.json() as { sessionId: string; deduplicated?: boolean };
+      const b = second.json() as { sessionId: string; deduplicated?: boolean };
+
+      expect(b.sessionId).toBe(a.sessionId);
+      expect(a.deduplicated).toBeUndefined();
+      expect(b.deduplicated).toBe(true);
+      expect(sessionManager.findChildren(parentId)).toHaveLength(1);
+    },
+  );
+
+  it(
+    "docs/306 — a different idempotencyKey still spawns a second child",
+    { timeout: 20_000 },
+    async () => {
+      const parentId = await createParentSession();
+      const spawn = (key: string) => app.inject({
+        method: "POST",
+        url: `/api/sessions/${parentId}/spawn`,
+        payload: { prompt: "Port API to TS", title: "Port API", idempotencyKey: key },
+      });
+
+      expect((await spawn("key-1")).statusCode).toBe(200);
+      expect((await spawn("key-2")).statusCode).toBe(200);
+
+      // Deduplication must not collapse deliberately distinct spawns (req 4).
+      expect(sessionManager.findChildren(parentId)).toHaveLength(2);
+    },
+  );
+
   it("docs/252 — a child inherits the parent's SELECTION, retirement resolved", { timeout: 15_000 }, async () => {
     const parentId = await createParentSession("Retired parent");
     sessionManager.setAgentId(parentId, "codex");

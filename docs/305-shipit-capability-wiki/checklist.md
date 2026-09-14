@@ -40,7 +40,7 @@ census in `how-shipit-works.md`.
 - [x] Backing up and moving an installation — a section in
       `installing-and-updating.md`, since there is no whole-install backup to
       describe as a feature
-- [ ] When consolidating, carry one framing out of the backup section into the
+- [x] When consolidating, carry one framing out of the backup section into the
       census: what a destroyed host costs is usually **the conversation and the
       configuration, not the work**, because every turn commits and pushes and
       archiving refuses to reclaim a checkout it cannot confirm is on the
@@ -50,7 +50,7 @@ census in `how-shipit-works.md`.
       push succeed. Unconditional "it's on GitHub" is the wrong reassurance, and
       a project's own Compose volumes are outside all of this and were never
       durable at all.
-- [ ] **Consolidate the index.** Each page's PR body ends with
+- [x] **Consolidate the index.** Each page's PR body ends with
       `## Rows for the index`; children do not edit `wiki/README.md` or
       `how-shipit-works.md` themselves (see `plan.md`). Once the pages have
       landed, add every question-map row and census row in one pass, phrased in
