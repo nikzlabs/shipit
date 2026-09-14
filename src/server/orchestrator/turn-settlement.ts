@@ -55,6 +55,27 @@ export function turnInterrupted(detail?: string): TurnOutcome {
   return { status: "interrupted", errored: false, ...(detail ? { detail } : {}) };
 }
 
+/**
+ * A notice riding a turn's prompt whose delivery is written off only once the
+ * agent has actually produced a result for that prompt
+ * (docs/299-agent-settings-access req 8).
+ *
+ * The alternative — marking at prompt assembly, as the bug-report notice does —
+ * loses the notice for good on a turn the agent never saw. Nothing downstream
+ * proves the agent read a prompt, so this is a **positive** signal and not a
+ * verdict over `TurnOutcome`: `delivered()` is called from exactly one place,
+ * where the executor has a real agent result in hand and has already decided not
+ * to fail over. Everything else — a crash, an interruption, a provider refusal,
+ * a turn that never spawned — simply never calls it, and the outcome rides the
+ * next turn. `completed` is NOT the test: a quota refusal on a route that cannot
+ * fail over arrives as an ordinary `agent_result` and settles the turn
+ * `completed` with nothing having run.
+ */
+export interface NoticeDelivery {
+  /** Idempotent: a turn may reach this point once, and must not need to. */
+  delivered(): void;
+}
+
 /** Never admitted: the dispatch asked to fail rather than wait in the queue. */
 export function turnRefused(detail: string): TurnOutcome {
   return { status: "refused", errored: true, detail };

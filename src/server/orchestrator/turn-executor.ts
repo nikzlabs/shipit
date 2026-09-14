@@ -45,7 +45,7 @@ import { formatSecretScanNotice } from "./services/secret-scan-notice.js";
 import { formatUnreadableWorkspaceNotice } from "./services/unreadable-workspace-notice.js";
 import { sessionAutoCommitAllowed } from "./services/auto-commit-gate.js";
 import { emitChatCard, emitNoticeInTurn, emitNoticePostTurn } from "./chat-card-persistence.js";
-import { TURN_COMPLETED, turnErrored, turnInterrupted, turnNoResult, type TurnOutcome } from "./turn-settlement.js";
+import { TURN_COMPLETED, turnErrored, turnInterrupted, turnNoResult, type NoticeDelivery, type TurnOutcome } from "./turn-settlement.js";
 import type { AgentInterfaceProvenance } from "../shared/agent-interface-sdk/protocol.js";
 import { getAgentCapabilities } from "../shared/agent-registry.js";
 
@@ -92,6 +92,13 @@ export interface TurnInput {
   postTurn?: "commit-push" | "none";
   systemTurn?: boolean;
   onTurnComplete?: (outcome: TurnOutcome) => void;
+  /**
+   * Receipts for notices already built into `prompt`, acknowledged only once the
+   * agent has produced a real result for it (docs/299-agent-settings-access
+   * req 8). A retry carries them onto its successor, so only the attempt that
+   * actually ran acknowledges.
+   */
+  noticeDeliveries?: readonly NoticeDelivery[];
   deliveryId?: string;
   adopt?: boolean;
   compact?: boolean;
@@ -129,6 +136,16 @@ export async function executeAgentTurn(
       arm();
     } catch (err) {
       console.error("[turn] arming the post-turn auto-push failed:", err);
+    }
+  };
+
+  const notePromptDelivered = (): void => {
+    for (const delivery of input.noticeDeliveries ?? []) {
+      try {
+        delivery.delivered();
+      } catch (err) {
+        console.error(`[turn] a prompt-notice receipt for ${sessionId} threw:`, err);
+      }
     }
   };
 
@@ -894,6 +911,14 @@ export async function executeAgentTurn(
         retireOnSpentAccount({ summaryIsTheNotice: !event.error });
       });
     }
+    // The one point at which anything riding this prompt has been delivered: a
+    // result is in hand, and the failover decision above is already made. A
+    // refusal is not a result — `exhausted` is the provider turning the turn
+    // away (including as successful-looking text), and an error result is a
+    // prompt that did not run — so both leave the notice for the next turn. This
+    // must stay HERE and not in `settleTurn`: a resident streaming turn settles
+    // no turn at all, and its listeners are discarded by the next reuse.
+    if (!exhausted && !event.error && event.status !== "error") notePromptDelivered();
     // Retry decisions still need adoption state; finalization after a result does not.
     servingAdoptedTurn = false;
     if (useStreaming) {

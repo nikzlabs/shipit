@@ -64,9 +64,7 @@ No agent-facing surface; the proposal card is the next slice.
 
 Not in this slice, and named in `plan.md` → *What a card can apply today*: the
 collection operations that create and delete entries, and the credential and
-provider-account labels. The notice that tells the agent about a resolved card at
-the start of its next turn (req 8's second half) is the remaining work; the read
-carries the outcome today.
+provider-account labels.
 
 ## Conformance against reqs 2, 3 and 7
 
@@ -102,3 +100,30 @@ requirements; each finding verified at the code before being acted on.
       routing description trimmed to what the band renders; and the name gate's
       claim narrowed to what it does — it removes a URL, it is not a credential
       scanner, and the design rejected scanners
+
+## Phase 2, slice 3 — the outcome notice (req 8)
+
+- [x] `agent_notified` on the private proposal row, with
+      `listUnnotifiedResolved` / `markAgentNotified` as two separate calls —
+      reading is never a consume
+- [x] `services/settings-outcome-notice.ts` — the notice, joining the same
+      `agentPrefix` chain as the bug-report notice, batching every outcome
+      resolved since the last turn into one and starting no turn of its own
+- [x] `NoticeDelivery` in `turn-settlement.ts`, acknowledged from ONE place in
+      `turn-executor.ts` — the `agent_result` handler, after the `exhausted`
+      check and the failover decision, and never for an error result
+- [x] At-least-once proven on all four shapes review found: every account
+      refusing for quota; a refusal on a route that cannot fail over, which
+      settles the turn `completed`; a refusal arriving as successful-looking
+      assistant text; and an error result. Each carries the outcome to the next
+      runnable turn
+- [x] A resident streaming turn, which calls `finishTurn` never and whose
+      listeners the next reuse discards, acknowledges on its result
+- [x] A card resolved with no runner alive still notifies on the next turn
+- [x] `shipit-docs/settings.md` — what the notice is, that `lastProposal` is the
+      authority, and that it can arrive twice
+- [x] Every new guard proven red on its own: marking at prompt assembly (the
+      bug-report copy) fails the quota tests; acknowledging at settlement on a
+      `completed` outcome fails all three of the refusal and resident-streaming
+      tests; dropping either clause of the result check fails its own test;
+      un-flattening any one interpolated field fails the flattening test

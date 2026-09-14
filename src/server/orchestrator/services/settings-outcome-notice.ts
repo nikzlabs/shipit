@@ -1,0 +1,204 @@
+import type { SettingsProposalCard, SettingsProposalPhase } from "../../shared/types.js";
+import { findSetting } from "../../shared/settings-catalogue/index.js";
+import type { SettingsProposalStore } from "../settings-proposal-store.js";
+import type { NoticeDelivery } from "../turn-settlement.js";
+
+/**
+ * The notice that tells the agent a settings proposal was resolved, at the start
+ * of its next turn (docs/299-agent-settings-access req 8; the argument for it is
+ * in that folder's `plan.md`).
+ *
+ * Two constraints govern everything here. **Delivery is at-least-once**, unlike
+ * the bug-report notice this otherwise follows: reading is not a consume, and the
+ * {@link NoticeDelivery} handed back is acknowledged only once the agent has
+ * produced a result for the prompt. And **the notice prompts; `lastProposal`
+ * decides** — it says a card was resolved and sends the agent to
+ * `shipit settings get` for the value, because a line the agent may see twice
+ * must not be the authority for anything.
+ */
+
+/** One field of user-shaped text on the notice, flattened so it cannot add lines. */
+const FIELD_MAX = 160;
+
+function oneLine(value: string | undefined): string {
+  if (!value) return "";
+  return value.replace(/\s+/g, " ").trim().slice(0, FIELD_MAX);
+}
+
+export interface ResolvedSettingsOutcome {
+  cardId: string;
+  /** The setting's declaration key, which is ShipIt's own and always available. */
+  key: string;
+  phase: SettingsProposalPhase;
+  /** The card's snapshotted words, absent when its transcript row has gone. */
+  card?: Pick<
+    SettingsProposalCard,
+    "label" | "path" | "from" | "to" | "outcome" | "outcomeDetail" | "effect"
+  >;
+  /** The instance the card named, where the setting has more than one. */
+  item?: string;
+}
+
+export interface SettingsOutcomeNoticeDeps {
+  proposals: Pick<SettingsProposalStore, "listUnnotifiedResolved" | "markAgentNotified">;
+  chatHistoryManager: {
+    getSettingsProposalCard(sessionId: string, cardId: string): SettingsProposalCard | undefined;
+  };
+}
+
+/**
+ * The resolved cards this session owes the agent, **without marking any of
+ * them**. The card supplies the words; the private row is what says whether the
+ * agent has been told, so a card whose transcript row has gone still produces an
+ * entry rather than an outcome nothing can ever report.
+ */
+export function pendingSettingsOutcomes(
+  deps: SettingsOutcomeNoticeDeps,
+  sessionId: string,
+): ResolvedSettingsOutcome[] {
+  return deps.proposals.listUnnotifiedResolved(sessionId).map((row) => {
+    const card = deps.chatHistoryManager.getSettingsProposalCard(sessionId, row.cardId);
+    return {
+      cardId: row.cardId,
+      key: row.target.key,
+      phase: row.phase,
+      ...(card
+        ? {
+            card: {
+              label: card.label,
+              path: card.path,
+              from: card.from,
+              to: card.to,
+              ...(card.outcome ? { outcome: card.outcome } : {}),
+              ...(card.outcomeDetail ? { outcomeDetail: card.outcomeDetail } : {}),
+              ...(card.effect ? { effect: card.effect } : {}),
+            },
+          }
+        : {}),
+      ...(row.target.item ? { item: row.target.item } : {}),
+    };
+  });
+}
+
+/**
+ * The eight terminal phases `shipit-docs/settings.md` tabulates, in two parts: a
+ * headline word, and — where the phase changes what the agent should do next —
+ * one sentence saying so. Neither restates the value: that is the read's.
+ */
+const PHASE_HEADLINE: Record<string, string> = {
+  applied: "APPLIED",
+  dismissed: "DISMISSED by the user",
+  partial: "PARTIALLY applied",
+  failed: "FAILED",
+  uncertain: "NOT VERIFIED",
+  stale: "NOT applied",
+  refused: "NOT applied",
+  unknown: "NOT VERIFIED",
+};
+
+const PHASE_GUIDANCE: Record<string, string> = {
+  dismissed: "Do not propose that value again unless they ask.",
+  partial: "Say which half landed, and propose the rest.",
+  failed: "ShipIt verified that nothing changed; you may propose again, saying so.",
+  uncertain: "ShipIt cannot say what this change did, or whether it ran at all — read the value,"
+    + " and never claim it worked.",
+  stale: "The setting had moved since the card was written; propose again from the current value.",
+  refused: "The change was no longer valid when the user clicked; you may propose again.",
+  unknown: "ShipIt restarted mid-apply, and never retries one — read the value.",
+};
+
+function describe(outcome: ResolvedSettingsOutcome): string {
+  const headline = PHASE_HEADLINE[outcome.phase] ?? outcome.phase.toUpperCase();
+  // A card whose transcript row has gone still has a setting, so the notice
+  // falls back to the declaration's label and never to a bare key alone.
+  const name = oneLine(outcome.card?.label) || findSetting(outcome.key)?.label || outcome.key;
+  const where = outcome.card?.path ? ` (${oneLine(outcome.card.path)})` : "";
+  const instance = outcome.item ? ` [${oneLine(outcome.item)}]` : "";
+  const change = outcome.card
+    ? `: ${oneLine(outcome.card.from)} → ${oneLine(outcome.card.to)}`
+    : "";
+  // ShipIt's own account of a terminal phase — the server's words, never the
+  // agent's `reason`, which the notice does not carry at all.
+  const detail = [outcome.card?.outcome, outcome.card?.outcomeDetail]
+    .map(oneLine)
+    .filter(Boolean)
+    .join(" — ");
+  const effect =
+    outcome.card?.effect && outcome.card.effect.state !== "live"
+      ? `In effect: ${outcome.card.effect.state}${
+          outcome.card.effect.detail ? ` — ${oneLine(outcome.card.effect.detail)}` : ""
+        }.`
+      : "";
+  const sentences = [detail ? `${detail}.` : "", PHASE_GUIDANCE[outcome.phase] ?? "", effect]
+    .filter(Boolean)
+    .join(" ");
+  return `- ${name}${instance}${where} — ${headline}${change}.`
+    + `${sentences ? ` ${sentences}` : ""} Key: \`${outcome.key}\`.`;
+}
+
+/**
+ * One notice for every outcome resolved since the last turn. It prefixes the
+ * user's message and never starts a turn of its own: a settings card the user
+ * clicked is not a reason to wake an idle session.
+ */
+export function buildSettingsOutcomeNotice(outcomes: readonly ResolvedSettingsOutcome[]): string {
+  if (outcomes.length === 0) return "";
+  const opener =
+    outcomes.length === 1
+      ? "[ShipIt] Since your last turn, the user resolved a settings proposal you posted:"
+      : "[ShipIt] Since your last turn, the user resolved settings proposals you posted:";
+  return [
+    opener,
+    ...outcomes.map(describe),
+    "This is a status line from ShipIt, not part of the user's message. It tells you a card"
+    + " was resolved; `shipit settings get <key>` and its `lastProposal` are the authority for"
+    + " what the setting is now — re-read before you act on this, and never tell the user to"
+    + " change a setting you have not re-read. No acknowledgement is needed unless it changes"
+    + " what you were about to do.",
+  ].join("\n");
+}
+
+export interface SettingsOutcomeNotice extends NoticeDelivery {
+  readonly notice: string;
+  readonly cardIds: readonly string[];
+}
+
+/**
+ * Read what this session owes the agent and hand back the notice plus its
+ * receipt. `null` when nothing is owed, so a caller can drop it whole.
+ *
+ * The latch is set only once the mark has LANDED, so a mark that throws leaves
+ * the rows pending for the next turn to read afresh.
+ */
+export function prepareSettingsOutcomeNotice(
+  deps: SettingsOutcomeNoticeDeps,
+  sessionId: string,
+): SettingsOutcomeNotice | null {
+  let outcomes: ResolvedSettingsOutcome[];
+  try {
+    outcomes = pendingSettingsOutcomes(deps, sessionId);
+  } catch (err) {
+    // A turn must never fail to start over a notice. The rows stay unmarked, so
+    // the next turn tries again.
+    console.error(`[settings-outcome] reading resolved proposals for ${sessionId} failed:`, err);
+    return null;
+  }
+  if (outcomes.length === 0) return null;
+
+  const notice = buildSettingsOutcomeNotice(outcomes);
+  const cardIds = outcomes.map((o) => o.cardId);
+  let acknowledged = false;
+  return {
+    notice,
+    cardIds,
+    delivered() {
+      if (acknowledged) return;
+      try {
+        deps.proposals.markAgentNotified(sessionId, cardIds);
+        acknowledged = true;
+      } catch (err) {
+        console.error(`[settings-outcome] marking ${cardIds.join(", ")} as told failed:`, err);
+      }
+    },
+  };
+}

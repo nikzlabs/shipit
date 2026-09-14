@@ -45,6 +45,12 @@ export interface SettingsProposalRow {
   baseline?: unknown;
   createdAt: string;
   resolvedAt?: string;
+  /**
+   * Whether the agent has been told this card was resolved (req 8). Set only
+   * once a turn carrying the notice settled as a real agent turn, never at
+   * prompt assembly — see `services/settings-outcome-notice.ts`.
+   */
+  agentNotified: boolean;
 }
 
 interface ProposalRow {
@@ -60,6 +66,7 @@ interface ProposalRow {
   baseline_json: string | null;
   created_at: string;
   resolved_at: string | null;
+  agent_notified: number | null;
 }
 
 function parse(json: string | null): unknown {
@@ -87,8 +94,16 @@ function fromRow(row: ProposalRow): SettingsProposalRow {
     ...(row.baseline_json === null ? {} : { baseline: parse(row.baseline_json) }),
     createdAt: row.created_at,
     ...(row.resolved_at ? { resolvedAt: row.resolved_at } : {}),
+    agentNotified: row.agent_notified === 1,
   };
 }
+
+/**
+ * A card the user has finished with: everything except the two phases that are
+ * still waiting on somebody. `applying` is excluded because the decision is
+ * mid-flight and its own terminal write is what the agent needs to hear about.
+ */
+const UNRESOLVED_PHASES: readonly SettingsProposalPhase[] = ["pending", "applying"];
 
 export class SettingsProposalStore {
   private db;
@@ -97,7 +112,7 @@ export class SettingsProposalStore {
     this.db = dbManager.db;
   }
 
-  create(row: Omit<SettingsProposalRow, "resolvedAt">): void {
+  create(row: Omit<SettingsProposalRow, "resolvedAt" | "agentNotified">): void {
     this.db.prepare(
       `INSERT INTO settings_proposals
          (card_id, session_id, setting_key, repo_url, item, operation, phase, from_json, proposed_json, baseline_json, created_at, resolved_at)
@@ -206,6 +221,39 @@ export class SettingsProposalStore {
       )
       .run(to, resolvedAt ?? null, cardId, sessionId, from);
     return res.changes > 0;
+  }
+
+  /**
+   * One session's resolved cards the agent has not been told about, oldest
+   * first (req 8). A **read**, not a consume: marking here is what loses an
+   * outcome for good when the turn then fails to reach the agent, so the
+   * acknowledgement is a separate call the turn's settlement makes.
+   */
+  listUnnotifiedResolved(sessionId: string): SettingsProposalRow[] {
+    const placeholders = UNRESOLVED_PHASES.map(() => "?").join(", ");
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM settings_proposals
+         WHERE session_id = ? AND agent_notified = 0 AND phase NOT IN (${placeholders})
+         ORDER BY created_at, rowid`,
+      )
+      .all(sessionId, ...UNRESOLVED_PHASES) as ProposalRow[];
+    return rows.map(fromRow);
+  }
+
+  /**
+   * Record that the agent has been told about these cards. Session-scoped for
+   * the same reason every other write here is: a card id names a row in one
+   * session's transcript.
+   */
+  markAgentNotified(sessionId: string, cardIds: readonly string[]): void {
+    if (cardIds.length === 0) return;
+    const stmt = this.db.prepare(
+      "UPDATE settings_proposals SET agent_notified = 1 WHERE card_id = ? AND session_id = ?",
+    );
+    this.db.transaction(() => {
+      for (const cardId of cardIds) stmt.run(cardId, sessionId);
+    })();
   }
 
   /** Every card in one phase, for the boot pass that resolves interrupted applies. */

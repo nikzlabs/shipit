@@ -3,6 +3,7 @@ import { perSessionCredentialsDir } from "./session-credentials-scaffold.js";
 import { restoreOpenCodeAccount } from "./openai-account-delivery.js";
 import { accountOwnerHarness } from "./provider-account-manager.js";
 import { AgentMergeClaimStore } from "./agent-merge-claims.js";
+import { SettingsProposalStore } from "./settings-proposal-store.js";
 import { reconcileAgentMergeClaims } from "./services/agent-merge-settlement.js";
 import { AgentMergeExecutor } from "./services/agent-merge-executor.js";
 import { serviceForLoginIntegration } from "../shared/catalogue/index.js";
@@ -565,6 +566,9 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
   };
 
   const agentMergeClaims = new AgentMergeClaimStore(databaseManager);
+  // A second handle over the same table as the routes' own: the store holds a
+  // database and no state, and a turn needs it before the route layer exists.
+  const settingsProposals = new SettingsProposalStore(databaseManager);
 
   const quotaContinuationRef: { ref: QuotaContinuationManager | null } = { ref: null };
 
@@ -585,6 +589,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     publishOverlayBases,
     activatePluginRepos,
     resolvePluginServices,
+    settingsProposals,
     logStore,
     ...(dockerSecretsConfig ? { dockerSecretsConfig } : {}),
     serviceEnvDir,
