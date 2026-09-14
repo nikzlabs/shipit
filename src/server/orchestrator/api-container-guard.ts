@@ -27,6 +27,9 @@ const HARD_DENY_PREFIXES = [
   "/api/credential-routes",
   "/api/trackers",
   "/api/updates",
+  // docs/305 — the SSH registry. Its reads are public projections, but a
+  // container has no business editing destinations or reading the list.
+  "/api/ssh-hosts",
 ] as const;
 
 export function isHardDeniedGlobal(pathname: string): boolean {

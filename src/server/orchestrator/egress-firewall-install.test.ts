@@ -109,6 +109,29 @@ describe("buildTierAEgressInputs", () => {
     expect(inputs.hosts).toEqual([...EGRESS_TIER_A_RESOLVE_HOSTS]);
     expect(inputs.cidrs).toContain("140.82.112.0/20");
   });
+
+  /**
+   * docs/305 — an IP-literal SSH destination has to be in the firewall's INPUT,
+   * not applied afterwards: `init-firewall.sh` rebuilds the ipsets on every
+   * reinstall, so a one-off `ipset add` would vanish on container recreation.
+   */
+  it("carries per-session SSH CIDRs into the input alongside GitHub's", async () => {
+    const inputs = await buildTierAEgressInputs({
+      fetchImpl: (async () => jsonResponse({ api: ["140.82.112.0/20"] })) as unknown as typeof fetch,
+      extraCidrs: ["100.83.12.47/32"],
+    });
+    expect(inputs.cidrs).toContain("140.82.112.0/20");
+    expect(inputs.cidrs).toContain("100.83.12.47/32");
+  });
+
+  it("drops a malformed CIDR rather than failing the whole install", async () => {
+    const inputs = await buildTierAEgressInputs({
+      fetchImpl: (async () => jsonResponse({ api: ["140.82.112.0/20"] })) as unknown as typeof fetch,
+      extraCidrs: ["not-a-cidr", "10.0.0.1/32", "10.0.0.1/32"],
+    });
+    expect(inputs.cidrs).not.toContain("not-a-cidr");
+    expect(inputs.cidrs.filter((c) => c === "10.0.0.1/32")).toHaveLength(1);
+  });
 });
 
 function fakeDocker(exitCode: number) {

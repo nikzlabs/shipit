@@ -72,10 +72,24 @@ export interface TierAEgressInputs {
   cidrs: string[];
 }
 
+export interface TierAInputOpts extends FetchCidrsOpts {
+  /**
+   * docs/305 — per-session CIDRs derived from durable SSH grants. They belong in
+   * the firewall's INPUT rather than in a later `ipset add`, because
+   * `init-firewall.sh:68` destroys and rebuilds the sets whenever the firewall
+   * reinstalls; a grant applied only to the running namespace would vanish.
+   */
+  extraCidrs?: readonly string[];
+}
+
 // Resolve hosts inside the agent's network namespace before installing the deny policy.
-export async function buildTierAEgressInputs(opts: FetchCidrsOpts = {}): Promise<TierAEgressInputs> {
+export async function buildTierAEgressInputs(opts: TierAInputOpts = {}): Promise<TierAEgressInputs> {
   const cidrs = await fetchGitHubMetaCidrs(opts);
-  return { hosts: [...EGRESS_TIER_A_RESOLVE_HOSTS], cidrs };
+  const extra = (opts.extraCidrs ?? []).filter((c) => isValidCidr(c));
+  return {
+    hosts: [...EGRESS_TIER_A_RESOLVE_HOSTS],
+    cidrs: [...new Set([...cidrs, ...extra])],
+  };
 }
 
 export interface InstallEgressFirewallOpts {

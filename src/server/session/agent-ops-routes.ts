@@ -219,6 +219,16 @@ export function registerAgentOpsRoutes(
     async (request, reply) => relay("POST", "/git/credential", request.body ?? {}, reply),
   );
 
+  // docs/305 — the same relay the worker's agent socket uses, for anything that
+  // speaks the agent protocol from outside this process.
+  app.get("/agent-ops/ssh/identities", async (_request, reply) =>
+    relay("GET", "/ssh/identities", undefined, reply));
+
+  app.post<{ Body: { keyBlob?: string; data?: string; bind?: string } }>(
+    "/agent-ops/ssh/sign",
+    async (request, reply) => relay("POST", "/ssh/sign", request.body ?? {}, reply),
+  );
+
   // Plugin installs can take minutes; keep the relay unbounded.
   app.post<{ Body: { repo?: string; force?: boolean } }>(
     "/agent-ops/plugin/refresh",

@@ -79,6 +79,26 @@ const DERIVED_FIXTURES: Record<string, unknown> = {
   ],
   "network.egress.hosts[].host": `https://svc:${TOKEN}@example.com/hook?token=${TOKEN}`, // gitleaks:allow
   "project.secrets": { SENTRY_DSN: TOKEN, DATABASE_URL: TOKEN, [CREDENTIAL_NAME]: "x" },
+  // docs/305 — the reader passes the public projection today, so this fixture is
+  // deliberately the STORED record instead: the projection has to drop the
+  // private key even if a later change hands it the wrong shape. The token
+  // stands in for the key with no PEM armour, which would only make a fake
+  // value look real to a secret scanner without strengthening the assertion.
+  "integrations.sshHosts": [
+    {
+      id: "ssh_1",
+      label: "prod",
+      address: "prod.example.com",
+      user: "deploy",
+      privateKeyPem: TOKEN,
+      identityLine: `ssh-ed25519 AAAA ${TOKEN}`,
+      authorizedKeysLine: `no-agent-forwarding ssh-ed25519 AAAA ${TOKEN}`,
+      hostKeyBlob: TOKEN,
+    },
+    { id: "ssh_2", label: "staging", address: "10.0.0.5", user: "root", privateKeyPem: TOKEN },
+    // A label is free text, so a pasted URL is a possible stored value.
+    { id: "ssh_3", label: CREDENTIAL_NAME, address: "x.example.com", user: "root" },
+  ],
 };
 
 /**
@@ -185,6 +205,18 @@ describe("every other derived projection", () => {
     );
 
     expect(outcome).toEqual({ readable: true, value: ["route-1", "route-2"] });
+  });
+
+  // The name gate the other name-addressed collections use: the labels the user
+  // chose are emitted, and the one shape that carries a credential without
+  // anyone choosing to — a URL pasted into the name box — is named by nothing.
+  it("emits only the destinations' names, never their key material", () => {
+    const outcome = projectSetting(
+      declarationFor("integrations.sshHosts"),
+      DERIVED_FIXTURES["integrations.sshHosts"],
+    );
+
+    expect(outcome).toEqual({ readable: true, value: ["prod", "staging"] });
   });
 
   it("drops an allowlist entry that is not a host, since it can match none", () => {

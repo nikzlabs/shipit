@@ -54,6 +54,12 @@ export interface SessionInfo {
   titleSource?: SessionTitleSource;
   kind?: "ops" | "sandbox";
   capabilities?: SessionCapabilities;
+  /**
+   * docs/305 — SSH destinations granted to this session, by host id.
+   * Server-authoritative like `capabilities`: the agent can edit `~/.ssh/config`
+   * but the signer reads only this.
+   */
+  sshHosts?: string[];
   createdAt: string;
   lastUsedAt: string;
   workspaceDir?: string;

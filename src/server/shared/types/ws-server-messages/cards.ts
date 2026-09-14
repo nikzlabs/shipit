@@ -13,6 +13,7 @@ import type {
   SessionSettingsChangeCard,
   SettingsProposalCard,
   NonTurnFailureCard,
+  SshHostKeyCard,
 } from "../domain-types.js";
 import type { ReleaseStatusSummary } from "../release-types.js";
 import type { VoiceNoteSource } from "../voice-note-types.js";
@@ -202,6 +203,13 @@ export interface WsSessionSettingsChangeCard {
   type: "session_settings_change_card";
   sessionId: string;
   card: SessionSettingsChangeCard;
+}
+
+/** docs/305 req 9 — the recorded host-key fingerprint, or a mismatch refusal. */
+export interface WsSshHostKeyCard {
+  type: "ssh_host_key_card";
+  sessionId: string;
+  card: SshHostKeyCard;
 }
 
 /** docs/299-agent-settings-access req 4 — a settings change the user has to click. */

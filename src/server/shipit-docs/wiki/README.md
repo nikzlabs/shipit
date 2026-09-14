@@ -122,6 +122,7 @@ is. Nobody says "rewind" or "Tailscale" until after they have learned to.
 | "what's this Plugins tab", "it says something needs a key" | [plugins-and-skills.md](plugins-and-skills.md) — the Plugins tab |
 | "get the latest version of that plugin", "it's out of date" | [plugins-and-skills.md](plugins-and-skills.md) — refreshing |
 | "connect Notion", "let it read our Sentry", "add my own tools" | [plugins-and-skills.md](plugins-and-skills.md) — MCP servers |
+| "deploy to my server", "ssh into the box", "run this on production", "give it access to my VPS" | [settings-and-accounts.md](settings-and-accounts.md) — SSH hosts, and `/shipit-docs/ssh.md` for using one |
 | "it can't see my Notion pages any more" | [plugins-and-skills.md](plugins-and-skills.md) — reconnect an expired MCP connection |
 | "connect my Claude account", "sign in to ChatGPT", "where do I put my provider key" | [settings-and-accounts.md](settings-and-accounts.md) — connecting a provider |
 | "I've run out", "how much have I got left", "what's my limit", "it says quota" | [settings-and-accounts.md](settings-and-accounts.md) — usage and subscription limits; [troubleshooting.md](troubleshooting.md) for a turn that failed on it |
@@ -161,7 +162,7 @@ is. Nobody says "rewind" or "Tailscale" until after they have learned to.
 | [previews.md](previews.md) | The preview pane and Compose services: what a preview is, which sessions have one, what the project must declare, the Services drawer, device viewports, the Errors panel, and why a preview goes blank |
 | [pull-requests.md](pull-requests.md) | The GitHub loop: the pull-request card, reviews and threads, the user's own review, CI and auto-fix, conflicts, merging and auto-merge, rollback, and cutting a release |
 | [issues-and-docs.md](issues-and-docs.md) | The Issues panel and the Docs tab: trackers and how one is declared, filtering and sorting, starting a session from an issue, closing one on merge, the docs list, and commenting on a selection in a document |
-| [settings-and-accounts.md](settings-and-accounts.md) | The two settings dialogs and their tabs: connecting a provider, several credentials on one service, choosing what a session runs on, roles and the reviewer, background work, usage limits, themes and keyboard shortcuts |
+| [settings-and-accounts.md](settings-and-accounts.md) | The two settings dialogs and their tabs: connecting a provider, several credentials on one service, choosing what a session runs on, roles and the reviewer, SSH hosts, background work, usage limits, themes and keyboard shortcuts |
 | [plugins-and-skills.md](plugins-and-skills.md) | Skills and where they come from, installing one from a catalogue, plugin repositories and the Plugins tab, and MCP servers |
 | [troubleshooting.md](troubleshooting.md) | Indexed by the symptom the user describes: a blank preview, a stuck agent, a disabled composer, blocked commits, a diverged branch, silent CI, a dying container, blocked egress, a crashed service |
 | [deploying.md](deploying.md) | Getting the project onto a real URL: connecting a hosting platform, deploying on every push, deploy status on the pull request, what to do when a deploy fails, and what ShipIt does not do |

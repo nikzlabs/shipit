@@ -47,6 +47,8 @@ import { FileWatcherController } from "./file-watcher-controller.js";
 import { InstallController } from "./install-controller.js";
 import { preparePlugins, type PluginPrepareResult } from "./plugin-runtime.js";
 import { ensurePluginBinOnPath } from "./plugin-cli.js";
+import { SshAgentSocket, type SshAgentIdentity } from "./ssh-agent-socket.js";
+import { OrchestratorClient as OrchestratorClientImpl } from "./orchestrator-client.js";
 
 export type { WorkerSSEEvent } from "./sse-broadcaster.js";
 export type { WorkerAgentFactory } from "./agent-controller.js";
@@ -89,6 +91,9 @@ export class SessionWorker extends EventEmitter {
   private readonly presentRegistry = new PresentRegistry();
 
   private readonly permissionBroker: PermissionBroker;
+
+  /** Present only when SSH_AUTH_SOCK names a path (docs/305). */
+  private sshAgentSocket: SshAgentSocket | null = null;
 
   constructor(deps: SessionWorkerDeps) {
     super();
@@ -524,7 +529,48 @@ export class SessionWorker extends EventEmitter {
 
   async start(): Promise<string> {
     const address = await this.app.listen({ port: this.port, host: this.host });
+    await this.startSshAgentSocket();
     return address;
+  }
+
+  /**
+   * The socket is best-effort: a worker that cannot open it must still serve
+   * turns. `ssh` then fails with "no such identity", which is the same failure
+   * as an ungranted destination and says so in the agent's own output.
+   */
+  private async startSshAgentSocket(): Promise<void> {
+    const socketPath = process.env.SSH_AUTH_SOCK;
+    if (!socketPath) return;
+    const client = this._createOrchestratorClient
+      ? this._createOrchestratorClient()
+      : (() => {
+          try { return new OrchestratorClientImpl(); } catch { return null; }
+        })();
+    if (!client) return;
+    const socket = new SshAgentSocket({
+      socketPath,
+      identities: async (): Promise<SshAgentIdentity[]> => {
+        const res = await client.request("GET", "/ssh/identities");
+        const body = res.body as { identities?: SshAgentIdentity[] } | undefined;
+        return res.ok && Array.isArray(body?.identities) ? body.identities : [];
+      },
+      sign: async (request) => {
+        const res = await client.request("POST", "/ssh/sign", request);
+        const body = res.body as { signature?: string; error?: string } | undefined;
+        if (!res.ok || typeof body?.signature !== "string") {
+          console.warn(`[ssh-agent] orchestrator refused to sign: ${body?.error ?? `HTTP ${res.status}`}`);
+          return null;
+        }
+        return body.signature;
+      },
+    });
+    try {
+      await socket.start();
+      this.sshAgentSocket = socket;
+      console.log(`[ssh-agent] listening on ${socketPath}`);
+    } catch (err) {
+      console.warn(`[ssh-agent] could not open ${socketPath}: ${getErrorMessage(err)}`);
+    }
   }
 
   async stop(): Promise<void> {
@@ -537,6 +583,8 @@ export class SessionWorker extends EventEmitter {
       try { raw.end(); } catch { /* already closed */ }
     }
     this.sse.clear();
+    await this.sshAgentSocket?.stop();
+    this.sshAgentSocket = null;
     await this.app.close();
   }
 

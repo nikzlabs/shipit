@@ -69,6 +69,7 @@ import { registerBugReportRoutes } from "./api-routes-bug-report.js";
 import { registerProposeActionsRoutes } from "./api-routes-propose-actions.js";
 import { registerProposeRepoSessionRoutes } from "./api-routes-propose-repo-session.js";
 import { registerEgressRoutes } from "./api-routes-egress.js";
+import { registerSshRoutes } from "./api-routes-ssh.js";
 import { registerIssueRoutes } from "./api-routes-issues.js";
 import { registerPluginRepoRoutes } from "./api-routes-plugin-repos.js";
 import type { PluginRefreshResult } from "./services/plugin-refresh.js";
@@ -262,6 +263,7 @@ export async function registerApiRoutes(
   await registerProposeActionsRoutes(app, deps);
   await registerProposeRepoSessionRoutes(app, deps2);
   await registerEgressRoutes(app, deps);
+  await registerSshRoutes(app, deps);
   await registerIssueRoutes(app, deps);
   await registerPluginRepoRoutes(app, deps);
   await registerLimitsRoutes(app, deps);

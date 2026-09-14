@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { CredentialStore } from "./credential-store.js";
 import { SecretCipher, isEncrypted } from "./secret-cipher.js";
+import { generateSshHostKey } from "./ssh-hosts.js";
 
 describe("CredentialStore", () => {
   let tmpDir: string;
@@ -988,5 +989,89 @@ describe("CredentialStore — update notice (docs/304)", () => {
 
   it("has nothing to report before the first check", () => {
     expect(store().getUpdateNotice("abc123")).toBeNull();
+  });
+});
+
+/**
+ * docs/305 — the store is the only place the private half of an SSH host key
+ * exists. Every read but one projects it away, so a new call site cannot leak it
+ * by forgetting to redact.
+ */
+describe("CredentialStore SSH hosts", () => {
+  let dir: string;
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), "ssh-cred-store-"));
+  });
+
+  afterEach(() => {
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  const generated = () => generateSshHostKey("shipit-prod");
+
+  it("returns no private key from any listing or lookup", () => {
+    const store = new CredentialStore(dir);
+    const key = generated();
+    const created = store.createSshHost(
+      { label: "prod", address: "prod.example.com", user: "deploy" },
+      key,
+    );
+    const secretBody = key.privateKeyPem.replace(/-----[A-Z ]+-----|\s/g, "");
+    const reads = [created, store.listSshHosts()[0], store.getSshHost(created.id)!];
+    for (const read of reads) {
+      expect(JSON.stringify(read)).not.toContain(secretBody);
+      expect(JSON.stringify(read)).not.toContain("PRIVATE KEY");
+      expect(read).not.toHaveProperty("privateKeyPem");
+    }
+    expect(store.getSshHostSigningKey(created.id)?.privateKeyPem).toBe(key.privateKeyPem);
+  });
+
+  it("defaults the port to 22 and survives a reload", () => {
+    const store = new CredentialStore(dir);
+    const created = store.createSshHost({ label: "prod", address: "10.0.0.5", user: "root" }, generated());
+    expect(created.port).toBe(22);
+    expect(new CredentialStore(dir).getSshHost(created.id)).toEqual(created);
+  });
+
+  // Trust on first use: the signer decides a mismatch, so a store that silently
+  // re-pinned would make that decision unreachable.
+  it("records a host key once and refuses to overwrite it", () => {
+    const store = new CredentialStore(dir);
+    const id = store.createSshHost({ label: "prod", address: "prod.example.com", user: "deploy" }, generated()).id;
+    store.recordSshHostKey(id, "AAAA-first", { fingerprint: "SHA256:first", keyType: "ssh-ed25519" });
+    store.recordSshHostKey(id, "AAAA-second", { fingerprint: "SHA256:second", keyType: "ssh-ed25519" });
+    expect(store.getSshHostKeyBlob(id)).toBe("AAAA-first");
+    expect(store.getSshHost(id)?.hostKeyFingerprint).toBe("SHA256:first");
+  });
+
+  it("forgets a recorded key on request, so the next connection records afresh", () => {
+    const store = new CredentialStore(dir);
+    const id = store.createSshHost({ label: "prod", address: "prod.example.com", user: "deploy" }, generated()).id;
+    store.recordSshHostKey(id, "AAAA-first", { fingerprint: "SHA256:first", keyType: "ssh-ed25519" });
+    expect(store.forgetSshHostKey(id)?.hostKeyFingerprint).toBeUndefined();
+    expect(store.getSshHostKeyBlob(id)).toBeUndefined();
+    store.recordSshHostKey(id, "AAAA-second", { fingerprint: "SHA256:second", keyType: "ssh-ed25519" });
+    expect(store.getSshHostKeyBlob(id)).toBe("AAAA-second");
+  });
+
+  // A recorded key pins ONE server. Repointing the destination at another
+  // address would otherwise carry the old server's key onto the new one.
+  it("drops the recorded key when the address or port changes, but not on a rename", () => {
+    const store = new CredentialStore(dir);
+    const id = store.createSshHost({ label: "prod", address: "prod.example.com", user: "deploy" }, generated()).id;
+    store.recordSshHostKey(id, "AAAA-first", { fingerprint: "SHA256:first", keyType: "ssh-ed25519" });
+
+    expect(store.updateSshHost(id, { label: "production" })?.hostKeyFingerprint).toBe("SHA256:first");
+    expect(store.updateSshHost(id, { address: "other.example.com" })?.hostKeyFingerprint).toBeUndefined();
+  });
+
+  it("deletes a destination and its key together", () => {
+    const store = new CredentialStore(dir);
+    const id = store.createSshHost({ label: "prod", address: "prod.example.com", user: "deploy" }, generated()).id;
+    expect(store.deleteSshHost(id)).toBe(true);
+    expect(store.deleteSshHost(id)).toBe(false);
+    expect(store.getSshHostSigningKey(id)).toBeUndefined();
+    expect(new CredentialStore(dir).listSshHosts()).toEqual([]);
   });
 });

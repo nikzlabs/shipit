@@ -237,6 +237,52 @@ export const INTEGRATIONS_SETTINGS = {
     propose: { kind: "no", reason: "secret" },
   }),
 
+  /**
+   * docs/305 — the SSH destination registry. The private half of each key never
+   * leaves the orchestrator's credential store, so the emitted projection is the
+   * destinations' labels and nothing else: a read tells the agent whether a
+   * destination exists, and `~/.ssh/config` tells it which ones THIS session may
+   * use. Adding one is not proposable — it is only useful once the user has
+   * installed its public line on the server, which ShipIt cannot do.
+   *
+   * **The only collection here that declares no `[]` item fields, deliberately.**
+   * Every other one addresses its items, and the registry guard permits this —
+   * it requires an item field to have a declared parent, never a collection to
+   * have items. The reason is that this registry is account-wide while a grant
+   * is per session: `[].address` and `[].user` would let a session read where
+   * every registered destination is and who it logs in as, including the ones it
+   * has no grant for, which is the enumeration the rest of docs/305 is built to
+   * prevent. The detail the agent legitimately needs is the granted detail, and
+   * that already reaches it through `~/.ssh/config`.
+   */
+  "integrations.sshHosts": defineSetting({
+    key: "integrations.sshHosts",
+    tab: "integrations",
+    scope: "global",
+    label: "SSH hosts",
+    description:
+      "Remote servers a session can reach over SSH. ShipIt generates a key for each destination "
+      + "and signs with it; the private half never enters a session container. A destination is "
+      + "granted to a session in that session's own settings, and until it is granted the session "
+      + "can neither reach it nor authenticate to it.",
+    type: collection<string>({ operations: ["add", "remove"], patchableFields: [] }),
+    store: { kind: "bespoke", ownedBy: "credential-store SSH hosts (/api/ssh-hosts)" },
+    // The same shape gate the other name-addressed collections use. A
+    // destination's label is free text — the route caps its length and rejects
+    // control characters and nothing more — so a pasted URL, which carries a
+    // credential in its userinfo and its query as a matter of routine, is a
+    // possible stored value here in a way an MCP server name is not.
+    emits: derived("the destinations' names", (raw) =>
+      userNamesProjection(
+        Array.isArray(raw)
+          ? raw.map((host) => ({ name: (host as { label?: unknown })?.label }))
+          : raw,
+      )),
+    // A destination is inert until its public line is installed on the server,
+    // which is the user's act on a machine ShipIt does not reach.
+    propose: { kind: "no", reason: "external_flow" },
+  }),
+
   "integrations.linear.credential": defineSetting({
     key: "integrations.linear.credential",
     tab: "integrations",

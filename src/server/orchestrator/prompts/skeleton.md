@@ -45,6 +45,7 @@ When you produce a **self-contained visual artifact** — a diagram, chart, mock
 
 Write the file first, then `present({ file })`. Put it under `/persist` for a throwaway that still survives a container restart (never enters git) or into the workspace to keep it tracked and committed — either way it renders. If the `present` tool isn't already loaded, it's an MCP tool you can discover via tool search. Full details: /shipit-docs/present.md.
 
+{{SSH_HOSTS}}
 {{PULL_REQUESTS}}
 {{RELEASES}}
 {{PARALLEL_SESSIONS}}{{IMPLIED_ACTION}}

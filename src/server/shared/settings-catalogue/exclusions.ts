@@ -128,6 +128,37 @@ export const SETTING_EXCLUSIONS: readonly SettingExclusion[] = [
     controls: ["Cancel"],
   },
   {
+    id: "integrations.sshHostPublicLine",
+    tab: "integrations",
+    scope: "global",
+    label: "Copy public key (an SSH destination)",
+    reason: "action",
+    why: "Copies the destination's authorized_keys line to the clipboard so the user can install "
+      + "it on the server. Public material, and it stores nothing.",
+    controls: ["Copy public key", "Copied"],
+  },
+  {
+    id: "integrations.sshHostKeyForget",
+    tab: "integrations",
+    scope: "global",
+    label: "Forget (a recorded SSH host key)",
+    reason: "action",
+    why: "Clears the server key ShipIt recorded on the first connection, so the next one records "
+      + "afresh (docs/305 req 9). It is a reset of an observed fact, not a stored choice — the "
+      + "fingerprint itself is read through `integrations.sshHosts`.",
+    controls: ["Forget"],
+  },
+  {
+    id: "integrations.sshHostForm",
+    tab: "integrations",
+    scope: "global",
+    label: "The add-a-destination form (name, address, user, port)",
+    reason: "action",
+    why: "Draft fields for one `add` operation on `integrations.sshHosts`; nothing is stored until "
+      + "Add destination is pressed, and the collection is what carries the policy.",
+    controls: ["Name (e.g. prod)", "Hostname or IP", "User", "Port", "Cancel"],
+  },
+  {
     id: "integrations.linearTeams",
     tab: "integrations",
     scope: "global",

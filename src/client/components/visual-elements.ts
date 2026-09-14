@@ -67,6 +67,7 @@ export const CARD_MESSAGE_FIELDS = [
   "branchSynced",
   "sessionRenamed",
   "sessionSettingsChange",
+  "sshHostKey",
   "settingsProposal",
   "releaseCard",
   "spawnedSession",

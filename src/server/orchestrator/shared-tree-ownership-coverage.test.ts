@@ -58,6 +58,14 @@ const ALLOWED: Record<string, { count: number; why: string }> = {
     why: "A session directory that has just been created and holds nothing yet — "
       + "a handful of lchowns over empty directories, no object store to reach into.",
   },
+  "orchestrator/ssh-provision.ts": {
+    count: 1,
+    why: "The session's `~/.ssh` (docs/305): three or four small files the orchestrator "
+      + "wrote itself moments earlier, inside the per-session credentials subtree. No git "
+      + "tree, no clone, no shared cache — nothing under it can share an inode with "
+      + "anything, and the directory is materialized first so the walk cannot be "
+      + "redirected out of the subtree by a symlink.",
+  },
   "orchestrator/services/session-fork-merge.ts": {
     count: 1,
     why: "The fork's workspace, cloned with `--no-hardlinks` (required there for its own "

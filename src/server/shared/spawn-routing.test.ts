@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 
-import { claudeModelArg, unshapeClaudeModelId } from "./spawn-routing.js";
+import { claudeModelArg, scrubHarnessEnvCredentials, unshapeClaudeModelId } from "./spawn-routing.js";
 import { MODEL_CONTEXT_WINDOWS } from "./model-windows.js";
 
 describe("claudeModelArg", () => {
@@ -52,5 +52,24 @@ describe("unshapeClaudeModelId", () => {
 
   it("passes through when the spawn selected no model", () => {
     expect(unshapeClaudeModelId("claude-opus-5", undefined)).toBe("claude-opus-5");
+  });
+});
+
+/**
+ * docs/305 — the SSH agent socket reaches a harness's shell tool only because
+ * every adapter spreads the worker environment unchanged. The credential scrub
+ * is the one thing that removes variables on that path, so it is the one thing
+ * that could silently take the socket away.
+ */
+describe("scrubHarnessEnvCredentials and SSH_AUTH_SOCK", () => {
+  it("leaves the agent socket in place for every harness", () => {
+    for (const harness of ["claude", "codex", "opencode", "grok", "antigravity"] as const) {
+      const env: Record<string, string> = {
+        SSH_AUTH_SOCK: "/run/shipit/ssh-agent.sock",
+        ANTHROPIC_API_KEY: "sk-test",
+      };
+      scrubHarnessEnvCredentials(env, harness);
+      expect(env.SSH_AUTH_SOCK, harness).toBe("/run/shipit/ssh-agent.sock");
+    }
   });
 });

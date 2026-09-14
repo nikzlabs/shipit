@@ -41,14 +41,20 @@ import {
   type OverlayProvisionerDeps,
 } from "./container-overlay-provisioner.js";
 import type { DepDirOverlaySpec } from "./overlay-session.js";
-import { egressEnforceEnabled, allowEgressToSubnets } from "./egress-firewall-install.js";
+import {
+  egressEnforceEnabled,
+  allowEgressToSubnets,
+  buildTierAEgressInputs,
+  installEgressFirewall,
+} from "./egress-firewall-install.js";
 import { extractNetworkSubnets } from "./egress-firewall.js";
 import {
   containComposeServices as applyComposeServiceEgress,
   invalidateComposeServiceContainment,
 } from "./compose-service-egress.js";
 import { egressDnsEnabled, orchestratorCallbackHost } from "./egress-dns-install.js";
-import { egressProxyEnabled } from "./egress-proxy-install.js";
+import { egressProxyEnabled, EGRESS_PROXY_UID, EGRESS_PROXY_PORT } from "./egress-proxy-install.js";
+import { EGRESS_RESOLVER_UID } from "./egress-dns.js";
 import {
   kernelRuntime,
   resolveSeccompSecurityOpt,
@@ -155,6 +161,13 @@ export interface SessionContainer {
   capabilitiesAtStart?: SessionCapabilities;
   /** Subnet rules must wait until installation finishes flushing OUTPUT. */
   egressFirewallReady?: Promise<void>;
+  /**
+   * docs/305 — the SSH CIDRs this container's firewall currently admits. Held
+   * because `allowEgressToSubnets` only ever ADDS a rule: without knowing what
+   * was applied, a revoked IP destination stays reachable until the namespace
+   * is rebuilt.
+   */
+  appliedSshCidrs?: string[];
   joinedSessionNetworks?: Set<string>;
 }
 
@@ -483,8 +496,16 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
     if (!cfg.contained) return false;
     const reloadResolver = egressDnsEnabled();
     const reloadProxy = egressProxyEnabled();
-    if (!reloadResolver && !reloadProxy) return false;
     const agentRunning = sc?.status === "running" && Boolean(sc.id);
+
+    // docs/305 — an IP-literal destination issues no DNS query, so reloading the
+    // resolver and proxy cannot admit or withdraw it; only the Tier A ipset can.
+    let cidrsChanged = false;
+    if (agentRunning && sc?.id) {
+      cidrsChanged = await this.applySshCidrs(sc, sessionId, sidecarImage, cfg.extraCidrs ?? []);
+    }
+
+    if (!reloadResolver && !reloadProxy) return cidrsChanged;
     if (agentRunning && sc?.id) {
       await reloadEgressSidecars({
         docker: this.docker,
@@ -507,6 +528,54 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
       throw error;
     }
     return agentRunning;
+  }
+
+  /**
+   * Bring the live namespace's SSH CIDRs to `next`, and report whether anything
+   * moved.
+   *
+   * Adding is cheap — `allowEgressToSubnets` appends ACCEPT rules. **Removing is
+   * not possible that way at all**: nothing withdraws a rule it added. So a
+   * shrinking set reinstalls Tier A, which destroys and rebuilds the ipsets from
+   * `EGRESS_ALLOWED_CIDRS` (`init-firewall.sh:68`), and then reopens the joined
+   * preview networks the reinstall's OUTPUT flush dropped — the same sequence
+   * container creation runs.
+   */
+  private async applySshCidrs(
+    sc: SessionContainer,
+    sessionId: string,
+    sidecarImage: string,
+    next: string[],
+  ): Promise<boolean> {
+    const previous = sc.appliedSshCidrs ?? [];
+    const nextSet = new Set(next);
+    const removed = previous.filter((c) => !nextSet.has(c));
+    const added = next.filter((c) => !previous.includes(c));
+    if (removed.length === 0 && added.length === 0) return false;
+
+    const labels = { ...this.baseLabels(), "shipit-parent-session": sessionId };
+    if (removed.length > 0) {
+      await installEgressFirewall(this.docker, {
+        agentContainerId: sc.id,
+        sidecarImage,
+        inputs: await buildTierAEgressInputs({ extraCidrs: next }),
+        ...(egressDnsEnabled() ? { resolverUid: EGRESS_RESOLVER_UID } : {}),
+        ...(egressProxyEnabled()
+          ? { proxyUid: EGRESS_PROXY_UID, proxyPort: EGRESS_PROXY_PORT }
+          : {}),
+        labels,
+      });
+      await this.reopenJoinedSessionEgress(sessionId);
+    } else {
+      await allowEgressToSubnets(this.docker, {
+        agentContainerId: sc.id,
+        sidecarImage,
+        subnets: added,
+        labels,
+      });
+    }
+    sc.appliedSshCidrs = [...next];
+    return true;
   }
 
   private baseLabels(): Record<string, string> {

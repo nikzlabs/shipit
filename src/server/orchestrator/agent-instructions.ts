@@ -35,6 +35,9 @@ const RELEASES = loadPrompt(import.meta.url, "./prompts/releases.md");
 const NEW_PROJECT_BEST_PRACTICE = loadPrompt(import.meta.url, "./prompts/new-project-best-practice.md");
 const LIVE_PREVIEW = loadPrompt(import.meta.url, "./prompts/live-preview.md");
 const COMPOSE_SERVICES_OPS = loadPrompt(import.meta.url, "./prompts/compose-services-ops.md");
+// Static: the granted list lives in ~/.ssh/config, never in the prompt, so the
+// frozen variants stay byte-stable (CLAUDE.md, Prompts).
+const SSH_HOSTS = loadPrompt(import.meta.url, "./prompts/ssh-hosts.md");
 const CODEX_IMPLIED_ACTION = loadPrompt(
   import.meta.url,
   "./agents/codex/implied-action.md",
@@ -66,6 +69,7 @@ function renderInstructions(
     OPS_SECTION: isOps ? OPS_SECTION : isSandbox ? SANDBOX_SECTION : "",
     GIT_WORKFLOW: isOps ? GIT_WORKFLOW_OPS : isSandbox ? GIT_WORKFLOW_SANDBOX : GIT_WORKFLOW_STANDARD,
     LIVE_PREVIEW: isOps ? COMPOSE_SERVICES_OPS : isSandbox ? "" : LIVE_PREVIEW,
+    SSH_HOSTS,
     PULL_REQUESTS: isOps ? PULL_REQUESTS_OPS : isSandbox ? PULL_REQUESTS_SANDBOX : PULL_REQUESTS_STANDARD,
     RELEASES: isOps || isSandbox ? "" : RELEASES,
     PARALLEL_SESSIONS: parallelSessionsSection,

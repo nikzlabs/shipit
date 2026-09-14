@@ -1,6 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 import { getErrorMessage } from "../shared/utils.js";
+import type { GeneratedSshKey } from "./ssh-hosts.js";
 import { isEncrypted, type SecretCipher } from "./secret-cipher.js";
 import type {
   McpServerConfig,
@@ -18,6 +20,7 @@ import type {
   ReviewerSlot,
   RolePinnedParams,
   UpdateNoticeRecord,
+  SshHostPublic,
 } from "../shared/types.js";
 import {
   credentialModeKey,
@@ -90,6 +93,45 @@ interface CredentialData extends DeclaredSettingsData {
   harnessOnboardingCompletedAt?: string;
   // importedValue detects manual replacement; removed prevents reimport after user deletion.
   adoptedEnvCredentials?: Record<string, { importedValue?: string; removed?: boolean }>;
+  // docs/305 — SSH destinations. The only store the session container cannot reach.
+  sshHosts?: StoredSshHost[];
+}
+
+/**
+ * docs/305 — the stored shape. `privateKeyPem` is the one field no read path
+ * outside {@link CredentialStore.getSshHostSigningKey} may return, which is why
+ * every other accessor projects through {@link publicSshHost} rather than
+ * spreading the record.
+ */
+interface StoredSshHost extends SshHostPublic {
+  privateKeyPem: string;
+  /** base64 of the server's recorded host key (req 9). */
+  hostKeyBlob?: string;
+}
+
+export interface SshHostInput {
+  label: string;
+  address: string;
+  port?: number;
+  user: string;
+}
+
+function publicSshHost(host: StoredSshHost): SshHostPublic {
+  return {
+    id: host.id,
+    label: host.label,
+    address: host.address,
+    port: host.port,
+    user: host.user,
+    publicKeyBlob: host.publicKeyBlob,
+    identityLine: host.identityLine,
+    authorizedKeysLine: host.authorizedKeysLine,
+    fingerprint: host.fingerprint,
+    ...(host.hostKeyFingerprint ? { hostKeyFingerprint: host.hostKeyFingerprint } : {}),
+    ...(host.hostKeyType ? { hostKeyType: host.hostKeyType } : {}),
+    ...(host.hostKeyRecordedAt ? { hostKeyRecordedAt: host.hostKeyRecordedAt } : {}),
+    createdAt: host.createdAt,
+  };
 }
 
 export const MAX_ROLE_NAME_LENGTH = 10_000;
@@ -1011,6 +1053,129 @@ export class CredentialStore {
       ...(stored?.prompt ? { prompt: stored.prompt } : {}),
       params: { kind: "auto" },
     };
+  }
+
+  /** Public projection, always. There is no accessor that returns the record. */
+  listSshHosts(): SshHostPublic[] {
+    return (this.data.sshHosts ?? []).map(publicSshHost);
+  }
+
+  getSshHost(id: string): SshHostPublic | undefined {
+    const found = this.data.sshHosts?.find((h) => h.id === id);
+    return found ? publicSshHost(found) : undefined;
+  }
+
+  /** The SERVER's recorded key — public material, for `known_hosts`. */
+  getSshHostKeyBlob(id: string): string | undefined {
+    return this.data.sshHosts?.find((h) => h.id === id)?.hostKeyBlob;
+  }
+
+  /**
+   * The signer's accessor, and the only one that yields the private key. Named
+   * so a call site that should not have it reads as wrong at the call.
+   */
+  getSshHostSigningKey(id: string): { privateKeyPem: string; hostKeyBlob?: string } | undefined {
+    const found = this.data.sshHosts?.find((h) => h.id === id);
+    if (!found) return undefined;
+    return {
+      privateKeyPem: found.privateKeyPem,
+      ...(found.hostKeyBlob ? { hostKeyBlob: found.hostKeyBlob } : {}),
+    };
+  }
+
+  createSshHost(input: SshHostInput, generated: GeneratedSshKey): SshHostPublic {
+    const host: StoredSshHost = {
+      id: `ssh_${randomUUID()}`,
+      label: input.label,
+      address: input.address,
+      port: input.port ?? 22,
+      user: input.user,
+      privateKeyPem: generated.privateKeyPem,
+      publicKeyBlob: generated.publicKeyBlob,
+      identityLine: generated.identityLine,
+      authorizedKeysLine: generated.authorizedKeysLine,
+      fingerprint: generated.fingerprint,
+      createdAt: new Date().toISOString(),
+    };
+    this.data.sshHosts = [...(this.data.sshHosts ?? []), host];
+    this.save();
+    return publicSshHost(host);
+  }
+
+  /** Changing the address or user drops the recorded host key: it pinned a different server. */
+  updateSshHost(id: string, patch: Partial<SshHostInput>): SshHostPublic | undefined {
+    const hosts = [...(this.data.sshHosts ?? [])];
+    const idx = hosts.findIndex((h) => h.id === id);
+    if (idx < 0) return undefined;
+    const current = hosts[idx];
+    const next: StoredSshHost = {
+      ...current,
+      ...(patch.label !== undefined ? { label: patch.label } : {}),
+      ...(patch.address !== undefined ? { address: patch.address } : {}),
+      ...(patch.port !== undefined ? { port: patch.port } : {}),
+      ...(patch.user !== undefined ? { user: patch.user } : {}),
+    };
+    if (next.address !== current.address || next.port !== current.port) {
+      delete next.hostKeyBlob;
+      delete next.hostKeyFingerprint;
+      delete next.hostKeyType;
+      delete next.hostKeyRecordedAt;
+    }
+    hosts[idx] = next;
+    this.data.sshHosts = hosts;
+    this.save();
+    return publicSshHost(next);
+  }
+
+  deleteSshHost(id: string): boolean {
+    const hosts = this.data.sshHosts ?? [];
+    const next = hosts.filter((h) => h.id !== id);
+    if (next.length === hosts.length) return false;
+    this.data.sshHosts = next;
+    this.save();
+    return true;
+  }
+
+  /**
+   * Trust on first use (req 9). Refuses to overwrite a key already recorded —
+   * the signer decides a mismatch, and a store that silently re-pinned would
+   * make that decision unreachable.
+   */
+  recordSshHostKey(
+    id: string,
+    hostKeyBlob: string,
+    derived: { fingerprint: string; keyType: string },
+  ): SshHostPublic | undefined {
+    const hosts = [...(this.data.sshHosts ?? [])];
+    const idx = hosts.findIndex((h) => h.id === id);
+    if (idx < 0) return undefined;
+    if (hosts[idx].hostKeyBlob) return publicSshHost(hosts[idx]);
+    hosts[idx] = {
+      ...hosts[idx],
+      hostKeyBlob,
+      hostKeyFingerprint: derived.fingerprint,
+      hostKeyType: derived.keyType,
+      hostKeyRecordedAt: new Date().toISOString(),
+    };
+    this.data.sshHosts = hosts;
+    this.save();
+    return publicSshHost(hosts[idx]);
+  }
+
+  /** Forget the pinned key so the next connection records afresh (req 9). */
+  forgetSshHostKey(id: string): SshHostPublic | undefined {
+    const hosts = [...(this.data.sshHosts ?? [])];
+    const idx = hosts.findIndex((h) => h.id === id);
+    if (idx < 0) return undefined;
+    const next = { ...hosts[idx] };
+    delete next.hostKeyBlob;
+    delete next.hostKeyFingerprint;
+    delete next.hostKeyType;
+    delete next.hostKeyRecordedAt;
+    hosts[idx] = next;
+    this.data.sshHosts = hosts;
+    this.save();
+    return publicSshHost(next);
   }
 
   clear(): void {

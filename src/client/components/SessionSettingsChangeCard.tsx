@@ -26,6 +26,7 @@ export interface SessionSettingsChangeCardProps {
 const TITLES: Record<SessionSettingsChangeCardData["scope"], string> = {
   "sandbox-capabilities": "Sandbox capabilities changed",
   "network-mode": "Network access changed",
+  "ssh-hosts": "SSH destinations changed",
 };
 
 export function SessionSettingsChangeCard({ card }: SessionSettingsChangeCardProps) {

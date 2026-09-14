@@ -320,6 +320,17 @@ describe("buildEnv", () => {
       .toBe(false);
   });
 
+  /**
+   * docs/305 — harness-agnostic by construction: all five adapters and the
+   * terminal spread the worker's environment into what they spawn, so putting
+   * the socket here is the whole integration. Nothing per-harness exists to
+   * break, which is exactly why this one line has to stay.
+   */
+  it("sets SSH_AUTH_SOCK, so every harness's shell tool and the terminal inherit it", () => {
+    const env = buildEnv(baseConfig(), "/workspace", 9100, undefined, undefined);
+    expect(env).toContain("SSH_AUTH_SOCK=/run/shipit/ssh-agent.sock");
+  });
+
   it("includes package manager cache env vars when depCacheDir is set", () => {
     const config = baseConfig({ depCacheDir: "/workspace/dep-cache/abc123" });
     const env = buildEnv(config, "/workspace", 9100, undefined, undefined);

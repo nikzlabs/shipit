@@ -48,6 +48,7 @@ import {
   identityForTarget,
 } from "./session-worker-uid.js";
 import { buildTierAEgressInputs, installEgressFirewall } from "./egress-firewall-install.js";
+import { SSH_AGENT_SOCKET_PATH } from "./ssh-provision.js";
 import {
   buildResolverConfigB64,
   launchEgressResolver,
@@ -328,6 +329,10 @@ export function buildEnv(
     `ANDROID_HOME=${ANDROID_SDK_ROOT}`,
     `JAVA_HOME=${JAVA_HOME}`,
     "GIT_CONFIG_GLOBAL=/credentials/.gitconfig",
+    // docs/305 — every harness's shell tool and the terminal inherit the worker
+    // environment, so `ssh`, `scp`, `rsync` and git transport all find the agent
+    // socket with no per-harness hook.
+    `SSH_AUTH_SOCK=${SSH_AGENT_SOCKET_PATH}`,
   ];
 
   if (procEnv.SHIPIT_SESSION_WORKER_UID) {
@@ -754,7 +759,12 @@ export async function createContainer(
         );
       }
       const egressLabels = { ...deps.baseLabels(), "shipit-parent-session": config.sessionId };
-      const inputs = await buildTierAEgressInputs();
+      const inputs = await buildTierAEgressInputs(
+        egressCfg.extraCidrs ? { extraCidrs: egressCfg.extraCidrs } : {},
+      );
+      // What this firewall now admits, so a later revoke knows a rule is there
+      // to withdraw (docs/305).
+      sc.appliedSshCidrs = [...(egressCfg.extraCidrs ?? [])];
       await installEgressFirewall(deps.docker, {
         agentContainerId: container.id,
         sidecarImage: deps.egressSidecarImage,

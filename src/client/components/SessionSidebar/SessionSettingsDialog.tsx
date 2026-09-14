@@ -23,6 +23,7 @@ import { useUiStore } from "../../stores/ui-store.js";
 import { useSessionStore } from "../../stores/session-store.js";
 import { useApi, ApiError } from "../../hooks/useApi.js";
 import { SandboxCapabilityToggles } from "../SandboxCapabilityToggles.js";
+import { SessionSshHostGrants } from "../SessionSshHostGrants.js";
 import { DEFAULT_SANDBOX_CAPABILITIES } from "../../../server/shared/types.js";
 import {
   NETWORK_MODE_LABEL,
@@ -35,14 +36,15 @@ import type {
 } from "../../../server/shared/types.js";
 
 /**
- * Per-session settings dialog (docs/172 / planning#92, docs/279).
+ * Per-session settings dialog (docs/172 / planning#92, docs/279, docs/305).
  *
  * Holds everything scoped to ONE session:
  *   - for a **sandbox**, its capability grants (docs/279 req 5) — editable after
  *     creation, rendered from the same `SandboxCapabilityToggles` the creation
  *     dialog uses;
  *   - for every **other** session, the network containment override
- *     (Inherit / Contained / Open).
+ *     (Inherit / Contained / Open);
+ *   - for **every** session kind, its SSH destination grants (docs/305 req 6).
  *
  * The two are mutually exclusive on purpose. A sandbox's Network access IS a
  * capability (docs/211: it only ever tightens), so showing the containment radio
@@ -261,6 +263,13 @@ export function SessionSettingsDialog({
             />
           </div>
         )}
+
+        {/* docs/305 req 6 — any session kind may be granted a destination, so
+            this sits OUTSIDE the sandbox/other split above. Its edit route is
+            deliberately not behind the capability editor's sandbox guard. */}
+        <div className="px-5 pt-2 pb-1">
+          <SessionSshHostGrants sessionId={sessionId} open={open} />
+        </div>
 
         {/* Pending — the selected mode resolves to a different containment than the
             live container was started with. Egress is plumbed at container

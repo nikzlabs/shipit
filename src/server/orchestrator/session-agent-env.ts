@@ -35,6 +35,7 @@ import {
   isLocalRuntime,
   linkAgentHomeToCredentials,
 } from "./local-agent-credentials.js";
+import { provisionSessionSshFromGrant } from "./ssh-provision.js";
 import { repoUrlToHash } from "./git-utils.js";
 import { agentHome, codexHome } from "../shared/agent-home.js";
 import type { ProviderAccountManager, ProviderRoute } from "./provider-account-manager.js";
@@ -366,6 +367,16 @@ export async function prepareSessionAgentEnvironment(
     } catch (err) {
       console.warn("[credentials] provisioning failed:", getErrorMessage(err));
     }
+    // docs/305 — derive ~/.ssh from the durable grant every turn, so a recreated
+    // container has the current config without waiting for a grant edit.
+    provisionSessionSshFromGrant(
+      {
+        credentialsDir: deps.credentialsDir,
+        credentialStore: deps.credentialStore,
+        sessionManager: deps.sessionManager,
+      },
+      sessionId,
+    );
   }
   if (isTurn && !session.agentPinned) {
     deps.sessionManager.setAgentId(sessionId, agentId);

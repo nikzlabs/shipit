@@ -152,6 +152,18 @@ if ! gosu "${UID_GID}:${WORKER_GID}" mkdir -p /credentials/.gemini/antigravity-c
   echo "[shipit] warning: could not prepare /credentials/.gemini for UID ${UID_GID}; Antigravity turns will fail (dangling ~/.gemini symlink)" >&2
 fi
 
+# docs/305 — ~/.ssh holds config, known_hosts and .pub files only; the private
+# key never reaches a path mounted into this container.
+if ! gosu "${UID_GID}:${WORKER_GID}" mkdir -p /credentials/.ssh 2>/dev/null; then
+  echo "[shipit] warning: could not prepare /credentials/.ssh for UID ${UID_GID}; ssh will not find its config (dangling ~/.ssh symlink)" >&2
+fi
+
+# /run is a tmpfs under the hardened rootfs, so the agent socket's directory has
+# to be created here rather than in the image.
+if ! (mkdir -p /run/shipit && chown "${UID_GID}:${WORKER_GID}" /run/shipit && chmod 0700 /run/shipit) 2>/dev/null; then
+  echo "[shipit] warning: could not prepare /run/shipit for UID ${UID_GID}; the SSH agent socket will not open" >&2
+fi
+
 if ! (mkdir -p /plugin-bin && chown "${UID_GID}:${WORKER_GID}" /plugin-bin) 2>/dev/null; then
   echo "[shipit] warning: could not prepare /plugin-bin for UID ${UID_GID}; plugin commands will not be on PATH" >&2
 fi
@@ -166,6 +178,7 @@ if [ "${SHIPIT_READONLY_HOME:-0}" = "1" ]; then
     ln -sfn /credentials/.local/share/opencode /home/shipit/.local/share/opencode
     ln -sfn /credentials/.grok        /home/shipit/.grok
     ln -sfn /credentials/.gemini      /home/shipit/.gemini
+    ln -sfn /credentials/.ssh         /home/shipit/.ssh
     mkdir -p /home/shipit/.npm-global /home/shipit/.npm
   '
 fi

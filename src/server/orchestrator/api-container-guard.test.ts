@@ -42,6 +42,10 @@ describe("isHardDeniedGlobal", () => {
       "/api/provider-accounts",
       "/api/trackers/linear/token",
       "/api/updates/check",
+      // docs/305 — a container may sign for its own session, never read or
+      // edit the destination registry.
+      "/api/ssh-hosts",
+      "/api/ssh-hosts/ssh_1",
     ]) {
       expect(isHardDeniedGlobal(p)).toBe(true);
     }
@@ -520,6 +524,11 @@ const GOLDEN_CONTAINER_ROUTES = [
   "POST /api/sessions/:sessionId/notify-on-merge-self",
   "POST /api/sessions/:sessionId/continue-after-rebase",
   "POST /api/sessions/:id/branch/reset-to-base",
+  // docs/305 — the agent may ask for its own session's identities and
+  // signatures. Every check is on the orchestrator side of these two, because
+  // the guard identifies the session and not the process inside it.
+  "GET /api/sessions/:id/ssh/identities",
+  "POST /api/sessions/:id/ssh/sign",
   "GET /api/sessions/:sessionId/cohort",
   "POST /api/sessions/:sessionId/report",
   "POST /api/sessions/:sessionId/voice-note",

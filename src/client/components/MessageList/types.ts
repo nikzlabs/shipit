@@ -10,6 +10,7 @@ import type {
   BranchSyncedCard as BranchSyncedCardData,
   SessionRenamedCard as SessionRenamedCardData,
   SessionSettingsChangeCard as SessionSettingsChangeCardData,
+  SshHostKeyCard as SshHostKeyCardData,
   SettingsProposalCard as SettingsProposalCardData,
   SelfMergeWatchCard as SelfMergeWatchCardData,
   AiReviewCard,
@@ -306,6 +307,9 @@ export interface ChatMessage {
   sessionRenamed?: SessionRenamedCardData;
 
   sessionSettingsChange?: SessionSettingsChangeCardData;
+
+  /** docs/305 req 9 — the pinned server host key, or a refused mismatch. */
+  sshHostKey?: SshHostKeyCardData;
   /**
    * docs/299-agent-settings-access req 4 — a ShipIt setting the agent proposes
    * changing. The setting does not move until the user clicks, and every phase

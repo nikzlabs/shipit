@@ -15,7 +15,9 @@ import {
   EGRESS_LIFELINE_ALLOWLIST,
   sandboxLifelineBase,
   sandboxLifelineEgressConfig,
+  sshEgressTargets,
 } from "./egress-allowlist.js";
+import { ipLiteralCidr, isIpLiteral } from "./ssh-hosts.js";
 import { EGRESS_TIER_A_RESOLVE_HOSTS } from "./egress-firewall.js";
 import { SERVICES } from "../shared/catalogue/services.js";
 import type { CredentialStore } from "./credential-store.js";
@@ -397,5 +399,54 @@ describe("sandboxLifelineEgressConfig", () => {
     expect(sandboxLifelineEgressConfig(sandbox({ network: false }), "")!.identityRules).toBeUndefined();
     const rules = '[{"host":".s3.amazonaws.com","identities":["b"]}]';
     expect(sandboxLifelineEgressConfig(sandbox({ network: false }), rules)!.identityRules).toBe(rules);
+  });
+});
+
+describe("sshEgressTargets", () => {
+  const classify = { isIpLiteral, ipLiteralCidr };
+
+  it("splits names from IP literals, because only a name is ever resolved", () => {
+    expect(sshEgressTargets(
+      [{ address: "prod.example.com" }, { address: "100.83.12.47" }, { address: "PROD.example.com" }],
+      classify,
+    )).toEqual({ names: ["prod.example.com"], cidrs: ["100.83.12.47/32"] });
+  });
+
+  // req 12 says "an IP address", and the Tier A ipset carries both families.
+  it("gives an IPv6 destination its /128", () => {
+    expect(sshEgressTargets([{ address: "2001:db8::1" }], classify))
+      .toEqual({ names: [], cidrs: ["2001:db8::1/128"] });
+  });
+
+  it("is empty for a session with no grant", () => {
+    expect(sshEgressTargets([], classify)).toEqual({ names: [], cidrs: [] });
+  });
+});
+
+/**
+ * docs/305 — a network-off sandbox discards the ordinary per-session host path,
+ * so an SSH grant has to be composed into its policy explicitly or the grant
+ * silently does nothing. That is the one deliberate exception.
+ */
+describe("sandboxLifelineEgressConfig with SSH grants", () => {
+  const networkOff: Pick<SessionInfo, "kind" | "capabilities"> = {
+    kind: "sandbox",
+    capabilities: { git: false, docker: false, network: false, dangerousGitHubOps: false },
+  };
+
+  it("adds a granted hostname to the lifeline base and an IP to the CIDR input", () => {
+    const cfg = sandboxLifelineEgressConfig(networkOff, "", {
+      names: ["prod.example.com"],
+      cidrs: ["100.83.12.47/32"],
+    })!;
+    expect(cfg.userHostsExcluded).toBe(true);
+    expect(cfg.base).toEqual([...EGRESS_LIFELINE_ALLOWLIST, "prod.example.com"]);
+    expect(cfg.extraCidrs).toEqual(["100.83.12.47/32"]);
+  });
+
+  it("widens nothing when no destination is granted", () => {
+    const cfg = sandboxLifelineEgressConfig(networkOff, "")!;
+    expect(cfg.base).toEqual([...EGRESS_LIFELINE_ALLOWLIST]);
+    expect(cfg.extraCidrs).toBeUndefined();
   });
 });
