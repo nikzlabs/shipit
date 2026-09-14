@@ -21,23 +21,8 @@ import {
 } from "../auto-conflict-resolve-manager.js";
 import { prepareDispatch } from "../prepared-dispatch.js";
 import { onWorkspaceRewritten } from "../workspace-rewrite.js";
-import {
-  closeFollowupWindow,
-  deliverRebaseFollowup,
-  openFollowupWindow,
-  type RebaseFollowup,
-} from "./rebase-followup.js";
 
 export const MAX_REBASE_ITERATIONS = 10;
-
-/** The driver's own claim on `runner.systemTurnInProgress`, re-minted at every acquisition. */
-interface DriverHold { seq: number }
-
-/** One entry point, so no acquisition can forget to capture the ticket it releases on. */
-function takeSystemHold(runner: SessionRunnerInterface, hold: DriverHold): void {
-  runner.systemTurnInProgress = true;
-  hold.seq = runner.systemHoldSeq;
-}
 
 export interface RebaseDriverDeps {
   git: GitManager;
@@ -50,8 +35,6 @@ export interface RebaseDriverDeps {
   sseBroadcast: (event: string, data: unknown) => void;
   /** Marks the dispatch boundary for automatic attempt accounting. */
   onAgentSpawned?: () => void;
-  /** The auto-resolve deadline closes the window itself; a hanging turn never reaches `finally`. */
-  onFollowupWindowOpened?: (attemptId: string) => void;
   drainQueue?: () => Promise<void> | void;
   /** Manual sync: persist no-op confirmations and notify the agent of rewrites. */
   recordSyncCard?: boolean;
@@ -70,13 +53,7 @@ export interface RebasePrStatusPoller {
 export type RebaseFlowOutcome =
   | { status: "up_to_date"; forcePushed: boolean }
   | { status: "rebased"; forcePushed: boolean }
-  | {
-    status: "conflicts_resolved";
-    iterations: number;
-    forcePushed: boolean;
-    /** Present only when the agent armed a note during conflict resolution. */
-    followup?: RebaseFollowup;
-  }
+  | { status: "conflicts_resolved"; iterations: number; forcePushed: boolean }
   | { status: "aborted"; reason: string };
 
 export function buildRebaseConflictPrompt(
@@ -92,15 +69,6 @@ export function buildRebaseConflictPrompt(
     "Edit them to produce the correct merged result. Don't run any git commands —",
     "just edit the files. After you finish, the orchestrator will stage your changes",
     "and continue the rebase.",
-    "",
-    "This turn ends BEFORE the rebase does. If finishing the job properly needs work once the",
-    "rebase concludes — re-running codegen or the tests over the merged result, fixing a",
-    "semantic conflict the markers do not show, updating the PR body — arm it now, in this turn:",
-    "",
-    '  shipit session continue-after-rebase --note "<what to do once the rebase lands>"',
-    "",
-    "ShipIt gives that note back to you as a turn once the rebase concludes. Arm nothing if the",
-    "resolved files are the whole job.",
   ].join("\n");
 }
 
@@ -351,13 +319,10 @@ export async function runRebaseFlow(
   }
 
   // Keep user turns queued between resolution turns and through the final push.
-  const hold: DriverHold = { seq: 0 };
-  takeSystemHold(runner, hold);
+  runner.systemTurnInProgress = true;
 
   // Defer auto-push so it cannot race the force-push. The object avoids TS callback narrowing.
   const pendingPush: { arm: (() => void) | null } = { arm: null };
-  // Object-held so the `finally` reads what the conflict loop wrote.
-  const followupAttempt: { id: string | null } = { id: null };
   let published = false;
   let pushProhibited = false;
   let savedCommit: string | null = null;
@@ -427,11 +392,6 @@ export async function runRebaseFlow(
     let iter = 0;
     while (result.status === "conflicts") {
       iter++;
-      // One window per attempt: notes append across rounds rather than replacing.
-      if (followupAttempt.id === null) {
-        followupAttempt.id = openFollowupWindow(runner.sessionId);
-        deps.onFollowupWindowOpened?.(followupAttempt.id);
-      }
       if (iter > MAX_REBASE_ITERATIONS) {
         try { await git.rebaseAbort(); } catch { /* may already be aborted */ }
         throw new ServiceError(
@@ -451,7 +411,7 @@ export async function runRebaseFlow(
 
       const prompt = buildRebaseConflictPrompt(baseBranch, result.conflicts);
       try {
-        await runRebaseResolutionTurn(deps, prompt, hold);
+        await runRebaseResolutionTurn(deps, prompt);
       } catch (err) {
         // Abort before rethrowing; verify failures before reporting the branch unchanged.
         let stillInProgress = false;
@@ -496,30 +456,8 @@ export async function runRebaseFlow(
       recordAgentNotice(deps, { baseBranch, headFrom: headBefore, headTo: headAfterResolve, forcePushed, resolvedConflicts: true });
     }
     runner.emitMessage({ type: "rebase_complete", sessionId: runner.sessionId, forcePushed });
-    // Capture at the return point: the success paths return from inside the `try`.
-    const notes = followupAttempt.id
-      ? closeFollowupWindow(runner.sessionId, followupAttempt.id)
-      : [];
-    followupAttempt.id = null;
-    return {
-      status: "conflicts_resolved",
-      iterations: iter,
-      forcePushed,
-      ...(notes.length > 0
-        ? {
-          followup: {
-            notes,
-            baseBranch,
-            headFrom: headBefore,
-            headTo: headAfterResolve,
-            forcePushed,
-          },
-        }
-        : {}),
-    };
+    return { status: "conflicts_resolved", iterations: iter, forcePushed };
   } finally {
-    // Any other ending discards the arm: an unconcluded rebase leaves nothing to follow up.
-    if (followupAttempt.id) closeFollowupWindow(runner.sessionId, followupAttempt.id);
     if (!abortNoticeReached) lastAbortNotice.delete(runner);
     // Aborts also restore LFS pointers; recover content before releasing queued turns.
     if (worktreeRewritten) await restoreLfsForSync(deps, baseBranch);
@@ -549,17 +487,14 @@ export async function runRebaseFlow(
       }
     }
     handWorkspaceBackToWorker(runner.sessionDir);
-    // Clear on the hold's own ticket: a turn that displaced the driver, or another owner that
-    // took over mid-flow, minted one of its own. Keying this on `runner.running` left a hold a
-    // CLI-started turn was adopted under set with no owner at all (planning#554).
-    if (runner.systemHoldSeq === hold.seq) runner.systemTurnInProgress = false;
-    // The drain is NOT conditional on that: the queue can also be left by a hold that changed
-    // hands, and `releaseQueuedTurn` declines on its own while a turn, a hold or a merge holds
-    // the session — so it starts a turn only when nothing else can.
-    try {
-      releaseQueuedTurn(runner);
-    } catch (releaseErr) {
-      console.error("[rebase] post-flow queue release failed:", getErrorMessage(releaseErr));
+    // A displacing turn owns its flag and queue drain.
+    if (!runner.running) {
+      runner.systemTurnInProgress = false;
+      try {
+        releaseQueuedTurn(runner);
+      } catch (releaseErr) {
+        console.error("[rebase] post-flow queue release failed:", getErrorMessage(releaseErr));
+      }
     }
   }
 }
@@ -649,7 +584,6 @@ function notifyPrStatusPollerOfPush(deps: RebaseDriverDeps): void {
 function runRebaseResolutionTurn(
   deps: RebaseDriverDeps,
   prompt: string,
-  hold: DriverHold,
 ): Promise<void> {
   const { runner } = deps;
 
@@ -683,7 +617,7 @@ function runRebaseResolutionTurn(
         if (turnSettled) return;
         turnSettled = true;
         // Restore the flow's hold synchronously after finishTurn clears the per-turn flag.
-        if (!runner.running) takeSystemHold(runner, hold);
+        if (!runner.running) runner.systemTurnInProgress = true;
         if (outcome.status === "completed") {
           resolve();
           return;
@@ -747,34 +681,21 @@ export async function runAutoResolveAttempt(
   }
 
   let didSpawn = false;
-  let settled = false;
-  let timedOut = false;
-  const followupAttempt: { id: string | null } = { id: null };
   const wrappedDeps: RebaseDriverDeps = {
     ...deps,
     onAgentSpawned: () => { didSpawn = true; },
-    onFollowupWindowOpened: (attemptId) => {
-      // The deadline may already have fired: the flow is raced, not cancelled, so it can reach
-      // its first conflict afterwards, with no deadline left to close what it opens.
-      if (timedOut) {
-        closeFollowupWindow(runner.sessionId, attemptId);
-        return;
-      }
-      followupAttempt.id = attemptId;
-    },
   };
 
   const timeoutMs = deps.timeoutMs ?? AUTO_RESOLVE_ATTEMPT_TIMEOUT_MS;
 
+  let settled = false;
+  let timedOut = false;
   let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
   const timeoutPromise = new Promise<AutoResolveResult>((resolve) => {
     timeoutHandle = setTimeout(() => {
       if (settled) return;
       settled = true;
       timedOut = true;
-      // A hanging agent leaves the resolution turn's promise pending for ever, so the flow's
-      // `finally` never runs. Without this the arm would wake on a later, unrelated rebase.
-      if (followupAttempt.id) closeFollowupWindow(runner.sessionId, followupAttempt.id);
       void (async () => {
         try { runner.getAgent()?.kill(); } catch { /* defensive */ }
         runner.setAgent(null);
@@ -788,11 +709,9 @@ export async function runAutoResolveAttempt(
     }, timeoutMs);
   });
 
-  const concluded: { outcome: RebaseFlowOutcome | null } = { outcome: null };
   const flowPromise = (async (): Promise<AutoResolveResult> => {
     try {
       const result = await runRebaseFlow(wrappedDeps, baseBranch);
-      concluded.outcome = result;
       if (result.status === "up_to_date" && !result.forcePushed) {
         // rebase_complete already cleared the banner; avoid a contradictory deferred event.
         return { outcome: "deferred", didWork: false, suppressEmit: true };
@@ -832,12 +751,6 @@ export async function runAutoResolveAttempt(
     await deps.drainQueue?.();
   } catch (err) {
     console.error("[auto-resolve] drainQueue failed:", err);
-  }
-  // After this path's own cleanup, not merely after the flow's: LFS restoration rewrites files
-  // in place, and a follow-up turn started before it would edit a tree still being rewritten.
-  const outcome = concluded.outcome;
-  if (!timedOut && outcome?.status === "conflicts_resolved" && outcome.followup) {
-    deliverRebaseFollowup(deps, outcome.followup);
   }
   return winner;
 }
