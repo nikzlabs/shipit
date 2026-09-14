@@ -18,6 +18,28 @@ checked against OpenCode's native model filter and runtime behavior. API-key
 routes retain Chat Completions or Anthropic Messages; adding the account route
 does not enable general Responses support for API keys.
 
+### Native filter re-measured on opencode-ai 1.18.30 (2026-09-14)
+
+The pin moved 1.18.27 → 1.18.30, which changes the filter this feature's model
+eligibility was derived from. Measured by extracting the pinned platform binary:
+
+- The subscription model filter widened its version rule from
+  `/^gpt-(\d+\.\d+)/` to `/^gpt-(\d+)(?:\.(\d+))?/`, comparing major and minor
+  separately and accepting major > 5. The change landed in 1.18.29.
+  `gpt-6-astra` matches it, where before it matched nothing and was rejected.
+- The embedded registry gained a bare `gpt-6-astra` row, also in 1.18.29.
+- The explicit allowlist is unchanged at
+  `["gpt-5.5", "gpt-5.3-codex-spark", "gpt-5.4", "gpt-5.4-mini"]`, and
+  `gpt-5.5-pro` and `gpt-5.6` are still rejected by id.
+- 1.18.30 routes ids containing `gpt-6` to a dedicated system prompt, separate
+  from the generic GPT and Codex prompts.
+
+So the two stated grounds for excluding `gpt-6-astra` above — absent from the
+registry, and failing the dotted-version rule — no longer hold on the pinned
+binary. The catalogue still carries `harnesses: ["codex"]` on that row; lifting
+it needs an authenticated smoke run first, per req 9. `gpt-5.3-codex` and
+`gpt-5.2` remain rejected.
+
 - `shared/types/agent-types.ts` carries an explicit `openai-chatgpt` account
   target with the internal route ID, never a secret. Catalogue credential
   targets constrain styles, and model rows can constrain harnesses.
