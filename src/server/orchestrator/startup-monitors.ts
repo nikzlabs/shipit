@@ -40,8 +40,8 @@ export async function startStartupMonitors(
     loopDetector, oomBreaker, chatHistoryManager,
     repoPrefetcher, claudeOAuthRefresherRef, codexOAuthRefresherRef,
     startupTimer, authManagers, dockerProxyServer, databaseManager,
-    mergeWatchManager, autoPushScheduler, agentMergeExecutor, cleanupContainer,
-    version,
+    mergeWatchManager, quotaContinuationManager, autoPushScheduler, agentMergeExecutor,
+    cleanupContainer, version,
   } = rt;
 
   // Held for the process: the first dictation after a quiet period must not pay
@@ -342,6 +342,7 @@ export async function startStartupMonitors(
     claudeOAuthRefresherRef.ref?.stop();
     codexOAuthRefresherRef.ref?.stop();
     mergeWatchManager?.stopRetryLoop();
+    quotaContinuationManager?.stop();
   });
   registerShutdownHook(app, {
     startupTimer, authManagers, runnerRegistry, autoPushScheduler,

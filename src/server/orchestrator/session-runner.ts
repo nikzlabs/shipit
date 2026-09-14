@@ -420,6 +420,18 @@ export interface SystemTurnDeps {
     },
   ) => Promise<{ turnRoute?: { kind: ProviderRouteKind; id: string } } | undefined>;
   needsAccountFailover?: (sessionId: string, agentId: AgentId) => boolean;
+  /**
+   * A quota refusal stopped a turn the CLI started on its own. Reports whether another
+   * credential can continue the work now; when none can, the session is recorded so it is
+   * resumed once one is free (docs/306-quota-continuation).
+   */
+  recordQuotaStandDown?: (args: {
+    sessionId: string;
+    agentId: AgentId;
+    benchedRouteId?: string;
+  }) => { continues: boolean };
+  /** Start the continuation turn. Runs after the stood-down turn's terminal sequence. */
+  continueAfterQuotaStandDown?: (sessionId: string) => Promise<void>;
   recoverResidentRoute?: (sessionId: string, agentId: AgentId) => { kind: ProviderRouteKind; id: string } | undefined;
   routeLabel?: (routeId: string) => string | undefined;
   routeProfile?: (
