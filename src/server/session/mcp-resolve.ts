@@ -1,30 +1,11 @@
 
 import type { McpServerConfig } from "./agents/agent-process.js";
+import { substituteMcpPlaceholders } from "../shared/mcp-placeholders.js";
 
 export interface McpResolveResult {
   /** Null means a credential is missing; omit this server from the turn. */
   resolved: Record<string, unknown> | null;
   missing: string[];
-}
-
-export function substituteMcpPlaceholders(
-  value: string,
-  env: Record<string, string | undefined>,
-  missing: string[],
-): string {
-  const lookup = (envKey: string): string => {
-    const v = env[envKey];
-    if (v === undefined || v === "") {
-      missing.push(envKey);
-      return "";
-    }
-    return v;
-  };
-  return value
-    .replace(/\$secret:([A-Za-z_][A-Za-z0-9_]*)/g, (_m, key: string) => lookup(key))
-    .replace(/\$platform:([a-z][a-z0-9_]*)/g, (_m, source: string) =>
-      lookup(`MCP_PLATFORM_${source.toUpperCase()}`),
-    );
 }
 
 export function resolveMcpServer(

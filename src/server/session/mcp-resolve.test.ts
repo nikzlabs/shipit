@@ -1,6 +1,7 @@
 
 import { describe, it, expect } from "vitest";
-import { resolveMcpServer, substituteMcpPlaceholders } from "./mcp-resolve.js";
+import { resolveMcpServer } from "./mcp-resolve.js";
+import { substituteMcpPlaceholders } from "../shared/mcp-placeholders.js";
 import type { McpServerConfig } from "./agents/agent-process.js";
 
 describe("resolveMcpServer (docs/088)", () => {

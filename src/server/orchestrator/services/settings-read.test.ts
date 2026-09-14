@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { CredentialStore } from "../credential-store.js";
+import { addMcpServer } from "./mcp.js";
 import { writeGlobalSystemPrompt } from "../global-system-prompt.js";
 import {
   ALL_SETTINGS,
@@ -48,6 +49,8 @@ function egressStore(over: Partial<{
     getGlobalEnabled: () => globalEnabled,
     getSessionOverride: () => override,
     resolveContained: () => override ?? globalEnabled,
+    listHosts: () => ["api.example.com"],
+    listSuppressedDefaults: () => [],
   } as unknown as SettingsReadDeps["egressAllowlistStore"];
 }
 
@@ -135,14 +138,18 @@ describe("listSettingsForAgent", () => {
     const { settings } = await listSettingsForAgent(deps(), "s1");
     const by = (key: string) => settings.find((s) => s.key === key);
 
-    // No egress allowlist store: containment has no reader on this install.
+    // No egress allowlist store: nothing on this install holds that value.
     expect(by("network.egressContained")).toMatchObject({
       readable: false,
-      unreadableReason: "no_reader",
+      unreadableReason: "read_failed",
     });
     expect(by("network.egressContained")?.effect.state).toBe("uncertain");
-    // Bespoke-stored: named and described, with no value until the readers land.
-    expect(by("roles[].model")).toMatchObject({ readable: false, unreadableReason: "no_reader" });
+    // Bespoke-stored, with the store its reader needs absent on this install:
+    // unreadable, never the declared default dressed up as the live value.
+    expect(by("services.providerAccounts")).toMatchObject({
+      readable: false,
+      unreadableReason: "read_failed",
+    });
     // Browser-local: its own reason, from the declaration, not "no reader yet".
     expect(by("advanced.soundOnFinish")).toMatchObject({
       readable: false,
@@ -159,18 +166,31 @@ describe("listSettingsForAgent", () => {
     expect(settings).toHaveLength(ALL_SETTINGS.length);
   });
 
-  it("reads every setting the settings payload stores, and only those", async () => {
+  it("reads everything whose store this install has, and names what it could not", async () => {
     const { settings } = await listSettingsForAgent(
       deps({ egressAllowlistStore: egressStore({}) }),
       "s1",
     );
-    const readable = settings.filter((s) => s.readable).map((s) => s.key).sort();
-    // 13 payload declarations plus the two own-route readers below.
-    const expected = ALL_SETTINGS
-      .filter((d) => isPayloadDeclaration(d) || OWN_ROUTE_READ_KEYS.includes(d.key))
-      .map((d) => d.key)
-      .sort();
-    expect(readable).toEqual(expected);
+    // This fixture has a credential store and an egress store, no provider
+    // accounts, no repository store and no bound repository — so what stays
+    // unreadable is exactly that, and nothing reports a default in its place.
+    const unreadable = Object.fromEntries(
+      settings.filter((s) => !s.readable).map((s) => [s.key, s.unreadableReason]),
+    );
+    for (const [key, reason] of Object.entries(unreadable)) {
+      const declaration = ALL_SETTINGS.find((d) => d.key === key)!;
+      const expected = declaration.emits.kind === "withheld"
+        ? declaration.emits.reason
+        : (declaration.scope === "project" ? "no_repository" : "read_failed");
+      expect(reason, key).toBe(expected);
+    }
+    // The payload settings and the two own-route readers all read.
+    for (const declaration of ALL_SETTINGS) {
+      if (!isPayloadDeclaration(declaration) && !OWN_ROUTE_READ_KEYS.includes(declaration.key)) continue;
+      expect(unreadable, declaration.key).not.toHaveProperty(declaration.key);
+    }
+    // And the settings a panel of its own owns are no longer a blanket refusal.
+    expect(settings.find((s) => s.key === "roles[].model")?.readable).toBe(true);
   });
 
   it("degrades the one entry whose read throws, and still returns the rest", async () => {
@@ -183,7 +203,7 @@ describe("listSettingsForAgent", () => {
       "s1",
     );
     const channel = settings.find((s) => s.key === "advanced.releaseChannel");
-    expect(channel).toMatchObject({ readable: false, unreadableReason: "no_reader" });
+    expect(channel).toMatchObject({ readable: false, unreadableReason: "read_failed" });
     expect(channel?.notes.join(" ")).toContain("could not read");
     // A failing reader's own message can carry whatever it was holding, so it
     // goes to the server log and never into the agent's output.
@@ -203,7 +223,7 @@ describe("listSettingsForAgent", () => {
     );
     expect(settings.find((s) => s.key === "advanced.autoFixCi")).toMatchObject({
       readable: false,
-      unreadableReason: "no_reader",
+      unreadableReason: "read_failed",
     });
     expect(settings.find((s) => s.key === "network.egressContained")?.value).toBe(false);
     expect(settings.find((s) => s.key === "advanced.releaseChannel")?.value).toBe("edge");
@@ -508,17 +528,55 @@ describe("req 2 — nothing of a secret-bearing value reaches the agent", () => 
     }
   });
 
-  it("a setting ShipIt cannot read emits nothing of its stored value, end to end", async () => {
-    // Every MCP field is bespoke-stored, so this read has no reader for it. The
-    // entry must still be named, and must carry nothing of what is stored.
+  // Assembled part by part rather than written as one literal, for the reason
+  // the sibling case below gives: a `scheme://user:pass@host` string in the
+  // source reads as a real credential to any scanner.
+  function poisonedUrl(): string {
+    const url = new URL("https://mcp.example.com");
+    url.username = "svc";
+    url.password = TOKEN;
+    url.pathname = `/v1/${TOKEN}`;
+    url.search = `api_key=${TOKEN}`;
+    return url.toString();
+  }
+
+  it("emits nothing of a stored MCP entry through any of this read's own paths", async () => {
+    // The catalogue's own guard proves the door is safe; this proves the read
+    // goes through it, over a stored server carrying the sentinel in every
+    // field one can travel in — args, env, headers and the URL.
+    addMcpServer(
+      credentialStore,
+      {
+        name: "poisoned",
+        type: "http",
+        url: poisonedUrl(),
+        headers: { Authorization: `Bearer ${TOKEN}` },
+        enabled: true,
+      },
+      {},
+    );
+
     const listed = await listSettingsForAgent(deps(), "s1");
     const mcp = listed.settings.filter((e) => e.key.startsWith("mcp.servers"));
     expect(mcp.length).toBeGreaterThan(0);
-    expect(mcp.every((e) => !e.readable)).toBe(true);
+    expect(mcp.every((e) => e.readable)).toBe(true);
     expect(JSON.stringify(listed)).not.toContain(TOKEN);
 
-    const detail = await getSettingForAgent(deps(), "s1", "mcp.servers[].env");
-    expect(detail.readable).toBe(false);
-    expect(JSON.stringify(detail)).not.toContain(TOKEN);
+    for (const key of ["mcp.servers", "mcp.servers[].headers", "mcp.servers[].url"]) {
+      const detail = await getSettingForAgent(deps(), "s1", key);
+      expect(detail.readable, key).toBe(true);
+      expect(JSON.stringify(detail), key).not.toContain(TOKEN);
+    }
+
+    // And the error path. A reader that throws can be holding the very value it
+    // was reading, so its message goes to the server log and the agent is told
+    // only that the read failed.
+    const throwing = Object.create(credentialStore) as CredentialStore;
+    throwing.getAllMcpServers = () => {
+      throw new Error(`could not parse ${TOKEN}`);
+    };
+    const failed = await getSettingForAgent(deps({ credentialStore: throwing }), "s1", "mcp.servers");
+    expect(failed).toMatchObject({ readable: false, unreadableReason: "read_failed" });
+    expect(JSON.stringify(failed)).not.toContain(TOKEN);
   });
 });

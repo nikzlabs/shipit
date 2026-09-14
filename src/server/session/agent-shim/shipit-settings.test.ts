@@ -245,15 +245,15 @@ describe("shipit settings get", () => {
           ...DETAIL.body,
           key: "roles[].model",
           readable: false,
-          unreadableReason: "no_reader",
+          unreadableReason: "read_failed",
           effect: { state: "uncertain" },
-          notes: ["ShipIt cannot read this setting's stored value yet."],
+          notes: ["ShipIt could not read this setting's stored value."],
         },
       },
     });
 
     // The value line already said so; an effect line would say it twice.
-    expect(res.stdout).toContain("Value: unreadable (no_reader)");
+    expect(res.stdout).toContain("Value: unreadable (read_failed)");
     expect(res.stdout).not.toContain("In effect");
   });
 

@@ -6,7 +6,7 @@ import type {
   McpServerConfig,
 } from "./agents/agent-process.js";
 import { resolveBridge } from "./mcp-bridge-paths.js";
-import { substituteMcpPlaceholders } from "./mcp-resolve.js";
+import { substituteMcpPlaceholders } from "../shared/mcp-placeholders.js";
 import type { WorkerSSEEvent } from "./sse-broadcaster.js";
 
 export interface McpConfigDeps {

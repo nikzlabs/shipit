@@ -1,8 +1,8 @@
-import type { AgentRegistry } from "../../shared/agent-registry.js";
 import type { EgressEnforcementStatus } from "../../shared/types.js";
 import {
   ALL_SETTINGS,
   addressesARepository,
+  collectionKeyOf,
   findSetting,
   formatSetting,
   isPayloadDeclaration,
@@ -17,15 +17,16 @@ import type {
   SettingTab,
   SettingValueKind,
 } from "../../shared/settings-catalogue/index.js";
-import type { CredentialStore } from "../credential-store.js";
-import type { EgressAllowlistStore } from "../egress-allowlist-store.js";
-import type { ProviderAccountManager } from "../provider-account-manager.js";
-import type { SessionManager } from "../sessions.js";
 import { backgroundWorkOptions, resolveNonTurnModel } from "../non-turn-model.js";
 import { readChannel } from "../release-channel.js";
 import { listConfiguredCredentials } from "../service-routing.js";
 import { readStoredGlobalSettings } from "./settings-derivation.js";
+import { BESPOKE_READERS, StoreReadCache } from "./settings-store-readers.js";
+import type { ItemName, StoreReadContext, StoredItem } from "./settings-store-readers.js";
+import type { SettingsReadDeps } from "./settings-read-deps.js";
 import { ServiceError } from "./types.js";
+
+export type { SettingsReadDeps };
 
 /**
  * The agent's read surface, projected from the declarations
@@ -34,24 +35,26 @@ import { ServiceError } from "./types.js";
  * the catalogue, and a newly declared setting is INDEXED here — key, label,
  * description, shape, refusal — with no edit to this file.
  *
- * Its VALUE comes from the catalogue too, where the settings payload stores it.
- * A declaration whose store is NOT the payload names only where the value lives,
- * so reading one back needs a reader: `own-route` has two below, and the 42
- * `bespoke` declarations have none yet, so they report that ShipIt cannot read
- * the value rather than passing off a default as the live one. Req 5 and req 7
- * hold — every setting is named, described and refusal-tagged — and req 3 is
- * what degrades until the bespoke readers land in the next slice.
+ * Its VALUE comes from wherever that setting is stored. The payload settings
+ * read as one bulk read of the stored half; everything else needs a reader —
+ * two `own-route` ones below, and one per owner in `settings-store-readers.ts`
+ * for the panels that own their own storage. A declaration with no reader
+ * reports that ShipIt could not read it rather than passing off the declared
+ * default as the live value, which is the one failure worth a whole guard test:
+ * a made-up default is stated to the user as fact.
  *
  * **Every emitted value goes through `projectSetting` / `formatSetting`
  * (`settings-catalogue/projection.ts`), and nothing here formats a stored value
  * directly** (req 2). An MCP entry takes arbitrary `args`, `env`, `headers` and
  * a URL, so a token lives in a field called `args`; a second formatter beside
  * that door is exactly how one escapes in the output path nobody re-checks.
+ * An item's ADDRESS goes through the same door — see `itemAddress`.
  *
  * Two steps by ROLE, never by size: `list` is the index — what a setting is and
- * what it is set to — and `get` is the detail, carrying the value's shape and
- * whatever has to be resolved live. A size threshold would make the response
- * shape depend on how many models happen to be installed.
+ * what it is set to — and `get` is the detail, carrying the value's shape, the
+ * instances of an item-addressed setting, and whatever has to be resolved live.
+ * A size threshold would make the response shape depend on how many models
+ * happen to be installed.
  */
 
 export type SettingEffectState = "live" | "restart-dependent" | "excluded" | "uncertain";
@@ -71,13 +74,22 @@ export interface SettingEffect {
  * Why ShipIt cannot show the agent this setting's value. The catalogue's four
  * refusal reasons carry through from a `withheld` projection; the two below them
  * are this read's own.
+ *
+ * There is deliberately no "ShipIt has no reader for this" reason. Every
+ * declaration has one, `settings-store-readers.test.ts` fails if a new one
+ * arrives without, and a reason for it would only ever be read as a
+ * placeholder someone can leave in place.
  */
 export type SettingUnreadableReason =
   | RefusalReason
   /** A per-repository setting read from a session that binds no repository. */
   | "no_repository"
-  /** Stored somewhere this read has no reader for yet. */
-  | "no_reader";
+  /**
+   * ShipIt tried and has no value to report: a store this install does not
+   * have, a repository it has no record of, or a read that threw. The note
+   * carries which — and never the declared default in place of the value.
+   */
+  | "read_failed";
 
 export interface SettingProposeView {
   allowed: boolean;
@@ -101,8 +113,11 @@ export interface SettingAddressView {
 export interface SettingItemView {
   /** How a change names this instance. */
   address: string;
+  /** Projected through the declaration's `emits`, exactly as a scalar value is. */
   value: unknown;
   display: string;
+  /** What ShipIt already computes about this instance, so the agent says why (req 3). */
+  notes?: string[];
 }
 
 export interface SettingIndexEntry {
@@ -113,7 +128,11 @@ export interface SettingIndexEntry {
   tab: SettingTab;
   scope: SettingScope;
   address: SettingAddressView;
-  /** Projected through the declaration's `emits`; null when unreadable. */
+  /**
+   * Projected through the declaration's `emits`. Null when the setting has no
+   * one value: unreadable, or addressed per item — where the index names the
+   * instances in `display` and `get` carries what each is set to.
+   */
   value: unknown;
   /** The value on one line, in the form a change to it would name. */
   display: string;
@@ -141,24 +160,6 @@ export interface SettingsIndex {
   settings: SettingIndexEntry[];
   /** Every tab carrying at least one declared setting. */
   tabs: SettingTab[];
-}
-
-export interface SettingsReadDeps {
-  agentRegistry: Pick<AgentRegistry, "list">;
-  appWorkspaceDir: string;
-  sessionManager: Pick<SessionManager, "get">;
-  credentialStore?: CredentialStore | undefined;
-  providerAccountManager?: ProviderAccountManager | undefined;
-  egressAllowlistStore?: EgressAllowlistStore | undefined;
-  egressEnforcementStatus?: EgressEnforcementStatus | undefined;
-  egressEnforcementActive?: boolean | undefined;
-  containerManager?: {
-    get(sessionId: string): { status?: string; egressContainedAtStart?: boolean } | undefined;
-    /** The shipped resolver, so sandbox capabilities are honoured, not re-derived. */
-    resolveEgress(sessionId: string): { contained: boolean; userHostsExcluded?: boolean } | undefined;
-  } | undefined;
-  /** Injected by tests; the release channel otherwise comes off the host checkout. */
-  readReleaseChannel?: (() => Promise<string>) | undefined;
 }
 
 /**
@@ -191,7 +192,8 @@ function firstSentence(description: string): string {
 }
 
 type ReadOutcome =
-  | { ok: true; value: unknown }
+  | { ok: true; kind: "value"; value: unknown }
+  | { ok: true; kind: "items"; items: StoredItem[] }
   | { ok: false; reason: SettingUnreadableReason; note: string };
 
 type OwnRouteReader = (deps: SettingsReadDeps) => Promise<ReadOutcome> | ReadOutcome;
@@ -202,15 +204,16 @@ type OwnRouteReader = (deps: SettingsReadDeps) => Promise<ReadOutcome> | ReadOut
  * reported unreadable rather than defaulted: reporting a made-up default as the
  * live value is worse than saying ShipIt cannot see it.
  */
-const OWN_ROUTE_READERS: Record<string, OwnRouteReader> = {
+export const OWN_ROUTE_READERS: Record<string, OwnRouteReader> = {
   "advanced.releaseChannel": async (deps) => ({
     ok: true,
+    kind: "value",
     value: await (deps.readReleaseChannel ?? readChannel)(),
   }),
   "network.egressContained": (deps) =>
     deps.egressAllowlistStore
-      ? { ok: true, value: deps.egressAllowlistStore.getGlobalEnabled() }
-      : { ok: false, reason: "no_reader", note: "This install has no egress allowlist store, so the containment setting cannot be read." },
+      ? { ok: true, kind: "value", value: deps.egressAllowlistStore.getGlobalEnabled() }
+      : { ok: false, reason: "read_failed", note: "This install has no egress allowlist store, so the containment setting cannot be read." },
 };
 
 function proposeView(declaration: AnySettingDeclaration): SettingProposeView {
@@ -340,6 +343,47 @@ function egressContainmentEffect(deps: SettingsReadDeps, sessionId: string): Set
 }
 
 /**
+ * The allowlist is read once, when a session's container is built, so a
+ * running container keeps the list it started with — and a session nothing
+ * contains is not restricted by it at all. Saying `live` here would promise the
+ * user their newly added host is reachable from the session they are asking
+ * about, which is the case they are asking about.
+ */
+function egressAllowlistEffect(deps: SettingsReadDeps, sessionId: string): SettingEffect {
+  const status = enforcementStatus(deps);
+  if (status !== "active") {
+    return {
+      state: "excluded",
+      detail: `Egress enforcement is not running on this install (${status}), so nothing is contained and the allowlist restricts nothing.`,
+    };
+  }
+  const store = deps.egressAllowlistStore;
+  if (!store) {
+    return { state: "uncertain", detail: "This install has no egress allowlist store to resolve containment against." };
+  }
+  const config = deps.containerManager?.resolveEgress(sessionId);
+  if (config?.userHostsExcluded) {
+    return {
+      state: "excluded",
+      detail: "This session's own network capability excludes it from the allowlist, and no restart makes a host here reachable from it. The session's network capability is what has to change.",
+    };
+  }
+  if (!(config?.contained ?? store.resolveContained(sessionId))) {
+    return {
+      state: "excluded",
+      detail: "This session is not contained, so its network access does not depend on the allowlist.",
+    };
+  }
+  if (deps.containerManager?.get(sessionId)?.status === "running") {
+    return {
+      state: "restart-dependent",
+      detail: "This session's container took its allowlist when it started; a change here applies the next time it starts.",
+    };
+  }
+  return { state: "live" };
+}
+
+/**
  * Settings whose stored value and live effect can differ. A setting with no
  * entry reads `live`, meaning what `SettingEffect` defines it to mean: the next
  * use of the setting reads the stored value. That is not a claim about a
@@ -350,6 +394,8 @@ function egressContainmentEffect(deps: SettingsReadDeps, sessionId: string): Set
  */
 const EFFECT_PROBES: Record<string, EffectProbe> = {
   "network.egressContained": egressContainmentEffect,
+  "network.egress.hosts": egressAllowlistEffect,
+  "network.egress.hosts[].host": egressAllowlistEffect,
 };
 
 type LiveDetail = (deps: SettingsReadDeps) => Record<string, unknown>;
@@ -384,20 +430,48 @@ function nonTurnModelDetail(deps: SettingsReadDeps): Record<string, unknown> {
 }
 
 /**
+ * What a role or a reviewer slot can be pointed at on THIS install. A
+ * declaration's `type` holds the shape of a model selection and cannot hold
+ * which ones exist, so req 3's "what it has to become" is resolved here — from
+ * the registry the dialog's own pickers offer, so the agent proposes from the
+ * same list the user would pick from.
+ */
+function runnableTargetsDetail(deps: SettingsReadDeps): Record<string, unknown> {
+  return {
+    harnesses: deps.agentRegistry
+      .list()
+      .filter((agent) => agent.installed && agent.hasRunnableModels)
+      .map((agent) => ({
+        harnessId: agent.id,
+        harnessName: agent.name,
+        models: agent.eligibleModels,
+        ...(agent.capabilities.reasoning
+          ? { reasoningLevels: agent.capabilities.reasoning.options }
+          : {}),
+      })),
+  };
+}
+
+/**
  * Live facts a declaration's `type` cannot hold — which models this install can
- * actually run background work on, and which one it resolves to today. Keyed by
- * setting: a setting with no entry still lists, gets, and carries its declared
- * shape, so this is extra detail and never a second place to register a setting.
+ * actually run, and what a pin resolves to today. Keyed by setting: a setting
+ * with no entry still lists, gets, and carries its declared shape, so this is
+ * extra detail and never a second place to register a setting.
  */
 const LIVE_DETAILS: Record<string, LiveDetail> = {
   "services.nonTurnModel": nonTurnModelDetail,
+  "roles[].model": runnableTargetsDetail,
+  "roles[].harness": runnableTargetsDetail,
+  "roles[].reasoningEffort": runnableTargetsDetail,
+  "reviewers[].model": runnableTargetsDetail,
+  "reviewers[].reasoningEffort": runnableTargetsDetail,
 };
 
 // Only this read's own two reasons; the catalogue's four come from
 // `refusalSentence`, so a withheld setting says the same thing everywhere.
-const UNREADABLE_NOTES: Record<"no_repository" | "no_reader", string> = {
+const UNREADABLE_NOTES: Record<"no_repository" | "read_failed", string> = {
   no_repository: "This is a per-repository setting and this session binds no repository.",
-  no_reader: "ShipIt cannot read this setting's stored value yet.",
+  read_failed: "ShipIt could not read this setting's stored value.",
 };
 
 interface ReadState {
@@ -405,7 +479,9 @@ interface ReadState {
   /** The bulk read of the stored half failed, so no payload setting has a value. */
   storedFailed: boolean;
   sessionId: string;
-  repoBound: boolean;
+  /** The session's own repository binding, and the only one a project read uses. */
+  repoUrl: string | null;
+  cache: StoreReadCache;
 }
 
 /**
@@ -448,7 +524,7 @@ function isItemAddressed(declaration: AnySettingDeclaration): boolean {
   return kind === "item" || kind === "repository-item";
 }
 
-/** Where a value lives, for a reader following an entry that has no value yet. */
+/** Where a value lives, for a reader following an entry that has no value. */
 function storeLocation(declaration: AnySettingDeclaration): string {
   const { store } = declaration;
   if (store.kind === "own-route") return `written by ${store.route}`;
@@ -463,50 +539,181 @@ async function readValue(
   state: ReadState,
 ): Promise<ReadOutcome> {
   // A `withheld` declaration answers for itself, and its reason beats anything
-  // this read would infer: a browser-local value is not "ShipIt has no reader
-  // yet", it is a value ShipIt's server never holds.
+  // this read would infer: a browser-local value is not "ShipIt could not read
+  // it", it is a value ShipIt's server never holds.
   if (declaration.emits.kind === "withheld") {
     const { reason } = declaration.emits;
     return { ok: false, reason, note: refusalSentence(reason) };
   }
-  const scoped = scopeUnreadableReason(declaration, state.repoBound);
+  const scoped = scopeUnreadableReason(declaration, state.repoUrl !== null);
   if (scoped) return { ok: false, reason: scoped, note: UNREADABLE_NOTES[scoped] };
   if (isPayloadDeclaration(declaration)) {
     // The stored half is one bulk read, so its failure is per entry for every
-    // payload setting — and the own-route ones still read.
+    // payload setting — and everything with a reader of its own still reads.
     if (state.storedFailed) {
-      return { ok: false, reason: "no_reader", note: UNREADABLE_NOTES.no_reader };
+      return { ok: false, reason: "read_failed", note: UNREADABLE_NOTES.read_failed };
     }
     const raw = state.stored[declaration.wire];
     // `omitWhenNull` drops the field rather than sending null; the pin is unset.
-    return { ok: true, value: raw === undefined ? declaration.type.defaultValue : raw };
+    return { ok: true, kind: "value", value: raw === undefined ? declaration.type.defaultValue : raw };
   }
-  const reader = OWN_ROUTE_READERS[declaration.key];
-  if (!reader) {
+  const ownRoute = OWN_ROUTE_READERS[declaration.key];
+  if (ownRoute) return ownRoute(deps);
+  const bespoke = BESPOKE_READERS[declaration.key];
+  if (!bespoke) {
+    // Unreachable while `settings-store-readers.test.ts` passes; kept so a
+    // declaration that slipped through says so instead of reporting a default.
     return {
       ok: false,
-      reason: "no_reader",
-      note: `${UNREADABLE_NOTES.no_reader} It is ${storeLocation(declaration)}.`,
+      reason: "read_failed",
+      note: `${UNREADABLE_NOTES.read_failed} It is ${storeLocation(declaration)}.`,
     };
   }
-  return reader(deps);
+  const ctx: StoreReadContext = { deps, sessionId: state.sessionId, repoUrl: state.repoUrl };
+  const read = bespoke(ctx, state.cache);
+  if (read.kind === "unreadable") return { ok: false, reason: "read_failed", note: read.note };
+  return read.kind === "items"
+    ? { ok: true, kind: "items", items: read.items }
+    : { ok: true, kind: "value", value: read.raw };
 }
 
+/**
+ * How ONE instance is named in the agent's output — through the same door its
+ * value leaves by (req 2). A name ShipIt derived itself is its own; a name the
+ * user wrote is projected through the collection declaration that owns the key,
+ * which is where emitting that text was decided and reasoned. An entry that
+ * collection's projection refuses to name — a URL pasted into the allowlist
+ * box, whose userinfo and query are where a token travels — is named by
+ * nothing, so it produces no item at all.
+ */
+function itemAddress(declarationKey: string, name: ItemName): string | null {
+  if (name.kind === "shipit") return name.address;
+  const collectionKey = collectionKeyOf(declarationKey);
+  const collection = collectionKey ? findSetting(collectionKey) : undefined;
+  if (!collection) return null;
+  const outcome = projectSetting(collection, [name.item]);
+  if (!outcome.readable || !Array.isArray(outcome.value)) return null;
+  const [emitted] = outcome.value as unknown[];
+  if (typeof emitted !== "string" || emitted.length === 0) return null;
+  return name.prefix ? `${name.prefix}:${emitted}` : emitted;
+}
+
+/** Up to this many addresses are named in the index; `get` carries them all. */
+const ADDRESSES_IN_INDEX = 8;
+
+function itemsDisplay(addresses: string[]): string {
+  if (addresses.length === 0) return "no items";
+  const shown = addresses.slice(0, ADDRESSES_IN_INDEX);
+  const rest = addresses.length - shown.length;
+  const more = rest > 0 ? `, … (+${rest} more)` : "";
+  return `${addresses.length} item${addresses.length === 1 ? "" : "s"}: ${shown.join(", ")}${more}`;
+}
+
+interface ProjectedItems {
+  items: SettingItemView[];
+  display: string;
+  notes: string[];
+}
+
+/**
+ * The instances of an item-addressed setting. Each one's value goes through
+ * `projectSettingValue`, exactly as a scalar's does — `raw` here is the one
+ * field of the one item, which is what `projectSetting` documents itself to
+ * take.
+ */
+function projectItems(
+  declaration: AnySettingDeclaration,
+  read: StoredItem[],
+  detail: boolean,
+): ProjectedItems {
+  const items: SettingItemView[] = [];
+  let unnamed = 0;
+  for (const item of read) {
+    const address = itemAddress(declaration.key, item.name);
+    if (address === null) {
+      unnamed++;
+      continue;
+    }
+    const projected = projectSettingValue(declaration, item.raw, detail);
+    items.push({
+      address,
+      value: projected.value,
+      display: projected.display,
+      ...(item.notes && item.notes.length > 0 ? { notes: item.notes } : {}),
+    });
+  }
+  const notes = unnamed > 0
+    ? [
+        `${unnamed} stored ${unnamed === 1 ? "instance is" : "instances are"} not listed: what `
+          + "identifies each is not shaped like the name this setting emits, so ShipIt does not "
+          + "repeat it back.",
+      ]
+    : [];
+  return { items, display: itemsDisplay(items.map((i) => i.address)), notes };
+}
+
+/** An entry plus, for an item-addressed setting, the instances `get` carries. */
+interface BuiltEntry {
+  entry: SettingIndexEntry;
+  items?: SettingItemView[];
+}
+
+function resolveEffect(
+  declaration: AnySettingDeclaration,
+  deps: SettingsReadDeps,
+  sessionId: string,
+): SettingEffect {
+  const probe = EFFECT_PROBES[declaration.key];
+  if (!probe) return { state: "live" };
+  try {
+    return probe(deps, sessionId);
+  } catch (err) {
+    return { state: "uncertain", detail: readFailureNote(declaration.key, err) };
+  }
+}
+
+/**
+ * Degrade per entry, never abort: one setting that throws must not cost the
+ * agent the index of every other setting. The PROJECTION is inside the guard
+ * with the read, because a declaration supplies its own `derived` function and
+ * a throw there would otherwise fail the whole call.
+ */
 async function buildEntry(
   declaration: AnySettingDeclaration,
   deps: SettingsReadDeps,
   state: ReadState,
   detail: boolean,
-): Promise<SettingIndexEntry> {
-  // Degrade per entry, never abort: one setting whose read throws must not cost
-  // the agent the index of every other setting.
-  let outcome: ReadOutcome;
+): Promise<BuiltEntry> {
   try {
-    outcome = await readValue(declaration, deps, state);
+    return await buildReadableEntry(declaration, deps, state, detail);
   } catch (err) {
-    outcome = { ok: false, reason: "no_reader", note: readFailureNote(declaration.key, err) };
+    return unreadableEntry(declaration, detail, "read_failed", readFailureNote(declaration.key, err));
   }
-  const base = {
+}
+
+function unreadableEntry(
+  declaration: AnySettingDeclaration,
+  detail: boolean,
+  reason: SettingUnreadableReason,
+  note: string,
+): BuiltEntry {
+  return {
+    entry: {
+      ...entryBase(declaration),
+      value: null,
+      display: "unknown",
+      readable: false,
+      unreadableReason: reason,
+      // An unreadable value cannot carry an effect claim. The reason is in
+      // `notes` and must not be repeated here — it is one fact, not three.
+      effect: { state: "uncertain" },
+      notes: [note, ...listOnlyNotes(declaration, detail)],
+    },
+  };
+}
+
+function entryBase(declaration: AnySettingDeclaration) {
+  return {
     key: declaration.key,
     label: declaration.label,
     summary: firstSentence(declaration.description),
@@ -515,38 +722,50 @@ async function buildEntry(
     address: addressView(declaration),
     propose: proposeView(declaration),
   };
-  // `get` says the same thing with the items themselves, so this is list-only.
-  const indexNotes = detail ? [] : [itemNote(declaration)].filter((n): n is string => !!n);
-  if (!outcome.ok) {
+}
+
+/** `get` says the same thing with the items themselves, so this is list-only. */
+function listOnlyNotes(declaration: AnySettingDeclaration, detail: boolean): string[] {
+  return detail ? [] : [itemNote(declaration)].filter((n): n is string => !!n);
+}
+
+async function buildReadableEntry(
+  declaration: AnySettingDeclaration,
+  deps: SettingsReadDeps,
+  state: ReadState,
+  detail: boolean,
+): Promise<BuiltEntry> {
+  const outcome = await readValue(declaration, deps, state);
+  if (!outcome.ok) return unreadableEntry(declaration, detail, outcome.reason, outcome.note);
+  const base = entryBase(declaration);
+  const indexNotes = listOnlyNotes(declaration, detail);
+  const effect = resolveEffect(declaration, deps, state.sessionId);
+  if (outcome.kind === "items") {
+    // The index names the instances and stops there; what each is set to is the
+    // detail, for the same reason an option set is (req 1).
+    const projected = projectItems(declaration, outcome.items, detail);
     return {
-      ...base,
-      value: null,
-      display: "unknown",
-      readable: false,
-      unreadableReason: outcome.reason,
-      // An unreadable value cannot carry an effect claim. The reason is in
-      // `notes` and must not be repeated here — it is one fact, not three.
-      effect: { state: "uncertain" },
-      notes: [outcome.note, ...indexNotes],
+      entry: {
+        ...base,
+        value: null,
+        display: projected.display,
+        readable: true,
+        effect,
+        notes: [...projectionNotes(declaration), ...projected.notes, ...indexNotes],
+      },
+      items: projected.items,
     };
   }
   const projected = projectSettingValue(declaration, outcome.value, detail);
-  const probe = EFFECT_PROBES[declaration.key];
-  let effect: SettingEffect = { state: "live" };
-  if (probe) {
-    try {
-      effect = probe(deps, state.sessionId);
-    } catch (err) {
-      effect = { state: "uncertain", detail: readFailureNote(declaration.key, err) };
-    }
-  }
   return {
-    ...base,
-    value: projected.value,
-    display: projected.display,
-    readable: true,
-    effect,
-    notes: [...projected.notes, ...indexNotes],
+    entry: {
+      ...base,
+      value: projected.value,
+      display: projected.display,
+      readable: true,
+      effect,
+      notes: [...projected.notes, ...indexNotes],
+    },
   };
 }
 
@@ -578,7 +797,14 @@ async function readState(deps: SettingsReadDeps, sessionId: string): Promise<Rea
     storedFailed = true;
     console.error("[settings-read] reading the stored settings failed:", err);
   }
-  return { stored, storedFailed, sessionId, repoBound: !!session.remoteUrl };
+  const repoUrl = session.remoteUrl || null;
+  return {
+    stored,
+    storedFailed,
+    sessionId,
+    repoUrl,
+    cache: new StoreReadCache({ deps, sessionId, repoUrl }),
+  };
 }
 
 /**
@@ -598,10 +824,10 @@ export async function listSettingsForAgent(
   }
   const state = await readState(deps, sessionId);
   const wanted = opts.tab ? declarations.filter((d) => d.tab === opts.tab) : declarations;
-  const settings = await Promise.all(
+  const built = await Promise.all(
     wanted.map((declaration) => buildEntry(declaration, deps, state, false)),
   );
-  return { settings, tabs };
+  return { settings: built.map((b) => b.entry), tabs };
 }
 
 /**
@@ -638,9 +864,8 @@ export async function getSettingForAgent(
     throw new ServiceError(404, `No ShipIt setting is called "${key}". List them with \`shipit settings list\`.`);
   }
   const state = await readState(deps, sessionId);
-  const entry = await buildEntry(declaration, deps, state, true);
+  const { entry, items } = await buildEntry(declaration, deps, state, true);
   const live = entry.readable ? resolveLiveDetail(declaration.key, deps, entry) : undefined;
-  const items = itemsFor(declaration, entry);
   return {
     ...entry,
     description: oneLine(declaration.description),
@@ -649,23 +874,4 @@ export async function getSettingForAgent(
     ...(live ? { live } : {}),
     ...(items ? { items } : {}),
   };
-}
-
-/**
- * The instances of an item-addressed setting. Enumerating them needs a reader
- * for the panel that owns the items, and the 42 `bespoke` declarations have none
- * yet — so the shape is here and empty, with the reason, and the next slice
- * fills it rather than changing the contract. The address each item is named by
- * is spelled when there are items to spell it for.
- */
-function itemsFor(
-  declaration: AnySettingDeclaration,
-  entry: SettingIndexEntry,
-): SettingItemView[] | undefined {
-  if (!isItemAddressed(declaration)) return undefined;
-  entry.notes.push(
-    "This setting exists once per item, and ShipIt cannot enumerate the items yet — "
-      + "it can say what the setting is, not what any one item is set to.",
-  );
-  return [];
 }

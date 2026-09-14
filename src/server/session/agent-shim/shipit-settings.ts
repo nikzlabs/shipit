@@ -19,6 +19,26 @@ interface SettingEntry {
   notes?: string[];
 }
 
+/** One addressed instance of a per-item setting; `get` carries them, `list` names them. */
+interface SettingItem {
+  address?: string;
+  display?: string;
+  notes?: string[];
+}
+
+function itemLines(entry: SettingEntry & { items?: SettingItem[] }): string[] {
+  const items = entry.items;
+  if (!items) return [];
+  const noun = asString(entry.address?.noun) || "an item";
+  if (items.length === 0) return ["", `No instances of this setting exist (one per ${noun}).`];
+  const lines = ["", `${items.length} instance${items.length === 1 ? "" : "s"}, addressed by ${noun}:`];
+  for (const item of items) {
+    lines.push(`  ${asString(item.address)} = ${asString(item.display)}`);
+    for (const note of item.notes ?? []) lines.push(`      ${note}`);
+  }
+  return lines;
+}
+
 function effectMarker(entry: SettingEntry): string {
   const state = entry.effect?.state;
   if (!state || state === "live") return "";
@@ -123,6 +143,7 @@ export async function handleSettingsGet(args: string[], deps: RunDeps): Promise<
     valueType?: string;
     shape?: Record<string, unknown>;
     live?: Record<string, unknown>;
+    items?: SettingItem[];
   };
   const lines = [
     `${entry.key} — ${entry.label}`,
@@ -153,6 +174,7 @@ export async function handleSettingsGet(args: string[], deps: RunDeps): Promise<
   const refusal = refusalLine(entry);
   if (refusal) lines.push(refusal);
   lines.push("", asString(entry.description));
+  lines.push(...itemLines(entry));
   if (entry.shape && Object.keys(entry.shape).length > 0) {
     lines.push("", `Accepts: ${JSON.stringify(entry.shape)}`);
   }

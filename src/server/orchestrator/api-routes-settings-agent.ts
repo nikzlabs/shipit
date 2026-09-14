@@ -23,6 +23,8 @@ export async function registerAgentSettingsRoutes(
     credentialStore: deps.credentialStore,
     providerAccountManager: deps.providerAccountManager,
     egressAllowlistStore: deps.egressAllowlistStore,
+    repoStore: deps.repoStore,
+    secretStore: deps.secretStore,
     egressEnforcementStatus: deps.egressEnforcementStatus,
     egressEnforcementActive: deps.egressEnforcementActive,
     containerManager: deps.containerManager,
