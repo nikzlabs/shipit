@@ -470,6 +470,33 @@ read** — an absent store, a repository ShipIt has no record of, a read that
 threw all degrade to an entry with the reason, because a plausible default is
 worse than nothing: the agent states it to the user as fact.
 
+**That rule binds the PAYLOAD readers too, and three of them used to break it
+because they were written for display.** Each returned one answer for "not
+configured" and for "ShipIt could not tell", so an existing file ShipIt could not
+open read as a configured *absence*: an `EACCES` on the instructions file read as
+**empty instructions**, an unreadable `.gitconfig` read as **no git identity**
+(`git config --global <key>` exits 1 for both an unset key and a config it cannot
+open, so the exit status alone cannot separate them — unset has an empty stderr,
+an unreadable config warns on it, and a malformed one exits 128), and an
+unreadable release-channel file read as **`edge`**, which is a real channel an
+install tracking `stable` would then be told it is on. Each reader now returns an
+outcome — `readGlobalSystemPrompt`, `readGitIdentity`, `readChannelOutcome` — and
+`readStoredGlobalSettings` answers `{ values, unreadable }`, naming the wires whose
+own reader could not tell so `readValue` reports exactly those as `read_failed`.
+The failure is per declaration, never per call: one unreadable file must not cost
+the agent every other setting's value. A caller that has to act either way keeps a
+total form beside the outcome — `globalSystemPromptForTurn` (a turn still runs,
+carrying no instructions), `getGitIdentity` (the container's commit identity) and
+`readChannel` (the updater) — and the honest one is the default, so a new caller
+that forgets gets an outcome rather than a lie.
+
+A half-set git identity keeps both halves for the same reason. Collapsing it to
+"none" made the agent report a name that is set as unset, and made
+`settings-baseline` hash every half-set state alike — so changing the name under
+an unset email read as no change at all and let an older card overwrite it. It
+also gave an unset identity no revision, which left a card proposing one
+permanently `stale`.
+
 **A reader reads the store the declaration names, which is not always the
 obvious one.** An MCP server's arguments, environment and headers hold `$secret:`
 references and the panel writes one for every key row even where the user left
@@ -542,6 +569,27 @@ start a contained session** — so the setting is not irrelevant, it is what is
 blocking the container, and req 3 is precisely the requirement that the read say
 so. `detail` therefore carries either why a value is not live **or** what its
 being live costs.
+
+**Containment is resolved against what is RUNNING, on both probes.** The
+allowlist probe read it off `resolveEgress` alone, which answers for the next
+start — so a session whose global containment was switched off mid-life was told
+*its network access does not depend on the allowlist* while its container was
+still contained and still enforcing the list. That is req 3's exact failure: the
+surface that exists to explain a blocker describing a state that is not the one
+blocking. It now branches on `egressContainedAtStart` the way the containment
+probe does, so all four combinations of (started contained? × next-start
+contained?) are reported for what they are, and a container rediscovered after a
+ShipIt restart — which has no recorded boot policy — says it cannot tell rather
+than guessing from the current setting.
+
+One case is left, and it is the same shape on both probes: `userHostsExcluded`
+also comes from `resolveEgress`, and revoking a sandbox's network capability
+saves without rebuilding the container (`services/session-settings.ts`
+→ `updateSandboxCapabilities`, which emits a `pendingRestart` card). So a session
+that started open is told its capability excludes it from the allowlist before
+the restart that makes that true. Resolving it needs the start-time capabilities
+(`containerManager.capabilitiesAtStart`), which the read's `containerManager`
+dependency does not yet carry.
 
 **The refusal is a suffix on every branch, never a branch of its own.** It
 answers a different question from the rest of the probe: those say what is true

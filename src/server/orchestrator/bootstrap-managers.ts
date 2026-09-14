@@ -11,7 +11,7 @@ import path from "node:path";
 import { createDockerClient } from "./docker-client.js";
 import type { AgentId, DockerMemoryStats } from "../shared/types.js";
 import type { SessionInfo } from "../shared/types.js";
-import { readGlobalSystemPrompt, type SystemPromptScope } from "./global-system-prompt.js";
+import { globalSystemPromptForTurn, type SystemPromptScope } from "./global-system-prompt.js";
 import { LogStore } from "./log-store.js";
 import type { PrStatusPoller } from "./pr-status-poller.js";
 import { ReleaseStatusPoller } from "./release-status-poller.js";
@@ -334,7 +334,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     return hook ? hook(accountId, opts) : true;
   };
   const readSystemPromptApp = (scope: SystemPromptScope): Promise<string | undefined> =>
-    readGlobalSystemPrompt(workspaceDir, scope);
+    globalSystemPromptForTurn(workspaceDir, scope);
 
   const agentRuntime = buildAgentRuntime({
     authManager,

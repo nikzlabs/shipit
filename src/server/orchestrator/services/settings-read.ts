@@ -26,7 +26,7 @@ import type {
 } from "../../shared/settings-catalogue/index.js";
 import { providerSpeeds, providerVoices, ttsProviders } from "../../shared/voice-catalog.js";
 import { backgroundWorkOptions, resolveNonTurnModel } from "../non-turn-model.js";
-import { readChannel } from "../release-channel.js";
+import { readChannelOutcome } from "../release-channel.js";
 import { listConfiguredCredentials } from "../service-routing.js";
 import { readStoredGlobalSettings } from "./settings-derivation.js";
 import { StoreReadCache, bespokeReader } from "./settings-store-readers.js";
@@ -272,11 +272,22 @@ type OwnRouteReader = (deps: SettingsReadDeps) => Promise<ReadOutcome> | ReadOut
  * `BESPOKE_READERS`.
  */
 export const OWN_ROUTE_READERS: Record<OwnRouteSettingKey, OwnRouteReader> = {
-  "advanced.releaseChannel": async (deps) => ({
-    ok: true,
-    kind: "value",
-    value: await (deps.readReleaseChannel ?? readChannel)(),
-  }),
+  "advanced.releaseChannel": async (deps) => {
+    if (deps.readReleaseChannel) {
+      return { ok: true, kind: "value", value: await deps.readReleaseChannel() };
+    }
+    // `readChannel` answers the DEFAULT channel for an unreadable file, and that
+    // is a real channel — an install tracking `stable` would read as `edge`.
+    const read = await readChannelOutcome();
+    if (!read.ok) {
+      return {
+        ok: false,
+        reason: "read_failed",
+        note: readFailureNote("advanced.releaseChannel", read.error),
+      };
+    }
+    return { ok: true, kind: "value", value: read.channel };
+  },
   "network.egressContained": (deps) =>
     deps.egressAllowlistStore
       ? { ok: true, kind: "value", value: deps.egressAllowlistStore.getGlobalEnabled() }
@@ -474,6 +485,15 @@ function egressContainmentEffect(deps: SettingsReadDeps, sessionId: string): Set
  * contains is not restricted by it at all. Saying `live` here would promise the
  * user their newly added host is reachable from the session they are asking
  * about, which is the case they are asking about.
+ *
+ * **Whether the allowlist applies is a fact about the RUNNING container**, and
+ * `resolveEgress` answers for the next start (plan.md → Saved is not effective).
+ * Reading containment off the resolver alone told a session that switched global
+ * containment off mid-life that *its network access does not depend on the
+ * allowlist* — while its container was still contained and still enforcing it.
+ * That is req 3's exact failure: the surface that exists to explain a blocker
+ * describing a state that is not the one blocking. So containment is resolved
+ * the way the adjacent probe resolves it, against what is running.
  */
 function egressAllowlistEffect(deps: SettingsReadDeps, sessionId: string): SettingEffect {
   const disabled = enforcementDisabledEffect(deps, "the allowlist restricts nothing");
@@ -499,17 +519,43 @@ function egressAllowlistEffect(deps: SettingsReadDeps, sessionId: string): Setti
       detail: "This session's own network capability excludes it from the allowlist, and no restart makes a host here reachable from it. The session's network capability is what has to change.",
     }, blocked);
   }
+  const container = deps.containerManager?.get(sessionId);
+  if (container?.status === "running") {
+    const startedContained = container.egressContainedAtStart;
+    // A rediscovered container has no recorded boot policy, which
+    // `session-container.ts` treats as unknown rather than as the current one.
+    if (startedContained === undefined) {
+      return withRefusal({
+        state: "uncertain",
+        detail: "This session's container was rediscovered after a ShipIt restart, so ShipIt does not know whether it is enforcing the allowlist. Restarting the session is what settles it.",
+      }, blocked);
+    }
+    if (!startedContained) {
+      return withRefusal(
+        contained
+          ? {
+              state: "restart-dependent",
+              detail: "This session's container started open, so the allowlist does not restrict it. It starts contained next time, and the allowlist applies from then on.",
+            }
+          : {
+              state: "excluded",
+              detail: "This session is not contained, so its network access does not depend on the allowlist.",
+            },
+        blocked,
+      );
+    }
+    return withRefusal({
+      state: "restart-dependent",
+      detail: contained
+        ? "This session's container took its allowlist when it started; a change here applies the next time it starts."
+        : "This session's container started contained and is still enforcing the allowlist it took then. It starts open next time, and the allowlist stops applying to it.",
+    }, blocked);
+  }
   if (!contained) {
     return {
       state: "excluded",
       detail: "This session is not contained, so its network access does not depend on the allowlist.",
     };
-  }
-  if (deps.containerManager?.get(sessionId)?.status === "running") {
-    return withRefusal({
-      state: "restart-dependent",
-      detail: "This session's container took its allowlist when it started; a change here applies the next time it starts.",
-    }, blocked);
   }
   return withRefusal({ state: "live" }, blocked);
 }
@@ -634,6 +680,8 @@ interface ReadState {
   stored: Record<string, unknown>;
   /** The bulk read of the stored half failed, so no payload setting has a value. */
   storedFailed: boolean;
+  /** Payload settings whose own reader could not tell, reported one by one. */
+  storedUnreadable: ReadonlySet<string>;
   sessionId: string;
   /** The session's own repository binding, and the only one a project read uses. */
   repoUrl: string | null;
@@ -706,7 +754,7 @@ async function readValue(
   if (isPayloadDeclaration(declaration)) {
     // The stored half is one bulk read, so its failure is per entry for every
     // payload setting — and everything with a reader of its own still reads.
-    if (state.storedFailed) {
+    if (state.storedFailed || state.storedUnreadable.has(declaration.wire)) {
       return { ok: false, reason: "read_failed", note: UNREADABLE_NOTES.read_failed };
     }
     const raw = state.stored[declaration.wire];
@@ -944,12 +992,15 @@ async function readState(deps: SettingsReadDeps, sessionId: string): Promise<Rea
   const session = deps.sessionManager.get(sessionId);
   if (!session) throw new ServiceError(404, "Session not found");
   let stored: Record<string, unknown> = {};
+  let storedUnreadable: ReadonlySet<string> = new Set();
   let storedFailed = false;
   try {
-    stored = await readStoredGlobalSettings({
+    const read = await readStoredGlobalSettings({
       appWorkspaceDir: deps.appWorkspaceDir,
       ...(deps.credentialStore ? { credentialStore: deps.credentialStore } : {}),
     });
+    stored = read.values;
+    storedUnreadable = read.unreadable;
   } catch (err) {
     storedFailed = true;
     console.error("[settings-read] reading the stored settings failed:", err);
@@ -958,6 +1009,7 @@ async function readState(deps: SettingsReadDeps, sessionId: string): Promise<Rea
   return {
     stored,
     storedFailed,
+    storedUnreadable,
     sessionId,
     repoUrl,
     cache: new StoreReadCache({ deps, sessionId, repoUrl }),

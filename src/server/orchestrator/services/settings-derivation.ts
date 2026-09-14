@@ -1,5 +1,5 @@
 import type { CredentialStore } from "../credential-store.js";
-import { getGitIdentity, setGitIdentity as writeGitIdentity } from "../git-config.js";
+import { readGitIdentity, setGitIdentity as writeGitIdentity } from "../git-config.js";
 import { readGlobalSystemPrompt, writeGlobalSystemPrompt } from "../global-system-prompt.js";
 import { payloadDeclarations } from "../../shared/settings-catalogue/index.js";
 import type {
@@ -29,6 +29,13 @@ export interface DeclaredSettingWrite {
   value: unknown;
 }
 
+/**
+ * A reader that could not tell throws here rather than answering with the
+ * declared default, so `readStoredGlobalSettings` can report THAT setting
+ * unreadable (docs/299-agent-settings-access req 1). The two file-backed stores
+ * used to swallow their own failures, and an `EACCES` on an existing
+ * instructions file read as *no instructions*.
+ */
 async function readDeclared(
   declaration: Declaration,
   ctx: SettingsDerivationContext,
@@ -39,24 +46,51 @@ async function readDeclared(
       return ctx.credentialStore
         ? ctx.credentialStore.getDeclaredSetting(declaration.key as CredentialStoreSettingKey)
         : type.defaultValue;
-    case "system-prompt-file":
-      return type.read(await readGlobalSystemPrompt(ctx.appWorkspaceDir, store.promptScope));
-    case "git-config":
-      return type.read(getGitIdentity());
+    case "system-prompt-file": {
+      const read = await readGlobalSystemPrompt(ctx.appWorkspaceDir, store.promptScope);
+      if (!read.ok) throw read.error;
+      return type.read(read.content);
+    }
+    case "git-config": {
+      const read = readGitIdentity();
+      if (!read.ok) throw read.error;
+      return type.read(read.identity);
+    }
   }
+}
+
+export interface StoredGlobalSettingsRead {
+  values: StoredGlobalSettings;
+  /**
+   * The wire names whose own reader could not tell. `values` still carries the
+   * declared default for these, because a caller rendering the dialog needs a
+   * complete payload — but a caller REPORTING a value must say it could not be
+   * read instead of passing that default off as the truth.
+   */
+  unreadable: ReadonlySet<string>;
 }
 
 export async function readStoredGlobalSettings(
   ctx: SettingsDerivationContext,
-): Promise<StoredGlobalSettings> {
+): Promise<StoredGlobalSettingsRead> {
   const out: Record<string, unknown> = {};
+  const unreadable = new Set<string>();
   for (const declaration of payloadDeclarations()) {
-    const value = await readDeclared(declaration, ctx);
+    let value: unknown;
+    try {
+      value = await readDeclared(declaration, ctx);
+    } catch (err) {
+      // Per declaration, never per call: one unreadable file must not cost the
+      // caller every other setting's value.
+      console.error(`[settings] reading ${declaration.key} failed:`, err);
+      unreadable.add(declaration.wire);
+      value = declaration.type.defaultValue;
+    }
     // A pin the payload has always omitted rather than sent as null.
     if (value === null && declaration.omitWhenNull) continue;
     out[declaration.wire] = value;
   }
-  return out as StoredGlobalSettings;
+  return { values: out as StoredGlobalSettings, unreadable };
 }
 
 /**

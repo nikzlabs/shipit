@@ -196,19 +196,69 @@ export function writeContainerGitConfig(destPath: string): void {
   chownToSessionWorker(destPath);
 }
 
-export function getGitIdentity(): GitIdentity | null {
+/**
+ * The two fields **as git answered for them**, empty where the key is not set;
+ * `ok: false` means ShipIt could not tell. `git config --global <key>` is what
+ * makes the two hard to separate: an unset key and an unreadable config file
+ * both exit **1**, so the exit status alone cannot answer it
+ * (docs/299-agent-settings-access req 1). Measured against git 2.x: unset exits
+ * 1 with nothing on stderr, an unreadable config exits 1 with
+ * `warning: unable to access`, a malformed one exits 128, and a missing git
+ * binary never runs at all.
+ *
+ * A HALF-set identity keeps both halves rather than collapsing to "none": a
+ * caller reporting the value would otherwise say the name is unset when it is
+ * not, and a caller hashing it for staleness would give every half-set state the
+ * same revision — so changing the name under an unset email would read as no
+ * change at all.
+ */
+export type GitIdentityRead =
+  | { ok: true; identity: GitIdentity }
+  | { ok: false; error: unknown };
+
+type ConfigValueRead =
+  | { ok: true; value: string }
+  /** `unset` separates "git answered, the key is not there" from every failure. */
+  | { ok: false; unset: boolean; error: unknown };
+
+function globalConfigValue(key: string): ConfigValueRead {
   try {
-    const name = execFileSync("git", gitArgsWithHooksDisabled(["config", "--global", "user.name"]), {
+    const value = execFileSync("git", gitArgsWithHooksDisabled(["config", "--global", key]), {
       encoding: "utf-8",
-    }).trim();
-    const email = execFileSync("git", gitArgsWithHooksDisabled(["config", "--global", "user.email"]), {
-      encoding: "utf-8",
-    }).trim();
-    if (name && email) return { name, email };
-    return null;
-  } catch {
-    return null;
+    });
+    return { ok: true, value: value.trim() };
+  } catch (err) {
+    const failure = err as { status?: number | null; stderr?: string | Buffer | null };
+    const stderr = typeof failure.stderr === "string"
+      ? failure.stderr
+      : failure.stderr?.toString("utf-8") ?? "";
+    return { ok: false, unset: failure.status === 1 && stderr.trim() === "", error: err };
   }
+}
+
+export function readGitIdentity(): GitIdentityRead {
+  const name = globalConfigValue("user.name");
+  if (!name.ok && !name.unset) return { ok: false, error: name.error };
+  const email = globalConfigValue("user.email");
+  if (!email.ok && !email.unset) return { ok: false, error: email.error };
+  return {
+    ok: true,
+    identity: { name: name.ok ? name.value : "", email: email.ok ? email.value : "" },
+  };
+}
+
+/**
+ * The identity ShipIt can actually commit with, for callers that act the same
+ * way on a missing half and on one they could not read — the container fallback
+ * and the "set your git identity" prompt. A caller that REPORTS the value wants
+ * {@link readGitIdentity}, which keeps those apart.
+ */
+export function getGitIdentity(): GitIdentity | null {
+  const read = readGitIdentity();
+  if (!read.ok) return null;
+  const { name, email } = read.identity;
+  // A key set to an empty string counts as unset, as it always has.
+  return name && email ? { name, email } : null;
 }
 
 /**
