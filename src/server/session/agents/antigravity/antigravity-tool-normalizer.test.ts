@@ -1,3 +1,5 @@
+import fs from "node:fs";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   ANTIGRAVITY_TRANSCRIPT_TOOL_NAMES,
@@ -6,11 +8,49 @@ import {
 } from "./antigravity-tool-normalizer.js";
 import { ANTIGRAVITY_TOOL_NAMES } from "../../../shared/agent-tool-names.js";
 
+const PROBES = path.join(
+  new URL("../../../../../docs/301-antigravity-harness/probes/", import.meta.url).pathname,
+);
+
+/**
+ * The docs/272 Layer B checker: every tool name a CAPTURE carries must be one
+ * the registry declares. Comparing the two constants to each other cannot catch
+ * a name that only ever appears in a captured event, which is the drift a CLI
+ * version bump actually produces.
+ */
+function undeclaredToolNamesIn(capture: string): string[] {
+  const observed = new Set<string>();
+  for (const line of capture.split("\n")) {
+    if (!line.trim()) continue;
+    const name = (JSON.parse(line) as { step_update?: { tool_name?: string } })
+      .step_update?.tool_name;
+    if (name) observed.add(name);
+  }
+  return [...observed].filter((n) => !(ANTIGRAVITY_TOOL_NAMES as readonly string[]).includes(n));
+}
+
 describe("the Antigravity tool vocabulary", () => {
   it("only maps names the CLI actually offers", () => {
     for (const name of Object.keys(ANTIGRAVITY_TRANSCRIPT_TOOL_NAMES)) {
       expect(ANTIGRAVITY_TOOL_NAMES as readonly string[], `${name} is not a CLI tool`).toContain(name);
     }
+  });
+
+  it("declares every tool name the captured tour actually used", () => {
+    const capture = fs.readFileSync(path.join(PROBES, "tour2.ndjson"), "utf8");
+    expect(undeclaredToolNamesIn(capture)).toEqual([]);
+  });
+
+  /**
+   * The recipe's negative control (docs/272 Step 2): a checker that cannot go
+   * red is worth nothing. Feed the same bytes with one name swapped for a
+   * fabricated one and the check above must fail.
+   */
+  it("flags a fabricated tool name in a capture", () => {
+    const capture = fs
+      .readFileSync(path.join(PROBES, "tour2.ndjson"), "utf8")
+      .replaceAll('"grep_search"', '"TaskCreateV2"');
+    expect(undeclaredToolNamesIn(capture)).toEqual(["TaskCreateV2"]);
   });
 
   /**

@@ -78,13 +78,11 @@ export class AntigravityAdapter
     toolNames: [...ANTIGRAVITY_TOOL_NAMES],
     models: [],
     ...(REASONING ? { reasoning: REASONING } : {}),
-    // not-wired — the docs/266 item-15 depth-0 probe has NOT run: it needs a
-    // live session on this harness, and no credential that can fund a review
-    // turn was available. Everything the flow needs is in `init.tools`
-    // (`run_command` + `command_status`, `invoke_subagent`, `view_file`), so
-    // this is expected to flip to true; planning#543 tracks the probe. A
-    // `false` hides the file-viewer button and leaves `/review` working.
-    supportsReview: false,
+    // probed on 1.1.27 — the docs/266 item-15 depth-0 probe ran the verbatim
+    // composeReviewMessage in a real session container: `shipit agent run
+    // --role reviewer` backgrounded by `run_command` and polled with
+    // `manage_task`, one 419 s turn (docs/301 probes/review.ndjson).
+    supportsReview: true,
     supportsSteering: false,
     supportsCompaction: false,
     supportsGoals: false,

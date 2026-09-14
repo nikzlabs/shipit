@@ -175,3 +175,26 @@ them cannot show whether its turn succeeded.
   does not carry a stale workspace of its own: `pwd` returns the repository on
   the first turn and on the resume, and `ls -1` on the resume lists the
   repository's files.
+
+## 2026-09-14 — what the CLI offers the MODEL (1.1.27)
+
+`tool-declarations.sh`, `tool-declarations.json`, `subagent.ndjson` +
+`subagent.meta`, `subagent-prompt.txt`.
+
+`init.tools` advertises 57 names and is **not** the model's toolset. On the wire
+a plain headless spawn declares **11** functions — the same 11 the tools-off
+control above captured as a by-product — and one stdio MCP server raises it to
+14 (`call_mcp_tool`, `list_resources`, `read_resource`). The other 43 are never
+offered: the whole subagent family, every `browser_*`, the `ask_*` family,
+`command_status`, `send_command_input`, `sed_file`,
+`multi_replace_file_content`, `notebook_edit`, `schedule` and `finish`.
+
+`subagent.ndjson` is the behaviour that led there: a prompt naming
+`define_subagent` and `invoke_subagent` and forbidding the shell makes the model
+answer that it does not have those tools. That is a claim; the declarations are
+the measurement. Together they close the docs/272 run's "the subagent surface
+has no observed driver" as **structural**, not unexercised.
+
+The request bodies themselves are deliberately not vendored — they are ~42 KB of
+Google's own system instruction each, and the derived name lists are the whole
+measurement.

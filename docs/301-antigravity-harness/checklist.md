@@ -129,12 +129,16 @@ Antigravity-specific is in [plan.md](./plan.md).
       repository and answered — no key, credentials scrubbed. It found three
       more defects, all fixed: the token file's real shape, the absent identity,
       and the egress host (all below)
-- [ ] Event-conversion verification: the docs/272 recipe, run and recorded at
-      `docs/272-harness-conversion-verification/runs/2026-09-14-1050-antigravity-1.1.27.md`
-      — **PARTIAL**. Steps 1, 2, 3 and 5 in full; three defects found and fixed.
-      Three gaps left: the subagent surface has no observed driver (the model
-      answers the tour's step 7 with a shell command), Step 4's UI-snapshot and
-      reload half was not taken, and no run exercised ACCOUNT mode
+- [x] Event-conversion verification: the docs/272 recipe, over two runs.
+      `runs/2026-09-14-1050-antigravity-1.1.27.md` ran Steps 1, 2, 3 and 5 in
+      full and found three defects, all fixed, and ended PARTIAL.
+      `runs/2026-09-14-1715-antigravity-1.1.27.md` closes every gap it named:
+      Step 4 in full on the ACCOUNT route (persisted history, UI snapshot, and a
+      post-reload snapshot identical line for line), the recipe's negative
+      control, and the subagent surface — which turns out to be structurally
+      undrivable, not unexercised. `init.tools` advertises 57 tools and the CLI
+      declares **11** of them to the model (14 with an MCP server), measured on
+      the wire (`probes/tool-declarations.json`)
 - [x] The failure **after partial output** fixture captured
       (`probes/partial-fail.ndjson`): exit 1, `result.status: "ERROR"`, empty
       stderr, after a complete `agent_response` step
