@@ -95,9 +95,16 @@ failed is still eligible: the local rebase concluded, which is what the agent's 
 is about.
 
 The success paths `return` from inside the `try`, so delivery cannot be a statement
-written after the `finally`. Capture the outcome and the notes at the return point,
-close the window there, and dispatch from a wrapper around `runRebaseFlow` so both
-call sites get identical behaviour.
+written after the `finally`. Capture the outcome and the notes at the return point and
+close the window there.
+
+**As built: the notes ride the outcome, and each call site delivers.** A shared wrapper
+around `runRebaseFlow` cannot work, because the two paths conclude at different moments:
+the idle path runs a second LFS restoration and its own `drainQueue` *after* the flow
+returns. So `conflicts_resolved` carries an optional `followup` field, and the two call
+sites — `api-routes-git.ts` for manual Sync, the end of `runAutoResolveAttempt` for the
+idle path — each hand it to `deliverRebaseFollowup` after their own final cleanup. Two
+lines apiece, and neither can deliver into a tree still being rewritten.
 
 Dispatch after the owning path's final cleanup, not merely after the flow's
 `finally`. On the idle path `runAutoResolveAttempt` does a second LFS restoration
@@ -174,13 +181,15 @@ turn is ordinary transcript content.
 | File | Change |
 |---|---|
 | `src/server/orchestrator/services/rebase-followup.ts` | New. Attempt-keyed window, note list, prompt composition, dispatch, handle observation. |
-| `src/server/orchestrator/services/rebase-driver.ts` | Open/close the window by attempt id; close it on the timeout path; extend `buildRebaseConflictPrompt`; deliver from a wrapper after each path's final cleanup. |
+| `src/server/orchestrator/services/rebase-driver.ts` | Open/close the window by attempt id; close it on the timeout path; extend `buildRebaseConflictPrompt`; carry the notes on the `conflicts_resolved` outcome; deliver at the end of `runAutoResolveAttempt`. |
+| `src/server/orchestrator/api-routes-git.ts` | Deliver on the manual Sync path once the flow settles. |
 | `src/server/orchestrator/prompts/post-rebase-followup.md` | New. Follow-up turn text. |
 | `src/server/orchestrator/api-routes-session-spawn.ts` | `POST /api/sessions/:sessionId/continue-after-rebase`, non-empty note validated. |
 | `src/server/session/agent-ops-routes.ts` | Relay route. |
 | `src/server/session/agent-shim/shipit-session.ts` | The CLI handler. |
 | `src/server/session/agent-shim/shipit.ts` | Register the subcommand in `SESSION_HANDLERS` and its help. |
-| `src/server/shipit-docs/github.md` | Agent-facing reference. |
+| `src/server/shipit-docs/github.md` | Agent-facing reference: *Work to do after a rebase concludes*. |
+| `src/server/shipit-docs/sessions.md` | The subcommand's row in the session-command table. |
 
 ## Tests
 

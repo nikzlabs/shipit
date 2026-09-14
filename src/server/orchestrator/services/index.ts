@@ -28,6 +28,7 @@ export * from "./repos.js";
 export * from "./repo-default-branch.js";
 export * from "./reviews.js";
 export * from "./rebase-driver.js";
+export * from "./rebase-followup.js";
 export * from "./health.js";
 export * from "./recovery.js";
 export * from "./diagnostics.js";

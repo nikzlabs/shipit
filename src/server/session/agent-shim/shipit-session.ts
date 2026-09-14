@@ -965,6 +965,61 @@ async function armSelfMergeWatch(json: boolean, deps: RunDeps): Promise<void> {
   );
 }
 
+export async function handleSessionContinueAfterRebase(
+  args: string[],
+  deps: RunDeps,
+): Promise<void> {
+  const parsed = parseFlags(args, {
+    values: { "--note": "note", "-n": "note" },
+    booleans: { "--json": "json" },
+  });
+  if (parsed.unsupported.length > 0) {
+    fail(
+      deps.io,
+      `Unsupported flag for shipit session continue-after-rebase: ${parsed.unsupported[0]}\n${REJECTED_HELP}`,
+    );
+  }
+  if (parsed.positional[0]) {
+    fail(
+      deps.io,
+      "shipit session continue-after-rebase takes no session id — it always arms this session's "
+      + "own rebase.",
+    );
+  }
+  const note = parsed.values.note?.trim();
+  if (!note) {
+    fail(
+      deps.io,
+      'shipit session continue-after-rebase: --note "..." is required. ShipIt plays the note back '
+      + "to you as the follow-up turn, so without one there is nothing to deliver.",
+    );
+  }
+
+  const res = await deps.call(
+    "POST",
+    "/agent-ops/session/continue-after-rebase",
+    { note },
+    deps.env,
+  );
+  if (res.status < 200 || res.status >= 300) {
+    fail(deps.io, formatError(res, "Failed to arm the post-rebase follow-up"), 1);
+  }
+
+  if (parsed.booleans.has("json")) {
+    deps.io.stdout(`${JSON.stringify(res.body)}\n`);
+    deps.io.exit(0);
+    return;
+  }
+  const notes = res.body.notes as number | undefined;
+  success(
+    deps.io,
+    `continue-after-rebase: armed\n`
+    + `notes:                ${notes ?? 1}\n`
+    + "on conclusion:        ShipIt gives your note back as a turn once this rebase concludes.\n"
+    + "                      A rebase that is aborted or interrupted delivers nothing.",
+  );
+}
+
 const REPORT_SEVERITIES = ["fyi", "warn", "blocker"];
 const REPORT_TARGETS = ["parent"];
 const MAX_REPORT_BODY_CHARS = 10_000;

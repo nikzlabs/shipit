@@ -1611,6 +1611,60 @@ describe("shipit session rename (docs/250)", () => {
   });
 });
 
+describe("shipit session continue-after-rebase (docs/303)", () => {
+  const ARMED = { status: 200, body: { armed: true, notes: 1 } };
+
+  it("posts the note to the self-scoped route and confirms the arm", async () => {
+    const { run } = makeRunner();
+    const out = await run(
+      ["session", "continue-after-rebase", "--note", "re-run codegen"],
+      { "POST /agent-ops/session/continue-after-rebase": ARMED },
+    );
+    expect(out.exitCode).toBe(0);
+    expect(out.calls[0]).toMatchObject({
+      method: "POST",
+      path: "/agent-ops/session/continue-after-rebase",
+      body: { note: "re-run codegen" },
+    });
+    expect(out.stdout).toContain("armed");
+  });
+
+  it("requires --note: without one the follow-up turn would carry nothing", async () => {
+    const { run } = makeRunner();
+    const out = await run(["session", "continue-after-rebase"]);
+    expect(out.exitCode).not.toBe(0);
+    expect(out.stderr).toContain("--note");
+    expect(out.calls).toHaveLength(0);
+  });
+
+  it("rejects a positional session id rather than arming the wrong session", async () => {
+    const { run } = makeRunner();
+    const out = await run(["session", "continue-after-rebase", "ses_other", "--note", "x"]);
+    expect(out.exitCode).not.toBe(0);
+    expect(out.stderr).toContain("takes no session id");
+    expect(out.calls).toHaveLength(0);
+  });
+
+  it("surfaces the orchestrator's refusal when no rebase is in progress", async () => {
+    const { run } = makeRunner();
+    const out = await run(["session", "continue-after-rebase", "--note", "too early"], {
+      "POST /agent-ops/session/continue-after-rebase": {
+        status: 409,
+        body: { error: "No rebase is in progress for this session." },
+      },
+    });
+    expect(out.exitCode).not.toBe(0);
+    expect(out.stderr).toContain("No rebase is in progress");
+  });
+
+  it("rejects unsupported flags", async () => {
+    const { run } = makeRunner();
+    const out = await run(["session", "continue-after-rebase", "--note", "x", "--when", "later"]);
+    expect(out.exitCode).not.toBe(0);
+    expect(out.stderr).toContain("Unsupported flag for shipit session continue-after-rebase");
+  });
+});
+
 describe("shipit session report", () => {
   const DELIVERED = {
     status: 200,

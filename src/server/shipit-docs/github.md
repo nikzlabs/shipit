@@ -238,6 +238,31 @@ shipit session notify-on-merge <child-id>
 Both return immediately (exit 0, "armed"). See [sessions.md](sessions.md) for
 what the wake-turn carries and how to chain several PRs from one session.
 
+### Work to do after a rebase concludes
+
+When ShipIt rebases your branch onto the base — you clicked Sync, or the idle
+auto-resolver started it — and the rebase hits conflicts, ShipIt gives you a turn
+to edit the conflicted files. **That turn ends before the rebase does.** ShipIt
+stages your edits, continues the rebase (possibly through more conflict rounds),
+then force-pushes. So work that only makes sense on the finished result —
+re-running codegen or the tests over the merged tree, fixing a semantic conflict
+the markers did not show, updating the PR body — cannot be done in that turn.
+
+Arm it instead, during the conflict-resolution turn:
+
+```sh
+shipit session continue-after-rebase --note "re-run codegen, then the snapshot tests"
+```
+
+ShipIt gives that note back to you as a new turn once the rebase concludes, on
+both paths. The note is required: it is what the follow-up turn carries, and the
+conversation may have been compacted in between. Arming several times across
+conflict rounds appends rather than replaces.
+
+A rebase that does **not** conclude — aborted, refused, timed out — delivers
+nothing: the branch is unchanged, so there is nothing to follow up. Arming
+outside a rebase ShipIt is driving is refused for the same reason.
+
 ### Images in a PR (not possible)
 
 You cannot put an image in a PR body or comment — no attach verb exists, and no

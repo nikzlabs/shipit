@@ -27,6 +27,7 @@ import {
   repoDefaultBranch,
   ServiceError,
 } from "./services/index.js";
+import { deliverRebaseFollowup } from "./services/rebase-followup.js";
 import { detectAndReArmResetSession } from "./services/pr-rearm.js";
 import {
   buildManualResetAgentNotice,
@@ -453,24 +454,35 @@ export async function registerGitRoutes(
           baseBranch,
         );
 
-        flowPromise.catch((err: unknown) => {
-          console.error(`[rebase] flow failed for session ${sessionId}:`, err);
-          runner.emitMessage({ type: "rebase_aborted", sessionId: runner.sessionId, reason: getErrorMessage(err) });
-          // Persist failures not already recorded by the driver; WS events do not survive reload.
-          if (syncFailureAlreadyExplained(err)) return;
+        void (async () => {
           try {
-            emitNoticePostTurn(
-              (msg) => runner.emitMessage(msg),
-              deps.chatHistoryManager,
-              sessionId,
-              `Sync with \`${baseBranch}\` failed: ${getErrorMessage(err)}. Your branch was not `
-              + "changed by ShipIt; check the workspace state and try again.",
-              "warn",
-            );
-          } catch (noticeErr) {
-            console.error("[rebase] sync-failure notice failed:", getErrorMessage(noticeErr));
+            const outcome = await flowPromise;
+            // The flow's `finally` has run: the system-turn hold is released and LFS restored.
+            if (outcome.status === "conflicts_resolved" && outcome.followup) {
+              deliverRebaseFollowup(
+                { runner, sessionManager: deps.sessionManager },
+                outcome.followup,
+              );
+            }
+          } catch (err: unknown) {
+            console.error(`[rebase] flow failed for session ${sessionId}:`, err);
+            runner.emitMessage({ type: "rebase_aborted", sessionId: runner.sessionId, reason: getErrorMessage(err) });
+            // Persist failures not already recorded by the driver; WS events do not survive reload.
+            if (syncFailureAlreadyExplained(err)) return;
+            try {
+              emitNoticePostTurn(
+                (msg) => runner.emitMessage(msg),
+                deps.chatHistoryManager,
+                sessionId,
+                `Sync with \`${baseBranch}\` failed: ${getErrorMessage(err)}. Your branch was not `
+                + "changed by ShipIt; check the workspace state and try again.",
+                "warn",
+              );
+            } catch (noticeErr) {
+              console.error("[rebase] sync-failure notice failed:", getErrorMessage(noticeErr));
+            }
           }
-        });
+        })();
 
         return { status: "started" };
       } catch (err) {
