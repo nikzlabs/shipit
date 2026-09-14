@@ -446,9 +446,8 @@ export interface ReleaseChannelWriteResult<T> {
   outcome: ApplyOutcome;
   /**
    * The update check after the write threw. The channel is durable either way,
-   * so this is the check's failure and never the write's: a caller that needs
-   * an update status re-raises it, and a caller that only changed the setting
-   * reports the change it made.
+   * so this is never the write's failure: a caller that needs an update status
+   * re-raises it.
    */
   checkError?: Error;
 }
@@ -460,10 +459,10 @@ export interface ReleaseChannelWriteResult<T> {
  * a single call could not tell that from a channel that never moved.
  *
  * A failed check is therefore NOT a failed write (plan.md → "Saved" has to mean
- * saved). Re-raising it here would lose that distinction for every caller: the
- * channel would be stored and the proposal card would report the change
- * refused. So the check's error is *returned* beside an `applied` outcome, and
- * the route that wants an update status raises it itself.
+ * saved), and re-raising it here lost that for every caller: the channel was
+ * stored and the proposal card reported the change refused. So it is *returned*
+ * beside an `applied` outcome, and the route that wants an update status raises
+ * it itself.
  */
 export async function applyReleaseChannel(
   deps: SettingsBroadcastDeps,
@@ -664,11 +663,7 @@ export async function applyMcpServerUpdate(
   });
 }
 
-/**
- * A server's `enabled` flag on its own. It is a separate operation rather than
- * an update carrying the stored config, because an update reconciles the
- * server's secrets to the config it is given — see {@link setMcpServerEnabled}.
- */
+/** A server's `enabled` flag on its own; see {@link setMcpServerEnabled}. */
 export async function applyMcpServerEnabled(
   deps: McpApplyDeps,
   id: string,

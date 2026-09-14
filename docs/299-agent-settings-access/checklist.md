@@ -118,7 +118,12 @@ code before being acted on.
 - [x] req 4 — a release-channel switch whose update check fails reports the
       change it made, not a refusal: `applyReleaseChannel` returns the check's
       error instead of raising it, and the route raises it
+- [x] `POST /api/updates/channel` still answers the check's own 503 and records
+      no update result, which is the contract the returned error replaced
 - [x] Every new guard proven red on its own, with the defect restored
+- [x] An independent review of the fixes themselves: no functional finding, and
+      its two observations acted on — the added comments cut back to the
+      constraint beside its code, and the route's branch covered
 
 Known and not fixed here: the MCP panel's own Enable/Disable button saves the
 whole server through `PUT /api/mcp/servers/:id`, so it clears an unreferenced

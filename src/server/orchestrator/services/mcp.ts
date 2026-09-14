@@ -288,15 +288,12 @@ export function updateMcpServer(
 }
 
 /**
- * One field of a stored server, and nothing else of it
- * (docs/299-agent-settings-access, plan.md → Collections are patched, never
- * replaced).
- *
- * Deliberately NOT {@link updateMcpServer} with the stored config and no
- * secrets. That call reconciles the stored secrets against the config it is
- * handed, so a secret with no `$secret:` reference in the configuration — which
- * {@link addMcpServer} accepts — is cleared by a caller that meant to change one
- * boolean. A narrow write is what lets a proposal card show its whole effect.
+ * One field of a stored server, and nothing else of it. Deliberately not
+ * {@link updateMcpServer} with the stored config: that reconciles the stored
+ * secrets against the config it is handed, so a secret the config does not
+ * `$secret:`-reference — which {@link addMcpServer} accepts — is cleared by a
+ * caller that meant to change one boolean (docs/299-agent-settings-access,
+ * plan.md → Collections are patched, never replaced).
  */
 export function setMcpServerEnabled(
   credentialStore: CredentialStore,

@@ -173,13 +173,9 @@ function settingIs(
 
 /**
  * An address the CALLER supplied, echoed back so the refusal says which one it
- * means.
- *
- * Reflected input, not a stored value — it arrives on the agent's own request —
- * so req 2 is not engaged and it is flattened and capped for presentation only,
- * exactly as the read echoes a key it does not know (`settings-read.ts` →
- * `echoSupplied`) and for the same reason. The projections are the secret
- * defence; this is hygiene.
+ * means. Reflected input rather than a stored value, so this is presentation
+ * hygiene and not req 2's defence — the same treatment `settings-read.ts` gives
+ * a key it does not know (plan.md → Reflected input is not this rule's business).
  */
 const SUPPLIED_ECHO_MAX = 80;
 
@@ -189,15 +185,11 @@ export function echoSupplied(supplied: string): string {
 }
 
 /**
- * Stored names an error message may repeat, and how many it may not
- * (req 2, plan.md → `emits` is an allowlist of derived values).
- *
- * **No error may interpolate a stored value that did not come through the
- * projection door.** Listing `getRoles()` directly disclosed exactly what the
- * read withholds: a role name is arbitrary user text, `PUT /api/roles` accepts
- * `https://user:token@host/?token=…` as one, and `settings-read.ts` emits no
- * item at all for a name wearing that shape. An error path that named them
- * anyway was the read's gate with a second door beside it.
+ * Stored names an error message may repeat, and how many it may not: no message
+ * interpolates a stored value that did not come through the projection door
+ * (req 2, plan.md → `emits` is an allowlist of derived values). A role name is
+ * arbitrary user text, and the read emits no item at all for one shaped like a
+ * URL.
  */
 function namesForMessage(names: string[]): string {
   const shown = names
@@ -605,11 +597,10 @@ const OPERATIONS: Record<string, SettingsOperation> = {
     { preflight: modeAddressed() },
   ),
 
-  // The release channel writes through its own route, and the update check that
-  // follows it can fail long after the channel landed. `applyReleaseChannel`
-  // keeps the two apart, so what throws here is the write itself — a refusal
-  // that stored nothing — and a failed check arrives as an applied outcome
-  // carrying what it could not confirm.
+  // The release channel writes through its own route. `applyReleaseChannel`
+  // keeps the write apart from the update check that follows it, so what throws
+  // here is the write — a refusal that stored nothing — and a failed check
+  // arrives as an applied outcome saying what it could not confirm.
   "advanced.releaseChannel::set": {
     domains: () => [releaseChannelDomain],
     async apply(deps, _target, value) {
@@ -662,11 +653,9 @@ const OPERATIONS: Record<string, SettingsOperation> = {
     },
     async apply(deps, target, value) {
       const credentialStore = requireCredentialStore(deps);
-      // One field, through a write that touches one field. Handing the stored
-      // server back to `applyMcpServerUpdate` looks equivalent and is not: that
-      // reconciles the server's stored secrets against the config it is given,
-      // so a secret the configuration does not reference is deleted by a card
-      // that proposed a boolean.
+      // One field, through a write that touches one field: an update carrying
+      // the stored server reconciles its secrets and deletes the ones the
+      // config does not reference (`services/mcp.ts` → `setMcpServerEnabled`).
       const { outcome } = await applyMcpServerEnabled(
         {
           sseBroadcast: deps.sseBroadcast,

@@ -1,4 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import Fastify from "fastify";
+import { registerUpdateRoutes } from "../api-routes-updates.js";
+import { versionAnchor } from "./update-notice.js";
 import { proposalFixture, type ProposalFixture } from "./settings-proposal-test-helpers.js";
 import { proposeSettingChange } from "./settings-propose.js";
 import { resolveSettingsProposal } from "./settings-decision.js";
@@ -89,5 +92,31 @@ describe("switching the release channel", () => {
 
     expect(card.phase).toBe("applied");
     expect(card.outcomeDetail).toBeUndefined();
+  });
+});
+
+describe("POST /api/updates/channel, which answers with an update status", () => {
+  it("still answers the check's own 503 and records no result", async () => {
+    updates.checkForUpdates.mockRejectedValue(
+      new ServiceError(503, "Failed to fetch updates: could not resolve github.com"),
+    );
+    const app = Fastify();
+    await registerUpdateRoutes(app, { sseBroadcast: () => {}, credentialStore: fx.credentialStore });
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/updates/channel",
+      payload: { channel: "edge" },
+    });
+    await app.close();
+
+    // The write no longer raises this error, so the endpoint does — its callers
+    // asked for an update status and there is none.
+    expect(res.statusCode).toBe(503);
+    expect(res.json().error).toContain("Failed to fetch updates");
+    expect(updates.writeReleaseChannel).toHaveBeenCalledWith("edge");
+    // A check that did not run records nothing: the banner keeps saying nothing
+    // is known until the next one succeeds.
+    expect(fx.credentialStore.getUpdateNotice(versionAnchor(undefined))?.result).toBeUndefined();
   });
 });
