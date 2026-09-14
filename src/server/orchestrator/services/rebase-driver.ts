@@ -185,6 +185,35 @@ function reevaluateSessionAfterRewrite(runner: SessionRunnerInterface): void {
   onWorkspaceRewritten(runner, "rebase");
 }
 
+/**
+ * Between resolution turns, and from the last one through the force-push and the
+ * branch-synced card, `running` is false — so only this lease keeps the runner out of
+ * the idle enforcer's reach. It feeds `agentBusy` and the non-forced `dispose()` guards
+ * from one flag, which is what CLAUDE.md's post-turn invariant 5 asks of post-turn-shaped
+ * work (planning#556). It is dropped while a resolution turn runs, where `running`
+ * guards instead.
+ *
+ * `take()` re-arms at every segment boundary rather than holding once: POST_TURN_HOLD_MAX_MS
+ * caps a hold at 120s, and `PostTurnHold` counts depth with no per-holder identity — past
+ * the deadline `begin()` zeroes the count, so neither our flag nor the aggregate proves we
+ * still contribute one. The cover is therefore bounded: a SINGLE segment that outruns the
+ * deadline reads idle again until the next boundary.
+ */
+class RebaseRunnerHold {
+  private held = false;
+  constructor(private readonly runner: SessionRunnerInterface) {}
+  take(): void {
+    if (this.held && this.runner.postTurnWorkInFlight) return;
+    this.held = true;
+    this.runner.beginPostTurnWork();
+  }
+  release(): void {
+    if (!this.held) return;
+    this.held = false;
+    this.runner.endPostTurnWork();
+  }
+}
+
 // The runner is no longer running; hold it against disposal during restoration.
 async function restoreLfsForSync(deps: RebaseDriverDeps, baseBranch: string): Promise<void> {
   const { runner } = deps;
@@ -348,11 +377,13 @@ export async function runRebaseFlow(
   const pendingPush: { arm: (() => void) | null } = { arm: null };
   // Object-held so the `finally` reads what the conflict loop wrote.
   const followupAttempt: { id: string | null } = { id: null };
+  const hold = new RebaseRunnerHold(runner);
   let published = false;
   let pushProhibited = false;
   let savedCommit: string | null = null;
 
   try {
+    hold.take();
     savedCommit = (await prepareWorkspaceForRebase(
       deps,
       baseBranch,
@@ -402,6 +433,9 @@ export async function runRebaseFlow(
     });
 
     if (result.status === "clean") {
+      // Nothing refreshed the lease since the flow started; fetch and rebase alone can
+      // outrun POST_TURN_HOLD_MAX_MS on a large repo.
+      hold.take();
       reevaluateSessionAfterRewrite(runner);
       const forcePushed = await tryForcePush(deps);
       published = forcePushed;
@@ -441,7 +475,7 @@ export async function runRebaseFlow(
 
       const prompt = buildRebaseConflictPrompt(baseBranch, result.conflicts);
       try {
-        await runRebaseResolutionTurn(deps, prompt);
+        await runRebaseResolutionTurn(deps, prompt, hold);
       } catch (err) {
         // Abort before rethrowing; verify failures before reporting the branch unchanged.
         let stillInProgress = false;
@@ -477,6 +511,7 @@ export async function runRebaseFlow(
       }
     }
 
+    hold.take();
     reevaluateSessionAfterRewrite(runner);
     const forcePushed = await tryForcePush(deps);
     published = forcePushed;
@@ -508,45 +543,53 @@ export async function runRebaseFlow(
         : {}),
     };
   } finally {
-    // Any other ending discards the arm: an unconcluded rebase leaves nothing to follow up.
-    if (followupAttempt.id) closeFollowupWindow(runner.sessionId, followupAttempt.id);
-    if (!abortNoticeReached) lastAbortNotice.delete(runner);
-    // Aborts also restore LFS pointers; recover content before releasing queued turns.
-    if (worktreeRewritten) await restoreLfsForSync(deps, baseBranch);
-    // Consume successful or prohibited pushes; a fallback on base would bypass the PR.
-    if (published) {
-      pendingPush.arm = null;
-    } else if (pushProhibited) {
-      pendingPush.arm = null;
-      if (savedCommit) {
-        persistSyncNotice(
-          deps,
-          `Your uncommitted changes were saved as a local commit (${savedCommit.slice(0, 7)}), but it was `
-          + `NOT pushed: this session is checked out on \`${baseBranch}\` itself, and pushing from a sync `
-          + "would put the commit straight on that branch without a pull request. Push it deliberately "
-          + "when you mean to.",
-        );
-      }
-    } else {
-      const arm = pendingPush.arm;
-      pendingPush.arm = null;
-      if (arm) {
-        try {
-          arm();
-        } catch (err) {
-          console.error("[rebase] arming the auto-push for the pre-sync commit failed:", getErrorMessage(err));
+    // Released last, so a throw in this teardown cannot strand the lease. Re-taken
+    // first: restoreLfsForSync's own begin/end would otherwise zero an expired depth
+    // and then drop it, leaving the handback and the queue drain uncovered.
+    try {
+      hold.take();
+      // Any other ending discards the arm: an unconcluded rebase leaves nothing to follow up.
+      if (followupAttempt.id) closeFollowupWindow(runner.sessionId, followupAttempt.id);
+      if (!abortNoticeReached) lastAbortNotice.delete(runner);
+      // Aborts also restore LFS pointers; recover content before releasing queued turns.
+      if (worktreeRewritten) await restoreLfsForSync(deps, baseBranch);
+      // Consume successful or prohibited pushes; a fallback on base would bypass the PR.
+      if (published) {
+        pendingPush.arm = null;
+      } else if (pushProhibited) {
+        pendingPush.arm = null;
+        if (savedCommit) {
+          persistSyncNotice(
+            deps,
+            `Your uncommitted changes were saved as a local commit (${savedCommit.slice(0, 7)}), but it was `
+            + `NOT pushed: this session is checked out on \`${baseBranch}\` itself, and pushing from a sync `
+            + "would put the commit straight on that branch without a pull request. Push it deliberately "
+            + "when you mean to.",
+          );
+        }
+      } else {
+        const arm = pendingPush.arm;
+        pendingPush.arm = null;
+        if (arm) {
+          try {
+            arm();
+          } catch (err) {
+            console.error("[rebase] arming the auto-push for the pre-sync commit failed:", getErrorMessage(err));
+          }
         }
       }
-    }
-    handWorkspaceBackToWorker(runner.sessionDir);
-    // A displacing turn owns its flag and queue drain.
-    if (!runner.running) {
-      runner.systemTurnInProgress = false;
-      try {
-        releaseQueuedTurn(runner);
-      } catch (releaseErr) {
-        console.error("[rebase] post-flow queue release failed:", getErrorMessage(releaseErr));
+      handWorkspaceBackToWorker(runner.sessionDir);
+      // A displacing turn owns its flag and queue drain.
+      if (!runner.running) {
+        runner.systemTurnInProgress = false;
+        try {
+          releaseQueuedTurn(runner);
+        } catch (releaseErr) {
+          console.error("[rebase] post-flow queue release failed:", getErrorMessage(releaseErr));
+        }
       }
+    } finally {
+      hold.release();
     }
   }
 }
@@ -633,9 +676,24 @@ function notifyPrStatusPollerOfPush(deps: RebaseDriverDeps): void {
   }
 }
 
-function runRebaseResolutionTurn(
+async function runRebaseResolutionTurn(
   deps: RebaseDriverDeps,
   prompt: string,
+  hold: RebaseRunnerHold,
+): Promise<void> {
+  try {
+    await dispatchRebaseResolutionTurn(deps, prompt, hold);
+  } finally {
+    // The turn executor releases its own lease as this continuation is queued, so by
+    // here it has let go — and if it had already expired, it took ours with it.
+    hold.take();
+  }
+}
+
+function dispatchRebaseResolutionTurn(
+  deps: RebaseDriverDeps,
+  prompt: string,
+  hold: RebaseRunnerHold,
 ): Promise<void> {
   const { runner } = deps;
 
@@ -668,8 +726,10 @@ function runRebaseResolutionTurn(
         // Late duplicate callbacks must not re-lock the runner after the flow releases it.
         if (turnSettled) return;
         turnSettled = true;
-        // Restore the flow's hold synchronously after finishTurn clears the per-turn flag.
+        // Restore the flow's holds synchronously after finishTurn clears the per-turn
+        // flag; an unexpired turn lease is still held here, so nothing reads idle between.
         if (!runner.running) runner.systemTurnInProgress = true;
+        hold.take();
         if (outcome.status === "completed") {
           resolve();
           return;
@@ -689,6 +749,10 @@ function runRebaseResolutionTurn(
         ));
       },
     }), { whenBusy: "refuse" });
+
+    // dispatch claims the turn synchronously, so `running` now says whether it started.
+    // A refusal settled inside the call above, and its hold must survive to the flow.
+    if (runner.running && !turnSettled) hold.release();
   });
 }
 
@@ -762,13 +826,21 @@ export async function runAutoResolveAttempt(
       // `finally` never runs. Without this the arm would wake on a later, unrelated rebase.
       if (followupAttempt.id) closeFollowupWindow(runner.sessionId, followupAttempt.id);
       void (async () => {
-        try { runner.getAgent()?.kill(); } catch { /* defensive */ }
-        runner.setAgent(null);
-        runner.running = false;
-        runner.systemTurnInProgress = false;
-        runner.onAgentFinished();
-        try { await git.rebaseAbort(); } catch { /* may already be aborted */ }
-        runner.emitMessage({ type: "rebase_aborted", sessionId: runner.sessionId });
+        // The flow dropped its lease when the turn started, so `running` was the only
+        // cover; clearing it below hands the runner to the idle enforcer, which
+        // onAgentFinished() invokes synchronously through the runner's `idle` event.
+        runner.beginPostTurnWork();
+        try {
+          try { runner.getAgent()?.kill(); } catch { /* defensive */ }
+          runner.setAgent(null);
+          runner.running = false;
+          runner.systemTurnInProgress = false;
+          runner.onAgentFinished();
+          try { await git.rebaseAbort(); } catch { /* may already be aborted */ }
+          runner.emitMessage({ type: "rebase_aborted", sessionId: runner.sessionId });
+        } finally {
+          runner.endPostTurnWork();
+        }
         resolve({ outcome: "error", lastError: "timeout", didWork: true });
       })();
     }, timeoutMs);
