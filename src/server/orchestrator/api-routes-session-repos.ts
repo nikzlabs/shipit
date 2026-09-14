@@ -8,8 +8,7 @@ import {
   removeRepo,
   reorderRepos,
   setRepoTrusted,
-  setRepoHidden,
-  setRepoColorIndex,
+  applyRepoSettings,
   assertValidRepoColorIndex,
   createRepoWithTemplate,
   deleteSession,
@@ -22,27 +21,6 @@ import {
 import { canonicalRepoKey, hasUrlCredentials, repoId } from "./git-utils.js";
 import { getErrorMessage } from "./validation.js";
 import { stopWarmPreview } from "./warm-preview.js";
-import { buildSystemNotice } from "./chat-card-persistence.js";
-import type { WsServerMessage } from "../shared/types.js";
-
-function cancelAgentMergeRequests(deps: ApiDeps, id: string): void {
-  if (!id || !deps.agentMergeClaims) return;
-  // Persist inside the cancellation transaction; broadcast only after commit.
-  const pending: { sessionId: string; ws: WsServerMessage }[] = [];
-  deps.agentMergeClaims.cancelPendingForRepo(id, (claim) => {
-    const { ws, persisted } = buildSystemNotice(
-      claim.sessionId,
-      `Cancelled the merge request for pull request #${claim.prNumber}: agent merging was turned off `
-      + "for this repository. Nothing was merged.",
-      "info",
-    );
-    deps.chatHistoryManager.append(claim.sessionId, persisted);
-    pending.push({ sessionId: claim.sessionId, ws });
-  });
-  for (const { sessionId, ws } of pending) {
-    deps.runnerRegistry?.get(sessionId)?.emitMessage(ws);
-  }
-}
 
 export async function registerSessionReposRoutes(
   app: FastifyInstance,
@@ -263,19 +241,22 @@ export async function registerSessionReposRoutes(
             return;
           }
         }
-        if (colorIndex !== undefined) setRepoColorIndex(deps.repoStore, url, colorIndex);
-        if (hidden !== undefined) setRepoHidden(deps.repoStore, url, hidden);
-        if (allowAgentMerge !== undefined) {
-          const result = deps.repoStore.setAllowAgentMerge(url, allowAgentMerge);
-          if (result === "not-found") {
-            reply.code(404).send({ error: "Repository not found" });
-            return;
-          }
-          // Revoke before cancellation; the executor rechecks the grant if cancellation fails.
-          if (!allowAgentMerge) cancelAgentMergeRequests(deps, repoId(url) ?? "");
+        // Revoking agent merging also cancels the merge requests claimed under
+        // it, and that cancellation is part of the write rather than of this
+        // route (docs/299 → Apply goes through a shared layer).
+        const written = await applyRepoSettings(deps, url, { hidden, colorIndex, allowAgentMerge });
+        if (written.notFound) {
+          reply.code(404).send({ error: "Repository not found" });
+          return;
         }
-        deps.sseBroadcast("repo_list", { repos: listRepos(deps.repoStore) });
-        return { repo: deps.repoStore.get(url) ?? null };
+        if (written.outcome.status !== "applied") {
+          reply.code(500).send({
+            error: written.outcome.detail ?? "Failed to update repo",
+            outcome: written.outcome,
+          });
+          return;
+        }
+        return { repo: written.repo };
       } catch (err) {
         if (err instanceof ServiceError) {
           reply.code(err.statusCode).send({ error: err.message });

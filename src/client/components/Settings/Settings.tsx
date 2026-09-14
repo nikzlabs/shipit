@@ -71,6 +71,28 @@ export function Settings({
   const [opsContent, setOpsContent] = useState(initialOpsContent);
   const savedRef = useRef(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  /*
+    What the drafts were seeded from. A settings write elsewhere — another tab,
+    or an agent's applied proposal — refetches the stored value into the store
+    and so into these props, while the drafts stay where the user left them
+    (docs/299-agent-settings-access → Apply goes through a shared layer).
+
+    An UNTOUCHED box adopts the new value: it would otherwise keep showing what
+    was stored when the dialog opened and write it back on Save, silently
+    reverting a change the user never saw. A box being edited keeps its draft and
+    says the stored value moved, because adopting there would throw away typing.
+  */
+  const seededRef = useRef({ content: initialContent, ops: initialOpsContent });
+  if (initialContent !== seededRef.current.content && content === seededRef.current.content) {
+    seededRef.current = { ...seededRef.current, content: initialContent };
+    setContent(initialContent);
+  }
+  if (initialOpsContent !== seededRef.current.ops && opsContent === seededRef.current.ops) {
+    seededRef.current = { ...seededRef.current, ops: initialOpsContent };
+    setOpsContent(initialOpsContent);
+  }
+  const changedElsewhere =
+    initialContent !== seededRef.current.content || initialOpsContent !== seededRef.current.ops;
 
   // A rejected save closes the modal and drops the draft, so the keyboard path
   // enforces the same limit the Save button disables itself on.
@@ -160,6 +182,7 @@ export function Settings({
               agentSystemInstructionsEnabled={agentSystemInstructionsEnabled}
               agentSystemInstructions={agentSystemInstructions}
               onToggleAgentSystemInstructions={onToggleAgentSystemInstructions}
+              changedElsewhere={changedElsewhere}
             />
           </TabsContent>
 

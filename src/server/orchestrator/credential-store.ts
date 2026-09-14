@@ -35,7 +35,8 @@ import {
   storageEnvFor,
 } from "../shared/catalogue/index.js";
 import type { ModelSelection } from "../shared/catalogue/index.js";
-import { credentialStoreField, GLOBAL_SETTINGS } from "../shared/settings-catalogue/index.js";
+import { APPLIED, applyFailed, combineOutcomes, credentialStoreField, GLOBAL_SETTINGS } from "../shared/settings-catalogue/index.js";
+import type { ApplyOutcome } from "../shared/settings-catalogue/index.js";
 import type {
   AnySettingDeclaration,
   CredentialStoreSettingField,
@@ -98,11 +99,16 @@ export class CredentialStore {
   private filePath: string;
   private data: CredentialData = {};
   private cipher?: SecretCipher;
+  /** The last serialization known to be on disk — what `save()` rolls back to. */
+  private persisted = "{}";
+  /** Set while a {@link transact} group is open; each `save()` reports into it. */
+  private writeReport: ApplyOutcome[] | null = null;
 
   constructor(credentialsDir?: string, cipher?: SecretCipher) {
     this.filePath = path.join(credentialsDir ?? DEFAULT_CREDENTIALS_DIR, FILENAME);
     this.cipher = cipher;
     this.load();
+    this.persisted = JSON.stringify(this.data, null, 2);
     this.migrateProviderAccountsToRoutes();
     this.migrateAgentEnvKeysToRoutes();
     this.migrateRoutingSettingsKeys();
@@ -242,21 +248,90 @@ export class CredentialStore {
     }
   }
 
+  /**
+   * Write through a temporary file and rename over the target.
+   *
+   * The rename is what makes a failed save provable (docs/299 → "Saved" has to
+   * mean saved): the old file is untouched until one atomic step replaces it, so
+   * nothing that throws — a short write, a refused `chmod`, a full disk — can
+   * leave the new contents on disk while `save()` reports that nothing changed.
+   * Writing in place could, and did: `chmod` runs AFTER the bytes are written.
+   */
   private writeToDisk(): void {
     const dir = path.dirname(this.filePath);
     fs.mkdirSync(dir, { recursive: true });
     const serialized = JSON.stringify(this.data, null, 2);
     const payload = this.cipher ? this.cipher.encrypt(serialized) : serialized;
-    fs.writeFileSync(this.filePath, payload, { mode: 0o600 });
-    // writeFileSync's mode does not repair existing file permissions.
-    fs.chmodSync(this.filePath, 0o600);
+    const staging = `${this.filePath}.${process.pid}.tmp`;
+    try {
+      fs.writeFileSync(staging, payload, { mode: 0o600 });
+      // writeFileSync's mode does not repair an existing file's permissions.
+      fs.chmodSync(staging, 0o600);
+      fs.renameSync(staging, this.filePath);
+    } catch (err) {
+      try {
+        fs.rmSync(staging, { force: true });
+      } catch {
+        // A leftover staging file is harmless; the next write overwrites it.
+      }
+      throw err;
+    }
+    this.persisted = serialized;
   }
 
-  private save(): void {
+  /**
+   * Persist the mutation the caller has already made in memory, or undo it.
+   *
+   * A value reported saved that vanishes at the next restart is a lie nothing
+   * downstream can detect, so a failed write rolls the store back to what is
+   * actually on disk and says `failed` (docs/299-agent-settings-access →
+   * "Saved" has to mean saved). Rolling back to the last persisted serialization
+   * rather than to a per-call snapshot is what keeps every one of the callers
+   * unchanged: each mutates and calls this immediately, so the two states differ
+   * by exactly the write that failed.
+   */
+  private save(): ApplyOutcome {
+    let outcome: ApplyOutcome;
     try {
       this.writeToDisk();
+      outcome = APPLIED;
     } catch (err) {
+      this.data = JSON.parse(this.persisted) as CredentialData;
       console.error("[credential-store] Failed to save:", getErrorMessage(err));
+      outcome = applyFailed(
+        "ShipIt could not write its credential store, so the change was rolled back and nothing was saved.",
+      );
+    }
+    this.writeReport?.push(outcome);
+    return outcome;
+  }
+
+  /**
+   * Run a group of mutations as one reported write. Every setter inside saves
+   * exactly as it does today; this collects whether each of those saves reached
+   * disk, so a caller may say `applied` only when they all did — and hears
+   * `partial` when an earlier write landed and a later one was rolled back.
+   *
+   * **Synchronous mutations only, and an async one is refused rather than
+   * mis-reported.** The report is closed when `mutate` returns, so an `await`
+   * inside would have the group answer `applied` before its own writes ran —
+   * and would count an unrelated write from elsewhere in the process while it
+   * was suspended. Both are ways to report something that never happened, which
+   * is the one thing this must not do.
+   */
+  transact<T>(mutate: () => T): { value: T; outcome: ApplyOutcome } {
+    const outer = this.writeReport;
+    const report = outer ?? [];
+    const from = report.length;
+    this.writeReport = report;
+    try {
+      const value = mutate();
+      if (typeof (value as { then?: unknown } | undefined)?.then === "function") {
+        throw new Error("CredentialStore.transact takes synchronous mutations only");
+      }
+      return { value, outcome: combineOutcomes(report.slice(from)) };
+    } finally {
+      this.writeReport = outer;
     }
   }
 
@@ -265,22 +340,12 @@ export class CredentialStore {
     return typeof value === "string" && value.length > 0 ? value : undefined;
   }
 
-  // Roll back failed writes; memory-only completion would vanish at restart.
+  // Memory-only completion would vanish at restart, so a failed write reports none.
   stampHarnessOnboardingCompleted(at: string): string | undefined {
     const existing = this.getHarnessOnboardingCompletedAt();
     if (existing) return existing;
     this.data.harnessOnboardingCompletedAt = at;
-    try {
-      this.writeToDisk();
-    } catch (err) {
-      delete this.data.harnessOnboardingCompletedAt;
-      console.error(
-        "[credential-store] Failed to record harness onboarding completion:",
-        getErrorMessage(err),
-      );
-      return undefined;
-    }
-    return at;
+    return this.save().status === "applied" ? at : undefined;
   }
 
   // Storage order; ProviderAccountManager derives selection order and primary status.
@@ -766,7 +831,7 @@ export class CredentialStore {
     this.setDeclaredSetting("services.nonTurnModel", selection);
   }
 
-  // A failed seed must not remain in memory as a saved setting; save() would swallow the error.
+  // A failed seed must not remain in memory as a saved setting.
   stampNonTurnModel(selection: ModelSelection): ModelSelection | undefined {
     const existing = this.getNonTurnModel();
     if (existing) return existing;
@@ -776,17 +841,7 @@ export class CredentialStore {
       );
     }
     this.data.nonTurnModel = { ...selection };
-    try {
-      this.writeToDisk();
-    } catch (err) {
-      delete this.data.nonTurnModel;
-      console.error(
-        "[credential-store] Failed to record the background-work model:",
-        getErrorMessage(err),
-      );
-      return undefined;
-    }
-    return { ...selection };
+    return this.save().status === "applied" ? { ...selection } : undefined;
   }
 
   getReviewerPin(slot: ReviewerSlot): ReviewerPin | undefined {
@@ -863,8 +918,12 @@ export class CredentialStore {
     };
   }
 
-  // Callers must validate pinned params through services/roles.ts before storing them.
-  setRole(name: string, role: AgentRole | null): void {
+  /**
+   * Callers must validate pinned params through services/roles.ts before storing
+   * them. Reports whether the write is durable, because a rename deletes the old
+   * name only once the new one has landed.
+   */
+  setRole(name: string, role: AgentRole | null): ApplyOutcome {
     // Test blankness without normalizing the stored name.
     if (!name.trim()) throw new Error("A role name cannot be blank");
     if (name.length > MAX_ROLE_NAME_LENGTH) {
@@ -874,14 +933,13 @@ export class CredentialStore {
       if (name === RESERVED_ROLE_NAME) {
         throw new Error(`The "${RESERVED_ROLE_NAME}" role cannot be deleted (docs/264-agent-roles req 2)`);
       }
-      if (!this.data.roles?.[name]) return;
+      if (!this.data.roles?.[name]) return APPLIED;
       const next: Record<string, StoredRole> = {};
       for (const [key, value] of Object.entries(this.data.roles)) {
         if (key !== name) next[key] = value;
       }
       this.data.roles = next;
-      this.save();
-      return;
+      return this.save();
     }
     if (name === RESERVED_ROLE_NAME) {
       if (role.params.kind !== "auto") {
@@ -917,7 +975,7 @@ export class CredentialStore {
         ...(role.params.kind === "pinned" ? { params: { ...role.params } } : {}),
       },
     };
-    this.save();
+    return this.save();
   }
 
   private reviewerRole(): AgentRole {

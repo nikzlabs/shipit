@@ -14,6 +14,7 @@ function makeCtx(store: EgressAllowlistStore, reloadEgress: ReturnType<typeof vi
     getRunnerRegistry: () => ({ get: () => runner }),
     getRunner: () => runner,
     send: vi.fn(),
+    sseBroadcast: vi.fn(),
     chatHistoryManager: {
       updateEgressPromptCard: (_sid: string, _cardId: string, patch: unknown) => updates.push(patch),
     },
@@ -36,10 +37,10 @@ describe("handleEgressDecision", () => {
     reloadEgress = vi.fn(async () => true);
   });
 
-  it("'add' grants live, writes the host to the durable global allowlist, and reloads the session", () => {
+  it("'add' grants live, writes the host to the durable global allowlist, and reloads the session", async () => {
     const { ctx, updates } = makeCtx(store, reloadEgress);
     const msg: WsEgressDecision = { type: "egress_decision", action: "add", host: "cdn.example.com", cardId: "egress-s1-cdn.example.com" };
-    handleEgressDecision(ctx, msg);
+    await handleEgressDecision(ctx, msg);
 
     expect(isEgressHostAllowed("s1", "cdn.example.com")).toBe(true);
     expect(store.listHosts(EGRESS_GLOBAL_SCOPE)).toEqual(["cdn.example.com"]);
@@ -47,9 +48,9 @@ describe("handleEgressDecision", () => {
     expect(updates).toContainEqual({ phase: "added" });
   });
 
-  it("'allow-once' grants live but does NOT persist or reload", () => {
+  it("'allow-once' grants live but does NOT persist or reload", async () => {
     const { ctx, updates } = makeCtx(store, reloadEgress);
-    handleEgressDecision(ctx, { type: "egress_decision", action: "allow-once", host: "cdn.example.com", cardId: "c1" });
+    await handleEgressDecision(ctx, { type: "egress_decision", action: "allow-once", host: "cdn.example.com", cardId: "c1" });
 
     expect(isEgressHostAllowed("s1", "cdn.example.com")).toBe(true);
     expect(store.listHosts(EGRESS_GLOBAL_SCOPE)).toEqual([]);
@@ -57,9 +58,9 @@ describe("handleEgressDecision", () => {
     expect(updates).toContainEqual({ phase: "allowed-once" });
   });
 
-  it("'deny' grants nothing and marks the card denied", () => {
+  it("'deny' grants nothing and marks the card denied", async () => {
     const { ctx, updates } = makeCtx(store, reloadEgress);
-    handleEgressDecision(ctx, { type: "egress_decision", action: "deny", host: "cdn.example.com", cardId: "c1" });
+    await handleEgressDecision(ctx, { type: "egress_decision", action: "deny", host: "cdn.example.com", cardId: "c1" });
 
     expect(isEgressHostAllowed("s1", "cdn.example.com")).toBe(false);
     expect(store.listHosts(EGRESS_GLOBAL_SCOPE)).toEqual([]);
@@ -67,7 +68,7 @@ describe("handleEgressDecision", () => {
     expect(updates).toContainEqual({ phase: "denied" });
   });
 
-  it("patches the recorded card in place (not the DB row) when the proposing turn is still in flight", () => {
+  it("patches the recorded card in place (not the DB row) when the proposing turn is still in flight", async () => {
     const dbUpdates: unknown[] = [];
     const flushed: unknown[] = [];
     const runner = {
@@ -92,7 +93,7 @@ describe("handleEgressDecision", () => {
       containerManager: { reloadEgress },
     } as never;
 
-    handleEgressDecision(ctx, { type: "egress_decision", action: "allow-once", host: "cdn.example.com", cardId: "c1" });
+    await handleEgressDecision(ctx, { type: "egress_decision", action: "allow-once", host: "cdn.example.com", cardId: "c1" });
 
     expect((runner.recordedCards[0].message as { egressPrompt?: { phase?: string } }).egressPrompt?.phase).toBe("allowed-once");
     expect(dbUpdates).toHaveLength(0);
