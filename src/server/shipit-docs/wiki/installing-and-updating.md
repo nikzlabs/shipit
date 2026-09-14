@@ -264,13 +264,20 @@ for v in shipit_workspace shipit_credentials; do
     tar -C /src -cpf "/out/$v.tar" --numeric-owner .
 done
 
-# Restore onto a stopped install.
+# Restore onto a stopped install. Replace the volume, do not extract over it.
 for v in shipit_workspace shipit_credentials; do
+  docker volume rm "$v" >/dev/null 2>&1 || true
   docker volume create "$v" >/dev/null
   docker run --rm -v "$v":/dst -v "$PWD":/in alpine \
     tar -C /dst -xpf "/in/$v.tar" --numeric-owner
 done
 ```
+
+**The restore replaces each volume rather than unpacking into it**, which is why
+it removes them first. A fresh install has already created its own session
+directories and its own database; extracting on top would keep the directories
+and overwrite the database, leaving checkouts on disk that no session row knows
+about.
 
 **The resulting tarballs are the install.** They carry the GitHub token, every
 provider sign-in, and the key that decrypts the secrets sitting beside them. Do
