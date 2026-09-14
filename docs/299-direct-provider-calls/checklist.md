@@ -209,6 +209,19 @@ the finding:
   later, because a wedged container stays running for ever while `forgetIfGone` acts only on
   death. The first transport failure against an adopted container replaces it — once, so an
   unrelated failure does not tear down a container that answers.
+
+- [ ] **Requirement 8 regressed: the provisional half of adoption is wrong both ways.** Found by
+      re-verifying reqs 3, 7 and 8 against the three fix commits, and confirmed at the code.
+      `replaceUnverifiedAdoption` destroys the shared container with no check for spawns in
+      flight, so one request's transport failure takes down another request's running harness —
+      contradicting an invariant `cleanup-container.ts` states twice, that a run is cancelled by
+      spawn id and that one request's deadline never kills the shared container. And
+      `adoptedUnverified` is cleared on any *resolved* worker response, while a worker whose
+      harness cannot reach the provider still answers HTTP 200 with `{status: "timeout"}` — so the
+      precise state adoption was made provisional for marks itself healthy on its first failure,
+      and every later dictation times out. A worker that never answers at all is genuinely fixed.
+      Dropping adoption and paying one container start after a restart is an acceptable answer if
+      it is the honest one.
 - [x] **Req 7 — an aborted direct call records no usage.**
 
 Shipped in PR #2777. A call cut off in flight now writes a row with **unknown** token counts —
@@ -240,10 +253,17 @@ The known limitation ships with it and is filed as
 0 tokens and $0.00, which reads as measured spend. Surfacing the uncertainty needs a flag carried
 through `foldSplitRows`, `UsageGroup` and `UsageModal.tsx` — the whole usage stack, not this fix.
 
-**Not a docs/299 defect, but reachable through it:**
+**A req 3 gap this feature owns, tracked outside it:**
 [planning#547](https://github.com/nikzlabs/shipit-planning/issues/547) — a Google API key with
 only Antigravity installed is offered no background-work option at all. Its two causes are owned
 by docs/302 (no client speaks Gemini's API style) and
 [planning#546](https://github.com/nikzlabs/shipit-planning/issues/546) (Antigravity's tools-off is
 unmeasured, so the filter skips it). Either fix closes it; neither owner covers the combination,
 which is why it needed an issue of its own.
+
+It was first recorded here as reachable through the feature but not owned by it. **That reading
+was wrong**, and the re-verification is right to reject it: docs/302 req 5 excludes a *harness*
+option for Gemini, and says nothing that amends req 3's rule that a credential permitted a direct
+call must be offered one. A key that declares `directCall` and yields no option is a req 3 gap,
+whoever fixes it. The rewritten guard asserts the missing client rather than accepting the empty
+list, which keeps the gap visible instead of blessing it — but it does not make the gap conform.
