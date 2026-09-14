@@ -82,12 +82,13 @@ Every row has an overflow menu. In order:
 - **Recover recent rewind** — undo a rewind.
 - **Download chat** — the conversation as a file.
 - **Investigate in Ops session** — opens ShipIt's own operations session pointed
-  at this one, when that is available.
+  at this one. On any row except an Ops session's own.
 - **Session settings** — currently the per-session network choice: contained, or
   open.
 
-The last four are on the **open** session's row only, not on every row in the
-list. An archived row offers **Restore** instead of all of it.
+**Recover recent rewind**, **Download chat** and **Session settings** are on the
+**open** session's row only, not on every row in the list. An archived row
+offers **Restore** instead of all of it.
 
 ## Going back: rewind and fork
 
