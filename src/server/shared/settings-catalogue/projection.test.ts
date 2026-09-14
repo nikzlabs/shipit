@@ -99,6 +99,10 @@ const DERIVED_FIXTURES: Record<string, unknown> = {
     // A label is free text, so a pasted URL is a possible stored value.
     { id: "ssh_3", label: CREDENTIAL_NAME, address: "x.example.com", user: "root" },
   ],
+  // The route gates both to a shape, so these fixtures are what a store the
+  // route never touched could hold — the projection is the door, not the route.
+  "integrations.sshHosts[].address": `https://svc:${TOKEN}@prod.example.com/p?token=${TOKEN}`, // gitleaks:allow
+  "integrations.sshHosts[].user": `deploy ${TOKEN}`,
 };
 
 /**
@@ -111,6 +115,7 @@ const USER_NAME_FIXTURES: Record<string, unknown> = {
   "roles[].name": CREDENTIAL_NAME,
   "mcp.servers[].name": CREDENTIAL_NAME,
   "project.secrets[].name": CREDENTIAL_NAME,
+  "integrations.sshHosts[].label": CREDENTIAL_NAME,
 };
 
 function declarationFor(key: string): AnySettingDeclaration {
@@ -217,6 +222,25 @@ describe("every other derived projection", () => {
     );
 
     expect(outcome).toEqual({ readable: true, value: ["prod", "staging"] });
+  });
+
+  /*
+    The two near neighbours are deliberately not reused, and this is the record
+    of why: `hostEntryProjection` refuses every IPv6 literal, which docs/305
+    req 12 admits, and `userNameProjection` requires an alphanumeric first
+    character, which `requireUser` does not. Either reuse would have emitted a
+    stored value as nothing at all, silently.
+  */
+  it("emits an SSH destination's own address and login, IPv6 and a leading underscore included", () => {
+    const address = declarationFor("integrations.sshHosts[].address");
+    for (const value of ["prod.example.com", "10.0.0.5", "2001:db8::1", "::1", "2001:db8::"]) {
+      expect(projectSetting(address, value), value).toEqual({ readable: true, value });
+    }
+
+    const user = declarationFor("integrations.sshHosts[].user");
+    for (const value of ["deploy", "_svc", "ci-runner", "root.admin"]) {
+      expect(projectSetting(user, value), value).toEqual({ readable: true, value });
+    }
   });
 
   it("drops an allowlist entry that is not a host, since it can match none", () => {

@@ -39,6 +39,17 @@ export interface SettingExclusion {
    * setting at all, which today is Skills.
    */
   readonly wholeTab?: true;
+  /**
+   * A `data-testid` naming a container whose every control is this exclusion.
+   *
+   * For a surface whose controls cannot be listed by name because the INSTALL
+   * produces them — the supported-models dialog renders one filter per
+   * (service, billing mode, harness) the catalogue happens to hold, so a name
+   * list here would be a copy of the catalogue that rots on the next entry. The
+   * claim it makes is about the whole container, so the `why` has to be true of
+   * every control in it, which is what review reads.
+   */
+  readonly region?: string;
 }
 
 export const SETTING_EXCLUSIONS: readonly SettingExclusion[] = [
@@ -57,9 +68,13 @@ export const SETTING_EXCLUSIONS: readonly SettingExclusion[] = [
     scope: "global",
     label: "Supported models",
     reason: "derived-status",
-    why: "Opens a read-only list of what each service offers; nothing about it is stored.",
+    why: "Opens a read-only list of what each service offers; nothing about it is stored. Every "
+      + "control inside it narrows or clears what the list shows — there is no value in the dialog "
+      + "to set, and the filters are one per (service, billing mode, harness) the installed "
+      + "catalogue holds, so they are covered as a region rather than named one by one.",
     // Twice over: the panel heading's reference, and the count on each card.
     controls: ["Supported models"],
+    region: "supported-models-dialog",
   },
   {
     id: "services.quotaReadout",
@@ -70,6 +85,17 @@ export const SETTING_EXCLUSIONS: readonly SettingExclusion[] = [
     why: "The provider's own reported usage. The cutoffs beside it are the settings. Its one "
       + "control re-reads the provider's figure and stores nothing.",
     controls: ["Refresh subscription usage"],
+  },
+  {
+    id: "services.addCredentialDismiss",
+    tab: "services",
+    scope: "global",
+    label: "Cancel · Done · Close (the add-a-credential dialog)",
+    reason: "action",
+    why: "All three close the dialog; Done is the same act once the account is connected and there "
+      + "is nothing left to call off. Save and Sign in are the writes, and they belong to the "
+      + "credential collection and the account connection.",
+    controls: ["Cancel", "Done", "Close"],
   },
   {
     id: "roles.reviewerParams",
@@ -141,22 +167,24 @@ export const SETTING_EXCLUSIONS: readonly SettingExclusion[] = [
     id: "integrations.sshHostKeyForget",
     tab: "integrations",
     scope: "global",
-    label: "Forget (a recorded SSH host key)",
-    reason: "action",
-    why: "Clears the server key ShipIt recorded on the first connection, so the next one records "
-      + "afresh (docs/305 req 9). It is a reset of an observed fact, not a stored choice — the "
-      + "fingerprint itself is read through `integrations.sshHosts`.",
+    label: "Forget (a recorded SSH host key) · the fingerprints beside it",
+    reason: "derived-status",
+    why: "Both fingerprints are observations, not choices: one is of the key ShipIt generated for "
+      + "the destination, the other of the server's own key as the orchestrator saw it at the "
+      + "configured address (docs/305-ssh-hosts req 13). Neither is stored by anyone setting it, "
+      + "and Forget only clears the observation so the next connection records afresh.",
     controls: ["Forget"],
   },
   {
-    id: "integrations.sshHostForm",
+    id: "integrations.sshHostFormCancel",
     tab: "integrations",
     scope: "global",
-    label: "The add-a-destination form (name, address, user, port)",
+    label: "Cancel (the add-a-destination form)",
     reason: "action",
-    why: "Draft fields for one `add` operation on `integrations.sshHosts`; nothing is stored until "
-      + "Add destination is pressed, and the collection is what carries the policy.",
-    controls: ["Name (e.g. prod)", "Hostname or IP", "User", "Port", "Cancel"],
+    why: "Closes the form and discards the draft. Add destination is the write, and it belongs to "
+      + "the SSH hosts collection; the four boxes above it are declared per field, because the "
+      + "address, the user and the port are all stored and then displayed.",
+    controls: ["Cancel"],
   },
   {
     id: "integrations.linearTeams",
@@ -306,7 +334,9 @@ export const SETTING_EXCLUSIONS: readonly SettingExclusion[] = [
     scope: "global",
     label: "Reset Everything",
     reason: "action",
-    why: "Deletes sessions, history and settings. An action, and a destructive one.",
+    why: "Deletes sessions, history and settings. An action, and a destructive one — which is why "
+      + "it asks again before running, and why its two in-flight labels are named here too.",
+    controls: ["Reset Everything", "Click again to confirm reset", "Resetting..."],
   },
   {
     id: "project-deployments.hostingLinks",

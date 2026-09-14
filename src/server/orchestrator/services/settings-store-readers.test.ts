@@ -620,6 +620,60 @@ describe("the pasted-token integrations and the voice credentials", () => {
   });
 });
 
+describe("SSH destinations", () => {
+  const generated = {
+    // No PEM armour: it would only make a fake value look real to a secret
+    // scanner, without strengthening the assertion below.
+    privateKeyPem: "private-key-SENTINEL",
+    publicKeyBlob: "AAAAsentinel",
+    identityLine: "ssh-ed25519 AAAAsentinel shipit-prod",
+    authorizedKeysLine: "restrict ssh-ed25519 AAAAsentinel shipit-prod",
+    fingerprint: "SHA256:sentinel",
+  };
+
+  beforeEach(() => {
+    credentialStore.createSshHost(
+      { label: "prod", address: "prod.example.com", port: 2222, user: "deploy" },
+      generated,
+    );
+  });
+
+  /*
+    The gate for the third conformance review's first finding. The registry's
+    address, user and port are stored (`api-routes-ssh.ts:161`) and shown back on
+    the row, so they are settings — and until they were declared, this was the
+    whole of what the agent could learn about a destination: its name.
+  */
+  it("reads where a destination is, who it logs in as and on which port", async () => {
+    expect(await itemDisplays("integrations.sshHosts[].address")).toEqual({ prod: "prod.example.com" });
+    expect(await itemDisplays("integrations.sshHosts[].user")).toEqual({ prod: "deploy" });
+    expect(await itemDisplays("integrations.sshHosts[].port")).toEqual({ prod: "2222" });
+    expect((await detail("integrations.sshHosts")).value).toEqual(["prod"]);
+  });
+
+  it("never carries key material into any of them", async () => {
+    const read = await Promise.all([
+      detail("integrations.sshHosts"),
+      detail("integrations.sshHosts[].label"),
+      detail("integrations.sshHosts[].address"),
+      detail("integrations.sshHosts[].user"),
+      detail("integrations.sshHosts[].port"),
+    ]);
+    expect(JSON.stringify(read)).not.toMatch(/SENTINEL|sentinel/);
+  });
+
+  it("names a destination by nothing when its label is not shaped like a name", async () => {
+    // The route takes any 200 characters that are not control characters, so a
+    // pasted URL is a storable label — and an item the collection refuses to
+    // name has no address to be read under.
+    credentialStore.createSshHost(
+      { label: "https://u:t@host/p?token=x", address: "other.example.com", user: "root" }, // gitleaks:allow
+      generated,
+    );
+    expect(Object.keys(await itemDisplays("integrations.sshHosts[].address"))).toEqual(["prod"]);
+  });
+});
+
 describe("the global egress allowlist", () => {
   it("reads the hosts that are allowed, addressed by host", async () => {
     hosts = ["api.example.com", ".internal.example.org"];

@@ -299,7 +299,12 @@ recorded. If a recorded key later changes, ShipIt refuses and says so; the user
 clears the recorded key with **Forget** on the destination's row.
 
 Your side of this is in `/shipit-docs/ssh.md`: `~/.ssh/config` is the list of
-what this session has, and `ssh <alias> '<command>'` is how you use it.
+what this session has, and `ssh <alias> '<command>'` is how you use it. To answer
+a question about a destination you have NOT been granted — whether it is
+registered at all, where it points, which account it logs in as — read it with
+`shipit settings get integrations.sshHosts`, which names every destination in the
+registry, and `integrations.sshHosts[].address`, `[].user` and `[].port` for
+where one points. No key material is in any of them.
 
 ## Background work
 

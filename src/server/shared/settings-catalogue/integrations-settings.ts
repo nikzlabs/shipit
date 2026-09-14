@@ -1,4 +1,9 @@
-import { mcpUrlProjection, userNamesProjection } from "./projection.js";
+import {
+  mcpUrlProjection,
+  sshAddressProjection,
+  sshUserProjection,
+  userNamesProjection,
+} from "./projection.js";
 import {
   configuredOnly,
   defineSetting,
@@ -9,7 +14,8 @@ import {
 } from "./types.js";
 import type { AnySettingDeclaration } from "./types.js";
 import type { McpHttpServerConfig, McpStdioServerConfig } from "../types/mcp-types.js";
-import { bool, collection, enumOf, secretBag, text } from "./value-types.js";
+import type { SshHostPublic } from "../types/domain-types/ssh.js";
+import { bool, collection, enumOf, numeric, secretBag, text } from "./value-types.js";
 
 /**
  * The **Integrations** tab (docs/299-agent-settings-access, plan.md → Scope
@@ -28,6 +34,7 @@ import { bool, collection, enumOf, secretBag, text } from "./value-types.js";
  */
 
 const MCP_ADDRESS = itemAddress("an MCP server name");
+const SSH_HOST_ADDRESS = itemAddress("an SSH destination name");
 
 export const INTEGRATIONS_SETTINGS = {
   "mcp.servers": defineSetting({
@@ -169,7 +176,11 @@ export const INTEGRATIONS_SETTINGS = {
       + "any user information in it are where a token travels, so none of them is emitted.",
     type: text({ maxLength: 2_000, noun: "MCP server url", required: true, trim: true }),
     store: { kind: "bespoke", ownedBy: "credential-store MCP servers (/api/mcp-servers)" },
-    emits: derived("the URL's scheme and host, with user information, path and query dropped", mcpUrlProjection),
+    emits: derived(
+      "the URL's scheme and host, with user information, path and query dropped",
+      mcpUrlProjection,
+      { shipItComputed: "ShipIt parses the URL and emits two fields of its own; the string the user typed is not repeated back." },
+    ),
     // plan.md's worked pair, the refused half: the card would either show less
     // than it changes or echo a path the agent may not read back.
     propose: { kind: "no", reason: "unsafe_to_display" },
@@ -239,21 +250,24 @@ export const INTEGRATIONS_SETTINGS = {
 
   /**
    * docs/305 — the SSH destination registry. The private half of each key never
-   * leaves the orchestrator's credential store, so the emitted projection is the
-   * destinations' labels and nothing else: a read tells the agent whether a
-   * destination exists, and `~/.ssh/config` tells it which ones THIS session may
-   * use. Adding one is not proposable — it is only useful once the user has
-   * installed its public line on the server, which ShipIt cannot do.
+   * leaves the orchestrator's credential store, so nothing here emits key
+   * material: what a read gives is the destinations the user configured, and
+   * `~/.ssh/config` is what tells a session which ones it may actually use.
+   * Adding one is not proposable — it is only useful once the user has installed
+   * its public line on the server, which ShipIt cannot do.
    *
-   * **The only collection here that declares no `[]` item fields, deliberately.**
-   * Every other one addresses its items, and the registry guard permits this —
-   * it requires an item field to have a declared parent, never a collection to
-   * have items. The reason is that this registry is account-wide while a grant
-   * is per session: `[].address` and `[].user` would let a session read where
-   * every registered destination is and who it logs in as, including the ones it
-   * has no grant for, which is the enumeration the rest of docs/305 is built to
-   * prevent. The detail the agent legitimately needs is the granted detail, and
-   * that already reaches it through `~/.ssh/config`.
+   * **The `add` form's four boxes are four settings.** They were an `action`
+   * exclusion — "nothing is stored until Add destination is pressed, and the
+   * collection is what carries the policy" — which was false of three of them:
+   * the collection carries labels only, while the address, the user and the port
+   * are persisted (`api-routes-ssh.ts:161`) and shown back on the row.
+   *
+   * Emitting the address and the user is deliberate, against an earlier claim
+   * here that it would be "the enumeration the rest of docs/305 is built to
+   * prevent". That does not survive reading docs/305-ssh-hosts: its req 3
+   * withholds the private key from a settings read, and nothing in it makes a
+   * destination's address confidential from an ungranted session — whose
+   * membership the labels already emit account-wide.
    */
   "integrations.sshHosts": defineSetting({
     key: "integrations.sshHosts",
@@ -272,14 +286,103 @@ export const INTEGRATIONS_SETTINGS = {
     // control characters and nothing more — so a pasted URL, which carries a
     // credential in its userinfo and its query as a matter of routine, is a
     // possible stored value here in a way an MCP server name is not.
-    emits: derived("the destinations' names", (raw) =>
-      userNamesProjection(
-        Array.isArray(raw)
-          ? raw.map((host) => ({ name: (host as { label?: unknown })?.label }))
-          : raw,
-      )),
+    emits: derived(
+      "the destinations' names",
+      (raw) =>
+        userNamesProjection(
+          Array.isArray(raw)
+            ? raw.map((host) => ({ name: (host as { label?: unknown })?.label }))
+            : raw,
+        ),
+      {
+        userText: "The labels are the user's own, and how the panel and the agent both address a "
+          + "destination. The shape gate is what keeps a pasted URL out; it does not make the "
+          + "label ShipIt's own text.",
+      },
+    ),
     // A destination is inert until its public line is installed on the server,
     // which is the user's act on a machine ShipIt does not reach.
+    propose: { kind: "no", reason: "external_flow" },
+  }),
+
+  "integrations.sshHosts[].label": defineSetting({
+    key: "integrations.sshHosts[].label",
+    tab: "integrations",
+    scope: "global",
+    address: SSH_HOST_ADDRESS,
+    label: "Name",
+    description:
+      "What this destination is called here, and the name a settings read addresses it by. The "
+      + "alias a granted session types after ssh is DERIVED from this — lowercased, punctuation "
+      + "replaced, and numbered when two labels collide — so the two can differ; `~/.ssh/config` "
+      + "is what says which alias a session actually has.",
+    type: text({ maxLength: 200, noun: "SSH destination name", required: true, trim: true }),
+    store: { kind: "bespoke", ownedBy: "credential-store SSH hosts (/api/ssh-hosts)" },
+    emits: userName(
+      "The destination's name is how the panel and the agent both address it. The route caps its "
+      + "length and rejects control characters and nothing more, so the shape gate is what keeps a "
+      + "pasted URL from being repeated back.",
+    ),
+    propose: { kind: "no", reason: "external_flow" },
+  }),
+
+  "integrations.sshHosts[].address": defineSetting({
+    key: "integrations.sshHosts[].address",
+    tab: "integrations",
+    scope: "global",
+    address: SSH_HOST_ADDRESS,
+    label: "Address",
+    description:
+      "Where this destination is, as a hostname or an IP address. A granted session reaches it "
+      + "through this address and no other; an IP destination is reached with no DNS lookup at all.",
+    type: text({ maxLength: 253, noun: "SSH destination address", required: true, trim: true }),
+    store: { kind: "bespoke", ownedBy: "credential-store SSH hosts (/api/ssh-hosts)" },
+    emits: derived(
+      "the address, when it is shaped like a hostname or an IP literal",
+      sshAddressProjection,
+      {
+        userText: "The address is the user's own, and it is the operational fact the agent needs "
+          + "to explain why a destination is unreachable. It is not credential material: SSH "
+          + "authenticates with a key ShipIt holds, and reaching the address proves nothing.",
+      },
+    ),
+    // The only write the dialog offers is the collection's `add`, and the
+    // destination it adds is inert until its public line is on that server.
+    propose: { kind: "no", reason: "external_flow" },
+  }),
+
+  "integrations.sshHosts[].user": defineSetting({
+    key: "integrations.sshHosts[].user",
+    tab: "integrations",
+    scope: "global",
+    address: SSH_HOST_ADDRESS,
+    label: "User",
+    description:
+      "The account on the remote server that ShipIt logs in as. The public line has to be "
+      + "installed in that account's authorized_keys, and the signer refuses a request naming "
+      + "any other user.",
+    type: text({ maxLength: 64, noun: "SSH destination user", required: true, trim: true }),
+    store: { kind: "bespoke", ownedBy: "credential-store SSH hosts (/api/ssh-hosts)" },
+    emits: derived("the user name, when it is shaped like one", sshUserProjection, {
+      userText: "The account name is text the operator typed, and it is half of what the user "
+        + "checks when a destination refuses the key — the other half is which account carries "
+        + "the public line.",
+    }),
+    propose: { kind: "no", reason: "external_flow" },
+  }),
+
+  "integrations.sshHosts[].port": defineSetting({
+    key: "integrations.sshHosts[].port",
+    tab: "integrations",
+    scope: "global",
+    address: SSH_HOST_ADDRESS,
+    label: "Port",
+    description: "The TCP port sshd listens on at this destination. 22 unless it was changed.",
+    type: numeric({ default: 22, min: 1, max: 65_535, integer: true }),
+    store: { kind: "bespoke", ownedBy: "credential-store SSH hosts (/api/ssh-hosts)" },
+    // A number in a fixed range, gated by the route and by this value type. It
+    // is neither the user's prose nor anything ShipIt derived, so it is plain.
+    emits: plain(),
     propose: { kind: "no", reason: "external_flow" },
   }),
 
@@ -303,10 +406,6 @@ export const INTEGRATIONS_SETTINGS = {
  * Why a stored field is not a declared setting. The same judgement
  * `exclusions.ts` makes about a dialog control, made about a persisted field —
  * and, like that one, a claim in prose that review reads.
- *
- * Deliberately unused today: every stored field is declared, which is the
- * strongest state the map can be in. It stays because the alternative escape
- * for a genuinely internal field would be declaring a setting that is not one.
  */
 interface NotASetting { readonly notASetting: string }
 
@@ -319,10 +418,8 @@ interface NotASetting { readonly notASetting: string }
  * name, so the only way to account for a new field is to declare it under that
  * name or to explain why it is not a setting.
  */
-type DeclarationForField<F extends string> =
-  `mcp.servers[].${F}` extends keyof typeof INTEGRATIONS_SETTINGS
-    ? `mcp.servers[].${F}`
-    : never;
+type DeclarationForField<C extends string, F extends string> =
+  `${C}[].${F}` extends keyof typeof INTEGRATIONS_SETTINGS ? `${C}[].${F}` : never;
 
 /**
  * **Every field of a stored MCP server, mapped to the declaration that
@@ -347,7 +444,7 @@ type DeclarationForField<F extends string> =
  */
 export const MCP_SERVER_FIELD_SETTINGS: {
   [F in keyof McpStdioServerConfig | keyof McpHttpServerConfig]:
-    DeclarationForField<F & string> | NotASetting;
+    DeclarationForField<"mcp.servers", F & string> | NotASetting;
 } = {
   name: "mcp.servers[].name",
   type: "mcp.servers[].type",
@@ -358,4 +455,37 @@ export const MCP_SERVER_FIELD_SETTINGS: {
   npmPackage: "mcp.servers[].npmPackage",
   url: "mcp.servers[].url",
   headers: "mcp.servers[].headers",
+};
+
+/**
+ * The same map for a stored SSH destination, keyed by `keyof SshHostPublic` —
+ * the shape every read path returns.
+ *
+ * It exists because the walk missed these fields for weeks and a DOM walk is
+ * structurally unable to find them: the add-a-destination form is not rendered
+ * until somebody presses a button, so a control that was never on screen was
+ * never a control the walk could fail on. This map does not depend on anything
+ * being rendered. A field added to `SshHostPublic` is a compile error here until
+ * it is declared or explained, whatever the dialog does.
+ *
+ * Most of this destination is ShipIt's own: the id, the key material and the
+ * fingerprints are generated or observed, and none is a value anyone sets.
+ */
+export const SSH_HOST_FIELD_SETTINGS: {
+  [F in keyof SshHostPublic]-?:
+    DeclarationForField<"integrations.sshHosts", F & string> | NotASetting;
+} = {
+  label: "integrations.sshHosts[].label",
+  address: "integrations.sshHosts[].address",
+  user: "integrations.sshHosts[].user",
+  port: "integrations.sshHosts[].port",
+  id: { notASetting: "ShipIt's own handle for the row; the user neither sets nor sees it." },
+  publicKeyBlob: { notASetting: "Half of the key pair ShipIt generated (docs/305-ssh-hosts req 5). Nobody chooses it." },
+  identityLine: { notASetting: "The same generated public key, in the form OpenSSH's identity loader takes." },
+  authorizedKeysLine: { notASetting: "The same generated public key again, with restrictions — what the user installs on the server. Its dialog control only copies it (`integrations.sshHostPublicLine`)." },
+  fingerprint: { notASetting: "Of ShipIt's own generated key; computed, not stored by anyone's choice." },
+  hostKeyFingerprint: { notASetting: "Of the SERVER's key, as the orchestrator observed it at the address (req 13). An observation, and its one control forgets it (`integrations.sshHostKeyForget`)." },
+  hostKeyType: { notASetting: "The algorithm of that same observed server key." },
+  hostKeyRecordedAt: { notASetting: "When the observation above was recorded." },
+  createdAt: { notASetting: "When the destination was added." },
 };

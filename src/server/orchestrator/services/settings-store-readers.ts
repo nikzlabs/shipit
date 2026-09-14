@@ -7,6 +7,7 @@ import { keyRequiringProviders } from "../../shared/voice-catalog.js";
 import type { CredentialBillingMode, CredentialRoute } from "../../shared/types.js";
 import type { McpServerConfig } from "../../shared/types/mcp-types.js";
 import type { ReviewerSlotView, RoleView } from "../../shared/types/agent-types.js";
+import type { SshHostPublic } from "../../shared/types/domain-types/ssh.js";
 import type { BespokeSettingKey } from "../../shared/settings-catalogue/index.js";
 import { buildReviewerSettings } from "./reviewer-settings.js";
 import { buildRoleSettings } from "./roles.js";
@@ -515,6 +516,33 @@ function mcpReferringItems(
   );
 }
 
+// SSH destinations ----------------------------------------------------------
+
+/**
+ * One field of each registered destination (docs/305-ssh-hosts). `listSshHosts`
+ * returns `SshHostPublic`, the only shape any read path produces, so the private
+ * key has no field here to be read by accident (req 3).
+ *
+ * Not cached: `list` asks three readers for it and a registry is a handful of
+ * rows read from memory, unlike the role views a cache entry exists for.
+ */
+function sshItems(
+  ctx: StoreReadContext,
+  field: (host: SshHostPublic) => unknown,
+): StoredRead {
+  const missing = needsCredentialStore(ctx);
+  if (missing) return missing;
+  return items(
+    (ctx.deps.credentialStore?.listSshHosts() ?? []).map((host) => ({
+      // Named through `integrations.sshHosts`, which emits these same labels —
+      // so a destination whose label is not shaped like one has no item here
+      // either, for the reason that collection's projection gives.
+      name: { kind: "stored" as const, item: host },
+      raw: field(host),
+    })),
+  );
+}
+
 // Project -------------------------------------------------------------------
 
 /**
@@ -695,6 +723,10 @@ export const BESPOKE_READERS: Record<BespokeSettingKey, StoreReader> = {
     const missing = needsCredentialStore(ctx);
     return missing ?? value(ctx.deps.credentialStore?.listSshHosts() ?? []);
   },
+  "integrations.sshHosts[].label": (ctx) => sshItems(ctx, (host) => host.label),
+  "integrations.sshHosts[].address": (ctx) => sshItems(ctx, (host) => host.address),
+  "integrations.sshHosts[].user": (ctx) => sshItems(ctx, (host) => host.user),
+  "integrations.sshHosts[].port": (ctx) => sshItems(ctx, (host) => host.port),
   "integrations.linear.credential": (ctx) => {
     const missing = needsCredentialStore(ctx);
     return missing ?? value(ctx.deps.credentialStore?.getLinearToken() ?? null);

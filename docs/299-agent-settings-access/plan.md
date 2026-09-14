@@ -129,8 +129,33 @@ is neither a declaration nor a reasoned `not-a-setting` exclusion.
 Match on the declaration binding, falling back to accessible name — **not** on
 `data-testid`, which identifies a control without proving it shares the
 declaration's description and policy (and the MCP env/header editor has none at
-all). The walk must render conditional and nested forms: the MCP stdio and HTTP
-variants, a populated credential row, an expanded role editor.
+all).
+
+**The forms are not listed; they are crawled.** The walk used to open the nested
+and conditional ones by name — the MCP stdio and HTTP variants, a populated
+credential row, an expanded role editor — and a list of forms is a list somebody
+maintains: the SSH add-a-destination form was never on it, so its four boxes were
+controls no test could fail on, and three of them turned out to write stored
+values (address, user, port) that no declaration described. The walk now presses
+every trigger in scope and walks whatever appears in the document as a result,
+inside the pane or in a portal beside it; what one press discloses is itself in
+scope, so a form inside a form is reached with nothing naming either.
+
+Three bounds are stated in the test rather than hidden. Scope is the pane and
+what the pane disclosed, never the whole document, so pressing the dialog's own
+Close cannot end the crawl with nothing to report. A press that moves the dialog
+to another **tab** is navigation rather than disclosure — the Voice tab links to
+Keyboard — so the tab is started again and the crawl resumes. And a disclosure
+behind something other than a press or a choice is not reached: typing, a drag, a
+hover. Nothing in either dialog works that way today.
+
+An exclusion may also cover a **region**: a container whose every control is that
+one exclusion, named by `data-testid`. It exists for a surface whose controls the
+INSTALL produces rather than anyone writing them — the supported-models dialog
+renders one filter per (service, billing mode, harness) the catalogue holds, so a
+name list there would be a copy of the catalogue that rots on the next entry. The
+crawl does not press inside a region either, since the exclusion's claim is that
+there is nothing in it to find; that claim is what review reads.
 
 The binding is the `data-setting` attribute `bindSetting(key)` produces, and its
 key is typed as `SettingKey`, so a control nobody declared has nothing it can
@@ -144,11 +169,12 @@ that writes its own words fails. And **the declarations the walk actually
 reached are compared against the whole registry**, so a pane that renders
 nothing cannot pass for coverage.
 
-The walk's boundary is the tab **pane** — dialog furniture and the
-add-a-provider wizard are outside it, and the test names what that costs. Two
-things it cannot decide are stated there rather than implied: a bespoke panel's
-visible wording is a review matter unless the panel marks it, and a `wholeTab`
-exemption is a claim `exclusions.ts` makes in prose.
+Two things the walk cannot decide are stated there rather than implied: a bespoke
+panel's visible wording is a review matter unless the panel marks it, and a
+`wholeTab` or `region` exemption is a claim `exclusions.ts` makes in prose. The
+list of declarations the walk cannot reach is now **empty** — the add-a-provider
+wizard was on it, described as "a flow rather than a pane", which was a statement
+about the old boundary and not about the control.
 
 **A control may only bind a declaration from its own tab.** A binding is an
 attribute, so the walk's first question was only whether the named declaration
@@ -231,6 +257,14 @@ field is marked `user_text` with a reason, and that mark is what review reads. A
 `derived` projection whose function returns the user's words rather than
 ShipIt's carries the same reason, on the same grounds: without it, `derived`
 claims the output is ShipIt's own.
+
+**That mark is a required argument, not an option.** It was optional, so two
+projections claimed ShipIt's authorship by omission: `integrations.sshHosts`
+emitted a destination's label and `network.egress.hosts[].host` an allowlist
+entry, both the user's own text and both unmarked. `derived()` now takes the
+origin as its third argument — `{ userText }` or `{ shipItComputed }`, each with
+the reason — so the question cannot be skipped, only answered. Neither output
+changed; what changed is that the declaration says whose text it is.
 
 **A NAME the user typed is emitted only when it is shaped like a name.** Naming a
 role, an MCP server or a missing secret is the whole of what the agent has to
@@ -387,6 +421,7 @@ dialog and per-repository **Project Settings**.
 | Integrations | MCP servers | derived fields only | narrow patches yes; credential fields `secret` |
 | Integrations | the Linear panel | configured / not | no — `secret`; it holds an API token, and the tracker destination is a repository declaration (`SettingsTrackers.tsx:13`) |
 | Integrations | connected services | connected / not | no — `external_flow` |
+| Integrations | SSH destinations: the name, and per destination its address, user and port | yes | no — `external_flow`; the only write the dialog offers is the `add`, and the destination is inert until the user installs its public line on the server |
 | Git | git identity name and email | yes | yes |
 | Instructions | your instructions, agent instructions enabled | yes | yes |
 | Keyboard | keybindings | no — `browser_local` | no |

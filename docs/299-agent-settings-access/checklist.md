@@ -526,3 +526,52 @@ change.
       text, per-line Added/Removed labels, and a bounded scrolling region
 - [x] The counts stay on the CARD, so padding a value cannot make the control
       look cheaper to skip than it is
+
+## Conformance against reqs 5 and 7 — SSH destinations, and the guard that missed them
+
+A conformance review of the SSH hosts area found a part of the Integrations tab
+the catalogue never covered, and the walk that should have caught it. Each
+finding re-verified at the code first.
+
+- [x] req 5 — the add-a-destination form's four boxes are declared per field.
+      They were an `action` exclusion on the reasoning that a draft field stores
+      nothing and "the collection is what carries the policy", which was false of
+      three of them: the collection carries labels only, while the dialog sends
+      address, user and port to `POST /api/ssh-hosts` and shows them back on the
+      row. `integrations.sshHosts[].label|address|user|port`, each with its own
+      projection, its own refusal reason and a reader in `BESPOKE_READERS`
+- [x] The claim that `[].address` and `[].user` must stay undeclared — "the
+      enumeration the rest of docs/305 is built to prevent" — did **not** hold
+      against docs/305-ssh-hosts: its req 3 withholds the private key from a
+      settings read and nothing there makes an address confidential from an
+      ungranted session, whose membership the labels already emit account-wide.
+      Recorded in the declaration rather than acted on as written
+- [x] Two projections of their own rather than the near neighbours, because
+      either reuse would have emitted a stored value as nothing:
+      `hostEntryProjection` refuses every IPv6 literal (docs/305 req 12 admits
+      one) and `userNameProjection` requires an alphanumeric first character
+      (`requireUser` does not)
+- [x] req 7 — `SSH_HOST_FIELD_SETTINGS`, keyed by `keyof SshHostPublic`, so a
+      field added to the stored shape is a compile error until it is declared or
+      explained. It does not depend on anything being rendered, which is what the
+      DOM walk could not manage for a form nobody opened
+- [x] req 2 — the `derived` origin is a **required argument**: `{ userText }` or
+      `{ shipItComputed }`, each with its reason. `integrations.sshHosts` and
+      `network.egress.hosts[].host` both emitted the user's own text under a bare
+      `derived`, which claims ShipIt computed it. No output changed
+- [x] req 5, req 7 — the coverage walk **crawls** instead of opening named forms.
+      Every trigger in scope is pressed and whatever appears is walked, so the
+      SSH form is reached by nothing naming it. A hand list of forms was the same
+      failure one level up, and the SSH form was the proof
+- [x] What the crawl then found, accounted rather than excused: the
+      add-a-provider wizard, which `UNREACHED` had called "a flow rather than a
+      pane". Its secret box, Save and Sign in bind their declarations, its two
+      address steps bind the credentials collection, and its three ways out are
+      one exclusion. `UNREACHED` is now empty
+- [x] `region` on an exclusion — a container whose every control is that one
+      exclusion, for a surface the install produces rather than anyone writing:
+      the supported-models dialog's filters are one per (service, mode, harness)
+- [x] Each fix proven red alone: the canary label emitted under an unmarked
+      `derived`; an SSH address the agent cannot read (`settings list` knows no
+      such setting); and the four SSH boxes named as unaccounted by the crawl
+      against the form as it was

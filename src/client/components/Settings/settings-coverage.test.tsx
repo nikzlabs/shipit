@@ -10,11 +10,20 @@
  * identifies a control without proving it shares the declaration's description
  * and policy.
  *
- * Its boundary is the tab **pane**: dialog furniture and the add-a-provider
- * wizard are outside it, and {@link UNREACHED} names what that costs. Two things
- * it cannot decide — a bespoke panel's visible wording unless the panel marks
- * it, and whether a `wholeTab` exemption is honest — are claims made in prose
- * and checked by review.
+ * **It opens what the pane can open, rather than what somebody listed.** The
+ * nested forms used to be reached by name — the role editor, the MCP form, a
+ * credential row's rename — which meant the SSH add-a-destination form was
+ * simply never opened and its four boxes were controls no test could fail on.
+ * {@link crawl} presses every trigger in scope instead and walks whatever
+ * appears, so a form nobody names is still walked; its doc comment states the
+ * three bounds that are real.
+ *
+ * Its boundary is the tab **pane and what the pane discloses**, never the whole
+ * document, so the dialog's own furniture stays out; {@link UNREACHED} names any
+ * declaration that ends up with no control the crawl can reach. Two things it
+ * cannot decide — a bespoke panel's visible wording unless the panel marks it,
+ * and whether a `wholeTab` or `region` exemption is honest — are claims made in
+ * prose and checked by review.
  *
  * **And a third, which is not prose but a different guard.** This walk reads the
  * rendered DOM, so it can establish that a control names *a* declaration and
@@ -29,7 +38,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { render, screen, cleanup, act, within } from "@testing-library/react";
+import { render, screen, cleanup, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { SETTINGS_TABS, Settings, type SettingsProps } from "../Settings.js";
 import { PROJECT_SETTINGS_TABS, ProjectSettings } from "../ProjectSettings.js";
@@ -49,7 +58,21 @@ import {
 import type { AgentOption } from "../../agent-types.js";
 import type { RoleView, ReviewerSlotView } from "../../../server/shared/types/agent-types.js";
 
-const INTERACTIVE = 'input, select, button, [role="switch"], textarea';
+const INTERACTIVE =
+  'input, select, button, textarea, [role="switch"], [role="menuitemcheckbox"], [role="menuitemradio"]';
+
+/**
+ * Pressable, and NOT part of what the walk accounts for: a plain menu item picks
+ * one of a collection's operations, and the menu's trigger is what binds the
+ * collection (see {@link editsAValue}). The crawl has to press them — the rename
+ * and replace-secret fields of a credential row exist only behind one — but
+ * requiring each to name a declaration would make "Rename" a setting.
+ *
+ * A menu item that CARRIES a value is a different thing and is in `INTERACTIVE`
+ * above: `menuitemcheckbox` and `menuitemradio` are accounted like any other
+ * control, so the exemption cannot be widened by rendering a setting as one.
+ */
+const OPERATION_CHOOSER = '[role="menuitem"]';
 
 /**
  * Enough of the accessible-name computation for a settings dialog, written here
@@ -86,6 +109,28 @@ function namesOf(exclusion: SettingExclusion): readonly string[] {
   return exclusion.controls ?? [exclusion.label];
 }
 
+/**
+ * Whether a control is inside a container the catalogue excuses whole.
+ *
+ * It answers two questions with one rule. The walk asks it because every control
+ * in such a container is that one exclusion; the crawl asks it because there is
+ * then nothing in there to discover, and the supported-models dialog alone
+ * renders one filter per (service, billing mode, harness) the catalogue holds —
+ * eighty-odd presses that reveal the same read-only list each time and starve
+ * the rest of the tab. The cost is that a form opened from INSIDE an excused
+ * region is not reached, which the region's `why` has to be true enough to rule
+ * out.
+ */
+function excusedRegionOf(tab: SettingTab): (el: Element) => boolean {
+  const regions = SETTING_EXCLUSIONS
+    .filter((x) => x.tab === tab)
+    .map((x) => x.region)
+    .filter((id) => id !== undefined);
+  if (regions.length === 0) return () => false;
+  const selector = regions.map((id) => `[data-testid="${id}"]`).join(", ");
+  return (el) => el.closest(selector) !== null;
+}
+
 function describeControl(el: Element): string {
   const testId = el.getAttribute("data-testid");
   return `<${el.tagName.toLowerCase()}${testId ? ` data-testid="${testId}"` : ""}> `
@@ -107,11 +152,96 @@ function editsAValue(el: Element): boolean {
     || el.hasAttribute("aria-pressed");
 }
 
+function visible(el: Element): boolean {
+  return !el.closest('[aria-hidden="true"]') && el.getAttribute("type") !== "hidden";
+}
+
 /** Every control in a pane, ignoring anything already hidden from a reader. */
-function controlsIn(pane: Element): Element[] {
-  return [...pane.querySelectorAll(INTERACTIVE)].filter(
-    (el) => !el.closest('[aria-hidden="true"]') && el.getAttribute("type") !== "hidden",
-  );
+function controlsIn(root: ParentNode): Element[] {
+  return [...root.querySelectorAll(INTERACTIVE)].filter(visible);
+}
+
+/** The operation pickers in a pane: pressed by the crawl, accounted by nothing. */
+function choosersIn(root: ParentNode): Element[] {
+  return [...root.querySelectorAll(OPERATION_CHOOSER)].filter(visible);
+}
+
+const COPY_ATTRS = "[data-setting-label], [data-setting-description]";
+
+/**
+ * What one walk looks at: the controls, and the elements claiming to render a
+ * declaration's words.
+ *
+ * Held as node lists rather than as a root, because a disclosure is found by
+ * DIFFING the document — the form a button opens may render inside the pane or
+ * in a portal beside it, and the only thing both have in common is that their
+ * nodes were not there before the click.
+ */
+interface Surface {
+  readonly controls: Element[];
+  readonly copy: Element[];
+  /** Pressed by the crawl, and never walked. */
+  readonly choosers: Element[];
+}
+
+function surfaceOf(root: ParentNode): Surface {
+  return {
+    controls: controlsIn(root),
+    copy: [...root.querySelectorAll(COPY_ATTRS)].filter(visible),
+    choosers: choosersIn(root),
+  };
+}
+
+const EMPTY_SURFACE: Surface = { controls: [], copy: [], choosers: [] };
+
+function mergeSurfaces(a: Surface, b: Surface): Surface {
+  const join = (one: Element[], two: Element[]): Element[] => {
+    const held = new Set(one);
+    return [...one, ...two.filter((el) => !held.has(el))];
+  };
+  return {
+    controls: join(a.controls, b.controls),
+    copy: join(a.copy, b.copy),
+    choosers: join(a.choosers, b.choosers),
+  };
+}
+
+function connected(surface: Surface): Surface {
+  const live = (list: Element[]): Element[] => list.filter((el) => el.isConnected);
+  return { controls: live(surface.controls), copy: live(surface.copy), choosers: live(surface.choosers) };
+}
+
+/**
+ * Every node this crawl has already looked at, so what a press DISCLOSED is what
+ * the DOM has never held rather than what it held a moment ago.
+ *
+ * Cumulative on purpose. A modal marks everything behind it `aria-hidden`, which
+ * takes the dialog's own tab strip out of the surface and puts it back when the
+ * modal closes — against a one-step diff those tab buttons read as a form that
+ * had just been opened, and the crawl went on to press them.
+ *
+ * **It decides scope, and never coverage.** React can reuse a node and change
+ * what it represents — an input rebound from one declaration to another when a
+ * choice repaints the field — and a node already recorded here would carry the
+ * new binding past a delta walk unseen. So the crawl walks the whole LIVE scope
+ * after every press, and this only says what is newly in it.
+ */
+class Seen {
+  private readonly nodes = new Set<Element>();
+
+  /** What is on screen now and was never on screen before; records all of it. */
+  takeNew(surface: Surface): Surface {
+    const fresh = (list: Element[]): Element[] => list.filter((el) => !this.nodes.has(el));
+    const taken: Surface = {
+      controls: fresh(surface.controls),
+      copy: fresh(surface.copy),
+      choosers: fresh(surface.choosers),
+    };
+    for (const list of [surface.controls, surface.copy, surface.choosers]) {
+      for (const el of list) this.nodes.add(el);
+    }
+    return taken;
+  }
 }
 
 interface WalkResult {
@@ -121,18 +251,33 @@ interface WalkResult {
   readonly drift: string[];
   /** Declarations this pane actually rendered a control for. */
   readonly bound: Set<string>;
+  /**
+   * The subset of {@link bound} whose control HOLDS the value — an input, a
+   * switch, a toggle card. A collection's operations are buttons, so a
+   * declaration bound only by a button may have no editable control rendered at
+   * all: `network.egress.hosts[].host` is bound by the row's *Edit* button
+   * whether or not pressing it opens anything.
+   */
+  readonly valueBound: Set<string>;
   /** Declarations whose label AND description this pane rendered. */
   readonly explained: Set<string>;
 }
 
-function walk(pane: Element, tab: SettingTab): WalkResult {
+function walk(pane: ParentNode, tab: SettingTab): WalkResult {
+  return walkSurface(surfaceOf(pane), tab);
+}
+
+function walkSurface(surface: Surface, tab: SettingTab): WalkResult {
   const exclusions = SETTING_EXCLUSIONS.filter((x) => x.tab === tab);
   const wholeTab = exclusions.some((x) => x.wholeTab);
   const excused = new Set(exclusions.flatMap(namesOf));
+  const inExcusedRegion = excusedRegionOf(tab);
   const unaccounted: string[] = [];
   const bound = new Set<string>();
+  const valueBound = new Set<string>();
 
-  for (const el of controlsIn(pane)) {
+  for (const el of surface.controls) {
+    if (inExcusedRegion(el)) continue;
     const key = el.getAttribute("data-setting");
     if (key) {
       const declaration = findSetting(key);
@@ -162,6 +307,7 @@ function walk(pane: Element, tab: SettingTab): WalkResult {
         unaccounted.push(`${describeControl(el)} edits a value but binds the collection "${key}"`);
       } else {
         bound.add(key);
+        if (editsAValue(el)) valueBound.add(key);
       }
       continue;
     }
@@ -177,7 +323,7 @@ function walk(pane: Element, tab: SettingTab): WalkResult {
     ["data-setting-label", "label"],
     ["data-setting-description", "description"],
   ] as const) {
-    for (const el of pane.querySelectorAll(`[${attribute}]`)) {
+    for (const el of surface.copy.filter((node) => node.hasAttribute(attribute))) {
       const key = el.getAttribute(attribute) ?? "";
       const declaration = findSetting(key);
       if (!declaration) {
@@ -196,7 +342,7 @@ function walk(pane: Element, tab: SettingTab): WalkResult {
   }
   const explained = new Set([...rendered.label].filter((key) => rendered.description.has(key)));
 
-  return { unaccounted, drift, bound, explained };
+  return { unaccounted, drift, bound, valueBound, explained };
 }
 
 const agents: AgentOption[] = [
@@ -444,6 +590,206 @@ async function settle(): Promise<void> {
   await act(async () => { await Promise.resolve(); });
 }
 
+/** Which tab the dialog has selected, so a link that moves it can be told apart. */
+function selectedTab(): string | null {
+  return document.querySelector('[role="tab"][aria-selected="true"]')?.getAttribute("id") ?? null;
+}
+
+/**
+ * A control that might DISCLOSE more controls: a button that runs something, or
+ * a choice that repaints the fields around it. A switch and a toggle card are
+ * not — they carry their own value, and the walk already accounts for them.
+ */
+function isDisclosureTrigger(el: Element): boolean {
+  if ((el as HTMLButtonElement).disabled) return false;
+  const tag = el.tagName.toLowerCase();
+  if (tag === "select") return true;
+  return tag === "button" && !el.hasAttribute("aria-checked");
+}
+
+function isChooser(el: Element): boolean {
+  return el.getAttribute("role") === "menuitem";
+}
+
+/**
+ * Stable enough to press a control once across re-renders, and distinct enough
+ * to tell two controls apart.
+ *
+ * Node identity would be exact and is wrong: React replaces nodes, so the same
+ * button would be pressed forever. Tag, test id and accessible name alone are
+ * wrong the other way — two rows each carrying an unnamed *Open* collide, and
+ * the second form is never opened.
+ *
+ * So the nearest ANCESTOR carrying a test id joins in, **and its position among
+ * the ancestors sharing that test id**, because a list gives every row the same
+ * one (`ssh-host-row`, `credential-row`). Both survive a re-render of the row's
+ * contents, which is what identity by node does not.
+ */
+function triggerId(el: Element): string {
+  const owner = el.parentElement?.closest("[data-testid]");
+  const testId = owner?.getAttribute("data-testid") ?? "";
+  const among = testId
+    ? [...el.ownerDocument.querySelectorAll(`[data-testid="${CSS.escape(testId)}"]`)].indexOf(owner!)
+    : -1;
+  return `${testId}#${among}|${el.tagName}|${el.getAttribute("data-testid") ?? ""}|${accessibleName(el)}`;
+}
+
+/**
+ * One thing that can be done to a control, and doing it. A button has one; a
+ * choice has one per option, **separately**, because the fields an option
+ * repaints are gone by the time the next one is picked — the MCP transport
+ * selector renders a command or a URL and never both.
+ */
+interface Press {
+  readonly id: string;
+  readonly run: () => Promise<void>;
+}
+
+function pressesFor(el: Element): Press[] {
+  if (el.tagName.toLowerCase() !== "select") {
+    return [{ id: triggerId(el), run: () => userEvent.click(el) }];
+  }
+  const select = el as HTMLSelectElement;
+  return [...select.options]
+    .filter((option) => !option.disabled)
+    .map((option) => ({
+      id: `${triggerId(el)}|${option.value}`,
+      run: async () => { await userEvent.selectOptions(select, option.value); },
+    }));
+}
+
+/**
+ * Nothing in the two dialogs takes anywhere near this many presses; it exists so
+ * a control that re-renders under a new accessible name on every press cannot
+ * spin forever. **Reaching it fails the test**, because a crawl that stopped
+ * early is coverage it did not do.
+ */
+const PRESS_CAP = 200;
+
+/**
+ * **Every form the pane can open, not only the ones it renders at rest**
+ * (docs/299-agent-settings-access req 5 and req 7).
+ *
+ * **The set of forms is not enumerated**, because a list of forms is a list
+ * somebody maintains: the SSH add-a-destination form was never on it, so its four
+ * boxes were controls no test could fail on and three wrote undeclared stored
+ * values. Every trigger in scope is pressed once instead, and whatever appears in
+ * the DOCUMENT as a result — inside the pane or in a portal beside it — is walked
+ * under the same rules. The scope grows as it goes, so a form inside a form is
+ * reached with nothing naming either.
+ *
+ * Three bounds are real and are stated rather than hidden:
+ *
+ *  - **Scope is the pane and what it disclosed**, never the whole document, so
+ *    the dialog's own furniture is out. Pressing Close would end the crawl with
+ *    an empty document and nothing to report, which is the silent skip this
+ *    replaces.
+ *  - **A press that moves the dialog to another TAB is navigation, not
+ *    disclosure.** The Voice tab links to Keyboard; without this the whole of
+ *    another tab would arrive as one delta. The tab is re-rendered and the crawl
+ *    goes on, with that trigger counted as pressed.
+ *  - **A disclosure behind something other than a press or a choice is not
+ *    reached** — typing into a box, a drag, a hover. Nothing in either dialog
+ *    works that way today; a control that starts to would need this to grow.
+ *
+ * It presses *Reset Everything* and *Remove* alike, and that is safe rather than
+ * lucky: every write in both dialogs goes out through `fetch`, which the fixture
+ * stubs to reject, so a press can change a component's own state and nothing
+ * else. A control that starts writing through something else would break that.
+ */
+async function crawl(
+  render: () => Promise<HTMLElement>,
+  tab: SettingTab,
+): Promise<WalkResult[]> {
+  let pane = await render();
+  let seen = new Seen();
+  /**
+   * What each press opened, newest group first. Depth-first, and in document
+   * order inside a group: a form's own Cancel is the last control in it, so the
+   * fields are pressed before the button that closes them — and a menu left open
+   * while the crawl went back to the pane would be closed by the next press
+   * there, stranding every operation it offered.
+   */
+  let disclosed: Element[][] = [];
+  /** Everything ever disclosed, for the live-scope walk after each press. */
+  let opened: Surface = EMPTY_SURFACE;
+  const pressed = new Set<string>();
+  const results: WalkResult[] = [walk(pane, tab)];
+  seen.takeNew(surfaceOf(document.body));
+
+  /**
+   * The pane as it is NOW, plus every still-attached node the crawl opened.
+   *
+   * Walked after every press rather than only the delta: React reuses nodes, so
+   * a box rebound from one declaration to another — or a description whose
+   * element stays and whose text changes — is a node the delta has already seen
+   * and would never look at again.
+   */
+  const liveScope = (): Surface => mergeSurfaces(surfaceOf(pane), connected(opened));
+
+  const excused = excusedRegionOf(tab);
+  const restart = async () => {
+    cleanup();
+    pane = await render();
+    seen = new Seen();
+    seen.takeNew(surfaceOf(document.body));
+    disclosed = [];
+    opened = EMPTY_SURFACE;
+  };
+  /** The press at which the tab was last started again, to tell a stall apart. */
+  let restartedAt = -1;
+
+  for (let n = 0; ; n++) {
+    if (n === PRESS_CAP) {
+      throw new Error(
+        `The ${tab} tab is still disclosing controls after ${PRESS_CAP} presses. Either a control `
+        + "re-renders under a new name every time it is pressed, or the tab has outgrown the cap; "
+        + "stopping here quietly would be coverage this test did not do.",
+      );
+    }
+    const pressable = (el: Element) =>
+      el.isConnected && !excused(el) && (isDisclosureTrigger(el) || isChooser(el));
+    const inScope = [
+      ...disclosed.flat(),
+      ...controlsIn(pane),
+      ...choosersIn(pane),
+    ].filter(pressable);
+    const next = inScope.flatMap(pressesFor).find((press) => !pressed.has(press.id));
+    if (!next) {
+      /*
+        Nothing left to press — or nothing REACHABLE. A modal takes the pane out
+        of the surface (`aria-hidden`) while it is open, and the one control that
+        would close an excused region is itself inside that region, so the crawl
+        would stop there with most of the tab unpressed. Starting the tab again
+        clears whatever is open; `pressed` carries over, so it resumes rather
+        than repeats, and a restart that finds nothing new ends the crawl.
+      */
+      if (restartedAt === n - 1) break;
+      restartedAt = n;
+      await restart();
+      continue;
+    }
+    pressed.add(next.id);
+
+    const tabBefore = selectedTab();
+    await next.run();
+    if (selectedTab() !== tabBefore) {
+      await restart();
+      continue;
+    }
+
+    const fresh = seen.takeNew(surfaceOf(document.body));
+    if (fresh.controls.length + fresh.choosers.length > 0) {
+      const group = [...fresh.controls, ...fresh.choosers].sort((a, b) =>
+        a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1);
+      disclosed = [group, ...disclosed];
+    }
+    opened = mergeSurfaces(connected(opened), fresh);
+    results.push(walkSurface(liveScope(), tab));
+  }
+  return results;
+}
+
 async function renderGlobalTab(tab: SettingTab): Promise<HTMLElement> {
   act(() => { useUiStore.getState().setSettingsTab(tab as never); });
   render(<Settings {...settingsProps} />);
@@ -466,54 +812,45 @@ async function renderProjectTab(initial: ProjectTab): Promise<HTMLElement> {
   return activePane();
 }
 
-/** Opens the role editor on the pinned role and returns its dialog. */
-async function openRoleEditor(): Promise<HTMLElement> {
-  await renderGlobalTab("roles");
-  await userEvent.click(screen.getByTestId("role-open-deep-dive"));
-  return screen.findByTestId("role-editor");
-}
-
-/** Opens a credential or account row's overflow menu and picks one operation. */
-async function openRowField(row: string, item: string): Promise<HTMLElement> {
-  const pane = await renderGlobalTab("services");
-  await userEvent.click(within(pane).getByRole("button", { name: `Manage ${row}` }));
-  await userEvent.click(await screen.findByRole("menuitem", { name: item }));
+/**
+ * A pane the crawl can be pointed at, for a shape no panel has today. Plain DOM
+ * on purpose: what is under test is the crawl, not a component.
+ */
+function paneFixture(html: string): HTMLElement {
+  const pane = document.createElement("div");
+  pane.innerHTML = html;
+  document.body.append(pane);
   return pane;
 }
 
-/** The row operations that open a field of their own, and the row they open on. */
-const ROW_FIELDS: readonly [row: string, item: string][] = [
-  ["Anthropic (primary)", "Rename"],
-  ["Anthropic (primary)", "Replace secret"],
-  ["OpenAI account", "Rename"],
-];
+/** The keys a crawl found bound to nothing declared, in the order it saw them. */
+function undeclaredBindings(results: WalkResult[]): string[] {
+  return collect(results, "unaccounted")
+    .map((complaint) => /binds undeclared "([^"]+)"/.exec(complaint)?.[1])
+    .filter((key) => key !== undefined);
+}
+
+async function crawlGlobalTab(tab: SettingTab): Promise<WalkResult[]> {
+  return crawl(() => renderGlobalTab(tab), tab);
+}
+
+async function crawlProjectTab(initial: ProjectTab, tab: SettingTab): Promise<WalkResult[]> {
+  return crawl(() => renderProjectTab(initial), tab);
+}
 
 /**
- * Opens the MCP form and walks each transport in turn, with one secret row
- * present — an empty environment list renders no inputs at all, so a walk that
- * did not add a row would never see the fields it claims to cover.
+ * One entry per distinct complaint. The crawl walks the whole live scope after
+ * every press, so an unaccounted control that stays on screen is reported once
+ * for each press that followed it.
  */
-async function walkBothMcpTransports(pane: HTMLElement): Promise<WalkResult[]> {
-  const form = () => screen.getByTestId("mcp-server-form");
-  const addSecretRow = async (noun: "variable" | "header") => {
-    await userEvent.click(within(form()).getByRole("button", { name: `+ Add ${noun}` }));
-    expect(within(form()).getAllByLabelText(/— name 1$/)).toHaveLength(1);
-  };
-
-  await userEvent.click(screen.getByTestId("mcp-add-server"));
-  await addSecretRow("variable");
-  const stdio = walk(pane, "integrations");
-
-  await userEvent.selectOptions(form().querySelector("select")!, "http");
-  expect(form().textContent).toContain("URL");
-  await addSecretRow("header");
-  return [stdio, walk(pane, "integrations")];
+function collect(results: WalkResult[], field: "unaccounted" | "drift"): string[] {
+  return [...new Set(results.flatMap((result) => result[field]))];
 }
 
 describe("every control in the Settings dialog is declared or excused", () => {
   for (const tab of GLOBAL_TABS) {
-    it(`accounts for the ${tab} tab`, async () => {
-      expect(walk(await renderGlobalTab(tab), tab).unaccounted).toEqual([]);
+    it(`accounts for the ${tab} tab, and for every form it opens`, async () => {
+      expect(collect(await crawlGlobalTab(tab), "unaccounted")).toEqual([]);
     });
   }
 
@@ -526,30 +863,6 @@ describe("every control in the Settings dialog is declared or excused", () => {
     expect(PROJECT_SETTINGS_TABS.map((tab) => PROJECT_TAB_OF[tab])).toEqual(
       PROJECT_TABS.map((entry) => entry.tab),
     );
-  });
-
-  it("accounts for the role editor, which only exists once opened", async () => {
-    expect(walk(await openRoleEditor(), "roles").unaccounted).toEqual([]);
-  });
-
-  it("accounts for the fields a credential or account row opens", async () => {
-    for (const [row, item] of ROW_FIELDS) {
-      expect(walk(await openRowField(row, item), "services").unaccounted).toEqual([]);
-      cleanup();
-    }
-  });
-
-  it("accounts for both MCP transports, whose forms render different fields", async () => {
-    const pane = await renderGlobalTab("integrations");
-    for (const result of await walkBothMcpTransports(pane)) {
-      expect(result.unaccounted).toEqual([]);
-      // The form is bespoke and reached only by opening it, so its copy is
-      // compared here rather than by the per-tab drift walk — which renders the
-      // pane without the form and would pass whatever the form says. Asserted
-      // beside `unaccounted` so a hand-written label names itself, instead of
-      // surfacing as a count in the vacuity test below.
-      expect(result.drift).toEqual([]);
-    }
   });
 
   /*
@@ -574,18 +887,84 @@ describe("every control in the Settings dialog is declared or excused", () => {
     ]);
   });
 
-  it("accounts for an allowlist row mid-edit", async () => {
-    const pane = await renderGlobalTab("network");
-    await userEvent.click(screen.getByTestId("settings-egress-edit-api.example.com"));
-    expect(screen.getByTestId("settings-egress-edit-input-api.example.com")).toBeInTheDocument();
-    expect(walk(pane, "network").unaccounted).toEqual([]);
+  /*
+    Two shapes the crawl has to survive, which no panel in the dialogs happens to
+    have today — so they are put to it directly rather than waited for. Both were
+    real holes when this was written: the first passed because the crawl walked
+    only what a press had just ADDED, and the second because two controls with
+    one name were one control to it.
+  */
+  it("looks again at a node whose binding a press changed", async () => {
+    const pane = paneFixture(`
+      <input data-setting="advanced.liveSteering" aria-label="Live steering" id="box" />
+      <button id="flip">Flip</button>
+    `);
+    pane.querySelector("#flip")!.addEventListener("click", () => {
+      pane.querySelector("#box")!.setAttribute("data-setting", "advanced.notASetting");
+    });
+
+    // The plain buttons are unaccounted too — nothing excuses "Flip" — so this
+    // asks only about the binding the crawl had to look twice to see.
+    expect(undeclaredBindings(await crawl(async () => pane, "advanced")))
+      .toEqual(['advanced.notASetting']);
+  });
+
+  it("presses two controls that share a name in rows that share a test id", async () => {
+    const pane = paneFixture(
+      ["first", "second"].map((row) => `
+        <div data-testid="row">
+          <button data-open="${row}">Open</button>
+          <span data-form="${row}"></span>
+        </div>
+      `).join(""),
+    );
+    for (const button of pane.querySelectorAll("[data-open]")) {
+      button.addEventListener("click", () => {
+        const row = button.getAttribute("data-open");
+        pane.querySelector(`[data-form="${row}"]`)!.innerHTML =
+          `<input data-setting="advanced.${row}" aria-label="${row}" />`;
+      });
+    }
+
+    expect(undeclaredBindings(await crawl(async () => pane, "advanced")))
+      .toEqual(["advanced.first", "advanced.second"]);
+  });
+
+  /*
+    The crawl is what reaches these, and each one was a hand-named opener until
+    the third conformance review: the role editor, a credential row's overflow
+    menu, the MCP form's two transports, an allowlist row mid-edit. They are
+    listed here as the surfaces that must still be REACHED, not as the way to
+    reach them — the vacuity test below fails if any of their fields stops being
+    bound, whatever opens it.
+  */
+  it("reaches the forms that only exist once something is pressed", async () => {
+    /*
+      `valueBound`, never `bound`: every one of these is a BOX inside a form, and
+      a collection's operations are buttons that sit on the pane at rest. The
+      allowlist's *Edit* button binds `network.egress.hosts[].host` whether or
+      not pressing it opens anything, so asking only whether the key was bound
+      would pass with the editor deleted.
+    */
+    const opensAField = async (tab: SettingTab, key: string) => {
+      const results = await crawlGlobalTab(tab);
+      cleanup();
+      return results.some((result) => result.valueBound.has(key));
+    };
+
+    expect(await opensAField("roles", "roles[].prompt"), "the role editor").toBe(true);
+    expect(await opensAField("services", "services.credentials[].label"), "a row rename").toBe(true);
+    expect(await opensAField("services", "services.credentials[].secret"), "the add-a-provider wizard").toBe(true);
+    expect(await opensAField("integrations", "mcp.servers[].url"), "the MCP http form").toBe(true);
+    expect(await opensAField("integrations", "integrations.sshHosts[].address"), "the SSH form").toBe(true);
+    expect(await opensAField("network", "network.egress.hosts[].host"), "an allowlist row").toBe(true);
   });
 });
 
 describe("every control in the Project Settings dialog is declared or excused", () => {
   for (const { tab, initial } of PROJECT_TABS) {
-    it(`accounts for the ${initial} tab`, async () => {
-      expect(walk(await renderProjectTab(initial), tab).unaccounted).toEqual([]);
+    it(`accounts for the ${initial} tab, and for every form it opens`, async () => {
+      expect(collect(await crawlProjectTab(initial, tab), "unaccounted")).toEqual([]);
     });
   }
 });
@@ -593,19 +972,15 @@ describe("every control in the Project Settings dialog is declared or excused", 
 describe("the dialog's copy is the declaration's copy", () => {
   for (const tab of GLOBAL_TABS) {
     it(`writes none of its own on the ${tab} tab`, async () => {
-      expect(walk(await renderGlobalTab(tab), tab).drift).toEqual([]);
+      expect(collect(await crawlGlobalTab(tab), "drift")).toEqual([]);
     });
   }
 
   for (const { tab, initial } of PROJECT_TABS) {
     it(`writes none of its own on the project ${initial} tab`, async () => {
-      expect(walk(await renderProjectTab(initial), tab).drift).toEqual([]);
+      expect(collect(await crawlProjectTab(initial, tab), "drift")).toEqual([]);
     });
   }
-
-  it("writes none of its own in the role editor", async () => {
-    expect(walk(await openRoleEditor(), "roles").drift).toEqual([]);
-  });
 });
 
 /**
@@ -614,9 +989,18 @@ describe("the dialog's copy is the declaration's copy", () => {
  * control that quietly stops being rendered cannot pass as coverage.
  */
 const UNREACHED: Record<string, string> = {
-  "services.providerAccounts[].connection": "Its controls are the sign-in challenge, which "
-    + "`AccountChallenge` renders inside the add-a-provider wizard and nowhere else "
-    + "(`ProviderAccountRows.tsx`). The wizard is a flow rather than a pane.",
+  /*
+    Empty, which is the strongest state it can be in — and it was not empty
+    before the crawl. `services.providerAccounts[].connection` lived here, on
+    the reasoning that its control is the sign-in inside the add-a-provider
+    wizard and "the wizard is a flow rather than a pane". The crawl walks into
+    the wizard like anything else, so the entry was a statement about the walk's
+    old boundary rather than about the control.
+
+    It stays because a genuine one would otherwise have nowhere to be named, and
+    an unnamed unreachable declaration is the silent skip this file exists to
+    prevent.
+  */
 };
 
 /**
@@ -645,6 +1029,13 @@ const EXPLAINED_IN_THE_DIALOG: readonly string[] = [
   "instructions.opsInstructions",
   "instructions.userInstructions",
   "integrations.autoCreatePr",
+  // The add-a-destination form's four boxes. They carried a placeholder and an
+  // `aria-label` of their own until this slice, and three of them wrote stored
+  // values no declaration described at all.
+  "integrations.sshHosts[].address",
+  "integrations.sshHosts[].label",
+  "integrations.sshHosts[].port",
+  "integrations.sshHosts[].user",
   // The MCP form's boxes. They rendered the declared LABEL and no description
   // until docs/299 — while the labels carried hand-written suffixes of their
   // own ("(space-separated)") that the declaration is supposed to hold. Those
@@ -690,25 +1081,11 @@ describe("the walk is not passing vacuously", () => {
     };
 
     for (const tab of GLOBAL_TABS) {
-      record(walk(await renderGlobalTab(tab), tab));
+      record(...await crawlGlobalTab(tab));
       cleanup();
     }
     for (const { tab, initial } of PROJECT_TABS) {
-      record(walk(await renderProjectTab(initial), tab));
-      cleanup();
-    }
-    record(walk(await openRoleEditor(), "roles"));
-    cleanup();
-    for (const [row, item] of ROW_FIELDS) {
-      record(walk(await openRowField(row, item), "services"));
-      cleanup();
-    }
-    record(...await walkBothMcpTransports(await renderGlobalTab("integrations")));
-    cleanup();
-    {
-      const pane = await renderGlobalTab("network");
-      await userEvent.click(screen.getByTestId("settings-egress-edit-api.example.com"));
-      record(walk(pane, "network"));
+      record(...await crawlProjectTab(initial, tab));
       cleanup();
     }
 

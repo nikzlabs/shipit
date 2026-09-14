@@ -150,16 +150,20 @@ export const ROLES_SETTINGS = {
       + "automatic; the harness is derived per review rather than pinned.",
     type: collection<string>({ operations: ["pin", "clear"], patchableFields: ["model", "reasoningEffort"] }),
     store: { kind: "bespoke", ownedBy: "credential-store reviewer slots (PUT /api/settings `reviewers`)" },
-    emits: derived("each slot and whether it is pinned or automatic", (raw) =>
-      Array.isArray(raw)
-        ? raw.map((entry) => {
-            const row = entry as { slot?: unknown; source?: unknown };
-            return {
-              slot: typeof row?.slot === "string" ? row.slot : null,
-              source: typeof row?.source === "string" ? row.source : null,
-            };
-          })
-        : []),
+    emits: derived(
+      "each slot and whether it is pinned or automatic",
+      (raw) =>
+        Array.isArray(raw)
+          ? raw.map((entry) => {
+              const row = entry as { slot?: unknown; source?: unknown };
+              return {
+                slot: typeof row?.slot === "string" ? row.slot : null,
+                source: typeof row?.source === "string" ? row.source : null,
+              };
+            })
+          : [],
+      { shipItComputed: "\"first\" and \"second\" are ShipIt's own names for the two slots, and pinned/automatic is ShipIt's own reading of them. The user names nothing here." },
+    ),
     propose: { kind: "yes" },
   }),
 
