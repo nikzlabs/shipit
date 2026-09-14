@@ -210,18 +210,52 @@ the finding:
   death. The first transport failure against an adopted container replaces it — once, so an
   unrelated failure does not tear down a container that answers.
 
-- [ ] **Requirement 8 regressed: the provisional half of adoption is wrong both ways.** Found by
-      re-verifying reqs 3, 7 and 8 against the three fix commits, and confirmed at the code.
-      `replaceUnverifiedAdoption` destroys the shared container with no check for spawns in
-      flight, so one request's transport failure takes down another request's running harness —
-      contradicting an invariant `cleanup-container.ts` states twice, that a run is cancelled by
-      spawn id and that one request's deadline never kills the shared container. And
-      `adoptedUnverified` is cleared on any *resolved* worker response, while a worker whose
-      harness cannot reach the provider still answers HTTP 200 with `{status: "timeout"}` — so the
-      precise state adoption was made provisional for marks itself healthy on its first failure,
-      and every later dictation times out. A worker that never answers at all is genuinely fixed.
-      Dropping adoption and paying one container start after a restart is an acceptable answer if
-      it is the honest one.
+- [x] **Requirement 8 regressed: the provisional half of adoption was wrong both ways.** Found by
+      re-verifying reqs 3, 7 and 8 against the three fix commits, and confirmed at the code. One
+      request's transport failure destroyed the shared container out from under another request's
+      running harness, and a worker that answered HTTP 200 carrying `{status: "timeout"}` — the
+      precise state adoption was made provisional for — marked itself healthy on its first
+      failure.
+
+Fixed in PR #2783, which kept adoption rather than dropping it. Dropping it was built first and
+refuted on the requirement's plain words: req 8 says the first dictation after a quiet period
+costs no container start, with no restart exception, and a restart can land inside a quiet
+period. Verified at the source it was also less safe — `container-lifecycle.ts:554` sweeps spawn
+homes under the comment "No worker is running yet" and only force-removes the survivor at `:677`,
+so creating straight over a live survivor sweeps homes a running CLI may still be rotating tokens
+in. Adoption's reject path stops the survivor first.
+
+- **"Verified" now means a run that succeeded**, not a reply. `noteRunOutcome` clears the
+  provisional state only on `status: "success"`; `"timeout"`, `"error"` and `"cancelled"` all
+  count as failure, the last because a blackholed egress answers nothing and the run ends at the
+  caller's own deadline (req 9) rather than the worker's.
+- **A replacement waits until no other spawn is awaiting the worker**, and the signal is not lost
+  by waiting: the container stays provisional until a run actually succeeds, so the next failure
+  on a drained container replaces it.
+- **The provisional state is keyed to the adopted container's id, not held as a flag** — a flag
+  outlives the container it described, and would condemn a replacement *this* process built on
+  its first ordinary provider error.
+- **The replacement holds the acquisition lock and re-checks shutdown after the teardown.**
+  `destroyContainer` leaves the entry reading "stopping" across several Docker calls, so a
+  dictation arriving in that window used to start a second teardown whose unconditional resource
+  cleanup then reaped the first one's replacement.
+- **The fixture now models four things it could not fail on**, each of which hid one of these
+  bugs — a teardown that rejects the spawns in flight against it, a destroyed worker that stays
+  dead, the "stopping" window itself, and the recorded transport options. That blindness is why
+  PR #2779's own tests passed with the defect present.
+
+**Five defects verified in the same code and deliberately left to their own decisions**, none
+introduced by this feature: [planning#557](https://github.com/nikzlabs/shipit-planning/issues/557)
+(a wedged container this orchestrator *created* is never repaired — the general form of the
+defect above, and the harder question of when a failed run means the container is at fault rather
+than the provider), [planning#558](https://github.com/nikzlabs/shipit-planning/issues/558) (two
+stacks on one Docker daemon destroy each other's containers, by the daemon-global container name
+before adoption is even reached, and one stack's boot sweep reaps another's ordinary-session
+sidecars), [planning#559](https://github.com/nikzlabs/shipit-planning/issues/559) (a `"timeout"`
+resolves in the same tick as `agent.kill()`, so the spawn home is released while the CLI may
+still be alive to write a rotated credential) and
+[planning#560](https://github.com/nikzlabs/shipit-planning/issues/560) (creation publishes its
+tracked entry before starting the container, so a gap-recovery probe can forget a live worker).
 - [x] **Req 7 — an aborted direct call records no usage.**
 
 Shipped in PR #2777. A call cut off in flight now writes a row with **unknown** token counts —
