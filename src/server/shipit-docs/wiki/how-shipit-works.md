@@ -158,10 +158,10 @@ in `/shipit-docs/`, or a live command to run rather than a page to read.
 
 | Capability | Where |
 |---|---|
-| Ten settings tabs: Services, Roles, Integrations, Git, Instructions, Skills, Keyboard, Voice, Network, Advanced | `shipit settings list` for the live values |
+| Ten settings tabs: Model providers, Roles, Integrations, Git, Instructions, Skills, Keyboard, Voice, Network, Advanced | `shipit settings list` for the live values |
 | Several agent harnesses — Claude Code, Codex, OpenCode, Grok, Antigravity | `shipit agent roles` |
-| Sign in with an existing subscription, or an API key as a fallback | Settings → Integrations |
-| Several accounts per provider, in a fallback order | Settings → Integrations |
+| Sign in with an existing subscription, or an API key as a fallback | Settings → Model providers — **not** Integrations, which holds GitHub, Linear and MCP servers |
+| Several accounts per provider, in a fallback order | Settings → Model providers |
 | Usage and subscription limits, visible before they bite | No wiki page yet — the capability is real, the detail is not written down |
 | Pick the model, the reasoning effort, and the role per session | `shipit agent params` |
 | Named roles that bundle harness, model and effort — including the reviewer | `/shipit-docs/agent.md` |

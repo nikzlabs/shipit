@@ -88,8 +88,8 @@ Two things users are surprised by, so say them before they find out:
   (`~/.shipit/.shipit.env` locally, `/etc/shipit/shipit.env` on a VPS) and
   re-running the deploy.
 - **An installed harness still needs credentials** — an account or an API key
-  connected in Settings → Model providers — before it can run a turn.
-  Integrations is the GitHub tab, not this one.
+  connected in Settings → Model providers — before it can run a turn. Not
+  Integrations: that tab holds GitHub, Linear and MCP servers.
 
 ## Sizing the machine
 
