@@ -1,30 +1,20 @@
 # Session status card — checklist
 
-Design deliverables (this PR):
+Implementation of [plan.md](plan.md); the design deliverables shipped in the
+docs-only PR and their review history is on planning#550.
 
-- [x] Capture the requirements from the design conversation, with receipts.
-- [x] Write the design in plan.md.
-- [x] Independent review of the design; fold in the findings.
-- [x] Resolve the open question in requirements.md (one nudge attempt; freshness shown on the card, req 14–15).
-- [x] Prototype the freshness visual (mockup.html; both states; light and dark).
-- [x] Record the chosen visual in plan.md (regular card when current; a small "Stale" label bottom-right when it may be behind; no title text).
-- [x] Record the label color: the theme accent (`--color-accent`).
-- [x] Fold the follow-up action card into the status card (reqs 16–20); redraw the mockup with actions.
-- [x] Second independent review (after the merge); fold in the findings: snapshot-and-version guard, server-owned offer identity, no alias, acceptance-path removal, shared item validator.
-
-Implementation (a later PR):
-
-- [ ] `advanced.sessionStatusCard` in the settings catalogue, off by default; per-turn `SHIPIT_SESSION_STATUS_CARD` on the agent environment.
-- [ ] `session_status` tool (status, needsYou, actions, replaceActions); `validateActionItems` extracted and shared; envelope validation; the worker relay.
-- [ ] Orchestrator route: persist, `session_list` broadcast, turn flag.
-- [ ] `sessions.session_status` column (status, needsYou, offers with `offerId`, fresh, version, provenance), `SessionInfo.sessionStatus`, migration; `runStatusExclusive`.
-- [ ] Per-turn flag `statusUpdated` on `TurnAccumulator`, set by the session-status route.
-- [ ] Evolve the action card: under the flag, leave `propose_actions` out of the adapter tool lists and swap the prompt section, and make its route refuse; split `ActionChecklistCard` into the shared checklist and two wrappers; `checklistAccepted` takes offers by `offerId` on acceptance.
-- [ ] `statusNudge` dispatch option through `prepared-dispatch.ts` and the queue; `silent` and `statusNudge` forwarded into `TurnInput`.
-- [ ] Memoized `status-nudge` post-turn step in `turn-executor.ts` on a pre-drain snapshot; version-guarded `markSessionStatusStale` on every settled turn without an update.
+- [ ] `advanced.sessionStatusCard` in the settings catalogue, off by default; save hook marks stored cards stale on false → true.
+- [ ] Flag on the per-turn run params → `SHIPIT_SESSION_STATUS_CARD` in the spawn env, `writeMcpConfig` context, the five adapter tool lists, Claude's allowlists; resident reuse check against the flag.
+- [ ] `session_status` tool and its bridge registry entry; `validateActionItems` extracted and shared; envelope validation; worker relay.
+- [ ] Orchestrator route: validate, provenance, reconcile offers, persist, broadcast, `statusUpdated`, reply with the offered list. `propose_actions` route refuses under the flag.
+- [ ] `sessions.session_status` column and `SessionInfo.sessionStatus`; `recordSessionStatus`, `markSessionStatusStale(ifWriteSeq)`, `takeOfferedActions`, `runStatusExclusive`.
+- [ ] `statusUpdated` on `TurnAccumulator`.
+- [ ] `settleTurnFacts` on all four terminal paths before the drain, with the immediate guarded stale mark; reset on adoption; memoized decision after idle; dispatch from `finishTurn` via the drain entry.
+- [ ] `statusNudge` and `silent` through `AgentDispatchInit`, `QueuedMessage`, `toQueuedMessage`, `queuedMessageToDispatchOptions`, `TurnInput`.
 - [ ] Lifecycle: stale on rewind/reset; copy-as-stale on fork.
-- [ ] `SessionStatusCard` above the composer: two fields, the offered actions with one Send, the "Stale" label bottom-right when it may be behind.
-- [ ] Prompt: two variants rendered at module load — the "Session status" section under the flag, the `propose_actions` section otherwise; composition test for both.
-- [ ] Unit, route, integration and component tests listed in plan.md.
-- [ ] Tool lists on all five harnesses in both modes.
-- [ ] Verify in the dogfood instance with the flag on: switch away and back, reload, one turn that skips the tool; and with the flag off: an action card as today.
+- [ ] `checklistAccepted` takes offers by `offerId` after admission; busy-path ordering fix.
+- [ ] Split `ActionChecklistCard` into the shared checklist and two wrappers; per-offer provenance in the pinned submit message.
+- [ ] `SessionStatusCard` in the `GoalChip` slot: two fields, offers with one Send, taken offers greyed and disabled, "Stale" label bottom-right.
+- [ ] Prompt: two variants at module load; the flag-on section replaces the follow-up-actions section and keeps its §5 boundary; composition tests per variant.
+- [ ] Tests listed in plan.md, including the flag-off byte-for-byte checks per harness.
+- [ ] Verify in the dogfood instance: flag on — switch away and back, reload, a turn that skips the tool, a resident agent across a toggle; flag off — an action card as today.

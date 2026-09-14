@@ -69,8 +69,8 @@ taken inside one session, without building an agent that talks to many.
     finished turn updated the whole card. When the last finished turn did not
     update it, whatever the reason, the card is visibly marked as possibly
     stale, in one visual language for every cause, so it is always clear to
-    the user. Between turns and while a turn runs, the card shows the state
-    as of the last finished turn. No title text is spent on it: a current
+    the user. Freshness is judged when a turn ends. No title text is spent
+    on it: a current
     card looks like a regular card; a stale card carries a small "Stale"
     label in its bottom-right corner, in the theme's accent color.
 15. ShipIt nudges once per missing update. If the agent ignores the nudge,
@@ -112,6 +112,12 @@ taken inside one session, without building an agent that talks to many.
 
 ## Resolved questions
 
+- 2026-09-14 — Whole-PR review (ShipIt reviewer, run 917edd86) found that
+  the sentence "between turns and while a turn runs, the card shows the state
+  as of the last finished turn", added by the agent as a clarification of
+  req 14, forbade a status write from showing during the turn that made it,
+  which nothing Nik said asks for. Replaced with "freshness is judged when a
+  turn ends", the part that was Nik's.
 - 2026-09-14 — The three gaps the consistency review opened. Nik: no card
   before the first write; after the setting is turned off and on again, the
   earlier status marked stale; stale actions still selectable. → reqs 22–24.
