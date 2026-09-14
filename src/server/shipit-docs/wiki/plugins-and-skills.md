@@ -32,7 +32,7 @@ files, where they came from, and who can invoke them:
 |---|---|---|---|
 | **Written here** | `.claude/skills/<name>/` in the project — on a Codex session `.codex/skills/`, on Grok `.grok/skills/`, on OpenCode `.opencode/skills/`, and on Antigravity `.claude/skills/` again | `/<name>` | Anyone — it is an ordinary file in the repository |
 | **Installed from a catalogue** | `<agent dir>/skills/<plugin>__<skill>/`, with a `.shipit-installed.json` marker recording its source, version and a checksum of the body | `/<plugin>:<skill>` | Leave it alone — fork it into a new directory instead |
-| **Brought by a plugin** | Materialized by ShipIt outside git, marked `.shipit-plugin-skill.json` | `<alias>/<skill>` — **yours to run, not the user's** | Nobody here: fix it in the plugin's own repository |
+| **Brought by a plugin** | Materialized by ShipIt outside git, marked `.shipit-plugin-skill.json` | Disclosed to you under a namespaced name (`plugins--<alias>--<skill>-…`) — **yours to run, not the user's**; the transcript shows it as `<alias>/<skill>` | Nobody here: fix it in the plugin's own repository |
 
 The invocation prefix follows the harness: `/` on Claude, OpenCode, Grok and
 Antigravity, and **`$` on a Codex session**. On a Codex session the menu also
@@ -40,8 +40,11 @@ lists the skills that CLI bundles, alongside the project's own.
 
 **Writing a skill is your job.** "Every time you touch this, also update the
 changelog" is a skill; the user says it once in chat and you write
-`.claude/skills/<name>/SKILL.md` on the branch, like any other file. It works
-on the next turn. So is removing one — delete the directory and commit. There
+`<agent dir>/skills/<name>/SKILL.md` on the branch — the directory this
+session's harness uses, from the table above — like any other file. Whatever is
+in that directory is picked up the next time an agent process starts, so a
+skill written now is in play shortly rather than instantly. Removing one is the
+same act in reverse: delete the directory and commit. There
 is no add-a-skill form and no uninstall button, deliberately: chat is the input
 surface and you are the actor.
 
@@ -56,7 +59,7 @@ checking:
    the menu shows and what the user types; the directory name is not.
 4. It came from a plugin. Those are deliberately kept out of the menu, because
    a plugin's instructions are something the plugin brought rather than a
-   command the user chose to have. Run it yourself and call it
+   command the user chose to have. Run it yourself, and refer to it in prose as
    `<alias>/<skill>`, which is how the transcript labels it.
 
 ## Installing a skill from a catalogue
@@ -102,12 +105,22 @@ being vendored into any of them. The consuming project names the repository in
 its own `shipit.yaml`, and ShipIt checks it out beside the session. Nobody
 clones it, copies it, or keeps it in sync by hand.
 
-What declaring one gives this project, all from the plugin's manifest:
+**Two declarations, and they do different things.** `plugins.repos` names the
+repository, which gets it checked out. `plugins.use` selects which of its
+exported plugins to *activate*. A repository declared with nothing selected is
+legitimate and says so on its card — "files only — no plugins activated" — so
+that is the first thing to check when a plugin's commands or skills are
+missing.
+
+What an activated plugin gives this project, all from its manifest:
 
 - **Services** that join the session's Compose stack. A plugin service is
   previewable only if this project gives it a `port:` — the plugin's author
   cannot know what this stack already runs, so the port is the consumer's to
-  choose. Without one it still runs; it just is not in the Preview pane.
+  choose. A service with no port is not previewable, and unless its own
+  fragment or this project's `autostart` override says otherwise it is
+  **manual**: it exists, and something has to start it (`shipit service start`,
+  which is yours to run).
 - **Commands** on your `PATH`, which run the plugin's code in its own container.
 - **Skills**, which reach you and not the composer's menu.
 - **Settings** the consuming project sets, and a state directory of the
@@ -126,9 +139,11 @@ them plainly when you do:
   visible identity: the Plugins tab always shows which repository, which ref,
   and which exact commit is live.
 - **Nothing is fetched until this project's repository is trusted.** An
-  untrusted repository defers every command it would auto-run, plugin
-  activation included. Trust is the "Trust this repository" card in the Preview
-  tab, granted once per repository.
+  untrusted repository defers every command ShipIt would auto-run, plugin
+  activation included — and it blocks messages to you as well, so this is
+  rarely a mystery for long. **Trust this repository** sits above the composer
+  while that block is in force, and in the Preview tab's restricted empty
+  state. It is granted once per repository, by the user, and never by you.
 
 The plugin's files are **not** in the project's file tree — they are a checkout
 beside it, at `/plugins/<name>` in your container, read-only on purpose. An
@@ -140,11 +155,11 @@ name>`, which the declaration alone grants).
 ## The Plugins tab
 
 **It exists only when this project's `shipit.yaml` has a `plugins:` block** —
-plus the one other case, where ShipIt could not read or parse `shipit.yaml` at
-all and the tab appears to say so. It is not a global
-tab and it is not somewhere in Settings; it is one of the tabs in the right-hand
-panel, beside Files and Docs, and it is absent in most projects. Do not promise
-it before checking `shipit.yaml`.
+plus one other case, where ShipIt could not read or parse `shipit.yaml` at all
+and the tab appears to say so. It is not a global tab and it is not somewhere
+in Settings; it is one of the tabs in the right-hand panel, beside Files and
+Docs, and it is absent in most projects. Do not promise it before checking
+`shipit.yaml`.
 
 It carries a warning dot when something needs the user: a declaration problem, a
 per-repository problem, an unset credential, or a declared host this session
@@ -171,12 +186,16 @@ that closes it:
 
 - **An unset credential** — "`FAL_KEY` is not set for this project". **Add
   key…** opens *this* project's Secrets, which is the only store that is read;
-  a value saved against the plugin's repository reaches nothing.
+  a value saved against the plugin's repository reaches nothing. The button is
+  there only on a session bound to a repository — a session with no repository
+  of its own gets the row and no action.
 - **A host this session may not reach** — **Allow for session** or **Allow for
   ShipIt**, the second covering future sessions too. What the grant actually
   took effect on is reported back on the card afterwards, with a **Restart to
-  apply now** button when a restart is what is missing — offered only when no
-  turn is running, since a restart would kill it.
+  apply now** button when the outcome names a session that needs restarting.
+  That button is present but **disabled while a turn is running**, because a
+  restart would kill it; the user waits for the turn rather than hunting for
+  the control.
 - **A host no grant can reach** is stated with no button at all, because every
   button there would be a lie. Two states read that way: this session's network
   access is off, which only turning it on fixes; and this deployment allows no
@@ -252,22 +271,34 @@ name/value pairs and **stored as secrets** — write-only, shown as `(unchanged)
 when editing. This is a place a user genuinely has to type: it is their
 credential, and it must not pass through the chat.
 
-Each row then offers **Enable / Disable**, **Test**, **Edit** and **Delete**.
-Two conditions: **Test needs a running session** — with none, the button is
-disabled and says so — and **Edit is absent on a server an OAuth connection
-owns**, because that connection manages its configuration. A successful test
-names the tools it found; a failure shows the server's own error.
+**Where the controls are depends on who owns the server.** A hand-added server
+gets its own row, offering **Enable / Disable**, **Test**, **Edit** and
+**Delete**. A server a *connected* OAuth provider owns is **not** in that list
+at all — it lives on the provider's card, which offers Enable/Disable and Test
+while it is healthy, and replaces them with **Reconnect** when authentication
+has failed. **Edit** is never offered there, because the connection manages the
+configuration; disconnecting is what moves the entry down into the ordinary
+list.
 
-A row also carries a live status badge — *loaded*, *failed*, *crashed* — which
-is what the agent CLI itself reported at its last start, with the reason. That
-is the badge to read when a server is configured, enabled, and its tools are
-still not there.
+**Test** is disabled when no session is selected, and while that server is
+being tested or deleted. The test itself runs inside a session container, so
+one has to be available — but the agent does not have to be idle, and testing
+does not interrupt whatever a session is doing. A successful test names the
+tools it found; a failure shows the server's own error.
 
-**When a change takes effect:** ShipIt reads the enabled servers fresh at the
-start of every turn, so adding, enabling or disabling one lands on the next
-message — no session restart. The exception is a stdio server's npm package,
-which is installed when a session's container starts; that one may need a new
-session before its command exists.
+A row shows a status badge — *loaded*, *failed*, *crashed* — **once ShipIt has
+a status to show**, and not before: a server nothing has reported on yet has no
+badge, which is not a fault. The badge comes from what the agent CLI reported
+when it started, from a failed package install, or from the last **Test**. Read
+it for what it is: a successful test proves the server answered ShipIt, not
+that the agent process currently running has its tools.
+
+**When a change takes effect:** the enabled-server list is read when ShipIt
+**starts an agent process**, not on every message. A session whose agent
+process is still resident may therefore keep running without a server the user
+just added or enabled; the next process picks it up. A stdio server's npm
+package is installed during session setup, so that one can need a new session
+before its command exists at all.
 
 ## Who does what
 
