@@ -3,6 +3,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { chownToSessionWorker, sessionWorkerUid } from "./session-worker-uid.js";
 import { gitArgsWithHooksDisabled } from "../shared/git-hooks-guard.js";
+import { APPLIED, applyFailed, applyPartial } from "../shared/settings-catalogue/index.js";
+import type { ApplyOutcome } from "../shared/settings-catalogue/index.js";
 
 // Creation modes do not repair files or directories from older installations.
 function tightenMode(target: string, mode: number): void {
@@ -209,9 +211,27 @@ export function getGitIdentity(): GitIdentity | null {
   }
 }
 
-export function setGitIdentity(name: string, email: string): void {
-  execFileSync("git", gitArgsWithHooksDisabled(["config", "--global", "user.name", name]));
-  execFileSync("git", gitArgsWithHooksDisabled(["config", "--global", "user.email", email]));
+/**
+ * Two writes, so three outcomes. A failure on the name is a verified `failed` —
+ * nothing ran. A failure on the email after the name landed is `partial`, and
+ * says which half: `git config` cannot prove a rollback would succeed either, so
+ * claiming "nothing changed" there would be the false report docs/299 ("Saved"
+ * has to mean saved) exists to remove.
+ */
+export function setGitIdentity(name: string, email: string): ApplyOutcome {
+  try {
+    execFileSync("git", gitArgsWithHooksDisabled(["config", "--global", "user.name", name]));
+  } catch (err) {
+    console.error("[git-config] setting user.name failed:", err);
+    return applyFailed("ShipIt could not write the git user name, so neither half of the identity changed.");
+  }
+  try {
+    execFileSync("git", gitArgsWithHooksDisabled(["config", "--global", "user.email", email]));
+  } catch (err) {
+    console.error("[git-config] setting user.email failed:", err);
+    return applyPartial("The git user name was saved, but ShipIt could not write the email address.");
+  }
+  return APPLIED;
 }
 
 export function setGlobalCredentialHelper(token: string): void {

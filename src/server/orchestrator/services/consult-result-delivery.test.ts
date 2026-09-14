@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { DatabaseManager } from "../../shared/database.js";
 import { SessionManager } from "../sessions.js";
 import { ChatHistoryManager } from "../chat-history.js";
@@ -8,7 +8,13 @@ import type {
   AgentDispatchOptions,
 } from "../session-runner.js";
 import type { SubAgentConsultCard } from "../../shared/types.js";
-import { TURN_COMPLETED, turnErrored } from "../turn-settlement.js";
+import {
+  TURN_COMPLETED,
+  createTurnSettlement,
+  turnErrored,
+  type TurnAdmission,
+  type TurnHandle,
+} from "../turn-settlement.js";
 import {
   deliverConsultResultByWake,
   type ConsultResultDeliveryDeps,
@@ -23,10 +29,15 @@ class FakeRunner {
   queueLength = 0;
   dispatched: AgentDispatchOptions[] = [];
   dispatchThrows: Error | null = null;
+  /** What the runner's admission gates decide for the next dispatch. */
+  admitAs: TurnAdmission = "started";
   constructor(public sessionDir: string) {}
-  dispatch(opts: AgentDispatchOptions): void {
+  dispatch(opts: AgentDispatchOptions): TurnHandle {
     if (this.dispatchThrows) throw this.dispatchThrows;
     this.dispatched.push(opts);
+    const settlement = createTurnSettlement();
+    settlement.noteAdmission(this.admitAs);
+    return settlement;
   }
   emitMessage(): void {}
 }
@@ -91,6 +102,10 @@ describe("deliverConsultResultByWake (docs/287)", () => {
     ctx = makeCtx();
   });
 
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it("wakes an idle session with a self-describing prompt naming the run id", async () => {
     const card = terminalCard();
     persistCard(ctx, card);
@@ -102,7 +117,7 @@ describe("deliverConsultResultByWake (docs/287)", () => {
       originatingTurnEpoch: 7,
     });
 
-    expect(decision).toEqual({ woken: true });
+    expect(decision).toEqual({ woken: true, admitted: "started" });
     expect(runner.dispatched).toHaveLength(1);
     const dispatched = runner.dispatched[0];
     expect(dispatched.systemTurn).toBe(true);
@@ -137,6 +152,12 @@ describe("deliverConsultResultByWake (docs/287)", () => {
     const runner = ctx.runnerRegistry.getOrCreate("s1", "/ws/s1", "claude") as unknown as FakeRunner;
     runner.running = true;
     runner.turnEpoch = 9;
+    // The later turn is what the dispatch queues behind (docs/304).
+    runner.admitAs = "queued";
+    const logged: string[] = [];
+    vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+      logged.push(args.map(String).join(" "));
+    });
 
     const decision = await deliverConsultResultByWake(ctx.deps, {
       sessionId: "s1",
@@ -144,8 +165,11 @@ describe("deliverConsultResultByWake (docs/287)", () => {
       originatingTurnEpoch: 7,
     });
 
-    expect(decision).toEqual({ woken: true });
+    expect(decision).toEqual({ woken: true, admitted: "queued" });
     expect(runner.dispatched).toHaveLength(1);
+    // Reporting it as "woke" is what hid a session stranded behind a system hold.
+    expect(logged.some((line) => line.includes("queued a wake for session=s1"))).toBe(true);
+    expect(logged.some((line) => line.includes("[consult-delivery] woke"))).toBe(false);
   });
 
   it("stands down when a resident streaming process will self-wake", async () => {
@@ -174,7 +198,7 @@ describe("deliverConsultResultByWake (docs/287)", () => {
       originatingTurnEpoch: 7,
     });
 
-    expect(decision).toEqual({ woken: true });
+    expect(decision).toEqual({ woken: true, admitted: "started" });
     expect(ctx.runners.get("s1")?.dispatched).toHaveLength(1);
   });
 
@@ -202,7 +226,7 @@ describe("deliverConsultResultByWake (docs/287)", () => {
       originatingTurnEpoch: 7,
     });
 
-    expect(decision).toEqual({ woken: true });
+    expect(decision).toEqual({ woken: true, admitted: "started" });
     expect(ctx.runners.get("s1")?.dispatched[0].text).toContain("status error");
   });
 

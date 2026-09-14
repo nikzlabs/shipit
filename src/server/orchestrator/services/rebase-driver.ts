@@ -21,6 +21,12 @@ import {
 } from "../auto-conflict-resolve-manager.js";
 import { prepareDispatch } from "../prepared-dispatch.js";
 import { onWorkspaceRewritten } from "../workspace-rewrite.js";
+import {
+  closeFollowupWindow,
+  deliverRebaseFollowup,
+  openFollowupWindow,
+  type RebaseFollowup,
+} from "./rebase-followup.js";
 
 export const MAX_REBASE_ITERATIONS = 10;
 
@@ -35,6 +41,8 @@ export interface RebaseDriverDeps {
   sseBroadcast: (event: string, data: unknown) => void;
   /** Marks the dispatch boundary for automatic attempt accounting. */
   onAgentSpawned?: () => void;
+  /** The auto-resolve deadline closes the window itself; a hanging turn never reaches `finally`. */
+  onFollowupWindowOpened?: (attemptId: string) => void;
   drainQueue?: () => Promise<void> | void;
   /** Manual sync: persist no-op confirmations and notify the agent of rewrites. */
   recordSyncCard?: boolean;
@@ -53,7 +61,13 @@ export interface RebasePrStatusPoller {
 export type RebaseFlowOutcome =
   | { status: "up_to_date"; forcePushed: boolean }
   | { status: "rebased"; forcePushed: boolean }
-  | { status: "conflicts_resolved"; iterations: number; forcePushed: boolean }
+  | {
+    status: "conflicts_resolved";
+    iterations: number;
+    forcePushed: boolean;
+    /** Present only when the agent armed a note during conflict resolution. */
+    followup?: RebaseFollowup;
+  }
   | { status: "aborted"; reason: string };
 
 export function buildRebaseConflictPrompt(
@@ -69,6 +83,15 @@ export function buildRebaseConflictPrompt(
     "Edit them to produce the correct merged result. Don't run any git commands —",
     "just edit the files. After you finish, the orchestrator will stage your changes",
     "and continue the rebase.",
+    "",
+    "This turn ends BEFORE the rebase does. If finishing the job properly needs work once the",
+    "rebase concludes — re-running codegen or the tests over the merged result, fixing a",
+    "semantic conflict the markers do not show, updating the PR body — arm it now, in this turn:",
+    "",
+    '  shipit session continue-after-rebase --note "<what to do once the rebase lands>"',
+    "",
+    "ShipIt gives that note back to you as a turn once the rebase concludes. Arm nothing if the",
+    "resolved files are the whole job.",
   ].join("\n");
 }
 
@@ -160,6 +183,35 @@ export function buildBranchSyncAgentNotice(opts: {
 // The container's file watcher may miss a rewrite from the orchestrator.
 function reevaluateSessionAfterRewrite(runner: SessionRunnerInterface): void {
   onWorkspaceRewritten(runner, "rebase");
+}
+
+/**
+ * Between resolution turns, and from the last one through the force-push and the
+ * branch-synced card, `running` is false — so only this lease keeps the runner out of
+ * the idle enforcer's reach. It feeds `agentBusy` and the non-forced `dispose()` guards
+ * from one flag, which is what CLAUDE.md's post-turn invariant 5 asks of post-turn-shaped
+ * work (planning#556). It is dropped while a resolution turn runs, where `running`
+ * guards instead.
+ *
+ * `take()` re-arms at every segment boundary rather than holding once: POST_TURN_HOLD_MAX_MS
+ * caps a hold at 120s, and `PostTurnHold` counts depth with no per-holder identity — past
+ * the deadline `begin()` zeroes the count, so neither our flag nor the aggregate proves we
+ * still contribute one. The cover is therefore bounded: a SINGLE segment that outruns the
+ * deadline reads idle again until the next boundary.
+ */
+class RebaseRunnerHold {
+  private held = false;
+  constructor(private readonly runner: SessionRunnerInterface) {}
+  take(): void {
+    if (this.held && this.runner.postTurnWorkInFlight) return;
+    this.held = true;
+    this.runner.beginPostTurnWork();
+  }
+  release(): void {
+    if (!this.held) return;
+    this.held = false;
+    this.runner.endPostTurnWork();
+  }
 }
 
 // The runner is no longer running; hold it against disposal during restoration.
@@ -323,11 +375,15 @@ export async function runRebaseFlow(
 
   // Defer auto-push so it cannot race the force-push. The object avoids TS callback narrowing.
   const pendingPush: { arm: (() => void) | null } = { arm: null };
+  // Object-held so the `finally` reads what the conflict loop wrote.
+  const followupAttempt: { id: string | null } = { id: null };
+  const hold = new RebaseRunnerHold(runner);
   let published = false;
   let pushProhibited = false;
   let savedCommit: string | null = null;
 
   try {
+    hold.take();
     savedCommit = (await prepareWorkspaceForRebase(
       deps,
       baseBranch,
@@ -377,6 +433,9 @@ export async function runRebaseFlow(
     });
 
     if (result.status === "clean") {
+      // Nothing refreshed the lease since the flow started; fetch and rebase alone can
+      // outrun POST_TURN_HOLD_MAX_MS on a large repo.
+      hold.take();
       reevaluateSessionAfterRewrite(runner);
       const forcePushed = await tryForcePush(deps);
       published = forcePushed;
@@ -392,6 +451,11 @@ export async function runRebaseFlow(
     let iter = 0;
     while (result.status === "conflicts") {
       iter++;
+      // One window per attempt: notes append across rounds rather than replacing.
+      if (followupAttempt.id === null) {
+        followupAttempt.id = openFollowupWindow(runner.sessionId);
+        deps.onFollowupWindowOpened?.(followupAttempt.id);
+      }
       if (iter > MAX_REBASE_ITERATIONS) {
         try { await git.rebaseAbort(); } catch { /* may already be aborted */ }
         throw new ServiceError(
@@ -411,7 +475,7 @@ export async function runRebaseFlow(
 
       const prompt = buildRebaseConflictPrompt(baseBranch, result.conflicts);
       try {
-        await runRebaseResolutionTurn(deps, prompt);
+        await runRebaseResolutionTurn(deps, prompt, hold);
       } catch (err) {
         // Abort before rethrowing; verify failures before reporting the branch unchanged.
         let stillInProgress = false;
@@ -447,6 +511,7 @@ export async function runRebaseFlow(
       }
     }
 
+    hold.take();
     reevaluateSessionAfterRewrite(runner);
     const forcePushed = await tryForcePush(deps);
     published = forcePushed;
@@ -456,45 +521,75 @@ export async function runRebaseFlow(
       recordAgentNotice(deps, { baseBranch, headFrom: headBefore, headTo: headAfterResolve, forcePushed, resolvedConflicts: true });
     }
     runner.emitMessage({ type: "rebase_complete", sessionId: runner.sessionId, forcePushed });
-    return { status: "conflicts_resolved", iterations: iter, forcePushed };
+    // Capture at the return point: the success paths return from inside the `try`.
+    const notes = followupAttempt.id
+      ? closeFollowupWindow(runner.sessionId, followupAttempt.id)
+      : [];
+    followupAttempt.id = null;
+    return {
+      status: "conflicts_resolved",
+      iterations: iter,
+      forcePushed,
+      ...(notes.length > 0
+        ? {
+          followup: {
+            notes,
+            baseBranch,
+            headFrom: headBefore,
+            headTo: headAfterResolve,
+            forcePushed,
+          },
+        }
+        : {}),
+    };
   } finally {
-    if (!abortNoticeReached) lastAbortNotice.delete(runner);
-    // Aborts also restore LFS pointers; recover content before releasing queued turns.
-    if (worktreeRewritten) await restoreLfsForSync(deps, baseBranch);
-    // Consume successful or prohibited pushes; a fallback on base would bypass the PR.
-    if (published) {
-      pendingPush.arm = null;
-    } else if (pushProhibited) {
-      pendingPush.arm = null;
-      if (savedCommit) {
-        persistSyncNotice(
-          deps,
-          `Your uncommitted changes were saved as a local commit (${savedCommit.slice(0, 7)}), but it was `
-          + `NOT pushed: this session is checked out on \`${baseBranch}\` itself, and pushing from a sync `
-          + "would put the commit straight on that branch without a pull request. Push it deliberately "
-          + "when you mean to.",
-        );
-      }
-    } else {
-      const arm = pendingPush.arm;
-      pendingPush.arm = null;
-      if (arm) {
-        try {
-          arm();
-        } catch (err) {
-          console.error("[rebase] arming the auto-push for the pre-sync commit failed:", getErrorMessage(err));
+    // Released last, so a throw in this teardown cannot strand the lease. Re-taken
+    // first: restoreLfsForSync's own begin/end would otherwise zero an expired depth
+    // and then drop it, leaving the handback and the queue drain uncovered.
+    try {
+      hold.take();
+      // Any other ending discards the arm: an unconcluded rebase leaves nothing to follow up.
+      if (followupAttempt.id) closeFollowupWindow(runner.sessionId, followupAttempt.id);
+      if (!abortNoticeReached) lastAbortNotice.delete(runner);
+      // Aborts also restore LFS pointers; recover content before releasing queued turns.
+      if (worktreeRewritten) await restoreLfsForSync(deps, baseBranch);
+      // Consume successful or prohibited pushes; a fallback on base would bypass the PR.
+      if (published) {
+        pendingPush.arm = null;
+      } else if (pushProhibited) {
+        pendingPush.arm = null;
+        if (savedCommit) {
+          persistSyncNotice(
+            deps,
+            `Your uncommitted changes were saved as a local commit (${savedCommit.slice(0, 7)}), but it was `
+            + `NOT pushed: this session is checked out on \`${baseBranch}\` itself, and pushing from a sync `
+            + "would put the commit straight on that branch without a pull request. Push it deliberately "
+            + "when you mean to.",
+          );
+        }
+      } else {
+        const arm = pendingPush.arm;
+        pendingPush.arm = null;
+        if (arm) {
+          try {
+            arm();
+          } catch (err) {
+            console.error("[rebase] arming the auto-push for the pre-sync commit failed:", getErrorMessage(err));
+          }
         }
       }
-    }
-    handWorkspaceBackToWorker(runner.sessionDir);
-    // A displacing turn owns its flag and queue drain.
-    if (!runner.running) {
-      runner.systemTurnInProgress = false;
-      try {
-        releaseQueuedTurn(runner);
-      } catch (releaseErr) {
-        console.error("[rebase] post-flow queue release failed:", getErrorMessage(releaseErr));
+      handWorkspaceBackToWorker(runner.sessionDir);
+      // A displacing turn owns its flag and queue drain.
+      if (!runner.running) {
+        runner.systemTurnInProgress = false;
+        try {
+          releaseQueuedTurn(runner);
+        } catch (releaseErr) {
+          console.error("[rebase] post-flow queue release failed:", getErrorMessage(releaseErr));
+        }
       }
+    } finally {
+      hold.release();
     }
   }
 }
@@ -581,9 +676,24 @@ function notifyPrStatusPollerOfPush(deps: RebaseDriverDeps): void {
   }
 }
 
-function runRebaseResolutionTurn(
+async function runRebaseResolutionTurn(
   deps: RebaseDriverDeps,
   prompt: string,
+  hold: RebaseRunnerHold,
+): Promise<void> {
+  try {
+    await dispatchRebaseResolutionTurn(deps, prompt, hold);
+  } finally {
+    // The turn executor releases its own lease as this continuation is queued, so by
+    // here it has let go — and if it had already expired, it took ours with it.
+    hold.take();
+  }
+}
+
+function dispatchRebaseResolutionTurn(
+  deps: RebaseDriverDeps,
+  prompt: string,
+  hold: RebaseRunnerHold,
 ): Promise<void> {
   const { runner } = deps;
 
@@ -616,8 +726,10 @@ function runRebaseResolutionTurn(
         // Late duplicate callbacks must not re-lock the runner after the flow releases it.
         if (turnSettled) return;
         turnSettled = true;
-        // Restore the flow's hold synchronously after finishTurn clears the per-turn flag.
+        // Restore the flow's holds synchronously after finishTurn clears the per-turn
+        // flag; an unexpired turn lease is still held here, so nothing reads idle between.
         if (!runner.running) runner.systemTurnInProgress = true;
+        hold.take();
         if (outcome.status === "completed") {
           resolve();
           return;
@@ -637,6 +749,10 @@ function runRebaseResolutionTurn(
         ));
       },
     }), { whenBusy: "refuse" });
+
+    // dispatch claims the turn synchronously, so `running` now says whether it started.
+    // A refusal settled inside the call above, and its hold must survive to the flow.
+    if (runner.running && !turnSettled) hold.release();
   });
 }
 
@@ -681,37 +797,60 @@ export async function runAutoResolveAttempt(
   }
 
   let didSpawn = false;
+  let settled = false;
+  let timedOut = false;
+  const followupAttempt: { id: string | null } = { id: null };
   const wrappedDeps: RebaseDriverDeps = {
     ...deps,
     onAgentSpawned: () => { didSpawn = true; },
+    onFollowupWindowOpened: (attemptId) => {
+      // The deadline may already have fired: the flow is raced, not cancelled, so it can reach
+      // its first conflict afterwards, with no deadline left to close what it opens.
+      if (timedOut) {
+        closeFollowupWindow(runner.sessionId, attemptId);
+        return;
+      }
+      followupAttempt.id = attemptId;
+    },
   };
 
   const timeoutMs = deps.timeoutMs ?? AUTO_RESOLVE_ATTEMPT_TIMEOUT_MS;
 
-  let settled = false;
-  let timedOut = false;
   let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
   const timeoutPromise = new Promise<AutoResolveResult>((resolve) => {
     timeoutHandle = setTimeout(() => {
       if (settled) return;
       settled = true;
       timedOut = true;
+      // A hanging agent leaves the resolution turn's promise pending for ever, so the flow's
+      // `finally` never runs. Without this the arm would wake on a later, unrelated rebase.
+      if (followupAttempt.id) closeFollowupWindow(runner.sessionId, followupAttempt.id);
       void (async () => {
-        try { runner.getAgent()?.kill(); } catch { /* defensive */ }
-        runner.setAgent(null);
-        runner.running = false;
-        runner.systemTurnInProgress = false;
-        runner.onAgentFinished();
-        try { await git.rebaseAbort(); } catch { /* may already be aborted */ }
-        runner.emitMessage({ type: "rebase_aborted", sessionId: runner.sessionId });
+        // The flow dropped its lease when the turn started, so `running` was the only
+        // cover; clearing it below hands the runner to the idle enforcer, which
+        // onAgentFinished() invokes synchronously through the runner's `idle` event.
+        runner.beginPostTurnWork();
+        try {
+          try { runner.getAgent()?.kill(); } catch { /* defensive */ }
+          runner.setAgent(null);
+          runner.running = false;
+          runner.systemTurnInProgress = false;
+          runner.onAgentFinished();
+          try { await git.rebaseAbort(); } catch { /* may already be aborted */ }
+          runner.emitMessage({ type: "rebase_aborted", sessionId: runner.sessionId });
+        } finally {
+          runner.endPostTurnWork();
+        }
         resolve({ outcome: "error", lastError: "timeout", didWork: true });
       })();
     }, timeoutMs);
   });
 
+  const concluded: { outcome: RebaseFlowOutcome | null } = { outcome: null };
   const flowPromise = (async (): Promise<AutoResolveResult> => {
     try {
       const result = await runRebaseFlow(wrappedDeps, baseBranch);
+      concluded.outcome = result;
       if (result.status === "up_to_date" && !result.forcePushed) {
         // rebase_complete already cleared the banner; avoid a contradictory deferred event.
         return { outcome: "deferred", didWork: false, suppressEmit: true };
@@ -751,6 +890,12 @@ export async function runAutoResolveAttempt(
     await deps.drainQueue?.();
   } catch (err) {
     console.error("[auto-resolve] drainQueue failed:", err);
+  }
+  // After this path's own cleanup, not merely after the flow's: LFS restoration rewrites files
+  // in place, and a follow-up turn started before it would edit a tree still being rewritten.
+  const outcome = concluded.outcome;
+  if (!timedOut && outcome?.status === "conflicts_resolved" && outcome.followup) {
+    deliverRebaseFollowup(deps, outcome.followup);
   }
   return winner;
 }

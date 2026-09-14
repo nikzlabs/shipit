@@ -252,7 +252,14 @@ export async function checkForUpdates(): Promise<UpdateStatus> {
   }
 }
 
-export async function setChannel(channel: ReleaseChannel): Promise<UpdateStatus> {
+/**
+ * The WRITE half only. It used to end with `checkForUpdates()`, which made a
+ * routine network failure indistinguishable from a channel that never
+ * changed — the read throws its own 503 long after the write has landed. The
+ * caller composes the two, so each can report for itself (docs/299 → "Saved"
+ * has to mean saved).
+ */
+export async function writeReleaseChannel(channel: ReleaseChannel): Promise<void> {
   if (channel !== "stable" && channel !== "edge") {
     throw new ServiceError(400, `Invalid channel: ${String(channel)}`);
   }
@@ -266,7 +273,6 @@ export async function setChannel(channel: ReleaseChannel): Promise<UpdateStatus>
   } catch (err) {
     throw new ServiceError(500, `Failed to set channel: ${(err as Error).message}`);
   }
-  return checkForUpdates();
 }
 
 export async function requestUpdate(): Promise<void> {

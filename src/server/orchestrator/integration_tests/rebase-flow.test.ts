@@ -169,6 +169,38 @@ async function postRebase(sessionId: string, baseBranch = "main"): Promise<{ sta
   });
 }
 
+async function postJson(
+  urlPath: string,
+  payload: unknown,
+): Promise<{ status: number; body: Record<string, unknown> }> {
+  const http = await import("node:http");
+  const body = JSON.stringify(payload);
+  return new Promise((resolve, reject) => {
+    const req = http.request(
+      `http://127.0.0.1:${port}${urlPath}`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Content-Length": Buffer.byteLength(body),
+        },
+      },
+      (res) => {
+        let buf = "";
+        res.on("data", (chunk: Buffer) => { buf += chunk.toString(); });
+        res.on("end", () => {
+          try {
+            resolve({ status: res.statusCode ?? 0, body: buf ? JSON.parse(buf) : {} });
+          } catch (err) { reject(err instanceof Error ? err : new Error(String(err))); }
+        });
+      },
+    );
+    req.on("error", reject);
+    req.write(body);
+    req.end();
+  });
+}
+
 async function collectMessages(timeoutMs = 3000): Promise<WsServerMessage[]> {
   const messages: WsServerMessage[] = [];
   const deadline = Date.now() + timeoutMs;
@@ -310,6 +342,70 @@ describe("rebase flow: API + WS events", () => {
     const finalContent = fs.readFileSync(path.join(sessionDir, "shared.txt"), "utf-8");
     expect(finalContent).not.toContain("<<<<<<<");
     expect(finalContent).toContain("merged");
+  });
+
+  it("docs/303: a note armed while resolving conflicts comes back as a turn once the rebase concludes", { timeout: 20_000 }, async () => {
+    await githubAuth.setToken("test-token");
+    const { sessionId, sessionDir } = await createSession();
+    setupDivergence(sessionDir, { conflicting: true });
+
+    const claudeBeforeRebase = latestClaude;
+    expect((await postRebase(sessionId, "main")).status).toBe(200);
+    await waitForMessage("rebase_conflicts");
+
+    const conflictAgent = await waitForClaude(() => latestClaude, claudeBeforeRebase);
+    expect(conflictAgent.lastPrompt).toContain("shipit session continue-after-rebase");
+
+    const armed = await postJson(`/api/sessions/${sessionId}/continue-after-rebase`, {
+      note: "re-run codegen over the merged result",
+    });
+    expect(armed.status).toBe(200);
+    expect(armed.body).toMatchObject({ armed: true, notes: 1 });
+
+    fs.writeFileSync(path.join(sessionDir, "shared.txt"), "merged\n");
+    conflictAgent.finish("test-session-1");
+    await waitForMessage("rebase_complete", 8_000);
+
+    const followup = await waitForPrompt("re-run codegen over the merged result", 8_000);
+    expect(followup.lastPrompt).toContain("you resolved conflicts for");
+    followup.finish("test-session-1");
+  });
+
+  it("docs/303: no arm — the concluded rebase starts no extra turn", { timeout: 20_000 }, async () => {
+    await githubAuth.setToken("test-token");
+    const { sessionId, sessionDir } = await createSession();
+    setupDivergence(sessionDir, { conflicting: true });
+
+    const claudeBeforeRebase = latestClaude;
+    expect((await postRebase(sessionId, "main")).status).toBe(200);
+    await waitForMessage("rebase_conflicts");
+
+    const conflictAgent = await waitForClaude(() => latestClaude, claudeBeforeRebase);
+    fs.writeFileSync(path.join(sessionDir, "shared.txt"), "merged\n");
+    conflictAgent.finish("test-session-1");
+    await waitForMessage("rebase_complete", 8_000);
+
+    await collectMessages(1500);
+    expect(allClaudes.some((c) => c.lastPrompt.includes("you resolved conflicts for"))).toBe(false);
+  });
+
+  it("docs/303: arming outside a rebase ShipIt is driving is refused", { timeout: 20_000 }, async () => {
+    const { sessionId } = await createSession();
+
+    const res = await postJson(`/api/sessions/${sessionId}/continue-after-rebase`, {
+      note: "too early",
+    });
+
+    expect(res.status).toBe(409);
+    expect(String(res.body.error)).toContain("No rebase is in progress");
+  });
+
+  it("docs/303: an empty note is refused — the follow-up turn would carry nothing", { timeout: 20_000 }, async () => {
+    const { sessionId } = await createSession();
+
+    const res = await postJson(`/api/sessions/${sessionId}/continue-after-rebase`, { note: "  " });
+
+    expect(res.status).toBe(400);
   });
 
   it("still tries refusal-benched accounts for the conflict-resolution turn, aborting only after every account refuses (docs/260-turn-level-account-routing reqs 6, 9, 12)", { timeout: 20_000 }, async () => {

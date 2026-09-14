@@ -19,6 +19,7 @@ import {
   waitForChildIdle,
   assertArchivableChild,
   registerMergeWatch,
+  armFollowupNote,
   armSelfMergeWatch,
   cancelSelfMergeWatch,
   deliverSessionReport,
@@ -544,6 +545,23 @@ export async function registerSessionSpawnRoutes(
           return;
         }
         reply.code(500).send({ error: `Failed to arm self merge-watch: ${getErrorMessage(err)}` });
+      }
+    },
+  );
+
+  app.post<{ Params: { sessionId: string }; Body: { note?: string } }>(
+    "/api/sessions/:sessionId/continue-after-rebase",
+    { config: { containerAccessible: true } },
+    async (request, reply) => {
+      try {
+        const result = armFollowupNote(request.params.sessionId, request.body?.note);
+        return { armed: true, ...result };
+      } catch (err) {
+        if (err instanceof ServiceError) {
+          reply.code(err.statusCode).send({ error: err.message });
+          return;
+        }
+        reply.code(500).send({ error: `Failed to arm the post-rebase follow-up: ${getErrorMessage(err)}` });
       }
     },
   );
