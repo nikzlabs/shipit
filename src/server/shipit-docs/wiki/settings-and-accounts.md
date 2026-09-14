@@ -318,8 +318,9 @@ that has been changed grows a reset arrow back to its default.
 
 **Six bindings are rebindable and four are fixed.** The fixed ones are editor
 keys — Enter to send, Shift+Enter for a newline, Ctrl+F to search the chat while
-its input is focused, Esc to close an overlay — shown for reference with no
-control. Rebindable ones cover showing the shortcut list, starting a new
+the composer or the transcript is focused, Esc to close an overlay — shown for
+reference with no control. Everywhere else, and in the transcript until the user
+clicks in it, Ctrl+F stays the browser's own find-in-page. Rebindable ones cover showing the shortcut list, starting a new
 session, quick capture, the "needs you" view, and the two dictation modes.
 
 Two rules the dialog enforces: a chord needs Ctrl/Cmd plus a key, and one that

@@ -68,6 +68,18 @@ function openOverlay() {
   useUiStore.setState({ quickCaptureOpen: true, bootstrapLoaded: true });
 }
 
+/**
+ * Closes the overlay the way the user does — from inside it. The real overlay
+ * takes focus on opening (its own composer autofocuses); `MessageInput` is
+ * mocked here, so the focus move has to be made by hand, or a restore-focus
+ * guard passes on focus that never left.
+ */
+function dismiss() {
+  const close = screen.getByRole("button", { name: "Close quick capture" });
+  close.focus();
+  fireEvent.click(close);
+}
+
 const LAST_QUICK_SESSION_REPO_KEY = "shipit-last-quick-session-repo";
 
 describe("QuickCaptureOverlay", () => {
@@ -593,11 +605,26 @@ describe("QuickCaptureOverlay", () => {
     openOverlay();
 
     render(<QuickCaptureOverlay onAddRepo={vi.fn()} />);
-    fireEvent.click(screen.getByRole("button", { name: "Close quick capture" }));
+    dismiss();
 
     await waitFor(() => expect(document.activeElement).toBe(textarea));
     expect(textarea.selectionStart).toBe(2);
     expect(textarea.selectionEnd).toBe(7);
     textarea.remove();
+  });
+
+  it("restores focus to the transcript when dismissed, so the chat-search chord still fires", async () => {
+    const transcript = document.createElement("div");
+    transcript.setAttribute("data-chat-transcript", "");
+    transcript.tabIndex = -1;
+    document.body.appendChild(transcript);
+    transcript.focus();
+    openOverlay();
+
+    render(<QuickCaptureOverlay onAddRepo={vi.fn()} />);
+    dismiss();
+
+    await waitFor(() => expect(document.activeElement).toBe(transcript));
+    transcript.remove();
   });
 });

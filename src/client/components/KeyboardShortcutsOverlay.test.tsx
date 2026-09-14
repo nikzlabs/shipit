@@ -57,7 +57,7 @@ describe("KeyboardShortcutsOverlay", () => {
 
   it("shows chat search shortcut", () => {
     render(<KeyboardShortcutsOverlay onClose={vi.fn()} />);
-    expect(screen.getByText("Search the chat (when chat input is focused)")).toBeInTheDocument();
+    expect(screen.getByText("Search the chat (from the composer or the transcript)")).toBeInTheDocument();
   });
 
   it("shows quick capture shortcut", () => {

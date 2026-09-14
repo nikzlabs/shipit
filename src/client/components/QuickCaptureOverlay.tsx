@@ -75,7 +75,7 @@ export function QuickCaptureOverlay({
   const [, noteSeedWrite] = useState(0);
   const seedWritten = () => noteSeedWrite((n) => n + 1);
   const [error, setError] = useState<string | null>(null);
-  const restoreFocusRef = useRef<{ element: HTMLTextAreaElement; start: number | null; end: number | null } | null>(null);
+  const restoreFocusRef = useRef<{ element: HTMLElement; start: number | null; end: number | null } | null>(null);
   const wasOpenRef = useRef(false);
 
   // React cannot track, so a dependency list here is a list of things that
@@ -108,10 +108,16 @@ export function QuickCaptureOverlay({
       wasOpenRef.current = false;
       return;
     }
+    // Any focusable element, not only a textarea: the transcript is a focus
+    // target now (see `MessageList`), and losing it to `<body>` on dismiss
+    // costs the reader the chat-search chord. Only a textarea has a selection.
     const active = document.activeElement;
-    restoreFocusRef.current = active instanceof HTMLTextAreaElement
-      ? { element: active, start: active.selectionStart, end: active.selectionEnd }
-      : null;
+    restoreFocusRef.current =
+      active instanceof HTMLTextAreaElement
+        ? { element: active, start: active.selectionStart, end: active.selectionEnd }
+        : active instanceof HTMLElement && active !== document.body
+          ? { element: active, start: null, end: null }
+          : null;
     if (!wasOpenRef.current) {
       setSelectedRepoUrl(defaultRepoUrl);
     }
@@ -134,7 +140,7 @@ export function QuickCaptureOverlay({
       const restore = restoreFocusRef.current;
       if (!restore) return;
       restore.element.focus();
-      if (restore.start !== null && restore.end !== null) {
+      if (restore.element instanceof HTMLTextAreaElement && restore.start !== null && restore.end !== null) {
         restore.element.setSelectionRange(restore.start, restore.end);
       }
     });

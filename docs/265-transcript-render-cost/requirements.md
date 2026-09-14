@@ -49,7 +49,10 @@ time and complained about by a user.
    *(Delivered — see `plan.md`.)*
 
 9. Every message stays present in the page. The browser's own Ctrl+F, and "select all →
-   copy", must keep covering the whole conversation, not only the visible part.
+   copy", must keep covering the whole conversation, not only the visible part. Narrowed
+   on 2026-09-14: once the reader clicks inside the transcript, Ctrl+F opens ShipIt's own
+   search instead of the browser's. Every other way of pressing it, including scrolling
+   without clicking, still reaches the browser's find-in-page over every message.
 
 10. Switching away from a session and back must not download the conversation again. The
     user moves between sessions constantly, and each move currently costs megabytes.
@@ -74,6 +77,14 @@ time and complained about by a user.
 *(none)*
 
 ## Resolved questions
+
+- **2026-09-14 — Requirement 9 narrowed for the chat-search chord.** The `chat-search`
+  keybinding (Ctrl+F / ⌘F) was extended from the composer to the transcript, which takes the
+  chord from the browser there. Raised because requirement 9 promises the browser's own
+  Ctrl+F over the whole conversation, and ShipIt's in-app search reads message text only —
+  tool inputs, tool results and card bodies are invisible to it. **The user chose to keep the
+  transcript shortcut and narrow the requirement.** The click is the gate: a reader who has
+  not clicked in the transcript still gets the browser's find-in-page.
 
 - **2026-09-02 — Requirement 14 added.** The user reported the interface had stopped freezing
   but now felt *"visibly sluggish, especially on a 120 Hz monitor"*, and traced it to the fix
