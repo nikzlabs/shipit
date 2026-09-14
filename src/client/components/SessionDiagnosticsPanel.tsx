@@ -396,6 +396,8 @@ function ParsedConfigRows({
 
   const bootedMemoryMiB = bootedLimits ? Math.round(bootedLimits.memoryLimit / 1024 / 1024) : null;
   const memoryMismatch = bootedMemoryMiB !== null && bootedMemoryMiB !== sizing.effectiveMb;
+  // 100 ms CFS period, so quota ÷ period is the core count the container may actually use.
+  const bootedCpuCores = bootedLimits ? bootedLimits.cpuQuota / 100_000 : null;
 
   return (
     <>
@@ -423,6 +425,12 @@ function ParsedConfigRows({
             ? `${bootedMemoryMiB} MiB ⚠ differs from current sizing ${sizing.effectiveMb} MiB`
             : `${bootedMemoryMiB} MiB (matches sizing)`}
         valueClass={memoryMismatch ? "text-(--color-error)" : undefined}
+      />
+      <KvRow
+        label="booted CPU"
+        value={bootedCpuCores === null
+          ? "— (container not running / limits unknown)"
+          : `${bootedCpuCores} cores (a quota does not change what the container reports as its core count)`}
       />
       <KvRow
         label="agent.install"

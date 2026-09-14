@@ -11,6 +11,10 @@ services:
         # Must match the session-worker build argument below.
         SHIPIT_HARNESSES: ${SHIPIT_HARNESSES:-}
     restart: unless-stopped
+    # CFS fairness is per-CPU, so at the default weight the orchestrator's single main thread gets
+    # only its even share against dozens of runnable worker threads — HTTP and WS upgrades stall for
+    # seconds and every session switch shows "Reconnecting to server". Workers run at 512 (docs/229).
+    cpu_shares: 4096
     ports:
       - "127.0.0.1:4123:4123"
       - "127.0.0.1:5173:5173"

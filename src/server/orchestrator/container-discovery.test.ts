@@ -12,6 +12,8 @@ import {
   CONTAINER_STANDBY_LABEL,
   type SessionContainer,
 } from "./session-container.js";
+import { deriveSessionCpuSizing, SESSION_CPU_SHARES } from "./container-config-builder.js";
+import { CLEANUP_CONTAINER_SESSION_ID } from "./shipit-own-sessions.js";
 
 const NETWORK = "shipit-test";
 const WORKER_PORT = 9100;
@@ -26,6 +28,14 @@ interface FakeContainerSpec {
   inspectThrows?: boolean;
   inspectStatus?: number;
   mounts?: { Type: string; Name?: string; Destination: string }[];
+  hostConfig?: {
+    Memory?: number; CpuQuota?: number; CpuPeriod?: number; CpuShares?: number; PidsLimit?: number;
+  };
+  updateThrows?: boolean;
+  /** The daemon reports a dropped CPU setting as a warning on a 200, not as an error. */
+  updateWarnings?: string[];
+  /** Records what reconciliation actually asked the daemon for, not merely that it tried. */
+  updates?: Record<string, unknown>[];
 }
 
 function makeFakeDocker(specs: FakeContainerSpec[]) {
@@ -50,6 +60,15 @@ function makeFakeDocker(specs: FakeContainerSpec[]) {
         }));
     },
     getContainer: (id: string) => ({
+      update: async (opts: Record<string, unknown>) => {
+        const spec = specs.find((s) => s.id === id);
+        if (!spec) throw new Error("no such container");
+        if (spec.updateThrows) throw new Error("update failed");
+        if (spec.updateWarnings) return { Warnings: spec.updateWarnings };
+        (spec.updates ??= []).push(opts);
+        spec.hostConfig = { ...spec.hostConfig, ...opts };
+        return { Warnings: [] };
+      },
       stop: async () => {
         const spec = specs.find((s) => s.id === id);
         if (spec) spec.state = "exited";
@@ -69,6 +88,7 @@ function makeFakeDocker(specs: FakeContainerSpec[]) {
           NetworkSettings: {
             Networks: spec.ip ? { [NETWORK]: { IPAddress: spec.ip } } : {},
           },
+          ...(spec.hostConfig ? { HostConfig: spec.hostConfig } : {}),
           ...(spec.mounts ? { Mounts: spec.mounts } : {}),
         };
       },
@@ -177,6 +197,151 @@ describe("adoptRunningContainer", () => {
     await adoptRunningContainer(deps, "sess-1", resolver);
 
     expect(containers.get("sess-1")?.overlayDepDirs).toEqual([]);
+  });
+
+  // A worker survives an orchestrator deploy, so without this it keeps the whole-host quota and
+  // default weight that starved the orchestrator in the first place (docs/229).
+  describe("CPU policy reconciliation", () => {
+    const staleHostConfig = {
+      Memory: 8 * 1024 * 1024 * 1024,
+      CpuQuota: 1_600_000,
+      PidsLimit: 8192,
+    };
+
+    it("rewrites a survivor's stale quota and missing weight in place", async () => {
+      const specs: FakeContainerSpec[] = [
+        { id: "c1", sessionId: "sess-1", state: "running", ip: "172.18.0.4", hostConfig: { ...staleHostConfig } },
+      ];
+      const { deps, containers } = makeDeps(specs);
+
+      expect(await adoptRunningContainer(deps, "sess-1", resolver)).toBe(true);
+
+      expect(specs[0].updates).toEqual([{
+        CpuQuota: deriveSessionCpuSizing().cpuQuota,
+        CpuPeriod: 100_000,
+        CpuShares: SESSION_CPU_SHARES,
+      }]);
+      expect(containers.get("sess-1")?.bootedLimits?.cpuQuota).toBe(deriveSessionCpuSizing().cpuQuota);
+    });
+
+    it("compares the effective limit, so a halved period does not read as current", async () => {
+      const specs: FakeContainerSpec[] = [{
+        id: "c1", sessionId: "sess-1", state: "running", ip: "172.18.0.4",
+        hostConfig: {
+          ...staleHostConfig,
+          CpuQuota: deriveSessionCpuSizing().cpuQuota,
+          CpuPeriod: 50_000,
+          CpuShares: SESSION_CPU_SHARES,
+        },
+      }];
+      const { deps, containers } = makeDeps(specs);
+
+      expect(await adoptRunningContainer(deps, "sess-1", resolver)).toBe(true);
+
+      // 700000µs per 50ms is 14 cores, not the 7 the quota alone suggests.
+      expect(specs[0].updates).toHaveLength(1);
+      expect(specs[0].updates?.[0].CpuPeriod).toBe(100_000);
+      expect(containers.get("sess-1")?.bootedLimits?.cpuQuota)
+        .toBe(deriveSessionCpuSizing().cpuQuota);
+    });
+
+    it("rewrites a container whose quota is current but whose weight is the default", async () => {
+      const specs: FakeContainerSpec[] = [{
+        id: "c1", sessionId: "sess-1", state: "running", ip: "172.18.0.4",
+        hostConfig: { ...staleHostConfig, CpuQuota: deriveSessionCpuSizing().cpuQuota, CpuShares: 0 },
+      }];
+      const { deps } = makeDeps(specs);
+
+      expect(await adoptRunningContainer(deps, "sess-1", resolver)).toBe(true);
+      expect(specs[0].updates?.[0].CpuShares).toBe(SESSION_CPU_SHARES);
+    });
+
+    it("treats a daemon warning as not applied rather than as success", async () => {
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+      const specs: FakeContainerSpec[] = [{
+        id: "c1", sessionId: "sess-1", state: "running", ip: "172.18.0.4",
+        hostConfig: { ...staleHostConfig }, updateWarnings: ["Your kernel does not support CPU CFS quota"],
+      }];
+      const { deps, containers } = makeDeps(specs);
+
+      expect(await adoptRunningContainer(deps, "sess-1", resolver)).toBe(true);
+      expect(containers.get("sess-1")?.bootedLimits?.cpuQuota).toBe(1_600_000);
+      expect(warnSpy).toHaveBeenCalled();
+      warnSpy.mockRestore();
+    });
+
+    it("never widens the cleanup worker, which is created from a smaller budget of its own", async () => {
+      const specs: FakeContainerSpec[] = [{
+        id: "c1", sessionId: CLEANUP_CONTAINER_SESSION_ID, state: "running", ip: "172.18.0.4",
+        hostConfig: { ...staleHostConfig, CpuQuota: 50_000 },
+      }];
+      const { deps, containers } = makeDeps(specs);
+
+      expect(await adoptRunningContainer(deps, CLEANUP_CONTAINER_SESSION_ID, resolver)).toBe(true);
+
+      expect(specs[0].updates).toBeUndefined();
+      expect(containers.get(CLEANUP_CONTAINER_SESSION_ID)?.bootedLimits?.cpuQuota).toBe(50_000);
+    });
+
+    it("preserves the memory and pids limits it does not manage", async () => {
+      const specs: FakeContainerSpec[] = [
+        { id: "c1", sessionId: "sess-1", state: "running", ip: "172.18.0.4", hostConfig: { ...staleHostConfig } },
+      ];
+      const { deps, containers } = makeDeps(specs);
+
+      await adoptRunningContainer(deps, "sess-1", resolver);
+
+      expect(specs[0].updates?.[0]).not.toHaveProperty("Memory");
+      expect(specs[0].updates?.[0]).not.toHaveProperty("PidsLimit");
+      expect(containers.get("sess-1")?.bootedLimits).toMatchObject({
+        memoryLimit: staleHostConfig.Memory,
+        pidsLimit: staleHostConfig.PidsLimit,
+      });
+    });
+
+    it("leaves an already-current container alone", async () => {
+      const specs: FakeContainerSpec[] = [{
+        id: "c1", sessionId: "sess-1", state: "running", ip: "172.18.0.4",
+        hostConfig: {
+          ...staleHostConfig,
+          CpuQuota: deriveSessionCpuSizing().cpuQuota,
+          CpuShares: SESSION_CPU_SHARES,
+        },
+      }];
+      const { deps } = makeDeps(specs);
+
+      expect(await adoptRunningContainer(deps, "sess-1", resolver)).toBe(true);
+      expect(specs[0].updates).toBeUndefined();
+    });
+
+    it("still adopts, reporting the real booted limits, when the daemon refuses the update", async () => {
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+      const specs: FakeContainerSpec[] = [{
+        id: "c1", sessionId: "sess-1", state: "running", ip: "172.18.0.4",
+        hostConfig: { ...staleHostConfig, CpuQuota: 800_000, CpuPeriod: 50_000 },
+        updateThrows: true,
+      }];
+      const { deps, containers } = makeDeps(specs);
+
+      expect(await adoptRunningContainer(deps, "sess-1", resolver)).toBe(true);
+      // Still 16 cores: reported on the 100ms basis, not as the 8 the raw quota reads like.
+      expect(containers.get("sess-1")?.bootedLimits?.cpuQuota).toBe(1_600_000);
+      expect(warnSpy).toHaveBeenCalled();
+      warnSpy.mockRestore();
+    });
+
+    it("reconciles every survivor on a rediscovery sweep", async () => {
+      const specs: FakeContainerSpec[] = [
+        { id: "c1", sessionId: "sess-1", state: "running", ip: "172.18.0.4", hostConfig: { ...staleHostConfig } },
+        { id: "c2", sessionId: "sess-2", state: "running", ip: "172.18.0.5", hostConfig: { ...staleHostConfig } },
+      ];
+      const { deps } = makeDeps(specs);
+
+      await rediscoverContainers(deps, new Set(["sess-1", "sess-2"]), resolver);
+
+      expect(specs[0].updates).toHaveLength(1);
+      expect(specs[1].updates).toHaveLength(1);
+    });
   });
 
   it("returns false and adopts nothing when the resolver yields no workspaceDir", async () => {

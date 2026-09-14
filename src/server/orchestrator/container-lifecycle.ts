@@ -69,8 +69,7 @@ import { readonlyRootfsTmpfs } from "./container-hardening.js";
 import { generateWorkerToken, setWorkerAuthToken, clearWorkerAuthToken } from "./worker-auth.js";
 import { clearEgressDecisionTokens } from "./egress-decision-auth.js";
 import { WORKER_TOKEN_ENV } from "../shared/worker-auth.js";
-
-const DEFAULT_CPU_PERIOD = 100_000;
+import { CPU_PERIOD_US as DEFAULT_CPU_PERIOD, SESSION_CPU_SHARES } from "./container-config-builder.js";
 
 export const OPS_DOCKER_HOST = `tcp://${OPS_DOCKER_PROXY_DNS_NAME}:2375`;
 
@@ -693,6 +692,8 @@ export async function createContainer(
         Memory: config.memoryLimit,
         CpuQuota: config.cpuQuota,
         CpuPeriod: DEFAULT_CPU_PERIOD,
+        // Quota bounds one session; the weight is what keeps the orchestrator scheduled when many run.
+        CpuShares: SESSION_CPU_SHARES,
         PidsLimit: config.pidsLimit,
         NetworkMode: deps.networkName,
         // Node cannot reap orphaned grandchildren; docker-init prevents PID exhaustion.

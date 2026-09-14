@@ -93,8 +93,11 @@ export {
   resolveAgentDockerLimits,
   readAgentConfig,
   deriveSessionMemorySizing,
+  deriveSessionCpuSizing,
+  SESSION_CPU_SHARES,
   type AgentDockerLimits,
   type SessionMemorySizing,
+  type SessionCpuSizing,
 } from "./container-config-builder.js";
 
 export interface ContainerConfig {

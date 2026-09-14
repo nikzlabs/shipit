@@ -10,6 +10,7 @@ import {
   CONTAINER_SESSION_ID_LABEL,
   CONTAINER_STACK_LABEL,
   readAgentConfig,
+  SESSION_CPU_SHARES,
 } from "./session-container.js";
 import type { ContainerConfig } from "./session-container.js";
 import { allowEgressHost, clearEgressPolicy } from "./egress-policy.js";
@@ -353,6 +354,7 @@ describe("SessionContainerManager", () => {
             Memory: 512 * 1024 * 1024,
             CpuQuota: 50_000,
             CpuPeriod: 100_000,
+            CpuShares: SESSION_CPU_SHARES,
             PidsLimit: 256,
             NetworkMode: "shipit-test",
             SecurityOpt: ["no-new-privileges"],

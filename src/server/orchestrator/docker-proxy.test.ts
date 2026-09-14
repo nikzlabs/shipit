@@ -6,6 +6,7 @@ import path from "node:path";
 import os from "node:os";
 import { createDockerProxy, PARENT_SESSION_LABEL } from "./docker-proxy.js";
 import type { SessionInfo, DockerProxyDeps } from "./docker-proxy.js";
+import { SESSION_CPU_SHARES } from "./container-config-builder.js";
 
 interface MockDaemon {
   server: http.Server;
@@ -1026,6 +1027,36 @@ describe("Docker API proxy", () => {
       expect(res.status).toBe(201);
       const hc = daemon.containers.get((res.body as any).Id)?.hostConfig;
       expect(hc?.PidsLimit).toBe(1024);
+    });
+
+    it("lowers a sibling's default CpuShares to the session weight", async () => {
+      const res = await makeRequest(proxyUrl, "POST", "/v1.41/containers/create", {
+        Image: "alpine",
+        HostConfig: {},
+      });
+      expect(res.status).toBe(201);
+      const hc = daemon.containers.get((res.body as any).Id)?.hostConfig;
+      expect(hc?.CpuShares).toBe(SESSION_CPU_SHARES);
+    });
+
+    it("caps an inflated CpuShares that would outweigh the orchestrator", async () => {
+      const res = await makeRequest(proxyUrl, "POST", "/v1.41/containers/create", {
+        Image: "alpine",
+        HostConfig: { CpuShares: 100_000 },
+      });
+      expect(res.status).toBe(201);
+      const hc = daemon.containers.get((res.body as any).Id)?.hostConfig;
+      expect(hc?.CpuShares).toBe(SESSION_CPU_SHARES);
+    });
+
+    it("leaves a CpuShares already below the session weight alone", async () => {
+      const res = await makeRequest(proxyUrl, "POST", "/v1.41/containers/create", {
+        Image: "alpine",
+        HostConfig: { CpuShares: 64 },
+      });
+      expect(res.status).toBe(201);
+      const hc = daemon.containers.get((res.body as any).Id)?.hostConfig;
+      expect(hc?.CpuShares).toBe(64);
     });
 
     it("caps inflated CpuPeriod to prevent effective CPU limit bypass", async () => {
