@@ -28,6 +28,11 @@ description: The agent runs commands on a remote server over SSH from any sessio
 
 ## Open questions
 
+- Registry shape. Is the registry a list of destinations, each with its own generated key
+  (one key trusted by one server), or a list of keys that several destinations can share?
+- IP destinations. May a destination be given as an IP address? A Tailscale peer must be,
+  because MagicDNS names do not resolve inside a session (see plan.md, Tailnet destinations).
+
 ## Resolved questions
 
 - 2026-09-14 — How is the host key verified? Accept on first connect and show the fingerprint

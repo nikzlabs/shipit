@@ -114,6 +114,33 @@ The agent protocol does not reveal the destination host, so scope comes from two
   server's host key before signing; the orchestrator can refuse to sign unless it matches the
   pinned key. This also makes any agent forwarding useless.
 
+### Tailnet destinations (Tailscale on the ShipIt host)
+
+Reachability works at the routing layer: the VPS runs `tailscaled` natively in kernel mode
+(`deployment/vps/tailscale.sh`), session containers sit on a per-session Docker bridge
+(`container-lifecycle.ts`, `Driver: "bridge"`), Docker masquerades bridge traffic out of any
+host interface including `tailscale0`, and Tailscale's default netfilter rules accept forwarded
+traffic leaving on `tailscale0`. Peers see the connection as coming from the ShipIt host node,
+subject to the tailnet's ACLs for that node. Verify on the host with `iptables -S ts-forward`.
+
+Two things do not work today and are implementation items here:
+
+- **Names.** The host runs `tailscale up --accept-dns=false`, so MagicDNS names never reach a
+  session; the Tier B resolver forwards only allowlisted public domains to `publicUpstreams`
+  (`egress-dns.ts`). A tailnet peer is addressed by its stable `100.x.y.z` address.
+- **IP literals.** The per-session allowlist is name-based: an address lands in the Tier A
+  ipset only through dnsmasq's `ipset=/<domain>/` pinning when a query for that name is
+  answered. `ssh 100.83.12.47` issues no query, so the packet is dropped. An SSH host entry
+  whose hostname is an IP literal must be added to the session's ipset directly at grant time
+  (the `EGRESS_ALLOWED_CIDRS` input exists but is fed by GitHub's ranges only,
+  `egress-firewall-install.ts:78`).
+
+**Tailscale SSH caveat.** If a peer runs Tailscale SSH, it authenticates the *node*, not a
+key. Every session on the ShipIt host looks like that node, so a Tailscale SSH policy that
+grants the ShipIt host node access would bypass the per-host key and leave the per-session
+egress allowlist as the only gate. Keep key-based `sshd` auth on peers and do not grant the
+ShipIt host node in Tailscale SSH policies.
+
 Residual risk, unchanged from docs/228: a prompt-injected agent can run destructive commands
 on the host. Bound it on the host side with a restricted user or a forced command; the
 authorized_keys line ShipIt shows carries `no-agent-forwarding,no-port-forwarding,no-X11-forwarding`.

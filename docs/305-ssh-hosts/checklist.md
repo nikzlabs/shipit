@@ -11,6 +11,7 @@ Design only so far. All questions in `requirements.md` are resolved; implementat
 - [ ] Provision `~/.ssh/{config,known_hosts,<alias>.pub}`; `SSH_AUTH_SOCK` in worker env
 - [ ] First-connect host key capture: worker reports the `known_hosts` line, orchestrator stores it, fingerprint in Settings + one persisted card
 - [ ] Per-session egress allowlist entry on grant / removal on revoke
+- [ ] IP-literal destinations (tailnet peers): add the address to the session ipset directly, since no DNS query pins it
 - [ ] Persisted change card on grant edit
 - [ ] Prompt fragment + `shipit-docs/ssh.md`
 - [ ] Tests listed in `plan.md`
