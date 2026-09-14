@@ -88,7 +88,7 @@ import {
   type InteractiveTerminalHandle,
 } from "./components/InteractiveTerminal.js";
 import { PreviewServicesDrawer } from "./components/PreviewServicesDrawer.js";
-import { SearchBar } from "./components/SearchBar.js";
+import { ConversationSearch } from "./components/ConversationSearch.js";
 import { TopPanelBanner } from "./components/TopPanelBanner.js";
 import { KeyboardShortcutsOverlay } from "./components/KeyboardShortcutsOverlay.js";
 import { HomeScreen } from "./components/HomeScreen.js";
@@ -1544,8 +1544,8 @@ export default function App() {
   const chatPanel = (
     <>
       {searchOpen && (
-        <SearchBar
-          key={searchFocusKey}
+        <ConversationSearch
+          focusKey={searchFocusKey}
           query={search.query}
           onQueryChange={search.setQuery}
           matches={search.matches}
