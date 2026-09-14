@@ -128,15 +128,25 @@ export function formatSetting(declaration: AnySettingDeclaration, outcome: Proje
  * spaces and the punctuation names actually use — because the point is to emit
  * the user's own words. What it excludes is URL-shaped punctuation
  * (`:` `/` `@` `?` `#` `%` `&` `=`) and a length no name has.
+ *
+ * **Emitted VERBATIM, never normalized.** The name is the ADDRESS a change
+ * names, and the stores behind one look an item up exactly (`getRole` reads
+ * `roles[name]`; a secret is a record key) while neither write path normalizes.
+ * Trimming would advertise an address resolving to a different item or to none,
+ * and `" helper "` beside `"helper"` would emit one address twice. A padded name
+ * is named by nothing for the same reason, one step further on: `--item` is
+ * trimmed before it is resolved (`services/settings-propose.ts:169`), so an
+ * address with an edge space could not be proposed back whatever it emitted.
  */
 const NAME_MAX = 200;
 const USER_NAME = /^[\p{L}\p{N}][\p{L}\p{N} ._+()[\]-]*$/u;
 
 export function userNameProjection(raw: unknown): string | null {
   if (typeof raw !== "string") return null;
-  const name = raw.trim();
-  if (name.length === 0 || name.length > NAME_MAX) return null;
-  return USER_NAME.test(name) ? name : null;
+  if (raw.length === 0 || raw.length > NAME_MAX) return null;
+  // The regex admits a trailing space; `--item` is trimmed, so it could not come back.
+  if (raw !== raw.trim()) return null;
+  return USER_NAME.test(raw) ? raw : null;
 }
 
 /**
@@ -158,11 +168,16 @@ export function userNamesProjection(raw: unknown): string[] {
  * for a subdomain match, then labels.
  *
  * `normalizeHost` trims, lowercases and drops a trailing dot and nothing else
- * (`egress-allowlist.ts:82`), and the dialog stores whatever was typed, so a
+ * (`egress-allowlist.ts:88`), and the dialog stores whatever was typed, so a
  * pasted `https://user:token@host/path?token=…` is a possible stored entry. Such
  * an entry matches no host — `hostMatchesEntry` compares whole labels — so
  * emitting nothing for it loses the reader nothing and keeps a pasted credential
  * out of every output.
+ *
+ * Unlike {@link userNameProjection} this one may normalize, because the store
+ * normalizes identically: `EgressAllowlistStore` puts every entry through
+ * `normalizeHost` on the way in and on the way to a match, so an emitted entry
+ * is the stored row and addresses it back.
  */
 const HOST_ENTRY = /^\.?[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)*$/;
 

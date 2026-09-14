@@ -130,6 +130,64 @@ whole server through `PUT /api/mcp/servers/:id`, so it clears an unreferenced
 secret the same way. That is the user's own dialog rather than a proposal card,
 and fixing it needs a narrow route and a client change.
 
+## Conformance against reqs 1 and 3 — three read-surface defects
+
+A closing review of the shipped read surface found req 1 and req 3 partly met.
+Each finding re-verified at the code before being acted on.
+
+- [x] req 1 — an address the read emits resolves back to the item it came from:
+      `userNameProjection` emits a stored name verbatim instead of trimming it,
+      so `" helper "` beside `"helper"` can no longer produce one address twice
+      or address the wrong role. A name that cannot be emitted as itself joins
+      the ones the gate already drops and is counted in the "not listed" note
+- [x] req 1 — `hostEntryProjection` is the case that MAY normalize, because the
+      store normalizes identically — but `normalizeHost` stripped only ONE
+      trailing dot, so `a.test..` stored as `a.test.` and was advertised as
+      `a.test`, addressing no row. It strips every trailing dot now, and
+      `removeHost` matches on the normalized row rather than the stored string,
+      so a row an older build already wrote is addressable too
+- [x] req 3 — MCP `args` put through the same missing-reference check as `env`
+      and `headers`, so the settings read no longer answers `{configured: true}`
+      about a server whose token secret is absent and which `resolveMcpServer`
+      omits from the turn. The field list taken from the resolver: `args`, `env`,
+      `headers` are substituted; `command`, `url` and `npmPackage` are not
+- [x] req 3 — and the check answers only for the two reference shapes the MCP
+      panel writes. The orchestrator cannot see the worker's environment — the
+      pushed set is a Compose snapshot it has no handle on, and the worker
+      augments `process.env` rather than replacing it — so any other reference
+      gets "ShipIt cannot say", not a blocker the server does not have. Verified
+      that no wider environment fixes this: widening to the account env trades a
+      false blocker for a false "configured"
+- [x] req 3 — the definite answer is recorded as a judgement rather than as an
+      ownership claim: project secrets merge over account values reserving no
+      prefix, so `mcp__…` is what the panel writes and not a name nobody else can
+      supply. And the two counts are independent, so a field with a blank key row
+      AND a reference to the session's environment reports both, rather than
+      whichever branch ran first
+- [x] req 1 — `voice.language` declared as the `enum` it is, with the Voice tab
+      rendering the declaration's list rather than its own; `voice.ttsVoice` and
+      `voice.ttsSpeed` carry their per-provider options as a `live` detail, which
+      is now resolved for an entry whose value is unreadable. Audited: no other
+      declaration's option set lives only in a component
+- [x] Every new **guard** proven red on its own, with the defect restored:
+      the trimmed address, the duplicate role address, the missing argument
+      secret, a reference ShipIt does not store reported as a blocker, the
+      trailing-dot host on insert and the un-normalized row an older build left,
+      a field reporting only one of its two faults, the missing enum, a divergent
+      option list in the dialog, per-provider voices replaced by one provider's,
+      a dropped speed range, and the cross-layer agreement — which
+      lives in `integration_tests/` because the orchestrator may not import
+      `session/`. One added test is success-path coverage and is NOT a guard:
+      arguments reading as configured once their secret is stored passes with the
+      original defect too, because the old reader called any non-empty argument
+      list configured
+- [ ] **Not this slice, and not this file's to fix**: `applyEgressHostRemove`
+      branches on `isBuiltinDefault` before trying the explicit row, so removing
+      a host that is both a shipped default and a global entry suppresses the
+      default and leaves the row effective — the read then advertises it again as
+      removable and every further removal reports success. `plan.md` carries the
+      reproduction (`.github.com`); the fix belongs with `settings-apply.ts`
+
 ## Phase 2, slice 3 — the outcome notice (req 8)
 
 - [x] `agent_notified` on the private proposal row, with

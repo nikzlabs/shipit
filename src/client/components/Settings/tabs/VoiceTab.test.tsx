@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { VoiceTab } from "./VoiceTab.js";
 import { useSettingsStore } from "../../../stores/settings-store.js";
 import { useUiStore } from "../../../stores/ui-store.js";
+import { settingOptions } from "../setting-binding.js";
 
 /**
  * The cleanup status line and the voice-key adoption offer
@@ -123,6 +124,23 @@ describe("VoiceTab cleanup status", () => {
     await userEvent.click(screen.getByTestId("voice-cleanup-background-work-link"));
 
     expect(useUiStore.getState().settingsTab).toBe("services");
+  });
+});
+
+describe("VoiceTab dictation languages", () => {
+  // The agent reads the options off the declaration (docs/299 req 1), so what
+  // the dialog offers has to be what the declaration says — this fails on a
+  // divergence, and cannot speak to where the rendered list came from.
+  it("offers exactly the declared options", async () => {
+    await renderTab();
+
+    const select = screen.getByTestId("voice-language") as HTMLSelectElement;
+    const rendered = [...select.options].map((o) => ({ value: o.value, label: o.textContent }));
+
+    expect(rendered).toEqual(
+      settingOptions("voice.language").map((o) => ({ value: o.value, label: o.label })),
+    );
+    expect(rendered.length).toBeGreaterThan(1);
   });
 });
 

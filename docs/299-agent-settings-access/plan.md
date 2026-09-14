@@ -241,6 +241,13 @@ hygiene, not a secret defence.
 `modelSelection` → eligible services, models and effort levels, resolved live;
 `collection` → operations and patchable field keys.
 
+**A setting with a fixed option set is declared as an `enum`, whichever control
+renders it.** A choice written as a list in the dialog's own component and as
+`text` on the declaration is a setting whose options `get` cannot report, which
+req 1 does not allow for — so the declaration holds the list and the control
+renders from it (`DeclaredSelect` takes an explicit `options` only where the
+choices are values the install produces, such as a provider's voices).
+
 **None of it is in `list`.** `list` is the index — key, label, one-line
 description, tab, scope, current value, availability, and the refusal reason if
 any. `get` is the detail. The split is by role, never by size: a threshold would
@@ -313,9 +320,22 @@ is what the coverage walk is for.
 ### Browser-local settings
 
 Part of both dialogs lives in `localStorage` (`stores/settings-store.ts:396`).
-These are **named and explained, nothing more**: read and propose both refuse
-with `browser_local`, and `list` says *set in the browser; ShipIt's server does
-not hold this value* — the honest limitation req 5 provides for.
+The **value** is what is refused: read and propose both answer `browser_local`,
+and `list` says *set in the browser; ShipIt's server does not hold this value* —
+the honest limitation req 5 provides for.
+
+**Its OPTIONS are not refused.** `browser_local` explains withholding the current
+selection and says nothing about what the setting can be set to, which is the
+half req 1 asks `get` for and req 3 needs the agent able to name. So a
+browser-local setting carries its option set like any other: a static one on the
+declaration — `voice.language` is an `enum` of the dozen languages the Voice tab
+offers, and the tab renders that list rather than writing its own — and one that
+has to be resolved on this install as a `live` detail, which is therefore
+resolved for an entry whose VALUE is unreadable and not only for one that reads.
+`voice.ttsVoice` and `voice.ttsSpeed` are that case: the voices and the offered
+speeds differ per TTS provider, and the declaration holds one pair of speed
+bounds for every provider. Nothing new can leak by resolving it — every live
+detail is a function of `deps` and never of the entry's value.
 
 Two shapes were tried and dropped: per-viewer snapshots give "this browser" no
 server-side meaning with two open, and a browser-side apply has no baseline and
@@ -360,6 +380,40 @@ box, is named by nothing and produces no item at all; the read says how many it
 left out. Where the address is ShipIt's own — a reviewer slot, a catalogue
 service id, a provider id — it needs no projection and has none.
 
+**An address the read emits must resolve back to the item it came from**, or the
+agent follows an address the read just advertised into a different item or into
+nothing. So a projection that produces an address may not normalize its input
+unless the store on the other side normalizes identically. `userNameProjection`
+does not: a role and a secret are looked up exactly (`getRole` reads
+`roles[name]`; a secret is a record key) and neither write path normalizes what
+it stores, so a padded `" helper "` beside `"helper"` would otherwise emit one
+address twice and resolve to the wrong role. It therefore emits the stored string
+**verbatim**, and a name that cannot be emitted as itself joins the ones the gate
+already drops — no item, counted in the read's "not listed" note.
+`hostEntryProjection` may normalize, and does, because `EgressAllowlistStore`
+puts every entry through `normalizeHost` on the way in AND on the way to a
+match.
+
+**That second arrangement needs the normalizer to be idempotent, and it was
+not.** `normalizeHost` stripped one trailing dot, so `a.test..` stored as
+`a.test.`, the read normalized the stored row again and advertised `a.test`, and
+removing that address matched no row. It strips every trailing dot now — and
+because nothing migrates a row an older build already wrote, `removeHost` matches
+on the NORMALIZED row rather than on the stored string, so the advertised address
+names its own row either way. Rows that normalize alike are the same host, so
+removing all of them is right.
+
+**The apply path has a defect of its own that this does not reach, and it is
+worse than the documented one.** `applyEgressHostRemove` reports `applied`
+whatever `removeHost` returns, which *"Saved" has to mean saved* already
+condemns — but it also branches on `isBuiltinDefault(host)` FIRST, so removing a
+host that is both a shipped default and an explicit global row only suppresses
+the default and leaves the row effective. The read then advertises that row again
+as `user-global`, `removable: true`, and every further removal reports success
+while changing nothing. `.github.com` is the worked case. Fixing it belongs with
+that file's owner: the branch has to try the explicit row before suppressing the
+default, and report what the store actually did.
+
 Reading a setting a panel of its own owns needs a reader per owner
 (`services/settings-store-readers.ts`), because a `bespoke` declaration names
 where its value lives and not how to read one back. A reader returns the stored
@@ -370,12 +424,54 @@ threw all degrade to an entry with the reason, because a plausible default is
 worse than nothing: the agent states it to the user as fact.
 
 **A reader reads the store the declaration names, which is not always the
-obvious one.** An MCP server's environment and headers hold `$secret:`
+obvious one.** An MCP server's arguments, environment and headers hold `$secret:`
 references and the panel writes one for every key row even where the user left
 the value blank (`McpServerSettings/utils/payload.ts:45`), so the config alone
 says a name exists and not that the server can start. `configured` there means
-every reference resolves, because one that does not stops the server
-(`session/mcp-resolve.ts:60`); the count of unresolved ones rides with the item.
+every reference resolves, because one that does not omits the server from the
+turn entirely (`session/mcp-resolve.ts:41`); the count of unresolved ones rides
+with the item.
+
+**The list of fields is the resolver's, not the ones that look secret.**
+`resolveMcpServer` substitutes a stdio server's `args` and `env` and an HTTP
+one's `headers` (`session/mcp-resolve.ts:30`, `:31`, `:37`) — a provider's token
+is routinely passed as an argument, which is why `mcp.servers[].args` is a
+`secretBag` in the first place, and sending `args` through the plain
+configured-only projection made the read answer `{configured: true}` about a
+server the runtime refuses to start. `command`, `url` and `npmPackage` are NOT
+substituted, so a reference written into one of them is literal text and blocks
+nothing. That the two layers agree on one configuration is pinned across the
+layer boundary in `integration_tests/agent-settings-access.test.ts`, because the
+orchestrator may not import `session/` and neither side's own unit test can hold
+both answers.
+
+**A reference ShipIt does not store is not a blocker it may report.** The check
+answers for the two shapes the MCP panel writes and ShipIt keeps the value of —
+`mcp__<server>__…` and an OAuth `$platform:` source — so the state req 3 exists
+for, a key row the user left blank, stays a definite answer. Every other
+reference resolves in the worker out of an environment the orchestrator cannot
+see: the pushed set is a Compose secrets snapshot this read has no handle on, and
+the worker AUGMENTS its `process.env` rather than replacing it, so the
+container's own variables resolve too. Calling such a reference missing states a
+blocker the server does not have, so the read says it cannot tell instead.
+
+**Even the definite answer is a judgement, not a guarantee**, and the code says
+so rather than claiming a prefix nobody else may use: project secrets merge over
+account values reserving no prefix (`service-secrets-resolver.ts:179`), so a
+project secret named `mcp__demo__TOKEN` would resolve while this read calls it
+blank. What makes answering right anyway is which case is real — the panel writes
+that name for every key row, blank or not.
+
+The uncertainty leans to `configured`, because of the two ways to be wrong about
+an unknown, that is the one that does not send the user to set something already
+set. And the two counts are independent: a field can carry a blank key row AND a
+reference to the session's environment, which are two different things wrong with
+it, so both notes are emitted rather than whichever branch ran first.
+
+No wider environment fixes this, which is why the read stops claiming one.
+Widening to the account env fixes `$secret:OPENAI_API_KEY` and then reports a
+stale non-MCP `agentEnv` key as configured where the real pushed snapshot omits
+it.
 
 ### Saved is not effective
 

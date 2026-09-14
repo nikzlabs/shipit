@@ -298,6 +298,26 @@ describe("a name the user typed", () => {
     });
   });
 
+  it("emits a name verbatim, so the address it gives out addresses the same item", () => {
+    // The emitted name IS the address the agent is told to name a change by, and
+    // the stores behind one look an item up exactly — `getRole` reads
+    // `roles[name]` and neither write path normalizes. A projection that trimmed
+    // would emit `"helper"` for a role stored as `" helper "`, which resolves to
+    // a DIFFERENT role or to none, and would emit one address twice when both
+    // exist.
+    const role = declarationFor("roles[].name");
+    const padded = " helper ";
+
+    expect(projectSetting(role, padded)).toEqual({ readable: true, value: null });
+    expect(projectSetting(role, "helper ")).toEqual({ readable: true, value: null });
+    expect(projectSetting(role, "helper")).toEqual({ readable: true, value: "helper" });
+
+    // …and the collection the address is projected through agrees, so the two
+    // cannot disagree about which items exist.
+    expect(projectSetting(declarationFor("roles"), [{ name: padded }, { name: "helper" }]))
+      .toEqual({ readable: true, value: ["helper"] });
+  });
+
   it("refuses a browser-local read with the sentence the dialog's user would recognise", () => {
     const declaration = BROWSER_SETTINGS["voice.handsFree"];
     const outcome = projectSetting(declaration, true);

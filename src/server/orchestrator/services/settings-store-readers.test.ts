@@ -6,6 +6,7 @@ import { allServices, getMode } from "../../shared/catalogue/index.js";
 import type { ModelSelection } from "../../shared/catalogue/index.js";
 import { MCP_OAUTH_PROVIDERS } from "../mcp-oauth-providers.js";
 import { ALL_SETTINGS } from "../../shared/settings-catalogue/index.js";
+import type { McpStdioServerConfig } from "../../shared/types/mcp-types.js";
 import { CredentialStore } from "../credential-store.js";
 import { ProviderAccountManager } from "../provider-account-manager.js";
 import { addMcpServer } from "./mcp.js";
@@ -191,6 +192,32 @@ describe("roles", () => {
   it("reports unreadable, never an empty role list, with no credential store", async () => {
     const entry = await detail("roles", { credentialStore: undefined });
     expect(entry).toMatchObject({ readable: false, unreadableReason: "read_failed" });
+  });
+
+  it("emits an address that resolves back to the role it came from (req 1)", async () => {
+    // `requireStorableName` checks blankness and length and does not normalize
+    // (`services/role-settings.ts:200`), so a padded name is storable beside the
+    // bare one — and `getRole` looks both up exactly. An address the read
+    // advertises has to name the item it was taken from.
+    credentialStore.setRole(" helper ", {
+      name: " helper ",
+      params: { kind: "pinned", harnessId: "codex", ...selection },
+    });
+    credentialStore.setRole("helper", {
+      name: "helper",
+      params: { kind: "pinned", harnessId: "claude", ...selection },
+    });
+
+    const entry = await detail("roles[].harness");
+    const addresses = (entry.items ?? []).map((i) => i.address);
+    expect(new Set(addresses).size).toBe(addresses.length);
+    for (const address of addresses) {
+      expect(credentialStore.getRole(address)?.name).toBe(address);
+    }
+    // The bare one is still named, and reads as its OWN stored value.
+    expect((await itemDisplays("roles[].harness")).helper).toBe("claude");
+    // The padded one is named by nothing, and the read says one was left out.
+    expect(entry.notes?.join(" ")).toContain("1 stored instance is not listed");
   });
 });
 
@@ -416,6 +443,110 @@ describe("MCP servers", () => {
     const item = entry.items?.find((i) => i.address === "blank");
     expect(item?.display).toBe("not configured");
     expect(item?.notes?.join(" ")).toContain("1 of 1 entry");
+  });
+
+  it("reports arguments whose secret was never stored as NOT configured, as the runtime does", async () => {
+    // A provider's token is routinely passed as an argument, which is why this
+    // field is a `secretBag` at all — and `resolveMcpServer` substitutes `args`
+    // exactly as it does `env`, omitting the whole server when one reference is
+    // unresolved. A settings read answering "configured" here is the surface
+    // that exists to explain a blocker failing to see it (req 3). That the two
+    // layers agree on one configuration is pinned across the layer boundary, in
+    // `integration_tests/agent-settings-access.test.ts`.
+    const config: McpStdioServerConfig = {
+      name: "demo",
+      type: "stdio",
+      command: "npx",
+      args: ["--token", "$secret:mcp__demo__TOKEN"],
+      enabled: true,
+    };
+    addMcpServer(credentialStore, config, {});
+
+    const item = (await detail("mcp.servers[].args")).items?.find((i) => i.address === "demo");
+    expect(item?.display).toBe("not configured");
+    expect(item?.notes?.join(" ")).toContain("1 of 2 arguments");
+  });
+
+  it("reports arguments as configured once the secret they refer to is stored", async () => {
+    const config: McpStdioServerConfig = {
+      name: "armed",
+      type: "stdio",
+      command: "npx",
+      args: ["--token", "$secret:mcp__armed__TOKEN"],
+      enabled: true,
+    };
+    addMcpServer(credentialStore, config, { mcp__armed__TOKEN: TOKEN });
+
+    const entry = await detail("mcp.servers[].args");
+    expect(entry.items?.find((i) => i.address === "armed")?.display).toBe("configured");
+    expect(JSON.stringify(entry)).not.toContain(TOKEN);
+  });
+
+  it("does not call a reference ShipIt does not store a blocker, and says it cannot tell", async () => {
+    // The worker AUGMENTS its own `process.env` with the pushed set rather than
+    // replacing it, and the pushed set is a Compose snapshot this read has no
+    // handle on — so `$secret:PATH` and `$secret:PROJECT_TOKEN` both resolve at
+    // run time for all this read knows. Reporting them as "cannot start" states
+    // a blocker the server does not have, which is req 3 pointing the wrong way.
+    addMcpServer(
+      credentialStore,
+      {
+        name: "inherited",
+        type: "stdio",
+        command: "npx",
+        args: ["--token", "$secret:PROJECT_TOKEN"],
+        enabled: true,
+      },
+      {},
+    );
+
+    const item = (await detail("mcp.servers[].args")).items?.find((i) => i.address === "inherited");
+    expect(item?.display).toBe("configured");
+    expect(item?.notes?.join(" ")).toContain("this read cannot say which");
+    expect(item?.notes?.join(" ")).not.toContain("cannot start");
+  });
+
+  it("still calls a reference ShipIt DOES store a blocker when its value is absent", async () => {
+    // The two ShipIt stores the value of are `mcp__<server>__<KEY>` and an MCP
+    // OAuth `$platform:` source, and the panel writes nothing else — so the
+    // state req 3 exists for stays a definite answer.
+    addMcpServer(
+      credentialStore,
+      {
+        name: "mixed",
+        type: "stdio",
+        command: "npx",
+        args: ["--token", "$secret:mcp__mixed__TOKEN", "--host", "$secret:PROJECT_HOST"],
+        enabled: true,
+      },
+      {},
+    );
+
+    const item = (await detail("mcp.servers[].args")).items?.find((i) => i.address === "mixed");
+    expect(item?.display).toBe("not configured");
+    expect(item?.notes?.join(" ")).toContain("cannot start until it is set");
+    // …and the other thing wrong with the field is still said. Two references
+    // fail for two different reasons and one branch would report one of them.
+    expect(item?.notes?.join(" ")).toContain("this read cannot say which");
+  });
+
+  it("says both things when one argument carries a stored reference AND an unknown one", async () => {
+    addMcpServer(
+      credentialStore,
+      {
+        name: "both",
+        type: "stdio",
+        command: "npx",
+        args: ["$secret:mcp__both__TOKEN@$secret:PROJECT_HOST"],
+        enabled: true,
+      },
+      {},
+    );
+
+    const item = (await detail("mcp.servers[].args")).items?.find((i) => i.address === "both");
+    expect(item?.display).toBe("not configured");
+    expect(item?.notes?.join(" ")).toContain("cannot start until it is set");
+    expect(item?.notes?.join(" ")).toContain("this read cannot say which");
   });
 
   it("reports an env bag as configured once the secret it refers to is stored", async () => {

@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { CredentialStore } from "../credential-store.js";
+import { getVoiceProvider, providerSpeeds, providerVoices, ttsProviders } from "../../shared/voice-catalog.js";
 import { addMcpServer } from "./mcp.js";
 import { writeGlobalSystemPrompt } from "../global-system-prompt.js";
 import {
@@ -556,6 +557,56 @@ describe("getSettingForAgent", () => {
   it("reports a setting the agent may propose as allowed, with no refusal to explain", async () => {
     const entry = await getSettingForAgent(deps(), "s1", "advanced.enableSubAgents");
     expect(entry.propose).toEqual({ allowed: true });
+  });
+
+  /**
+   * req 1 — `get` is the detail of a setting WHATEVER the setting is. Being
+   * browser-local explains withholding the current selection; it does not
+   * justify hiding the options, which are ShipIt's own and are what the agent
+   * has to name when the user asks what a setting can be set to.
+   */
+  describe("a browser-local setting still reports its options", () => {
+    it("carries a static option set on the declaration, not in the dialog", async () => {
+      const entry = await getSettingForAgent(deps(), "s1", "voice.language");
+      expect(entry.readable).toBe(false);
+      expect(entry.unreadableReason).toBe("browser_local");
+      expect(entry.valueType).toBe("enum");
+      const options = entry.shape.options as { value: string; label: string }[];
+      expect(options.length).toBeGreaterThan(1);
+      expect(options.every((o) => typeof o.label === "string" && o.label.length > 0)).toBe(true);
+      // The one option that is a stated property rather than a list that moves:
+      // empty follows the browser's locale, which the description promises.
+      expect(options.map((o) => o.value)).toContain("");
+    });
+
+    it("resolves each provider's OWN voices and speeds, not one provider's for all", async () => {
+      // Asserted against the catalogue helpers rather than against named voices,
+      // which move — but per provider, so handing every provider the first one's
+      // list (or an empty list, which `.every` would wave through) fails.
+      const expected = ttsProviders();
+      expect(expected.length).toBeGreaterThan(0);
+
+      for (const key of ["voice.ttsVoice", "voice.ttsSpeed"]) {
+        const entry = await getSettingForAgent(deps(), "s1", key);
+        const live = entry.live as {
+          providers: { providerId: string; voices: unknown[]; speeds: number[] }[];
+        };
+        expect(live.providers.map((p) => p.providerId)).toEqual(expected.map((p) => p.id));
+        for (const provider of live.providers as (typeof live.providers[number] & {
+          speedRange?: { min: number; max: number };
+        })[]) {
+          expect(provider.voices).toEqual(providerVoices(provider.providerId));
+          expect(provider.speeds).toEqual(providerSpeeds(provider.providerId));
+          expect(provider.voices.length).toBeGreaterThan(0);
+          expect(provider.speeds.length).toBeGreaterThan(0);
+          // The bounds are the reason this is live at all: the declaration holds
+          // one pair for every provider, so a dropped or borrowed range is the
+          // defect, not a detail.
+          expect(provider.speedRange).toEqual(getVoiceProvider(provider.providerId)?.speedRange);
+          expect(provider.speedRange).toBeDefined();
+        }
+      }
+    });
   });
 });
 

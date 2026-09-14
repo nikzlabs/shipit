@@ -387,54 +387,125 @@ function mcpItems(
 
 function stdioField(
   server: McpServerConfig,
-  field: "command" | "args" | "npmPackage",
+  field: "command" | "npmPackage",
 ): unknown {
   return server.type === "stdio" ? server[field] ?? null : null;
 }
 
-/**
- * An environment or header bag, read against the secrets it REFERS to and not
- * against the config alone. The config holds `$secret:` references, and the
- * panel writes one for every key row even where the user left the value blank
- * (`client/components/McpServerSettings/utils/payload.ts:45`) — so a bag that
- * looks configured is exactly the state an agent is asked to diagnose. One
- * unresolved reference stops the server (`session/mcp-resolve.ts:60`), so a
- * partly-set bag is reported as not configured, with a count of how many are
- * missing. The count is ShipIt's own; the keys are the user's and stay out.
- */
-function mcpSecretBag(
-  ctx: StoreReadContext,
-  bag: Record<string, string> | null,
-): { raw: unknown; notes: string[] } {
-  const entries = Object.entries(bag ?? {});
-  if (entries.length === 0) return { raw: null, notes: [] };
-  const env = ctx.deps.credentialStore ? collectMcpAgentEnv(ctx.deps.credentialStore) : {};
-  const unresolved = entries.filter(([, value]) => {
-    const missing: string[] = [];
-    substituteMcpPlaceholders(value, env, missing);
-    return missing.length > 0;
-  }).length;
-  if (unresolved === 0) return { raw: bag, notes: [] };
-  return {
-    raw: null,
-    notes: [
-      `${unresolved} of ${entries.length} ${entries.length === 1 ? "entry" : "entries"} refers to a `
-        + "stored value ShipIt does not have, so this server cannot start until it is set.",
-    ],
-  };
+/** One credential-bearing field's stored strings, for the reference check below. */
+interface McpReferringField {
+  /** What the projection sees when every reference resolves. */
+  raw: unknown;
+  /** The stored strings, each of which may carry a `$secret:` reference. */
+  values: string[];
+  /** How one entry of this field is named in the note. */
+  noun: { one: string; many: string };
 }
 
-/** `env` for a stdio server, `headers` for an HTTP one; both are the same bag. */
-function mcpSecretItems(
+const ENTRIES = { one: "entry", many: "entries" };
+const ARGUMENTS = { one: "argument", many: "arguments" };
+
+/**
+ * The two shapes the MCP panel writes and ShipIt keeps the value of:
+ * `mcp__<server>__<KEY>` (`validateMcpSecrets` requires that prefix) and
+ * `MCP_PLATFORM_<SOURCE>` from an OAuth flow. Absent here, the likely truth is
+ * the one the panel produces — a key row left blank — so this read answers.
+ *
+ * **Not an ownership claim, and it cannot be one.** A project secret may carry
+ * either name and reaches the worker ahead of the account values
+ * (`service-secrets-resolver.ts:179` merges project over account, reserving no
+ * prefix), so a definite answer here is a judgement about which case is real,
+ * not a guarantee. Every OTHER name is not even that: it resolves out of an
+ * environment the orchestrator cannot see at all — a Compose snapshot this read
+ * has no handle on, plus whatever the container already had, since the worker
+ * AUGMENTS its `process.env` rather than replacing it (`session-worker.ts:277`).
+ */
+function shipItStoresReference(envKey: string): boolean {
+  return envKey.startsWith("mcp__") || envKey.startsWith("MCP_PLATFORM_");
+}
+
+/**
+ * A field read against the secrets it REFERS to and not against the config
+ * alone. The config holds `$secret:` references, and the panel writes one for
+ * every key row even where the user left the value blank
+ * (`client/components/McpServerSettings/utils/payload.ts:45`) — so a field that
+ * looks configured is exactly the state an agent is asked to diagnose. One
+ * unresolved reference anywhere omits the whole server from the turn
+ * (`session/mcp-resolve.ts:41`), so a partly-set field is reported as not
+ * configured, with a count of how many are missing. The count is ShipIt's own;
+ * the keys are the user's and stay out.
+ *
+ * **Three fields carry references, not two.** `resolveMcpServer` substitutes a
+ * stdio server's `args` and `env` and an HTTP one's `headers`
+ * (`session/mcp-resolve.ts:30`, `:31`, `:37`); `command`, `url` and `npmPackage`
+ * are not, so a reference in one of them is literal text and blocks nothing.
+ *
+ * **A reference ShipIt does not store is not a blocker it may report.** This
+ * read cannot see the worker's environment (see {@link shipItStoresReference}),
+ * so calling such a reference missing states a blocker the server does not have.
+ * It says it cannot tell instead, and leans to `configured`, because of the two
+ * ways to be wrong about an unknown this is the one that does not send the user
+ * to set something already set.
+ *
+ * The two counts are independent and BOTH notes are emitted: a field carrying a
+ * blank key row and a reference to the session's environment has two different
+ * things wrong with it, and counting them in one branch drops whichever came
+ * second. plan.md → *A reader reads the store the declaration names*.
+ */
+function mcpReferences(
+  ctx: StoreReadContext,
+  field: McpReferringField | null,
+): { raw: unknown; notes: string[] } {
+  if (!field || field.values.length === 0) return { raw: null, notes: [] };
+  const env = ctx.deps.credentialStore ? collectMcpAgentEnv(ctx.deps.credentialStore) : {};
+  let missingStored = 0;
+  let undecidable = 0;
+  for (const value of field.values) {
+    const unresolved: string[] = [];
+    substituteMcpPlaceholders(value, env, unresolved);
+    if (unresolved.some(shipItStoresReference)) missingStored++;
+    if (unresolved.some((key) => !shipItStoresReference(key))) undecidable++;
+  }
+  const total = field.values.length;
+  const named = (n: number): string => `${n} of ${total} ${total === 1 ? field.noun.one : field.noun.many}`;
+  const notes: string[] = [];
+  if (missingStored > 0) {
+    notes.push(
+      `${named(missingStored)} refers to a stored value ShipIt does not have, so this server `
+        + "cannot start until it is set.",
+    );
+  }
+  if (undecidable > 0) {
+    notes.push(
+      `${named(undecidable)} refers to a value ShipIt does not store, so it is supplied — or not `
+        + "— by the session's own environment, and this read cannot say which.",
+    );
+  }
+  return { raw: missingStored > 0 ? null : field.raw, notes };
+}
+
+/** An environment or header bag: every value of it may be a reference. */
+function mcpBag(bag: Record<string, string> | null): McpReferringField | null {
+  const values = Object.values(bag ?? {});
+  return values.length > 0 ? { raw: bag, values, noun: ENTRIES } : null;
+}
+
+/** A stdio server's arguments: every one of them may be a reference. */
+function mcpArgs(args: string[] | null): McpReferringField | null {
+  return args && args.length > 0 ? { raw: args, values: args, noun: ARGUMENTS } : null;
+}
+
+/** `args`, `env` or `headers` — the three fields whose strings are substituted. */
+function mcpReferringItems(
   ctx: StoreReadContext,
   cache: StoreReadCache,
-  pick: (server: McpServerConfig) => Record<string, string> | null,
+  pick: (server: McpServerConfig) => McpReferringField | null,
 ): StoredRead {
   const missing = needsCredentialStore(ctx);
   if (missing) return missing;
   return items(
     cache.mcpServers().map((server) => {
-      const read = mcpSecretBag(ctx, pick(server));
+      const read = mcpReferences(ctx, pick(server));
       return {
         name: { kind: "stored" as const, item: server },
         raw: read.raw,
@@ -594,14 +665,15 @@ export const BESPOKE_READERS: Record<BespokeSettingKey, StoreReader> = {
   "mcp.servers[].type": (ctx, cache) => mcpItems(ctx, cache, (server) => server.type),
   "mcp.servers[].enabled": (ctx, cache) => mcpItems(ctx, cache, (server) => server.enabled),
   "mcp.servers[].command": (ctx, cache) => mcpItems(ctx, cache, (s) => stdioField(s, "command")),
-  "mcp.servers[].args": (ctx, cache) => mcpItems(ctx, cache, (s) => stdioField(s, "args")),
+  "mcp.servers[].args": (ctx, cache) =>
+    mcpReferringItems(ctx, cache, (server) => mcpArgs(server.type === "stdio" ? server.args ?? null : null)),
   "mcp.servers[].npmPackage": (ctx, cache) => mcpItems(ctx, cache, (s) => stdioField(s, "npmPackage")),
   "mcp.servers[].url": (ctx, cache) =>
     mcpItems(ctx, cache, (server) => (server.type === "http" ? server.url : null)),
   "mcp.servers[].env": (ctx, cache) =>
-    mcpSecretItems(ctx, cache, (server) => (server.type === "stdio" ? server.env ?? null : null)),
+    mcpReferringItems(ctx, cache, (server) => mcpBag(server.type === "stdio" ? server.env ?? null : null)),
   "mcp.servers[].headers": (ctx, cache) =>
-    mcpSecretItems(ctx, cache, (server) => (server.type === "http" ? server.headers ?? null : null)),
+    mcpReferringItems(ctx, cache, (server) => mcpBag(server.type === "http" ? server.headers ?? null : null)),
   "mcp.oauthProvider": (ctx) => {
     const credentialStore = ctx.deps.credentialStore;
     if (!credentialStore) return unreadable(NO_CREDENTIAL_STORE);

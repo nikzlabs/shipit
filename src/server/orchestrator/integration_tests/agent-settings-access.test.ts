@@ -16,6 +16,8 @@ import {
 } from "./test-helpers.js";
 import type { DatabaseManager } from "../../shared/database.js";
 import { runShim, type ShimIO } from "../../session/agent-shim/shipit.js";
+import { resolveMcpServer } from "../../session/mcp-resolve.js";
+import { addMcpServer } from "../services/mcp.js";
 
 // docs/299-agent-settings-access req 1: the agent reads ShipIt's settings
 // itself — the shim, the orchestrator route, and the catalogue projection.
@@ -138,6 +140,40 @@ describe("Integration: agent settings access (docs/299)", () => {
     const { stderr, exitCode } = await runSettingsShim(["settings", "get", "advanced.nope"]);
     expect(exitCode).toBe(1);
     expect(stderr).toContain("advanced.nope");
+  });
+
+  /**
+   * req 3 across the layer boundary: the surface that exists to explain a
+   * blocker has to see the blocker the runtime sees. Only an integration test
+   * can pin this — the orchestrator may not import `session/`, so neither side's
+   * own unit test can hold both answers about one configuration.
+   */
+  it("agrees with the session's own MCP resolver about a missing argument secret", async () => {
+    const config = {
+      name: "demo",
+      type: "stdio" as const,
+      command: "npx",
+      // A provider's token is routinely passed as an argument.
+      args: ["--token", "$secret:mcp__demo__TOKEN"],
+      enabled: true,
+    };
+    addMcpServer(credentialStore, config, {});
+
+    const res = await app.inject({
+      method: "GET",
+      url: `/api/sessions/${sessionId}/settings/detail?key=${encodeURIComponent("mcp.servers[].args")}`,
+    });
+    const body = res.json() as { items?: { address: string; display: string; notes?: string[] }[] };
+    const item = body.items?.find((i) => i.address === "demo");
+
+    expect(item?.display).toBe("not configured");
+    expect(item?.notes?.join(" ")).toContain("cannot start until it is set");
+    // The runtime, on the same configuration: the server is omitted from the
+    // turn entirely, and it names the credential that is missing.
+    expect(resolveMcpServer(config, {})).toEqual({
+      resolved: null,
+      missing: ["mcp__demo__TOKEN"],
+    });
   });
 
   // Keeping a container to its OWN session is the container guard's job and is
