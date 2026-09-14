@@ -137,6 +137,22 @@ function setupDivergence(
   return bareDir;
 }
 
+async function postRebaseAbort(sessionId: string): Promise<number> {
+  const http = await import("node:http");
+  return new Promise((resolve, reject) => {
+    const req = http.request(
+      `http://127.0.0.1:${port}/api/sessions/${sessionId}/git/rebase/abort`,
+      { method: "POST", headers: { "Content-Length": "0" } },
+      (res) => {
+        res.on("data", () => {});
+        res.on("end", () => resolve(res.statusCode ?? 0));
+      },
+    );
+    req.on("error", reject);
+    req.end();
+  });
+}
+
 async function postRebase(sessionId: string, baseBranch = "main"): Promise<{ status: number; body: { status?: string; error?: string } }> {
   const http = await import("node:http");
   const body = JSON.stringify({ baseBranch });
@@ -456,20 +472,7 @@ describe("rebase flow: API + WS events", () => {
     await waitForMessage("rebase_conflicts");
     await waitForClaude(() => latestClaude, claudeBeforeRebase);
 
-    const http = await import("node:http");
-    const abortRes = await new Promise<{ status: number }>((resolve, reject) => {
-      const req = http.request(
-        `http://127.0.0.1:${port}/api/sessions/${sessionId}/git/rebase/abort`,
-        { method: "POST", headers: { "Content-Length": "0" } },
-        (res) => {
-          res.on("data", () => {});
-          res.on("end", () => resolve({ status: res.statusCode ?? 0 }));
-        },
-      );
-      req.on("error", reject);
-      req.end();
-    });
-    expect(abortRes.status).toBe(200);
+    expect(await postRebaseAbort(sessionId)).toBe(200);
 
     await waitForMessage("rebase_aborted");
 
@@ -486,6 +489,33 @@ describe("rebase flow: API + WS events", () => {
     const postAbortClaude = await waitForClaude(() => latestClaude, claudeAtAbort);
     postAbortClaude.emit("event", { type: "system", subtype: "init", session_id: "test-session-post-abort" });
     postAbortClaude.finish("test-session-post-abort");
+  });
+
+  // The abort route emits `superseded` BEFORE it clears `runner.running`, so the driver's
+  // resolution turn settles with a turn still apparently running and the driver never re-takes
+  // its hold. Its queue drain must not be conditional on owning one (planning#554).
+  it("rebase abort endpoint — drains a message queued before the abort", { timeout: 15_000 }, async () => {
+    const { sessionId, sessionDir } = await createSession();
+    setupDivergence(sessionDir, { conflicting: true });
+
+    const claudeBeforeRebase = latestClaude;
+    await postRebase(sessionId, "main");
+    await waitForMessage("rebase_conflicts");
+    const resolutionClaude = await waitForClaude(() => latestClaude, claudeBeforeRebase);
+
+    // Queued, not started: the flow holds the session across the whole rebase.
+    client.send({ type: "send_message", text: "and now do the other thing" });
+    await waitForMessage("message_queued");
+
+    expect(await postRebaseAbort(sessionId)).toBe(200);
+    await waitForMessage("rebase_aborted");
+
+    // Nothing else can start this turn: the resolution turn runs under postTurn "none", so its
+    // own teardown never drains, and the user sent nothing after the abort.
+    const queuedClaude = await waitForClaude(() => latestClaude, resolutionClaude);
+    expect(queuedClaude.lastPrompt).toContain("and now do the other thing");
+    queuedClaude.emit("event", { type: "system", subtype: "init", session_id: "test-session-queued" });
+    queuedClaude.finish("test-session-queued");
   });
 
   it("dirty workspace — the sync saves the work, then rebases", { timeout: 20_000 }, async () => {
