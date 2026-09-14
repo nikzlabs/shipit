@@ -466,7 +466,10 @@ function runningContainmentEffect(
   if (startedContained === undefined) {
     return {
       state: "uncertain",
-      detail: "This session's container was rediscovered after a ShipIt restart, so ShipIt does not know which network mode it started under. Restarting the session is what makes the stored value certain.",
+      // "…what settles it", not "…what makes the stored value certain": this
+      // sentence is carried by the branches that have just said the stored value
+      // will never apply to this session, and the two must not contradict.
+      detail: "This session's container was rediscovered after a ShipIt restart, so ShipIt does not know which network mode it started under. Restarting the session is what settles it.",
     };
   }
   if (startedContained === resolved) return null;
@@ -567,7 +570,9 @@ function egressAllowlistEffect(deps: SettingsReadDeps, sessionId: string): Setti
   const blocked = startupRefusal(deps, contained);
   const container = deps.containerManager?.get(sessionId);
   const running = container?.status === "running";
-  const startedExcluded = startedUserHostsExcluded(deps, sessionId);
+  // Only a running container has an exclusion in force; nothing running means
+  // the stored capability answers both halves.
+  const startedExcluded = running ? startedUserHostsExcluded(deps, sessionId) : null;
   if (config?.userHostsExcluded) {
     // A running container ShipIt cannot vouch for is not one it may describe as
     // sealed: it started before the capability was read here, or recorded
