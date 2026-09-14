@@ -103,9 +103,10 @@ is the artifact's own element, so `shipit-render` means nothing there and ShipIt
 adds no class to it.
 
 Two limits. It works for **rendered HTML and markdown** artifacts, the same two
-kinds a fragment addresses; an SVG's own `<a>` is left to the browser. And it is
-a **primary click** only — a middle-click or ⌘-click is swallowed rather than
-opening a second tab, because ShipIt has no second tab to open one in.
+kinds a fragment addresses; an SVG's own `<a>` is left to the browser. And a
+**middle-click does nothing** — ShipIt has no second tab to open a destination
+in, so the click is swallowed rather than handed to the OS. A ⌘/Ctrl-click opens
+it here like an ordinary one.
 
 ## Choosing how the link looks
 

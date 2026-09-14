@@ -87,9 +87,10 @@ function injectHeightReport(html: string): string {
  * which is the same code path a pointer in chat takes.
  *
  * `preventDefault` runs for **every** button, including the auxiliary ones: a
- * middle-click or ⌘-click on a custom-protocol href is what hands it to the OS
- * protocol handler, the same reason a chat pointer carries no real `href`. Only
- * a primary click opens — ShipIt has no second tab to open one in.
+ * middle-click on a custom-protocol href is what hands it to the OS protocol
+ * handler, the same reason a chat pointer carries no real `href`. Only a primary
+ * click opens, so a middle-click does nothing — ShipIt has no second tab to open
+ * one in, and a ⌘-click is a primary click that opens here like any other.
  *
  * Capture phase, because a page that calls `stopPropagation` on its own links
  * would otherwise keep the click from ever reaching this listener.
