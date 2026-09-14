@@ -42,9 +42,7 @@ export interface SettingsProps {
   onGitIdentitySave: (name: string, email: string) => void;
   memoryBudgetMb: number | null;
   onMemoryBudgetSave: (mb: number | null) => void;
-  agentSystemInstructionsEnabled: boolean;
   agentSystemInstructions: string;
-  onToggleAgentSystemInstructions: (enabled: boolean) => void;
   hasActiveSession: boolean;
   onClose: () => void;
 }
@@ -62,9 +60,7 @@ export function Settings({
   onGitIdentitySave,
   memoryBudgetMb,
   onMemoryBudgetSave,
-  agentSystemInstructionsEnabled,
   agentSystemInstructions,
-  onToggleAgentSystemInstructions,
   hasActiveSession,
   onClose,
 }: SettingsProps) {
@@ -167,9 +163,7 @@ export function Settings({
               textareaRef={textareaRef}
               onSave={handleSave}
               onClose={onClose}
-              agentSystemInstructionsEnabled={agentSystemInstructionsEnabled}
               agentSystemInstructions={agentSystemInstructions}
-              onToggleAgentSystemInstructions={onToggleAgentSystemInstructions}
               changedElsewhere={changedElsewhere}
             />
           </TabsContent>

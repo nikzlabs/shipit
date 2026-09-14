@@ -7,8 +7,6 @@ import { SettingsTrackers } from "./SettingsTrackers.js";
 import { McpServerSettings } from "./McpServerSettings.js";
 import { SshHostsSettings } from "./SshHostsSettings.js";
 import { ManagedByShipItBadge } from "./ManagedByShipItBadge.js";
-import { useSettingsStore } from "../stores/settings-store.js";
-import { useUiStore } from "../stores/ui-store.js";
 import { DeclaredToggle, bindSetting } from "./Settings/declared.js";
 
 /**
@@ -54,36 +52,13 @@ function LinearLogo() {
 
 /**
  * GitHub-specific PR-automation toggle. Lives under the GitHub row because it's
- * a GitHub-scoped behavior, not a generic setting. Optimistic with a revert +
- * toast on failure (moved here from Settings.tsx's GitHub tab, docs/201).
+ * a GitHub-scoped behavior, not a generic setting. The optimistic write, the
+ * revert and the toast come from the declaration (docs/299 req 7).
  */
 function PullRequestSettings() {
-  const autoCreatePr = useSettingsStore((s) => s.autoCreatePr);
-
-  const handleToggle = async (v: boolean) => {
-    useSettingsStore.getState().setAutoCreatePr(v);
-    try {
-      const res = await fetch("/api/settings", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ autoCreatePr: v }),
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    } catch (err) {
-      useSettingsStore.getState().setAutoCreatePr(!v);
-      useUiStore.getState().setToast({ message: "Failed to update auto-create PR setting" });
-      console.error("[settings] toggle autoCreatePr failed:", err);
-    }
-  };
-
   return (
     <div className="px-3 py-2.5">
-      <DeclaredToggle
-        settingKey="integrations.autoCreatePr"
-        enabled={autoCreatePr}
-        onToggle={(v) => void handleToggle(v)}
-        testId="settings-auto-create-pr"
-      />
+      <DeclaredToggle settingKey="integrations.autoCreatePr" testId="settings-auto-create-pr" />
     </div>
   );
 }

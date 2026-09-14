@@ -18,6 +18,9 @@ import type { SettingKey } from "../../../server/shared/settings-catalogue/index
 import { ToggleSwitch } from "./ToggleSwitch.js";
 import { inputClass } from "./shared.js";
 import { bindSetting, settingCopy, settingOptions, type DeclaredOption } from "./setting-binding.js";
+import { useDeclaredBoolean, type DeclaredBooleanKey } from "./declared-setting.js";
+
+export { saveDeclaredBoolean, useDeclaredBoolean, type DeclaredBooleanKey } from "./declared-setting.js";
 
 export {
   SETTING_ATTR,
@@ -68,23 +71,26 @@ export function SettingCopy({
   );
 }
 
-/** A boolean setting: the declared words on the left, the switch on the right. */
-export function DeclaredToggle({
+interface ToggleChrome {
+  testId?: string;
+  detail?: ReactNode;
+  /** A section that *is* one toggle keeps its heading. */
+  heading?: boolean;
+}
+
+interface ToggleWiring {
+  enabled: boolean;
+  onToggle: (value: boolean) => void;
+}
+
+function ToggleRow({
   settingKey,
   enabled,
   onToggle,
   testId,
   detail,
   heading,
-}: {
-  settingKey: SettingKey;
-  enabled: boolean;
-  onToggle: (value: boolean) => void;
-  testId?: string;
-  detail?: ReactNode;
-  /** A section that *is* one toggle keeps its heading. */
-  heading?: boolean;
-}) {
+}: { settingKey: SettingKey } & ToggleWiring & ToggleChrome) {
   const { label } = settingCopy(settingKey);
   return (
     <div className="flex items-center justify-between gap-4 py-1">
@@ -101,6 +107,40 @@ export function DeclaredToggle({
         {...(testId ? { testId } : {})}
       />
     </div>
+  );
+}
+
+/** Its own component, so the hook is unconditional on the branch that uses it. */
+function DerivedToggle({
+  settingKey,
+  ...chrome
+}: { settingKey: DeclaredBooleanKey } & ToggleChrome) {
+  const { value, set } = useDeclaredBoolean(settingKey);
+  return <ToggleRow settingKey={settingKey} enabled={value} onToggle={set} {...chrome} />;
+}
+
+/**
+ * A boolean setting: the declared words on the left, the switch on the right.
+ *
+ * **The wiring is optional, and omitting it is the point** (req 7). A declared
+ * global boolean reads and writes itself — the store field, the
+ * `PUT /api/settings` payload, the rollback and the toast all come from the
+ * declaration (`declared-setting.ts`), so a new one costs a declaration and this
+ * tag. The two props stay for a value the browser store owns, and for a control
+ * whose write is not a settings save at all. A key that is neither derivable nor
+ * given them is a compile error naming the setting.
+ */
+export function DeclaredToggle(
+  props:
+    | ({ settingKey: DeclaredBooleanKey } & Partial<ToggleWiring> & ToggleChrome)
+    | ({ settingKey: SettingKey } & ToggleWiring & ToggleChrome),
+) {
+  const { settingKey, enabled, onToggle, ...chrome } = props;
+  if (enabled === undefined || onToggle === undefined) {
+    return <DerivedToggle settingKey={settingKey as DeclaredBooleanKey} {...chrome} />;
+  }
+  return (
+    <ToggleRow settingKey={settingKey} enabled={enabled} onToggle={onToggle} {...chrome} />
   );
 }
 

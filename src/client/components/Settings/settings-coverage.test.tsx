@@ -138,6 +138,19 @@ function walk(pane: Element, tab: SettingTab): WalkResult {
       const declaration = findSetting(key);
       if (!declaration) {
         unaccounted.push(`${describeControl(el)} binds undeclared "${key}"`);
+      } else if (declaration.tab !== tab) {
+        /*
+          A binding is an attribute, so accepting ANY existing declaration let a
+          control claim one that has nothing to do with it — a new field in the
+          role editor bound to `advanced.liveSteering` passed here, and the
+          agent then read that setting's description for a control that saves
+          something else. A declaration names the tab it belongs to, so a
+          control on a different one is naming a declaration that is not its.
+        */
+        unaccounted.push(
+          `${describeControl(el)} binds "${key}", which is declared for the `
+          + `${declaration.tab} tab and not this one`,
+        );
       } else if (declaration.type.kind === "collection" && editsAValue(el)) {
         /*
           plan.md → Bespoke panels declare per field. A collection's controls are
@@ -298,9 +311,7 @@ const settingsProps: SettingsProps = {
   onGitIdentitySave: vi.fn(),
   memoryBudgetMb: null,
   onMemoryBudgetSave: vi.fn(),
-  agentSystemInstructionsEnabled: true,
   agentSystemInstructions: "You are working inside ShipIt.",
-  onToggleAgentSystemInstructions: vi.fn(),
   hasActiveSession: true,
   onClose: vi.fn(),
 };
@@ -539,6 +550,28 @@ describe("every control in the Settings dialog is declared or excused", () => {
       // surfacing as a count in the vacuity test below.
       expect(result.drift).toEqual([]);
     }
+  });
+
+  /*
+    The binding is an attribute and nothing else, so before this the walk asked
+    only whether the named declaration EXISTS. A new field in the role editor
+    could name `advanced.liveSteering`, pass every test, and reach the agent
+    carrying a description for a different setting entirely — the control was
+    bound, so it never showed up as unaccounted.
+
+    A declaration names its own tab, which is what makes the mismatch decidable
+    from the DOM. What stays undecidable is a role-editor box bound to a
+    DIFFERENT ROLE FIELD's declaration; `ROLE_FIELD_SETTINGS`
+    (`settings-catalogue/roles-settings.ts`) is the other direction, over the
+    stored type, and the two together are as far as this can be taken.
+  */
+  it("catches a control that binds a declaration belonging to another tab", () => {
+    const pane = document.createElement("div");
+    pane.innerHTML =
+      '<input data-setting="advanced.liveSteering" aria-label="Standing instructions" />';
+    expect(walk(pane, "roles").unaccounted).toEqual([
+      expect.stringContaining("declared for the advanced tab"),
+    ]);
   });
 
   it("accounts for an allowlist row mid-edit", async () => {

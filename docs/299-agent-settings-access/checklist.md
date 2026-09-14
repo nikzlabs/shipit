@@ -188,6 +188,51 @@ Each finding re-verified at the code before being acted on.
       removable and every further removal reports success. `plan.md` carries the
       reproduction (`.github.com`); the fix belongs with `settings-apply.ts`
 
+## Conformance against reqs 7 and 8 — the closing review
+
+Three findings from a closing conformance review, each verified at the code
+first. One of the three did not hold as stated and is recorded as such.
+
+- [x] req 7 — a declared global boolean generates its **save wiring**: the
+      optimistic write, the `PUT /api/settings` payload, the rollback and the
+      toast all come from `wire` and `label`, so
+      `<DeclaredToggle settingKey="…" />` is the whole of a new toggle. Seven
+      hand-written copies of that block removed, including the one threaded
+      through `App.tsx` as a prop
+- [x] req 7 — what the derivation does NOT reach is named rather than implied:
+      the browser store field is hand-written, so a declaration missing its field
+      or setter drops out of `DeclaredBooleanKey` and binding a control to it
+      without the two props is a compile error. `plan.md` → *Settings are
+      declared once* carries the derived/detected split as a table
+- [x] req 7 — a control may bind only a declaration **from its own tab**; before
+      this the walk asked only whether the named declaration existed, so a role
+      field bound to `advanced.liveSteering` passed
+- [x] req 7 — `ROLE_FIELD_SETTINGS` / `ROLE_PARAMS_FIELD_SETTINGS`, the role's
+      half of what `MCP_SERVER_FIELD_SETTINGS` does: a field added to `AgentRole`
+      or `RolePinnedParams` is a compile error until it is declared under its own
+      name, with `partOf` confined to the roles family for the model tuple and
+      the harness
+- [x] req 8 — the read renders `lastProposal` in the **plain** output, phase
+      headline and instruction included. It reached `--json` and nothing else,
+      so a dismissed card was invisible to the command the notice tells the agent
+      to run, and the agent re-proposed a value the user had declined
+- [x] The phase table moved to `shared/settings-proposal-guidance.ts`, read by
+      both the notice and the shim, so the two surfaces cannot word a phase
+      differently
+- [x] req 8 — an automatic turn carries the notice: the requirement says *the
+      next turn* and names no kind. Compaction and a verbatim harness command
+      stay out because neither carries any agent prefix at all, and the outcome
+      rides the turn after
+- [x] The reviewer's third claim did **not** hold as stated: `BESPOKE_READERS`
+      detects a missing reader rather than deriving one, and a reader is
+      per-owner code that cannot be generated. Recorded in `plan.md` as detection
+      rather than changed
+- [x] Every new guard proven red on its own: the plain-`get` rendering removed
+      fails three of its four tests (the fourth is the negative control), the
+      system-turn exclusion restored fails the automatic-turn test, the tab
+      check removed fails the cross-tab test, and a field added to `AgentRole` or
+      `RolePinnedParams` fails `tsc` in both maps
+
 ## Phase 2, slice 3 — the outcome notice (req 8)
 
 - [x] `agent_notified` on the private proposal row, with

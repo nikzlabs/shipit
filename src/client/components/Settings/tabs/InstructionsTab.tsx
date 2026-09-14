@@ -13,9 +13,7 @@ export function InstructionsTab({
   textareaRef,
   onSave,
   onClose,
-  agentSystemInstructionsEnabled,
   agentSystemInstructions,
-  onToggleAgentSystemInstructions,
   changedElsewhere,
 }: {
   content: string;
@@ -25,9 +23,7 @@ export function InstructionsTab({
   textareaRef: RefObject<HTMLTextAreaElement | null>;
   onSave: () => void;
   onClose: () => void;
-  agentSystemInstructionsEnabled: boolean;
   agentSystemInstructions: string;
-  onToggleAgentSystemInstructions: (enabled: boolean) => void;
   /** The stored instructions moved while these edits were unsaved. */
   changedElsewhere?: boolean;
 }) {
@@ -78,8 +74,6 @@ export function InstructionsTab({
         <DeclaredToggle
           settingKey="instructions.agentInstructionsEnabled"
           heading
-          enabled={agentSystemInstructionsEnabled}
-          onToggle={onToggleAgentSystemInstructions}
           testId="agent-instructions-toggle"
         />
         {agentSystemInstructions && (

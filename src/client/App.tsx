@@ -273,9 +273,6 @@ export default function App() {
   const hasSystemPrompt = useSettingsStore((s) => s.hasSystemPrompt);
   const systemPromptContent = useSettingsStore((s) => s.systemPromptContent);
   const systemPromptOpsContent = useSettingsStore((s) => s.systemPromptOpsContent);
-  const agentSystemInstructionsEnabled = useSettingsStore(
-    (s) => s.agentSystemInstructionsEnabled,
-  );
   const agentSystemInstructions = useSettingsStore(
     (s) => s.agentSystemInstructions,
   );
@@ -1846,27 +1843,7 @@ export default function App() {
                 );
               }
             }}
-            agentSystemInstructionsEnabled={agentSystemInstructionsEnabled}
             agentSystemInstructions={agentSystemInstructions}
-            onToggleAgentSystemInstructions={async (enabled) => {
-              try {
-                const raw = await apiPut("/api/settings", {
-                  agentSystemInstructionsEnabled: enabled,
-                });
-                const res = raw as Record<string, unknown>;
-                if (res.agentSystemInstructionsEnabled !== undefined)
-                  {useSettingsStore
-                    .getState()
-                    .setAgentSystemInstructionsEnabled(
-                      !!res.agentSystemInstructionsEnabled,
-                    );}
-              } catch (err) {
-                console.error(
-                  "[settings] Failed to toggle agent system instructions:",
-                  err,
-                );
-              }
-            }}
             hasActiveSession={!!sessionId}
             onClose={() => {
               useUiStore.getState().setSettingsOpen(false);

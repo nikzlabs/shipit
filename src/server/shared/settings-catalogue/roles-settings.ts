@@ -1,5 +1,6 @@
 import { defineSetting, derived, itemAddress, plain, userName, userText } from "./types.js";
 import type { AnySettingDeclaration } from "./types.js";
+import type { AgentRole, RoleAutoParams, RolePinnedParams } from "../types/agent-types.js";
 import { userNamesProjection } from "./projection.js";
 import { collection, modelSelection, text } from "./value-types.js";
 
@@ -193,3 +194,114 @@ export const ROLES_SETTINGS = {
     propose: { kind: "yes" },
   }),
 } as const satisfies Record<string, AnySettingDeclaration>;
+
+export type RolesSettingKey = keyof typeof ROLES_SETTINGS;
+
+/**
+ * The one declaration a stored role field may name: its own.
+ *
+ * Naming *any* declaration is the pass the DOM walk already gives — a control
+ * bound to something that exists — and it is the loophole this map is here to
+ * close. Deriving the key from the field name means the only way to account for
+ * a new field is to declare it under that name, or to say in prose why it is one
+ * of the two other things below.
+ */
+type DeclarationForRoleField<F extends string> =
+  `roles[].${F}` extends RolesSettingKey ? `roles[].${F}` : never;
+
+/**
+ * A field the declared **mutation unit** covers rather than declaring under its
+ * own name. Picking a role's model rewrites service, billing mode and model id
+ * together (`Settings/roles/RoleEditor.tsx`), so those three are one declared
+ * tuple and not three settings — plan.md → The unit of a change is the declared
+ * operation. The target is confined to the roles family, so this cannot become
+ * "mapped to some scalar that exists", and the `reason` is the claim review
+ * reads.
+ */
+interface PartOfRoleSetting {
+  readonly partOf: RolesSettingKey;
+  readonly reason: string;
+}
+
+/** A field whose own fields are declared one map deeper. */
+interface NestedRoleFields {
+  readonly fieldsDeclaredIn: string;
+}
+
+/** Why a stored field is not a setting at all — the same prose claim `exclusions.ts` makes. */
+interface NotARoleSetting {
+  readonly notASetting: string;
+}
+
+/**
+ * What a stored field may be, OTHER than the declaration named for it. The bare
+ * `RolesSettingKey` is deliberately absent: admitting it would let a field name
+ * any declaration in the family, which is the "mapped to something that exists"
+ * pass this map exists to refuse.
+ */
+export type RoleFieldMapping = PartOfRoleSetting | NestedRoleFields | NotARoleSetting;
+
+/**
+ * **Every field of a stored role, mapped to the declaration that describes it**
+ * (docs/299-agent-settings-access req 7: no way to ship a setting the agent
+ * cannot see).
+ *
+ * The same guard `MCP_SERVER_FIELD_SETTINGS` makes over an MCP server, in the
+ * direction the coverage walk cannot see. The walk reads rendered DOM, so it can
+ * establish that a control names *a* declaration and never that the declaration
+ * is the one whose property the handler saves — a new box in the role editor
+ * bound to `roles[].description` while writing something else passes it. The
+ * stored TYPE can say what the DOM cannot: keyed by `keyof AgentRole`, a field
+ * added to `agent-types.ts` is a compile error here until it is declared or
+ * explained.
+ *
+ * The walk's own half is narrower than it was: a control may now only bind a
+ * declaration **from its own tab**, so a role field bound to
+ * `advanced.liveSteering` fails there. Between the two, the loophole that
+ * remains is a role-editor box bound to a *different role field's* declaration —
+ * which no guard reading the DOM can decide, and which
+ * `settings-coverage.test.tsx` names as such.
+ */
+export const ROLE_FIELD_SETTINGS: {
+  [F in keyof Required<AgentRole>]: DeclarationForRoleField<F & string> | RoleFieldMapping;
+} = {
+  name: "roles[].name",
+  description: "roles[].description",
+  prompt: "roles[].prompt",
+  params: { fieldsDeclaredIn: "ROLE_PARAMS_FIELD_SETTINGS" },
+};
+
+/**
+ * Every field of a role's stored parameters, mapped the same way. `params` is
+ * where the harness, the model tuple and the effort level actually live, so a
+ * map that stopped at `keyof AgentRole` would cover the two prose fields and
+ * miss everything the agent proposes.
+ */
+export const ROLE_PARAMS_FIELD_SETTINGS: {
+  [F in keyof Required<RolePinnedParams> | keyof RoleAutoParams]:
+    DeclarationForRoleField<F & string> | RoleFieldMapping;
+} = {
+  kind: {
+    notASetting: "The discriminant. `auto` exists only for the reserved reviewer, whose own "
+      + "parameters render no control at all (plan.md → Not everything in a dialog is a setting); "
+      + "every other role is pinned, so nobody chooses this.",
+  },
+  harnessId: {
+    partOf: "roles[].harness",
+    reason: "Declared under what the user picks rather than what is stored.",
+  },
+  serviceId: {
+    partOf: "roles[].model",
+    reason: "One third of the declared model tuple; picking a model rewrites all three together, "
+      + "so a field-by-field proposal would require invalid intermediate states.",
+  },
+  billingMode: {
+    partOf: "roles[].model",
+    reason: "One third of the declared model tuple, written with the service and the model id.",
+  },
+  modelId: {
+    partOf: "roles[].model",
+    reason: "One third of the declared model tuple, written with the service and the billing mode.",
+  },
+  reasoningEffort: "roles[].reasoningEffort",
+};

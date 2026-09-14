@@ -60,9 +60,7 @@ const defaultProps: SettingsProps = {
   onGitIdentitySave: vi.fn(),
   memoryBudgetMb: null,
   onMemoryBudgetSave: vi.fn(),
-  agentSystemInstructionsEnabled: true,
   agentSystemInstructions: "You are working inside ShipIt.",
-  onToggleAgentSystemInstructions: vi.fn(),
   hasActiveSession: false,
   onClose: vi.fn(),
 };

@@ -275,6 +275,91 @@ describe("shipit settings get", () => {
     expect(res.stdout).toContain("The user enters it in Settings.");
   });
 
+  /*
+    docs/299-agent-settings-access req 8 — "it does not remind the user about a
+    change they have already dealt with". The next-turn notice deliberately
+    carries no values and sends the agent to `shipit settings get`, so the phase
+    has to be in the output the agent was told to read. It reached `--json` and
+    nothing else, which is the half the agent does not read: a dismissed card
+    was invisible to plain `get`, and the agent re-proposed the value the user
+    had just declined.
+  */
+  const DISMISSED = {
+    cardId: "set-7f3a",
+    phase: "dismissed",
+    operation: "set",
+    from: false,
+    proposed: true,
+    proposedAt: "2026-09-13T10:00:00.000Z",
+    resolvedAt: "2026-09-13T10:02:00.000Z",
+    sessionId: "sess-1",
+  };
+
+  it("shows what the user already did about this setting, and what that means", async () => {
+    const { run } = makeRunner();
+    const res = await run(["settings", "get", "advanced.enableSubAgents"], {
+      "GET /agent-ops/settings/get": {
+        status: 200,
+        body: { ...DETAIL.body, key: "advanced.enableSubAgents", lastProposal: DISMISSED },
+      },
+    });
+
+    expect(res.exitCode).toBe(0);
+    expect(res.stdout).toContain("Last proposal: DISMISSED by the user (card set-7f3a)");
+    expect(res.stdout).toContain("set: false → true on 2026-09-13T10:00:00.000Z");
+    expect(res.stdout).toContain("resolved 2026-09-13T10:02:00.000Z");
+    expect(res.stdout).toContain("Do not propose that value again unless they ask.");
+  });
+
+  it("shows a card still in front of the user, which is what stops a second one", async () => {
+    const { run } = makeRunner();
+    const res = await run(["settings", "get", "advanced.enableSubAgents"], {
+      "GET /agent-ops/settings/get": {
+        status: 200,
+        body: {
+          ...DETAIL.body,
+          lastProposal: { ...DISMISSED, phase: "pending", resolvedAt: undefined },
+        },
+      },
+    });
+
+    expect(res.stdout).toContain("Last proposal: PENDING");
+    expect(res.stdout).toContain("The card is in front of the user.");
+    expect(res.stdout).not.toContain("resolved ");
+  });
+
+  it("says nothing about proposals for a setting nobody has proposed a change to", async () => {
+    const { run } = makeRunner();
+    const res = await run(["settings", "get", "advanced.releaseChannel"], {
+      "GET /agent-ops/settings/get": DETAIL,
+    });
+
+    expect(res.stdout).not.toContain("Last proposal");
+  });
+
+  it("carries each instance's own proposal, since a sibling's says nothing about it", async () => {
+    const { run } = makeRunner();
+    const res = await run(["settings", "get", "roles[].model"], {
+      "GET /agent-ops/settings/get": {
+        status: 200,
+        body: {
+          ...DETAIL.body,
+          key: "roles[].model",
+          address: { kind: "item", noun: "a role name" },
+          items: [
+            { address: "deep-dive", display: "Opus 5", lastProposal: { ...DISMISSED, item: "deep-dive" } },
+            { address: "explainer", display: "Haiku 4.5" },
+          ],
+        },
+      },
+    });
+
+    expect(res.stdout).toContain("deep-dive = Opus 5");
+    expect(res.stdout).toContain("Last proposal: DISMISSED by the user");
+    // One instance carries a card; the other's line must stay a bare value.
+    expect(res.stdout.match(/Last proposal/g)).toHaveLength(1);
+  });
+
   it("says a per-item setting is per-item, and what names one instance", async () => {
     const { run } = makeRunner();
     const res = await run(["settings", "get", "roles[].model"], {

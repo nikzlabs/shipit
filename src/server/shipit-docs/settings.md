@@ -203,7 +203,10 @@ way to name another one.
 
 `shipit settings get <key>` carries the last proposal for that setting — from any
 session, because what was done about a setting is a fact about the setting. Read
-it before proposing.
+it before proposing. It is printed as a `Last proposal:` block in the plain
+output and carried as `lastProposal` under `--json`; a setting that exists once
+per item carries one per instance, under the instance it belongs to, because a
+card about the `reviewer` role says nothing about `deep-dive`.
 
 | `phase` | What it means, and what to do |
 |---|---|
@@ -228,10 +231,11 @@ You do not have to work out for yourself that a card was clicked. When the user
 applies or dismisses one, the **start of your next turn** carries a
 `[ShipIt] Since your last turn…` line naming the setting and what happened to
 it. Everything resolved since your last turn arrives in that one notice, and it
-never wakes a session on its own — it rides the user's next message. An automatic
-turn ShipIt runs by itself (a CI fix, a conflict resolution, a compaction) does
-not carry it; the outcome waits for your next ordinary turn rather than being
-lost.
+never wakes a session on its own — it rides whatever turn comes next. That
+includes an automatic turn ShipIt runs by itself: a CI fix, a conflict
+resolution, a rebase follow-up, a wake. Two turns carry no prefix at all and so
+carry no notice — a compaction, and a harness command delivered verbatim — and
+the outcome waits for the turn after rather than being lost.
 
 Three things to know about it.
 

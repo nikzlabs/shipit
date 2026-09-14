@@ -171,6 +171,35 @@ describe("a resolved settings proposal reaches the agent's next turn", () => {
     expect(proposals.get(proposals.listByPhase("dismissed")[0]!.cardId)?.agentNotified).toBe(true);
   });
 
+  /*
+    req 8 says "the next turn" and names no kind of turn, so the next one ShipIt
+    runs by itself — an auto CI fix, a conflict resolution, a wake — carries the
+    outcome as an ordinary turn does. It used to be excluded at both call sites,
+    which left the outcome waiting for a later ordinary turn that may be hours
+    away and may never come.
+  */
+  it("rides an automatic turn ShipIt runs by itself", async () => {
+    postAndResolve("set-a", "dismissed");
+
+    runner.dispatch(testDispatch({
+      text: "CI is failing. Fix it.",
+      systemTurn: true,
+      onTurnComplete: (outcome) => { settled.push(outcome); },
+    }));
+    await waitForTurn(
+      () => agents.filter((a) => a.run.mock.calls.length > 0).length === 1,
+      "the system turn's agent run",
+    );
+
+    const prompt = promptOfAttempt(0);
+    expect(prompt).toContain("[ShipIt] Since your last turn, the user resolved a settings proposal");
+    expect(prompt).toContain("DISMISSED");
+    expect(prompt.endsWith("CI is failing. Fix it.")).toBe(true);
+
+    await completeTurn();
+    expect(proposals.listUnnotifiedResolved(SESSION)).toEqual([]);
+  });
+
   it("batches several outcomes into one notice", async () => {
     postAndResolve("set-a", "applied");
     postAndResolve("set-b", "dismissed");

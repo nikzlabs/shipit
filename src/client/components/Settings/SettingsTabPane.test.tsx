@@ -67,9 +67,7 @@ describe("tab Save buttons stay pinned", () => {
         textareaRef={createRef<HTMLTextAreaElement>()}
         onSave={() => {}}
         onClose={() => {}}
-        agentSystemInstructionsEnabled
         agentSystemInstructions=""
-        onToggleAgentSystemInstructions={() => {}}
       />,
     );
     const pane = container.firstElementChild as HTMLElement;

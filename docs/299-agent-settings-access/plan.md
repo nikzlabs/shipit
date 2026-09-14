@@ -70,10 +70,32 @@ Derived from it, not written again:
 | the `PUT /api/settings` body type and validation | an undeclared setting cannot be saved |
 | `CredentialStore` read/write | no duplicated default or validation; a named accessor may remain as a thin delegate |
 | the dialog's standard controls | the user and the agent read the same words |
+| a declared global boolean's **save wiring** | the optimistic write, the `PUT` payload, the rollback and the toast, from `wire` and `label` (`Settings/declared-setting.ts`) |
 | `shipit settings list` / `get` | **the agent sees a new setting the day it is declared** |
 
 The last row is req 7, holding structurally rather than by a guard test: the
 agent's view is a projection of the table the server persists from.
+
+**What is DERIVED and what is only DETECTED, said plainly.** Req 7's second
+sentence — no way to ship a setting the agent cannot see — is carried partly by
+derivation and partly by a guard that names the omission, and the two are not
+the same guarantee.
+
+| | Holds because |
+|---|---|
+| the payload, its validation and the store accessor | derived from the declaration |
+| `shipit settings list` / `get` | derived: the read projects the registry |
+| a global boolean's control **and its save** | derived: `<DeclaredToggle settingKey="…" />` is the whole of it |
+| the **browser store field** a global boolean lives in | detected — it is hand-written and read across the app, so a declaration whose `wire` field or `set<Wire>` setter is missing drops out of `DeclaredBooleanKey`, and binding a control to it without supplying the two props is a compile error naming the setting |
+| a **reader** for a setting a panel of its own owns | detected — a reader is per-owner code and cannot be generated; `BespokeSettingKey` makes a missing one a missing property |
+| a **stored field** nobody declared | detected — `MCP_SERVER_FIELD_SETTINGS`, `ROLE_FIELD_SETTINGS` / `ROLE_PARAMS_FIELD_SETTINGS` |
+| a **control** nobody declared, or one naming another tab's declaration | detected — the coverage walk |
+| a control bound to a **different field's declaration on its own tab** | neither. No guard reading the DOM can decide it, and the walk says so |
+
+A bespoke panel's fields — the role editor, the MCP form, the credential rows —
+are the part that derives least: each needs its declaration, its reader and its
+operation. That is the shape of the code, not an oversight, and the guards above
+are what stop a step being skipped silently.
 
 `GlobalSettings` **splits** rather than deriving whole — it also carries computed
 status (`canRunTurns`, the agent list, resolved reviewer and role views) which is
@@ -128,18 +150,38 @@ things it cannot decide are stated there rather than implied: a bespoke panel's
 visible wording is a review matter unless the panel marks it, and a `wholeTab`
 exemption is a claim `exclusions.ts` makes in prose.
 
+**A control may only bind a declaration from its own tab.** A binding is an
+attribute, so the walk's first question was only whether the named declaration
+*exists* — and a new field in the role editor could name `advanced.liveSteering`,
+pass every test, and reach the agent carrying a description for a setting that
+saves something else. A declaration names its own tab, which is what makes the
+mismatch decidable from the DOM.
+
 **And a third, which the type system decides instead.** The walk reads rendered
 DOM, so it can establish that a control names *a* declaration and never that the
 declaration is the one whose property the handler saves — a box bound to
 `mcp.servers[].command` while writing something else passes it. The stored shape
 can say what the DOM cannot: `MCP_SERVER_FIELD_SETTINGS` is keyed by
-`keyof McpServerConfig`, so a field added to the persisted type is a compile
-error until it is declared or explained as not a setting. **The declaration it
-may name is derived from the field's own name** — `mcp.servers[].${F}`, not any
-existing key — because "mapped to something that exists" is the same pass the DOM
-walk gives, and it is the loophole being closed. The two guards run in opposite
-directions: the walk finds a control nobody declared, the map finds a stored
-field nobody declared.
+`keyof McpServerConfig`, and `ROLE_FIELD_SETTINGS` /
+`ROLE_PARAMS_FIELD_SETTINGS` by `keyof AgentRole` and `keyof RolePinnedParams`,
+so a field added to a persisted type is a compile error until it is declared or
+explained as not a setting. **The declaration it may name is derived from the
+field's own name** — `mcp.servers[].${F}`, `roles[].${F}`, not any existing key —
+because "mapped to something that exists" is the same pass the DOM walk gives,
+and it is the loophole being closed. The two guards run in opposite directions:
+the walk finds a control nobody declared, the map finds a stored field nobody
+declared.
+
+A role has two escapes from that derivation and both are prose review reads. The
+model tuple is one declared operation, not three settings, so `serviceId`,
+`billingMode` and `modelId` are `partOf: "roles[].model"`; `harnessId` is
+declared under what the user picks (`roles[].harness`). The target of a `partOf`
+is confined to the roles family, so it cannot become "mapped to some scalar that
+exists" — which is the whole point of the map.
+
+What stays undecidable, and is stated rather than implied: a role-editor box
+bound to a *different role field's* declaration. The DOM cannot see which
+property the handler saves, and the stored map cannot see the DOM.
 
 `setup` is what the map found — a pre-start command for non-npm stdio servers,
 designed in `docs/088-mcp-integration/plan.md:405`, whose type and validator
@@ -757,7 +799,13 @@ what raises it.
 ## How the agent learns the outcome
 
 `shipit settings get <key>` carries `lastProposal`, and the agent reads before
-proposing anyway:
+proposing anyway. **It is rendered in the plain output, not only in `--json`** —
+the notice below deliberately carries no values and sends the agent here, so a
+phase visible only to the flag the agent does not pass would leave `get` unable
+to answer the one question the notice asked it. The phase's headline and its
+one-sentence instruction come from `shared/settings-proposal-guidance.ts`, which
+the notice reads too: two surfaces reporting a phase must not word it
+differently.
 
 ```json
 "lastProposal": { "cardId": "set-7f3a", "phase": "dismissed",
@@ -863,13 +911,27 @@ for everything else. The one field ShipIt did not author is the instance
 address, which stays because a notice that cannot say *which* role or server says
 nothing useful; it is quoted, and the closing line tells the agent it is data.
 
-**A system turn carries no notice**, excluded explicitly at both call sites —
-`dispatched-turn.ts` and `ws-handlers/agent-execution.ts`, where the condition is
-this feature's own rather than the bug-report notice's (which relies on `compact`
-catching its only system-turn caller). An outcome resolved before an automatic
-turn (CI fix, conflict resolution, compaction) waits rather than being dropped,
-and reaches the agent on its next ordinary turn. Nothing is lost, and a settings
-notice inside a conflict-resolution prompt could only distract.
+**An automatic turn carries the notice too.** Req 8 says *the next turn* and
+names no kind, so a CI fix, a conflict resolution, a rebase follow-up, a
+credential remediation and a wake all carry it, exactly as a message the user
+typed does. An earlier version excluded every system turn at both call sites on
+the grounds that a settings notice inside a conflict-resolution prompt could only
+distract — which made the outcome wait for an ordinary turn that may be hours
+away and may never come, and that is a restriction the requirement's wording
+does not carry.
+
+Two turn kinds are left out, and neither is a judgement about settings:
+
+- **Compaction** carries no agent prefix at all. The pending-agent notice, the
+  bug outcome and the dependency gap are all excluded there already, because its
+  prompt is an instruction to summarise and its result replaces the context a
+  notice would have been read in.
+- **A verbatim command** (`ridesTurnAsCommand`, docs/297) is delivered as the
+  user typed it, because the harness reads it as its own command only when the
+  prompt is exactly the command. There is no prefix slot to put a notice in.
+
+In both, the outcome is left pending and rides the next turn — the same
+at-least-once carry that covers a turn which never ran.
 
 **`agentNotified` is a column on the private proposal row, not a card field** —
 it is ShipIt's bookkeeping about a delivery, and nothing a viewer reads.
@@ -939,8 +1001,11 @@ affordance ShipIt's own UI puts in front of the user.
 ## Key files
 
 New: `shared/settings-catalogue/` (declarations, `type` constructors, the
-derivations, `exclusions.ts`); `client/components/Settings/setting-binding.ts`
-(`bindSetting`, `settingCopy`) and `declared.tsx` (the standard controls);
+derivations, `exclusions.ts`); `shared/settings-proposal-guidance.ts` (the phase
+table the read and the notice share);
+`client/components/Settings/setting-binding.ts`
+(`bindSetting`, `settingCopy`), `declared.tsx` (the standard controls) and
+`declared-setting.ts` (a declared global boolean's read and write);
 `client/components/Settings/settings-coverage.test.tsx` (the residual guard);
 `services/settings-store-readers.ts` (a reader per owner, for the settings a
 panel of its own stores); `services/settings-read.ts` and
