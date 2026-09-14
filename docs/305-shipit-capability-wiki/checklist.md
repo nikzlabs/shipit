@@ -35,7 +35,7 @@ census in `how-shipit-works.md`.
 - [x] `repos-and-sandboxes.md` — adding a repo, trust, repo colours, sandbox
       sessions and their capabilities, secrets
 - [x] `plugins-and-skills.md` — what the user sees, marketplaces, MCP servers
-- [ ] `deploying.md` — targets, prerequisites, status on the card
+- [x] `deploying.md` — targets, prerequisites, status on the card
 - [x] `troubleshooting.md` — the questions users actually ask when it misbehaves
 - [x] Backing up and moving an installation — a section in
       `installing-and-updating.md`, since there is no whole-install backup to

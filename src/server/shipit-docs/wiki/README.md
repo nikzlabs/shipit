@@ -123,7 +123,11 @@ is. Nobody says "rewind" or "Tailscale" until after they have learned to.
 | "open it on my phone", "reach it from my laptop", "is it safe to expose" | [installing-and-updating.md](installing-and-updating.md) — access |
 | "how much RAM does this need" | [installing-and-updating.md](installing-and-updating.md) — sizing |
 | "how do I back this up", "move it to a new machine", "what if the disk dies" | [installing-and-updating.md](installing-and-updating.md) — backing up, and moving to another machine |
-| "did it deploy" | `/shipit-docs/deployment.md` |
+| "put this online", "how do I actually ship this", "get it on a real URL" | [deploying.md](deploying.md) |
+| "did it deploy", "is it live yet", "where's the link to the deployed site" | [deploying.md](deploying.md) — the deployment row on the pull request |
+| "the deploy failed", "the build broke on Vercel", "why won't it build" | [deploying.md](deploying.md) — when a deploy fails |
+| "why isn't my site updating", "it's still showing the old version" | [deploying.md](deploying.md) |
+| "connect it to Vercel / Netlify / Cloudflare" | [deploying.md](deploying.md) — Project Settings → Deployments, on the repository's menu in the sidebar |
 | "what am I allowed to change in settings" | `shipit settings list` — the live answer, never a page here; [settings-and-accounts.md](settings-and-accounts.md) for what the tabs are for |
 | "what agents/roles can this run" | `shipit agent roles` for the roles, `shipit agent params` for the harnesses, models and effort levels this install has. Neither reports which model *this* conversation is on — that is the picker in the composer |
 | "file that as a bug in ShipIt itself" | `/shipit-docs/bug-filing.md` |
@@ -142,11 +146,11 @@ is. Nobody says "rewind" or "Tailscale" until after they have learned to.
 | [settings-and-accounts.md](settings-and-accounts.md) | The two settings dialogs and their tabs: connecting a provider, several credentials on one service, choosing what a session runs on, roles and the reviewer, background work, usage limits, themes and keyboard shortcuts |
 | [plugins-and-skills.md](plugins-and-skills.md) | Skills and where they come from, installing one from a catalogue, plugin repositories and the Plugins tab, and MCP servers |
 | [troubleshooting.md](troubleshooting.md) | Indexed by the symptom the user describes: a blank preview, a stuck agent, a disabled composer, blocked commits, a diverged branch, silent CI, a dying container, blocked egress, a crashed service |
+| [deploying.md](deploying.md) | Getting the project onto a real URL: connecting a hosting platform, deploying on every push, deploy status on the pull request, what to do when a deploy fails, and what ShipIt does not do |
 
-Areas with no page here yet — the chat surface itself, and deploys — are
-covered from your own side by the operating docs listed in
-[`/shipit-docs/README.md`](../README.md). Answer from those, and say plainly
-when something is outside what you can confirm rather than inventing a feature.
+The chat surface itself has no page here yet. Answer that from the operating
+docs listed in [`/shipit-docs/README.md`](../README.md), and say plainly when
+something is outside what you can confirm rather than inventing a feature.
 
 ## What is never written down here
 
