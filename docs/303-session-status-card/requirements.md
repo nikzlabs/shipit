@@ -1,7 +1,7 @@
 ---
 issue: planning#550
 title: Session status card
-description: An agent-written card at the bottom of the conversation that says what the session is about, where it stands, and what needs the user.
+description: An agent-written card at the bottom of the conversation that says what the session is about, where it stands, what needs the user, and which follow-up actions the agent offers.
 ---
 
 # Session status card
@@ -35,16 +35,18 @@ taken inside one session, without building an agent that talks to many.
 4. The card has two fields: "Status" — what the session is about, how far
    it got, and whether it is done or ready to merge, including agent work
    not yet started — and "Needs you" — the decision or hand action, empty
-   when there is none.
+   when there is none. Below them it carries the agent's offered follow-up
+   actions (req 16).
 5. The agent writes the card at the end of its turn, with a tool call.
 6. The card sits at the bottom of the conversation, stuck to the input
    field: the place where the user already reads the agent's last sentences.
    It is a separate element, always visible, not a message in the transcript.
 7. The card does not appear in the session sidebar. The sidebar already
    carries a lot, and one more line per session would not read at a glance.
-8. The card is always shown, also on a turn that ends with a question card
-   or a follow-up-actions card. Those cards are the last thing in the
-   conversation; the status card stays below them, at the input field.
+8. The card is always shown, also on a turn that ends with a question card.
+   That card is the last thing in the conversation; the status card stays
+   below it, at the input field. (Until 2026-09-14 this also named the
+   follow-up-actions card; since req 16 its actions live on the status card.)
 9. The card does not make a session "need attention". The needs-attention
    indicator works today; the user reads the card after the agent has
    finished, when they already know the session needs them.
@@ -56,13 +58,15 @@ taken inside one session, without building an agent that talks to many.
     it did not, ShipIt sends the agent a further turn that asks for the
     update, on every harness alike. That turn is visible in the conversation,
     as a regular turn, for transparency.
-13. A turn that ended with a question card or a follow-up-actions card is
-    complete without a card update. The card may lag by a turn there;
-    updating it would waste tokens and turns. The card then shows that it may
-    be behind (req 14).
+13. A turn that ended with a question card is complete without a card
+    update. The card may lag by a turn there; updating it would waste tokens
+    and turns. The card then shows that it may be behind (req 14). (Until
+    2026-09-14 this also exempted a turn that ended with a follow-up-actions
+    card; since req 16 the actions are part of the status card, so such a
+    turn updates the card by definition.)
 14. The card always shows whether it is current. When the last finished turn
-    did not update it — because that turn ended with a question or an actions
-    card, or because the agent ignored the nudge — the card is visibly marked
+    did not update it — because that turn ended with a question, or because
+    the agent ignored the nudge — the card is visibly marked
     as possibly stale, in one visual language shared by both cases, so it is
     always clear to the user. No title text is spent on it: a current card
     looks like a regular card; a stale card carries a small "Stale" label in
@@ -70,12 +74,35 @@ taken inside one session, without building an agent that talks to many.
 15. ShipIt nudges once per missing update. If the agent ignores the nudge,
     ShipIt does not nudge again for that turn; the card is marked stale
     (req 14) and the next ordinary turn is checked afresh.
+16. The follow-up actions the agent offers (today the separate action card,
+    docs/207) are part of the status card, written by the same tool. They are
+    the same thing as the card: what can happen next in this session.
+17. Offered actions persist across turns until the user takes them or the
+    agent replaces them. A turn does not clear them. The agent can add
+    actions to the ones already offered, or replace the whole list.
+18. The card shows every offered action that is relevant. Concise means no
+    padding, not fewer actions than the agent has to offer; a separate card
+    would not save height either.
+19. The existing action card is evolved into this, not duplicated beside it:
+    its item shape, its submit path and its renderer are reused.
+20. "Needs you" and the actions stay distinct in meaning, on this card as on
+    two: "Needs you" is what only the user can do by hand; an action is agent
+    work the user approves with a click.
 
 ## Open questions
 
 - None.
 
 ## Resolved questions
+
+- 2026-09-14 — Should the follow-up action card be part of the status card?
+  Yes. Asked for pros and cons, Nik answered the cons one by one: untaken
+  offers should not vanish — the agent can add to or replace the list; the
+  card is "concise but not smaller than needed", so all relevant actions are
+  shown and a separate card saves no height; actions are not cleared each
+  turn; the existing action card should be evolved to simplify the work; and
+  the distinction between "Needs you" and actions holds on one card as on
+  two. → reqs 4, 13, 16–20.
 
 - 2026-09-14 — How is freshness shown? The prototype drew three variants
   (left rail, dot, tinted header), each with a header reading "Current" or

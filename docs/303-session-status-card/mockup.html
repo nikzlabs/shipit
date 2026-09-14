@@ -34,8 +34,12 @@
     font-size: 12px; line-height: 1.45;
   }
   .card { position: relative; }
-  .card.stale .row:last-child .v { padding-right: 44px; }
-  .stale-tag { position: absolute; right: 10px; bottom: 6px; font-size: 11px; font-weight: 600; letter-spacing: .02em; }
+  .actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--color-border-secondary); }
+  .actions label { display: inline-flex; align-items: center; gap: 6px; color: var(--color-text-primary); cursor: default; }
+  .actions input { margin: 0; width: 12px; height: 12px; accent-color: var(--color-accent); }
+  .actions .send { margin-left: auto; font-size: 11px; font-weight: 600; padding: 3px 10px; border-radius: 6px; border: 1px solid var(--color-border-secondary); background: var(--color-bg-primary); color: var(--color-text-primary); }
+  .card.stale .actions .send { margin-right: 44px; }
+  .stale-tag { position: absolute; right: 10px; bottom: 9px; font-size: 11px; font-weight: 600; letter-spacing: .02em; }
   .card.stale .stale-tag { color: var(--color-accent); }
   .row { display: grid; grid-template-columns: 76px 1fr; gap: 10px; }
   .row .k { color: var(--color-text-tertiary); }
@@ -52,9 +56,10 @@
 <h1>Session status card — freshness</h1>
 <p class="lead">
   docs/303 req 14: the state is carried by appearance only, never by title text. A current card is a regular card.
-  A card that may be behind — after a question or actions turn that skipped the update, or after an ignored nudge —
+  A card that may be behind — after a question turn that skipped the update, or after an ignored nudge —
   carries a small "Stale" label in its bottom-right corner, in the theme accent (<code>--color-accent</code>).
-  In place above the composer, on a light and a dark theme.
+  Below the two fields sit the agent's offered follow-up actions (req 16–18): every relevant one, persisting across turns,
+  ticked and sent once. In place above the composer, on a light and a dark theme.
 </p>
 
 <div class="boards" id="boards"></div>
@@ -63,6 +68,12 @@
   <div class="card" title="">
     <div class="row"><span class="k">Status</span><span class="v">Billing service: routes and tests done; PR #212 ready to merge. Webhook not started.</span></div>
     <div class="row"><span class="k">Needs you</span><span class="v">Add the Stripe test key in Settings → Secrets.</span></div>
+    <div class="actions">
+      <label><input type="checkbox" checked> Wire the Stripe webhook</label>
+      <label><input type="checkbox"> Add retry on 5xx from Stripe</label>
+      <label><input type="checkbox" checked> Update the API docs for /billing</label>
+      <button class="send" type="button">Send</button>
+    </div>
   </div>
 </template>
 
