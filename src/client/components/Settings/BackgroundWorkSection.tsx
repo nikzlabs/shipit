@@ -182,7 +182,12 @@ export function BackgroundWorkSection({ agentList = [] }: { agentList?: AgentOpt
               agree about what it is.
             */
             <p className="mt-1 text-[11px] text-(--color-warning)">
-              {pinned.modelId} is no longer available — its credential or its harness is gone.
+              {/*
+                No cause is named: a stale pin says only that it is not among the
+                offered options, which also happens with the credential present
+                and its harness installed (docs/299-direct-provider-calls req 3).
+              */}
+              {pinned.modelId} can no longer run background work on this install.
               Background work is failing until you pick another provider.
             </p>
           )}
