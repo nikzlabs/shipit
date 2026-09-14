@@ -135,7 +135,7 @@ describe("ensureRepoReady", () => {
     const store = new Map<string, { status: string }>([[userUrl, { status: "ready" }]]);
     const added: string[] = [];
     const key = await ensureRepoReady(
-      "https://x-access-token:github_pat_ABC123@GitHub.com/acme/shipit", // gitleaks:allow — fake token; the point is that it is stripped
+      "https://x-access-token:pw@GitHub.com/acme/shipit",
       {
         repoStore: {
           get: (u) => store.get(u),
@@ -151,12 +151,12 @@ describe("ensureRepoReady", () => {
     expect(key).toBe(userUrl);
   });
 
-  it("registers a credential-free key (never the embedded PAT) when no entry exists", async () => {
+  it("registers a credential-free key, never the embedded credential, when no entry exists", async () => {
     const store = new Map<string, { status: string }>();
     const added: string[] = [];
     const clonedFrom: string[] = [];
     const key = await ensureRepoReady(
-      "https://x-access-token:github_pat_SECRET@github.com/acme/shipit.git", // gitleaks:allow — fake token; the point is that it is stripped
+      "https://x-access-token:pw@github.com/acme/shipit.git",
       {
         repoStore: {
           get: (u) => store.get(u),
@@ -170,6 +170,6 @@ describe("ensureRepoReady", () => {
     );
     expect(key).toBe("https://github.com/acme/shipit.git");
     expect(added).toEqual(["https://github.com/acme/shipit.git"]);
-    expect(JSON.stringify({ key, added, clonedFrom })).not.toContain("github_pat_SECRET"); // gitleaks:allow
+    expect(JSON.stringify({ key, added, clonedFrom })).not.toContain("x-access-token");
   });
 });
