@@ -299,10 +299,14 @@ describe("scopeUnreadableReason", () => {
 });
 
 describe("saved is not effective", () => {
+  // `startedWith` is the capability the RUNNING container took, which is not the
+  // stored one: revoking a sandbox's network capability saves without rebuilding
+  // the container.
   const network = (
     over: Parameters<typeof egressStore>[0],
     container?: { status?: string; egressContainedAtStart?: boolean },
     resolved?: { contained: boolean; userHostsExcluded?: boolean },
+    startedWith?: { network: boolean } | null,
   ) =>
     deps({
       egressAllowlistStore: egressStore(over),
@@ -310,6 +314,7 @@ describe("saved is not effective", () => {
       containerManager: {
         get: () => container,
         resolveEgress: () => resolved,
+        capabilitiesAtStart: () => startedWith ?? null,
       },
     });
 
@@ -343,6 +348,45 @@ describe("saved is not effective", () => {
     );
     expect(entry.effect.state).toBe("excluded");
     expect(entry.effect.detail).toContain("network capability");
+  });
+
+  /*
+    Which setting DECIDES this session's containment is a question about the
+    stored capability — `sandboxLifelineEgressConfig` intercepts a network-off
+    sandbox at every resolution, so the global setting is irrelevant to it now
+    and at every future start. What that says nothing about is the container in
+    front of the user: revoking the capability saves without rebuilding it
+    (`updateSandboxCapabilities`), so a session that started open is still open.
+    Returning on the capability alone dropped that answer.
+  */
+  it("names the capability AND what the container it is running in is doing", async () => {
+    const entry = await getSettingForAgent(
+      network(
+        { globalEnabled: false },
+        { status: "running", egressContainedAtStart: false },
+        { contained: true, userHostsExcluded: true },
+        { network: true },
+      ),
+      "s1",
+      "network.egressContained",
+    );
+    expect(entry.effect.state).toBe("excluded");
+    expect(entry.effect.detail).toContain("network capability");
+    expect(entry.effect.detail).toContain("started open");
+  });
+
+  it("names a per-session override AND what the container it is running in is doing", async () => {
+    const entry = await getSettingForAgent(
+      network(
+        { globalEnabled: false, override: true },
+        { status: "running", egressContainedAtStart: false },
+      ),
+      "s1",
+      "network.egressContained",
+    );
+    expect(entry.effect.state).toBe("excluded");
+    expect(entry.effect.detail).toContain("own network mode");
+    expect(entry.effect.detail).toContain("started open");
   });
 
   it("says uncertain when a running container's boot mode is unknown", async () => {
@@ -413,7 +457,11 @@ describe("saved is not effective", () => {
       deps({
         egressAllowlistStore: egressStore(over),
         egressEnforcementStatus: "no-sidecar",
-        containerManager: { get: () => container, resolveEgress: () => undefined },
+        containerManager: {
+          get: () => container,
+          resolveEgress: () => undefined,
+          capabilitiesAtStart: () => null,
+        },
       });
 
     it("names the refusal on the containment setting rather than calling it irrelevant", async () => {
@@ -466,6 +514,7 @@ describe("saved is not effective", () => {
           containerManager: {
             get: () => undefined,
             resolveEgress: () => ({ contained: true, userHostsExcluded: true }),
+            capabilitiesAtStart: () => null,
           },
         }),
         "s1",

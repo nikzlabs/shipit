@@ -638,6 +638,7 @@ describe("the global egress allowlist", () => {
       containerManager: {
         get: () => ({ status: "running", egressContainedAtStart: true }),
         resolveEgress: () => ({ contained: true }),
+        capabilitiesAtStart: () => null,
       },
     });
     expect(entry.effect.state).toBe("restart-dependent");
@@ -654,6 +655,7 @@ describe("the global egress allowlist", () => {
       containerManager: {
         get: () => ({ status: "running", egressContainedAtStart: true }),
         resolveEgress: () => ({ contained: false }),
+        capabilitiesAtStart: () => null,
       },
     });
     expect(entry.effect.state).toBe("restart-dependent");
@@ -667,6 +669,7 @@ describe("the global egress allowlist", () => {
       containerManager: {
         get: () => ({ status: "running", egressContainedAtStart: false }),
         resolveEgress: () => ({ contained: true }),
+        capabilitiesAtStart: () => null,
       },
     });
     expect(entry.effect.state).toBe("restart-dependent");
@@ -679,6 +682,7 @@ describe("the global egress allowlist", () => {
       containerManager: {
         get: () => ({ status: "running" }),
         resolveEgress: () => ({ contained: true }),
+        capabilitiesAtStart: () => null,
       },
     });
     expect(entry.effect.state).toBe("uncertain");
@@ -691,6 +695,7 @@ describe("the global egress allowlist", () => {
       containerManager: {
         get: () => undefined,
         resolveEgress: () => ({ contained: false }),
+        capabilitiesAtStart: () => null,
       },
     });
     expect(entry.effect.state).toBe("excluded");
@@ -703,10 +708,107 @@ describe("the global egress allowlist", () => {
       containerManager: {
         get: () => ({ status: "running", egressContainedAtStart: true }),
         resolveEgress: () => ({ contained: true, userHostsExcluded: true }),
+        // Sealed at start too: no capability changed under this container.
+        capabilitiesAtStart: () => ({ network: false }),
       },
     });
     expect(entry.effect.state).toBe("excluded");
     expect(entry.effect.detail).toContain("network capability");
+  });
+
+  /*
+    Revoking a sandbox's network capability saves WITHOUT rebuilding the
+    container (`services/session-settings.ts` → `updateSandboxCapabilities`,
+    which emits a `pendingRestart` card), so the resolver's `userHostsExcluded`
+    answers for the next start while the container is still running under the
+    capability it took. Reading the exclusion off the resolver alone told such a
+    session it was sealed from the allowlist — req 3's exact failure, on the
+    surface that exists to explain a blocker.
+  */
+  describe("a capability that changed after the container started", () => {
+    const capabilities = (
+      container: { status?: string; egressContainedAtStart?: boolean } | undefined,
+      resolved: { contained: boolean; userHostsExcluded?: boolean },
+      startedWith: { network: boolean } | null,
+    ): Partial<SettingsReadDeps> => ({
+      egressEnforcementStatus: "active",
+      containerManager: {
+        get: () => container,
+        resolveEgress: () => resolved,
+        capabilitiesAtStart: () => startedWith,
+      },
+    });
+
+    it("does not tell a container that started open that it is sealed from the allowlist", async () => {
+      const entry = await detail("network.egress.hosts", capabilities(
+        { status: "running", egressContainedAtStart: false },
+        { contained: true, userHostsExcluded: true },
+        { network: true },
+      ));
+      expect(entry.effect.state).toBe("excluded");
+      // What is in force: nothing restricts it, and the user is owed that first.
+      expect(entry.effect.detail).toContain("started open");
+      // And what the next start does, which is why the state is still excluded.
+      expect(entry.effect.detail).toContain("no restart makes a host here reachable");
+    });
+
+    it("says a still-contained container is enforcing the list it took, before the sealing", async () => {
+      const entry = await detail("network.egress.hosts", capabilities(
+        { status: "running", egressContainedAtStart: true },
+        { contained: true, userHostsExcluded: true },
+        { network: true },
+      ));
+      expect(entry.effect.state).toBe("excluded");
+      expect(entry.effect.detail).toContain("still enforcing");
+      expect(entry.effect.detail).toContain("switched off since");
+    });
+
+    it("cannot say what a rediscovered container is enforcing, and does not pretend to", async () => {
+      // No boot record at all, so the start-time capability is unknown too.
+      const entry = await detail("network.egress.hosts", capabilities(
+        { status: "running" },
+        { contained: true, userHostsExcluded: true },
+        null,
+      ));
+      expect(entry.effect.state).toBe("excluded");
+      expect(entry.effect.detail).toContain("rediscovered");
+    });
+
+    it("says a container that started sealed reaches no host on the list, once the capability is back", async () => {
+      // The mirror image: granting the capability leaves the running container
+      // sealed to ShipIt's own lifeline hosts until it restarts.
+      const entry = await detail("network.egress.hosts", capabilities(
+        { status: "running", egressContainedAtStart: true },
+        { contained: true },
+        { network: false },
+      ));
+      expect(entry.effect.state).toBe("restart-dependent");
+      expect(entry.effect.detail).toContain("no host on this list is reachable");
+      expect(entry.effect.detail).toContain("from its next start");
+    });
+
+    it("promises no allowlist after a restart when nothing will contain the session", async () => {
+      const entry = await detail("network.egress.hosts", capabilities(
+        { status: "running", egressContainedAtStart: true },
+        { contained: false },
+        { network: false },
+      ));
+      expect(entry.effect.state).toBe("excluded");
+      expect(entry.effect.detail).toContain("no host on this list is reachable");
+      expect(entry.effect.detail).toContain("nothing contains the session");
+    });
+
+    it("leaves a sandbox nothing changed under saying exactly what it said before", async () => {
+      const entry = await detail("network.egress.hosts", capabilities(
+        { status: "running", egressContainedAtStart: true },
+        { contained: true, userHostsExcluded: true },
+        { network: false },
+      ));
+      expect(entry.effect).toEqual({
+        state: "excluded",
+        detail: "This session's own network capability excludes it from the allowlist, and no restart makes a host here reachable from it. The session's network capability is what has to change.",
+      });
+    });
   });
 
   it("emits nothing of an entry that is not shaped like a host, and gives it no address", async () => {

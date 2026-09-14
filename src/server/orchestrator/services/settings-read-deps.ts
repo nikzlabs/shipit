@@ -33,6 +33,16 @@ export interface SettingsReadDeps {
     get(sessionId: string): { status?: string; egressContainedAtStart?: boolean } | undefined;
     /** The shipped resolver, so sandbox capabilities are honoured, not re-derived. */
     resolveEgress(sessionId: string): { contained: boolean; userHostsExcluded?: boolean } | undefined;
+    /**
+     * The capabilities the RUNNING container started with — null when none is
+     * running and for one rediscovered after a ShipIt restart, which recorded
+     * none. `resolveEgress` answers for the NEXT start, so a probe that has to
+     * say what is in force reads this instead (`settings-read.ts` →
+     * `startedUserHostsExcluded`). Required rather than optional: an effect
+     * answer sourced from the wrong one of the two is the failure req 3 exists
+     * to prevent, so a caller cannot leave it out.
+     */
+    capabilitiesAtStart(sessionId: string): { network: boolean } | null;
   } | undefined;
   /** Injected by tests; the release channel otherwise comes off the host checkout. */
   readReleaseChannel?: (() => Promise<string>) | undefined;

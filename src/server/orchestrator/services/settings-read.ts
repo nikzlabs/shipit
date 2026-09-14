@@ -416,12 +416,64 @@ const NO_SIDECAR_REFUSAL =
  * dropped the sandbox, override and running-container answers.
  */
 function startupRefusal(deps: SettingsReadDeps, contained: boolean): string {
-  return contained && enforcementStatus(deps) === "no-sidecar" ? ` ${NO_SIDECAR_REFUSAL}` : "";
+  return contained && enforcementStatus(deps) === "no-sidecar" ? NO_SIDECAR_REFUSAL : "";
 }
 
-function withRefusal(effect: SettingEffect, refusal: string): SettingEffect {
-  if (!refusal) return effect;
-  return { state: effect.state, detail: `${effect.detail ?? ""}${refusal}`.trim() };
+/**
+ * A second true fact about the same session, appended rather than replacing the
+ * first. Every "what the next start does" answer here rides an answer about what
+ * is in force now, because both are true and the user is looking at the
+ * container the second one describes.
+ */
+function alsoSay(effect: SettingEffect, sentence: string): SettingEffect {
+  if (!sentence) return effect;
+  return { state: effect.state, detail: `${effect.detail ?? ""} ${sentence}`.trim() };
+}
+
+/**
+ * Whether the RUNNING container excludes the user's hosts — null when nothing
+ * running answers, which is a container rediscovered after a ShipIt restart as
+ * well as no container at all.
+ *
+ * Deliberately NOT `resolveEgress`'s `userHostsExcluded`: revoking a sandbox's
+ * network capability saves without rebuilding the container
+ * (`services/session-settings.ts` → `updateSandboxCapabilities`, which emits a
+ * `pendingRestart` card), so the resolver answers for the next start while this
+ * answers for the container the user is asking about.
+ */
+function startedUserHostsExcluded(deps: SettingsReadDeps, sessionId: string): boolean | null {
+  const started = deps.containerManager?.capabilitiesAtStart(sessionId);
+  return started ? !started.network : null;
+}
+
+/**
+ * What the RUNNING container is doing about containment, or null when it agrees
+ * with the resolved policy and there is nothing extra to say. Computed once and
+ * carried by the branches above it: a capability or a per-session override
+ * decides what the NEXT start does and says nothing about a container that
+ * started before the change.
+ */
+function runningContainmentEffect(
+  deps: SettingsReadDeps,
+  sessionId: string,
+  resolved: boolean,
+): SettingEffect | null {
+  const container = deps.containerManager?.get(sessionId);
+  if (container?.status !== "running") return null;
+  const startedContained = container.egressContainedAtStart;
+  // A rediscovered container has no recorded boot policy, which
+  // `session-container.ts` treats as unknown rather than as the current one.
+  if (startedContained === undefined) {
+    return {
+      state: "uncertain",
+      detail: "This session's container was rediscovered after a ShipIt restart, so ShipIt does not know which network mode it started under. Restarting the session is what makes the stored value certain.",
+    };
+  }
+  if (startedContained === resolved) return null;
+  return {
+    state: "restart-dependent",
+    detail: `This session's container started ${startedContained ? "contained" : "open"} and stays that way until it is restarted.`,
+  };
 }
 
 /**
@@ -429,6 +481,13 @@ function withRefusal(effect: SettingEffect, refusal: string): SettingEffect {
  * containment is already fixed, which is exactly the case the user is
  * unblocking — so containment is resolved against what is running rather than
  * inferred from whether a reload ran (plan.md → Saved is not effective).
+ *
+ * **Which setting DECIDES this session's containment is a question about the
+ * stored capability**, and that is why this probe reads it from `resolveEgress`:
+ * `sandboxLifelineEgressConfig` intercepts a network-off sandbox at every
+ * resolution, so the global setting is irrelevant to it now and at every future
+ * start. What the stored capability cannot answer is what the container in front
+ * of the user is doing, so that answer rides along instead of being dropped.
  */
 function egressContainmentEffect(deps: SettingsReadDeps, sessionId: string): SettingEffect {
   const disabled = enforcementDisabledEffect(deps, "this setting changes nothing");
@@ -443,40 +502,24 @@ function egressContainmentEffect(deps: SettingsReadDeps, sessionId: string): Set
   const config = deps.containerManager?.resolveEgress(sessionId);
   const resolved = config?.contained ?? store.resolveContained(sessionId);
   const blocked = startupRefusal(deps, resolved);
+  const running = runningContainmentEffect(deps, sessionId, resolved);
   if (config?.userHostsExcluded) {
     // Blocked still rides this one: granting the capability leaves global
     // containment on, so the start is refused for the second reason too.
-    return withRefusal({
+    return alsoSay(alsoSay({
       state: "excluded",
       detail: "This session's own network capability decides its containment, and no restart makes the global setting apply to it. The session's network capability is what has to change.",
-    }, blocked);
+    }, running?.detail ?? ""), blocked);
   }
   const override = store.getSessionOverride(sessionId);
   if (override !== null) {
-    return withRefusal({
+    return alsoSay(alsoSay({
       state: "excluded",
       detail: `This session sets its own network mode (${override ? "contained" : "open"}), which wins over the global setting. Changing the global one does not change this session.`,
-    }, blocked);
+    }, running?.detail ?? ""), blocked);
   }
-  const container = deps.containerManager?.get(sessionId);
-  if (container?.status === "running") {
-    const startedContained = container.egressContainedAtStart;
-    // A rediscovered container has no recorded boot policy, which
-    // `session-container.ts` treats as unknown rather than as the current one.
-    if (startedContained === undefined) {
-      return withRefusal({
-        state: "uncertain",
-        detail: "This session's container was rediscovered after a ShipIt restart, so ShipIt does not know which network mode it started under. Restarting the session is what makes the stored value certain.",
-      }, blocked);
-    }
-    if (startedContained !== resolved) {
-      return withRefusal({
-        state: "restart-dependent",
-        detail: `This session's container started ${startedContained ? "contained" : "open"} and stays that way until it is restarted.`,
-      }, blocked);
-    }
-  }
-  return withRefusal({ state: "live" }, blocked);
+  if (running) return alsoSay(running, blocked);
+  return alsoSay({ state: "live" }, blocked);
 }
 
 /**
@@ -494,6 +537,15 @@ function egressContainmentEffect(deps: SettingsReadDeps, sessionId: string): Set
  * That is req 3's exact failure: the surface that exists to explain a blocker
  * describing a state that is not the one blocking. So containment is resolved
  * the way the adjacent probe resolves it, against what is running.
+ *
+ * **The session's network capability splits into two questions here, and they
+ * have two different sources.** Whether a change to this list can EVER reach the
+ * session is the next start's capability, because a global host add reloads
+ * nothing live (`services/settings-apply.ts` → `applyEgressHostAdd`) and the
+ * next container start resolves the capability afresh. Whether the list is
+ * restricting the session NOW is the running container's start-time capability:
+ * revoking a sandbox's leaves the container as it was, so the stored one says a
+ * session is sealed while it is still reaching every host it started with.
  */
 function egressAllowlistEffect(deps: SettingsReadDeps, sessionId: string): SettingEffect {
   const disabled = enforcementDisabledEffect(deps, "the allowlist restricts nothing");
@@ -513,25 +565,50 @@ function egressAllowlistEffect(deps: SettingsReadDeps, sessionId: string): Setti
     be wrong for exactly that session.
   */
   const blocked = startupRefusal(deps, contained);
+  const container = deps.containerManager?.get(sessionId);
+  const running = container?.status === "running";
+  const startedExcluded = startedUserHostsExcluded(deps, sessionId);
   if (config?.userHostsExcluded) {
-    return withRefusal({
+    // A running container ShipIt cannot vouch for is not one it may describe as
+    // sealed: it started before the capability was read here, or recorded
+    // nothing at all.
+    const stale = running && startedExcluded !== true;
+    return alsoSay({
       state: "excluded",
-      detail: "This session's own network capability excludes it from the allowlist, and no restart makes a host here reachable from it. The session's network capability is what has to change.",
+      detail: stale
+        ? `${allowlistInForce(container)} This session's network capability has been switched off since, so restarting it seals the session and no restart makes a host here reachable from it.`
+        : "This session's own network capability excludes it from the allowlist, and no restart makes a host here reachable from it. The session's network capability is what has to change.",
     }, blocked);
   }
-  const container = deps.containerManager?.get(sessionId);
-  if (container?.status === "running") {
-    const startedContained = container.egressContainedAtStart;
+  if (startedExcluded) {
+    // The mirror image: the capability was granted after this container started,
+    // so it is still sealed to ShipIt's own lifeline hosts.
+    const now = "This session's container started with its network capability switched off, so no host on this list is reachable from it.";
+    return alsoSay(
+      contained
+        ? {
+            state: "restart-dependent",
+            detail: `${now} The capability is on again now, and the allowlist applies to the session from its next start.`,
+          }
+        : {
+            state: "excluded",
+            detail: `${now} The capability is on again now and nothing contains the session, so a restart does not put it under the allowlist either.`,
+          },
+      blocked,
+    );
+  }
+  if (running) {
+    const startedContained = container?.egressContainedAtStart;
     // A rediscovered container has no recorded boot policy, which
     // `session-container.ts` treats as unknown rather than as the current one.
     if (startedContained === undefined) {
-      return withRefusal({
+      return alsoSay({
         state: "uncertain",
         detail: "This session's container was rediscovered after a ShipIt restart, so ShipIt does not know whether it is enforcing the allowlist. Restarting the session is what settles it.",
       }, blocked);
     }
     if (!startedContained) {
-      return withRefusal(
+      return alsoSay(
         contained
           ? {
               state: "restart-dependent",
@@ -544,7 +621,7 @@ function egressAllowlistEffect(deps: SettingsReadDeps, sessionId: string): Setti
         blocked,
       );
     }
-    return withRefusal({
+    return alsoSay({
       state: "restart-dependent",
       detail: contained
         ? "This session's container took its allowlist when it started; a change here applies the next time it starts."
@@ -557,7 +634,18 @@ function egressAllowlistEffect(deps: SettingsReadDeps, sessionId: string): Setti
       detail: "This session is not contained, so its network access does not depend on the allowlist.",
     };
   }
-  return withRefusal({ state: "live" }, blocked);
+  return alsoSay({ state: "live" }, blocked);
+}
+
+/** What the RUNNING container is doing about the allowlist, in one sentence. */
+function allowlistInForce(container: { egressContainedAtStart?: boolean } | undefined): string {
+  const startedContained = container?.egressContainedAtStart;
+  if (startedContained === undefined) {
+    return "This session's container was rediscovered after a ShipIt restart, so ShipIt does not know whether it is enforcing the allowlist.";
+  }
+  return startedContained
+    ? "This session's container started contained and is still enforcing the allowlist it took then."
+    : "This session's container started open, so the allowlist does not restrict it.";
 }
 
 /**
