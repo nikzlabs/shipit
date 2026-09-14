@@ -1017,3 +1017,147 @@ describe("runNonTurnDirect — reports failure, never renders it", () => {
     expect(outcome).toEqual({ ok: true, text: "Add a React useEffect" });
   });
 });
+
+/**
+ * Voice cleanup's own deadline aborts the call, inserts the raw transcript and
+ * walks away — but the provider was already spending. A run nobody can price
+ * still has to appear somewhere (docs/299-direct-provider-calls req 7), so this
+ * reads the rows a real UsageManager wrote: an empty table and a table holding
+ * one amount-less row are the two outcomes that must not be confused.
+ */
+describe("runNonTurnDirect — a call cut off before its amount could be read still reports a run", () => {
+  let dbManager: DatabaseManager;
+  let usageManager: UsageManager;
+
+  beforeEach(() => {
+    dbManager = new DatabaseManager(":memory:");
+    usageManager = new UsageManager(dbManager);
+  });
+  afterEach(() => {
+    dbManager.close();
+  });
+
+  const target = {
+    execution: "direct" as const,
+    selection: { serviceId: "anthropic", billingMode: "key" as const, modelId: "haiku" },
+    serviceName: "Anthropic",
+    source: "default" as const,
+    call: {
+      style: "anthropic-messages" as const,
+      baseUrl: "https://api.anthropic.com",
+      apiModelId: "claude-haiku-4-5",
+      storageEnv: "ANTHROPIC_API_KEY",
+    },
+    apiKey: "sk-direct",
+  };
+
+  const allRows = () =>
+    dbManager.db.prepare("SELECT * FROM usage_turns ORDER BY id").all() as Record<string, unknown>[];
+
+  function abortingFetch(controller: AbortController): typeof fetch {
+    return (async () => {
+      controller.abort();
+      throw Object.assign(new Error("This operation was aborted"), { name: "AbortError" });
+    }) as unknown as typeof fetch;
+  }
+
+  async function cleanWithDeadlineHit(controller: AbortController) {
+    const { runNonTurnDirect } = await import("./non-turn-work.js");
+    return runNonTurnDirect(
+      { usageManager, fetchImpl: abortingFetch(controller) },
+      {
+        sessionId: null,
+        purpose: "voice-cleanup",
+        target,
+        prompt: "clean this",
+        signal: controller.signal,
+      },
+    );
+  }
+
+  it("writes the run with no amounts rather than dropping it", async () => {
+    const controller = new AbortController();
+
+    expect((await cleanWithDeadlineHit(controller)).ok).toBe(false);
+
+    const rows = allRows();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      session_id: null,
+      service_id: "anthropic",
+      billing_mode: "key",
+      model: "haiku",
+      background_work: 1,
+      sub_agent_id: null,
+      cost_usd: 0,
+    });
+    // NULL, not zero: nobody measured these, and a zero would claim they were.
+    expect(rows[0]!.input_tokens).toBeNull();
+    expect(rows[0]!.output_tokens).toBeNull();
+    expect(rows[0]!.cache_read_tokens).toBeNull();
+    expect(rows[0]!.cache_create_tokens).toBeNull();
+  });
+
+  it("shows it install-wide, since a dictation belongs to no session", async () => {
+    await cleanWithDeadlineHit(new AbortController());
+
+    const stats = usageManager.getStats();
+    expect(stats.sessions).toEqual([]);
+    expect(stats.groups.map((g) => g.key)).toEqual(["install:anthropic:key"]);
+    expect(stats.groups[0]!.installLevel).toBe(true);
+    expect(stats.groups[0]!.models).toEqual(["haiku"]);
+    expect(stats.totalTurns).toBe(1);
+    // The amount is unknown, so no figure is invented for the money totals.
+    expect(stats.totals.meteredCostUsd).toBe(0);
+  });
+
+  // The provider answered 200 and was writing an answer when the socket died.
+  // Nobody cancelled anything, and the run was billed just the same.
+  it("writes the run when the response body is lost to a dropped socket", async () => {
+    const { runNonTurnDirect } = await import("./non-turn-work.js");
+    const fetchImpl = (async () => new Response(
+      new ReadableStream({
+        start: (c) => {
+          c.enqueue(new TextEncoder().encode('{"content":[{"type":"text"'));
+          c.error(new TypeError("terminated"));
+        },
+      }),
+      { status: 200, headers: { "Content-Type": "application/json" } },
+    )) as unknown as typeof fetch;
+
+    await runNonTurnDirect({ usageManager, fetchImpl }, {
+      sessionId: null,
+      purpose: "voice-cleanup",
+      target,
+      prompt: "clean this",
+    });
+
+    const rows = allRows();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ service_id: "anthropic", cost_usd: 0, background_work: 1 });
+    expect(rows[0]!.output_tokens).toBeNull();
+  });
+
+  it("records nothing when the deadline had already passed before the request went out", async () => {
+    const controller = new AbortController();
+    controller.abort();
+
+    await cleanWithDeadlineHit(controller);
+
+    expect(allRows()).toEqual([]);
+  });
+
+  it("records nothing for a failure the provider answered, which it does not bill", async () => {
+    const { runNonTurnDirect } = await import("./non-turn-work.js");
+    const fetchImpl = (async () => new Response("no key", { status: 401 })) as unknown as typeof fetch;
+
+    await runNonTurnDirect({ usageManager, fetchImpl }, {
+      sessionId: null,
+      purpose: "voice-cleanup",
+      target,
+      prompt: "clean this",
+    });
+
+    expect(allRows()).toEqual([]);
+  });
+});
