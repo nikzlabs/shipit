@@ -59,8 +59,15 @@ export class CleanupContainerManager implements BackgroundHarnessRunner {
   private consecutiveFailures = 0;
   private retryTimer: NodeJS.Timeout | null = null;
   private lastFailure: string | null = null;
-  private adoptedUnverified = false;
-  /** Spawns running in the shared container right now; a replacement waits for zero. */
+  /**
+   * The adopted container's id, until a run inside it succeeds. Keyed by id and
+   * not a flag: a container this process *created* is not provisional, and a
+   * flag outlives the container it described — an adopted container that dies
+   * before any run succeeds is recreated, and the flag would condemn the
+   * replacement on its first ordinary failure.
+   */
+  private adoptedUnverifiedId: string | null = null;
+  /** Spawns awaiting the worker right now; a replacement waits for zero. */
   private inFlightSpawns = 0;
   private stopped = false;
   private readonly onContainerExited: (sessionId: string) => void;
@@ -200,7 +207,7 @@ export class CleanupContainerManager implements BackgroundHarnessRunner {
       }
       console.log(`[cleanup-container] adopted the running container at ${sc.workerUrl}`);
       this.lastFailure = null;
-      this.adoptedUnverified = true;
+      this.adoptedUnverifiedId = sc.id;
       return sc;
     } catch (err) {
       console.warn("[cleanup-container] could not adopt a running container:", getErrorMessage(err));
@@ -340,14 +347,15 @@ export class CleanupContainerManager implements BackgroundHarnessRunner {
    * so a failing dictation does not wait for a container teardown it started.
    */
   private noteRunOutcome(sc: SessionContainer, outcome: SubAgentRunResult): void {
-    if (!this.adoptedUnverified || this.stopped) return;
+    if (this.adoptedUnverifiedId !== sc.id || this.stopped) return;
     if (outcome.status === "success") {
-      this.adoptedUnverified = false;
+      this.adoptedUnverifiedId = null;
       return;
     }
-    // Replace only once the container is idle: another dictation may be mid-run
-    // in it, and one request's failure must disturb no other work (req 9). The
-    // signal is not lost by waiting — the flag stays set until a run succeeds.
+    // Replace only once no other spawn is awaiting this worker: destroying the
+    // container takes any dictation still running in it, and one request's
+    // failure must disturb no other work (req 9). Waiting loses nothing — the
+    // id stays provisional until a run succeeds, so the next failure acts.
     if (this.inFlightSpawns > 0) return;
     void this.replaceUnverifiedAdoption(sc);
   }
@@ -383,19 +391,38 @@ export class CleanupContainerManager implements BackgroundHarnessRunner {
    * torn down by an unrelated failure.
    */
   private async replaceUnverifiedAdoption(sc: SessionContainer): Promise<void> {
-    if (!this.adoptedUnverified || this.stopped) return;
-    this.adoptedUnverified = false;
+    if (this.adoptedUnverifiedId !== sc.id || this.stopped) return;
+    this.adoptedUnverifiedId = null;
     if (this.deps.containerManager.get(CLEANUP_CONTAINER_SESSION_ID)?.id !== sc.id) return;
+    // Hold the acquisition lock across the whole replacement, and take it before
+    // the first await. `destroyContainer` leaves the entry reading "stopping"
+    // across several Docker calls (`container-lifecycle.ts:966`), so a dictation
+    // arriving inside that window would start a *second* teardown — which then
+    // reaps this one's replacement: the session-wide resource cleanup and the
+    // final `containers.delete` are both unconditional (`:993`, `:1016`).
+    if (this.ensuring) return;
     console.warn("[cleanup-container] the adopted container did not clean a transcript — replacing it");
+    this.ensuring = this.destroyAndRebuild().finally(() => { this.ensuring = null; });
+    await this.ensuring;
+  }
+
+  private async destroyAndRebuild(): Promise<SessionContainer | null> {
     try {
       await this.deps.containerManager.destroy(
         CLEANUP_CONTAINER_SESSION_ID, { replacementFollows: true },
       );
     } catch (err) {
       console.warn("[cleanup-container] could not replace it:", getErrorMessage(err));
-      return;
+      return null;
     }
-    this.noteContainerGone();
+    // The teardown awaits Docker, so shutdown can land inside it — the same
+    // window `acquire()` guards, reached by a different path.
+    if (this.stopped) return null;
+    // Rebuild inside the lock rather than leaving it to the retry timer: req 8
+    // is about the container being up before the next dictation.
+    const replacement = await this.create();
+    if (!replacement) this.reviveSoon();
+    return replacement;
   }
 
   private async cancelSpawn(sc: SessionContainer, spawnId: string): Promise<void> {

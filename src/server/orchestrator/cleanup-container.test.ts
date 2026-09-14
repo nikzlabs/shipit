@@ -20,9 +20,12 @@ let spawnReply: (body: Record<string, unknown>, signal?: AbortSignal) => Promise
 
 /** Spawns still awaiting a worker, so the fixture can take their container away. */
 const inFlight: { url: string; reject: (err: Error) => void }[] = [];
+/** Workers whose container is gone: a later request must not reach them either. */
+const deadWorkers = new Set<string>();
 
 /** What a request sees when the container it is running in is destroyed. */
 function killWorker(url: string): void {
+  deadWorkers.add(url);
   for (const entry of inFlight.splice(0)) {
     if (entry.url === url) entry.reject(new Error("socket hang up"));
     else inFlight.push(entry);
@@ -40,6 +43,7 @@ vi.mock("./worker-http.js", () => ({
     opts?: { signal?: AbortSignal; timeoutMs?: number },
   ) => {
     posts.push({ url, path: p, body, timeoutMs: opts?.timeoutMs });
+    if (deadWorkers.has(url)) throw new Error("connect ECONNREFUSED");
     if (p !== "/agent/spawn") return { cancelled: true };
     const racers: Promise<unknown>[] = [
       spawnReply(body, opts?.signal),
@@ -68,6 +72,8 @@ class FakeContainerManager extends EventEmitter {
   survivor: { id: string; workerBuildId?: string } | null = null;
   /** Holds an adoption open after it has published its entry, as the real one does. */
   adoptGate: Promise<void> | null = null;
+  /** Holds a teardown open after it has marked the entry stopping, as the real one does. */
+  destroyGate: Promise<void> | null = null;
 
   async isTrackedContainerRunning(): Promise<boolean | undefined> { return this.trackedRunning; }
 
@@ -114,6 +120,11 @@ class FakeContainerManager extends EventEmitter {
   async destroy(sessionId: string): Promise<void> {
     const sc = this.containers.get(sessionId);
     this.destroyed.push(sessionId);
+    // The real teardown marks the entry stopping and then awaits Docker
+    // (container-lifecycle.ts:966); deleting it at once hides everything that
+    // can arrive in between, including a second teardown.
+    if (sc) (sc as { status: string }).status = "stopping";
+    if (this.destroyGate) await this.destroyGate;
     this.containers.delete(sessionId);
     // Destroying the container takes every request running inside it; a fixture
     // that skipped this could not fail on a replacement made mid-flight.
@@ -148,6 +159,7 @@ describe("CleanupContainerManager", () => {
   beforeEach(() => {
     posts.length = 0;
     inFlight.length = 0;
+    deadWorkers.clear();
     spawnReply = async () => ({ status: "success", text: "cleaned", truncated: false, durationMs: 5, costUsd: 0 });
     root = fs.mkdtempSync(path.join(os.tmpdir(), "cleanup-container-"));
   });
@@ -360,6 +372,131 @@ describe("CleanupContainerManager", () => {
 
     expect((await slowRun).text).toBe("cleaned");
     mgr.stop();
+  });
+
+  /**
+   * Deferring the replacement must not discard it: when every dictation in the
+   * container has failed, the container is still unproven and still has to go,
+   * or waiting for idle would be a way of never replacing a busy wedge.
+   */
+  it("replaces the container once the dictations that deferred it have drained", async () => {
+    vi.stubEnv("SHIPIT_BUILD_ID", "build-1");
+    const { mgr, cm, clock } = makeManager(root);
+    cm.survivor = { id: "survivor-1", workerBuildId: "build-1" };
+    await mgr.start();
+    clock.now += CREATE_INTERVAL_MS + 1_000;
+
+    let releaseSecond: (() => void) | null = null;
+    const second = new Promise<void>((r) => { releaseSecond = r; });
+    spawnReply = async (body) => {
+      if (body.prompt === "second") await second;
+      throw new Error("connect ECONNREFUSED");
+    };
+
+    const secondRun = mgr.run({ harnessId: "claude", prompt: "second", model: "haiku" });
+    await vi.waitFor(() => { expect(posts.filter((p) => p.path === "/agent/spawn")).toHaveLength(1); });
+    await mgr.run({ harnessId: "claude", prompt: "first", model: "haiku" });
+
+    await new Promise((r) => setTimeout(r, 20));
+    expect(cm.destroyed).toEqual([]);
+
+    releaseSecond!();
+    await secondRun;
+    await vi.waitFor(() => { expect(cm.destroyed).toEqual([CLEANUP_CONTAINER_SESSION_ID]); });
+    await new Promise((r) => setTimeout(r, 20));
+    mgr.stop();
+
+    // Exactly one replacement, not one per failed dictation.
+    expect(cm.destroyed).toEqual([CLEANUP_CONTAINER_SESSION_ID]);
+    expect(cm.createCalls).toHaveLength(1);
+  });
+
+  /**
+   * `destroyContainer` marks the entry stopping and then awaits Docker
+   * (`container-lifecycle.ts:966`). A dictation arriving inside that window used
+   * to start a second teardown, and the first one then reaped the second's
+   * replacement — its resource cleanup and its `containers.delete` are both
+   * unconditional (`:993`, `:1016`).
+   */
+  it("holds a dictation arriving mid-replacement until the replacement is ready", async () => {
+    vi.stubEnv("SHIPIT_BUILD_ID", "build-1");
+    const { mgr, cm, clock } = makeManager(root);
+    cm.survivor = { id: "survivor-1", workerBuildId: "build-1" };
+    await mgr.start();
+    clock.now += CREATE_INTERVAL_MS + 1_000;
+
+    let releaseDestroy: (() => void) | null = null;
+    cm.destroyGate = new Promise<void>((r) => { releaseDestroy = r; });
+    spawnReply = async (body) => {
+      if (body.prompt === "doomed") throw new Error("connect ECONNREFUSED");
+      return { status: "success", text: "cleaned", truncated: false, durationMs: 1, costUsd: 0 };
+    };
+
+    await mgr.run({ harnessId: "claude", prompt: "doomed", model: "haiku" });
+    await vi.waitFor(() => { expect(cm.destroyed).toHaveLength(1); });
+
+    const during = mgr.run({ harnessId: "claude", prompt: "during", model: "haiku" });
+    await new Promise((r) => setTimeout(r, 20));
+    releaseDestroy!();
+    const result = await during;
+    mgr.stop();
+
+    expect(result.text).toBe("cleaned");
+    expect(cm.destroyed).toEqual([CLEANUP_CONTAINER_SESSION_ID]);
+    expect(cm.createCalls).toHaveLength(1);
+    expect(posts.find((p) => p.path === "/agent/spawn" && p.body.prompt === "during")!.url)
+      .toBe("http://worker-1:9100");
+  });
+
+  // The teardown awaits Docker, so shutdown lands inside a replacement the same
+  // way it lands inside an acquisition — and a container built then has nothing
+  // left to manage it.
+  it("does not rebuild when shutdown lands inside a replacement", async () => {
+    vi.stubEnv("SHIPIT_BUILD_ID", "build-1");
+    const { mgr, cm, clock } = makeManager(root);
+    cm.survivor = { id: "survivor-1", workerBuildId: "build-1" };
+    await mgr.start();
+    clock.now += CREATE_INTERVAL_MS + 1_000;
+
+    let releaseDestroy: (() => void) | null = null;
+    cm.destroyGate = new Promise<void>((r) => { releaseDestroy = r; });
+    spawnReply = async () => { throw new Error("connect ECONNREFUSED"); };
+
+    await mgr.run({ harnessId: "claude", prompt: "a", model: "haiku" });
+    await vi.waitFor(() => { expect(cm.destroyed).toHaveLength(1); });
+
+    mgr.stop();
+    releaseDestroy!();
+    await new Promise((r) => setTimeout(r, 20));
+
+    expect(cm.createCalls).toHaveLength(0);
+  });
+
+  /**
+   * An adopted container that dies before any run succeeds is recreated by this
+   * process, and what this process built needs no proving. A flag rather than
+   * the adopted container's id would condemn that replacement on its first
+   * ordinary provider error.
+   */
+  it("does not treat the container it built after an adoption as unproven", async () => {
+    vi.stubEnv("SHIPIT_BUILD_ID", "build-1");
+    const { mgr, cm, clock } = makeManager(root);
+    cm.survivor = { id: "survivor-1", workerBuildId: "build-1" };
+    await mgr.start();
+    clock.now += CREATE_INTERVAL_MS + 1_000;
+
+    // The adopted container dies with nothing having run in it yet.
+    cm.containers.delete(CLEANUP_CONTAINER_SESSION_ID);
+    cm.emit("container_exited", CLEANUP_CONTAINER_SESSION_ID, 1, undefined);
+    await vi.waitFor(() => { expect(cm.createCalls).toHaveLength(1); });
+
+    spawnReply = async () => ({ status: "error", text: "", truncated: false, durationMs: 1, costUsd: 0 });
+    await mgr.run({ harnessId: "claude", prompt: "a", model: "haiku" });
+    await new Promise((r) => setTimeout(r, 20));
+    mgr.stop();
+
+    expect(cm.destroyed).toEqual([]);
+    expect(cm.createCalls).toHaveLength(1);
   });
 
   it("keeps an adopted container that has answered once", async () => {
