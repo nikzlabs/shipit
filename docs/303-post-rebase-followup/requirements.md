@@ -58,6 +58,10 @@ The user has to send a message saying the rebase is finished.
 | Idle auto-resolve | No | — |
 
 `setPendingAgentNotice` (`src/server/orchestrator/services/rebase-driver.ts:129`)
-is set only on the manual-sync path (`recordSyncCard: true`), and it is consumed by
-the *next user turn* (`src/server/orchestrator/ws-handlers/agent-execution.ts:407`).
+is set only on the manual-sync path (`recordSyncCard: true`). It is consumed by the
+next turn that actually runs — a user turn
+(`src/server/orchestrator/ws-handlers/agent-execution.ts:407`) or any dispatched
+turn whose `postTurn` is not `"none"`
+(`src/server/orchestrator/dispatched-turn.ts:194`). Today nothing dispatches such a
+turn after a rebase, so in practice the user's next message is what delivers it.
 That is exactly the manual step this feature removes.
