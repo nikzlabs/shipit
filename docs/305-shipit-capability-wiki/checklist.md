@@ -32,7 +32,7 @@ census in `how-shipit-works.md`.
       closing on merge, the Docs tab, selection comments
 - [ ] `settings-and-accounts.md` — the ten tabs, provider accounts and fallback
       order, harnesses, model/effort/role, usage and limits, themes, keybindings
-- [ ] `repos-and-sandboxes.md` — adding a repo, trust, repo colours, sandbox
+- [x] `repos-and-sandboxes.md` — adding a repo, trust, repo colours, sandbox
       sessions and their capabilities, secrets
 - [ ] `plugins-and-skills.md` — what the user sees, marketplaces, MCP servers
 - [ ] `deploying.md` — targets, prerequisites, status on the card
