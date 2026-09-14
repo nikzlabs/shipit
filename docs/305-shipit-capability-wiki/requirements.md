@@ -29,22 +29,22 @@ user can do, where, and what happens when they do it.
 5. Where a feature's current state can be **queried live** (settings values,
    running services, configured roles), the material names the query rather
    than restating a value that will drift.
-6. Coverage includes the self-hosting surface — installing ShipIt, updating it,
+6. Each page says what the user does and what ShipIt does in response,
+   precisely enough that the agent can guide the user through a surface the
+   agent cannot operate itself.
+7. Keeping the material current is part of changing a feature, and the rule
+   that says so is written where a contributor will hit it.
+8. Coverage includes the self-hosting surface — installing ShipIt, updating it,
    the access options, sizing the machine — not only what happens inside a
    running ShipIt.
-7. **Every page is written so that the work lands on an agent, not on the
+9. **Every page is written so that the work lands on an agent, not on the
    user.** Where ShipIt gives an agent a way to do the thing, the page tells the
    agent to do it and never hands the user a command to type. Where the step is
    genuinely the user's — a click only they can make, a credential only they
    hold — the page says so and says exactly where.
-8. Requirement 7 holds outside a session too. The agent that installs ShipIt
-   runs on the user's host, not inside ShipIt, and the material must read
-   correctly to it.
-9. Each page says what the user does and what ShipIt does in response,
-   precisely enough that the agent can guide the user through a surface the
-   agent cannot operate itself.
-10. Keeping the material current is part of changing a feature, and the rule
-    that says so is written where a contributor will hit it.
+10. Requirement 9 holds outside a session too. The agent that installs ShipIt
+    runs on the user's host, not inside ShipIt, and the material must read
+    correctly to it.
 
 ## Open questions
 

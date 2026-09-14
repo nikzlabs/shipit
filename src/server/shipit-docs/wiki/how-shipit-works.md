@@ -59,9 +59,11 @@ with a link.
 - **Middle — the conversation.** Their messages and your work, including file
   attachments, diffs, questions, permission prompts, and cards for pull
   requests, reviews, issues, spawned sessions and releases.
-- **Right — one of ten tabs.** Preview, Files, Docs, Issues, PR, Terminal,
-  History, Plugins, Present, Host. A diff view opens over the panel when a
-  change is tapped.
+- **Right — a tabbed panel.** Files, Docs, Issues, PR, Terminal, History,
+  Plugins, Present, and either Preview or Host. Which tabs are there depends on
+  the session: Host appears only in an Ops session, and Preview does not, so do
+  not promise a tab without checking the session in front of you. A diff view
+  opens over the panel when a change is tapped.
 
 On a phone the middle and the preview swap rather than sit side by side, and
 dictation replaces typing.
@@ -80,7 +82,8 @@ in `/shipit-docs/`, or a live command to run rather than a page to read.
 | Start a session from a repo, an issue, or a blank prompt | [sessions.md](sessions.md) |
 | Fork a session from any point in its conversation | [sessions.md](sessions.md) |
 | Rewind — throw away the code, the chat, or both, back to a chosen point | [sessions.md](sessions.md) |
-| Pin a session so it stays at the top and is never auto-reclaimed | [sessions.md](sessions.md) |
+| Pin a session so it stays at the top and keeps its workspace on disk | [sessions.md](sessions.md) |
+| Keep a session's preview running while it is idle | [sessions.md](sessions.md) |
 | Mute a session that is asking for attention it does not need | [sessions.md](sessions.md) |
 | Archive and unarchive | [sessions.md](sessions.md) |
 | "Needs you" view — only the sessions waiting on the user | [sessions.md](sessions.md) |
@@ -95,12 +98,12 @@ in `/shipit-docs/`, or a live command to run rather than a page to read.
 | Attach files and images to a message; drop in uploads | `/shipit-docs/environment.md` (`/uploads`) |
 | Reference a file with `@`, a skill with `/` | Settings → Skills, `/shipit-docs/skills.md` |
 | Interrupt a running turn, or queue the next message behind it | This page — the queued message can be cancelled before it runs |
-| Answer a question or a permission prompt inline | — |
+| Answer a question or a permission prompt inline | No wiki page yet — the capability is real, the detail is not written down |
 | Dictate by voice, on desktop and phone | Settings → Voice |
 | Spoken summaries back from the agent when it needs the user | `/shipit-docs/voice-notes.md` |
-| Collapse finished turns so a long conversation stays readable | — |
-| Compact the conversation when context fills; a dial shows how full | — |
-| Set a goal condition the session works toward | — |
+| Collapse finished turns so a long conversation stays readable | No wiki page yet — the capability is real, the detail is not written down |
+| Compact the conversation when context fills; a dial shows how full | No wiki page yet — the capability is real, the detail is not written down |
+| Set a goal condition the session works toward | No wiki page yet — the capability is real, the detail is not written down |
 | Show a diagram, mockup or rendered document in the Present tab | `/shipit-docs/present.md` |
 | Offer the user a checklist of optional follow-ups | `/shipit-docs/present.md` and the `propose_actions` tool |
 | Link straight to a place in the running app or a presented artifact | `/shipit-docs/chat-links.md` |
@@ -144,7 +147,7 @@ in `/shipit-docs/`, or a live command to run rather than a page to read.
 | Start a session directly from an issue | `/shipit-docs/issues.md` |
 | Close an issue by merging the PR that names it | `/shipit-docs/issues.md` |
 | Every markdown file in the repo, browsable, with tracked docs grouped | `/shipit-docs/design-docs.md` |
-| Comment on a selection inside a document | — |
+| Comment on a selection inside a document | No wiki page yet — the capability is real, the detail is not written down |
 
 ### Configuring it
 
@@ -154,14 +157,15 @@ in `/shipit-docs/`, or a live command to run rather than a page to read.
 | Several agent harnesses — Claude Code, Codex, OpenCode, Grok, Antigravity | `shipit agent roles` |
 | Sign in with an existing subscription, or an API key as a fallback | Settings → Integrations |
 | Several accounts per provider, in a fallback order | Settings → Integrations |
-| Usage and subscription limits, visible before they bite | — |
+| Usage and subscription limits, visible before they bite | No wiki page yet — the capability is real, the detail is not written down |
 | Pick the model, the reasoning effort, and the role per session | `shipit agent params` |
 | Named roles that bundle harness, model and effort — including the reviewer | `/shipit-docs/agent.md` |
 | Per-session network access: contained, or open | Session settings, `/shipit-docs/environment.md` |
 | Project configuration — install command, ports, resources | `/shipit-docs/shipit-yaml.md` |
 | Skills, plugin repositories, and MCP servers | `/shipit-docs/plugins.md`, `/shipit-docs/skills.md` |
 | Custom instructions applied to every session | Settings → Instructions |
-| Twenty themes, light and dark, and rebindable keyboard shortcuts | Settings → Keyboard |
+| Twenty themes, light and dark | The palette button in the app header — **not** in Settings |
+| Rebindable keyboard shortcuts | Settings → Keyboard |
 
 ### Running the thing itself
 
@@ -170,7 +174,7 @@ in `/shipit-docs/`, or a live command to run rather than a page to read.
 | Install on a laptop or a VPS, by an agent or by hand | [installing-and-updating.md](installing-and-updating.md) |
 | Update in place, and pick a release channel | [installing-and-updating.md](installing-and-updating.md) |
 | Reach it from a phone over Tailscale or a Cloudflare tunnel | [installing-and-updating.md](installing-and-updating.md) |
-| Host overview — memory, disk, uptime, what is running | The Host tab |
+| Host overview — memory, disk, uptime, what is running | The Host tab, which exists only in an Ops session |
 | A memory budget that decides what idle sessions keep | [sessions.md](sessions.md) |
 | Session diagnostics when a container misbehaves | The session's overflow menu |
 | File a bug against ShipIt itself, redacted, with the user's consent | `/shipit-docs/bug-filing.md` |

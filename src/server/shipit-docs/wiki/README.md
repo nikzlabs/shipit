@@ -47,7 +47,10 @@ is. Nobody says "rewind" or "Tailscale" until after they have learned to.
 | "why did my session stop / go grey", "it lost my preview" | [sessions.md](sessions.md) — idle reclaim |
 | "stop nagging me about this one", "get it out of my list" | [sessions.md](sessions.md) — mute, pin, archive |
 | "keep this one at the top" | [sessions.md](sessions.md) — pin |
+| "keep the app running while I'm away", "don't kill my dev server" | [sessions.md](sessions.md) — Keep preview running |
 | "what needs me right now" | [sessions.md](sessions.md) — the Needs you view |
+| "rename this chat", "save this conversation", "bring back one I archived" | [sessions.md](sessions.md) — the session menu |
+| "change the colours", "dark mode", "it's too bright" | The palette button in the app header — 20 themes, light and dark |
 | "install it", "set it up on my server", "update it", "get the new version" | [installing-and-updating.md](installing-and-updating.md) |
 | "open it on my phone", "reach it from my laptop", "is it safe to expose" | [installing-and-updating.md](installing-and-updating.md) — access |
 | "how much RAM does this need" | [installing-and-updating.md](installing-and-updating.md) — sizing |
@@ -55,7 +58,7 @@ is. Nobody says "rewind" or "Tailscale" until after they have learned to.
 | "show me the app", "why is the preview blank" | `/shipit-docs/preview.md`, `/shipit-docs/compose.md` |
 | "merge it", "what's failing in CI", "did it deploy" | `/shipit-docs/github.md` |
 | "what am I allowed to change in settings" | `shipit settings list` — the live answer, never a page here |
-| "which agent/model is this" | `shipit agent roles`, `shipit agent params` |
+| "what agents/roles can this run" | `shipit agent roles` for the roles, `shipit agent params` for the harnesses, models and effort levels this install has. Neither reports which model *this* conversation is on — that is the picker in the composer |
 | "file that as a bug in ShipIt itself" | `/shipit-docs/bug-filing.md` |
 
 ## Pages
@@ -85,7 +88,9 @@ copied into a page is a value that will be wrong later:
 - **Services in this project and whether they are up** — `shipit service list`.
 - **Which agents and roles this install has** — `shipit agent roles`,
   `shipit agent params`.
-- **Issue trackers wired up here** — `shipit issue list --tracker <name>`.
+- **Issue trackers wired up here** — there is no inventory command; a
+  `shipit issue list --tracker <name>` naming a tracker that is not declared
+  fails with the list of the ones that are.
 
 A page may tell you *that* a setting decides something, and what the choice
 means. It never tells you what it is set to.

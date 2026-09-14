@@ -2,7 +2,7 @@
 
 ## First slice
 
-- [x] `requirements.md`, with the voice contract recorded as reqs 7–8
+- [x] `requirements.md`, with the voice contract recorded as reqs 9–10
 - [x] `plan.md` — placement, voice contract, discovery, page map
 - [x] `wiki/README.md` — index, question map, voice contract, live-query rule
 - [x] `wiki/how-shipit-works.md` — the model, the screen, the capability census
@@ -34,11 +34,17 @@ census in `how-shipit-works.md`.
 - [ ] `plugins-and-skills.md` — what the user sees, marketplaces, MCP servers
 - [ ] `deploying.md` — targets, prerequisites, status on the card
 - [ ] `troubleshooting.md` — the questions users actually ask when it misbehaves
+- [ ] Backing up and moving an installation — no page and no section covers it;
+      it belongs in `installing-and-updating.md` once the facts are verified
 
 ## Before each page ships
 
 - [ ] Every claim verified against code or a shipped feature's requirements —
       not against a design doc, which may describe intent that never landed
+- [ ] **Every named control checked for its condition.** The first slice's
+      review found four errors of this one shape: a control named in the wrong
+      panel, or promised on installs and sessions that do not have it. A tab, a
+      button or a menu item is only correct together with when it appears.
 - [ ] No setting value, service list, role or tracker written down; the live
       command named instead
 - [ ] Read once more for the voice contract: no command addressed to the user

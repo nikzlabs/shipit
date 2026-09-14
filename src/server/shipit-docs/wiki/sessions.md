@@ -63,8 +63,10 @@ needing attention while that view is open keeps its place and is marked as no
 longer waiting, rather than vanishing under the cursor.
 
 ShipIt can also raise a browser notification when a session starts needing the
-user, including on a phone. It waits a couple of seconds before doing so,
-because a session that is mid-handover briefly looks stopped.
+user, where the browser permits it — some mobile browsers refuse notifications
+raised this way, and there ShipIt stays silent rather than failing loudly. It
+waits a couple of seconds before notifying, because a session that is
+mid-handover briefly looks stopped.
 
 ## What is on a session's menu
 
@@ -77,14 +79,15 @@ Every row has an overflow menu. In order:
 - **Keep preview running** — a tick; exempts this session's services from being
   stopped when it goes idle.
 - **Archive**.
-- **Recover recent rewind** — undo a rewind, on the open session.
+- **Recover recent rewind** — undo a rewind.
 - **Download chat** — the conversation as a file.
 - **Investigate in Ops session** — opens ShipIt's own operations session pointed
   at this one, when that is available.
 - **Session settings** — currently the per-session network choice: contained, or
   open.
 
-An archived row offers **Restore** instead.
+The last four are on the **open** session's row only, not on every row in the
+list. An archived row offers **Restore** instead of all of it.
 
 ## Going back: rewind and fork
 
@@ -118,12 +121,21 @@ and ShipIt switches to it when it is ready.
 
 ## Attention, and turning it off
 
-A session needs attention when it has stopped and wants something: an answer, a
-permission decision, a failed run, a merged PR. **Mute until next turn** silences
-that without changing anything else — the session stays active and in the list,
-and looks like a session with nothing pending. The mute lifts by itself when the
-next turn starts, however it starts. The user can unmute earlier. A mute is
-stored with the session, so it holds on their phone too.
+A session needs attention when it has **stopped** and wants something: an answer
+to a question, a failing check, a workspace it cannot commit to. Two cases that
+look like attention and are not:
+
+- **A merged or closed pull request raises nothing.** The work is done; the
+  session goes quiet.
+- **A permission prompt counts as the agent still working**, so the session is
+  not "waiting on the user" in this sense and cannot be muted. It is still
+  visibly blocked, and answering it is what unblocks it.
+
+**Mute until next turn** silences an attention signal without changing anything
+else — the session stays active and in the list, and looks like a session with
+nothing pending. The mute lifts by itself when the next turn starts, however it
+starts. The user can unmute earlier. A mute is stored with the session, so it
+holds on their phone too.
 
 Only a session that is currently asking for attention, and whose agent is not
 working, can be muted. If the user wants to silence a *busy* session, the answer
@@ -131,33 +143,44 @@ is that there is nothing to silence yet.
 
 ## Going idle, and what ShipIt reclaims
 
-Sessions do not run forever. ShipIt reclaims resources when it is over its
-memory budget, taking the longest-idle first — never a session with someone
-watching it, and never one whose agent is working.
+Sessions do not run forever. **Two separate mechanisms** take things back, and
+users conflate them constantly — answer with the right one, because the
+exemptions are different.
 
-What that looks like, in order of severity:
+**Memory.** When ShipIt is over its memory budget it reclaims running
+containers, longest-idle first. It never takes a session someone is watching,
+and never one whose agent is working.
 
 1. **The agent container stops.** The conversation, the branch and the files are
    all intact; the next message starts a fresh container.
-2. **The preview keeps running** while the budget allows — including the
-   background services, not just the one on screen. Coming back to the session
-   shows the app immediately. **Keep preview running** on the menu exempts a
-   session from this being reversed.
-3. **Dependencies are cleared** to save disk. The row shows a mark reading
-   *"Dependencies cleared to save disk — reinstalled when you open it"*. Opening
-   the session reinstalls them.
-4. **The workspace is stored** and restored from the shared cache on next open.
+2. **The preview keeps running** while the budget allows — the whole Compose
+   stack, not just the service on screen, because a preview URL serving errors
+   because its database was stopped is worse than a clean stop. Coming back
+   shows the app immediately.
+
+The exemption here is **Keep preview running** on the session menu, which
+reserves that session against the memory reclaim. Nothing else exempts it —
+pinning does not.
+
+**Disk.** Independently of memory, a session that has been idle long enough
+descends a disk ladder. This happens even when memory is plentiful.
+
+3. **Dependencies are cleared.** The row shows a mark reading *"Dependencies
+   cleared to save disk — reinstalled when you open it"*. Opening the session
+   reinstalls them.
+4. **The workspace is stored**, and restored from the shared cache on next open.
+
+The exemption here is a **pin**. Pinning sticks a session to the top of its
+repository's group *and* keeps it: it is never silently dropped from the list,
+and its workspace never descends the disk ladder. That is the reason to
+recommend a pin, not the ordering. A pin does not keep its container or its
+preview alive.
 
 Two consequences to state plainly when they come up. Anything **committed** is
 safe, and ShipIt commits after every turn. Anything started by hand inside the
 container — a background process, a `setInterval`, a dev server launched from
 the terminal — does **not** survive, and does not come back. Long-running work
 belongs in `docker-compose.yml`; one-time setup belongs in `shipit.yaml`.
-
-**A pinned session is exempt.** Pinning sticks a session to the top of its
-repository's group *and* makes it persistent: it is never silently dropped from
-the list, and its workspace is never auto-reclaimed. That is the reason to
-recommend a pin, not the ordering.
 
 ## Archiving
 

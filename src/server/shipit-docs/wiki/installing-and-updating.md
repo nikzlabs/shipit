@@ -5,7 +5,8 @@ This page has two readers.
 **If you are inside a ShipIt session**, the user is asking about the install
 that is running them. You cannot change it from in here — a session container
 has no reach over its host. Answer the question, name the panel where the
-control is, and be clear about which parts need them at a terminal.
+control is, and where there is no control, say that the step needs an agent with
+a shell on the host machine. That is still not work for the user to type.
 
 **If you are on the user's own machine with a shell**, this is yours to do. The
 user asked you to install or update ShipIt because they would rather not run
@@ -20,9 +21,12 @@ Two paths, and the difference is what the machine is for.
 | **Local** | A laptop or desktop. macOS, Linux, or Windows via WSL2. | Installed under `~/.shipit`, running detached at `http://localhost:4123`, bound to loopback only |
 | **VPS** | An always-on Linux server, Ubuntu 24.04 | Same, plus an access layer (Cloudflare Tunnel with Zero Trust sign-in, Tailscale, or both) and updates from the UI |
 
-Both need Docker — Docker Desktop, or Docker Engine with the Compose v2 plugin.
-The installers check for it and tell the user how to get it; they never install
-Docker themselves.
+Both need Docker — Docker Desktop, or Docker Engine with the Compose v2 plugin —
+but they differ in who provides it. The **VPS** installer runs as root on an
+Ubuntu host and installs Docker Engine and the Compose plugin itself if they are
+missing. The **local** installer does not: it checks, and tells the user how to
+get Docker, because installing Docker Desktop on someone's laptop is not its
+call.
 
 ### Doing it for the user
 
@@ -99,10 +103,16 @@ user owns. Do not guess its value — `shipit settings list` prints it.
 
 ## Updating
 
-**From the UI, which is the normal way:** Settings → Advanced → Software
-Updates → **Check for Updates**, then **Update Now**. ShipIt pulls its channel,
-rebuilds, and restarts itself. If the user asks you to update ShipIt from inside
-a session, this is the answer — name that panel; you cannot do it from in here.
+**Which path applies depends on how ShipIt was installed, so establish that
+first.** Settings → Advanced → Software Updates has **Check for Updates** on
+every install, but the **Update Now** button that follows it appears only on an
+install that manages its own updates — the VPS path. A local install can see
+that an update exists and cannot apply it from the UI; it updates by running
+`~/.shipit/deployment/local/update.sh` on the host.
+
+So, from inside a session: tell the user what their install can do, and if it is
+the local kind, say the update needs an agent with a shell on that machine
+rather than leaving them at a button that is not there.
 
 **Release channels**, chosen in the same panel:
 
@@ -113,7 +123,7 @@ Moving from edge to a stable release that is *behind* the running code is a
 downgrade, and ShipIt warns before applying it, because older code may not read
 newer on-disk data cleanly.
 
-**By hand**, if you have a shell on the machine: a local install updates with
+**From a shell on the machine:** a local install updates with
 `~/.shipit/deployment/local/update.sh`. A VPS install re-deploys from
 `/opt/shipit`, honouring the channel recorded in `/opt/shipit/.release-channel`.
 Both are spelled out in `deployment/README.md`; run them for the user rather
@@ -160,5 +170,7 @@ access layer's logs (`journalctl -u cloudflared -f`), the updater's
 (`docker ps --filter "label=shipit-stack=shipit"`). Read the logs and tell the
 user what they say; do not hand them the commands.
 
-From inside a session, you cannot see any of that. Say so, and point them at the
-Host tab, which shows memory, disk and uptime for the install they are on.
+From inside an ordinary session you can see none of that, and there is no Host
+tab to send them to — that tab exists only in an Ops session. Say so, and offer
+**Investigate in Ops session** from the session's menu, which is the route from
+a session to ShipIt's own view of the machine.

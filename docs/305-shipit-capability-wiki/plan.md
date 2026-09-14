@@ -29,11 +29,11 @@ carried into the session worker image by the `COPY src/server/shipit-docs/
 /shipit-docs/` already present in both worker Dockerfiles, so it lands at
 `/shipit-docs/wiki/` with no build change.
 
-The same path serves req 8. The directory is in a public repository, so a host
+The same path serves req 10. The directory is in a public repository, so a host
 agent installing ShipIt reads it over `raw.githubusercontent.com` without ShipIt
 running at all. One source, both readers.
 
-## The voice contract (req 7, req 8)
+## The voice contract (req 9, req 10)
 
 This is the load-bearing decision, and it is what makes the wiki different from
 every other doc in the repository. **The reader is an agent; the subject is the
@@ -99,7 +99,7 @@ Commissioned but not yet written — one page each, listed in
 the git and pull-request loop, issues and docs, settings and accounts, repos
 and sandboxes, plugins and skills, deploys, troubleshooting.
 
-## Freshness (req 10)
+## Freshness (req 7)
 
 The `CLAUDE.md` Workflow rule that already says to update
 `src/server/shipit-docs/` when agent-facing behaviour changes is extended to
