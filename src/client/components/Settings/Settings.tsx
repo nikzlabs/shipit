@@ -14,6 +14,9 @@ import { GitTab } from "./tabs/GitTab.js";
 import { VoiceTab } from "./tabs/VoiceTab.js";
 import { AdvancedTab } from "./tabs/AdvancedTab.js";
 import { RolesTab } from "./tabs/RolesTab.js";
+// One map for the dialog's own tab strip and for anything else that names where
+// a setting lives, so the two cannot say different words for the same tab.
+import { SETTING_TAB_LABELS } from "../../../server/shared/settings-catalogue/index.js";
 
 const mobileTabClass = "max-md:w-auto max-md:whitespace-nowrap max-md:rounded-md max-md:px-3 max-md:py-1.5 max-md:text-xs";
 
@@ -121,21 +124,6 @@ export function Settings({
     }
   };
 
-  const tabLabel = (tab: Tab) => {
-    switch (tab) {
-      case "services": return "Model providers";
-      case "roles": return "Roles";
-      case "integrations": return "Integrations";
-      case "git": return "Git";
-      case "instructions": return "Instructions";
-      case "skills": return "Skills";
-      case "keyboard": return "Keyboard";
-      case "voice": return "Voice";
-      case "network": return "Network";
-      case "advanced": return "Advanced";
-    }
-  };
-
   const dialogClass = activeTab === "skills"
     ? "rounded-lg border-(--color-border-secondary) max-w-5xl w-full md:mx-4 flex flex-col md:h-[80vh] max-md:h-full"
     : "rounded-lg border-(--color-border-secondary) max-w-2xl w-full md:mx-4 flex flex-col md:h-120 max-md:h-full";
@@ -164,7 +152,7 @@ export function Settings({
           <TabsList className="md:w-40 md:shrink-0 md:min-h-0 md:overflow-y-auto md:border-r md:py-2 max-md:flex-row max-md:overflow-x-auto max-md:border-b max-md:px-2 max-md:py-1.5 max-md:gap-1 max-md:shrink-0 border-(--color-border-secondary)">
             {SETTINGS_TABS.map((tab) => (
               <TabsTrigger key={tab} value={tab} data-testid={`settings-tab-${tab}`} className={mobileTabClass}>
-                {tabLabel(tab)}
+                {SETTING_TAB_LABELS[tab]}
               </TabsTrigger>
             ))}
           </TabsList>

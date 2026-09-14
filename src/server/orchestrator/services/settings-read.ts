@@ -1,4 +1,4 @@
-import type { EgressEnforcementStatus } from "../../shared/types.js";
+import type { EgressEnforcementStatus, SettingsEffectState } from "../../shared/types.js";
 import {
   ALL_SETTINGS,
   addressesARepository,
@@ -57,7 +57,8 @@ export type { SettingsReadDeps };
  * happen to be installed.
  */
 
-export type SettingEffectState = "live" | "restart-dependent" | "excluded" | "uncertain";
+/** The proposal card reports the same four answers, so the two cannot drift. */
+export type SettingEffectState = SettingsEffectState;
 
 /**
  * Whether the stored value is what ShipIt actually uses. `live` means the next
