@@ -299,7 +299,8 @@ stays.
 Use it. A diagram you described in prose is a diagram the user did not see.
 
 You can also make a place in the running app or in a presented artifact
-clickable straight from chat — `/shipit-docs/chat-links.md`.
+clickable — from chat, and from inside an artifact itself, so a row in a table
+you presented can open the page that produced it. `/shipit-docs/chat-links.md`.
 
 **Proposed actions.** When you would end a turn by suggesting optional
 follow-ups, `propose_actions` renders them as a card instead: one action becomes

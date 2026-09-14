@@ -425,6 +425,63 @@ for a page with no script. So it defers to `DOMContentLoaded`, running
 immediately only when `readyState` is already past loading. Both orderings need a
 test; the early one is the default case.
 
+## Pointers the artifact itself carries (req 14)
+
+A pointer was only ever live in **chat**, so a link the agent wrote *into* an
+artifact it presented was dead on click: the artifact is mounted from `srcDoc`
+on an opaque origin, and `shipit-preview://` is a scheme that frame can do
+nothing with, so the click was swallowed with no error anywhere. Req 14 makes
+the artifact a surface the schemes are live on, alongside chat.
+
+Nothing about resolution changes. Both kinds end at `openShipitLink`, which is
+the same function a chat pointer calls, so starting a stopped service (req 12),
+the toasts (req 10) and the same-path navigation (req 13) are inherited rather
+than re-implemented. What differs is only how the href gets there:
+
+- **Markdown artifacts** render in ShipIt's own DOM, so this is the existing
+  opt-in renderer capability switched on one surface further down:
+  `FileContentView` → `MarkdownReviewView` → `MarkdownSelectionComments` →
+  `MarkdownBlock`, which then selects `shipitLinkComponents` and the
+  scheme-preserving `urlTransform`. A prop, not a context, because the flag has
+  to stay a primitive over module-level component maps for the memo to hold —
+  and because an ambient switch would silently enable every markdown surface
+  that happens to render inside a pane.
+- **Rendered HTML artifacts** get a second injected script beside the scroll
+  one. It intercepts a click on any `shipit-*` href in the **capture** phase,
+  `preventDefault`s it and posts `{ type: "link_click", href }` to the parent,
+  which parses it exactly as `MarkdownLink` would. Capture, because a page that
+  calls `stopPropagation` on its own links would otherwise keep the click from
+  ever arriving. `preventDefault` runs for the auxiliary buttons too but only a
+  primary click opens: a middle-click on a custom-protocol href is what hands it
+  to the OS protocol handler, which is the same reason a chat pointer carries no
+  real `href`.
+
+**This widens no trust boundary, and that is not an assumption — it is the same
+gate the SDK already passes.** A presented HTML artifact already runs its own
+scripts and can already send a composed instruction to the agent
+(`handleAgentInterfaceRequest`), which is a strictly stronger capability than
+naming a destination; and unlike the SDK channel, a pointer needs a user click
+to fire at all. The boundary that matters is unchanged and enforced the same
+way: the flag is **default off**, and the file-preview dialog — which renders
+repository files ShipIt did not author — does not set it. `RenderedFrame` is
+shared with that dialog, the diff media view and the gallery thumbnails, so the
+injection is a prop those three never pass.
+
+**Scoping follows the surface.** An inline present card sits in the deferred
+transcript, so it reads `ShipitPointerSessionContext` and refuses a click that
+belongs to the outgoing session, exactly as `ShipitPointer` does. The Present
+tab renders the active session's own store and is unscoped.
+
+**SVG artifacts are deliberately left out**, as they are for fragments: only the
+two kinds req 9 names can be addressed *into*, and an SVG's own `<a>` stays the
+browser's business.
+
+**Requirement provenance.** Req 14 names `shipit-preview://`, which is what the
+requester asked for. `shipit-present:` rides along as a design consequence and
+not as a second requirement: resolution is one parser and one `openShipitLink`,
+so honouring one scheme and dropping the other would be an extra branch whose
+only effect is a dead link between two artifacts.
+
 ## Unopenable pointers (req 10)
 
 Req 10 is **best effort**: this table is the set of failures ShipIt can
@@ -491,9 +548,9 @@ when clicked (req 12), which is exactly the untrusted-input boundary ShipIt
 treats as sacred: ingested content is data, not instructions.
 
 So ShipIt links are an explicit **renderer capability, default off**, switched on
-only where the text is agent-authored — assistant chat messages
-(`MessageList.tsx:316`). Everywhere else the href falls through to the existing
-branches and renders as it does today.
+only where the content is agent-authored — assistant chat messages
+(`MessageList.tsx:316`) and presented artifacts (req 14, below). Everywhere else
+the href falls through to the existing branches and renders as it does today.
 
 Mechanically this is a second **module-level** components map, selected by a
 `shipitLinks` prop that defaults to off. It must stay module-level, because
@@ -622,8 +679,10 @@ status bar on hover and hand it to the OS protocol handler on middle-click or
 | `src/client/stores/present-store.ts` | `focusByPath` (closes the gallery), `linkTarget` |
 | `src/client/components/PreviewFrame/PreviewFrame.tsx` | Hand the destination to the live slot's injected script (falling back to `src`) |
 | `src/server/orchestrator/preview-proxy.ts` | The injected script's `navigate` command: same-document hash change vs. a real navigation (req 13) |
-| `src/client/components/PresentPane.tsx` | Scroll a markdown artifact; pass the fragment to the rendered frame |
-| `src/client/components/FileContentView/RenderedFrame.tsx` | Inject the scroll script into an HTML artifact's `srcDoc` |
+| `src/client/components/PresentPane.tsx` | Scroll a markdown artifact; pass the fragment to the rendered frame; open a pointer the frame reports (req 14) |
+| `src/client/components/PresentInlineCard.tsx` | The same, for an inline artifact — scoped to its transcript's session |
+| `src/client/components/FileContentView/RenderedFrame.tsx` | Inject the scroll script, and the click interceptor, into an HTML artifact's `srcDoc` |
+| `src/client/components/MarkdownSelectionComments/MarkdownBlock.tsx` | Selects the scheme-enabled components for a presented markdown artifact |
 | `src/server/shipit-docs/chat-links.md` | Agent-facing reference |
 
 ## Non-goals

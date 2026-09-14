@@ -2,7 +2,9 @@
 
 You can write a link in chat that, when clicked, opens the Preview or the
 Present tab **at a specific place**. It is an ordinary markdown link with a
-ShipIt URL scheme — no tool call, and it can sit anywhere prose can.
+ShipIt URL scheme — no tool call, and it can sit anywhere prose can. The same
+two schemes work inside an artifact you presented; see "Pointers inside a
+presented artifact".
 
 ```markdown
 Two requirements need attention: [REQ-7](shipit-present:/persist/reqs.html#req-7)
@@ -83,6 +85,28 @@ nothing more. If you need a page that reacts, build it as a Compose service and
 point at it with `shipit-preview://`. SVG and image artifacts are focused but
 have no place inside them to address.
 
+## Pointers inside a presented artifact
+
+Both schemes also work **from inside an artifact you presented** — write an
+ordinary `<a href="…">` in the HTML, or a markdown link in the `.md`, and a click
+opens the destination exactly as a pointer in chat does, starting a stopped
+service and toasting an unopenable one just the same.
+
+```html
+<a href="shipit-preview://web/runs/1183?highlight=step-4">open run 1183</a>
+```
+
+This is what makes an artifact a control surface for the running app: a summary
+table whose rows link into the page that produced them, a requirements doc whose
+items open the app at that item. Style the link however the artifact does — it
+is the artifact's own element, so `shipit-render` means nothing there and ShipIt
+adds no class to it.
+
+Two limits. It works for **rendered HTML and markdown** artifacts, the same two
+kinds a fragment addresses; an SVG's own `<a>` is left to the browser. And it is
+a **primary click** only — a middle-click or ⌘-click is swallowed rather than
+opening a second tab, because ShipIt has no second tab to open one in.
+
 ## Choosing how the link looks
 
 Add the reserved `shipit-render` parameter to render the pointer as a badge or a
@@ -114,6 +138,7 @@ toast saying which thing was missing. Not every failure is detectable: a path
 that loads your app's own "not found" page looks exactly like one that worked.
 So point at destinations you know exist.
 
-Both schemes are live **only in your own chat messages**. They are inert in PR
-descriptions, issue bodies, comments and review text, which ShipIt renders but
-did not author.
+Both schemes are live **only in your own chat messages and in artifacts you
+presented**. They are inert in PR descriptions, issue bodies, comments, review
+text and repository files opened in the file viewer — all content ShipIt renders
+but did not author.

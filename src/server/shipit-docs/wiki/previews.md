@@ -143,9 +143,10 @@ The pane also remembers where it was. The path the user was last on is restored
 when the frame is rebuilt — after a reload, after switching sessions and back —
 so they do not land back on the app's front page each time.
 
-You can also send the user straight to a place in their app from chat, with a
+You can also send the user straight to a place in their app with a
 `shipit-preview://` link — ShipIt opens the Preview on that path and **starts
-the service first if it is stopped**. `/shipit-docs/chat-links.md` has the form.
+the service first if it is stopped**. It works from chat and from inside an
+artifact you presented. `/shipit-docs/chat-links.md` has the form.
 
 ## Phone and tablet viewports — the user's control
 

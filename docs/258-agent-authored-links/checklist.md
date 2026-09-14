@@ -55,12 +55,27 @@
       escaped for HTML as well as JSON, scroll on `DOMContentLoaded`, and no
       remount for an identical repeat click
 
+## Pointers inside a presented artifact (req 14)
+
+- [x] Click interceptor injected into a presented HTML artifact's `srcDoc`:
+      capture phase, `preventDefault` on every button, primary click only,
+      `link_click` posted to the embedder
+- [x] `PresentPane` and `PresentInlineCard` resolve the reported href through
+      the same `openShipitLink` a chat pointer uses
+- [x] Presented markdown renders live pointers — `shipitLinks` threaded to
+      `MarkdownBlock`, still a prop over module-level component maps
+- [x] Off by default, so the file-preview dialog, the diff media view and the
+      gallery thumbnails are unchanged
+- [x] An inline card refuses a click scoped to another session's transcript
+
 ## Docs
 
 - [x] `src/server/shipit-docs/chat-links.md` — including that a Preview page
       reads its own URL and ShipIt adds no API
 - [x] `src/server/orchestrator/prompts/live-preview.md` — respecting the
       prompt-cache contract (rendered once at module load)
+- [x] `present.md` and the wiki (`chat.md`, `previews.md`) say a pointer works
+      from inside an artifact, and where the schemes are inert
 
 ## Tests
 
@@ -79,6 +94,9 @@
 - [x] A malformed pointer keeps the badge/button form the agent authored
 - [x] Injected scroll script: a fragment with quotes, backslashes or a closing
       script tag cannot break out
+- [x] The injected click interceptor **executed** against a real DOM (a string
+      assertion cannot fail on a broken anchor walk), plus a real-browser check
+      that a sandboxed `srcdoc` frame reports the click at `origin=null`
 
 ## Quality
 

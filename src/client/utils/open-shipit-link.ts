@@ -22,7 +22,7 @@ import { usePresentStore } from "../stores/present-store.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { useUiStore } from "../stores/ui-store.js";
 import { revealWorkspaceTab } from "./reveal-workspace-tab.js";
-import type { ShipitLink } from "./shipit-link.js";
+import { parseShipitLink, type ShipitLink } from "./shipit-link.js";
 
 let clickCounter = 0;
 
@@ -50,6 +50,22 @@ export function openShipitLink(link: ShipitLink, owningSession?: string | null):
   }
   if (link.kind === "present") openPresentLink(link);
   else openPreviewLink(link);
+}
+
+/**
+ * Open a pointer that arrived as a raw href rather than as a parsed markdown
+ * link — the click a presented artifact reports out of its own markup (req 14).
+ *
+ * An href that is not a ShipIt scheme at all is **ignored**, not reported: the
+ * artifact's own `<a href="https://…">` and `#anchor` links are its business,
+ * and the interceptor only forwards the schemes. A scheme that matches and then
+ * fails the parser still gets the req 10 toast, exactly as it does in chat.
+ */
+export function openShipitLinkHref(href: unknown, owningSession?: string | null): void {
+  if (typeof href !== "string") return;
+  const link = parseShipitLink(href);
+  if (!link) return;
+  openShipitLink(link, owningSession);
 }
 
 function openPresentLink(link: Extract<ShipitLink, { kind: "present" }>): void {

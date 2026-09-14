@@ -20,6 +20,12 @@ all**: write each to its own file and call `present` once per file. Don't show a
 single variant and point the user elsewhere for the rest; that limitation
 doesn't exist.
 
+**An artifact can link into the running app.** A `shipit-preview://` link in the
+HTML or markdown you present opens the Preview on that path when clicked
+(starting the service first if it is stopped), and `shipit-present:` jumps
+between artifacts — so a summary table can link to the pages behind its rows.
+Form and limits: [chat-links.md](chat-links.md).
+
 Before/after screenshots belong here, not on a PR — an image can't go in a PR
 body at all ([github.md](github.md)), so present them and describe the change in
 words in the PR body.

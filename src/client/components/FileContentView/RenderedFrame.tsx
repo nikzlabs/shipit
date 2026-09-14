@@ -77,6 +77,44 @@ function injectHeightReport(html: string): string {
   return `${HEIGHT_REPORT_SCRIPT}${html}`;
 }
 
+/**
+ * Forward a click on a ShipIt-scheme link out to the embedder (docs/258 req 14).
+ *
+ * The artifact is mounted from `srcDoc` on an opaque origin, so a
+ * `shipit-preview://` href is a scheme the frame itself can do nothing with: the
+ * click is swallowed and the pointer the agent wrote into its own artifact is
+ * dead. The frame therefore reports the href and lets the parent resolve it,
+ * which is the same code path a pointer in chat takes.
+ *
+ * `preventDefault` runs for **every** button, including the auxiliary ones: a
+ * middle-click or ⌘-click on a custom-protocol href is what hands it to the OS
+ * protocol handler, the same reason a chat pointer carries no real `href`. Only
+ * a primary click opens — ShipIt has no second tab to open one in.
+ *
+ * Capture phase, because a page that calls `stopPropagation` on its own links
+ * would otherwise keep the click from ever reaching this listener.
+ */
+export const LINK_CLICK_SCRIPT =
+  "<script>(function(){var s='shipit-preview';"
+  + "function on(e){var el=e.target;"
+  + "while(el&&el!==document&&!(el.nodeType===1&&String(el.tagName).toLowerCase()==='a'))el=el.parentNode;"
+  + "if(!el||el===document||el.nodeType!==1)return;"
+  + "var href=el.getAttribute('href')||'';"
+  + "if(!/^shipit-(preview|present):/i.test(href))return;"
+  + "e.preventDefault();"
+  + "if(e.type==='click'&&!e.button)parent.postMessage({source:s,type:'link_click',href:href},'*');}"
+  + "document.addEventListener('click',on,true);"
+  + "document.addEventListener('auxclick',on,true);})()</script>";
+
+function injectLinkClicks(html: string): string {
+  const head = /<head[^>]*>/i.exec(html);
+  if (head?.index !== undefined) {
+    const at = head.index + head[0].length;
+    return `${html.slice(0, at)}${LINK_CLICK_SCRIPT}${html.slice(at)}`;
+  }
+  return `${LINK_CLICK_SCRIPT}${html}`;
+}
+
 function injectAgentInterface(html: string): string {
   const head = /<head[^>]*>/i.exec(html);
   if (head?.index !== undefined) {
@@ -91,6 +129,7 @@ export function RenderedFrame({
   content,
   enableAgentInterface = false,
   reportHeight = false,
+  shipitLinks = false,
   frameRef,
   scrollTo,
 }: {
@@ -98,6 +137,13 @@ export function RenderedFrame({
   content: string;
   enableAgentInterface?: boolean;
   reportHeight?: boolean;
+  /**
+   * Report clicks on `shipit-preview://` / `shipit-present:` links out to the
+   * embedder (req 14). Off by default and on only for a **presented** artifact:
+   * a repo file rendered in the file-preview dialog is content ShipIt did not
+   * author, and a pointer click can start a Compose service (req 12).
+   */
+  shipitLinks?: boolean;
   frameRef?: Ref<HTMLIFrameElement>;
   scrollTo?: string;
 }) {
@@ -114,7 +160,8 @@ export function RenderedFrame({
   } else {
     const secured = injectCsp(content);
     const withSdk = enableAgentInterface ? injectAgentInterface(secured) : secured;
-    const withHeight = reportHeight ? injectHeightReport(withSdk) : withSdk;
+    const withLinks = shipitLinks ? injectLinkClicks(withSdk) : withSdk;
+    const withHeight = reportHeight ? injectHeightReport(withLinks) : withLinks;
     srcDoc = scrollTo ? injectScrollToFragment(withHeight, scrollTo) : withHeight;
   }
 

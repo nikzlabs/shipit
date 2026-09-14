@@ -10,6 +10,7 @@ export function MarkdownReviewView({
   comments,
   lineComments = [],
   readOnly = false,
+  shipitLinks = false,
 }: {
   filePath: string;
   content: string;
@@ -17,6 +18,7 @@ export function MarkdownReviewView({
   comments: SelectionCommentData[];
   lineComments?: { id: string; line: number; text: string }[];
   readOnly?: boolean;
+  shipitLinks?: boolean;
 }) {
   const addSelectionComment = useFileReviewStore((s) => s.addSelectionComment);
   const editComment = useFileReviewStore((s) => s.editComment);
@@ -84,6 +86,7 @@ export function MarkdownReviewView({
         onDeleteComment={handleDelete}
         onComposingChange={handleComposingChange}
         readOnly={readOnly}
+        shipitLinks={shipitLinks}
       />
     </div>
   );

@@ -83,6 +83,21 @@ describe("FileContentView dispatch", () => {
     expect(srcdoc).toContain("connect-src 'none'");
   });
 
+  it("keeps ShipIt pointers inert in a repo file, and live in a presented one (req 14)", () => {
+    const md = "See [run 1](shipit-preview://web/runs/1).";
+    render(<FileContentView {...base} filePath="docs/x.md" content={md} kind="markdown" viewMode="rendered" />);
+    // The file-preview dialog renders repository text, which ShipIt did not
+    // author — a pointer there could start a Compose service on click.
+    expect(screen.queryByRole("button", { name: "run 1" })).toBeNull();
+    expect(screen.getByText("run 1")).toBeInTheDocument();
+
+    cleanup();
+    render(
+      <FileContentView {...base} filePath="/persist/x.md" content={md} kind="markdown" viewMode="rendered" shipitLinks />,
+    );
+    expect(screen.getByRole("button", { name: "run 1" })).toBeInTheDocument();
+  });
+
   it("shows the Monaco mount when HTML is toggled to source", () => {
     render(
       <FileContentView {...base} filePath="m.html" content="<h1>Hi</h1>" kind="html" viewMode="source" />,
