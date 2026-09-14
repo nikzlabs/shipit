@@ -77,15 +77,21 @@ one-time consent, and it is the same shape as VS Code's Restricted Mode.
 Two places carry the grant, and both say **"Trust this repository"**:
 
 - **Above the composer**, as a notice explaining why messages are blocked. This
-  one exists in every mode.
+  is the reliable one — it renders in every mode.
 - **The Preview tab**, which renders a restricted empty state where the preview
-  would be.
+  would be. Conditional: there are installs with no Preview tab at all, and
+  there the composer notice is the only way in. Name that one first.
 
-The decision is **per remote and permanent** — it is remembered for that
-repository and never asked again, in any session. Granting it does not need a
-restart: the deferred install and compose start running on the spot. A
-repository ShipIt **created** from a template is trusted at creation and never
-reaches this state.
+The decision is **per remote**, and it is remembered for every session on that
+repository — nobody is asked twice. Granting it needs no restart: the deferred
+install and compose start running on the spot. A repository ShipIt **created**
+from a template is trusted at creation and never reaches this state.
+
+One limit worth knowing before recommending a clean-up: trust is stored **on the
+repository's entry**, so *removing* a repository discards it. Add the same
+repository back later and it is untrusted again, and the first session on it is
+blocked until the user accepts once more. It is remembered for as long as the
+repository is on the list, not for ever.
 
 ## Per-repository settings
 
@@ -119,6 +125,12 @@ showing **more than one group**, so on a single-repository install there is
 nothing to see; and this is per repository, not the app's theme — the theme is
 the palette button in the app header.
 
+**Ordering is not in this dialog.** "Can I put my projects in my own order?" is
+a fair question and the answer is yes, by **dragging a repository's header row**
+in the sidebar; the order is saved. A drag handle appears on the header on hover
+only when more than one repository is visible — with a single one there is
+nothing to reorder and no handle.
+
 **Read the current values rather than guessing them.** Project settings are in
 the same read as the global ones: `shipit settings list` indexes them under keys
 beginning `project.`, and `shipit settings get project.allowAgentMerge` gives
@@ -143,22 +155,35 @@ collapsed **"Hidden · N"** section appears at the bottom of the sidebar, and
 expanding it offers **Show** on each row. Adding the repository again also
 un-hides it.
 
-**Remove Repository** asks for confirmation first, and the confirmation is worth
-repeating to the user, because it is precise about the one thing they fear:
+**Remove Repository** asks for confirmation first. What it does:
 
 - Its sessions are **archived**, not deleted.
-- Freed from this machine: each session's working copy — **including uncommitted
-  changes that were never pushed** — plus cached dependencies and running
-  containers.
+- Freed from this machine: each session's working copy, its cached dependencies,
+  and its running containers.
 - Kept: session chat history, usage and pull-request status; and every branch
-  and pull request already pushed to GitHub.
-- **Nothing on GitHub is changed.** Removing a repository from ShipIt does not
-  delete it.
+  and pull request on GitHub.
+- **The repository itself is not touched.** Removing it from ShipIt does not
+  delete it on GitHub.
 - Adding it back later brings its sessions back under **All Sessions**, ready to
-  restore, history and all. Only unpushed work is gone for good.
+  restore, history and all. Restoring re-clones a fresh working copy.
+- Its **trust is discarded** with it, per the section above.
 
-So the honest answer to "is this safe?" is: safe for anything pushed, and you
-can make it safe for the rest by ensuring the branch is on the remote first.
+**"Will I lose work that was never pushed?"** — almost certainly not, and the
+confirmation dialog's own wording is more pessimistic than the behaviour. Each
+session is archived through the same durability check archiving always runs:
+ShipIt commits whatever is outstanding, pushes the branch, and only then
+reclaims the checkout. If it **cannot** make the work durable — a push that
+failed, a detached HEAD, changes git refused to commit, a workspace it could not
+read — it **keeps that session's files** instead of deleting them, and says so.
+
+Two things follow, and the second one surprises people. Removal can **publish**:
+a commit and a push are exactly how the work is made safe, so a branch that only
+existed locally can appear on GitHub as a result. And a session whose files were
+kept is not a failure — it is the guard doing its job, and restoring that
+session gives it back where it stood.
+
+If a user wants removal to be quiet as well as safe, the honest answer is to get
+the branches pushed first — which you can do — and then remove.
 
 ## Secrets for a project
 
@@ -181,9 +206,12 @@ panel.
 
 What follows from the design, and answers most of what users ask:
 
-- **ShipIt never shows a value back** — not to the browser, not to you. The read
-  reports which *names* are set and nothing more. So "what is my Stripe key set
-  to?" has no answer anywhere in ShipIt; "is it set?" does.
+- **Nothing reads a value back out of the store.** Neither the browser nor a
+  settings read ever receives one: both report which *names* are set and nothing
+  more, and the Secrets tab shows a saved value as dots it cannot reveal. So
+  "what is my Stripe key set to?" is not a question ShipIt will answer — "is it
+  set?" is. (The one path a value takes *out* is the next bullet, and it is a
+  deliberate one the user opted into per secret.)
 - **A value only reaches the services that declared it.** A `web` frontend does
   not receive the `db` password.
 - **You see a value only if it is marked `agent: true`**, which puts it in the
@@ -245,7 +273,7 @@ useful and safe. Each names exactly what it widens:
 | **GitHub access** | The credential broker is wired for `git` and `gh`: clone and push **private** repositories, open pull requests, anywhere that account can reach. The token is brokered, never resident in the container | No GitHub token. Public HTTPS clones may still work; pushing to the user's repositories does not. This is **not** a network seal |
 | **Allow merging PRs** | The agent may run `gh pr merge` — gated on green checks, never a force-merge | The agent cannot merge. This is a *sub-grant* of GitHub access: it is unavailable, and is cleared, whenever GitHub access is off |
 | **Docker access** | `DOCKER_HOST` points at a **session-scoped** Docker proxy — only this session's containers, networks and volumes are visible. No host socket, no `--privileged` | No Docker at all |
-| **Network access** | The standard allowlist every session runs under — LLM API, GitHub, package registries, hosts the user added — with an inline prompt for a new one | No internet beyond the agent's lifeline (the LLM API and ShipIt), plus GitHub if that is granted. No registries, no web. It only ever tightens; it is never an air-gap |
+| **Network access** | Whatever every other session gets — normally the standard allowlist (LLM API, GitHub, package registries, hosts the user added) with an inline prompt for a new host, but the workspace's Network setting is what decides, and it can be Open | No internet beyond the agent's lifeline (the LLM API and ShipIt), plus GitHub if that is granted. No registries, no web. It only ever tightens; it is never an air-gap |
 
 They are **server-authoritative**. An agent cannot read them out of a workspace
 file and cannot grant itself one — the route that writes them refuses a session
@@ -255,22 +283,39 @@ container outright.
 
 **Do not assume a default, and do not assume what you had last turn.** The
 grants are chosen per sandbox at creation and the user can change them at any
-time afterwards. There is no ShipIt command that reports them to you, and the
+time afterwards. There is **no command that reports all four to you**, and the
 capabilities endpoint is deliberately closed to session containers — a request
 from inside comes back `403 This endpoint is not available to session
-containers`. So work it out one of these ways:
+containers`. So work it out:
 
+- **Network access** is the one you can read directly. `shipit settings get
+  network.egressContained` resolves containment against this session rather than
+  against the stored setting, and for a sandbox with Network access **off** it
+  comes back `excluded` with a note saying *this session's own network
+  capability* decides its containment. **Read the note, not just the word** —
+  there is a second `excluded`, whose note says egress enforcement is not
+  running on the install at all, and that one tells you nothing about the grant
+  (on such an install nothing is contained anyway). Any other answer means
+  Network access is on.
 - **Ask the user, and tell them where to look.** The sandbox banner at the top
-  of the chat panel says *"Granted: …"* with the live list. Note that it names
-  GitHub, Docker and Network only — the merge sub-grant is not on it, so for
-  that one the answer is the Session settings dialog.
-- **Docker:** `DOCKER_HOST` is set in your environment when, and only when,
-  Docker access is granted.
+  of the chat panel says *"Granted: …"*. Two caveats to carry when you quote it:
+  it names GitHub, Docker and Network only — the merge sub-grant is not on it,
+  so that one is the Session settings dialog — and it lists what is **saved**,
+  which is not the same as what this container is running under (below).
+- **Docker:** `DOCKER_HOST` is set in your environment exactly when the
+  container was **started** with Docker access. That is the useful signal,
+  because it reports what you can actually do right now. It can disagree with
+  the saved grant while a restart is pending — newly granted and still absent,
+  or revoked and still present — so a mismatch with the banner is the pending
+  restart, not a bug.
 - **GitHub:** a brokered operation refused with *"GitHub access is not granted
-  for this sandbox session"* is the grant being absent, not a broken token.
-- **Network:** a host that resolves but will not connect is containment, not an
-  outage — and with Network access off there is no prompt to approve a new host,
-  because the allowlist is not in play.
+  for this sandbox session"* is the grant being absent, not a broken token. This
+  one applies at once, so the refusal is always current.
+
+**Do not diagnose a missing Network grant from a failed connection.** A blocked
+host and a host that is simply unreachable both close the same way; a genuine
+outage would send you asking the user to widen permissions they never needed to
+touch. Read the setting above instead.
 
 When something fails for want of a grant, **name the switch and stop**. Do not
 engineer around it: the user turns it on in one click, and a workaround that
