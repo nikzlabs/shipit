@@ -24,21 +24,22 @@ census in `how-shipit-works.md`.
 - [ ] `chat.md` — attachments, `@` files, `/` skills, interrupt and queue,
       permission prompts, questions, dictation, voice notes, collapsed turns,
       the context dial and compaction, goals, Present, proposed actions
-- [ ] `previews.md` — what the preview is, Compose services, service control,
+- [x] `previews.md` — what the preview is, Compose services, service control,
       device viewports, preview errors, why a preview is blank
-- [ ] `pull-requests.md` — the card, review threads, the user's own review flow,
+- [x] `pull-requests.md` — the card, review threads, the user's own review flow,
       merge methods, auto-merge, CI and auto-fix, conflicts, rollback, releases
-- [ ] `issues-and-docs.md` — trackers, the Issues panel, starting from an issue,
+- [x] `issues-and-docs.md` — trackers, the Issues panel, starting from an issue,
       closing on merge, the Docs tab, selection comments
-- [ ] `settings-and-accounts.md` — the ten tabs, provider accounts and fallback
+- [x] `settings-and-accounts.md` — the ten tabs, provider accounts and fallback
       order, harnesses, model/effort/role, usage and limits, themes, keybindings
 - [x] `repos-and-sandboxes.md` — adding a repo, trust, repo colours, sandbox
       sessions and their capabilities, secrets
-- [ ] `plugins-and-skills.md` — what the user sees, marketplaces, MCP servers
+- [x] `plugins-and-skills.md` — what the user sees, marketplaces, MCP servers
 - [ ] `deploying.md` — targets, prerequisites, status on the card
 - [x] `troubleshooting.md` — the questions users actually ask when it misbehaves
-- [ ] Backing up and moving an installation — no page and no section covers it;
-      it belongs in `installing-and-updating.md` once the facts are verified
+- [x] Backing up and moving an installation — a section in
+      `installing-and-updating.md`, since there is no whole-install backup to
+      describe as a feature
 
 ## Before each page ships
 
