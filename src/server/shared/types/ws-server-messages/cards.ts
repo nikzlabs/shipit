@@ -5,6 +5,7 @@ import type {
   CompactionCard,
   SubAgentConsultCard,
   ActionChecklistCard,
+  RepoSessionProposalCard,
   PresentInlineCard,
   BranchAutoResetCard,
   BranchSyncedCard,
@@ -159,6 +160,24 @@ export interface WsActionChecklistUpdate {
   sessionId: string;
   cardId: string;
   submittedAt: string;
+}
+
+/** docs/303 — work the agent says belongs in a different repository. */
+export interface WsRepoSessionProposalCard {
+  type: "repo_session_proposal_card";
+  sessionId: string;
+  card: RepoSessionProposalCard;
+}
+
+/** docs/303 — the user started it: starting → started, or failed. */
+export interface WsRepoSessionProposalUpdate {
+  type: "repo_session_proposal_update";
+  sessionId: string;
+  cardId: string;
+  state: "starting" | "started" | "failed";
+  startedSessionId?: string;
+  startedAt?: string;
+  errorMessage?: string;
 }
 
 export interface WsBranchAutoResetCard {

@@ -53,6 +53,18 @@ const EVERY_OPTIONAL_FIELD_MESSAGE: PersistedMessage = {
     headSha: "abc12345",
     createdAt: "2026-06-05T00:00:00.000Z",
   },
+  repoSessionProposal: {
+    cardId: "rsp1",
+    repo: "acme/api",
+    repoUrl: "https://github.com/acme/api.git",
+    registered: true,
+    title: "Add cursor pagination to /events",
+    prompt: "Add cursor pagination to GET /events. The web client in acme/web depends on it.",
+    createdAt: "2026-09-14T00:00:00.000Z",
+    state: "started",
+    startedSessionId: "ses_child",
+    startedAt: "2026-09-14T00:01:00.000Z",
+  },
   presentInline: {
     presentId: "pres_0123456789abcdef0123456789abcdef",
     filePath: "/persist/chart.svg",

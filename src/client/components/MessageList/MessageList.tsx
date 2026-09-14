@@ -77,6 +77,7 @@ export function MessageList({
   onResolvePermission,
   onEgressDecision,
   onUndoIssueWrite,
+  onStartRepoSession,
   onOpenIssue,
   onResumeSession,
   onReleaseConfirm,
@@ -103,6 +104,7 @@ export function MessageList({
   onEgressDecision?: (cardId: string, host: string, action: "allow-once" | "add" | "deny") => void;
 
   onUndoIssueWrite?: (cardId: string) => void;
+  onStartRepoSession?: (cardId: string) => Promise<void>;
 
   onOpenIssue?: (ref: {
     tracker: TrackerId;
@@ -273,6 +275,7 @@ export function MessageList({
     onResolvePermission,
     onEgressDecision,
     onUndoIssueWrite,
+    onStartRepoSession,
     onOpenIssue,
     onResumeSession,
     onReleaseConfirm,

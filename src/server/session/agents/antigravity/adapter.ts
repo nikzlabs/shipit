@@ -571,7 +571,7 @@ export class AntigravityAdapter
       servers.shipit = {
         command: ctx.shipitBridge.tsxBin,
         args: [ctx.shipitBridge.bridgePath],
-        env: { SHIPIT_MCP_TOOLS: "present,voice,bug,ask,propose_actions" },
+        env: { SHIPIT_MCP_TOOLS: "present,voice,bug,ask,propose_actions,propose_repo_session" },
       };
     }
 

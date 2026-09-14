@@ -31,6 +31,7 @@ export interface RowHandlers {
   onResolvePermission?: (requestId: string, behavior: "allow" | "deny", remember?: boolean) => void;
   onEgressDecision?: (cardId: string, host: string, action: "allow-once" | "add" | "deny") => void;
   onUndoIssueWrite?: (cardId: string) => void;
+  onStartRepoSession?: (cardId: string) => Promise<void>;
   onOpenIssue?: (ref: {
     tracker: TrackerId;
     id?: string;
@@ -57,6 +58,7 @@ const CALLBACK_KEYS = [
   "onResolvePermission",
   "onEgressDecision",
   "onUndoIssueWrite",
+  "onStartRepoSession",
   "onOpenIssue",
   "onResumeSession",
   "onReleaseConfirm",

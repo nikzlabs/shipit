@@ -522,6 +522,7 @@ const GOLDEN_CONTAINER_ROUTES = [
   "POST /api/sessions/:sessionId/voice-note",
   "POST /api/sessions/:sessionId/bug-report",
   "POST /api/sessions/:sessionId/propose-actions",
+  "POST /api/sessions/:sessionId/propose-repo-session",
   "GET /api/egress/decision",
 ].sort();
 

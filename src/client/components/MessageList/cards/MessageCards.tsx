@@ -14,6 +14,7 @@ import { CompactionCard } from "../../CompactionCard.js";
 import { IssueWriteCard } from "../../IssueWriteCard.js";
 import { IssueRefCard } from "../../IssueRefCard.js";
 import { ActionChecklistCard } from "../../ActionChecklistCard.js";
+import { RepoSessionProposalCard } from "../../RepoSessionProposalCard.js";
 import { PresentInlineCard } from "../../PresentInlineCard.js";
 import { BranchUpdatedCard } from "../../BranchUpdatedCard.js";
 import { SessionRenamedCard } from "../../SessionRenamedCard.js";
@@ -54,6 +55,8 @@ export interface MessageCardCallbacks {
   onSendFollowUp?: (text: string, options?: { actionChecklistCardId?: string }) => boolean;
   /** docs/299-agent-settings-access req 4 — the click that moves a setting. */
   onSettingsProposalDecision?: (cardId: string, action: "apply" | "dismiss") => void;
+
+  onStartRepoSession?: (cardId: string) => Promise<void>;
 
   onReleaseConfirm?: (version: string, mechanism: ReleaseMechanism) => void;
 
@@ -275,6 +278,20 @@ export function renderMessageCard(msg: ChatMessage, cb: MessageCardCallbacks): R
       <div className="flex justify-start">
         <div className="max-w-2xl w-full">
           <ActionChecklistCard card={msg.actionChecklist} onSubmit={cb.onSendFollowUp} />
+        </div>
+      </div>
+    );
+  }
+
+  if (msg.repoSessionProposal) {
+    return (
+      <div className="flex justify-start">
+        <div className="max-w-2xl w-full">
+          <RepoSessionProposalCard
+            card={msg.repoSessionProposal}
+            onStart={cb.onStartRepoSession}
+            onOpenSession={cb.onResumeSession}
+          />
         </div>
       </div>
     );
