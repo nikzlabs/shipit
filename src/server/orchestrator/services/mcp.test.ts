@@ -137,6 +137,174 @@ describe("services/mcp (docs/088)", () => {
       expect(cs.getAgentEnv("mcp__linearprod__LINEAR_API_KEY")).toBe("lin_api_new");
     });
 
+    it("updateMcpServer rename migrates secrets the form cannot resubmit (planning#565)", () => {
+      const cs = store();
+      addMcpServer(cs, stdioConfig, { mcp__linear__LINEAR_API_KEY: "lin_api_abc" });
+
+      // The edit form blanks stored values and labels them "(unchanged)", so a
+      // rename submits no replacement for them.
+      const renamed = {
+        ...stdioConfig,
+        name: "linearprod",
+        env: { LINEAR_API_KEY: "$secret:mcp__linearprod__LINEAR_API_KEY" },
+      };
+      const { clearedSecretKeys } = updateMcpServer(cs, "linear", renamed, {});
+
+      expect(cs.getAgentEnv("mcp__linearprod__LINEAR_API_KEY")).toBe("lin_api_abc");
+      expect(cs.getAgentEnv("mcp__linear__LINEAR_API_KEY")).toBeUndefined();
+      expect(clearedSecretKeys).toEqual(["mcp__linear__LINEAR_API_KEY"]);
+    });
+
+    it("updateMcpServer rename migrates an http server's header secrets", () => {
+      const cs = store();
+      addMcpServer(
+        cs,
+        {
+          name: "sentry",
+          type: "http",
+          url: "https://mcp.sentry.dev/mcp",
+          headers: { Authorization: "Bearer $secret:mcp__sentry__TOKEN" },
+          enabled: true,
+        },
+        { mcp__sentry__TOKEN: "sntrys_abc" },
+      );
+
+      updateMcpServer(
+        cs,
+        "sentry",
+        {
+          name: "sentryprod",
+          type: "http",
+          url: "https://mcp.sentry.dev/mcp",
+          headers: { Authorization: "Bearer $secret:mcp__sentryprod__TOKEN" },
+          enabled: true,
+        },
+        {},
+      );
+
+      expect(cs.getAgentEnv("mcp__sentryprod__TOKEN")).toBe("sntrys_abc");
+      expect(cs.getAgentEnv("mcp__sentry__TOKEN")).toBeUndefined();
+    });
+
+    it("updateMcpServer rename does not carry a key the edit removed", () => {
+      const cs = store();
+      addMcpServer(
+        cs,
+        {
+          ...stdioConfig,
+          env: { A: "$secret:mcp__linear__A", B: "$secret:mcp__linear__B" },
+        },
+        { mcp__linear__A: "a", mcp__linear__B: "b" },
+      );
+
+      const { clearedSecretKeys } = updateMcpServer(
+        cs,
+        "linear",
+        { ...stdioConfig, name: "linearprod", env: { A: "$secret:mcp__linearprod__A" } },
+        {},
+      );
+
+      expect(cs.getAgentEnv("mcp__linearprod__A")).toBe("a");
+      expect(cs.getAgentEnv("mcp__linearprod__B")).toBeUndefined();
+      expect(clearedSecretKeys.sort()).toEqual(["mcp__linear__A", "mcp__linear__B"]);
+    });
+
+    it("updateMcpServer drops a secret the config no longer refers to", () => {
+      const cs = store();
+      addMcpServer(
+        cs,
+        {
+          ...stdioConfig,
+          env: { A: "$secret:mcp__linear__A", B: "$secret:mcp__linear__B" },
+        },
+        { mcp__linear__A: "a", mcp__linear__B: "b" },
+      );
+
+      const { clearedSecretKeys } = updateMcpServer(
+        cs,
+        "linear",
+        { ...stdioConfig, env: { A: "$secret:mcp__linear__A" } },
+        {},
+      );
+
+      expect(cs.getAgentEnv("mcp__linear__A")).toBe("a");
+      expect(cs.getAgentEnv("mcp__linear__B")).toBeUndefined();
+      expect(clearedSecretKeys).toEqual(["mcp__linear__B"]);
+    });
+
+    it("updateMcpServer keeps stored secrets when a save submits none", () => {
+      const cs = store();
+      addMcpServer(cs, stdioConfig, { mcp__linear__LINEAR_API_KEY: "lin_api_abc" });
+
+      // The enabled toggle re-submits the stored config with no secrets at all.
+      const { clearedSecretKeys } = updateMcpServer(
+        cs,
+        "linear",
+        { ...stdioConfig, enabled: false },
+        {},
+      );
+
+      expect(cs.getAgentEnv("mcp__linear__LINEAR_API_KEY")).toBe("lin_api_abc");
+      expect(clearedSecretKeys).toEqual([]);
+    });
+
+    it("updateMcpServer keeps a secret referenced only from args", () => {
+      const cs = store();
+      // `args` values are substituted too (session/mcp-resolve.ts), so a
+      // reference there is as live as one in `env`.
+      const argsConfig = {
+        name: "linear",
+        type: "stdio",
+        command: "npx",
+        args: ["-y", "@anthropic-ai/linear-mcp", "--token", "$secret:mcp__linear__TOKEN"],
+        enabled: true,
+      };
+      addMcpServer(cs, argsConfig, { mcp__linear__TOKEN: "lin_api_abc" });
+
+      const { clearedSecretKeys } = updateMcpServer(
+        cs,
+        "linear",
+        { ...argsConfig, enabled: false },
+        {},
+      );
+
+      expect(cs.getAgentEnv("mcp__linear__TOKEN")).toBe("lin_api_abc");
+      expect(clearedSecretKeys).toEqual([]);
+    });
+
+    it("updateMcpServer keeps secrets across a transport change", () => {
+      const cs = store();
+      addMcpServer(cs, stdioConfig, { mcp__linear__LINEAR_API_KEY: "lin_api_abc" });
+
+      // The new bag is `headers`, not `env`; the secret keys do not move with it.
+      const { clearedSecretKeys } = updateMcpServer(
+        cs,
+        "linear",
+        {
+          name: "linear",
+          type: "http",
+          url: "https://mcp.linear.app/mcp",
+          headers: { Authorization: "Bearer $secret:mcp__linear__LINEAR_API_KEY" },
+          enabled: true,
+        },
+        {},
+      );
+
+      expect(cs.getAgentEnv("mcp__linear__LINEAR_API_KEY")).toBe("lin_api_abc");
+      expect(clearedSecretKeys).toEqual([]);
+    });
+
+    it("updateMcpServer leaves another server's secrets alone", () => {
+      const cs = store();
+      addMcpServer(cs, stdioConfig, { mcp__linear__LINEAR_API_KEY: "lin_api_abc" });
+      addMcpServer(cs, { ...stdioConfig, name: "sentry", env: undefined }, {});
+      cs.setMcpSecret("mcp__sentry__TOKEN", "sntrys_abc");
+
+      updateMcpServer(cs, "linear", { ...stdioConfig, name: "linearprod", env: {} }, {});
+
+      expect(cs.getAgentEnv("mcp__sentry__TOKEN")).toBe("sntrys_abc");
+    });
+
     it("removeMcpServer drops the blob and reports cleared secret keys", () => {
       const cs = store();
       addMcpServer(cs, stdioConfig, { mcp__linear__LINEAR_API_KEY: "lin_api_abc" });

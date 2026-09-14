@@ -38,7 +38,9 @@ export function KvEditor({
             className={inputClass}
             type="password"
             value={row.value}
-            placeholder={editingId ? "(unchanged)" : "value"}
+            placeholder={
+              editingId && row.originalKey === row.key.trim() ? "(unchanged)" : "value"
+            }
             aria-label={`${label} — value ${idx + 1}`}
             onChange={(e) =>
               onChange(kv.map((r, i) => (i === idx ? { ...r, value: e.target.value } : r)))

@@ -22,8 +22,22 @@ export function substituteMcpPlaceholders(
     return v;
   };
   return value
-    .replace(/\$secret:([A-Za-z_][A-Za-z0-9_]*)/g, (_m, key: string) => lookup(key))
+    .replace(secretRefPattern(), (_m, key: string) => lookup(key))
     .replace(/\$platform:([a-z][a-z0-9_]*)/g, (_m, source: string) =>
       lookup(`MCP_PLATFORM_${source.toUpperCase()}`),
     );
+}
+
+/**
+ * The agentEnv keys a config value refers to. Shares the pattern with the
+ * substitution above so the two readers cannot drift: the orchestrator
+ * reconciles stored secrets against what a config refers to (planning#565), and
+ * a reference it failed to see would be a secret it deletes.
+ */
+export function secretKeysReferencedIn(value: string): string[] {
+  return [...value.matchAll(secretRefPattern())].map((m) => m[1]);
+}
+
+function secretRefPattern(): RegExp {
+  return /\$secret:([A-Za-z_][A-Za-z0-9_]*)/g;
 }

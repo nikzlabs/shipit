@@ -7,6 +7,21 @@ import type {
 export interface KvRow {
   key: string;
   value: string;
+  /**
+   * The key this row was loaded with, absent on a row the user added. A blank
+   * value means "unchanged" only while the key still matches it: the stored
+   * secret is named after the key, so editing the key points the row at a
+   * secret that was never stored (planning#565).
+   */
+  originalKey?: string;
+  /**
+   * The reference expression this row was loaded with. The form shows only the
+   * key, so re-deriving the value would flatten anything it cannot represent —
+   * a `Bearer ` prefix, a secret named unlike its key, an OAuth `$platform:`
+   * link — and the save would then delete the credential it stopped referring
+   * to (planning#565).
+   */
+  originalValue?: string;
 }
 
 export interface FormState {
@@ -33,6 +48,12 @@ export const EMPTY_FORM: FormState = {
   enabled: true,
 };
 
+/** The server carries the stored values across a rename; the references move with them. */
+function moveSecretNamespace(expression: string, from: string, to: string): string {
+  if (!from || from === to) return expression;
+  return expression.replaceAll(`$secret:mcp__${from}__`, () => `$secret:mcp__${to}__`);
+}
+
 export function buildPayload(form: FormState): {
   config: McpServerConfig;
   secrets: Record<string, string>;
@@ -43,8 +64,17 @@ export function buildPayload(form: FormState): {
     const k = row.key.trim();
     if (!k) continue;
     const secretKey = `mcp__${form.name}__${k}`;
-    placeholders[k] = `$secret:${secretKey}`;
-    if (row.value) secrets[secretKey] = row.value;
+    if (row.value) {
+      placeholders[k] = `$secret:${secretKey}`;
+      secrets[secretKey] = row.value;
+      continue;
+    }
+    // Blank means unchanged, so the row keeps the expression it was loaded with
+    // — a rename only moves it into the new namespace.
+    placeholders[k] =
+      row.originalKey === k && row.originalValue
+        ? moveSecretNamespace(row.originalValue, form.editingId, form.name)
+        : `$secret:${secretKey}`;
   }
 
   if (form.type === "stdio") {
@@ -85,8 +115,13 @@ export function formFromServer(server: McpServerConfig): FormState {
     args: server.type === "stdio" ? (server.args ?? []).join(" ") : "",
     url: server.type === "http" ? server.url : "",
     npmPackage: server.type === "stdio" ? server.npmPackage ?? "" : "",
-    // Never echo stored secret values.
-    kv: Object.keys(kvSource).map((key) => ({ key, value: "" })),
+    // Never echo stored secret values — only the references to them.
+    kv: Object.entries(kvSource).map(([key, expression]) => ({
+      key,
+      value: "",
+      originalKey: key,
+      originalValue: expression,
+    })),
     enabled: server.enabled,
   };
 }

@@ -219,6 +219,128 @@ describe("McpServerSettings (docs/088)", () => {
     expect((valueInputs[0] as HTMLInputElement).value).toBe("");
   });
 
+  it("submits a rename with no secrets at all, so the server must carry them (planning#565)", async () => {
+    const fake = new FakeFetch();
+    fake.on("GET", /^\/api\/mcp-servers$/, () => ({ servers: [stdioConfig] }));
+    fake.on("GET", /\/oauth\/providers$/, () => ({ providers: [] }));
+    fake.on("PUT", /\/api\/mcp-servers\/linear$/, () => ({ server: stdioConfig }));
+    fake.install();
+
+    render(<McpServerSettings hasActiveSession={false} />);
+    await waitFor(() => {
+      expect(screen.getByTestId("mcp-server-linear")).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Edit linear" }));
+
+    fireEvent.change(screen.getByDisplayValue("linear"), { target: { value: "linearprod" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save MCP server" }));
+
+    await waitFor(() => {
+      expect(fake.calls.some((c) => c.method === "PUT")).toBe(true);
+    });
+    const put = fake.calls.find((c) => c.method === "PUT")!;
+    const body = put.body as {
+      config: { env: Record<string, string> };
+      secrets: Record<string, string>;
+    };
+    expect(body.config.env).toEqual({
+      LINEAR_API_KEY: "$secret:mcp__linearprod__LINEAR_API_KEY",
+    });
+    expect(body.secrets).toEqual({});
+  });
+
+  it("keeps a reference expression the form cannot represent, moving it on rename", async () => {
+    // A header whose value wraps the reference, under a key that is not the
+    // secret's name — the shape an agent-written config has.
+    const sentry: McpServerConfig = {
+      name: "sentry",
+      type: "http",
+      url: "https://mcp.sentry.dev/mcp",
+      headers: { Authorization: "Bearer $secret:mcp__sentry__TOKEN" },
+      enabled: true,
+    };
+    const fake = new FakeFetch();
+    fake.on("GET", /^\/api\/mcp-servers$/, () => ({ servers: [sentry] }));
+    fake.on("GET", /\/oauth\/providers$/, () => ({ providers: [] }));
+    fake.on("PUT", /\/api\/mcp-servers\/sentry$/, () => ({ server: sentry }));
+    fake.install();
+
+    render(<McpServerSettings hasActiveSession={false} />);
+    await waitFor(() => {
+      expect(screen.getByTestId("mcp-server-sentry")).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Edit sentry" }));
+
+    fireEvent.change(screen.getByDisplayValue("sentry"), { target: { value: "sentryprod" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save MCP server" }));
+
+    await waitFor(() => {
+      expect(fake.calls.some((c) => c.method === "PUT")).toBe(true);
+    });
+    const body = fake.calls.find((c) => c.method === "PUT")!.body as {
+      config: { headers: Record<string, string> };
+    };
+    expect(body.config.headers).toEqual({
+      Authorization: "Bearer $secret:mcp__sentryprod__TOKEN",
+    });
+  });
+
+  it("keeps an OAuth $platform: reference through an unrelated edit", async () => {
+    const notion: McpServerConfig = {
+      name: "notion",
+      type: "http",
+      url: "https://mcp.notion.com/mcp",
+      headers: { Authorization: "Bearer $platform:notion_oauth" },
+      enabled: true,
+    };
+    const fake = new FakeFetch();
+    fake.on("GET", /^\/api\/mcp-servers$/, () => ({ servers: [notion] }));
+    fake.on("GET", /\/oauth\/providers$/, () => ({ providers: [] }));
+    fake.on("PUT", /\/api\/mcp-servers\/notion$/, () => ({ server: notion }));
+    fake.install();
+
+    render(<McpServerSettings hasActiveSession={false} />);
+    await waitFor(() => {
+      expect(screen.getByTestId("mcp-server-notion")).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Edit notion" }));
+
+    fireEvent.change(screen.getByDisplayValue("https://mcp.notion.com/mcp"), {
+      target: { value: "https://mcp.notion.com/v1/mcp" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save MCP server" }));
+
+    await waitFor(() => {
+      expect(fake.calls.some((c) => c.method === "PUT")).toBe(true);
+    });
+    const body = fake.calls.find((c) => c.method === "PUT")!.body as {
+      config: { headers: Record<string, string> };
+    };
+    expect(body.config.headers).toEqual({ Authorization: "Bearer $platform:notion_oauth" });
+  });
+
+  it("stops claiming a value is unchanged once its key is edited (planning#565)", async () => {
+    const fake = new FakeFetch();
+    fake.on("GET", /^\/api\/mcp-servers$/, () => ({ servers: [stdioConfig] }));
+    fake.on("GET", /\/oauth\/providers$/, () => ({ providers: [] }));
+    fake.install();
+
+    render(<McpServerSettings hasActiveSession={false} />);
+    await waitFor(() => {
+      expect(screen.getByTestId("mcp-server-linear")).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Edit linear" }));
+
+    // A renamed key refers to a secret that was never stored, so "(unchanged)"
+    // would promise a value the save cannot carry over.
+    fireEvent.change(screen.getByDisplayValue("LINEAR_API_KEY"), {
+      target: { value: "LINEAR_TOKEN" },
+    });
+
+    expect(screen.queryByPlaceholderText("(unchanged)")).toBeNull();
+    expect(screen.getAllByPlaceholderText("value")).toHaveLength(1);
+  });
+
   it("folds an OAuth-managed server into the connection card and hides the duplicate row", async () => {
     const notionServer: McpServerConfig = {
       name: "notion",
