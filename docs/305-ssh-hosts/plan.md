@@ -84,11 +84,18 @@ orchestrator, gated by `gitCredentialAllowed(session)` in `pr-target.ts`).
      and `is_forwarding` is an unsigned byte the caller controls. Both limits are
      PROTOCOL.agent's, not this implementation's; their consequences are stated below.
   3. The bind's host key equals the destination's recorded host key. If the destination has
-     none yet, this bind records it (TOFU, req 9) — but only after every other rule has
-     passed, so a request that is about to be refused can never set the account-wide pin
-     (`services/ssh.ts`, "Recording is DEFERRED"). A persisted card shows the fingerprint. A
-     later mismatch is refused and a persisted warning card says so. The host entry in Settings
-     has a "forget host key" action that clears the pin so the next valid bind records afresh.
+     none yet, the orchestrator observes the key itself before trusting the bind (req 13): it
+     runs `ssh-keyscan -p <port> -T 5 -t <bind's key type> <address>` from its own network
+     and records the bind's key only if the scan returns that same key blob. A scan that
+     returns a different key, or none (unreachable, timeout, `ssh-keyscan` absent in local
+     mode), refuses with reason `host-key-unverified` and posts a persisted warning card that
+     names what the scan saw, so a wrong address or a firewall between the orchestrator and the
+     host is visible without reading logs. Recording still happens only after every other
+     rule has passed (`services/ssh.ts`, "Recording is DEFERRED"). A persisted card shows the
+     fingerprint once recorded (req 9). A later mismatch is refused and a persisted warning
+     card says so. The host entry in Settings has a "forget host key" action that clears the
+     pin so the next valid bind is verified and recorded afresh. The scan runs only while no
+     key is recorded, so it is one process per destination lifetime, not per connection.
   4. The data to sign parses as an SSH userauth publickey request whose session id equals the
      bind's, whose `user` equals the destination's configured user, whose public key is the
      destination's, and whose algorithm is `ssh-ed25519`. Two layouts are accepted: the
@@ -113,20 +120,21 @@ What it does not do:
   (host-side restricted user), and revoking a grant stops *new* authentications only — an
   already authenticated connection continues until it closes (the firewall accepts
   established flows, `init-firewall.sh:104`).
-- **First-use trust is the session's word.** Before the first recorded key, a granted session
-  can post a bind it minted itself, with junk of the right shape to sign, and pin its own key
-  as the destination's. The private key is not exposed by this and no other server becomes
-  reachable; the damage is a denial of service on that one destination for every granted
-  session, plus a wrong fingerprint in the card and the host entry, recovered by "forget host
-  key". How ShipIt should learn the real key is an open question in `requirements.md`.
+- **First-use trust rests on the orchestrator's scan, not the session's word.** Without
+  rule 3's scan, a granted session could post a bind it minted itself and pin its own key as
+  the destination's — no key exposure, but a denial of service on that destination for every
+  granted session and a wrong fingerprint. The scan ties the key to the address as seen from
+  the orchestrator; what it cannot detect is an attacker who controls that address from the
+  orchestrator's network position too, which is the same trust every first `ssh` makes.
 - **The `is_forwarding` refusal stops honest and accidental forwarding only** — a
   `ForwardAgent yes` in the editable config, or `ssh -A`. A hostile in-container agent can
   clear the byte. What a forwarded socket then yields is a signature for the pinned host as
   the configured user, which the session can already obtain directly, so the residual is
   nothing new reachable. The check stays because it is free and catches the realistic case.
-- **Why not a brokered `ssh` shim.** It would need `openssh-client` in the orchestrator image,
-  stream stdin and terminals over two HTTP hops, and reimplement `scp`, `rsync`, and git
-  transport one by one. The agent-socket path needs none of that (req 2).
+- **Why not a brokered `ssh` shim.** It would stream stdin and terminals over two HTTP hops
+  and reimplement `scp`, `rsync`, and git transport one by one. The agent-socket path needs
+  none of that (req 2). `openssh-client` is in the orchestrator image for `ssh-keyscan` alone
+  (rule 3); the orchestrator never opens an authenticated connection.
 
 | Option | Agent can read key? | Harness-agnostic? | scp / git / rsync work? | Fails closed? | New binaries |
 |---|---|---|---|---|---|
@@ -286,6 +294,7 @@ As implemented:
   are here).
 - `src/server/orchestrator/services/ssh.ts` (new) — the five-rule signer contract, the
   per-session rate and concurrency bound, the audit line, and the host-key cards.
+- `docker/Dockerfile.prod`, `.dev`, `.dogfood` — `openssh-client` for `ssh-keyscan` (rule 3).
 - `src/server/orchestrator/ssh-provision.ts` (new) — aliases, `~/.ssh/{config,known_hosts,
   <alias>.pub}`, and the full rewrite from the durable grant.
 - `src/server/orchestrator/api-routes-ssh.ts` (new) — browser-only host CRUD and session
@@ -325,7 +334,10 @@ Two implementation choices worth naming, both inside the design rather than chan
   host-key signature → refuse; host key ≠ recorded → refuse + warning card; data that is not a
   userauth request, or a different session id, or a different user, or a different algorithm,
   or a host-bound request naming a different server → refuse; the first *fully valid* request
-  records the key and a refused one never does. Signature round trip verified with
+  records the key and a refused one never does; a first bind whose key the scan does not
+  return → refuse + warning card, nothing recorded; scan failure (timeout, no binary) →
+  refuse, nothing recorded. The scan is a spawned process, so its test fakes the spawn and
+  asserts the argument list and the exact-blob comparison. Signature round trip verified with
   `ssh-keygen -Y verify`.
 - Grant gate: a session without the host gets `SSH_AGENT_FAILURE`; an ungranted key id 403s;
   a direct call from the container to its own session's route is accepted, a cross-session

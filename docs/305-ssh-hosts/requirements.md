@@ -31,20 +31,23 @@ description: The agent runs commands on a remote server over SSH from any sessio
     destination has its own generated key. A session is granted one or more destinations.
 12. A destination's address may be a hostname or an IP address. An IP destination is
     reachable from a granted session even though no DNS lookup happens for it.
+13. ShipIt records a destination's host key only after it has itself observed that key at
+    the configured address and port, from the orchestrator's own network. A key a session
+    presents that ShipIt cannot observe there is refused, and the user can see why.
 
 ## Open questions
 
-- How does ShipIt learn a destination's real host key (req 9)? The first `session-bind`
-  proves a key exchange with whoever holds the supplied host key, not with the configured
-  address, so before the first real connection a granted session can pin a key of its own.
-  The private key is not exposed; the effect is that the destination stops working for every
-  granted session until "forget host key" is used, with a wrong fingerprint shown meanwhile.
-  Candidates: the orchestrator scans the address itself (`ssh-keyscan`, needs
-  `openssh-client` in the orchestrator image) and pins only a matching key; accept the risk as
-  stated and keep the current narrowing; or the user confirms the fingerprint card before
-  signing starts.
-
 ## Resolved questions
+
+- 2026-09-14 — How does ShipIt learn a destination's real host key? The first `session-bind`
+  proves a key exchange with whoever holds the supplied host key, not with the configured
+  address, so a granted session could pin a key of its own before the first real connection.
+  The user chose: the orchestrator scans the address itself and pins only a matching key
+  (req 13). Accepting the risk and a confirm step on the fingerprint card were declined.
+- 2026-09-14 — The signer's `is_forwarding` refusal cannot hold against a hostile agent
+  (the flag is outside the server's signature). The user chose: keep the check for honest
+  and accidental forwarding, and drop the claim from the plan. Removing the check was
+  declined.
 
 - 2026-09-14 — Does req 10 mean confirmed connections or authentication attempts? The user
   does not mind which; the logging must make debugging easy. Req 10 reworded to one line per
