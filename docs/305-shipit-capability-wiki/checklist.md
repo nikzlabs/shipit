@@ -21,7 +21,7 @@ Each one is a page in `src/server/shipit-docs/wiki/`, written under the voice
 contract in `wiki/README.md`, and added to that file's question map and to the
 census in `how-shipit-works.md`.
 
-- [ ] `chat.md` — attachments, `@` files, `/` skills, interrupt and queue,
+- [x] `chat.md` — attachments, `@` files, `/` skills, interrupt and queue,
       permission prompts, questions, dictation, voice notes, collapsed turns,
       the context dial and compaction, goals, Present, proposed actions
 - [ ] `previews.md` — what the preview is, Compose services, service control,
