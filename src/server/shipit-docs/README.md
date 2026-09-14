@@ -4,8 +4,16 @@ Reference documentation for the ShipIt runtime environment. Consult these when
 configuring projects, troubleshooting previews, or answering questions about
 platform capabilities.
 
+**When the user asks what ShipIt can do, read [wiki/](wiki/README.md) instead.**
+The files below are your operating manual — how to drive the surface you
+control. The wiki describes ShipIt as a product: the panels the user works in,
+what they can ask for, and what happens when they do. Most of that is surface
+you never touch, so it is the only place you can learn it. Start at
+[wiki/README.md](wiki/README.md), which maps the user's own wording to a page.
+
 | File | Covers |
 |------|--------|
+| [wiki/](wiki/README.md) | **What ShipIt can do, for when the user asks** — the product, its features, and how to install and run it |
 | [environment.md](environment.md) | Container layout, paths, auto-git, hot reload |
 | [android.md](android.md) | Android — build/lint/test the baked toolchain, snapshot tests for visual checks, emulator-as-Compose-service for a live device |
 | [shipit-yaml.md](shipit-yaml.md) | Full `shipit.yaml` config reference |
