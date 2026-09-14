@@ -223,11 +223,20 @@ and its workspace never descends the disk ladder. That is the reason to
 recommend a pin, not the ordering. A pin does not keep its container or its
 preview alive.
 
-Two consequences to state plainly when they come up. Anything **committed** is
-safe, and ShipIt commits after every turn. Anything started by hand inside the
-container — a background process, a `setInterval`, a dev server launched from
-the terminal — does **not** survive, and does not come back. Long-running work
-belongs in `docker-compose.yml`; one-time setup belongs in `shipit.yaml`.
+Two consequences to state plainly when they come up.
+
+**Committed work is safe on this machine, and safe everywhere only once it is
+pushed.** ShipIt commits after every turn and then pushes — but the push is
+conditional, and it is worth knowing on which conditions. With **GitHub not
+connected** nothing is pushed at all; the commit stays in the session's local
+history. A push that **fails** leaves the commit there too. In both cases the
+work is intact and the session will say so, but it exists on one host only, and
+"it's on GitHub" would be the wrong reassurance to give.
+
+**Anything started by hand inside the container does not survive** — a
+background process, a `setInterval`, a dev server launched from the terminal.
+It does not come back either. Long-running work belongs in
+`docker-compose.yml`; one-time setup belongs in `shipit.yaml`.
 
 ## Archiving
 
@@ -235,6 +244,13 @@ Archiving is the tidy end of a session's life, not a delete. It stops the
 session's container, removes its named volumes, and reclaims its checkout — and
 it takes the session's **children** with it, since archiving a parent is one
 user action.
+
+**"Removes its named volumes" includes the project's own.** A volume declared in
+the user's `docker-compose.yml` becomes a Docker volume belonging to this
+session, so whatever is in it goes when the session is archived — the rows in a
+development database, an upload directory, a cache built up over weeks of work.
+That data was never durable and no backup covers it. If it matters to the user,
+say so *before* they archive, and get it out first.
 
 **"If I archive this, do I lose my work?"** is the question users actually ask,
 and the answer is no, for a reason worth giving them: before ShipIt reclaims a
