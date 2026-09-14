@@ -59,7 +59,16 @@ export class CleanupContainerManager implements BackgroundHarnessRunner {
   private consecutiveFailures = 0;
   private retryTimer: NodeJS.Timeout | null = null;
   private lastFailure: string | null = null;
-  private adoptedUnverified = false;
+  /**
+   * The adopted container's id, until a run inside it succeeds. Keyed by id and
+   * not a flag: a container this process *created* is not provisional, and a
+   * flag outlives the container it described — an adopted container that dies
+   * before any run succeeds is recreated, and the flag would condemn the
+   * replacement on its first ordinary failure.
+   */
+  private adoptedUnverifiedId: string | null = null;
+  /** Spawns awaiting the worker right now; a replacement waits for zero. */
+  private inFlightSpawns = 0;
   private stopped = false;
   private readonly onContainerExited: (sessionId: string) => void;
   private readonly onHealthMonitorResumed: () => void;
@@ -198,7 +207,7 @@ export class CleanupContainerManager implements BackgroundHarnessRunner {
       }
       console.log(`[cleanup-container] adopted the running container at ${sc.workerUrl}`);
       this.lastFailure = null;
-      this.adoptedUnverified = true;
+      this.adoptedUnverifiedId = sc.id;
       return sc;
     } catch (err) {
       console.warn("[cleanup-container] could not adopt a running container:", getErrorMessage(err));
@@ -289,8 +298,10 @@ export class CleanupContainerManager implements BackgroundHarnessRunner {
     // waiting so the spawn home is released only once the CLI has actually gone.
     const onAbort = (): void => { void this.cancelSpawn(sc, spawnId); };
     req.signal?.addEventListener("abort", onAbort, { once: true });
+    this.inFlightSpawns += 1;
+    let outcome: SubAgentRunResult;
     try {
-      const result = await workerPost(
+      outcome = await workerPost(
         sc.workerUrl,
         "/agent/spawn",
         {
@@ -310,16 +321,43 @@ export class CleanupContainerManager implements BackgroundHarnessRunner {
         // The worker's own timer settles the run; the transport outlives it so a
         // timed-out run still returns its partial text rather than a socket error.
         { timeoutMs: timeoutMs + SPAWN_TRANSPORT_HEADROOM_MS },
-      );
-      this.adoptedUnverified = false;
-      return result as SubAgentRunResult;
+      ) as SubAgentRunResult;
     } catch (err) {
       await this.forgetIfGone(sc);
-      await this.replaceUnverifiedAdoption(sc);
-      return failedRun(getErrorMessage(err), startedAt);
+      outcome = failedRun(getErrorMessage(err), startedAt);
     } finally {
       req.signal?.removeEventListener("abort", onAbort);
+      this.inFlightSpawns -= 1;
     }
+    this.noteRunOutcome(sc, outcome);
+    return outcome;
+  }
+
+  /**
+   * Adoption is settled by a run that **succeeded**, and by nothing weaker. A
+   * worker whose harness cannot reach the provider still answers the spawn —
+   * HTTP 200 carrying `status: "error"` or `"timeout"`
+   * (`session/agent-controller.ts`) — so a reply is not evidence, and a
+   * container wedged that way would otherwise mark itself verified on its first
+   * failure and stay wedged for the life of the install. `"cancelled"` is not
+   * evidence either: a blackholed egress answers nothing, so the caller's
+   * deadline is what ends the run (req 9).
+   *
+   * Synchronous, so a success cannot be overtaken by a concurrent failure, and
+   * so a failing dictation does not wait for a container teardown it started.
+   */
+  private noteRunOutcome(sc: SessionContainer, outcome: SubAgentRunResult): void {
+    if (this.adoptedUnverifiedId !== sc.id || this.stopped) return;
+    if (outcome.status === "success") {
+      this.adoptedUnverifiedId = null;
+      return;
+    }
+    // Replace only once no other spawn is awaiting this worker: destroying the
+    // container takes any dictation still running in it, and one request's
+    // failure must disturb no other work (req 9). Waiting loses nothing — the
+    // id stays provisional until a run succeeds, so the next failure acts.
+    if (this.inFlightSpawns > 0) return;
+    void this.replaceUnverifiedAdoption(sc);
   }
 
   /**
@@ -345,27 +383,46 @@ export class CleanupContainerManager implements BackgroundHarnessRunner {
 
   /**
    * Adoption is provisional. "Running", under the build this orchestrator made,
-   * does not establish that the worker still answers or that its egress sidecars
-   * outlived the gap — and nothing repairs that later, because a wedged
+   * does not establish that the worker still runs a cleanup or that its egress
+   * sidecars outlived the gap — and nothing repairs that later, because a wedged
    * container stays running for ever and `forgetIfGone` only acts on death. So
-   * the first transport failure against an adopted container replaces it rather
-   * than trusting it again. Once, so a container that answers is not torn down
-   * by an unrelated failure.
+   * the first failed run against an adopted container replaces it rather than
+   * trusting it again. Once, so a container that has cleaned a transcript is not
+   * torn down by an unrelated failure.
    */
   private async replaceUnverifiedAdoption(sc: SessionContainer): Promise<void> {
-    if (!this.adoptedUnverified || this.stopped) return;
-    this.adoptedUnverified = false;
+    if (this.adoptedUnverifiedId !== sc.id || this.stopped) return;
+    this.adoptedUnverifiedId = null;
     if (this.deps.containerManager.get(CLEANUP_CONTAINER_SESSION_ID)?.id !== sc.id) return;
-    console.warn("[cleanup-container] the adopted container did not answer — replacing it");
+    // Hold the acquisition lock across the whole replacement, and take it before
+    // the first await. `destroyContainer` leaves the entry reading "stopping"
+    // across several Docker calls (`container-lifecycle.ts:966`), so a dictation
+    // arriving inside that window would start a *second* teardown — which then
+    // reaps this one's replacement: the session-wide resource cleanup and the
+    // final `containers.delete` are both unconditional (`:993`, `:1016`).
+    if (this.ensuring) return;
+    console.warn("[cleanup-container] the adopted container did not clean a transcript — replacing it");
+    this.ensuring = this.destroyAndRebuild().finally(() => { this.ensuring = null; });
+    await this.ensuring;
+  }
+
+  private async destroyAndRebuild(): Promise<SessionContainer | null> {
     try {
       await this.deps.containerManager.destroy(
         CLEANUP_CONTAINER_SESSION_ID, { replacementFollows: true },
       );
     } catch (err) {
       console.warn("[cleanup-container] could not replace it:", getErrorMessage(err));
-      return;
+      return null;
     }
-    this.noteContainerGone();
+    // The teardown awaits Docker, so shutdown can land inside it — the same
+    // window `acquire()` guards, reached by a different path.
+    if (this.stopped) return null;
+    // Rebuild inside the lock rather than leaving it to the retry timer: req 8
+    // is about the container being up before the next dictation.
+    const replacement = await this.create();
+    if (!replacement) this.reviveSoon();
+    return replacement;
   }
 
   private async cancelSpawn(sc: SessionContainer, spawnId: string): Promise<void> {
