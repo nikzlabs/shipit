@@ -35,7 +35,7 @@ census in `how-shipit-works.md`.
 - [x] `repos-and-sandboxes.md` — adding a repo, trust, repo colours, sandbox
       sessions and their capabilities, secrets
 - [x] `plugins-and-skills.md` — what the user sees, marketplaces, MCP servers
-- [ ] `deploying.md` — targets, prerequisites, status on the card
+- [x] `deploying.md` — targets, prerequisites, status on the card
 - [x] `troubleshooting.md` — the questions users actually ask when it misbehaves
 - [x] Backing up and moving an installation — a section in
       `installing-and-updating.md`, since there is no whole-install backup to
@@ -43,12 +43,12 @@ census in `how-shipit-works.md`.
 
 ## Before each page ships
 
-- [ ] Every claim verified against code or a shipped feature's requirements —
+- [x] Every claim verified against code or a shipped feature's requirements —
       not against a design doc, which may describe intent that never landed
-- [ ] **Every named control checked for its condition.** The first slice's
+- [x] **Every named control checked for its condition.** The first slice's
       review found four errors of this one shape: a control named in the wrong
       panel, or promised on installs and sessions that do not have it. A tab, a
       button or a menu item is only correct together with when it appears.
-- [ ] No setting value, service list, role or tracker written down; the live
+- [x] No setting value, service list, role or tracker written down; the live
       command named instead
-- [ ] Read once more for the voice contract: no command addressed to the user
+- [x] Read once more for the voice contract: no command addressed to the user
