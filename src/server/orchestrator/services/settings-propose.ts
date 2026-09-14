@@ -271,6 +271,31 @@ function requireShowable(declaration: AnySettingDeclaration, side: string, text:
   );
 }
 
+/**
+ * A value the declaration's own projection would not emit.
+ *
+ * A projection that drops a value formats it as "not set", so the card would say
+ * the setting becomes nothing while the write stored what was typed — a role
+ * renamed to `https://user:token@host/` is the worked case, since
+ * `userNameProjection` names no URL back. It is the same test `hostPreflight`
+ * makes of an allowlist entry (plan.md → an operation whose full effect cannot
+ * be displayed is refused), and for the same second reason: the value is NOT
+ * quoted back, because what was typed can carry a credential and this message
+ * reaches the transcript as tool output.
+ */
+function requireEmittable(declaration: AnySettingDeclaration, value: unknown): void {
+  if (value === null || value === undefined || value === "") return;
+  const outcome = projectSetting(declaration, value);
+  if (!outcome.readable || outcome.value !== null) return;
+  const shape = declaration.emits.kind === "user_name"
+    ? " A name is letters, digits, spaces and . _ + ( ) [ ] - ; anything URL-shaped is named by nothing."
+    : "";
+  refuse(
+    `ShipIt would not read that value back for ${declaration.key}, so a card would show the setting `
+      + `becoming "not set" while the write stored something else.${shape}`,
+  );
+}
+
 interface ProposedChange {
   from: string;
   fromValue: unknown;
@@ -334,6 +359,7 @@ function valueChange(
         + `${knownAddresses(current.entry)}.`,
     );
   }
+  requireEmittable(declaration, proposedValue);
   // Through the catalogue's own door, exactly as the read's value was: the card
   // must show `from` and `to` in one another's terms.
   const to = formatSetting(declaration, projectSetting(declaration, proposedValue));

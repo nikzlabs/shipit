@@ -188,14 +188,19 @@ describe("SettingsProposalCard — resolved", () => {
     expect(screen.queryByText("never shown")).not.toBeInTheDocument();
   });
 
-  it("shows the server's own sub-line ahead of the effect's", () => {
+  it("shows the server's own sub-line AND the effect's, in that order", () => {
     render(<SettingsProposalCard card={card({
       phase: "partial",
       outcomeDetail: "The name was saved. The email failed.",
-      effect: { state: "uncertain", detail: "not this one" },
+      effect: { state: "excluded", detail: "This session's containment was fixed at start." },
     })} />);
     const el = screen.getByTestId("settings-proposal-card");
+    // Two different questions: what the write did, and whether the saved value
+    // is the one this session uses. One hiding the other loses the half the user
+    // is usually unblocking.
     expect(el).toHaveTextContent(/The name was saved\. The email failed\./);
-    expect(el).not.toHaveTextContent(/not this one/);
+    expect(el).toHaveTextContent(/containment was fixed at start/);
+    expect(el.textContent!.indexOf("The name was saved"))
+      .toBeLessThan(el.textContent!.indexOf("containment was fixed"));
   });
 });

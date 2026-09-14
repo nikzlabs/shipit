@@ -460,16 +460,15 @@ function globalRemovalOutcome(deps: EgressApplyDeps, host: string): ApplyOutcome
           : `${stillListed.host} is still on the global allowlist after the removal, so nothing about what sessions can reach changed.`,
     );
   }
-  // The entry is gone and the host can still be reachable: entries are patterns,
-  // so removing `api.github.com` changes nothing about the shipped `.github.com`
-  // that matches it. The write did what the card said; saying only that would
-  // tell the user the host is unreachable now, which is the case it is not.
+  // Entries are patterns, so removing `api.github.com` leaves the shipped
+  // `.github.com` matching it. Membership, not reachability: whether a session
+  // reaches the host depends on its own containment, which the card's `effect`
+  // answers and this must not talk over.
   const covered = remaining.find((entry) => hostMatchesEntry(target, entry.host));
   return covered
     ? {
         status: "applied",
-        detail: `The entry is off the list. ${covered.host} still allows ${target}, so sessions can `
-          + "reach it until that entry goes too.",
+        detail: `The entry is off the list, and ${covered.host} is still on it and matches ${target}.`,
       }
     : APPLIED;
 }

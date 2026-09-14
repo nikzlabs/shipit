@@ -715,13 +715,9 @@ const credentialLabelOperation: SettingsOperation = {
 };
 
 /**
- * The `serviceId:accountId` the read emits, as the writer's own arguments.
- *
- * The two halves are not the same vocabulary: an address names the SERVICE the
- * account belongs to, and `renameProviderAccount` takes the HARNESS whose
- * sign-in owns that service (`requireAccountService`). Passing the address's
- * half straight through refused every rename with "Unknown provider", at the
- * click rather than at the proposal.
+ * The `serviceId:accountId` the read emits, as the writer's own arguments: an
+ * address names the SERVICE the account belongs to, and `renameProviderAccount`
+ * takes the HARNESS whose sign-in owns that service (`requireAccountService`).
  */
 function accountAddress(item: string | undefined): { harnessId: AgentId; accountId: string } | null {
   const at = item?.indexOf(":") ?? -1;

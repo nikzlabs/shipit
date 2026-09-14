@@ -133,6 +133,35 @@ describe("proposeSettingChange", () => {
       .toContain("already on");
   });
 
+  it("refuses a name ShipIt would not read back, rather than showing it as \"not set\"", async () => {
+    fx.credentialStore.setRole("deep-dive", {
+      name: "deep-dive",
+      params: {
+        kind: "pinned",
+        harnessId: "claude",
+        serviceId: "anthropic",
+        billingMode: "sub",
+        modelId: "claude-opus-5",
+      },
+    });
+
+    const message = await refusal({
+      key: "roles[].name",
+      item: "deep-dive",
+      valueText: "https://user:CANARY@example.test/?token=CANARY",
+      reason: "why",
+    });
+
+    // The projection names no URL back, so the card would have said
+    // `deep-dive → not set` while the write stored the URL and deleted the role.
+    expect(message).toContain("would not read that value back");
+    expect(fx.emitted).toHaveLength(0);
+    expect(fx.credentialStore.getRole("deep-dive")).toBeDefined();
+    // The refusal reaches the transcript as tool output, so it must not quote
+    // back what was typed.
+    expect(message).not.toContain("CANARY");
+  });
+
   it("refuses a value the card cannot show in full", async () => {
     const message = await refusal({
       key: "instructions.userInstructions",

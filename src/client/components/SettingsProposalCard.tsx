@@ -90,17 +90,25 @@ const STANDARD_DETAIL: Partial<Record<SettingsProposalPhase, string>> = {
  * A saved value is not always the one ShipIt uses, so an applied card says which
  * — reporting a global allowlist addition as a plain "Applied" would tell the
  * user the host is reachable now, in exactly the case where it is not.
+ *
+ * Both lines, never one instead of the other: they answer different questions.
+ * The server's own detail is about the write ("the entry is off the list"), and
+ * the effect is about this session ("its containment was fixed at start"), so
+ * letting the first hide the second loses the half the user is usually
+ * unblocking.
  */
-function subLine(card: SettingsProposalCardData): string | undefined {
-  if (card.outcomeDetail) return card.outcomeDetail;
-  if (card.effect && card.effect.state !== "live") return card.effect.detail;
-  return STANDARD_DETAIL[card.phase];
+function subLines(card: SettingsProposalCardData): string[] {
+  const lines = [card.outcomeDetail, card.effect?.state !== "live" ? card.effect?.detail : undefined]
+    .filter((line): line is string => Boolean(line));
+  if (lines.length > 0) return lines;
+  const standard = STANDARD_DETAIL[card.phase];
+  return standard ? [standard] : [];
 }
 
 export function SettingsProposalCard({ card, onDecide }: SettingsProposalCardProps) {
   if (card.phase !== "pending") {
     const { icon: Icon, tone, headline } = RESOLVED[card.phase];
-    const detail = subLine(card);
+    const details = subLines(card);
     return (
       <div
         data-testid="settings-proposal-card"
@@ -115,9 +123,11 @@ export function SettingsProposalCard({ card, onDecide }: SettingsProposalCardPro
           <span className="text-(--color-text-tertiary)" aria-hidden>·</span>{" "}
           {card.outcome ?? standardClause(card)}
         </span>
-        {detail && (
-          <span className="block w-full pl-6 text-xs text-(--color-text-tertiary)">{detail}</span>
-        )}
+        {details.map((detail) => (
+          <span key={detail} className="block w-full pl-6 text-xs text-(--color-text-tertiary)">
+            {detail}
+          </span>
+        ))}
       </div>
     );
   }

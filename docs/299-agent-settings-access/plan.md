@@ -477,9 +477,12 @@ And the outcome is now read off the **resulting membership**, in two steps. The
 named entry still on the list is `failed`, naming the source that keeps it there.
 The entry gone but the host still *matched* by another — entries are patterns, so
 removing `api.github.com` changes nothing about the shipped `.github.com` — is
-`applied` with a detail saying which entry still allows it, because the write did
-exactly what the card said and a bare "Applied" would read as the host being
-unreachable. The read-back sees every source, which is why
+`applied` with a detail naming the entry that still matches it, because the write
+did exactly what the card said and a bare "Applied" would read as the host being
+off the list altogether. That detail is membership too: whether a session reaches
+the host is the **effect**'s question, and a card renders both lines rather than
+letting the outcome's hide the session's — a sandbox with network off would
+otherwise lose the half the user is unblocking. The read-back sees every source, which is why
 `EgressApplyDeps` carries a **required** `credentialStore` key: the proposal's
 preflight refuses an MCP-supplied host before writing, and `DELETE
 /api/egress/hosts` does not, so the writer has to see one too. A session's list
@@ -798,6 +801,15 @@ card shows in full. *Change its URL* is refused — the projection shows only th
 host, so the card would either display less than it changes or echo a path the
 agent may not read back. The test is not size; it is whether the card can show
 all of it.
+
+**A VALUE the projection drops fails that test too**, and propose refuses it
+before the card exists. `userNameProjection` names no URL back, so renaming a
+role to `https://user:token@host/` would have shown `deep-dive → not set` while
+the write stored the URL and deleted the old name. The check is over the
+declaration's own projection rather than over one setting's shape, so it covers
+any emitter that drops a value; and like `hostPreflight` it does not quote the
+value back, because what was typed can carry a credential and the refusal reaches
+the transcript as tool output.
 
 **The patch has to be narrow in the WRITE, not only on the card.** Reading the
 stored object and handing it back to a whole-object writer looks like the same

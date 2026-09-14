@@ -399,3 +399,29 @@ Three findings, each verified at the code and each a defect rather than taste.
 - [x] A rename skipped the role validator every other role edit runs, so a role
       pinned to a retired model could be proposed and only refused at the click
 - [x] Both guards proven red alone
+
+### A fourth review, after the rebase
+
+- [x] A role could be renamed to a value the card could not show: the projection
+      names no URL back, so the card read `deep-dive → not set` while Apply
+      stored the URL and deleted the old name. Propose now refuses any value the
+      declaration's own projection drops — over the projection, not over one
+      setting's shape — without quoting the value back
+- [x] Guard proven red alone; the account-address comment trimmed to the
+      constraint, with its bug history left in `plan.md`
+- [x] The rebase resolution checked from both sides: `settings-baseline.ts` holds
+      a NUL byte in a source string, so git kept main's whole version with no
+      markers and the two readers were re-applied on top
+
+### A fifth review, of that fix
+
+- [x] The removal's own detail claimed reachability — the very thing the
+      membership wording exists to stop — and in a network-off sandbox it was
+      false. It names the entry that still matches the host and says nothing
+      about what a session can reach
+- [x] And it was hiding the answer: `subLine` returned the outcome's detail
+      INSTEAD of the effect's, so a card could report the write and drop the
+      reason the write is not live for this session. The card renders both, the
+      write's first. Pre-existing for every operation that sets both; this change
+      is what made the pair common
+- [x] Guard proven red alone

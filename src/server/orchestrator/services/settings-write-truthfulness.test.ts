@@ -247,6 +247,10 @@ describe("applyEgressHostRemove: `applied` means the host came off", () => {
     // "applied" would read as the host being unreachable now.
     expect(outcome.status).toBe("applied");
     expect(outcome.detail).toContain(".github.com");
+    // Membership, not reachability: whether a session reaches the host depends
+    // on its own containment, which the card's `effect` answers and this must
+    // not talk over.
+    expect(outcome.detail).not.toMatch(/reach/i);
     expect(fx.effective().map((entry) => entry.host)).not.toContain("api.github.com");
   });
 
