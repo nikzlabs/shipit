@@ -16,10 +16,12 @@ const TEST_TIMEOUT_MS = 30_000;
 
 // An uncapped pool sizes itself from the container's visible cores, so concurrent full runs
 // across sessions oversubscribe the shared host and starve the orchestrator's main thread.
-// Vitest uses a numeric maxWorkers verbatim, so take the lower of the cap and its own default
-// (cpus - 1) — otherwise this would *raise* the pool on a smaller CI runner.
+// Vitest uses a numeric maxWorkers verbatim with no clamp, and its own default differs by mode
+// (run: cpus - 1, watch: cpus / 2) — so leave it unset below the ceiling rather than computing
+// a replacement, which would otherwise *raise* the pool on a smaller machine.
+const WORKER_CEILING = 8;
 const cpus = os.availableParallelism?.() ?? os.cpus().length;
-const MAX_WORKERS = Math.min(8, Math.max(cpus - 1, 1));
+const MAX_WORKERS = cpus > WORKER_CEILING ? WORKER_CEILING : undefined;
 
 export default defineConfig({
   plugins: [react()],
