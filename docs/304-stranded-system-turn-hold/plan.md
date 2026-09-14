@@ -147,8 +147,9 @@ in other subsystems and need their own design and tests:
 
 - **planning#554** — a rebase flow releases its hold only `if (!runner.running)`,
   so a CLI-started turn adopted while it runs strands the hold with no owner at
-  all: the same permanent stall, through the rebase door. The ticket introduced
-  here is what its repair should key on.
+  all: the same permanent stall, through the rebase door. Fixed on the ticket
+  introduced here — see
+  [docs/305-rebase-hold-identity](../305-rebase-hold-identity/plan.md).
 - **planning#555** — a restart-adopted turn's quota or auth retry spreads
   `adopt: true` into the recursive `executeAgentTurn`, which then spawns an agent
   it never runs. Unrelated to holds; found while auditing the retry paths.

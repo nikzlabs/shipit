@@ -30,6 +30,15 @@ import {
 
 export const MAX_REBASE_ITERATIONS = 10;
 
+/** The driver's own claim on `runner.systemTurnInProgress`, re-minted at every acquisition. */
+interface DriverHold { seq: number }
+
+/** One entry point, so no acquisition can forget to capture the ticket it releases on. */
+function takeSystemHold(runner: SessionRunnerInterface, hold: DriverHold): void {
+  runner.systemTurnInProgress = true;
+  hold.seq = runner.systemHoldSeq;
+}
+
 export interface RebaseDriverDeps {
   git: GitManager;
   githubAuthManager: GitHubAuthManager;
@@ -342,7 +351,8 @@ export async function runRebaseFlow(
   }
 
   // Keep user turns queued between resolution turns and through the final push.
-  runner.systemTurnInProgress = true;
+  const hold: DriverHold = { seq: 0 };
+  takeSystemHold(runner, hold);
 
   // Defer auto-push so it cannot race the force-push. The object avoids TS callback narrowing.
   const pendingPush: { arm: (() => void) | null } = { arm: null };
@@ -441,7 +451,7 @@ export async function runRebaseFlow(
 
       const prompt = buildRebaseConflictPrompt(baseBranch, result.conflicts);
       try {
-        await runRebaseResolutionTurn(deps, prompt);
+        await runRebaseResolutionTurn(deps, prompt, hold);
       } catch (err) {
         // Abort before rethrowing; verify failures before reporting the branch unchanged.
         let stillInProgress = false;
@@ -539,8 +549,10 @@ export async function runRebaseFlow(
       }
     }
     handWorkspaceBackToWorker(runner.sessionDir);
-    // A displacing turn owns its flag and queue drain.
-    if (!runner.running) {
+    // Release on the hold's own ticket. A turn that displaced the driver minted one of its own
+    // and owns the flag and the queue drain; a CLI-started turn adopted mid-flow mints none, and
+    // keying this on `runner.running` left the hold set with no owner at all (planning#554).
+    if (runner.systemHoldSeq === hold.seq) {
       runner.systemTurnInProgress = false;
       try {
         releaseQueuedTurn(runner);
@@ -636,6 +648,7 @@ function notifyPrStatusPollerOfPush(deps: RebaseDriverDeps): void {
 function runRebaseResolutionTurn(
   deps: RebaseDriverDeps,
   prompt: string,
+  hold: DriverHold,
 ): Promise<void> {
   const { runner } = deps;
 
@@ -669,7 +682,7 @@ function runRebaseResolutionTurn(
         if (turnSettled) return;
         turnSettled = true;
         // Restore the flow's hold synchronously after finishTurn clears the per-turn flag.
-        if (!runner.running) runner.systemTurnInProgress = true;
+        if (!runner.running) takeSystemHold(runner, hold);
         if (outcome.status === "completed") {
           resolve();
           return;
