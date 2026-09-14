@@ -187,7 +187,7 @@ export async function deliverSessionReport(
     woken: false,
   };
   try {
-    await wakeSessionWithTurn(deps, parent, {
+    const handle = await wakeSessionWithTurn(deps, parent, {
       text: buildReportWakePrompt(card),
       messageOrigin: {
         sessionId: reporter.id,
@@ -200,6 +200,13 @@ export async function deliverSessionReport(
           : "Reading a report from a child session…",
     });
     result.woken = true;
+    // The card is already in the parent's transcript; only the turn can be waiting.
+    if (handle.admitted !== "started") {
+      console.log(
+        `[session-report] the wake for ${parent.id} was ${handle.admitted}; `
+        + "no turn has started on the report yet",
+      );
+    }
   } catch (err) {
     result.error = err instanceof Error ? err.message : String(err);
     console.error(`[session-report] wake-turn not delivered to ${parent.id}:`, err);

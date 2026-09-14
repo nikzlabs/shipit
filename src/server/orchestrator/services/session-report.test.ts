@@ -16,6 +16,7 @@ import {
   type SessionReportDeps,
 } from "./session-report.js";
 import { ServiceError } from "./types.js";
+import { createTurnSettlement, type TurnHandle } from "../turn-settlement.js";
 
 class FakeRunner {
   running = false;
@@ -25,8 +26,9 @@ class FakeRunner {
   dispatched: AgentDispatchOptions[] = [];
   emitted: unknown[] = [];
   constructor(public sessionDir: string) {}
-  dispatch(opts: AgentDispatchOptions): void {
+  dispatch(opts: AgentDispatchOptions): TurnHandle {
     this.dispatched.push(opts);
+    return createTurnSettlement();
   }
   emitMessage(msg: unknown): void {
     this.emitted.push(msg);

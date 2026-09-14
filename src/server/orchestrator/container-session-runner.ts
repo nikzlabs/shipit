@@ -79,6 +79,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   private _agentId: AgentId;
   private _isRunning = false;
   private _systemTurnInProgress = false;
+  private _systemHoldSeq = 0;
   private _mergeHold = false;
   private _wasInterrupted = false;
   turnEpoch = 0;
@@ -228,7 +229,12 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   get running(): boolean { return this._isRunning; }
   set running(v: boolean) { this._isRunning = v; }
   get systemTurnInProgress(): boolean { return this._systemTurnInProgress; }
-  set systemTurnInProgress(v: boolean) { this._systemTurnInProgress = v; }
+  set systemTurnInProgress(v: boolean) {
+    // Every acquisition is a new hold, including one taken while the flag is already set.
+    if (v) this._systemHoldSeq += 1;
+    this._systemTurnInProgress = v;
+  }
+  get systemHoldSeq(): number { return this._systemHoldSeq; }
   get mergeHold(): boolean { return this._mergeHold; }
   set mergeHold(v: boolean) { this._mergeHold = v; }
 

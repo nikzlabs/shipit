@@ -1,7 +1,7 @@
 import type { SessionManager } from "./sessions.js";
 import type { SessionRunnerRegistry } from "./session-runner.js";
 import { prepareDispatch } from "./prepared-dispatch.js";
-import type { TurnOutcome } from "./turn-settlement.js";
+import type { TurnHandle, TurnOutcome } from "./turn-settlement.js";
 import type { CredentialStore } from "./credential-store.js";
 import type { ProviderAccountManager } from "./provider-account-manager.js";
 import type { SessionContainerManager } from "./session-container.js";
@@ -34,11 +34,15 @@ export interface WakeTurnOptions {
 // Dispatch also waits for readiness; this wait exposes early boot failures.
 const WAKE_WORKER_READY_TIMEOUT_MS = 30_000;
 
+/**
+ * Resolves once the turn is dispatched, NOT once it runs. Read `admitted` on the handle:
+ * a wake queued behind a running turn or a system hold has started nothing (docs/304).
+ */
 export async function wakeSessionWithTurn(
   deps: WakeSessionDeps,
   session: SessionInfo,
   opts: WakeTurnOptions,
-): Promise<void> {
+): Promise<TurnHandle> {
   if (!session.workspaceDir) {
     throw new Error(`session ${session.id} has no workspace`);
   }
@@ -100,7 +104,7 @@ export async function wakeSessionWithTurn(
 
   // The callback preserves synchronous settlement; awaiting the handle adds a microtask.
   const onSettled = opts.onSettled;
-  runner.dispatch(prepareDispatch({
+  return runner.dispatch(prepareDispatch({
     text: opts.text,
     agentInterface: undefined,
     messageOrigin: opts.messageOrigin,

@@ -94,6 +94,11 @@ async function runDispatchedTurnInner(
       deps.shouldCompactBeforeTurn?.(runner, agentId, runner.sessionId, sessionDir, opts.compactContext) ?? Promise.resolve(false))
   ) {
     runner.messageQueue.unshift({ ...toQueuedMessage(opts), compactContext: false });
+    // Its dispatch was already reported as started; say that it is waiting after all.
+    console.log(
+      `[dispatch] re-queued the ${opts.systemTurn ? "system " : ""}dispatch for `
+      + `${runner.sessionId} at position 1 — a compaction turn runs first`,
+    );
     runner.emitMessage({ type: "queue_updated", queue: runner.getQueueSnapshot() });
     await runDispatchedTurn(runner, deps, agentId, prepareDispatch({
       text: POST_MERGE_COMPACT_PROMPT,
@@ -241,10 +246,12 @@ async function runDispatchedTurnInner(
         }))
       : undefined;
 
-  const drainNext = async (): Promise<void> => {
-    // A rebase may take the hold during the local commit. A system turn owns its existing hold.
-    if (runner.systemTurnInProgress && !opts.systemTurn) return;
-    if (opts.silent) {
+  const drainNext = async (info?: { ownsSystemHold: boolean }): Promise<void> => {
+    // A rebase may take the hold during the local commit, or between this turn's result
+    // and its exit — so a system turn owns the hold only while it is still its own (docs/304).
+    const ownsHold = opts.systemTurn === true && info?.ownsSystemHold === true;
+    if (runner.systemTurnInProgress && !ownsHold) return;
+    if (opts.silent && ownsHold) {
       runner.systemTurnInProgress = false;
       noteMissedCompaction(runner, deps.listenerDeps.chatHistoryManager, runner.sessionId);
     }
