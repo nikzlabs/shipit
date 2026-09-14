@@ -486,7 +486,13 @@ backgrounded, read the markdown off stdout and applied the fixes, in one
 419 s turn).
 
 **ACCOUNT mode is the one thing still unmeasured**, and it needs a human to
-complete a Google sign-in once. Three items wait on it: a dogfood turn on the
+complete a Google sign-in once. Getting that far took a fix of its own: the
+sign-in spawns on a **pty**, because the CLI starts an interactive login only
+when stdin is a character device and refuses on a pipe — and a pipe is what
+delivering the pasted code requires, so the shipped flow could never complete.
+Phase 0 missed it because `probe.sh` ran the CLI from a shell, where stdin was
+already interactive; the probe and production differed in invocation shape, not
+in version or environment (`probes/signin-stdin-shape.md`). Three items wait on it: a dogfood turn on the
 account billing route, a real token file to replace the reconstructed
 freshness fixture, and the account-mode egress host — the allowlist carries
 `cloudcode-pa.googleapis.com` from the pinned binary's compiled host list,

@@ -121,9 +121,14 @@ Antigravity-specific is in [plan.md](./plan.md).
       `GEMINI_API_KEY`: real Pro turns through ShipIt's own adapter in the
       dogfood, and `shipit agent run --role reviewer` driven BY the harness
       (`probes/review.ndjson`). This is what found the `--add-dir` defect below
-- [ ] ACCOUNT mode (Google sign-in) still unverified — it needs a human to
-      complete the OAuth flow once. With it go the account-mode billing route,
-      the real token-freshness fixture, and the egress host below
+- [x] ACCOUNT mode verified on 2026-09-14 after a real Google sign-in. Getting
+      there needed a fix of its own: the CLI starts an interactive login only
+      when stdin is a character device and ShipIt spawned it on a pipe, so no
+      sign-in could complete (`probes/signin-stdin-shape.md`). With the pty in
+      place the sign-in completed, and a turn on `route=account:<id>` read the
+      repository and answered — no key, credentials scrubbed. It found three
+      more defects, all fixed: the token file's real shape, the absent identity,
+      and the egress host (all below)
 - [ ] Event-conversion verification: the docs/272 recipe, run and recorded at
       `docs/272-harness-conversion-verification/runs/2026-09-14-1050-antigravity-1.1.27.md`
       — **PARTIAL**. Steps 1, 2, 3 and 5 in full; three defects found and fixed.
@@ -133,8 +138,17 @@ Antigravity-specific is in [plan.md](./plan.md).
 - [x] The failure **after partial output** fixture captured
       (`probes/partial-fail.ndjson`): exit 1, `result.status: "ERROR"`, empty
       stderr, after a complete `agent_response` step
-- [ ] A real account token file, to replace the reconstructed freshness fixture
-      — blocked with ACCOUNT mode above
+- [x] The freshness fixture is now a REAL capture, and it corrected the reader:
+      a sign-in writes `{auth_method, token:{…}}`, so the credential fields sit
+      one level down. Read at the top level, freshness was `null` for every real
+      token — `token-freshness=unorderable outcome=stranded-rotation`, so a
+      refreshed token was never published back. The reconstructed fixture was
+      flat and carried an `id_token`, which is why the pre-existing guard
+      (`token-freshness-guard.test.ts`, planning#449) could not fail
+- [x] Account identity is honestly ABSENT: a `consumer` sign-in's token has no
+      `id_token` at all — only an opaque `access_token`, a `refresh_token`,
+      `token_type` and `expiry` — so no email or external id can be shown. The
+      reader still handles a nested `id_token` for a method not yet seen
 
 ## Still open
 
@@ -150,7 +164,10 @@ Antigravity-specific is in [plan.md](./plan.md).
   still running — and the OVERWRITE half is untouched: a second borrow still
   replaces the first's credentials while it runs. The settings write is atomic,
   which stops a torn read and fixes nothing else. This is not Antigravity-specific.
-- **The account-mode host is inferred, not observed.** The egress allowlist
-  gains `cloudcode-pa.googleapis.com` from the pinned binary's compiled host
-  list, because no signed-in account was available to watch. Re-measure on the
-  first real account turn and correct the entry if it is wrong.
+- ~~**The account-mode host is inferred, not observed.**~~ **Measured 2026-09-14
+  and it WAS wrong.** A real account turn sent every `loadCodeAssist` and
+  `streamGenerateContent` to `daily-cloudcode-pa.googleapis.com`; the bare
+  `cloudcode-pa.googleapis.com` the binary's compiled hosts named appeared
+  nowhere. Allowlist entries are exact unless they start with a dot, so the bare
+  entry did not cover it and account mode would have been blocked wherever
+  egress is enforced. Both are now listed.

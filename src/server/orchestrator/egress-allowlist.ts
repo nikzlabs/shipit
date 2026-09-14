@@ -18,10 +18,13 @@ export const EGRESS_DEFAULT_ALLOWLIST: readonly string[] = [
   "cli-chat-proxy.grok.com",
   "generativelanguage.googleapis.com",
   // Antigravity's Google sign-in, its token exchange, and the backend its
-  // account mode calls. The last is read from the pinned binary's compiled
-  // hosts, not observed on the wire — no signed-in account was available.
+  // account mode calls. A real account turn (2026-09-14, 1.1.27) sent BOTH
+  // `loadCodeAssist` and `streamGenerateContent` to the `daily-` host, and the
+  // bare one appeared nowhere; the bare one is kept because it is in the pinned
+  // binary's compiled hosts and another account or version may reach it.
   "accounts.google.com",
   "oauth2.googleapis.com",
+  "daily-cloudcode-pa.googleapis.com",
   "cloudcode-pa.googleapis.com",
   ".github.com",
   ".githubusercontent.com",
@@ -58,10 +61,13 @@ export const EGRESS_LIFELINE_ALLOWLIST: readonly string[] = [
   "cli-chat-proxy.grok.com",
   "generativelanguage.googleapis.com",
   // Antigravity's Google sign-in, its token exchange, and the backend its
-  // account mode calls. The last is read from the pinned binary's compiled
-  // hosts, not observed on the wire — no signed-in account was available.
+  // account mode calls. A real account turn (2026-09-14, 1.1.27) sent BOTH
+  // `loadCodeAssist` and `streamGenerateContent` to the `daily-` host, and the
+  // bare one appeared nowhere; the bare one is kept because it is in the pinned
+  // binary's compiled hosts and another account or version may reach it.
   "accounts.google.com",
   "oauth2.googleapis.com",
+  "daily-cloudcode-pa.googleapis.com",
   "cloudcode-pa.googleapis.com",
 ];
 
