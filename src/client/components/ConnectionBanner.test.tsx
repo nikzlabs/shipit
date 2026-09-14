@@ -1,6 +1,35 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
 import { render, screen, cleanup, act, fireEvent } from "@testing-library/react";
-import { ConnectionBanner } from "./ConnectionBanner.js";
+import { ConnectionBannerPill, useConnectionBannerState } from "./ConnectionBanner.js";
+import type { WsStatus } from "../hooks/useWebSocket.js";
+
+/**
+ * The hook and the pill, composed as `TopPanelBanner` composes them. Production
+ * has no standalone ConnectionBanner component: the slot is shared with the
+ * update banner, so the composition lives there (docs/304).
+ */
+function ConnectionBanner({
+  status,
+  reconnectAttempt = 0,
+  onReconnect,
+  compact = false,
+}: {
+  status: WsStatus;
+  reconnectAttempt?: number;
+  onReconnect?: () => void;
+  compact?: boolean;
+}) {
+  const state = useConnectionBannerState(status);
+  if (!state) return null;
+  return (
+    <ConnectionBannerPill
+      state={state}
+      reconnectAttempt={reconnectAttempt}
+      compact={compact}
+      {...(onReconnect ? { onReconnect } : {})}
+    />
+  );
+}
 
 afterEach(() => {
   cleanup();

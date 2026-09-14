@@ -8,7 +8,6 @@ import type { UpdateNotice } from "../../server/shared/types.js";
 const AVAILABLE: UpdateNotice = {
   available: true,
   latestVersion: "v1.5.0",
-  currentVersion: "v1.4.0",
   dismissed: false,
 };
 
@@ -88,6 +87,26 @@ describe("UpdateAvailableBanner", () => {
     await waitFor(() => {
       expect(fetchCalls).toEqual([{ url: "/api/updates/dismiss", method: "POST" }]);
     });
+  });
+
+  it("leaves a newer server word alone when its own dismissal fails", async () => {
+    let failRequest: () => void = () => {};
+    vi.stubGlobal("fetch", (url: string, init?: RequestInit) => {
+      fetchCalls.push({ url, method: init?.method ?? "GET" });
+      return new Promise((_resolve, reject) => { failRequest = () => reject(new Error("network")); });
+    });
+    useUiStore.getState().setUpdateNotice(AVAILABLE);
+    render(<UpdateAvailableBanner />);
+
+    await userEvent.click(screen.getByTestId("update-available-dismiss"));
+    // Another device dismissed, and its broadcast arrives before this request gives up.
+    const fromServer = { ...AVAILABLE, latestVersion: "v1.6.0", dismissed: true };
+    useUiStore.getState().setUpdateNotice(fromServer);
+    failRequest();
+
+    await waitFor(() => { expect(fetchCalls.length).toBe(1); });
+    expect(useUiStore.getState().updateNotice).toEqual(fromServer);
+    expect(useUiStore.getState().toast).toBeNull();
   });
 
   it("puts the banner back when the server refuses the dismissal", async () => {

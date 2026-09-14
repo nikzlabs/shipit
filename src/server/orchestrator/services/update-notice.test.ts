@@ -7,6 +7,7 @@ import {
   checkUpdatesAndRecord,
   currentUpdateNotice,
   dismissUpdateNotice,
+  invalidateUpdateResult,
   isCheckDue,
   runUpdateCheckIfDue,
   versionAnchor,
@@ -50,12 +51,12 @@ function status(overrides: Partial<UpdateStatus> = {}): UpdateStatus {
 }
 
 function depsFor(store: UpdateNoticeStore, updates: () => Promise<UpdateStatus>, nowMs = Date.parse("2026-09-14T09:00:00Z")) {
-  const broadcasts: UpdateNotice[] = [];
+  const broadcasts: (UpdateNotice | null)[] = [];
   return {
     deps: {
       store,
       anchor: ANCHOR,
-      broadcast: (n: UpdateNotice) => { broadcasts.push(n); },
+      broadcast: (n: UpdateNotice | null) => { broadcasts.push(n); },
       checkUpdates: updates,
       now: () => nowMs,
     },
@@ -112,7 +113,7 @@ describe("checkUpdatesAndRecord", () => {
 
     expect(result.behindBy).toBe(4);
     expect(broadcasts).toEqual([
-      { available: true, latestVersion: "v1.5.0", currentVersion: "v1.4.0", dismissed: false },
+      { available: true, latestVersion: "v1.5.0", dismissed: false },
     ]);
     expect(store.record?.lastCheckedAt).toBe("2026-09-14T09:00:00.000Z");
     expect(isCheckDue(store.record ?? null, Date.parse("2026-09-14T09:00:00Z"))).toBe(false);
@@ -137,8 +138,55 @@ describe("checkUpdatesAndRecord", () => {
     await checkUpdatesAndRecord(deps);
 
     expect(broadcasts[0]).toEqual({
-      available: true, latestVersion: "v1.6.0", currentVersion: "v1.4.0", dismissed: true,
+      available: true, latestVersion: "v1.6.0", dismissed: true,
     });
+  });
+
+  it("does not resurrect a dismissal made while the check was in flight", async () => {
+    const store = fakeStore();
+    let release: (s: UpdateStatus) => void = () => {};
+    const pending = new Promise<UpdateStatus>((resolve) => { release = resolve; });
+    const { deps, broadcasts } = depsFor(store, () => pending);
+
+    const inFlight = checkUpdatesAndRecord(deps);
+    dismissUpdateNotice(deps);
+    release(status());
+    await inFlight;
+
+    expect(store.record?.dismissed).toBe(true);
+    expect(broadcasts.at(-1)?.dismissed).toBe(true);
+  });
+
+  it("claims the attempt before fetching, so two due callers do not both fetch", async () => {
+    const store = fakeStore();
+    const check = vi.fn(() => new Promise<UpdateStatus>(() => {}));
+    const { deps } = depsFor(store, check);
+
+    void runUpdateCheckIfDue(deps);
+    void runUpdateCheckIfDue(deps);
+
+    expect(check).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not let a superseded check write the answer to a question that moved on", async () => {
+    const store = fakeStore();
+    let release: (s: UpdateStatus) => void = () => {};
+    const pending = new Promise<UpdateStatus>((resolve) => { release = resolve; });
+    const first = depsFor(store, () => pending, Date.parse("2026-09-14T09:00:00Z"));
+    // A channel switch, a minute later, whose own check completes first.
+    const second = depsFor(
+      store,
+      () => Promise.resolve(status({ available: false, latestVersion: "v1.4.0" })),
+      Date.parse("2026-09-14T09:01:00Z"),
+    );
+
+    const superseded = checkUpdatesAndRecord(first.deps);
+    await checkUpdatesAndRecord(second.deps);
+    release(status({ available: true, latestVersion: "v1.5.0-edge" }));
+    await superseded;
+
+    expect(store.record?.result).toEqual({ available: false, latestVersion: "v1.4.0" });
+    expect(first.broadcasts).toEqual([]);
   });
 
   it("records the attempt and rethrows when the check fails", async () => {
@@ -177,11 +225,39 @@ describe("runUpdateCheckIfDue", () => {
   });
 });
 
+describe("invalidateUpdateResult", () => {
+  it("forgets the other channel's answer and tells viewers nothing is known", () => {
+    const store = fakeStore({
+      anchor: ANCHOR,
+      dismissed: true,
+      lastCheckedAt: "2026-09-14T08:00:00Z",
+      result: { available: true, latestVersion: "v1.5.0" },
+    });
+    const { deps, broadcasts } = depsFor(store, () => Promise.resolve(status()));
+
+    invalidateUpdateResult(deps);
+
+    expect(broadcasts).toEqual([null]);
+    expect(currentUpdateNotice(store, ANCHOR)).toBeNull();
+    // The dismissal is about the install, not about a channel.
+    expect(store.record?.dismissed).toBe(true);
+  });
+
+  it("says nothing when there was no answer to forget", () => {
+    const store = fakeStore({ anchor: ANCHOR });
+    const { deps, broadcasts } = depsFor(store, () => Promise.resolve(status()));
+
+    invalidateUpdateResult(deps);
+
+    expect(broadcasts).toEqual([]);
+  });
+});
+
 describe("dismissUpdateNotice", () => {
   it("silences the notice for the install and broadcasts the new state", () => {
     const store = fakeStore({
       anchor: ANCHOR,
-      result: { available: true, latestVersion: "v1.5.0", currentVersion: "v1.4.0" },
+      result: { available: true, latestVersion: "v1.5.0" },
     });
     const { deps, broadcasts } = depsFor(store, () => Promise.resolve(status()));
 
@@ -196,7 +272,7 @@ describe("dismissUpdateNotice", () => {
     const store = fakeStore({
       anchor: ANCHOR,
       dismissed: true,
-      result: { available: true, latestVersion: "v1.5.0", currentVersion: "v1.4.0" },
+      result: { available: true, latestVersion: "v1.5.0" },
     });
 
     expect(currentUpdateNotice(store, "ccccccc")).toBeNull();
@@ -207,7 +283,7 @@ describe("dismissUpdateNotice", () => {
     const store = fakeStore({
       anchor: ANCHOR,
       lastCheckedAt: "2026-09-14T08:00:00Z",
-      result: { available: true, latestVersion: "v1.5.0", currentVersion: "v1.4.0" },
+      result: { available: true, latestVersion: "v1.5.0" },
     });
     const updatedAnchor = "bbbbbbb";
     const { deps, broadcasts } = depsFor(store, () => Promise.resolve(status({
@@ -221,7 +297,7 @@ describe("dismissUpdateNotice", () => {
 
     await runUpdateCheckIfDue(afterUpdate);
     expect(broadcasts[0]).toEqual({
-      available: false, latestVersion: "v1.5.0", currentVersion: "v1.5.0", dismissed: false,
+      available: false, latestVersion: "v1.5.0", dismissed: false,
     });
   });
 });

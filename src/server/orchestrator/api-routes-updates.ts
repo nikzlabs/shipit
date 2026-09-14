@@ -5,6 +5,7 @@ import type { SettingsBroadcastDeps } from "./services/settings-apply.js";
 import {
   checkUpdatesAndRecord,
   dismissUpdateNotice,
+  invalidateUpdateResult,
   versionAnchor,
   type UpdateNoticeDeps,
 } from "./services/update-notice.js";
@@ -22,7 +23,7 @@ export function updateNoticeDeps(deps: UpdateRoutesDeps): UpdateNoticeDeps {
   return {
     store: deps.credentialStore,
     anchor: versionAnchor(deps.version),
-    broadcast: (notice: UpdateNotice) => deps.sseBroadcast("update_notice", notice),
+    broadcast: (notice: UpdateNotice | null) => deps.sseBroadcast("update_notice", notice),
   };
 }
 
@@ -56,17 +57,20 @@ export async function registerUpdateRoutes(app: FastifyInstance, deps: UpdateRou
       return;
     }
     try {
+      // The old channel's answer is dropped before the switch, not after it: a
+      // write or check that then fails leaves viewers told nothing is known —
+      // which the next check repairs — rather than showing the other channel's
+      // update as if it were this one's (docs/304).
+      const noticeDeps = updateNoticeDeps(deps);
+      invalidateUpdateResult(noticeDeps);
       const { status, outcome } = await applyReleaseChannel(deps, channel);
       if (outcome.status !== "applied") {
         reply.code(500).send({ error: outcome.detail ?? "Failed to set channel", outcome });
         return;
       }
-      // The write's own check already ran under the new channel; record that
-      // result rather than paying for a second fetch (docs/304).
-      await checkUpdatesAndRecord({
-        ...updateNoticeDeps(deps),
-        checkUpdates: () => Promise.resolve(status),
-      });
+      // That write ran its own check under the new channel; record it rather
+      // than paying for a second fetch.
+      await checkUpdatesAndRecord({ ...noticeDeps, checkUpdates: () => Promise.resolve(status) });
       return status;
     } catch (err) {
       if (err instanceof ServiceError) {

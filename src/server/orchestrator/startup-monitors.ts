@@ -270,13 +270,12 @@ export async function startStartupMonitors(
     diskEscalationInterval.unref();
   }
 
-  // docs/304 — nobody should have to open Settings to learn an update exists.
-  // The tick only asks whether a check is due; `lastCheckedAt` is persisted, so
-  // restarting (which every update does) does not earn an extra check.
+  // docs/304. The tick only asks whether a check is due; `lastCheckedAt` is
+  // persisted, so restarting does not earn an extra check.
   const updateNoticeDeps = {
     store: credentialStore,
     anchor: versionAnchor(version),
-    broadcast: (notice: UpdateNotice) => sseBroadcast("update_notice", notice),
+    broadcast: (notice: UpdateNotice | null) => sseBroadcast("update_notice", notice),
   };
   const updateCheckInterval = isTestMode
     ? null

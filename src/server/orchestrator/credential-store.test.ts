@@ -962,14 +962,14 @@ describe("CredentialStore — update notice (docs/304)", () => {
       anchor: "abc123",
       lastCheckedAt: "2026-09-14T09:00:00.000Z",
       dismissed: true,
-      result: { available: true, latestVersion: "v1.5.0", currentVersion: "v1.4.0" },
+      result: { available: true, latestVersion: "v1.5.0" },
     });
 
     expect(new CredentialStore(dir).getUpdateNotice("abc123")).toEqual({
       anchor: "abc123",
       lastCheckedAt: "2026-09-14T09:00:00.000Z",
       dismissed: true,
-      result: { available: true, latestVersion: "v1.5.0", currentVersion: "v1.4.0" },
+      result: { available: true, latestVersion: "v1.5.0" },
     });
   });
 
@@ -978,7 +978,7 @@ describe("CredentialStore — update notice (docs/304)", () => {
     s.setUpdateNotice({
       anchor: "abc123",
       dismissed: true,
-      result: { available: true, latestVersion: "v1.5.0", currentVersion: "v1.4.0" },
+      result: { available: true, latestVersion: "v1.5.0" },
     });
 
     expect(s.getUpdateNotice("def456")).toBeNull();

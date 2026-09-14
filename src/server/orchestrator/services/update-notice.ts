@@ -18,7 +18,8 @@ export interface UpdateNoticeDeps {
   store: UpdateNoticeStore;
   /** Identifies the running build; see `versionAnchor`. */
   anchor: string;
-  broadcast: (notice: UpdateNotice) => void;
+  /** `null` means "nothing known" — viewers must clear a banner on it, not keep the last one. */
+  broadcast: (notice: UpdateNotice | null) => void;
   checkUpdates?: () => Promise<UpdateStatus>;
   now?: () => number;
 }
@@ -61,31 +62,30 @@ export function currentUpdateNotice(store: UpdateNoticeStore, anchor: string): U
 
 /**
  * Runs the check, records it, and broadcasts the result — the single act every
- * caller performs, so a manual check from Settings and the daily tick can never
- * disagree about when the day was last checked. Rethrows what `checkForUpdates`
- * throws, after recording the attempt.
+ * caller performs, so a manual check and the daily one cannot disagree about
+ * when the day was last checked. Rethrows what `checkForUpdates` throws.
+ *
+ * A git fetch is long enough for the record to change underneath it, so the
+ * attempt doubles as a claim: written before the fetch, re-read after. A caller
+ * whose claim was taken over returns its status but records nothing — it is
+ * answering a question the install has stopped asking.
  */
 export async function checkUpdatesAndRecord(deps: UpdateNoticeDeps): Promise<UpdateStatus> {
-  const nowMs = deps.now?.() ?? Date.now();
-  const at = new Date(nowMs).toISOString();
-  const previous = deps.store.getUpdateNotice(deps.anchor);
+  const at = new Date(deps.now?.() ?? Date.now()).toISOString();
+  const claimed = deps.store.getUpdateNotice(deps.anchor);
+  deps.store.setUpdateNotice({ ...(claimed ?? {}), anchor: deps.anchor, lastAttemptAt: at });
 
-  let status: UpdateStatus;
-  try {
-    status = await (deps.checkUpdates ?? checkForUpdates)();
-  } catch (err) {
-    deps.store.setUpdateNotice({ ...(previous ?? {}), anchor: deps.anchor, lastAttemptAt: at });
-    throw err;
-  }
+  const status = await (deps.checkUpdates ?? checkForUpdates)();
+
+  // Re-read: a dismissal landing mid-fetch must not be overwritten by the
+  // record that was read before it existed (req 4).
+  const current = deps.store.getUpdateNotice(deps.anchor);
+  if (current && current.lastAttemptAt !== at) return status;
 
   // A downgrade is not a newer version (req 6); Settings warns about it separately.
-  const result = {
-    available: status.available && !status.isDowngrade,
-    latestVersion: status.latestVersion,
-    currentVersion: status.currentVersion,
-  };
+  const result = { available: status.available && !status.isDowngrade, latestVersion: status.latestVersion };
   const record: UpdateNoticeRecord = {
-    ...(previous ?? {}),
+    ...(current ?? {}),
     anchor: deps.anchor,
     lastCheckedAt: at,
     lastAttemptAt: at,
@@ -94,6 +94,19 @@ export async function checkUpdatesAndRecord(deps: UpdateNoticeDeps): Promise<Upd
   deps.store.setUpdateNotice(record);
   deps.broadcast({ ...result, dismissed: record.dismissed === true });
   return status;
+}
+
+/**
+ * Forgets what the last check found, without touching the dismissal. The
+ * channel decides what "latest" means, so on a switch the old channel's answer
+ * is not a worse answer — it is an answer to a different question.
+ */
+export function invalidateUpdateResult(deps: UpdateNoticeDeps): void {
+  const current = deps.store.getUpdateNotice(deps.anchor);
+  if (!current?.result) return;
+  const { result: _dropped, ...rest } = current;
+  deps.store.setUpdateNotice({ ...rest, anchor: deps.anchor });
+  deps.broadcast(null);
 }
 
 /** The daily tick. Never throws: a background check must not be louder than what it checks for. */

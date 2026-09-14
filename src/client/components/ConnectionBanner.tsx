@@ -109,25 +109,3 @@ export function ConnectionBannerPill({
   );
 }
 
-export function ConnectionBanner({
-  status,
-  reconnectAttempt = 0,
-  onReconnect,
-  compact = false,
-}: {
-  status: WsStatus;
-  reconnectAttempt?: number;
-  onReconnect?: () => void;
-  compact?: boolean;
-}) {
-  const state = useConnectionBannerState(status);
-  if (!state) return null;
-  return (
-    <ConnectionBannerPill
-      state={state}
-      reconnectAttempt={reconnectAttempt}
-      compact={compact}
-      {...(onReconnect ? { onReconnect } : {})}
-    />
-  );
-}

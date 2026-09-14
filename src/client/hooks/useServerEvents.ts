@@ -710,8 +710,9 @@ export function useServerEvents(): void {
       useUiStore.getState().setUpdateMode(data.updateMode ?? "manual");
     });
 
+    // null clears: it is how a reconnect says the install has since been updated.
     es.addEventListener("update_notice", (e: MessageEvent) => {
-      const data = JSON.parse(e.data as string) as UpdateNotice;
+      const data = JSON.parse(e.data as string) as UpdateNotice | null;
       useUiStore.getState().setUpdateNotice(data);
     });
 

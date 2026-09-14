@@ -70,7 +70,6 @@ export interface UpdateNotice {
   /** A newer version on this channel; never true for a downgrade. */
   available: boolean;
   latestVersion: string;
-  currentVersion: string;
   dismissed: boolean;
 }
 

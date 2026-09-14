@@ -7,7 +7,6 @@ import type { UpdateNotice } from "../../server/shared/types.js";
 const AVAILABLE: UpdateNotice = {
   available: true,
   latestVersion: "v1.5.0",
-  currentVersion: "v1.4.0",
   dismissed: false,
 };
 
@@ -40,7 +39,8 @@ describe("TopPanelBanner", () => {
     const { container } = render(
       <TopPanelBanner variant="mobile" showConnection status="open" />,
     );
-    expect(container.firstElementChild).not.toBeNull();
+    // Dropping the row, or its padding, shifts the chat under it (docs/304).
+    expect(container.firstElementChild?.className).toContain("py-1.5");
   });
 
   it("adds no mobile row on a screen that never reserved one", () => {

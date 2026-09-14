@@ -13,4 +13,6 @@
 - [x] Client tests: banner visibility, dismiss POST, Settings navigation, connection banner wins the slot
 - [x] Checked in the dogfood UI: desktop header pill, mobile row, Settings navigation, dismiss
 - [x] `npm run lint:dev` and `npm run typecheck` clean
-- [ ] Independent review via `shipit agent run --role reviewer`
+- [x] Independent review via `shipit agent run --role reviewer`, twice — the second on the reworked diff
+- [x] Review fixes: claim-and-recheck around the fetch, `null` replay, channel-switch invalidation, client rollback reconciliation, `SHIPIT_BUILD_ID` on the local build paths
+- [x] Integration test for the dismiss endpoint, live broadcast, disk persistence and connect-time replay; client SSE handler covered

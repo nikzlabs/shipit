@@ -138,12 +138,11 @@ export function registerSseEndpoint(app: FastifyInstance, rt: OrchestratorRuntim
 
     client.write(`event: system_info\ndata: ${JSON.stringify({ processStartedAt, buildId, version, updateMode })}\n\n`);
 
-    // Without the replay a fresh page load would wait for the next daily check
-    // to learn what the server already knows (docs/304).
-    const updateNotice = currentUpdateNotice(credentialStore, versionAnchor(version));
-    if (updateNotice) {
-      client.write(`event: update_notice\ndata: ${JSON.stringify(updateNotice)}\n\n`);
-    }
+    // Always sent, `null` included (docs/304): a reconnecting viewer keeps its
+    // store, so silence would leave a banner up for an already-installed update.
+    client.write(`event: update_notice\ndata: ${
+      JSON.stringify(currentUpdateNotice(credentialStore, versionAnchor(version)))
+    }\n\n`);
 
     if (dockerForStats) {
       void (async () => {
