@@ -233,6 +233,33 @@ first. One of the three did not hold as stated and is recorded as such.
       check removed fails the cross-tab test, and a field added to `AgentRole` or
       `RolePinnedParams` fails `tsc` in both maps
 
+### The independent review of those fixes
+
+Three findings, each verified at the code and each a defect rather than taste.
+
+- [x] A **superseded** turn no longer acknowledges its notice. A retired process
+      can emit a result for its own prompt after a successor took the agent slot;
+      the turn settles `interrupted` with its work discarded, and the receipt was
+      spent on it. Failover and the quota retry deliberately keep acknowledging,
+      since those re-dispatch the same prompt
+- [x] **Overlapping saves.** Reverting a failed save to the opposite of its own
+      requested value is wrong the moment it is not the only save: off-then-on
+      with both failing left the server on and the browser off. A failure now
+      reverts to the value the server last accepted, and only from the newest
+      request. Pre-existing in all seven hand-written copies; centralising them
+      is what made one fix cover it
+- [x] The role map's `partOf` narrowed from *any key in the roles family* to an
+      enumerated allowlist of the two aggregates, and `fieldsDeclaredIn` from any
+      string to the one map's name — the prose claimed a restriction the types
+      did not make, and `{ partOf: "roles[].description" }` typechecked
+- [x] Three test gaps the review named, closed: two saves held pending at once,
+      a superseded turn with a late result, and the `agent-execution.ts` line
+      that no test can distinguish, which says so in a comment
+- [x] Each new guard proven red alone, and one candidate guard **dropped** rather
+      than kept: pinning the server's confirmed value to the newest successful
+      request has no interleaving where the right answer is knowable, so there
+      was nothing a test could assert
+
 ## Phase 2, slice 3 — the outcome notice (req 8)
 
 - [x] `agent_notified` on the private proposal row, with

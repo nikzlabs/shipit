@@ -210,22 +210,38 @@ type DeclarationForRoleField<F extends string> =
   `roles[].${F}` extends RolesSettingKey ? `roles[].${F}` : never;
 
 /**
+ * The only two declarations a stored field may be *part of* — an enumerated
+ * allowlist, not "any key in the family".
+ *
+ * Admitting every `RolesSettingKey` here left the loophole open one step further
+ * along: a new field could name `{ partOf: "roles[].description" }` and pass, and
+ * a control bound to that same declaration passes the DOM walk, so the field
+ * would ship undeclared exactly as before. Both entries are aggregates rather
+ * than fields — `roles[].model` is a three-part tuple, `roles[].harness` is the
+ * stored `harnessId` under the name the user picks — so widening the list is a
+ * deliberate edit with a claim attached, which is what `reason` records.
+ */
+type RoleAggregateSettingKey = "roles[].model" | "roles[].harness";
+
+/**
  * A field the declared **mutation unit** covers rather than declaring under its
  * own name. Picking a role's model rewrites service, billing mode and model id
  * together (`Settings/roles/RoleEditor.tsx`), so those three are one declared
  * tuple and not three settings — plan.md → The unit of a change is the declared
- * operation. The target is confined to the roles family, so this cannot become
- * "mapped to some scalar that exists", and the `reason` is the claim review
- * reads.
+ * operation.
  */
 interface PartOfRoleSetting {
-  readonly partOf: RolesSettingKey;
+  readonly partOf: RoleAggregateSettingKey;
   readonly reason: string;
 }
 
-/** A field whose own fields are declared one map deeper. */
+/**
+ * A field whose own fields are declared one map deeper. Named as a literal
+ * rather than a string: `{ fieldsDeclaredIn: "NO_SUCH_MAP" }` would otherwise
+ * account for a field by pointing at nothing.
+ */
 interface NestedRoleFields {
-  readonly fieldsDeclaredIn: string;
+  readonly fieldsDeclaredIn: "ROLE_PARAMS_FIELD_SETTINGS";
 }
 
 /** Why a stored field is not a setting at all — the same prose claim `exclusions.ts` makes. */

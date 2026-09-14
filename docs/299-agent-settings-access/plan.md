@@ -70,7 +70,7 @@ Derived from it, not written again:
 | the `PUT /api/settings` body type and validation | an undeclared setting cannot be saved |
 | `CredentialStore` read/write | no duplicated default or validation; a named accessor may remain as a thin delegate |
 | the dialog's standard controls | the user and the agent read the same words |
-| a declared global boolean's **save wiring** | the optimistic write, the `PUT` payload, the rollback and the toast, from `wire` and `label` (`Settings/declared-setting.ts`) |
+| a declared global boolean's **save wiring** | the optimistic write, the `PUT` payload, the rollback and the toast, from `wire` and `label` (`Settings/declared-setting.ts`) — including the overlap rule, since a toggle is one click and two of them overlap the moment the user changes their mind: a failed save reverts to the value the **server** last accepted, and only from the newest request, because reverting each save to the opposite of its own requested value leaves the browser showing what nobody holds |
 | `shipit settings list` / `get` | **the agent sees a new setting the day it is declared** |
 
 The last row is req 7, holding structurally rather than by a guard test: the
@@ -172,12 +172,17 @@ and it is the loophole being closed. The two guards run in opposite directions:
 the walk finds a control nobody declared, the map finds a stored field nobody
 declared.
 
-A role has two escapes from that derivation and both are prose review reads. The
-model tuple is one declared operation, not three settings, so `serviceId`,
-`billingMode` and `modelId` are `partOf: "roles[].model"`; `harnessId` is
-declared under what the user picks (`roles[].harness`). The target of a `partOf`
-is confined to the roles family, so it cannot become "mapped to some scalar that
-exists" — which is the whole point of the map.
+A role has two escapes from that derivation. The model tuple is one declared
+operation, not three settings, so `serviceId`, `billingMode` and `modelId` are
+`partOf: "roles[].model"`; `harnessId` is declared under what the user picks
+(`roles[].harness`). **`partOf`'s target is an enumerated allowlist of those two
+declarations, not any key in the roles family**: admitting the family left the
+loophole open one step along, since a new field could name
+`partOf: "roles[].description"` and a control bound to that same declaration
+passes the DOM walk, so the field would ship undeclared exactly as before. Both
+entries are aggregates rather than fields, and `fieldsDeclaredIn` names the one
+nested map as a literal for the same reason — pointing at nothing must not
+account for a field.
 
 What stays undecidable, and is stated rather than implied: a role-editor box
 bound to a *different role field's* declaration. The DOM cannot see which
@@ -874,10 +879,18 @@ shipped shapes rule that out, both found in review:
   settlement is lost for good and the notice repeats on every turn forever.
 
 So `delivered()` is called from **one place**: the `agent_result` handler, after
-the `exhausted` check and the failover decision, and under three conditions —
+the `exhausted` check and the failover decision, and under four conditions —
 the result is not a refusal, it `resultIsTheAgentsOwn` (neither `event.error` nor
 `status === "error"` — a conservative filter, since an error result can follow
-partial work, not proof the prompt never ran), and **`promptSubmitted`**.
+partial work, not proof the prompt never ran), **`promptSubmitted`**, and
+**not `wasSuperseded`**.
+
+The last of those is the retired-process shape: a superseded turn settles
+`interrupted` with its work discarded, but its listeners are still attached, so
+the old process emitting a result for its own prompt would spend the receipt on a
+turn nobody reads — and the successor, which carries the same notice, would have
+none left to settle. Failover and the quota retry deliberately do **not** set the
+flag: those re-dispatch the same prompt, and their own attempt acknowledges.
 
 `promptSubmitted` is the nearest thing to prompt ownership available here, and it
 took two review rounds to get right. The executor's listeners go live before its

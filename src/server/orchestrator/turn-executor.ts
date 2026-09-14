@@ -933,10 +933,20 @@ export async function executeAgentTurn(
     }
     // Anything riding this prompt is delivered here, and must not be delivered
     // in `settleTurn`: a resident streaming turn settles no turn at all, and its
-    // listeners are discarded by the next reuse. All three conditions hold the
-    // notice back rather than prove delivery, which is the safe direction
+    // listeners are discarded by the next reuse. Every condition holds the
+    // notice back rather than proves delivery, which is the safe direction
     // (docs/299-agent-settings-access plan.md → And a notice on the next turn).
-    if (promptSubmitted && !exhausted && resultIsTheAgentsOwn(event)) notePromptDelivered();
+    //
+    // `wasSuperseded` is the last of them: a retired process can emit a result
+    // for its own prompt AFTER a successor took the agent slot, and this turn is
+    // then settled `interrupted` with its work discarded. Acknowledging there
+    // spends the receipt on a turn whose output nobody reads, and the successor
+    // — which carries the same notice — has no receipt left to settle. The
+    // failover and quota-retry paths do NOT set the flag, deliberately: those
+    // re-dispatch the same prompt, and their attempt acknowledges its own.
+    if (promptSubmitted && !exhausted && !wasSuperseded && resultIsTheAgentsOwn(event)) {
+      notePromptDelivered();
+    }
     // Retry decisions still need adoption state; finalization after a result does not.
     servingAdoptedTurn = false;
     if (useStreaming) {

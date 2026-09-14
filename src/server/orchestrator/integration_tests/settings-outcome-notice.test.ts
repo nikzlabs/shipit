@@ -5,7 +5,7 @@ import { ChatHistoryManager } from "../chat-history.js";
 import { SettingsProposalStore } from "../settings-proposal-store.js";
 import { SessionRunner } from "../session-runner.js";
 import type { SystemTurnDeps } from "../session-runner.js";
-import type { AgentId } from "../../shared/types.js";
+import type { AgentId, AgentProcess } from "../../shared/types.js";
 import type { TurnOutcome } from "../turn-settlement.js";
 import { ProviderRouteUnavailableError } from "../provider-route-preflight.js";
 import { prepareSettingsOutcomeNotice } from "../services/settings-outcome-notice.js";
@@ -198,6 +198,38 @@ describe("a resolved settings proposal reaches the agent's next turn", () => {
 
     await completeTurn();
     expect(proposals.listUnnotifiedResolved(SESSION)).toEqual([]);
+  });
+
+  /*
+    A retired process can emit a result for its own prompt after a successor has
+    taken the agent slot — the turn is settled `interrupted` and its work
+    discarded. Acknowledging there spends the receipt on a turn whose output
+    nobody reads, and the successor, which carries the same notice, has nothing
+    left to settle. Reachable for an ordinary turn too; it became reachable for
+    an automatic one the moment those started carrying the notice.
+  */
+  it("acknowledges nothing when a newer turn took the slot first", async () => {
+    postAndResolve("set-a", "applied");
+
+    runner.dispatch(testDispatch({
+      text: "resolve the conflicts",
+      systemTurn: true,
+      postTurn: "none",
+      onTurnComplete: (outcome) => { settled.push(outcome); },
+    }));
+    await waitForTurn(
+      () => agents.filter((a) => a.run.mock.calls.length > 0).length === 1,
+      "the superseded turn's agent run",
+    );
+    expect(promptOfAttempt(0)).toContain("[ShipIt] Since your last turn");
+
+    // A successor takes the slot, which retires this turn's process.
+    runner.setAgent(makeFakeAgent() as unknown as AgentProcess);
+    agents[0]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+    await waitForTurn(() => settled.length > 0, "the superseded turn settled");
+
+    expect(settled[0]?.status).toBe("interrupted");
+    expect(proposals.listUnnotifiedResolved(SESSION)).toHaveLength(1);
   });
 
   it("batches several outcomes into one notice", async () => {

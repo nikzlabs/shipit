@@ -13,7 +13,11 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { render, screen, cleanup, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { DeclaredToggle } from "./declared.js";
-import { saveDeclaredBoolean, type DeclaredBooleanKey } from "./declared-setting.js";
+import {
+  resetDeclaredSaves,
+  saveDeclaredBoolean,
+  type DeclaredBooleanKey,
+} from "./declared-setting.js";
 import { useSettingsStore } from "../../stores/settings-store.js";
 import { useUiStore } from "../../stores/ui-store.js";
 import {
@@ -39,6 +43,7 @@ let fetchMock: ReturnType<typeof vi.fn>;
 beforeEach(() => {
   fetchMock = vi.fn().mockResolvedValue({ ok: true });
   vi.stubGlobal("fetch", fetchMock);
+  resetDeclaredSaves();
 });
 
 afterEach(() => {
@@ -86,6 +91,77 @@ describe("a declared boolean saves itself", () => {
       );
     });
   }
+});
+
+/**
+ * A toggle is one click, so two of them overlap the moment the user changes
+ * their mind. These hold both requests pending on purpose: a test that awaits
+ * each save in turn never has two in flight, and passes with the defect present.
+ */
+describe("two saves of one setting that overlap", () => {
+  const KEY = "advanced.enableSubAgents" as DeclaredBooleanKey;
+  const WIRE = "enableSubAgents";
+
+  /** A fetch whose responses are settled by hand, in whatever order the test wants. */
+  function deferredFetch(): ((ok: boolean) => void)[] {
+    const settlers: ((ok: boolean) => void)[] = [];
+    fetchMock.mockImplementation(
+      () => new Promise((resolve) => {
+        settlers.push((ok) => { resolve({ ok, status: ok ? 200 : 500 }); });
+      }),
+    );
+    return settlers;
+  }
+
+  beforeEach(() => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    useSettingsStore.getState().setEnableSubAgents(true);
+  });
+
+  it("shows the server's value when both fail, not the reverse of the later one", async () => {
+    const settlers = deferredFetch();
+    const off = saveDeclaredBoolean(KEY, false);
+    const on = saveDeclaredBoolean(KEY, true);
+    expect(settlers).toHaveLength(2);
+
+    await act(async () => { settlers[0](false); await off; });
+    await act(async () => { settlers[1](false); await on; });
+
+    // The server was never written to, so it is still on. Reverting each save to
+    // the opposite of its OWN requested value leaves this off.
+    expect(storeValue(WIRE)).toBe(true);
+  });
+
+  it("does not let an older request's failure flip the switch under a newer one", async () => {
+    const settlers = deferredFetch();
+    const first = saveDeclaredBoolean(KEY, false);
+    const second = saveDeclaredBoolean(KEY, true);
+    const third = saveDeclaredBoolean(KEY, false);
+
+    await act(async () => { settlers[1](true); await second; });
+    // The first request fails while the user's most recent click is still in
+    // flight. A rollback here corrects a display the newest request owns, and
+    // the switch jumps to on with nothing left to put it back.
+    await act(async () => { settlers[0](false); await first; });
+    await act(async () => { settlers[2](true); await third; });
+
+    expect(storeValue(WIRE)).toBe(false);
+  });
+
+  it("rolls back to a value that moved underneath it, not to the one it remembered", async () => {
+    fetchMock.mockResolvedValue({ ok: true });
+    await act(async () => { await saveDeclaredBoolean(KEY, true); });
+
+    // A `settings_changed` refetch, or another viewer's save: nothing is in
+    // flight, so the displayed value is the server's and the remembered one is
+    // stale.
+    act(() => { useSettingsStore.getState().setEnableSubAgents(false); });
+
+    fetchMock.mockResolvedValue({ ok: false, status: 500 });
+    await act(async () => { await saveDeclaredBoolean(KEY, true); });
+
+    expect(storeValue(WIRE)).toBe(false);
+  });
 });
 
 describe("a toggle given no wiring is still a working control", () => {

@@ -65,13 +65,39 @@ function setterName(wire: string): string {
   return `set${wire.charAt(0).toUpperCase()}${wire.slice(1)}`;
 }
 
+function readStore(wire: string): boolean {
+  return (useSettingsStore.getState() as unknown as Record<string, boolean>)[wire] ?? false;
+}
+
 function writeStore(wire: string, value: boolean): void {
   const state = useSettingsStore.getState() as unknown as Record<string, (v: boolean) => void>;
   state[setterName(wire)]?.(value);
 }
 
 /**
- * Write optimistically, then durably — and put the optimistic value back when
+ * What is in flight for one setting, and what the server last accepted.
+ *
+ * A toggle is one click, so two of them overlap the moment the user changes
+ * their mind — and reverting a failed save to the opposite of *its own*
+ * requested value is wrong as soon as it is not the only save. Off-then-on with
+ * both requests failing leaves the server on and the browser off, because the
+ * second rollback reverses a value the first one had already put back. Reverting
+ * to the last value the SERVER accepted, and only from the newest request, is
+ * right for every interleaving.
+ */
+interface SaveState {
+  /** Requests still in flight for this field. */
+  pending: number;
+  /** Monotonic per field; only the highest may correct the display. */
+  seq: number;
+  /** The last value the server acknowledged — the honest rollback target. */
+  confirmed: boolean;
+}
+
+const SAVES = new Map<string, SaveState>();
+
+/**
+ * Write optimistically, then durably — and put the server's own value back when
  * the save does not land, so the switch never shows a state the server refused.
  */
 export async function saveDeclaredBoolean(
@@ -79,6 +105,17 @@ export async function saveDeclaredBoolean(
   value: boolean,
 ): Promise<void> {
   const wire = wireOf(key);
+  const existing = SAVES.get(wire);
+  // With nothing in flight the displayed value IS the server's, so re-seed from
+  // it: a `settings_changed` refetch since the last save would otherwise leave
+  // `confirmed` describing a value nobody holds any more.
+  const state: SaveState = existing && existing.pending > 0
+    ? existing
+    : { pending: 0, seq: existing?.seq ?? 0, confirmed: readStore(wire) };
+  SAVES.set(wire, state);
+
+  const mine = ++state.seq;
+  state.pending += 1;
   writeStore(wire, value);
   try {
     const res = await fetch("/api/settings", {
@@ -87,14 +124,17 @@ export async function saveDeclaredBoolean(
       body: JSON.stringify({ [wire]: value }),
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    state.confirmed = value;
   } catch (err) {
-    writeStore(wire, !value);
+    if (state.seq === mine) writeStore(wire, state.confirmed);
     // The declaration's own label, so the toast names the control the user just
     // used rather than a second phrasing of it written beside the fetch.
     useUiStore.getState().setToast({
       message: `Failed to update ${GLOBAL_SETTINGS[key].label}`,
     });
     console.error(`[settings] saving ${key} failed:`, err);
+  } finally {
+    state.pending -= 1;
   }
 }
 
@@ -108,4 +148,9 @@ export function useDeclaredBoolean(key: DeclaredBooleanKey): {
     (state) => (state as unknown as Record<string, boolean>)[wire] ?? false,
   );
   return { value, set: (next) => { void saveDeclaredBoolean(key, next); } };
+}
+
+/** Test seam: the in-flight bookkeeping is process-wide and outlives a render. */
+export function resetDeclaredSaves(): void {
+  SAVES.clear();
 }

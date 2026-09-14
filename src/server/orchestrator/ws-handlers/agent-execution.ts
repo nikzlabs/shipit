@@ -426,6 +426,11 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
   // nowhere to put it — compaction, whose prompt is an instruction to summarise
   // and whose result replaces the context, and a verbatim command, which the
   // harness reads only when the prompt is exactly the command.
+  //
+  // No test distinguishes this line from the one it replaced, and cannot: the
+  // only caller that reaches here with `systemTurn` is `runCompactionAhead`,
+  // which sets `compact` as well. It changes with the other call site so a
+  // future system turn on this path is not silently excluded.
   const settingsOutcome =
     capturedSessionId && ctx.settingsProposals
       && !opts.compact && !ridesTurnAsCommand
