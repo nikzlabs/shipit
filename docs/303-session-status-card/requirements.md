@@ -32,8 +32,8 @@ taken inside one session, without building an agent that talks to many.
 3. The card describes the session, not the last turn. The last turn's text is
    already on screen when the user arrives; a card that repeats it has no
    value.
-4. The card has three fields: where it stands, what comes next, and what needs
-   the user.
+4. The card has three fields: status, what comes next, and what needs the
+   user. The first is labelled "Status".
 5. The agent writes the card at the end of its turn, with a tool call.
 6. The card sits at the bottom of the conversation, stuck to the input
    field: the place where the user already reads the agent's last sentences.
@@ -123,3 +123,7 @@ taken inside one session, without building an agent that talks to many.
   already the last card and "working great"; the status card should be
   standardized with it. → reqs 6–8.
 - 2026-09-14 — Which fields? Where it stands, next, needs you. → req 4.
+  Later the same day Nik renamed the first field: "Where it stands" → "Status".
+  He also ruled that merging is never a next step: "Merge after review" is the
+  default ShipIt workflow, so readiness belongs in the status ("Status: Ready
+  to merge"). → req 4 and the prompt guidance in plan.md.

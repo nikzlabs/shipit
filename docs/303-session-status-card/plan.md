@@ -39,12 +39,12 @@ Three plain-text arguments, validated in
 
 | Field | Limit | Meaning |
 |---|---|---|
-| `standing` | required, ≤ 240 chars | What the session is about and where it stands — including "done" when the task is finished. The whole session, not the last turn. |
+| `status` | required, ≤ 240 chars | What the session is about and where it stands — including "done" or "ready to merge" when that is the state. The whole session, not the last turn. |
 | `next` | required, ≤ 240 chars | The intended next step. "Nothing" is a valid value. |
 | `needsYou` | optional, ≤ 240 chars | What the user must do or decide. Empty when nothing. |
 
 The limits are the concision (req 2): the agent cannot write a paragraph. A
-`done` boolean was in the first draft and removed on review: `standing` says
+`done` boolean was in the first draft and removed on review: `status` says
 it in words, and nothing in the requirements asks for a glyph.
 
 Call path: tool → worker `POST /agent-ops/session-status` (a `relay` line in
@@ -57,7 +57,7 @@ line telling the agent the status is on screen and it can end its turn.
 ## Storage and transport (req 10)
 
 - `sessions.session_status` column, JSON
-  `{ standing, next, needsYou?, fresh }`. Migration via
+  `{ status, next, needsYou?, fresh }`. Migration via
   `addSessionColumnIfMissing` (`database.ts`), like `agent_goal`.
 - `fresh` (req 14) means "the last finished turn updated this card". The
   route writes `fresh: true`; the post-turn step (below) writes
@@ -201,9 +201,9 @@ until the session has one.
 Layout, `text-xs`, semantic tokens only, no new theme values, no header row:
 
 ```
-Where it stands   Billing service: routes and tests done; PR #212 open for review.
-Next              Merge after review; then wire the Stripe webhook.
-Needs you         Add the Stripe test key in Settings → Secrets.
+Status      Billing service: routes and tests done; PR #212 ready to merge.
+Next        Wire the Stripe webhook.
+Needs you   Add the Stripe test key in Settings → Secrets.
 ```
 
 - **Freshness (req 14).** Two states, carried by appearance alone. A current
@@ -232,6 +232,9 @@ A short "Session status" section in
 follow-up actions". It says what the three fields are, that the status
 describes the session and not the turn, that it is the last act of a turn,
 and that a turn ending in a question or `propose_actions` needs no update.
+It also says what is **not** a next step: opening, reviewing or merging the
+PR is ShipIt's default workflow, never a step to list — the status says
+"ready to merge" instead. (Nik, 2026-09-14.)
 The tool description carries the same rules in brief, for harnesses whose
 system prompt is shorter. Static text, rendered once at module load — the
 prompt-cache contract in the `prompt-architecture` skill holds. Tests assert

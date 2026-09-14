@@ -34,7 +34,7 @@
     font-size: 12px; line-height: 1.45;
   }
   .card.stale { opacity: .7; }
-  .row { display: grid; grid-template-columns: 104px 1fr; gap: 10px; }
+  .row { display: grid; grid-template-columns: 76px 1fr; gap: 10px; }
   .row .k { color: var(--color-text-tertiary); }
   .row .v { color: var(--color-text-primary); }
   .composer { height: 40px; border-radius: 8px; border: 1px solid var(--color-border-secondary); background: var(--color-bg-primary); color: var(--color-text-tertiary); font-size: 12px; display: flex; align-items: center; padding: 0 12px; }
@@ -57,8 +57,8 @@
 
 <template id="card-tpl">
   <div class="card" title="">
-    <div class="row"><span class="k">Where it stands</span><span class="v">Billing service: routes and tests done; PR #212 open for review.</span></div>
-    <div class="row"><span class="k">Next</span><span class="v">Merge after review; then wire the Stripe webhook.</span></div>
+    <div class="row"><span class="k">Status</span><span class="v">Billing service: routes and tests done; PR #212 ready to merge.</span></div>
+    <div class="row"><span class="k">Next</span><span class="v">Wire the Stripe webhook.</span></div>
     <div class="row"><span class="k">Needs you</span><span class="v">Add the Stripe test key in Settings → Secrets.</span></div>
   </div>
 </template>
@@ -66,7 +66,7 @@
 <script>
   const cases = [
     { key: "fresh", title: "Current", note: "the last turn updated it — a regular card",
-      tail: `<p>Routes and tests are in. PR #212 is open for review.</p>` },
+      tail: `<p>Routes and tests are in. PR #212 is ready to merge.</p>` },
     { key: "stale", title: "May be behind", note: "the last turn ended with a question and did not update it — 70% opacity, tooltip explains",
       tail: `<p>Two ways to store the webhook secret; I need your call.</p>
              <div class="q"><b>Question</b>Keep the Stripe secret in ShipIt secrets, or in the repo's .env.example with a placeholder?</div>` },
