@@ -18,7 +18,7 @@ import { getErrorMessage } from "../validation.js";
 import { isTitleLockedAgainst } from "./session-title.js";
 import { nativeServiceForHarness, selectionExists } from "../../shared/catalogue/index.js";
 import type { BillingMode } from "../../shared/catalogue/index.js";
-import { resolveNonTurnModel, type NonTurnDirectTarget } from "../non-turn-model.js";
+import { resolveNonTurnModel, unavailableFrom, type NonTurnDirectTarget } from "../non-turn-model.js";
 import {
   emitNonTurnFailure,
   recordNonTurnUsage,
@@ -183,20 +183,12 @@ function scheduleSessionNaming(deps: ScheduleSessionNamingDeps, opts: ScheduleSe
   const reportNamingFailure = (detail: string | undefined): void => {
     if (!chatHistoryManager) return;
     if (resolution && !resolution.ok) {
-      if (!pinUnavailable) return;
+      if (resolution.reason !== "pin_unavailable") return;
+      // The notice says why the resolver refused, so a credential that is present
+      // and working is never reported as gone (docs/299-direct-provider-calls req 3).
       emitNonTurnFailure(
         { getRunnerRegistry: () => runnerRegistry, chatHistoryManager },
-        {
-          sessionId,
-          purpose: "session-naming",
-          unavailable: {
-            serviceName: resolution.serviceName,
-            serviceId: resolution.selection.serviceId,
-            billingMode: resolution.selection.billingMode,
-            modelId: resolution.selection.modelId,
-          },
-          detail: "The chosen model is no longer available — its credential or harness is gone.",
-        },
+        { sessionId, purpose: "session-naming", unavailable: unavailableFrom(resolution) },
       );
       return;
     }

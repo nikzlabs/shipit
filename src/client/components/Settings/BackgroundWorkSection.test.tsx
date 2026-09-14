@@ -273,7 +273,10 @@ describe("BackgroundWorkSection", () => {
 
     // the model picker has nothing to offer and req 14 removes it. What must not
 
-    expect(screen.getByText(/gpt-5.4-mini is no longer available/)).toBeTruthy();
+    expect(screen.getByText(/gpt-5.4-mini can no longer run background work/)).toBeTruthy();
+    // The panel cannot tell a missing credential from a carrier that cannot run
+    // it, so it claims neither (docs/299-direct-provider-calls req 3).
+    expect(screen.queryByText(/credential or its harness is gone/)).toBeNull();
     expect((screen.getByTestId("background-work-service-trigger") as HTMLButtonElement).textContent)
       .toContain("openai");
     expect(screen.queryByTestId("background-work-model")).toBeNull();

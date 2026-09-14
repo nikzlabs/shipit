@@ -254,9 +254,9 @@ const SAVE_HOOKS: Partial<Record<GlobalSettingKey, SaveHook>> = {
     check: (value, ctx) => {
       if (value === null) return;
       const selection = value as NonTurnModelSelection;
-      // Not `harnessForNonTurnSelection`: a model provider whose credential
-      // permits a direct call needs no installed harness (docs/299 req 3), and
-      // asking for one here refused by hand exactly what seeding accepts.
+      // The background-work search, not a harness search: a model provider whose
+      // credential permits a direct call needs no installed harness (docs/299
+      // req 3), and asking for one here refused by hand what seeding accepts.
       const runnable = runnerForNonTurnSelection(
         selection,
         listConfiguredCredentials(ctx.credentialStore),

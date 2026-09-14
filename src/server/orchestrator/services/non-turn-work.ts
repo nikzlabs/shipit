@@ -27,13 +27,16 @@ import {
 } from "../session-credentials.js";
 import {
   resolveNonTurnModel,
+  unavailableFrom,
   type GenerateText,
   type NonTurnCardPurpose,
   type NonTurnDirectTarget,
   type NonTurnHarnessTarget,
+  type NonTurnPinUnavailable,
   type NonTurnPurpose,
-  type NonTurnResolution,
   type NonTurnTarget,
+  type NonTurnUnavailable,
+  type NonTurnUnavailableCause,
 } from "../non-turn-model.js";
 import { DirectCallError, directCallForStyle, type DirectCallUsage } from "../direct-provider/index.js";
 
@@ -162,6 +165,24 @@ const FALLBACK_TEXT: Record<NonTurnCardPurpose, string> = {
 };
 
 /**
+ * The notice's sentence comes from the cause the resolver reported, never from
+ * the caller. A fixed string stating a cause nothing checked sent users whose
+ * credential was working to Settings to repair it — which is the damaging half,
+ * since there is nothing there to fix (docs/299-direct-provider-calls req 3).
+ */
+const UNAVAILABLE_DETAIL: Record<NonTurnUnavailableCause, string> = {
+  credential_gone:
+    "ShipIt no longer has a credential for it. Add one under Model providers,"
+    + " or choose another model for background work in Settings.",
+  credential_unusable:
+    "Its sign-in is no longer usable. Reconnect that account under Model providers,"
+    + " or choose another model for background work in Settings.",
+  no_background_carrier:
+    "Its credential is still configured, but nothing on this install can run that model as"
+    + " background work. Choose another model for background work in Settings.",
+};
+
+/**
  * Only a card purpose can reach this, so voice cleanup cannot persist a card by
  * accident (docs/299-direct-provider-calls req 6) — the executors below report
  * an outcome and leave the decision to emit to the caller that wants one.
@@ -172,11 +193,13 @@ export function emitNonTurnFailure(
     sessionId: string;
     purpose: NonTurnCardPurpose;
     target?: NonTurnTarget | undefined;
-    unavailable?: { serviceName: string; serviceId: string; billingMode: "sub" | "key"; modelId: string } | undefined;
+    unavailable?: NonTurnUnavailable | undefined;
     detail?: string | undefined;
   },
 ): NonTurnFailureCard {
   const { sessionId, purpose } = args;
+  const detail = args.detail
+    ?? (args.unavailable ? UNAVAILABLE_DETAIL[args.unavailable.cause] : undefined);
   const named = args.target
     ? {
         serviceId: args.target.selection.serviceId,
@@ -200,7 +223,7 @@ export function emitNonTurnFailure(
     purpose,
     ...(named ?? {}),
     fallback: FALLBACK_TEXT[purpose],
-    ...(args.detail ? { detail: args.detail.slice(0, 300) } : {}),
+    ...(detail ? { detail: detail.slice(0, 300) } : {}),
     createdAt: new Date().toISOString(),
   };
   const persisted: PersistedMessage = { role: "assistant", text: "", nonTurnFailure: card };
@@ -219,7 +242,7 @@ export function emitNonTurnFailure(
   console.warn(
     `[non-turn] ${purpose} failed session=${sessionId} `
     + `service=${named?.serviceId ?? "-"}/${named?.billingMode ?? "-"} `
-    + `model=${named?.modelId ?? "-"}: ${args.detail ?? "no detail"}`,
+    + `model=${named?.modelId ?? "-"}: ${detail ?? "no detail"}`,
   );
   return card;
 }
@@ -409,19 +432,9 @@ function reportUnrunnable(
   deps: Pick<NonTurnWorkDeps, "getRunnerRegistry" | "chatHistoryManager">,
   sessionId: string,
   purpose: NonTurnCardPurpose,
-  resolution: Extract<NonTurnResolution, { ok: false; reason: "pin_unavailable" }>,
+  resolution: NonTurnPinUnavailable,
 ): void {
-  emitNonTurnFailure(deps, {
-    sessionId,
-    purpose,
-    unavailable: {
-      serviceName: resolution.serviceName,
-      serviceId: resolution.selection.serviceId,
-      billingMode: resolution.selection.billingMode,
-      modelId: resolution.selection.modelId,
-    },
-    detail: "The chosen model is no longer available — its credential or harness is gone.",
-  });
+  emitNonTurnFailure(deps, { sessionId, purpose, unavailable: unavailableFrom(resolution) });
 }
 
 async function runNonTurnSpawn(
