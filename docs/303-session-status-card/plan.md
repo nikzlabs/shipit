@@ -68,7 +68,7 @@ line telling the agent the status is on screen and it can end its turn.
   whatever the reason — a question, an actions card, a user stop, a crash, an
   ignored nudge. Only a `silent` compaction turn leaves it alone: no work
   happened. One rule, two writers, no third state. A dispatched nudge leaves the
-  card dimmed until the nudge turn writes; that is the honest reading of that
+  card marked stale until the nudge turn writes; that is the honest reading of that
   window.
 - `SessionInfo.sessionStatus?: SessionStatus` (`domain-types/session.ts`),
   read in `sessions.ts` `toRow`/`fromRow`, written by
@@ -208,14 +208,16 @@ Status      Billing service: routes and tests done; PR #212 ready to merge. Webh
 Needs you   Add the Stripe test key in Settings → Secrets.
 ```
 
-- **Freshness (req 14).** Two states, carried by appearance alone. A current
-  card is a regular card. A card that may be behind is the same card at
-  **70% opacity** (`opacity-70`). No state word, no color, no icon: the
-  title space is not spent on it. Opacity is invisible to assistive
-  technology, so the stale card also carries `aria-description`
-  "May be behind: the last turn did not update it", and the same sentence
-  as its `title` tooltip for a pointer user who wonders what the dimming
-  means. Both states are drawn on a light and a dark theme in
+- **Freshness (req 14).** Two states, no title text spent on them. A current
+  card is a regular card. A card that may be behind carries a small
+  **"Stale"** label (`text-[11px] font-semibold`) in its bottom-right corner,
+  in the primary color — the theme accent (`--color-accent`) or the primary
+  text color (`--color-text-primary`); the prototype draws both and the pick
+  is recorded here. The last row keeps right padding so the label never
+  overlaps text. The label doubles as the accessible signal (it is real text),
+  and the card's `title` tooltip says "Stale: the last turn did not update it"
+  for a pointer user. Opacity was tried first and rejected as barely visible.
+  Both states are drawn on a light and a dark theme in
   [mockup.html](mockup.html).
 - `Needs you` is omitted when empty.
 - No button, no collapse: the limits keep it short (req 2), and the composer
@@ -259,7 +261,7 @@ the section is composed in, not its wording.
   no follow-up until the successor ends; the streaming `agent_result` + `done`
   pair → one decision, not two.
 - `SessionStatusCard.test.tsx` — two rows, hidden `Needs you` when empty,
-  the stale state's opacity class and `aria-description`.
+  the "Stale" label present only in the stale state.
 - `services/session-status.test.ts` also covers `fresh`: the route sets it,
   a question turn clears it, an ignored nudge clears it, a later update sets
   it again; the broadcast fires only on change.

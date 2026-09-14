@@ -7,7 +7,8 @@ Design deliverables (this PR):
 - [x] Independent review of the design; fold in the findings.
 - [x] Resolve the open question in requirements.md (one nudge attempt; freshness shown on the card, req 14–15).
 - [x] Prototype the freshness visual (mockup.html; both states; light and dark).
-- [x] Record the chosen visual in plan.md (regular card when current; 70% opacity when it may be behind; no state text).
+- [x] Record the chosen visual in plan.md (regular card when current; a small "Stale" label bottom-right when it may be behind; no title text).
+- [ ] Record the label color (accent or primary text) once picked from the prototype.
 
 Implementation (a later PR):
 
@@ -17,7 +18,7 @@ Implementation (a later PR):
 - [ ] Per-turn flags on `TurnAccumulator`: `statusUpdated` (route) and `actionsProposed` (propose-actions route).
 - [ ] `statusNudge` dispatch option through `prepared-dispatch.ts` and the queue; `silent` and `statusNudge` forwarded into `TurnInput`.
 - [ ] Memoized `status-nudge` post-turn step in `turn-executor.ts`; `markSessionStatusStale` on every settled turn without an update.
-- [ ] `SessionStatusCard` above the composer, dimmed to 70% opacity when it may be behind, with the `aria-description`.
+- [ ] `SessionStatusCard` above the composer, with the "Stale" label bottom-right when it may be behind.
 - [ ] Prompt section in `skeleton.md`; composition test.
 - [ ] Unit, route, integration and component tests listed in plan.md.
 - [ ] Add the tool to all five harness `SHIPIT_MCP_TOOLS` lists.
