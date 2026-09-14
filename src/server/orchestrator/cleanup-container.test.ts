@@ -13,25 +13,50 @@ import { SUB_AGENT_HOME_SUBDIR } from "./session-credentials-scaffold.js";
 import { ANTIGRAVITY_TOOLS_OFF_REFUSAL } from "../shared/agent-tools-off.js";
 import type { SessionContainer, SessionContainerManager } from "./session-container.js";
 
-const posts: { url: string; path: string; body: Record<string, unknown> }[] = [];
+const posts: {
+  url: string; path: string; body: Record<string, unknown>; timeoutMs?: number | undefined;
+}[] = [];
 let spawnReply: (body: Record<string, unknown>, signal?: AbortSignal) => Promise<unknown>;
+
+/** Spawns still awaiting a worker, so the fixture can take their container away. */
+const inFlight: { url: string; reject: (err: Error) => void }[] = [];
+/** Workers whose container is gone: a later request must not reach them either. */
+const deadWorkers = new Set<string>();
+
+/** What a request sees when the container it is running in is destroyed. */
+function killWorker(url: string): void {
+  deadWorkers.add(url);
+  for (const entry of inFlight.splice(0)) {
+    if (entry.url === url) entry.reject(new Error("socket hang up"));
+    else inFlight.push(entry);
+  }
+}
 
 // Reproduces the real workerPost's abort behaviour: an aborted signal rejects
 // the request at once. Without that, a fixture cannot see a caller that gives up
 // on the transport and unwinds while the worker is still running the spawn.
 vi.mock("./worker-http.js", () => ({
-  workerPost: async (url: string, p: string, body: Record<string, unknown>, opts?: { signal?: AbortSignal }) => {
-    posts.push({ url, path: p, body });
-    const reply = p === "/agent/spawn" ? spawnReply(body, opts?.signal) : Promise.resolve({ cancelled: true });
-    if (!opts?.signal) return reply;
-    return Promise.race([
-      reply,
-      new Promise((_r, reject) => {
+  workerPost: async (
+    url: string,
+    p: string,
+    body: Record<string, unknown>,
+    opts?: { signal?: AbortSignal; timeoutMs?: number },
+  ) => {
+    posts.push({ url, path: p, body, timeoutMs: opts?.timeoutMs });
+    if (deadWorkers.has(url)) throw new Error("connect ECONNREFUSED");
+    if (p !== "/agent/spawn") return { cancelled: true };
+    const racers: Promise<unknown>[] = [
+      spawnReply(body, opts?.signal),
+      new Promise((_r, reject) => { inFlight.push({ url, reject }); }),
+    ];
+    if (opts?.signal) {
+      racers.push(new Promise((_r, reject) => {
         opts.signal!.addEventListener(
           "abort", () => reject(new Error("Worker request aborted")), { once: true },
         );
-      }),
-    ]);
+      }));
+    }
+    return Promise.race(racers);
   },
 }));
 
@@ -47,6 +72,8 @@ class FakeContainerManager extends EventEmitter {
   survivor: { id: string; workerBuildId?: string } | null = null;
   /** Holds an adoption open after it has published its entry, as the real one does. */
   adoptGate: Promise<void> | null = null;
+  /** Holds a teardown open after it has marked the entry stopping, as the real one does. */
+  destroyGate: Promise<void> | null = null;
 
   async isTrackedContainerRunning(): Promise<boolean | undefined> { return this.trackedRunning; }
 
@@ -91,8 +118,17 @@ class FakeContainerManager extends EventEmitter {
   }
 
   async destroy(sessionId: string): Promise<void> {
+    const sc = this.containers.get(sessionId);
     this.destroyed.push(sessionId);
+    // The real teardown marks the entry stopping and then awaits Docker
+    // (container-lifecycle.ts:966); deleting it at once hides everything that
+    // can arrive in between, including a second teardown.
+    if (sc) (sc as { status: string }).status = "stopping";
+    if (this.destroyGate) await this.destroyGate;
     this.containers.delete(sessionId);
+    // Destroying the container takes every request running inside it; a fixture
+    // that skipped this could not fail on a replacement made mid-flight.
+    if (sc) killWorker(sc.workerUrl);
   }
 }
 
@@ -122,6 +158,8 @@ describe("CleanupContainerManager", () => {
 
   beforeEach(() => {
     posts.length = 0;
+    inFlight.length = 0;
+    deadWorkers.clear();
     spawnReply = async () => ({ status: "success", text: "cleaned", truncated: false, durationMs: 5, costUsd: 0 });
     root = fs.mkdtempSync(path.join(os.tmpdir(), "cleanup-container-"));
   });
@@ -233,8 +271,13 @@ describe("CleanupContainerManager", () => {
   });
 
   it("ignores another session's container exit", async () => {
-    const { mgr, cm } = makeManager(root);
+    const { mgr, cm, clock } = makeManager(root);
     await mgr.start();
+    // Nothing but the session-id filter stops this exit recreating the
+    // container: its entry is gone and the create interval has passed.
+    cm.containers.delete(CLEANUP_CONTAINER_SESSION_ID);
+    clock.now += CREATE_INTERVAL_MS + 1_000;
+
     cm.emit("container_exited", "11111111-1111-4111-8111-111111111111", 1, undefined);
     await new Promise((r) => setTimeout(r, 10));
     mgr.stop();
@@ -265,6 +308,195 @@ describe("CleanupContainerManager", () => {
 
     expect(cm.destroyed).toEqual([CLEANUP_CONTAINER_SESSION_ID]);
     expect(cm.gone).toEqual([]);
+  });
+
+  /**
+   * The wedge this exists for: a worker whose harness cannot reach the provider
+   * answers the spawn perfectly well, with HTTP 200 carrying a failed run
+   * (`session/agent-controller.ts`). Taking that reply as proof of health let
+   * the container mark itself verified on its first failure and stay wedged for
+   * the life of the install, with Docker reporting it running throughout.
+   * `cancelled` is the same wedge seen from the other side: egress that
+   * blackholes answers nothing, so the orchestrator's deadline ends the run.
+   */
+  it.each(["timeout", "error", "cancelled"])(
+    "replaces an adopted container whose worker answers with status %s",
+    async (status) => {
+      vi.stubEnv("SHIPIT_BUILD_ID", "build-1");
+      const { mgr, cm, clock } = makeManager(root);
+      cm.survivor = { id: "survivor-1", workerBuildId: "build-1" };
+      await mgr.start();
+      clock.now += CREATE_INTERVAL_MS + 1_000;
+
+      spawnReply = async () => ({ status, text: "", truncated: false, durationMs: 1, costUsd: 0 });
+      const failed = await mgr.run({ harnessId: "claude", prompt: "a", model: "haiku" });
+      expect(failed.status).toBe(status);
+
+      await vi.waitFor(() => { expect(cm.createCalls).toHaveLength(1); });
+      mgr.stop();
+
+      expect(cm.destroyed).toEqual([CLEANUP_CONTAINER_SESSION_ID]);
+    },
+  );
+
+  /**
+   * Replacing an adopted container mid-flight destroys the harness another
+   * dictation is running in, so that dictation gets a raw transcript and a
+   * warning for work that was going fine. Enforcing one dictation's deadline
+   * must disturb no other work in flight (req 9).
+   */
+  it("waits for the container to be idle before replacing it", async () => {
+    vi.stubEnv("SHIPIT_BUILD_ID", "build-1");
+    const { mgr, cm, clock } = makeManager(root);
+    cm.survivor = { id: "survivor-1", workerBuildId: "build-1" };
+    await mgr.start();
+    clock.now += CREATE_INTERVAL_MS + 1_000;
+
+    let releaseSlow: (() => void) | null = null;
+    const slow = new Promise<void>((r) => { releaseSlow = r; });
+    spawnReply = async (body) => {
+      if (body.prompt === "fast") throw new Error("connect ECONNREFUSED");
+      await slow;
+      return { status: "success", text: "cleaned", truncated: false, durationMs: 1, costUsd: 0 };
+    };
+
+    const slowRun = mgr.run({ harnessId: "claude", prompt: "slow", model: "haiku" });
+    await vi.waitFor(() => { expect(posts.filter((p) => p.path === "/agent/spawn")).toHaveLength(1); });
+    const fast = await mgr.run({ harnessId: "claude", prompt: "fast", model: "haiku" });
+    expect(fast.status).toBe("error");
+
+    // The failure must not have taken the slow dictation's harness with it.
+    await new Promise((r) => setTimeout(r, 20));
+    expect(cm.destroyed).toEqual([]);
+    releaseSlow!();
+
+    expect((await slowRun).text).toBe("cleaned");
+    mgr.stop();
+  });
+
+  /**
+   * Deferring the replacement must not discard it: when every dictation in the
+   * container has failed, the container is still unproven and still has to go,
+   * or waiting for idle would be a way of never replacing a busy wedge.
+   */
+  it("replaces the container once the dictations that deferred it have drained", async () => {
+    vi.stubEnv("SHIPIT_BUILD_ID", "build-1");
+    const { mgr, cm, clock } = makeManager(root);
+    cm.survivor = { id: "survivor-1", workerBuildId: "build-1" };
+    await mgr.start();
+    clock.now += CREATE_INTERVAL_MS + 1_000;
+
+    let releaseSecond: (() => void) | null = null;
+    const second = new Promise<void>((r) => { releaseSecond = r; });
+    spawnReply = async (body) => {
+      if (body.prompt === "second") await second;
+      throw new Error("connect ECONNREFUSED");
+    };
+
+    const secondRun = mgr.run({ harnessId: "claude", prompt: "second", model: "haiku" });
+    await vi.waitFor(() => { expect(posts.filter((p) => p.path === "/agent/spawn")).toHaveLength(1); });
+    await mgr.run({ harnessId: "claude", prompt: "first", model: "haiku" });
+
+    await new Promise((r) => setTimeout(r, 20));
+    expect(cm.destroyed).toEqual([]);
+
+    releaseSecond!();
+    await secondRun;
+    await vi.waitFor(() => { expect(cm.destroyed).toEqual([CLEANUP_CONTAINER_SESSION_ID]); });
+    await new Promise((r) => setTimeout(r, 20));
+    mgr.stop();
+
+    // Exactly one replacement, not one per failed dictation.
+    expect(cm.destroyed).toEqual([CLEANUP_CONTAINER_SESSION_ID]);
+    expect(cm.createCalls).toHaveLength(1);
+  });
+
+  /**
+   * `destroyContainer` marks the entry stopping and then awaits Docker
+   * (`container-lifecycle.ts:966`). A dictation arriving inside that window used
+   * to start a second teardown, and the first one then reaped the second's
+   * replacement — its resource cleanup and its `containers.delete` are both
+   * unconditional (`:993`, `:1016`).
+   */
+  it("holds a dictation arriving mid-replacement until the replacement is ready", async () => {
+    vi.stubEnv("SHIPIT_BUILD_ID", "build-1");
+    const { mgr, cm, clock } = makeManager(root);
+    cm.survivor = { id: "survivor-1", workerBuildId: "build-1" };
+    await mgr.start();
+    clock.now += CREATE_INTERVAL_MS + 1_000;
+
+    let releaseDestroy: (() => void) | null = null;
+    cm.destroyGate = new Promise<void>((r) => { releaseDestroy = r; });
+    spawnReply = async (body) => {
+      if (body.prompt === "doomed") throw new Error("connect ECONNREFUSED");
+      return { status: "success", text: "cleaned", truncated: false, durationMs: 1, costUsd: 0 };
+    };
+
+    await mgr.run({ harnessId: "claude", prompt: "doomed", model: "haiku" });
+    await vi.waitFor(() => { expect(cm.destroyed).toHaveLength(1); });
+
+    const during = mgr.run({ harnessId: "claude", prompt: "during", model: "haiku" });
+    await new Promise((r) => setTimeout(r, 20));
+    releaseDestroy!();
+    const result = await during;
+    mgr.stop();
+
+    expect(result.text).toBe("cleaned");
+    expect(cm.destroyed).toEqual([CLEANUP_CONTAINER_SESSION_ID]);
+    expect(cm.createCalls).toHaveLength(1);
+    expect(posts.find((p) => p.path === "/agent/spawn" && p.body.prompt === "during")!.url)
+      .toBe("http://worker-1:9100");
+  });
+
+  // The teardown awaits Docker, so shutdown lands inside a replacement the same
+  // way it lands inside an acquisition — and a container built then has nothing
+  // left to manage it.
+  it("does not rebuild when shutdown lands inside a replacement", async () => {
+    vi.stubEnv("SHIPIT_BUILD_ID", "build-1");
+    const { mgr, cm, clock } = makeManager(root);
+    cm.survivor = { id: "survivor-1", workerBuildId: "build-1" };
+    await mgr.start();
+    clock.now += CREATE_INTERVAL_MS + 1_000;
+
+    let releaseDestroy: (() => void) | null = null;
+    cm.destroyGate = new Promise<void>((r) => { releaseDestroy = r; });
+    spawnReply = async () => { throw new Error("connect ECONNREFUSED"); };
+
+    await mgr.run({ harnessId: "claude", prompt: "a", model: "haiku" });
+    await vi.waitFor(() => { expect(cm.destroyed).toHaveLength(1); });
+
+    mgr.stop();
+    releaseDestroy!();
+    await new Promise((r) => setTimeout(r, 20));
+
+    expect(cm.createCalls).toHaveLength(0);
+  });
+
+  /**
+   * An adopted container that dies before any run succeeds is recreated by this
+   * process, and what this process built needs no proving. A flag rather than
+   * the adopted container's id would condemn that replacement on its first
+   * ordinary provider error.
+   */
+  it("does not treat the container it built after an adoption as unproven", async () => {
+    vi.stubEnv("SHIPIT_BUILD_ID", "build-1");
+    const { mgr, cm, clock } = makeManager(root);
+    cm.survivor = { id: "survivor-1", workerBuildId: "build-1" };
+    await mgr.start();
+    clock.now += CREATE_INTERVAL_MS + 1_000;
+
+    // The adopted container dies with nothing having run in it yet.
+    cm.containers.delete(CLEANUP_CONTAINER_SESSION_ID);
+    cm.emit("container_exited", CLEANUP_CONTAINER_SESSION_ID, 1, undefined);
+    await vi.waitFor(() => { expect(cm.createCalls).toHaveLength(1); });
+
+    spawnReply = async () => ({ status: "error", text: "", truncated: false, durationMs: 1, costUsd: 0 });
+    await mgr.run({ harnessId: "claude", prompt: "a", model: "haiku" });
+    await new Promise((r) => setTimeout(r, 20));
+    mgr.stop();
+
+    expect(cm.destroyed).toEqual([]);
+    expect(cm.createCalls).toHaveLength(1);
   });
 
   it("keeps an adopted container that has answered once", async () => {
@@ -327,6 +559,9 @@ describe("CleanupContainerManager", () => {
     expect(result.text).toBe("cleaned");
     const spawn = posts.find((p) => p.path === "/agent/spawn")!;
     expect(spawn.body.toolsOff).toBe(true);
+    // The worker's own timer has to settle the run first, or a timed-out run
+    // comes back as a socket error instead of the partial text it produced.
+    expect(spawn.timeoutMs!).toBeGreaterThan(Number(spawn.body.timeoutMs));
     expect(spawn.body.agentId).toBe("claude");
     expect(spawn.body.model).toBe("haiku");
     // Concurrent requests share this container, so each needs its own home.
@@ -457,6 +692,8 @@ describe("CleanupContainerManager", () => {
     }
     mgr.stop();
 
+    // Both bounds: an upper one alone is satisfied by never retrying at all.
+    expect(cm.createCalls.length).toBeGreaterThan(1);
     expect(cm.createCalls.length).toBeLessThanOrEqual(MAX_REVIVE_ATTEMPTS + 1);
   });
 
@@ -471,6 +708,7 @@ describe("CleanupContainerManager", () => {
     }
     mgr.stop();
 
+    expect(cm.createCalls.length).toBeGreaterThan(1);
     expect(cm.createCalls.length).toBeLessThanOrEqual(MAX_REVIVE_ATTEMPTS);
   });
 
