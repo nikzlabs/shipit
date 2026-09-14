@@ -89,6 +89,11 @@ taken inside one session, without building an agent that talks to many.
 20. "Needs you" and the actions stay distinct in meaning, on this card as on
     two: "Needs you" is what only the user can do by hand; an action is agent
     work the user approves with a click.
+21. The whole feature sits behind a feature flag in Settings, off by default,
+    so the user can try it for a few days before it is released. With the
+    flag on, the agent has the status card tool and not `propose_actions`.
+    With the flag off, nothing changes from today: no card, no nudge, and
+    `propose_actions` available as it is now.
 
 ## Open questions
 
@@ -96,6 +101,11 @@ taken inside one session, without building an agent that talks to many.
 
 ## Resolved questions
 
+- 2026-09-14 — Is the card always on? No. Nik: the new card should be
+  togglable in settings, and `propose_actions` is unavailable to the agent
+  only while the new card is enabled. Then: "essentially the new feature
+  would be behind a feature flag in settings, off by default. Need to try it
+  myself for a few days before releasing." → req 21.
 - 2026-09-14 — Should the follow-up action card be part of the status card?
   Yes. Asked for pros and cons, Nik answered the cons one by one: untaken
   offers should not vanish — the agent can add to or replace the list; the

@@ -6,12 +6,12 @@ description: A transient, agent-authored card proposing one or more independent 
 
 # Action checklist cards
 
-> **Superseded for new offers by
+> **Superseded while the `advanced.sessionStatusCard` setting is on by
 > [docs/303-session-status-card](../303-session-status-card/plan.md)** (2026-09-14):
-> the agent offers follow-up actions through the session status card, which
-> persists them across turns. The `propose_actions` tool and its route go
-> with that change; existing cards in history keep rendering and submitting
-> as described here. One statement below is outdated already: a submission
+> with that flag the agent offers follow-up actions through the session
+> status card, which persists them across turns, and `propose_actions` is not
+> in its tool list. With the flag off — the default — everything here is
+> current. Existing cards in history keep rendering and submitting either way. One statement below is outdated already: a submission
 > does have a persisted lifecycle — `submittedAt` is stamped on acceptance in
 > `send-message.ts`.
 

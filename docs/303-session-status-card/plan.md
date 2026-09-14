@@ -12,13 +12,44 @@ on 2026-09-14 — once before and once after the action card was folded in;
 the findings that changed this design are named where they apply. Decisions
 the human did not state are collected at the end, under "Agent decisions".
 
+## Setting (req 21)
+
+One declaration in the settings catalogue
+(`src/server/shared/settings-catalogue/global-settings.ts`, the
+`defineSetting` shape of `advanced.enableSubAgents`):
+`advanced.sessionStatusCard`, tab `advanced`, scope `global`,
+`bool({ default: false })`, label "Session status card", description: an
+agent-written card above the composer with the session's status, what needs
+you and the offered follow-up actions; while on, the agent offers actions
+through that card instead of the follow-up-actions card. Off by default: Nik
+wants to run it for a few days before releasing it.
+
+The flag gates everything below at one point per surface:
+
+| Surface | Flag on | Flag off (today) |
+|---|---|---|
+| Tools in `SHIPIT_MCP_TOOLS` | `session_status`, no `propose_actions` | `propose_actions`, no `session_status` |
+| Prompt | the "Session status" section | the "Proposing optional follow-up actions" section |
+| Post-turn | the `status-nudge` step runs | the step returns at once |
+| Client | `SessionStatusCard` rendered | not rendered; transcript action cards as today |
+
+The flag reaches the session side per turn, the way `SHIPIT_AUTO_CREATE_PR`
+does (`src/server/session/agents/claude/process.ts:243` sets it on the spawn
+env from the run params): a run param `sessionStatusCard` becomes
+`SHIPIT_SESSION_STATUS_CARD=1` in the agent's environment, and each adapter
+picks its tool list from it. So a toggle applies from the next turn, on
+every harness, with no restart. The prompt has two variants, both rendered
+once at module load and picked per turn by the flag — the prompt-cache
+contract of the `prompt-architecture` skill, unchanged. Stored status and
+offers survive a toggle: off hides the card, on shows it again.
+
 ## Shape
 
 Four pieces, each one already has a precedent in the codebase:
 
 | Piece | Precedent |
 |---|---|
-| Agent tool `session_status` | `propose_actions` (`src/server/session/mcp-tools/propose-actions.ts`), which it replaces (req 16, 19) |
+| Agent tool `session_status` | `propose_actions` (`src/server/session/mcp-tools/propose-actions.ts`), which it replaces while the flag is on (req 16, 19, 21) |
 | Session-record column `session_status`, broadcast with `session_list` | `agent_goal` (docs/154, `services/agent-goal.ts`) |
 | Pinned element above the composer | `GoalChip` in `App.tsx` |
 | ShipIt-started follow-up turn | the dispatch path `wakeSessionWithTurn` uses (`wake-session.ts`, `dispatched-turn.ts`) |
@@ -30,9 +61,9 @@ rehydration) is involved.
 ## The tool (req 4, 5)
 
 `session_status` — id and name both `session_status`, in
-`src/server/session/mcp-tools/session-status.ts`, added to the
-`SHIPIT_MCP_TOOLS` list of all five harness adapters (Claude, Codex, OpenCode,
-Grok, Antigravity), so it is the same tool everywhere.
+`src/server/session/mcp-tools/session-status.ts`, in the `SHIPIT_MCP_TOOLS`
+list of all five harness adapters (Claude, Codex, OpenCode, Grok,
+Antigravity) while the flag is on, so it is the same tool everywhere.
 
 Two plain-text arguments and an optional action list, validated in
 `src/server/shared/session-status-validation.ts`. The per-item validation is
@@ -325,24 +356,27 @@ Needs you   Add the Stripe test key in Settings → Secrets.
   (req 8). Action cards from before this change stay where history put them
   and keep working; new offers appear only on this card.
 
-## Evolving the action card (req 19)
+## Evolving the action card (req 19, 21)
 
-`propose_actions` is replaced, not duplicated, and not aliased:
+`propose_actions` is replaced while the flag is on, kept intact while it is
+off, and never aliased:
 
-- **Tool.** `propose_actions` is removed from the MCP bridge and from every
-  harness's `SHIPIT_MCP_TOOLS` list, and its section in `skeleton.md` is
-  replaced by the session-status section. The first draft kept it as an
-  alias that merged actions without a status; review showed the alias's own
-  tool description still told the agent to call it and end the turn
-  (`propose-actions.ts:87`, advertised by `mcp-shipit-bridge.ts:50`), so it
-  produced a predictable extra nudge, and an alias call on a session with no
-  status yet would store offers nobody could see. No requirement asks for
-  transitional compatibility; removing the tool removes both problems.
-- **Route.** `api-routes-propose-actions.ts` is deleted with the tool. New
-  offers never enter chat history.
+- **Tool.** With the flag on, `propose_actions` is left out of every
+  harness's `SHIPIT_MCP_TOOLS` list and its `skeleton.md` section is swapped
+  for the session-status section; with the flag off, both stay exactly as
+  today. The tool, its route and its validator are not deleted. An earlier
+  draft kept the tool callable under the flag as an alias that merged
+  actions without a status; review showed the alias's own tool description
+  still told the agent to call it and end the turn (`propose-actions.ts:87`,
+  advertised by `mcp-shipit-bridge.ts:50`), so it produced a predictable
+  extra nudge, and an alias call on a session with no status yet would store
+  offers nobody could see. Gating by the tool list removes both problems: an
+  agent under the flag cannot see the old tool.
+- **Route.** `api-routes-propose-actions.ts` stays for the flag-off mode.
+  Under the flag it answers 409 with a line naming `session_status`, so a
+  stale process cannot post a transcript card while the card is on.
 - **Validation.** `validateActionItems` is extracted from
-  `propose-actions-validation.ts` and shared; the old envelope validator goes
-  with the tool.
+  `propose-actions-validation.ts` and shared by both envelopes.
 - **Renderer.** As in "Client" above: shared checklist, two wrappers. Old
   `actionChecklist` rows in history keep rendering and submitting; nothing is
   migrated or deleted.
@@ -408,6 +442,11 @@ the section is composed in, not its wording.
 - `send-message.test.ts` — `checklistAccepted` takes the offers on each
   acceptance path and not on refusal; old cards still get `submittedAt`.
 - `ActionChecklistCard.test.tsx` — existing behavior unchanged after the split.
+- Flag tests: with `advanced.sessionStatusCard` off, the tool lists, the
+  prompt, the post-turn step and the client are exactly today's (a snapshot
+  of the tool list and the prompt section set per harness in both modes);
+  with it on, `propose_actions` is absent and the route refuses; toggling
+  applies on the next turn.
 - `services/session-status.test.ts` also covers `fresh`: the route sets it,
   a question turn clears it, an ignored nudge clears it, a later update sets
   it again; the broadcast fires only on change.
@@ -422,7 +461,9 @@ the section is composed in, not its wording.
 - `src/server/orchestrator/turn-executor.ts` — the memoized `status-nudge` post-turn step; `silent` and `statusNudge` on `TurnInput`.
 - `src/server/orchestrator/prepared-dispatch.ts`, `src/server/shared/types/agent-types.ts` — the `statusNudge` dispatch option.
 - `src/server/orchestrator/turn-accumulator.ts`, `session-runner.ts` — per-turn flags and their reset.
-- `src/server/orchestrator/api-routes-propose-actions.ts`, `src/server/session/mcp-tools/propose-actions.ts` — deleted; `src/server/session/mcp-shipit-bridge.ts` and the five adapters drop the tool.
+- `src/server/shared/settings-catalogue/global-settings.ts` — the `advanced.sessionStatusCard` declaration.
+- `src/server/session/agents/*/adapter.ts`, `src/server/session/agents/claude/process.ts` — tool list and `SHIPIT_SESSION_STATUS_CARD` per turn.
+- `src/server/orchestrator/api-routes-propose-actions.ts` — refuses under the flag; unchanged otherwise.
 - `src/server/orchestrator/ws-handlers/send-message.ts` — `checklistAccepted` also takes offered actions by `offerId`.
 - `src/client/components/ActionChecklistCard.tsx`, `src/client/utils/action-checklist-message.ts` — split into the shared checklist piece and two wrappers.
 - `src/server/orchestrator/ws-handlers/rollback-handlers.ts`, `src/server/orchestrator/services/session-fork-merge.ts` — stale on rewind, copy-as-stale on fork.
@@ -445,3 +486,5 @@ is reversible without touching a numbered requirement; say so and it changes.
 - Offer identity is server-owned (`offerId`); the agent's `id` is a name for
   in-place replacement, not the identity.
 - A successor turn running or queued defers the check to that turn's end.
+- The flag is `global` scope on the `advanced` tab; a per-project flag was not
+  asked for and would put the tool list on a second axis.

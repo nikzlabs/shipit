@@ -14,16 +14,17 @@ Design deliverables (this PR):
 
 Implementation (a later PR):
 
+- [ ] `advanced.sessionStatusCard` in the settings catalogue, off by default; per-turn `SHIPIT_SESSION_STATUS_CARD` on the agent environment.
 - [ ] `session_status` tool (status, needsYou, actions, replaceActions); `validateActionItems` extracted and shared; envelope validation; the worker relay.
 - [ ] Orchestrator route: persist, `session_list` broadcast, turn flag.
 - [ ] `sessions.session_status` column (status, needsYou, offers with `offerId`, fresh, version, provenance), `SessionInfo.sessionStatus`, migration; `runStatusExclusive`.
 - [ ] Per-turn flag `statusUpdated` on `TurnAccumulator`, set by the session-status route.
-- [ ] Evolve the action card: remove `propose_actions` (tool, route, bridge entry, adapter lists, prompt section); split `ActionChecklistCard` into the shared checklist and two wrappers; `checklistAccepted` takes offers by `offerId` on acceptance.
+- [ ] Evolve the action card: under the flag, leave `propose_actions` out of the adapter tool lists and swap the prompt section, and make its route refuse; split `ActionChecklistCard` into the shared checklist and two wrappers; `checklistAccepted` takes offers by `offerId` on acceptance.
 - [ ] `statusNudge` dispatch option through `prepared-dispatch.ts` and the queue; `silent` and `statusNudge` forwarded into `TurnInput`.
 - [ ] Memoized `status-nudge` post-turn step in `turn-executor.ts` on a pre-drain snapshot; version-guarded `markSessionStatusStale` on every settled turn without an update.
 - [ ] Lifecycle: stale on rewind/reset; copy-as-stale on fork.
 - [ ] `SessionStatusCard` above the composer: two fields, the offered actions with one Send, the "Stale" label bottom-right when it may be behind.
-- [ ] Prompt section in `skeleton.md` replacing the `propose_actions` section; composition test.
+- [ ] Prompt: two variants rendered at module load — the "Session status" section under the flag, the `propose_actions` section otherwise; composition test for both.
 - [ ] Unit, route, integration and component tests listed in plan.md.
-- [ ] Add the tool to all five harness `SHIPIT_MCP_TOOLS` lists.
-- [ ] Verify in the dogfood instance: switch away and back, reload, and one turn that skips the tool.
+- [ ] Tool lists on all five harnesses in both modes.
+- [ ] Verify in the dogfood instance with the flag on: switch away and back, reload, one turn that skips the tool; and with the flag off: an action card as today.
