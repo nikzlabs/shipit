@@ -1,5 +1,6 @@
 import type { PrStatusSummary, PrMergeableState } from "../shared/types/github-types.js";
-import { residentBackgroundWork, type SessionRunnerInterface } from "./session-runner.js";
+import type { SessionRunnerInterface } from "./session-runner.js";
+import { residentBackgroundWork } from "./turn-admission.js";
 import { getErrorMessage } from "./validation.js";
 import { AutoRemediationManager } from "./auto-remediation-manager.js";
 import type { RemediationArbiter } from "./auto-remediation-arbiter.js";

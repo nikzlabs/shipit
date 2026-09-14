@@ -271,6 +271,126 @@ describe("queue drain vs. post-turn commit ordering (planning#264)", () => {
     runner.dispose({ force: true });
   });
 
+  // planning#562 added a release when a system turn's hold comes off. The adapter-error path
+  // reaches finishTurn BEFORE its drain and commit, so that release must not fire there.
+  it("a system turn that ERRORS still commits before the queued turn that resets the tree runs", async () => {
+    const runner = new SessionRunner({ sessionId: "s1", sessionDir: repoDir, defaultAgentId: "claude" as AgentId });
+    const agents: FakeAgent[] = [];
+    const filePath = path.join(repoDir, "file.txt");
+
+    const onRunByTurn = [
+      () => fs.writeFileSync(filePath, "system-turn work\n"),
+      () => execFileSync("git", ["reset", "--hard", "HEAD"], { cwd: repoDir, stdio: "pipe" }),
+    ];
+
+    const deps: SystemTurnDeps = {
+      agentFactory: () => {
+        const idx = agents.length;
+        const a = makeFakeAgent(() => onRunByTurn[idx]?.());
+        agents.push(a);
+        return a as unknown as ReturnType<SystemTurnDeps["agentFactory"]>;
+      },
+      autoCommit: async (sessionDir: string, summary: string) => {
+        const git = new GitManager(sessionDir);
+        const parentHash = await git.getHeadHash();
+        const r = await git.autoCommit(summary);
+        return { ...r, parentHash };
+      },
+      scheduleAutoPush: vi.fn(),
+      listenerDeps: makeListenerDeps(),
+      buildRunParams: vi.fn().mockResolvedValue({ prompt: "p", cwd: repoDir }),
+    };
+    runner.setSystemTurnDeps(deps);
+
+    runner.dispatch(testDispatch({ text: "fix CI", systemTurn: true }));
+    await waitFor(() => agents.length === 1 && agents[0]!.run.mock.calls.length === 1, "system turn started");
+    expect(fs.readFileSync(filePath, "utf8")).toBe("system-turn work\n");
+
+    // Background work is what defers the queued system turn at this turn's drain.
+    runner.isStreamingActive = true;
+    runner.setBackgroundTasks([{ id: "bg-1", description: "Codex consult" }]);
+    runner.dispatch(testDispatch({ text: "reset the tree", systemTurn: true }));
+    expect(runner.queueLength).toBe(1);
+
+    agents[0]!.emit("error", new Error("the CLI fell over"));
+
+    await waitFor(() => agents.length === 2 && agents[1]!.run.mock.calls.length === 1, "queued turn started");
+    expect(fs.readFileSync(filePath, "utf8")).toBe("system-turn work\n");
+    const log = execFileSync("git", ["log", "--oneline"], { cwd: repoDir, encoding: "utf8" });
+    expect(log.split("\n").filter(Boolean)).toHaveLength(2);
+
+    agents[1]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+    agents[1]!.emit("done", 0);
+    await waitFor(() => !runner.running, "queued turn finished");
+    runner.dispose({ force: true });
+  });
+
+  // The release is behind the local commit, not behind the drain: `drainFired` is set before
+  // the commit it awaits, so an error landing in that window must not free the queue early.
+  it("holds the release while the system turn's commit is still in flight", async () => {
+    const runner = new SessionRunner({ sessionId: "s1", sessionDir: repoDir, defaultAgentId: "claude" as AgentId });
+    const agents: FakeAgent[] = [];
+    const filePath = path.join(repoDir, "file.txt");
+    const onRunByTurn = [
+      () => fs.writeFileSync(filePath, "system-turn work\n"),
+      () => execFileSync("git", ["reset", "--hard", "HEAD"], { cwd: repoDir, stdio: "pipe" }),
+    ];
+
+    let releaseCommit = (): void => {};
+    const commitGate = new Promise<void>((resolve) => { releaseCommit = resolve; });
+    let commitStarted = false;
+
+    const deps: SystemTurnDeps = {
+      agentFactory: () => {
+        const idx = agents.length;
+        const a = makeFakeAgent(() => onRunByTurn[idx]?.());
+        agents.push(a);
+        return a as unknown as ReturnType<SystemTurnDeps["agentFactory"]>;
+      },
+      autoCommit: async (sessionDir: string, summary: string) => {
+        commitStarted = true;
+        await commitGate;
+        const git = new GitManager(sessionDir);
+        const parentHash = await git.getHeadHash();
+        const r = await git.autoCommit(summary);
+        return { ...r, parentHash };
+      },
+      scheduleAutoPush: vi.fn(),
+      listenerDeps: makeListenerDeps(),
+      buildRunParams: vi.fn().mockResolvedValue({ prompt: "p", cwd: repoDir }),
+    };
+    runner.setSystemTurnDeps(deps);
+
+    runner.dispatch(testDispatch({ text: "fix CI", systemTurn: true }));
+    await waitFor(() => agents.length === 1 && agents[0]!.run.mock.calls.length === 1, "system turn started");
+
+    runner.isStreamingActive = true;
+    runner.setBackgroundTasks([{ id: "bg-1", description: "Codex consult" }]);
+    runner.dispatch(testDispatch({ text: "reset the tree", systemTurn: true }));
+    expect(runner.queueLength).toBe(1);
+
+    // The result opens the commit; the error then reaches finishTurn while it is still open.
+    agents[0]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+    await waitFor(() => commitStarted, "commit started");
+    agents[0]!.emit("error", new Error("the CLI fell over"));
+    await flush();
+    await flush();
+
+    expect(agents).toHaveLength(1);
+    expect(runner.queueLength).toBe(1);
+
+    releaseCommit();
+    await waitFor(() => agents.length === 2 && agents[1]!.run.mock.calls.length === 1, "queued turn started");
+    expect(fs.readFileSync(filePath, "utf8")).toBe("system-turn work\n");
+    expect(execFileSync("git", ["log", "--oneline"], { cwd: repoDir, encoding: "utf8" })
+      .split("\n").filter(Boolean)).toHaveLength(2);
+
+    agents[1]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+    agents[1]!.emit("done", 0);
+    await waitFor(() => !runner.running, "queued turn finished");
+    runner.dispose({ force: true });
+  });
+
   it("leaves the empty-queue turn end untouched — the commit still runs after the finished SSE", async () => {
     const runner = new SessionRunner({ sessionId: "s1", sessionDir: repoDir, defaultAgentId: "claude" as AgentId });
     const agents: FakeAgent[] = [];

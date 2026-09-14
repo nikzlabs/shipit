@@ -430,6 +430,71 @@ was corrected in the same change: the auto-resolve timeout test never wired
 system-turn deps, so its "hanging agent" never ran and the deadline it asserted
 was a deadline on a queued prompt.
 
+## Fix F — the drain re-reads admission (planning#562)
+
+Fix E moved every non-starting gate behind one exit so a refusing caller could not
+be queued by a gate added later. It did nothing for the other end: **what happens to
+an entry the gates already queued.** Two drains run their entry by calling
+`runDispatchedTurn` directly — `startQueuedMessage` (`queue-drain.ts`) and `drainNext`
+(`dispatched-turn.ts`) — so they never re-enter `dispatchOnRunner` and read no gate at
+all. `releaseQueuedTurn` is the counter-example that hid it: it goes back through
+`runner.dispatch`, so it re-runs everything.
+
+One gate is not an invariant of the queue, only of the moment: a system turn replaces
+the resident process, so it may not start while that process has background work in
+flight. `dispatchOnRunner` enqueues for that reason; the drain then ran the entry with
+the condition unchanged, and the dispatched executor retired the resident CLI —
+destroying exactly the work the gate exists to protect. docs/236 records an 18-minute
+cross-agent review lost to a neighbouring mechanism; this is the same loss.
+
+The fix is not "check the gate at both drain sites":
+
+- `takeRunnableQueuedTurn` (`queue-drain.ts`) **gates and takes in one act**. A drain
+  site that has already shifted the entry, emitted `queue_updated` and set
+  `runner.running = true` — which `ws-handlers/agent-execution.ts` had — has no cheap
+  way to put it back, so a gate it reads separately is a gate it eventually will not
+  read. Nothing is claimed until the entry may run; a deferred entry is simply still
+  queued, and every client-visible emit stays at the caller because the interactive
+  path's `queue_updated.dequeued` restores a bubble the dispatched path echoes itself.
+- The gate itself moves to `turn-admission.ts` and `dispatchOnRunner` reads the same
+  function, so the two answers cannot drift — `residentBackgroundWork`'s docstring
+  already asked for this and only the pre-flight callers obeyed it.
+- **Deferring, not refusing**, matches what the dispatch would have done: enqueue is
+  already an indefinite defer. But deferring is only safe if something comes back for the
+  entry, and **the obvious release is not enough**. When the predecessor is itself a system
+  turn, its CLI exits — clearing the background work, and firing the `background_work`
+  listener in `runner-registry-factory.ts` — while that turn still holds
+  `systemTurnInProgress`. The listener hand-rolled a dequeue + dispatch, so it took the
+  entry, met the hold, and re-queued it at the **tail**; `finishTurn` then released the
+  hold with no drain behind it, and the entry sat there for ever. That is an ordinary path,
+  not a race: an independent review found it, and a guard reproduces it. So:
+  - `releaseQueuedTurn` takes through `takeRunnableQueuedTurn` too, and the listener calls
+    it instead of hand-rolling. A gate that still holds now leaves the entry where it is.
+  - `finishTurn` releases the queue after clearing the system hold — after settlement, so
+    a new turn cannot leave the finished one's delivery published. Its own drain ran
+    *before* the hold came off, so nothing else would have revisited that entry.
+  - That release waits on the memoized **local** commit (`commitOnce`), not on the drain
+    having fired. `drainFired` is set *before* the commit it awaits, and the adapter-error
+    path reaches `finishTurn` before either — so gating on the drain lets a queued turn
+    `git reset --hard` over work that is still being committed (invariant 1). The window is
+    real: a guard reproduces it with a blocked commit, and the full suite caught a second
+    instance in the rebase driver.
+  - The rule this leaves behind: **a site that clears one of these gates calls
+    `releaseQueuedTurn`** (the rebase driver and the merge executor already did).
+  Two accepted consequences. The tracker's 1-hour **TTL** expires tasks without an event,
+  so that entry waits for the next turn to end — the same is true of `dispatchOnRunner`'s
+  own enqueue, so no timer was added for it. And an entry deferred behind a **system**
+  predecessor now resumes only after that turn's network post-turn work, because the
+  system hold deliberately spans it; releasing earlier would put a turn inside the window
+  the hold exists to protect.
+
+`releaseQueuedTurn` deliberately keeps re-entering `dispatch` rather than pre-checking:
+the gates it would duplicate are the ones it owns the answer to.
+
+Producers that reach this: merge-watch wake turns (docs/196, docs/239) and the
+post-rebase follow-up turn (docs/303), which dispatches `{ whenBusy: "queue" }` so a
+message typed during the rebase is answered first.
+
 ## Key files
 
 | Area | File | Change |
@@ -457,6 +522,10 @@ was a deadline on a queued prompt.
 | Fix E — the caller | `src/server/orchestrator/services/rebase-driver.ts` | Resolution turn dispatches `{ whenBusy: "refuse" }`; the `runner.running` pre-check deleted; refusal rejects as 409 |
 | Fix E — the log | `src/server/shared/git.ts` | `rebase` / `rebaseContinue` log the conflict stop and its file count |
 | Fix E — restart half | `src/server/orchestrator/abandoned-rebase-sweep.ts` *(new)*, `bootstrap-managers.ts` | Boot sweep for checkouts left mid-rebase; records a pending agent notice |
+| **Fix F** — the shared gate | `src/server/orchestrator/turn-admission.ts` *(new)* | `residentBackgroundWork` (moved from `session-runner.ts`) + `systemTurnBlockedByResidentWork`, the one reason string `dispatchOnRunner` and the drain both read |
+| Fix F — gate the take | `src/server/orchestrator/queue-drain.ts` | `takeRunnableQueuedTurn` — the single entry point for taking a queue entry that will be run WITHOUT re-entering `dispatch` |
+| Fix F — the drains | `src/server/orchestrator/ws-handlers/agent-execution.ts`, `dispatched-turn.ts`, `turn-adoption.ts` | Take the head through it; the interactive drain's shift moves *before* its `queue_updated` + `running = true` claim |
+| Fix F — the release | `src/server/orchestrator/queue-drain.ts`, `runner-registry-factory.ts`, `turn-executor.ts` | `releaseQueuedTurn` takes through the same gate (no tail re-queue); the `background_work` listener calls it instead of hand-rolling a drain; `finishTurn` calls it after clearing the system hold, behind `commitOnce` |
 | Fix D — the race | `src/server/orchestrator/ws-handlers/send-message.ts` | Re-reads `runner.running` after `verifyRunningState`, so a released entry isn't raced for the `_agent` slot |
 | Fix D — banner scope | `src/server/shared/types/ws-server-messages/git.ts`, `services/rebase-driver.ts`, `api-routes-git.ts`, `client/hooks/message-handlers/rebase-*.ts` | `sessionId` on the four rebase lifecycle messages; handlers drop foreign ones (the guard `auto_resolve_started` already had) |
 
@@ -503,6 +572,23 @@ was a deadline on a queued prompt.
   live in the same tick as `running`, live across the queued wait and through its
   own turn, and cleared BEFORE the consumer is told (a stale `true` reads as
   "never retry").
+
+- `queue-drain.test.ts` / `integration_tests/system-turn-queue.test.ts` /
+  `integration_tests/turn-settlement.test.ts` (planning#562) — the unit half covers
+  `takeRunnableQueuedTurn` directly (a system turn is held while the resident has
+  background work, a user turn never is, a system turn with no resident is not, and
+  the held entry is handed over intact afterwards); the integration half drives all
+  three drain sites through a real dispatch — the interactive drain, the drain inside
+  a dispatched turn, and the adoption drain — asserting the resident CLI is not
+  killed, the entry is still queued, and it runs once the background work ends. Each
+  fails alone when its own drain site is reverted to a bare `dequeue()`. A fourth
+  integration case is the release half: a system turn deferred behind a **system** turn
+  runs when the hold clears and is queued exactly once — it hangs to the timeout without
+  `finishTurn`'s release, and counts two `message_queued` without the listener's. Two more
+  in `turn-drain-commit-ordering.test.ts` pin the release behind the commit, on the two
+  shapes that get there first: a system turn that **errors** (finishTurn ahead of its own
+  drain and commit) and an error arriving while the commit is **still in flight** (a
+  blocked `autoCommit`, which is where gating on `drainFired` starts the successor early).
 
 ## Resolved decisions
 

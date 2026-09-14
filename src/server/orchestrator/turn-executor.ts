@@ -148,7 +148,10 @@ export async function executeAgentTurn(
   };
   const finishTurn = (): void => {
     if (turnCompleteFired) return;
-    if (runner && ownsSystemHold()) runner.systemTurnInProgress = false;
+    // Hold identity, not the turn epoch (docs/304): the release below must only run when
+    // this turn is the owner that actually took the hold off.
+    const releasesSystemHold = runner !== null && ownsSystemHold();
+    if (releasesSystemHold) runner.systemTurnInProgress = false;
     // Superseding resets wasInterrupted; the latched superseded flag must take precedence.
     settleTurn(
       agentErrored
@@ -161,6 +164,20 @@ export async function executeAgentTurn(
               ? turnInterrupted("the turn was interrupted before it produced a result")
               : turnNoResult("agent process exited without producing a turn result"),
     );
+    // An entry the drain passed over — a system turn behind this one's background work —
+    // has no other trigger once the hold comes off (planning#562). Each condition is pinned by
+    // a guard: behind the local commit (the error path reaches finishTurn before its own
+    // drain and commit, and a queued turn may reset the tree — invariant 1), after
+    // settlement, never past a running successor, and never for a driver's `none` post-turn.
+    if (releasesSystemHold && postTurn !== "none" && !runner.running && runner.queueLength > 0) {
+      const held = runner;
+      void (async () => {
+        try {
+          await commitOnce();
+        } catch { /* the commit's own terminal path reports it */ }
+        releaseQueuedTurn(held);
+      })();
+    }
   };
 
   if (runner) {

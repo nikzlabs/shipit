@@ -12,7 +12,7 @@ import type {
   SystemTurnDeps,
 } from "./session-runner.js";
 import type { PreparedDispatch } from "./prepared-dispatch.js";
-import { queuedMessageToDispatchOptions } from "./queue-drain.js";
+import { queuedMessageToDispatchOptions, takeRunnableQueuedTurn } from "./queue-drain.js";
 import { prepareDispatch } from "./prepared-dispatch.js";
 import { toQueuedMessage } from "./session-runner.js";
 import { POST_MERGE_COMPACT_PROMPT, noteMissedCompaction } from "./compact-before-turn.js";
@@ -256,7 +256,7 @@ async function runDispatchedTurnInner(
       noteMissedCompaction(runner, deps.listenerDeps.chatHistoryManager, runner.sessionId);
     }
     if (runner.queueLength === 0) return;
-    const next = runner.dequeue();
+    const next = takeRunnableQueuedTurn(runner);
     if (!next) return;
     runner.emitMessage({ type: "queue_updated", queue: runner.getQueueSnapshot() });
     await runDispatchedTurn(runner, deps, agentId, queuedMessageToDispatchOptions(next), createAgent);

@@ -2,6 +2,7 @@ import { describe, it, expect, vi, afterEach } from "vitest";
 import { SessionRunner } from "../session-runner.js";
 import { createAutoPushScheduler } from "../services/auto-push-scheduler.js";
 import { adoptInFlightTurn } from "../turn-adoption.js";
+import { releaseQueuedTurn } from "../queue-drain.js";
 import type { AgentId, AgentProcess } from "../../shared/types.js";
 import type { TurnOutcome } from "../turn-settlement.js";
 import {
@@ -159,6 +160,56 @@ describe("dispatched-turn settlement (docs/240 Fix B)", () => {
     expect(outcomes).toHaveLength(1);
     expect(outcomes[0]!.status).toBe("completed");
     expect(runner.systemTurnInProgress).toBe(false);
+
+    runner.dispose({ force: true });
+  });
+
+  it("planning#562: a system turn queued behind an ADOPTED turn is held while the resident has background work", async () => {
+    const runner = newRunner();
+    const agents: FakeAgent[] = [];
+    const { deps } = makeDispatchTurnDeps(agents, []);
+    runner.setSystemTurnDeps(deps);
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const adopted = makeFakeAgent();
+    runner.setAgent(adopted as unknown as AgentProcess);
+    await adoptInFlightTurn(runner, deps, adopted as unknown as AgentProcess, {
+      agentId: "claude" as AgentId,
+      streaming: false,
+    });
+
+    // The adopted turn owns a backgrounded consult the wake turn would retire with the CLI.
+    runner.isStreamingActive = true;
+    runner.setBackgroundTasks([{ id: "bg-1", description: "Codex consult" }]);
+
+    const outcomes: TurnOutcome[] = [];
+    runner.dispatch(testDispatch({
+      text: "child PR merged — resume",
+      systemTurn: true,
+      onTurnComplete: (o) => outcomes.push(o),
+    }));
+    expect(runner.queueLength).toBe(1);
+
+    // Settle without exiting: the adopted process stays resident, as it does in production.
+    adopted.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+    await waitForTurn(() => !runner.running, "adopted turn settled");
+    await flushTurn();
+
+    expect(agents).toHaveLength(0);
+    expect(runner.queueLength).toBe(1);
+    expect(adopted.kill).not.toHaveBeenCalled();
+    expect(runner.getAgent()).toBe(adopted as unknown as AgentProcess);
+    expect(outcomes).toEqual([]);
+
+    // Still whole: the entry runs once the background work is gone. Released by hand here —
+    // the automatic release lives on the registry's runner, which this harness does not build.
+    runner.clearBackgroundTasks();
+    expect(releaseQueuedTurn(runner)).toBe(true);
+    await waitForTurn(() => agents.length === 1, "wake turn spawned");
+    agents[0]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+    agents[0]!.emit("done", 0);
+    await waitForTurn(() => outcomes.length > 0, "wake-turn settlement");
+    expect(outcomes[0]!.status).toBe("completed");
 
     runner.dispose({ force: true });
   });

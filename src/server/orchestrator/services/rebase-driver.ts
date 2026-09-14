@@ -5,7 +5,8 @@ import type { AgentProcess, AgentId, BranchSyncedCard } from "../../shared/types
 import type { ChatHistoryManager } from "../chat-history.js";
 import type { SessionManager } from "../sessions.js";
 import type { UsageManager } from "../usage.js";
-import { residentBackgroundWork, type SessionRunnerInterface } from "../session-runner.js";
+import type { SessionRunnerInterface } from "../session-runner.js";
+import { residentBackgroundWork } from "../turn-admission.js";
 import { ServiceError } from "./types.js";
 import { agentLogAppend } from "../log-emit.js";
 import { emitNoticePostTurn } from "../chat-card-persistence.js";
