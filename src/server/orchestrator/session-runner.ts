@@ -22,6 +22,7 @@ import { getAgentDisplayName } from "../shared/agent-registry.js";
 import { runDispatchedTurn } from "./dispatched-turn.js";
 export { runDispatchedTurn };
 
+import { systemTurnBlockedByResidentWork } from "./turn-admission.js";
 import { trySteerDispatch } from "./dispatch-steering.js";
 import { resetVoiceNoteTurnState } from "./voice/voice-note-router.js";
 import {
@@ -181,21 +182,12 @@ export interface DispatchAdmission {
 }
 
 /**
- * Background work a system turn would destroy by replacing the resident process. Callers
- * that pre-flight this gate must read it here, or their check drifts from the gate's.
- */
-export function residentBackgroundWork(
-  runner: Pick<SessionRunnerInterface, "getAgent" | "backgroundWorkDescriptions">,
-): string[] {
-  return runner.getAgent() !== null ? runner.backgroundWorkDescriptions : [];
-}
-
-/**
  * Prefix of the only `errored` outcome that means the prompt never reached the agent. Every
  * other `errored` can describe a turn the agent ran and then failed, so a consumer deciding
  * whether to re-deliver must tell the two apart rather than reading the status alone.
  */
 export const DISPATCH_SETUP_FAILURE = "dispatched turn failed to start";
+
 
 export function dispatchOnRunner(
   runner: SessionRunnerInterface,
@@ -254,13 +246,8 @@ export function dispatchOnRunner(
   if (runner.mergeHold) return enqueueOrRefuse("a merge is being held for this session");
 
   // System turns replace the resident process, which would destroy its background work.
-  const residentWork = opts.systemTurn ? residentBackgroundWork(runner) : [];
-  if (residentWork.length > 0) {
-    return enqueueOrRefuse(
-      "the resident agent has background work in flight "
-      + `(${residentWork.join(", ")}), which a system turn would destroy`,
-    );
-  }
+  const residentWorkBlock = systemTurnBlockedByResidentWork(runner, opts.systemTurn);
+  if (residentWorkBlock) return enqueueOrRefuse(residentWorkBlock);
 
   // Claim synchronously so another message or delivery retry cannot enter during async setup.
   if (opts.systemTurn) runner.systemTurnInProgress = true;

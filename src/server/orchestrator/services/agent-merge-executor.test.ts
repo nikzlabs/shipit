@@ -133,6 +133,15 @@ function fakeRunner(over: Partial<{ running: boolean; agentBusy: boolean; queueL
       runner.queueLength -= 1;
       return { text: "queued while merging", execution: "dispatched" as const };
     },
+    // The release reads the head before claiming it, and the gate reads the resident agent.
+    get messageQueue(): { text: string; execution: "dispatched" }[] {
+      return Array.from(
+        { length: runner.queueLength as number },
+        () => ({ text: "queued while merging", execution: "dispatched" as const }),
+      );
+    },
+    getAgent: () => null,
+    backgroundWorkDescriptions: [] as string[],
     getQueueSnapshot: () => [],
     emitted: [] as { type?: string; message?: string }[],
     emitMessage: (m: unknown) => { runner.emitted.push(m as { type?: string; message?: string }); },
