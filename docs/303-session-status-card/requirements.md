@@ -1,7 +1,7 @@
 ---
 issue: planning#550
 title: Session status card
-description: An agent-written card at the bottom of the conversation that says what the session is about, where it stands, what comes next and what needs the user.
+description: An agent-written card at the bottom of the conversation that says what the session is about, where it stands, and what needs the user.
 ---
 
 # Session status card
@@ -32,8 +32,10 @@ taken inside one session, without building an agent that talks to many.
 3. The card describes the session, not the last turn. The last turn's text is
    already on screen when the user arrives; a card that repeats it has no
    value.
-4. The card has three fields: status, what comes next, and what needs the
-   user. The first is labelled "Status".
+4. The card has two fields: "Status" — what the session is about, how far
+   it got, and whether it is done or ready to merge, including agent work
+   not yet started — and "Needs you" — the decision or hand action, empty
+   when there is none.
 5. The agent writes the card at the end of its turn, with a tool call.
 6. The card sits at the bottom of the conversation, stuck to the input
    field: the place where the user already reads the agent's last sentences.
@@ -126,4 +128,7 @@ taken inside one session, without building an agent that talks to many.
   Later the same day Nik renamed the first field: "Where it stands" → "Status".
   He also ruled that merging is never a next step: "Merge after review" is the
   default ShipIt workflow, so readiness belongs in the status ("Status: Ready
-  to merge"). → req 4 and the prompt guidance in plan.md.
+  to merge"). Then, asked whether "Next" and "Needs you" differ — everything
+  under Next waits for the user's go anyway — he chose two fields: Status and
+  Needs you, with unstarted agent work stated in Status. → req 4 and the
+  prompt guidance in plan.md.

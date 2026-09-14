@@ -33,15 +33,18 @@ rehydration) is involved.
 `SHIPIT_MCP_TOOLS` list of all five harness adapters (Claude, Codex, OpenCode,
 Grok, Antigravity), so it is the same tool everywhere.
 
-Three plain-text arguments, validated in
+Two plain-text arguments, validated in
 `src/server/shared/session-status-validation.ts` (the
 `propose-actions-validation.ts` pattern, shared by the tool and the route):
 
 | Field | Limit | Meaning |
 |---|---|---|
-| `status` | required, ≤ 240 chars | What the session is about and where it stands — including "done" or "ready to merge" when that is the state. The whole session, not the last turn. |
-| `next` | required, ≤ 240 chars | The intended next step. "Nothing" is a valid value. |
-| `needsYou` | optional, ≤ 240 chars | What the user must do or decide. Empty when nothing. |
+| `status` | required, ≤ 240 chars | What the session is about, how far it got, and whether it is done or ready to merge — including agent work not yet started ("webhook not started"). The whole session, not the last turn. |
+| `needsYou` | optional, ≤ 240 chars | The decision or hand action only the user can take. Empty when nothing. |
+
+A `next` field was in the first draft and removed on 2026-09-14: the card
+is read after the agent has finished, so everything "next" waits for the
+user's go and either duplicates `status` or is a `needsYou`.
 
 The limits are the concision (req 2): the agent cannot write a paragraph. A
 `done` boolean was in the first draft and removed on review: `status` says
@@ -57,7 +60,7 @@ line telling the agent the status is on screen and it can end its turn.
 ## Storage and transport (req 10)
 
 - `sessions.session_status` column, JSON
-  `{ status, next, needsYou?, fresh }`. Migration via
+  `{ status, needsYou?, fresh }`. Migration via
   `addSessionColumnIfMissing` (`database.ts`), like `agent_goal`.
 - `fresh` (req 14) means "the last finished turn updated this card". The
   route writes `fresh: true`; the post-turn step (below) writes
@@ -149,7 +152,7 @@ the post-turn flow runs as for any turn. That is the transparency req 12 asks
 for. The prompt opens with `[ShipIt]`, the prefix ShipIt already uses for
 lines it writes into the conversation (bug-report resolutions), and says: the
 last turn ended without a session status update; call `session_status` now
-with the three fields; do nothing else.
+with the two fields; do nothing else.
 
 **Nudge identity travels with the dispatch.** The first draft set a
 `statusNudgePending` flag on the runner and consumed it at the next turn
@@ -201,8 +204,7 @@ until the session has one.
 Layout, `text-xs`, semantic tokens only, no new theme values, no header row:
 
 ```
-Status      Billing service: routes and tests done; PR #212 ready to merge.
-Next        Wire the Stripe webhook.
+Status      Billing service: routes and tests done; PR #212 ready to merge. Webhook not started.
 Needs you   Add the Stripe test key in Settings → Secrets.
 ```
 
@@ -229,7 +231,7 @@ Needs you   Add the Stripe test key in Settings → Secrets.
 
 A short "Session status" section in
 `src/server/orchestrator/prompts/skeleton.md`, after "Proposing optional
-follow-up actions". It says what the three fields are, that the status
+follow-up actions". It says what the two fields are, that the status
 describes the session and not the turn, that it is the last act of a turn,
 and that a turn ending in a question or `propose_actions` needs no update.
 It also says what is **not** a next step: opening, reviewing or merging the
@@ -256,7 +258,7 @@ the section is composed in, not its wording.
   turn that asks a question → no follow-up; a turn with a queued successor →
   no follow-up until the successor ends; the streaming `agent_result` + `done`
   pair → one decision, not two.
-- `SessionStatusCard.test.tsx` — three rows, hidden `Needs you` when empty,
+- `SessionStatusCard.test.tsx` — two rows, hidden `Needs you` when empty,
   the stale state's opacity class and `aria-description`.
 - `services/session-status.test.ts` also covers `fresh`: the route sets it,
   a question turn clears it, an ignored nudge clears it, a later update sets
