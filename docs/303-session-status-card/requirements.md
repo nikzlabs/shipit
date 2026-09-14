@@ -60,7 +60,12 @@ taken inside one session, without building an agent that talks to many.
 
 ## Open questions
 
-- None.
+- The agent ignores the nudge too: the follow-up turn also ends without a
+  status update. The design stops there, keeps the last written status on
+  screen, and says in the conversation that the agent did not update it, so
+  the user knows the card is behind. Should ShipIt try a second time before
+  saying so, or is one attempt enough? (Some bound is needed so a broken agent
+  cannot loop; the number is the human's call.)
 
 ## Resolved questions
 
