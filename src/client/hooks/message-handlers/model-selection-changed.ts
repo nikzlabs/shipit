@@ -50,11 +50,14 @@ export const handleModelSelectionChanged: Handler<WsModelSelectionChanged> = (_c
     ),
   );
 
-  // Before the first turn, persist both role selection and role removal.
+  // Before the first turn, persist both role selection and role removal — but
+  // only the user's own. A clear ShipIt decided (`roleAutoCleared`) is not a
+  // selection, and writing it here deleted the role the user starts every new
+  // session on (docs/272 req 12) because one session's parameters had to move.
   const started = !!useSessionStore
     .getState()
     .sessions.find((s) => s.id === data.sessionId)?.agentPinned;
-  if (session.sessionId === data.sessionId && !started) {
+  if (session.sessionId === data.sessionId && !started && !data.roleAutoCleared) {
     saveRoleName(data.roleName ?? undefined);
   }
   // docs/272 — on `/{repo}/new` the warm session has no row, so the pickers read

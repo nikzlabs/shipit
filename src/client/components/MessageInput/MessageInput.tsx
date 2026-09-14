@@ -251,9 +251,17 @@ export function MessageInput({
 
   const [pendingRole, setPendingRole] = useState<string | undefined>(() => getSavedRoleName());
 
-  // The seed may name a role this session never took — it is chosen for the
-
-  const roleInForce = hasActiveSession ? sessionRoleName : (sessionRoleName ?? pendingRole);
+  // The seed may name a role this session never took — it is chosen for the NEXT
+  // one — so a live session's own row is the only authority over it (req 13).
+  // Until that row exists there is no answer to prefer, and the seed is what the
+  // session was started on: reading the silence as "no role" is what blanked the
+  // pill on the first message of every new session, where the session is still
+  // warm and `SessionManager.list()` filters `warm = 0`. Read here rather than
+  // taken as a prop, so `sessionRoleName` and the question of whether it means
+  // anything cannot be wired up separately, or one of them forgotten.
+  const sessionRowKnown = useSessionStore((s) => s.sessions.some((row) => row.id === sessionId));
+  const sessionAnswered = hasActiveSession && sessionRowKnown;
+  const roleInForce = sessionAnswered ? sessionRoleName : (sessionRoleName ?? pendingRole);
 
   const leavePendingRole = () => {
     setPendingRole(undefined);

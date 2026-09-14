@@ -63,6 +63,19 @@ describe("Integration: user-selectable roles (docs/272)", () => {
       },
     });
 
+    // A role need not pin a level: `reasoningEffort` is optional, and "none" is a
+    // decision the browser's global seed must not overwrite.
+    credentialStore.setRole("quick take", {
+      name: "quick take",
+      params: {
+        kind: "pinned",
+        harnessId: "claude",
+        serviceId: "openrouter",
+        billingMode: "key",
+        modelId: ROLE_MODEL,
+      },
+    });
+
     sessionManager = new SessionManager(dbManager);
     app = await buildApp({
       credentialStore,
@@ -364,6 +377,95 @@ describe("Integration: user-selectable roles (docs/272)", () => {
     expect(row?.roleName).toBe("deep dive");
     expect(row?.agentId).toBe("claude");
     expect(row?.model).toBe(ROLE_MODEL);
+    again.close();
+  });
+
+  /*
+    The connect handler's own reconciliation is the one path that takes a role off
+    a session nobody touched. These three pin what it may and may not do: a role
+    that pinned no reasoning level keeps that decision against the browser's
+    global seed, a clear it does make is repaired inside the same connect when the
+    seed still names a runnable role, and one that stands is reported rather than
+    written silently.
+  */
+  it("does not unname a role that pinned no level when the browser seeds one (reqs 2, 13)", async () => {
+    const first = await TestClient.connect(port, undefined, {
+      role: "quick take",
+      reasoning: "high",
+    });
+    await first.receive();
+    const sessionId = first.sessionId!;
+    expect(sessionManager.get(sessionId)?.roleName).toBe("quick take");
+    expect(sessionManager.get(sessionId)?.reasoningEffort).toBeUndefined();
+    first.close();
+
+    // No `?role=` on the reconnect, so the repair below cannot put the role back:
+    // what survives here is the role never being taken off in the first place.
+    const again = await TestClient.connect(port, sessionId, { reasoning: "high" });
+    await again.receive();
+    const row = sessionManager.get(sessionId);
+    expect(row?.roleName).toBe("quick take");
+    expect(row?.reasoningEffort).toBeUndefined();
+    again.close();
+  });
+
+  it("repairs a reconciliation clear inside the same connect (reqs 12, 13)", async () => {
+    const first = await TestClient.connect(port, undefined, { role: "deep dive" });
+    await first.receive();
+    const sessionId = first.sessionId!;
+    first.close();
+
+    // A model the role's harness cannot list: reconciliation has to move it.
+    sessionManager.setModel(sessionId, "a-model-no-harness-lists", "openrouter");
+
+    const again = await TestClient.connect(port, sessionId, { role: "deep dive" });
+    await drainUntil(again, (m) => m.type === "model_selection_changed");
+    const row = sessionManager.get(sessionId);
+    expect(row?.roleName).toBe("deep dive");
+    expect(row?.model).toBe(ROLE_MODEL);
+    expect(row?.reasoningEffort).toBe("high");
+    again.close();
+  });
+
+  it("will not answer a clear with a DIFFERENT role the stale URL still names (req 13)", async () => {
+    const first = await TestClient.connect(port, undefined, { role: "deep dive" });
+    await first.receive();
+    const sessionId = first.sessionId!;
+    // The URL is memoized per session, so it goes on naming the role the page
+    // loaded with however many times the user picks another one.
+    first.send({ type: "set_role", roleName: "quick take" });
+    await drainUntil(
+      first,
+      (m) => m.type === "model_selection_changed" && m.roleName === "quick take",
+    );
+    first.close();
+
+    sessionManager.setModel(sessionId, "a-model-no-harness-lists", "openrouter");
+
+    const again = await TestClient.connect(port, sessionId, { role: "deep dive" });
+    const answer: AnyMsg = await drainUntil(again, (m) => m.type === "model_selection_changed");
+    expect(answer.roleName).toBeNull();
+    expect(answer.roleAutoCleared).toBe(true);
+    expect(sessionManager.get(sessionId)?.roleName).toBeUndefined();
+    again.close();
+  });
+
+  it("reports a reconciliation clear it cannot repair, as the server's own (req 12)", async () => {
+    const first = await TestClient.connect(port, undefined, { role: "deep dive" });
+    await first.receive();
+    const sessionId = first.sessionId!;
+    first.close();
+
+    sessionManager.setModel(sessionId, "a-model-no-harness-lists", "openrouter");
+
+    // No `?role=`, so nothing re-applies it: the clear is what the viewer sees.
+    const again = await TestClient.connect(port, sessionId, {});
+    const answer: AnyMsg = await drainUntil(again, (m) => m.type === "model_selection_changed");
+    expect(answer, "the automatic clear reached the viewer as nothing at all").toBeTruthy();
+    expect(answer.roleName).toBeNull();
+    expect(answer.roleAutoCleared).toBe(true);
+    expect(answer.notice).toContain("deep dive");
+    expect(sessionManager.get(sessionId)?.roleName).toBeUndefined();
     again.close();
   });
 
