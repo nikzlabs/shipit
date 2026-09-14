@@ -11,6 +11,7 @@ import { handlePresentInlineCard } from "./present-inline-card.js";
 import { handleBranchAutoResetCard } from "./branch-auto-reset-card.js";
 import { handleSessionRenamedCard } from "./session-renamed-card.js";
 import { handleSessionSettingsChangeCard } from "./session-settings-change-card.js";
+import { handleSettingsProposalCard, handleSettingsProposalUpdate } from "./settings-proposal-card.js";
 import { handleBranchSyncedCard } from "./branch-synced-card.js";
 import { handleAuthRequired } from "./auth-required.js";
 import { handleAutoResolveResult } from "./auto-resolve-result.js";
@@ -125,6 +126,8 @@ export const messageHandlers: MessageHandlerMap = {
   branch_auto_reset_card: handleBranchAutoResetCard,
   session_renamed_card: handleSessionRenamedCard,
   session_settings_change_card: handleSessionSettingsChangeCard,
+  settings_proposal_card: handleSettingsProposalCard,
+  settings_proposal_update: handleSettingsProposalUpdate,
   branch_synced_card: handleBranchSyncedCard,
   agent_event: handleAgentEvent,
   turn_snapshot: handleTurnSnapshot,
@@ -262,6 +265,8 @@ const TRANSCRIPT_SCOPED_MESSAGES: ReadonlySet<WsMessageType> = new Set<WsMessage
   "self_merge_watch_card",
   "session_renamed_card",
   "session_settings_change_card",
+  "settings_proposal_card",
+  "settings_proposal_update",
   "session_report_card",
   "non_turn_failure_card",
   "non_turn_failure_dismissed",

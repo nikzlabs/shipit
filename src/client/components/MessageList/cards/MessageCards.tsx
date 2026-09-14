@@ -18,6 +18,7 @@ import { PresentInlineCard } from "../../PresentInlineCard.js";
 import { BranchUpdatedCard } from "../../BranchUpdatedCard.js";
 import { SessionRenamedCard } from "../../SessionRenamedCard.js";
 import { SessionSettingsChangeCard } from "../../SessionSettingsChangeCard.js";
+import { SettingsProposalCard } from "../../SettingsProposalCard.js";
 import { BranchSyncedCard } from "../../BranchSyncedCard.js";
 import { ReleaseLifecycleCard } from "../../ReleaseLifecycleCard.js";
 import type { ChatMessage } from "../types.js";
@@ -51,6 +52,8 @@ export interface MessageCardCallbacks {
   }) => void;
 
   onSendFollowUp?: (text: string, options?: { actionChecklistCardId?: string }) => boolean;
+  /** docs/299-agent-settings-access req 4 — the click that moves a setting. */
+  onSettingsProposalDecision?: (cardId: string, action: "apply" | "dismiss") => void;
 
   onReleaseConfirm?: (version: string, mechanism: ReleaseMechanism) => void;
 
@@ -316,6 +319,19 @@ export function renderMessageCard(msg: ChatMessage, cb: MessageCardCallbacks): R
       <div className="flex justify-start">
         <div className="max-w-2xl w-full">
           <SessionSettingsChangeCard card={msg.sessionSettingsChange} />
+        </div>
+      </div>
+    );
+  }
+
+  if (msg.settingsProposal) {
+    return (
+      <div className="flex justify-start">
+        <div className="max-w-2xl w-full">
+          <SettingsProposalCard
+            card={msg.settingsProposal}
+            {...(cb.onSettingsProposalDecision ? { onDecide: cb.onSettingsProposalDecision } : {})}
+          />
         </div>
       </div>
     );

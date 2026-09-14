@@ -84,6 +84,100 @@ export interface ActionChecklistCard {
   submittedAt?: string;
 }
 
+/**
+ * Whether a saved setting is what ShipIt actually uses. The same four answers
+ * the read surface gives (`services/settings-read.ts` → `SettingEffectState`),
+ * so a card and a read say the same thing about the same write: "saved, applies
+ * after a restart" is a false promise for a sandbox whose containment is already
+ * fixed, which is the case the user is usually unblocking.
+ */
+export type SettingsEffectState = "live" | "restart-dependent" | "excluded" | "uncertain";
+
+/**
+ * What a proposal is about. A declaration key alone does not name one value:
+ * `project.allowAgentMerge` exists once per repository and `mcp.servers[].enabled`
+ * once per server (docs/299-agent-settings-access plan.md → The target, and the
+ * lock). The repository is frozen when the card is written, and apply verifies
+ * the session still binds it.
+ */
+export interface SettingsProposalTarget {
+  key: string;
+  /** A per-repository setting's repository, as the session bound it at propose time. */
+  repoUrl?: string;
+  /** One instance of an item-addressed setting — a role name, an MCP server. */
+  item?: string;
+}
+
+/**
+ * `pending` → `dismissed`, or `pending` → `applying` → one terminal answer.
+ *
+ * The terminal set is deliberately wider than applied/failed: three shipped
+ * writers cannot prove what they did (`CredentialStore.save` logs and returns
+ * void, `setGitIdentity` is two `git config` calls, `writeGlobalSystemPrompt`
+ * swallows its unlink error), so `failed` is reserved for a writer that verified
+ * nothing changed, `partial` for a multi-write operation that half landed, and
+ * `uncertain` for a writer that cannot say. `unknown` is a card found mid-apply
+ * after a restart: it is never retried, because the side effect may already have
+ * run.
+ */
+export type SettingsProposalPhase =
+  | "pending"
+  | "applying"
+  | "applied"
+  | "partial"
+  | "uncertain"
+  | "stale"
+  | "refused"
+  | "failed"
+  | "dismissed"
+  | "unknown";
+
+/**
+ * One proposed settings change, as it appears in the transcript
+ * (docs/299-agent-settings-access req 4). One card carries one change, and the
+ * setting does not move until the user clicks.
+ *
+ * Everything describing the change is ShipIt's own: `label`, `description` and
+ * `path` are the registry's words and `from`/`to` come from the server's own
+ * read, both snapshotted at propose time so a later rename cannot rewrite
+ * history. `reason` is the ONLY agent-authored field — untrusted text, flattened
+ * and capped before it is stored, and rendered as attributed. That separation is
+ * what stops a reason describing a different change than the button applies.
+ *
+ * The baseline apply compares against is deliberately NOT here: transcript
+ * projection returns a message's fields unless something strips them, so it
+ * lives in the private proposal row instead (`settings-proposal-store.ts`).
+ */
+export interface SettingsProposalCard {
+  cardId: string;
+  target: SettingsProposalTarget;
+  /** The declared label, snapshotted. */
+  label: string;
+  /** The declared description — the same words the dialog shows. */
+  description: string;
+  /** Breadcrumb to the control, e.g. `Settings › Advanced`. */
+  path: string;
+  /** The current value at propose time, formatted by the catalogue's own door. */
+  from: string;
+  /** The proposed value, formatted the same way. */
+  to: string;
+  /** The agent's words, flattened to one line and capped. */
+  reason?: string;
+  phase: SettingsProposalPhase;
+  createdAt: string;
+  resolvedAt?: string;
+  /**
+   * ShipIt's own account of a terminal phase, never the agent's words:
+   * `outcome` replaces the phase's standard clause ("added `registry.npmjs.org`
+   * to the global allowlist"), `outcomeDetail` is the line under it ("the name
+   * was saved, the email failed").
+   */
+  outcome?: string;
+  outcomeDetail?: string;
+  /** Present once applied: whether the saved value is what ShipIt now uses. */
+  effect?: { state: SettingsEffectState; detail?: string };
+}
+
 export interface BranchAutoResetCard {
   cardId: string;
   base: string;

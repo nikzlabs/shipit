@@ -10,6 +10,7 @@ import type {
   BranchSyncedCard,
   SessionRenamedCard,
   SessionSettingsChangeCard,
+  SettingsProposalCard,
   NonTurnFailureCard,
 } from "../domain-types.js";
 import type { ReleaseStatusSummary } from "../release-types.js";
@@ -182,6 +183,25 @@ export interface WsSessionSettingsChangeCard {
   type: "session_settings_change_card";
   sessionId: string;
   card: SessionSettingsChangeCard;
+}
+
+/** docs/299-agent-settings-access req 4 — a settings change the user has to click. */
+export interface WsSettingsProposalCard {
+  type: "settings_proposal_card";
+  sessionId: string;
+  card: SettingsProposalCard;
+}
+
+/**
+ * A phase change on a card already in the transcript. Carries the whole card
+ * rather than a patch: a viewer that attached after the card was posted has
+ * nothing to patch, and the durable row is the source of truth either way.
+ */
+export interface WsSettingsProposalUpdate {
+  type: "settings_proposal_update";
+  sessionId: string;
+  cardId: string;
+  card: SettingsProposalCard;
 }
 
 export interface WsNonTurnFailureCard {

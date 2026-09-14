@@ -642,8 +642,11 @@ session-scoped, container-accessible reads `GET /api/sessions/:id/settings` and
 the broadcast), `services/settings-conflict-domain.ts` (the lock) and
 `services/settings-baseline.ts` (the per-declaration revision);
 `shared/settings-catalogue/apply-outcome.ts` (the four outcomes);
-`services/settings-proposal.ts` (compile, claim, transition);
+`settings-proposal-store.ts` (the private proposal row: target, proposed value,
+baseline, phase); `services/settings-proposal.ts` (compile, claim, transition);
 `ws-handlers/settings-proposal-handlers.ts`;
+`shared/settings-catalogue/tabs.ts` (the tab labels the dialog and a card's
+breadcrumb share);
 `session/agent-shim/shipit-settings.ts`; the client card handler and component;
 `shipit-docs/settings.md`.
 
