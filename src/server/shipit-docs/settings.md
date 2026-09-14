@@ -42,9 +42,24 @@ Lets the agent in a session spawn another agent for a one-shot sub-task …
 ```
 
 **Some settings exist once per item** — a role, an MCP server, a secret name.
-`list` shows one entry per setting whatever the item count is, and says what
-names an instance ("a role name"); `get` is where the items themselves belong.
-There is no `--item` flag: the read is two steps, and a third would not be.
+`list` shows one entry per setting whatever the item count is, names the
+instances that exist, and says what names one ("a role name"); `get` is where
+each instance's value belongs. There is no `--item` flag: the read is two
+steps, and a third would not be.
+
+```
+$ shipit settings list --tab roles
+roles:
+  roles[].model = 2 items: deep-dive, reviewer
+      Runs on — The model this role runs on: a service, a billing mode and a model id, …
+
+$ shipit settings get roles[].model
+…
+2 instances, addressed by a role name:
+  deep-dive = {"serviceId":"anthropic","billingMode":"sub","modelId":"claude-opus-5"}
+  reviewer = not set
+      ShipIt resolves this role per review from the two reviewer candidate slots, …
+```
 
 ## What the read will and will not show you
 
@@ -62,15 +77,12 @@ the reason, rather than coming back with a number it invented:
 | `configured` / `not configured` | Credential material — an API key, a token, a webhook secret. You learn whether it is set, never the value. |
 | `unreadable (browser_local)` | The value lives in the user's browser, not on ShipIt's server. |
 | `unreadable (no_repository)` | A per-repository setting, read from a session that binds no repository. |
-| `unreadable (no_reader)` | ShipIt cannot read the stored value yet. Say that; do not fall back to what you think the default is. |
+| `unreadable (read_failed)` | ShipIt tried and has no value to report: a store this install does not have, a repository it has no record of, a read that failed. The note says which. |
 
-**Right now `no_reader` covers a lot of ground.** The settings owned by their own
-panel — roles, reviewer slots, credential routing, MCP servers, provider
-accounts, the per-repository settings, the voice keys — are named, described and
-refusal-tagged, and ShipIt does not yet read their values back. So you can tell
-the user what a setting is, what it accepts and whether they may change it, and
-you cannot tell them what it is currently set to. Say which of those you are
-doing; do not guess the value.
+**`read_failed` means ShipIt does not know, and so do you.** Say that. Do not
+fall back to what you think the default is, and do not tell the user a setting is
+off because the read came back empty — an unreadable value is reported as
+`unknown`, never as a value.
 
 Degrading is per entry. A session with no repository still gets every global
 setting in the same listing, and one setting ShipIt cannot read costs you no

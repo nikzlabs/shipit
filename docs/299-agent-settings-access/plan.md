@@ -266,6 +266,36 @@ is not doing what the user expects.
 bound repository, project entries read *unavailable* and `list` still returns
 every global setting.
 
+### An item-addressed setting is read in the same two steps
+
+A key alone does not name one value: `roles[].model` exists once per role,
+`mcp.servers[].url` once per server. That changes nothing about the shape of the
+read. `list` emits **one entry per declaration and never one per item** — its
+length is the catalogue's, whatever number of roles or MCP servers someone
+happens to have — and it names the instances that exist. `get` is where the
+items themselves are, each with the address a change to it would name and what
+it is set to. There is no `--item` selector: the read is two steps, and a third
+would not be the same shape for a setting that has one value.
+
+An item's **address goes through the projection door its value does**. An
+address is the user's own text for a role, an MCP server, a secret and an
+allowlist entry, so it is projected through the collection declaration that owns
+the key — `roles`, `mcp.servers`, `project.secrets`, `network.egress.hosts` —
+which is where emitting those names was decided and reasoned. An entry that
+collection's projection refuses to name, such as a URL pasted into the allowlist
+box, is named by nothing and produces no item at all; the read says how many it
+left out. Where the address is ShipIt's own — a reviewer slot, a catalogue
+service id, a provider id — it needs no projection and has none.
+
+Reading a setting a panel of its own owns needs a reader per owner
+(`services/settings-store-readers.ts`), because a `bespoke` declaration names
+where its value lives and not how to read one back. A reader returns the stored
+value and never a formatted one, so `projectSetting` / `formatSetting` stay the
+only door. **A reader never substitutes a default for a value it could not
+read** — an absent store, a repository ShipIt has no record of, a read that
+threw all degrade to an entry with the reason, because a plausible default is
+worse than nothing: the agent states it to the user as fact.
+
 ### Saved is not effective
 
 "Saved, applies after a restart" is false for a sandbox whose network capability
@@ -596,7 +626,9 @@ New: `shared/settings-catalogue/` (declarations, `type` constructors, the
 derivations, `exclusions.ts`); `client/components/Settings/setting-binding.ts`
 (`bindSetting`, `settingCopy`) and `declared.tsx` (the standard controls);
 `client/components/Settings/settings-coverage.test.tsx` (the residual guard);
-`services/settings-read.ts` and `api-routes-settings-agent.ts` (the two
+`services/settings-store-readers.ts` (a reader per owner, for the settings a
+panel of its own stores); `services/settings-read.ts` and
+`api-routes-settings-agent.ts` (the two
 session-scoped, container-accessible reads `GET /api/sessions/:id/settings` and
 `…/settings/detail?key=`); `services/settings-apply.ts` (the shared writers, the
 conflict-domain lock, the broadcast); `services/settings-proposal.ts` (compile,
