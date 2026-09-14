@@ -449,6 +449,9 @@ export async function executeAgentTurn(
     };
   };
 
+  // At most one automatic continuation per refusal; the wake runs after this turn's teardown.
+  let quotaContinuationPending = false;
+
   // A declined retry still needs an explanation, and quota text must not become a commit subject.
   const retireOnSpentAccount = (opts: { summaryIsTheNotice: boolean }): void => {
     if (opts.summaryIsTheNotice) {
@@ -462,20 +465,40 @@ export async function executeAgentTurn(
     )) return;
     const routeId = capturedCredentialRoute?.providerRouteId;
     const label = routeId ? (deps.routeLabel?.(routeId) ?? routeId) : "This account";
+    // The turn's prompt cannot be replayed, but ShipIt can start a turn of its own, so ask
+    // the router before deciding what to tell the user (docs/306-quota-continuation, superseding docs/140).
+    quotaContinuationPending = deps.recordQuotaStandDown?.({
+      sessionId,
+      agentId,
+      ...(routeId ? { benchedRouteId: routeId } : {}),
+    }).continues === true;
+    const outcomeLog = quotaContinuationPending
+      ? "the account is benched and ShipIt is continuing the work on another credential"
+      : "the account is benched and no credential is free; ShipIt will resume when one is";
+    const outcomeNotice = quotaContinuationPending
+      ? "is continuing this work on another credential."
+      : "will continue this work by itself as soon as one of your credentials is free.";
     console.log(
       `[turn] ${agentId} reported a quota refusal for ${sessionId}`
-      + `${routeId ? ` on ${routeId}` : ""} during a CLI-started turn; `
-      + "not re-dispatching (docs/140) — the account is benched and the next turn routes on",
+      + `${routeId ? ` on ${routeId}` : ""} during a CLI-started turn; ${outcomeLog}`,
     );
     emitNoticePostTurn(
       (m) => { if (runner) runner.emitMessage(m); else emit(m); },
       deps.listenerDeps.chatHistoryManager,
       sessionId,
       `${label} is out of quota, so the agent stopped partway through work it had started on `
-      + "its own. ShipIt has set that account aside — send your next message and it will "
-      + "continue on another account if you have one.",
+      + `its own. ShipIt has set that account aside and ${outcomeNotice}`,
       "warn",
     );
+  };
+
+  const runQuotaContinuation = async (): Promise<void> => {
+    if (!quotaContinuationPending) return;
+    quotaContinuationPending = false;
+    // A queued turn drained during teardown is already the continuation; a second one
+    // would only queue an unasked-for "carry on" behind the user's own message.
+    if (runner?.running) return;
+    await deps.continueAfterQuotaStandDown?.(sessionId);
   };
 
   // A true return takes ownership of teardown; rejected retries must finish it themselves.
@@ -861,6 +884,8 @@ export async function executeAgentTurn(
           await postTurnStep("finished-sse", broadcastFinishedIfIdle);
           await postTurnStep("commit", runCommitAndPr);
           await postTurnStep("idle", signalIdleIfIdle);
+          // Last of all: the continuation is a new turn, so this one must be fully settled.
+          await postTurnStep("quota-continuation", runQuotaContinuation);
         } finally {
           releasePostTurn();
         }
@@ -973,6 +998,8 @@ export async function executeAgentTurn(
         await postTurnStep("finished-sse", broadcastFinishedIfIdle);
         await postTurnStep("commit", runCommitAndPr);
         await postTurnStep("idle", signalIdleIfIdle);
+        // Only fires when the result's own sequence did not reach it (a second result).
+        await postTurnStep("quota-continuation", runQuotaContinuation);
         finishTurn();
         return;
       }

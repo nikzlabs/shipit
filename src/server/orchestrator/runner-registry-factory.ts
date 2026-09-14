@@ -27,6 +27,7 @@ import type { SystemPromptScope } from "./global-system-prompt.js";
 import type { ProviderAccountManager } from "./provider-account-manager.js";
 import type { TurnOutcome } from "./turn-settlement.js";
 import type { AutoPushScheduler } from "./services/auto-push-scheduler.js";
+import type { QuotaContinuationManager } from "./services/quota-continuation.js";
 import { applyShipitConfigChange, emitPluginReposUpdated, setupServiceManager, type ServiceSetupDeps } from "./service-manager-setup.js";
 import { emitNoticeInTurn } from "./chat-card-persistence.js";
 import { clearActivationState } from "./services/plugin-activation.js";
@@ -102,6 +103,8 @@ export interface RunnerRegistryDeps {
   ) => void;
   getSubscriptionLimitsSnapshot?: () => SubscriptionLimitsMap;
   markSessionAccountExhausted?: (sessionId: string, until: number, routeId?: string) => void;
+  /** Lazy: the continuation manager wakes through this registry, so it is built after it. */
+  getQuotaContinuation?: () => QuotaContinuationManager | undefined;
   markCredentialRouteAuthFailed?: (routeId: string) => void;
   clearCredentialRouteAuthFailed?: (routeId: string) => void;
   nudgeClaudeOAuthRefresh?: () => void;
@@ -148,6 +151,7 @@ export function createRunnerRegistry(
     isAgentMergeInFlight,
     usageManager, recordAgentRateLimits, getSubscriptionLimitsSnapshot,
     markSessionAccountExhausted,
+    getQuotaContinuation,
     markCredentialRouteAuthFailed,
     clearCredentialRouteAuthFailed,
     nudgeClaudeOAuthRefresh, onAgentAuthRequired, ensureAgentTokenFresh, runParamsPreps,
@@ -350,6 +354,16 @@ export function createRunnerRegistry(
               credentialStore,
               ...(providerAccountManager ? { providerAccountManager } : {}),
             }),
+        } : {}),
+        ...(getQuotaContinuation ? {
+          recordQuotaStandDown: (args: {
+            sessionId: string;
+            agentId: AgentId;
+            benchedRouteId?: string;
+          }) => getQuotaContinuation()?.recordStandDown(args) ?? { continues: false },
+          continueAfterQuotaStandDown: async (sessionId: string) => {
+            await getQuotaContinuation()?.continueNow(sessionId);
+          },
         } : {}),
         commitTurn: ({ sessionDir, sessionId, summary, turnStartHeadHash, runner: turnRunner, emit, deferPushArm }) =>
           postTurnCommit(

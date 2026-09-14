@@ -831,10 +831,28 @@ awaiting `rearmInFlight`; the listener's suppression decision and
 same fact synchronously instead. That also closes the same window on the
 adapter-`error` quota path, which had it unguarded.
 
+**Superseded in part by docs/306-quota-continuation (2026-09-14).** PR 2677
+decided that a CLI-started turn refused for quota does not fail over, and gave
+one reason: the failover mechanism is `retryOnNextAccount`, which replays
+`input.prompt`, and a self-wake has no prompt. That reason is still correct and
+`retryOnNextAccount` is still not called here. What the reasoning missed is that
+replay is not the only way to continue: `wakeSessionWithTurn` starts a **fresh**
+turn of ShipIt's own, and its per-turn account selection is exactly the hop the
+stand-down was standing down from — so "no prompt to replay" never implied "the
+user must send the next message". Production 2026-09-14 (session `e4be6129`)
+showed the cost: a second healthy account served other sessions for 45 minutes
+while that one waited for a human. So the notice no longer asks for a message and
+`retireOnSpentAccount` now asks the router whether any credential is free, then
+either wakes a continuation turn or records the session for resumption when a
+bench ends. Everything else on this phase stands: the two gates, the cleared
+summary, and the `postTurnStep` wrapping are unchanged, and the continuation runs
+LAST in the terminal sequence so it cannot displace the drain, the commit or the
+push.
+
 Coverage, every assertion verified red on its own: `turn-self-wake-commit.test.ts`
-— "does not re-dispatch a CLI-started turn that hits the account's quota limit"
-(no second `run`, a persisted notice, `Agent turn` as the subject with the work
-still committed, the req-7 bench still stamped); "does not promise an account
+— "does not re-dispatch a CLI-started turn whose quota limit leaves no credential
+free" (no second `run`, a persisted notice, `Agent turn` as the subject with the
+work still committed, the req-7 bench still stamped); "does not promise an account
 move to a CLI-started turn billed to a metered key"; "still commits the adopted
 turn when persisting the quota notice throws"; and "keeps the limit notice out of
 the commit even when a second turn is adopted first", which is what pins the

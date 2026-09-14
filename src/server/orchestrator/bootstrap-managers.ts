@@ -60,6 +60,7 @@ import { reportAbandonedRebases } from "./abandoned-rebase-sweep.js";
 import { reconcileOrphanedConsultCards } from "./consult-card-reconcile.js";
 import { createOomCircuitBreaker } from "./oom-circuit-breaker.js";
 import { MergeWatchManager } from "./merge-watch.js";
+import { QuotaContinuationManager } from "./services/quota-continuation.js";
 import { createSessionLoopDetector } from "./loop-detector.js";
 import { CleanupContainerManager, CLEANUP_CONTAINER_SESSION_ID } from "./cleanup-container.js";
 import {
@@ -565,6 +566,8 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
 
   const agentMergeClaims = new AgentMergeClaimStore(databaseManager);
 
+  const quotaContinuationRef: { ref: QuotaContinuationManager | null } = { ref: null };
+
   const runnerRegistry = createRunnerRegistry({
     effectiveRunnerFactory, sessionManager, repoStore, createGitManager,
     githubAuthManager, agentFactory, chatHistoryManager,
@@ -573,6 +576,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     credentialStore, secretStore, runtimeMode, broadcastLog,
     usageManager, runParamsPreps,
     markSessionAccountExhausted,
+    getQuotaContinuation: () => quotaContinuationRef.ref ?? undefined,
     markCredentialRouteAuthFailed,
     clearCredentialRouteAuthFailed,
     nudgeClaudeOAuthRefresh,
@@ -616,6 +620,21 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     if (!runner) return;
     releaseQueuedTurn(runner);
   };
+
+  const quotaContinuationManager = new QuotaContinuationManager({
+    sessionManager,
+    runnerRegistry,
+    defaultAgentId,
+    credentialsDir,
+    credentialStore,
+    providerAccountManager,
+    containerManager,
+    restoreWorkspace: (sessionId: string) =>
+      restoreSessionWorkspace(
+        sessionManager, createRepoGit, getBareCacheDir, githubAuthManager, repoStore, sessionId,
+      ),
+  });
+  quotaContinuationRef.ref = quotaContinuationManager;
 
   const mergeWatchManager = new MergeWatchManager({
     sessionManager,
@@ -986,6 +1005,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     repoPrefetcher,
     drainQueueForSession,
     mergeWatchManager,
+    quotaContinuationManager,
     prStatusPoller,
     releaseStatusPoller,
     limitsRegistry,

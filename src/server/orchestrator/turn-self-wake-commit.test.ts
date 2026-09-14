@@ -384,15 +384,18 @@ describe("post-turn flow for a self-woken turn", () => {
     h.runner.dispose({ force: true });
   });
 
-  it("does not re-dispatch a CLI-started turn that hits the account's quota limit", async () => {
+  it("does not re-dispatch a CLI-started turn whose quota limit leaves no credential free", async () => {
     const filePath = path.join(repoDir, "file.txt");
     const markSessionAccountExhausted = vi.fn();
+    const continueAfterQuotaStandDown = vi.fn(async () => {});
     const h = await runFirstStreamingTurn({
       onRun: () => fs.writeFileSync(filePath, "turn-1 work\n"),
       extraDeps: {
         prepareAgentEnv: async () => ({ turnRoute: { kind: "account" as const, id: "acct-a" } }),
         routeProfile: () => ({ billingMode: "sub" as const, serviceId: undefined }),
         routeLabel: () => "Work account",
+        recordQuotaStandDown: () => ({ continues: false }),
+        continueAfterQuotaStandDown,
       },
     });
     (h.listenerDeps as { markSessionAccountExhausted?: unknown }).markSessionAccountExhausted =
@@ -422,7 +425,8 @@ describe("post-turn flow for a self-woken turn", () => {
 
     const notice = h.messages.find((m) => m.type === "system_notice");
     expect(notice?.message).toContain("Work account is out of quota");
-    expect(notice?.message).toContain("send your next message");
+    expect(notice?.message).toContain("will continue this work by itself");
+    expect(continueAfterQuotaStandDown).not.toHaveBeenCalled();
     const append = h.listenerDeps.chatHistoryManager.append as ReturnType<typeof vi.fn>;
     expect(
       append.mock.calls.some((c) =>
@@ -440,6 +444,106 @@ describe("post-turn flow for a self-woken turn", () => {
     expect(markSessionAccountExhausted).toHaveBeenCalledWith("s1", expect.any(Number), "acct-a");
 
     await waitFor(() => !h.runner.running, "adopted turn settled");
+    h.runner.dispose({ force: true });
+  });
+
+  it("continues a CLI-started turn on another credential when one is free", async () => {
+    const filePath = path.join(repoDir, "file.txt");
+    const recordQuotaStandDown = vi.fn(() => ({ continues: true }));
+    // The continuation is a new turn: this one must be committed and settled before it starts.
+    const stateAtContinuation: { porcelain: string; prFlows: number; running: boolean }[] = [];
+    const continueAfterQuotaStandDown = vi.fn(async () => {
+      stateAtContinuation.push({
+        porcelain: gitOut("status", "--porcelain"),
+        prFlows: h.postTurnPrFlow.mock.calls.length,
+        running: h.runner.running,
+      });
+    });
+
+    const h = await runFirstStreamingTurn({
+      onRun: () => fs.writeFileSync(filePath, "turn-1 work\n"),
+      extraDeps: {
+        prepareAgentEnv: async () => ({ turnRoute: { kind: "account" as const, id: "acct-a" } }),
+        routeProfile: () => ({ billingMode: "sub" as const, serviceId: undefined }),
+        routeLabel: () => "Work account",
+        recordQuotaStandDown,
+        continueAfterQuotaStandDown,
+      },
+    });
+
+    h.agent.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+    await waitFor(() => h.settledTurns() === 1, "turn 1 post-turn flow settled");
+
+    await selfWake(h.agent);
+    fs.writeFileSync(filePath, "adopted work\n");
+    h.agent.emit("event", {
+      type: "agent_assistant",
+      content: [{ type: "text", text: "You've hit your session limit · resets 6:40pm (UTC)" }],
+    });
+    h.agent.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+
+    await waitFor(
+      () => continueAfterQuotaStandDown.mock.calls.length === 1,
+      "the stood-down session was continued",
+    );
+
+    expect(recordQuotaStandDown).toHaveBeenCalledWith({
+      sessionId: "s1",
+      agentId: "claude",
+      benchedRouteId: "acct-a",
+    });
+    expect(continueAfterQuotaStandDown).toHaveBeenCalledWith("s1");
+    expect(stateAtContinuation).toEqual([{ porcelain: "", prFlows: 2, running: false }]);
+
+    const notice = h.messages.find((m) => m.type === "system_notice");
+    expect(notice?.message).toContain("Work account is out of quota");
+    expect(notice?.message).toContain("is continuing this work on another credential");
+
+    // The stood-down turn's own work still lands, under a subject that is not the quota notice.
+    const subjects = commitSubjects();
+    expect(subjects).toHaveLength(3);
+    expect(subjects[0]).toBe("Agent turn");
+    expect(gitOut("show", "HEAD:file.txt")).toBe("adopted work\n");
+
+    h.runner.dispose({ force: true });
+  });
+
+  it("leaves the continuation to a queued turn that drained during the stand-down", async () => {
+    const filePath = path.join(repoDir, "file.txt");
+    const continueAfterQuotaStandDown = vi.fn(async () => {});
+    const h = await runFirstStreamingTurn({
+      onRun: () => fs.writeFileSync(filePath, "turn-1 work\n"),
+      extraDeps: {
+        prepareAgentEnv: async () => ({ turnRoute: { kind: "account" as const, id: "acct-a" } }),
+        routeProfile: () => ({ billingMode: "sub" as const, serviceId: undefined }),
+        routeLabel: () => "Work account",
+        recordQuotaStandDown: () => ({ continues: true }),
+        continueAfterQuotaStandDown,
+      },
+    });
+
+    h.agent.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+    await waitFor(() => h.settledTurns() === 1, "turn 1 post-turn flow settled");
+
+    // The user's own message takes the session over as the drain dispatches it.
+    h.drainNext.mockImplementation(async () => { h.runner.running = true; });
+
+    await selfWake(h.agent);
+    fs.writeFileSync(filePath, "adopted work\n");
+    h.agent.emit("event", {
+      type: "agent_assistant",
+      content: [{ type: "text", text: "You've hit your session limit · resets 6:40pm (UTC)" }],
+    });
+    h.agent.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+
+    await waitFor(() => h.postTurnPrFlow.mock.calls.length === 2, "adopted turn post-turn flow ran");
+    await flush();
+    await flush();
+
+    expect(continueAfterQuotaStandDown).not.toHaveBeenCalled();
+    expect(gitOut("show", "HEAD:file.txt")).toBe("adopted work\n");
+
+    h.runner.running = false;
     h.runner.dispose({ force: true });
   });
 
