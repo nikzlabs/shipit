@@ -458,6 +458,15 @@ export interface AgentProcess extends EventEmitter<AgentProcessEvents> {
   run(params: AgentRunParams): void;
   writeStdin(data: string): void;
   sendUserMessage(text: string, opts?: { images?: ImageAttachment[] }): void;
+  /**
+   * The last `run`/`sendUserMessage` submission, resolved once the process has
+   * accepted it and rejected if it never did. Present only where submission is
+   * NOT synchronous: `ProxyAgentProcess` posts to the session worker and returns
+   * before the answer, so a caller that must know the prompt landed — the
+   * settings outcome receipt, docs/299-agent-settings-access req 8 — has to wait
+   * for this rather than for the method to return. `null` before any submission.
+   */
+  submissionSettled?(): Promise<unknown> | null;
   /** done fires on process exit, not on each turn's end. */
   readonly isStreaming: boolean;
   interrupt(): void;

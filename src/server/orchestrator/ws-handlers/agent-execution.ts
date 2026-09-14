@@ -421,7 +421,8 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
   // below is settled by the turn, so an outcome that never reaches the agent
   // rides the next turn instead of being lost.
   const settingsOutcome =
-    capturedSessionId && ctx.settingsProposals && !opts.compact && !ridesTurnAsCommand
+    capturedSessionId && ctx.settingsProposals
+      && !opts.compact && !opts.systemTurn && !ridesTurnAsCommand
       ? prepareSettingsOutcomeNotice(
           { proposals: ctx.settingsProposals, chatHistoryManager: ctx.chatHistoryManager },
           capturedSessionId,

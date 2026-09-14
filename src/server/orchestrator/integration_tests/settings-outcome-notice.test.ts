@@ -15,6 +15,7 @@ import {
 } from "../services/settings-proposal.js";
 import {
   makeDispatchTurnDeps,
+  makeFakeAgent,
   testDispatch,
   waitForTurn,
   type FakeAgent,
@@ -376,5 +377,65 @@ describe("a resident streaming turn, which settles no turn of its own", () => {
 
     releasePrep();
     await waitForTurn(() => agents[0]!.sendUserMessage.mock.calls.length > 0, "the prompt sent");
+  });
+
+  it("acknowledges on a reused process once its submission is confirmed", async () => {
+    // The false side of `promptSubmitted` is covered above; this is the true
+    // side on the reuse path, where the flag is set from `sendUserMessage`.
+    postAndResolve("set-a", "applied");
+    runner.dispatch(testDispatch({ text: "first" }));
+    await waitForTurn(
+      () => agents.length > 0 && agents[0]!.run.mock.calls.length > 0,
+      "resident agent running",
+    );
+    agents[0]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+    await waitForTurn(
+      () => proposals.listUnnotifiedResolved(SESSION).length === 0,
+      "the first outcome acknowledged",
+    );
+
+    postAndResolve("set-b", "dismissed");
+    runner.dispatch(testDispatch({ text: "second" }));
+    await waitForTurn(() => agents[0]!.sendUserMessage.mock.calls.length > 0, "the steered prompt");
+    expect(String(agents[0]!.sendUserMessage.mock.calls[0]?.[0]))
+      .toContain("[ShipIt] Since your last turn");
+
+    agents[0]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+    await waitForTurn(
+      () => proposals.listUnnotifiedResolved(SESSION).length === 0,
+      "the reused turn's outcome acknowledged",
+    );
+  });
+
+  it("does not acknowledge when a proxied submission is never accepted", async () => {
+    // `ProxyAgentProcess.sendUserMessage` returns while its worker request is
+    // still in flight, so returning from it proves nothing. A resident CLI can
+    // finish a turn of its own in that window and the request can then fail.
+    postAndResolve("set-a", "applied");
+
+    let rejectSubmission: (err: Error) => void = () => {};
+    const submission = new Promise<void>((_resolve, reject) => { rejectSubmission = reject; });
+    submission.catch(() => { /* the adapter's error path owns the turn */ });
+    (deps.agentFactory as unknown) = () => {
+      const agent = makeFakeAgent() as FakeAgent & { submissionSettled(): Promise<unknown> };
+      agent.submissionSettled = () => submission;
+      agents.push(agent);
+      return agent;
+    };
+
+    runner.dispatch(testDispatch({ text: "unblock me" }));
+    await waitForTurn(
+      () => agents.length > 0 && agents[0]!.run.mock.calls.length > 0,
+      "the proxied agent run",
+    );
+    expect(promptOfAttempt(0)).toContain("[ShipIt] Since your last turn");
+
+    agents[0]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+    await waitForTurn(() => true, "flush");
+    expect(proposals.listUnnotifiedResolved(SESSION)).toHaveLength(1);
+
+    rejectSubmission(new Error("the session worker never accepted the prompt"));
+    await waitForTurn(() => true, "flush");
+    expect(proposals.listUnnotifiedResolved(SESSION)).toHaveLength(1);
   });
 });

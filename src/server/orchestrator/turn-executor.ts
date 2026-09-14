@@ -139,8 +139,25 @@ export async function executeAgentTurn(
     }
   };
 
-  // Set once this turn's prompt has actually reached the process.
+  // Set once this turn's prompt is known to have been accepted by the process.
   let promptSubmitted = false;
+  const noteSubmitted = (): void => {
+    const settled = agent.submissionSettled?.();
+    // A synchronous submission has landed when the call returns; a proxied one
+    // has not, and a resident CLI can finish a turn of its own in that window.
+    if (!settled) {
+      promptSubmitted = true;
+      return;
+    }
+    void (async () => {
+      try {
+        await settled;
+        promptSubmitted = true;
+      } catch {
+        // The submission failed; the adapter's error path owns the turn.
+      }
+    })();
+  };
 
   const notePromptDelivered = (): void => {
     for (const delivery of input.noticeDeliveries ?? []) {
@@ -914,16 +931,11 @@ export async function executeAgentTurn(
         retireOnSpentAccount({ summaryIsTheNotice: !event.error });
       });
     }
-    // The one point at which anything riding this prompt has been delivered: a
-    // result is in hand, and the failover decision above is already made. A
-    // refusal is not a result — `exhausted` is the provider turning the turn
-    // away, including as successful-looking text — so it leaves the notice for
-    // the next turn. `promptSubmitted` is what ties the result to THIS prompt: on
-    // a resident process these listeners are live before env preparation
-    // finishes, so a CLI-started turn of its own can land a result in the gap,
-    // and preparation can then fail with the prompt never sent. And this must
-    // stay HERE rather than in `settleTurn`: a resident streaming turn settles no
-    // turn at all, and its listeners are discarded by the next reuse.
+    // Anything riding this prompt is delivered here, and must not be delivered
+    // in `settleTurn`: a resident streaming turn settles no turn at all, and its
+    // listeners are discarded by the next reuse. All three conditions hold the
+    // notice back rather than prove delivery, which is the safe direction
+    // (docs/299-agent-settings-access plan.md → And a notice on the next turn).
     if (promptSubmitted && !exhausted && resultIsTheAgentsOwn(event)) notePromptDelivered();
     // Retry decisions still need adoption state; finalization after a result does not.
     servingAdoptedTurn = false;
@@ -1150,7 +1162,7 @@ export async function executeAgentTurn(
         runner.appliedPermissionMode = input.permissionMode;
       }
       agent.sendUserMessage(prompt);
-      promptSubmitted = true;
+      noteSubmitted();
     } else {
       if (input.deliveryId !== undefined) agent.setDeliveryId?.(input.deliveryId);
       const paramsBegan = Date.now();
@@ -1163,7 +1175,7 @@ export async function executeAgentTurn(
       );
       console.log(`[turn] build-run-params for ${sessionId} took ${Date.now() - paramsBegan}ms; spawning agent`);
       agent.run(input.useStreaming !== undefined ? { ...runParams, useStreaming: input.useStreaming } : runParams);
-      promptSubmitted = true;
+      noteSubmitted();
       if (runner) runner.appliedPermissionMode = input.permissionMode;
       if (runner) {
         runner.appliedSpawnIdentity = desiredSpawnIdentity(
