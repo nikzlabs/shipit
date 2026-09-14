@@ -97,25 +97,24 @@ taken inside one session, without building an agent that talks to many.
     on, the agent offers actions through the status card and cannot post a
     follow-up action card. With the setting off, nothing changes from today:
     no card, no nudge, and the follow-up action card as it is now.
+22. Before the first status write — a new session, or one whose first turn
+    ended with a question — there is no card. The first ordinary turn
+    produces it.
+23. When the setting is turned off and later on again, the card shows the
+    earlier status and its offered actions, marked stale. The next turn
+    refreshes it.
+24. While the card is marked stale, its offered actions can still be taken.
+    Staleness is about the words; the agent owns the action list.
 
 ## Open questions
 
-Raised by the independent consistency review of 2026-09-14; each changes
-observable behavior and none is answered by a requirement above.
-
-- Before the first status write — a new session, or one whose first turn
-  ended with a question — does the user see no card, or an empty card that
-  says there is no status yet? (Design assumes: no card.)
-- The setting is turned off, work continues, and it is turned on again. Is
-  the earlier status and its actions shown again, marked stale, or is the
-  card cleared? (Design assumes: shown again, marked stale.)
-- While the card is marked stale, can the offered actions still be taken, or
-  are they unavailable until the card is current again? (Design assumes:
-  they can be taken; staleness is about the words, and the agent still owns
-  the list.)
+- None.
 
 ## Resolved questions
 
+- 2026-09-14 — The three gaps the consistency review opened. Nik: no card
+  before the first write; after the setting is turned off and on again, the
+  earlier status marked stale; stale actions still selectable. → reqs 22–24.
 - 2026-09-14 — Independent consistency review (ShipIt reviewer, run
   16538cd9), after Nik's review. Two contradictions fixed: req 5 now names
   req 13's exception; reqs 11 and 14 now say "current" means the whole card,

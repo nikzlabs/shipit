@@ -41,7 +41,9 @@ picks its tool list from it. So a toggle applies from the next turn, on
 every harness, with no restart. The prompt has two variants, both rendered
 once at module load and picked per turn by the flag — the prompt-cache
 contract of the `prompt-architecture` skill, unchanged. Stored status and
-offers survive a toggle: off hides the card, on shows it again.
+offers survive a toggle: off hides the card; turning it on again shows the
+earlier card marked stale, and the next turn refreshes it (req 23) — the
+on-transition sets `fresh: false`.
 
 ## Shape
 
@@ -168,9 +170,9 @@ Lifecycle (agent decisions, see the end):
   fork whose first turn asks a question would have no card at all.
 - **Archive.** The row keeps the column; archiving hides the session, and a
   restore brings the card back with it. Nothing to do.
-- **New session.** No card until the first status write. A first turn that
-  ends with a question leaves no card (req 13); the first ordinary turn
-  writes one.
+- **New session.** No card until the first status write (req 22). A first
+  turn that ends with a question leaves no card (req 13); the first ordinary
+  turn writes one.
 - **Dismissal and taken offers.** The user has no control on the card to
   drop an offer; ShipIt's control is the composer (CLAUDE.md §5). "Drop the
   retry idea" is a message; the prompt tells the agent to answer it with
@@ -340,7 +342,8 @@ Needs you   Add the Stripe test key in Settings → Secrets.
   ticked offers are stamped taken and render greyed out and unselected, the
   unticked ones stay as they were (req 17). A taken offer cannot be ticked
   again; it leaves the card only when the agent removes it with
-  `replaceActions`. Every offered action is shown (req 18).
+  `replaceActions`. Every offered action is shown (req 18), and the untaken
+  ones stay selectable while the card is marked stale (req 24).
 
 - **Freshness (req 14).** Two states, no title text spent on them. A current
   card is a regular card. A card that may be behind carries a small
@@ -489,8 +492,6 @@ is reversible without touching a numbered requirement; say so and it changes.
 - A rewind or conversation reset marks the card stale rather than clearing
   it (req 14's meaning applied to a case req 14 does not name).
 - A fork copies the parent's card, marked stale.
-- A new session shows no card until its first status write; a first turn
-  that ends with a question leaves none (req 13 applied to a fresh session).
 - The offered list is bounded at 10 items as a safety limit.
 - Offer identity is server-owned (`offerId`); the agent's `id` is a name for
   in-place replacement, not the identity.
