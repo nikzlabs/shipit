@@ -135,6 +135,35 @@ describe("shipit session create — retry safety (docs/306)", () => {
     expect(out.stderr).toContain("Per-turn spawn limit");
   });
 
+  it("treats a 200 with no session id as uncertain, not as success", async () => {
+    const pf = await promptFile("Port API to TS");
+    // callBroker turns an unreadable body into {}, so the status alone says nothing.
+    const { run } = makeRunner({ [CREATE]: [{ status: 200, body: {} }] });
+    const out = await run(createArgs(pf));
+
+    expect(out.exitCode).toBe(1);
+    expect(out.stdout).not.toContain("session-id:");
+    expect(out.stderr).toContain("could not confirm whether the session was created");
+    expect(out.stderr).toContain("carried no session id");
+  });
+
+  it("keeps the first attempt's uncertainty when the retry is refused", async () => {
+    const pf = await promptFile("Port API to TS");
+    const { run } = makeRunner({
+      [CREATE]: [
+        { status: 502, body: { error: "Could not reach orchestrator" } },
+        { status: 429, body: { error: "Per-turn spawn limit reached (3)." } },
+      ],
+    });
+    const out = await run(createArgs(pf));
+
+    expect(out.exitCode).toBe(1);
+    // The refusal may be caused by the session the lost first attempt created.
+    expect(out.stderr).toContain("could not confirm whether the session was created");
+    expect(out.stderr).toContain("A refusal describes the retry");
+    expect(out.stderr).toContain("shipit session list");
+  });
+
   it("says a deduplicated result is the same session, not a second one", async () => {
     const pf = await promptFile("Port API to TS");
     const { run } = makeRunner({

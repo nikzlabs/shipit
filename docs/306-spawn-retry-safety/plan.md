@@ -104,9 +104,7 @@ adding a second classification.
 ## The sibling commands (req 5)
 
 Every non-GET shim command inherits the same synthetic-502 ambiguity, because
-they all pass through `relay`. What differs is what a retry costs. The audit
-below is the whole non-GET surface; the endpoint semantics were read at the
-handler, not inferred from the name.
+they all pass through `relay`. What differs is what a retry costs.
 
 **Worth fixing — a retry produces a visible duplicate:**
 
@@ -114,26 +112,34 @@ handler, not inferred from the name.
 |---|---|---|
 | `shipit session create` | `/agent-ops/session/create` | A duplicate child session, container and branch. **Fixed here.** |
 | `shipit agent run` | `/agent-ops/agent/spawn` | A second consult: real money, and a second inline card. Worst cost on the list. |
+| `shipit session message` | `/agent-ops/session/message/:id` | Another turn in the child. `sendChildMessage` dispatches with `deliveryId: undefined` (`services/child-sessions.ts:637`), so nothing downstream can tell the two apart — it repeats the work and spends the quota twice. |
 | `shipit session report` | `/agent-ops/session/report` | A duplicate card in the parent *and* a duplicate queued turn — it costs the parent a turn each time. |
 | `shipit issue create` | `/agent-ops/issue/create` | A duplicate issue in the tracker, visible to everyone. |
 | `shipit issue comment` | `/agent-ops/issue/comment` | A duplicate comment. |
 | `gh pr comment` | `/agent-ops/pr/:num/comment` | A duplicate comment on the pull request. |
 | `shipit settings propose` | `/agent-ops/settings/propose` | A duplicate proposal card for the user to resolve. |
+| `shipit issue label create` | `/agent-ops/issue/label/create` | A second create against a name that now exists — a refusal rather than a duplicate on most trackers, but it depends on the backend. |
+| `shipit plugin exec` | `/agent-ops/plugin/exec` | Whatever the plugin's command does, again. Unknowable from here, which is its own argument for a key. |
 
 **Not worth fixing — the second call is a no-op, a refusal, or sets the same
 value:**
 
 `gh pr create` already returns the existing pull request and flags it with
 `alreadyExisted` (`gh.ts:290`). `gh pr merge` fails as already merged.
-`gh pr edit`, `shipit issue edit`, `shipit issue status`, `shipit issue assign`
-and `shipit session rename` all set a value rather than append one. `shipit
-service start`/`stop` set a state. `shipit branch reset-to-base` re-checks its
-own preconditions. `shipit session notify-on-merge` registers a watch.
-`shipit release prepare` updates the existing release PR rather than opening a
-second.
+`shipit session notify-on-merge` returns `alreadyArmed` rather than arming twice
+(`services/child-sessions.ts:674`). `gh pr edit`, `shipit issue edit`,
+`shipit issue status`, `shipit issue assign`, `shipit issue comment edit`,
+`shipit issue label edit` and `shipit session rename` all set a value rather
+than append one. `shipit service start`/`stop` set a state, and
+`shipit plugin refresh` re-reads one. `shipit session archive` refuses a session
+that is already archived. `shipit branch reset-to-base` and
+`shipit session continue-after-rebase` re-check their own preconditions.
+`shipit release plan` computes without writing, and `shipit release prepare`
+updates the existing release PR rather than opening a second.
 
-`gh run rerun` sits between the two: a duplicate CI run costs compute and
-confuses the card briefly, but it converges on its own.
+`gh run rerun` and `gh pr ready|close|reopen` sit between the two: a duplicate
+CI run costs compute, and a state toggle re-applied is harmless but noisy on the
+card. Both converge on their own.
 
 **Deliberately out of scope.** Only the create is fixed here. Fixing the other
 six means either a per-endpoint key or a general one in `relay`, and a general

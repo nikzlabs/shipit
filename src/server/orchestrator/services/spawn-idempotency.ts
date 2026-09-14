@@ -7,6 +7,7 @@ const DEFAULT_TTL_MS = 10 * 60 * 1000;
 interface Claim<T> {
   result: Promise<T>;
   claimedAt: number;
+  settled: boolean;
 }
 
 export interface SpawnClaimsOptions {
@@ -32,21 +33,28 @@ export class SpawnClaims<T> {
     if (existing) {
       return { result: await existing.result, deduplicated: true };
     }
-    const result = spawn();
-    this.claims.set(key, { result, claimedAt: this.now() });
+    const claim: Claim<T> = { result: spawn(), claimedAt: this.now(), settled: false };
+    this.claims.set(key, claim);
     try {
-      return { result: await result, deduplicated: false };
+      const result = await claim.result;
+      claim.settled = true;
+      return { result, deduplicated: false };
     } catch (err) {
+      claim.settled = true;
       // A failed spawn must not be replayed as a failure: the retry is a real retry.
-      this.claims.delete(key);
+      // Only ever withdraw our OWN claim — a slow spawn that failed after being evicted
+      // would otherwise delete the entry a later, successful spawn had registered.
+      if (this.claims.get(key) === claim) this.claims.delete(key);
       throw err;
     }
   }
 
+  // A pending spawn is never evicted: dropping it would let a second spawn start under
+  // the same key while the first is still running, which is the duplicate this prevents.
   private evictExpired(): void {
     const cutoff = this.now() - this.ttlMs;
     for (const [key, claim] of this.claims) {
-      if (claim.claimedAt <= cutoff) this.claims.delete(key);
+      if (claim.settled && claim.claimedAt <= cutoff) this.claims.delete(key);
     }
   }
 

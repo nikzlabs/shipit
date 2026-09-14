@@ -150,18 +150,31 @@ export async function handleSessionCreate(args: string[], deps: RunDeps): Promis
 
   payload.idempotencyKey = deriveIdempotencyKey(payload);
 
+  const detached = parsed.booleans.has("detached");
   let res = await deps.call("POST", "/agent-ops/session/create", payload, deps.env);
-  if (isTransientStatus(res.status)) {
+  const firstWasLost = isTransientStatus(res.status);
+  if (firstWasLost) {
     // A transient status cannot distinguish a request that never arrived from one that
     // spawned a session and lost its response. Retrying under the same key is safe for
     // both: it either returns that session or creates the one that never existed.
     await deps.sleep(CREATE_RETRY_DELAY_MS);
     res = await deps.call("POST", "/agent-ops/session/create", payload, deps.env);
   }
-  if (isTransientStatus(res.status)) {
-    fail(deps.io, uncertainCreateMessage(res, parsed.booleans.has("detached")), 1);
+
+  const answered = res.status >= 200 && res.status < 300;
+  // A 200 whose body was lost parses to {}, which would otherwise print an empty id.
+  if (answered && !asString(res.body.sessionId)) {
+    fail(deps.io, uncertainCreateMessage(res, detached, "empty"), 1);
   }
-  if (res.status < 200 || res.status >= 300) {
+  if (!answered) {
+    if (isTransientStatus(res.status)) {
+      fail(deps.io, uncertainCreateMessage(res, detached, "no-answer"), 1);
+    }
+    // A refusal on the retry says nothing about the lost first attempt — it may even be
+    // caused by it, when the session it created is what exhausted the quota.
+    if (firstWasLost) {
+      fail(deps.io, uncertainCreateMessage(res, detached, "refused-after-loss"), 1);
+    }
     fail(deps.io, formatError(res, "Failed to create spawned session"), 1);
   }
   if (res.body.deduplicated === true) {
@@ -207,9 +220,21 @@ function deriveIdempotencyKey(payload: Record<string, unknown>): string {
   return createHash("sha256").update(canonical).digest("hex");
 }
 
+type UncertainReason = "no-answer" | "empty" | "refused-after-loss";
+
+const UNCERTAIN_CAUSE: Record<UncertainReason, string> = {
+  "no-answer": "Two attempts both failed before ShipIt answered.",
+  empty: "ShipIt answered, but the reply carried no session id — the body was lost in transit.",
+  "refused-after-loss":
+    "The first attempt was lost and the retry was refused. A refusal describes the retry, "
+    + "not the attempt before it — and a session the first attempt created is one possible "
+    + "cause of the refusal.",
+};
+
 function uncertainCreateMessage(
   res: { status: number; body: Record<string, unknown> },
   detached: boolean,
+  reason: UncertainReason,
 ): string {
   const where = detached
     ? "a detached session is not a child, so it appears in the sidebar rather than in `shipit session list`"
@@ -217,7 +242,7 @@ function uncertainCreateMessage(
   return (
     "shipit session create: could not confirm whether the session was created.\n"
     + `${formatError(res, "the orchestrator did not answer")}\n`
-    + "Two attempts both failed before ShipIt answered. That does NOT mean no session exists: "
+    + `${UNCERTAIN_CAUSE[reason]} That does NOT mean no session exists: `
     + "the request may have been carried out and only its reply lost. "
     + `Check before trying again — ${where}.`
   );

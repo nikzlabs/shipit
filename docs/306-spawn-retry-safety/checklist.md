@@ -14,8 +14,30 @@
       against a check-then-await version, the shim guards against the original
       single-call create
 - [x] `npm run lint:dev` and `npm run typecheck`
-- [ ] Independent review via `shipit agent run --role reviewer`
+- [x] Independent review via `shipit agent run --role reviewer`
 - [x] Tracker issue created and cross-linked in `plan.md` frontmatter
+
+## Review round (2026-09-14)
+
+Three findings, all verified at source and fixed:
+
+- [x] **An expired-but-pending claim could be replaced, and its later failure
+      then deleted the newer claim** — a third spawn followed. `evictExpired`
+      now skips unsettled claims, and the failure path withdraws only its own
+      entry. Two guards added, both proved red against the old shape.
+- [x] **A 200 whose body was lost parses to `{}`**, so the create printed an
+      empty session id and exited 0. A successful reply must now carry a
+      session id or it is reported as uncertain.
+- [x] **A refusal on the retry was reported flatly**, discarding the first
+      attempt's uncertainty — and the refusal may be *caused* by the session
+      that attempt created. The uncertainty now survives.
+- [x] **The audit missed `shipit session message`**, whose retry dispatches
+      another child turn (`deliveryId: undefined`, `child-sessions.ts:637`).
+      The table was rebuilt over the whole non-GET surface.
+- [x] **No test proved the route was wired to the claim** — removing
+      `spawnClaims.run` left both unit suites green. Two integration tests
+      added in `agent-spawned-session.test.ts`; the first goes red when the
+      claim is bypassed.
 
 ## Not done here, on purpose
 
