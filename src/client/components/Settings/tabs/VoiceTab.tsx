@@ -18,23 +18,7 @@ import {
   SettingCopy,
   bindSetting,
   settingCopy,
-  type DeclaredOption,
 } from "../declared.js";
-
-const VOICE_LANGUAGES: DeclaredOption[] = [
-  { value: "", label: "Auto (browser locale)" },
-  { value: "en", label: "English" },
-  { value: "es", label: "Spanish" },
-  { value: "fr", label: "French" },
-  { value: "de", label: "German" },
-  { value: "it", label: "Italian" },
-  { value: "pt", label: "Portuguese" },
-  { value: "nl", label: "Dutch" },
-  { value: "ru", label: "Russian" },
-  { value: "ja", label: "Japanese" },
-  { value: "ko", label: "Korean" },
-  { value: "zh", label: "Chinese" },
-];
 
 // Cleanup runs on the background-work model, not on a provider ShipIt picks for
 // it (docs/299-direct-provider-calls req 5), so the line names that model or says nothing can clean.
@@ -421,12 +405,13 @@ export function VoiceTab() {
           settings.
         </p>
 
+        {/* No `options`: the languages are the declaration's, so the agent reads
+            the same list this renders. */}
         <DeclaredSelect
           settingKey="voice.language"
           id="voice-language"
           value={voiceLanguage}
           onChange={setVoiceLanguage}
-          options={VOICE_LANGUAGES}
           testId="voice-language"
         />
       </div>

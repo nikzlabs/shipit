@@ -130,6 +130,33 @@ whole server through `PUT /api/mcp/servers/:id`, so it clears an unreferenced
 secret the same way. That is the user's own dialog rather than a proposal card,
 and fixing it needs a narrow route and a client change.
 
+## Conformance against reqs 1 and 3 — three read-surface defects
+
+A closing review of the shipped read surface found req 1 and req 3 partly met.
+Each finding re-verified at the code before being acted on.
+
+- [x] req 1 — an address the read emits resolves back to the item it came from:
+      `userNameProjection` emits a stored name verbatim instead of trimming it,
+      so `" helper "` beside `"helper"` can no longer produce one address twice
+      or address the wrong role. A name that cannot be emitted as itself joins
+      the ones the gate already drops and is counted in the "not listed" note
+- [x] req 1 — `hostEntryProjection` verified as the case that MAY normalize, and
+      documented as such: `EgressAllowlistStore` normalizes on the way in and on
+      the way to a match, so its emitted entry is the stored row
+- [x] req 3 — MCP `args` put through the same missing-reference check as `env`
+      and `headers`, so the settings read no longer answers `{configured: true}`
+      about a server whose token secret is absent and which `resolveMcpServer`
+      omits from the turn. The field list taken from the resolver: `args`, `env`,
+      `headers` are substituted; `command`, `url` and `npmPackage` are not
+- [x] req 1 — `voice.language` declared as the `enum` it is, with the Voice tab
+      rendering the declaration's list rather than its own; `voice.ttsVoice` and
+      `voice.ttsSpeed` carry their per-provider options as a `live` detail, which
+      is now resolved for an entry whose value is unreadable. Audited: no other
+      declaration's option set lives only in a component
+- [x] Every new guard proven red on its own, with the defect restored — including
+      the cross-layer one, which lives in `integration_tests/` because the
+      orchestrator may not import `session/`
+
 ## Phase 2, slice 3 — the outcome notice (req 8)
 
 - [x] `agent_notified` on the private proposal row, with

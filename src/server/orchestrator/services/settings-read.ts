@@ -24,6 +24,7 @@ import type {
   SettingTab,
   SettingValueKind,
 } from "../../shared/settings-catalogue/index.js";
+import { providerSpeeds, providerVoices, ttsProviders } from "../../shared/voice-catalog.js";
 import { backgroundWorkOptions, resolveNonTurnModel } from "../non-turn-model.js";
 import { readChannel } from "../release-channel.js";
 import { listConfiguredCredentials } from "../service-routing.js";
@@ -583,10 +584,30 @@ function runnableTargetsDetail(deps: SettingsReadDeps): Record<string, unknown> 
 }
 
 /**
+ * What a voice note can be spoken as. The provider is browser-local and the
+ * server cannot read which one is SELECTED, but the voices and speeds are
+ * ShipIt's own catalogue and differ per provider — including the speed range,
+ * which the declaration can only hold as one pair of bounds. Withholding the
+ * value is not a reason to withhold the options (req 1).
+ */
+function ttsChoicesDetail(): Record<string, unknown> {
+  return {
+    providers: ttsProviders().map((provider) => ({
+      providerId: provider.id,
+      providerName: provider.label,
+      voices: providerVoices(provider.id),
+      speeds: providerSpeeds(provider.id),
+      ...(provider.speedRange ? { speedRange: provider.speedRange } : {}),
+    })),
+  };
+}
+
+/**
  * Live facts a declaration's `type` cannot hold — which models this install can
- * actually run, and what a pin resolves to today. Keyed by setting: a setting
- * with no entry still lists, gets, and carries its declared shape, so this is
- * extra detail and never a second place to register a setting.
+ * actually run, what a pin resolves to today, which voices a provider offers.
+ * Keyed by setting: a setting with no entry still lists, gets, and carries its
+ * declared shape, so this is extra detail and never a second place to register a
+ * setting.
  */
 const LIVE_DETAILS: Record<string, LiveDetail> = {
   "services.nonTurnModel": nonTurnModelDetail,
@@ -595,6 +616,8 @@ const LIVE_DETAILS: Record<string, LiveDetail> = {
   "roles[].reasoningEffort": runnableTargetsDetail,
   "reviewers[].model": runnableTargetsDetail,
   "reviewers[].reasoningEffort": runnableTargetsDetail,
+  "voice.ttsVoice": ttsChoicesDetail,
+  "voice.ttsSpeed": ttsChoicesDetail,
 };
 
 // Only this read's own two reasons; the catalogue's four come from
@@ -776,8 +799,8 @@ function projectItems(
   const notes = unnamed > 0
     ? [
         `${unnamed} stored ${unnamed === 1 ? "instance is" : "instances are"} not listed: what `
-          + "identifies each is not shaped like the name this setting emits, so ShipIt does not "
-          + "repeat it back.",
+          + "identifies each is not an address this setting can emit as it is stored, so ShipIt "
+          + "does not repeat it back.",
       ]
     : [];
   return { items, display: itemsDisplay(items.map((i) => i.address)), notes };
@@ -1029,7 +1052,12 @@ export async function getSettingForAgent(
   }
   const state = await readState(deps, sessionId);
   const { entry, items } = await buildEntry(declaration, deps, state, true);
-  const live = entry.readable ? resolveLiveDetail(declaration.key, deps, entry) : undefined;
+  // Not gated on `readable`: the live detail says what this setting's OPTIONS
+  // are, which is a different question from what it is set to — and the
+  // settings whose value is withheld are exactly the ones whose options the
+  // agent still has to be able to name (req 1, req 3). Every detail function
+  // takes `deps` and never the entry's value, so none of them can emit one.
+  const live = resolveLiveDetail(declaration.key, deps, entry);
   // A per-repository setting's proposals are addressed by repository, and the
   // repository is the session's own binding — never anything a caller supplies.
   const perRepository = declaration.scope === "project" || addressesARepository(declaration.address);

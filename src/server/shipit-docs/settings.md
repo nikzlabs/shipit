@@ -78,8 +78,8 @@ the reason, rather than coming back with a number it invented:
 
 | What the read says | What it means |
 |---|---|
-| `configured` / `not configured` | Credential material — an API key, a token, a webhook secret. You learn whether it is set, never the value. For a bag of them (an MCP server's environment or headers) `configured` means **all** of them are set: one missing value stops the server, and the note says how many are missing. |
-| `unreadable (browser_local)` | The value lives in the user's browser, not on ShipIt's server. |
+| `configured` / `not configured` | Credential material — an API key, a token, a webhook secret. You learn whether it is set, never the value. For a field that holds several (an MCP server's **arguments**, environment or headers) `configured` means **all** of them resolve: one missing value drops that server from the turn entirely, and the note says how many are missing. |
+| `unreadable (browser_local)` | The **value** lives in the user's browser, not on ShipIt's server. The setting's **options** are still reported — `get` tells you what it can be set to, so you can answer that without the user reading anything out. |
 | `unreadable (no_repository)` | A per-repository setting, read from a session that binds no repository. |
 | `unreadable (read_failed)` | ShipIt tried and has no value to report: a store this install does not have, a repository it has no record of, a read that failed. The note says which. |
 
@@ -99,9 +99,12 @@ it, and the read says so.
 
 A **name** the user chose is the point too, so you get it: naming the missing
 secret or the role that does not exist is most of what you have to tell them.
-But only when it is shaped like a name. A secret or a role called
+But only when it is shaped like a name, and only when ShipIt can give it to you
+exactly as it is stored. A secret or a role called
 `https://user:token@host/?token=…` is a name nothing stops the user storing, so
-ShipIt does not repeat it back — that entry produces no item at all, and the
+ShipIt does not repeat it back; neither is one padded with spaces, because the
+address you are given has to be one you can name a change by, and these stores
+look a name up exactly. Either way that entry produces no item at all, and the
 read says how many it left out. If you need to talk about one of those, describe
 it rather than asking ShipIt to name it.
 

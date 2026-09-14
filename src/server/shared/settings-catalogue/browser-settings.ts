@@ -23,6 +23,28 @@ import { bool, collection, enumOf, numeric, text } from "./value-types.js";
 const BROWSER_LOCAL = withheld("browser_local");
 const NOT_PROPOSABLE = { kind: "no", reason: "browser_local" } as const;
 
+/**
+ * The languages the Voice tab offers for dictation. Declared rather than written
+ * in `Settings/tabs/VoiceTab.tsx`, because a static option set is part of the
+ * setting and `get` is the detail of a setting whatever the setting is (req 1).
+ * Being browser-local withholds the current SELECTION; it says nothing about the
+ * choices, which are ShipIt's own copy.
+ */
+const DICTATION_LANGUAGES = [
+  { value: "", label: "Auto (browser locale)" },
+  { value: "en", label: "English" },
+  { value: "es", label: "Spanish" },
+  { value: "fr", label: "French" },
+  { value: "de", label: "German" },
+  { value: "it", label: "Italian" },
+  { value: "pt", label: "Portuguese" },
+  { value: "nl", label: "Dutch" },
+  { value: "ru", label: "Russian" },
+  { value: "ja", label: "Japanese" },
+  { value: "ko", label: "Korean" },
+  { value: "zh", label: "Chinese" },
+] as const;
+
 export const BROWSER_SETTINGS = {
   "keyboard.keybindings": defineSetting({
     key: "keyboard.keybindings",
@@ -102,7 +124,7 @@ export const BROWSER_SETTINGS = {
     description:
       "The language dictation is transcribed as, chosen from the dozen the tab offers. Empty "
       + "follows the browser's locale.",
-    type: text({ maxLength: 16, noun: "Dictation language" }),
+    type: enumOf({ default: "", options: DICTATION_LANGUAGES }),
     store: { kind: "browser", localStorageKey: "shipit-voice-language" },
     emits: BROWSER_LOCAL,
     propose: NOT_PROPOSABLE,

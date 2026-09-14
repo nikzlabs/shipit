@@ -557,6 +557,37 @@ describe("getSettingForAgent", () => {
     const entry = await getSettingForAgent(deps(), "s1", "advanced.enableSubAgents");
     expect(entry.propose).toEqual({ allowed: true });
   });
+
+  /**
+   * req 1 — `get` is the detail of a setting WHATEVER the setting is. Being
+   * browser-local explains withholding the current selection; it does not
+   * justify hiding the options, which are ShipIt's own and are what the agent
+   * has to name when the user asks what a setting can be set to.
+   */
+  describe("a browser-local setting still reports its options", () => {
+    it("carries a static option set on the declaration, not in the dialog", async () => {
+      const entry = await getSettingForAgent(deps(), "s1", "voice.language");
+      expect(entry.readable).toBe(false);
+      expect(entry.unreadableReason).toBe("browser_local");
+      expect(entry.valueType).toBe("enum");
+      const options = entry.shape.options as { value: string; label: string }[];
+      expect(options.length).toBeGreaterThan(1);
+      expect(options.map((o) => o.value)).toContain("ja");
+    });
+
+    it("resolves a provider-dependent option set live, per provider", async () => {
+      const entry = await getSettingForAgent(deps(), "s1", "voice.ttsVoice");
+      const live = entry.live as {
+        providers: { providerId: string; voices: unknown[]; speeds: number[] }[];
+      };
+      expect(live.providers.length).toBeGreaterThan(0);
+      expect(live.providers.every((p) => p.voices.length > 0)).toBe(true);
+      // The speeds too, because the declaration holds ONE pair of bounds while
+      // each provider offers its own set.
+      const speeds = await getSettingForAgent(deps(), "s1", "voice.ttsSpeed");
+      expect((speeds.live as typeof live).providers.every((p) => p.speeds.length > 0)).toBe(true);
+    });
+  });
 });
 
 /**
