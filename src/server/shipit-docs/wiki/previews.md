@@ -136,7 +136,7 @@ Each of these appears under a condition. The condition is part of the answer.
 | Back | Always; disabled when the page has nowhere to go back to | Steps the preview's own history, never ShipIt's |
 | Refresh | Always | Reloads the preview |
 | Open in a new tab | Always; disabled until there is a URL | The page the preview is currently on, in a browser tab — not the app's root |
-| Errors, with a count | Only when the page has produced errors | Opens the error panel |
+| Errors, with a count | Only when the page has *reported* errors to ShipIt — see "Errors" for why that is narrower than it sounds | Opens the error panel |
 | Auto-fix switch | Always | See "Errors", below |
 
 The pane also remembers where it was. The path the user was last on is restored
