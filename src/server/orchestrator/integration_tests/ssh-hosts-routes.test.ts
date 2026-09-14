@@ -18,12 +18,13 @@ import {
 import type { DatabaseManager } from "../../shared/database.js";
 import type { CredentialStore } from "../credential-store.js";
 import type { SessionSshHostsView, SshHostPublic } from "../../shared/types.js";
-import { _resetSshRateLimits } from "../services/ssh.js";
+import { _resetSshRateLimits, _resetSshScanState } from "../services/ssh.js";
 import {
   buildSessionBind,
   buildUserauthData,
   fakeEd25519ServerKey,
 } from "../ssh-test-helpers.js";
+import { fingerprintOf } from "../ssh-hosts.js";
 
 describe("Integration: SSH host routes", () => {
   let app: FastifyInstance;
@@ -36,6 +37,7 @@ describe("Integration: SSH host routes", () => {
 
   beforeEach(async () => {
     _resetSshRateLimits();
+    _resetSshScanState();
     dbManager = createTestDatabaseManager();
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ssh-routes-"));
     sessionManager = new SessionManager(dbManager);
@@ -77,6 +79,19 @@ describe("Integration: SSH host routes", () => {
 
   const grant = (id: string, granted: string[]) =>
     app.inject({ method: "PUT", url: `/api/sessions/${id}/ssh-hosts`, payload: { granted } });
+
+  const signPayload = (host: SshHostPublic, server = fakeEd25519ServerKey()) => {
+    const sshSessionId = Buffer.from("kex-hash");
+    return {
+      keyBlob: host.publicKeyBlob,
+      data: buildUserauthData({
+        sessionId: sshSessionId,
+        user: host.user,
+        publicKeyBlob: host.publicKeyBlob,
+      }),
+      bind: buildSessionBind(server, sshSessionId),
+    };
+  };
 
   describe("registry CRUD", () => {
     it("creates a destination with a generated key and returns only public material", async () => {
@@ -219,21 +234,44 @@ describe("Integration: SSH host routes", () => {
       expect((ungranted.json() as { identities: unknown[] }).identities).toEqual([]);
     });
 
+    /**
+     * The address is a closed loopback port, so the orchestrator's own scan
+     * (req 13) finds nothing there — which is the whole point: a host key the
+     * session presents and ShipIt cannot observe at the configured address is
+     * refused, and nothing is pinned. This exercises the real `ssh-keyscan`
+     * path, offline and in milliseconds.
+     */
+    it("refuses a first host key it cannot observe at the address, and pins nothing", async () => {
+      const host = await create({ address: "127.0.0.1", port: 1 });
+      await grant(sessionId, [host.id]);
+      const history = new ChatHistoryManager(dbManager);
+
+      const res = await app.inject({
+        method: "POST",
+        url: `/api/sessions/${sessionId}/ssh/sign`,
+        payload: signPayload(host),
+      });
+
+      expect(res.statusCode).toBe(403);
+      expect(res.json()).toMatchObject({ error: expect.stringMatching(/could not observe/) });
+      expect(credentialStore.getSshHostSigningKey(host.id)?.hostKeyBlob).toBeUndefined();
+      expect(history.load(sessionId).at(-1)?.sshHostKey).toMatchObject({
+        kind: "unverified",
+        hostId: host.id,
+      });
+    });
+
     it("signs for a granted session and refuses the same request from another", async () => {
-      const host = await create();
+      const host = await create({ address: "127.0.0.1", port: 1 });
       await grant(sessionId, [host.id]);
 
       const server = fakeEd25519ServerKey();
-      const sshSessionId = Buffer.from("kex-hash");
-      const payload = {
-        keyBlob: host.publicKeyBlob,
-        data: buildUserauthData({
-          sessionId: sshSessionId,
-          user: host.user,
-          publicKeyBlob: host.publicKeyBlob,
-        }),
-        bind: buildSessionBind(server, sshSessionId),
-      };
+      // Pinned already, so the signer answers from the record and never scans.
+      credentialStore.recordSshHostKey(host.id, server.blob, {
+        fingerprint: fingerprintOf(server.blob),
+        keyType: "ssh-ed25519",
+      });
+      const payload = signPayload(host, server);
 
       const signed = await app.inject({
         method: "POST", url: `/api/sessions/${sessionId}/ssh/sign`, payload,

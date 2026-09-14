@@ -85,17 +85,51 @@ orchestrator, gated by `gitCredentialAllowed(session)` in `pr-target.ts`).
      PROTOCOL.agent's, not this implementation's; their consequences are stated below.
   3. The bind's host key equals the destination's recorded host key. If the destination has
      none yet, the orchestrator observes the key itself before trusting the bind (req 13): it
-     runs `ssh-keyscan -p <port> -T 5 -t <bind's key type> <address>` from its own network
-     and records the bind's key only if the scan returns that same key blob. A scan that
-     returns a different key, or none (unreachable, timeout, `ssh-keyscan` absent in local
-     mode), refuses with reason `host-key-unverified` and posts a persisted warning card that
-     names what the scan saw, so a wrong address or a firewall between the orchestrator and the
-     host is visible without reading logs. Recording still happens only after every other
+     runs `ssh-keyscan -p <port> -T 5 -t <family of the bind's key type> <address>` from its
+     own network, with the address and port taken from the registry and never from the
+     request, and records the bind's key only if the scan returns that same key blob. A scan
+     that returns a different key, or none (unreachable, timeout, `ssh-keyscan` absent in
+     local mode), refuses with reason `host-key-unverified` and posts a persisted warning card
+     (`kind: "unverified"`) that names what the scan saw, so a wrong address or a firewall
+     between the orchestrator and the host is visible without reading logs. The scan is
+     sequenced *after* rule 4 rather than beside this comparison, so a request that is going
+     to be refused anyway spawns no process, and recording still happens only once every other
      rule has passed (`services/ssh.ts`, "Recording is DEFERRED"). A persisted card shows the
      fingerprint once recorded (req 9). A later mismatch is refused and a persisted warning
      card says so. The host entry in Settings has a "forget host key" action that clears the
      pin so the next valid bind is verified and recorded afresh. The scan runs only while no
-     key is recorded, so it is one process per destination lifetime, not per connection.
+     key is recorded, so once a destination is pinned no connection to it ever spawns one
+     again; before that, a refused attempt is retried on the next connection, since a scan
+     that saw nothing is never cached as a verdict. Concurrent scans are deduplicated by
+     everything that decides the answer — destination, address, port and key family — so
+     sharing can never hand one request an answer about a different question.
+
+     The scan is the one step in the signer that suspends, and every rule above it read state
+     that the user can change while it waits. So `signSshRequest` is async and, after the scan
+     returns, it re-reads all of it and refuses on any difference: the grant (revoked), the
+     destination (deleted), its address or port (a key observed at the old endpoint says
+     nothing about the new one, and that refusal gets its own card, since `ssh` reports only a
+     generic agent failure), its user (rule 4 compared against the old one), and the pin
+     (a concurrent request may have recorded first). The rate slot is taken
+     before the suspension, so a flood is bounded by attempts started rather than attempts
+     finished.
+
+     **Pinned and observed are separate facts**, because a pin recorded before req 13 shipped
+     was whatever key the first bind carried — exactly what this rule exists to stop. So the
+     store records `hostKeyObservedAt` beside the key, only ever from this path, and the
+     signer verifies a pin that has none as if it were fresh: the same key gets confirmed by a
+     scan and acquires an observation, a different key is the mismatch it always was. Without
+     that distinction an upgrade would silently inherit every unverified pin.
+
+     `ssh-keyscan -t` names a key *family* (`ed25519`, `rsa`, `ecdsa`), not a blob type, so
+     `ssh-keyscan.ts` maps it; a type it cannot name is refused rather than passed to argv.
+     **The family is as specific as the scan can be**, and that is a real limit, not an
+     oversight: measured against a recording listener, `ssh-keyscan -t ecdsa-sha2-nistp384`
+     proposes `nistp256,nistp384,nistp521` exactly as a bare `-t ecdsa` does, so a server
+     holding several ECDSA host keys answers with whichever curve it prefers. A session that
+     forced the other curve is then refused for as long as both keys exist. The failure is a
+     denial, never a bypass, and the card names the scanned key's *type* beside its
+     fingerprint so the cause is readable rather than a second opaque fingerprint.
   4. The data to sign parses as an SSH userauth publickey request whose session id equals the
      bind's, whose `user` equals the destination's configured user, whose public key is the
      destination's, and whose algorithm is `ssh-ed25519`. Two layouts are accepted: the
@@ -293,14 +327,20 @@ As implemented:
   ed25519 / RSA / ECDSA servers (Node cannot read SSH key formats, so the SPKI conversions
   are here).
 - `src/server/orchestrator/services/ssh.ts` (new) — the five-rule signer contract, the
-  per-session rate and concurrency bound, the audit line, and the host-key cards.
+  per-session rate bound, the per-destination scan dedupe, the audit line, and the host-key
+  cards.
+- `src/server/orchestrator/ssh-keyscan.ts` (new) — the `ssh-keyscan` spawn behind rule 3:
+  blob type → `-t` family, output parse, timeout (`killChild`), and the failure kinds the
+  `unverified` card names. Injected into the signer as `SshServiceDeps.scanHostKey`, which is
+  what the tests fake.
 - `docker/Dockerfile.prod`, `.dev`, `.dogfood` — `openssh-client` for `ssh-keyscan` (rule 3).
 - `src/server/orchestrator/ssh-provision.ts` (new) — aliases, `~/.ssh/{config,known_hosts,
   <alias>.pub}`, and the full rewrite from the durable grant.
 - `src/server/orchestrator/api-routes-ssh.ts` (new) — browser-only host CRUD and session
   grant edit; container-accessible identities/sign.
 - `src/server/orchestrator/credential-store.ts` — `sshHosts`, with a public projection on
-  every read and `getSshHostSigningKey` as the one accessor that yields the private half.
+  every read and `getSshHostSigningKey` as the one accessor that yields the private half;
+  `hostKeyObservedAt` records that the orchestrator, not a session, chose the pin (req 13).
 - `src/server/orchestrator/sessions.ts`, `shared/database.ts`,
   `shared/types/domain-types/session.ts` — the `ssh_hosts` grant column and `setSshHosts`.
 - `src/server/orchestrator/index.ts`, `egress-allowlist.ts`, `egress-firewall-install.ts`,

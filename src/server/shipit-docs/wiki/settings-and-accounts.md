@@ -273,9 +273,13 @@ revoking removes both, though a connection already authenticated runs until it
 closes.
 
 The first connection records the server's host key and posts its fingerprint as a
-card in the chat, for the user to compare with the server. If the key later
-changes, ShipIt refuses and says so; the user clears the recorded key with
-**Forget** on the destination's row.
+card in the chat, for the user to compare with the server. ShipIt records it only
+after seeing that same key at the destination's own address itself, so a first
+connection can be refused even when the session did everything right — a wrong
+address or port, a server that is down, or a firewall between ShipIt and the host
+all end in a card saying ShipIt could not observe that key there, and nothing is
+recorded. If a recorded key later changes, ShipIt refuses and says so; the user
+clears the recorded key with **Forget** on the destination's row.
 
 Your side of this is in `/shipit-docs/ssh.md`: `~/.ssh/config` is the list of
 what this session has, and `ssh <alias> '<command>'` is how you use it.
