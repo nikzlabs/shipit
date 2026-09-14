@@ -194,19 +194,36 @@ patched blind: [planning#548](https://github.com/nikzlabs/shipit-planning/issues
       **third** sweep the container was never exempted from, after the idle enforcer and the boot
       credential sweep — which is the argument for one place that answers "is this ShipIt's own
       container?" rather than a fourth exemption.
-- [ ] **Req 7 — an aborted direct call records no usage.** `direct-provider/http.ts` raises an
-      error carrying no usage on abort, and `runNonTurnDirect` records only errors that carry
-      some, so a call the provider had already begun billing when cleanup's deadline fired appears
-      nowhere. Cleanup runs with no session, so this is install-level spend nobody can see.
-      *In flight as PR #2777.* Measurement settled the open part: all three direct clients post a
-      single non-streaming request, so usage exists only in the terminal body and there is nothing
-      to salvage from an earlier frame. The row therefore carries **unknown** counts rather than a
-      request-side estimate, because an estimate becomes a dollar figure indistinguishable from a
-      measured one while the output half stays unknown regardless. It also closes a wider hole
-      than the finding named: a body lost after an HTTP 200, where the 200 proves the model ran.
-      Rendering that unknown honestly is
-      [planning#549](https://github.com/nikzlabs/shipit-planning/issues/549) — today it draws as
-      0 tokens and $0.00, which reads as measured.
+- [x] **Req 7 — an aborted direct call records no usage.**
+
+Shipped in PR #2777. A call cut off in flight now writes a row with **unknown** token counts —
+NULL columns, zero cost, service, billing mode and model from the selection — rather than no row
+at all. `DirectCallError` gains `spendUnknown`, which is the only escape from the "absent
+telemetry creates no row" guard; that guard is otherwise untouched, because a harness that simply
+reported nothing is a different case from a call known to have run.
+
+- **Measured, not reasoned.** All three direct clients post a single non-streaming request, so
+  usage exists only in the terminal body and no earlier frame can be salvaged. Probes against a
+  real socket also established the rule the fix keys on: a body lost mid-flight fails as a
+  `TypeError`, while a complete non-JSON body fails as a `SyntaxError`. A `SyntaxError` means the
+  whole body arrived and no model wrote it; anything else means the counts were among bytes that
+  never came.
+- **Unknown counts, not a request-side estimate.** An estimate does not stay a token count — it
+  flows into `cost_usd` and `atApiRatesUsd`, producing a dollar figure the user cannot tell apart
+  from a measured one, while the output half stays unknown regardless and is usually the larger
+  share. An undercount is at least an undercount.
+- **It closed a wider hole than the finding named.** A body lost to a dropped socket *after* an
+  HTTP 200 is the strongest billing case of all, because the 200 proves the provider ran the
+  model. An abort during the body read previously escaped as a raw `AbortError` that was not a
+  `DirectCallError` at all, so it reached no failure path.
+- **Two shapes are deliberately not recorded:** a `fetch` that fails before reaching a provider
+  (DNS, refused connection, TLS), and a non-2xx answer, where the provider refused and the model
+  never ran.
+
+The known limitation ships with it and is filed as
+[planning#549](https://github.com/nikzlabs/shipit-planning/issues/549): the unknown row draws as
+0 tokens and $0.00, which reads as measured spend. Surfacing the uncertainty needs a flag carried
+through `foldSplitRows`, `UsageGroup` and `UsageModal.tsx` — the whole usage stack, not this fix.
 
 **Not a docs/299 defect, but reachable through it:**
 [planning#547](https://github.com/nikzlabs/shipit-planning/issues/547) — a Google API key with
