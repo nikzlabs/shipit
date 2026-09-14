@@ -1,3 +1,4 @@
+import os from "node:os";
 import { defineConfig } from "vitest/config";
 import react from "@vitejs/plugin-react";
 
@@ -13,10 +14,19 @@ const clientExecArgv = nodeMajor >= 25 ? ["--no-webstorage"] : [];
 // Allow cold imports under host contention. Vitest 4 requires this per project.
 const TEST_TIMEOUT_MS = 30_000;
 
+// An uncapped pool sizes itself from the container's visible cores, so concurrent full runs
+// across sessions oversubscribe the shared host and starve the orchestrator's main thread.
+// Vitest uses a numeric maxWorkers verbatim, so take the lower of the cap and its own default
+// (cpus - 1) — otherwise this would *raise* the pool on a smaller CI runner.
+const cpus = os.availableParallelism?.() ?? os.cpus().length;
+const MAX_WORKERS = Math.min(8, Math.max(cpus - 1, 1));
+
 export default defineConfig({
   plugins: [react()],
   test: {
     reporters: ["./vitest-llm-reporter.ts"],
+    // Projects inherit this from the root config and share groupOrder 0, so it caps the run.
+    maxWorkers: MAX_WORKERS,
     projects: [
       {
         test: {
