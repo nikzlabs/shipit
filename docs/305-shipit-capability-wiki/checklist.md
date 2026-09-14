@@ -11,6 +11,9 @@
 - [x] `shipit-docs/README.md` points at the wiki
 - [x] `CLAUDE.md` maintenance rule for user-facing behaviour
 - [x] Root `README.md` links the wiki, so a host agent finds it
+- [x] Gap audit of all three pages — every inherited claim re-verified in code,
+      unanswered user questions closed, every named control checked for its
+      condition
 
 ## Remaining pages
 

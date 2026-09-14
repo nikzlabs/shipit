@@ -59,11 +59,13 @@ with a link.
 - **Middle — the conversation.** Their messages and your work, including file
   attachments, diffs, questions, permission prompts, and cards for pull
   requests, reviews, issues, spawned sessions and releases.
-- **Right — a tabbed panel.** Files, Docs, Issues, PR, Terminal, History,
-  Plugins, Present, and either Preview or Host. Which tabs are there depends on
-  the session: Host appears only in an Ops session, and Preview does not, so do
-  not promise a tab without checking the session in front of you. A diff view
-  opens over the panel when a change is tapped.
+- **Right — a tabbed panel.** Files, Docs, Issues, Terminal, History, Present,
+  and, conditionally, Preview or Host, PR, and Plugins. **Which tabs exist
+  depends on the session**, so check before promising one: Host appears only in
+  an Ops session and Preview does not; PR appears once the session has a pull
+  request, and never in an Ops or sandbox session; Plugins appears only when the
+  project declares them. A diff view opens over the panel when a change is
+  tapped.
 
 On a phone the middle and the preview swap rather than sit side by side, and
 dictation replaces typing.
@@ -78,8 +80,11 @@ in `/shipit-docs/`, or a live command to run rather than a page to read.
 
 | Capability | Where |
 |---|---|
+| Add a repository, so sessions can be started against it | **Add Repository**, in the repository switcher at the top of the sidebar. Added once; ShipIt keeps a shared bare clone so each new session is cheap |
 | Many sessions at once, isolated by container and branch | [sessions.md](sessions.md) |
 | Start a session from a repo, an issue, or a blank prompt | [sessions.md](sessions.md) |
+| Find a session that has dropped out of the sidebar | [sessions.md](sessions.md) — All sessions |
+| Recover a wedged session — diagnostics, restart, rescue | [sessions.md](sessions.md) — the health strip in the Terminal tab |
 | Fork a session from any point in its conversation | [sessions.md](sessions.md) |
 | Rewind — throw away the code, the chat, or both, back to a chosen point | [sessions.md](sessions.md) |
 | Pin a session so it stays at the top and keeps its workspace on disk | [sessions.md](sessions.md) |

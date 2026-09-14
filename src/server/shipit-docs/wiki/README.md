@@ -49,9 +49,15 @@ is. Nobody says "rewind" or "Tailscale" until after they have learned to.
 | "keep this one at the top" | [sessions.md](sessions.md) — pin |
 | "keep the app running while I'm away", "don't kill my dev server" | [sessions.md](sessions.md) — Keep preview running |
 | "what needs me right now" | [sessions.md](sessions.md) — the Needs you view |
+| "where did my session go", "it disappeared from the list" | [sessions.md](sessions.md) — the sidebar cap and All sessions |
+| "it's stuck", "it's not responding", "restart it" | [sessions.md](sessions.md) — the health strip in the Terminal tab |
+| "if I archive this do I lose it?", "can I get my branch back" | [sessions.md](sessions.md) — archiving |
 | "rename this chat", "save this conversation", "bring back one I archived" | [sessions.md](sessions.md) — the session menu |
+| "let it reach the internet", "it can't download anything" | [sessions.md](sessions.md) — Session settings, and Settings → Network for the workspace default |
 | "change the colours", "dark mode", "it's too bright" | The palette button in the app header — 20 themes, light and dark |
 | "install it", "set it up on my server", "update it", "get the new version" | [installing-and-updating.md](installing-and-updating.md) |
+| "will updating interrupt my work", "get rid of it", "uninstall" | [installing-and-updating.md](installing-and-updating.md) |
+| "add my repo", "work on a different project" | **Add Repository**, in the repository switcher at the top of the sidebar |
 | "open it on my phone", "reach it from my laptop", "is it safe to expose" | [installing-and-updating.md](installing-and-updating.md) — access |
 | "how much RAM does this need" | [installing-and-updating.md](installing-and-updating.md) — sizing |
 | "why can't it reach the internet" | `/shipit-docs/environment.md`, and the Network tab in Settings |

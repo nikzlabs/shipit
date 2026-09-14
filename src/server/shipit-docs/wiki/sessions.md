@@ -53,7 +53,8 @@ ask about them:
 | Tick / cross / spinner | CI passed, failed, or still running, with counts |
 | Auto-merge glyph | The PR is armed to merge itself when checks pass |
 | Archive glyph | Archived |
-| A small disk glyph | The session was trimmed to save space — see idle reclaim below |
+| Disk glyph, *"Dependencies cleared to save disk"* | Its `node_modules` and friends were dropped; opening it reinstalls them |
+| Disk glyph, *"Workspace stored to save disk"* | The whole checkout went back to the cache; opening it re-clones. Slower to come back than the row above |
 | Relative time | When it was last used |
 
 There is a second sidebar view, **"Needs you"**, reached from the icon in the
@@ -83,12 +84,51 @@ Every row has an overflow menu. In order:
 - **Download chat** — the conversation as a file.
 - **Investigate in Ops session** — opens ShipIt's own operations session pointed
   at this one. On any row except an Ops session's own.
-- **Session settings** — currently the per-session network choice: contained, or
-  open.
+- **Session settings** — currently the per-session network choice, three ways:
+  **Inherit** (follow the workspace setting, changed in Settings → Network),
+  **Contained** (default-deny: only the allowlist — the LLM API, GitHub, package
+  registries, and hosts the user has added — is reachable, with an inline prompt
+  when something new is wanted), or **Open** (unrestricted outbound, no
+  allowlist, no prompts). Changing it restarts the session's container to apply.
 
 **Recover recent rewind**, **Download chat** and **Session settings** are on the
 **open** session's row only, not on every row in the list. An archived row
 offers **Restore** instead of all of it.
+
+## "Where did my session go?"
+
+Almost always the sidebar cap, and almost never a deletion. **Only the five
+most recently resolved sessions per repository stay in the list.** A session is
+"resolved" once its pull request has merged or closed; older resolved ones drop
+out to stop finished work burying live work.
+
+Several things exempt a session from that cap: a **pin**, a **Keep preview
+running** reservation, a workspace ShipIt could not commit to (which needs the
+user, so it is never hidden), and belonging to a live parent-and-children tree.
+A session that is not resolved at all is never capped.
+
+Nothing dropped is gone. **All sessions** — reached from a repository group's
+header in the sidebar — lists everything, with a search box over titles and
+repository names, and filters for sandbox and Ops sessions. Archived sessions
+are there too, and opening one from that dialog restores it first. If the user
+says a session vanished, that dialog is the answer; suggest a pin if they want
+it to stay put.
+
+## When a session is stuck
+
+The **Terminal** tab carries a session health strip at the top, and everything
+for a wedged session is on it, in increasing order of violence:
+
+| Control | Does |
+|---|---|
+| Show diagnostics | Expands the health detail in place |
+| Open the full diagnostics panel | Services, runner state, recent logs — and a copy button that yields the whole payload as JSON, which is what a bug report wants |
+| Force-kill the agent | SIGKILL on the agent process. For when an interrupt did not take |
+| Restart the agent container | Destroys and recreates **just** the agent container, leaving the Compose stack up. The right one when the agent is wedged but the preview is fine |
+| Rescue session | Stops the Compose stack, destroys the agent container, rebuilds everything |
+
+Read the diagnostics before reaching for a restart, and say what they show. A
+restart that fixes nothing twice is worth a bug report rather than a third.
 
 ## Going back: rewind and fork
 
@@ -115,10 +155,16 @@ nothing there.
 Anything that touches files asks for confirmation first, and tells the user how
 many files it will change. A rewind can be undone: a toast offers it
 immediately, and **Recover recent rewind** on the session menu offers it after
-that. Rewinding is refused while a turn is running; the user interrupts first.
+that — that recovery is also refused mid-turn.
+
+**While a turn is running, the gaps offer fork and nothing else.** The three
+rewinds are refused outright ("Cannot rewind while a turn is running"), so a
+user who wants to go back interrupts first. Forking is not blocked, which is the
+useful half: they can branch off the current state without stopping the work.
 
 A fork is a real, separate session with its own branch and its own pull request,
-and ShipIt switches to it when it is ready.
+and ShipIt moves the browser to it as soon as it exists — the user does not go
+looking for it in the sidebar.
 
 ## Attention, and turning it off
 
@@ -185,10 +231,28 @@ belongs in `docker-compose.yml`; one-time setup belongs in `shipit.yaml`.
 
 ## Archiving
 
-Archiving takes a session out of the way and frees what it was holding, keeping
-the conversation. It is reversible from the archived row's **Restore**. Use it
-when a session's pull request has merged and the work is done; it is the tidy
-end of a session's life, not a delete.
+Archiving is the tidy end of a session's life, not a delete. It stops the
+session's container, removes its named volumes, and reclaims its checkout — and
+it takes the session's **children** with it, since archiving a parent is one
+user action.
+
+**"If I archive this, do I lose my work?"** is the question users actually ask,
+and the answer is no, for a reason worth giving them: before ShipIt reclaims a
+checkout it commits anything outstanding and **verifies the branch is on the
+remote**. If it cannot confirm that — commits that were never pushed, changes
+git refused to commit, a detached HEAD, or a workspace it could not read — it
+**keeps the files** and says so in as many words. A session with no remote at
+all is never reclaimed either. The conversation is always kept.
+
+So the branch and the pull request survive archiving; they are on GitHub, which
+is what the check was for. One consequence to state plainly, because it
+surprises people: **restoring gives the session a new branch**, cut fresh from
+the repository. It does not resume the old one — that work already shipped, or
+is still on the remote to be looked at. The exception is a session whose files
+were kept because they were not safely on the remote: that one is restored where
+it stands, branch and all.
+
+Restore is on the archived row's menu, or from **All sessions**.
 
 ## Sessions that spawn sessions
 

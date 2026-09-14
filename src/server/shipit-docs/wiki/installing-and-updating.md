@@ -123,6 +123,14 @@ Moving from edge to a stable release that is *behind* the running code is a
 downgrade, and ShipIt warns before applying it, because older code may not read
 newer on-disk data cleanly.
 
+**"Will updating interrupt what I'm working on?"** Not immediately. A deploy
+deliberately does not kill running session containers — they keep the image they
+started on until they go idle, and new sessions get the new one right away. The
+one case where that bites is a **newly added agent CLI**: a session that was
+already open is running a container without it, and a turn on that harness fails
+there until the container is replaced. Closing the session, or letting it go
+idle, is the whole fix.
+
 **From a shell on the machine:** a local install updates with
 `~/.shipit/deployment/local/update.sh`. A VPS install re-deploys from
 `/opt/shipit`, honouring the channel recorded in `/opt/shipit/.release-channel`.
@@ -155,11 +163,16 @@ Two practical notes that come up constantly:
 
 ## Stopping and removing
 
-Stopping preserves the workspace and credentials volumes, so sessions and
+**Stopping** preserves the workspace and credentials volumes, so sessions and
 provider sign-ins survive: `deployment/local/stop.sh`, or
-`/opt/shipit/deployment/vps/stop.sh` on a server. Both have a purge option that
-deletes those volumes too — destructive, and worth confirming out loud before
-you run it.
+`/opt/shipit/deployment/vps/stop.sh` on a server.
+
+**Removing it entirely** is two steps, and there is no single uninstall command
+to reach for. `stop.sh --purge` deletes the workspace and credentials volumes —
+every session and every provider sign-in — and then the install directory
+(`~/.shipit`, or `/opt/shipit`) is deleted by hand. The purge is irreversible
+and takes the user's sessions with it: confirm it out loud before running it,
+and never infer it from "uninstall ShipIt" alone.
 
 ## When it will not start
 
