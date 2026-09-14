@@ -17,9 +17,9 @@ One box, with a row of controls under it:
 | Control | Does |
 |---|---|
 | **+** | Opens a file picker. Also the drop target: files dragged anywhere onto the composer are attached |
-| **Permission mode** | Plan / Guarded / Auto, below. The same control carries the session's **network access** — see [sessions.md](sessions.md) |
+| **Permission mode** | Plan / Guarded / Auto, below. The same control carries the session's **network access** — see [sessions.md](sessions.md) — except in a sandbox session, where egress is one of the capability grants instead |
 | **Harness · model · reasoning**, or a **role** in their place | What this session runs on. `shipit agent params` and `shipit agent roles` for what this install offers |
-| **The ring** | The context dial — how full the conversation is, and what it has cost. Below |
+| **The ring** | The context dial — how full the conversation is, and what it has spent. Below |
 | **Mic** | Dictation. Present only when the user has turned voice input on |
 | **Send**, or **Stop** while a turn runs | Below |
 
@@ -58,17 +58,21 @@ dragging them onto the composer, or by pasting an image. They are copied to the
 host and mounted into the session container at **`/uploads/<name>`,
 read-only** — outside the git repo, so they are never committed. Copy one into
 `/workspace` or `/persist` before modifying it. An image upload is decoded and
-put into the message as an image; a text file is inlined; a binary one arrives
-as a note telling you to read it from `/uploads` yourself. The session's uploads
-are also listed under **Uploads** at the bottom of the **Files** tab, where the
-user can delete one they no longer want.
+put into the message as an image; a text file is inlined, unless it is over
+100KB; a binary one, and an oversized text one, arrive as a note telling you to
+read the file from `/uploads` yourself. Uploading has its own limits, separate
+from the `@` ones below: **50MB per file, 20 files at a time, 500MB per
+session**. The session's uploads are also listed under **Uploads** at the bottom
+of the **Files** tab, where the user can delete one they no longer want.
 
 **Workspace file references — `@`.** Typing `@` opens a file picker over the
 session's own checkout. Picking one writes
-`@path` into the message and adds a chip. On send, ShipIt reads that file **as
-it is at that moment** and inlines its contents, marked as untrusted content.
-Limits: **10 files per message, 100KB per file, 500KB in total** — over any of
-them the send is refused with a message saying which. The same chip can be added
+`@path` into the message and adds a chip. ShipIt reads that file and inlines its
+contents, marked as untrusted content — **at the moment the message runs**, not
+the moment it was typed, so a message that sat in the queue carries the file as
+it is when its turn starts. Limits: **10 files per message, 100KB per file,
+500KB in total** — over any of them the send is refused with a message saying
+which. The same chip can be added
 from the **Files** tab ("Add to chat") or by dragging a file out of the file tree
 onto the composer.
 
@@ -84,9 +88,11 @@ session's model.
 
 ## `@` files and `/` skills
 
-`@` opens its menu anywhere in the message; `/` opens its own only as the first
-character of one, so a slash written mid-sentence is just a slash. Both take
-arrow keys, Enter or Tab to accept, and Escape to dismiss.
+`@` opens its menu at the start of the message or after any non-alphanumeric
+character — so `an @file` opens it and `word@file` does not, and there has to be
+a file tree to pick from. `/` opens its own only as the very first character of
+the message, so a slash written mid-sentence is just a slash. Both take arrow
+keys, Enter or Tab to accept, and Escape to dismiss.
 
 `/` opens the skills-and-commands menu. It lists:
 
@@ -110,40 +116,49 @@ The Send button is replaced by a red **Stop**. Two things decide whether they
 can also send:
 
 - **Live steering is on and the harness supports it** — Send stays beside Stop,
-  and a message sent now is injected into the turn you are already running. It
-  appears in the transcript as an ordinary message from them, and you see it
-  mid-turn. This is the default; the switch is *Inject messages mid-turn* in
-  **Settings → Advanced** (`shipit settings get advanced.liveSteering`).
+  and a message sent now is normally injected into the turn you are already
+  running. It appears in the transcript as an ordinary message from them, and
+  you see it mid-turn. The switch is *Inject messages mid-turn* in **Settings →
+  Advanced** (`shipit settings get advanced.liveSteering`). Injection also needs
+  a live streaming process and a turn that can take one: a ShipIt-driven system
+  turn, or a merge being held, sends the message to the queue instead. That is
+  the honest answer to "why did it queue when it should have interrupted?".
 - **Otherwise** the message is **queued**. A strip above the composer lists the
   queued messages in order, each with an ✕ to drop it, and **Clear all**. A
   queued message runs as its own turn once the current one has finished and its
-  work is committed.
+  work is committed. Without live steering there is no Send button mid-turn at
+  all: on a desktop Enter still queues, but **on a phone there is no way to
+  queue while a turn runs** — they wait, or they stop the turn.
 
-**Stop** interrupts you where you are — and ShipIt still commits whatever the
-turn had already written, so nothing is lost by stopping. A stop that does not
-take is what **Force-kill the agent** on the Terminal tab's health strip is for
-([sessions.md](sessions.md)).
+**Stop** interrupts you where you are — and in an ordinary session ShipIt still
+commits whatever the turn had already written, so nothing is lost by stopping. A
+stop that does not take is what **Force-kill the agent** on the Terminal tab's
+health strip is for ([sessions.md](sessions.md)).
 
 While you work, a line under the transcript names what you are doing. When the
-turn ends, ShipIt commits and pushes; that flow is in `/shipit-docs/github.md`.
+turn ends, ShipIt commits, and pushes if the session has a remote and GitHub is
+connected; that flow is in `/shipit-docs/github.md`. **Ops and sandbox sessions
+are exempt from the automatic commit entirely** — work there is committed only
+when something asks for it, so say so rather than promising a commit that will
+not happen.
 
 ## When you need the user
 
-Four things stop and ask, and they look different on purpose.
+Three things stop and wait for an answer, and they look different on purpose.
 
 | Card | Appears when | The user can |
 |---|---|---|
-| **Permission needed** | A tool call needs approval | **Approve**, **Deny**, or **Approve & remember** — the last only when the request names a file, and it then allows that file for the rest of the session. **Show details** expands the full gated call. There is no timeout; it waits |
-| **A question** | You call `AskUserQuestion` | Pick an option, tick several where the question allows it, or choose **Other** and type — with a mic on that field. Answering starts a turn |
-| **Plan ready** | You leave plan mode | Accept, accept guarded, or suggest changes (above) |
-| **Voice note** | You call `voice_note` | Play the spoken headline. Below |
+| **Permission needed** | A tool call needs approval | **Approve**, **Deny**, or **Approve & remember** — the last only when the request names a file, and it then allows that file for the rest of the session. **Show details**, where the call has more to show than the one-line summary, expands it in full. There is no timeout; it waits |
+| **A question** | You call `AskUserQuestion` | Pick an option, tick several where the question allows it, or choose **Other** and type — with a mic on that field where voice input is on. Answering starts a turn |
+| **Plan ready** | You end plan mode with `ExitPlanMode` — the card hangs off that tool call, so plan-shaped prose alone does not produce one | Accept, accept guarded, or suggest changes (above) |
 
 A permission prompt counts as you still working, so the session is not "waiting
 on the user" in the sidebar's sense and cannot be muted — see
 [sessions.md](sessions.md). A question does put the session in that state.
 
-Answered cards stay in the transcript showing what was chosen, and survive a
-reload.
+Answered cards stay in the transcript and survive a reload. A question keeps the
+answer that was chosen; a plan card reloads as simply resolved, without saying
+which way it went.
 
 ## Voice
 
@@ -165,11 +180,15 @@ The same applies to a dictated "Other" answer on a question card.
 
 **Spoken summaries back.** `voice_note` is how you tell a user who is not
 looking at the screen that you need them — see `/shipit-docs/voice-notes.md` for
-when to call it. It renders as a card with a Play button, and the user can have
-notes autoplay hands-free, with a chime, from **Settings → Voice**. Where a note
-goes — inline, to a webhook, or both — is the user's setting and never your
-decision; always just call the tool. Separately, the same tab can put a **Play**
-button on every completed turn of yours, for reading a whole reply aloud.
+when to call it. It does not block: the note goes out and you carry on, so it is
+not one of the three cards above. Where it goes — an inline card in the
+conversation, a webhook, or both — is the user's setting and never your
+decision; always just call the tool. Where the note does land in the
+conversation it is a card with a Play button, and the user can have such notes
+autoplay hands-free, with a chime, from **Settings → Voice**. On a webhook-only
+setting there is no card at all, which is not a failure. Separately, the same
+tab can put a **Play** button on every completed turn of yours, for reading a
+whole reply aloud.
 
 ## A long conversation
 
@@ -188,10 +207,15 @@ an ordinary session; a sandbox session has a different strip and no search.
 
 **The context dial.** The ring in the composer row — present once ShipIt knows
 the session's model, so not on a session that has never run a turn — shows how
-full the model's context window is and, beside it, what the session has cost so far. Opening it
-gives the per-turn breakdown, the largest turns, token and cache totals, and a
-row that opens the full usage view. It goes yellow, orange and red as the window
-fills.
+full the model's context window is. It goes yellow, orange and red as the window
+fills. Opening it gives the per-turn breakdown, the largest turns, token and
+cache totals, and a row that opens the full usage view.
+
+Money needs care when answering. The dial separates **metered spend** — what an
+API key was actually charged — from **at API rates**, which is what turns
+already covered by a subscription *would* have cost and is not a bill. The
+figures sit beside the ring on a wide composer and inside the popover otherwise,
+so "I can't see a number" usually means a narrow panel.
 
 **Compaction** summarises the conversation so far and frees that context. Three
 ways it happens:
@@ -209,15 +233,19 @@ ways it happens:
   Offered only where the harness supports compaction, and the user can untick it.
 
 Whichever way it happened, a **Context compacted** card is left in the
-transcript with the before/after token counts, which is the record that it ran.
+transcript — with the before and after token counts where the harness reports
+both, and a plain sentence where it does not. Either way the card is the record
+that it ran.
 
 ## Goals
 
 `/goal <condition>` sets a condition for the session to work toward; `/goal`
 alone (or `/goal status`) reads it, and `/goal clear` removes it. Where the
-harness has them, `/goal pause` and `/goal resume` too. A live goal shows as a
-chip above the composer with its objective and state, and it disappears when the
-goal ends.
+harness has them, `/goal pause` and `/goal resume` too. A goal shows as a chip
+above the composer carrying its objective and its state — active, paused,
+blocked, complete. **Reaching the objective does not remove the chip**; it
+changes its state. Clearing it is what removes it, which is why a session can
+sit there showing a finished goal.
 
 Which of those a session offers depends entirely on the harness — the `/` menu
 lists only the ones it can actually do, and an action with no equivalent is
@@ -230,14 +258,16 @@ commit like any other.
 
 **The Present tab** renders a self-contained file — a diagram, a mockup, a
 chart, a rendered document — with no dev server. Write the file, then call
-`present`; `/shipit-docs/present.md` is the full reference. Two conditions worth
+`present`; `/shipit-docs/present.md` is the full reference. The conditions worth
 knowing, because users ask: **the Present tab only exists once the session has
 at least one artifact**, and ShipIt switches the panel to it only for the
-**first** one — after that a new artifact raises a count badge instead of taking
-the screen. The tab is a carousel with previous/next, a gallery, and a download
-button, and the file path is the identity: re-presenting the same path updates
-that entry in place. Passing `inline: true` also puts the artifact in the
-conversation as a card, where it stays.
+**first non-inline** one — after that a new artifact raises a count badge
+instead of taking the screen, and an `inline: true` artifact never takes it at
+all, because you have already put that one in front of them. The tab is a
+carousel with previous/next, a gallery and a download button, and the file path
+is the identity: re-presenting the same path updates that entry in place.
+Passing `inline: true` also puts the artifact in the conversation as a card,
+where it stays.
 
 Use it. A diagram you described in prose is a diagram the user did not see.
 
@@ -255,17 +285,17 @@ still yours to do.
 
 ## Quoting and re-using what is on screen
 
-Selecting text anywhere in the conversation raises a **Quote** button, which
-drops the selection into the composer as a blockquote with room to reply under
-it. It works on your output as well as theirs — the fastest way for a user to
-say "this part, specifically".
+Selecting text anywhere in the conversation raises a floating **Reply** button,
+which drops the selection into the composer as a blockquote with room to write
+under it. It works on your output as well as theirs — the fastest way for a user
+to say "this part, specifically".
 
 ## Who does what
 
 | The user does | You do |
 |---|---|
 | Types, dictates, attaches, and sends | Read the message, including the attachments and the `@` files |
-| Interrupts, queues, cancels a queued message | Stop cleanly; ShipIt commits the partial work |
+| Interrupts, queues, cancels a queued message | Stop cleanly; in an ordinary session ShipIt commits the partial work |
 | Answers a question, approves or denies a permission, accepts a plan | Ask only when the answer changes what you do |
 | Types `/compact` when context is full | Say that context is the problem — you cannot compact it yourself |
 | Sets and clears a goal | Work toward it |
