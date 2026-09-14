@@ -94,10 +94,32 @@ Written in this slice:
 | `wiki/sessions.md` | Everything about a session's life: create, fork, pin, mute, archive, children, idle, rewind |
 | `wiki/installing-and-updating.md` | Install, update, uninstall, reach it from a phone — written to a host agent |
 
-Commissioned but not yet written — one page each, listed in
+The rest are written one page per child session, listed in
 [`checklist.md`](./checklist.md): the chat surface, previews and services,
 the git and pull-request loop, issues and docs, settings and accounts, repos
-and sandboxes, plugins and skills, deploys, troubleshooting.
+and sandboxes, plugins and skills, deploys, troubleshooting — plus a backup and
+migration section for the install page.
+
+### How the remaining pages are written
+
+**A child writes only its own page, and never the two shared files.** The index
+and the census would otherwise take nine concurrent appends to the same two
+markdown tables, which conflicts pairwise and lets one child's rebase drop a
+sibling's rows — a cross-dependency between sessions that are supposed to have
+none. Instead each PR body ends with a `## Rows for the index` section giving
+the exact question-map and census rows, and those are consolidated in one pass
+once the pages land.
+
+That also keeps the question map in one voice. It is a translation layer from
+the user's wording to ShipIt's, so nine independent phrasings of the same
+guess-what-the-user-said problem would be worse than one.
+
+Every spawn prompt carries the same six rules: the voice contract; verify at
+source and never from a `plan.md`; check every named control for the condition
+under which it exists; write down nothing that has a live query; do not touch
+the shared files; and stop at one PR. The third of those is not generic advice —
+it is the measured dominant failure mode for this doc set, at eight of the
+nineteen defects found across the first slice's two audits.
 
 ## Freshness (req 7)
 

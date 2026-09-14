@@ -40,6 +40,22 @@ census in `how-shipit-works.md`.
 - [x] Backing up and moving an installation — a section in
       `installing-and-updating.md`, since there is no whole-install backup to
       describe as a feature
+- [ ] When consolidating, carry one framing out of the backup section into the
+      census: what a destroyed host costs is usually **the conversation and the
+      configuration, not the work**, because every turn commits and pushes and
+      archiving refuses to reclaim a checkout it cannot confirm is on the
+      remote. **Carry its condition with it every time.** The push does nothing
+      when GitHub is not connected, and a failed push leaves the commit in local
+      history — `checkout-durability.ts` blocks *reclaim*, it does not make a
+      push succeed. Unconditional "it's on GitHub" is the wrong reassurance, and
+      a project's own Compose volumes are outside all of this and were never
+      durable at all.
+- [ ] **Consolidate the index.** Each page's PR body ends with
+      `## Rows for the index`; children do not edit `wiki/README.md` or
+      `how-shipit-works.md` themselves (see `plan.md`). Once the pages have
+      landed, add every question-map row and census row in one pass, phrased in
+      one voice. Until this is done the new pages exist but are not discoverable,
+      which is requirement 4.
 
 ## Before each page ships
 
