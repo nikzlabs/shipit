@@ -15,7 +15,9 @@ re-run you can perform yourself, below.
 1. The user connects the repository to a hosting platform, once. Their act —
    see below.
 2. ShipIt commits and pushes the session's branch after **every turn that left
-   something to commit**.
+   something to commit** — in an ordinary repository session. Ops and sandbox
+   sessions are excluded from that sweep, and a sandbox can hold a clone, so it
+   is worth checking before promising a deploy there.
 3. The platform sees the push and runs its own build and deploy.
 4. The platform records a GitHub Deployment against the commit.
 5. ShipIt polls GitHub, finds it, and shows it on the pull request.
@@ -88,23 +90,24 @@ deployments of the pull request's head commit.
 | Red cross | failure, error | The build or the deploy failed |
 | Grey globe | inactive, destroyed, abandoned | No longer serving. Usually superseded by a later deployment, but the state does not say why |
 
-**Freshness.** For five minutes after each push ShipIt polls every 15 seconds —
-the window a deploy normally starts in. After that a quiet pull request falls
-back to roughly every two minutes, so a build longer than five minutes can
-report a couple of minutes late. Pending checks and armed automation hold it at
-the fast rate.
+**Freshness.** A push opens a five-minute window in which ShipIt polls every 15
+seconds — the window a deploy normally starts in. Pending checks, a running CI
+auto-fix and ShipIt-managed auto-merge hold that fast rate too. Otherwise a
+quiet repository falls back to roughly every two minutes, so a build longer than
+five minutes can report a couple of minutes late.
 
-Polling also **stops entirely** when nobody has the session open and no
-automation needs it, shortly after the last viewer leaves. So a row that looks
-frozen after the user has been away is not a lost deploy — opening the session
-starts the poll again and the row catches up.
+Polling also **stops entirely** shortly after the last viewer leaves — and that
+is installation-wide, not per session: it pauses when nobody has *ShipIt* open
+anywhere and no background work needs it, so closing this one session does not
+by itself freeze its rows. A row that looks stale after the user has been away
+is not a lost deploy; coming back starts the poll again and it catches up.
 
 **Two honest gaps**, worth stating rather than working around:
 
-- **Merging ends ShipIt's view.** Once the pull request merges, ShipIt stops
-  following it, and the card's open phase — with it, the deployment rows — is
-  replaced. Nothing in ShipIt *renders* the production deploy that the merge
-  triggers. That is a rendering gap, not a blindness: where production deploys
+- **Merging or closing the pull request ends ShipIt's view.** Either one drops
+  the session out of polling and replaces its status with a terminal summary
+  carrying no deployments, so the rows clear in both places. Nothing in ShipIt
+  *renders* the production deploy that a merge triggers. That is a rendering gap, not a blindness: where production deploys
   from a GitHub Actions workflow, `gh run list --branch <base>` and
   `gh run view <id> --log-failed` still let you look, on any branch. Only a
   hosted platform's build is genuinely out of reach.
@@ -138,7 +141,8 @@ instead.
    it. Ask for the error text; do not ask them to debug it.
 
 **No row at all** is a different problem from a failed row. In order of
-likelihood: the session has no pull request yet; nothing was pushed — check that
+likelihood: the session has no pull request yet, or its pull request has already
+merged or closed, which clears the rows; nothing was pushed — check that
 the commit actually reached GitHub before blaming anyone's configuration, since
 a push is skipped when GitHub is not connected and refused for work stacked on
 an already-merged branch; the platform is not configured to build this branch;
@@ -152,4 +156,4 @@ ever appear, and that is not a ShipIt fault to chase.
 | Imports the repository on the platform, once | Explain what the platform needs and why; never claim ShipIt can do it |
 | Sets build settings and environment variables on the platform | Reproduce the build in the session and fix what is broken in the code |
 | Opens a **hosted** build's log, which only they can reach | Read an **Actions** run's log yourself, and ask for the error text only in the hosted case |
-| Merges from the pull request card — or lets armed auto-merge do it, or grants an agent the toggle in Project Settings → Deployments | Open and maintain the pull request; say plainly that ShipIt renders nothing about the deploy the merge triggers |
+| Merges — from the card, from armed auto-merge, or by granting an agent the toggle in Project Settings → Deployments. The merge button has conditions of its own; [pull-requests.md](pull-requests.md) has them | Open and maintain the pull request; say plainly that ShipIt renders nothing about the deploy a merge triggers |

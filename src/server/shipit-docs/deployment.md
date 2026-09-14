@@ -65,8 +65,13 @@ there. What you have depends on who ran the build.
   precisely so it cannot re-execute someone else's deploy.
 - A branch that has no pull request still pushes, so a platform configured to
   build every branch will still produce preview deployments; the status row only
-  appears where ShipIt has a PR to attach it to.
-- Polling is not continuous. It runs fast for five minutes after a push, falls
-  back to roughly two-minute intervals, and stops entirely once no viewer is
-  attached and no automation needs it (`polling-global-gate.ts`). A row that
-  looks frozen after the user has been away is not a lost deploy.
+  appears where ShipIt has a PR to attach it to. Merging **or closing** that PR
+  replaces its status with a terminal summary carrying no deployments, so the
+  rows clear either way.
+- Polling is not continuous. It runs every 15s for five minutes after a push —
+  also while checks are pending, a CI auto-fix is running, or ShipIt-managed
+  auto-merge is armed — and otherwise falls back to roughly two-minute
+  intervals. It stops entirely once no viewer is attached **anywhere in the
+  installation** and no background work needs it (`polling-global-gate.ts`
+  `isOpen`, which scans the whole runner registry). A row that looks frozen
+  after the user has been away is not a lost deploy.
