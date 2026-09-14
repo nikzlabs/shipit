@@ -23,24 +23,31 @@ agent turn, deploys happen automatically.
 
 | Component | Location | Role |
 |-----------|----------|------|
-| `PrStatusPoller` | `orchestrator/pr-status-poller.ts` | Polls GitHub for PR + deployment status |
-| `GitHubDeploymentStatus` | `shared/types/deployment-types.ts` | Type for deployment status data |
-| `PrStatusSummary.deployments` | `shared/types/github-types.ts` | Deployment data on PR status |
-| `DeploymentStatusRow` | `client/components/PrLifecycleCard.tsx` | UI row showing deploy status |
-| Settings "Deployments" tab | `client/components/Settings.tsx` | Setup guide with platform links |
+| `PrStatusPoller` | `src/server/orchestrator/pr-status-poller.ts` | Polls GitHub for PR + deployment status |
+| GraphQL selection + `mapDeploymentState` | `src/server/orchestrator/pr-status-parser.ts` | The `deployments` query fields and the GitHub-state → ShipIt-state mapping |
+| `GitHubDeploymentStatus` | `src/server/shared/types/deployment-types.ts` | Type for deployment status data |
+| `PrStatusSummary.deployments` | `src/server/shared/types/github-types.ts` | Deployment data on PR status |
+| `DeploymentStatusRow` | `src/client/components/PrLifecycleCard/indicators/DeploymentStatusRow.tsx` | UI row showing deploy status, rendered from `phases/OpenPhase.tsx` |
+| PR tab Status section | `src/client/components/pr-detail/PrStatusSection.tsx` | The second render site — same rows, without the "via" attribution |
+| Project Settings "Deployments" tab | `src/client/components/ProjectSettings.tsx` | Setup guide with platform links |
 
 ## Deployment Status Tracking
 
-The `PrStatusPoller` GraphQL query includes `commit.deployments(last:5)` to fetch the latest
-deployments for each PR's head commit. Each deployment includes:
+The PR status GraphQL selection includes `commit.deployments(last: 3)` on the PR's head commit —
+so only the **three most recent** deployments of that commit are ever fetched. Each deployment
+includes:
 
 - **environment** — e.g. "Production", "Preview"
-- **state** — pending, success, failure, error, in_progress, etc.
-- **environmentUrl** — the deployed URL (preview or production)
-- **creator** — the platform that created the deployment (e.g. "vercel[bot]")
+- **latestStatus.state** — normalized by `mapDeploymentState`: `SUCCESS`/`ACTIVE` → success,
+  `FAILURE` → failure, `ERROR` → error, `INACTIVE`/`DESTROYED`/`ABANDONED` → inactive,
+  `IN_PROGRESS` → in_progress, `QUEUED`/`WAITING` → queued, `PENDING` and anything unrecognized
+  → pending
+- **latestStatus.environmentUrl** — the deployed URL (preview or production), or `null`
+- **createdAt**
+- **creator.login** — the platform that created the deployment (e.g. "vercel[bot]"). Recorded
+  only; **nothing filters on it**, so a repo's own GitHub Actions workflow renders identically
 
-This data is broadcast via SSE `pr_status` events and displayed in the PR lifecycle card's
-`DeploymentStatusRow` component.
+This data is broadcast via SSE `pr_status` events and displayed in both render sites above.
 
 ## Setup Guide
 
@@ -48,7 +55,9 @@ The per-repo **Project Settings → Deployments** tab shows:
 - Links to import repos on Vercel, Cloudflare Pages, and Netlify
 - A brief explanation of how auto-deploy works with ShipIt
 
-No credentials are stored — the platform's own Git integration handles auth.
+That tab opens from a repository group's overflow menu in the sidebar, so it exists per repository
+and a sandbox session has no such menu. No credentials are stored — the platform's own Git
+integration handles auth.
 
 ## Key Design Decisions
 
@@ -57,4 +66,14 @@ No credentials are stored — the platform's own Git integration handles auth.
 - **GitHub Deployments API** — platform-agnostic status tracking (works with any platform that
   creates GitHub Deployments)
 - **No new credentials** — uses the existing GitHub token from PR polling
-- **PR card only** — no toasts or notifications (deploys are frequent due to auto-push)
+- **Inline on the PR only** — the lifecycle card and the PR tab, no toasts or notifications
+  (deploys are frequent due to auto-push)
+
+## Shipped docs to keep in step
+
+Changing anything above means changing the material baked into session containers:
+
+- `src/server/shipit-docs/deployment.md` — the agent's operating manual: the Actions log reads,
+  the one permitted `gh run rerun` and its scope, polling behaviour
+- `src/server/shipit-docs/wiki/deploying.md` — the product-facing page the agent answers a
+  *user's* "can ShipIt deploy?" from
