@@ -28,12 +28,12 @@ All twelve requirements are resolved and the design is reviewed. Implementation 
 - [x] Static prompt fragment (points at `~/.ssh/config`) + `shipit-docs/ssh.md` (aliases, revocation limits, local-mode caveat) + the wiki page
 - [x] Tests listed in `plan.md`, each signer rule proven red alone
 
-## Open — the design's own guarantees, with the human
+## The design's own guarantees, after review
 
-An independent review (run `21b663a1-c44f-4371-8058-6d35e38e1ef0`) found two claims in `plan.md` that the mechanism cannot support. Both are reported to the design session and neither is decided here.
+An independent review (run `21b663a1-c44f-4371-8058-6d35e38e1ef0`) found two claims in `plan.md` that the mechanism cannot support. `plan.md` now states what the bind proves and what each check leaves open.
 
-- [ ] **First-use trust.** A `session-bind` proves possession of *a* host key, not of the *destination's*: nothing ties the caller-supplied key to the configured address. A granted session can pin a key it minted itself before the first real connection. Recording is now deferred until every other rule has passed, which narrows it to an otherwise-valid request; closing it needs a trusted association with the address.
-- [ ] **`is_forwarding`.** The server signs only the session identifier, so the flag is an unsigned byte the caller controls — flipping it turns the refusal into a signature. The check still stops honest and accidental forwarding; the claim that it holds against a hostile in-container agent does not.
+- [ ] **First-use trust (req 13).** Nothing ties the caller-supplied host key to the configured address. Decided: the orchestrator verifies the key itself. To build: `openssh-client` in `docker/Dockerfile.prod`, `.dev`, `.dogfood`; in `services/ssh.ts` rule 3, when no key is recorded, run `ssh-keyscan -p <port> -T 5 -t <type> <address>` and record only an exact blob match; refuse `host-key-unverified` otherwise with a persisted warning card naming what the scan saw (new card kind, docs/188 recipe); tests fake the spawn and prove the mismatch and no-output paths red alone.
+- [x] **`is_forwarding`.** The flag is an unsigned byte the caller controls. The check stays for honest and accidental forwarding; `plan.md` no longer claims it holds against a hostile in-container agent, and states that the residual reaches nothing new.
 
 ## Fixed after review, each with a guard proven red alone
 
