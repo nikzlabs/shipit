@@ -470,15 +470,21 @@ The fix is not "check the gate at both drain sites":
   not a race: an independent review found it, and a guard reproduces it. So:
   - `releaseQueuedTurn` takes through `takeRunnableQueuedTurn` too, and the listener calls
     it instead of hand-rolling. A gate that still holds now leaves the entry where it is.
-  - `finishTurn` releases the queue after clearing the system hold — after settlement, so
-    a new turn cannot leave the finished one's delivery published. Its own drain ran
+  - `finishTurn` releases the queue after clearing the system hold. Its own drain ran
     *before* the hold came off, so nothing else would have revisited that entry.
-  - That release waits on the memoized **local** commit (`commitOnce`), not on the drain
-    having fired. `drainFired` is set *before* the commit it awaits, and the adapter-error
-    path reaches `finishTurn` before either — so gating on the drain lets a queued turn
-    `git reset --hard` over work that is still being committed (invariant 1). The window is
-    real: a guard reproduces it with a blocked commit, and the full suite caught a second
-    instance in the rebase driver.
+  - **Only once that drain has SETTLED**, which is a different fact from `drainFired`. The
+    flag is set *before* the commit the drain awaits, so while the drain is parked there the
+    release would start a queued turn that can `git reset --hard` over work still being
+    committed (invariant 1) — and once the drain resumes, the two would each start a
+    successor, so a turn that errors with two entries queued runs both at once. Both were
+    reproduced and both are now guards. `drainSettled` says the local commit has happened
+    *and* no drain of this turn's is still to come.
+  - **Synchronously, and in a `finally`.** Awaiting anything between the decision and the
+    claim reopens the same race from the other side: a newer turn can start, finish and
+    begin its own commit inside that gap, and the stale release then starts a queued turn
+    ahead of it. And `withSettlement` rethrows a consumer's exception, so a completion
+    callback that throws would otherwise skip the release and strand the entry with every
+    gate clear — invariant 3's shape exactly.
   - The rule this leaves behind: **a site that clears one of these gates calls
     `releaseQueuedTurn`** (the rebase driver and the merge executor already did).
   Two accepted consequences. The tracker's 1-hour **TTL** expires tasks without an event,
@@ -525,7 +531,7 @@ message typed during the rebase is answered first.
 | **Fix F** — the shared gate | `src/server/orchestrator/turn-admission.ts` *(new)* | `residentBackgroundWork` (moved from `session-runner.ts`) + `systemTurnBlockedByResidentWork`, the one reason string `dispatchOnRunner` and the drain both read |
 | Fix F — gate the take | `src/server/orchestrator/queue-drain.ts` | `takeRunnableQueuedTurn` — the single entry point for taking a queue entry that will be run WITHOUT re-entering `dispatch` |
 | Fix F — the drains | `src/server/orchestrator/ws-handlers/agent-execution.ts`, `dispatched-turn.ts`, `turn-adoption.ts` | Take the head through it; the interactive drain's shift moves *before* its `queue_updated` + `running = true` claim |
-| Fix F — the release | `src/server/orchestrator/queue-drain.ts`, `runner-registry-factory.ts`, `turn-executor.ts` | `releaseQueuedTurn` takes through the same gate (no tail re-queue); the `background_work` listener calls it instead of hand-rolling a drain; `finishTurn` calls it after clearing the system hold, behind `commitOnce` |
+| Fix F — the release | `src/server/orchestrator/queue-drain.ts`, `runner-registry-factory.ts`, `turn-executor.ts` | `releaseQueuedTurn` takes through the same gate (no tail re-queue); the `background_work` listener calls it instead of hand-rolling a drain; `finishTurn` calls it synchronously in a `finally` once `drainSettled` |
 | Fix D — the race | `src/server/orchestrator/ws-handlers/send-message.ts` | Re-reads `runner.running` after `verifyRunningState`, so a released entry isn't raced for the `_agent` slot |
 | Fix D — banner scope | `src/server/shared/types/ws-server-messages/git.ts`, `services/rebase-driver.ts`, `api-routes-git.ts`, `client/hooks/message-handlers/rebase-*.ts` | `sessionId` on the four rebase lifecycle messages; handlers drop foreign ones (the guard `auto_resolve_started` already had) |
 
@@ -585,10 +591,13 @@ message typed during the rebase is answered first.
   integration case is the release half: a system turn deferred behind a **system** turn
   runs when the hold clears and is queued exactly once — it hangs to the timeout without
   `finishTurn`'s release, and counts two `message_queued` without the listener's. Two more
-  in `turn-drain-commit-ordering.test.ts` pin the release behind the commit, on the two
-  shapes that get there first: a system turn that **errors** (finishTurn ahead of its own
-  drain and commit) and an error arriving while the commit is **still in flight** (a
-  blocked `autoCommit`, which is where gating on `drainFired` starts the successor early).
+  in `turn-drain-commit-ordering.test.ts` pin the release against this turn's own drain: a
+  system turn that **errors** still commits first, and an error arriving while the commit is
+  **still in flight** (a blocked `autoCommit`) starts nothing — which is where gating on
+  `drainFired` rather than `drainSettled` resets the tree. A third queues **two** entries
+  behind an errored system turn and asserts exactly one successor starts, which is what an
+  awaited release gets wrong. One more in `turn-settlement.test.ts`: a completion callback
+  that **throws** does not strand the deferred entry.
 
 ## Resolved decisions
 

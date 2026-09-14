@@ -214,6 +214,52 @@ describe("dispatched-turn settlement (docs/240 Fix B)", () => {
     runner.dispose({ force: true });
   });
 
+  // `withSettlement` resolves the handle even when the consumer throws, but the exception
+  // still leaves `settleTurn` — and the hold-release is the step after it (planning#562).
+  it("planning#562: a throwing completion callback does not strand the deferred entry", async () => {
+    const runner = newRunner();
+    const agents: FakeAgent[] = [];
+    const { deps } = makeDispatchTurnDeps(agents, []);
+    runner.setSystemTurnDeps(deps);
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    runner.dispatch(testDispatch({
+      text: "fix CI",
+      systemTurn: true,
+      onTurnComplete: () => { throw new Error("the watch's persistence blew up"); },
+    }));
+    await waitForTurn(() => agents.length === 1 && agents[0]!.run.mock.calls.length === 1, "system turn started");
+
+    runner.isStreamingActive = true;
+    runner.setBackgroundTasks([{ id: "bg-1", description: "Codex consult" }]);
+
+    const outcomes: TurnOutcome[] = [];
+    runner.dispatch(testDispatch({
+      text: "child PR merged — resume",
+      systemTurn: true,
+      onTurnComplete: (o) => outcomes.push(o),
+    }));
+    expect(runner.queueLength).toBe(1);
+
+    agents[0]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+    await waitForTurn(() => !runner.running, "the drain deferred the wake turn");
+    await flushTurn();
+    await flushTurn();
+    expect(agents).toHaveLength(1);
+    expect(runner.queueLength).toBe(1);
+
+    // Exit clears the background work, then the throwing callback runs on the way out.
+    agents[0]!.emit("done", 0);
+    await waitForTurn(() => agents.length === 2, "wake turn started anyway");
+
+    agents[1]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+    agents[1]!.emit("done", 0);
+    await waitForTurn(() => outcomes.length > 0, "wake-turn settlement");
+    expect(outcomes[0]!.status).toBe("completed");
+
+    runner.dispose({ force: true });
+  });
+
   it("publishes the delivery for the whole turn and clears it BEFORE the consumer is told", async () => {
     const runner = newRunner();
     const agents: FakeAgent[] = [];

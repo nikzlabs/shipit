@@ -107,5 +107,6 @@
       entry to the tail; the `background_work` listener calls it instead of hand-rolling
 - [x] `finishTurn` releases the queue after clearing the system hold — the predecessor's own
       drain ran before the hold came off, so nothing else revisits the entry it passed over
-- [x] That release waits on `commitOnce`, not on `drainFired`: the error path reaches
-      `finishTurn` before its drain and commit, and a queued turn may reset the tree
+- [x] That release is gated on `drainSettled`, not `drainFired` (the flag is set before the
+      commit the drain awaits), and runs synchronously inside a `finally` so no successor can
+      appear in a gap and a throwing completion callback cannot strand the entry

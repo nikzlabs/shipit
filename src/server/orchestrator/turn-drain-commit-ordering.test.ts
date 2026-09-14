@@ -325,6 +325,58 @@ describe("queue drain vs. post-turn commit ordering (planning#264)", () => {
     runner.dispose({ force: true });
   });
 
+  // The hold-release and this turn's own drain must not both claim a successor: the drain
+  // is still to come on the error path, and it does not check `running` before starting one.
+  it("starts exactly one successor when a system turn errors with two entries queued", async () => {
+    const runner = new SessionRunner({ sessionId: "s1", sessionDir: repoDir, defaultAgentId: "claude" as AgentId });
+    const agents: FakeAgent[] = [];
+
+    const deps: SystemTurnDeps = {
+      agentFactory: () => {
+        const a = makeFakeAgent();
+        agents.push(a);
+        return a as unknown as ReturnType<SystemTurnDeps["agentFactory"]>;
+      },
+      autoCommit: async (sessionDir: string, summary: string) => {
+        const git = new GitManager(sessionDir);
+        const parentHash = await git.getHeadHash();
+        const r = await git.autoCommit(summary);
+        return { ...r, parentHash };
+      },
+      scheduleAutoPush: vi.fn(),
+      listenerDeps: makeListenerDeps(),
+      buildRunParams: vi.fn().mockResolvedValue({ prompt: "p", cwd: repoDir }),
+    };
+    runner.setSystemTurnDeps(deps);
+
+    runner.dispatch(testDispatch({ text: "fix CI", systemTurn: true }));
+    await waitFor(() => agents.length === 1 && agents[0]!.run.mock.calls.length === 1, "system turn started");
+
+    runner.isStreamingActive = true;
+    runner.setBackgroundTasks([{ id: "bg-1", description: "Codex consult" }]);
+    runner.dispatch(testDispatch({ text: "first queued", systemTurn: true }));
+    runner.dispatch(testDispatch({ text: "second queued", systemTurn: true }));
+    expect(runner.queueLength).toBe(2);
+
+    agents[0]!.emit("error", new Error("the CLI fell over"));
+
+    await waitFor(() => agents.length >= 2, "a successor started");
+    await flush();
+    await flush();
+
+    expect(agents).toHaveLength(2);
+    expect(agents[1]!.run).toHaveBeenCalledTimes(1);
+    expect(runner.queueLength).toBe(1);
+
+    agents[1]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+    agents[1]!.emit("done", 0);
+    await waitFor(() => agents.length === 3, "the second entry follows in order");
+    agents[2]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+    agents[2]!.emit("done", 0);
+    await waitFor(() => !runner.running, "queue finished");
+    runner.dispose({ force: true });
+  });
+
   // The release is behind the local commit, not behind the drain: `drainFired` is set before
   // the commit it awaits, so an error landing in that window must not free the queue early.
   it("holds the release while the system turn's commit is still in flight", async () => {

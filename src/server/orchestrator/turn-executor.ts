@@ -152,31 +152,28 @@ export async function executeAgentTurn(
     // this turn is the owner that actually took the hold off.
     const releasesSystemHold = runner !== null && ownsSystemHold();
     if (releasesSystemHold) runner.systemTurnInProgress = false;
-    // Superseding resets wasInterrupted; the latched superseded flag must take precedence.
-    settleTurn(
-      agentErrored
-        ? turnErrored()
-        : receivedResult
-          ? TURN_COMPLETED
-          : wasSuperseded
-            ? turnInterrupted("a newer turn took the agent slot before this one finished")
-            : (runner?.wasInterrupted ?? false)
-              ? turnInterrupted("the turn was interrupted before it produced a result")
-              : turnNoResult("agent process exited without producing a turn result"),
-    );
-    // An entry the drain passed over — a system turn behind this one's background work —
-    // has no other trigger once the hold comes off (planning#562). Each condition is pinned by
-    // a guard: behind the local commit (the error path reaches finishTurn before its own
-    // drain and commit, and a queued turn may reset the tree — invariant 1), after
-    // settlement, never past a running successor, and never for a driver's `none` post-turn.
-    if (releasesSystemHold && postTurn !== "none" && !runner.running && runner.queueLength > 0) {
-      const held = runner;
-      void (async () => {
-        try {
-          await commitOnce();
-        } catch { /* the commit's own terminal path reports it */ }
-        releaseQueuedTurn(held);
-      })();
+    try {
+      // Superseding resets wasInterrupted; the latched superseded flag must take precedence.
+      settleTurn(
+        agentErrored
+          ? turnErrored()
+          : receivedResult
+            ? TURN_COMPLETED
+            : wasSuperseded
+              ? turnInterrupted("a newer turn took the agent slot before this one finished")
+              : (runner?.wasInterrupted ?? false)
+                ? turnInterrupted("the turn was interrupted before it produced a result")
+                : turnNoResult("agent process exited without producing a turn result"),
+      );
+    } finally {
+      // An entry the drain passed over — a system turn behind this one's background work —
+      // has no other trigger once the hold comes off (planning#562). Only once this turn's
+      // drain has SETTLED: while it is still parked on its commit the release would start a
+      // queued turn that can reset the tree (invariant 1), and once it resumes the two would
+      // each start a successor. A `none` post-turn belongs to a driver that drains its own
+      // queue. Synchronous, so no successor can appear between the decision and the claim;
+      // in a `finally`, so a throwing completion callback cannot strand the entry.
+      if (releasesSystemHold && drainSettled && postTurn !== "none") releaseQueuedTurn(runner);
     }
   };
 
@@ -622,17 +619,24 @@ export async function executeAgentTurn(
   const servingCliStartedTurn = (): boolean => servingAdoptedTurn || rearmInFlight !== null;
 
   let drainFired = false;
+  // Fired vs. settled: the flag is set before the commit this awaits, so only `drainSettled`
+  // says the local commit has happened and no drain of this turn's is still to come.
+  let drainSettled = false;
   const tryDrain = async (): Promise<void> => {
     if (drainFired) return;
     drainFired = true;
-    if (!turnIsCurrent()) return;
-    if (runner) runner.running = false;
-    if (postTurn === "none") return;
-    // Commit locally before a queued turn can reset the tree. Network flows stay after drain.
-    if ((runner?.queueLength ?? 0) > 0) await commitOnce();
-    // A CLI-started turn can take ownership during the commit await.
-    if (!turnIsCurrent()) return;
-    await input.drainNext({ ownsSystemHold: ownsSystemHold() });
+    try {
+      if (!turnIsCurrent()) return;
+      if (runner) runner.running = false;
+      if (postTurn === "none") return;
+      // Commit locally before a queued turn can reset the tree. Network flows stay after drain.
+      if ((runner?.queueLength ?? 0) > 0) await commitOnce();
+      // A CLI-started turn can take ownership during the commit await.
+      if (!turnIsCurrent()) return;
+      await input.drainNext({ ownsSystemHold: ownsSystemHold() });
+    } finally {
+      drainSettled = true;
+    }
   };
 
   const runCommit = async (): Promise<string | null> => {
