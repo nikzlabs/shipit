@@ -4,6 +4,7 @@ import type { ReactNode } from "react";
 import { DotsSixVerticalIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../../design-tokens.js";
 import { OverflowMenu } from "../ui/overflow-menu.js";
+import type { SettingKey } from "../../../server/shared/settings-catalogue/index.js";
 import type { RowDragProps } from "./useRowDrag.js";
 
 export function CredentialRowShell({
@@ -12,6 +13,7 @@ export function CredentialRowShell({
   quota,
   menu,
   menuLabel,
+  menuSettingKey,
   drag,
   error,
   children,
@@ -25,6 +27,8 @@ export function CredentialRowShell({
 
   menu?: ReactNode;
   menuLabel: string;
+  /** The collection whose operations the menu offers (docs/299 req 7). */
+  menuSettingKey?: SettingKey;
 
   drag?: RowDragProps;
 
@@ -77,6 +81,7 @@ export function CredentialRowShell({
             label={menuLabel}
             triggerClassName="h-6 w-6 shrink-0"
             contentClassName="min-w-40"
+            {...(menuSettingKey ? { settingKey: menuSettingKey } : {})}
           >
             {menu}
           </OverflowMenu>

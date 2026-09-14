@@ -1,6 +1,7 @@
 import { useState, useRef } from "react";
 import { Button } from "../../ui/button.js";
 import { SettingsTabPane } from "../SettingsTabPane.js";
+import { bindSetting, settingCopy } from "../declared.js";
 
 export function GitTab({
   gitIdentity,
@@ -33,37 +34,45 @@ export function GitTab({
           disabled={!gitName.trim() || !gitEmail.trim()}
           className="rounded-md"
           data-testid="settings-git-save"
+          aria-label={gitSaved ? "Git identity saved" : "Save git identity"}
+          {...bindSetting("git.identity")}
         >
           {gitSaved ? "Saved" : "Save"}
         </Button>
       }
     >
       <div className="space-y-4">
-        <p className="text-sm text-(--color-text-secondary)">
-          Git identity used for automatic commits in all sessions.
+        {/* Name and email are one declaration, because they are written
+            together — `value-types.ts` → `gitIdentity`. Both boxes bind to it. */}
+        <p className="text-sm text-(--color-text-secondary)" data-setting-description="git.identity">
+          {settingCopy("git.identity").description}
         </p>
 
         <div>
-          <label className="block text-sm font-medium text-(--color-text-primary) mb-1">Name</label>
+          <label className="block text-sm font-medium text-(--color-text-primary) mb-1" htmlFor="git-identity-name">Name</label>
           <input
+            id="git-identity-name"
             type="text"
             value={gitName}
             onChange={(e) => { setGitName(e.target.value); setGitSaved(false); }}
             placeholder="Your Name"
             className="w-full rounded-lg bg-(--color-bg-secondary) border border-(--color-border-secondary) px-4 py-3 text-sm text-(--color-text-primary) placeholder-(--color-text-tertiary) focus:outline-none focus:border-(--color-border-focus)"
             data-testid="settings-git-name"
+            {...bindSetting("git.identity")}
           />
         </div>
 
         <div>
-          <label className="block text-sm font-medium text-(--color-text-primary) mb-1">Email</label>
+          <label className="block text-sm font-medium text-(--color-text-primary) mb-1" htmlFor="git-identity-email">Email</label>
           <input
+            id="git-identity-email"
             type="email"
             value={gitEmail}
             onChange={(e) => { setGitEmail(e.target.value); setGitSaved(false); }}
             placeholder="you@example.com"
             className="w-full rounded-lg bg-(--color-bg-secondary) border border-(--color-border-secondary) px-4 py-3 text-sm text-(--color-text-primary) placeholder-(--color-text-tertiary) focus:outline-none focus:border-(--color-border-focus)"
             data-testid="settings-git-email"
+            {...bindSetting("git.identity")}
           />
         </div>
       </div>

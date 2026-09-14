@@ -1,5 +1,6 @@
 import { Button } from "../ui/button.js";
 import { useMcpStore } from "../../stores/mcp-store.js";
+import { bindSetting } from "../Settings/setting-binding.js";
 import { McpTestResult } from "./McpTestResult.js";
 import type { McpServerConfig, McpTestResult as McpTestResultData } from "../../../server/shared/types.js";
 
@@ -76,6 +77,8 @@ export function McpServerRow({
             variant="ghost"
             onClick={onToggle}
             disabled={isToggling || isDeleting}
+            aria-label={`${server.enabled ? "Disable" : "Enable"} ${server.name}`}
+            {...bindSetting("mcp.servers[].enabled")}
           >
             {isToggling ? "…" : server.enabled ? "Disable" : "Enable"}
           </Button>
@@ -85,16 +88,31 @@ export function McpServerRow({
             onClick={onTest}
             disabled={!hasActiveSession || isTesting || isDeleting}
             title={hasActiveSession ? undefined : "Start a session to test"}
+            aria-label="Test"
           >
             {isTesting ? "Testing…" : "Test"}
           </Button>
           {/* OAuth connections own their server configuration. */}
           {!managedBy && (
-            <Button size="md" variant="ghost" onClick={onEdit} disabled={isDeleting}>
+            <Button
+              size="md"
+              variant="ghost"
+              onClick={onEdit}
+              disabled={isDeleting}
+              aria-label={`Edit ${server.name}`}
+              {...bindSetting("mcp.servers")}
+            >
               Edit
             </Button>
           )}
-          <Button size="md" variant="ghost" onClick={onDelete} disabled={isDeleting}>
+          <Button
+            size="md"
+            variant="ghost"
+            onClick={onDelete}
+            disabled={isDeleting}
+            aria-label={`Delete ${server.name}`}
+            {...bindSetting("mcp.servers")}
+          >
             {isDeleting ? "Deleting…" : "Delete"}
           </Button>
         </div>

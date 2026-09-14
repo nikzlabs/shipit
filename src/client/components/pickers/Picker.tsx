@@ -34,6 +34,8 @@ import {
   DropdownMenuItem,
   DropdownMenuLabel,
 } from "../ui/dropdown-menu.js";
+import { bindSetting } from "../Settings/setting-binding.js";
+import type { SettingKey } from "../../../server/shared/settings-catalogue/index.js";
 
 /**
  * The trigger's own classes, exported so the guard test has one string to
@@ -141,6 +143,7 @@ export function Picker({
   align = "start",
   disabled,
   whenEmpty = "hide",
+  settingKey,
   children,
 }: {
   label: string;
@@ -173,8 +176,14 @@ export function Picker({
    * opening on click — cannot happen either way.
    */
   whenEmpty?: "hide" | "readout";
+  /**
+   * The declaration this picker is the control for, where it is one — the
+   * Settings surfaces pass it, the composer does not (docs/299 req 7).
+   */
+  settingKey?: SettingKey;
   children: ReactNode;
 }) {
+  const binding = settingKey ? bindSetting(settingKey) : {};
   /**
    * req 14 — **a picker with nothing to pick is not rendered at all.**
    *
@@ -203,6 +212,7 @@ export function Picker({
         title={title}
         aria-label={ariaLabel}
         data-testid={triggerTestId}
+        {...binding}
       />
     );
   }
@@ -228,6 +238,7 @@ export function Picker({
         title={lockedTitle}
         aria-label={ariaLabel}
         data-testid={triggerTestId}
+        {...binding}
       />
     );
   }
@@ -243,6 +254,7 @@ export function Picker({
           title={title}
           aria-label={ariaLabel}
           data-testid={triggerTestId}
+          {...binding}
         />
       </DropdownMenuTrigger>
       <DropdownMenuContent side={side} align={align} className={menuWidth} data-testid={menuTestId}>

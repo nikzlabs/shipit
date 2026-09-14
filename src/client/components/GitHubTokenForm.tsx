@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Spinner } from "./Spinner.js";
 import { ICON_SIZE } from "../design-tokens.js";
+import { bindSetting } from "./Settings/setting-binding.js";
 
 export interface GitHubTokenFormProps {
   onSubmit: (token: string) => Promise<boolean | undefined>;
@@ -43,10 +44,12 @@ export function GitHubTokenForm({ onSubmit }: GitHubTokenFormProps) {
         onChange={(e) => { setToken(e.target.value); if (error) setError(""); }}
         onKeyDown={handleKeyDown}
         placeholder="ghp_xxxxxxxxxxxxxxxxxxxx"
+        aria-label="GitHub personal access token"
         className="w-full rounded-lg bg-(--color-bg-secondary) border border-(--color-border-secondary) px-4 py-3 text-sm text-(--color-text-primary) placeholder-gray-500 focus:outline-none focus:border-(--color-border-focus) font-mono"
         autoFocus
         disabled={loading}
         data-testid="github-token-input"
+        {...bindSetting("integrations.github.connection")}
       />
 
       {error && (
@@ -60,6 +63,8 @@ export function GitHubTokenForm({ onSubmit }: GitHubTokenFormProps) {
         disabled={!canSubmit}
         className="w-full rounded-lg bg-(--color-accent) px-4 py-2.5 text-sm font-medium text-(--color-accent-text) hover:bg-(--color-accent-hover) transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
         data-testid="github-token-submit"
+        aria-label="Connect GitHub"
+        {...bindSetting("integrations.github.connection")}
       >
         {loading ? (
           <>

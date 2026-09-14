@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Button } from "../ui/button.js";
 import type { VoiceProviderInfo } from "../../../server/shared/voice-catalog.js";
 import { inputClass } from "./shared.js";
+import { bindSetting } from "./setting-binding.js";
 
 /**
  * One server-side API key for a single voice provider. The key is POSTed to
@@ -85,11 +86,20 @@ export function ProviderKeyField({
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
           placeholder={provider.keyPlaceholder ?? "API key"}
+          aria-label={`${provider.label} API key`}
           className={inputClass}
           data-testid={`voice-key-input-${provider.id}`}
           autoComplete="off"
+          {...bindSetting("voice.providerKey")}
         />
-        <Button variant="primary" size="md" disabled={!draft.trim() || saving} onClick={() => void save()}>
+        <Button
+          variant="primary"
+          size="md"
+          disabled={!draft.trim() || saving}
+          onClick={() => void save()}
+          aria-label={`Save the ${provider.label} API key`}
+          {...bindSetting("voice.providerKey")}
+        >
           {saving ? "Saving…" : "Save"}
         </Button>
         {configured && (
@@ -99,6 +109,8 @@ export function ProviderKeyField({
             disabled={saving}
             onClick={() => void clear()}
             className="text-(--color-error) hover:text-(--color-error)"
+            aria-label={`Clear the ${provider.label} API key`}
+            {...bindSetting("voice.providerKey")}
           >
             Clear
           </Button>

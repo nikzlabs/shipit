@@ -8,6 +8,7 @@ import { McpServerSettings } from "./McpServerSettings.js";
 import { ManagedByShipItBadge } from "./ManagedByShipItBadge.js";
 import { useSettingsStore } from "../stores/settings-store.js";
 import { useUiStore } from "../stores/ui-store.js";
+import { DeclaredToggle, bindSetting } from "./Settings/declared.js";
 
 /**
  * Settings → Integrations (docs/201).
@@ -75,28 +76,13 @@ function PullRequestSettings() {
   };
 
   return (
-    <div className="flex items-center justify-between gap-4 px-3 py-2.5">
-      <div>
-        <span className="text-sm text-(--color-text-primary)">Auto-create PR after every meaningful turn</span>
-        <p className="text-xs text-(--color-text-tertiary)">
-          When the agent finishes a turn that changes files, ShipIt opens a pull request automatically.
-        </p>
-      </div>
-      <button
-        onClick={() => void handleToggle(!autoCreatePr)}
-        className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors ${
-          autoCreatePr ? "bg-(--color-accent)" : "bg-(--color-bg-hover)"
-        }`}
-        role="switch"
-        aria-checked={autoCreatePr}
-        data-testid="settings-auto-create-pr"
-      >
-        <span
-          className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${
-            autoCreatePr ? "translate-x-4.5" : "translate-x-0.5"
-          }`}
-        />
-      </button>
+    <div className="px-3 py-2.5">
+      <DeclaredToggle
+        settingKey="integrations.autoCreatePr"
+        enabled={autoCreatePr}
+        onToggle={(v) => void handleToggle(v)}
+        testId="settings-auto-create-pr"
+      />
     </div>
   );
 }
@@ -152,6 +138,15 @@ function GitHubConnectionCard({
                 : "border-(--color-border-secondary) bg-(--color-bg-elevated) text-(--color-text-secondary) hover:bg-(--color-bg-hover) hover:text-(--color-text-primary)"
           }`}
           data-testid="settings-disconnect"
+          /* The visible text carries the confirmation step, so the accessible
+             name has to carry it too — otherwise the second press disconnects
+             with no warning a screen reader ever gave. */
+          aria-label={
+            disconnecting
+              ? "Disconnecting GitHub"
+              : confirmingLogout ? "Click again to disconnect GitHub" : "Disconnect GitHub"
+          }
+          {...bindSetting("integrations.github.connection")}
         >
           {disconnecting ? "Disconnecting..." : confirmingLogout ? "Click again to disconnect" : "Disconnect"}
         </button>

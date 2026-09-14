@@ -103,6 +103,24 @@ declaration's description and policy (and the MCP env/header editor has none at
 all). The walk must render conditional and nested forms: the MCP stdio and HTTP
 variants, a populated credential row, an expanded role editor.
 
+The binding is the `data-setting` attribute `bindSetting(key)` produces, and its
+key is typed as `SettingKey`, so a control nobody declared has nothing it can
+name. Three further checks live in the same walk, because a guard that only
+counted controls would pass through every defect it is most likely to meet.
+**A box that edits a value may not bind a collection** — a collection's declared
+controls are its operations, which are buttons, so binding a new field to
+`mcp.servers` is the per-panel loophole rebuilt and it fails. **The rendered
+label and description are compared against the declaration's**, so a control
+that writes its own words fails. And **the declarations the walk actually
+reached are compared against the whole registry**, so a pane that renders
+nothing cannot pass for coverage.
+
+The walk's boundary is the tab **pane** — dialog furniture and the
+add-a-provider wizard are outside it, and the test names what that costs. Two
+things it cannot decide are stated there rather than implied: a bespoke panel's
+visible wording is a review matter unless the panel marks it, and a `wholeTab`
+exemption is a claim `exclusions.ts` makes in prose.
+
 ## What a declaration says to the agent
 
 ```ts
@@ -575,22 +593,29 @@ affordance ShipIt's own UI puts in front of the user.
 ## Key files
 
 New: `shared/settings-catalogue/` (declarations, `type` constructors, the
-derivations); `services/settings-read.ts` and `api-routes-settings-agent.ts`
-(the two session-scoped, container-accessible reads `GET
-/api/sessions/:id/settings` and `…/settings/detail?key=`);
-`services/settings-apply.ts` (the shared writers, the conflict-domain lock, the
-broadcast); `services/settings-proposal.ts` (compile, claim, baseline,
-transition); `ws-handlers/settings-proposal-handlers.ts`;
+derivations, `exclusions.ts`); `client/components/Settings/setting-binding.ts`
+(`bindSetting`, `settingCopy`) and `declared.tsx` (the standard controls);
+`client/components/Settings/settings-coverage.test.tsx` (the residual guard);
+`services/settings-read.ts` and `api-routes-settings-agent.ts` (the two
+session-scoped, container-accessible reads `GET /api/sessions/:id/settings` and
+`…/settings/detail?key=`); `services/settings-apply.ts` (the shared writers, the
+conflict-domain lock, the broadcast); `services/settings-proposal.ts` (compile,
+claim, baseline, transition); `ws-handlers/settings-proposal-handlers.ts`;
 `session/agent-shim/shipit-settings.ts`; the client card handler and component;
 `shipit-docs/settings.md`.
 
 Changed: `credential-store.ts`, `services/settings.ts`, `services/types.ts`,
 `api-routes-bootstrap.ts`, `api-routes-egress.ts`, `api-routes-mcp.ts`,
 `api-routes-updates.ts`, `api-routes-session-repos.ts`,
-`ws-handlers/egress-handlers.ts`, the settings tab components,
-`session/agent-ops-routes.ts`, `agent-shim/shipit.ts`, the WS message types,
-`chat-history.ts`, `database.ts`, `visual-elements.ts`, the client
-message-handler index, `useServerEvents.ts`.
+`ws-handlers/egress-handlers.ts`, the settings tab components and the bespoke
+panels they host (`ServicesPanel`, `CredentialRouting`, `ProviderAccountRows`,
+`RoleEditor`, `ReviewerSection`, `McpServerSettings/*`, `SettingsEgress`,
+`SettingsTrackers`, `GitHubTokenForm`, `KeybindingSettings`, `SecretsTab`,
+`DeclaredSecretRow`, `AgentPermissions`, `RepoColorPicker`), `pickers/Picker`
+and `ServiceSelector` and `ui/overflow-menu` (each takes the binding through to
+its trigger), `session/agent-ops-routes.ts`, `agent-shim/shipit.ts`, the WS
+message types, `chat-history.ts`, `database.ts`, `visual-elements.ts`, the
+client message-handler index, `useServerEvents.ts`.
 
 ## Sequencing
 

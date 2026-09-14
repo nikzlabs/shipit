@@ -28,6 +28,17 @@ export interface SettingExclusion {
   readonly reason: ExclusionReason;
   /** Why it is not a setting. This sentence is what review reads. */
   readonly why: string;
+  /**
+   * The accessible names the coverage walk should accept for this entry, when
+   * the controls are not named by the label itself — a group of buttons, or a
+   * label written for a reader rather than for a control. Defaults to the label.
+   */
+  readonly controls?: readonly string[];
+  /**
+   * Every control on the tab is this exclusion. Only for a tab that holds no
+   * setting at all, which today is Skills.
+   */
+  readonly wholeTab?: true;
 }
 
 export const SETTING_EXCLUSIONS: readonly SettingExclusion[] = [
@@ -47,6 +58,8 @@ export const SETTING_EXCLUSIONS: readonly SettingExclusion[] = [
     label: "Supported models",
     reason: "derived-status",
     why: "Opens a read-only list of what each service offers; nothing about it is stored.",
+    // Twice over: the panel heading's reference, and the count on each card.
+    controls: ["Supported models"],
   },
   {
     id: "services.quotaReadout",
@@ -54,7 +67,9 @@ export const SETTING_EXCLUSIONS: readonly SettingExclusion[] = [
     scope: "global",
     label: "Reported quota on a credential row",
     reason: "derived-status",
-    why: "The provider's own reported usage. The cutoffs beside it are the settings.",
+    why: "The provider's own reported usage. The cutoffs beside it are the settings. Its one "
+      + "control re-reads the provider's figure and stores nothing.",
+    controls: ["Refresh subscription usage"],
   },
   {
     id: "roles.reviewerParams",
@@ -64,6 +79,16 @@ export const SETTING_EXCLUSIONS: readonly SettingExclusion[] = [
     reason: "explanatory-copy",
     why: "The reserved `reviewer` role renders no control, only a paragraph pointing at the "
       + "two reviewer slots (`Settings/roles/RoleEditor.tsx:245`). The slots are the settings.",
+  },
+  {
+    id: "roles.editorDismiss",
+    tab: "roles",
+    scope: "global",
+    label: "Cancel · Close (the role editor)",
+    reason: "action",
+    why: "Both close the editor and discard the draft. Save is the write, and it belongs to the "
+      + "roles collection.",
+    controls: ["Cancel", "Close"],
   },
   {
     id: "roles.unavailableReason",
@@ -90,6 +115,17 @@ export const SETTING_EXCLUSIONS: readonly SettingExclusion[] = [
     label: "Test (an MCP server)",
     reason: "action",
     why: "Runs a connection attempt and reports its tools; stores nothing.",
+    controls: ["Test", "Testing…"],
+  },
+  {
+    id: "integrations.mcpFormCancel",
+    tab: "integrations",
+    scope: "global",
+    label: "Cancel (the MCP server form)",
+    reason: "action",
+    why: "Closes the form and discards the draft. Save is the write, and it belongs to the MCP "
+      + "servers collection.",
+    controls: ["Cancel"],
   },
   {
     id: "integrations.linearTeams",
@@ -107,7 +143,18 @@ export const SETTING_EXCLUSIONS: readonly SettingExclusion[] = [
     label: "ShipIt Agent Instructions (the text)",
     reason: "explanatory-copy",
     why: "Displayed content, shipped with ShipIt. The setting beside it is the toggle that "
-      + "enables it.",
+      + "enables it, and its one control only shows and hides the text.",
+    controls: ["View instructions", "Hide instructions"],
+  },
+  {
+    id: "instructions.commit",
+    tab: "instructions",
+    scope: "global",
+    label: "Save · Cancel",
+    reason: "action",
+    why: "Save commits both instruction boxes in one write, so it belongs to neither "
+      + "declaration; Cancel closes the dialog. The two textareas above are the settings.",
+    controls: ["Save", "Cancel"],
   },
   {
     id: "skills.tab",
@@ -117,6 +164,7 @@ export const SETTING_EXCLUSIONS: readonly SettingExclusion[] = [
     reason: "action",
     why: "Discover-only — no installed list and no uninstall. Installing is repo-targeted and "
       + "opens a pull request in a session of its own (`SkillsTab.tsx:1`).",
+    wholeTab: true,
   },
   {
     id: "keyboard.fixedKeys",
@@ -135,6 +183,27 @@ export const SETTING_EXCLUSIONS: readonly SettingExclusion[] = [
     reason: "explanatory-copy",
     why: "Names the Background work model and links to it. The setting is that model pin, on the "
       + "Services tab.",
+    controls: ["Background work"],
+  },
+  {
+    id: "voice.keyboardTabLink",
+    tab: "voice",
+    scope: "global",
+    label: "Mic hotkeys are configured in Keyboard settings",
+    reason: "explanatory-copy",
+    why: "A sentence pointing at the Keyboard tab, whose link moves the dialog there. The "
+      + "shortcuts themselves are that tab's settings.",
+    controls: ["Keyboard"],
+  },
+  {
+    id: "voice.adoptVoiceKey",
+    tab: "voice",
+    scope: "global",
+    label: "Use your key for cleanup too?",
+    reason: "action",
+    why: "An offer to copy a stored speech key into the model providers, which runs a server-side "
+      + "copy rather than storing a value of its own. Declining only hides the offer.",
+    controls: ["Add it as a model provider", "Not now"],
   },
   {
     id: "voice.testPlayback",
@@ -163,6 +232,16 @@ export const SETTING_EXCLUSIONS: readonly SettingExclusion[] = [
       + "list is read-only in the dialog too.",
   },
   {
+    id: "network.grantOutcome",
+    tab: "network",
+    scope: "global",
+    label: "What adding a host actually did",
+    reason: "derived-status",
+    why: "Reports where a just-added host took effect and where it did not. Its one control "
+      + "dismisses the report; the host itself is already in the list above.",
+    controls: ["Dismiss"],
+  },
+  {
     id: "network.sessionHosts",
     tab: "network",
     scope: "global",
@@ -188,6 +267,7 @@ export const SETTING_EXCLUSIONS: readonly SettingExclusion[] = [
     label: "Check for Updates · Update Now · Just Restart",
     reason: "action",
     why: "Each runs something. None of the three stores a value.",
+    controls: ["Check for Updates", "Update Now", "Just Restart"],
   },
   {
     id: "advanced.resetEverything",

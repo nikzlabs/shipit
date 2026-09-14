@@ -148,7 +148,7 @@ describe("McpServerSettings (docs/088)", () => {
     const nameInput = screen.getByPlaceholderText("sentry");
     fireEvent.change(nameInput, { target: { value: "Bad-Name" } });
 
-    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save MCP server" }));
 
     await waitFor(() => {
       expect(
@@ -172,7 +172,7 @@ describe("McpServerSettings (docs/088)", () => {
     const commandInput = screen.getByPlaceholderText("npx") as HTMLInputElement;
     fireEvent.change(commandInput, { target: { value: "" } });
 
-    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save MCP server" }));
 
     await waitFor(() => {
       expect(
@@ -208,7 +208,7 @@ describe("McpServerSettings (docs/088)", () => {
       expect(screen.getByTestId("mcp-server-linear")).toBeInTheDocument();
     });
 
-    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+    fireEvent.click(screen.getByRole("button", { name: "Edit linear" }));
     expect(screen.getByText('Edit "linear"')).toBeInTheDocument();
 
     expect((screen.getByDisplayValue("LINEAR_API_KEY") as HTMLInputElement).value).toBe(
@@ -253,8 +253,8 @@ describe("McpServerSettings (docs/088)", () => {
     const card = screen.getByTestId("mcp-oauth-notion_oauth");
     expect(within(card).getByText(/● Connected/)).toBeInTheDocument();
     expect(within(card).getByRole("button", { name: "Test" })).toBeInTheDocument();
-    expect(within(card).getByRole("button", { name: "Disable" })).toBeInTheDocument();
-    expect(within(card).getByRole("button", { name: "Disconnect" })).toBeInTheDocument();
+    expect(within(card).getByRole("button", { name: "Disable notion" })).toBeInTheDocument();
+    expect(within(card).getByRole("button", { name: "Disconnect Notion" })).toBeInTheDocument();
   });
 
   it("reconciles stale tokens: auth-required status downgrades 'Connected' to Reconnect", async () => {
@@ -293,8 +293,8 @@ describe("McpServerSettings (docs/088)", () => {
       expect(within(card).getByText(/Authentication required/)).toBeInTheDocument();
     });
     expect(within(card).queryByText(/● Connected/)).toBeNull();
-    expect(within(card).getByRole("button", { name: "Reconnect" })).toBeInTheDocument();
-    expect(within(card).getByRole("button", { name: "Disconnect" })).toBeInTheDocument();
+    expect(within(card).getByRole("button", { name: "Reconnect Notion" })).toBeInTheDocument();
+    expect(within(card).getByRole("button", { name: "Disconnect Notion" })).toBeInTheDocument();
     expect(within(card).queryByRole("button", { name: "Test" })).toBeNull();
   });
 
@@ -339,6 +339,6 @@ describe("McpServerSettings (docs/088)", () => {
 
     const row = screen.getByTestId("mcp-server-notion");
     expect(within(row).getByText(/via Notion connection/)).toBeInTheDocument();
-    expect(within(row).queryByRole("button", { name: "Edit" })).toBeNull();
+    expect(within(row).queryByRole("button", { name: "Edit notion" })).toBeNull();
   });
 });

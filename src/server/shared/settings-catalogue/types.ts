@@ -2,8 +2,9 @@
  * One declaration per setting (docs/299-agent-settings-access req 7). The stored
  * half of `GlobalSettings`, the `PUT /api/settings` body and `CredentialStore`'s
  * read/write all derive from it, so an undeclared setting has no payload field
- * and cannot be saved. Binding the dialog to the same declaration, which is what
- * would stop a control being built without one, is a later slice.
+ * and cannot be saved. The dialog renders from the same declaration — its label
+ * and description are these two fields — and `settings-coverage.test.tsx` fails
+ * on a control that is neither bound to one nor named in `exclusions.ts`.
  */
 
 export type SettingScope = "global" | "project" | "browser";

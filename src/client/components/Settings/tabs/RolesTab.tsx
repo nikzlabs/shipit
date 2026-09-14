@@ -39,6 +39,7 @@ import { Button } from "../../ui/button.js";
 import { BillingModePill } from "../../BillingModePill.js";
 import { useSettingsStore } from "../../../stores/settings-store.js";
 import { useUiStore } from "../../../stores/ui-store.js";
+import { bindSetting, settingCopy } from "../declared.js";
 import { ReviewerSection } from "./ReviewerSection.js";
 import { RoleEditor } from "../roles/RoleEditor.js";
 import type { AgentOption } from "../../../agent-types.js";
@@ -117,18 +118,24 @@ export function RolesTab({ agentList = [] }: { agentList?: AgentOption[] }) {
                 the composer the mark is unlabelled, and a mark nobody has seen
                 is a puzzle. Roles are created here, so this is where a user
                 meets it with its name — neither half of the rule works alone. */}
-            <h3 className="flex items-center gap-1.5 text-sm font-medium text-(--color-text-primary)">
+            <h3
+              className="flex items-center gap-1.5 text-sm font-medium text-(--color-text-primary)"
+              data-setting-label="roles"
+            >
               <BaseballCapIcon
                 size={ICON_SIZE.SM}
                 className="shrink-0 text-(--color-text-tertiary)"
                 aria-hidden
               />
-              Roles
+              {settingCopy("roles").label}
             </h3>
+            <p className="mt-0.5 text-xs text-(--color-text-tertiary)" data-setting-description="roles">
+              {settingCopy("roles").description}
+            </p>
+            {/* Not the setting's own words: where the roles are USED, which the
+                declaration has no reason to carry. */}
             <p className="mt-0.5 text-xs text-(--color-text-tertiary)">
-              Named units of agent work — each one naming the harness that runs it, the model it
-              runs, the reasoning level, and optionally what the job is. Pick one in the composer
-              to start a session on it, or name it to an agent.
+              Pick one in the composer to start a session on it, or name it to an agent.
             </p>
           </div>
           <Button
@@ -137,6 +144,7 @@ export function RolesTab({ agentList = [] }: { agentList?: AgentOption[] }) {
             className="shrink-0"
             onClick={() => { setError(undefined); setEditing({ role: undefined }); }}
             data-testid="role-new"
+            {...bindSetting("roles")}
           >
             <PlusIcon size={ICON_SIZE.XS} />
             New role
@@ -218,7 +226,15 @@ function RoleMetadata({ role, onEdit }: { role: RoleView; onEdit: () => void }) 
           </p>
         )}
       </div>
-      <Button variant="ghost" size="sm" className="shrink-0" onClick={onEdit} data-testid="reviewer-edit">
+      <Button
+        variant="ghost"
+        size="sm"
+        className="shrink-0"
+        onClick={onEdit}
+        data-testid="reviewer-edit"
+        aria-label="Edit the reviewer role"
+        {...bindSetting("roles")}
+      >
         <PencilSimpleIcon size={ICON_SIZE.XS} />
         Edit
       </Button>
@@ -323,6 +339,8 @@ function RoleRow({
             disabled={busy}
             onClick={onOpen}
             data-testid={`role-open-${role.name}`}
+            aria-label={`Edit ${role.name}`}
+            {...bindSetting("roles")}
           >
             <PencilSimpleIcon size={ICON_SIZE.XS} />
             Edit
@@ -335,6 +353,7 @@ function RoleRow({
             aria-label={`Delete ${role.name}`}
             className="text-(--color-error) hover:text-(--color-error)"
             data-testid={`role-delete-${role.name}`}
+            {...bindSetting("roles")}
           >
             <TrashIcon size={ICON_SIZE.XS} />
           </Button>

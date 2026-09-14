@@ -3,6 +3,7 @@ import { useEffect, useState, type ReactNode } from "react";
 import { Button } from "./ui/button.js";
 import { ManagedByShipItBadge } from "./ManagedByShipItBadge.js";
 import { useIssuesStore } from "../stores/issues-store.js";
+import { bindSetting } from "./Settings/setting-binding.js";
 
 interface LinearTeam {
   id: string;
@@ -112,7 +113,15 @@ export function SettingsTrackers({ embedded = false, logo }: { embedded?: boolea
 
   const headerActions = connected ? (
     <div className="ml-auto shrink-0">
-      <Button variant="ghost" size="md" disabled={busy} onClick={handleDisconnect} data-testid="trackers-disconnect">
+      <Button
+        variant="ghost"
+        size="md"
+        disabled={busy}
+        onClick={handleDisconnect}
+        data-testid="trackers-disconnect"
+        aria-label="Disconnect Linear"
+        {...bindSetting("integrations.linear.credential")}
+      >
         Disconnect
       </Button>
     </div>
@@ -161,12 +170,20 @@ export function SettingsTrackers({ embedded = false, logo }: { embedded?: boolea
         placeholder="lin_api_..."
         data-testid="linear-token-input"
         className="w-full bg-(--color-bg-elevated) border border-(--color-border-secondary) rounded px-3 py-2 text-sm text-(--color-text-primary) placeholder-(--color-text-tertiary) focus:outline-none focus:ring-1 focus:ring-(--color-border-focus)"
+        {...bindSetting("integrations.linear.credential")}
       />
       <p className="text-xs text-(--color-text-tertiary)">
         Create a personal API key in Linear → Settings → Security &amp; access → Personal API keys.
         Stored server-side and never shown again.
       </p>
-      <Button variant="primary" size="md" disabled={busy || !token.trim()} onClick={handleConnect}>
+      <Button
+        variant="primary"
+        size="md"
+        disabled={busy || !token.trim()}
+        onClick={handleConnect}
+        aria-label="Connect Linear"
+        {...bindSetting("integrations.linear.credential")}
+      >
         {busy ? "Connecting…" : "Connect Linear"}
       </Button>
     </div>

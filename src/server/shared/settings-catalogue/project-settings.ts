@@ -75,7 +75,7 @@ export const PROJECT_SETTINGS = {
     label: "Secret name",
     description:
       "What one secret is called — the environment variable a service reads. A repository's "
-      + "`docker-compose.yml` and its plugins declare the ones they need; the user may add others.",
+      + "docker-compose.yml and its plugins declare the ones they need; the user may add others.",
     type: text({ maxLength: 200, noun: "Secret name", required: true, trim: true }),
     store: { kind: "bespoke", ownedBy: "the repository secrets store (PUT /api/secrets)" },
     emits: userText(

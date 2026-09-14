@@ -4,31 +4,36 @@ import { Button } from "../../ui/button.js";
 import { useUiStore } from "../../../stores/ui-store.js";
 import { useSettingsStore } from "../../../stores/settings-store.js";
 import {
-  sttProviders,
-  ttsProviders,
   keyRequiringProviders,
   providerVoices,
   providerSpeeds,
   getVoiceProvider,
 } from "../../../../server/shared/voice-catalog.js";
 import { armAutoplay } from "../../../voice/voice-notes.js";
-import { ToggleSwitch } from "../ToggleSwitch.js";
 import { ProviderKeyField } from "../ProviderKeyField.js";
 import { inputClass } from "../shared.js";
+import {
+  DeclaredSelect,
+  DeclaredToggle,
+  SettingCopy,
+  bindSetting,
+  settingCopy,
+  type DeclaredOption,
+} from "../declared.js";
 
-const VOICE_LANGUAGES: { code: string; label: string }[] = [
-  { code: "", label: "Auto (browser locale)" },
-  { code: "en", label: "English" },
-  { code: "es", label: "Spanish" },
-  { code: "fr", label: "French" },
-  { code: "de", label: "German" },
-  { code: "it", label: "Italian" },
-  { code: "pt", label: "Portuguese" },
-  { code: "nl", label: "Dutch" },
-  { code: "ru", label: "Russian" },
-  { code: "ja", label: "Japanese" },
-  { code: "ko", label: "Korean" },
-  { code: "zh", label: "Chinese" },
+const VOICE_LANGUAGES: DeclaredOption[] = [
+  { value: "", label: "Auto (browser locale)" },
+  { value: "en", label: "English" },
+  { value: "es", label: "Spanish" },
+  { value: "fr", label: "French" },
+  { value: "de", label: "German" },
+  { value: "it", label: "Italian" },
+  { value: "pt", label: "Portuguese" },
+  { value: "nl", label: "Dutch" },
+  { value: "ru", label: "Russian" },
+  { value: "ja", label: "Japanese" },
+  { value: "ko", label: "Korean" },
+  { value: "zh", label: "Chinese" },
 ];
 
 // Cleanup runs on the background-work model, not on a provider ShipIt picks for
@@ -271,8 +276,6 @@ export function VoiceTab() {
   // that line back, which is what makes the consequence of declining visible.
   const cleanupOffer = cleanupStatus.state === "ready" && !offerDismissed ? cleanupStatus.offer : null;
 
-  const sttList = sttProviders();
-  const ttsList = ttsProviders();
   const voices = providerVoices(ttsProvider);
   const speeds = providerSpeeds(ttsProvider);
   const ttsProviderLabel = getVoiceProvider(ttsProvider)?.label ?? ttsProvider;
@@ -330,31 +333,21 @@ export function VoiceTab() {
       <div className="space-y-4">
         <h3 className="text-sm font-medium text-(--color-text-primary)">Voice input (dictation)</h3>
 
-        <div className="flex items-center justify-between gap-4 py-1">
-          <div>
-            <span className="text-sm text-(--color-text-primary)">Enable voice input</span>
-            <p className="text-xs text-(--color-text-tertiary)">Show the mic button and enable push-to-talk dictation.</p>
-          </div>
-          <ToggleSwitch enabled={voiceInputEnabled} onToggle={setVoiceInputEnabled} testId="voice-input-enabled" />
-        </div>
+        <DeclaredToggle
+          settingKey="voice.inputEnabled"
+          enabled={voiceInputEnabled}
+          onToggle={setVoiceInputEnabled}
+          testId="voice-input-enabled"
+        />
 
         <div className="space-y-1.5">
-          <label className="block text-sm text-(--color-text-primary)" htmlFor="stt-provider">
-            Speech-to-text provider
-          </label>
-          <select
+          <DeclaredSelect
+            settingKey="voice.sttProvider"
             id="stt-provider"
             value={sttProvider}
-            onChange={(e) => setSttProvider(e.target.value)}
-            className={`w-56 ${inputClass}`}
-            data-testid="stt-provider"
-          >
-            {sttList.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.label}
-              </option>
-            ))}
-          </select>
+            onChange={setSttProvider}
+            testId="stt-provider"
+          />
           {!configured.includes(sttProvider) && (
             <p className="text-xs text-(--color-text-tertiary)">
               Add a {getVoiceProvider(sttProvider)?.label ?? sttProvider} key above to use this provider.
@@ -363,13 +356,12 @@ export function VoiceTab() {
         </div>
 
         <div className="space-y-1.5">
-          <div className="flex items-center justify-between gap-4 py-1">
-            <div>
-              <span className="text-sm text-(--color-text-primary)">Clean up transcripts with an LLM</span>
-              <p className="text-xs text-(--color-text-tertiary)">Fixes mis-hearings, fillers, and casing before the text lands in the box.</p>
-            </div>
-            <ToggleSwitch enabled={cleanupEnabled} onToggle={setCleanupEnabled} testId="voice-cleanup-enabled" />
-          </div>
+          <DeclaredToggle
+            settingKey="voice.cleanupEnabled"
+            enabled={cleanupEnabled}
+            onToggle={setCleanupEnabled}
+            testId="voice-cleanup-enabled"
+          />
           {cleanupEnabled && cleanupStatus.state !== "pending" && !cleanupOffer && (
             <p className="text-xs text-(--color-text-tertiary)" data-testid="voice-cleanup-status">
               {cleanupStatus.state === "unknown"
@@ -429,24 +421,14 @@ export function VoiceTab() {
           settings.
         </p>
 
-        <div className="space-y-1.5">
-          <label className="block text-sm text-(--color-text-primary)" htmlFor="voice-language">
-            Language
-          </label>
-          <select
-            id="voice-language"
-            value={voiceLanguage}
-            onChange={(e) => setVoiceLanguage(e.target.value)}
-            className={`w-56 ${inputClass}`}
-            data-testid="voice-language"
-          >
-            {VOICE_LANGUAGES.map((l) => (
-              <option key={l.code} value={l.code}>
-                {l.label}
-              </option>
-            ))}
-          </select>
-        </div>
+        <DeclaredSelect
+          settingKey="voice.language"
+          id="voice-language"
+          value={voiceLanguage}
+          onChange={setVoiceLanguage}
+          options={VOICE_LANGUAGES}
+          testId="voice-language"
+        />
       </div>
 
       <div className="border-t border-(--color-border-secondary)" />
@@ -455,31 +437,21 @@ export function VoiceTab() {
       <div className="space-y-4">
         <h3 className="text-sm font-medium text-(--color-text-primary)">Voice playback</h3>
 
-        <div className="flex items-center justify-between gap-4 py-1">
-          <div>
-            <span className="text-sm text-(--color-text-primary)">Enable voice playback</span>
-            <p className="text-xs text-(--color-text-tertiary)">Show a Play button on each completed assistant turn.</p>
-          </div>
-          <ToggleSwitch enabled={voicePlaybackEnabled} onToggle={setVoicePlaybackEnabled} testId="voice-playback-enabled" />
-        </div>
+        <DeclaredToggle
+          settingKey="voice.playbackEnabled"
+          enabled={voicePlaybackEnabled}
+          onToggle={setVoicePlaybackEnabled}
+          testId="voice-playback-enabled"
+        />
 
         <div className="space-y-1.5">
-          <label className="block text-sm text-(--color-text-primary)" htmlFor="tts-provider">
-            Text-to-speech provider
-          </label>
-          <select
+          <DeclaredSelect
+            settingKey="voice.ttsProvider"
             id="tts-provider"
             value={ttsProvider}
-            onChange={(e) => setTtsProvider(e.target.value)}
-            className={`w-56 ${inputClass}`}
-            data-testid="tts-provider"
-          >
-            {ttsList.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.label}
-              </option>
-            ))}
-          </select>
+            onChange={setTtsProvider}
+            testId="tts-provider"
+          />
           {!ttsConfigured && (
             <p className="text-xs text-(--color-text-tertiary)">
               Add a {ttsProviderLabel} key above to use this provider.
@@ -487,32 +459,27 @@ export function VoiceTab() {
           )}
         </div>
 
-        <div className="space-y-1.5">
-          <label className="block text-sm text-(--color-text-primary)" htmlFor="tts-voice">
-            Voice
-          </label>
-          <select
-            id="tts-voice"
-            value={ttsVoice}
-            onChange={(e) => setTtsVoice(e.target.value)}
-            className={`w-56 ${inputClass}`}
-            data-testid="tts-voice"
-          >
-            {voices.map((v) => (
-              <option key={v.id} value={v.id}>
-                {v.label}
-              </option>
-            ))}
-          </select>
-        </div>
+        {/* The voices are the provider's, so they are values rather than copy —
+            the declaration supplies the words and this supplies the list. */}
+        <DeclaredSelect
+          settingKey="voice.ttsVoice"
+          id="tts-voice"
+          value={ttsVoice}
+          onChange={setTtsVoice}
+          options={voices.map((v) => ({ value: v.id, label: v.label }))}
+          testId="tts-voice"
+        />
 
         <div className="space-y-1.5">
-          <span className="block text-sm text-(--color-text-primary)">Playback speed</span>
+          <SettingCopy settingKey="voice.ttsSpeed" />
           <div className="flex items-center gap-2" data-testid="tts-speed">
             {speeds.map((s) => (
               <button
                 key={s}
                 onClick={() => setTtsSpeed(s)}
+                aria-label={`Playback speed ${s}×`}
+                aria-pressed={ttsSpeed === s}
+                {...bindSetting("voice.ttsSpeed")}
                 className={`rounded-md border px-3 py-1 text-sm transition-colors ${
                   ttsSpeed === s
                     ? "border-(--color-accent) bg-(--color-accent)/15 text-(--color-text-primary)"
@@ -552,34 +519,20 @@ export function VoiceTab() {
           </p>
         </div>
 
-        <div className="space-y-1.5">
-          <label className="block text-sm text-(--color-text-primary)" htmlFor="voice-delivery-mode">
-            Delivery
-          </label>
-          <select
-            id="voice-delivery-mode"
-            value={voiceDeliveryMode}
-            onChange={(e) => void onDeliveryModeChange(e.target.value as "native" | "external" | "both")}
-            className={`w-56 ${inputClass}`}
-            data-testid="voice-delivery-mode"
-          >
-            <option value="native">Native — inline note in ShipIt</option>
-            <option value="external">External — webhook only</option>
-            <option value="both">Both</option>
-          </select>
-        </div>
+        <DeclaredSelect
+          settingKey="voice.deliveryMode"
+          id="voice-delivery-mode"
+          value={voiceDeliveryMode}
+          onChange={(mode) => void onDeliveryModeChange(mode as "native" | "external" | "both")}
+          testId="voice-delivery-mode"
+        />
 
-        <div className="flex items-center justify-between gap-4 py-1">
-          <div>
-            <span className="text-sm text-(--color-text-primary)">Hands-free</span>
-            <p className="text-xs text-(--color-text-tertiary)">Autoplay native voice notes (with a chime). Off by default — when off, notes show a tap-to-play prompt.</p>
-          </div>
-          <ToggleSwitch
-            enabled={voiceHandsFree}
-            onToggle={(v) => { setVoiceHandsFree(v); if (v) armAutoplay(); }}
-            testId="voice-hands-free"
-          />
-        </div>
+        <DeclaredToggle
+          settingKey="voice.handsFree"
+          enabled={voiceHandsFree}
+          onToggle={(v) => { setVoiceHandsFree(v); if (v) armAutoplay(); }}
+          testId="voice-hands-free"
+        />
 
         {(voiceDeliveryMode === "external" || voiceDeliveryMode === "both") && (
           <div className="space-y-3 rounded-lg border border-(--color-border-secondary) p-3">
@@ -590,8 +543,16 @@ export function VoiceTab() {
                 {voiceWebhookConfigured && webhookSavedUrl ? ` Configured → ${webhookSavedUrl}` : ""}
               </p>
             </div>
+            {/* The two boxes are one credential in two halves, so each names
+                its own declaration rather than a word the panel invented. */}
             <div className="space-y-1.5">
-              <label className="block text-xs text-(--color-text-secondary)" htmlFor="voice-webhook-url">URL</label>
+              <label
+                className="block text-xs text-(--color-text-secondary)"
+                htmlFor="voice-webhook-url"
+                data-setting-label="voice.webhook.url"
+              >
+                {settingCopy("voice.webhook.url").label}
+              </label>
               <input
                 id="voice-webhook-url"
                 type="url"
@@ -600,10 +561,17 @@ export function VoiceTab() {
                 placeholder="https://example.com/voice-notes"
                 className={inputClass}
                 data-testid="voice-webhook-url"
+                {...bindSetting("voice.webhook.url")}
               />
             </div>
             <div className="space-y-1.5">
-              <label className="block text-xs text-(--color-text-secondary)" htmlFor="voice-webhook-token">Bearer token</label>
+              <label
+                className="block text-xs text-(--color-text-secondary)"
+                htmlFor="voice-webhook-token"
+                data-setting-label="voice.webhook.token"
+              >
+                {settingCopy("voice.webhook.token").label}
+              </label>
               <input
                 id="voice-webhook-token"
                 type="password"
@@ -612,6 +580,7 @@ export function VoiceTab() {
                 placeholder={voiceWebhookConfigured ? "•••••• (leave blank to keep)" : "token"}
                 className={inputClass}
                 data-testid="voice-webhook-token"
+                {...bindSetting("voice.webhook.token")}
               />
             </div>
             <div className="flex items-center gap-2">
@@ -621,6 +590,7 @@ export function VoiceTab() {
                 disabled={webhookBusy || !webhookUrl.trim()}
                 onClick={() => void saveWebhook()}
                 data-testid="voice-webhook-save"
+                {...bindSetting("voice.webhook.url")}
               >
                 {webhookBusy ? "Saving…" : "Save webhook"}
               </Button>
@@ -631,6 +601,8 @@ export function VoiceTab() {
                   disabled={webhookBusy}
                   onClick={() => void clearWebhook()}
                   data-testid="voice-webhook-clear"
+                  aria-label="Remove the voice note webhook"
+                  {...bindSetting("voice.webhook.url")}
                 >
                   Remove
                 </Button>

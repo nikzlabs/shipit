@@ -108,6 +108,7 @@ import {
 import { MODE_LABEL, ServiceCard } from "./ServiceCard.js";
 import { SupportedModelsDialog } from "./SupportedModelsDialog.js";
 import { CredentialSelectionModeControl, FailoverCutoffControls } from "./CredentialRouting.js";
+import { bindSetting } from "./setting-binding.js";
 
 /**
  * Sign-ins whose CLI prints a URL and then reads a pasted authorization code,
@@ -370,6 +371,7 @@ export function ServicesPanel({ agentList = [] }: { agentList?: AgentOption[] })
           className="rounded-md"
           onClick={() => setDialog({})}
           data-testid={empty ? "services-add-empty" : "services-add"}
+          {...bindSetting("services.credentials")}
         >
           <PlusIcon size={ICON_SIZE.XS} /> Add a model provider
         </Button>
@@ -794,6 +796,7 @@ function StringCredentialRow({
       label={route.label}
       {...(drag ? { drag } : {})}
       menuLabel={`Manage ${route.label}`}
+      menuSettingKey="services.credentials"
       quota={
 
         modeReportsQuota(route.serviceId, route.billingMode) ? (
@@ -854,6 +857,7 @@ function StringCredentialRow({
           aria-label={`Name for ${route.label}`}
           className="mt-1 w-full rounded border border-(--color-border-secondary) bg-(--color-bg-primary) px-1.5 py-0.5 text-xs text-(--color-text-primary) focus:border-(--color-border-focus) focus:outline-none"
           data-testid={`credential-rename-input-${route.id}`}
+          {...bindSetting("services.credentials[].label")}
         />
       )}
       {replacing && (
@@ -868,6 +872,7 @@ function StringCredentialRow({
             aria-label={`New credential for ${route.label}`}
             className="min-w-0 flex-1 rounded border border-(--color-border-secondary) bg-(--color-bg-primary) px-1.5 py-0.5 text-xs text-(--color-text-primary) focus:border-(--color-border-focus) focus:outline-none"
             data-testid={`credential-replace-input-${route.id}`}
+            {...bindSetting("services.credentials[].secret")}
           />
           <Button
             variant="secondary"
@@ -876,6 +881,8 @@ function StringCredentialRow({
             disabled={busy || !value.trim()}
             onClick={() => void patch({ secret: value })}
             data-testid={`credential-replace-submit-${route.id}`}
+            aria-label={`Save the new credential for ${route.label}`}
+            {...bindSetting("services.credentials[].secret")}
           >
             Save
           </Button>

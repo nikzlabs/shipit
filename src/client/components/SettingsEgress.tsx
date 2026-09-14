@@ -17,6 +17,7 @@ import { Alert } from "./ui/banner.js";
 import { useEgressStore } from "../stores/egress-store.js";
 import { useUiStore } from "../stores/ui-store.js";
 import { summarizeEgressGrant } from "./egress-grant-summary.js";
+import { DeclaredToggle, SettingCopy, bindSetting } from "./Settings/declared.js";
 import { RichErrorText } from "./PrLifecycleCard/RichErrorText.js";
 import type {
   EgressAllowlistEntry,
@@ -31,26 +32,6 @@ const SOURCE_META: Record<EgressAllowlistSource, { label: string; variant: "defa
   "user-global": { label: "Added", variant: "success" },
   "user-session": { label: "This session", variant: "success" },
 };
-
-function ToggleSwitch({ enabled, onToggle, testId }: { enabled: boolean; onToggle: (v: boolean) => void; testId?: string }) {
-  return (
-    <button
-      onClick={() => onToggle(!enabled)}
-      className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-[background-color] duration-(--duration-fast) ${
-        enabled ? "bg-(--color-accent)" : "bg-(--color-bg-hover)"
-      }`}
-      role="switch"
-      aria-checked={enabled}
-      data-testid={testId}
-    >
-      <span
-        className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform duration-(--duration-fast) ${
-          enabled ? "translate-x-4.5" : "translate-x-0.5"
-        }`}
-      />
-    </button>
-  );
-}
 
 function AllowlistRow({
   entry,
@@ -89,8 +70,10 @@ function AllowlistRow({
             if (e.key === "Enter") { e.preventDefault(); commit(); }
             if (e.key === "Escape") { setDraft(entry.host); setEditing(false); }
           }}
+          aria-label={`Host, editing ${entry.host}`}
           className="flex-1 rounded bg-(--color-bg-tertiary) border border-(--color-border-focus) px-2 py-1 text-sm font-mono text-(--color-text-primary) focus:outline-none"
           data-testid={`settings-egress-edit-input-${entry.host}`}
+          {...bindSetting("network.egress.hosts[].host")}
         />
       ) : (
         <span className="flex-1 truncate text-sm text-(--color-text-primary) font-mono">{entry.host}</span>
@@ -105,15 +88,17 @@ function AllowlistRow({
               <button
                 onClick={commit}
                 className="text-(--color-text-tertiary) hover:text-(--color-success) transition-[color] duration-(--duration-fast)"
-                aria-label="Save"
+                aria-label={`Save ${entry.host}`}
                 data-testid={`settings-egress-edit-save-${entry.host}`}
+                {...bindSetting("network.egress.hosts[].host")}
               >
                 <CheckIcon size={ICON_SIZE.SM} />
               </button>
               <button
                 onClick={() => { setDraft(entry.host); setEditing(false); }}
                 className="text-(--color-text-tertiary) hover:text-(--color-text-primary) transition-[color] duration-(--duration-fast)"
-                aria-label="Cancel"
+                aria-label={`Stop editing ${entry.host}`}
+                {...bindSetting("network.egress.hosts[].host")}
               >
                 <XIcon size={ICON_SIZE.SM} />
               </button>
@@ -125,6 +110,7 @@ function AllowlistRow({
                 className="text-(--color-text-tertiary) hover:text-(--color-text-primary) transition-[color] duration-(--duration-fast)"
                 aria-label={`Edit ${entry.host}`}
                 data-testid={`settings-egress-edit-${entry.host}`}
+                {...bindSetting("network.egress.hosts[].host")}
               >
                 <PencilSimpleIcon size={ICON_SIZE.SM} />
               </button>
@@ -133,6 +119,7 @@ function AllowlistRow({
                 className="text-(--color-text-tertiary) hover:text-(--color-error) transition-[color] duration-(--duration-fast)"
                 aria-label={`Remove ${entry.host}`}
                 data-testid={`settings-egress-host-remove-${entry.host}`}
+                {...bindSetting("network.egress.hosts")}
               >
                 <TrashIcon size={ICON_SIZE.SM} />
               </button>
@@ -304,16 +291,12 @@ export function SettingsEgress() {
           defense against a prompt-injected agent exfiltrating your credentials.
         </p>
 
-        <div className="flex items-center justify-between py-1 gap-4">
-          <div>
-            <span className="text-sm text-(--color-text-primary)">Contain outbound network access</span>
-            <p className="text-xs text-(--color-text-tertiary)">
-              On (recommended): default-deny egress with an allowlist and inline prompts. Off: unrestricted
-              egress, no prompts. Applies the next time each session&rsquo;s container starts.
-            </p>
-          </div>
-          <ToggleSwitch enabled={globalEnabled} onToggle={(v) => void handleToggle(v)} testId="settings-egress-contained" />
-        </div>
+        <DeclaredToggle
+          settingKey="network.egressContained"
+          enabled={globalEnabled}
+          onToggle={(v) => void handleToggle(v)}
+          testId="settings-egress-contained"
+        />
 
         {showEnforcementWarning && (
           <Alert
@@ -339,31 +322,27 @@ export function SettingsEgress() {
       </div>
 
       <div className="space-y-2">
-        <div className="flex items-center justify-between gap-2">
-          <span className="text-xs font-medium text-(--color-text-secondary)">Allowlist</span>
+        <div className="flex items-start justify-between gap-2">
+          <SettingCopy settingKey="network.egress.hosts" />
           {defaultsCustomized && (
             <button
               type="button"
               onClick={() => void handleRestoreDefaults()}
-              className="text-xs text-(--color-text-link) hover:underline"
+              className="shrink-0 text-xs text-(--color-text-link) hover:underline"
               data-testid="settings-egress-restore-defaults"
+              {...bindSetting("network.egress.hosts")}
             >
               Restore defaults
             </button>
           )}
         </div>
-        <p className="text-xs text-(--color-text-tertiary)">
-          Hosts the agent may reach. The shipped defaults are listed below and can be removed or
-          edited — &ldquo;Restore defaults&rdquo; brings them back. Prefix with a dot
-          (e.g. <code className="text-(--color-text-secondary)">.example.com</code>) to also match subdomains.
-          Changes apply on the next container start.
-        </p>
 
         <div className="flex items-center gap-2">
           <input
             type="text"
             value={hostInput}
             placeholder="api.example.com or .example.com"
+            aria-label="Host to allow"
             spellCheck={false}
             autoCapitalize="off"
             autoCorrect="off"
@@ -371,6 +350,7 @@ export function SettingsEgress() {
             onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); void handleAdd(); } }}
             className="flex-1 rounded-lg bg-(--color-bg-secondary) border border-(--color-border-secondary) px-3 py-2 text-sm text-(--color-text-primary) focus:outline-none focus:border-(--color-border-focus)"
             data-testid="settings-egress-host-input"
+            {...bindSetting("network.egress.hosts[].host")}
           />
           <Button
             variant="primary"
@@ -379,6 +359,8 @@ export function SettingsEgress() {
             onClick={() => void handleAdd()}
             className="rounded-md"
             data-testid="settings-egress-host-add"
+            aria-label="Add host to the allowlist"
+            {...bindSetting("network.egress.hosts")}
           >
             Add
           </Button>

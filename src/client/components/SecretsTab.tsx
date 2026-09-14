@@ -2,6 +2,7 @@
 import { useState, useRef, useEffect } from "react";
 import { Button } from "./ui/button.js";
 import { DeclaredSecretRow, isPlatformProvided } from "./DeclaredSecretRow.js";
+import { bindSetting } from "./Settings/setting-binding.js";
 import { SettingsTabPane } from "./Settings/SettingsTabPane.js";
 import { usePreviewStore } from "../stores/preview-store.js";
 
@@ -179,6 +180,8 @@ export function SecretsTab({ repoUrl, onSecretsSave, onSecretsLoad }: SecretsTab
           onClick={save}
           className="rounded-md"
           data-testid="secrets-save"
+          aria-label={saving ? "Saving secrets" : saved ? "Secrets saved" : "Save secrets"}
+          {...bindSetting("project.secrets")}
         >
           {saving ? "Saving..." : saved ? "Saved" : "Save"}
         </Button>
@@ -244,16 +247,20 @@ export function SecretsTab({ repoUrl, onSecretsSave, onSecretsLoad }: SecretsTab
                 value={row.key}
                 onChange={(e) => setCustomKey(idx, e.target.value)}
                 placeholder="KEY"
+                aria-label={`Custom secret name ${idx + 1}`}
                 className="flex-1 rounded-md bg-(--color-bg-secondary) border border-(--color-border-secondary) px-3 py-2 text-sm text-(--color-text-primary) placeholder-(--color-text-tertiary) focus:outline-none focus:border-(--color-border-focus) font-mono"
                 data-testid={`secret-key-${idx}`}
+                {...bindSetting("project.secrets[].name")}
               />
               <input
                 type="password"
                 value={row.value}
                 onChange={(e) => setCustomValue(idx, e.target.value)}
                 placeholder={row.existing ? "•••••••• saved — type to replace" : "value"}
+                aria-label={`Custom secret value ${idx + 1}`}
                 className="flex-1 rounded-md bg-(--color-bg-secondary) border border-(--color-border-secondary) px-3 py-2 text-sm text-(--color-text-primary) placeholder-(--color-text-tertiary) focus:outline-none focus:border-(--color-border-focus) font-mono"
                 data-testid={`secret-value-${idx}`}
+                {...bindSetting("project.secrets[].value")}
               />
               <Button
                 variant="ghost"
@@ -262,6 +269,7 @@ export function SecretsTab({ repoUrl, onSecretsSave, onSecretsLoad }: SecretsTab
                 className="text-(--color-text-tertiary) hover:text-(--color-error) shrink-0 h-7 w-7 p-0"
                 aria-label="Remove secret"
                 data-testid={`secret-remove-${idx}`}
+                {...bindSetting("project.secrets")}
               >
                 &times;
               </Button>
@@ -272,6 +280,7 @@ export function SecretsTab({ repoUrl, onSecretsSave, onSecretsLoad }: SecretsTab
           onClick={addCustomRow}
           className="text-xs text-(--color-text-link) hover:text-(--color-accent) transition-colors self-start"
           data-testid="secret-add"
+          {...bindSetting("project.secrets")}
         >
           + Add variable
         </button>

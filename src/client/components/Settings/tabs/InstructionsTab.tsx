@@ -1,6 +1,7 @@
 import { useState, type RefObject } from "react";
 import { Button } from "../../ui/button.js";
 import { SettingsTabPane } from "../SettingsTabPane.js";
+import { DeclaredTextarea, DeclaredToggle } from "../declared.js";
 
 export const MAX_LENGTH = 50_000;
 
@@ -61,29 +62,13 @@ export function InstructionsTab({
     >
       {/* Agent system instructions (built-in) */}
       <div className="rounded-lg border border-(--color-border-secondary) bg-(--color-bg-secondary) p-3 space-y-2" data-testid="agent-system-instructions">
-        <div className="flex items-center justify-between">
-          <div>
-            <h3 className="text-sm font-medium text-(--color-text-primary)">ShipIt Agent Instructions</h3>
-            <p className="text-xs text-(--color-text-tertiary) mt-0.5">
-              Built-in context sent with every message to help the agent understand the ShipIt environment.
-            </p>
-          </div>
-          <button
-            onClick={() => onToggleAgentSystemInstructions(!agentSystemInstructionsEnabled)}
-            className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors ${
-              agentSystemInstructionsEnabled ? "bg-(--color-accent)" : "bg-(--color-bg-hover)"
-            }`}
-            role="switch"
-            aria-checked={agentSystemInstructionsEnabled}
-            data-testid="agent-instructions-toggle"
-          >
-            <span
-              className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${
-                agentSystemInstructionsEnabled ? "translate-x-4.5" : "translate-x-0.5"
-              }`}
-            />
-          </button>
-        </div>
+        <DeclaredToggle
+          settingKey="instructions.agentInstructionsEnabled"
+          heading
+          enabled={agentSystemInstructionsEnabled}
+          onToggle={onToggleAgentSystemInstructions}
+          testId="agent-instructions-toggle"
+        />
         {agentSystemInstructions && (
           <div>
             <button
@@ -105,21 +90,14 @@ export function InstructionsTab({
       <div className="border-t border-(--color-border-secondary)" />
 
       {/* User custom instructions */}
-      <div>
-        <h3 className="text-sm font-medium text-(--color-text-primary) mb-1">Your Instructions</h3>
-        <p className="text-xs text-(--color-text-secondary) mb-2">
-          Custom instructions sent to the agent with every message. Use them to define project
-          conventions, preferred libraries, or style guidelines.
-        </p>
-      </div>
-
-      <textarea
-        ref={textareaRef}
+      <DeclaredTextarea
+        settingKey="instructions.userInstructions"
         value={content}
-        onChange={(e) => onContentChange(e.target.value)}
+        onChange={onContentChange}
+        textareaRef={textareaRef}
         placeholder="e.g. Always use TypeScript with strict mode. Use Tailwind CSS for styling."
         className="flex-1 min-h-30 w-full bg-(--color-bg-secondary) border border-(--color-border-secondary) rounded-md px-3 py-2 text-sm text-(--color-text-primary) placeholder-(--color-text-tertiary) resize-none focus:outline-none focus:border-(--color-border-focus)"
-        data-testid="settings-textarea"
+        testId="settings-textarea"
       />
 
       <div className="flex items-center justify-between text-xs text-(--color-text-secondary)">
@@ -135,21 +113,13 @@ export function InstructionsTab({
 
       {/* Ops sessions take their own block: ShipIt's read-only host-debugging
           instructions contradict ordinary project conventions (docs/014-system-prompt req 4). */}
-      <div>
-        <h3 className="text-sm font-medium text-(--color-text-primary) mb-1">Ops Session Instructions</h3>
-        <p className="text-xs text-(--color-text-secondary) mb-2">
-          Sent in an ops session <em>instead of</em> Your Instructions, which can contradict the
-          read-only host-debugging contract an ops session already carries. Leave it empty to send
-          no instructions of your own in an ops session.
-        </p>
-      </div>
-
-      <textarea
+      <DeclaredTextarea
+        settingKey="instructions.opsInstructions"
         value={opsContent}
-        onChange={(e) => onOpsContentChange(e.target.value)}
+        onChange={onOpsContentChange}
         placeholder="e.g. Report findings as a timeline. Never propose a host change without naming the evidence."
         className="flex-1 min-h-20 w-full bg-(--color-bg-secondary) border border-(--color-border-secondary) rounded-md px-3 py-2 text-sm text-(--color-text-primary) placeholder-(--color-text-tertiary) resize-none focus:outline-none focus:border-(--color-border-focus)"
-        data-testid="settings-textarea-ops"
+        testId="settings-textarea-ops"
       />
 
       <div className="flex items-center justify-end text-xs text-(--color-text-secondary)">

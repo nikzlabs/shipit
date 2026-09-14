@@ -99,6 +99,9 @@ function ModelsControl({
       <button
         type="button"
         onClick={onOpen}
+        /* The visible text is a count; the accessible name is what it opens,
+           which is also how `exclusions.ts` names it. */
+        aria-label="Supported models"
         className="shrink-0 rounded px-1 py-0.5 text-[10px] text-(--color-text-tertiary) hover:bg-(--color-bg-hover) hover:text-(--color-text-secondary) focus:outline-none focus-visible:bg-(--color-bg-hover)"
         data-testid={`service-models-${testId}`}
       >

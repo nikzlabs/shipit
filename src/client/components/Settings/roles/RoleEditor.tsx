@@ -23,6 +23,8 @@ import {
   type ServiceChoice,
 } from "../../pickers/model-choice.js";
 import { reasoningOptionsFor } from "../../../../server/shared/catalogue/index.js";
+import { bindSetting, settingCopy } from "../declared.js";
+import type { SettingKey } from "../../../../server/shared/settings-catalogue/index.js";
 import type { ModelSelection } from "../../../../server/shared/catalogue/index.js";
 import type { AgentId } from "../../../../server/shared/types.js";
 import type { AgentOption, EligibleModelOption } from "../../../agent-types.js";
@@ -187,15 +189,17 @@ export function RoleEditor({
             a setting — "review this" has to keep resolving to something.
           */}
           {!reserved && (
-            <Field label="Name">
+            <Field settingKey="roles[].name">
               <input
                 type="text"
                 value={name}
                 onChange={(e) => setName(e.target.value)}
                 placeholder="deep-dive"
+                aria-label={settingCopy("roles[].name").label}
                 className={INPUT_CLASS}
                 data-testid="role-editor-name"
                 autoFocus
+                {...bindSetting("roles[].name")}
               />
             </Field>
           )}
@@ -207,31 +211,29 @@ export function RoleEditor({
             user who thinks it is a label for themselves writes "The thorough
             one" instead of something either job can be done from.
           */}
-          <Field
-            label="Description"
-            hint="Optional — what this role is for. The agent reads it to pick this role and to pitch the prompts it sends here."
-          >
+          <Field settingKey="roles[].description" optional>
             <input
               type="text"
               value={description}
               onChange={(e) => setDescription(e.target.value)}
               placeholder="Deep research on a hard problem — takes an open brief"
+              aria-label={settingCopy("roles[].description").label}
               className={INPUT_CLASS}
               data-testid="role-editor-description"
+              {...bindSetting("roles[].description")}
             />
           </Field>
 
-          <Field
-            label="Standing instructions"
-            hint="Optional — added to whatever task the role is given."
-          >
+          <Field settingKey="roles[].prompt" optional>
             <textarea
               value={prompt}
               onChange={(e) => setPrompt(e.target.value)}
               rows={4}
               placeholder="Check the code against requirements.md, and report only."
+              aria-label={settingCopy("roles[].prompt").label}
               className={`${INPUT_CLASS} resize-y font-mono text-(length:--font-size-code)`}
               data-testid="role-editor-prompt"
+              {...bindSetting("roles[].prompt")}
             />
           </Field>
 
@@ -248,7 +250,7 @@ export function RoleEditor({
               behind this dialog.
             </p>
           ) : params ? (
-            <Field label="Runs on">
+            <Field settingKey="roles[].model">
               <div className="flex flex-wrap items-center gap-1.5 rounded-lg border border-(--color-border-secondary) p-1.5">
                 <ServiceSelector
                   services={services}
@@ -257,6 +259,7 @@ export function RoleEditor({
                   disabled={busy}
                   idPrefix="role-editor"
                   fallbackLabel={params.serviceId}
+                  settingKey="roles[].model"
                 />
                 <Picker
                   label={modelLabel}
@@ -266,6 +269,7 @@ export function RoleEditor({
                   menuWidth="w-72"
                   disabled={busy}
                   whenEmpty="readout"
+                  settingKey="roles[].model"
                 >
                   {serviceModels.map((model) => (
                     <PickerOption
@@ -314,6 +318,7 @@ export function RoleEditor({
                     menuLabel={harness.reasoning.label}
                     menuWidth="w-48"
                     disabled={busy}
+                    settingKey="roles[].reasoningEffort"
                   >
                     {[{ value: undefined, label: DEFAULT_LEVEL_LABEL }, ...roleLevels]
                       .map((option) => (
@@ -365,6 +370,8 @@ export function RoleEditor({
             disabled={!canSave}
             onClick={submit}
             data-testid="role-editor-save"
+            aria-label="Save role"
+            {...bindSetting("roles")}
           >
             {busy ? "Saving…" : "Save"}
           </Button>
@@ -406,6 +413,7 @@ function HarnessControl({
         menuLabel="Runs under"
         menuWidth="w-56"
         disabled={busy}
+        settingKey="roles[].harness"
       >
         {harnesses.map((choice) => (
           <PickerOption
@@ -447,20 +455,29 @@ function Readout({
   );
 }
 
+/**
+ * One field of the editor, labelled and explained by its own declaration
+ * (docs/299 req 7) — the editor writes none of this copy itself.
+ */
 function Field({
-  label,
-  hint,
+  settingKey,
+  optional,
   children,
 }: {
-  label: string;
-  hint?: string;
+  settingKey: SettingKey;
+  /** The field may be left empty. Not part of what the setting IS. */
+  optional?: boolean;
   children: React.ReactNode;
 }) {
+  const { label, description } = settingCopy(settingKey);
   return (
     <div>
       <label className="block text-xs font-medium text-(--color-text-primary) mb-1">
-        {label}
-        {hint && <span className="ml-1.5 font-normal text-(--color-text-tertiary)">{hint}</span>}
+        <span data-setting-label={settingKey}>{label}</span>
+        <span className="ml-1.5 font-normal text-(--color-text-tertiary)">
+          {optional && "Optional — "}
+          <span data-setting-description={settingKey}>{description}</span>
+        </span>
       </label>
       {children}
     </div>

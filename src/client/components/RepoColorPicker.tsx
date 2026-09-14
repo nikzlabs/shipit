@@ -3,6 +3,7 @@ import { ICON_SIZE } from "../design-tokens.js";
 import { useRepoStore } from "../stores/repo-store.js";
 import { parseRepoName } from "../utils/repo-label.js";
 import { REPO_COLOR_COUNT, REPO_COLOR_NAMES, repoColorVar } from "../../server/shared/repo-colors.js";
+import { bindSetting, settingCopy } from "./Settings/setting-binding.js";
 
 export function RepoColorPicker({ repoUrl }: { repoUrl: string }) {
   const repos = useRepoStore((s) => s.repos);
@@ -19,16 +20,27 @@ export function RepoColorPicker({ repoUrl }: { repoUrl: string }) {
   return (
     <div className="space-y-3" data-testid="repo-color-picker">
       <div className="space-y-1">
-        <h3 className="text-sm font-medium text-(--color-text-primary)">Sidebar color</h3>
-        <p className="text-xs text-(--color-text-secondary)">
-          The colored edge marking this repository&apos;s group in the session sidebar. Each repo gets a
-          different color automatically — change it here if you&apos;d rather pick your own. Colors already
-          taken by another repository are marked with a dot.
+        <h3
+          className="text-sm font-medium text-(--color-text-primary)"
+          data-setting-label="project.colorIndex"
+        >
+          {settingCopy("project.colorIndex").label}
+        </h3>
+        <p
+          className="text-xs text-(--color-text-secondary)"
+          data-setting-description="project.colorIndex"
+        >
+          {settingCopy("project.colorIndex").description}
+        </p>
+        {/* Not part of the setting: it explains the dot on a swatch, which is
+            derived from what the other repositories currently use. */}
+        <p className="text-xs text-(--color-text-tertiary)">
+          Colors already taken by another repository are marked with a dot.
         </p>
       </div>
       <div
         role="radiogroup"
-        aria-label="Sidebar color"
+        aria-label={settingCopy("project.colorIndex").label}
         className="grid grid-cols-8 gap-2 max-w-md"
       >
         {Array.from({ length: REPO_COLOR_COUNT }, (_, index) => {
@@ -47,6 +59,7 @@ export function RepoColorPicker({ repoUrl }: { repoUrl: string }) {
               title={label}
               data-taken={users ? "true" : undefined}
               data-testid={`repo-color-${index}`}
+              {...bindSetting("project.colorIndex")}
               onClick={() => { void setRepoColorIndex(repoUrl, index); }}
               className={`h-8 rounded-md flex items-center justify-center transition-transform hover:scale-105 focus:outline-none focus-visible:ring-2 focus-visible:ring-(--color-border-focus) ${
                 isSelected ? "ring-2 ring-(--color-text-primary) ring-offset-2 ring-offset-(--color-bg-elevated)" : ""
