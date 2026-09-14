@@ -36,8 +36,7 @@
   .card { position: relative; }
   .card.stale .row:last-child .v { padding-right: 44px; }
   .stale-tag { position: absolute; right: 10px; bottom: 6px; font-size: 11px; font-weight: 600; letter-spacing: .02em; }
-  .card.stale.accent .stale-tag { color: var(--color-accent); }
-  .card.stale.textprimary .stale-tag { color: var(--color-text-primary); }
+  .card.stale .stale-tag { color: var(--color-accent); }
   .row { display: grid; grid-template-columns: 76px 1fr; gap: 10px; }
   .row .k { color: var(--color-text-tertiary); }
   .row .v { color: var(--color-text-primary); }
@@ -54,9 +53,8 @@
 <p class="lead">
   docs/303 req 14: the state is carried by appearance only, never by title text. A current card is a regular card.
   A card that may be behind — after a question or actions turn that skipped the update, or after an ignored nudge —
-  carries a small "Stale" label in its bottom-right corner. Two colors are drawn for that label: the theme accent
-  (<code>--color-accent</code>) and the primary text color (<code>--color-text-primary</code>). In place above the composer,
-  on a light and a dark theme.
+  carries a small "Stale" label in its bottom-right corner, in the theme accent (<code>--color-accent</code>).
+  In place above the composer, on a light and a dark theme.
 </p>
 
 <div class="boards" id="boards"></div>
@@ -72,10 +70,7 @@
   const cases = [
     { key: "fresh", title: "Current", note: "the last turn updated it — a regular card",
       tail: `<p>Routes and tests are in. PR #212 is ready to merge.</p>` },
-    { key: "stale accent", title: "Stale · label in the accent color", note: "the last turn ended with a question and did not update it",
-      tail: `<p>Two ways to store the webhook secret; I need your call.</p>
-             <div class="q"><b>Question</b>Keep the Stripe secret in ShipIt secrets, or in the repo's .env.example with a placeholder?</div>` },
-    { key: "stale textprimary", title: "Stale · label in the primary text color", note: "same card, same case",
+    { key: "stale accent", title: "Stale", note: "the last turn ended with a question and did not update it — label in the accent color",
       tail: `<p>Two ways to store the webhook secret; I need your call.</p>
              <div class="q"><b>Question</b>Keep the Stripe secret in ShipIt secrets, or in the repo's .env.example with a placeholder?</div>` },
   ];

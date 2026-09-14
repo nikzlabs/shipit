@@ -210,11 +210,10 @@ Needs you   Add the Stripe test key in Settings → Secrets.
 
 - **Freshness (req 14).** Two states, no title text spent on them. A current
   card is a regular card. A card that may be behind carries a small
-  **"Stale"** label (`text-[11px] font-semibold`) in its bottom-right corner,
-  in the primary color — the theme accent (`--color-accent`) or the primary
-  text color (`--color-text-primary`); the prototype draws both and the pick
-  is recorded here. The last row keeps right padding so the label never
-  overlaps text. The label doubles as the accessible signal (it is real text),
+  **"Stale"** label (`text-[11px] font-semibold text-(--color-accent)`) in
+  its bottom-right corner. The accent was chosen over the primary text color
+  on 2026-09-14: it stands out from the card text and reads as a status
+  signal. The last row keeps right padding so the label never overlaps text. The label doubles as the accessible signal (it is real text),
   and the card's `title` tooltip says "Stale: the last turn did not update it"
   for a pointer user. Opacity was tried first and rejected as barely visible.
   Both states are drawn on a light and a dark theme in

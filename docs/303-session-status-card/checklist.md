@@ -8,7 +8,7 @@ Design deliverables (this PR):
 - [x] Resolve the open question in requirements.md (one nudge attempt; freshness shown on the card, req 14–15).
 - [x] Prototype the freshness visual (mockup.html; both states; light and dark).
 - [x] Record the chosen visual in plan.md (regular card when current; a small "Stale" label bottom-right when it may be behind; no title text).
-- [ ] Record the label color (accent or primary text) once picked from the prototype.
+- [x] Record the label color: the theme accent (`--color-accent`).
 
 Implementation (a later PR):
 

@@ -66,7 +66,7 @@ taken inside one session, without building an agent that talks to many.
     as possibly stale, in one visual language shared by both cases, so it is
     always clear to the user. No title text is spent on it: a current card
     looks like a regular card; a stale card carries a small "Stale" label in
-    its bottom-right corner, in the primary color.
+    its bottom-right corner, in the theme's accent color.
 15. ShipIt nudges once per missing update. If the agent ignores the nudge,
     ShipIt does not nudge again for that turn; the card is marked stale
     (req 14) and the next ordinary turn is checked afresh.
@@ -85,7 +85,9 @@ taken inside one session, without building an agent that talks to many.
   This replaces the earlier amber/green direction. → req 14. Drawn and
   rejected the same day: "the opacity is barely visible and not clear what it
   is." Nik's next direction: the text "Stale" in the primary color in the
-  bottom-right corner. → req 14 as it stands now.
+  bottom-right corner. Drawn in the two tokens that phrase can mean; Nik chose
+  the theme accent (`--color-accent`) over the primary text color. → req 14 as
+  it stands now.
 - 2026-09-14 — The agent ignores the nudge too: one attempt or two? One. Nik
   added the part the design lacked: the card needs "some visual language for
   saying that the card is potentially stale", shown in this case and equally
