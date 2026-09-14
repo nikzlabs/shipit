@@ -27,7 +27,20 @@ const FLAGS = [
   "supportsSteering",
   "supportsCompaction",
   "supportsGoals",
+  "goalReadEntersContext",
 ] as const satisfies readonly (keyof AgentCapabilities)[];
+
+/**
+ * `satisfies` above checks the names listed; it cannot notice one that is
+ * missing. This does: a new boolean capability that nobody adds to FLAGS makes
+ * `Unchecked` non-empty and fails the typecheck, naming the key.
+ */
+type BooleanCapabilityKeys = {
+  [K in keyof AgentCapabilities]-?: boolean extends NonNullable<AgentCapabilities[K]> ? K : never;
+}[keyof AgentCapabilities];
+type Unchecked = Exclude<BooleanCapabilityKeys, (typeof FLAGS)[number] | "startsOwnTurns">;
+const _everyBooleanCapabilityIsChecked: Unchecked extends never ? true : Unchecked = true;
+void _everyBooleanCapabilityIsChecked;
 
 const ADAPTERS: Record<AgentId, () => { capabilities: AgentCapabilities }> = {
   claude: () => new ClaudeAdapter(),

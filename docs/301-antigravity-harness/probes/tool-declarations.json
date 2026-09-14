@@ -1,12 +1,14 @@
 {
-  "measured_utc": "2026-09-14T17:29Z",
+  "measured_utc": "2026-09-14T17:52Z",
   "cli_version": "1.1.27",
-  "method": "GOOGLE_GEMINI_BASE_URL redirected at probes/recorder.js; the measurement is tools[].functionDeclarations[].name in the outgoing streamGenerateContent body. Reproduce with probes/tool-declarations.sh.",
+  "auth_mode": "key (GEMINI_API_KEY). Account mode talks to cloudcode-pa.googleapis.com, which GOOGLE_GEMINI_BASE_URL does not redirect, so it is NOT measured here.",
+  "method": "GOOGLE_GEMINI_BASE_URL redirected at probes/recorder.js; the measurement is tools[].functionDeclarations[].name in the outgoing streamGenerateContent body. One recorder and one body directory per spawn. Reproduce with probes/tool-declarations.sh.",
   "init_tools_advertised": 57,
   "declared_to_model": {
-    "plain_headless_spawn": {
+    "plain": {
+      "configuration": "fresh home, key mode, gemini-3.1-pro effort high, one turn",
       "count": 11,
-      "body_bytes": 42412,
+      "body_bytes": 42352,
       "names": [
         "find_by_name",
         "generate_image",
@@ -21,9 +23,46 @@
         "write_to_file"
       ]
     },
-    "with_one_stdio_mcp_server": {
+    "resumed": {
+      "configuration": "the SAME conversation resumed with --conversation (id verified equal)",
+      "count": 11,
+      "body_bytes": 43199,
+      "names": [
+        "find_by_name",
+        "generate_image",
+        "grep_search",
+        "list_dir",
+        "manage_task",
+        "read_url_content",
+        "replace_file_content",
+        "run_command",
+        "search_web",
+        "view_file",
+        "write_to_file"
+      ]
+    },
+    "flash": {
+      "configuration": "gemini-3.8-flash effort high",
+      "count": 11,
+      "body_bytes": 41232,
+      "names": [
+        "find_by_name",
+        "generate_image",
+        "grep_search",
+        "list_dir",
+        "manage_task",
+        "read_url_content",
+        "replace_file_content",
+        "run_command",
+        "search_web",
+        "view_file",
+        "write_to_file"
+      ]
+    },
+    "mcp": {
+      "configuration": "one stdio MCP server in ~/.gemini/config/mcp_config.json",
       "count": 14,
-      "body_bytes": 46107,
+      "body_bytes": 46032,
       "names": [
         "call_mcp_tool",
         "find_by_name",
@@ -42,7 +81,7 @@
       ]
     }
   },
-  "advertised_but_never_declared": [
+  "advertised_but_never_declared_in_these_configurations": [
     "ask_custom_permission",
     "ask_permission",
     "ask_question",
@@ -91,6 +130,7 @@
     "model_path": "gemini-3.1-flash-lite-preview",
     "tools": 0,
     "body_bytes": 819,
-    "purpose": "conversation title generator (systemInstruction verbatim in the body)"
+    "purpose": "conversation title generator (systemInstruction verbatim in the body)",
+    "note": "present on a NEW conversation and absent on the resumed spawn, which sent only the main request"
   }
 }

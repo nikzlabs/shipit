@@ -110,9 +110,9 @@ Antigravity-specific is in [plan.md](./plan.md).
 **9 — Tests**
 - [x] The build-breaking parity tests extended (installer↔catalogue, registry
       list, reviewer ordering, headless validator message)
-- [x] Token freshness reader against a committed fixture — see the caveat in
-      `token-freshness-guard.test.ts`'s header: the KEY SET is a real
-      observation, the file was not re-captured
+- [x] Token freshness reader against a committed fixture. The fixture began as a
+      reconstruction (real key set, file not captured) and is now a REAL capture
+      — which is what corrected the reader; see the entry under Phase 10
 - [x] Stream conformance replayed from the vendored `probes/*.ndjson`, and an
       adapter test whose guards were each proved red by mutation
 
@@ -135,10 +135,13 @@ Antigravity-specific is in [plan.md](./plan.md).
       `runs/2026-09-14-1715-antigravity-1.1.27.md` closes every gap it named:
       Step 4 in full on the ACCOUNT route (persisted history, UI snapshot, and a
       post-reload snapshot identical line for line), the recipe's negative
-      control, and the subagent surface — which turns out to be structurally
-      undrivable, not unexercised. `init.tools` advertises 57 tools and the CLI
-      declares **11** of them to the model (14 with an MCP server), measured on
-      the wire (`probes/tool-declarations.json`)
+      control in both halves, and the subagent surface — absent by configuration
+      rather than unexercised. `init.tools` advertises 57 tools and the CLI
+      declares **11** of them to the model (14 with an MCP server) in every
+      key-mode configuration measured — fresh, resumed, and a second model —
+      with the subagent family in none of them (`probes/tool-declarations.json`).
+      Account-mode declarations are NOT measured: that spawn talks to
+      `cloudcode-pa`, which the endpoint override does not redirect
 - [x] The failure **after partial output** fixture captured
       (`probes/partial-fail.ndjson`): exit 1, `result.status: "ERROR"`, empty
       stderr, after a complete `agent_response` step

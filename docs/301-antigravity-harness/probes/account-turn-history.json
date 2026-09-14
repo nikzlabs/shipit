@@ -1,0 +1,99 @@
+{
+  "note": "GET /history for the account-mode dogfood session, reduced to what the docs/272 matrix asserts. Full bodies are not vendored; the tool name, input and result summary are the claim.",
+  "sessionId": "520f511b-5646-457f-a91a-c25bb712f693",
+  "route": "account:acct_bb68a5f5 (google, billingMode sub)",
+  "turns": [],
+  "toolCalls": [
+    {
+      "name": "Write",
+      "input": {
+        "file_path": "/tmp/antigravity-home-ofVrwQ/.gemini/antigravity-cli/brain/ac244edd-b54d-4d4f-bbed-5caefcdae296/todo.md"
+      },
+      "isError": false,
+      "result": ""
+    },
+    {
+      "name": "Read",
+      "input": {
+        "file_path": "/workspace/package.json"
+      },
+      "isError": false,
+      "result": "120 lines, 3862 bytes"
+    },
+    {
+      "name": "Write",
+      "input": {
+        "file_path": "/workspace/probe-note.md"
+      },
+      "isError": false,
+      "result": ""
+    },
+    {
+      "name": "Edit",
+      "input": {
+        "file_path": "/workspace/probe-note.md"
+      },
+      "isError": false,
+      "result": ""
+    },
+    {
+      "name": "Bash",
+      "input": {
+        "command": "echo conversion-probe"
+      },
+      "isError": false,
+      "result": "conversion-probe\r\n"
+    },
+    {
+      "name": "Grep",
+      "input": {
+        "pattern": "conversion-probe",
+        "path": "/workspace"
+      },
+      "isError": false,
+      "result": ""
+    },
+    {
+      "name": "Edit",
+      "input": {
+        "file_path": "/tmp/antigravity-home-ofVrwQ/.gemini/antigravity-cli/brain/ac244edd-b54d-4d4f-bbed-5caefcdae296/todo.md"
+      },
+      "isError": false,
+      "result": ""
+    },
+    {
+      "name": "Glob",
+      "input": {
+        "path": "/workspace/sessions/520f511b-5646-457f-a91a-c25bb712f693/workspace"
+      },
+      "isError": false,
+      "result": ".git/\n.github/\n.gitignore\nDESIGN.md\nREADME.md\ndocker-compose.yml\nindex.html\npackage-lock.json\npackage.json\nplugin/\nshipit.yaml\nsrc/\ntsconfig.json\nvite.config.ts"
+    }
+  ],
+  "usage": [
+    {
+      "inputTokens": 39654,
+      "outputTokens": 3930,
+      "costUsd": 0,
+      "durationMs": 79424,
+      "timestamp": "2026-09-14 17:23:15",
+      "cacheRead": 93505,
+      "model": "gemini-3.1-pro-preview",
+      "contextTokens": 30048,
+      "billingMode": "sub",
+      "atApiRatesUsd": 0.145169
+    },
+    {
+      "inputTokens": 26137,
+      "outputTokens": 1257,
+      "costUsd": 0,
+      "durationMs": 213009,
+      "timestamp": "2026-09-14 17:25:28",
+      "cacheRead": 36685,
+      "model": "gemini-3.1-pro-preview",
+      "contextTokens": 31995,
+      "billingMode": "sub",
+      "atApiRatesUsd": 0.074695
+    }
+  ]
+}

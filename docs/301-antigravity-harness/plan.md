@@ -256,15 +256,19 @@ selected (req 1): pickers, roles and `SHIPIT_HARNESSES` all derive from
   boundary.
 - **`init.tools` is the CLI's catalogue, not the model's toolset.** Measured on
   the wire on 1.1.27 (`probes/tool-declarations.sh` →
-  `probes/tool-declarations.json`): a headless spawn declares **11** functions
-  to the model, 14 with one stdio MCP server. The subagent family, the `ask_*`
-  family, every `browser_*`, `command_status`, `send_command_input`, `sed_file`,
-  `multi_replace_file_content`, `notebook_edit` and `schedule` are advertised and
-  never offered — so 9 of the normalizer's 18 names cannot arrive on this
-  version. The map stays a superset on purpose: it costs nothing, and a later
-  version that declares them renders a named card rather than a raw tool name.
-  Each turn also makes a tool-free side call to `gemini-3.1-flash-lite-preview`
-  to generate a conversation title, which the stream's `usage` does not cover.
+  `probes/tool-declarations.json`), in four key-mode configurations — a fresh
+  turn, the same conversation resumed, `gemini-3.8-flash`, and one stdio MCP
+  server: **11** functions reach the model, 14 with the MCP server. The subagent
+  family, the `ask_*` family, every `browser_*`, `command_status`,
+  `send_command_input`, `sed_file`, `multi_replace_file_content`, `notebook_edit`
+  and `schedule` are advertised and offered in none of them — so 9 of the
+  normalizer's 18 names did not arrive in any measured configuration. The map
+  stays a superset on purpose: it costs nothing, and a later version that
+  declares them renders a named card rather than a raw tool name. **Account mode
+  is not measured this way**: it calls `cloudcode-pa`, which
+  `GOOGLE_GEMINI_BASE_URL` does not redirect. A new conversation also makes a
+  tool-free side call to `gemini-3.1-flash-lite-preview` to generate a title,
+  which the stream's `usage` does not cover; a resumed spawn does not.
 
 ## Install (recipe step 3, req 5)
 
@@ -498,15 +502,25 @@ key became billable, and set it to `true`
 backgrounded, read the markdown off stdout and applied the fixes, in one
 419 s turn).
 
-**ACCOUNT mode is the one thing still unmeasured**, and it needs a human to
-complete a Google sign-in once. Getting that far took a fix of its own: the
-sign-in spawns on a **pty**, because the CLI starts an interactive login only
-when stdin is a character device and refuses on a pipe — and a pipe is what
-delivering the pasted code requires, so the shipped flow could never complete.
-Phase 0 missed it because `probe.sh` ran the CLI from a shell, where stdin was
-already interactive; the probe and production differed in invocation shape, not
-in version or environment (`probes/signin-stdin-shape.md`). Three items wait on it: a dogfood turn on the
-account billing route, a real token file to replace the reconstructed
-freshness fixture, and the account-mode egress host — the allowlist carries
-`cloudcode-pa.googleapis.com` from the pinned binary's compiled host list,
-never from an observed request.
+**ACCOUNT mode was measured on 2026-09-14**, after a human completed a Google
+sign-in once. Getting that far took a fix of its own: the sign-in spawns on a
+**pty**, because the CLI starts an interactive login only when stdin is a
+character device and refuses on a pipe — and a pipe is what delivering the pasted
+code requires, so the shipped flow could never complete. Phase 0 missed it
+because `probe.sh` ran the CLI from a shell, where stdin was already interactive;
+the probe and production differed in invocation shape, not in version or
+environment (`probes/signin-stdin-shape.md`).
+
+The three items that waited on the sign-in are all closed, and each was a defect:
+
+- **A dogfood turn on the account billing route** — done twice
+  (`probes/account-spawn.log`, `probes/account-turn-history.json`), and the
+  docs/272 Step 4 matrix was re-run on that route.
+- **The freshness fixture** — a real capture now, and it corrected the reader: a
+  sign-in writes `{auth_method, token:{…}}`, so every real token read `null` at
+  the top level (`token-freshness=unorderable outcome=stranded-rotation`).
+  Account identity is honestly ABSENT: a `consumer` token carries no `id_token`.
+- **The account-mode egress host** — observed, and the inferred one was wrong. A
+  real account turn called `daily-cloudcode-pa.googleapis.com`; the bare
+  `cloudcode-pa.googleapis.com` from the compiled host list appeared nowhere, and
+  allowlist entries are exact unless they start with a dot. Both are listed now.

@@ -198,3 +198,13 @@ has no observed driver" as **structural**, not unexercised.
 The request bodies themselves are deliberately not vendored — they are ~42 KB of
 Google's own system instruction each, and the derived name lists are the whole
 measurement.
+
+### Account mode (2026-09-14, dogfood, `google/sub`)
+
+`account-spawn.log` — the orchestrator's own lines for both turns: the route,
+the `--add-dir <session workspace>`, and the credential scrub.
+`account-turn-history.json` — `GET /history` reduced to the tool calls and the
+turn usage (`billingMode: "sub"`, `costUsd: 0`). `account-ui-before-reload.txt` /
+`account-ui-after-reload.txt` — the transcript's accessibility tree before and
+after a page reload, 236 lines each and identical once `[ref=…]` is stripped
+(Playwright re-mints the refs per load, and prefixes the second load's `f1e…`).
