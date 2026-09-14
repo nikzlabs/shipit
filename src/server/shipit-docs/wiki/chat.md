@@ -29,9 +29,10 @@ composer keeps a **draft per session**, so switching away mid-sentence and
 coming back does not lose it.
 
 Below about 700px of composer width — the chat panel is a draggable split, so
-this happens on a wide window with a narrow panel too — the permission, harness,
-model and reasoning controls fold into a single settings menu, and the mic, Stop
-and Send stay where they are.
+this happens on a wide window with a narrow panel too — the harness, model and
+reasoning controls fold into a single settings menu. The permission-and-network
+control keeps its own place in the row on every width, as do the mic, Stop and
+Send.
 
 ### Permission mode
 
@@ -41,8 +42,18 @@ supports appear, so on a harness with one mode there is nothing to choose.
 | Mode | Means |
 |---|---|
 | **Plan** | Read-only. You research and plan; you do not edit |
-| **Guarded** | Autonomous, but every shell and network command is safety-checked before it runs and risky ones are blocked. Slower, and costs a little more. Needs a Sonnet or Opus model — the menu says so and refuses the pick otherwise |
+| **Guarded** | Autonomous, but every shell and network command is safety-checked before it runs and risky ones are blocked. Slower, and costs a little more. Conditions below |
 | **Auto** | Autonomous, no command safety check |
+
+**Guarded mode can be picked and then not happen, and this is worth getting
+right** — it is the one place where reassuring the user wrongly has a cost. The
+menu enforces the model half: guarded needs a Sonnet or Opus model, and it
+refuses the pick otherwise. The *account* half is only discovered when the turn
+starts: it also needs a Max, Team or Enterprise plan, and where the account or
+the model cannot run it, ShipIt says so in the conversation and **runs the turn
+in auto — with no command safety check at all**, as do the turns after it. So if
+the user asks whether their commands are being checked, look for that notice
+rather than answering from the control's label.
 
 In Plan mode your plan arrives as a card with **Accept & Execute**, **Accept in
 Guarded Mode** (only where the harness has a guarded mode) and **Suggest
@@ -65,26 +76,29 @@ from the `@` ones below: **50MB per file, 20 files at a time, 500MB per
 session**. The session's uploads are also listed under **Uploads** at the bottom
 of the **Files** tab, where the user can delete one they no longer want.
 
-**Workspace file references — `@`.** Typing `@` opens a file picker over the
-session's own checkout. Picking one writes
-`@path` into the message and adds a chip. ShipIt reads that file and inlines its
-contents, marked as untrusted content — **at the moment the message runs**, not
-the moment it was typed, so a message that sat in the queue carries the file as
-it is when its turn starts. Limits: **10 files per message, 100KB per file,
-500KB in total** — over any of them the send is refused with a message saying
-which. The same chip can be added
-from the **Files** tab ("Add to chat") or by dragging a file out of the file tree
-onto the composer.
+**Workspace file references — `@`.** A pointer at a file in the session's own
+checkout, picked from the `@` menu (next section), added from the **Files** tab
+with "Add to chat", or dragged out of the file tree onto the composer. Each one
+shows as a chip. ShipIt reads the file and inlines its contents, marked as
+untrusted content — **at the moment the message runs**, not the moment it was
+typed, so a message that sat in the queue carries the file as it is when its
+turn starts. Limits: **10 files per message, 100KB per file, 500KB in total** —
+over any of them the send is refused with a message saying which.
 
 **A large paste.** Pasting **2000 characters or more** attaches it as
 `pasted-text.txt` instead of dumping it into the box.
 
-Two refusals worth recognising, because the user will ask why Send is dead:
-while an attachment is still uploading, and while one has failed — the button's
-tooltip says which, and a failed chip offers Retry. And a message carrying an
-image sent on a model known to be text-only is refused outright, naming the
-model and offering the two ways out: remove the attachment, or switch the
-session's model.
+Three refusals worth recognising, because the user will ask why Send is dead.
+Two are about the attachment: while one is still uploading, and while one has
+failed — the button's tooltip says which, and a failed chip offers Retry. The
+third is not about attachments at all — when no model provider can run a turn,
+the whole composer is dead and says so in its placeholder, *"Add a model
+provider to start chatting"*; that is an install with no usable account behind
+it, and the answer is Settings → Integrations, not anything about the message.
+
+Separately, a message carrying an image sent on a model known to be text-only is
+refused outright, naming the model and offering the two ways out: remove the
+attachment, or switch the session's model.
 
 ## `@` files and `/` skills
 
@@ -199,11 +213,14 @@ still needs them stay. Each collapsed turn carries a **Show full turn** button.
 It is saved per browser, so it does not follow the user to their phone.
 
 **Search.** The magnifying glass in the strip at the very top of the
-conversation opens a search bar over the whole conversation, with a match count
-and next/previous (Enter and Shift+Enter step through them, Escape closes). It
-is the one that finds text inside a collapsed turn — and it reveals it — where
-the browser's own Find can only see what is on screen. The strip carries it in
-an ordinary session; a sandbox session has a different strip and no search.
+conversation opens a search bar, with a match count and next/previous (Enter and
+Shift+Enter step through them, Escape closes). It is the one that finds text
+inside a collapsed turn — and it reveals it — where the browser's own Find can
+only see what is on screen. It searches the **message text** of every turn, and
+nothing else: a command inside a tool call, a tool's output, or a label on a
+card will not be found, so do not send the user hunting for one that way. The
+strip carries it in an ordinary session; a sandbox session has a different strip
+and no search.
 
 **The context dial.** The ring in the composer row — present once ShipIt knows
 the session's model, so not on a session that has never run a turn — shows how
@@ -224,7 +241,10 @@ ways it happens:
   `/compact keep the API decisions, drop the debugging`. This one is genuinely
   theirs: there is no command that lets you compact your own conversation, so
   when context is the problem, say that and let them type it. The dial's popover
-  suggests it once the ring is orange or red.
+  suggests it once the ring is orange or red. Note that supporting compaction
+  and honouring those extra instructions are two different things — some
+  harnesses take only the instruction to compact and summarise on their own
+  terms, so do not promise that a phrasing will be obeyed.
 - **The harness does it itself** when its context fills.
 - **After a merge.** When a session's pull request has merged and the user's
   next message will reset the branch to the latest base, the composer offers
@@ -243,9 +263,14 @@ that it ran.
 alone (or `/goal status`) reads it, and `/goal clear` removes it. Where the
 harness has them, `/goal pause` and `/goal resume` too. A goal shows as a chip
 above the composer carrying its objective and its state — active, paused,
-blocked, complete. **Reaching the objective does not remove the chip**; it
-changes its state. Clearing it is what removes it, which is why a session can
-sit there showing a finished goal.
+blocked, complete.
+
+What happens when the objective is reached depends on the harness, so do not
+promise either outcome. Some evaluate the condition themselves and clear the
+goal silently; ShipIt re-reads the goal after the turn and the chip goes. Others
+leave it in place reading **Complete** until someone clears it, which is why a
+session can sit there showing a finished goal. `/goal` reports the truth in both
+cases.
 
 Which of those a session offers depends entirely on the harness — the `/` menu
 lists only the ones it can actually do, and an action with no equivalent is
@@ -260,14 +285,16 @@ commit like any other.
 chart, a rendered document — with no dev server. Write the file, then call
 `present`; `/shipit-docs/present.md` is the full reference. The conditions worth
 knowing, because users ask: **the Present tab only exists once the session has
-at least one artifact**, and ShipIt switches the panel to it only for the
-**first non-inline** one — after that a new artifact raises a count badge
-instead of taking the screen, and an `inline: true` artifact never takes it at
-all, because you have already put that one in front of them. The tab is a
-carousel with previous/next, a gallery and a download button, and the file path
-is the identity: re-presenting the same path updates that entry in place.
-Passing `inline: true` also puts the artifact in the conversation as a card,
-where it stays.
+at least one artifact**, and ShipIt takes the user to it exactly once — when the
+session's *very first* artifact arrives and it is not inline. Everything after
+that raises a count badge on the tab instead of taking the screen. The corollary
+catches people out: if the first artifact of the session was `inline: true`, no
+later one will ever open the tab by itself, so say where it is rather than
+assuming they are looking at it. The file path is the identity — re-presenting
+the same path updates that entry in place — and a second artifact gives the tab
+its previous/next arrows and gallery, which a single one has no need of. Passing
+`inline: true` also puts the artifact in the conversation as a card, where it
+stays.
 
 Use it. A diagram you described in prose is a diagram the user did not see.
 
