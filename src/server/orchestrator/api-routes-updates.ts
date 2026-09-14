@@ -1,22 +1,51 @@
 import type { FastifyInstance } from "fastify";
-import { checkForUpdates, requestRestart, requestUpdate } from "./services/updates.js";
+import { requestRestart, requestUpdate } from "./services/updates.js";
 import { applyReleaseChannel } from "./services/settings-apply.js";
 import type { SettingsBroadcastDeps } from "./services/settings-apply.js";
+import {
+  checkUpdatesAndRecord,
+  dismissUpdateNotice,
+  versionAnchor,
+  type UpdateNoticeDeps,
+} from "./services/update-notice.js";
+import type { CredentialStore } from "./credential-store.js";
+import type { UpdateNotice, VersionInfo } from "../shared/types.js";
 import { ServiceError } from "./services/types.js";
 import { getErrorMessage } from "./validation.js";
 
-export type UpdateRoutesDeps = SettingsBroadcastDeps;
+export interface UpdateRoutesDeps extends SettingsBroadcastDeps {
+  credentialStore: CredentialStore;
+  version?: VersionInfo;
+}
+
+export function updateNoticeDeps(deps: UpdateRoutesDeps): UpdateNoticeDeps {
+  return {
+    store: deps.credentialStore,
+    anchor: versionAnchor(deps.version),
+    broadcast: (notice: UpdateNotice) => deps.sseBroadcast("update_notice", notice),
+  };
+}
 
 export async function registerUpdateRoutes(app: FastifyInstance, deps: UpdateRoutesDeps): Promise<void> {
   app.post("/api/updates/check", async (_request, reply) => {
     try {
-      return await checkForUpdates();
+      // Records the day's check and refreshes the banner, so a manual check and
+      // the daily one are the same act (docs/304).
+      return await checkUpdatesAndRecord(updateNoticeDeps(deps));
     } catch (err) {
       if (err instanceof ServiceError) {
         reply.code(err.statusCode).send({ error: err.message });
         return;
       }
       reply.code(500).send({ error: `Failed to check for updates: ${getErrorMessage(err)}` });
+    }
+  });
+
+  app.post("/api/updates/dismiss", async (_request, reply) => {
+    try {
+      return { notice: dismissUpdateNotice(updateNoticeDeps(deps)) };
+    } catch (err) {
+      reply.code(500).send({ error: `Failed to dismiss update notice: ${getErrorMessage(err)}` });
     }
   });
 
@@ -32,6 +61,12 @@ export async function registerUpdateRoutes(app: FastifyInstance, deps: UpdateRou
         reply.code(500).send({ error: outcome.detail ?? "Failed to set channel", outcome });
         return;
       }
+      // The write's own check already ran under the new channel; record that
+      // result rather than paying for a second fetch (docs/304).
+      await checkUpdatesAndRecord({
+        ...updateNoticeDeps(deps),
+        checkUpdates: () => Promise.resolve(status),
+      });
       return status;
     } catch (err) {
       if (err instanceof ServiceError) {

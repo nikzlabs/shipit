@@ -12,6 +12,7 @@ import type {
   AgentProcess,
   LimitsRefreshResult,
   EgressEnforcementStatus,
+  VersionInfo,
 } from "../shared/types.js";
 import type { ReconcileEgressOutcome } from "./services/reconcile-session-egress.js";
 import type { UsageManager } from "./usage.js";
@@ -167,6 +168,8 @@ export interface ApiDeps {
   trackerFetchImpl?: typeof fetch;
   /** Runs background work that needs a harness but no session (docs/299-direct-provider-calls req 8). */
   backgroundHarnessRunner?: BackgroundHarnessRunner | null;
+  /** The running build, for the update notice's anchor (docs/304). */
+  version?: VersionInfo;
 }
 
 export function resolveSessionDir(
@@ -243,7 +246,11 @@ export async function registerApiRoutes(
       serviceManagers,
     });
   }
-  await registerUpdateRoutes(app, { sseBroadcast: deps.sseBroadcast });
+  await registerUpdateRoutes(app, {
+    credentialStore: deps.credentialStore,
+    sseBroadcast: deps.sseBroadcast,
+    ...(deps.version ? { version: deps.version } : {}),
+  });
   await registerAgentRoutes(app, deps);
   await registerAgentSettingsRoutes(app, deps);
   await registerVoiceRoutes(app, deps);

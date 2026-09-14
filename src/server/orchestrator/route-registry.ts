@@ -58,6 +58,7 @@ import type { StartupMonitors } from "./startup-monitors.js";
 import { getContainerFreshness } from "./container-freshness.js";
 import { buildComposeAttachReplay } from "./compose-attach-replay.js";
 import { startSseKeepalive, startWebSocketKeepalive } from "./keepalive.js";
+import { currentUpdateNotice, versionAnchor } from "./services/update-notice.js";
 import { applyRoleToSession, resolveUserRole } from "./services/session-role.js";
 import { ServiceError } from "./services/types.js";
 
@@ -137,6 +138,13 @@ export function registerSseEndpoint(app: FastifyInstance, rt: OrchestratorRuntim
 
     client.write(`event: system_info\ndata: ${JSON.stringify({ processStartedAt, buildId, version, updateMode })}\n\n`);
 
+    // Without the replay a fresh page load would wait for the next daily check
+    // to learn what the server already knows (docs/304).
+    const updateNotice = currentUpdateNotice(credentialStore, versionAnchor(version));
+    if (updateNotice) {
+      client.write(`event: update_notice\ndata: ${JSON.stringify(updateNotice)}\n\n`);
+    }
+
     if (dockerForStats) {
       void (async () => {
         const stats = await readDockerMemoryStats(dockerForStats);
@@ -187,7 +195,7 @@ export async function registerRoutes(
     refreshPluginReposForSession, runPluginCommandForSession,
     prStatusPoller, releaseStatusPoller, limitsRegistry, recordAgentRateLimits, markSessionAccountExhausted,
     createSessionDir, warmSessionForRepo, waitForWarmSession,
-    clientDir, logStore, buildId,
+    clientDir, logStore, buildId, version,
   } = rt;
   const { kickDiskEscalation } = monitors;
   const { agentMergeClaims, agentMergeExecutor } = rt;
@@ -282,6 +290,7 @@ export async function registerRoutes(
     oomBreaker,
     loopDetector,
     backgroundHarnessRunner,
+    version,
     ...(deps.mcpOAuthFetchImpl !== undefined
       ? { mcpOAuthFetchImpl: deps.mcpOAuthFetchImpl }
       : {}),

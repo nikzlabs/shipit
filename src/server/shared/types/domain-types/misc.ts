@@ -65,6 +65,27 @@ export interface SystemInfo {
   updateMode?: "managed" | "manual";
 }
 
+/** What the background update check tells viewers (docs/304). */
+export interface UpdateNotice {
+  /** A newer version on this channel; never true for a downgrade. */
+  available: boolean;
+  latestVersion: string;
+  currentVersion: string;
+  dismissed: boolean;
+}
+
+/** Persisted form. Discarded whole once `anchor` stops matching the running build. */
+export interface UpdateNoticeRecord {
+  /** The running build the rest of this record describes. */
+  anchor: string;
+  /** ISO; last check that succeeded. */
+  lastCheckedAt?: string;
+  /** ISO; last check attempted, successful or not — the failure backoff reads this. */
+  lastAttemptAt?: string;
+  dismissed?: boolean;
+  result?: Omit<UpdateNotice, "dismissed">;
+}
+
 export interface HostContainerInfo {
   id: string;
   name: string;

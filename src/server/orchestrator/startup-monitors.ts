@@ -20,6 +20,8 @@ import { serializeStackOp } from "./stack-op-queue.js";
 import { startWarmTierSweep } from "./warm-tier-sweep.js";
 import { sweepWorkspaceBlocksAtStartup } from "./services/workspace-block.js";
 import { stopWarmPreview } from "./warm-preview.js";
+import { runUpdateCheckIfDue, versionAnchor, UPDATE_CHECK_TICK_MS } from "./services/update-notice.js";
+import type { UpdateNotice } from "../shared/types.js";
 
 export interface StartupMonitors {
   kickDiskEscalation: (excludeSessionId?: string) => void;
@@ -39,6 +41,7 @@ export async function startStartupMonitors(
     repoPrefetcher, claudeOAuthRefresherRef, codexOAuthRefresherRef,
     startupTimer, authManagers, dockerProxyServer, databaseManager,
     mergeWatchManager, autoPushScheduler, agentMergeExecutor, cleanupContainer,
+    version,
   } = rt;
 
   // Held for the process: the first dictation after a quiet period must not pay
@@ -267,6 +270,20 @@ export async function startStartupMonitors(
     diskEscalationInterval.unref();
   }
 
+  // docs/304 — nobody should have to open Settings to learn an update exists.
+  // The tick only asks whether a check is due; `lastCheckedAt` is persisted, so
+  // restarting (which every update does) does not earn an extra check.
+  const updateNoticeDeps = {
+    store: credentialStore,
+    anchor: versionAnchor(version),
+    broadcast: (notice: UpdateNotice) => sseBroadcast("update_notice", notice),
+  };
+  const updateCheckInterval = isTestMode
+    ? null
+    : setInterval(() => { void runUpdateCheckIfDue(updateNoticeDeps); }, UPDATE_CHECK_TICK_MS);
+  if (updateCheckInterval?.unref) updateCheckInterval.unref();
+  if (!isTestMode) void runUpdateCheckIfDue(updateNoticeDeps);
+
   if (containerManager) {
     const keepPreviewSupervisor = createKeepPreviewRestartSupervisor({
       sessionManager,
@@ -321,6 +338,7 @@ export async function startStartupMonitors(
     if (idleEnforcementInterval) clearInterval(idleEnforcementInterval);
     if (diskEscalationInterval) clearInterval(diskEscalationInterval);
     if (warmSweepInterval) clearInterval(warmSweepInterval);
+    if (updateCheckInterval) clearInterval(updateCheckInterval);
     if (repoPrefetcher) repoPrefetcher.stop();
     claudeOAuthRefresherRef.ref?.stop();
     codexOAuthRefresherRef.ref?.stop();

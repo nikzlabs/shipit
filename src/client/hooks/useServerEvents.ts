@@ -9,7 +9,7 @@ import { useSettingsStore } from "../stores/settings-store.js";
 import { useEgressStore } from "../stores/egress-store.js";
 import type { ToastData } from "../components/Toast.js";
 import { fullResetAllStores } from "../stores/actions/session-actions.js";
-import type { AgentId, SessionInfo, RepoInfo, PrStatusSummary, DockerMemoryStats, SystemInfo, SubscriptionLimitsMap, PermissionMode, CredentialRoute, EgressSettings } from "../../server/shared/types.js";
+import type { AgentId, SessionInfo, RepoInfo, PrStatusSummary, DockerMemoryStats, SystemInfo, SubscriptionLimitsMap, PermissionMode, CredentialRoute, EgressSettings, UpdateNotice } from "../../server/shared/types.js";
 import type { ReviewerSlotView, RoleView } from "../../server/shared/types/agent-types.js";
 import type { EligibleModelOption, GoalActionModes } from "../agent-types.js";
 import { getLoadedClientBuildId, shouldReloadForServerBuild } from "../utils/client-build.js";
@@ -708,6 +708,11 @@ export function useServerEvents(): void {
       useUiStore.getState().setProcessStartedAt(data.processStartedAt);
       if (data.version) useUiStore.getState().setVersion(data.version);
       useUiStore.getState().setUpdateMode(data.updateMode ?? "manual");
+    });
+
+    es.addEventListener("update_notice", (e: MessageEvent) => {
+      const data = JSON.parse(e.data as string) as UpdateNotice;
+      useUiStore.getState().setUpdateNotice(data);
     });
 
     es.addEventListener("session_status", (e: MessageEvent) => {

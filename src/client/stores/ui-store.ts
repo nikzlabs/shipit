@@ -4,7 +4,7 @@ import type { AgentOption } from "../agent-types.js";
 import type { SessionUsage, UsageStats } from "../../server/shared/types.js";
 import type { ModelInfo } from "../utils/model-info.js";
 import type { ToastData } from "../components/Toast.js";
-import type { AgentId, DockerMemoryStats, SubscriptionLimitsMap, RuntimeMode, VersionInfo } from "../../server/shared/types.js";
+import type { AgentId, DockerMemoryStats, SubscriptionLimitsMap, RuntimeMode, UpdateNotice, VersionInfo } from "../../server/shared/types.js";
 import {
   getSavedAgentId,
   getSavedSidebarCollapsed,
@@ -94,6 +94,9 @@ interface UiState {
   version: VersionInfo | null;
   updateMode: "managed" | "manual";
 
+  /** The background update check's latest word; null until one has run (docs/304). */
+  updateNotice: UpdateNotice | null;
+
   subscriptionLimits: SubscriptionLimitsMap;
 
   runtimeMode: RuntimeMode;
@@ -129,6 +132,7 @@ interface UiState {
   setProcessStartedAt: (epochMs: number | null) => void;
   setVersion: (version: VersionInfo | null) => void;
   setUpdateMode: (updateMode: "managed" | "manual") => void;
+  setUpdateNotice: (updateNotice: UpdateNotice | null) => void;
   setSubscriptionLimits: (limits: SubscriptionLimitsMap) => void;
   setBootstrapLoaded: (loaded: boolean) => void;
   setRuntimeMode: (mode: RuntimeMode) => void;
@@ -169,6 +173,7 @@ const initialState = {
   processStartedAt: null as number | null,
   version: null as VersionInfo | null,
   updateMode: "manual" as "managed" | "manual",
+  updateNotice: null as UpdateNotice | null,
   subscriptionLimits: {} as SubscriptionLimitsMap,
   runtimeMode: "containerized" as RuntimeMode,
   tailnetPreviewHost: null as string | null,
@@ -247,6 +252,7 @@ export const useUiStore = create<UiState>((set) => ({
   setProcessStartedAt: (processStartedAt) => set({ processStartedAt }),
   setVersion: (version) => set({ version }),
   setUpdateMode: (updateMode) => set({ updateMode }),
+  setUpdateNotice: (updateNotice) => set({ updateNotice }),
 
   setSubscriptionLimits: (subscriptionLimits) => set({ subscriptionLimits }),
 

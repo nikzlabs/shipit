@@ -7,17 +7,15 @@ import type { WsStatus } from "../hooks/useWebSocket.js";
 
 const DISCONNECT_DELAY_MS = 1500;
 
-export function ConnectionBanner({
-  status,
-  reconnectAttempt = 0,
-  onReconnect,
-  compact = false,
-}: {
-  status: WsStatus;
-  reconnectAttempt?: number;
-  onReconnect?: () => void;
-  compact?: boolean;
-}) {
+export type ConnectionBannerState = "reconnected" | "connecting" | "lost";
+
+/**
+ * Whether the connection pill should be showing, and as what. Owns the 1.5 s
+ * delay before a disconnect is announced and the 3 s "Reconnected" flash, so a
+ * caller that shares the slot (`TopPanelBanner`) can ask once rather than
+ * mounting a second copy whose timers would start from scratch.
+ */
+export function useConnectionBannerState(status: WsStatus): ConnectionBannerState | null {
   const prevStatusRef = useRef(status);
   const [showReconnected, setShowReconnected] = useState(false);
   const [showDisconnect, setShowDisconnect] = useState(false);
@@ -46,7 +44,23 @@ export function ConnectionBanner({
     }
   }, [status]);
 
-  if (status === "open" && showReconnected) {
+  if (status === "open") return showReconnected ? "reconnected" : null;
+  if (!showDisconnect) return null;
+  return status === "connecting" ? "connecting" : "lost";
+}
+
+export function ConnectionBannerPill({
+  state,
+  reconnectAttempt = 0,
+  onReconnect,
+  compact = false,
+}: {
+  state: ConnectionBannerState;
+  reconnectAttempt?: number;
+  onReconnect?: () => void;
+  compact?: boolean;
+}) {
+  if (state === "reconnected") {
     return (
       <div
         role="status"
@@ -58,9 +72,7 @@ export function ConnectionBanner({
     );
   }
 
-  if (status === "open" || !showDisconnect) return null;
-
-  const isConnecting = status === "connecting";
+  const isConnecting = state === "connecting";
 
   return (
     <div
@@ -94,5 +106,28 @@ export function ConnectionBanner({
         </button>
       )}
     </div>
+  );
+}
+
+export function ConnectionBanner({
+  status,
+  reconnectAttempt = 0,
+  onReconnect,
+  compact = false,
+}: {
+  status: WsStatus;
+  reconnectAttempt?: number;
+  onReconnect?: () => void;
+  compact?: boolean;
+}) {
+  const state = useConnectionBannerState(status);
+  if (!state) return null;
+  return (
+    <ConnectionBannerPill
+      state={state}
+      reconnectAttempt={reconnectAttempt}
+      compact={compact}
+      {...(onReconnect ? { onReconnect } : {})}
+    />
   );
 }

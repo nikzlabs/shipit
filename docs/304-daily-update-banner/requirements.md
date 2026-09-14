@@ -19,19 +19,26 @@ description: ShipIt checks for a newer version once a day and shows a dismissibl
    code, a later available version notifies again.
 6. No update notification appears while ShipIt is already running the newest
    version on its channel.
+7. Acting on the banner opens Settings → Software Updates, where the changelog,
+   the channel selector and the existing update control already are. The banner
+   itself never applies an update.
+8. A dismissal covers the whole install: every browser and every device pointed
+   at this ShipIt goes quiet, and stays quiet across reloads and restarts.
+9. The banner can appear anywhere the top panel is — including the home screen
+   and the new-session view, where the reconnecting banner is never shown.
 
 ## Open questions
 
-- What the banner offers besides "dismiss": does it apply the update in place,
-  or open Settings → Software Updates where the changelog and the existing
-  "Update Now" button live?
-- Whether a dismissal is per install (stored on the server, so every browser
-  and device is quiet) or per browser (stored locally, so another device still
-  sees the notice).
-- Whether the banner appears on the home screen and the new-session view, where
-  the reconnecting banner is not shown at all today because it has no session
-  to report on.
+- None.
 
 ## Resolved questions
 
-- None yet.
+- 2026-09-14 — What should the banner do besides let the user dismiss it?
+  Nik: open Settings → Software Updates; do not apply the update from the
+  banner. Carries the constraint that no update-applying logic is duplicated
+  outside Settings (req 7).
+- 2026-09-14 — Is a dismissal per install or per browser? Nik: the whole
+  install, stored on the server (req 8).
+- 2026-09-14 — Should the banner appear on the home screen and the new-session
+  view, where the reconnecting banner is hidden? Nik: yes, everywhere the top
+  panel is (req 9).
