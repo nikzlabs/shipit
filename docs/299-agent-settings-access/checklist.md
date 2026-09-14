@@ -64,9 +64,7 @@ No agent-facing surface; the proposal card is the next slice.
 
 Not in this slice, and named in `plan.md` → *What a card can apply today*: the
 collection operations that create and delete entries, and the credential and
-provider-account labels. The notice that tells the agent about a resolved card at
-the start of its next turn (req 8's second half) is the remaining work; the read
-carries the outcome today.
+provider-account labels.
 
 ## Conformance against reqs 2, 3 and 7
 
@@ -102,3 +100,51 @@ requirements; each finding verified at the code before being acted on.
       routing description trimmed to what the band renders; and the name gate's
       claim narrowed to what it does — it removes a URL, it is not a credential
       scanner, and the design rejected scanners
+
+## Phase 2, slice 3 — the outcome notice (req 8)
+
+- [x] `agent_notified` on the private proposal row, with
+      `listUnnotifiedResolved` / `markAgentNotified` as two separate calls —
+      reading is never a consume
+- [x] `services/settings-outcome-notice.ts` — the notice, joining the same
+      `agentPrefix` chain as the bug-report notice, batching every outcome
+      resolved since the last turn into one and starting no turn of its own
+- [x] `NoticeDelivery` in `turn-settlement.ts`, acknowledged from ONE place in
+      `turn-executor.ts` — the `agent_result` handler, after the `exhausted`
+      check and the failover decision, never for an error result, and only once
+      `promptSubmitted`: a resident process can land a result of its own before
+      env preparation finishes and the prompt is sent
+- [x] At-least-once proven on every shape review found: every account refusing
+      for quota (which then goes on to a later runnable turn and receives the
+      outcome); a refusal on a route that cannot fail over, which settles the
+      turn `completed`; a refusal arriving as successful-looking assistant text;
+      an error result; and a proxied submission the session worker never
+      accepted. The last four assert the outcome is still pending, which is the
+      invariant; only the quota test carries it through a second turn
+- [x] A resident streaming turn, which calls `finishTurn` never and whose
+      listeners the next reuse discards, acknowledges on its result — and a
+      result arriving before that turn's prompt was sent acknowledges nothing
+- [x] The notice carries no values at all: `from`/`to`, `outcome`,
+      `outcomeDetail` and an effect's prose are all channels for text the user or
+      the agent supplied, and a dismissed proposal would otherwise replay its own
+      proposed instructions in ShipIt's voice
+- [x] The one field ShipIt did not author — the instance address — cannot leave
+      the region marking it as data: a role name may hold `"` and `]`, and a
+      reviewer had a working exploit before the delimiters were stripped
+- [x] A card resolved with no runner alive still notifies on the next turn
+- [x] `shipit-docs/settings.md` — what the notice is, that `lastProposal` is the
+      authority, and that it can arrive twice
+- [x] Every new guard proven red on its own: marking at prompt assembly (the
+      bug-report copy) fails the quota tests; acknowledging at settlement on a
+      `completed` outcome fails all three of the refusal and resident-streaming
+      tests; dropping the `promptSubmitted` gate fails the before-submission
+      test; re-interpolating the card's values fails the trust-boundary test;
+      un-flattening any one field fails the flattening test; quoting the
+      instance without stripping delimiters fails the hostile-name test;
+      ignoring `submissionSettled()` fails the unaccepted-submission test;
+      dropping the flag on the reuse path fails the reused-process test;
+      counting writes,
+      not the flag, is what makes the idempotence test able to fail. Both clauses
+      of `resultIsTheAgentsOwn` are covered directly in
+      `turn-settlement.test.ts`, because no shipped adapter can produce the
+      `error`-without-`error`-status pair an integration test would need

@@ -216,9 +216,17 @@ async function runDispatchedTurnInner(
     ? ""
     : buildBugOutcomeNotice(deps.consumeBugOutcomes?.(runner.sessionId) ?? []);
 
+  // A settings outcome is NOT consumed here (docs/299 req 8): the receipt rides
+  // the turn and is settled by it, so a turn that never reaches the agent leaves
+  // the outcome for the next one.
+  const settingsOutcome = opts.systemTurn || isCompactRequest
+    ? null
+    : deps.settingsOutcomeNotice?.(runner.sessionId) ?? null;
+
   const agentPrefix = [
     pendingNotice,
     bugOutcomeNotice,
+    settingsOutcome?.notice,
     reset?.agentPrefix,
     isCompactRequest ? "" : dependencyGapAgentPrefix(runner.dependencyGap),
   ]
@@ -325,6 +333,7 @@ async function runDispatchedTurnInner(
       ...(opts.systemTurn !== undefined ? { systemTurn: opts.systemTurn } : {}),
       ...(opts.deliveryId !== undefined ? { deliveryId: opts.deliveryId } : {}),
       onTurnComplete: (outcome) => settleAttempt(attempt, outcome),
+      ...(settingsOutcome ? { noticeDeliveries: [settingsOutcome] } : {}),
       emitUserEcho: attempt === 0 && !opts.silent,
       ...(opts.agentInterface ? { agentInterface: opts.agentInterface } : {}),
       ...(opts.messageOrigin ? { messageOrigin: opts.messageOrigin } : {}),

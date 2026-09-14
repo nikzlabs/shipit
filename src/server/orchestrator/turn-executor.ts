@@ -45,7 +45,7 @@ import { formatSecretScanNotice } from "./services/secret-scan-notice.js";
 import { formatUnreadableWorkspaceNotice } from "./services/unreadable-workspace-notice.js";
 import { sessionAutoCommitAllowed } from "./services/auto-commit-gate.js";
 import { emitChatCard, emitNoticeInTurn, emitNoticePostTurn } from "./chat-card-persistence.js";
-import { TURN_COMPLETED, turnErrored, turnInterrupted, turnNoResult, type TurnOutcome } from "./turn-settlement.js";
+import { TURN_COMPLETED, resultIsTheAgentsOwn, turnErrored, turnInterrupted, turnNoResult, type NoticeDelivery, type TurnOutcome } from "./turn-settlement.js";
 import type { AgentInterfaceProvenance } from "../shared/agent-interface-sdk/protocol.js";
 import { getAgentCapabilities } from "../shared/agent-registry.js";
 
@@ -92,6 +92,13 @@ export interface TurnInput {
   postTurn?: "commit-push" | "none";
   systemTurn?: boolean;
   onTurnComplete?: (outcome: TurnOutcome) => void;
+  /**
+   * Receipts for notices already built into `prompt`, acknowledged only once the
+   * agent has produced a real result for it (docs/299-agent-settings-access
+   * req 8). A retry carries them onto its successor, so only the attempt that
+   * actually ran acknowledges.
+   */
+  noticeDeliveries?: readonly NoticeDelivery[];
   deliveryId?: string;
   adopt?: boolean;
   compact?: boolean;
@@ -129,6 +136,36 @@ export async function executeAgentTurn(
       arm();
     } catch (err) {
       console.error("[turn] arming the post-turn auto-push failed:", err);
+    }
+  };
+
+  // Set once this turn's prompt is known to have been accepted by the process.
+  let promptSubmitted = false;
+  const noteSubmitted = (): void => {
+    const settled = agent.submissionSettled?.();
+    // A synchronous submission has landed when the call returns; a proxied one
+    // has not, and a resident CLI can finish a turn of its own in that window.
+    if (!settled) {
+      promptSubmitted = true;
+      return;
+    }
+    void (async () => {
+      try {
+        await settled;
+        promptSubmitted = true;
+      } catch {
+        // The submission failed; the adapter's error path owns the turn.
+      }
+    })();
+  };
+
+  const notePromptDelivered = (): void => {
+    for (const delivery of input.noticeDeliveries ?? []) {
+      try {
+        delivery.delivered();
+      } catch (err) {
+        console.error(`[turn] a prompt-notice receipt for ${sessionId} threw:`, err);
+      }
     }
   };
 
@@ -894,6 +931,12 @@ export async function executeAgentTurn(
         retireOnSpentAccount({ summaryIsTheNotice: !event.error });
       });
     }
+    // Anything riding this prompt is delivered here, and must not be delivered
+    // in `settleTurn`: a resident streaming turn settles no turn at all, and its
+    // listeners are discarded by the next reuse. All three conditions hold the
+    // notice back rather than prove delivery, which is the safe direction
+    // (docs/299-agent-settings-access plan.md → And a notice on the next turn).
+    if (promptSubmitted && !exhausted && resultIsTheAgentsOwn(event)) notePromptDelivered();
     // Retry decisions still need adoption state; finalization after a result does not.
     servingAdoptedTurn = false;
     if (useStreaming) {
@@ -1119,6 +1162,7 @@ export async function executeAgentTurn(
         runner.appliedPermissionMode = input.permissionMode;
       }
       agent.sendUserMessage(prompt);
+      noteSubmitted();
     } else {
       if (input.deliveryId !== undefined) agent.setDeliveryId?.(input.deliveryId);
       const paramsBegan = Date.now();
@@ -1131,6 +1175,7 @@ export async function executeAgentTurn(
       );
       console.log(`[turn] build-run-params for ${sessionId} took ${Date.now() - paramsBegan}ms; spawning agent`);
       agent.run(input.useStreaming !== undefined ? { ...runParams, useStreaming: input.useStreaming } : runParams);
+      noteSubmitted();
       if (runner) runner.appliedPermissionMode = input.permissionMode;
       if (runner) {
         runner.appliedSpawnIdentity = desiredSpawnIdentity(

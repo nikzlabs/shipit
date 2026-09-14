@@ -666,29 +666,97 @@ longer matches resolves `stale`.
 ### And a notice on the next turn
 
 The read only helps an agent that thinks to read (req 8). So a resolved card also
-prefixes the agent's next turn, reusing the bug-report machinery: an
-`agentNotified` flag, a `consumeUnreportedSettingsOutcomes` beside
-`consumeUnreportedBugOutcomes` (`chat-history.ts:519`), joining the same
-`agentPrefix` chain (`ws-handlers/agent-execution.ts:414`,
-`dispatched-turn.ts:212`). Outcomes batch into one notice, and it never starts a
-turn of its own.
+prefixes the agent's next turn: `services/settings-outcome-notice.ts` joins the
+same `agentPrefix` chain the bug-report notice does
+(`ws-handlers/agent-execution.ts`, `dispatched-turn.ts`), outcomes batch into one
+notice, and it never starts a turn of its own.
 
-**Delivery is at-least-once, deliberately.** No layer here proves the agent read
-a prompt: the turn-start broadcast precedes submission, the proxy's submission
-methods return before their worker request completes
+**Delivery is at-least-once, deliberately** — and that is the one thing NOT
+copied from the bug-report machinery, which marks an outcome told *before*
+delivery (`chat-history.ts` → `consumeUnreportedBugOutcomes`) and so loses one
+for good when the turn then fails to spawn. Acceptable for a convenience; not for
+a requirement that says the agent *is* told. No layer here proves the agent read
+a prompt either: the turn-start broadcast precedes submission, the proxy's
+submission methods return before their worker request completes
 (`proxy-agent-process.ts:77`, `:91`), and a worker HTTP success can still be
 followed by a failed spawn or dead stdin.
 
-An outcome is marked notified only when its turn **settled as a real agent
-turn** — after ShipIt's credential-failure classification and failover retry
-(`credential-failure-policy.ts`, `quotaRetryInProgress` in `turn-executor.ts`).
-"Produced output" is not the test: when every account refuses for quota,
-`turn-executor.ts:30` emits assistant text saying so, and a rule keyed on output
-would consume the outcome on a turn the agent never saw. Raw
-`agent_result.status === "success"` is insufficient for the same reason.
+So the read and the acknowledgement are two calls, not one.
+`prepareSettingsOutcomeNotice` reads the session's resolved-but-untold cards
+**without marking any**, and hands back a `NoticeDelivery`
+(`turn-settlement.ts`) whose `delivered()` the executor calls.
 
-A duplicate notice costs a line of prompt; a lost one is the failure req 8
-exists to prevent. **The notice prompts; `lastProposal` decides.**
+**The signal is positive, and it is not a verdict over `TurnOutcome`.** Two
+shipped shapes rule that out, both found in review:
+
+- A quota refusal on a route that **cannot fail over** — `stopsOnFailure` is
+  `billingMode === "key"` (`credential-failure-policy.ts`) — arrives as an
+  ordinary `agent_result` and falls through to normal teardown, so the turn
+  settles **`completed`** with nothing having run. Neither "produced output" nor
+  `agent_result.status === "success"` is the test either: the CLI reports its own
+  limit as final text on a `success` result, which
+  `detectHardExhaustionInTurnText` is there to catch.
+- A **resident streaming** turn settles no turn at all: the streaming
+  `agent_result` branch runs its post-turn work and never calls `finishTurn`,
+  because the CLI stays alive and emits no `done` — and the next reuse discards
+  that executor's listeners (`dispatched-turn.ts`), so a receipt waiting on
+  settlement is lost for good and the notice repeats on every turn forever.
+
+So `delivered()` is called from **one place**: the `agent_result` handler, after
+the `exhausted` check and the failover decision, and under three conditions —
+the result is not a refusal, it `resultIsTheAgentsOwn` (neither `event.error` nor
+`status === "error"` — a conservative filter, since an error result can follow
+partial work, not proof the prompt never ran), and **`promptSubmitted`**.
+
+`promptSubmitted` is the nearest thing to prompt ownership available here, and it
+took two review rounds to get right. The executor's listeners go live before its
+`await prepareAgentEnv`, so on a **resident** process a CLI-started turn of the
+agent's own can land a result in that gap and preparation can then fail with the
+prompt never sent. Returning from the submission is not enough either:
+`ProxyAgentProcess.run` / `.sendUserMessage` post to the session worker and
+return before the answer (`proxy-agent-process.ts`), so a result in *that* window
+would be written off against a prompt the worker went on to reject. So the proxy
+exposes `submissionSettled()` and the executor waits for it; a synchronous
+submission has none and is landed when the call returns. What this still does not
+give is identity between a result and a prompt — a result that beats the
+confirmation leaves the notice for the next turn, which is the safe direction.
+
+Sequencing after the failover decision is what puts the acknowledgement past
+ShipIt's credential-failure classification (`quotaRetryInProgress`): a retry
+re-dispatches the same prompt carrying the same receipt, so only the attempt that
+actually ran acknowledges. Every other path — a crash, an interruption, the
+all-refused report, a turn that never spawned — simply never calls it.
+
+**The notice carries no values, and that is a trust decision rather than
+brevity.** `from`/`to` are formatted values and a `user_text` projection keeps
+what the user or the agent supplied; `outcome` and `outcomeDetail` can
+incorporate a value, an address or a raw exception message
+(`settings-decision.ts` → `getErrorMessage`). Interpolating any of them would put
+text that entered as somebody else's into a line the agent reads as ShipIt's —
+so a *dismissed* proposal would replay its own proposed instructions into the
+next prompt, laundered through the platform's voice. The notice states the
+setting, the instance, the phase and what to do, and the read is the authority
+for everything else. The one field ShipIt did not author is the instance
+address, which stays because a notice that cannot say *which* role or server says
+nothing useful; it is quoted, and the closing line tells the agent it is data.
+
+**A system turn carries no notice**, excluded explicitly at both call sites —
+`dispatched-turn.ts` and `ws-handlers/agent-execution.ts`, where the condition is
+this feature's own rather than the bug-report notice's (which relies on `compact`
+catching its only system-turn caller). An outcome resolved before an automatic
+turn (CI fix, conflict resolution, compaction) waits rather than being dropped,
+and reaches the agent on its next ordinary turn. Nothing is lost, and a settings
+notice inside a conflict-resolution prompt could only distract.
+
+**`agentNotified` is a column on the private proposal row, not a card field** —
+it is ShipIt's bookkeeping about a delivery, and nothing a viewer reads.
+
+Duplicates remain possible by design: a turn that ran and was interrupted, and a
+turn queued behind one that has not yet acknowledged, both carry the notice
+again. That is the safe direction: a duplicate costs a line of prompt; a lost one
+is the failure req 8 exists to prevent. **The notice prompts; `lastProposal`
+decides** — so its closing line sends the agent to the read rather than inviting
+it to trust that it was told once.
 
 ## Persistence
 
@@ -705,7 +773,7 @@ after the turn ends, and it decides between riding the turn and appending a fina
 row (`:128`).
 
 **One transition contract, and it is not `persistCardTransition`.** Every phase
-change — claim, dismiss, terminal, notified — goes through one function of this
+change — claim, dismiss, terminal — goes through one function of this
 feature's own: write the durable row unconditionally, then, only if a runner
 exists, sync the recorded card and emit. `persistCardTransition` requires a
 runner (`:156`) and runs its database callback **only** when it did not patch an
@@ -766,7 +834,8 @@ propose path and its refusals); `services/settings-operations.ts` (what an Apply
 button runs, per declared operation); `services/settings-decision.ts` (claim,
 lock, baseline, apply, and the boot pass that resolves an interrupted one);
 `services/settings-proposal-deps.ts` (one assembly both callers share);
-`ws-handlers/settings-proposal-handlers.ts`;
+`services/settings-outcome-notice.ts` (the next-turn notice and its deferred
+receipt); `ws-handlers/settings-proposal-handlers.ts`;
 `shared/settings-catalogue/tabs.ts` (the tab labels the dialog and a card's
 breadcrumb share);
 `session/agent-shim/shipit-settings.ts`; the client card handler and component;
@@ -776,7 +845,11 @@ Changed: `credential-store.ts`, `global-system-prompt.ts`, `git-config.ts`,
 `services/settings.ts`, `services/settings-derivation.ts`, `services/types.ts`,
 `api-routes-bootstrap.ts`, `api-routes-egress.ts`, `api-routes-mcp.ts`,
 `api-routes-updates.ts`, `api-routes-session-repos.ts`,
-`ws-handlers/egress-handlers.ts`, `client/utils/session-data.ts`
+`ws-handlers/egress-handlers.ts`, `turn-settlement.ts` (`NoticeDelivery`),
+`turn-executor.ts` (`noticeDeliveries`, acknowledged from the `agent_result`
+handler), `dispatched-turn.ts`, `session-runner.ts`,
+`runner-registry-factory.ts`, `bootstrap-managers.ts`,
+`client/utils/session-data.ts`
 (`refreshGlobalSettings`), the settings tab components and the bespoke
 panels they host (`ServicesPanel`, `CredentialRouting`, `ProviderAccountRows`,
 `RoleEditor`, `ReviewerSection`, `McpServerSettings/*`, `SettingsEgress`,

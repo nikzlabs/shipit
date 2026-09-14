@@ -16,6 +16,7 @@ import {
 import { emitResetEligible } from "../services/pre-turn-reset.js";
 import { applyPreTurnReset, type PreTurnResetHookResult } from "../pre-turn-reset-hook.js";
 import { buildBugOutcomeNotice } from "../services/bug-report.js";
+import { prepareSettingsOutcomeNotice } from "../services/settings-outcome-notice.js";
 import { routeVoiceNote } from "../voice/voice-note-router.js";
 import type { SessionRunnerInterface, SystemTurnDeps, QueuedMessage } from "../session-runner.js";
 import { startQueuedMessage, takeRunnableQueuedTurn } from "../queue-drain.js";
@@ -416,6 +417,18 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
       ? buildBugOutcomeNotice(ctx.chatHistoryManager.consumeUnreportedBugOutcomes(capturedSessionId))
       : "";
 
+  // Read, never consumed here (docs/299-agent-settings-access req 8): the receipt
+  // below is settled by the turn, so an outcome that never reaches the agent
+  // rides the next turn instead of being lost.
+  const settingsOutcome =
+    capturedSessionId && ctx.settingsProposals
+      && !opts.compact && !opts.systemTurn && !ridesTurnAsCommand
+      ? prepareSettingsOutcomeNotice(
+          { proposals: ctx.settingsProposals, chatHistoryManager: ctx.chatHistoryManager },
+          capturedSessionId,
+        )
+      : null;
+
   const activeDir = ctx.getActiveDir();
   const fileContext = validatedFiles.length > 0 ? formatFileContext(validatedFiles) : "";
   const imageContext =
@@ -424,6 +437,7 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
   const agentPrefix = [
     pendingAgentNotice,
     bugOutcomeNotice,
+    settingsOutcome?.notice,
     resetAgentPrefix,
     dependencyPrefix,
   ]
@@ -670,6 +684,7 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
       reuseExistingAgent: existingAgent !== null,
       emitErrorOnNoResult: true,
       onInterruptedTurn,
+      ...(settingsOutcome ? { noticeDeliveries: [settingsOutcome] } : {}),
     });
   } finally {
     if (sessionId) resetHook.ensureRecorded?.(sessionId);

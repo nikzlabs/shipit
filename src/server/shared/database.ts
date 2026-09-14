@@ -951,6 +951,17 @@ const MIGRATIONS: Migration[] = [
     if (columns.some((c) => c.name === "operation")) return;
     db.exec("ALTER TABLE settings_proposals ADD COLUMN operation TEXT NOT NULL DEFAULT 'set'");
   },
+
+  // docs/299-agent-settings-access req 8 — whether the agent has been told this
+  // proposal was resolved. It lives on the private row rather than the card
+  // because it is ShipIt's own bookkeeping about a delivery, not something a
+  // viewer reads; existing rows default to "not told", which at worst costs one
+  // notice naming a card the user already forgot about.
+  (db) => {
+    const columns = db.prepare("PRAGMA table_info(settings_proposals)").all() as { name: string }[];
+    if (columns.some((c) => c.name === "agent_notified")) return;
+    db.exec("ALTER TABLE settings_proposals ADD COLUMN agent_notified INTEGER NOT NULL DEFAULT 0");
+  },
 ];
 
 /** Guard tests that rewind user_version and replay later migrations. */

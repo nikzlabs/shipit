@@ -14,6 +14,7 @@ import type { ServiceManager } from "./service-manager.js";
 import type { SessionContainerManager } from "./session-container.js";
 import type { CredentialStore } from "./credential-store.js";
 import type { SecretStore } from "./secret-store.js";
+import type { SettingsProposalStore } from "./settings-proposal-store.js";
 import type { PrStatusPoller } from "./pr-status-poller.js";
 import type { AutoConflictResolveManager } from "./auto-conflict-resolve-manager.js";
 import type { AgentId, AgentProcess, LogSource, SubscriptionLimitsMap, SessionInfo } from "../shared/types.js";
@@ -46,6 +47,7 @@ import { emitResetEligible } from "./services/pre-turn-reset.js";
 import { wireResetEligibleOnFileChange } from "./reset-eligible-watch.js";
 import { postTurnCommit } from "./ws-handlers/post-turn.js";
 import { takeRoleStandingInstructions } from "./services/session-role.js";
+import { prepareSettingsOutcomeNotice } from "./services/settings-outcome-notice.js";
 import { routeVoiceNote } from "./voice/voice-note-router.js";
 import type { VoiceNotePayload, VoiceNoteSource } from "../shared/types/voice-note-types.js";
 import { getAgentCapabilities } from "../shared/agent-registry.js";
@@ -123,6 +125,8 @@ export interface RunnerRegistryDeps {
     onSettled?: (sessionId: string) => void,
   ) => void;
   resolvePluginServices?: ServiceSetupDeps["resolvePluginServices"];
+  /** Absent in minimal setups; without it a turn simply carries no settings notice. */
+  settingsProposals?: SettingsProposalStore;
 }
 
 export function assertSessionCanDispatch(
@@ -158,6 +162,7 @@ export function createRunnerRegistry(
     publishOverlayBases,
     activatePluginRepos,
     resolvePluginServices,
+    settingsProposals,
   } = registryDeps;
 
   return new SessionRunnerRegistry({
@@ -429,6 +434,12 @@ export function createRunnerRegistry(
         },
         consumePendingAgentNotice: (sessionId) => sessionManager.consumePendingAgentNotice(sessionId),
         consumeBugOutcomes: (sessionId) => chatHistoryManager.consumeUnreportedBugOutcomes(sessionId),
+        ...(settingsProposals
+          ? {
+              settingsOutcomeNotice: (sessionId: string) =>
+                prepareSettingsOutcomeNotice({ proposals: settingsProposals, chatHistoryManager }, sessionId),
+            }
+          : {}),
         ...(credentialStore
           ? { takeRoleInstructions: (sessionId: string) =>
               takeRoleStandingInstructions(sessionId, { sessionManager, credentialStore }) }
