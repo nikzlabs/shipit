@@ -56,13 +56,24 @@ line telling the agent the status is on screen and it can end its turn.
 
 ## Storage and transport (req 10)
 
-- `sessions.session_status` column, JSON `{ standing, next, needsYou? }`.
-  Migration via `addSessionColumnIfMissing` (`database.ts`), like `agent_goal`.
+- `sessions.session_status` column, JSON
+  `{ standing, next, needsYou?, fresh }`. Migration via
+  `addSessionColumnIfMissing` (`database.ts`), like `agent_goal`.
+- `fresh` (req 14) means "the last finished turn updated this card". The
+  route writes `fresh: true`; the post-turn step (below) writes
+  `fresh: false` at the end of every settled turn that did not update it,
+  whatever the reason — a question, an actions card, a user stop, a crash, an
+  ignored nudge. Only a `silent` compaction turn leaves it alone: no work
+  happened. One rule, two writers, no third state. A dispatched nudge leaves the
+  card amber until the nudge turn writes; that is the honest reading of that
+  window.
 - `SessionInfo.sessionStatus?: SessionStatus` (`domain-types/session.ts`),
   read in `sessions.ts` `toRow`/`fromRow`, written by
   `SessionManager.setSessionStatus`.
-- `services/session-status.ts` `recordSessionStatus(deps, sessionId, status)`:
-  write, then `sseBroadcast("session_list", …)`, exactly `recordAgentGoal`.
+- `services/session-status.ts` `recordSessionStatus(deps, sessionId, status)`
+  and `markSessionStatusStale(deps, sessionId)`: write, then
+  `sseBroadcast("session_list", …)` when something shown changed, exactly
+  `recordAgentGoal`.
 
 Because the value rides `SessionInfo`, every viewer, a reload, a session
 switch and an orchestrator restart show the same card with no extra request.
@@ -152,15 +163,19 @@ to `AgentDispatchInit` and `queuedMessageToDispatchOptions`
 error) — carried through the queue and compaction into `TurnInput`, and read
 by the `status-nudge` step of that turn.
 
-**Bound.** A nudge turn is never followed by another nudge for the same
-missing update: the step says no for a turn whose input is `statusNudge`. An
-agent that ignores the nudge leaves the previously written status on screen
-and a persisted `system_notice` in the conversation, "The agent did not update
-the session status", so the user knows the card is behind rather than
-trusting it. The next ordinary turn is checked afresh. Whether ShipIt should
-try more than once before saying so is an open question in
-requirements.md; the bound itself is loop prevention against a broken agent,
-not a design for staleness.
+**Bound (req 15).** One nudge per missing update: the step says no for a
+turn whose input is `statusNudge`. An agent that ignores the nudge leaves the
+previously written status on screen, marked stale (req 14) — the same mark a
+question turn leaves. The next ordinary turn is checked afresh. A transcript
+notice was in the second draft and is gone: the card says it itself, in the
+language every stale card uses.
+
+**The step is reachable from every terminal path, like `runCommitAndPr`
+(CLAUDE.md invariant 2), and its first act on any non-`silent` turn without
+`statusUpdated` is `markSessionStatusStale`.** That is the second writer of
+`fresh`. Only the *dispatch* of a nudge needs `receivedResult` and the other
+conditions above; the stale mark does not, because a turn that ended by a
+question, a stop or a crash left the card behind just the same.
 
 Rejected on the way:
 
@@ -171,10 +186,10 @@ Rejected on the way:
 - **Deriving the card from `runner.turnSummary` or a small-model call** — the
   last message is already on screen (requirements, resolved 2026-09-14), and a
   summarizer is not the agent's own knowledge of the session.
-- **A "not updated in the last turn" marker on the card** — the first draft
-  had one; it is the stale card wearing a label. Replaced by the notice above,
-  which is a statement about the turn, in the transcript, where turn events
-  belong.
+- **A transcript `system_notice` when the nudge is ignored** — the second
+  draft had one. With req 14 the card carries its own freshness in one visual
+  language for every cause, and a notice for one cause would be a second
+  language. Removed.
 
 ## Client (req 6–9)
 
@@ -186,11 +201,21 @@ until the session has one.
 Layout, `text-xs`, semantic tokens only, no new theme values:
 
 ```
-◎ Where it stands   Billing service: routes and tests done; PR #212 open for review.
-  Next              Merge after review; then wire the webhook.
-  Needs you         Add the Stripe test key in Settings → Secrets.
+▌ Current · updated this turn
+▌ Where it stands   Billing service: routes and tests done; PR #212 open for review.
+▌ Next              Merge after review; then wire the webhook.
+▌ Needs you         Add the Stripe test key in Settings → Secrets.
 ```
 
+- **Freshness (req 14).** Two states, one visual language: **current**
+  (`--color-success`, label "Current") and **may be behind**
+  (`--color-attention`, label "May be behind · last turn did not update it").
+  Color never carries the state alone: the label does too, and the
+  `--color-attention-text` token keeps the amber legible on light themes
+  (the contrast lesson of docs/260-attention-sidebar-view). The variants are
+  drawn in [mockup.html](mockup.html) — a colored left rail, a dot before
+  the label, and a tinted header — for both states on a light and a dark
+  theme; the chosen one is recorded here once picked.
 - `Needs you` is omitted when empty.
 - No button, no collapse: the limits keep it short (req 2), and the composer
   is the control.
@@ -224,12 +249,16 @@ the section is composed in, not its wording.
 - `prepared-dispatch.test.ts` — `statusNudge` survives the queue round trip.
 - Integration (`integration_tests/session-status-nudge.test.ts`, FakeClaude):
   a turn without the tool → exactly one dispatched follow-up whose user row
-  starts with `[ShipIt]`; the follow-up calls the tool → card persisted; a
-  follow-up that also skips it → no third turn and the `system_notice`; a
+  starts with `[ShipIt]`; the follow-up calls the tool → card persisted and
+  fresh; a follow-up that also skips it → no third turn, card marked stale; a
   turn that asks a question → no follow-up; a turn with a queued successor →
   no follow-up until the successor ends; the streaming `agent_result` + `done`
   pair → one decision, not two.
-- `SessionStatusCard.test.tsx` — three rows, hidden `Needs you` when empty.
+- `SessionStatusCard.test.tsx` — three rows, hidden `Needs you` when empty,
+  the two freshness states with their labels.
+- `services/session-status.test.ts` also covers `fresh`: the route sets it,
+  a question turn clears it, an ignored nudge clears it, a later update sets
+  it again; the broadcast fires only on change.
 - `agent-instructions.test.ts` — the section is present in every variant.
 
 ## Key files

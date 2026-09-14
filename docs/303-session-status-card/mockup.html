@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Session status card — freshness variants (docs/303)</title>
+<style>
+  :root { font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; }
+  body { margin: 0; padding: 24px; background: #e5e7eb; color: #111; }
+  h1 { font-size: 16px; margin: 0 0 4px; }
+  p.lead { font-size: 13px; color: #374151; margin: 0 0 20px; max-width: 900px; }
+  .boards { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+  .theme { border-radius: 12px; padding: 16px; }
+  .theme h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; margin: 0 0 12px; color: var(--color-text-tertiary); }
+  .theme.warm-light {
+    --color-bg-primary: #fdf8f0; --color-bg-secondary: #f5ede0;
+    --color-text-primary: #2c2416; --color-text-secondary: #5c5040; --color-text-tertiary: #a89878;
+    --color-border-secondary: #d0c0a4;
+    --color-success: #2d8a4e; --color-success-subtle: rgba(45,138,78,.10); --color-success-border: rgba(45,138,78,.30);
+    --color-attention: #d97706; --color-attention-text: #92400e;
+    background: var(--color-bg-primary); color: var(--color-text-primary);
+  }
+  .theme.dark {
+    --color-bg-primary: #030712; --color-bg-secondary: #111827;
+    --color-text-primary: #f3f4f6; --color-text-secondary: #9ca3af; --color-text-tertiary: #6b7280;
+    --color-border-secondary: #374151;
+    --color-success: #22c55e; --color-success-subtle: rgba(34,197,94,.15); --color-success-border: rgba(34,197,94,.30);
+    --color-attention: #f59e0b; --color-attention-text: #f59e0b;
+    background: var(--color-bg-primary); color: var(--color-text-primary);
+  }
+  .variant { margin-bottom: 22px; }
+  .variant h3 { font-size: 12px; font-weight: 600; margin: 0 0 8px; color: var(--color-text-secondary); }
+  .variant h3 span { font-weight: 400; color: var(--color-text-tertiary); }
+
+  /* The card as it would sit above the composer: mx-4, rounded-lg, border, bg-secondary, text-xs */
+  .card {
+    position: relative; margin: 0 0 10px; padding: 8px 12px; border-radius: 8px;
+    border: 1px solid var(--color-border-secondary); background: var(--color-bg-secondary);
+    font-size: 12px; line-height: 1.45; overflow: hidden;
+  }
+  .head { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; color: var(--color-text-secondary); }
+  .head .state { font-weight: 600; }
+  .head .why { color: var(--color-text-tertiary); }
+  .row { display: grid; grid-template-columns: 104px 1fr; gap: 10px; }
+  .row .k { color: var(--color-text-tertiary); }
+  .row .v { color: var(--color-text-primary); }
+  .composer { height: 40px; border-radius: 8px; border: 1px solid var(--color-border-secondary); background: var(--color-bg-primary); color: var(--color-text-tertiary); font-size: 12px; display: flex; align-items: center; padding: 0 12px; }
+
+  /* A · left rail */
+  .a.fresh { box-shadow: inset 3px 0 0 var(--color-success); }
+  .a.stale { box-shadow: inset 3px 0 0 var(--color-attention); }
+  .a.fresh .state { color: var(--color-success); }
+  .a.stale .state { color: var(--color-attention-text); }
+
+  /* B · dot + label */
+  .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+  .b.fresh .dot { background: var(--color-success); }
+  .b.stale .dot { background: var(--color-attention); }
+  .b.fresh .state { color: var(--color-success); }
+  .b.stale .state { color: var(--color-attention-text); }
+
+  /* C · tinted header band */
+  .c .head { margin: -8px -12px 6px; padding: 5px 12px; border-bottom: 1px solid var(--color-border-secondary); }
+  .c.fresh .head { background: var(--color-success-subtle); border-bottom-color: var(--color-success-border); }
+  .c.stale .head { background: color-mix(in srgb, var(--color-attention) 14%, transparent); border-bottom-color: color-mix(in srgb, var(--color-attention) 35%, transparent); }
+  .c.fresh .state { color: var(--color-success); }
+  .c.stale .state { color: var(--color-attention-text); }
+
+  .icon { width: 14px; height: 14px; flex: none; }
+</style>
+</head>
+<body>
+<h1>Session status card — freshness variants</h1>
+<p class="lead">
+  docs/303 req 14: the card always says whether it is current. Two states, one language for every cause
+  (a question turn that did not update it, an actions turn, an ignored nudge). Each variant is drawn in both
+  states, on a light and a dark theme, using the real theme tokens (<code>--color-success</code>,
+  <code>--color-attention</code>, <code>--color-attention-text</code>). The grey bar under each pair is the composer.
+</p>
+
+<div class="boards" id="boards"></div>
+
+<template id="card-tpl">
+  <div class="card">
+    <div class="head">
+      <svg class="icon" viewBox="0 0 256 256" fill="currentColor"><path d="M128,24A104,104,0,1,0,232,128,104.11,104.11,0,0,0,128,24Zm0,192a88,88,0,1,1,88-88A88.1,88.1,0,0,1,128,216Zm0-144a56,56,0,1,0,56,56A56.06,56.06,0,0,0,128,72Zm0,96a40,40,0,1,1,40-40A40,40,0,0,1,128,168Zm0-64a24,24,0,1,0,24,24A24,24,0,0,0,128,104Zm0,32a8,8,0,1,1,8-8A8,8,0,0,1,128,136Z"/></svg>
+      <span class="dot" hidden></span>
+      <span class="state"></span>
+      <span class="why"></span>
+    </div>
+    <div class="row"><span class="k">Where it stands</span><span class="v">Billing service: routes and tests done; PR #212 open for review.</span></div>
+    <div class="row"><span class="k">Next</span><span class="v">Merge after review; then wire the Stripe webhook.</span></div>
+    <div class="row"><span class="k">Needs you</span><span class="v">Add the Stripe test key in Settings → Secrets.</span></div>
+  </div>
+</template>
+
+<script>
+  const variants = [
+    { key: "a", title: "A · Left rail", note: "3px inset rail, the sidebar's attention-marker vocabulary (docs/187) turned to the left edge" },
+    { key: "b", title: "B · Dot + label", note: "an 8px status dot before the label; no edge treatment" },
+    { key: "c", title: "C · Tinted header band", note: "the header row tinted with the subtle token; the body stays neutral" },
+  ];
+  const states = [
+    { key: "fresh", label: "Current", why: "· updated at the end of the last turn" },
+    { key: "stale", label: "May be behind", why: "· the last turn did not update it" },
+  ];
+  const themes = [
+    { key: "warm-light", title: "warm-light" },
+    { key: "dark", title: "dark" },
+  ];
+  const tpl = document.getElementById("card-tpl");
+  const boards = document.getElementById("boards");
+  for (const theme of themes) {
+    const t = document.createElement("section");
+    t.className = `theme ${theme.key}`;
+    t.innerHTML = `<h2>${theme.title}</h2>`;
+    for (const v of variants) {
+      const wrap = document.createElement("div");
+      wrap.className = "variant";
+      wrap.innerHTML = `<h3>${v.title} <span>— ${v.note}</span></h3>`;
+      for (const s of states) {
+        const node = tpl.content.firstElementChild.cloneNode(true);
+        node.classList.add(v.key, s.key);
+        node.querySelector(".state").textContent = s.label;
+        node.querySelector(".why").textContent = s.why;
+        const dot = node.querySelector(".dot");
+        const icon = node.querySelector(".icon");
+        if (v.key === "b") { dot.hidden = false; icon.remove(); }
+        wrap.appendChild(node);
+      }
+      const composer = document.createElement("div");
+      composer.className = "composer";
+      composer.textContent = "Message the agent…";
+      wrap.appendChild(composer);
+      t.appendChild(wrap);
+    }
+    boards.appendChild(t);
+  }
+</script>
+</body>
+</html>

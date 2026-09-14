@@ -55,19 +55,34 @@ taken inside one session, without building an agent that talks to many.
     update, on every harness alike. That turn is visible in the conversation,
     as a regular turn, for transparency.
 13. A turn that ended with a question card or a follow-up-actions card is
-    complete without a card update. This is the one case where the card may
-    lag by a turn; updating it there would waste tokens and turns.
+    complete without a card update. The card may lag by a turn there;
+    updating it would waste tokens and turns. The card then shows that it may
+    be behind (req 14).
+14. The card always shows whether it is current. When the last finished turn
+    did not update it — because that turn ended with a question or an actions
+    card, or because the agent ignored the nudge — the card is visibly marked
+    as possibly stale, in one visual language shared by both cases, so it is
+    always clear to the user. The direction is a color: amber-like for stale,
+    green-like for current. The exact visual is chosen from a prototype.
+15. ShipIt nudges once per missing update. If the agent ignores the nudge,
+    ShipIt does not nudge again for that turn; the card is marked stale
+    (req 14) and the next ordinary turn is checked afresh.
 
 ## Open questions
 
-- The agent ignores the nudge too: the follow-up turn also ends without a
-  status update. The design stops there, keeps the last written status on
-  screen, and says in the conversation that the agent did not update it, so
-  the user knows the card is behind. Should ShipIt try a second time before
-  saying so, or is one attempt enough? (Some bound is needed so a broken agent
-  cannot loop; the number is the human's call.)
+- None.
 
 ## Resolved questions
+
+- 2026-09-14 — The agent ignores the nudge too: one attempt or two? One. Nik
+  added the part the design lacked: the card needs "some visual language for
+  saying that the card is potentially stale", shown in this case and equally
+  when a turn ends with a question and does not update the card, "so it's
+  always super clear for the user" — perhaps orange for stale and green for
+  updated; prototype it; the same language in both cases. → reqs 13–15. This
+  also settles what the earlier receipt about staleness meant: a stale card
+  presented as current is what has no value; a stale card that says so is
+  required.
 
 - 2026-09-14 — A turn ends with no card update, no question and no actions
   card: nudge, or show the previous card marked older? Nudge. Nik: a stale
