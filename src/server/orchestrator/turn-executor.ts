@@ -475,9 +475,10 @@ export async function executeAgentTurn(
     const outcomeLog = quotaContinuationPending
       ? "the account is benched and ShipIt is continuing the work on another credential"
       : "the account is benched and no credential is free; ShipIt will resume when one is";
+    // Req 2: the notice describes the credential, never which kind of turn was interrupted.
     const outcomeNotice = quotaContinuationPending
       ? "is continuing this work on another credential."
-      : "will continue this work by itself as soon as one of your credentials is free.";
+      : "will continue this work as soon as one of your credentials is free.";
     console.log(
       `[turn] ${agentId} reported a quota refusal for ${sessionId}`
       + `${routeId ? ` on ${routeId}` : ""} during a CLI-started turn; ${outcomeLog}`,
@@ -486,8 +487,8 @@ export async function executeAgentTurn(
       (m) => { if (runner) runner.emitMessage(m); else emit(m); },
       deps.listenerDeps.chatHistoryManager,
       sessionId,
-      `${label} is out of quota, so the agent stopped partway through work it had started on `
-      + `its own. ShipIt has set that account aside and ${outcomeNotice}`,
+      `${label} is out of quota, so the agent stopped partway through this work. `
+      + `ShipIt has set that account aside and ${outcomeNotice}`,
       "warn",
     );
   };
@@ -495,9 +496,7 @@ export async function executeAgentTurn(
   const runQuotaContinuation = async (): Promise<void> => {
     if (!quotaContinuationPending) return;
     quotaContinuationPending = false;
-    // A queued turn drained during teardown is already the continuation; a second one
-    // would only queue an unasked-for "carry on" behind the user's own message.
-    if (runner?.running) return;
+    // A turn that drained during teardown supersedes this one; the manager holds that rule.
     await deps.continueAfterQuotaStandDown?.(sessionId);
   };
 
@@ -505,9 +504,25 @@ export async function executeAgentTurn(
   const willRetryOnQuotaError = (err: Error): boolean => {
     if (!turnIsCurrent()) return false;
     if (err instanceof ProviderRouteUnavailableError) return false;
-    if (!quotaRetryAllowed()) return false;
     const exhausted = detectHardExhaustion(err.message);
     if (!exhausted) return false;
+    if (!quotaRetryAllowed()) {
+      // The same refusal, reported as an adapter error rather than a result. Unlike the
+      // result path there is no listener stamping the bench, so do it here, then stand down
+      // (the stand-down self-gates on adoption and on a metered key). Synchronous by
+      // contract: a throw here would take the listener's error handling with it.
+      try {
+        deps.listenerDeps.markSessionAccountExhausted?.(
+          sessionId,
+          exhaustionLockoutUntil(exhausted),
+          capturedCredentialRoute?.providerRouteId,
+        );
+        retireOnSpentAccount({ summaryIsTheNotice: false });
+      } catch (standDownErr) {
+        console.error("[turn] quota stand-down on the error path failed:", standDownErr);
+      }
+      return false;
+    }
     const refusedEntry = ledgerEntryFor(err.message, exhausted);
     try {
       deps.listenerDeps.markSessionAccountExhausted?.(
@@ -574,6 +589,8 @@ export async function executeAgentTurn(
         finishTurn();
         await postTurnStep("drain", tryDrain);
         await postTurnStep("commit", runCommitAndPr);
+        // A quota refusal can reach the executor as an adapter error; continue from here too.
+        await postTurnStep("quota-continuation", runQuotaContinuation);
       } finally {
         releasePostTurn();
       }

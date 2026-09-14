@@ -425,7 +425,7 @@ describe("post-turn flow for a self-woken turn", () => {
 
     const notice = h.messages.find((m) => m.type === "system_notice");
     expect(notice?.message).toContain("Work account is out of quota");
-    expect(notice?.message).toContain("will continue this work by itself");
+    expect(notice?.message).toContain("will continue this work as soon as one of your credentials is free");
     expect(continueAfterQuotaStandDown).not.toHaveBeenCalled();
     const append = h.listenerDeps.chatHistoryManager.append as ReturnType<typeof vi.fn>;
     expect(
@@ -508,8 +508,11 @@ describe("post-turn flow for a self-woken turn", () => {
     h.runner.dispose({ force: true });
   });
 
-  it("leaves the continuation to a queued turn that drained during the stand-down", async () => {
+  // The same refusal can arrive as an adapter error instead of a result; both are terminal.
+  it("continues a CLI-started turn whose quota refusal arrives as an adapter error", async () => {
     const filePath = path.join(repoDir, "file.txt");
+    const markSessionAccountExhausted = vi.fn();
+    const recordQuotaStandDown = vi.fn(() => ({ continues: true }));
     const continueAfterQuotaStandDown = vi.fn(async () => {});
     const h = await runFirstStreamingTurn({
       onRun: () => fs.writeFileSync(filePath, "turn-1 work\n"),
@@ -517,33 +520,39 @@ describe("post-turn flow for a self-woken turn", () => {
         prepareAgentEnv: async () => ({ turnRoute: { kind: "account" as const, id: "acct-a" } }),
         routeProfile: () => ({ billingMode: "sub" as const, serviceId: undefined }),
         routeLabel: () => "Work account",
-        recordQuotaStandDown: () => ({ continues: true }),
+        recordQuotaStandDown,
         continueAfterQuotaStandDown,
       },
     });
+    (h.listenerDeps as { markSessionAccountExhausted?: unknown }).markSessionAccountExhausted =
+      markSessionAccountExhausted;
 
     h.agent.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
     await waitFor(() => h.settledTurns() === 1, "turn 1 post-turn flow settled");
 
-    // The user's own message takes the session over as the drain dispatches it.
-    h.drainNext.mockImplementation(async () => { h.runner.running = true; });
-
     await selfWake(h.agent);
     fs.writeFileSync(filePath, "adopted work\n");
-    h.agent.emit("event", {
-      type: "agent_assistant",
-      content: [{ type: "text", text: "You've hit your session limit · resets 6:40pm (UTC)" }],
+    h.agent.emit("error", new Error("Claude AI usage limit reached · resets 6:40pm (UTC)"));
+
+    await waitFor(
+      () => continueAfterQuotaStandDown.mock.calls.length === 1,
+      "the errored adopted turn was continued",
+    );
+
+    expect(h.agent.run).toHaveBeenCalledTimes(1);
+    // Nothing else stamps the bench on this path, so the notice's promise would be false.
+    expect(markSessionAccountExhausted).toHaveBeenCalledWith("s1", expect.any(Number), "acct-a");
+    expect(recordQuotaStandDown).toHaveBeenCalledWith({
+      sessionId: "s1",
+      agentId: "claude",
+      benchedRouteId: "acct-a",
     });
-    h.agent.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+    const notice = h.messages.find((m) => m.type === "system_notice");
+    expect(notice?.message).toContain("Work account is out of quota");
 
-    await waitFor(() => h.postTurnPrFlow.mock.calls.length === 2, "adopted turn post-turn flow ran");
-    await flush();
-    await flush();
-
-    expect(continueAfterQuotaStandDown).not.toHaveBeenCalled();
+    await waitFor(() => gitOut("status", "--porcelain") === "", "errored turn's edits committed");
     expect(gitOut("show", "HEAD:file.txt")).toBe("adopted work\n");
 
-    h.runner.running = false;
     h.runner.dispose({ force: true });
   });
 
