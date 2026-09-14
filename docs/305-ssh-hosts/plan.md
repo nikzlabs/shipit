@@ -56,8 +56,9 @@ orchestrator, gated by `gitCredentialAllowed(session)` in `pr-target.ts`).
   runs as the agent's uid, which is fine: it holds nothing worth reading.
 - **Orchestrator side.** `POST /sessions/:id/ssh/sign` checks that the session's grant
   includes the key, signs with `node:crypto` (ed25519: `crypto.sign(null, data, key)`, blob
-  `string "ssh-ed25519" || string sig`), logs one line per signature (one signature is one
-  connection), and returns. Container-accessible only through the relay, so the docs/201
+  `string "ssh-ed25519" || string sig`), logs one line per signature with session, host,
+  and time (one signature is one connection; that log line is the whole audit, req 10),
+  and returns. Container-accessible only through the relay, so the docs/201
   bridge-IP guard applies.
 - **Why not a brokered `ssh` shim.** It would need `openssh-client` in the orchestrator image,
   stream stdin and terminals over two HTTP hops, and reimplement `scp`, `rsync`, and git
@@ -77,7 +78,7 @@ Host prod
   IdentityAgent /run/shipit/ssh-agent.sock
   IdentityFile ~/.ssh/prod.pub
   IdentitiesOnly yes
-  StrictHostKeyChecking yes          # accept-new until the host key question is resolved
+  StrictHostKeyChecking accept-new   # first connect records the key (req 9)
   UserKnownHostsFile ~/.ssh/known_hosts
   ForwardAgent no
   ControlMaster auto
@@ -86,7 +87,11 @@ Host prod
 ```
 
 `IdentityFile` may name a `.pub` when the private half is in an agent, so only public material
-is on disk. `SSH_AUTH_SOCK` is also set in the worker's environment so `ssh user@host`,
+is on disk. The host key is learned on the first connection (req 9): the worker reads the new
+`known_hosts` line after a successful sign, reports it to the orchestrator, which stores it on
+the host entry, shows the fingerprint in Settings, and emits one persisted transcript card via
+`emitChatCard`. From then on the orchestrator provisions that line into `known_hosts` for
+every session, so a changed host key fails the connection. `SSH_AUTH_SOCK` is also set in the worker's environment so `ssh user@host`,
 `git clone git@…`, `scp`, and `rsync` work without the alias; every harness and the terminal
 inherit it. The agent can edit these files, which only weakens its own protection.
 

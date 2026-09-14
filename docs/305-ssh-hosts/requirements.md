@@ -19,16 +19,22 @@ description: The agent runs commands on a remote server over SSH from any sessio
    session is a sandbox session with a host granted.
 8. Carried from docs/228: nothing is installed on the remote host, and no agent or model
    credential is stored there. The host only receives commands.
+9. The first connection to a host accepts and records the server's host key. The fingerprint
+   is shown in the host entry and in a transcript card so the user can compare it with the
+   server. Later connections require the recorded key.
+10. Each SSH connection is recorded as one line in the orchestrator log with session, host,
+    and time. No transcript card per connection; the commands are already in the transcript
+    as the agent's tool calls.
 
 ## Open questions
 
-- Host key verification. Should the user paste the server's public host key to pin it when
-  adding the host, or should the first connection accept the host key and record the
-  fingerprint for the user to confirm?
-- Audit. Should each SSH connection produce a line in the session transcript, or only a line
-  in the orchestrator log?
-
 ## Resolved questions
+
+- 2026-09-14 — How is the host key verified? Accept on first connect and show the fingerprint
+  (req 9). Pasting the host public key to pin it was declined as one more manual step per
+  host.
+- 2026-09-14 — Where is each connection recorded? Orchestrator log only (req 10). A
+  per-connection transcript card was declined as noise.
 
 - 2026-09-14 — Where does the private key come from? ShipIt generates it (req 5). Import of
   an existing key is not in scope; a shared personal key would break the one-key-per-host
