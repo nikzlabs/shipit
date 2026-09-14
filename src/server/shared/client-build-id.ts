@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { gitArgsWithHooksDisabled } from "./git-hooks-args.js";
 
 export type ViteCommand = "build" | "serve";
 
@@ -26,7 +27,7 @@ function trimmed(value: string | undefined): string | undefined {
 
 function gitHead(): string | undefined {
   try {
-    return execFileSync("git", ["rev-parse", "HEAD"], {
+    return execFileSync("git", gitArgsWithHooksDisabled(["rev-parse", "HEAD"]), {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
     });
