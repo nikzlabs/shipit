@@ -21,6 +21,10 @@ export interface AttachmentPlan {
   clearAttachments: boolean;
 }
 
+function isUploadPath(filePath: string): boolean {
+  return filePath.startsWith("/uploads/");
+}
+
 export function buildAttachmentPlan(input: {
 
   text: string;
@@ -36,21 +40,30 @@ export function buildAttachmentPlan(input: {
     return { frame: {}, bubble: {}, clearAttachments: false };
   }
 
+  // A pending file under /uploads/ is an existing upload re-attached as a file
+  // reference ("Add to chat", `@`). `files` is resolved against the workspace,
+  // which refuses an absolute path, so it travels as an upload instead.
+  const contextFiles = input.pendingFiles.filter((f) => !isUploadPath(f.path));
+  const reattachedUploads: UploadRef[] = input.pendingFiles
+    .filter((f) => isUploadPath(f.path) && !input.uploadRefs.some((u) => u.path === f.path))
+    .map((f) => ({ path: f.path, type: "upload" }));
+  const uploadRefs = [...input.uploadRefs, ...reattachedUploads];
+
   const readyUploads = input.uploads.filter((u) => u.status === "ready" && u.path);
   const imageUploads = readyUploads.filter((u) => u.previewUrl);
-  const nonImageUploadRefs = input.uploadRefs.filter(
+  const nonImageUploadRefs = uploadRefs.filter(
     (ref) => !imageUploads.some((u) => u.path === ref.path),
   );
 
   const bubbleFiles = [
-    ...input.pendingFiles.map((f) => ({ path: f.path, contentPreview: "" })),
+    ...contextFiles.map((f) => ({ path: f.path, contentPreview: "" })),
     ...nonImageUploadRefs.map((u) => ({ path: u.path, contentPreview: "" })),
   ];
 
   return {
     frame: {
-      ...(input.uploadRefs.length > 0 ? { uploads: input.uploadRefs } : {}),
-      ...(input.pendingFiles.length > 0 ? { files: input.pendingFiles } : {}),
+      ...(uploadRefs.length > 0 ? { uploads: uploadRefs } : {}),
+      ...(contextFiles.length > 0 ? { files: contextFiles } : {}),
     },
     bubble: {
       ...(bubbleFiles.length > 0 ? { files: bubbleFiles } : {}),
@@ -63,8 +76,8 @@ export function buildAttachmentPlan(input: {
             })),
           }
         : {}),
-      ...(input.uploadRefs.length > 0
-        ? { uploadPaths: input.uploadRefs.map((u) => u.path) }
+      ...(uploadRefs.length > 0
+        ? { uploadPaths: uploadRefs.map((u) => u.path) }
         : {}),
     },
     clearAttachments: true,
