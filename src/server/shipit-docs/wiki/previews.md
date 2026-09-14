@@ -24,13 +24,29 @@ Three consequences worth stating when they come up:
   subdomain of the host ShipIt is reached on — so the app sits at the root of
   that origin and absolute paths like `/assets/app.js` resolve normally. This is
   also why a raw-IP host has no preview at all; see the blank-preview list.
-- **It is private to this ShipIt.** It is not a deployment and not a public URL.
-  A user asking to show the app to someone else is asking about deploys
-  (`/shipit-docs/deployment.md`), not about this.
+  (Reaching ShipIt over a Tailscale MagicDNS name is the one exception: previews
+  are then routed through a separate host the server advertises.)
+- **It is a development instance, not a deployment.** There is no separate login
+  on a preview origin — whoever can reach this ShipIt's host can reach it — so
+  "is it safe to share this URL" is a question about how the installation is
+  exposed ([installing-and-updating.md](installing-and-updating.md)), and "put
+  this in front of real users" is a question about deploys
+  (`/shipit-docs/deployment.md`).
 
-Edits hot-reload; nothing has to be restarted for a source change. Switching to
-another tab does not reload the preview either — its document stays mounted
-behind the other tabs, so coming back is instant rather than a fresh load.
+Switching to another tab does not reload the preview — its document stays
+mounted behind the other tabs, so coming back is instant rather than a fresh
+load.
+
+Whether a source edit **hot-reloads** is the app's business, not ShipIt's.
+ShipIt rewrites the dev server's hot-reload WebSocket URL so it survives the
+proxy, but it supplies no watcher of its own: reloading needs a service that
+mounts the source and runs a dev server that watches it. One ShipIt-specific
+trap is worth knowing, because it looks like a broken app — the dev server
+watches the workspace from **another container**, and inotify events do not
+cross that boundary, so a native watcher never hears your edits. The fix is
+polling in the dev server's own config (`server.watch.usePolling` for Vite,
+`WATCHPACK_POLLING` for Next.js); `/shipit-docs/compose.md` has the per-framework
+form.
 
 ## Which sessions have a preview at all
 
@@ -55,9 +71,12 @@ A session has services because the repository declares them, in two files:
 - **`shipit.yaml`** — a `compose:` key naming that file.
 
 **ShipIt does not go looking for a compose file.** A `docker-compose.yml` that
-`shipit.yaml` does not name is never read, and the session simply has no
-services. So "there's a docker-compose.yml, why is there no preview" has a real
-answer, and adding the `compose:` key is your job, not something to explain.
+`shipit.yaml` does not name is never read, and the project contributes no
+services at all. So "there's a docker-compose.yml, why is there no preview" has
+a real answer, and adding the `compose:` key is your job, not something to
+explain. (A project can also get services from a **plugin** it uses, with no
+`compose:` key of its own — see `/shipit-docs/plugins.md`. `shipit service list`
+shows everything either way.)
 
 When a project declares nothing, the pane shows an invitation — *"Your app can
 run here"*, with an **Ask the agent to set it up** button that sends you a
@@ -74,8 +93,13 @@ Every service is one or the other, and the drawer badges it:
 
 | Mode | Badge | Behaviour |
 |---|---|---|
-| `auto` | **Preview** | Starts by itself when the session starts, and can be shown in the pane. The default for a service that declares `ports` |
-| `manual` | **Manual** | Starts only when asked. The default for a service with no `ports` |
+| `auto` | **Preview** | Started by ShipIt when the session starts. The default for a service that declares `ports` |
+| `manual` | **Manual** | Not started by ShipIt; brought up on demand. The default for a service with no `ports` |
+
+The badge says who starts it, not what can be previewed: a `manual` service that
+is running and has a port can be shown in the pane like any other. And a
+`manual` service still comes up on its own if an `auto` service names it under
+`depends_on` — Compose starts a service's dependencies with it.
 
 An `auto` service also **waits for `agent.install` to finish** before its first
 start, unless it opts out. So a service that has not come up yet while
@@ -104,14 +128,14 @@ Each of these appears under a condition. The condition is part of the answer.
 
 | Control | When it is there | Does |
 |---|---|---|
-| Service picker (dot + name) | Only when more than one service or port is available; otherwise a plain dot and label | Chooses which service the pane shows |
+| Service picker (dot + name) | Only while a preview is running **and** more than one preview target is available; otherwise a plain status dot and label | Chooses which service the pane shows. Stopped services are started from the drawer, not here |
 | Device selector | While the preview is running | Phone and tablet viewports — see below |
 | Rotate | Only while a device viewport is chosen | Portrait ↔ landscape; on a freeform size it swaps width and height |
 | Home | While the preview is running | Back to the app's root |
 | Address bar | Once the page has reported its location | The path and query the preview is on — never the generated host, which says nothing. Clicking it copies the full absolute URL |
 | Back | Always; disabled when the page has nowhere to go back to | Steps the preview's own history, never ShipIt's |
 | Refresh | Always | Reloads the preview |
-| Open in a new tab | Always; disabled until there is a URL | The preview origin in a browser tab |
+| Open in a new tab | Always; disabled until there is a URL | The page the preview is currently on, in a browser tab — not the app's root |
 | Errors, with a count | Only when the page has produced errors | Opens the error panel |
 | Auto-fix switch | Always | See "Errors", below |
 
@@ -144,25 +168,32 @@ after any responsive change rather than asking the user to go and look.
 ## The Services drawer
 
 Along the bottom of the Preview tab, when the project declares at least one
-service. It opens itself when nothing is running — that is the moment it is
-worth seeing — and stays where the user puts it after that. The header reads
-"N of M running"; the drawer can be dragged taller.
+service. It opens itself whenever **no preview is running** — that is the moment
+it is worth seeing. Collapsing it by hand holds until a preview comes up; if the
+preview later stops, it opens again. The header reads "N of M running", and the
+drawer can be dragged taller.
 
 What is on it, and when:
 
 - **Start** on a service that is stopped or crashed; **Stop** on one that is
   running or starting; **Restart** on one that is running.
-- **Logs** — a live log view. With one service it is in the card; with several,
-  the terminal icon on a row drills into that service.
+- **Logs** — a live log view. With one service the log is in the card itself;
+  with several, the terminal icon on a row drills into that service, which
+  replaces the header's bulk controls until you come back out.
 - **Send to Agent** — sends you the tail of that service's log as a message.
 - **Open in a new tab** — on a running service that has a port.
-- **Start all / Stop all / Restart all** — only when there is more than one
-  service.
+- **Start all / Stop all / Restart all** — only with more than one service, and
+  each on its own condition: Restart all needs something running, Stop all
+  something running or starting, and **Start all only when nothing is running at
+  all** — so a half-started stack offers Stop all rather than Start all, and the
+  remaining service is started from its own row.
 - A crashed service shows its error in place with **Ask the agent to fix →**,
-  which also comes to you as a message. A container killed for running out of
-  memory is badged **OOM**.
+  which also comes to you as a message.
+- In the multi-service list, a container killed for running out of memory is
+  badged **OOM**, and clicking a running service's name puts it in the pane.
+  The single-service card has neither: it shows the error text instead.
 
-Clicking a running service's name or its `:port` puts it in the preview pane.
+Clicking a running service's `:port` puts it in the preview pane, in both views.
 
 Everything in that list you can also do, and usually should:
 `shipit service list`, `start`, `stop`, `restart`, `logs`. For what this project
@@ -171,16 +202,28 @@ written down anywhere, because it changes.
 
 ## Errors
 
-The preview captures the page's own **uncaught errors** and its
-**`console.error` and `console.warn`** output. They collect behind the Errors
-button in the toolbar, with a count. The panel offers **Send to Agent** for all
-of them and **Fix** on a single one; both arrive as a message to you.
+The Errors button in the toolbar, with its count, collects errors the previewed
+page **reports to ShipIt itself**, over a `postMessage` channel. Know the limit
+before you lean on it: ShipIt injects only its hot-reload and navigation
+scripts — it installs no error handler and intercepts no console — so a page
+that does not opt into that channel produces nothing here. **An empty Errors
+panel is not evidence that the app is healthy.** To find out for yourself, open
+the service's URL in your own browser and read its console
+(`browser_console_messages`), and read `shipit service logs <name>`.
 
-**Auto-fix** is the switch beside it, and it is **off** until the user turns it
-on. While it is on, a new error is sent to you automatically. It counts repeats
-of the same error and gives up after three rounds, turning itself off — so a
-user who says "it stopped trying" is describing the designed behaviour, and the
-next step is a real diagnosis rather than a fourth identical round.
+What the panel does offer is a route into the conversation: **Send to Agent**
+for all of the collected errors, and **Fix** on a single one. Both arrive as a
+message to you.
+
+**Auto-fix** is the switch beside it, **off** until the user turns it on. While
+it is on, newly reported errors are sent to you without the user asking — but
+not unconditionally: errors that arrive while you are already working are
+skipped rather than queued, and there is a short cooldown between sends. It
+compares the whole collected set against the previous send, and after three
+rounds that come back the same it turns itself off. So "it stopped trying" has
+more than one cause; check whether the switch is still on before assuming the
+three-round limit, and either way the next step is a real diagnosis rather than
+a fourth identical round.
 
 Three other failures surface in their own place, not in that panel:
 
@@ -223,9 +266,10 @@ about itself and each says so in the pane; only the last two are the app.
    `{session}--3000.192.168.1.5` resolve. When ShipIt itself is open on an IP
    literal, the client refuses to build a preview URL at all and says so in the
    pane — naming a host that would work, where it can suggest one. `localhost`
-   and loopback addresses are fine. The fix is the address ShipIt itself is
-   opened on — a domain with a `*` record, or Tailscale with MagicDNS — and
-   nothing in the project changes it.
+   and loopback addresses are fine, and so is Tailscale, where ShipIt routes
+   previews through a host it advertises for the purpose. The fix is the address
+   ShipIt itself is opened on — a domain with a `*` record, or a tailnet name —
+   and nothing in the project changes it.
    [installing-and-updating.md](installing-and-updating.md) covers the access
    options.
 8. **A reverse proxy in front of ShipIt is asking the preview origin to
@@ -237,10 +281,11 @@ about itself and each says so in the pane; only the last two are the app.
    never clears, the usual cause is a server bound to `127.0.0.1` instead of
    `0.0.0.0`, so the proxy cannot reach it.
 10. **The app is serving a blank page.** Now it is ordinary debugging — and it
-    is yours. Check the Errors panel, read `shipit service logs <name>`, and
-    open the service's own container URL from `shipit service list` in your
-    browser. Do not use the `{session}--{port}` origin for that: it is the
-    user's pane, and it does not resolve from inside your container.
+    is yours. Read `shipit service logs <name>`, then open the service's own
+    container URL from `shipit service list` in your browser and read its
+    console. Do not use the `{session}--{port}` origin for that: it is the
+    user's pane, and it does not resolve from inside your container. The Errors
+    panel is worth a glance but proves nothing when empty — see "Errors".
 
 ## When nobody is watching
 
