@@ -159,7 +159,7 @@ Antigravity-specific is in [plan.md](./plan.md).
 
 ## Still open
 
-- **Concurrent spawns share one durable directory.** Two Antigravity runs
+- **Concurrent spawns share one durable directory** (planning#572). Two Antigravity runs
   against the same session's credential subtree — a key-mode and an account-mode
   consult, or local mode — can change each other's credentials and
   `settings.json` mid-run, so one can end up billed to the other's route. The
@@ -170,7 +170,9 @@ Antigravity-specific is in [plan.md](./plan.md).
   the spawns holding a subtree, so an earlier release no longer wipes a consult
   still running — and the OVERWRITE half is untouched: a second borrow still
   replaces the first's credentials while it runs. The settings write is atomic,
-  which stops a torn read and fixes nothing else. This is not Antigravity-specific.
+  which stops a torn read and fixes nothing else. This is not Antigravity-specific,
+  and the shape — a private subtree per spawn, or serialized borrows — is the
+  decision planning#572 is open on.
 - ~~**The account-mode host is inferred, not observed.**~~ **Measured 2026-09-14
   and it WAS wrong.** A real account turn sent every `loadCodeAssist` and
   `streamGenerateContent` to `daily-cloudcode-pa.googleapis.com`; the bare

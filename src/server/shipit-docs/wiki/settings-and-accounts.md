@@ -243,6 +243,13 @@ and say that doing so sets the distance guarantee aside.
 The reviewer's description and standing instructions are ordinary role metadata
 and are edited like any other role's.
 
+**Every review is brokered, so it needs Multi-agent sessions on** (Settings →
+Advanced). With it off there is no review: `/review` and *Ask agent to review*
+refuse in the UI and say which setting to turn on, and `shipit agent run --role
+reviewer` refuses too. Nothing substitutes for it — a review written by the model
+that wrote the work is not a second opinion, so when the brokered run cannot
+happen, tell the user why instead of reviewing it yourself.
+
 ## SSH hosts
 
 Settings → Integrations → **SSH hosts** is a list of remote servers a session can

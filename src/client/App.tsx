@@ -142,10 +142,8 @@ import { usePrStore } from "./stores/pr-store.js";
 import { useSettingsStore } from "./stores/settings-store.js";
 import { useUiStore, type RightTab } from "./stores/ui-store.js";
 import { useRepoStore } from "./stores/repo-store.js";
-import {
-  composeReviewMessage,
-  resolveReviewer,
-} from "./utils/compose-review-body.js";
+import { composeReviewMessage } from "./utils/compose-review-body.js";
+import { REVIEW_NEEDS_MULTI_AGENT } from "./utils/review-command.js";
 import { handleSessionResume } from "./stores/actions/session-actions.js";
 import {
   parseRepoLabel,
@@ -1104,13 +1102,11 @@ export default function App() {
   const handleAskAgentReview = useCallback(
     (reviewFilePath: string) => {
       const sid = useSessionStore.getState().sessionId;
-      const prompt = composeReviewMessage(
-        reviewFilePath,
-        resolveReviewer({
-          enableSubAgents: useSettingsStore.getState().enableSubAgents,
-          activeAgentId: useUiStore.getState().activeAgentId,
-        }),
-      );
+      if (!useSettingsStore.getState().enableSubAgents) {
+        useUiStore.getState().setToast({ message: REVIEW_NEEDS_MULTI_AGENT });
+        return;
+      }
+      const prompt = composeReviewMessage(reviewFilePath);
       if (sid && isNewSessionRoute) {
         void navigate(`/session/${sid}`, { replace: true });
       }
