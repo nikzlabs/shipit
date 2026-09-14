@@ -245,10 +245,18 @@ export class StubGitHubAuthManager extends EventEmitter {
 
   private _canWriteRepo = true;
   setRepoWriteAccess(canWrite: boolean) { this._canWriteRepo = canWrite; }
-  async checkRepoWriteAccess(_owner: string, _repo: string): Promise<{ canWrite: boolean; reason?: string }> {
+  async checkRepoWriteAccess(
+    _owner: string,
+    _repo: string,
+  ): Promise<{ canWrite: boolean; reachable: boolean; reason?: string }> {
     return this._canWriteRepo
-      ? { canWrite: true }
-      : { canWrite: false, reason: "the connected account has read-only access" };
+      ? { canWrite: true, reachable: true }
+      : {
+          canWrite: false,
+          // Read-only, not invisible: the repository is still reachable.
+          reachable: true,
+          reason: "the connected account has read-only access",
+        };
   }
   public createRepoCalls: { name: string; options: { description?: string; isPrivate?: boolean; owner?: string } }[] = [];
 

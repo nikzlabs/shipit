@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { DatabaseManager } from "../../shared/database.js";
 import { RepoStore } from "../repo-store.js";
 import { REPO_COLOR_COUNT } from "../../shared/repo-colors.js";
-import { addRepo, setRepoColorIndex, assertValidRepoColorIndex, setRepoHidden } from "./repos.js";
+import { addRepo, ensureRepoReady, setRepoColorIndex, assertValidRepoColorIndex, setRepoHidden } from "./repos.js";
 import { ServiceError } from "./types.js";
 
 let dbManager: DatabaseManager;
@@ -94,5 +94,82 @@ describe("setRepoColorIndex", () => {
     expect(() => assertValidRepoColorIndex(99)).toThrow(ServiceError);
     expect(repoStore.get(url)?.hidden).toBe(false);
     expect(repoStore.get(url)?.colorIndex).toBe(5);
+  });
+});
+
+describe("ensureRepoReady", () => {
+  it("is a no-op when the repo is already ready", async () => {
+    let cloned = false;
+    const key = await ensureRepoReady("https://github.com/acme/shipit.git", {
+      repoStore: {
+        get: () => ({ status: "ready" }),
+        add: () => { throw new Error("should not add"); },
+        setReady: () => { throw new Error("should not setReady"); },
+        list: () => [],
+      },
+      getSharedRepoDir: (u) => `/cache/${u}`,
+      ensureBareCache: async () => { cloned = true; },
+    });
+    expect(cloned).toBe(false);
+    expect(key).toBe("https://github.com/acme/shipit.git");
+  });
+
+  it("registers, clones, and marks the repo ready when missing", async () => {
+    const events: string[] = [];
+    const key = await ensureRepoReady("https://github.com/acme/shipit.git", {
+      repoStore: {
+        get: () => undefined,
+        add: () => events.push("add"),
+        setReady: () => events.push("setReady"),
+        list: () => [],
+      },
+      getSharedRepoDir: () => "/cache/shipit",
+      ensureBareCache: async (dir) => { events.push(`clone:${dir}`); },
+    });
+    expect(events).toEqual(["add", "clone:/cache/shipit", "setReady"]);
+    expect(key).toBe("https://github.com/acme/shipit.git");
+  });
+
+  it("reuses the user's existing entry instead of adding a duplicate for a credentialed URL", async () => {
+    const userUrl = "https://github.com/acme/shipit.git";
+    const store = new Map<string, { status: string }>([[userUrl, { status: "ready" }]]);
+    const added: string[] = [];
+    const key = await ensureRepoReady(
+      "https://x-access-token:github_pat_ABC123@GitHub.com/acme/shipit", // gitleaks:allow — fake token; the point is that it is stripped
+      {
+        repoStore: {
+          get: (u) => store.get(u),
+          add: (u) => { added.push(u); store.set(u, { status: "cloning" }); return undefined; },
+          setReady: () => { throw new Error("should not setReady"); },
+          list: () => [...store.keys()].map((url) => ({ url })),
+        },
+        getSharedRepoDir: (u) => `/cache/${u}`,
+        ensureBareCache: async () => { throw new Error("should not clone — already ready"); },
+      },
+    );
+    expect(added).toEqual([]);
+    expect(key).toBe(userUrl);
+  });
+
+  it("registers a credential-free key (never the embedded PAT) when no entry exists", async () => {
+    const store = new Map<string, { status: string }>();
+    const added: string[] = [];
+    const clonedFrom: string[] = [];
+    const key = await ensureRepoReady(
+      "https://x-access-token:github_pat_SECRET@github.com/acme/shipit.git", // gitleaks:allow — fake token; the point is that it is stripped
+      {
+        repoStore: {
+          get: (u) => store.get(u),
+          add: (u) => { added.push(u); store.set(u, { status: "cloning" }); return undefined; },
+          setReady: (u) => { store.set(u, { status: "ready" }); },
+          list: () => [...store.keys()].map((url) => ({ url })),
+        },
+        getSharedRepoDir: (u) => `/cache/${u}`,
+        ensureBareCache: async (_dir, u) => { clonedFrom.push(u); },
+      },
+    );
+    expect(key).toBe("https://github.com/acme/shipit.git");
+    expect(added).toEqual(["https://github.com/acme/shipit.git"]);
+    expect(JSON.stringify({ key, added, clonedFrom })).not.toContain("github_pat_SECRET"); // gitleaks:allow
   });
 });

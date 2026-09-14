@@ -470,7 +470,7 @@ export class CodexAdapter
     }
 
     if (ctx.shipitBridge) {
-      runtimeEnv.SHIPIT_MCP_TOOLS = "present,voice,ask,bug,propose_actions";
+      runtimeEnv.SHIPIT_MCP_TOOLS = "present,voice,ask,bug,propose_actions,propose_repo_session";
       lines.push(
         "",
         "[mcp_servers.shipit]",

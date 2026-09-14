@@ -4,6 +4,7 @@ import type {
   CompactionCard as CompactionCardData,
   SubAgentConsultCard as SubAgentConsultCardData,
   ActionChecklistCard as ActionChecklistCardData,
+  RepoSessionProposalCard as RepoSessionProposalCardData,
   PresentInlineCard as PresentInlineCardData,
   BranchAutoResetCard as BranchAutoResetCardData,
   BranchSyncedCard as BranchSyncedCardData,
@@ -292,6 +293,9 @@ export interface ChatMessage {
    * persisted — so on reload the card returns to its original definition.
    */
   actionChecklist?: ActionChecklistCardData;
+
+  /** docs/303 — work the agent says belongs in a different repository. */
+  repoSessionProposal?: RepoSessionProposalCardData;
 
   presentInline?: PresentInlineCardData;
 

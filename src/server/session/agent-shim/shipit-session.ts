@@ -72,7 +72,10 @@ export async function handleSessionCreate(args: string[], deps: RunDeps): Promis
   if ("repo" in parsed.values || "owner" in parsed.values) {
     fail(
       deps.io,
-      "shipit session create does not support --repo/--owner. Spawned sessions inherit the parent's repo (or use --shipit-source in an Ops session).",
+      "shipit session create does not support --repo/--owner. Spawned sessions inherit the parent's repo "
+        + "(or use --shipit-source in an Ops session). For work that belongs in ANOTHER repository, call the "
+        + "`propose_repo_session` tool: it posts a card the user starts with one click, which creates an "
+        + "independent session there with your prompt.",
     );
   }
   if (parsed.unsupported.length > 0) {

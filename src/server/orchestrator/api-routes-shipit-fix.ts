@@ -4,7 +4,7 @@ import { parseGitHubRemote } from "./git-utils.js";
 import {
   ServiceError,
   resolveShipitFixTarget,
-  ensureShipitSourceRepoReady,
+  ensureRepoReady,
   buildShipitFixPrompt,
 } from "./services/index.js";
 
@@ -74,7 +74,7 @@ export async function prepareShipitFixSpawn(
       );
     }
     // Use the credential-free store URL so the child uses the account checked above.
-    const readyRepoUrl = await ensureShipitSourceRepoReady(target.repoUrl, {
+    const readyRepoUrl = await ensureRepoReady(target.repoUrl, {
       repoStore: deps.repoStore,
       getSharedRepoDir: deps.getSharedRepoDir,
       ensureBareCache: (cacheDir, url) => ensureBareCache(cacheDir, url, deps.createRepoGit),

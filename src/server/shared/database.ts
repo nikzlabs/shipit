@@ -934,6 +934,13 @@ const MIGRATIONS: Migration[] = [
         ON settings_proposals(setting_key, repo_url, item, created_at);
     `);
   },
+  // docs/303 — the cross-repository session proposal card. Appended after the
+  // docs/299 migrations, which deployed installs have already run.
+  (db) => {
+    const columns = db.prepare("PRAGMA table_info(messages)").all() as { name: string }[];
+    if (columns.some((c) => c.name === "repo_session_proposal")) return;
+    db.exec("ALTER TABLE messages ADD COLUMN repo_session_proposal TEXT");
+  },
 ];
 
 /** Guard tests that rewind user_version and replay later migrations. */

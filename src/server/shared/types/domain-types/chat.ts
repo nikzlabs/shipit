@@ -228,6 +228,31 @@ export interface SessionSettingsChangeCard {
   createdAt: string;
 }
 
+/**
+ * docs/303 — the agent proposes work that belongs in a different repository.
+ * Starting it creates a session there; the card is the only link to it, since
+ * the started session is deliberately independent (req 6).
+ */
+export interface RepoSessionProposalCard {
+  cardId: string;
+  /** `owner/repo`, for display. */
+  repo: string;
+  /** Canonical clone URL, resolved when the card was written. */
+  repoUrl: string;
+  /** Whether ShipIt already had this repository when the card was written. */
+  registered: boolean;
+  /** The connected account can read it but not push: the session cannot open a PR. */
+  readOnly?: boolean;
+  title: string;
+  prompt: string;
+  createdAt: string;
+  /** Absent until the user clicks. */
+  state?: "starting" | "started" | "failed";
+  startedSessionId?: string;
+  startedAt?: string;
+  errorMessage?: string;
+}
+
 export type WsSubagentEvent =
   | {
       kind: "assistant";

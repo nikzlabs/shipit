@@ -65,6 +65,7 @@ import { registerMarketplaceRoutes } from "./api-routes-marketplace.js";
 import { registerVoiceRoutes } from "./api-routes-voice.js";
 import { registerBugReportRoutes } from "./api-routes-bug-report.js";
 import { registerProposeActionsRoutes } from "./api-routes-propose-actions.js";
+import { registerProposeRepoSessionRoutes } from "./api-routes-propose-repo-session.js";
 import { registerEgressRoutes } from "./api-routes-egress.js";
 import { registerIssueRoutes } from "./api-routes-issues.js";
 import { registerPluginRepoRoutes } from "./api-routes-plugin-repos.js";
@@ -249,6 +250,7 @@ export async function registerApiRoutes(
   await registerVoiceRoutes(app, deps);
   await registerBugReportRoutes(app, deps);
   await registerProposeActionsRoutes(app, deps);
+  await registerProposeRepoSessionRoutes(app, deps2);
   await registerEgressRoutes(app, deps);
   await registerIssueRoutes(app, deps);
   await registerPluginRepoRoutes(app, deps);

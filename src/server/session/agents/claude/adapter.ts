@@ -578,7 +578,7 @@ export class ClaudeAdapter
       mcpServers.shipit = {
         command: ctx.shipitBridge.tsxBin,
         args: [ctx.shipitBridge.bridgePath],
-        env: { SHIPIT_MCP_TOOLS: "present,voice,bug,permission,propose_actions" },
+        env: { SHIPIT_MCP_TOOLS: "present,voice,bug,permission,propose_actions,propose_repo_session" },
       };
       // CLI-only gate; exclude this tool from the model's allowlist.
       this._permissionPromptTool = "mcp__shipit__permission_prompt";

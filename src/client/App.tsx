@@ -1642,6 +1642,12 @@ export default function App() {
             onUndoIssueWrite={(cardId) =>
               send({ type: "undo_issue_write", cardId })
             }
+            onStartRepoSession={async (cardId) => {
+              if (!sessionId) return;
+              await apiPost(
+                `/api/sessions/${sessionId}/repo-session-proposals/${cardId}/start`,
+              );
+            }}
             onOpenIssue={handleOpenIssue}
             onAgentInterfaceMessage={handleAgentInterfaceMessage}
             onResumeSession={(sid) => handleSessionResume(sid, navigate)}
