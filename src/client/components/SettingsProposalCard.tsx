@@ -139,7 +139,18 @@ export function SettingsProposalCard({ card, onDecide }: SettingsProposalCardPro
           <div className="mt-0.5 text-xs text-(--color-text-tertiary)">{card.path}</div>
 
           <div className="mt-2.5 rounded-md border border-(--color-border-secondary) bg-(--color-bg-primary) px-3 py-2">
-            <div className="text-sm font-medium text-(--color-text-primary)">{card.label}</div>
+            <div className="text-sm font-medium text-(--color-text-primary)">
+              {card.label}
+              {/* One setting exists once per role, per MCP server, per allowlist
+                  entry. Without the instance, two cards proposing opposite
+                  changes to different servers read identically, and the only
+                  thing telling them apart would be the agent's own reason. */}
+              {card.target.item && (
+                <span className="ml-1.5 font-normal text-(--color-text-tertiary)">
+                  · {card.target.item}
+                </span>
+              )}
+            </div>
             <div className="mt-0.5 text-xs text-(--color-text-secondary)">{card.description}</div>
             <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
               <span

@@ -4,8 +4,8 @@ import type {
   SettingsProposalPhase,
   SettingsProposalTarget,
 } from "../../shared/types.js";
-import type { AnySettingDeclaration } from "../../shared/settings-catalogue/index.js";
-import { settingPath } from "../../shared/settings-catalogue/index.js";
+import { findSetting, settingPath } from "../../shared/settings-catalogue/index.js";
+import { ServiceError } from "./types.js";
 import type { SessionRunnerInterface, SessionRunnerRegistry } from "../session-runner.js";
 import type { PersistedMessage } from "../chat-history.js";
 import type { SettingsProposalStore } from "../settings-proposal-store.js";
@@ -44,7 +44,6 @@ export function flattenProposalReason(reason: string | undefined): string | unde
 }
 
 export interface SettingsProposalPersister extends InProgressPersister {
-  getSettingsProposalCard(sessionId: string, cardId: string): SettingsProposalCard | undefined;
   updateSettingsProposalCard(
     sessionId: string,
     cardId: string,
@@ -71,7 +70,7 @@ type ProposalRunner = Pick<
 
 export interface PostSettingsProposalArgs {
   sessionId: string;
-  declaration: Pick<AnySettingDeclaration, "key" | "label" | "description" | "tab">;
+  /** The setting the card is about. Its declaration is looked up, never passed in. */
   target: SettingsProposalTarget;
   /** Both already through the catalogue's formatting door. */
   from: string;
@@ -85,6 +84,12 @@ export interface PostSettingsProposalArgs {
 /**
  * Write a proposal: the private row first, then the card.
  *
+ * The card's words — its label, its description and its breadcrumb — are read
+ * off the declaration the TARGET names, so what the card says and what the
+ * button writes cannot be two different settings. Everything else ShipIt
+ * asserts (`from`, `to`) is the caller's own read through the catalogue's
+ * projection door; the agent contributes only `reason`.
+ *
  * The order matters. A card the user can click before its row exists is a click
  * that loads nothing, so the row — which is what a decision loads, claims and
  * applies from — is written before anything reaches a viewer.
@@ -97,11 +102,20 @@ export interface PostSettingsProposalArgs {
  * `replaceInProgress` then deletes wholesale (docs/236).
  */
 export function postSettingsProposal(
-  deps: SettingsProposalDeps,
+  deps: Pick<SettingsProposalDeps, "chatHistoryManager" | "proposals">,
+  // An argument rather than a registry lookup: a propose comes from inside the
+  // session's own container, so its runner exists by construction. A DECISION
+  // does not, which is why the transition below resolves one and copes without.
   runner: ProposalRunner,
   args: PostSettingsProposalArgs,
 ): SettingsProposalCard {
-  const { sessionId, declaration } = args;
+  const { sessionId } = args;
+  // Resolved here rather than accepted from the caller, so the words on the card
+  // and the setting the button writes cannot be two different settings.
+  const declaration = findSetting(args.target.key);
+  if (!declaration) {
+    throw new ServiceError(400, `No ShipIt setting is called "${args.target.key}".`);
+  }
   const createdAt = new Date().toISOString();
   const reason = flattenProposalReason(args.reason);
   const card: SettingsProposalCard = {
@@ -160,8 +174,10 @@ export interface SettingsProposalTransition {
  *
  * So, in order:
  *
- *  1. the durable row and the private row, **unconditionally** — this is what
- *     the next decision, the next read and the next boot see;
+ *  1. the durable row and the private row, in ONE transaction and **whether or
+ *     not a runner exists** — this is what the next decision, the next read and
+ *     the next boot see, and a phase in one but not the other is the split this
+ *     contract exists to prevent;
  *  2. only then, and only if a runner exists, the copy the turn is holding plus
  *     the live emit.
  *
@@ -169,6 +185,13 @@ export interface SettingsProposalTransition {
  * the in-progress rows from `recordedCards` — which is why step 2 patches them
  * rather than leaving the rebuild to reproduce a stale card. Where there is no
  * runner at all there is nothing to rebuild from, so the durable row stands.
+ *
+ * The **snapshot** rewrite in step 2 is narrower than the patch, and must be:
+ * `recordedCards` is cleared at the start of the NEXT turn, not at the end of
+ * this one (`resetRunnerTurnState`), so a card resolved in the gap is still
+ * there to patch while its turn is finished and its rows finalized. Rebuilding
+ * the snapshot then re-inserts the whole finished turn as in-progress rows
+ * beside the finalized ones, and the user sees their last turn twice.
  */
 export function transitionSettingsProposal(
   deps: SettingsProposalDeps,
@@ -184,8 +207,15 @@ export function transitionSettingsProposal(
     ...(transition.effect ? { effect: transition.effect } : {}),
   };
 
-  const card = deps.chatHistoryManager.updateSettingsProposalCard(sessionId, cardId, patch);
-  deps.proposals.setPhase(cardId, transition.phase, transition.resolvedAt);
+  const card = deps.proposals.transaction(() => {
+    // Session-scoped, and it gates the private write: a card id names a row in
+    // one session's transcript, so a decision that cannot find it there must not
+    // reach the proposal it happens to share an id with.
+    const updated = deps.chatHistoryManager.updateSettingsProposalCard(sessionId, cardId, patch);
+    if (!updated) return null;
+    deps.proposals.setPhase(sessionId, cardId, transition.phase, transition.resolvedAt);
+    return updated;
+  });
   if (!card) return null;
 
   const runner = deps.getRunnerRegistry()?.get(sessionId);
@@ -196,7 +226,12 @@ export function transitionSettingsProposal(
     (m) => m.settingsProposal?.cardId === cardId,
     (m) => ({ ...m, settingsProposal: card }),
   );
-  if (patched) {
+  // `running` alone is not enough: it goes true before the previous turn's cards
+  // are cleared, so the snapshot is rewritten only when rows actually exist to
+  // replace.
+  const ownsInProgressRows =
+    runner.running && (deps.chatHistoryManager.hasInProgress?.(sessionId) ?? true);
+  if (patched && ownsInProgressRows) {
     persistTurnInProgress(deps.chatHistoryManager, runner, sessionId);
     if (typeof runner.getTurnEventBuffer === "function") {
       runner.lastPersistedBufferIndex = runner.getTurnEventBuffer().length;

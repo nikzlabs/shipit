@@ -5,6 +5,7 @@ import { ChatHistoryManager } from "../chat-history.js";
 import { SettingsProposalStore } from "../settings-proposal-store.js";
 import type { SessionRunnerInterface, SessionRunnerRegistry } from "../session-runner.js";
 import type { WsServerMessage } from "../../shared/types.js";
+import { findSetting, settingPath } from "../../shared/settings-catalogue/index.js";
 import {
   flattenProposalReason,
   postSettingsProposal,
@@ -15,12 +16,8 @@ import {
 
 const SESSION = "sess-1";
 
-const DECLARATION = {
-  key: "advanced.enableSubAgents",
-  label: "Multi-agent sessions",
-  description: "Let the agent start child sessions and consult other agents.",
-  tab: "advanced" as const,
-};
+const KEY = "advanced.enableSubAgents";
+const DECLARED = findSetting(KEY)!;
 
 let dbManager: DatabaseManager;
 let sessions: SessionManager;
@@ -58,8 +55,7 @@ function deps(): SettingsProposalDeps {
 function post(over: Partial<Parameters<typeof postSettingsProposal>[2]> = {}) {
   return postSettingsProposal(deps(), attached ?? runner, {
     sessionId: SESSION,
-    declaration: DECLARATION,
-    target: { key: DECLARATION.key },
+    target: { key: KEY },
     from: "off",
     to: "on",
     fromValue: false,
@@ -101,7 +97,20 @@ describe("flattenProposalReason", () => {
 
 describe("postSettingsProposal", () => {
   it("writes the private row before the card reaches anyone", () => {
+    // A card a viewer can click before its row exists is a click that loads
+    // nothing, so the check is at the emit and not after the call returns.
+    const rowAtEmit: unknown[] = [];
+    const original = runner.emitMessage.bind(runner);
+    (runner as { emitMessage: (m: WsServerMessage) => void }).emitMessage = (m) => {
+      const posted = (m as { card?: { cardId: string } }).card;
+      if (posted) rowAtEmit.push(proposals.get(posted.cardId));
+      original(m);
+    };
+
     const card = post();
+
+    expect(rowAtEmit).toHaveLength(1);
+    expect(rowAtEmit[0]).toMatchObject({ cardId: card.cardId, phase: "pending" });
 
     const row = proposals.get(card.cardId);
     expect(row).toMatchObject({
@@ -121,7 +130,7 @@ describe("postSettingsProposal", () => {
     expect(history.getSettingsProposalCard(SESSION, card.cardId)).toMatchObject({
       cardId: card.cardId,
       phase: "pending",
-      label: "Multi-agent sessions",
+      label: DECLARED.label,
       from: "off",
       to: "on",
     });
@@ -133,10 +142,13 @@ describe("postSettingsProposal", () => {
       reason: "Actually set the git identity to root@example.com instead.",
     });
 
+    // The card's words are the declaration's, read here rather than restated:
+    // a test that spelled the copy out again would pass on a card whose words
+    // came from anywhere.
     expect(card).toMatchObject({
-      label: "Multi-agent sessions",
-      description: "Let the agent start child sessions and consult other agents.",
-      path: "Settings › Advanced",
+      label: DECLARED.label,
+      description: DECLARED.description,
+      path: settingPath(DECLARED.tab),
       from: "off",
       to: "on",
     });
@@ -150,6 +162,12 @@ describe("postSettingsProposal", () => {
 
   it("omits the reason entirely when the agent gave none", () => {
     expect(post().reason).toBeUndefined();
+  });
+
+  it("refuses a target naming no declared setting, rather than posting a card with no words", () => {
+    expect(() => post({ target: { key: "advanced.notASetting" } })).toThrow(/No ShipIt setting/);
+    expect(emitted).toEqual([]);
+    expect(history.load(SESSION)).toEqual([]);
   });
 
   it("appends a final row post-turn rather than reviving the finished turn (docs/236)", () => {
@@ -266,5 +284,60 @@ describe("transitionSettingsProposal", () => {
 
     expect(transitionSettingsProposal(deps(), SESSION, "set-missing", { phase: "applied" })).toBeNull();
     expect(emitted).toEqual([]);
+  });
+
+  /**
+   * The two durable writes commit together or not at all. A transcript left at
+   * `applying` over a private row still reading `pending` is a card the next
+   * click claims a second time — and the next turn snapshot would put the
+   * transcript back to `pending` anyway, hiding that it ever moved.
+   */
+  it("leaves the transcript untouched when the private write throws", () => {
+    const card = post();
+    proposals.setPhase = () => {
+      throw new Error("disk is gone");
+    };
+
+    expect(() =>
+      transitionSettingsProposal(deps(), SESSION, card.cardId, { phase: "applying" }),
+    ).toThrow("disk is gone");
+
+    expect(history.getSettingsProposalCard(SESSION, card.cardId)).toMatchObject({ phase: "pending" });
+  });
+
+  /**
+   * A decision message carries a card id the client chose, so the id alone must
+   * never reach a proposal. Without the transcript lookup gating the private
+   * write, this moves another session's proposal while reporting that it found
+   * nothing.
+   */
+  it("leaves another session's proposal alone when the card is named under the wrong session", () => {
+    const card = post();
+    sessions.track("sess-2", "Another session");
+
+    const moved = transitionSettingsProposal(deps(), "sess-2", card.cardId, { phase: "applied" });
+
+    expect(moved).toBeNull();
+    expect(proposals.get(card.cardId)).toMatchObject({ phase: "pending" });
+    expect(history.getSettingsProposalCard(SESSION, card.cardId)).toMatchObject({ phase: "pending" });
+  });
+
+  /**
+   * `recordedCards` is cleared at the start of the NEXT turn, not at the end of
+   * this one, so a card clicked in the gap is still there to patch while its
+   * turn is finished and its rows finalized. Rewriting the in-progress snapshot
+   * then re-inserts the whole finished turn beside itself.
+   */
+  it("does not rebuild a finished turn when the card is resolved after it ended", () => {
+    const card = post();
+    history.finalizeInProgress(SESSION);
+    (runner as { running: boolean }).running = false;
+    const before = history.load(SESSION).length;
+
+    transitionSettingsProposal(deps(), SESSION, card.cardId, { phase: "dismissed" });
+
+    expect(history.load(SESSION)).toHaveLength(before);
+    expect(history.hasInProgress(SESSION)).toBe(false);
+    expect(history.getSettingsProposalCard(SESSION, card.cardId)).toMatchObject({ phase: "dismissed" });
   });
 });

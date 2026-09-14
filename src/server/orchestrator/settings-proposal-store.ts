@@ -128,10 +128,33 @@ export class SettingsProposalStore {
     return row ? fromRow(row) : null;
   }
 
-  setPhase(cardId: string, phase: SettingsProposalPhase, resolvedAt?: string): boolean {
+  /**
+   * Run `fn` with this row and the transcript row committing together. Both live
+   * in the same database, and a phase that lands in one and not the other is the
+   * split the transition contract exists to prevent: a private row left
+   * `pending` under a transcript that says `applying` is a card the next click
+   * claims a second time.
+   */
+  transaction<T>(fn: () => T): T {
+    return this.db.transaction(fn)();
+  }
+
+  /**
+   * Scoped by session as well as card: a card id is the client's to name, and a
+   * decision arriving under the wrong session must not reach another session's
+   * proposal.
+   */
+  setPhase(
+    sessionId: string,
+    cardId: string,
+    phase: SettingsProposalPhase,
+    resolvedAt?: string,
+  ): boolean {
     const res = this.db
-      .prepare("UPDATE settings_proposals SET phase = ?, resolved_at = COALESCE(?, resolved_at) WHERE card_id = ?")
-      .run(phase, resolvedAt ?? null, cardId);
+      .prepare(
+        "UPDATE settings_proposals SET phase = ?, resolved_at = COALESCE(?, resolved_at) WHERE card_id = ? AND session_id = ?",
+      )
+      .run(phase, resolvedAt ?? null, cardId, sessionId);
     return res.changes > 0;
   }
 

@@ -34,6 +34,28 @@ describe("SettingsProposalCard — pending", () => {
     expect(screen.getByTestId("settings-proposal-to")).toHaveTextContent("on");
   });
 
+  /**
+   * One setting exists once per role, per MCP server, per allowlist entry. Two
+   * cards proposing opposite changes to different servers would otherwise read
+   * identically, leaving the agent's own reason as the only thing telling them
+   * apart.
+   */
+  it("names the instance an item-addressed proposal is about", () => {
+    render(<SettingsProposalCard card={card({
+      target: { key: "mcp.servers[].enabled", item: "notion" },
+      label: "Enabled",
+      from: "on",
+      to: "off",
+    })} />);
+    expect(screen.getByText(/notion/)).toBeInTheDocument();
+  });
+
+  it("adds no instance qualifier to a setting that exists once", () => {
+    render(<SettingsProposalCard card={card()} />);
+    expect(screen.getByText("Multi-agent sessions")).toBeInTheDocument();
+    expect(screen.queryByText(/·\s*\S/)).not.toBeInTheDocument();
+  });
+
   it("attributes the agent's reason, so it cannot read as ShipIt describing the change", () => {
     render(<SettingsProposalCard card={card()} />);
     expect(screen.getByText("The agent’s reason")).toBeInTheDocument();
