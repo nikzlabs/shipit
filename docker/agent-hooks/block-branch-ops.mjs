@@ -6,6 +6,7 @@
  */
 
 import { readFileSync } from "node:fs";
+import { runInNewContext } from "node:vm";
 
 // Sandbox sessions own their branches (docs/211). That exemption is about
 // branch ownership and nothing else, so it scopes the git checks below rather
@@ -149,88 +150,138 @@ function offendsDestructive(seg) {
   return null;
 }
 
-// ---------------------------------------------------------------------------
-// A wait loop that can never change its own answer.
-//
-// The Bash tool runs a command as `bash -c '<the whole command>'`, so every
-// literal written in the command is part of the command line of the process
-// that runs it — and `pgrep -f` matches full command lines. A loop waiting on
-// `pgrep -f "<something from this command>"` therefore matches ITSELF: the
-// condition is constant, so the loop either never exits (holding the session
-// until something kills it) or never waits at all.
+// A wait loop whose own `pgrep -f` test can only ever be true. The Bash tool
+// runs a command as `bash -c '<the whole command>'`, so every literal in it is
+// part of the command line of the process running it, and `pgrep -f` matches
+// full command lines. What this judges is that test, not the loop's control
+// flow: a deadline or a `break` elsewhere can still end the loop, and the test
+// is broken either way.
 
-/** Options whose value is the NEXT token, so that token is not the pattern. */
-const PGREP_VALUE_OPTS = new Set([
-  "-d", "--delimiter", "-F", "--pidfile", "-G", "--group", "-g", "--pgroup",
-  "-P", "--parent", "-s", "--session", "-t", "--terminal", "-u", "--euid",
-  "-U", "--uid", "--ns", "--nslist", "--signal",
+/**
+ * Options that cannot change whether the calling shell is among the matches.
+ * Anything else — `-x` exact, `-A` ignore-ancestors, `-P` parent, `-v` inverse,
+ * a uid or session filter, an option procps adds next year — is a deliberate
+ * way to exclude the caller or to invert the test, and the honest answer there
+ * is no answer at all.
+ */
+const HARMLESS_LONG = new Set([
+  "--full", "--list-full", "--list-name", "--count", "--ignore-case",
+  "--lightweight", "--newest", "--oldest",
 ]);
+const HARMLESS_LONG_WITH_VALUE = new Set(["--delimiter", "--signal"]);
+const HARMLESS_SHORT = new Set(["f", "a", "l", "c", "i", "w", "n", "o"]);
+const HARMLESS_SHORT_WITH_VALUE = new Set(["d"]);
 
-/** Shell-ish tokens with quotes removed; null when the quoting does not close. */
-function shellTokens(text) {
+/** A heredoc body is data the shell feeds a program, never something it runs. */
+function withoutHeredocBodies(line) {
+  const kept = [];
+  let terminator = null;
+  for (const one of line.split("\n")) {
+    if (terminator !== null) {
+      if (one.trim() === terminator) terminator = null;
+      continue;
+    }
+    kept.push(one);
+    const opener = /<<-?\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\1/.exec(one);
+    if (opener) terminator = opener[2];
+  }
+  return kept.join("\n");
+}
+
+/**
+ * Tokens, each marked with whether the shell would have quoted it away.
+ * Quoting is the difference between code and data: `printf '%s' 'while pgrep
+ * -f x; do ...'` runs nothing, and refusing it would refuse ordinary work.
+ * Null when the quoting never closes — what cannot be read is not judged.
+ */
+function tokenize(text) {
   const tokens = [];
-  let cur = null;
+  let value = null;
+  let quoted = false;
   let quote = null;
+  const push = () => {
+    if (value !== null) tokens.push({ value, quoted });
+    value = null;
+    quoted = false;
+  };
   for (let i = 0; i < text.length; i++) {
     const ch = text[i];
     if (quote) {
       if (ch === quote) { quote = null; continue; }
       // Only a double-quoted context honours a backslash escape.
-      if (quote === '"' && ch === "\\" && i + 1 < text.length) { cur += text[++i]; continue; }
-      cur += ch;
+      if (quote === '"' && ch === "\\" && i + 1 < text.length) { value += text[++i]; continue; }
+      value += ch;
       continue;
     }
-    if (ch === "'" || ch === '"') { quote = ch; cur ??= ""; continue; }
-    if (/\s/.test(ch)) { if (cur !== null) { tokens.push(cur); cur = null; } continue; }
-    if (ch === "\\" && i + 1 < text.length) { cur = (cur ?? "") + text[++i]; continue; }
-    cur = (cur ?? "") + ch;
+    if (ch === "'" || ch === '"') { quote = ch; value ??= ""; quoted = true; continue; }
+    if (/\s/.test(ch)) { push(); continue; }
+    if (";|&()".includes(ch)) {
+      push();
+      const doubled = (ch === "&" || ch === "|") && text[i + 1] === ch;
+      if (doubled) i++;
+      tokens.push({ value: doubled ? ch + ch : ch, quoted: false, operator: true });
+      continue;
+    }
+    if (ch === "\\" && i + 1 < text.length) { value = (value ?? "") + text[++i]; continue; }
+    value = (value ?? "") + ch;
   }
-  if (cur !== null) tokens.push(cur);
+  push();
   return quote ? null : tokens;
 }
 
-/** `>/dev/null`, `2>&1`, a bare `>` and friends: never the pattern. */
-function isRedirection(token) {
-  return /^\d*[<>]/.test(token);
-}
-
-/** True when a redirection token's target is the token after it. */
-function redirectionTakesNext(token) {
-  return /^\d*[<>]{1,2}$/.test(token);
+/** Where this invocation's arguments stop: an operator, or a redirection. */
+function endsArguments(token) {
+  return token.operator === true || (!token.quoted && /^\d*[<>]/.test(token.value));
 }
 
 /**
- * The pattern a `pgrep` / `pkill` invocation searches full command lines for,
- * or null. Null is the answer for every shape this cannot read unambiguously —
- * an unknown option leaves its value looking like a second operand, and
- * guessing between two operands would refuse correct work.
+ * The pattern this `pgrep` / `pkill` tests full command lines against, or null
+ * for every shape that cannot be read unambiguously. Null is the important
+ * half: an option this does not know, or a second operand, means a guess — and
+ * a guess here refuses correct work, which a hook has no way to undo.
  */
-function fullCommandLinePattern(args) {
+function fullCommandLinePattern(args, program) {
   let full = false;
   const operands = [];
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
-    if (isRedirection(arg)) {
-      if (redirectionTakesNext(arg)) i++;
-      continue;
-    }
     if (arg === "--") {
-      operands.push(...args.slice(i + 1).filter((t) => !isRedirection(t)));
+      operands.push(...args.slice(i + 1));
       break;
     }
     if (arg.startsWith("--")) {
-      const name = arg.split("=")[0];
-      if (name === "--full") full = true;
-      else if (!arg.includes("=") && PGREP_VALUE_OPTS.has(name)) i++;
-      continue;
+      const [name, inline] = arg.split(/=(.*)/s);
+      if (HARMLESS_LONG.has(name)) {
+        if (name === "--full") full = true;
+        continue;
+      }
+      if (HARMLESS_LONG_WITH_VALUE.has(name)) {
+        if (inline === undefined) i++;
+        continue;
+      }
+      return null;
     }
     if (arg.startsWith("-") && arg.length > 1) {
-      if (/^-\d+$/.test(arg)) continue; // pkill's signal number
-      const chars = arg.slice(1).split("");
-      if (chars.includes("f")) full = true;
-      const valueChar = chars.find((c) => PGREP_VALUE_OPTS.has(`-${c}`));
-      // A value-taking short option consumes the next token when it ends the cluster.
-      if (valueChar && arg.endsWith(valueChar)) i++;
+      // A signal names what pkill sends, not what it matches.
+      if (program === "pkill" && /^-(\d+|[A-Z]{2,})$/.test(arg)) continue;
+      const chars = [...arg.slice(1)];
+      let takesNext = false;
+      let unknown = false;
+      for (const [at, ch] of chars.entries()) {
+        if (HARMLESS_SHORT.has(ch)) {
+          if (ch === "f") full = true;
+          continue;
+        }
+        // A value-taking option swallows the rest of the cluster, or the next token.
+        if (HARMLESS_SHORT_WITH_VALUE.has(ch)) {
+          takesNext = at === chars.length - 1;
+          break;
+        }
+        unknown = true;
+        break;
+      }
+      if (unknown) return null;
+      if (takesNext) i++;
       continue;
     }
     operands.push(arg);
@@ -238,44 +289,44 @@ function fullCommandLinePattern(args) {
   return full && operands.length === 1 ? operands[0] : null;
 }
 
-/** Every `pgrep -f` / `pkill -f` pattern inside one loop condition. */
-function fullMatchPatterns(conditionText) {
-  const tokens = shellTokens(conditionText);
-  if (!tokens) return []; // unreadable quoting is not something to judge
+/** Every readable `pgrep -f` / `pkill -f` pattern among these tokens. */
+function fullMatchPatterns(tokens) {
   const patterns = [];
   for (let i = 0; i < tokens.length; i++) {
-    // An absolute path still names the program.
-    if (!/^(.*\/)?(pgrep|pkill)$/.test(tokens[i])) continue;
+    // An absolute path still names the program, and so does a quoted one:
+    // quoting stops `while` being a keyword, and does not stop `pgrep` being
+    // a command.
+    const program = /^(?:.*\/)?(pgrep|pkill)$/.exec(tokens[i].value)?.[1];
+    if (!program) continue;
     const args = [];
-    for (let j = i + 1; j < tokens.length && !/^[;|&()]/.test(tokens[j]); j++) args.push(tokens[j]);
-    const pattern = fullCommandLinePattern(args);
+    for (let j = i + 1; j < tokens.length && !endsArguments(tokens[j]); j++) args.push(tokens[j].value);
+    const pattern = fullCommandLinePattern(args, program);
     if (pattern !== null) patterns.push(pattern);
   }
   return patterns;
 }
 
 /**
- * The condition of each `until` / `while`, up to its `do`.
- *
- * A quote counts as a start, because `timeout 600 bash -c 'until ...; done'`
- * is a real shape — and is the very one this hook's own advice recommends, so
- * missing it would let the guard bless a watcher that still cannot terminate.
- * The cost is that a loop merely QUOTED and never run, as in `echo "until
- * ..."`, is read as one. That direction is the deliberate one: refusing a
- * command that prints a sentence is a turn, and missing one that hangs is a
- * session.
+ * The tokens of each `until` / `while` condition, up to that loop's `do`.
+ * A quoted keyword is not a keyword — bash refuses `wh"ile" x; do y; done` as
+ * a syntax error — so quoting is what separates a loop from a word about one.
  */
-function loopConditions(line) {
+function loopConditions(tokens) {
   const out = [];
-  const re = /(?:^|[\s;&|('"`])(?:until|while)\b([\s\S]*?)(?:;|\s)\s*do\b/g;
-  let match;
-  while ((match = re.exec(line)) !== null) out.push(match[1]);
+  for (let i = 0; i < tokens.length; i++) {
+    if (tokens[i].quoted || !/^(?:until|while)$/.test(tokens[i].value)) continue;
+    let end = i + 1;
+    while (end < tokens.length && !(!tokens[end].quoted && tokens[end].value === "do")) end++;
+    out.push(tokens.slice(i + 1, end));
+  }
   return out;
 }
 
-// A pattern is the agent's own text rather than anything hostile, but a
-// pathological one over a very long command is still a way to stall the hook.
-const COMMAND_SCAN_LIMIT = 20_000;
+// A pattern is the agent's own text rather than anything hostile, but
+// catastrophic backtracking does not care: `a(a+)+$` over 26 characters takes
+// seconds, and a `try` cannot interrupt it. A hook that stalls is the failure
+// this one exists to prevent, so the match runs under a deadline it can lose.
+const MATCH_TIMEOUT_MS = 100;
 
 /**
  * Whether a pattern matches the command it is written in. Matching the command
@@ -285,16 +336,21 @@ const COMMAND_SCAN_LIMIT = 20_000;
  * costs nothing a refusal would have saved.
  */
 function matchesOwnCommand(pattern, line) {
-  if (!pattern || line.length > COMMAND_SCAN_LIMIT) return false;
+  if (!pattern) return false;
   try {
-    return new RegExp(pattern).test(line);
+    return runInNewContext("new RegExp(p).test(s)", { p: pattern, s: line }, {
+      timeout: MATCH_TIMEOUT_MS,
+    }) === true;
   } catch {
-    return false; // not a pattern this runtime reads as a regex
+    // Not a regex this runtime reads, or too slow to decide inside the deadline.
+    return false;
   }
 }
 
 function offendsSelfMatchingWatcher(line) {
-  for (const condition of loopConditions(line)) {
+  const tokens = tokenize(withoutHeredocBodies(line));
+  if (!tokens) return null;
+  for (const condition of loopConditions(tokens)) {
     for (const pattern of fullMatchPatterns(condition)) {
       if (matchesOwnCommand(pattern, line)) return pattern;
     }
@@ -357,12 +413,12 @@ try {
 
 if (selfMatched) {
   process.stderr.write(
-    `Blocked: this wait loop searches for \`${selfMatched}\`, which is text in this very command.\n\n` +
+    `Blocked: this wait loop tests for \`${selfMatched}\`, which is text in this very command.\n\n` +
       "The Bash tool runs a command as `bash -c '<the whole command>'`, so every " +
       "literal you write is part of the command line of the process that runs it — " +
-      "and `pgrep -f` matches full command lines. This loop matches ITSELF, so its " +
-      "condition never changes: it either never exits, holding the session until " +
-      "something kills it, or never waits at all.\n\n" +
+      "and `pgrep -f` matches full command lines. This test matches ITSELF, so it is " +
+      "true whatever the processes are doing: the loop waits for something that has " +
+      "already happened, or never notices that it did.\n\n" +
       "Three ways out, best first.\n\n" +
       "1. Do not poll for work this harness already tracks. A command started with " +
       "the Bash tool's background mode notifies you when it exits, so there is " +
@@ -370,10 +426,10 @@ if (selfMatched) {
       "2. Wait on the artifact, not the process. Its output has a definite end " +
       "state and matching it reads no process list at all:\n" +
       "     until grep -qE '^(PASS|FAIL)' /tmp/run.log; do sleep 5; done\n\n" +
-      "3. If you must match processes, bracket one character so the pattern cannot " +
-      "match itself. It still matches the target, and the literal in this command " +
-      "no longer matches the pattern:\n" +
-      "     pgrep -f '[v]itest run src/...'\n\n" +
+      "3. If you must match processes, exclude yourself. Any of these is enough, " +
+      "and each is left alone here:\n" +
+      "     pgrep -A  -f 'vitest run src/...'   # ignore this shell's ancestors\n" +
+      "     pgrep -f '[v]itest run src/...'     # a pattern that cannot match itself\n\n" +
       "Bound the wait either way, so a mistake costs minutes and not the session:\n" +
       "     timeout 600 bash -c 'until ...; done'\n",
   );
