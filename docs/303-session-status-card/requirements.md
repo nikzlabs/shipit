@@ -84,7 +84,8 @@ taken inside one session, without building an agent that talks to many.
     padding, not fewer actions than the agent has to offer; a separate card
     would not save height either.
 19. The existing action card is evolved into this, not duplicated beside it:
-    its item shape, its submit path and its renderer are reused.
+    its item shape, its submit path and its renderer are reused. Action cards
+    already in a conversation keep working.
 20. "Needs you" and the actions stay distinct in meaning, on this card as on
     two: "Needs you" is what only the user can do by hand; an action is agent
     work the user approves with a click.
@@ -103,7 +104,6 @@ taken inside one session, without building an agent that talks to many.
   turn; the existing action card should be evolved to simplify the work; and
   the distinction between "Needs you" and actions holds on one card as on
   two. → reqs 4, 13, 16–20.
-
 - 2026-09-14 — How is freshness shown? The prototype drew three variants
   (left rail, dot, tinted header), each with a header reading "Current" or
   "May be behind · the last turn did not update it". Nik: it is wasteful to

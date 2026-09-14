@@ -7,9 +7,10 @@ description: One agent tool carrying status, needs-you and offered actions; one 
 # Session status card — design
 
 Requirements: [requirements.md](requirements.md). Remaining work:
-[checklist.md](checklist.md). Reviewed once by ShipIt's configured reviewer
-on 2026-09-14; the findings that changed this design are named where they
-apply.
+[checklist.md](checklist.md). Reviewed twice by ShipIt's configured reviewer
+on 2026-09-14 — once before and once after the action card was folded in;
+the findings that changed this design are named where they apply. Decisions
+the human did not state are collected at the end, under "Agent decisions".
 
 ## Shape
 
@@ -17,7 +18,7 @@ Four pieces, each one already has a precedent in the codebase:
 
 | Piece | Precedent |
 |---|---|
-| Agent tool `session_status` | `propose_actions` (`src/server/session/mcp-tools/propose-actions.ts`), which it absorbs (req 16, 19) |
+| Agent tool `session_status` | `propose_actions` (`src/server/session/mcp-tools/propose-actions.ts`), which it replaces (req 16, 19) |
 | Session-record column `session_status`, broadcast with `session_list` | `agent_goal` (docs/154, `services/agent-goal.ts`) |
 | Pinned element above the composer | `GoalChip` in `App.tsx` |
 | ShipIt-started follow-up turn | the dispatch path `wakeSessionWithTurn` uses (`wake-session.ts`, `dispatched-turn.ts`) |
@@ -34,20 +35,37 @@ rehydration) is involved.
 Grok, Antigravity), so it is the same tool everywhere.
 
 Two plain-text arguments and an optional action list, validated in
-`src/server/shared/session-status-validation.ts`, which reuses
-`propose-actions-validation.ts` for the items (req 19):
+`src/server/shared/session-status-validation.ts`. The per-item validation is
+extracted from `propose-actions-validation.ts` into `validateActionItems`
+and shared (req 19); the envelope rules differ (below), so the envelope
+validator is not reused — review found it rejects an empty list and caps at
+five, which "replace with nothing" and "replace with everything relevant"
+both need.
 
 | Field | Limit | Meaning |
 |---|---|---|
 | `status` | required, ≤ 240 chars | What the session is about, how far it got, and whether it is done or ready to merge — including agent work not yet started ("webhook not started"). The whole session, not the last turn. |
 | `needsYou` | optional, ≤ 240 chars | The decision or hand action only the user can take. Empty when nothing. |
-| `actions` | optional, each item the `propose_actions` shape: `id`, `label`, `description?`, `defaultChecked?`, `payload` (≤ 4000 chars) | Follow-up agent work the user approves with a click (req 16, 20). |
-| `replaceActions` | optional boolean, default false | `false`: merge the given actions into the offered list by `id` (same id updates in place); `true`: the given list replaces the offered list, an empty list clears it (req 17). |
+| `actions` | optional, each item the `propose_actions` item shape: `id`, `label`, `description?`, `defaultChecked?`, `payload` (≤ 4000 chars) | Follow-up agent work the user approves with a click (req 16, 20). |
+| `replaceActions` | optional boolean, default false | `false`: add the given actions to the offered list; an item whose `id` is already offered replaces that item. `true`: the given list replaces the offered list; an empty list clears it (req 17). |
 
 Actions are never cleared by a turn (req 17): a call without `actions`
 leaves the offered list as it is. Only `replaceActions: true`, or the user
-taking an action, changes it. There is no cap on the number of offered
-actions beyond `MAX_ACTIONS` per call (req 18).
+taking an action, changes it. An empty `actions` is valid only with
+`replaceActions: true`. The offered list holds at most
+`MAX_OFFERED_ACTIONS = 10` items — a bound against a runaway agent, not a
+design target (req 18 wants every relevant one shown); a call that would
+exceed it is refused with a message naming `replaceActions`.
+
+**Action identity.** The agent's `id` names an offer; the server gives every
+stored item an `offerId` (uuid) when it is created or replaced. Everything
+that acts on an offer — the checkbox, the submit, the removal — uses the
+`offerId`. So a replacement that changes an item's payload gets a new
+`offerId`, a submit composed before that replacement removes nothing and the
+new offer stays, and a replacement can never resurrect an offer the user
+already took. Review found this race unaddressed; `propose_actions` ids are
+unique only within one card (`propose-actions-validation.ts:53`), which is
+why the server owns the identity.
 
 A `next` field was in the first draft and removed on 2026-09-14: the card
 is read after the agent has finished, so everything "next" waits for the
@@ -67,8 +85,14 @@ line telling the agent the status is on screen and it can end its turn.
 ## Storage and transport (req 10)
 
 - `sessions.session_status` column, JSON
-  `{ status, needsYou?, actions: ActionChecklistItem[], fresh }`. Migration via
-  `addSessionColumnIfMissing` (`database.ts`), like `agent_goal`.
+  `{ status, needsYou?, actions: OfferedAction[], fresh, version, branch?, headSha? }`,
+  where `OfferedAction` is the item shape plus `offerId` and `offeredAt`.
+  `version` increments on every write and is the guard the post-turn step
+  uses (below). `branch`/`headSha` are captured at write time exactly as
+  `api-routes-propose-actions.ts` does today, because the submit message
+  (`formatProposalMessage`, `src/client/utils/action-checklist-message.ts`)
+  carries that provenance. Migration via `addSessionColumnIfMissing`
+  (`database.ts`), like `agent_goal`.
 - `fresh` (req 14) means "the last finished turn updated this card". The
   route writes `fresh: true`; the post-turn step (below) writes
   `fresh: false` at the end of every settled turn that did not update it,
@@ -80,19 +104,44 @@ line telling the agent the status is on screen and it can end its turn.
 - `SessionInfo.sessionStatus?: SessionStatus` (`domain-types/session.ts`),
   read in `sessions.ts` `toRow`/`fromRow`, written by
   `SessionManager.setSessionStatus`.
-- `services/session-status.ts` `recordSessionStatus(deps, sessionId, status)`
-  and `markSessionStatusStale(deps, sessionId)`: write, then
-  `sseBroadcast("session_list", …)` when something shown changed, exactly
-  `recordAgentGoal`.
+- `services/session-status.ts` `recordSessionStatus(deps, sessionId, write)`,
+  `markSessionStatusStale(deps, sessionId, ifVersion)` and
+  `takeOfferedActions(deps, sessionId, offerIds)`: each runs inside
+  `runStatusExclusive` (the `runGoalExclusive` chain from `agent-goal.ts`,
+  copied — one status operation per session at a time), writes, then
+  `sseBroadcast("session_list", …)` when something shown changed. The stale
+  mark takes the `version` the caller observed and is a no-op if a newer
+  write happened since; copying only the setter, as the first draft did,
+  inherited neither the serialization nor the obsolete-write rejection the
+  goal service has (review).
 
 Because the value rides `SessionInfo`, every viewer, a reload, a session
 switch and an orchestrator restart show the same card with no extra request.
-`clearAgentSessionId` (conversation reset) clears `agent_goal` and leaves this
-column alone: the status is about the session, and a new thread does not
-change what the session is about. A fork (`forkSession`) is a new row and
-starts with no status; its first turn is nudged into writing one — unless
-that first turn asks a question, in which case the fork has no card until
-its first ordinary turn (req 13's exemption, applied to a fresh session).
+Lifecycle (agent decisions, see the end):
+
+- **Conversation reset and rewind.** `clearAgentSessionId` runs on a
+  conversation reset and after a code/history rewind
+  (`rollback-handlers.ts:348`). It clears `agent_goal`; here it keeps the
+  status and the offers but marks them stale (`fresh: false`). The card's
+  content is still the best summary the user has, and after a rewind it may
+  describe work that is gone, which is exactly what "Stale" says. The next
+  turn refreshes it.
+- **Fork.** `forkSession` creates a new row (`session-fork-merge.ts:184`); it
+  copies the parent's status and offers, marked stale. The fork starts from
+  the parent's state, so the parent's card is the right first card, and the
+  stale mark says it was not written for this session. Without the copy a
+  fork whose first turn asks a question would have no card at all.
+- **Archive.** The row keeps the column; archiving hides the session, and a
+  restore brings the card back with it. Nothing to do.
+- **New session.** No card until the first status write. A first turn that
+  ends with a question leaves no card (req 13); the first ordinary turn
+  writes one.
+- **Dismissal.** The user has no control on the card to drop an offer;
+  ShipIt's control is the composer (CLAUDE.md §5). "Drop the retry idea" is
+  a message; the prompt tells the agent to answer it with
+  `replaceActions`. The agent also reads the offered list back: the route's
+  reply to any `session_status` call, and the nudge prompt, include the
+  current offers, so a fresh context after a reset knows what is on the card.
 
 ## Turn-end accounting (req 11–13)
 
@@ -120,10 +169,11 @@ The flag is set on the orchestrator's own evidence — its route was hit —
 never by matching tool names in the event stream, which differ per harness.
 
 **A stated tolerance.** The flag is sticky within the turn: an agent that
-updates the status and then does more work still counts as complete. The prompt asks for the update as the last
-act; the orchestrator does not verify ordering, because the route hits and
-the tool events arrive on different channels and ordering them would be a
-mechanism nobody asked for. Reviewer finding, kept as a known tolerance.
+updates the status and then does more work still counts as complete. The
+prompt asks for the update as the last act; the orchestrator does not verify
+ordering, because the route hits and the tool events arrive on different
+channels and ordering them would be a mechanism nobody asked for. Both
+reviews named it; kept as a known tolerance.
 
 ## The nudge (req 12)
 
@@ -137,11 +187,20 @@ An idle listener would need a turn epoch to be safe; the executor already has
 one.
 
 So the decision is a memoized post-turn step in `turn-executor.ts`,
-`status-nudge`, run after `idle` on the paths that reached `agent_result`
-(memoized with `??=` like `runCommitAndPr`, so the streaming `agent_result`
-and `done` paths call it once between them). It reads executor-local facts —
-`receivedResult`, `runner.wasInterrupted`, the turn's own `silent` and
-`statusNudge` inputs, the accumulator flag — and says **no** when:
+`status-nudge`, run after `idle` (memoized with `??=` like `runCommitAndPr`,
+so the streaming `agent_result` and `done` paths call it once between them).
+
+**Its inputs are a snapshot, taken before the drain.** The second review
+showed that `runner.wasInterrupted` and the accumulator flag are mutable
+runner state, not executor-local: `tryDrain` starts the successor before the
+commit and the idle step (`turn-executor.ts:831`), and the successor's start
+resets both (`session-runner.ts:448`). A step that read them later would
+read the successor's turn. So at the moment the turn settles — the
+`agent_result` handler, or the `done` handler on a no-result path — and
+before `postTurnStep("drain", …)`, the executor copies into a `const`:
+`{ statusUpdated, wasInterrupted, receivedResult, silent, statusNudge,
+statusVersion }`, where `statusVersion` is the record's `version` at that
+instant. The decision reads only that snapshot, and says **no** when:
 
 - the status was updated (any `session_status` call, with or without
   actions);
@@ -152,9 +211,11 @@ and `done` paths call it once between them). It reads executor-local facts —
 - the turn was `silent` (compaction) — `silent` is not forwarded into
   `TurnInput` today (`dispatched-turn.ts:307`); this change forwards it;
 - the turn was itself a nudge (below);
-- a successor is running or queued: the card is checked again when that
-  turn ends, and a nudge queued behind a user message would answer the wrong
-  turn.
+- the record's `version` has moved past the snapshot's: a later turn
+  already wrote, and this turn's verdict is obsolete;
+- a successor is running or queued: this is a deferral, not an exemption —
+  the card is checked again when that turn ends, and a nudge queued behind a
+  user message would answer the wrong turn.
 
 Otherwise it dispatches the nudge through the same entry the queue drain
 uses, as a dispatched system turn — not `silent`, so the prompt is echoed as
@@ -163,7 +224,8 @@ the post-turn flow runs as for any turn. That is the transparency req 12 asks
 for. The prompt opens with `[ShipIt]`, the prefix ShipIt already uses for
 lines it writes into the conversation (bug-report resolutions), and says: the
 last turn ended without a session status update; call `session_status` now
-with the two fields; do nothing else.
+with the two fields; do nothing else. The prompt also lists the currently
+offered actions, so the agent can keep or replace them knowingly.
 
 **Nudge identity travels with the dispatch.** The first draft set a
 `statusNudgePending` flag on the runner and consumed it at the next turn
@@ -185,11 +247,14 @@ notice was in the second draft and is gone: the card says it itself, in the
 language every stale card uses.
 
 **The step is reachable from every terminal path, like `runCommitAndPr`
-(CLAUDE.md invariant 2), and its first act on any non-`silent` turn without
-`statusUpdated` is `markSessionStatusStale`.** That is the second writer of
-`fresh`. Only the *dispatch* of a nudge needs `receivedResult` and the other
-conditions above; the stale mark does not, because a turn that ended by a
-question, a stop or a crash left the card behind just the same.
+(CLAUDE.md invariant 2), and its first act on any non-`silent` turn whose
+snapshot lacks `statusUpdated` is `markSessionStatusStale(…, snapshot.statusVersion)`.**
+That is the second writer of `fresh`, and the version argument makes it a
+no-op when a later turn has already written — so a slow predecessor can
+never mark a newer status stale. Only the *dispatch* of a nudge needs
+`receivedResult` and the other conditions above; the stale mark does not,
+because a turn that ended by a question, a stop or a crash left the card
+behind just the same.
 
 Rejected on the way:
 
@@ -222,16 +287,22 @@ Needs you   Add the Stripe test key in Settings → Secrets.
 ```
 
 - **Actions (req 16–19).** The offered actions render below the two fields
-  as the checklist the action card already draws: `ActionChecklistCard`'s
-  item list and submit logic (`src/client/components/ActionChecklistCard.tsx`,
-  `formatProposalMessage`) are lifted into a shared piece that both the old
-  transcript rows and this card use. One "Send" for the ticked items; a
-  single action renders as one button, as today. Submitting composes the
-  same user message as today and starts a turn; the ticked actions leave the
-  offered list at once (they are now a message), the unticked ones stay
-  (req 17). Every offered action is shown; the list grows with the offer,
-  not with a cap (req 18). The card's `title` and `id` per action are the
-  agent's, so an `add` with a known id updates that item in place.
+  as the checklist the action card already draws. `ActionChecklistCard`
+  (`src/client/components/ActionChecklistCard.tsx`) splits into a
+  presentational checklist (items, selection, "Send" / single button) and a
+  wrapper that owns formatting and submission; the old transcript-row wrapper
+  keeps its repeat-submission, delivery-failure and "Add comment…" behavior
+  unchanged, and the pinned card gets its own wrapper. Two adaptations the
+  second review required: selection is keyed by `offerId`, not by the
+  agent's `id`, so a replaced offer arrives as a new, unselected item with
+  its own `defaultChecked`, and the payload behind a ticked box can never
+  change silently; and the pinned wrapper passes the card's stored
+  `branch`/`headSha`/`offeredAt` to `formatProposalMessage`, which needs
+  them. The "Add comment…" path carries the ticked `offerIds` too, so a
+  qualified approval also clears what it approved. Submitting composes the
+  same user message as today and starts a turn; the ticked offers leave the
+  list on acceptance (below), the unticked ones stay (req 17). Every offered
+  action is shown (req 18).
 
 - **Freshness (req 14).** Two states, no title text spent on them. A current
   card is a regular card. A card that may be behind carries a small
@@ -256,26 +327,36 @@ Needs you   Add the Stripe test key in Settings → Secrets.
 
 ## Evolving the action card (req 19)
 
-`propose_actions` is absorbed, not duplicated:
+`propose_actions` is replaced, not duplicated, and not aliased:
 
-- **Tool.** The `propose_actions` tool stays callable for one release as an
-  alias: its call becomes `session_status` with `actions` and no status text,
-  which merges the items (req 17) and does **not** set `statusUpdated` — the
-  prompt no longer mentions it, so a call is a leftover habit and the nudge
-  then asks for the status. Its section in `skeleton.md` is replaced by the
-  session-status section.
-- **Route.** `api-routes-propose-actions.ts` forwards to the session-status
-  service instead of emitting a transcript card. New offers never enter chat
-  history.
-- **Validation.** `propose-actions-validation.ts` keeps validating the items;
-  `session-status-validation.ts` calls it.
-- **Renderer.** `ActionChecklistCard` splits into the checklist piece (shared)
-  and the transcript-row wrapper (kept for existing `actionChecklist` rows in
-  history; nothing is migrated or deleted).
-- **Submit path.** `send_message.actionChecklistCardId` keeps marking an old
-  transcript card submitted; the pinned card's submit sends the same message
-  shape with a `sessionStatusActionIds` list instead, and the route removes
-  those ids from the offered list before the turn starts.
+- **Tool.** `propose_actions` is removed from the MCP bridge and from every
+  harness's `SHIPIT_MCP_TOOLS` list, and its section in `skeleton.md` is
+  replaced by the session-status section. The first draft kept it as an
+  alias that merged actions without a status; review showed the alias's own
+  tool description still told the agent to call it and end the turn
+  (`propose-actions.ts:87`, advertised by `mcp-shipit-bridge.ts:50`), so it
+  produced a predictable extra nudge, and an alias call on a session with no
+  status yet would store offers nobody could see. No requirement asks for
+  transitional compatibility; removing the tool removes both problems.
+- **Route.** `api-routes-propose-actions.ts` is deleted with the tool. New
+  offers never enter chat history.
+- **Validation.** `validateActionItems` is extracted from
+  `propose-actions-validation.ts` and shared; the old envelope validator goes
+  with the tool.
+- **Renderer.** As in "Client" above: shared checklist, two wrappers. Old
+  `actionChecklist` rows in history keep rendering and submitting; nothing is
+  migrated or deleted.
+- **Submit and acceptance.** Today `send_message.actionChecklistCardId` is
+  consumed in `handleSendMessage`'s `checklistAccepted` callback
+  (`send-message.ts:147`), which runs on every acceptance path — steered,
+  queued and ordinary dispatch — and stamps the card `submittedAt`
+  (`send-message.ts:55`). The pinned card's submit carries
+  `sessionStatusOfferIds` on the same message, and the same callback calls
+  `takeOfferedActions` for them. Removing on acceptance, not before and not
+  at execution, is what review asked for: a refused message keeps its offers,
+  and a queued approval does not stay offered while it waits.
+  (docs/207's statement that a submission has no persisted lifecycle
+  predates `submittedAt`; a note there points here.)
 
 ## Prompt (req 5)
 
@@ -286,7 +367,8 @@ describes the session and not the turn, that it is the last act of a turn,
 that a turn ending in a question needs no update, that "Needs you" is what
 only the user can do by hand while an action is agent work approved with a
 click (req 20), and that offered actions persist — add to them, or replace
-them when they are no longer relevant.
+them when they are no longer relevant, including when the user asks to drop
+one.
 It also says what is **not** a next step: opening, reviewing or merging the
 PR is ShipIt's default workflow, never a step to list — the status says
 "ready to merge" instead. (Nik, 2026-09-14.)
@@ -298,13 +380,17 @@ the section is composed in, not its wording.
 ## Tests
 
 - `session-status-validation.test.ts` — limits, required fields, trimming,
-  action items validated by the shared validator, `replaceActions` semantics
-  (merge by id, replace, clear with an empty list).
+  action items validated by the shared validator, an empty list only with
+  `replaceActions`, the offered-list bound.
+- `services/session-status.test.ts` — offer semantics: add, same-`id`
+  replacement issues a new `offerId`, replace, clear; `takeOfferedActions`
+  with a stale `offerId` removes nothing; writes serialize per session;
+  `markSessionStatusStale` with an old version is a no-op.
 - `api-routes-session-status.test.ts` — validate → persist → `session_list`
   broadcast → accumulator flag set; 409 when the runner is not active.
-- `services/session-status.test.ts` — the decision table: updated /
-  interrupted / no result / silent / nudge-itself / successor running → no;
-  plain turn → nudge; a `propose_actions` alias call alone → nudge.
+- `services/session-status.test.ts` — the decision table on a snapshot:
+  updated / interrupted / no result / silent / nudge-itself / version moved /
+  successor running → no; plain turn → nudge.
 - `prepared-dispatch.test.ts` — `statusNudge` survives the queue round trip.
 - Integration (`integration_tests/session-status-nudge.test.ts`, FakeClaude):
   a turn without the tool → exactly one dispatched follow-up whose user row
@@ -312,13 +398,16 @@ the section is composed in, not its wording.
   fresh; a follow-up that also skips it → no third turn, card marked stale; a
   turn that asks a question → no follow-up; a turn with a queued successor →
   no follow-up until the successor ends; the streaming `agent_result` + `done`
-  pair → one decision, not two.
+  pair → one decision, not two; a predecessor settling after its successor
+  wrote → no stale mark and no nudge (the snapshot-and-version guard).
 - `SessionStatusCard.test.tsx` — two rows, hidden `Needs you` when empty,
   the "Stale" label present only in the stale state, every offered action
-  rendered, submit composes the same message as the transcript card and
-  removes the ticked ids.
-- `api-routes-propose-actions.test.ts` — the alias merges actions into the
-  status and emits no transcript card.
+  rendered, selection keyed by `offerId` survives a replacement as a new
+  unselected item, submit composes the same message as the transcript card
+  and sends the ticked `offerIds`, the comment path sends them too.
+- `send-message.test.ts` — `checklistAccepted` takes the offers on each
+  acceptance path and not on refusal; old cards still get `submittedAt`.
+- `ActionChecklistCard.test.tsx` — existing behavior unchanged after the split.
 - `services/session-status.test.ts` also covers `fresh`: the route sets it,
   a question turn clears it, an ignored nudge clears it, a later update sets
   it again; the broadcast fires only on change.
@@ -333,9 +422,26 @@ the section is composed in, not its wording.
 - `src/server/orchestrator/turn-executor.ts` — the memoized `status-nudge` post-turn step; `silent` and `statusNudge` on `TurnInput`.
 - `src/server/orchestrator/prepared-dispatch.ts`, `src/server/shared/types/agent-types.ts` — the `statusNudge` dispatch option.
 - `src/server/orchestrator/turn-accumulator.ts`, `session-runner.ts` — per-turn flags and their reset.
-- `src/server/orchestrator/api-routes-propose-actions.ts` — the alias; forwards to the session-status service.
-- `src/client/components/ActionChecklistCard.tsx` — split into the shared checklist piece and the transcript-row wrapper.
+- `src/server/orchestrator/api-routes-propose-actions.ts`, `src/server/session/mcp-tools/propose-actions.ts` — deleted; `src/server/session/mcp-shipit-bridge.ts` and the five adapters drop the tool.
+- `src/server/orchestrator/ws-handlers/send-message.ts` — `checklistAccepted` also takes offered actions by `offerId`.
+- `src/client/components/ActionChecklistCard.tsx`, `src/client/utils/action-checklist-message.ts` — split into the shared checklist piece and two wrappers.
+- `src/server/orchestrator/ws-handlers/rollback-handlers.ts`, `src/server/orchestrator/services/session-fork-merge.ts` — stale on rewind, copy-as-stale on fork.
 - `src/server/orchestrator/sessions.ts`, `src/server/shared/database.ts`, `src/server/shared/types/domain-types/session.ts` — column and type.
-- `src/server/shared/session-status-validation.ts` — limits.
+- `src/server/shared/session-status-validation.ts`, `src/server/shared/propose-actions-validation.ts` — envelope limits; the shared `validateActionItems`.
 - `src/server/orchestrator/prompts/skeleton.md` — the instruction.
 - `src/client/components/SessionStatusCard.tsx`, `src/client/App.tsx` — the element.
+
+## Agent decisions
+
+Choices the human did not state, made to close gaps the reviews named. Each
+is reversible without touching a numbered requirement; say so and it changes.
+
+- A rewind or conversation reset marks the card stale rather than clearing
+  it (req 14's meaning applied to a case req 14 does not name).
+- A fork copies the parent's card, marked stale.
+- A new session shows no card until its first status write; a first turn
+  that ends with a question leaves none (req 13 applied to a fresh session).
+- The offered list is bounded at 10 items as a safety limit.
+- Offer identity is server-owned (`offerId`); the agent's `id` is a name for
+  in-place replacement, not the identity.
+- A successor turn running or queued defers the check to that turn's end.
