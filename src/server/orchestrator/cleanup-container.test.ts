@@ -43,8 +43,26 @@ class FakeContainerManager extends EventEmitter {
   /** Undefined means Docker could not answer, which is not proof of death. */
   trackedRunning: boolean | undefined = true;
   gone: string[] = [];
+  /** A running container that outlived the orchestrator process, if Docker has one. */
+  survivor: { id: string; workerBuildId?: string } | null = null;
+  /** Holds an adoption open after it has published its entry, as the real one does. */
+  adoptGate: Promise<void> | null = null;
 
   async isTrackedContainerRunning(): Promise<boolean | undefined> { return this.trackedRunning; }
+
+  async adoptRunningContainer(sessionId: string): Promise<boolean> {
+    if (!this.survivor || this.containers.has(sessionId)) return false;
+    this.containers.set(sessionId, {
+      id: this.survivor.id,
+      sessionId,
+      workerUrl: "http://survivor:9100",
+      status: "running",
+      workerBuildId: this.survivor.workerBuildId,
+    } as unknown as SessionContainer);
+    this.survivor = null;
+    if (this.adoptGate) await this.adoptGate;
+    return true;
+  }
 
   async markContainerGone(sessionId: string, expectedId: string): Promise<boolean> {
     if (this.containers.get(sessionId)?.id !== expectedId) return false;
@@ -108,7 +126,73 @@ describe("CleanupContainerManager", () => {
     root = fs.mkdtempSync(path.join(os.tmpdir(), "cleanup-container-"));
   });
 
-  afterEach(() => { fs.rmSync(root, { recursive: true, force: true }); });
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  /**
+   * A container that outlived the orchestrator process is the container req 8
+   * wants. `create()` would rebuild it — it force-removes whatever holds the
+   * container name — so the first dictation after a restart would pay the start
+   * the requirement forbids.
+   */
+  it("adopts a container this orchestrator built that outlived the process", async () => {
+    vi.stubEnv("SHIPIT_BUILD_ID", "build-1");
+    const { mgr, cm } = makeManager(root);
+    cm.survivor = { id: "survivor-1", workerBuildId: "build-1" };
+    await mgr.start();
+
+    const result = await mgr.run({ harnessId: "claude", prompt: "clean this up", model: "haiku" });
+    mgr.stop();
+
+    expect(cm.createCalls).toHaveLength(0);
+    expect(result.text).toBe("cleaned");
+    expect(posts.find((p) => p.path === "/agent/spawn")!.url).toBe("http://survivor:9100");
+  });
+
+  // Never stopped, so anything but an exact match would carry another
+  // orchestrator's worker, and the configuration it was created with, for the
+  // life of the install.
+  it.each([
+    ["a previous deploy built it", "build-1"],
+    ["its build cannot be established", undefined],
+  ])("replaces a survivor when %s", async (_case, workerBuildId) => {
+    vi.stubEnv("SHIPIT_BUILD_ID", "build-2");
+    const { mgr, cm } = makeManager(root);
+    cm.survivor = { id: "survivor-1", ...(workerBuildId ? { workerBuildId } : {}) };
+    await mgr.start();
+    mgr.stop();
+
+    expect(cm.destroyed).toEqual([CLEANUP_CONTAINER_SESSION_ID]);
+    expect(cm.createCalls).toHaveLength(1);
+  });
+
+  /**
+   * Adoption publishes the survivor's entry before its build is checked, so a
+   * dictation reading that entry could be dispatched to a worker this manager is
+   * about to destroy.
+   */
+  it("holds a dictation arriving mid-adoption until the container is settled", async () => {
+    vi.stubEnv("SHIPIT_BUILD_ID", "build-2");
+    const { mgr, cm } = makeManager(root);
+    cm.survivor = { id: "survivor-1", workerBuildId: "build-1" };
+    let release: (() => void) | null = null;
+    cm.adoptGate = new Promise<void>((r) => { release = r; });
+
+    const started = mgr.start();
+    await vi.waitFor(() => {
+      expect(cm.get(CLEANUP_CONTAINER_SESSION_ID)?.id).toBe("survivor-1");
+    });
+    const run = mgr.run({ harnessId: "claude", prompt: "a", model: "haiku" });
+    release!();
+    await started;
+    const result = await run;
+    mgr.stop();
+
+    expect(result.text).toBe("cleaned");
+    expect(posts.find((p) => p.path === "/agent/spawn")!.url).toBe("http://worker-1:9100");
+  });
 
   it("creates the container at start under the reserved session id", async () => {
     const { mgr, cm } = makeManager(root);
@@ -351,6 +435,51 @@ describe("CleanupContainerManager", () => {
 
     expect(second.text).toBe("cleaned");
     expect(cm.createCalls).toHaveLength(2);
+  });
+
+  /**
+   * The dictation that discovers the missed exit has already failed. Leaving the
+   * recreate to the next one costs that one a container start too, so both
+   * dictations either side of an event-stream gap break req 8.
+   */
+  it("recreates after a missed exit event without waiting for the next dictation", async () => {
+    const { mgr, cm } = makeManager(root);
+    await mgr.start();
+
+    cm.trackedRunning = false;
+    spawnReply = async () => { throw new Error("connect ECONNREFUSED"); };
+    const failed = await mgr.run({ harnessId: "claude", prompt: "a", model: "haiku" });
+    expect(failed.status).toBe("error");
+    expect(cm.gone).toEqual(["c1"]);
+
+    // No second run: the container must be back before the next dictation asks.
+    cm.trackedRunning = true;
+    await vi.waitFor(() => { expect(cm.createCalls).toHaveLength(2); });
+
+    // One recreate, not a loop: the revive is scheduled once and settles.
+    await new Promise((r) => setTimeout(r, 30));
+    mgr.stop();
+
+    expect(cm.createCalls).toHaveLength(2);
+    expect(cm.get(CLEANUP_CONTAINER_SESSION_ID)).toBeDefined();
+  });
+
+  /**
+   * A `die` lost to an event-stream gap is otherwise noticed only when a
+   * dictation fails, so the first user back after the gap gets no cleanup at all.
+   */
+  it("reconciles a missed exit when the event stream recovers, with no dictation", async () => {
+    const { mgr, cm } = makeManager(root);
+    await mgr.start();
+
+    cm.trackedRunning = false;
+    cm.emit("health_monitor_resumed", { gapMs: 30_000 });
+
+    await vi.waitFor(() => { expect(cm.createCalls).toHaveLength(2); });
+    mgr.stop();
+
+    expect(cm.gone).toEqual(["c1"]);
+    expect(posts).toHaveLength(0);
   });
 
   it("keeps a container Docker could not answer for", async () => {

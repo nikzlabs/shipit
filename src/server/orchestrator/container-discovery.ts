@@ -9,6 +9,7 @@ import { cleanupSessionDockerResources } from "./container-lifecycle.js";
 import { getContainerFreshness } from "./container-freshness.js";
 import { overlayDepDirsFromMounts } from "./overlay-session.js";
 import { setWorkerAuthToken, workerTokenFromContainerEnv } from "./worker-auth.js";
+import { isShipItOwnSession } from "./shipit-own-sessions.js";
 
 export interface DiscoveryDeps {
   docker: Docker;
@@ -229,6 +230,10 @@ export async function cleanupOrphanContainers(
 
     for (const containerInfo of containers) {
       const sessionId = containerInfo.Labels?.[CONTAINER_SESSION_ID_LABEL];
+      // An id the session store has never heard of is not proof of an orphan;
+      // ShipIt labels its own containers with ids it holds no row for. Guarded
+      // here rather than in each caller's active set (docs/299 req 8).
+      if (sessionId && isShipItOwnSession(sessionId)) continue;
       if (sessionId && !activeSessionIds.has(sessionId)) {
         try {
           const container = deps.docker.getContainer(containerInfo.Id);
@@ -264,6 +269,9 @@ export async function cleanupOrphanComposeResources(
     const orphanedSessionIds = new Set<string>();
     for (const ci of containers) {
       const sessionId = ci.Labels?.[PARENT_SESSION_LABEL];
+      // The cleanup container's egress sidecars carry its reserved id; reaping
+      // them leaves its worker with firewall redirects and no resolver.
+      if (sessionId && isShipItOwnSession(sessionId)) continue;
       if (sessionId && !activeSessionIds.has(sessionId)) {
         orphanedSessionIds.add(sessionId);
         removed++;
