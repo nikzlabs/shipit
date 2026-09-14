@@ -1256,6 +1256,28 @@ describe("SessionContainerManager", () => {
       expect(sc.status).not.toBe("stopped");
     });
 
+    // The sidecar reap is awaited, and a recreate can land inside it — the
+    // cleanup container now schedules one the moment a probe says "gone".
+    it("refuses an incarnation replaced while the sidecar reap was awaited", async () => {
+      const sc = await manager.create(buildConfig());
+      const realList = mockDocker.listContainers;
+      let replacement: Awaited<ReturnType<typeof manager.create>> | undefined;
+      // The recreate lands inside the reap, exactly as an auto-revive does.
+      mockDocker.listContainers = vi.fn(async (...args: unknown[]) => {
+        mockDocker.listContainers = realList;
+        await manager.destroy("test-session-1", { replacementFollows: true });
+        replacement = await manager.create(buildConfig());
+        return realList(...(args as Parameters<typeof realList>));
+      }) as typeof realList;
+
+      const marked = await manager.markContainerGone("test-session-1", sc.id);
+
+      expect(replacement!.id).not.toBe(sc.id);
+      expect(marked).toBe(false);
+      expect(manager.get("test-session-1")).toBe(replacement);
+      expect(replacement!.status).not.toBe("stopped");
+    });
+
     it("does not emit container_destroyed", async () => {
       const destroyed = vi.fn();
       manager.on("container_destroyed", destroyed);

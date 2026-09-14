@@ -6,7 +6,7 @@ import { bytesOverBudget } from "./memory-pressure.js";
 import { getErrorMessage } from "./validation.js";
 import type { SessionManager } from "./sessions.js";
 import { holdsActiveReservation } from "./sessions.js";
-import { isCleanupContainerSession } from "./cleanup-container.js";
+import { isShipItOwnSession } from "./shipit-own-sessions.js";
 
 export interface IdleServiceHooks {
   liveSessions: () => string[];
@@ -48,7 +48,7 @@ export function createIdleEnforcer(
     // docs/299 req 8: the cleanup container is never stopped. It has no runner
     // and no viewer, so without this it sorts first on every pass — and every
     // first dictation after a quiet period would pay a container start.
-    if (isCleanupContainerSession(sessionId)) return false;
+    if (isShipItOwnSession(sessionId)) return false;
     if (holdsActiveReservation(sessionManager?.get(sessionId))) return false;
     if (!runner) return true;
     // agentBusy includes autonomous turns and pending background work.
