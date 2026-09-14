@@ -981,7 +981,7 @@ distract — which made the outcome wait for an ordinary turn that may be hours
 away and may never come, and that is a restriction the requirement's wording
 does not carry.
 
-Two turn kinds are left out, and neither is a judgement about settings:
+Three turn kinds are left out, and none is a judgement about settings:
 
 - **Compaction** carries no agent prefix at all. The pending-agent notice, the
   bug outcome and the dependency gap are all excluded there already, because its
@@ -990,9 +990,33 @@ Two turn kinds are left out, and neither is a judgement about settings:
 - **A verbatim command** (`ridesTurnAsCommand`, docs/297) is delivered as the
   user typed it, because the harness reads it as its own command only when the
   prompt is exactly the command. There is no prefix slot to put a notice in.
+- **A turn the CLI wakes itself for** is one ShipIt did not compose. Background
+  work finishing wakes a resident CLI; the wake arrives as `agent_self_wake`
+  (`agents/claude/adapter.ts` maps `system/task_notification` to it),
+  `ws-handlers/agent-listeners.ts` adopts the turn and `turn-executor.ts` re-arms
+  its post-turn flow — all of it *after* the CLI has resumed. ShipIt observes
+  that turn rather than writing its prompt, so both prefix chains above are
+  bypassed by construction. Live steering (`agent.sendUserMessage`) is the only
+  channel into a resident CLI and is not one here: it lands mid-turn, it is gated
+  on the user's live-steering setting, Antigravity, OpenCode and Grok drop it,
+  and it sets `turnLive`, resets the context accounting and makes the worker
+  `beginTurn()` (`session/agent-controller.ts`) — perturbing the bookkeeping the
+  adoption path reads. Delivering after the wake would also race the CLI's own
+  model call with nothing to order against.
 
-In both, the outcome is left pending and rides the next turn — the same
-at-least-once carry that covers a turn which never ran.
+In all three, the outcome is left pending and rides the next turn — the same
+at-least-once carry that covers a turn which never ran. For the woken turn that
+holds because the receipt binds to the **dispatched** turn: `noticeDeliveries`
+is the executor's own input, the wake path prepares none, and the re-arm reuses
+the finished turn's (already acknowledged) one. So a wake cannot spend a receipt,
+and the outcome is delayed by one turn rather than dropped.
+
+**There is no guard test for the woken turn, deliberately.** There is no fix for
+one to fail against, and a guard written for it — pinning that the wake leaves the
+outcome pending — stayed green against a deliberately broken implementation,
+because the re-arm completes after the assertion with no observable to
+synchronise on. A guard that cannot be made to fail is worse than a recorded gap:
+it reads as coverage.
 
 **`agentNotified` is a column on the private proposal row, not a card field** —
 it is ShipIt's bookkeeping about a delivery, and nothing a viewer reads.
