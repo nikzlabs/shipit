@@ -67,6 +67,11 @@
 - [x] Off by default, so the file-preview dialog, the diff media view and the
       gallery thumbnails are unchanged
 - [x] An inline card refuses a click scoped to another session's transcript
+- [x] The receiver gates on the artifact being the visible surface — a frame can
+      post `link_click` with no click behind it, so an offscreen card or an
+      unselected tab cannot move the workspace
+- [x] The anchor is resolved through `composedPath()` (open shadow roots) and
+      the href is trimmed the way the HTML URL parser trims it
 
 ## Docs
 
@@ -97,6 +102,11 @@
 - [x] The injected click interceptor **executed** against a real DOM (a string
       assertion cannot fail on a broken anchor walk), plus a real-browser check
       that a sandboxed `srcdoc` frame reports the click at `origin=null`
+- [x] Interceptor: whitespace-padded href, an anchor in an open shadow root, the
+      `postMessage` target origin
+- [x] Receiver: a `link_click` from another window or at a named origin is
+      ignored; an offscreen inline card and an unselected Present tab refuse
+      one; the scoped positive case is asserted alongside the negative
 
 ## Quality
 

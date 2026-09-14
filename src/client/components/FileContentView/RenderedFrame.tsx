@@ -94,13 +94,23 @@ function injectHeightReport(html: string): string {
  *
  * Capture phase, because a page that calls `stopPropagation` on its own links
  * would otherwise keep the click from ever reaching this listener.
+ *
+ * The anchor is found through `composedPath()`, not by walking `parentNode` from
+ * `event.target`: inside a web component the target is retargeted to the host,
+ * so a walk finds no anchor and the link in an open shadow root stays dead. The
+ * href is trimmed for the same reason — the HTML URL parser strips surrounding
+ * whitespace, so ` shipit-preview://…` is a pointer the browser would resolve,
+ * and forwarding it untrimmed would address a place with a space in its name.
  */
 export const LINK_CLICK_SCRIPT =
   "<script>(function(){var s='shipit-preview';"
-  + "function on(e){var el=e.target;"
-  + "while(el&&el!==document&&!(el.nodeType===1&&String(el.tagName).toLowerCase()==='a'))el=el.parentNode;"
-  + "if(!el||el===document||el.nodeType!==1)return;"
-  + "var href=el.getAttribute('href')||'';"
+  + "function anchor(e){var p=e.composedPath?e.composedPath():null,i,n;"
+  + "if(p){for(i=0;i<p.length;i++){n=p[i];"
+  + "if(n&&n.nodeType===1&&String(n.tagName).toLowerCase()==='a')return n;}return null;}"
+  + "n=e.target;while(n&&n.nodeType===1&&String(n.tagName).toLowerCase()!=='a')n=n.parentNode;"
+  + "return n&&n.nodeType===1?n:null;}"
+  + "function on(e){var el=anchor(e);if(!el)return;"
+  + "var href=(el.getAttribute('href')||'').trim();"
   + "if(!/^shipit-(preview|present):/i.test(href))return;"
   + "e.preventDefault();"
   + "if(e.type==='click'&&!e.button)parent.postMessage({source:s,type:'link_click',href:href},'*');}"

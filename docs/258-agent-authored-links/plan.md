@@ -456,12 +456,37 @@ than re-implemented. What differs is only how the href gets there:
   to the OS protocol handler, which is the same reason a chat pointer carries no
   real `href`.
 
+  Two details are the difference between "matches the demo" and "matches the
+  platform", and both were review findings. The anchor comes from
+  **`composedPath()`**, not a `parentNode` walk from `event.target`: inside a web
+  component the target is retargeted to the host, so a walk finds nothing and a
+  link in an open shadow root stays dead. And the href is **trimmed**, because
+  the HTML URL parser strips surrounding whitespace — so ` shipit-preview://…`
+  is a pointer the browser resolves and an untrimmed match would skip, while a
+  trailing space forwarded verbatim addresses a path that has a space in it.
+  That is agreement with the platform, not the repair the parser refuses to do:
+  everything between the first and last non-whitespace character is still passed
+  through byte-for-byte.
+
 **This widens no trust boundary, and that is not an assumption — it is the same
 gate the SDK already passes.** A presented HTML artifact already runs its own
 scripts and can already send a composed instruction to the agent
 (`handleAgentInterfaceRequest`), which is a strictly stronger capability than
-naming a destination; and unlike the SDK channel, a pointer needs a user click
-to fire at all. The boundary that matters is unchanged and enforced the same
+naming a destination.
+
+**A click is not what the receiver can verify, so visibility is what it gates
+on.** `link_click` is an ordinary `postMessage` and a frame can send one with no
+click behind it — the first cut of this said a pointer "needs a user click",
+which was a claim about the *artifact's* behaviour dressed up as a check, and
+the review caught it. So the receiver applies the condition the SDK channel
+already applies to the same frame: the Present tab honours a pointer only when
+that artifact is the rendered thing on the selected tab (`agentInterfaceActive`),
+and an inline card only while it is on screen. An artifact scrolled far up the
+transcript cannot start a service or take over the workspace, which is the
+outcome that mattered; a *visible* artifact posting one without a click is
+within what it can already do.
+
+The rest of the boundary is unchanged and enforced the same
 way: the flag is **default off**, and the file-preview dialog — which renders
 repository files ShipIt did not author — does not set it. `RenderedFrame` is
 shared with that dialog, the diff media view and the gallery thumbnails, so the
@@ -643,11 +668,18 @@ crossing into a frame, so the parser is a gate, not a formatter:
   concatenated into it. That script is the only place a pointer's data enters a
   document ShipIt assembles.
 
-**No cross-frame message carries pointer data.** Cutting the SDK channel removed
-the whole outbound-delivery question with it: nothing is posted into the preview
-frame, and nothing is posted into an opaque-origin artifact frame. The existing
-inbound checks (`event.source`, the SDK's locked `parentOrigin`) are untouched
-and unrelied-upon by this feature.
+**No pointer data is posted *into* a frame.** Cutting the SDK channel removed
+the whole outbound-delivery question with it: nothing is posted into an
+opaque-origin artifact frame, and the Preview's `navigate` command goes to the
+slot's own origin (above), never `"*"`.
+
+The **inbound** direction changed with req 14 and the claim that it did not has
+been corrected here: an artifact's `link_click` carries an href, so this feature
+*does* rely on the existing inbound checks — the message must come from the
+artifact's own `contentWindow` at `origin === "null"`, the opaque origin a
+sandboxed `srcDoc` frame has. Those checks are unmodified, and a test now pins
+them, since a receiver that stopped applying them would accept a destination
+from any window on the page.
 
 ## Branch order in `MarkdownLink`
 

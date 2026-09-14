@@ -147,6 +147,59 @@ describe("PresentInlineCard", () => {
       expect(usePreviewStore.getState().previewLinkIntent?.targetPath).toBe("/x");
     });
 
+    it("refuses a pointer from a card scrolled off screen", () => {
+      usePreviewStore.setState({
+        services: [{ name: "web", status: "running", port: 5173, preview: "auto" }],
+        previewLinkIntent: null,
+        selectedPort: null,
+      });
+      useSessionStore.setState({ sessionId: "s1" });
+      // A frame can post `link_click` with no click behind it, so a card far up
+      // the transcript must not be able to move the user's workspace.
+      class OffScreenObserver {
+        constructor(private readonly cb: IntersectionObserverCallback) {}
+        observe() {
+          this.cb([{ isIntersecting: false } as IntersectionObserverEntry], this as unknown as IntersectionObserver);
+        }
+        disconnect() { /* no-op */ }
+      }
+      vi.stubGlobal("IntersectionObserver", OffScreenObserver);
+
+      render(<PresentInlineCard card={seedArtifact({}, '<a href="shipit-preview://web/x">go</a>')} />);
+      const frame = document.querySelector("iframe")!;
+      window.dispatchEvent(new MessageEvent("message", {
+        data: { source: "shipit-preview", type: "link_click", href: "shipit-preview://web/x" },
+        source: frame.contentWindow,
+        origin: "null",
+      }));
+
+      expect(usePreviewStore.getState().previewLinkIntent).toBeNull();
+      vi.unstubAllGlobals();
+    });
+
+    it("acts on a click from the transcript that is on screen", () => {
+      usePreviewStore.setState({
+        services: [{ name: "web", status: "running", port: 5173, preview: "auto" }],
+        previewLinkIntent: null,
+        selectedPort: null,
+      });
+      useSessionStore.setState({ sessionId: "s1" });
+      render(
+        <ShipitPointerSessionProvider value="s1">
+          <PresentInlineCard card={seedArtifact({}, '<a href="shipit-preview://web/x">go</a>')} />
+        </ShipitPointerSessionProvider>,
+      );
+
+      const frame = document.querySelector("iframe")!;
+      window.dispatchEvent(new MessageEvent("message", {
+        data: { source: "shipit-preview", type: "link_click", href: "shipit-preview://web/x" },
+        source: frame.contentWindow,
+        origin: "null",
+      }));
+
+      expect(usePreviewStore.getState().previewLinkIntent?.targetPath).toBe("/x");
+    });
+
     it("refuses a click from a card belonging to another session's transcript", () => {
       usePreviewStore.setState({
         services: [{ name: "web", status: "running", port: 5173, preview: "auto" }],

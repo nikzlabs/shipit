@@ -106,26 +106,56 @@ describe("RenderedFrame — fragment scrolling", () => {
       const doc = document.implementation.createHTMLDocument("artifact");
       doc.body.innerHTML = body;
       const posted: unknown[] = [];
+      const targets: unknown[] = [];
       const js = LINK_CLICK_SCRIPT.replace(/^<script>/, "").replace(/<\/script>$/, "");
       // eslint-disable-next-line @typescript-eslint/no-implied-eval -- runs the very script shipped into the frame, against a document this test owns
       const run = new Function("document", "parent", js) as (d: Document, p: unknown) => void;
-      run(doc, { postMessage: (msg: unknown) => posted.push(msg) });
+      run(doc, {
+        postMessage: (msg: unknown, target: unknown) => {
+          posted.push(msg);
+          targets.push(target);
+        },
+      });
       const fire = (type: "click" | "auxclick", button = 0) => {
         const target = doc.querySelector("[data-hit]") ?? doc.querySelector("a");
         const event = new MouseEvent(type, { bubbles: true, cancelable: true, button });
         target?.dispatchEvent(event);
         return event;
       };
-      return { doc, posted, fire };
+      return { doc, posted, targets, fire };
     }
 
     it("reports a preview pointer and stops the frame navigating to a scheme it cannot load", () => {
-      const { posted, fire } = mount('<a href="shipit-preview://web/runs/1?focus=7#s">go</a>');
+      const { posted, targets, fire } = mount('<a href="shipit-preview://web/runs/1?focus=7#s">go</a>');
       const event = fire("click");
       expect(posted).toEqual([
         { source: "shipit-preview", type: "link_click", href: "shipit-preview://web/runs/1?focus=7#s" },
       ]);
+      // The href is the artifact's own text, and `parent` reaches only the
+      // embedder — matching the height report beside it.
+      expect(targets).toEqual(["*"]);
       expect(event.defaultPrevented).toBe(true);
+    });
+
+    it("trims an href the way the HTML URL parser does", () => {
+      // The browser resolves ` shipit-preview://web/x ` — so an untrimmed match
+      // leaves the pointer dead, and an untrimmed forward addresses "/x ".
+      const { posted, fire } = mount('<a href=" shipit-preview://web/x ">go</a>');
+      const event = fire("click");
+      expect(posted).toEqual([
+        { source: "shipit-preview", type: "link_click", href: "shipit-preview://web/x" },
+      ]);
+      expect(event.defaultPrevented).toBe(true);
+    });
+
+    it("finds an anchor inside an open shadow root, where the target is the host", () => {
+      const { doc, posted } = mount("<my-card></my-card>");
+      const host = doc.querySelector("my-card")!;
+      host.attachShadow({ mode: "open" }).innerHTML =
+        '<a href="shipit-preview://web/x"><span>go</span></a>';
+      const inner = host.shadowRoot!.querySelector("span")!;
+      inner.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, composed: true }));
+      expect(posted).toHaveLength(1);
     });
 
     it("reports a click on an element nested inside the anchor", () => {

@@ -75,11 +75,13 @@ export function PresentPane({ isActiveTab, onSendComments, onAskAgentReview, onA
     if (!iframe?.contentWindow || event.source !== iframe.contentWindow || event.origin !== "null") return;
     const data = event.data as { source?: string; type?: string; href?: unknown } | undefined;
     if (data?.source !== "shipit-preview") return;
-    // A pointer the artifact carries in its own markup (req 14). Not gated on
-    // `agentInterfaceActive`: this is a user click on a frame that is on screen
-    // by construction, and it resolves exactly as the same pointer in chat does.
+    // A pointer the artifact carries in its own markup (req 14), resolved
+    // exactly as the same pointer in chat is. Gated on the same "this artifact
+    // is the surface the user is looking at" condition as the SDK channel: a
+    // frame can post this without a click, so an artifact that is not on screen
+    // must not be able to move the user's workspace.
     if (data.type === "link_click") {
-      openShipitLinkHref(data.href);
+      if (agentInterfaceActive) openShipitLinkHref(data.href);
       return;
     }
     if (data.type === "ready") {

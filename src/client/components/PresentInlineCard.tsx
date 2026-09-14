@@ -76,7 +76,11 @@ export function PresentInlineCard({ card, onAgentInterfaceMessage }: PresentInli
   const kind = kindFromMimeType(card.mimeType, card.filePath);
 
   const missing = !entry;
-  const sdkActive = onScreen && kind === "html" && !!onAgentInterfaceMessage;
+  // Both channels out of the frame are gated on the card being on screen: an
+  // artifact scrolled far up the transcript is not a surface the user is
+  // looking at, so it may neither message the agent nor move their workspace.
+  const linksActive = onScreen && kind === "html";
+  const sdkActive = linksActive && !!onAgentInterfaceMessage;
 
   // eslint-disable-next-line no-restricted-syntax -- lazy content fetch keyed on visibility
   useEffect(() => {
@@ -109,7 +113,7 @@ export function PresentInlineCard({ card, onAgentInterfaceMessage }: PresentInli
       | undefined;
     if (data?.source !== "shipit-preview") return;
     if (data.type === "link_click") {
-      openShipitLinkHref(data.href, owningSession);
+      if (linksActive) openShipitLinkHref(data.href, owningSession);
       return;
     }
     if (data.type === "content_height" && typeof data.height === "number") {
