@@ -236,13 +236,13 @@ export const HARNESSES = [
           { value: "high", label: "High" },
         ],
       },
-      // not-wired — the docs/266 item-15 depth-0 probe has NOT run: it needs a
-      // live session on this harness, and no credential that can fund a review
-      // turn was available. Everything the flow needs is in `init.tools`
-      // (`run_command` + `command_status`, `invoke_subagent`, `view_file`), so
-      // this is expected to flip to true; planning#543 tracks the probe. A
-      // `false` hides the file-viewer button and leaves `/review` working.
-      supportsReview: false,
+      // probed on 1.1.27 — the docs/266 item-15 depth-0 probe ran the verbatim
+      // composeReviewMessage in a real session container: the CLI composed the
+      // heredoc, ran `shipit agent run --role reviewer` twice, polled it with
+      // `manage_task {Action: "status"}` while it was backgrounded, read the
+      // reviewer's markdown off stdout and applied the fixes — one 419 s turn,
+      // no MCP tool (docs/301 probes/review.ndjson).
+      supportsReview: true,
       // structural — one process per turn, so there is no channel to steer.
       supportsSteering: false,
       // structural — the process exits at turn end.

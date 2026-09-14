@@ -1,0 +1,8 @@
+label:        review
+cli_version:  1.1.27
+model:        gemini-3.1-pro  effort: high
+prompt_file:  /persist/agy-review-probe/review-message.txt
+exit_code:    0
+wall_seconds: 419
+date_utc:     2026-09-14T10:51:41Z
+stderr_bytes: 0

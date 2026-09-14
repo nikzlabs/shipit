@@ -398,11 +398,19 @@ one non-npm branch, gated on `contains antigravity $selected`:
 
 - **Spawn per turn**: `antigravity --print='' --input-format stream-json
   --output-format stream-json --dangerously-skip-permissions --model <id>
-  [--effort <lvl>] [--conversation <id>] --print-timeout <n>` with cwd = the
-  workspace, the prompt written to stdin as one
+  [--effort <lvl>] [--conversation <id>] --print-timeout <n> --add-dir <cwd>`
+  with cwd = the workspace, the prompt written to stdin as one
   `{"event":"user","message":{"content":"…"}}` line, then stdin closed —
   the prompt never rides argv (128 KiB ceiling; Grok's `--prompt-file`
-  lesson). The `conversation_id` from `init` is stored for `--conversation`
+  lesson). **`--add-dir` is load-bearing and was missing at launch.** The
+  CLI's tools ignore the process cwd and operate under `HOME`, which here is
+  a throwaway `/tmp` directory — so a turn read and wrote an empty scratch
+  home and never touched the repository, while exiting 0 and reporting
+  success. `init.cwd` echoes the spawn cwd either way, so nothing in the
+  stream reveals it; only the tool arguments do. Measured on 1.1.27 with a
+  minimal pair: `run_command`'s own `pwd` prints `HOME` without the flag and
+  the repository with it
+  ([the docs/272 run](../272-harness-conversion-verification/runs/2026-09-14-1050-antigravity-1.1.27.md)). The `conversation_id` from `init` is stored for `--conversation`
   on the next turn; an unknown id starts a new conversation with a warning
   (candidates.md) — surface it as Claude's resume-invalid recovery does.
 - **Spawn home** (`makeSpawnHome`, Grok's shape): a throwaway `HOME` under
@@ -470,4 +478,16 @@ a negative control); steering via the resident `--input-format stream-json`
 process; goals via the CLI's `/goal`; an account-usage reader if one
 exists. Each is a `false` of the not-wired kind and says so beside the
 flag. `supportsReview` is not on this list: its probe is part of this
-feature (item 15) and sets the launch value.
+feature (item 15) and sets the launch value — it ran on 2026-09-14 once the
+key became billable, and set it to `true`
+([`probes/review.ndjson`](./probes/review.ndjson): the CLI ran
+`shipit agent run --role reviewer` itself at depth 0, polled it while it was
+backgrounded, read the markdown off stdout and applied the fixes, in one
+419 s turn).
+
+**ACCOUNT mode is the one thing still unmeasured**, and it needs a human to
+complete a Google sign-in once. Three items wait on it: a dogfood turn on the
+account billing route, a real token file to replace the reconstructed
+freshness fixture, and the account-mode egress host — the allowlist carries
+`cloudcode-pa.googleapis.com` from the pinned binary's compiled host list,
+never from an observed request.

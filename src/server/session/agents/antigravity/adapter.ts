@@ -224,6 +224,12 @@ export class AntigravityAdapter
       // req 8 — full-auto only at launch.
       "--dangerously-skip-permissions",
       "--print-timeout", PRINT_TIMEOUT,
+      // The CLI's tools ignore the process cwd and run under HOME, which here is
+      // a throwaway /tmp directory — so without this the agent never sees the
+      // repository at all (probed on 1.1.27: `pwd` returns HOME; with
+      // `--add-dir` it returns the repo). `init.cwd` echoes the spawn cwd
+      // either way, so the stream cannot reveal the difference.
+      "--add-dir", params.cwd,
     ];
     if (params.model) {
       args.push("--model", antigravityCliModelId(params.model));
@@ -449,13 +455,26 @@ export class AntigravityAdapter
     const index = step.step_index ?? -1;
     const rawName = step.tool_info?.name ?? step.tool_name;
     if (!rawName) return;
-    if (step.state === "DONE") {
+    // ERROR is terminal too. Falling through to the ACTIVE branch left the call
+    // with no result at all — a tool card stuck "running" forever, the CLI's own
+    // error text never shown, and the id leaked. Observed on 1.1.27 on two
+    // different tools with two different messages (probes/review.ndjson,
+    // probes/tour-no-add-dir.ndjson), so it is not one tool's quirk.
+    if (step.state === "DONE" || step.state === "ERROR") {
       const id = this.stepToolUseIds.get(index);
       this.stepToolUseIds.delete(index);
       if (!id) return;
+      const failed = step.state === "ERROR";
       this.emit("event", {
         type: "agent_tool_result",
-        content: [{ type: "tool_result", tool_use_id: id, content: step.tool_info?.output ?? "" }],
+        content: [{
+          type: "tool_result",
+          tool_use_id: id,
+          content: failed
+            ? (step.tool_info?.error?.message ?? "the Antigravity CLI reported a tool error")
+            : (step.tool_info?.output ?? ""),
+          ...(failed ? { is_error: true } : {}),
+        }],
       });
       return;
     }

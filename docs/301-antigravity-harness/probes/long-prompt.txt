@@ -1,0 +1,3 @@
+Run this exact shell command and, once it has finished, report verbatim the single line it printed and its exit code. Do not do anything else. The command takes about four minutes; wait for it.
+
+bash -c 'sleep 250; echo LONGCMD-NONCE-7731-COMPLETE'

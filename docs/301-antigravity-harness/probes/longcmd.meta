@@ -1,0 +1,8 @@
+label:        longcmd
+cli_version:  1.1.27
+model:        gemini-3.1-pro  effort: high
+prompt_file:  /persist/agy-review-probe/long-prompt.txt
+exit_code:    0
+wall_seconds: 272
+date_utc:     2026-09-14T10:54:37Z
+stderr_bytes: 0
