@@ -2,8 +2,13 @@ import { eventMatchesChord } from "../keybindings/registry.js";
 import { useKeybinding } from "../keybindings/use-keybinding.js";
 import { useEventListener } from "./useEventListener.js";
 
-/** The composer's textarea marks itself with this (MessageInput.tsx). */
-const CHAT_INPUT_SELECTOR = "[data-chat-input]";
+/**
+ * The conversation composer's textarea. `MessageInput` marks itself with its
+ * surface, so this excludes the quick-capture overlay's copy — searching the
+ * conversation behind that overlay would be nonsense, and the browser keeps the
+ * key there.
+ */
+const CHAT_INPUT_SELECTOR = '[data-chat-input="chat"]';
 
 /**
  * Opens the conversation search bar for the `chat-search` chord, but ONLY while

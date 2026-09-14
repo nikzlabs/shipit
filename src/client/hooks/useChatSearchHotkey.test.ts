@@ -12,7 +12,7 @@ function pressFindIn(el: Element, init: Partial<KeyboardEventInit> = {}): Keyboa
 
 function chatInput(): HTMLTextAreaElement {
   const el = document.createElement("textarea");
-  el.setAttribute("data-chat-input", "");
+  el.setAttribute("data-chat-input", "chat");
   document.body.appendChild(el);
   return el;
 }
@@ -52,6 +52,20 @@ describe("useChatSearchHotkey", () => {
     expect(onOpen).not.toHaveBeenCalled();
     expect(e.defaultPrevented).toBe(false);
     other.remove();
+  });
+
+  it("leaves the key alone in the quick-capture overlay's composer", () => {
+    const onOpen = vi.fn();
+    renderHook(() => useChatSearchHotkey(onOpen));
+    const overlay = document.createElement("textarea");
+    overlay.setAttribute("data-chat-input", "overlay");
+    document.body.appendChild(overlay);
+
+    const e = pressFindIn(overlay);
+
+    expect(onOpen).not.toHaveBeenCalled();
+    expect(e.defaultPrevented).toBe(false);
+    overlay.remove();
   });
 
   it("ignores other chords on the composer", () => {

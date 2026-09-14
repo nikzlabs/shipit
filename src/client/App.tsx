@@ -373,6 +373,8 @@ export default function App() {
   const {
     searchOpen,
     setSearchOpen,
+    openSearch,
+    searchFocusKey,
     shortcutsOpen,
     setShortcutsOpen,
     githubOrgs,
@@ -742,7 +744,7 @@ export default function App() {
     quickCaptureHotkey,
     voiceInputEnabled,
     voiceHotkeyModeB,
-    openChatSearch: () => setSearchOpen(true),
+    openChatSearch: openSearch,
   });
 
   const handleTabChange = useCallback(
@@ -1543,6 +1545,7 @@ export default function App() {
     <>
       {searchOpen && (
         <SearchBar
+          key={searchFocusKey}
           query={search.query}
           onQueryChange={search.setQuery}
           matches={search.matches}
@@ -1581,7 +1584,7 @@ export default function App() {
             }}
             onCreatePr={handleCreatePr}
             canAutoMerge={!!currentSession?.remoteUrl}
-            onSearch={() => setSearchOpen(true)}
+            onSearch={openSearch}
           />
         ))}
       {isMobile && (

@@ -22,7 +22,7 @@ describe("useAppKeyboardShortcuts", () => {
     const openChatSearch = vi.fn();
     render(openChatSearch);
     const composer = document.createElement("textarea");
-    composer.setAttribute("data-chat-input", "");
+    composer.setAttribute("data-chat-input", "chat");
     document.body.appendChild(composer);
 
     composer.dispatchEvent(
