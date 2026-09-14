@@ -157,12 +157,10 @@ resolution turn and the force-push the runner reads as idle and a non-forced
 one the delivery guarantee would sit on, and most exposed on the idle path where no
 viewer is attached.
 
-Fix at the same time: take `beginPostTurnWork`/`endPostTurnWork` around the
-publication segment — stage, continue, force-push, card, dispatch. Scope it to that
-segment rather than the whole flow, because `POST_TURN_HOLD_MAX_MS` is 120 s
-(`post-turn-hold.ts:1`) and a multi-round rebase runs far longer; during a resolution
-turn `_isRunning` already blocks disposal, so only the gaps between turns need
-covering.
+**Tracked and fixed separately as planning#556**, since it stands on its own. This
+feature depends on that fix: a follow-up turn dispatched at the end of a publication
+segment whose runner can vanish has no delivery guarantee. Implement planning#556
+first, or at least confirm it landed.
 
 ## No card for the arm
 
@@ -176,7 +174,7 @@ turn is ordinary transcript content.
 | File | Change |
 |---|---|
 | `src/server/orchestrator/services/rebase-followup.ts` | New. Attempt-keyed window, note list, prompt composition, dispatch, handle observation. |
-| `src/server/orchestrator/services/rebase-driver.ts` | Open/close the window by attempt id; close it on the timeout path; publication-segment lease; extend `buildRebaseConflictPrompt`; deliver from a wrapper after each path's final cleanup. |
+| `src/server/orchestrator/services/rebase-driver.ts` | Open/close the window by attempt id; close it on the timeout path; extend `buildRebaseConflictPrompt`; deliver from a wrapper after each path's final cleanup. |
 | `src/server/orchestrator/prompts/post-rebase-followup.md` | New. Follow-up turn text. |
 | `src/server/orchestrator/api-routes-session-spawn.ts` | `POST /api/sessions/:sessionId/continue-after-rebase`, non-empty note validated. |
 | `src/server/session/agent-ops-routes.ts` | Relay route. |
