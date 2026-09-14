@@ -1,0 +1,8 @@
+label:        subagent
+cli_version:  1.1.27
+model:        gemini-3.1-pro  effort: high
+prompt_file:  /persist/agy-review-probe/subagent-prompt.txt
+exit_code:    0
+wall_seconds: 11
+stderr_bytes: 0
+date_utc:     2026-09-14T17:18:41Z
