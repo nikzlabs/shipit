@@ -2,8 +2,12 @@ import { describe, it, expect, afterEach, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { DatabaseManager } from "../../shared/database.js";
 import { CredentialStore } from "../credential-store.js";
+import { EgressAllowlistStore, EGRESS_GLOBAL_SCOPE } from "../egress-allowlist-store.js";
+import { buildEffectiveAllowlist } from "../egress-allowlist.js";
 import { globalSystemPromptPath, writeGlobalSystemPrompt } from "../global-system-prompt.js";
+import { applyEgressHostRemove } from "./settings-apply.js";
 
 /**
  * "Saved" has to mean saved (docs/299-agent-settings-access, plan.md). Two of
@@ -166,5 +170,112 @@ describe("writeGlobalSystemPrompt: clearing can fail, and says so", () => {
 
     expect(outcome.status).toBe("failed");
     expect(outcome.detail).toMatch(/still in place/i);
+  });
+});
+
+/**
+ * A removal from the global allowlist (docs/299-agent-settings-access req 4).
+ *
+ * The same rule, one layer up: the write used to report `applied` from having
+ * run rather than from having worked, and a host reaches the list from more
+ * places than one removal can reach.
+ */
+describe("applyEgressHostRemove: `applied` means the host came off", () => {
+  const OPERATOR_ENV = process.env.SESSION_EGRESS_ALLOWLIST;
+
+  afterEach(() => {
+    if (OPERATOR_ENV === undefined) delete process.env.SESSION_EGRESS_ALLOWLIST;
+    else process.env.SESSION_EGRESS_ALLOWLIST = OPERATOR_ENV;
+  });
+
+  function fixture(credentialStore?: CredentialStore) {
+    const dbManager = new DatabaseManager(":memory:");
+    const store = new EgressAllowlistStore(dbManager);
+    dbs.push(dbManager);
+    return {
+      store,
+      deps: { sseBroadcast: () => {}, egressAllowlistStore: store, credentialStore },
+      effective: () =>
+        buildEffectiveAllowlist({
+          ...(credentialStore ? { credentialStore } : {}),
+          globalHosts: store.listHosts(EGRESS_GLOBAL_SCOPE),
+          suppressedDefaults: store.listSuppressedDefaults(),
+        }),
+    };
+  }
+
+  const dbs: DatabaseManager[] = [];
+  afterEach(() => {
+    while (dbs.length) dbs.pop()!.close();
+  });
+
+  it("takes off a host that is both a shipped default and an explicit row", async () => {
+    const fx = fixture();
+    // The shape an older build could write, and the one the branch order missed:
+    // suppressing the default returned first and left the row effective, so the
+    // read advertised the host again and every further removal reported success.
+    fx.store.addHost(EGRESS_GLOBAL_SCOPE, ".github.com");
+
+    const outcome = await applyEgressHostRemove(fx.deps, EGRESS_GLOBAL_SCOPE, ".github.com");
+
+    expect(outcome.status).toBe("applied");
+    expect(fx.effective().map((entry) => entry.host)).not.toContain(".github.com");
+  });
+
+  it("reports `failed` when the deployment's operator supplies the host as well", async () => {
+    process.env.SESSION_EGRESS_ALLOWLIST = ".github.com";
+    const fx = fixture();
+
+    const outcome = await applyEgressHostRemove(fx.deps, EGRESS_GLOBAL_SCOPE, ".github.com");
+
+    // Suppressing the built-in default is all this write can reach, and the
+    // operator's entry keeps the host allowed — so the card and the agent's
+    // next-turn notice must not say it came off.
+    expect(outcome.status).toBe("failed");
+    expect(outcome.detail).toContain("operator");
+    expect(fx.effective().map((entry) => entry.host)).toContain(".github.com");
+  });
+
+  it("says the host is still reachable when a broader entry covers it", async () => {
+    const fx = fixture();
+    fx.store.addHost(EGRESS_GLOBAL_SCOPE, "api.github.com");
+
+    const outcome = await applyEgressHostRemove(fx.deps, EGRESS_GLOBAL_SCOPE, "api.github.com");
+
+    // The entry IS off the list, so this is applied — but entries are patterns,
+    // and the shipped `.github.com` still matches the host. Saying only
+    // "applied" would read as the host being unreachable now.
+    expect(outcome.status).toBe("applied");
+    expect(outcome.detail).toContain(".github.com");
+    expect(fx.effective().map((entry) => entry.host)).not.toContain("api.github.com");
+  });
+
+  it("reports `failed` when a configured MCP server needs the host", async () => {
+    const credentialStore = new CredentialStore(tmpDir("shipit-truth-mcp-"));
+    credentialStore.setMcpServer("router", {
+      name: "router",
+      type: "http",
+      url: "https://openrouter.ai/mcp",
+      enabled: true,
+    });
+    const fx = fixture(credentialStore);
+
+    const outcome = await applyEgressHostRemove(fx.deps, EGRESS_GLOBAL_SCOPE, "openrouter.ai");
+
+    // The proposal path refuses this before writing; the route does not, so the
+    // writer itself has to see every source the list is assembled from.
+    expect(outcome.status).toBe("failed");
+    expect(outcome.detail).toContain("MCP server");
+  });
+
+  it("stays idempotent for a host that is genuinely off the list", async () => {
+    const fx = fixture();
+    await applyEgressHostRemove(fx.deps, EGRESS_GLOBAL_SCOPE, ".github.com");
+
+    // A second removal writes nothing and is still right: the outcome is read
+    // off the resulting state, not off what the store changed.
+    const outcome = await applyEgressHostRemove(fx.deps, EGRESS_GLOBAL_SCOPE, ".github.com");
+
+    expect(outcome.status).toBe("applied");
   });
 });

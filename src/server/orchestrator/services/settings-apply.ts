@@ -14,7 +14,12 @@ import { buildSystemNotice } from "../chat-card-persistence.js";
 import type { CredentialStore } from "../credential-store.js";
 import { EGRESS_GLOBAL_SCOPE } from "../egress-allowlist-store.js";
 import type { EgressAllowlistStore } from "../egress-allowlist-store.js";
-import { isBuiltinDefault } from "../egress-allowlist.js";
+import {
+  buildEffectiveAllowlist,
+  hostMatchesEntry,
+  isBuiltinDefault,
+  normalizeHost,
+} from "../egress-allowlist.js";
 import { repoId } from "../git-utils.js";
 import type { ProviderAccountManager } from "../provider-account-manager.js";
 import type { RepoStore } from "../repo-store.js";
@@ -263,6 +268,46 @@ export async function applyCredentialUpdate(
   });
 }
 
+/**
+ * A credential's display name, and nothing else — the narrow writer for a narrow
+ * operation, as `setMcpServerEnabled` is for the `enabled` toggle. It omits
+ * `propagateCredentialChange` deliberately: that refreshes auth, agent
+ * environments and resident CLIs on the strength of credential MATERIAL.
+ */
+export async function applyCredentialLabel(
+  deps: SettingsBroadcastDeps & { credentialStore: CredentialStore },
+  routeId: string,
+  label: string,
+): Promise<CredentialRoutesWriteResult> {
+  return withConflictDomains(credentialLabelDomains(deps.credentialStore, routeId), () => {
+    const { value, outcome } = deps.credentialStore.transact(() =>
+      updateStringCredential(deps.credentialStore, routeId, { label }),
+    );
+    deps.sseBroadcast("credential_routes", { routes: value.routes });
+    broadcastSettingsChanged(deps, ["services.credentialLabel"]);
+    return { ...value, outcome };
+  });
+}
+
+/**
+ * The domains a credential-label write takes. Exported because a proposal holds
+ * them across its baseline check and this write, and the nested acquisition here
+ * has to be a subset of what the caller already holds.
+ */
+export function credentialLabelDomains(
+  credentialStore: Pick<CredentialStore, "getCredentialRoute">,
+  routeId: string,
+): ConflictDomain[] {
+  const route = credentialStore.getCredentialRoute(routeId);
+  return [
+    credentialRouteDomain(routeId),
+    // A reorder rewrites the same row's priority, and this write upserts the
+    // whole row. A route's service and billing mode are fixed for its life, so
+    // resolving them before the lock cannot read a value the write decides.
+    ...(route ? [credentialRoutesDomain(route.serviceId, route.billingMode)] : []),
+  ];
+}
+
 export interface ProviderAccountApplyDeps extends SettingsBroadcastDeps {
   credentialStore: CredentialStore;
   providerAccountManager: ProviderAccountManager;
@@ -282,7 +327,7 @@ export interface ProviderAccountsWriteResult {
  * same rows' priorities, and under two separate locks a later reorder could
  * overtake an earlier one.
  */
-function providerAccountDomains(serviceId: string): ConflictDomain[] {
+export function providerAccountDomains(serviceId: string): ConflictDomain[] {
   return [providerAccountsDomain, credentialRoutesDomain(serviceId, "sub")];
 }
 
@@ -323,6 +368,12 @@ export async function applyProviderAccountLabel(
 
 export interface EgressApplyDeps extends SettingsBroadcastDeps {
   egressAllowlistStore: EgressAllowlistStore;
+  /**
+   * Required, though an install may have none: a configured MCP server is one of
+   * the sources the allowlist is assembled from, so a removal that cannot see it
+   * reports a host gone that the next container still reaches.
+   */
+  credentialStore: CredentialStore | undefined;
   containerManager?: { reloadEgress(sessionId: string): Promise<boolean> } | undefined;
   /**
    * The shipped `egress_settings` push, where the caller can build one. It
@@ -383,25 +434,67 @@ export async function applyEgressHostAdd(
   });
 }
 
+/**
+ * Whether the host is still on the GLOBAL list after the write, and why.
+ *
+ * Read off the resulting state rather than off what the store returned: that
+ * list is assembled from several sources and a write reaches two of them
+ * (plan.md → "Saved" has to mean saved). A session's list has one source, its
+ * own rows, so its write already is the resulting state.
+ */
+function globalRemovalOutcome(deps: EgressApplyDeps, host: string): ApplyOutcome {
+  const store = deps.egressAllowlistStore;
+  const target = normalizeHost(host);
+  const remaining = buildEffectiveAllowlist({
+    ...(deps.credentialStore ? { credentialStore: deps.credentialStore } : {}),
+    globalHosts: store.listHosts(EGRESS_GLOBAL_SCOPE),
+    suppressedDefaults: store.listSuppressedDefaults(),
+  });
+  const stillListed = remaining.find((entry) => entry.host === target);
+  if (stillListed) {
+    return applyFailed(
+      stillListed.source === "mcp"
+        ? `${stillListed.host} is still allowed: a configured MCP server needs it, so removing it here does not take it off.`
+        : stillListed.source === "operator"
+          ? `${stillListed.host} is still allowed: this deployment's operator supplies it, and no removal here takes it off.`
+          : `${stillListed.host} is still on the global allowlist after the removal, so nothing about what sessions can reach changed.`,
+    );
+  }
+  // The entry is gone and the host can still be reachable: entries are patterns,
+  // so removing `api.github.com` changes nothing about the shipped `.github.com`
+  // that matches it. The write did what the card said; saying only that would
+  // tell the user the host is unreachable now, which is the case it is not.
+  const covered = remaining.find((entry) => hostMatchesEntry(target, entry.host));
+  return covered
+    ? {
+        status: "applied",
+        detail: `The entry is off the list. ${covered.host} still allows ${target}, so sessions can `
+          + "reach it until that entry goes too.",
+      }
+    : APPLIED;
+}
+
 export async function applyEgressHostRemove(
   deps: EgressApplyDeps,
   scope: string,
   host: string,
 ): Promise<ApplyOutcome> {
   return withConflictDomains([egressScopeDomain(scope)], () => {
+    const isGlobal = scope === EGRESS_GLOBAL_SCOPE;
     try {
-      if (scope === EGRESS_GLOBAL_SCOPE && isBuiltinDefault(host)) {
-        deps.egressAllowlistStore.suppressDefault(host);
-      } else {
-        deps.egressAllowlistStore.removeHost(scope, host);
-      }
+      // Both, never one or the other. A host can be a shipped default AND an
+      // explicit row, and the old branch suppressed the default first and
+      // returned — leaving the row effective, advertised again as the user's
+      // own, and every further removal reporting success while changing nothing.
+      deps.egressAllowlistStore.removeHost(scope, host);
+      if (isGlobal && isBuiltinDefault(host)) deps.egressAllowlistStore.suppressDefault(host);
     } catch (err) {
       console.error(`[settings-apply] removing egress host ${host} from ${scope} failed:`, err);
       return outcomeOf(err);
     }
     deps.broadcastEgressSettings?.();
     broadcastSettingsChanged(deps, ["network.egress.hosts"]);
-    return APPLIED;
+    return isGlobal ? globalRemovalOutcome(deps, host) : APPLIED;
   });
 }
 

@@ -1,6 +1,10 @@
 import { findSetting } from "../../shared/settings-catalogue/index.js";
 import type { AnySettingDeclaration, ApplyOutcome } from "../../shared/settings-catalogue/index.js";
-import type { SettingsProposalCard, SettingsProposalPhase } from "../../shared/types.js";
+import type {
+  SettingsProposalCard,
+  SettingsProposalPhase,
+  SettingsProposalSideChange,
+} from "../../shared/types.js";
 import type { SettingsProposalRow, SettingsProposalStore } from "../settings-proposal-store.js";
 import { baselineMatches, settingBaseline } from "./settings-baseline.js";
 import type { SettingBaseline, SettingBaselineDeps } from "./settings-baseline.js";
@@ -132,6 +136,11 @@ async function effectAfterApply(
   }
 }
 
+/** One comparable line per side change, in the operation's own order. */
+function describeSideChanges(changes: SettingsProposalSideChange[]): string {
+  return changes.map((change) => `${change.label} ${change.from} → ${change.to}`).join("; ");
+}
+
 async function runApply(
   deps: SettingsDecisionDeps,
   sessionId: string,
@@ -173,6 +182,22 @@ async function runApply(
   }
 
   try {
+    // The side changes are re-derived and compared with the CARD, because they
+    // are computed from live state the baseline does not cover — which harnesses
+    // are installed, which levels a selection offers. A card that would now
+    // write something it never displayed is refused rather than applied: the
+    // user approved what the card said (plan.md → The unit of a change is the
+    // declared operation).
+    const derived = operation.alsoChanges?.(deps.operations, row.target, row.proposed) ?? [];
+    const shown = card.alsoChanges ?? [];
+    if (describeSideChanges(derived) !== describeSideChanges(shown)) {
+      return {
+        phase: "refused",
+        outcome: "Applying this now would write something this card does not show, so nothing was written.",
+        outcomeDetail: `The card says: ${describeSideChanges(shown) || "nothing else changes"}. `
+          + `It would now also do: ${describeSideChanges(derived) || "nothing else"}.`,
+      };
+    }
     const outcome = await operation.apply(deps.operations, row.target, row.proposed);
     const phase = OUTCOME_PHASE[outcome.status];
     const effect = phase === "failed"
@@ -233,7 +258,7 @@ export async function resolveSettingsProposal(
   if (!claimed) return { card: currentCard(deps, sessionId, cardId), acted: false };
 
   const terminal = await withConflictDomains(
-    operation.domains(row.target),
+    operation.domains(row.target, deps.operations, row.proposed),
     () => runApply(deps, sessionId, row, claimed, declaration, operation),
   ).catch((err: unknown) => {
     console.error(`[settings-decision] applying ${declaration.key} failed outside the write:`, err);

@@ -14,6 +14,7 @@ import {
   type BillingModeDef,
   type ServiceDef,
 } from "../../shared/catalogue/index.js";
+import { MAX_CREDENTIAL_LABEL_LENGTH } from "../credential-store.js";
 import type { CredentialStore } from "../credential-store.js";
 import { collectServiceCredentialEnv } from "../secret-resolver.js";
 import { envRouteIdFor } from "../service-routing.js";
@@ -141,7 +142,9 @@ export function updateStringCredential(
   if (patch.label !== undefined) {
     const label = normalizeLabel(patch.label);
     if (!label) throw new ServiceError(400, "Credential label cannot be empty");
-    if (label.length > 120) throw new ServiceError(400, "Credential label is too long (max 120 characters)");
+    if (label.length > MAX_CREDENTIAL_LABEL_LENGTH) {
+      throw new ServiceError(400, `Credential label is too long (max ${MAX_CREDENTIAL_LABEL_LENGTH} characters)`);
+    }
     next = { ...next, label, labelIsGenerated: false };
   }
   if (patch.secret !== undefined) {

@@ -7,6 +7,7 @@ import { DatabaseManager } from "../../shared/database.js";
 import { ChatHistoryManager } from "../chat-history.js";
 import { CredentialStore } from "../credential-store.js";
 import { EgressAllowlistStore } from "../egress-allowlist-store.js";
+import { ProviderAccountManager } from "../provider-account-manager.js";
 import { RepoStore } from "../repo-store.js";
 import { SessionManager } from "../sessions.js";
 import type { SessionRunnerInterface, SessionRunnerRegistry } from "../session-runner.js";
@@ -67,6 +68,8 @@ export interface FixtureOptions {
   /** The session's repository binding, for the per-repository settings. */
   remoteUrl?: string;
   agents?: AgentInfo[];
+  /** Opt-in: without it the install has no provider accounts, as most tests want. */
+  providerAccounts?: boolean;
 }
 
 export function proposalFixture(opts: FixtureOptions = {}): ProposalFixture {
@@ -77,6 +80,9 @@ export function proposalFixture(opts: FixtureOptions = {}): ProposalFixture {
   const proposals = new SettingsProposalStore(dbManager);
   const credentialStore = new CredentialStore(path.join(tmpDir, "credentials"));
   const egressAllowlistStore = new EgressAllowlistStore(dbManager);
+  const providerAccountManager = opts.providerAccounts
+    ? new ProviderAccountManager({ credentialsDir: path.join(tmpDir, "credentials"), credentialStore })
+    : undefined;
   const repoStore = new RepoStore(dbManager);
   const emitted: WsServerMessage[] = [];
   const broadcasts: { event: string; data: unknown }[] = [];
@@ -105,6 +111,7 @@ export function proposalFixture(opts: FixtureOptions = {}): ProposalFixture {
     chatHistoryManager: history,
     settingsProposals: proposals,
     credentialStore,
+    providerAccountManager,
     egressAllowlistStore,
     repoStore,
     getRunnerRegistry: () =>

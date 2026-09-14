@@ -1,16 +1,30 @@
 import type { AgentRegistry } from "../../shared/agent-registry.js";
-import { allHarnesses, reasoningOptionsFor } from "../../shared/catalogue/index.js";
+import {
+  allHarnesses,
+  harnessForNativeService,
+  reasoningOptionsFor,
+} from "../../shared/catalogue/index.js";
 import type { ModelSelection } from "../../shared/catalogue/types.js";
 import {
+  ALL_SETTINGS,
+  collectionKeyOf,
   findSetting,
+  formatSetting,
   hostEntryProjection,
   isPayloadDeclaration,
+  projectSetting,
   userNameProjection,
 } from "../../shared/settings-catalogue/index.js";
 import type { AnySettingDeclaration, ApplyOutcome } from "../../shared/settings-catalogue/index.js";
+import { RESERVED_ROLE_NAME } from "../../shared/types/agent-types.js";
 import type { AgentRole, AgentId, RolePinnedParams } from "../../shared/types/agent-types.js";
-import type { SettingsProposalOperation, SettingsProposalTarget } from "../../shared/types.js";
+import type {
+  SettingsProposalOperation,
+  SettingsProposalSideChange,
+  SettingsProposalTarget,
+} from "../../shared/types.js";
 import type { ChatHistoryManager } from "../chat-history.js";
+import { MAX_CREDENTIAL_LABEL_LENGTH } from "../credential-store.js";
 import type { CredentialStore } from "../credential-store.js";
 import { EGRESS_GLOBAL_SCOPE } from "../egress-allowlist-store.js";
 import type { EgressAllowlistStore } from "../egress-allowlist-store.js";
@@ -25,17 +39,22 @@ import type { RepoStore } from "../repo-store.js";
 import type { ServiceManager } from "../service-manager.js";
 import type { SessionRunnerRegistry } from "../session-runner.js";
 import { listConfiguredCredentials } from "../service-routing.js";
+import { listCredentialRoutes } from "./credential-routes.js";
 import { buildEffectiveAllowlist } from "../egress-allowlist.js";
 import { MAX_ENABLED_MCP_SERVERS } from "./mcp.js";
 import {
+  applyCredentialLabel,
   applyEgressGlobalEnabled,
   applyEgressHostAdd,
   applyEgressHostRemove,
   applyGlobalSettings,
   applyMcpServerEnabled,
+  applyProviderAccountLabel,
   applyReleaseChannel,
   applyRepoSettings,
+  credentialLabelDomains,
   domainsForSettingsSave,
+  providerAccountDomains,
 } from "./settings-apply.js";
 import type { SaveGlobalSettingsOptions } from "./settings.js";
 import {
@@ -106,11 +125,19 @@ export interface SettingsOperationDeps {
 
 export interface SettingsOperation {
   /**
-   * Every stored object this operation writes, from the target alone — it is
-   * named before the lock is taken, so it cannot depend on a value read inside
-   * it.
+   * Every stored object this operation writes.
+   *
+   * Answered BEFORE the lock is taken, from three things that are all settled by
+   * then: the target, the stores (a credential id names a row whose service and
+   * billing mode are fixed for its life), and the already-validated value a
+   * rename needs — it writes the stored object under the new name as well as the
+   * old one's.
    */
-  domains(target: SettingsOperationTarget): ConflictDomain[];
+  domains(
+    target: SettingsOperationTarget,
+    deps: SettingsOperationDeps,
+    value: unknown,
+  ): ConflictDomain[];
   /**
    * Refuse before anything is written, in words the card can show. Runs at
    * propose time AND again inside the lock, because a card outlives its turn.
@@ -121,6 +148,17 @@ export interface SettingsOperation {
     target: SettingsOperationTarget,
     value: unknown,
   ): Promise<ApplyOutcome>;
+  /**
+   * Everything ELSE this one operation would rewrite, for the card to show; the
+   * user approves what the card displays. Re-derived at apply time and compared
+   * with the card, because the derivation reads live state the baseline does not
+   * cover — a harness can be uninstalled between the two.
+   */
+  alsoChanges?(
+    deps: SettingsOperationDeps,
+    target: SettingsOperationTarget,
+    value: unknown,
+  ): SettingsProposalSideChange[];
   /**
    * How the card words a change that is not a new value — joining or leaving a
    * collection. Absent for a `set`, where the values themselves are the wording.
@@ -149,6 +187,7 @@ function egressDeps(deps: SettingsOperationDeps) {
   return {
     sseBroadcast: deps.sseBroadcast,
     egressAllowlistStore: deps.egressAllowlistStore,
+    credentialStore: deps.credentialStore,
     ...(deps.containerManager ? { containerManager: deps.containerManager } : {}),
   };
 }
@@ -160,6 +199,30 @@ function egressDeps(deps: SettingsOperationDeps) {
  */
 function asText(value: unknown): string {
   return typeof value === "string" ? value : "";
+}
+
+/**
+ * One neighbouring field, through the same door `from` and `to` go through. A
+ * field whose declaration has gone throws rather than being dropped: showing
+ * less than the operation writes is what this exists to prevent.
+ */
+function sideChange(key: string, from: unknown, to: unknown): SettingsProposalSideChange | null {
+  const declaration = findSetting(key);
+  if (!declaration) {
+    throw new ServiceError(
+      400,
+      `Applying this would also change ${key}, which ShipIt no longer declares, so a card cannot `
+        + "show its whole effect.",
+    );
+  }
+  const show = (raw: unknown): string => formatSetting(declaration, projectSetting(declaration, raw ?? null));
+  const before = show(from);
+  const after = show(to);
+  return before === after ? null : { label: declaration.label, from: before, to: after };
+}
+
+function sideChanges(changes: (SettingsProposalSideChange | null)[]): SettingsProposalSideChange[] {
+  return changes.filter((change): change is SettingsProposalSideChange => change !== null);
 }
 
 function settingIs(
@@ -254,7 +317,7 @@ function domainsOfSave(patch: Partial<SaveGlobalSettingsOptions>): ConflictDomai
 
 function savingOperation(
   build: SaveBuilder,
-  domainsOf: (target: SettingsOperationTarget) => ConflictDomain[],
+  domainsOf: SettingsOperation["domains"],
   opts: { preflight?: SettingsOperation["preflight"] } = {},
 ): SettingsOperation {
   return {
@@ -414,12 +477,66 @@ function requireSelection(value: unknown): ModelSelection {
   return { serviceId: row.serviceId, billingMode: row.billingMode, modelId: row.modelId };
 }
 
-const roleModelOperation = rolePatchOperation((role, value, deps) => {
+/** One function, so the card and the write cannot derive the tuple differently. */
+function roleModelParams(
+  role: AgentRole,
+  value: unknown,
+  deps: SettingsOperationDeps,
+): RolePinnedParams {
   const params = pinnedParams(role, { key: "roles[].model", item: role.name });
   const selection = requireSelection(value);
   const harnessId = harnessForSelection(deps, selection, params.harnessId);
-  return { params: pinned(harnessId, selection, keptEffort(harnessId, selection, params.reasoningEffort)) };
-});
+  return pinned(harnessId, selection, keptEffort(harnessId, selection, params.reasoningEffort));
+}
+
+/**
+ * Picking a model moves two more fields, and the card says so: the harness when
+ * the role's own cannot speak to the new model, and a level the new selection
+ * does not offer.
+ */
+const roleModelOperation: SettingsOperation = {
+  ...rolePatchOperation((role, value, deps) => ({ params: roleModelParams(role, value, deps) })),
+  alsoChanges: (deps, target, value) => {
+    const role = storedRole(deps, target.item);
+    if (role?.params.kind !== "pinned") return [];
+    const next = roleModelParams(role, value, deps);
+    return sideChanges([
+      sideChange("roles[].harness", role.params.harnessId, next.harnessId),
+      sideChange("roles[].reasoningEffort", role.params.reasoningEffort, next.reasoningEffort),
+    ]);
+  },
+};
+
+/**
+ * A level the new harness does not honour is dropped rather than carried over —
+ * the role editor's own move, since `validateRoleParams` refuses one the
+ * selection does not offer — so the card names it.
+ */
+function roleHarnessParams(role: AgentRole, value: unknown): RolePinnedParams {
+  const params = pinnedParams(role, { key: "roles[].harness", item: role.name });
+  const harnessId = asText(value) as AgentId;
+  const selection = {
+    serviceId: params.serviceId,
+    billingMode: params.billingMode,
+    modelId: params.modelId,
+  };
+  return pinned(harnessId, selection, keptEffort(harnessId, selection, params.reasoningEffort));
+}
+
+const roleHarnessOperation: SettingsOperation = {
+  ...rolePatchOperation((role, value) => ({ params: roleHarnessParams(role, value) })),
+  alsoChanges: (deps, target, value) => {
+    const role = storedRole(deps, target.item);
+    if (role?.params.kind !== "pinned") return [];
+    return sideChanges([
+      sideChange(
+        "roles[].reasoningEffort",
+        role.params.reasoningEffort,
+        roleHarnessParams(role, value).reasoningEffort,
+      ),
+    ]);
+  },
+};
 
 // Reviewer slots ------------------------------------------------------------
 
@@ -487,6 +604,57 @@ function reviewerOperation(
   );
 }
 
+/**
+ * A slot's model, and the level that rides on it. `resolveReviewerPinPatch`
+ * SUBSTITUTES the slot's default for a level the new model does not offer, which
+ * is right — the dialog's picker does the same — and has to be on the card.
+ */
+function reviewerModelOperation(): SettingsOperation {
+  const resolvedEffort = (
+    deps: SettingsOperationDeps,
+    pin: Record<string, unknown> | null,
+    value: unknown,
+  ): string | undefined => {
+    const selection = requireSelection(value);
+    const patch = { ...selection, ...(pin?.reasoningEffort ? { reasoningEffort: pin.reasoningEffort } : {}) };
+    return resolveReviewerPinPatch(patch as unknown as ReviewerPinPatch, requireCredentialStore(deps))
+      .reasoningEffort;
+  };
+  return {
+    ...reviewerOperation(
+      (pin, value) => {
+        if (value === null) return null;
+        const selection = requireSelection(value);
+        return { ...selection, ...(pin?.reasoningEffort ? { reasoningEffort: pin.reasoningEffort } : {}) };
+      },
+      (deps, target, value) => {
+        if (value === null) return null;
+        const pin = reviewerPin(deps, target.item ?? "");
+        const selection = value as Partial<ModelSelection>;
+        if (typeof selection?.serviceId !== "string") {
+          return "A model names a serviceId, a billingMode and a modelId.";
+        }
+        // The selection has to be one this install can run a reviewer on — that
+        // is what the writer refuses. The level the pin carries is NOT compared:
+        // it is re-derived exactly as the dialog's own picker re-derives it, and
+        // `alsoChanges` is what puts the result on the card.
+        return reviewerLevelRefusal(
+          deps,
+          { ...selection, ...(pin?.reasoningEffort ? { reasoningEffort: pin.reasoningEffort } : {}) },
+          undefined,
+        );
+      },
+    ),
+    alsoChanges: (deps, target, value) => {
+      const pin = reviewerPin(deps, target.item ?? "");
+      const before = pin?.reasoningEffort;
+      // Clearing the pin takes the level with it; there is no pin left to hold one.
+      const after = value === null ? undefined : resolvedEffort(deps, pin, value);
+      return sideChanges([sideChange("reviewers[].reasoningEffort", before, after)]);
+    },
+  };
+}
+
 // Services ------------------------------------------------------------------
 
 /** The `service:mode` key the Services panel stores these under. */
@@ -507,6 +675,135 @@ function modeAddressed(preflight?: SettingsOperation["preflight"]): SettingsOper
   };
 }
 
+/**
+ * A label the writer would refuse. The declaration's own limit is wider than
+ * what `updateStringCredential` and `ProviderAccountManager.rename` store, and a
+ * card that could only ever resolve `refused` is not a change the user makes
+ * with one click.
+ */
+function labelRefusal(label: string): string | null {
+  return label.length > MAX_CREDENTIAL_LABEL_LENGTH
+    ? `A name is at most ${MAX_CREDENTIAL_LABEL_LENGTH} characters, and this one is ${label.length}.`
+    : null;
+}
+
+/** A stored credential's display name, addressed by the route id the read emits. */
+const credentialLabelOperation: SettingsOperation = {
+  domains: (target, deps) => credentialLabelDomains(requireCredentialStore(deps), target.item ?? ""),
+  preflight: (deps, target, value) => {
+    const routeId = target.item ?? "";
+    if (requireCredentialStore(deps).getCredentialRoute(routeId)) return labelRefusal(asText(value));
+    // Through the collection's own projection, like every other message that
+    // names stored values (plan.md → `emits` is an allowlist of derived values).
+    const collection = findSetting("services.credentials")!;
+    const stored = listCredentialRoutes(requireCredentialStore(deps))
+      .filter((route) => route.via === "string");
+    const outcome = projectSetting(collection, stored);
+    const known = outcome.readable && Array.isArray(outcome.value) ? outcome.value : [];
+    return `No credential with id "${echoSupplied(routeId)}" — ids on this install: `
+      + `${known.length > 0 ? known.join(", ") : "none"}.`;
+  },
+  apply: async (deps, target, value) => {
+    const { outcome } = await applyCredentialLabel(
+      { sseBroadcast: deps.sseBroadcast, credentialStore: requireCredentialStore(deps) },
+      target.item ?? "",
+      asText(value),
+    );
+    return outcome;
+  },
+  applied: settingIs,
+};
+
+/**
+ * The `serviceId:accountId` the read emits, as the writer's own arguments.
+ *
+ * The two halves are not the same vocabulary: an address names the SERVICE the
+ * account belongs to, and `renameProviderAccount` takes the HARNESS whose
+ * sign-in owns that service (`requireAccountService`). Passing the address's
+ * half straight through refused every rename with "Unknown provider", at the
+ * click rather than at the proposal.
+ */
+function accountAddress(item: string | undefined): { harnessId: AgentId; accountId: string } | null {
+  const at = item?.indexOf(":") ?? -1;
+  if (!item || at <= 0 || at === item.length - 1) return null;
+  const harnessId = harnessForNativeService(item.slice(0, at));
+  return harnessId ? { harnessId, accountId: item.slice(at + 1) } : null;
+}
+
+/** A connected account's display name. Connecting one is a sign-in and stays unproposable. */
+const providerAccountLabelOperation: SettingsOperation = {
+  domains: (target) => providerAccountDomains(accountAddress(target.item)?.harnessId ?? ""),
+  preflight: (deps, target, value) => {
+    const address = accountAddress(target.item);
+    if (!address) {
+      return `No provider account is addressed by "${echoSupplied(target.item ?? "")}" — `
+        + "`shipit settings get services.providerAccounts[].label` lists the ones this install has.";
+    }
+    if (!deps.providerAccountManager) {
+      return "This install has no provider accounts, so there is none to rename.";
+    }
+    return labelRefusal(asText(value));
+  },
+  apply: async (deps, target, value) => {
+    const address = accountAddress(target.item);
+    if (!address || !deps.providerAccountManager) {
+      throw new ServiceError(400, "This card names no provider account that still exists.");
+    }
+    const { outcome } = await applyProviderAccountLabel(
+      {
+        sseBroadcast: deps.sseBroadcast,
+        credentialStore: requireCredentialStore(deps),
+        providerAccountManager: deps.providerAccountManager,
+        broadcastProviderAccounts: (accounts) => deps.sseBroadcast("provider_accounts", { accounts }),
+      },
+      address.harnessId,
+      address.accountId,
+      asText(value),
+    );
+    return outcome;
+  },
+  applied: settingIs,
+};
+
+/**
+ * Renaming a role, expressed by the KEY of the roles map with the old name as
+ * `previousName` rather than by a `name` field.
+ */
+const roleNameOperation: SettingsOperation = savingOperation(
+  (deps, target, value) => {
+    const role = storedRole(deps, target.item);
+    if (!role) throw new ServiceError(400, `No role named "${echoSupplied(target.item ?? "")}".`);
+    return { roles: { [asText(value)]: roleWrite(role, {}) } };
+  },
+  (target, _deps, value) => domainsOfSave({
+    roles: { [asText(value)]: { previousName: target.item ?? "" } },
+  }),
+  {
+    preflight: (deps, target, value) => {
+      const role = storedRole(deps, target.item);
+      if (!role) {
+        const known = namesForMessage(deps.credentialStore?.getRoles().map((r) => r.name) ?? []);
+        return `No role named "${echoSupplied(target.item ?? "")}" — roles on this install: ${known}.`;
+      }
+      const next = asText(value);
+      if (role.name === RESERVED_ROLE_NAME) {
+        return `The "${RESERVED_ROLE_NAME}" role cannot be renamed: "review this" has to keep resolving `
+          + "to something. Its description and standing instructions are editable.";
+      }
+      if (next === RESERVED_ROLE_NAME) {
+        return `"${RESERVED_ROLE_NAME}" is the name of the role ShipIt ships, so another role cannot take it.`;
+      }
+      if (storedRole(deps, next)) {
+        return `A role called "${echoSupplied(next)}" already exists, and a rename would replace it.`;
+      }
+      // The write validates the whole role, not the name — a role pinned to a
+      // retired model or an uninstalled harness is refused at the click — so the
+      // rename runs the same check every other role edit runs.
+      return rolePreflight(() => ({}))(deps, target, value);
+    },
+  },
+);
+
 // ---------------------------------------------------------------------------
 // The registry
 // ---------------------------------------------------------------------------
@@ -517,19 +814,8 @@ const OPERATIONS: Record<string, SettingsOperation> = {
   "roles[].description::set": rolePatchOperation((_role, value) => ({ description: asText(value) })),
   "roles[].prompt::set": rolePatchOperation((_role, value) => ({ prompt: asText(value) })),
   "roles[].model::set": roleModelOperation,
-  "roles[].harness::set": rolePatchOperation((role, value) => {
-    const params = pinnedParams(role, { key: "roles[].harness", item: role.name });
-    const harnessId = asText(value) as AgentId;
-    const selection = {
-      serviceId: params.serviceId,
-      billingMode: params.billingMode,
-      modelId: params.modelId,
-    };
-    // A level the new harness does not honour is dropped rather than carried
-    // over, which is the move the role editor makes: `validateRoleParams`
-    // refuses a level the selection does not offer.
-    return { params: pinned(harnessId, selection, keptEffort(harnessId, selection, params.reasoningEffort)) };
-  }),
+  "roles[].name::set": roleNameOperation,
+  "roles[].harness::set": roleHarnessOperation,
   "roles[].reasoningEffort::set": rolePatchOperation((role, value) => {
     const params = pinnedParams(role, { key: "roles[].reasoningEffort", item: role.name });
     const effort = asText(value);
@@ -544,30 +830,7 @@ const OPERATIONS: Record<string, SettingsOperation> = {
 
   // Reviewer slots. A slot's model is the pin; its level rides on the pin, so
   // there has to be one to put it on.
-  "reviewers[].model::set": reviewerOperation(
-    (pin, value) => {
-      if (value === null) return null;
-      const selection = requireSelection(value);
-      return { ...selection, ...(pin?.reasoningEffort ? { reasoningEffort: pin.reasoningEffort } : {}) };
-    },
-    (deps, target, value) => {
-      if (value === null) return null;
-      const pin = reviewerPin(deps, target.item ?? "");
-      const selection = value as Partial<ModelSelection>;
-      if (typeof selection?.serviceId !== "string") {
-        return "A model names a serviceId, a billingMode and a modelId.";
-      }
-      // The selection has to be one this install can run a reviewer on — that
-      // is what the writer refuses. The level the pin carries is NOT compared:
-      // the card is about the model, and a level the new model does not offer
-      // is re-derived exactly as the dialog's own picker re-derives it.
-      return reviewerLevelRefusal(
-        deps,
-        { ...selection, ...(pin?.reasoningEffort ? { reasoningEffort: pin.reasoningEffort } : {}) },
-        undefined,
-      );
-    },
-  ),
+  "reviewers[].model::set": reviewerModelOperation(),
   "reviewers[].reasoningEffort::set": reviewerOperation(
     (pin, value) => (pin ? { ...pin, reasoningEffort: asText(value) } : null),
     (deps, target, value) => {
@@ -581,6 +844,8 @@ const OPERATIONS: Record<string, SettingsOperation> = {
   ),
 
   // Credential routing, addressed by service and billing mode.
+  "services.credentials[].label::set": credentialLabelOperation,
+  "services.providerAccounts[].label::set": providerAccountLabelOperation,
   "services.accountSelectionMode::set": savingOperation(
     (_deps, target, value) => ({ accountSelectionMode: { [modeKey(target)]: value as "strict" | "balanced" } }),
     () => domainsOfSave({ accountSelectionMode: {} }),
@@ -629,7 +894,11 @@ const OPERATIONS: Record<string, SettingsOperation> = {
     domains: () => [egressScopeDomain(EGRESS_GLOBAL_SCOPE)],
     preflight: (deps, target) => hostPreflight(target.item) ?? removableRefusal(deps, target.item ?? ""),
     apply: (deps, target) => applyEgressHostRemove(egressDeps(deps), EGRESS_GLOBAL_SCOPE, target.item ?? ""),
-    wording: { from: "allowed", to: "not allowed" },
+    // Membership, not reachability. Entries are patterns, so taking
+    // `api.github.com` off leaves the shipped `.github.com` matching it — a card
+    // reading "not allowed" would promise, before the click, something the
+    // removal cannot deliver.
+    wording: { from: "on the list", to: "off the list" },
     normalizeItem: normalizeHostEntry,
     applied: (target) => `${target.item ?? "the host"} is off the global allowlist`,
   },
@@ -787,6 +1056,24 @@ export function findOperation(
   if (named) return named;
   if (kind === "set" && isPayloadDeclaration(declaration)) return payloadOperation(declaration);
   return undefined;
+}
+
+/**
+ * The entry fields of a collection that a proposal CAN reach.
+ *
+ * A collection declaration is the aggregate — `roles`, `mcp.servers`,
+ * `network.egress.hosts` — and a card never replaces a whole list, so the
+ * aggregate carries no operation of its own while its entry fields do. Naming
+ * them is what keeps `propose.allowed: true` on the aggregate honest: there is
+ * somewhere for a proposal about it to go, and the refusal says where rather
+ * than leaving the agent to discover it by attempting the change
+ * (docs/299-agent-settings-access req 4).
+ */
+export function proposableFieldsOf(collectionKey: string): string[] {
+  return ALL_SETTINGS
+    .filter((declaration) => collectionKeyOf(declaration.key) === collectionKey)
+    .filter((declaration) => operationsFor(declaration.key).length > 0)
+    .map((declaration) => declaration.key);
 }
 
 /** What a `shipit settings propose` refusal says about a setting nothing can write yet. */

@@ -232,3 +232,62 @@ describe("a setting stored per (service, billing mode)", () => {
     expect(baseline).toMatchObject({ kind: "unknown" });
   });
 });
+
+/**
+ * A reader is what makes an operation reachable: without one the baseline is
+ * `unknown` and `requireBaseline` refuses every proposal, so the operation is
+ * registered and can never be applied (docs/299-agent-settings-access req 4).
+ */
+describe("the credential rows a rename is proposed against", () => {
+  function route(id: string, over: Record<string, unknown> = {}) {
+    return {
+      id,
+      serviceId: "anthropic",
+      billingMode: "key" as const,
+      via: "string" as const,
+      status: "ready" as const,
+      priority: 0,
+      isPrimary: true,
+      label: "the old name",
+      createdAt: 0,
+      updatedAt: 0,
+      ...over,
+    };
+  }
+
+  it("holds a revision of the whole credential row", async () => {
+    const store = new CredentialStore(tmpDir());
+    store.upsertCredentialRouteWithSecret(route("anthropic-key-1"), "sk-ant");
+    const d = deps(store);
+
+    const before = await settingBaseline(d, { key: "services.credentials[].label", item: "anthropic-key-1" });
+    expect(before.kind).toBe("revision");
+
+    store.upsertCredentialRoute(route("anthropic-key-1", { label: "renamed elsewhere" }));
+    const after = await settingBaseline(d, { key: "services.credentials[].label", item: "anthropic-key-1" });
+
+    expect(baselineMatches(after, before)).toBe(false);
+  });
+
+  it("holds a revision of a provider account, addressed by provider and id", async () => {
+    const store = new CredentialStore(tmpDir());
+    store.upsertCredentialRoute(route("acct-1", { billingMode: "sub", via: "account" }));
+    const d = deps(store);
+
+    const baseline = await settingBaseline(d, {
+      key: "services.providerAccounts[].label",
+      item: "claude:acct-1",
+    });
+
+    expect(baseline.kind).toBe("revision");
+  });
+
+  it("says so rather than guessing when the id names nothing", async () => {
+    const store = new CredentialStore(tmpDir());
+    const baseline = await settingBaseline(deps(store), {
+      key: "services.credentials[].label",
+      item: "no-such-route",
+    });
+    expect(baseline.kind).toBe("unknown");
+  });
+});

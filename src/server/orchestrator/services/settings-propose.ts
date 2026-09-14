@@ -12,7 +12,12 @@ import type { SettingsProposalStore } from "../settings-proposal-store.js";
 import { settingBaseline } from "./settings-baseline.js";
 import type { SettingBaseline, SettingBaselineDeps } from "./settings-baseline.js";
 import { withConflictDomains } from "./settings-conflict-domain.js";
-import { echoSupplied, findOperation, operationsFor } from "./settings-operations.js";
+import {
+  echoSupplied,
+  findOperation,
+  operationsFor,
+  proposableFieldsOf,
+} from "./settings-operations.js";
 import type {
   SettingsOperation,
   SettingsOperationDeps,
@@ -154,6 +159,17 @@ function resolveTarget(
   const operation = findOperation(declaration, kind);
   if (!operation) {
     const available = operationsFor(declaration.key);
+    // A collection declaration is the list itself, and a card changes one entry
+    // of it — so the refusal names the entry fields rather than reading as a
+    // capability ShipIt has not built (plan.md → Collections are patched, never
+    // replaced).
+    const fields = available.length === 0 ? proposableFieldsOf(declaration.key) : [];
+    if (fields.length > 0) {
+      refuse(
+        `${declaration.key} is the whole list, and a proposal changes one entry of it. Propose `
+          + `${fields.join(" or ")} instead, naming the entry with --item.`,
+      );
+    }
     const alternatives = available.length > 0 ? `; it can ${available.join(" and ")} this setting` : "";
     refuse(
       `ShipIt cannot ${kind} ${declaration.key} from a proposal card yet${alternatives}. `
@@ -289,9 +305,26 @@ function membershipChange(
   };
 }
 
+/**
+ * The value the card would write, decided BEFORE the lock.
+ *
+ * Validation is pure — the declared type reads the agent's text and says whether
+ * it is one — so it needs no lock, and the target's conflict domains can depend
+ * on the answer: renaming a role writes the stored object under the NEW name as
+ * well as the old one's, and the lock has to hold both before either is read.
+ */
+function proposedValueOf(declaration: AnySettingDeclaration, input: SettingsProposeInput): unknown {
+  const raw = input.value !== undefined
+    ? input.value
+    : readProposedValue(declaration, input.valueText ?? "");
+  const checked = declaration.type.validate(raw, declaration.label);
+  if (!checked.ok) refuse(checked.message);
+  return checked.value;
+}
+
 function valueChange(
   declaration: AnySettingDeclaration,
-  input: SettingsProposeInput,
+  proposedValue: unknown,
   current: CurrentValue,
   target: SettingsProposalTarget,
 ): ProposedChange {
@@ -301,19 +334,13 @@ function valueChange(
         + `${knownAddresses(current.entry)}.`,
     );
   }
-  const raw = input.value !== undefined
-    ? input.value
-    : readProposedValue(declaration, input.valueText ?? "");
-  const checked = declaration.type.validate(raw, declaration.label);
-  if (!checked.ok) refuse(checked.message);
-
   // Through the catalogue's own door, exactly as the read's value was: the card
   // must show `from` and `to` in one another's terms.
-  const to = formatSetting(declaration, projectSetting(declaration, checked.value));
+  const to = formatSetting(declaration, projectSetting(declaration, proposedValue));
   if (to === current.display) {
     refuse(`${declaration.key} is already ${to}, so there is nothing to change.`);
   }
-  return { from: current.display, fromValue: current.value, to, proposedValue: checked.value };
+  return { from: current.display, fromValue: current.value, to, proposedValue };
 }
 
 /**
@@ -353,12 +380,13 @@ export async function proposeSettingChange(
   // between, which gives the card a `from` the baseline never saw: the user
   // approves what the card shows, and the apply compares against something else
   // and overwrites it (plan.md → Proposing: "the server takes the snapshot").
-  const { change, baseline } = await withConflictDomains(
-    operation.domains(target),
+  const proposedValue = kind === "set" ? proposedValueOf(declaration, input) : kind === "add";
+  const { change, alsoChanges, baseline } = await withConflictDomains(
+    operation.domains(target, deps.operations, proposedValue),
     async () => {
       const current = await readCurrent(deps, sessionId, resolved);
       const computed = kind === "set"
-        ? valueChange(declaration, input, current, target)
+        ? valueChange(declaration, proposedValue, current, target)
         : membershipChange(operation, kind, current, target);
       // After the read, so a setting whose instance does not exist is refused by
       // the read — which can name the instances that DO — rather than by the
@@ -368,7 +396,20 @@ export async function proposeSettingChange(
       if (refusal) refuse(refusal);
       requireShowable(declaration, "current", computed.from);
       requireShowable(declaration, "proposed", computed.to);
-      return { change: computed, baseline: await requireBaseline(deps, resolved) };
+      // The rest of what this one operation writes, in the same snapshot and
+      // under the same lock as `from`: a role's model re-derives the harness and
+      // the level, and the card names both rather than leaving the user to
+      // approve what it does not display.
+      const alsoChanges = operation.alsoChanges?.(deps.operations, target, computed.proposedValue) ?? [];
+      for (const side of alsoChanges) {
+        requireShowable(declaration, `current ${side.label}`, side.from);
+        requireShowable(declaration, `proposed ${side.label}`, side.to);
+      }
+      return {
+        change: computed,
+        alsoChanges,
+        baseline: await requireBaseline(deps, resolved),
+      };
     },
   );
 
@@ -387,6 +428,7 @@ export async function proposeSettingChange(
       operation: kind,
       from: change.from,
       to: change.to,
+      alsoChanges,
       fromValue: change.fromValue,
       proposedValue: change.proposedValue,
       baseline,

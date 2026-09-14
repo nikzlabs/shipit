@@ -359,18 +359,35 @@ export interface EffectiveAllowlistOpts {
   suppressedDefaults?: Iterable<string>;
 }
 
+/**
+ * The list as one entry per host, where several sources can supply the same one.
+ *
+ * A removal reaches only the sources a write owns — the user's rows and a
+ * suppressible built-in default — so an entry is removable only when EVERY
+ * source supplying it is, and the source named is the one that pins it.
+ * First-source-wins on `removable` offered a remove button, and a proposal card,
+ * for a host the operator or an MCP server would keep allowed.
+ */
 export function buildEffectiveAllowlist(opts: EffectiveAllowlistOpts = {}): EgressAllowlistEntry[] {
   const env = opts.env ?? process.env;
   const base = opts.base ?? EGRESS_DEFAULT_ALLOWLIST;
   const suppressed = new Set<string>();
   for (const h of opts.suppressedDefaults ?? []) suppressed.add(normalizeHost(h));
-  const seen = new Set<string>();
+  const byHost = new Map<string, EgressAllowlistEntry>();
   const entries: EgressAllowlistEntry[] = [];
   const push = (raw: string, source: EgressAllowlistSource, removable: boolean) => {
     const host = normalizeHost(raw);
-    if (!host || seen.has(host)) return;
-    seen.add(host);
-    entries.push({ host, source, removable });
+    if (!host) return;
+    const already = byHost.get(host);
+    if (!already) {
+      const entry: EgressAllowlistEntry = { host, source, removable };
+      byHost.set(host, entry);
+      entries.push(entry);
+      return;
+    }
+    if (removable || !already.removable) return;
+    already.source = source;
+    already.removable = false;
   };
 
   for (const h of base) {

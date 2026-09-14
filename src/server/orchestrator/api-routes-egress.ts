@@ -130,6 +130,7 @@ export async function registerEgressRoutes(app: FastifyInstance, deps: ApiDeps):
     const applyDeps: EgressApplyDeps = {
       sseBroadcast: deps.sseBroadcast,
       egressAllowlistStore: store,
+      credentialStore: deps.credentialStore,
       containerManager: deps.containerManager,
       broadcastEgressSettings: () => {
         deps.sseBroadcast("egress_settings", globalSettings(store, enforcement));

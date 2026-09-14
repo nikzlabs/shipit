@@ -286,6 +286,33 @@ describe("buildEffectiveAllowlist", () => {
     expect(gh).toHaveLength(1);
     expect(gh[0]).toMatchObject({ source: "builtin", removable: true });
   });
+
+  it("is not removable when a second source pins the same host", () => {
+    // `.github.com` is a shipped default AND named by the operator. Suppressing
+    // the default is all a removal can reach, so advertising it as removable
+    // offers a button and a proposal card for a change that cannot happen
+    // (docs/299-agent-settings-access req 4).
+    const entries = buildEffectiveAllowlist({
+      env: { SESSION_EGRESS_ALLOWLIST: ".github.com" },
+      globalHosts: [],
+    });
+    const gh = entries.filter((e) => e.host === ".github.com");
+    expect(gh).toHaveLength(1);
+    expect(gh[0]).toMatchObject({ source: "operator", removable: false });
+  });
+
+  it("is not removable when a configured MCP server needs a host that is also a default", () => {
+    // `openrouter.ai` ships as a default and is where this server lives, so the
+    // built-in pass claims it first — and suppressing that default would leave
+    // the host reachable for the MCP server that still needs it.
+    const store = stubStore({
+      servers: { router: { name: "router", type: "http", url: "https://openrouter.ai/mcp", enabled: true } },
+    });
+    const entries = buildEffectiveAllowlist({ env: {}, credentialStore: store });
+    const entry = entries.filter((e) => e.host === "openrouter.ai");
+    expect(entry).toHaveLength(1);
+    expect(entry[0]).toMatchObject({ source: "mcp", removable: false });
+  });
 });
 
 describe("isBuiltinDefault", () => {

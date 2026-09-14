@@ -1,4 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { persistTurnInProgress } from "../chat-card-persistence.js";
 import { addMcpServer } from "./mcp.js";
 import { SETTINGS_CHANGED_EVENT } from "./settings-apply.js";
@@ -306,5 +309,153 @@ describe("recoverInterruptedProposals", () => {
 
     expect(recoverInterruptedProposals(fx.deps)).toBe(0);
     expect(fx.proposals.get(card.cardId)?.phase).toBe("pending");
+  });
+});
+
+/**
+ * A card outlives its turn, and the fields one operation re-derives are computed
+ * from live state the baseline does not cover — which harnesses are installed,
+ * which levels a selection offers (docs/299-agent-settings-access req 4).
+ */
+describe("the click applies what the card showed, and nothing more", () => {
+  function installReport(harnesses: string[]): { restore: () => void } {
+    const previous = process.env.SHIPIT_AGENTS_INSTALL_REPORT;
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-installed-"));
+    const file = path.join(dir, "installed.json");
+    fs.writeFileSync(file, JSON.stringify({ harnesses }));
+    process.env.SHIPIT_AGENTS_INSTALL_REPORT = file;
+    return {
+      restore: () => {
+        if (previous === undefined) delete process.env.SHIPIT_AGENTS_INSTALL_REPORT;
+        else process.env.SHIPIT_AGENTS_INSTALL_REPORT = previous;
+        fs.rmSync(dir, { recursive: true, force: true });
+      },
+    };
+  }
+
+  /**
+   * The registry guard says an operation is registered; only propose-then-click
+   * says it can be reached. A rename with no baseline reader posts no card at
+   * all, and the operation-level tests call `apply` directly, so they cannot see
+   * it.
+   */
+  it("carries a credential rename from the proposal to the stored row", async () => {
+    fx.credentialStore.upsertCredentialRouteWithSecret(
+      {
+        id: "anthropic-key-fixture",
+        serviceId: "anthropic",
+        billingMode: "key",
+        via: "string",
+        status: "ready",
+        priority: 0,
+        isPrimary: true,
+        label: "the old name",
+        createdAt: 0,
+        updatedAt: 0,
+      },
+      "sk-ant-fixture",
+    );
+
+    const card = await post({
+      key: "services.credentials[].label",
+      item: "anthropic-key-fixture",
+      valueText: "work key",
+    });
+    const { card: resolved } = await decide(card.cardId);
+
+    expect(resolved.phase).toBe("applied");
+    expect(fx.credentialStore.getCredentialRoute("anthropic-key-fixture")?.label).toBe("work key");
+  });
+
+  it("carries a provider-account rename from the proposal to the stored account", async () => {
+    fx.close();
+    fx = proposalFixture({ providerAccounts: true });
+    fx.credentialStore.upsertCredentialRoute({
+      id: "acct-1",
+      serviceId: "anthropic",
+      billingMode: "sub",
+      via: "account",
+      status: "ready",
+      priority: 0,
+      isPrimary: true,
+      label: "the old name",
+      createdAt: 0,
+      updatedAt: 0,
+    });
+
+    // The read addresses an account by its SERVICE; the writer takes the harness
+    // whose sign-in owns that service, and passing the address's half straight
+    // through refused every rename at the click.
+    const card = await post({
+      key: "services.providerAccounts[].label",
+      item: "anthropic:acct-1",
+      valueText: "work account",
+    });
+    const { card: resolved } = await decide(card.cardId);
+
+    expect(resolved.phase).toBe("applied");
+    expect(fx.credentialStore.getCredentialRoute("acct-1")?.label).toBe("work account");
+  });
+
+  it("carries a role rename from the proposal to the stored role", async () => {
+    fx.credentialStore.setRole("deep-dive", {
+      name: "deep-dive",
+      prompt: "standing instructions",
+      params: {
+        kind: "pinned",
+        harnessId: "claude",
+        serviceId: "anthropic",
+        billingMode: "sub",
+        modelId: "claude-opus-5",
+      },
+    });
+
+    const card = await post({ key: "roles[].name", item: "deep-dive", valueText: "auditor" });
+    const { card: resolved } = await decide(card.cardId);
+
+    expect(resolved.phase).toBe("applied");
+    expect(fx.credentialStore.getRole("deep-dive")).toBeUndefined();
+    expect(fx.credentialStore.getRole("auditor")?.prompt).toBe("standing instructions");
+  });
+
+  it("refuses when the harness it would now re-derive is not the one on the card", async () => {
+    let report = installReport(["claude", "opencode"]);
+    try {
+      fx.credentialStore.setRole("deep-dive", {
+        name: "deep-dive",
+        params: {
+          kind: "pinned",
+          harnessId: "claude",
+          serviceId: "anthropic",
+          billingMode: "sub",
+          modelId: "claude-opus-5",
+        },
+      });
+      // Both harnesses speak this model, so the role keeps its own and the card
+      // shows a model change alone.
+      const card = await post({
+        key: "roles[].model",
+        item: "deep-dive",
+        valueText: JSON.stringify({ serviceId: "zai", billingMode: "sub", modelId: "glm-5.3[1m]" }),
+      });
+      expect(card.alsoChanges).toBeUndefined();
+
+      // The role's own harness is uninstalled before the click, so applying
+      // would now move the role onto opencode — a change nobody approved.
+      report.restore();
+      report = installReport(["opencode"]);
+      const { card: resolved } = await decide(card.cardId);
+
+      expect(resolved.phase).toBe("refused");
+      expect(resolved.outcome).toContain("does not show");
+      expect(resolved.outcomeDetail).toContain("opencode");
+      // Refused means nothing was written.
+      expect(fx.credentialStore.getRole("deep-dive")?.params).toMatchObject({
+        harnessId: "claude",
+        modelId: "claude-opus-5",
+      });
+    } finally {
+      report.restore();
+    }
   });
 });

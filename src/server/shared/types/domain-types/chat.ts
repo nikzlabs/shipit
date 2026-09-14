@@ -139,6 +139,18 @@ export type SettingsProposalPhase =
   | "unknown";
 
 /**
+ * One further field the SAME operation rewrites: picking a role's model
+ * re-derives its harness and drops a level the new selection does not offer, and
+ * the user approves what the card shows.
+ */
+export interface SettingsProposalSideChange {
+  /** The neighbouring declaration's label, never the agent's words. */
+  label: string;
+  from: string;
+  to: string;
+}
+
+/**
  * One proposed settings change, as it appears in the transcript
  * (docs/299-agent-settings-access req 4). One card carries one change, and the
  * setting does not move until the user clicks.
@@ -167,6 +179,8 @@ export interface SettingsProposalCard {
   from: string;
   /** The proposed value, formatted the same way. */
   to: string;
+  /** Absent unless this one operation writes more than the field it names. */
+  alsoChanges?: SettingsProposalSideChange[];
   /** The agent's words, flattened to one line and capped. */
   reason?: string;
   phase: SettingsProposalPhase;

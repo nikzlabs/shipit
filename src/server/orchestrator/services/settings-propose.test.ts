@@ -1,4 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { findSetting } from "../../shared/settings-catalogue/index.js";
 import { addMcpServer, MAX_ENABLED_MCP_SERVERS } from "./mcp.js";
 import { settingsPayloadDomain, withConflictDomains } from "./settings-conflict-domain.js";
@@ -29,6 +32,26 @@ async function refusal(input: Parameters<typeof proposeSettingChange>[2]): Promi
     throw err;
   }
   throw new Error("expected the proposal to be refused");
+}
+
+/**
+ * Which harnesses this box counts as installed, pinned for the length of a test.
+ * `harnessForSelection` asks, so a test about the harness a model moves a role
+ * onto cannot be left reading whatever the machine running it happens to have.
+ */
+function installReport(harnesses: string[]): { restore: () => void } {
+  const previous = process.env.SHIPIT_AGENTS_INSTALL_REPORT;
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-installed-"));
+  const file = path.join(dir, "installed.json");
+  fs.writeFileSync(file, JSON.stringify({ harnesses }));
+  process.env.SHIPIT_AGENTS_INSTALL_REPORT = file;
+  return {
+    restore: () => {
+      if (previous === undefined) delete process.env.SHIPIT_AGENTS_INSTALL_REPORT;
+      else process.env.SHIPIT_AGENTS_INSTALL_REPORT = previous;
+      fs.rmSync(dir, { recursive: true, force: true });
+    },
+  };
 }
 
 beforeEach(() => {
@@ -87,9 +110,15 @@ describe("proposeSettingChange", () => {
     expect(fx.emitted).toHaveLength(0);
   });
 
-  it("refuses a setting ShipIt cannot apply yet, saying so rather than posting a dead card", async () => {
-    const message = await refusal({ key: "roles[].name", item: "reviewer", valueText: "auditor", reason: "why" });
-    expect(message).toContain("cannot set roles[].name");
+  it("sends a proposal about a whole list to the entry field that carries it", async () => {
+    // The aggregate declaration advertises `propose.allowed: true` and carries no
+    // operation, because a card changes one entry and never replaces the list.
+    // The refusal has to say where the proposal goes, or the only way to find out
+    // is to attempt it (docs/299-agent-settings-access req 4).
+    const message = await refusal({ key: "roles", valueText: "anything", reason: "why" });
+    expect(message).toContain("roles is the whole list");
+    expect(message).toContain("roles[].description");
+    expect(message).toContain("--item");
     expect(fx.emitted).toHaveLength(0);
   });
 
@@ -203,7 +232,23 @@ describe("proposeSettingChange", () => {
         operation: "remove",
         item: "example.test",
         reason: "why",
-      })).toContain("already not allowed");
+      })).toContain("already off the list");
+    });
+
+    it("words a removal as membership, not as reachability", async () => {
+      // `.github.com` ships as a default and matches this host, so taking the
+      // entry off does not make the host unreachable. A card promising "not
+      // allowed" would be approving something the removal cannot deliver.
+      fx.egressAllowlistStore.addHost("global", "api.github.com");
+
+      const card = await propose({
+        key: "network.egress.hosts[].host",
+        operation: "remove",
+        item: "api.github.com",
+        reason: "why",
+      });
+
+      expect(card).toMatchObject({ from: "on the list", to: "off the list" });
     });
   });
 
@@ -253,6 +298,28 @@ describe("proposeSettingChange", () => {
 
     expect(message).toContain("MCP server");
     expect(fx.emitted).toHaveLength(0);
+  });
+
+  it("refuses removing a shipped default the deployment's operator also supplies", async () => {
+    // `.github.com` is on the list twice over. A removal suppresses the default
+    // and cannot touch the operator's entry, so the host stays reachable — and
+    // the card, and the agent's next-turn notice, used to report it gone.
+    const previous = process.env.SESSION_EGRESS_ALLOWLIST;
+    process.env.SESSION_EGRESS_ALLOWLIST = ".github.com";
+    try {
+      const message = await refusal({
+        key: "network.egress.hosts[].host",
+        operation: "remove",
+        item: ".github.com",
+        reason: "why",
+      });
+
+      expect(message).toContain("operator");
+      expect(fx.emitted).toHaveLength(0);
+    } finally {
+      if (previous === undefined) delete process.env.SESSION_EGRESS_ALLOWLIST;
+      else process.env.SESSION_EGRESS_ALLOWLIST = previous;
+    }
   });
 
   it("refuses enabling an MCP server past the limit the writer enforces", async () => {
@@ -356,5 +423,165 @@ describe("readProposedValue", () => {
     expect(readProposedValue(budget, "null")).toBeNull();
     expect(readProposedValue(pin, '{"serviceId":"anthropic","billingMode":"sub","modelId":"m"}'))
       .toEqual({ serviceId: "anthropic", billingMode: "sub", modelId: "m" });
+  });
+});
+
+/**
+ * The declared operation is the mutation unit, so the card shows all of it
+ * (docs/299-agent-settings-access req 4, plan.md → The unit of a change is the
+ * declared operation).
+ *
+ * Picking a role's model re-derives the harness and drops a level the new
+ * selection does not offer. The declaration's own description says so in
+ * prose — and prose is not the values, which is what the user is approving.
+ */
+describe("a card shows every field its one operation writes", () => {
+  const ROLE = "deep-dive";
+
+  function pinRole(params: Record<string, unknown>) {
+    fx.credentialStore.setRole(ROLE, {
+      name: ROLE,
+      params: { kind: "pinned", ...params } as never,
+    });
+  }
+
+  it("names the reasoning level a new model drops", async () => {
+    pinRole({
+      harnessId: "claude",
+      serviceId: "anthropic",
+      billingMode: "sub",
+      modelId: "claude-opus-5",
+      reasoningEffort: "max",
+    });
+
+    // Claude speaks this model, so the harness stays — and it offers low and
+    // high only, so `max` cannot survive the write.
+    const card = await propose({
+      key: "roles[].model",
+      item: ROLE,
+      valueText: JSON.stringify({ serviceId: "openrouter", billingMode: "key", modelId: "stealth/ox-alpha" }),
+      reason: "why",
+    });
+
+    expect(card.alsoChanges).toEqual([
+      { label: findSetting("roles[].reasoningEffort")!.label, from: "max", to: "not set" },
+    ]);
+  });
+
+  it("names the harness a new model moves the role onto", async () => {
+    const report = installReport(["claude", "codex"]);
+    try {
+      pinRole({
+        harnessId: "claude",
+        serviceId: "anthropic",
+        billingMode: "sub",
+        modelId: "claude-opus-5",
+      });
+
+      // Only codex speaks this one, so applying moves the role's harness.
+      const card = await propose({
+        key: "roles[].model",
+        item: ROLE,
+        valueText: JSON.stringify({ serviceId: "openai", billingMode: "sub", modelId: "gpt-5.6-sol" }),
+        reason: "why",
+      });
+
+      expect(card.alsoChanges).toEqual([
+        { label: findSetting("roles[].harness")!.label, from: "claude", to: "codex" },
+      ]);
+    } finally {
+      report.restore();
+    }
+  });
+
+  it("names the level a new harness drops", async () => {
+    const report = installReport(["claude", "codex"]);
+    try {
+      pinRole({
+        harnessId: "codex",
+        serviceId: "openrouter",
+        billingMode: "key",
+        modelId: "stealth/ox-alpha",
+        reasoningEffort: "minimal",
+      });
+
+      // Claude offers low and high on this model, so `minimal` cannot survive
+      // the move — the same drop a model change makes, under a different card.
+      const card = await propose({
+        key: "roles[].harness",
+        item: ROLE,
+        valueText: "claude",
+        reason: "why",
+      });
+
+      expect(card.alsoChanges).toEqual([
+        { label: findSetting("roles[].reasoningEffort")!.label, from: "minimal", to: "not set" },
+      ]);
+    } finally {
+      report.restore();
+    }
+  });
+
+  it("carries nothing extra when the operation writes the one field it names", async () => {
+    pinRole({
+      harnessId: "claude",
+      serviceId: "anthropic",
+      billingMode: "sub",
+      modelId: "claude-opus-5",
+      reasoningEffort: "high",
+    });
+
+    const card = await propose({
+      key: "roles[].model",
+      item: ROLE,
+      valueText: JSON.stringify({ serviceId: "anthropic", billingMode: "sub", modelId: "claude-sonnet-5" }),
+      reason: "why",
+    });
+
+    // Same harness, same level: an "also changes" block here would be noise the
+    // user has to read past on every ordinary card.
+    expect(card.alsoChanges).toBeUndefined();
+  });
+
+  it("names the level a reviewer slot's new model substitutes", async () => {
+    // A reviewer slot resolves against the credentials this install has, so the
+    // fixture needs one before any model is runnable in a slot.
+    fx.credentialStore.upsertCredentialRouteWithSecret(
+      {
+        id: "openrouter-key-fixture",
+        serviceId: "openrouter",
+        billingMode: "key",
+        via: "string",
+        status: "ready",
+        priority: 0,
+        isPrimary: true,
+        label: "fixture",
+        createdAt: 0,
+        updatedAt: 0,
+      },
+      "sk-or-fixture",
+    );
+    fx.credentialStore.setReviewerPin("first", {
+      serviceId: "openrouter",
+      billingMode: "key",
+      modelId: "anthropic/claude-opus-5",
+      reasoningEffort: "max",
+    });
+
+    const card = await propose({
+      key: "reviewers[].model",
+      item: "first",
+      valueText: JSON.stringify({ serviceId: "openrouter", billingMode: "key", modelId: "stealth/ox-alpha" }),
+      reason: "why",
+    });
+
+    // The slot's writer substitutes a default rather than refusing a level the
+    // new model does not offer, so the substitution belongs on the card.
+    expect(card.alsoChanges).toHaveLength(1);
+    expect(card.alsoChanges?.[0]).toMatchObject({
+      label: findSetting("reviewers[].reasoningEffort")!.label,
+      from: "max",
+    });
+    expect(card.alsoChanges?.[0]?.to).not.toBe("max");
   });
 });

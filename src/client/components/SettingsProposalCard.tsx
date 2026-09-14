@@ -167,6 +167,30 @@ export function SettingsProposalCard({ card, onDecide }: SettingsProposalCardPro
                 {card.to}
               </span>
             </div>
+            {card.alsoChanges && card.alsoChanges.length > 0 && (
+              <div
+                data-testid="settings-proposal-also"
+                className="mt-2 border-t border-(--color-border-secondary) pt-2"
+              >
+                <div className="text-[11px] text-(--color-text-tertiary)">Applying this also changes</div>
+                {card.alsoChanges.map((change) => (
+                  <div
+                    key={change.label}
+                    data-testid={`settings-proposal-also-${change.label}`}
+                    className="mt-1 flex flex-wrap items-center gap-2 text-xs"
+                  >
+                    <span className="text-(--color-text-secondary)">{change.label}</span>
+                    <span className="rounded bg-(--color-bg-tertiary) px-1.5 py-0.5 font-mono text-(--color-text-secondary) line-through decoration-(--color-text-tertiary)">
+                      {change.from}
+                    </span>
+                    <span className="text-(--color-text-tertiary)" aria-hidden>→</span>
+                    <span className="rounded bg-(--color-success-subtle) px-1.5 py-0.5 font-mono font-semibold text-(--color-success)">
+                      {change.to}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
 
           {card.reason && (
