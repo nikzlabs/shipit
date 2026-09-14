@@ -1273,7 +1273,9 @@ describe("rebase-driver: planning#369 up-to-date branch with unpushed commits", 
     const attemptDeps = {
       ...deps(git, runner, true),
       agentFactory: hangingAgent,
-      timeoutMs: 250,
+      // Long enough that a loaded machine still reaches the dispatch: the assertion below is
+      // that the agent RAN, and under the full suite 250ms expired during the rebase itself.
+      timeoutMs: 3_000,
       drainQueue: () => { order.push("drain"); },
     };
     // Wire the deps: without them the resolution turn is refused rather than started,
@@ -2728,7 +2730,8 @@ describe("rebase-driver: docs/303 post-rebase follow-up", () => {
     const attemptDeps = {
       ...baseDeps(git, runner, () => "unused"),
       agentFactory: hangingAgent,
-      timeoutMs: 250,
+      // See the note on the other 3s deadline: 250ms expired before the dispatch under load.
+      timeoutMs: 3_000,
     };
     wireSystemTurnDeps(attemptDeps);
     const result = await runAutoResolveAttempt(attemptDeps, "main");
