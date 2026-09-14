@@ -12,6 +12,10 @@ services:
         # so a failed update reads as a performed one (docs/304). The VPS path
         # has always passed this; the local ones now do too.
         SHIPIT_BUILD_ID: ${SHIPIT_BUILD_ID:-}
+    # CFS fairness is per-CPU, so at the default weight the orchestrator's single main thread gets
+    # only its even share against dozens of runnable worker threads — HTTP and WS upgrades stall for
+    # seconds and every session switch shows "Reconnecting to server". Workers run at 512 (docs/229).
+    cpu_shares: 4096
     # Keep loopback as the default: this service has no built-in authentication.
     ports:
       - "${SHIPIT_BIND_ADDR:-127.0.0.1}:4123:4123"

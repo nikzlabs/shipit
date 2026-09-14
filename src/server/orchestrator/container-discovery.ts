@@ -10,6 +10,11 @@ import { getContainerFreshness } from "./container-freshness.js";
 import { overlayDepDirsFromMounts } from "./overlay-session.js";
 import { setWorkerAuthToken, workerTokenFromContainerEnv } from "./worker-auth.js";
 import { isShipItOwnSession } from "./shipit-own-sessions.js";
+import {
+  CPU_PERIOD_US as DEFAULT_CPU_PERIOD_US,
+  deriveSessionCpuSizing,
+  SESSION_CPU_SHARES,
+} from "./container-config-builder.js";
 
 export interface DiscoveryDeps {
   docker: Docker;
@@ -18,6 +23,60 @@ export interface DiscoveryDeps {
   networkName: string;
   workerPort: number;
   labelFilters: () => string[];
+}
+
+/**
+ * A worker survives an orchestrator deploy, so without this it keeps whatever CPU policy it was
+ * created under — the whole-host quota and default weight that starved the orchestrator in the
+ * first place (docs/229). cgroup CPU limits are writable live, so this needs no restart.
+ *
+ * Only session workers: a container ShipIt owns (the cleanup worker) is created from its own
+ * deliberately smaller budget, and adopting it under the session formula would silently widen it.
+ */
+async function reconcileAdoptedCpuPolicy(
+  sessionId: string,
+  container: Docker.Container,
+  hostConfig: Docker.ContainerInspectInfo["HostConfig"] | undefined,
+  cpuQuota: number,
+): Promise<{ memoryLimit: number; cpuQuota: number; pidsLimit: number } | undefined> {
+  // The quota means nothing without its period: 700000µs buys 7 cores per 100ms and 14 per 50ms.
+  // Report it on the 100ms basis every consumer of `bootedLimits` assumes.
+  const bootedPeriod = hostConfig?.CpuPeriod || DEFAULT_CPU_PERIOD_US;
+  const booted = hostConfig && {
+    memoryLimit: hostConfig.Memory ?? 0,
+    cpuQuota: Math.round((hostConfig.CpuQuota ?? 0) * (DEFAULT_CPU_PERIOD_US / bootedPeriod)),
+    pidsLimit: hostConfig.PidsLimit ?? 0,
+  };
+  if (isShipItOwnSession(sessionId)) return booted;
+
+  const stale = booted?.cpuQuota !== cpuQuota || hostConfig?.CpuShares !== SESSION_CPU_SHARES;
+  if (!stale) return booted;
+  try {
+    // CPU only: lowering a live Memory limit below current usage invites the OOM killer, and the
+    // pids guard never changed.
+    const res = await container.update({
+      CpuQuota: cpuQuota, CpuPeriod: DEFAULT_CPU_PERIOD_US, CpuShares: SESSION_CPU_SHARES,
+    }) as { Warnings?: string[] } | undefined;
+    // The daemon reports a silently-dropped CPU setting as a warning on a 200, not as an error.
+    const warnings = res?.Warnings ?? [];
+    if (warnings.length > 0) {
+      console.warn(
+        `[adopt] session ${sessionId}: daemon warned on the CPU policy update, treating it as `
+          + `not applied: ${warnings.join("; ")}`,
+      );
+      return booted;
+    }
+    console.log(
+      `[adopt] session ${sessionId}: CPU policy updated in place — quota ${booted?.cpuQuota ?? "?"}`
+        + `/${bootedPeriod} → ${cpuQuota}/${DEFAULT_CPU_PERIOD_US}, `
+        + `shares ${hostConfig?.CpuShares || "unset"} → ${SESSION_CPU_SHARES}`,
+    );
+    return booted && { ...booted, cpuQuota };
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    console.warn(`[adopt] session ${sessionId}: CPU policy update failed, keeping booted limits: ${detail}`);
+    return booted;
+  }
 }
 
 function logAdoptedWorkerBuild(
@@ -69,6 +128,10 @@ export async function rediscoverContainers(
         const workerUrl = `http://${networkInfo.IPAddress}:${deps.workerPort}`;
         const workerToken = workerTokenFromContainerEnv(info.Config?.Env);
         setWorkerAuthToken(workerUrl, workerToken);
+        const cpuQuota = resolved.resourceLimits?.cpuQuota ?? deriveSessionCpuSizing().cpuQuota;
+        const bootedLimits = await reconcileAdoptedCpuPolicy(
+          sessionId, container, info.HostConfig, cpuQuota,
+        );
         deps.containers.set(sessionId, {
           id: ci.Id,
           sessionId,
@@ -81,6 +144,7 @@ export async function rediscoverContainers(
           dockerAccess,
           sessionNetworkName: dockerAccess ? `shipit-session-${sessionId.slice(0, 12)}` : undefined,
           resourceLimits: dockerAccess ? resolved.resourceLimits : undefined,
+          bootedLimits,
           // Use actual mounts; workspace configuration may have changed since creation.
           overlayDepDirs: overlayDepDirsFromMounts(sessionId, info.Mounts),
         });
@@ -126,6 +190,10 @@ export async function adoptRunningContainer(
         const workerUrl = `http://${networkInfo.IPAddress}:${deps.workerPort}`;
         const workerToken = workerTokenFromContainerEnv(info.Config?.Env);
         setWorkerAuthToken(workerUrl, workerToken);
+        const cpuQuota = resolved.resourceLimits?.cpuQuota ?? deriveSessionCpuSizing().cpuQuota;
+        const bootedLimits = await reconcileAdoptedCpuPolicy(
+          sessionId, container, info.HostConfig, cpuQuota,
+        );
         deps.containers.set(sessionId, {
           id: ci.Id,
           sessionId,
@@ -138,6 +206,7 @@ export async function adoptRunningContainer(
           dockerAccess,
           sessionNetworkName: dockerAccess ? `shipit-session-${sessionId.slice(0, 12)}` : undefined,
           resourceLimits: dockerAccess ? resolved.resourceLimits : undefined,
+          bootedLimits,
           overlayDepDirs: overlayDepDirsFromMounts(sessionId, info.Mounts),
         });
         logAdoptedWorkerBuild(sessionId, ci.Id, ci.Labels);

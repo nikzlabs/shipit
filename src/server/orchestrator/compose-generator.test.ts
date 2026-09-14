@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { parse as parseYaml } from "yaml";
+import { SESSION_CPU_SHARES } from "./container-config-builder.js";
 import {
   extractContainerPort,
   parseComposeFile,
@@ -1505,6 +1506,21 @@ describe("generateComposeOverride — session-worker UID (#1646)", () => {
     const doc = parseYaml(override) as { services: Record<string, { user?: string }> };
     expect(doc.services.web.user).toBe("1000:1000");
     expect(doc.services.api.user).toBe("1000:1000");
+  });
+
+  it("gives every service the session CPU weight so a sibling cannot outrank the orchestrator", () => {
+    const override = generateComposeOverride(
+      [
+        { name: "web", shipitPreview: "auto" },
+        { name: "docker-socket-proxy", shipitPreview: "manual", trustedOpsProxy: true },
+      ],
+      { ...baseOpts, composeConfig: { file: "docker-compose.yml", dockerSocket: true } },
+    );
+    const doc = parseYaml(override) as { services: Record<string, { cpu_shares?: number }> };
+    expect(doc.services.web.cpu_shares).toBe(SESSION_CPU_SHARES);
+    expect(doc.services["docker-socket-proxy"].cpu_shares).toBe(SESSION_CPU_SHARES);
+    // Docker's default is 1024, which is what the weight has to beat.
+    expect(SESSION_CPU_SHARES).toBeLessThan(1024);
   });
 
   it("keeps the ops docker-socket-proxy image startup user so HAProxy config generation can run", () => {

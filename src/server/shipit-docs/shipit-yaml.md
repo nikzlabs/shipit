@@ -84,8 +84,11 @@ sized automatically from host capacity: a session's ceiling is half the usable
 budget (host RAM minus a 10% orchestrator/OS reserve), clamped to a 4 GiB floor
 and a 48 GiB cap. A Docker memory limit is a ceiling, not a reservation, so idle
 sessions cost nothing and a single heavy session can use a large share of the
-host. CPU is left unthrottled (the host scheduler shares cores under
-contention), and processes carry a fixed fork-bomb guard.
+host. CPU is capped at roughly half the host's cores after an orchestrator
+reserve, so one session cannot claim the whole machine; most tools do not see
+that cap (`os.availableParallelism()` never does, `nproc` only on newer
+coreutils), so give CPU-heavy tools an explicit worker count. Processes carry a
+fixed fork-bomb guard.
 
 The old `agent.memory` / `agent.cpu` / `agent.pids` fields are **removed**. A
 shipit.yaml that still sets them is accepted but the fields are ignored with a

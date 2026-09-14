@@ -9,6 +9,7 @@ import { COMPOSE_OVERRIDE_FILE } from "./session-state-dir.js";
 import { EGRESS_RESOLVER_UID } from "./egress-dns.js";
 import { EGRESS_PROXY_UID } from "./egress-proxy-install.js";
 import { PLUGIN_CONTRACT_ENV_NAMES } from "../shared/plugin-contract.js";
+import { SESSION_CPU_SHARES } from "./container-config-builder.js";
 
 export interface ComposeServiceOrigin {
   kind: "plugin";
@@ -1023,6 +1024,9 @@ export function generateComposeOverride(
       // ShipIt-owned fields must override the plugin definition.
       ...(svc.pluginDefinition ?? {}),
       labels,
+      // A service container is a sibling on the host, not inside the worker's cgroup, so without
+      // this it keeps the default weight and outranks the session it belongs to (docs/229).
+      cpu_shares: SESSION_CPU_SHARES,
       // A second bridge would permit egress before containment is installed.
       networks: opts.containEgress ? "__RESET_NETWORKS__" : ["shipit-session"],
       cap_drop: applyServiceContainment ? ["NET_RAW", "SETUID", "SETGID"] : ["NET_RAW"],

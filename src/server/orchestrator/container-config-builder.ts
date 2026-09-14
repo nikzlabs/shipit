@@ -10,7 +10,20 @@ const BOOT_MIN_MB = 1536;
 const RESERVE_MIN_MB = 2048;
 const RESERVE_FRACTION = 0.1;
 const PIDS_LIMIT = 8192;
-const CPU_PERIOD_US = 100_000;
+/** The CFS period every ShipIt container runs on; a quota is only meaningful against it. */
+export const CPU_PERIOD_US = 100_000;
+const CPU_RESERVE_MIN_CORES = 2;
+const CPU_RESERVE_FRACTION = 0.1;
+const PER_SESSION_CORE_FRACTION = 0.5;
+
+/**
+ * Worker cgroup weight, against the orchestrator's `cpu_shares: 4096` in the deployment compose
+ * files. CFS fairness is per-CPU, so at equal weights busy workers starve the orchestrator's single
+ * main thread down to a fraction of one core and the UI reads as disconnected (docs/229).
+ * cgroup v2 has no "shares": the runtime rescales this into `cpu.weight` by a formula that has
+ * changed across runc releases, so read the resulting weight from the cgroup, never infer it here.
+ */
+export const SESSION_CPU_SHARES = 512;
 
 const BYTES_PER_MB = 1024 * 1024;
 
@@ -29,7 +42,7 @@ export function resolveAgentDockerLimits(workspaceDir: string): AgentDockerLimit
 
   return {
     memoryLimit: sizing.effectiveMb * BYTES_PER_MB,
-    cpuQuota: hostCpuQuota(),
+    cpuQuota: deriveSessionCpuSizing().cpuQuota,
     pidsLimit: PIDS_LIMIT,
     dockerAccess: cfg.compose?.dockerSocket ?? false,
   };
@@ -95,8 +108,34 @@ export function deriveSessionMemorySizing(): SessionMemorySizing {
   };
 }
 
-function hostCpuQuota(): number {
-  return Math.max(1, os.cpus().length) * CPU_PERIOD_US;
+/** Core counts, except `cpuQuota` which is microseconds per 100 ms CFS period. */
+export interface SessionCpuSizing {
+  hostCores: number;
+  reserveCores: number;
+  usableCores: number;
+  perSessionCores: number;
+  cpuQuota: number;
+}
+
+/**
+ * A ceiling on the CPU time ONE session may consume — not a reservation, and not a cap on how many
+ * processes it spawns: enough concurrent sessions still saturate the host. Its job is to stop a
+ * single container holding every core, which is what left the orchestrator unschedulable (docs/229).
+ * `reserveCores` shapes that ceiling; the orchestrator's actual priority comes from the cgroup
+ * weight below, not from subtracting cores here.
+ */
+export function deriveSessionCpuSizing(): SessionCpuSizing {
+  const hostCores = Math.max(1, os.cpus().length);
+  const reserveCores = Math.max(CPU_RESERVE_MIN_CORES, Math.floor(hostCores * CPU_RESERVE_FRACTION));
+  const usableCores = Math.max(1, hostCores - reserveCores);
+  const perSessionCores = Math.max(1, Math.floor(usableCores * PER_SESSION_CORE_FRACTION));
+  return {
+    hostCores,
+    reserveCores,
+    usableCores,
+    perSessionCores,
+    cpuQuota: perSessionCores * CPU_PERIOD_US,
+  };
 }
 
 function hostTotalMemoryMb(): number {

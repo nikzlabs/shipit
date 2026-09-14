@@ -3,7 +3,14 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 
-import { resolveAgentDockerLimits, deriveSessionMemorySizing } from "./session-container.js";
+import { parse as parseYaml } from "yaml";
+
+import {
+  resolveAgentDockerLimits,
+  deriveSessionMemorySizing,
+  deriveSessionCpuSizing,
+  SESSION_CPU_SHARES,
+} from "./session-container.js";
 import { expectInvalidShipitConfig } from "../shared/shipit-config-test-guard.js";
 
 const MIB = 1024 * 1024;
@@ -125,6 +132,63 @@ describe("deriveSessionMemorySizing", () => {
   });
 });
 
+describe("deriveSessionCpuSizing", () => {
+  it("leaves the orchestrator a reserve and halves the rest on a 16-core host", () => {
+    stubHost(96 * GIB, 16);
+    const s = deriveSessionCpuSizing();
+    expect(s.hostCores).toBe(16);
+    expect(s.reserveCores).toBe(2);
+    expect(s.usableCores).toBe(14);
+    expect(s.perSessionCores).toBe(7);
+    expect(s.cpuQuota).toBe(7 * CPU_PERIOD);
+  });
+
+  it("never hands a session the whole host", () => {
+    for (const cores of [1, 2, 4, 8, 16, 32, 64, 128]) {
+      stubHost(96 * GIB, cores);
+      const s = deriveSessionCpuSizing();
+      expect(s.perSessionCores).toBeLessThan(Math.max(2, cores));
+      expect(s.cpuQuota).toBe(s.perSessionCores * CPU_PERIOD);
+    }
+  });
+
+  it("scales the reserve with the host above the 2-core minimum", () => {
+    stubHost(96 * GIB, 64);
+    const s = deriveSessionCpuSizing();
+    expect(s.reserveCores).toBe(6);
+    expect(s.perSessionCores).toBe(29);
+  });
+
+  it("floors at one core on hosts too small to divide", () => {
+    for (const cores of [1, 2, 3, 4]) {
+      stubHost(8 * GIB, cores);
+      expect(deriveSessionCpuSizing().perSessionCores).toBe(1);
+    }
+  });
+});
+
+// The quota bounds one session; only the weight keeps the orchestrator scheduled when many run.
+describe("orchestrator CPU priority in the deployment compose files", () => {
+  // Every compose file that runs the orchestrator beside worker containers. The dogfood
+  // docker-compose.yml is deliberately absent: RUNTIME_MODE=local spawns no worker containers.
+  const COMPOSE_FILES = [
+    "../../../deployment/vps/docker-compose.yml",
+    "../../../docker/local/prod/compose.yml",
+    "../../../docker/local/dev/compose.yml",
+  ];
+
+  it.each(COMPOSE_FILES)("%s outweighs a session by a margin the scheduler can act on", (rel) => {
+    const raw = realReadFileSync(new URL(rel, import.meta.url), "utf-8") as string;
+    const doc = parseYaml(raw) as { services?: Record<string, { cpu_shares?: number }> };
+    const shares = doc.services?.shipit?.cpu_shares;
+    // Runtimes rescale shares into cpu.weight non-linearly, so a hair's-breadth lead (513 vs 512)
+    // can round to the same weight, and a container with NO shares set sits at weight 100 — which
+    // the oldest conversion only reaches at ~2600 shares. 8x clears both under every conversion
+    // we've seen, without pinning the exact 4096.
+    expect(shares).toBeGreaterThanOrEqual(SESSION_CPU_SHARES * 8);
+  });
+});
+
 describe("resolveAgentDockerLimits", () => {
   let tmpDir: string;
 
@@ -139,12 +203,12 @@ describe("resolveAgentDockerLimits", () => {
     if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it("auto-sizes memory and host-core CPU when shipit.yaml is missing", () => {
+  it("auto-sizes memory and sub-host CPU when shipit.yaml is missing", () => {
     stubHost(96 * GIB, 16);
     const dir = setup();
     const limits = resolveAgentDockerLimits(dir);
     expect(limits.memoryLimit).toBe(44237 * MIB);
-    expect(limits.cpuQuota).toBe(16 * CPU_PERIOD);
+    expect(limits.cpuQuota).toBe(7 * CPU_PERIOD);
     expect(limits.pidsLimit).toBe(PIDS_LIMIT);
     expect(limits.dockerAccess).toBe(false);
   });

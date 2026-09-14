@@ -6,7 +6,11 @@ import { EventEmitter } from "node:events";
 import type { FastifyInstance } from "fastify";
 import { buildApp } from "../index.js";
 import { GitManager } from "../../shared/git.js";
-import { deriveSessionMemorySizing } from "../session-container.js";
+import {
+  deriveSessionMemorySizing,
+  deriveSessionCpuSizing,
+  SESSION_CPU_SHARES,
+} from "../session-container.js";
 import { SessionManager } from "../sessions.js";
 import { RepoStore } from "../repo-store.js";
 import {
@@ -631,6 +635,8 @@ describe("standby container resources are auto-sized", () => {
     const expectedMem = deriveSessionMemorySizing().effectiveMb * 1024 * 1024;
     expect(standbyDocker!.hostConfig.Memory).toBe(expectedMem);
     expect(standbyDocker!.hostConfig.PidsLimit).toBe(8192);
-    expect(standbyDocker!.hostConfig.CpuQuota).toBe(Math.max(1, os.cpus().length) * 100_000);
+    expect(standbyDocker!.hostConfig.CpuQuota).toBe(deriveSessionCpuSizing().cpuQuota);
+    expect(standbyDocker!.hostConfig.CpuQuota).toBeLessThan(Math.max(2, os.cpus().length) * 100_000);
+    expect(standbyDocker!.hostConfig.CpuShares).toBe(SESSION_CPU_SHARES);
   }, 25000);
 });

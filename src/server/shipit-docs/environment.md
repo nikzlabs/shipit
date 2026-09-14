@@ -325,7 +325,22 @@ to ShipIt and dies on the next eviction. Move it into compose or
 
 ## Resource limits
 
-Agent containers have default limits (1536 MB memory, 0.5 CPU, 256 PIDs) that
-can be increased via the `agent` section in `shipit.yaml`. See
-[shipit-yaml.md](shipit-yaml.md) for details. Service containers have their
-own resource limits set in `docker-compose.yml`.
+Session containers are sized automatically from host capacity — the repo cannot
+set its own limits, and there is no `shipit.yaml` field for them. Memory is a
+generous ceiling (roughly half the host's usable RAM), PIDs are capped at 8192,
+and CPU is capped at **about half the host's cores after a reserve**, so one
+session running a full test suite cannot claim the whole machine and starve the
+orchestrator.
+
+A CPU quota does not narrow what most tools see, so `nproc` and Node's
+`os.availableParallelism()` can report more cores than the container may
+actually use. A pool sized from that number oversubscribes the quota, which
+costs context switching and memory and can end up slower than a right-sized
+pool. When a test run or build is CPU-heavy, pass an explicit worker count
+(`vitest run --maxWorkers=4`, `make -j4` — bare `make -j` is unlimited, which is
+worse) rather than letting the tool guess.
+
+Service containers declared in `docker-compose.yml` are separate containers, so
+they do **not** draw on the session's CPU budget — they get their own. ShipIt
+gives them a low scheduling weight so they yield to the platform under
+contention; set your own `deploy.resources` limits if a service needs a cap.

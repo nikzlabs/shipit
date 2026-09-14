@@ -7,7 +7,7 @@ import { EventEmitter } from "node:events";
 import type { FastifyInstance } from "fastify";
 import { buildApp } from "../index.js";
 import { GitManager } from "../../shared/git.js";
-import { deriveSessionMemorySizing } from "../session-container.js";
+import { deriveSessionMemorySizing, deriveSessionCpuSizing } from "../session-container.js";
 import { SessionManager } from "../sessions.js";
 import { RepoStore } from "../repo-store.js";
 import { SessionContainerManager, CONTAINER_SESSION_ID_LABEL } from "../session-container.js";
@@ -205,7 +205,7 @@ describe("Integration: warm-pool / claim staleness (W2 + W3)", () => {
     );
     expect(standbyDocker).toBeDefined();
     const expectedMem = deriveSessionMemorySizing().effectiveMb * 1024 * 1024;
-    const expectedCpu = Math.max(1, os.cpus().length) * 100_000;
+    const expectedCpu = deriveSessionCpuSizing().cpuQuota;
     expect(standbyDocker!.hostConfig.Memory).toBe(expectedMem);
     expect(standbyDocker!.hostConfig.PidsLimit).toBe(8192);
 

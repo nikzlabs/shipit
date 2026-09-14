@@ -10,6 +10,7 @@ import { parse as parseYaml } from "yaml";
 import type Docker from "dockerode";
 import { resolveSessionPluginServices } from "./services/plugin-services.js";
 import { ALLOWED_SERVICE_KEYS, parsePluginFragment } from "./plugin-compose.js";
+import { SESSION_CPU_SHARES } from "./container-config-builder.js";
 import { ServiceManager, type ComposeQuery, type ComposeRunner } from "./service-manager.js";
 import {
   COMPOSE_OVERRIDE_FILE,
@@ -225,10 +226,13 @@ function expectBoundaryHolds(
   },
 ): void {
   expect(Object.keys(entry).sort()).toEqual([
-    "cap_drop", "command", "environment", "group_add", "image", "labels", "networks",
+    "cap_drop", "command", "cpu_shares", "environment", "group_add", "image", "labels", "networks",
     ...(expected.contained ? ["restart", "security_opt"] : []),
     "user", "volumes", "working_dir",
   ].sort());
+  // A plugin service is an orchestrator-created host sibling, so it must yield to the platform
+  // under contention rather than run at Docker's default weight (docs/229).
+  expect(entry.cpu_shares).toBe(SESSION_CPU_SHARES);
 
   for (const key of [
     "network_mode", "pid", "ipc", "uts", "userns_mode", "cgroup", "privileged",

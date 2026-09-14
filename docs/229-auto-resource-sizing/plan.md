@@ -37,8 +37,11 @@ Two structural problems follow:
    *simultaneously*. One ceiling, derived once; no live rebalancing as sessions come and go.
 2. **Memory and CPU are not symmetric.** Memory is incompressible — overshoot invokes the OOM killer, so
    it needs a firm derived limit. CPU is compressible — contention slows everyone down, nothing crashes —
-   so the quota is set to the host core count (effectively unlimited for a single session; the kernel
-   scheduler time-shares under contention), never a per-repo knob.
+   so it is derived from host capacity too, never a per-repo knob. But "nothing crashes" holds only for
+   the *sessions*: the orchestrator is one process serving every viewer, and CPU it does not get is a UI
+   that reads as offline. Its protection is therefore a higher cgroup **weight**, not reserved cores —
+   nothing in cgroup CPU reserves capacity for anybody. The per-session quota is a second, weaker guard
+   that stops one container holding the machine. See **CPU** and **CPU weight** below.
 
 ## Design
 
@@ -74,12 +77,85 @@ and the one exception to "never exceed usable": on a host so small that even `us
 session still gets `BOOT_MIN` (it cannot function below it) and the operator is warned that the host is
 below the supported minimum and therefore oversubscribed.
 
-- **CPU:** `cpuQuota` = host core count × the 100 ms CFS period — effectively unlimited for a single
-  session, while still bounding any one container to the host's cores. This keeps `cpuQuota` a plain
-  number through the existing container plumbing (`bootedLimits`, `resourceLimits`, the child-container
+- **CPU:**
+
+  ```
+  reserveCores    = max( 2 , floor( hostCores × 0.10 ) )   // headroom the ceiling is sized around
+  usableCores     = max( 1 , hostCores − reserveCores )
+  perSessionCores = max( 1 , floor( usableCores × 0.5 ) )
+  cpuQuota        = perSessionCores × 100 ms CFS period
+  ```
+
+  | hostCores | 1 | 2 | 4 | 8 | 16 | 32 | 64 | 128 |
+  |---|---|---|---|---|---|---|---|---|
+  | reserve | 2 | 2 | 2 | 2 | 2 | 3 | 6 | 12 |
+  | **per session** | 1 | 1 | 1 | 3 | **7** | 14 | 29 | 58 |
+
+  **`reserveCores` shapes the ceiling; it does not reserve anything.** Principle 1 still holds — a
+  quota is a ceiling, so three sessions at 7 cores each can still collectively saturate a 16-core
+  host. What the subtraction buys is that *no single* container can, which is the failure mode that
+  left the orchestrator unschedulable. The orchestrator's actual protection is the weight below.
+  The one-core floor overrides the reserve on 1–2-core hosts by necessity; on a 4-core host a single
+  session drops from 4 usable cores to 1, which is the intended trade.
+
+  `cpuQuota` stays a plain number through the existing container plumbing (`bootedLimits`, `resourceLimits`, the child-container
   sanitizer, `buildContainerConfig`, the `HostConfig` write) rather than threading an optional
-  `cpuQuota?: undefined` through all of it just to omit the field. Cores are scheduler-shared; an
-  over-busy session slows itself, not the host.
+  `cpuQuota?: undefined` through all of it just to omit the field.
+
+  **Why not the whole host (the original design).** `cpuQuota` = host core count let a single session
+  hold every core. That is fine for *one* session and wrong for several: a CPU quota does not narrow
+  what a process sees, so every worker still reported all 16 cores (Node's
+  `os.availableParallelism()`, `nproc` on the coreutils we ship, `sched_getaffinity` generally) and
+  every tool that sizes a pool from it — Vitest first among them — spawned a 16-wide pool. Four
+  sessions running test suites produced ~39 vitest workers plus tsc and headless Chromium, load
+  average 75 on 16 cores, and `/proc/pressure/cpu` "some" at ~85%. Halving the post-reserve budget
+  bounds the CPU time each of those pools can consume. It does **not** stop them being spawned, and
+  on that four-worker peak contention alone already held each worker near its new ceiling — so the
+  quota is the guard against one container monopolising an otherwise-quiet host, and the weight
+  below is what actually fixed the incident.
+
+- **CPU weight.** The quota bounds one container; the *weight* decides who runs when several are
+  runnable at once. Every container defaulted to `cpu.weight = 100` — the orchestrator included — and
+  the orchestrator's single Node main thread was sampled at 10–27% of one core while permanently in
+  state `R`. (CFS group scheduling does not pit that thread against each of the ~39 worker threads
+  individually — a group's weight is distributed across its per-CPU runqueues by group load — but at
+  equal weights the orchestrator's cgroup had no more claim on a CPU than any test runner's.)
+  Measured against a starved orchestrator, a static `GET /` took 12–14 s to first byte and WS
+  upgrades 5–10 s (two hit the 15 s timeout), so the client's 1.5 s `DISCONNECT_DELAY_MS`
+  (`ConnectionBanner.tsx`) showed "Reconnecting to server" on every session switch. Two halves fix it:
+  the orchestrator service sets `cpu_shares: 4096` in the deployment compose files, and session
+  containers are created with `CpuShares: 512` (`SESSION_CPU_SHARES`) — a ratio that holds even if a
+  session's quota is later raised.
+
+  **Three kinds of container are siblings of the orchestrator, not children of a worker, so each
+  needs the weight written explicitly**: the session worker itself; a docker-access session's child
+  containers, clamped by the child-container sanitizer (`docker-proxy-sanitize.ts`); and **every
+  Compose service** — `ServiceManager`/`ComposeCli` run `docker compose` from the *orchestrator*
+  against the host daemon, so a repo's dev server is a host-level sibling and not inside the worker's
+  cgroup. `generateComposeOverride` writes `cpu_shares` into the ShipIt-owned override block for that
+  reason. Missing any one of them leaves a CPU-heavy container outranking the session it belongs to.
+
+  **Read the weights from the kernel, not from the shares.** cgroup v2 has no "shares" — the
+  container runtime rescales the Docker-v1 number into `cpu.weight`, and *the formula has changed
+  across runc releases*, so 4096 and 512 do not map to fixed values. What is stable is the ordering
+  and the rough ratio (single-digit multiple), and that an **unset** `CpuShares` means the cgroup
+  default `cpu.weight = 100` — which is what every ShipIt container had, orchestrator included, and
+  is how the starvation happened. Confirm a deployment by reading `cpu.weight` in the cgroups, e.g.
+  `docker exec <c> cat /sys/fs/cgroup/cpu.weight`; do not infer it from the compose file.
+
+  Left at the default on purpose: ShipIt's own per-session sidecars (egress proxy, resolver), which
+  are near-idle by construction.
+
+  The weight is deliberately *not* a CPU quota on the orchestrator (compose `cpus:`): the
+  orchestrator is idle most of the time, and a ceiling it cannot exceed would cap the burst it needs
+  precisely when many viewers reconnect at once. A weight costs nothing while the host is quiet and
+  only decides the order under contention.
+
+  **Rollout.** A session container survives an orchestrator deploy, so it would otherwise keep the
+  policy it was created under — which on the incident host is the whole-host quota and the default
+  weight. cgroup CPU limits are writable live, so adoption reconciles them
+  (`reconcileAdoptedCpuPolicy` in `container-discovery.ts`) instead of waiting for the container to
+  cycle; it also populates `bootedLimits`, which adoption previously left unset.
 - **PIDs:** fixed 8192 fork-bomb guard. A safety rail, not a capacity-derived budget.
 
 `reserve` is the orchestrator + OS working set — not reclaimable slack. It is never shaved to fit more
@@ -158,8 +234,21 @@ container; for the VM deployment it resolves straight to `os.totalmem()`.
 
 ## Key files
 
-- `src/server/orchestrator/container-config-builder.ts` — auto-derivation, env overrides, host-capacity
-  reader. Replaces `hostMemoryCapMb` (75%-of-host single-session cap) and the fixed-default flow.
+- `src/server/orchestrator/container-config-builder.ts` — auto-derivation (`deriveSessionMemorySizing`,
+  `deriveSessionCpuSizing`), `SESSION_CPU_SHARES`, env overrides, host-capacity reader. Replaces
+  `hostMemoryCapMb` (75%-of-host single-session cap) and the fixed-default flow.
+- `src/server/orchestrator/container-lifecycle.ts` — writes `CpuQuota` / `CpuShares` into the worker
+  `HostConfig`.
+- `src/server/orchestrator/docker-proxy-sanitize.ts` — clamps a docker-access session's sibling
+  containers to the same `CpuShares`.
+- `src/server/orchestrator/compose-generator.ts` — writes `cpu_shares` into the generated Compose
+  override, since services are orchestrator-created host siblings.
+- `src/server/orchestrator/container-discovery.ts` — `reconcileAdoptedCpuPolicy`, the live update
+  that applies the policy to containers surviving a deploy, plus `bootedLimits` on adoption.
+- `deployment/vps/docker-compose.yml`, `docker/local/prod/compose.yml`, `docker/local/dev/compose.yml`
+  — `cpu_shares: 4096` on the orchestrator service. Any new compose file that runs the orchestrator
+  beside workers needs it too, and `resolve-agent-docker-limits.test.ts` asserts the list; the dogfood
+  `docker-compose.yml` is exempt (`RUNTIME_MODE=local` spawns no worker containers).
 - `src/server/shared/shipit-config.ts` — remove `agent.memory` / `agent.cpu` / `agent.pids` from
   `AgentConfig` and the schema; route them through the warn-and-ignore deprecation path. Keep
   `AGENT_DEFAULTS.memory` only as `BOOT_MIN`.

@@ -2,6 +2,7 @@ import type { SessionInfo } from "./docker-proxy-helpers.js";
 import { PARENT_SESSION_LABEL } from "./docker-proxy-helpers.js";
 import { isPathUnderWorkspace } from "./docker-proxy-auth.js";
 import { volumeBelongsToSession, networkBelongsToSession } from "./docker-proxy-auth.js";
+import { SESSION_CPU_SHARES } from "./container-config-builder.js";
 
 const BUILTIN_NETWORK_MODES = new Set(["", "default", "bridge", "host", "none"]);
 
@@ -166,6 +167,12 @@ export async function sanitizeContainerCreate(
     const currentPeriod = hostConfig.CpuPeriod as number | undefined;
     if (!currentPeriod || currentPeriod <= 0 || currentPeriod > 100_000) {
       hostConfig.CpuPeriod = 100_000;
+    }
+    // A sibling of a docker-access session is scheduled against the orchestrator, so it inherits
+    // the worker's low cgroup weight rather than Docker's default 1024.
+    const currentShares = hostConfig.CpuShares as number | undefined;
+    if (!currentShares || currentShares <= 0 || currentShares > SESSION_CPU_SHARES) {
+      hostConfig.CpuShares = SESSION_CPU_SHARES;
     }
     const currentPids = hostConfig.PidsLimit as number | undefined;
     if (!currentPids || currentPids <= 0 || currentPids > limits.pidsLimit) {
