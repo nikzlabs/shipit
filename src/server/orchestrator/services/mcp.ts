@@ -287,6 +287,34 @@ export function updateMcpServer(
   return { config, clearedSecretKeys: cleared };
 }
 
+/**
+ * One field of a stored server, and nothing else of it. Deliberately not
+ * {@link updateMcpServer} with the stored config: that reconciles the stored
+ * secrets against the config it is handed, so a secret the config does not
+ * `$secret:`-reference — which {@link addMcpServer} accepts — is cleared by a
+ * caller that meant to change one boolean (docs/299-agent-settings-access,
+ * plan.md → Collections are patched, never replaced).
+ */
+export function setMcpServerEnabled(
+  credentialStore: CredentialStore,
+  id: string,
+  enabled: boolean,
+): McpServerConfig {
+  const existing = credentialStore.getMcpServer(id);
+  if (!existing) {
+    throw new ServiceError(404, `MCP server "${id}" not found`);
+  }
+  if (enabled && countEnabled(credentialStore, id) + 1 > MAX_ENABLED_MCP_SERVERS) {
+    throw new ServiceError(
+      400,
+      `Cannot enable more than ${MAX_ENABLED_MCP_SERVERS} MCP servers at once`,
+    );
+  }
+  const config: McpServerConfig = { ...existing, enabled };
+  credentialStore.setMcpServer(id, config);
+  return config;
+}
+
 export function removeMcpServer(
   credentialStore: CredentialStore,
   id: string,

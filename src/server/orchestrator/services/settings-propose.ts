@@ -12,7 +12,7 @@ import type { SettingsProposalStore } from "../settings-proposal-store.js";
 import { settingBaseline } from "./settings-baseline.js";
 import type { SettingBaseline, SettingBaselineDeps } from "./settings-baseline.js";
 import { withConflictDomains } from "./settings-conflict-domain.js";
-import { findOperation, operationsFor } from "./settings-operations.js";
+import { echoSupplied, findOperation, operationsFor } from "./settings-operations.js";
 import type {
   SettingsOperation,
   SettingsOperationDeps,
@@ -143,7 +143,7 @@ function resolveTarget(
   if (!declaration) {
     throw new ServiceError(
       404,
-      `No ShipIt setting is called "${input.key}". List them with \`shipit settings list\`.`,
+      `No ShipIt setting is called "${echoSupplied(input.key)}". List them with \`shipit settings list\`.`,
     );
   }
   if (declaration.propose.kind === "no") {
@@ -279,7 +279,7 @@ function membershipChange(
   // Both refusals say the same thing — the entry is already in the state this
   // operation would move it to — so both quote `to` and never `from`.
   if (present === (kind === "add")) {
-    refuse(`"${target.item ?? ""}" is already ${wording.to}, so there is nothing to change.`);
+    refuse(`"${echoSupplied(target.item ?? "")}" is already ${wording.to}, so there is nothing to change.`);
   }
   return {
     from: wording.from,
@@ -297,7 +297,7 @@ function valueChange(
 ): ProposedChange {
   if (target.item && current.item === undefined) {
     refuse(
-      `${declaration.key} has no instance called "${target.item}". It exists for: `
+      `${declaration.key} has no instance called "${echoSupplied(target.item)}". It exists for: `
         + `${knownAddresses(current.entry)}.`,
     );
   }
