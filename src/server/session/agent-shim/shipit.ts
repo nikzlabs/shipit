@@ -50,7 +50,11 @@ import {
   handleServiceStop,
 } from "./shipit-service.js";
 import { handleReleasePlan, handleReleasePrepare } from "./shipit-release.js";
-import { handleSettingsGet, handleSettingsList } from "./shipit-settings.js";
+import {
+  handleSettingsGet,
+  handleSettingsList,
+  handleSettingsPropose,
+} from "./shipit-settings.js";
 import {
   handleSourceBlame,
   handleSourceCat,
@@ -298,9 +302,11 @@ Sub-agents (docs/144 — spawn another agent for a one-shot sub-task):
   1 the lookup failed (bad run id, unreachable) · 2 bad flags. Branch on those,
   never on grepping the output for "pending" — a finished review can say it.
 
-ShipIt's own settings (docs/299 — read what the user configured):
-  shipit settings list   [--tab NAME] [--json]
-  shipit settings get    <key> [--json]
+ShipIt's own settings (docs/299 — read what the user configured, propose a change):
+  shipit settings list    [--tab NAME] [--json]
+  shipit settings get     <key> [--json]
+  shipit settings propose <key>=<value> [--item ADDRESS] --reason "..."
+  shipit settings propose <key> --add|--remove <entry> --reason "..."
 
   Answer "what is this setting set to?" yourself instead of asking the user to
   read a value out of the Settings dialog. 'list' is the index — every setting
@@ -318,6 +324,16 @@ ShipIt's own settings (docs/299 — read what the user configured):
   A value can be saved and still not in effect — a container that started under
   a different network mode keeps it until restart. Both commands say so where
   it applies, so don't promise the user a restart will fix something it cannot.
+
+  'propose' posts a card naming ONE change: the setting, what it is now, what it
+  would become, and your --reason. Nothing moves until the user clicks Apply, and
+  the click is the whole gate — there is no way to change a setting yourself.
+  It returns immediately: never wait for the card, never poll, and never post the
+  same one twice. 'get' carries what became of the last proposal for a setting —
+  applied, dismissed, or still in front of the user — so read before you propose.
+
+  Post the card INSTEAD of telling the user which control to go and find. Keep
+  the prose to what the card does not say.
 
 Ops-only (read-only ShipIt source, docs/162):
   shipit source status   [--json]
@@ -582,6 +598,7 @@ const SETTINGS_HANDLERS: Record<
 > = {
   list: handleSettingsList,
   get: handleSettingsGet,
+  propose: handleSettingsPropose,
 };
 
 const SOURCE_HANDLERS: Record<
@@ -826,8 +843,9 @@ async function dispatchSettings(args: string[], deps: RunDeps, io: ShimIO): Prom
     fail(
       io,
       `${SHIM_NAME} does not support \`shipit settings ${sub}\` — a ShipIt setting is the user's to change.\n`
-        + "Read it with `shipit settings get <key>`, then tell the user which setting it is, what it is\n"
-        + "set to, and what it has to become. See /shipit-docs/settings.md.",
+        + "Read it with `shipit settings get <key>`, then post a card with `shipit settings propose\n"
+        + "<key>=<value> --reason \"...\"`. The user's click on that card is what changes the setting.\n"
+        + "See /shipit-docs/settings.md.",
     );
   }
   const handler = SETTINGS_HANDLERS[sub];

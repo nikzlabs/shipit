@@ -508,6 +508,9 @@ const GOLDEN_CONTAINER_ROUTES = [
   "GET /api/sessions/:id/agent/params",
   "GET /api/sessions/:id/settings",
   "GET /api/sessions/:id/settings/detail",
+  // The agent's only write path to a setting, and it writes no setting: it posts
+  // the card the user clicks (docs/299-agent-settings-access req 4).
+  "POST /api/sessions/:id/settings/propose",
   "POST /api/sessions/:parentId/spawn",
   "GET /api/sessions/:parentId/children",
   "GET /api/sessions/:parentId/children/:childId",

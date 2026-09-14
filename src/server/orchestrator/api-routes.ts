@@ -61,6 +61,7 @@ import { registerReviewRoutes } from "./api-routes-reviews.js";
 import { registerUpdateRoutes } from "./api-routes-updates.js";
 import { registerAgentRoutes } from "./api-routes-agent.js";
 import { registerAgentSettingsRoutes } from "./api-routes-settings-agent.js";
+import type { SettingsProposalStore } from "./settings-proposal-store.js";
 import { registerLimitsRoutes } from "./api-routes-limits.js";
 import { registerMarketplaceRoutes } from "./api-routes-marketplace.js";
 import { registerVoiceRoutes } from "./api-routes-voice.js";
@@ -146,6 +147,8 @@ export interface ApiDeps {
   releaseStatusPoller?: ReleaseStatusPoller;
   mergeWatchManager?: MergeWatchManager;
   databaseManager?: DatabaseManager;
+  /** The private half of a settings proposal; `propose` writes its row. */
+  settingsProposals?: SettingsProposalStore;
   secretStore?: SecretStore;
   egressAllowlistStore?: EgressAllowlistStore;
   egressEnforcementActive?: boolean;

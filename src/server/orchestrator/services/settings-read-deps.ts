@@ -1,5 +1,6 @@
 import type { AgentRegistry } from "../../shared/agent-registry.js";
-import type { EgressEnforcementStatus } from "../../shared/types.js";
+import type { EgressEnforcementStatus, SettingsProposalTarget } from "../../shared/types.js";
+import type { SettingsProposalRow } from "../settings-proposal-store.js";
 import type { CredentialStore } from "../credential-store.js";
 import type { EgressAllowlistStore } from "../egress-allowlist-store.js";
 import type { ProviderAccountManager } from "../provider-account-manager.js";
@@ -35,4 +36,13 @@ export interface SettingsReadDeps {
   } | undefined;
   /** Injected by tests; the release channel otherwise comes off the host checkout. */
   readReleaseChannel?: (() => Promise<string>) | undefined;
+  /**
+   * The last proposal about a setting, which `get` reports so the agent knows
+   * what the user already did about it (docs/299 req 8). Optional: an install
+   * without the store answers every setting, minus that one fact.
+   */
+  proposals?: {
+    latestForTarget(target: SettingsProposalTarget): SettingsProposalRow | null;
+    latestForKey(key: string, repoUrl?: string): SettingsProposalRow | null;
+  } | undefined;
 }

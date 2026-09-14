@@ -56,10 +56,12 @@ function post(over: Partial<Parameters<typeof postSettingsProposal>[2]> = {}) {
   return postSettingsProposal(deps(), attached ?? runner, {
     sessionId: SESSION,
     target: { key: KEY },
+    operation: "set",
     from: "off",
     to: "on",
     fromValue: false,
     proposedValue: true,
+    baseline: { kind: "revision", revision: "r0" },
     ...over,
   });
 }
@@ -116,12 +118,13 @@ describe("postSettingsProposal", () => {
     expect(row).toMatchObject({
       sessionId: SESSION,
       target: { key: "advanced.enableSubAgents" },
+      operation: "set",
       phase: "pending",
       from: false,
       proposed: true,
+      // Server-only: the revision the apply compares against, never on the card.
+      baseline: { kind: "revision", revision: "r0" },
     });
-    // The baseline is the apply layer's to write; nothing here invents one.
-    expect(row?.baseline).toBeUndefined();
   });
 
   it("puts the card in chat history in the same call, with no tool-result boundary", () => {

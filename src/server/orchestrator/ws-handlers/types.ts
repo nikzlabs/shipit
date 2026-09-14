@@ -15,6 +15,10 @@ import type { ProviderAccountManager } from "../provider-account-manager.js";
 import type { AgentRegistry } from "../../shared/agent-registry.js";
 import type { RepoStore } from "../repo-store.js";
 import type { EgressAllowlistStore } from "../egress-allowlist-store.js";
+import type { SettingsProposalStore } from "../settings-proposal-store.js";
+import type { SecretStore } from "../secret-store.js";
+import type { ServiceManager } from "../service-manager.js";
+import type { AgentMergeClaimStore } from "../agent-merge-claims.js";
 import type { SessionContainerManager } from "../session-container.js";
 import type { PrStatusPoller } from "../pr-status-poller.js";
 import type { ReleaseStatusPoller } from "../release-status-poller.js";
@@ -96,6 +100,14 @@ export interface AppCtx {
   warmSessionForRepo: (repoUrl: string) => Promise<void>;
   egressAllowlistStore?: EgressAllowlistStore;
   containerManager?: SessionContainerManager;
+
+  // The settings proposal card is resolved over this connection, and its apply
+  // is the whole act each settings route does — so the stores those writes
+  // reach have to be here too (docs/299-agent-settings-access req 4).
+  settingsProposals?: SettingsProposalStore;
+  secretStore?: SecretStore;
+  serviceManagers?: Map<string, ServiceManager>;
+  agentMergeClaims?: AgentMergeClaimStore;
 
   generateText: GenerateText;
   getSharedRepoDir: (repoUrl: string) => string;

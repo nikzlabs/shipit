@@ -30,6 +30,7 @@ export interface RowHandlers {
   onDismissBugReport?: (cardId: string) => void;
   onResolvePermission?: (requestId: string, behavior: "allow" | "deny", remember?: boolean) => void;
   onEgressDecision?: (cardId: string, host: string, action: "allow-once" | "add" | "deny") => void;
+  onSettingsProposalDecision?: (cardId: string, action: "apply" | "dismiss") => void;
   onUndoIssueWrite?: (cardId: string) => void;
   onStartRepoSession?: (cardId: string) => Promise<void>;
   onOpenIssue?: (ref: {
@@ -57,6 +58,7 @@ const CALLBACK_KEYS = [
   "onSubmitBugReport",
   "onResolvePermission",
   "onEgressDecision",
+  "onSettingsProposalDecision",
   "onUndoIssueWrite",
   "onStartRepoSession",
   "onOpenIssue",

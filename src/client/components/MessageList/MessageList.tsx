@@ -76,6 +76,7 @@ export function MessageList({
   onDismissBugReport,
   onResolvePermission,
   onEgressDecision,
+  onSettingsProposalDecision,
   onUndoIssueWrite,
   onStartRepoSession,
   onOpenIssue,
@@ -102,6 +103,7 @@ export function MessageList({
   onResolvePermission?: (requestId: string, behavior: "allow" | "deny", remember?: boolean) => void;
 
   onEgressDecision?: (cardId: string, host: string, action: "allow-once" | "add" | "deny") => void;
+  onSettingsProposalDecision?: (cardId: string, action: "apply" | "dismiss") => void;
 
   onUndoIssueWrite?: (cardId: string) => void;
   onStartRepoSession?: (cardId: string) => Promise<void>;
@@ -274,6 +276,7 @@ export function MessageList({
     onDismissBugReport,
     onResolvePermission,
     onEgressDecision,
+    onSettingsProposalDecision,
     onUndoIssueWrite,
     onStartRepoSession,
     onOpenIssue,

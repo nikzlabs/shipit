@@ -109,6 +109,12 @@ export interface SettingsProposalTarget {
 }
 
 /**
+ * What a card proposes doing. A value replacement is the common case; a list
+ * entry is joined or left instead, which the value alone cannot say.
+ */
+export type SettingsProposalOperation = "set" | "add" | "remove";
+
+/**
  * `pending` → `dismissed`, or `pending` → `applying` → one terminal answer.
  *
  * The terminal set is deliberately wider than applied/failed: three shipped

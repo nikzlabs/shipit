@@ -12,8 +12,7 @@ import type { SettingBaselineDeps } from "./settings-baseline.js";
 
 /**
  * The baseline an apply compares against (docs/299-agent-settings-access,
- * plan.md → Applying). Nothing consumes it until the proposal card, so it is
- * tested directly here.
+ * plan.md → Applying), taken when a card is written and again before its write.
  */
 
 const dirs: string[] = [];
@@ -163,5 +162,33 @@ describe("settingBaseline", () => {
       kind: "unknown",
       reason: expect.stringContaining("browser"),
     });
+  });
+});
+
+describe("a setting stored per (service, billing mode)", () => {
+  it("has a baseline of its own, so a card about it is not refused for want of one", async () => {
+    // Without a reader these answer `unknown`, and propose refuses every card
+    // for a setting it cannot tell has moved — the operation exists and nothing
+    // can reach it.
+    const store = new CredentialStore(tmpDir());
+    const d = deps(store);
+    const target = { key: "services.failoverCutoff.session", item: "anthropic:sub" };
+
+    const before = await settingBaseline(d, target);
+    expect(before.kind).toBe("revision");
+
+    store.setFailoverCutoffs("anthropic", "sub", { session: 50 });
+    const after = await settingBaseline(d, target);
+
+    expect(after.kind).toBe("revision");
+    expect(baselineMatches(before, after)).toBe(false);
+  });
+
+  it("says so when the address is not a service and a billing mode", async () => {
+    const baseline = await settingBaseline(deps(new CredentialStore(tmpDir())), {
+      key: "services.accountSelectionMode",
+      item: "anthropic",
+    });
+    expect(baseline).toMatchObject({ kind: "unknown" });
   });
 });

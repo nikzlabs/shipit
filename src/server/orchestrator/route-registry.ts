@@ -38,6 +38,9 @@ import * as rollbackHandlers from "./ws-handlers/rollback-handlers.js";
 import * as sendMessageHandlers from "./ws-handlers/send-message.js";
 import * as bugReportHandlers from "./ws-handlers/bug-report-handlers.js";
 import * as egressHandlers from "./ws-handlers/egress-handlers.js";
+import * as settingsProposalHandlers from "./ws-handlers/settings-proposal-handlers.js";
+import { SettingsProposalStore } from "./settings-proposal-store.js";
+import { recoverInterruptedProposals } from "./services/settings-decision.js";
 import { egressEnforcementActive, egressEnforcementStatus } from "./egress-firewall-install.js";
 import { reconcileSessionEgress } from "./services/reconcile-session-egress.js";
 import { egressDnsEnabled } from "./egress-dns-install.js";
@@ -200,6 +203,16 @@ export async function registerRoutes(
   const { agentMergeClaims, agentMergeExecutor } = rt;
   const wsOriginPolicy = readOriginPolicyFromEnv();
 
+  const settingsProposals = new SettingsProposalStore(databaseManager);
+  // Before any route exists, so no decision can reach a card that is actionable
+  // and mid-apply at once. An interrupted apply is never retried — ShipIt cannot
+  // know which side of the write it stopped on (docs/299 → Applying).
+  recoverInterruptedProposals({
+    proposals: settingsProposals,
+    chatHistoryManager,
+    getRunnerRegistry: () => runnerRegistry,
+  });
+
   await registerApiRoutes(app, {
     sessionManager,
     cancelAutoPush: (sessionId: string) => autoPushScheduler.cancel(sessionId),
@@ -251,6 +264,7 @@ export async function registerRoutes(
     releaseStatusPoller,
     mergeWatchManager,
     databaseManager,
+    settingsProposals,
     secretStore,
     reviewStore,
     egressAllowlistStore,
@@ -960,6 +974,7 @@ export async function registerRoutes(
         ...(deps.trackerFetchImpl !== undefined ? { trackerFetchImpl: deps.trackerFetchImpl } : {}),
         repoStore, warmSessionForRepo, generateText,
         egressAllowlistStore,
+        settingsProposals, secretStore, serviceManagers, agentMergeClaims,
         ...(containerManager ? { containerManager } : {}),
         getSharedRepoDir: getBareCacheDir, checkGitIdentity, readSystemPrompt, scheduleAutoPush,
         prStatusPoller,
@@ -1313,6 +1328,8 @@ Read /shipit-docs/compose.md for full details on the compose model.`,
           case "submit_bug_report": return bugReportHandlers.handleSubmitBugReport(ctx, msg);
           case "dismiss_bug_report": { bugReportHandlers.handleDismissBugReport(ctx, msg); return; }
           case "egress_decision": return egressHandlers.handleEgressDecision(ctx, msg);
+          case "settings_proposal_decision":
+            return settingsProposalHandlers.handleSettingsProposalDecision(ctx, msg);
           case "resolve_permission": { permissionHandlers.handleResolvePermission(ctx, msg); return; }
           case "undo_issue_write": return issueWriteHandlers.handleUndoIssueWrite(ctx, msg);
         }
