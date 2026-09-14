@@ -402,8 +402,11 @@ What shipped, and where it diverged from the sketch above:
 - **Branch-op shim.** Turned off via a `SHIPIT_SANDBOX=1` CLI env the orchestrator
   sets for sandbox sessions (a `sandbox` flag threaded
   buildAgentRunParams → Claude run-params-prep → adapter → `ClaudeProcess` spawn
-  env, mirroring `SHIPIT_AUTO_CREATE_PR`); `block-branch-ops.mjs` self-gates off on
-  it. Sandbox also forces `autoCreatePr = false`.
+  env, mirroring `SHIPIT_AUTO_CREATE_PR`); `block-branch-ops.mjs` self-gates its
+  **git** checks off on it. That is the whole of the exemption: it is about
+  branch ownership, so the same hook's refusal of a wait loop that matches its
+  own command line still applies in a sandbox, which hangs like any other
+  session. Sandbox also forces `autoCreatePr = false`.
 - **UI.** Teal `--color-sandbox` token — bright teal-400 in `:root` (the dark-theme
   value); the six light themes override the trio to a darker teal-700 for text
   contrast on light tints, mirroring `--color-warning`'s per-theme darkening;

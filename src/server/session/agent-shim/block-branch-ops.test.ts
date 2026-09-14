@@ -239,4 +239,110 @@ describe("block-branch-ops.mjs", () => {
       ).toBe(0);
     });
   });
+
+  /**
+   * A wait loop whose `pgrep -f` pattern is text in the command it lives in.
+   * The Bash tool runs a command as `bash -c '<the whole command>'`, so the
+   * pattern is part of the command line the loop is searching — the condition
+   * never changes, and the loop either never exits or never waits.
+   */
+  describe("refuses a wait loop that matches its own command line", () => {
+    const blocked = [
+      // The incident, verbatim.
+      'until ! pgrep -f "vitest run src/server/orchestrator/services/" >/dev/null 2>&1; do sleep 3; done; tail -6 /tmp/out.log',
+      'while pgrep -f "npm run build" > /dev/null; do sleep 2; done',
+      "until ! pgrep -af 'my-job'; do sleep 1; done",
+      'until ! pgrep -u root -f "my-job"; do sleep 1; done',
+      'until ! pgrep --full "my-job"; do sleep 1; done',
+      // `pkill -f` never signals itself, but it does signal the shell running it.
+      'until ! pkill -f "my-job"; do sleep 1; done',
+      "until ! /usr/bin/pgrep -f my-job; do sleep 1; done",
+      "(until ! pgrep -f my-job; do sleep 1; done) && echo ok",
+      'echo "x"; until ! pgrep -f my-job; do sleep 1; done',
+      // Bounding the wait does not make it able to terminate — and this is the
+      // shape the hook's own advice recommends, so missing it would let the
+      // guard bless a watcher that still hangs.
+      `timeout 600 bash -c 'until ! pgrep -f "my-job"; do sleep 1; done'`,
+    ];
+    for (const command of blocked) {
+      it(`blocks: ${command.slice(0, 60)}`, () => {
+        const r = runHook(bash(command));
+        expect(r.status).toBe(2);
+        expect(r.stderr).toContain("Blocked:");
+        expect(r.stderr).toContain("matches ITSELF");
+      });
+    }
+
+    it("keeps reading after a pattern it cannot parse, rather than stopping there", () => {
+      // Two loops: the first pattern is not a regex this runtime reads, the
+      // second self-matches. Giving up at the first would let the second hang.
+      const r = runHook(
+        bash('until ! pgrep -f "bad[" ; do sleep 1; done; until ! pgrep -f "my-job"; do sleep 1; done'),
+      );
+      expect(r.status).toBe(2);
+      expect(r.stderr).toContain("`my-job`");
+    });
+
+    it("names the pattern and the ways out, so the refusal is actionable", () => {
+      const r = runHook(bash('until ! pgrep -f "my-job"; do sleep 1; done'));
+      expect(r.stderr).toContain("`my-job`");
+      expect(r.stderr).toContain("background mode notifies you");
+      expect(r.stderr).toContain("Wait on the artifact");
+      expect(r.stderr).toContain("[v]itest");
+    });
+
+    it("applies to a sandbox session, whose branch exemption is not about this", () => {
+      // docs/211 exempts a sandbox because it owns its branch. A loop that
+      // cannot terminate hangs a sandbox session exactly as it hangs any other.
+      const loop = 'until ! pgrep -f "my-job"; do sleep 1; done';
+      expect(runHook(bash(loop), { SHIPIT_SANDBOX: "1" }).status).toBe(2);
+      expect(runHook(bash("git checkout -b feature/foo"), { SHIPIT_SANDBOX: "1" }).status).toBe(0);
+    });
+  });
+
+  describe("leaves alone what it cannot call broken", () => {
+    const allowed = [
+      // The fix the refusal recommends must not itself be refused: the pattern
+      // still matches the target, and the literal here no longer matches it.
+      'until ! pgrep -f "[v]itest run src/server/orchestrator/services/"; do sleep 3; done',
+      // Measured against the real pgrep: an alternation group does not match
+      // its own literal, so `(run|test)` here looks for `npm run` / `npm test`,
+      // neither of which is in this command. Not a self-match, not refused.
+      'until ! pgrep -f "npm (run|test)"; do sleep 1; done',
+      // Nothing literal to match: the pattern is not known until it runs.
+      'PAT=vitest; until ! pgrep -f "$PAT"; do sleep 1; done',
+      // Listing processes to read them is not a loop, and self-matching there
+      // costs one extra line of output.
+      'pgrep -af "vitest|tsc --noEmit|eslint"',
+      // The shape the refusal recommends instead.
+      "until grep -qE '^(PASS|FAIL)' /tmp/out.log; do sleep 5; done",
+      // Without -f, pgrep matches the program name and never a command line.
+      'until ! pgrep -x "sleep"; do sleep 1; done',
+      "until [ -f /tmp/done ]; do sleep 1; done",
+      "npm test",
+      // Shapes this guard cannot read, where a guess would refuse correct work:
+      // an option it does not know leaves its value looking like a pattern,
+      "until ! pgrep --future-flag val -f my-job; do sleep 1; done",
+      // quoting that never closes,
+      'until ! pgrep -f "my-job; do sleep 1; done',
+      // and a pattern the runtime does not read as a regex.
+      'until ! pgrep -f "my-job[" ; do sleep 1; done',
+    ];
+    for (const command of allowed) {
+      it(`allows: ${command.slice(0, 60)}`, () => {
+        const r = runHook(bash(command));
+        expect(r.status).toBe(0);
+        expect(r.stderr).toBe("");
+      });
+    }
+
+    it("does not scan a command too long to scan safely", () => {
+      // A pattern is the agent's own text, not anything hostile, but a
+      // pathological one over a very long command is still a way to stall the
+      // hook. Past the limit it declines to judge rather than spending there.
+      const padding = "# ".repeat(11_000);
+      const r = runHook(bash(`${padding}\nuntil ! pgrep -f "my-job"; do sleep 1; done`));
+      expect(r.status).toBe(0);
+    });
+  });
 });
