@@ -74,7 +74,7 @@ the reason, rather than coming back with a number it invented:
 
 | What the read says | What it means |
 |---|---|
-| `configured` / `not configured` | Credential material — an API key, a token, a webhook secret. You learn whether it is set, never the value. |
+| `configured` / `not configured` | Credential material — an API key, a token, a webhook secret. You learn whether it is set, never the value. For a bag of them (an MCP server's environment or headers) `configured` means **all** of them are set: one missing value stops the server, and the note says how many are missing. |
 | `unreadable (browser_local)` | The value lives in the user's browser, not on ShipIt's server. |
 | `unreadable (no_repository)` | A per-repository setting, read from a session that binds no repository. |
 | `unreadable (read_failed)` | ShipIt tried and has no value to report: a store this install does not have, a repository it has no record of, a read that failed. The note says which. |

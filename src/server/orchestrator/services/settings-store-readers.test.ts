@@ -195,6 +195,46 @@ describe("reviewer slots", () => {
     expect((await itemDisplays("reviewers[].reasoningEffort")).first).toBe("high");
   });
 
+  it("says a slot whose pin cannot run supplies no reviewer, promising no fallback", async () => {
+    // `resolveSlotPlan` returns no target for a pinned slot it cannot run, so a
+    // note claiming ShipIt picks one automatically would send an agent
+    // diagnosing a blocked review down the wrong path.
+    credentialStore.setReviewerPin("first", selection);
+    const entry = await detail("reviewers[].model");
+    const note = entry.items?.find((i) => i.address === "first")?.notes?.join(" ") ?? "";
+    expect(note).toContain("supplies no reviewer");
+    expect(note).not.toMatch(/automatic/i);
+  });
+
+  it("carries the models and levels this install can actually run (req 3)", async () => {
+    // "What it has to become" needs the option set, which a declaration's type
+    // cannot hold — so `get` resolves it from the same registry the dialog's
+    // own picker offers.
+    const entry = await getSettingForAgent(
+      deps({
+        agentRegistry: {
+          list: () => [
+            {
+              id: "codex",
+              name: "Codex",
+              installed: true,
+              hasRunnableModels: true,
+              eligibleModels: [{ serviceId: selection.serviceId, modelId: selection.modelId }],
+              capabilities: { reasoning: { label: "Effort", options: [{ value: "high", label: "High" }] } },
+            },
+            { id: "claude", name: "Claude", installed: false, hasRunnableModels: false, eligibleModels: [] },
+          ],
+        } as unknown as SettingsReadDeps["agentRegistry"],
+      }),
+      SESSION,
+      "roles[].model",
+    );
+    const live = entry.live as { harnesses: { harnessId: string; reasoningLevels?: unknown[] }[] };
+    // Only what this install can run: an uninstalled harness is not an option.
+    expect(live.harnesses.map((h) => h.harnessId)).toEqual(["codex"]);
+    expect(live.harnesses[0]?.reasoningLevels).toEqual([{ value: "high", label: "High" }]);
+  });
+
   it("names both slots and whether each is pinned", async () => {
     credentialStore.setReviewerPin("first", selection);
     const entry = await detail("reviewers");
@@ -349,6 +389,44 @@ describe("MCP servers", () => {
     expect((await itemDisplays("mcp.servers[].npmPackage")).local).toBe("configured");
   });
 
+  it("reports an env bag whose secret was never stored as NOT configured", async () => {
+    // The panel writes a `$secret:` reference for every key row even where the
+    // user left the value blank, so the config alone says a name exists and not
+    // that the server can start — which is the state an agent is asked about.
+    addMcpServer(
+      credentialStore,
+      {
+        name: "blank",
+        type: "stdio",
+        command: "npx",
+        env: { API_KEY: "$secret:mcp__blank__API_KEY" },
+        enabled: true,
+      },
+      {},
+    );
+    const entry = await detail("mcp.servers[].env");
+    const item = entry.items?.find((i) => i.address === "blank");
+    expect(item?.display).toBe("not configured");
+    expect(item?.notes?.join(" ")).toContain("1 of 1 entry");
+  });
+
+  it("reports an env bag as configured once the secret it refers to is stored", async () => {
+    addMcpServer(
+      credentialStore,
+      {
+        name: "filled",
+        type: "stdio",
+        command: "npx",
+        env: { API_KEY: "$secret:mcp__filled__API_KEY" },
+        enabled: true,
+      },
+      { mcp__filled__API_KEY: TOKEN },
+    );
+    const entry = await detail("mcp.servers[].env");
+    expect(entry.items?.find((i) => i.address === "filled")?.display).toBe("configured");
+    expect(JSON.stringify(entry)).not.toContain(TOKEN);
+  });
+
   it("names every MCP OAuth provider and reads none of them as connected", async () => {
     const entry = await detail("mcp.oauthProvider");
     expect(entry.items?.map((i) => i.address).sort()).toEqual(
@@ -489,7 +567,12 @@ describe("Project Settings", () => {
   });
 
   it("names the secrets that are set and whether each has a value, never a value", async () => {
-    secrets = { DATABASE_URL: `postgres://user:${"SENTINEL"}@db/app`, EMPTY_ONE: "" };
+    // Assembled rather than written as one literal, for the reason the MCP
+    // fixture gives: a `scheme://user:pass@host` string reads as a credential.
+    const dbUrl = new URL("postgres://db/app");
+    dbUrl.username = "user";
+    dbUrl.password = "SENTINEL";
+    secrets = { DATABASE_URL: dbUrl.toString(), EMPTY_ONE: "" };
     const names = await detail("project.secrets");
     expect(names.value).toEqual(["DATABASE_URL", "EMPTY_ONE"]);
     const values = await itemDisplays("project.secrets[].value");

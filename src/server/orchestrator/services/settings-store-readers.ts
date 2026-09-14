@@ -1,4 +1,6 @@
 import { allServices } from "../../shared/catalogue/index.js";
+import { substituteMcpPlaceholders } from "../../shared/mcp-placeholders.js";
+import { collectMcpAgentEnv } from "../secret-resolver.js";
 import { buildEffectiveAllowlist } from "../egress-allowlist.js";
 import { EGRESS_GLOBAL_SCOPE } from "../egress-allowlist-store.js";
 import { keyRequiringProviders } from "../../shared/voice-catalog.js";
@@ -265,9 +267,11 @@ function rolePinnedSelection(role: RoleView): unknown {
 function reviewerNote(slot: ReviewerSlotView): string[] {
   switch (slot.unavailableReason) {
     case "pin_unavailable":
+      // No fallback: `resolveSlotPlan` returns no target for a pinned slot it
+      // cannot run (`reviewer-model.ts:311`), so the slot supplies nothing.
       return [
-        "This slot's pinned model cannot run with the credentials configured, so ShipIt picks "
-          + "this slot's reviewer automatically until that changes.",
+        "This slot's pinned model cannot run with the credentials configured, so the slot supplies "
+          + "no reviewer at all until the pin is changed, cleared, or made runnable.",
       ];
     case "nothing_eligible":
       return ["No configured credential can run a reviewer, so this slot resolves to nothing."];
@@ -382,9 +386,61 @@ function mcpItems(
 
 function stdioField(
   server: McpServerConfig,
-  field: "command" | "args" | "npmPackage" | "env",
+  field: "command" | "args" | "npmPackage",
 ): unknown {
   return server.type === "stdio" ? server[field] ?? null : null;
+}
+
+/**
+ * An environment or header bag, read against the secrets it REFERS to and not
+ * against the config alone. The config holds `$secret:` references, and the
+ * panel writes one for every key row even where the user left the value blank
+ * (`client/components/McpServerSettings/utils/payload.ts:45`) — so a bag that
+ * looks configured is exactly the state an agent is asked to diagnose. One
+ * unresolved reference stops the server (`session/mcp-resolve.ts:60`), so a
+ * partly-set bag is reported as not configured, with a count of how many are
+ * missing. The count is ShipIt's own; the keys are the user's and stay out.
+ */
+function mcpSecretBag(
+  ctx: StoreReadContext,
+  bag: Record<string, string> | null,
+): { raw: unknown; notes: string[] } {
+  const entries = Object.entries(bag ?? {});
+  if (entries.length === 0) return { raw: null, notes: [] };
+  const env = ctx.deps.credentialStore ? collectMcpAgentEnv(ctx.deps.credentialStore) : {};
+  const unresolved = entries.filter(([, value]) => {
+    const missing: string[] = [];
+    substituteMcpPlaceholders(value, env, missing);
+    return missing.length > 0;
+  }).length;
+  if (unresolved === 0) return { raw: bag, notes: [] };
+  return {
+    raw: null,
+    notes: [
+      `${unresolved} of ${entries.length} ${entries.length === 1 ? "entry" : "entries"} refers to a `
+        + "stored value ShipIt does not have, so this server cannot start until it is set.",
+    ],
+  };
+}
+
+/** `env` for a stdio server, `headers` for an HTTP one; both are the same bag. */
+function mcpSecretItems(
+  ctx: StoreReadContext,
+  cache: StoreReadCache,
+  pick: (server: McpServerConfig) => Record<string, string> | null,
+): StoredRead {
+  const missing = needsCredentialStore(ctx);
+  if (missing) return missing;
+  return items(
+    cache.mcpServers().map((server) => {
+      const read = mcpSecretBag(ctx, pick(server));
+      return {
+        name: { kind: "stored" as const, item: server },
+        raw: read.raw,
+        ...(read.notes.length > 0 ? { notes: read.notes } : {}),
+      };
+    }),
+  );
 }
 
 // Project -------------------------------------------------------------------
@@ -533,9 +589,10 @@ export const BESPOKE_READERS: Record<string, StoreReader> = {
   "mcp.servers[].npmPackage": (ctx, cache) => mcpItems(ctx, cache, (s) => stdioField(s, "npmPackage")),
   "mcp.servers[].url": (ctx, cache) =>
     mcpItems(ctx, cache, (server) => (server.type === "http" ? server.url : null)),
-  "mcp.servers[].env": (ctx, cache) => mcpItems(ctx, cache, (s) => stdioField(s, "env")),
+  "mcp.servers[].env": (ctx, cache) =>
+    mcpSecretItems(ctx, cache, (server) => (server.type === "stdio" ? server.env ?? null : null)),
   "mcp.servers[].headers": (ctx, cache) =>
-    mcpItems(ctx, cache, (server) => (server.type === "http" ? server.headers ?? null : null)),
+    mcpSecretItems(ctx, cache, (server) => (server.type === "http" ? server.headers ?? null : null)),
   "mcp.oauthProvider": (ctx) => {
     const credentialStore = ctx.deps.credentialStore;
     if (!credentialStore) return unreadable(NO_CREDENTIAL_STORE);

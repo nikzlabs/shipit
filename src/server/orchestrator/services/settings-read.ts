@@ -430,13 +430,41 @@ function nonTurnModelDetail(deps: SettingsReadDeps): Record<string, unknown> {
 }
 
 /**
+ * What a role or a reviewer slot can be pointed at on THIS install. A
+ * declaration's `type` holds the shape of a model selection and cannot hold
+ * which ones exist, so req 3's "what it has to become" is resolved here — from
+ * the registry the dialog's own pickers offer, so the agent proposes from the
+ * same list the user would pick from.
+ */
+function runnableTargetsDetail(deps: SettingsReadDeps): Record<string, unknown> {
+  return {
+    harnesses: deps.agentRegistry
+      .list()
+      .filter((agent) => agent.installed && agent.hasRunnableModels)
+      .map((agent) => ({
+        harnessId: agent.id,
+        harnessName: agent.name,
+        models: agent.eligibleModels,
+        ...(agent.capabilities.reasoning
+          ? { reasoningLevels: agent.capabilities.reasoning.options }
+          : {}),
+      })),
+  };
+}
+
+/**
  * Live facts a declaration's `type` cannot hold — which models this install can
- * actually run background work on, and which one it resolves to today. Keyed by
- * setting: a setting with no entry still lists, gets, and carries its declared
- * shape, so this is extra detail and never a second place to register a setting.
+ * actually run, and what a pin resolves to today. Keyed by setting: a setting
+ * with no entry still lists, gets, and carries its declared shape, so this is
+ * extra detail and never a second place to register a setting.
  */
 const LIVE_DETAILS: Record<string, LiveDetail> = {
   "services.nonTurnModel": nonTurnModelDetail,
+  "roles[].model": runnableTargetsDetail,
+  "roles[].harness": runnableTargetsDetail,
+  "roles[].reasoningEffort": runnableTargetsDetail,
+  "reviewers[].model": runnableTargetsDetail,
+  "reviewers[].reasoningEffort": runnableTargetsDetail,
 };
 
 // Only this read's own two reasons; the catalogue's four come from
@@ -644,21 +672,48 @@ function resolveEffect(
   }
 }
 
+/**
+ * Degrade per entry, never abort: one setting that throws must not cost the
+ * agent the index of every other setting. The PROJECTION is inside the guard
+ * with the read, because a declaration supplies its own `derived` function and
+ * a throw there would otherwise fail the whole call.
+ */
 async function buildEntry(
   declaration: AnySettingDeclaration,
   deps: SettingsReadDeps,
   state: ReadState,
   detail: boolean,
 ): Promise<BuiltEntry> {
-  // Degrade per entry, never abort: one setting whose read throws must not cost
-  // the agent the index of every other setting.
-  let outcome: ReadOutcome;
   try {
-    outcome = await readValue(declaration, deps, state);
+    return await buildReadableEntry(declaration, deps, state, detail);
   } catch (err) {
-    outcome = { ok: false, reason: "read_failed", note: readFailureNote(declaration.key, err) };
+    return unreadableEntry(declaration, detail, "read_failed", readFailureNote(declaration.key, err));
   }
-  const base = {
+}
+
+function unreadableEntry(
+  declaration: AnySettingDeclaration,
+  detail: boolean,
+  reason: SettingUnreadableReason,
+  note: string,
+): BuiltEntry {
+  return {
+    entry: {
+      ...entryBase(declaration),
+      value: null,
+      display: "unknown",
+      readable: false,
+      unreadableReason: reason,
+      // An unreadable value cannot carry an effect claim. The reason is in
+      // `notes` and must not be repeated here — it is one fact, not three.
+      effect: { state: "uncertain" },
+      notes: [note, ...listOnlyNotes(declaration, detail)],
+    },
+  };
+}
+
+function entryBase(declaration: AnySettingDeclaration) {
+  return {
     key: declaration.key,
     label: declaration.label,
     summary: firstSentence(declaration.description),
@@ -667,23 +722,23 @@ async function buildEntry(
     address: addressView(declaration),
     propose: proposeView(declaration),
   };
-  // `get` says the same thing with the items themselves, so this is list-only.
-  const indexNotes = detail ? [] : [itemNote(declaration)].filter((n): n is string => !!n);
-  if (!outcome.ok) {
-    return {
-      entry: {
-        ...base,
-        value: null,
-        display: "unknown",
-        readable: false,
-        unreadableReason: outcome.reason,
-        // An unreadable value cannot carry an effect claim. The reason is in
-        // `notes` and must not be repeated here — it is one fact, not three.
-        effect: { state: "uncertain" },
-        notes: [outcome.note, ...indexNotes],
-      },
-    };
-  }
+}
+
+/** `get` says the same thing with the items themselves, so this is list-only. */
+function listOnlyNotes(declaration: AnySettingDeclaration, detail: boolean): string[] {
+  return detail ? [] : [itemNote(declaration)].filter((n): n is string => !!n);
+}
+
+async function buildReadableEntry(
+  declaration: AnySettingDeclaration,
+  deps: SettingsReadDeps,
+  state: ReadState,
+  detail: boolean,
+): Promise<BuiltEntry> {
+  const outcome = await readValue(declaration, deps, state);
+  if (!outcome.ok) return unreadableEntry(declaration, detail, outcome.reason, outcome.note);
+  const base = entryBase(declaration);
+  const indexNotes = listOnlyNotes(declaration, detail);
   const effect = resolveEffect(declaration, deps, state.sessionId);
   if (outcome.kind === "items") {
     // The index names the instances and stops there; what each is set to is the

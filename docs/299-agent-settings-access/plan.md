@@ -296,6 +296,14 @@ read** — an absent store, a repository ShipIt has no record of, a read that
 threw all degrade to an entry with the reason, because a plausible default is
 worse than nothing: the agent states it to the user as fact.
 
+**A reader reads the store the declaration names, which is not always the
+obvious one.** An MCP server's environment and headers hold `$secret:`
+references and the panel writes one for every key row even where the user left
+the value blank (`McpServerSettings/utils/payload.ts:45`), so the config alone
+says a name exists and not that the server can start. `configured` there means
+every reference resolves, because one that does not stops the server
+(`session/mcp-resolve.ts:60`); the count of unresolved ones rides with the item.
+
 ### Saved is not effective
 
 "Saved, applies after a restart" is false for a sandbox whose network capability
