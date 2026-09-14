@@ -425,6 +425,13 @@ they take that role's **conflict domain** — the stored object an operation
 writes. Every writer of that object takes it, including whole-object dialog
 saves.
 
+The lock is **re-entrant for the domains a caller already holds**, and that is
+what makes step 3 possible: a decision holds the target's domains across its
+baseline re-read and the `settings-apply.ts` operation that writes it, and that
+operation takes the same domains. Checking outside the lock would leave the gap a
+dialog save lands in. A nested call naming a domain its caller does **not** hold
+is refused by name rather than left to deadlock against an opposite-ordered pair.
+
 Serialization buys ordering, not conflict detection. The MCP editor captures the
 whole server object when it opens (`McpServerSettings/hooks/useMcpFormState.ts:27`),
 so a form opened before a card applies overwrites it in correct order. That is
@@ -454,6 +461,23 @@ card shows in full. *Change its URL* is refused — the projection shows only th
 host, so the card would either display less than it changes or echo a path the
 agent may not read back. The test is not size; it is whether the card can show
 all of it.
+
+### What a card can apply today
+
+A declaration says a setting MAY be proposed; `services/settings-operations.ts`
+says what changing it means, and the two are separate because a field-level
+declaration is for discovery and is not the mutation unit. Every declared payload
+scalar is proposable through one generic operation, so a setting declared
+tomorrow is proposable the same day (req 7). Named operations cover the release
+channel, egress containment and one allowlist entry, the two project settings, an
+MCP server's `enabled` flag, a role's description, standing instructions, model,
+harness and level, both reviewer slots, and the per-mode routing settings.
+
+The rest is declared, readable and **refused at propose time by name**: creating
+or deleting a role, an MCP server or a credential, and the credential and
+provider-account labels. That refusal is deliberately not one of the catalogue's
+four reasons — those describe settings nobody can propose at all, and this one
+says the read works and the write has not been built.
 
 ## Apply goes through a shared layer
 
@@ -642,8 +666,13 @@ session-scoped, container-accessible reads `GET /api/sessions/:id/settings` and
 the broadcast), `services/settings-conflict-domain.ts` (the lock) and
 `services/settings-baseline.ts` (the per-declaration revision);
 `shared/settings-catalogue/apply-outcome.ts` (the four outcomes);
-`settings-proposal-store.ts` (the private proposal row: target, proposed value,
-baseline, phase); `services/settings-proposal.ts` (compile, claim, transition);
+`settings-proposal-store.ts` (the private proposal row: target, operation,
+proposed value, baseline, phase); `services/settings-proposal.ts` (the card as a
+transcript object: post, claim, transition); `services/settings-propose.ts` (the
+propose path and its refusals); `services/settings-operations.ts` (what an Apply
+button runs, per declared operation); `services/settings-decision.ts` (claim,
+lock, baseline, apply, and the boot pass that resolves an interrupted one);
+`services/settings-proposal-deps.ts` (one assembly both callers share);
 `ws-handlers/settings-proposal-handlers.ts`;
 `shared/settings-catalogue/tabs.ts` (the tab labels the dialog and a card's
 breadcrumb share);

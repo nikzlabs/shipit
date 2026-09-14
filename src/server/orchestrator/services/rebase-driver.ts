@@ -215,6 +215,18 @@ class RebaseRunnerHold {
   }
 }
 
+/**
+ * The driver's own claim on `runner.systemTurnInProgress`, separate from the disposal lease
+ * above: every write of `true` mints a new `systemHoldSeq`, and the release compares (docs/304).
+ */
+interface SystemHoldTicket { seq: number }
+
+/** One entry point, so no acquisition can forget to capture the ticket it releases on. */
+function takeSystemHold(runner: SessionRunnerInterface, ticket: SystemHoldTicket): void {
+  runner.systemTurnInProgress = true;
+  ticket.seq = runner.systemHoldSeq;
+}
+
 // The runner is no longer running; hold it against disposal during restoration.
 async function restoreLfsForSync(deps: RebaseDriverDeps, baseBranch: string): Promise<void> {
   const { runner } = deps;
@@ -372,7 +384,8 @@ export async function runRebaseFlow(
   }
 
   // Keep user turns queued between resolution turns and through the final push.
-  runner.systemTurnInProgress = true;
+  const systemHold: SystemHoldTicket = { seq: 0 };
+  takeSystemHold(runner, systemHold);
 
   // Defer auto-push so it cannot race the force-push. The object avoids TS callback narrowing.
   const pendingPush: { arm: (() => void) | null } = { arm: null };
@@ -476,7 +489,7 @@ export async function runRebaseFlow(
 
       const prompt = buildRebaseConflictPrompt(baseBranch, result.conflicts);
       try {
-        await runRebaseResolutionTurn(deps, prompt, hold);
+        await runRebaseResolutionTurn(deps, prompt, hold, systemHold);
       } catch (err) {
         // Abort before rethrowing; verify failures before reporting the branch unchanged.
         let stillInProgress = false;
@@ -580,14 +593,17 @@ export async function runRebaseFlow(
         }
       }
       handWorkspaceBackToWorker(runner.sessionDir);
-      // A displacing turn owns its flag and queue drain.
-      if (!runner.running) {
-        runner.systemTurnInProgress = false;
-        try {
-          releaseQueuedTurn(runner);
-        } catch (releaseErr) {
-          console.error("[rebase] post-flow queue release failed:", getErrorMessage(releaseErr));
-        }
+      // Clear on the hold's own ticket: a turn that displaced the driver, or another owner that
+      // took over mid-flow, minted one of its own. Keying this on `runner.running` left a hold a
+      // CLI-started turn was adopted under set with no owner at all (planning#554).
+      if (runner.systemHoldSeq === systemHold.seq) runner.systemTurnInProgress = false;
+      // The drain is NOT conditional on that: the queue can also be left by a hold that changed
+      // hands, and `releaseQueuedTurn` declines on its own while a turn, a hold or a merge holds
+      // the session — so it starts a turn only when nothing else can.
+      try {
+        releaseQueuedTurn(runner);
+      } catch (releaseErr) {
+        console.error("[rebase] post-flow queue release failed:", getErrorMessage(releaseErr));
       }
     } finally {
       hold.release();
@@ -681,9 +697,10 @@ async function runRebaseResolutionTurn(
   deps: RebaseDriverDeps,
   prompt: string,
   hold: RebaseRunnerHold,
+  systemHold: SystemHoldTicket,
 ): Promise<void> {
   try {
-    await dispatchRebaseResolutionTurn(deps, prompt, hold);
+    await dispatchRebaseResolutionTurn(deps, prompt, hold, systemHold);
   } finally {
     // The turn executor releases its own lease as this continuation is queued, so by
     // here it has let go — and if it had already expired, it took ours with it.
@@ -695,6 +712,7 @@ function dispatchRebaseResolutionTurn(
   deps: RebaseDriverDeps,
   prompt: string,
   hold: RebaseRunnerHold,
+  systemHold: SystemHoldTicket,
 ): Promise<void> {
   const { runner } = deps;
 
@@ -729,7 +747,7 @@ function dispatchRebaseResolutionTurn(
         turnSettled = true;
         // Restore the flow's holds synchronously after finishTurn clears the per-turn
         // flag; an unexpired turn lease is still held here, so nothing reads idle between.
-        if (!runner.running) runner.systemTurnInProgress = true;
+        if (!runner.running) takeSystemHold(runner, systemHold);
         hold.take();
         if (outcome.status === "completed") {
           resolve();

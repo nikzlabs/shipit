@@ -37,3 +37,33 @@ No agent-facing surface; the proposal card is the next slice.
 - [x] `services/settings-baseline.ts` — the per-declaration revision over the
       whole stored value, tested directly
 - [x] Every new guard proven red on its own, with the defect restored
+
+## Phase 2, slice 2 — propose, and the decision handler
+
+- [x] `shipit settings propose <key>=<value> [--item] --reason` and
+      `--add`/`--remove` for one list entry; posts, returns, never waits
+- [x] The server takes the snapshot — the displayed `from` and the private
+      baseline in one read, never carried from the agent's earlier `get`
+- [x] Validated at propose time and again inside the lock at apply time
+- [x] `services/settings-operations.ts` — what an Apply button runs, per declared
+      operation, ending in the shared apply layer
+- [x] `ws-handlers/settings-proposal-handlers.ts` — transport only; the session
+      is the connection's and never the message's
+- [x] Dismiss as its own short path: one atomic `pending → dismissed`
+- [x] Apply: claim atomically, then the conflict domains held across the
+      baseline re-read, the revalidation and the write
+- [x] `unknown` — boot recovery converts an interrupted apply before any
+      decision is accepted, and never retries it
+- [x] Settlement with no runner at all
+- [x] `lastProposal` in `shipit settings get`, per target and per instance, from
+      any session; a pending card does not block a second proposal
+- [x] `shipit-docs/settings.md` — propose, the one-change rule, the phase table
+- [x] Every new guard proven red on its own: two decisions produce one apply, a
+      turn snapshot does not restore `pending`, and a projection-dropped field
+      resolves `stale` where comparing `from` would not
+
+Not in this slice, and named in `plan.md` → *What a card can apply today*: the
+collection operations that create and delete entries, and the credential and
+provider-account labels. The notice that tells the agent about a resolved card at
+the start of its next turn (req 8's second half) is the remaining work; the read
+carries the outcome today.

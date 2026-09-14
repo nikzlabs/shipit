@@ -1,6 +1,7 @@
 # Checklist — Remote session
 
-Design doc only so far; nothing implemented. Tracks planning#217.
+Superseded by `docs/305-ssh-hosts` on 2026-09-14; nothing here will be implemented as written.
+Tracks planning#217.
 
 ## Phase 1 — Prove the loop
 - [ ] Add `openssh-client` to `Dockerfile.session-worker.prod` and `.dev`

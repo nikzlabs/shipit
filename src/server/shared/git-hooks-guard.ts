@@ -2,15 +2,14 @@
 // This does not block other config-driven execution such as filters or helpers.
 import simpleGit, { type SimpleGit, type SimpleGitOptions } from "simple-git";
 import { resolveGitTreeUid } from "./git-tree-uid.js";
+import { HOOKS_DISABLED_CONFIG } from "./git-hooks-args.js";
 
-// /dev/null/<hook> cannot resolve, regardless of the hook name.
-export const HOOKS_DISABLED_PATH = "/dev/null";
-export const HOOKS_DISABLED_CONFIG = `core.hooksPath=${HOOKS_DISABLED_PATH}`;
-export const GIT_HOOKS_DISABLED_ARGS: readonly string[] = ["-c", HOOKS_DISABLED_CONFIG];
-
-export function gitArgsWithHooksDisabled(args: readonly string[]): string[] {
-  return [...GIT_HOOKS_DISABLED_ARGS, ...args];
-}
+export {
+  HOOKS_DISABLED_PATH,
+  HOOKS_DISABLED_CONFIG,
+  GIT_HOOKS_DISABLED_ARGS,
+  gitArgsWithHooksDisabled,
+} from "./git-hooks-args.js";
 
 export function safeSimpleGit(baseDir?: string, options?: Partial<SimpleGitOptions>): SimpleGit {
   // Last -c wins. GIT_CONFIG_COUNT would trip simple-git's environment guard.

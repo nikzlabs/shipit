@@ -59,12 +59,13 @@ with a link.
 - **Middle — the conversation.** Their messages and your work, including file
   attachments, diffs, questions, permission prompts, and cards for pull
   requests, reviews, issues, spawned sessions and releases.
-- **Right — a tabbed panel.** Files, Docs, Issues, Terminal, History, Present,
-  and, conditionally, Preview or Host, PR, and Plugins. **Which tabs exist
+- **Right — a tabbed panel.** Files, Docs, Issues, Terminal and History, and,
+  conditionally, Preview or Host, PR, Present and Plugins. **Which tabs exist
   depends on the session**, so check before promising one: Host appears only in
   an Ops session, where Preview does not — and Preview is missing from a sandbox
   session and from a local-mode install too; PR appears once the session has a
-  pull request, and never in an Ops or sandbox session; Plugins appears only
+  pull request, and never in an Ops or sandbox session; Present appears only
+  once something has been presented; Plugins appears only
   when the project declares them. A diff view opens over the panel when a change
   is tapped.
 
@@ -105,17 +106,20 @@ in `/shipit-docs/`, or a live command to run rather than a page to read.
 
 | Capability | Where |
 |---|---|
-| Attach files and images to a message; drop in uploads | `/shipit-docs/environment.md` (`/uploads`) |
-| Reference a file with `@`, a skill with `/` (`$` on a Codex session) | [plugins-and-skills.md](plugins-and-skills.md) |
-| Interrupt a running turn, or queue the next message behind it | This page — the queued message can be cancelled before it runs |
-| Answer a question or a permission prompt inline | No wiki page yet — the capability is real, the detail is not written down |
-| Dictate by voice, on desktop and phone | Settings → Voice |
-| Spoken summaries back from the agent when it needs the user | `/shipit-docs/voice-notes.md` |
-| Collapse finished turns so a long conversation stays readable | No wiki page yet — the capability is real, the detail is not written down |
-| Compact the conversation when context fills; a dial shows how full | No wiki page yet — the capability is real, the detail is not written down |
-| Set a goal condition the session works toward | No wiki page yet — the capability is real, the detail is not written down |
-| Show a diagram, mockup or rendered document in the Present tab | `/shipit-docs/present.md` |
-| Offer the user a checklist of optional follow-ups | `/shipit-docs/present.md` and the `propose_actions` tool |
+| Attach files and images to a message; drop in uploads | [chat.md](chat.md), and `/shipit-docs/environment.md` for `/uploads` |
+| Reference a file with `@`, a skill with `/` (`$` on a Codex session) | [chat.md](chat.md); [plugins-and-skills.md](plugins-and-skills.md) to install more |
+| Interrupt a running turn, steer it mid-turn, or queue the next message | [chat.md](chat.md) — the queued message can be cancelled before it runs |
+| Answer a question or a permission prompt inline | [chat.md](chat.md) |
+| Plan mode — the agent designs before it is allowed to change anything | [chat.md](chat.md) — a permission mode, and not every harness offers one |
+| Dictate by voice, on desktop and phone | [chat.md](chat.md) — Settings → Voice |
+| Spoken summaries back from the agent when it needs the user | [chat.md](chat.md), `/shipit-docs/voice-notes.md` |
+| Collapse finished turns so a long conversation stays readable | [chat.md](chat.md) |
+| Search the conversation's message text — not tool calls or their output | [chat.md](chat.md) |
+| Compact the conversation when context fills; a dial shows how full | [chat.md](chat.md) |
+| Set a goal condition the session works toward | [chat.md](chat.md) |
+| Quote a selection of the conversation into a reply | [chat.md](chat.md) |
+| Show a diagram, mockup or rendered document in the Present tab | [chat.md](chat.md), `/shipit-docs/present.md` |
+| Offer the user a checklist of optional follow-ups | [chat.md](chat.md), and the `propose_actions` tool |
 | Link straight to a place in the running app or a presented artifact | `/shipit-docs/chat-links.md` |
 
 ### Seeing the app
@@ -149,7 +153,8 @@ in `/shipit-docs/`, or a live command to run rather than a page to read.
 | Branch history, and rolling back to an earlier commit | [sessions.md](sessions.md) — rewind; [pull-requests.md](pull-requests.md) for what it does to the branch on GitHub |
 | Be woken when a pull request merges, instead of watching it | `shipit session notify-on-merge` |
 | Cut a release — version bump, branch, tag, published notes | [pull-requests.md](pull-requests.md), and `/shipit-docs/release.md` for your own steps |
-| Deploy targets and deploy status on the card | `/shipit-docs/deployment.md` |
+| Deploy on every push, through the hosting platform's own Git integration | [deploying.md](deploying.md) |
+| Deploy status — environment, state and URL — on the pull request card and in the PR tab | [deploying.md](deploying.md) |
 
 ### Issues and documents
 

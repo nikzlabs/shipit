@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type {
   SettingsProposalCard,
+  SettingsProposalOperation,
   SettingsProposalPhase,
   SettingsProposalTarget,
 } from "../../shared/types.js";
@@ -72,12 +73,19 @@ export interface PostSettingsProposalArgs {
   sessionId: string;
   /** The setting the card is about. Its declaration is looked up, never passed in. */
   target: SettingsProposalTarget;
+  /** What the click will do, which the decision runs and the message never says. */
+  operation: SettingsProposalOperation;
   /** Both already through the catalogue's formatting door. */
   from: string;
   to: string;
   /** The projected current value and the value to write, for the private row. */
   fromValue: unknown;
   proposedValue: unknown;
+  /**
+   * The revision of the WHOLE stored value at propose time — server-only, and
+   * what the apply compares against instead of the displayed `from`.
+   */
+  baseline: unknown;
   reason?: string | undefined;
 }
 
@@ -135,9 +143,11 @@ export function postSettingsProposal(
     cardId: card.cardId,
     sessionId,
     target: args.target,
+    operation: args.operation,
     phase: "pending",
     from: args.fromValue,
     proposed: args.proposedValue,
+    baseline: args.baseline,
     createdAt,
   });
 
@@ -150,6 +160,9 @@ export function postSettingsProposal(
   );
   return card;
 }
+
+/** A claim against a card the transcript no longer holds; rolls the phase back. */
+class CardRowMissing extends Error {}
 
 export interface SettingsProposalTransition {
   phase: SettingsProposalPhase;
@@ -217,9 +230,71 @@ export function transitionSettingsProposal(
     return updated;
   });
   if (!card) return null;
+  syncRecordedCard(deps, sessionId, cardId, card);
+  return card;
+}
 
+/**
+ * **The claim**, and the same contract from the other end: the phase moves only
+ * if it is still the one the caller found, and the card the user is looking at
+ * moves with it in the same transaction.
+ *
+ * Both halves are the point. A database-only claim is undone the moment the next
+ * turn snapshot rebuilds the in-progress rows from `recordedCards`
+ * (`chat-history.ts` → `replaceInProgress`), which puts a `pending` card back in
+ * front of the user over a proposal already being applied — so the second click
+ * claims it again and the change is applied twice. And the conditional update IS
+ * the test: two clicks racing produce one claim, because the loser changes no
+ * rows rather than reading a phase that a rival is about to overwrite.
+ */
+export function claimSettingsProposal(
+  deps: SettingsProposalDeps,
+  sessionId: string,
+  cardId: string,
+  from: SettingsProposalPhase,
+  transition: SettingsProposalTransition,
+): SettingsProposalCard | null {
+  const patch: Partial<SettingsProposalCard> = {
+    phase: transition.phase,
+    ...(transition.resolvedAt ? { resolvedAt: transition.resolvedAt } : {}),
+    ...(transition.outcome ? { outcome: transition.outcome } : {}),
+  };
+  let card: SettingsProposalCard | null;
+  try {
+    card = deps.proposals.transaction(() => {
+      if (!deps.proposals.claimPhase(sessionId, cardId, from, transition.phase, transition.resolvedAt)) {
+        return null;
+      }
+      const updated = deps.chatHistoryManager.updateSettingsProposalCard(sessionId, cardId, patch);
+      // No card row means no card to claim. Throwing rolls the phase back with
+      // it, rather than leaving a proposal claimed against a transcript that
+      // never showed it.
+      if (!updated) throw new CardRowMissing();
+      return updated;
+    });
+  } catch (err) {
+    if (err instanceof CardRowMissing) return null;
+    throw err;
+  }
+  if (!card) return null;
+  syncRecordedCard(deps, sessionId, cardId, card);
+  return card;
+}
+
+/**
+ * The runner half of a transition: the copy the turn is holding, and the live
+ * emit. Where there is no runner there is nothing to rebuild from, so the
+ * durable row stands on its own — which is what lets a card be resolved hours
+ * after its turn ended.
+ */
+function syncRecordedCard(
+  deps: SettingsProposalDeps,
+  sessionId: string,
+  cardId: string,
+  card: SettingsProposalCard,
+): void {
   const runner = deps.getRunnerRegistry()?.get(sessionId);
-  if (!runner) return card;
+  if (!runner) return;
 
   const patched = updateRecordedCard(
     runner,
@@ -238,5 +313,4 @@ export function transitionSettingsProposal(
     }
   }
   runner.emitMessage({ type: "settings_proposal_update", sessionId, cardId, card });
-  return card;
 }

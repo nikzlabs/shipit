@@ -152,6 +152,19 @@ export interface WsEgressDecision {
   action: "allow-once" | "add" | "deny";
 }
 
+/**
+ * The click that is the whole gate on a settings change (docs/299 req 4).
+ *
+ * It names the card and what to do with it, and nothing else. The session is
+ * the connection's own — a card id alone identifies nothing, and the session is
+ * not the client's to name.
+ */
+export interface WsSettingsProposalDecision {
+  type: "settings_proposal_decision";
+  cardId: string;
+  action: "apply" | "dismiss";
+}
+
 export type WsClientMessage =
   | WsSendMessage
   | WsSubmitBugReport
@@ -159,6 +172,7 @@ export type WsClientMessage =
   | WsUndoIssueWrite
   | WsResolvePermission
   | WsEgressDecision
+  | WsSettingsProposalDecision
   | WsSubscribeLogs
   | WsLogClear
   | WsAnswerQuestion

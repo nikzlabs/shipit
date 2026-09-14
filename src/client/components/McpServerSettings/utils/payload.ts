@@ -7,6 +7,15 @@ import type {
 export interface KvRow {
   key: string;
   value: string;
+  /**
+   * The reference expression this row was loaded with, absent on a row the user
+   * added. The form shows only the key, so re-deriving the value would flatten
+   * anything it cannot represent — a `Bearer ` prefix, a secret named unlike its
+   * key, an OAuth `$platform:` link — and the save would then delete the
+   * credential it stopped referring to (planning#565). The key names the
+   * variable the MCP server reads, so renaming it moves nothing.
+   */
+  originalValue?: string;
 }
 
 export interface FormState {
@@ -33,18 +42,78 @@ export const EMPTY_FORM: FormState = {
   enabled: true,
 };
 
+/**
+ * The server carries the stored values across a rename and moves the references
+ * in the config it stores; the submitted secret keys have to move with them,
+ * because the API accepts only keys in the server's own namespace.
+ */
+function moveSecretNamespace(expression: string, from: string, to: string): string {
+  if (!from || from === to) return expression;
+  return expression.replaceAll(`$secret:mcp__${from}__`, () => `$secret:mcp__${to}__`);
+}
+
+/** The keys in this server's namespace an expression refers to, each once. */
+function secretKeysIn(expression: string, serverName: string): string[] {
+  const prefix = `mcp__${serverName}__`;
+  return [
+    ...new Set(
+      [...expression.matchAll(/\$secret:([A-Za-z_][A-Za-z0-9_]*)/g)]
+        .map((m) => m[1])
+        .filter((key) => key.startsWith(prefix)),
+    ),
+  ];
+}
+
+/** `base`, or the first free variant of it — a taken name belongs to another row. */
+function freeSecretKey(base: string, taken: Set<string>): string {
+  if (!taken.has(base)) return base;
+  let n = 2;
+  while (taken.has(`${base}_${n}`)) n++;
+  return `${base}_${n}`;
+}
+
 export function buildPayload(form: FormState): {
   config: McpServerConfig;
   secrets: Record<string, string>;
 } {
   const secrets: Record<string, string> = {};
   const placeholders: Record<string, string> = {};
-  for (const row of form.kv) {
-    const k = row.key.trim();
-    if (!k) continue;
-    const secretKey = `mcp__${form.name}__${k}`;
-    placeholders[k] = `$secret:${secretKey}`;
-    if (row.value) secrets[secretKey] = row.value;
+
+  // A row loaded from the server keeps the expression it came with, so a shape
+  // the form cannot show survives an edit that does not touch it.
+  const rows = form.kv
+    .map((row) => ({
+      key: row.key.trim(),
+      value: row.value,
+      carried: row.originalValue
+        ? moveSecretNamespace(row.originalValue, form.editingId, form.name)
+        : null,
+    }))
+    .filter((row) => row.key);
+  const spokenFor = new Set(
+    rows.flatMap((row) => (row.carried ? secretKeysIn(row.carried, form.name) : [])),
+  );
+
+  for (const row of rows) {
+    // A typed value replaces the secret THIS row refers to; naming it after the
+    // row's key would land it on whatever else is called that.
+    const target = row.value && row.carried ? secretKeysIn(row.carried, form.name) : [];
+    if (row.carried && target.length === 1) {
+      placeholders[row.key] = row.carried;
+      secrets[target[0]] = row.value;
+      continue;
+    }
+    if (!row.value) {
+      placeholders[row.key] = row.carried ?? `$secret:mcp__${form.name}__${row.key}`;
+      continue;
+    }
+    // A typed value with no single reference to fill — a new row, an
+    // OAuth-managed header, an expression naming two secrets — gets a key from
+    // its own row name, stepped aside if another row already refers to that.
+    const key = freeSecretKey(`mcp__${form.name}__${row.key}`, spokenFor);
+    spokenFor.add(key);
+    placeholders[row.key] = `$secret:${key}`;
+    secrets[key] = row.value;
   }
 
   if (form.type === "stdio") {
@@ -85,8 +154,12 @@ export function formFromServer(server: McpServerConfig): FormState {
     args: server.type === "stdio" ? (server.args ?? []).join(" ") : "",
     url: server.type === "http" ? server.url : "",
     npmPackage: server.type === "stdio" ? server.npmPackage ?? "" : "",
-    // Never echo stored secret values.
-    kv: Object.keys(kvSource).map((key) => ({ key, value: "" })),
+    // Never echo stored secret values — only the references to them.
+    kv: Object.entries(kvSource).map(([key, expression]) => ({
+      key,
+      value: "",
+      originalValue: expression,
+    })),
     enabled: server.enabled,
   };
 }

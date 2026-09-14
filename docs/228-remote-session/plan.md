@@ -6,6 +6,14 @@ description: A session whose execution environment is a remote host reached over
 
 # 228 — Remote session
 
+> **Superseded by `docs/305-ssh-hosts` (2026-09-14).** A remote session is now a Sandbox
+> session (docs/211) with an SSH host granted; there is no `kind = "remote"` and no
+> transparent command routing. One claim below is wrong and is corrected there: a `0600` key
+> file under `/credentials` is **readable** by the agent, because the agent CLI, the worker,
+> and the terminal share one uid (docs/138, docs/150). The key therefore stays in the
+> orchestrator and the container gets an SSH agent socket. The Security model and the
+> competitive landscape remain useful history.
+
 ## Overview
 
 A **Remote session** is a session whose **execution environment is a remote host**, reached over

@@ -581,13 +581,24 @@ Five lifecycle events affect MCP state. Each must be explicit so secrets don't l
 
 | Event | Effect on `mcpServers` blob | Effect on `mcp__<name>__*` agentEnv | Effect on running session worker(s) |
 |---|---|---|---|
-| User edits server config (rename / disable) | Updated in place | Untouched (unless renamed; see below) | Next agent turn picks up new shape |
+| User edits server config (rename / disable) | Updated in place | Reconciled to the keys the new config refers to; a rename carries the values over (see below) | Next agent turn picks up new shape |
 | User updates a secret value | Untouched | New value written | `PUT /secrets` push removes/updates the value in worker `process.env` |
 | User deletes a server | Removed from map | All `mcp__<name>__*` entries removed | `PUT /secrets` push **with the deleted keys included as empty string** so the worker clears them from `process.env` (matches existing 087 behavior for removed keys) |
 | User signs out of Claude (clears `AuthManager`) | Untouched (account-level state survives, mirroring how `githubToken` survives Claude sign-out today) | Untouched | No change |
 | User runs full reset / clears `CredentialStore` | All entries cleared | All `mcp__*` entries cleared | `PUT /secrets` push with all `mcp__*` keys set to empty so worker drops them |
 
-Renaming a server is treated as delete-then-add: the old `mcp__<old>__*` keys are cleared (and pushed) before the new `mcp__<new>__*` keys are written. The UI surfaces a confirm prompt warning that the secret values must be re-entered after rename.
+**Corrected (planning#565).** Renaming was originally specified as delete-then-add, with a confirm prompt warning that the values must be re-entered. The prompt never shipped, and the edit form cannot re-enter them either: it blanks stored values and labels them "(unchanged)", so a rename submitted no replacement and the save silently destroyed the credentials. A save now *reconciles* the namespace instead — `updateMcpServer` keeps the keys the new config refers to plus anything the save explicitly submits, taking each value from the submitted secrets, else from the same key under the old name (the rename carry-over), else from what is already stored, and clears the rest of either namespace. The old `mcp__<old>__*` keys are reported as cleared, because they are: their values moved to `mcp__<new>__*`. The one exception is a key another server's config still refers to, which is retained and not reported.
+
+Four things reconciliation depends on, each of which was a way to destroy a credential:
+
+- References are read from **every** string in the config, not just the `env` / `headers` bag, because `args` resolves them too (`session/mcp-resolve.ts`).
+- A rename rewrites the server's own `$secret:mcp__<old>__*` references in the config it stores, so a caller that renames without rewriting them — the form cannot rewrite the ones in `args` at all — does not leave references that read as unreferenced. References into *another* server's namespace are left alone.
+- A key another stored server's config still refers to is not cleared as a side effect of this edit. One server's namespace is not private to it, and this edit is not that server's. A save that *names* the key and submits an empty value has asked for it, and is answered.
+- The edit form re-submits the reference expression each row was loaded with instead of re-deriving `$secret:mcp__<name>__<KEY>` from the key, and a typed value replaces the secret that row's expression refers to. Re-deriving flattened a `Bearer ` prefix, a secret named unlike its key, and an OAuth `$platform:` link — and, where a row's key matched a *different* row's secret name, wrote one row's new value over the other's.
+
+A row's key names the variable (or header) the MCP server reads, not the secret behind it, so renaming a key moves nothing: the row keeps its reference and its value. That is why a blank value can go on meaning "unchanged". It does mean the panel itself can produce a row whose key and secret name differ, so a row that needs a *new* secret takes its key's name only if no other row refers to it, and steps aside to `<KEY>_2` if one does. Nothing shows the user a secret's name, so stepping aside costs nothing and overwriting another row's credential costs everything.
+
+One limit is accepted rather than fixed, and it needs a config the panel cannot author: one that refers into *another* server's namespace. Such a reference keeps working when its owner is renamed away — the key is retained rather than cleared — but if a new server is then created under the freed name, its own values take over those keys and the reference silently changes meaning. The namespace follows the name; ShipIt declines to *delete* what another config refers to, and does not reserve a freed name against reuse.
 
 Deleting a server while it's actively spawned by the Claude CLI is safe because the deletion only affects the next agent turn — the current turn's `/tmp/mcp-config-*.json` is already on disk and the running stdio child or HTTP connection is unaffected. The cleared `process.env` entries take effect on the *next* `generateMcpConfig()` call.
 

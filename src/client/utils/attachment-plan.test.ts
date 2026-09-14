@@ -113,6 +113,46 @@ describe("buildAttachmentPlan — an ordinary message", () => {
   });
 });
 
+describe("buildAttachmentPlan — an existing upload re-attached as a file reference", () => {
+  it("carries it as an upload, not as a workspace file", () => {
+    const plan = buildAttachmentPlan({
+      text: "read this again",
+      uploadRefs: [],
+      uploads: [],
+      pendingFiles: [{ path: "/uploads/notes.txt" }],
+    });
+    expect(plan.frame.uploads).toEqual([NOTES]);
+    expect(plan.frame.files).toBeUndefined();
+    expect(plan.bubble.uploadPaths).toEqual(["/uploads/notes.txt"]);
+    expect(plan.bubble.files).toEqual([{ path: "/uploads/notes.txt", contentPreview: "" }]);
+  });
+
+  it("keeps workspace files in files and uploads in uploads", () => {
+    const plan = buildAttachmentPlan({
+      text: "both",
+      uploadRefs: [],
+      uploads: [],
+      pendingFiles: [{ path: "src/index.ts" }, { path: "/uploads/shot.png" }],
+    });
+    expect(plan.frame).toEqual({
+      uploads: [SHOT],
+      files: [{ path: "src/index.ts" }],
+    });
+  });
+
+  it("does not carry the same upload twice when its chip is also pending", () => {
+    const plan = buildAttachmentPlan({
+      text: "x",
+      uploadRefs: [NOTES],
+      uploads: [upload({})],
+      pendingFiles: [{ path: "/uploads/notes.txt" }],
+    });
+    expect(plan.frame.uploads).toEqual([NOTES]);
+    expect(plan.bubble.uploadPaths).toEqual(["/uploads/notes.txt"]);
+    expect(plan.bubble.files).toEqual([{ path: "/uploads/notes.txt", contentPreview: "" }]);
+  });
+});
+
 describe("buildAttachmentPlan — /compact (docs/294 reqs 5-6)", () => {
   it("carries nothing and takes nothing away", () => {
     const plan = buildAttachmentPlan({

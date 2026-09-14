@@ -6,7 +6,7 @@ import path from "node:path";
 import { execSync } from "node:child_process";
 import { GitManager } from "../../shared/git.js";
 import { initGlobalGitConfig, setGitIdentity } from "../git-config.js";
-import { SessionRunner, SessionRunnerRegistry } from "../session-runner.js";
+import { SessionRunner, SessionRunnerRegistry, resetRunnerTurnState } from "../session-runner.js";
 import { createIdleEnforcer } from "../idle-enforcer.js";
 import { POST_TURN_HOLD_MAX_MS } from "../post-turn-hold.js";
 import type { SessionRunnerInterface } from "../session-runner.js";
@@ -1278,7 +1278,9 @@ describe("rebase-driver: planning#369 up-to-date branch with unpushed commits", 
     const attemptDeps = {
       ...deps(git, runner, true),
       agentFactory: hangingAgent,
-      timeoutMs: 250,
+      // Long enough that a loaded machine still reaches the dispatch: the assertion below is
+      // that the agent RAN, and under the full suite 250ms expired during the rebase itself.
+      timeoutMs: 3_000,
       drainQueue: () => { order.push("drain"); },
     };
     // Wire the deps: without them the resolution turn is refused rather than started,
@@ -2733,7 +2735,8 @@ describe("rebase-driver: docs/303 post-rebase follow-up", () => {
     const attemptDeps = {
       ...baseDeps(git, runner, () => "unused"),
       agentFactory: hangingAgent,
-      timeoutMs: 250,
+      // See the note on the other 3s deadline: 250ms expired before the dispatch under load.
+      timeoutMs: 3_000,
     };
     wireSystemTurnDeps(attemptDeps);
     const result = await runAutoResolveAttempt(attemptDeps, "main");
@@ -3228,5 +3231,103 @@ describe("rebase-driver: planning#556 leases that a neighbour can invalidate", (
     expect(busyAtHandback.length).toBeGreaterThan(0);
     for (const busy of busyAtHandback) expect(busy).toBe(true);
     expect(runner.postTurnWorkInFlight).toBe(false);
+  });
+});
+
+// planning#554 — the flow's `finally` used `!runner.running` as an ownership check for
+// systemTurnInProgress. It is not one: a turn can run without owning the hold, and the hold
+// can change hands with no turn running at all.
+describe("rebase-driver: the flow releases its own hold, not whatever the flag holds", () => {
+  let tmpDir: string;
+  let origGitConfigGlobal: string | undefined;
+  let origGitEditor: string | undefined;
+
+  beforeEach(() => {
+    vi.mocked(handWorkspaceBackToWorker).mockClear();
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-rebase-hold-"));
+    origGitConfigGlobal = process.env.GIT_CONFIG_GLOBAL;
+    origGitEditor = process.env.GIT_EDITOR;
+    initGlobalGitConfig(path.join(tmpDir, "credentials"));
+    setGitIdentity("Test User", "test@test.com");
+    process.env.GIT_EDITOR = "true";
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    if (origGitConfigGlobal !== undefined) process.env.GIT_CONFIG_GLOBAL = origGitConfigGlobal;
+    else delete process.env.GIT_CONFIG_GLOBAL;
+    if (origGitEditor !== undefined) process.env.GIT_EDITOR = origGitEditor;
+    else delete process.env.GIT_EDITOR;
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  function setupDivergedSession(): { git: GitManager; runner: SessionRunner; deps: Parameters<typeof runRebaseFlow>[0] } {
+    const { workDir, bareDir, git } = setupRepoWithRemote(tmpDir);
+    createCleanDivergence(bareDir, workDir);
+    execSync("git push -u origin feature", { cwd: workDir, stdio: "pipe" });
+    const runner = new SessionRunner({ sessionId: "s1", sessionDir: workDir, defaultAgentId: "claude" });
+    return {
+      git,
+      runner,
+      deps: {
+        git,
+        githubAuthManager: makeStubAuth(true),
+        runner,
+        sessionManager: makeStubSessionManager(),
+        chatHistoryManager: makeStubHistory([]),
+        agentFactory: () => new FakeRebaseAgent(() => "Ran the queued user turn.") as unknown as AgentProcess,
+        usageManager: makeStubUsageManager(),
+        sseBroadcast: () => {},
+      },
+    };
+  }
+
+  /** The push is a non-turn step of the flow — the incident's window. */
+  function duringTheFlow(git: GitManager, inject: () => void): void {
+    vi.spyOn(git, "forcePush").mockImplementation(async () => {
+      inject();
+      return "pushed";
+    });
+  }
+
+  it("releases the hold when a CLI-started turn was adopted mid-flow", async () => {
+    const { git, runner, deps } = setupDivergedSession();
+    let queued: { settled: Promise<{ status: string }> } | null = null;
+
+    duringTheFlow(git, () => {
+      queued = runner.dispatch(testDispatch({ text: "and now do the other thing" }));
+      // What adoptCliStartedTurn (ws-handlers/agent-listeners.ts) does for a self-wake: it starts
+      // a turn ShipIt never dispatched, moves the turn epoch, and takes no system hold.
+      resetRunnerTurnState(runner);
+      runner.running = true;
+    });
+
+    expect((await runFlow(deps, "main")).status).toBe("rebased");
+    expect(runner.queueLength).toBe(1);
+    expect(runner.systemTurnInProgress).toBe(false);
+
+    // The stall the incident produced: with the hold stranded, nothing this session does again
+    // can start a turn — not even the adopted turn's own teardown drain.
+    runner.running = false;
+    expect(releaseQueuedTurn(runner)).toBe(true);
+    expect((await queued!.settled).status).toBe("completed");
+    expect(runner.queueLength).toBe(0);
+  });
+
+  it("leaves a hold taken over mid-flow alone, and drains nothing under it", async () => {
+    const { git, runner, deps } = setupDivergedSession();
+
+    duringTheFlow(git, () => {
+      runner.dispatch(testDispatch({ text: "and now do the other thing" }));
+      // Another owner takes the session between turns. Every write of `true` mints a new ticket,
+      // so this is a different hold even though the flag never went false (docs/304).
+      runner.systemTurnInProgress = true;
+    });
+
+    expect((await runFlow(deps, "main")).status).toBe("rebased");
+
+    // Its owner may be mid-rebase itself; handing it a queued turn is what docs/304 stopped.
+    expect(runner.systemTurnInProgress).toBe(true);
+    expect(runner.queueLength).toBe(1);
   });
 });

@@ -1,4 +1,10 @@
-import type { EgressEnforcementStatus, SettingsEffectState } from "../../shared/types.js";
+import type {
+  EgressEnforcementStatus,
+  SettingsEffectState,
+  SettingsProposalOperation,
+  SettingsProposalPhase,
+  SettingsProposalTarget,
+} from "../../shared/types.js";
 import {
   ALL_SETTINGS,
   addressesARepository,
@@ -24,6 +30,7 @@ import { readStoredGlobalSettings } from "./settings-derivation.js";
 import { BESPOKE_READERS, StoreReadCache } from "./settings-store-readers.js";
 import type { ItemName, StoreReadContext, StoredItem } from "./settings-store-readers.js";
 import type { SettingsReadDeps } from "./settings-read-deps.js";
+import type { SettingsProposalRow } from "../settings-proposal-store.js";
 import { ServiceError } from "./types.js";
 
 export type { SettingsReadDeps };
@@ -119,6 +126,8 @@ export interface SettingItemView {
   display: string;
   /** What ShipIt already computes about this instance, so the agent says why (req 3). */
   notes?: string[];
+  /** The last proposal about THIS instance; a sibling item's says nothing about it. */
+  lastProposal?: SettingProposalSummary;
 }
 
 export interface SettingIndexEntry {
@@ -145,6 +154,33 @@ export interface SettingIndexEntry {
   notes: string[];
 }
 
+/**
+ * What the user last did about this setting, from any session
+ * (docs/299-agent-settings-access req 8, plan.md → How the agent learns the
+ * outcome). What somebody did about a setting is a fact about the setting, not
+ * about the session that asked.
+ *
+ * It is ONE record, deliberately: a dismissal followed by another session's
+ * proposal leaves only the latter, so this is not a durable veto and must not be
+ * read as one. A `pending` card does not stop a second proposal either —
+ * reporting it is enough, because a card nothing expires would otherwise be an
+ * indefinite veto from a session the user has forgotten.
+ */
+export interface SettingProposalSummary {
+  cardId: string;
+  phase: SettingsProposalPhase;
+  operation: SettingsProposalOperation;
+  /** The instance it was about, where the setting has more than one. */
+  item?: string;
+  /** Both as the proposal recorded them: the projected value, never the stored one. */
+  from: unknown;
+  proposed: unknown;
+  proposedAt: string;
+  resolvedAt?: string;
+  /** The session the card is in, which may not be the one reading this. */
+  sessionId: string;
+}
+
 export interface SettingDetailEntry extends SettingIndexEntry {
   /** The declared description, whole — the same words the dialog shows (req 7). */
   description: string;
@@ -155,6 +191,8 @@ export interface SettingDetailEntry extends SettingIndexEntry {
   live?: Record<string, unknown>;
   /** Present for an item-addressed setting: one entry per instance. */
   items?: SettingItemView[];
+  /** The last proposal about this setting, or about this repository's copy of it. */
+  lastProposal?: SettingProposalSummary;
 }
 
 export interface SettingsIndex {
@@ -854,6 +892,33 @@ function resolveLiveDetail(
   }
 }
 
+/**
+ * The last proposal about one target, in the words `lastProposal` reports. The
+ * store answers per target, so an item-addressed setting looks one up per
+ * instance: a card about the `reviewer` role says nothing about `deep-dive`.
+ */
+function lastProposalFor(
+  deps: SettingsReadDeps,
+  target: SettingsProposalTarget,
+): SettingProposalSummary | undefined {
+  return summarize(deps.proposals?.latestForTarget(target) ?? null);
+}
+
+function summarize(row: SettingsProposalRow | null): SettingProposalSummary | undefined {
+  if (!row) return undefined;
+  return {
+    cardId: row.cardId,
+    phase: row.phase,
+    operation: row.operation,
+    ...(row.target.item ? { item: row.target.item } : {}),
+    from: row.from,
+    proposed: row.proposed,
+    proposedAt: row.createdAt,
+    ...(row.resolvedAt ? { resolvedAt: row.resolvedAt } : {}),
+    sessionId: row.sessionId,
+  };
+}
+
 /** The detail of one setting: its whole description, its value's shape, and what resolves live. */
 export async function getSettingForAgent(
   deps: SettingsReadDeps,
@@ -867,12 +932,29 @@ export async function getSettingForAgent(
   const state = await readState(deps, sessionId);
   const { entry, items } = await buildEntry(declaration, deps, state, true);
   const live = entry.readable ? resolveLiveDetail(declaration.key, deps, entry) : undefined;
+  // A per-repository setting's proposals are addressed by repository, and the
+  // repository is the session's own binding — never anything a caller supplies.
+  const perRepository = declaration.scope === "project" || addressesARepository(declaration.address);
+  const base: SettingsProposalTarget = {
+    key: declaration.key,
+    ...(perRepository && state.repoUrl ? { repoUrl: state.repoUrl } : {}),
+  };
+  // Keyed by SETTING rather than by target: an item-addressed lookup answers
+  // nothing for an entry that does not exist yet (a pending host addition) or no
+  // longer does (one a card removed), and those are exactly the cards an agent
+  // told to read before proposing has to see.
+  const last = summarize(deps.proposals?.latestForKey(base.key, base.repoUrl) ?? null);
+  const withProposals = items?.map((item) => {
+    const proposal = lastProposalFor(deps, { ...base, item: item.address });
+    return proposal ? { ...item, lastProposal: proposal } : item;
+  });
   return {
     ...entry,
     description: oneLine(declaration.description),
     valueType: declaration.type.kind,
     shape: declaration.type.shape,
     ...(live ? { live } : {}),
-    ...(items ? { items } : {}),
+    ...(withProposals ? { items: withProposals } : {}),
+    ...(last ? { lastProposal: last } : {}),
   };
 }

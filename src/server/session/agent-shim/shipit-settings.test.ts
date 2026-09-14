@@ -285,12 +285,90 @@ describe("shipit settings get", () => {
 });
 
 describe("shipit settings write verbs", () => {
-  it("refuses `settings set` and says what to do instead", async () => {
+  it("refuses `settings set` and points at the card that does change a setting", async () => {
     const { run } = makeRunner();
     const res = await run(["settings", "set", "advanced.autoFixCi=true"]);
 
     expect(res.exitCode).toBe(2);
     expect(res.stderr).toContain("a ShipIt setting is the user's to change");
+    expect(res.stderr).toContain("shipit settings propose");
     expect(res.calls).toHaveLength(0);
+  });
+});
+
+const PROPOSED: MockResponse = {
+  status: 200,
+  body: {
+    card: {
+      cardId: "set-7f3a",
+      label: "Auto-fix CI when checks fail",
+      path: "Settings › Advanced",
+      from: "off",
+      to: "on",
+      target: { key: "advanced.autoFixCi" },
+    },
+  },
+};
+
+describe("shipit settings propose", () => {
+  it("sends the value as TEXT, for the server to read against the declared type", async () => {
+    const { run } = makeRunner();
+    const res = await run(
+      ["settings", "propose", "advanced.autoFixCi=true", "--reason", "the checks keep failing"],
+      { "POST /agent-ops/settings/propose": PROPOSED },
+    );
+
+    expect(res.exitCode).toBe(0);
+    expect(res.calls).toEqual([{ method: "POST", path: "/agent-ops/settings/propose" }]);
+    // What the agent is told back: the change, and that nothing has moved.
+    expect(res.stdout).toContain("off → on");
+    expect(res.stdout).toContain("set-7f3a");
+    expect(res.stdout).toContain("Nothing has changed yet");
+  });
+
+  it("requires a reason, because the user reads it on the card", async () => {
+    const { run } = makeRunner();
+    const res = await run(["settings", "propose", "advanced.autoFixCi=true"]);
+
+    expect(res.exitCode).toBe(2);
+    expect(res.stderr).toContain("--reason is required");
+    expect(res.calls).toHaveLength(0);
+  });
+
+  it("requires a value, or one of the two list operations", async () => {
+    const { run } = makeRunner();
+    const res = await run(["settings", "propose", "advanced.autoFixCi", "--reason", "why"]);
+
+    expect(res.exitCode).toBe(2);
+    expect(res.stderr).toContain("needs a value");
+    expect(res.calls).toHaveLength(0);
+  });
+
+  it("takes one list operation at a time, never both", async () => {
+    const { run } = makeRunner();
+    const res = await run([
+      "settings", "propose", "network.egress.hosts[].host",
+      "--add", "a.example.com", "--remove", "b.example.com", "--reason", "why",
+    ]);
+
+    expect(res.exitCode).toBe(2);
+    expect(res.stderr).toContain("one of them");
+    expect(res.calls).toHaveLength(0);
+  });
+
+  it("fails with the server's own refusal, which is the agent's answer", async () => {
+    const { run } = makeRunner();
+    const res = await run(
+      ["settings", "propose", "voice.speed=2", "--reason", "why"],
+      {
+        "POST /agent-ops/settings/propose": {
+          status: 400,
+          body: { error: "Set in the browser; ShipIt's server does not hold this value." },
+        },
+      },
+    );
+
+    expect(res.exitCode).toBe(1);
+    expect(res.stderr).toContain("Set in the browser");
   });
 });

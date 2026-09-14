@@ -1636,6 +1636,9 @@ export default function App() {
             onEgressDecision={(cardId, host, action) =>
               send({ type: "egress_decision", cardId, host, action })
             }
+            onSettingsProposalDecision={(cardId, action) =>
+              send({ type: "settings_proposal_decision", cardId, action })
+            }
             onUndoIssueWrite={(cardId) =>
               send({ type: "undo_issue_write", cardId })
             }
