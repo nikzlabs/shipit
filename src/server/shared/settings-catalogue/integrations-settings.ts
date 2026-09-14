@@ -257,6 +257,10 @@ export const INTEGRATIONS_SETTINGS = {
  * Why a stored field is not a declared setting. The same judgement
  * `exclusions.ts` makes about a dialog control, made about a persisted field —
  * and, like that one, a claim in prose that review reads.
+ *
+ * Deliberately unused today: every stored field is declared, which is the
+ * strongest state the map can be in. It stays because the alternative escape
+ * for a genuinely internal field would be declaring a setting that is not one.
  */
 interface NotASetting { readonly notASetting: string }
 
@@ -287,9 +291,13 @@ type DeclarationForField<F extends string> =
  * explained. That is the structural half; the walk still covers the other
  * direction, a control nobody declared.
  *
- * `setup` is the field that proved the gap: it has been accepted by the stored
- * type and by `validateMcpServerConfig` since the original MCP integration, and
- * nothing anywhere reads it.
+ * The gap was not hypothetical. `setup` — a pre-start command for non-npm stdio
+ * servers, designed in `docs/088-mcp-integration/plan.md:405` — was accepted by
+ * the stored type and by `validateMcpServerConfig` from that integration onwards
+ * and read by nothing for as long. It is deleted rather than declared, because a
+ * stored value with no effect is not a setting to report; if the feature is
+ * wanted, docs/088 still holds the design and re-adding the field will fail here
+ * until it is declared.
  */
 export const MCP_SERVER_FIELD_SETTINGS: {
   [F in keyof McpStdioServerConfig | keyof McpHttpServerConfig]:
@@ -304,10 +312,4 @@ export const MCP_SERVER_FIELD_SETTINGS: {
   npmPackage: "mcp.servers[].npmPackage",
   url: "mcp.servers[].url",
   headers: "mcp.servers[].headers",
-  setup: {
-    notASetting:
-      "Accepted by `validateMcpServerConfig` and stored, and read by nothing — no panel writes it, "
-      + "no spawn runs it. It stores a value that has no effect, so there is nothing for the agent "
-      + "to report about it; dropping the field belongs with the MCP panel's own work.",
-  },
 };

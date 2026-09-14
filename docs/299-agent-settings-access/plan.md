@@ -139,8 +139,13 @@ may name is derived from the field's own name** — `mcp.servers[].${F}`, not an
 existing key — because "mapped to something that exists" is the same pass the DOM
 walk gives, and it is the loophole being closed. The two guards run in opposite
 directions: the walk finds a control nobody declared, the map finds a stored
-field nobody declared. `setup` is what the map found — accepted by
-`validateMcpServerConfig` since the original MCP integration and read by nothing.
+field nobody declared.
+
+`setup` is what the map found — a pre-start command for non-npm stdio servers,
+designed in `docs/088-mcp-integration/plan.md:405`, whose type and validator
+shipped and whose reader never did. It is **deleted**, not declared: a stored
+value with no effect is not a setting the agent should report. docs/088 still
+holds the design, and re-adding the field fails the map until it is declared.
 
 **The reader tables are the same kind of derivation.** `BESPOKE_READERS` and
 `OWN_ROUTE_READERS` are keyed by `BespokeSettingKey` / `OwnRouteSettingKey`,

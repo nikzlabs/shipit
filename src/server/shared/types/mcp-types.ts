@@ -7,7 +7,6 @@ export interface McpStdioServerConfig {
   /** May contain $secret:<agentEnv-key> placeholders, resolved in the worker. */
   env?: Record<string, string>;
   npmPackage?: string;
-  setup?: string;
   enabled: boolean;
 }
 

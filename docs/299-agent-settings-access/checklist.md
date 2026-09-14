@@ -89,6 +89,9 @@ requirements; each finding verified at the code before being acted on.
       runtime guards are gone
 - [x] req 7 — a stored MCP field with no declaration is a compile error
       (`MCP_SERVER_FIELD_SETTINGS`), which is what the DOM walk cannot see
+- [x] The field that guard found — MCP `setup`, stored since docs/088 and read by
+      nothing — removed rather than declared, so every stored field is a
+      declaration and the map carries no exemption
 - [x] req 7 — the MCP form and the credential-routing band render the
       declaration's description, and their hand-written copy moved into it
 - [x] Every new guard proven red on its own, with the defect restored
