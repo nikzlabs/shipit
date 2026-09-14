@@ -370,7 +370,7 @@ export function RoleEditor({
             disabled={!canSave}
             onClick={submit}
             data-testid="role-editor-save"
-            aria-label="Save role"
+            aria-label={busy ? "Saving role" : "Save role"}
             {...bindSetting("roles")}
           >
             {busy ? "Saving…" : "Save"}

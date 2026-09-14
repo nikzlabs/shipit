@@ -181,7 +181,7 @@ export function SettingsTrackers({ embedded = false, logo }: { embedded?: boolea
         size="md"
         disabled={busy || !token.trim()}
         onClick={handleConnect}
-        aria-label="Connect Linear"
+        aria-label={busy ? "Connecting Linear" : "Connect Linear"}
         {...bindSetting("integrations.linear.credential")}
       >
         {busy ? "Connecting…" : "Connect Linear"}

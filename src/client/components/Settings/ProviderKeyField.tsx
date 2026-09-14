@@ -97,7 +97,7 @@ export function ProviderKeyField({
           size="md"
           disabled={!draft.trim() || saving}
           onClick={() => void save()}
-          aria-label={`Save the ${provider.label} API key`}
+          aria-label={`${saving ? "Saving" : "Save"} the ${provider.label} API key`}
           {...bindSetting("voice.providerKey")}
         >
           {saving ? "Saving…" : "Save"}

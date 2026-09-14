@@ -113,7 +113,7 @@ export function OAuthProviderCards({
                         onClick={() => onTest(managedServer)}
                         disabled={!hasActiveSession || isTesting || inFlight}
                         title={hasActiveSession ? undefined : "Start a session to test"}
-                        aria-label="Test"
+                        aria-label={isTesting ? "Testing…" : "Test"}
                       >
                         {isTesting ? "Testing…" : "Test"}
                       </Button>
@@ -126,7 +126,7 @@ export function OAuthProviderCards({
                         variant="primary"
                         disabled={inFlight}
                         onClick={() => onConnect(provider.id)}
-                        aria-label={`Reconnect ${provider.label}`}
+                        aria-label={`${inFlight ? "Connecting" : "Reconnect"} ${provider.label}`}
                         {...bindSetting("mcp.oauthProvider")}
                       >
                         {inFlight ? "Connecting…" : "Reconnect"}
@@ -159,7 +159,7 @@ export function OAuthProviderCards({
                       variant="primary"
                       disabled={inFlight}
                       onClick={() => onConnect(provider.id)}
-                      aria-label={`Connect ${provider.label}`}
+                      aria-label={`${inFlight ? "Connecting" : "Connect"} ${provider.label}`}
                       {...bindSetting("mcp.oauthProvider")}
                     >
                       {inFlight ? "Connecting…" : `Connect ${provider.label}`}

@@ -3,47 +3,25 @@
  * plan.md → The residual guard).
  *
  * Deriving the dialog's controls from the declarations cannot stop somebody
- * hand-writing one that was never declared, so this renders **each tab of both
- * settings dialogs**, enumerates its interactive elements, and fails on any that
- * is neither a declaration binding nor a reasoned `not-a-setting` exclusion.
+ * hand-writing one that was never declared, so this renders each tab of both
+ * settings dialogs and fails on any interactive element that is neither a
+ * declaration binding nor a reasoned `not-a-setting` exclusion. It matches the
+ * binding and falls back to the accessible name; never a test id, which
+ * identifies a control without proving it shares the declaration's description
+ * and policy.
  *
- * Four decisions, each because the obvious version of the walk was found wrong:
- *
- *  - **It never matches on `data-testid`.** A test id identifies a control and
- *    proves nothing about whether it shares the declaration's description and
- *    policy — and the MCP env/header editor has no test id at all. The match is
- *    the binding, falling back to the accessible name for an exclusion.
- *  - **It renders the conditional and nested forms**, or it would not see most
- *    of the controls: the MCP stdio *and* HTTP variants, a populated credential
- *    row with its rename and replace fields, an expanded role editor, an
- *    allowlist row mid-edit.
- *  - **It also compares the rendered copy against the declaration**, because a
- *    rendering change that silently drops a description — or quietly writes its
- *    own — is the defect this slice is most likely to ship, and a walk that only
- *    counted controls would stay green through it.
- *  - **It proves it is not passing vacuously.** A tab that rendered nothing has
- *    nothing unaccounted for, so the last test asserts which declarations the
- *    walk actually reached, against a named list of the ones it cannot.
- *
- * Its boundary is the tab **pane**. The dialog's own furniture (the tab strip,
- * the close affordance) is not a setting and is not walked, and neither is the
- * add-a-provider wizard, which is a flow rather than a pane — {@link UNREACHED}
- * names what that costs.
- *
- * **Two things it cannot decide, stated rather than implied.** A bespoke panel
- * keeps its own components by design, so a field there is proved *bound* and its
- * visible wording is a matter for review unless the panel marks it — the
- * standard controls, and the bespoke labels that do mark themselves, are what
- * {@link EXPLAINED_IN_THE_DIALOG} pins. And `wholeTab` is a blanket exemption:
- * on a tab carrying one, nothing can fail, so whether that tab really holds no
- * setting is a claim `exclusions.ts` makes in prose and review checks.
+ * Its boundary is the tab **pane**: dialog furniture and the add-a-provider
+ * wizard are outside it, and {@link UNREACHED} names what that costs. Two things
+ * it cannot decide — a bespoke panel's visible wording unless the panel marks
+ * it, and whether a `wholeTab` exemption is honest — are claims made in prose
+ * and checked by review.
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { render, screen, cleanup, act, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { Settings, type SettingsProps } from "../Settings.js";
-import { ProjectSettings } from "../ProjectSettings.js";
+import { SETTINGS_TABS, Settings, type SettingsProps } from "../Settings.js";
+import { PROJECT_SETTINGS_TABS, ProjectSettings } from "../ProjectSettings.js";
 import { useUiStore } from "../../stores/ui-store.js";
 import { useSettingsStore } from "../../stores/settings-store.js";
 import { usePreviewStore } from "../../stores/preview-store.js";
@@ -103,9 +81,19 @@ function describeControl(el: Element): string {
     + `named "${accessibleName(el) || "(nothing)"}"`;
 }
 
-/** A control that holds a value of its own, rather than running an operation. */
+/**
+ * A control that holds a value of its own, rather than running an operation.
+ *
+ * Not the tag alone: a switch, a radio and a toggle button are all `<button>`,
+ * and binding one of those to a collection is the same loophole as an `<input>`.
+ * A menu trigger looks the same and is NOT one — the overflow menu on a
+ * credential row offers the collection's operations, which is what it should
+ * bind — so the test is the checked/pressed state a value control carries.
+ */
 function editsAValue(el: Element): boolean {
-  return ["input", "select", "textarea"].includes(el.tagName.toLowerCase());
+  return ["input", "select", "textarea"].includes(el.tagName.toLowerCase())
+    || el.hasAttribute("aria-checked")
+    || el.hasAttribute("aria-pressed");
 }
 
 /** Every control in a pane, ignoring anything already hidden from a reader. */
@@ -186,8 +174,6 @@ function walk(pane: Element, tab: SettingTab): WalkResult {
 
   return { unaccounted, drift, bound, explained };
 }
-
-// ---------------------------------------------------------------- fixtures
 
 const agents: AgentOption[] = [
   {
@@ -401,8 +387,6 @@ afterEach(() => {
   useRepoStore.setState({ repos: [] } as never);
 });
 
-// ------------------------------------------------------------------ renders
-
 /** The pane the walk reads: the one tab Radix currently has mounted. */
 function activePane(): HTMLElement {
   return screen.getByRole("tabpanel");
@@ -414,19 +398,25 @@ function activePane(): HTMLElement {
  * stored value. The test below pins that the two lists agree, so the tab cannot
  * be skipped without the catalogue saying, in prose, why.
  */
-/** Every tab the global dialog renders, in its own order. */
-const SETTINGS_DIALOG_TABS: SettingTab[] = [
-  "services", "roles", "integrations", "git", "instructions",
-  "skills", "keyboard", "voice", "network", "advanced",
-];
+/**
+ * The tabs to walk, taken from the dialog itself rather than listed here: a tab
+ * added to `Settings.tsx` and forgotten here would be a pane nothing ever looks
+ * at, and the test would go on passing.
+ */
+const GLOBAL_TABS: SettingTab[] = SETTINGS_TABS.filter((tab) => tab !== "skills");
 
-const GLOBAL_TABS: SettingTab[] = SETTINGS_DIALOG_TABS.filter((tab) => tab !== "skills");
+type ProjectTab = (typeof PROJECT_SETTINGS_TABS)[number];
 
-const PROJECT_TABS: { tab: SettingTab; initial: "secrets" | "deployments" | "appearance" }[] = [
-  { tab: "project-secrets", initial: "secrets" },
-  { tab: "project-deployments", initial: "deployments" },
-  { tab: "project-appearance", initial: "appearance" },
-];
+/** The Project Settings tab names, as the catalogue spells them. */
+const PROJECT_TAB_OF: Record<ProjectTab, SettingTab> = {
+  secrets: "project-secrets",
+  deployments: "project-deployments",
+  appearance: "project-appearance",
+};
+
+const PROJECT_TABS = PROJECT_SETTINGS_TABS.map(
+  (initial) => ({ initial, tab: PROJECT_TAB_OF[initial] }),
+);
 
 async function settle(): Promise<void> {
   await act(async () => { await Promise.resolve(); });
@@ -439,9 +429,7 @@ async function renderGlobalTab(tab: SettingTab): Promise<HTMLElement> {
   return activePane();
 }
 
-async function renderProjectTab(
-  initial: "secrets" | "deployments" | "appearance",
-): Promise<HTMLElement> {
+async function renderProjectTab(initial: ProjectTab): Promise<HTMLElement> {
   render(
     <ProjectSettings
       repoUrl={REPO_URL}
@@ -500,8 +488,6 @@ async function walkBothMcpTransports(pane: HTMLElement): Promise<WalkResult[]> {
   return [stdio, walk(pane, "integrations")];
 }
 
-// -------------------------------------------------------------------- tests
-
 describe("every control in the Settings dialog is declared or excused", () => {
   for (const tab of GLOBAL_TABS) {
     it(`accounts for the ${tab} tab`, async () => {
@@ -509,15 +495,15 @@ describe("every control in the Settings dialog is declared or excused", () => {
     });
   }
 
-  it("leaves out only a tab that carries a whole-tab exemption", () => {
-    const walked = new Set(GLOBAL_TABS);
-    const exempt = new Set(
-      SETTING_EXCLUSIONS.filter((x) => x.wholeTab).map((x) => x.tab),
+  it("leaves out only a tab the catalogue exempts whole", () => {
+    const walked = new Set<string>(GLOBAL_TABS);
+    const exempt = SETTING_EXCLUSIONS.filter((x) => x.wholeTab).map((x) => x.tab);
+    // Both lists come from the dialogs themselves, so a tab added to either one
+    // is walked unless `exclusions.ts` says in prose why it holds no setting.
+    expect(SETTINGS_TABS.filter((tab: string) => !walked.has(tab))).toEqual(exempt);
+    expect(PROJECT_SETTINGS_TABS.map((tab) => PROJECT_TAB_OF[tab])).toEqual(
+      PROJECT_TABS.map((entry) => entry.tab),
     );
-    // Skills is the only tab either list may name, and it must be in both: left
-    // out of the walk AND excused in the catalogue, with the reason written down.
-    expect([...exempt]).toEqual(["skills"]);
-    expect(SETTINGS_DIALOG_TABS.filter((tab) => !walked.has(tab))).toEqual([...exempt]);
   });
 
   it("accounts for the role editor, which only exists once opened", async () => {

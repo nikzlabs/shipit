@@ -122,7 +122,7 @@ export function McpServerForm({
           variant="primary"
           onClick={onSave}
           disabled={saving}
-          aria-label="Save MCP server"
+          aria-label={saving ? "Saving MCP server" : "Save MCP server"}
           {...bindSetting("mcp.servers")}
         >
           {saving ? "Saving…" : "Save"}

@@ -88,7 +88,7 @@ export function McpServerRow({
             onClick={onTest}
             disabled={!hasActiveSession || isTesting || isDeleting}
             title={hasActiveSession ? undefined : "Start a session to test"}
-            aria-label="Test"
+            aria-label={isTesting ? "Testing…" : "Test"}
           >
             {isTesting ? "Testing…" : "Test"}
           </Button>
@@ -110,7 +110,7 @@ export function McpServerRow({
             variant="ghost"
             onClick={onDelete}
             disabled={isDeleting}
-            aria-label={`Delete ${server.name}`}
+            aria-label={`${isDeleting ? "Deleting" : "Delete"} ${server.name}`}
             {...bindSetting("mcp.servers")}
           >
             {isDeleting ? "Deleting…" : "Delete"}
