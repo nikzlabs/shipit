@@ -244,6 +244,16 @@ export const INTEGRATIONS_SETTINGS = {
    * destination exists, and `~/.ssh/config` tells it which ones THIS session may
    * use. Adding one is not proposable — it is only useful once the user has
    * installed its public line on the server, which ShipIt cannot do.
+   *
+   * **The only collection here that declares no `[]` item fields, deliberately.**
+   * Every other one addresses its items, and the registry guard permits this —
+   * it requires an item field to have a declared parent, never a collection to
+   * have items. The reason is that this registry is account-wide while a grant
+   * is per session: `[].address` and `[].user` would let a session read where
+   * every registered destination is and who it logs in as, including the ones it
+   * has no grant for, which is the enumeration the rest of docs/305 is built to
+   * prevent. The detail the agent legitimately needs is the granted detail, and
+   * that already reaches it through `~/.ssh/config`.
    */
   "integrations.sshHosts": defineSetting({
     key: "integrations.sshHosts",
