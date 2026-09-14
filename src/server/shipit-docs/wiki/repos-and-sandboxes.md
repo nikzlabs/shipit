@@ -77,7 +77,10 @@ one-time consent, and it is the same shape as VS Code's Restricted Mode.
 Two places carry the grant, and both say **"Trust this repository"**:
 
 - **Above the composer**, as a notice explaining why messages are blocked. This
-  is the reliable one — it renders in every mode.
+  is the reliable one — it renders in every mode. One caveat: the *button* needs
+  a remote ShipIt actually tracks as a repository. If the session's remote
+  matches no entry, the notice still explains the block but carries no grant —
+  which means the fix is to add that repository, not to hunt for a button.
 - **The Preview tab**, which renders a restricted empty state where the preview
   would be. Conditional: there are installs with no Preview tab at all, and
   there the composer notice is the only way in. Name that one first.
@@ -103,11 +106,12 @@ Sessions*). It has three tabs.
 
 **Deployments** — two unrelated things sharing a tab:
 
-- **Agent permissions → "Allow agents to merge their own pull requests."** Off
-  for every repository until the user turns it on. When it is on, an agent may
-  merge **only the pull request its own session opened**, only when every check
-  has passed, and never with a force-merge; GitHub's branch protection and
-  required reviews still apply on top. This toggle is deliberately the user's
+- **Agent permissions → "Allow agents to merge their own pull requests."** It
+  ships off and is granted per repository; read this one's state with `shipit
+  settings get project.allowAgentMerge` rather than assuming. When it is on, an
+  agent may merge **only the pull request its own session opened**, only when
+  every check has passed, and never with a force-merge; GitHub's branch
+  protection and required reviews still apply on top. This toggle is the user's
   alone — the route that writes it refuses a session container, so you cannot
   grant yourself the permission, and asking is the only path you have.
 - **Connect your repo** — links to Vercel, Cloudflare Pages and Netlify. These
@@ -174,13 +178,25 @@ session is archived through the same durability check archiving always runs:
 ShipIt commits whatever is outstanding, pushes the branch, and only then
 reclaims the checkout. If it **cannot** make the work durable — a push that
 failed, a detached HEAD, changes git refused to commit, a workspace it could not
-read — it **keeps that session's files** instead of deleting them, and says so.
+read — it **keeps that session's files** instead of deleting them.
 
-Two things follow, and the second one surprises people. Removal can **publish**:
-a commit and a push are exactly how the work is made safe, so a branch that only
-existed locally can appear on GitHub as a result. And a session whose files were
-kept is not a failure — it is the guard doing its job, and restoring that
-session gives it back where it stood.
+Three consequences, none of them obvious:
+
+- **Removal can publish.** A commit and a push are exactly how the work is made
+  safe, so a branch that only ever existed locally can appear on GitHub as a
+  result of removing the repository. Say so before the user clicks, if the
+  repository is one where that matters.
+- **Nothing tells the user when files were kept.** The retention is real and it
+  is logged on the server, but this path reports only success — unlike archiving
+  a single session, which does say so. So do not promise a notice, and do not
+  read the absence of one as proof that everything was reclaimed.
+- **A kept checkout is not guaranteed to come back as it was.** Restoring runs
+  the same durability check again. If it *now* succeeds — the push that failed
+  works because the network is back or the GitHub connection was repaired —
+  ShipIt pushes the work and then replaces the checkout with a fresh clone on a
+  **new branch**. The commits are safe on the remote; the session does not
+  resume them. It is restored where it stood only while it is *still* not
+  durable.
 
 If a user wants removal to be quiet as well as safe, the honest answer is to get
 the branches pushed first — which you can do — and then remove.
@@ -210,8 +226,9 @@ What follows from the design, and answers most of what users ask:
   settings read ever receives one: both report which *names* are set and nothing
   more, and the Secrets tab shows a saved value as dots it cannot reveal. So
   "what is my Stripe key set to?" is not a question ShipIt will answer — "is it
-  set?" is. (The one path a value takes *out* is the next bullet, and it is a
-  deliberate one the user opted into per secret.)
+  set?" is. That is a guarantee about *reading the store*, not about where
+  values end up: they are delivered into containers and processes that declared
+  them, which is the whole point of storing them.
 - **A value only reaches the services that declared it.** A `web` frontend does
   not receive the `db` password.
 - **You see a value only if it is marked `agent: true`**, which puts it in the
@@ -224,9 +241,13 @@ What follows from the design, and answers most of what users ask:
 - **Saving applies immediately.** ShipIt rewrites the env files and recreates
   the affected containers; nobody has to restart anything. A service the user
   started by hand is left alone.
-- **A custom variable that no service declares is injected nowhere.** It is
-  stored, and that is all. Adding its name to `x-shipit-secrets` is what
-  connects it.
+- **A name nothing declares is injected nowhere.** It is stored, and that is
+  all. Two kinds of thing declare a name: a compose service's
+  `x-shipit-secrets`, which you write, and a **plugin** the project uses, which
+  declares the credentials it needs and is served from this same repository's
+  store. So a "custom" variable may already be wired up by a plugin without
+  appearing in any compose file — the Secrets tab marks which plugin asked for
+  it. Check there before telling a user their value is going nowhere.
 - **Deleting a service is a secrets change.** The declaration lives on the
   service, so removing the last service that names a secret silently un-wires
   it — including from the agent container if it was `agent: true`. Re-declare it
@@ -273,7 +294,7 @@ useful and safe. Each names exactly what it widens:
 | **GitHub access** | The credential broker is wired for `git` and `gh`: clone and push **private** repositories, open pull requests, anywhere that account can reach. The token is brokered, never resident in the container | No GitHub token. Public HTTPS clones may still work; pushing to the user's repositories does not. This is **not** a network seal |
 | **Allow merging PRs** | The agent may run `gh pr merge` — gated on green checks, never a force-merge | The agent cannot merge. This is a *sub-grant* of GitHub access: it is unavailable, and is cleared, whenever GitHub access is off |
 | **Docker access** | `DOCKER_HOST` points at a **session-scoped** Docker proxy — only this session's containers, networks and volumes are visible. No host socket, no `--privileged` | No Docker at all |
-| **Network access** | Whatever every other session gets — normally the standard allowlist (LLM API, GitHub, package registries, hosts the user added) with an inline prompt for a new host, but the workspace's Network setting is what decides, and it can be Open | No internet beyond the agent's lifeline (the LLM API and ShipIt), plus GitHub if that is granted. No registries, no web. It only ever tightens; it is never an air-gap |
+| **Network access** | Whatever every other session gets. Normally the standard allowlist (LLM API, GitHub, package registries, hosts the user added) with an inline prompt for a new host — but this switch does not decide that. A per-session override decides it if one is set, otherwise the workspace's Network setting, and either can be Open | Egress is tightened to the agent's lifeline (the LLM API and ShipIt), plus GitHub if that is granted — **where the install enforces containment at all**. It only ever tightens; it is never an air-gap, and on an install with no enforcement it is inert |
 
 They are **server-authoritative**. An agent cannot read them out of a workspace
 file and cannot grant itself one — the route that writes them refuses a session
@@ -288,26 +309,29 @@ capabilities endpoint is deliberately closed to session containers — a request
 from inside comes back `403 This endpoint is not available to session
 containers`. So work it out:
 
-- **Network access** is the one you can read directly. `shipit settings get
-  network.egressContained` resolves containment against this session rather than
-  against the stored setting, and for a sandbox with Network access **off** it
-  comes back `excluded` with a note saying *this session's own network
-  capability* decides its containment. **Read the note, not just the word** —
-  there is a second `excluded`, whose note says egress enforcement is not
-  running on the install at all, and that one tells you nothing about the grant
-  (on such an install nothing is contained anyway). Any other answer means
-  Network access is on.
+- **Network access** is the one with a machine-readable tell. `shipit settings
+  get network.egressContained` reports the workspace setting's *value*, and
+  separately what it *does to this session* — and for a sandbox with Network
+  access **off** that effect comes back `excluded`, with a note saying this
+  session's own network capability decides its containment. **Read the note, not
+  the value, and not the word `excluded` alone**: a second `excluded` means
+  egress enforcement is not running on the install at all and tells you nothing
+  about the grant, and a read that fails reports `unknown` / `uncertain`, which
+  is not evidence either way. Only that one specific note is a positive signal,
+  and it reports the **saved** grant, not what this container is running under.
 - **Ask the user, and tell them where to look.** The sandbox banner at the top
   of the chat panel says *"Granted: …"*. Two caveats to carry when you quote it:
   it names GitHub, Docker and Network only — the merge sub-grant is not on it,
   so that one is the Session settings dialog — and it lists what is **saved**,
   which is not the same as what this container is running under (below).
-- **Docker:** `DOCKER_HOST` is set in your environment exactly when the
-  container was **started** with Docker access. That is the useful signal,
-  because it reports what you can actually do right now. It can disagree with
-  the saved grant while a restart is pending — newly granted and still absent,
-  or revoked and still present — so a mismatch with the banner is the pending
-  restart, not a bug.
+- **Docker:** `DOCKER_HOST` is set in your environment when the container was
+  **started** with Docker access. Treat its absence as decisive and its presence
+  as only suggestive: the Docker proxy re-checks the grant on every request, so
+  the variable can be there while each call is refused — while a restart is
+  pending, and also after ShipIt itself has restarted, which re-derives a
+  session's Docker access without consulting the sandbox grant. The honest
+  reading is "this container was started with it"; if a Docker call is then
+  refused, say that rather than assuming the grant is off.
 - **GitHub:** a brokered operation refused with *"GitHub access is not granted
   for this sandbox session"* is the grant being absent, not a broken token. This
   one applies at once, so the refusal is always current.
