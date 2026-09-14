@@ -1,6 +1,6 @@
 # Checklist — SSH hosts
 
-Design only so far. One open question in `requirements.md` (req 10 wording) blocks implementation code.
+Design only so far. All twelve requirements are resolved and the design is reviewed; implementation is unblocked.
 
 ## Image and container
 - [ ] `openssh-client` and a `~/.ssh` → `/credentials/.ssh` symlink in both session-worker Dockerfiles
@@ -15,7 +15,7 @@ Design only so far. One open question in `requirements.md` (req 10 wording) bloc
 
 ## Signing path
 - [ ] Worker SSH agent socket: identities, `session-bind@openssh.com` held per connection, sign relayed with the bind; everything else refused
-- [ ] Orchestrator sign endpoint: grant gate, bind verification, `is_forwarding` refusal, host-key pin (record on first bind, refuse mismatch + warning card), userauth-only data with matching session id and user, per-session rate/concurrency bound, one audit line per signature
+- [ ] Orchestrator sign endpoint: grant gate, bind verification, `is_forwarding` refusal, host-key pin (record on first bind, refuse mismatch + warning card), userauth-only data with matching session id and user, per-session rate/concurrency bound, one audit line per attempt with outcome and refusal reason
 - [ ] Fingerprint card on first bind and warning card on mismatch, both persisted (docs/188 recipe)
 
 ## Reachability

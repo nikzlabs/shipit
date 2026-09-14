@@ -90,9 +90,11 @@ orchestrator, gated by `gitCredentialAllowed(session)` in `pr-target.ts`).
      configured user. Nothing else is ever signed, so the endpoint is not a signing oracle.
   5. A per-session rate and concurrency bound is not exceeded.
   Then it signs with `node:crypto` (ed25519: `crypto.sign(null, data, key)`, blob
-  `string "ssh-ed25519" || string sig`) and logs one line: session, destination, user, time.
-  That line records an *authentication attempt*; the orchestrator never learns whether the
-  server accepted it (see the open question on req 10).
+  `string "ssh-ed25519" || string sig`). Every attempt, signed or refused, logs one line:
+  session, destination, user, time, outcome, and for a refusal which rule above failed
+  (req 10). That line records an *authentication attempt*; the orchestrator never learns
+  whether the server accepted it, so a "signed" line followed by a failing `ssh` points at
+  the server side (`authorized_keys`, restricted user), never at the signer.
 
 What this contract buys, stated without overclaiming: the private key stays secret (req 3);
 the key authenticates only to the pinned host, as the configured user — a relay through

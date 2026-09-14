@@ -22,9 +22,10 @@ description: The agent runs commands on a remote server over SSH from any sessio
 9. The first connection to a host accepts and records the server's host key. The fingerprint
    is shown in the host entry and in a transcript card so the user can compare it with the
    server. Later connections require the recorded key.
-10. Each SSH connection is recorded as one line in the orchestrator log with session, host,
-    and time. No transcript card per connection; the commands are already in the transcript
-    as the agent's tool calls.
+10. Each SSH authentication attempt is recorded as one line in the orchestrator log with
+    enough detail to debug a failure: session, destination, user, time, and whether ShipIt
+    signed or refused, with the reason for a refusal. No transcript card per connection; the
+    commands are already in the transcript as the agent's tool calls.
 
 11. The registry is a list of destinations, account-wide for the ShipIt instance. Each
     destination has its own generated key. A session is granted one or more destinations.
@@ -33,12 +34,12 @@ description: The agent runs commands on a remote server over SSH from any sessio
 
 ## Open questions
 
-- Req 10 says each SSH *connection* is recorded. The orchestrator signs the authentication
-  request and can record destination, user, and time for each attempt, but it never learns
-  whether the server accepted it. Is one log line per authentication attempt what req 10
-  means, or does it require confirmed connections, which this design cannot see?
-
 ## Resolved questions
+
+- 2026-09-14 — Does req 10 mean confirmed connections or authentication attempts? The user
+  does not mind which; the logging must make debugging easy. Req 10 reworded to one line per
+  authentication attempt with the signer's outcome and refusal reason, since server
+  acceptance is invisible to ShipIt.
 
 - 2026-09-14 — What does the registry hold? Destinations, one key each (req 11). Shared keys
   were declined because one key would then open several servers.
