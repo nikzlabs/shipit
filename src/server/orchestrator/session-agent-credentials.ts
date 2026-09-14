@@ -274,13 +274,15 @@ export function provisionSubAgentCredentials(
   credentialsRoot: string,
   sessionId: string,
   subAgentId: AgentId,
+  /** The spawn taking the subtree; failover re-provisions under the same id. */
+  holderId: string,
   accountId?: string,
 ): void {
   const sourceRoot = accountId
     ? providerAccountCredentialRoot(credentialsRoot, subAgentId, accountId)
     : credentialsRoot;
   // Record the borrow before copying so concurrent token write-back cannot misattribute it.
-  beginSubtreeBorrow(credentialsRoot, sessionId, subAgentId);
+  beginSubtreeBorrow(credentialsRoot, sessionId, subAgentId, holderId);
   provisionAgentCredentialsFromRoot(credentialsRoot, sessionId, subAgentId, sourceRoot, true);
   writeSessionAccountMarker(credentialsRoot, sessionId, subAgentId, accountId ?? null);
 }
@@ -289,8 +291,16 @@ export function releaseSubAgentCredentials(
   credentialsRoot: string,
   sessionId: string,
   subAgentId: AgentId,
+  holderId: string,
 ): string | undefined {
-  // Preserve rotations while the marker and borrow ledger still identify their owner.
+  // Cross-harness consults share one subtree, so only the LAST holder may wipe
+  // it: an earlier release deletes the credentials of a consult still running.
+  const release = endSubtreeBorrow(sessionId, subAgentId, holderId);
+  if (!release.last) {
+    console.log(`[session-credentials] keep-credentials session=${sessionId} agent=${subAgentId} holder=${holderId}`);
+    return undefined;
+  }
+  // Preserve rotations while the marker still identifies their owner.
   preserveBorrowedTokens(
     credentialsRoot,
     sessionId,
@@ -298,7 +308,7 @@ export function releaseSubAgentCredentials(
     readSessionAccountMarker(credentialsRoot, sessionId)[subAgentId],
   );
   removeSubAgentCredentials(credentialsRoot, sessionId, subAgentId);
-  return endSubtreeBorrow(sessionId, subAgentId);
+  return release.displaced;
 }
 
 function preserveBorrowedTokens(

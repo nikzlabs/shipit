@@ -294,7 +294,7 @@ export async function runSubAgent(
     console.log(
       `[sub-agent] provision-credentials session=${sessionId} agent=${subAgentId} account=${accountId ?? "flat"}`,
     );
-    provisionSubAgentCredentials(credentialsDir, sessionId, subAgentId, accountId);
+    provisionSubAgentCredentials(credentialsDir, sessionId, subAgentId, spawnId, accountId);
   };
   const startedAtMs = Date.now();
   runner.emitMessage({ type: "sub_agent_spawn", sessionId, spawnId, subAgentId });
@@ -584,7 +584,7 @@ export async function runSubAgent(
           // Best-effort token sync.
         }
         // Restore from the borrow record; the current marker belongs to the consult.
-        const restoreAccountId = releaseSubAgentCredentials(credentialsDir, sessionId, subAgentId);
+        const restoreAccountId = releaseSubAgentCredentials(credentialsDir, sessionId, subAgentId, spawnId);
         console.log(
           `[sub-agent] wipe-credentials session=${sessionId} spawn=${spawnId} agent=${subAgentId} `
           + `account=${accountId ?? "flat"} restore=${restoreAccountId ?? "none"}`,

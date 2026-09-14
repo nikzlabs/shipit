@@ -99,22 +99,36 @@ export function writeSessionAccountMarker(
 }
 
 // Preserve the displaced account and distinguish a borrowed legacy route from a lost marker.
-const outstandingBorrows = new Map<string, string | undefined>();
+// Overlapping borrows share one subtree, so the record tracks its HOLDERS, not a
+// count of begin calls: one consult re-provisions per failover attempt.
+// `displaced` is what the session held before the FIRST borrow.
+const outstandingBorrows = new Map<string, { holders: Set<string>; displaced: string | undefined }>();
 
 const borrowKey = (sessionId: string, agentId: AgentId): string => `${sessionId}:${agentId}`;
 
 // Repeated borrows retain the first displaced account, not the borrowed account.
-export function beginSubtreeBorrow(credentialsRoot: string, sessionId: string, agentId: AgentId): void {
+export function beginSubtreeBorrow(credentialsRoot: string, sessionId: string, agentId: AgentId, holderId: string): void {
   const key = borrowKey(sessionId, agentId);
-  if (outstandingBorrows.has(key)) return;
-  outstandingBorrows.set(key, readSessionAccountMarker(credentialsRoot, sessionId)[agentId]);
+  const open = outstandingBorrows.get(key);
+  if (open) {
+    open.holders.add(holderId);
+    return;
+  }
+  outstandingBorrows.set(key, {
+    holders: new Set([holderId]),
+    displaced: readSessionAccountMarker(credentialsRoot, sessionId)[agentId],
+  });
 }
 
-export function endSubtreeBorrow(sessionId: string, agentId: AgentId): string | undefined {
+/** `last` is false while another spawn holds the subtree; no record reads as last. */
+export function endSubtreeBorrow(sessionId: string, agentId: AgentId, holderId: string): { last: boolean; displaced?: string } {
   const key = borrowKey(sessionId, agentId);
-  const displaced = outstandingBorrows.get(key);
+  const borrow = outstandingBorrows.get(key);
+  if (!borrow) return { last: true };
+  borrow.holders.delete(holderId);
+  if (borrow.holders.size > 0) return { last: false };
   outstandingBorrows.delete(key);
-  return displaced;
+  return { last: true, ...(borrow.displaced !== undefined ? { displaced: borrow.displaced } : {}) };
 }
 
 export function subtreeBorrowInFlight(sessionId: string, agentId: AgentId): boolean {

@@ -65,6 +65,13 @@ Both prompts were checked: naming and both pull-request-description prompts supp
 inputs and none instructs the model to read the repository, so tools-off execution is safe for
 them.
 
+**Every caller resolves through one definition of "can run background work."** Naming asked for a
+harness it could run, because it had a CLI and nothing else; once it has the executor, that
+question is the general one and it takes the general answer — including the `toolsOffRefusal`
+filter in `backgroundWorkHarnessFor`, which it has no grounds to opt out of. The narrow
+consequence is that an install whose only carrier is an unmeasured harness loses naming, and the
+fix there is measuring that harness, not a caller-specific resolver option.
+
 ## The direct clients, and the contract they need
 
 Three styles are declared (`catalogue/types.ts:6`): `anthropic-messages`,

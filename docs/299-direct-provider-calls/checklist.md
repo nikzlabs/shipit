@@ -74,18 +74,26 @@ with its tools off is never selected for background work at all.
 
 - [x] Pull-request path: resolve and execute above the no-session and no-runner gates (`non-turn-work.ts:231`, `:252`).
 - [x] Test that background work now succeeds with no session open and with the container reclaimed.
-- [ ] Session naming: extract prompt construction and result parsing from the `execFile` invocation in `session-namer.ts:443`; run the selected executor; keep its failure, usage and branch-finalisation behaviour.
+- [x] Session naming: extract prompt construction and result parsing from the `execFile` invocation in `session-namer.ts:443`; run the selected executor; keep its failure, usage and branch-finalisation behaviour.
+- [x] Delete `harnessOnly` once naming stops asking for it; it has no other caller.
 
-**Naming's defect is worse than "it takes the slower route", and the fix must remove both halves.**
-`services/graduate-session.ts` resolves with `harnessOnly: true` — the last caller of that option.
-On an install whose background-work choice resolves direct-only, that yields `pin_unavailable`,
-so the session gets **no generated name** *and* a failure card saying the model's credential or
-harness is gone, while the credential is present and working. The false cause is the damaging
-part: it sends the user to Settings to repair nothing. Found by the selector slice, verified
-against `main`. A second decision rides with it — once `harnessOnly` goes, the new
-`toolsOffRefusal` filter becomes what keeps naming off an unusable harness, but naming's
-orchestrator-side `execFile` path passes no tools-off flag today, so the two paths disagree about
-what "can run background work" means.
+Shipped in PR #2769. The defect it removed was worse than "naming takes the slower route", and
+both halves are gone: `services/graduate-session.ts` resolved with `harnessOnly: true`, so an
+install whose background-work choice is reachable only as a direct call got `pin_unavailable` —
+**no generated name on any session**, plus a card saying the model's credential or harness was
+gone while that credential was present and working. The false cause was the damaging half,
+because it sent the user to Settings to repair nothing.
+
+- **Whether naming should keep its own definition of an eligible harness was a real decision,
+  not a consequence.** It was taken deliberately and is recorded in [`plan.md`](./plan.md);
+  measuring the one harness it costs is
+  [planning#546](https://github.com/nikzlabs/shipit-planning/issues/546).
+- **The dispatch route resolved no background-work model at all.** `POST
+  /api/sessions/:id/agent/dispatch` passed none of the credential plumbing into graduation, so
+  it named on the session's own harness and silently ignored the user's choice. Found by review,
+  outside the slice as written.
+- **The title parser was order-dependent.** It matched slug-before-title only, so a correct
+  answer in the other key order was discarded after the provider had already billed for it.
 
 **Sequencing, decided while shipping rather than in the design.** The union, the direct executor
 and the pull-request caller ship together, ahead of the selector work. A selector that offered a
@@ -117,12 +125,29 @@ Shipped in PR #2767, which also deleted `voice/providers/openai-cleanup.ts` — 
 entirely on the background-work choice, with no provider of its own. Until the voice key is
 adopted, an install whose only OpenAI key is that one has no cleanup.
 
-- [ ] Adopt `voiceProviderKeys.openai` as an ordinary OpenAI service credential, per docs/252 req 20's precedent. Seed background work onto it only when nothing is set.
-- [ ] The adoption notice in `VoiceTab.tsx`; declining leaves cleanup unavailable and says so, and never writes a background-work choice.
-- [ ] `VoiceTab.tsx` status names the background-work choice, links to that setting, and says when cleanup will take a few seconds. Render test per state.
-- [ ] Test: cleanup failure inserts the raw transcript and persists no chat card.
+- [x] Adopt `voiceProviderKeys.openai` as an ordinary OpenAI service credential, per docs/252 req 20's precedent. Seed background work onto it only when nothing is set.
+- [x] The adoption notice in `VoiceTab.tsx`; declining leaves cleanup unavailable and says so, and never writes a background-work choice.
+- [x] `VoiceTab.tsx` status names the background-work choice, links to that setting, and says when cleanup will take a few seconds. Render test per state.
+- [x] Test: cleanup failure inserts the raw transcript and persists no chat card.
+
+Shipped in PR #2771. Adoption goes through `createStringCredential`, the same path a pasted key
+takes, so the adopted key is an ordinary credential — renameable, removable, ordered like any
+other — rather than a second shape. Two things the slice checked rather than assumed:
+
+- **Whether the offer is safe to make is `runnerForNonTurnSelection`'s answer, not a restatement
+  of the rule.** An independent review found the first version treating a pin on a *retired*
+  model as unreachable, so it withheld the offer from an install where adoption would in fact
+  have restored cleanup. Asking the resolver removes the second copy of the rule.
+- **Phase 4b had already rewritten the cleanup status line**, contrary to the slice brief.
+
+The "no chat card" half of the last item is settled by construction rather than by a test, which
+is the stronger answer and is why no guard was written: `VoiceCleanupDeps` carries neither a
+runner registry nor a chat-history manager, and `runNonTurnDirect` returns its failure instead of
+rendering one, so cleanup has no reachable way to write to a transcript (req 6). A test would
+need an injection point that deliberately does not exist, and would pass whether or not the
+guarantee held.
 
 ## Closing
 
-- [ ] Re-review the branch diff against every numbered requirement.
-- [ ] Comment the outcome on [planning#542](https://github.com/nikzlabs/shipit-planning/issues/542).
+- [x] Re-review the branch diff against every numbered requirement.
+- [x] Comment the outcome on [planning#542](https://github.com/nikzlabs/shipit-planning/issues/542).

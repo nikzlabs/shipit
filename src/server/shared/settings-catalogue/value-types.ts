@@ -249,6 +249,38 @@ export function modelSelection(): SettingValueType<ModelSelection | null> {
 }
 
 /**
+ * A field whose every entry can be credential material — an MCP server's
+ * arguments, environment or headers (`services/mcp.ts:49`, `:63`). The write is
+ * refused by the type itself rather than by the declaration alone, and the
+ * refusal names the field and never the value, so no output path can quote what
+ * it was asked to store.
+ */
+export function secretBag(opts: {
+  shape: "list" | "map";
+  noun: string;
+}): SettingValueType<unknown> {
+  const empty: unknown = opts.shape === "list" ? [] : {};
+  return {
+    kind: "secretBag",
+    defaultValue: empty,
+    shape: { entries: opts.shape, values: "secret" },
+    read(raw) {
+      if (opts.shape === "list") return Array.isArray(raw) ? (raw as unknown[]) : [];
+      return raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
+    },
+    validate(_raw, noun) {
+      return fail(
+        `${opts.noun || noun} can hold credential material, so it is edited in the panel that `
+          + "owns it and never through a proposal",
+      );
+    },
+    serialize(value) {
+      return value;
+    },
+  };
+}
+
+/**
  * A collection is patched per item and never replaced wholesale: the agent
  * cannot see the credential fields inside an entry, so a whole-list write would
  * either drop them or echo back something it may not read (plan.md →

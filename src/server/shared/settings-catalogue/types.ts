@@ -15,6 +15,7 @@ export type SettingTab =
   | "integrations"
   | "git"
   | "instructions"
+  | "skills"
   | "keyboard"
   | "voice"
   | "network"
@@ -23,8 +24,13 @@ export type SettingTab =
   | "project-secrets"
   | "project-appearance";
 
-/** Why the agent may not propose this change (plan.md → Refusals are first-class). */
-export type ProposeRefusal =
+/**
+ * Why a setting cannot be read as a value, or cannot be proposed
+ * (plan.md → Refusals are first-class). The same four reasons serve both: a
+ * browser-local value is withheld from the read AND unproposable, for one
+ * reason and not two.
+ */
+export type RefusalReason =
   /** Credential material the agent does not have. */
   | "secret"
   /** Needs an OAuth or device-code flow on the provider's site. */
@@ -34,6 +40,8 @@ export type ProposeRefusal =
   /** The card cannot show the operation's full effect, so the user cannot approve it by looking. */
   | "unsafe_to_display";
 
+export type ProposeRefusal = RefusalReason;
+
 export type ProposeDescriptor =
   | { readonly kind: "yes" }
   | { readonly kind: "no"; readonly reason: ProposeRefusal };
@@ -42,11 +50,23 @@ export type ProposeDescriptor =
  * The only output this setting may produce. A projection emits values ShipIt
  * derived, never user-supplied free text — `user_text` is the marked exception,
  * and its reason is what review reads.
+ *
+ * A field-name deny-list cannot work here: an MCP entry takes arbitrary `args`,
+ * `env`, `headers` and a URL, so a token lives in a field called `args`
+ * (`services/mcp.ts:49`, `:63`). `derived` is the allowlist — its function is
+ * the only thing that produces output, so a field it does not read cannot leak.
  */
 export type Projection =
   | { readonly kind: "plain" }
   | { readonly kind: "user_text"; readonly reason: string }
-  | { readonly kind: "configured_only" };
+  | { readonly kind: "configured_only" }
+  | {
+      readonly kind: "derived";
+      /** What the function emits, for a reader checking it against the value. */
+      readonly describes: string;
+      readonly project: (raw: unknown) => unknown;
+    }
+  | { readonly kind: "withheld"; readonly reason: RefusalReason };
 
 export type SettingValueKind =
   | "bool"
@@ -55,6 +75,7 @@ export type SettingValueKind =
   | "text"
   | "gitIdentity"
   | "modelSelection"
+  | "secretBag"
   | "collection";
 
 export type ValidationResult<T> =
@@ -95,7 +116,56 @@ export interface OwnRouteStore {
   readonly route: string;
 }
 
-export type SettingStore<T> = PayloadSettingStore<T> | OwnRouteStore;
+/**
+ * A panel of its own reads and writes the value — the role editor, the MCP
+ * panel, the credential rows, the secrets table, Project Settings — so the
+ * derived payload has no single field for it. `ownedBy` names where the value
+ * lives, for a reader following it.
+ */
+export interface BespokeStore {
+  readonly kind: "bespoke";
+  readonly ownedBy: string;
+}
+
+/** The value is in `localStorage`; ShipIt's server never holds it. */
+export interface BrowserStore {
+  readonly kind: "browser";
+  readonly localStorageKey: string;
+}
+
+/** Everything the derived global payload does not carry. */
+export type NonPayloadStore = OwnRouteStore | BespokeStore | BrowserStore;
+
+export type SettingStore<T> = PayloadSettingStore<T> | NonPayloadStore;
+
+/**
+ * What identifies one instance of this setting. A key alone is not enough:
+ * `project.allowAgentMerge` exists once per repository and
+ * `mcp.servers[].enabled` once per server (plan.md → The target, and the lock).
+ * A repository address is resolved from the session's own binding, never from
+ * anything the agent supplies.
+ */
+export type SettingAddress =
+  | { readonly kind: "none" }
+  | { readonly kind: "repository" }
+  | { readonly kind: "item"; readonly noun: string }
+  /** One item inside the session's repository — a secret name, say. */
+  | { readonly kind: "repository-item"; readonly noun: string };
+
+export function itemAddress(noun: string): SettingAddress {
+  return { kind: "item", noun };
+}
+
+export function repositoryItemAddress(noun: string): SettingAddress {
+  return { kind: "repository-item", noun };
+}
+
+export const REPOSITORY_ADDRESS: SettingAddress = { kind: "repository" };
+
+/** True for the two addresses a project setting may carry. */
+export function addressesARepository(address: SettingAddress | undefined): boolean {
+  return address?.kind === "repository" || address?.kind === "repository-item";
+}
 
 /** Every store kind, for code that handles declarations of any value type. */
 export type AnyPayloadStore =
@@ -113,6 +183,8 @@ interface SettingDeclarationBase<T> {
   readonly type: SettingValueType<T>;
   readonly emits: Projection;
   readonly propose: ProposeDescriptor;
+  /** Absent means the setting exists once, with nothing to address. */
+  readonly address?: SettingAddress;
 }
 
 export interface PayloadSettingDeclaration<T> extends SettingDeclarationBase<T> {
@@ -123,19 +195,19 @@ export interface PayloadSettingDeclaration<T> extends SettingDeclarationBase<T> 
   readonly omitWhenNull?: boolean;
 }
 
-export interface OwnRouteSettingDeclaration<T> extends SettingDeclarationBase<T> {
-  readonly store: OwnRouteStore;
+export interface NonPayloadSettingDeclaration<T> extends SettingDeclarationBase<T> {
+  readonly store: NonPayloadStore;
   /** The payload does not carry this setting, so it has no field to name. */
   readonly wire?: never;
 }
 
 export type SettingDeclaration<T> =
   | PayloadSettingDeclaration<T>
-  | OwnRouteSettingDeclaration<T>;
+  | NonPayloadSettingDeclaration<T>;
 
 /** The registry's element type: any declared value, any store. */
 export interface AnySettingDeclaration extends SettingDeclarationBase<unknown> {
-  readonly store: AnyPayloadStore | OwnRouteStore;
+  readonly store: AnyPayloadStore | NonPayloadStore;
   readonly wire?: string;
   readonly omitWhenNull?: boolean;
 }
@@ -149,10 +221,21 @@ export interface AnyPayloadDeclaration extends AnySettingDeclaration {
 /** The value type a declaration carries. */
 export type SettingValue<D> = D extends { readonly type: SettingValueType<infer T> } ? T : never;
 
+const PAYLOAD_STORE_KINDS: ReadonlySet<string> = new Set<AnyPayloadStore["kind"]>([
+  "credential-store",
+  "system-prompt-file",
+  "git-config",
+]);
+
+/**
+ * Named positively: a store kind added for a panel of its own must not reach
+ * the derived payload by being spelled differently from the one exclusion a
+ * negative test would have listed.
+ */
 export function isPayloadDeclaration(
   declaration: AnySettingDeclaration,
 ): declaration is AnyPayloadDeclaration {
-  return declaration.store.kind !== "own-route";
+  return PAYLOAD_STORE_KINDS.has(declaration.store.kind);
 }
 
 export function plain(): Projection {
@@ -166,6 +249,16 @@ export function userText(reason: string): Projection {
 
 export function configuredOnly(): Projection {
   return { kind: "configured_only" };
+}
+
+/** Emits what the function returns and nothing else. */
+export function derived(describes: string, project: (raw: unknown) => unknown): Projection {
+  return { kind: "derived", describes, project };
+}
+
+/** The read has no value to give: a browser-local setting, or secret material. */
+export function withheld(reason: RefusalReason): Projection {
+  return { kind: "withheld", reason };
 }
 
 /**
