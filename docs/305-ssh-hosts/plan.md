@@ -249,23 +249,53 @@ SFTP-backed remote file tree from docs/228 phase 3 stays a separate future item.
 
 ## Key files
 
+As implemented:
+
 - `docker/Dockerfile.session-worker.prod`, `.dev` — `openssh-client`, `~/.ssh` symlink;
-  `docker/session-worker/entrypoint.sh` — symlink under read-only home, `/run/shipit`.
-- `src/server/session/ssh-agent-socket.ts` (new) — agent-protocol socket; holds the
-  session-bind per connection and relays it with each sign request.
-- `src/server/orchestrator/egress-firewall-install.ts`, `egress-allowlist.ts` — IP grants into
-  the CIDR input; SSH grants composed into a network-off sandbox's policy.
+  `docker/session-worker/entrypoint.sh` — the symlink under the read-only home tmpfs, and
+  `/run/shipit` owned by the worker uid.
+- `src/server/shared/ssh-wire.ts` (new) — agent-protocol framing and the length-prefixed
+  primitives, shared by the worker socket and the signer. Every read is bounds-checked.
+- `src/server/session/ssh-agent-socket.ts` (new) — the agent-protocol socket; holds the
+  session-bind per connection and relays it with each sign request. Started from
+  `session-worker.ts` when `SSH_AUTH_SOCK` is set.
+- `src/server/orchestrator/ssh-hosts.ts` (new) — key generation, public-line derivation,
+  signing, `session-bind` and userauth parsing, and host-key signature verification for
+  ed25519 / RSA / ECDSA servers (Node cannot read SSH key formats, so the SPKI conversions
+  are here).
+- `src/server/orchestrator/services/ssh.ts` (new) — the five-rule signer contract, the
+  per-session rate and concurrency bound, the audit line, and the host-key cards.
+- `src/server/orchestrator/ssh-provision.ts` (new) — aliases, `~/.ssh/{config,known_hosts,
+  <alias>.pub}`, and the full rewrite from the durable grant.
+- `src/server/orchestrator/api-routes-ssh.ts` (new) — browser-only host CRUD and session
+  grant edit; container-accessible identities/sign.
+- `src/server/orchestrator/credential-store.ts` — `sshHosts`, with a public projection on
+  every read and `getSshHostSigningKey` as the one accessor that yields the private half.
+- `src/server/orchestrator/sessions.ts`, `shared/database.ts`,
+  `shared/types/domain-types/session.ts` — the `ssh_hosts` grant column and `setSshHosts`.
+- `src/server/orchestrator/index.ts`, `egress-allowlist.ts`, `egress-firewall-install.ts`,
+  `container-lifecycle.ts`, `session-container.ts` — grants derived into the effective egress
+  policy (names) and the firewall's CIDR input (IP literals), at every container creation and
+  live on a grant edit.
+- `src/server/orchestrator/session-agent-env.ts` — re-derives `~/.ssh` at every turn, so a
+  recreated container needs no grant edit to be current.
 - `src/server/session/agent-ops-routes.ts` — `/agent-ops/ssh/identities`, `/agent-ops/ssh/sign`.
-- `src/server/orchestrator/ssh-hosts.ts` (new) — key generation, public-line derivation, signing.
-- `src/server/orchestrator/credential-store.ts` — `sshHosts` field.
-- `src/server/orchestrator/api-routes-ssh.ts` (new) — browser-only host CRUD; session grant
-  edit; container-relayed identities/sign.
-- `src/server/orchestrator/sessions.ts`, `shared/types/domain-types/session.ts` — `sshHosts`.
-- `src/server/orchestrator/session-credentials.ts` — provision `~/.ssh/*`.
-- `src/server/orchestrator/egress-allowlist.ts` — per-session entry on grant.
-- `src/server/orchestrator/agent-instructions.ts`, `prompts/` — hosts fragment.
-- `src/client/components/Settings/ServicesPanel.tsx`, `SessionSidebar/SessionSettingsDialog.tsx`.
-- `src/server/shipit-docs/ssh.md`.
+- `src/server/orchestrator/agent-instructions.ts`, `prompts/ssh-hosts.md` — the static fragment.
+- `src/client/components/SshHostsSettings.tsx` (Settings → Integrations, beside GitHub and
+  Linear), `SessionSshHostGrants.tsx` (in `SessionSidebar/SessionSettingsDialog.tsx`, for every
+  session kind), `SshHostKeyCard.tsx`.
+- `src/server/shipit-docs/ssh.md`, `shipit-docs/wiki/settings-and-accounts.md`.
+
+Two implementation choices worth naming, both inside the design rather than changes to it:
+
+- **The per-session egress entry is derived, not mirrored.** `resolveEgressConfig` reads the
+  grant on every call and composes names and CIDRs from it, rather than writing a row into
+  `EgressAllowlistStore` at grant time. The plan already requires derivation for IP literals
+  (a rebuilt firewall drops a one-off `ipset add`); doing the same for names means a revoked
+  grant cannot leave an orphaned, separately-removable allowlist row behind.
+- **The grant-edit card is the existing `SessionSettingsChangeCard`** with a new `ssh-hosts`
+  scope, which is what this document names. Only the host-key cards needed a new persisted
+  field.
 
 ## Tests
 

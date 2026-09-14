@@ -22,6 +22,7 @@ you never touch, so it is the only place you can learn it. Start at
 | [secrets.md](secrets.md) | Per-service env var declaration via `x-shipit-secrets` |
 | [deployment.md](deployment.md) | Deploy targets, and what you can do about a failed deploy — Actions run logs and the one re-run you are allowed |
 | [github.md](github.md) | Branches, PRs, auto-push, CI |
+| [ssh.md](ssh.md) | SSH destinations granted to this session — `~/.ssh/config` is the list, `ssh <alias> '<cmd>'` is the use, and why the key is unreadable |
 | [sessions.md](sessions.md) | Agent-spawned sibling sessions — `shipit session create`, when to use it |
 | [sandbox-session.md](sandbox-session.md) | Sandbox session — empty `/workspace`, the git/docker/network capabilities, how to clone & open PRs per-repo, persistence |
 | [agent.md](agent.md) | One-shot sub-agents — `shipit agent run --role NAME`, relaying an override the user asked for, and the two reads that say what exists here (`shipit agent roles` / `shipit agent params`) |

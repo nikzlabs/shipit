@@ -125,6 +125,7 @@ import type {
   WsBranchSyncedCard,
   WsSessionRenamedCard,
   WsSessionSettingsChangeCard,
+  WsSshHostKeyCard,
   WsSettingsProposalCard,
   WsSettingsProposalUpdate,
   WsNonTurnFailureCard,
@@ -169,6 +170,7 @@ export type WsServerMessage =
   | WsBranchSyncedCard
   | WsSessionRenamedCard
   | WsSessionSettingsChangeCard
+  | WsSshHostKeyCard
   | WsSettingsProposalCard
   | WsSettingsProposalUpdate
   | WsNonTurnFailureCard

@@ -618,6 +618,11 @@ export const BESPOKE_READERS: Record<BespokeSettingKey, StoreReader> = {
     const missing = needsCredentialStore(ctx);
     return missing ?? value(ctx.deps.credentialStore?.getGithubToken() ?? null);
   },
+  // docs/305 — the public projection, which is all this store ever returns.
+  "integrations.sshHosts": (ctx) => {
+    const missing = needsCredentialStore(ctx);
+    return missing ?? value(ctx.deps.credentialStore?.listSshHosts() ?? []);
+  },
   "integrations.linear.credential": (ctx) => {
     const missing = needsCredentialStore(ctx);
     return missing ?? value(ctx.deps.credentialStore?.getLinearToken() ?? null);

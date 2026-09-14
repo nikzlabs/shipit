@@ -5,6 +5,7 @@ import { StatusDot } from "./ui/status-dot.js";
 import { GitHubTokenForm } from "./GitHubTokenForm.js";
 import { SettingsTrackers } from "./SettingsTrackers.js";
 import { McpServerSettings } from "./McpServerSettings.js";
+import { SshHostsSettings } from "./SshHostsSettings.js";
 import { ManagedByShipItBadge } from "./ManagedByShipItBadge.js";
 import { useSettingsStore } from "../stores/settings-store.js";
 import { useUiStore } from "../stores/ui-store.js";
@@ -190,6 +191,20 @@ export function SettingsIntegrations({
           onGitHubTokenSubmit={onGitHubTokenSubmit}
         />
         <SettingsTrackers embedded logo={<LogoTile><LinearLogo /></LogoTile>} />
+      </section>
+
+      <div className="h-px bg-(--color-border-secondary)" />
+
+      {/* docs/305 — also brokered and also never in the container, but a list
+          the user maintains rather than one connection, so it gets its own
+          section beside GitHub and Linear rather than a card among them. */}
+      <section className="flex flex-col gap-3">
+        <SectionHeader
+          title="SSH hosts"
+          hint="managed by ShipIt"
+          description="Servers a session can reach over SSH. ShipIt generates a key per destination, holds the private half, and signs for it — the agent never reads it. Grant a destination to a session in that session's settings."
+        />
+        <SshHostsSettings />
       </section>
 
       <div className="h-px bg-(--color-border-secondary)" />

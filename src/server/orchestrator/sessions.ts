@@ -38,6 +38,7 @@ interface SessionRow {
   session_type: string | null;
   kind: string | null;
   capabilities: string | null;
+  ssh_hosts: string | null;
   branch_renamed: number;
   merged_at: string | null;
   closed_at: string | null;
@@ -93,6 +94,16 @@ function sameShownGoal(a: AgentGoal | null, b: AgentGoal | null): boolean {
 }
 
 export const MAX_MERGED_SESSIONS_PER_REPO = 5;
+
+function parseSshHosts(json: string | null): string[] {
+  if (!json) return [];
+  try {
+    const parsed = JSON.parse(json) as unknown;
+    return Array.isArray(parsed) ? parsed.filter((v): v is string => typeof v === "string") : [];
+  } catch {
+    return [];
+  }
+}
 
 function safeParseCapabilities(json: string): unknown {
   try {
@@ -210,6 +221,8 @@ export class SessionManager {
         row.capabilities ? safeParseCapabilities(row.capabilities) : undefined,
       );
     }
+    const sshHosts = parseSshHosts(row.ssh_hosts);
+    if (sshHosts.length > 0) info.sshHosts = sshHosts;
     if (row.branch_renamed) info.branchRenamed = true;
     if (row.merged_at) info.mergedAt = row.merged_at;
     if (row.closed_at) info.closedAt = row.closed_at;
@@ -648,6 +661,16 @@ export class SessionManager {
   setCapabilities(id: string, capabilities: SessionCapabilities): void {
     this.db.prepare("UPDATE sessions SET capabilities = ? WHERE id = ?")
       .run(JSON.stringify(capabilities), id);
+  }
+
+  /**
+   * docs/305 — browser-only, like `setCapabilities`: a session container that
+   * could widen its own grant would defeat the signer's first rule.
+   */
+  setSshHosts(id: string, hostIds: string[]): void {
+    const unique = [...new Set(hostIds.filter((h) => typeof h === "string" && h.length > 0))];
+    this.db.prepare("UPDATE sessions SET ssh_hosts = ? WHERE id = ?")
+      .run(unique.length > 0 ? JSON.stringify(unique) : null, id);
   }
 
   setModel(id: string, model: string, preferredServiceId?: string): void {

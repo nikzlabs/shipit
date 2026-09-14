@@ -19,6 +19,7 @@ import { PresentInlineCard } from "../../PresentInlineCard.js";
 import { BranchUpdatedCard } from "../../BranchUpdatedCard.js";
 import { SessionRenamedCard } from "../../SessionRenamedCard.js";
 import { SessionSettingsChangeCard } from "../../SessionSettingsChangeCard.js";
+import { SshHostKeyCard } from "../../SshHostKeyCard.js";
 import { SettingsProposalCard } from "../../SettingsProposalCard.js";
 import { BranchSyncedCard } from "../../BranchSyncedCard.js";
 import { ReleaseLifecycleCard } from "../../ReleaseLifecycleCard.js";
@@ -336,6 +337,16 @@ export function renderMessageCard(msg: ChatMessage, cb: MessageCardCallbacks): R
       <div className="flex justify-start">
         <div className="max-w-2xl w-full">
           <SessionSettingsChangeCard card={msg.sessionSettingsChange} />
+        </div>
+      </div>
+    );
+  }
+
+  if (msg.sshHostKey) {
+    return (
+      <div className="flex justify-start">
+        <div className="max-w-2xl w-full">
+          <SshHostKeyCard card={msg.sshHostKey} />
         </div>
       </div>
     );

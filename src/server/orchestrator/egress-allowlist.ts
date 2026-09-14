@@ -276,6 +276,13 @@ export function composeEgressIdentityRules(opts: ComposeIdentityRulesOpts = {}):
 export interface ResolvedEgressConfig {
   contained: boolean;
   extraHosts: string[];
+  /**
+   * docs/305 — addresses that never produce a DNS query, so the Tier B
+   * resolver's `ipset` pinning cannot admit them. They go into the firewall's
+   * CIDR input at every container creation, never as a one-off `ipset add`:
+   * `init-firewall.sh:68` rebuilds the sets whenever the firewall reinstalls.
+   */
+  extraCidrs?: string[];
   /** Omitted means the full default base. */
   base?: string[];
   identityRules?: string;
@@ -283,16 +290,51 @@ export interface ResolvedEgressConfig {
   userHostsExcluded?: boolean;
 }
 
+export interface SshEgressTargets {
+  /** Hostname destinations, for the resolver and proxy allowlists. */
+  names: string[];
+  /** IP-literal destinations as /32 CIDRs, for the Tier A ipset. */
+  cidrs: string[];
+}
+
+/**
+ * Split a session's granted destinations by how each one can be admitted
+ * (docs/305, req 12). Derived from the durable grant on every read rather than
+ * mirrored into the per-session allowlist table, so a revoked grant cannot leave
+ * an orphaned row behind and a rebuilt firewall re-applies the same set.
+ */
+export function sshEgressTargets(
+  hosts: Iterable<{ address: string }>,
+  classify: { isIpLiteral(address: string): boolean; ipLiteralCidr(address: string): string },
+): SshEgressTargets {
+  const names: string[] = [];
+  const cidrs: string[] = [];
+  for (const { address } of hosts) {
+    if (classify.isIpLiteral(address)) cidrs.push(classify.ipLiteralCidr(address));
+    else names.push(normalizeHost(address));
+  }
+  return { names: [...new Set(names)], cidrs: [...new Set(cidrs)] };
+}
+
+/**
+ * A network-off sandbox discards the ordinary per-session host path
+ * (`userHostsExcluded`), so SSH grants have to be composed into the effective
+ * policy explicitly — names into the lifeline base, IPs into the CIDR input.
+ * That is the one deliberate exception, the way `git` adds `github.com`
+ * (docs/211); `shipit-docs/ssh.md` says so.
+ */
 // Internal orchestrator/worker hosts are added by the resolver and proxy.
 export function sandboxLifelineEgressConfig(
   session: Pick<SessionInfo, "kind" | "capabilities"> | undefined,
   identityRules: string,
+  ssh: SshEgressTargets = { names: [], cidrs: [] },
 ): ResolvedEgressConfig | null {
   if (session?.kind !== "sandbox" || session.capabilities?.network !== false) return null;
   return {
     contained: true,
     extraHosts: [],
-    base: sandboxLifelineBase({ git: session.capabilities.git }),
+    base: [...sandboxLifelineBase({ git: session.capabilities.git }), ...ssh.names],
+    ...(ssh.cidrs.length > 0 ? { extraCidrs: ssh.cidrs } : {}),
     ...(identityRules ? { identityRules } : {}),
     userHostsExcluded: true,
   };

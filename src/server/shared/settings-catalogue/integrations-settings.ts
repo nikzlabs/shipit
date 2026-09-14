@@ -237,6 +237,37 @@ export const INTEGRATIONS_SETTINGS = {
     propose: { kind: "no", reason: "secret" },
   }),
 
+  /**
+   * docs/305 — the SSH destination registry. The private half of each key never
+   * leaves the orchestrator's credential store, so the emitted projection is the
+   * destinations' labels and nothing else: a read tells the agent whether a
+   * destination exists, and `~/.ssh/config` tells it which ones THIS session may
+   * use. Adding one is not proposable — it is only useful once the user has
+   * installed its public line on the server, which ShipIt cannot do.
+   */
+  "integrations.sshHosts": defineSetting({
+    key: "integrations.sshHosts",
+    tab: "integrations",
+    scope: "global",
+    label: "SSH hosts",
+    description:
+      "Remote servers a session can reach over SSH. ShipIt generates a key for each destination "
+      + "and signs with it; the private half never enters a session container. A destination is "
+      + "granted to a session in that session's own settings, and until it is granted the session "
+      + "can neither reach it nor authenticate to it.",
+    type: collection<string>({ operations: ["add", "remove"], patchableFields: [] }),
+    store: { kind: "bespoke", ownedBy: "credential-store SSH hosts (/api/ssh-hosts)" },
+    emits: derived("the destinations' names", (raw) =>
+      Array.isArray(raw)
+        ? raw
+            .map((host) => (host as { label?: unknown })?.label)
+            .filter((label): label is string => typeof label === "string")
+        : []),
+    // A destination is inert until its public line is installed on the server,
+    // which is the user's act on a machine ShipIt does not reach.
+    propose: { kind: "no", reason: "external_flow" },
+  }),
+
   "integrations.linear.credential": defineSetting({
     key: "integrations.linear.credential",
     tab: "integrations",

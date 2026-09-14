@@ -107,6 +107,17 @@ const EVERY_OPTIONAL_FIELD_MESSAGE: PersistedMessage = {
     pendingRestart: true,
     createdAt: "2026-06-05T00:00:00.000Z",
   },
+  sshHostKey: {
+    cardId: "sshk1",
+    hostId: "ssh_1",
+    label: "prod",
+    address: "prod.example.com",
+    kind: "mismatch",
+    fingerprint: "SHA256:seen",
+    keyType: "ssh-ed25519",
+    recordedFingerprint: "SHA256:recorded",
+    createdAt: "2026-06-05T00:00:00.000Z",
+  },
   settingsProposal: {
     cardId: "set-1",
     target: { key: "advanced.enableSubAgents", repoUrl: "https://github.com/o/r", item: "notion" },

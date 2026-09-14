@@ -55,7 +55,7 @@ not "Services" — that is only its internal id.
 |---|---|
 | **Model providers** | Credentials — the subscriptions and API keys ShipIt bills models to. Also the installed-harness read-out, and the background-work model |
 | **Roles** | Named roles the user creates, and the two reviewer candidate slots |
-| **Integrations** | GitHub, Linear, MCP servers, and auto-create-PR |
+| **Integrations** | GitHub, Linear, SSH hosts, MCP servers, and auto-create-PR |
 | **Git** | The name and email on ShipIt's automatic commits |
 | **Instructions** | Custom instructions sent with every message, a separate set for Ops sessions, and a switch for ShipIt's own built-in agent context |
 | **Skills** | Browse the skill catalogue and install one into a repository |
@@ -243,6 +243,36 @@ and say that doing so sets the distance guarantee aside.
 The reviewer's description and standing instructions are ordinary role metadata
 and are edited like any other role's.
 
+## SSH hosts
+
+Settings → Integrations → **SSH hosts** is a list of remote servers a session can
+reach over SSH. It is account-wide, not per repository, and it is deliberately
+not a repository secret: a secret resolves into a Compose service, and you edit
+the Compose file.
+
+The user adds a destination with a name, an address (a hostname or an IP), a
+user and a port. ShipIt then generates a key **for that destination alone** and
+shows the `authorized_keys` line to install on the server. It holds the private
+half and never lets it into a session container — not through a settings read,
+not through a Compose service, not on any mounted path. When `ssh` needs a
+signature, ShipIt signs, and only for a connection that really reached the server
+whose host key it recorded, as that destination's configured user.
+
+Adding a destination grants nothing. **The grant is per session**, in that
+session's own settings (the session menu → Session settings → SSH destinations),
+and any session kind can hold one — repo-backed, sandbox or ops. Granting one
+writes `~/.ssh/config` for that session and opens its egress to that address;
+revoking removes both, though a connection already authenticated runs until it
+closes.
+
+The first connection records the server's host key and posts its fingerprint as a
+card in the chat, for the user to compare with the server. If the key later
+changes, ShipIt refuses and says so; the user clears the recorded key with
+**Forget** on the destination's row.
+
+Your side of this is in `/shipit-docs/ssh.md`: `~/.ssh/config` is the list of
+what this session has, and `ssh <alias> '<command>'` is how you use it.
+
 ## Background work
 
 Below the credential cards, **Background work** pins the model ShipIt uses for
@@ -369,4 +399,6 @@ restarts — telling that user "saved, it will work" would be a false promise.
 | Creates roles and configures the reviewer slots | Run `--role NAME`; read a role's description before writing its prompt |
 | Picks the harness, model, level or role for a session | Say what the work needs; mention the harness locks at the first message |
 | Picks a theme and rebinds shortcuts | Name the control — the palette button, Settings → Keyboard — and stop |
+| Adds an SSH destination and installs its public line on the server | Say the destination is needed and what it is for; use it once granted |
+| Grants a destination to a session, in Session settings | Read `~/.ssh/config` to see what this session has, and say when nothing is granted |
 | Changes any setting | Read it, name it, say what it has to become. Never write it |

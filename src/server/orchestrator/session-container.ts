@@ -483,8 +483,21 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
     if (!cfg.contained) return false;
     const reloadResolver = egressDnsEnabled();
     const reloadProxy = egressProxyEnabled();
-    if (!reloadResolver && !reloadProxy) return false;
     const agentRunning = sc?.status === "running" && Boolean(sc.id);
+
+    // docs/305 — an IP-literal destination issues no DNS query, so reloading the
+    // resolver and proxy cannot admit it. Open it in the live namespace too; the
+    // durable derivation is what re-applies it at the next container creation.
+    if (agentRunning && sc?.id && cfg.extraCidrs?.length) {
+      await allowEgressToSubnets(this.docker, {
+        agentContainerId: sc.id,
+        sidecarImage,
+        subnets: cfg.extraCidrs,
+        labels: { ...this.baseLabels(), "shipit-parent-session": sessionId },
+      });
+    }
+
+    if (!reloadResolver && !reloadProxy) return agentRunning && Boolean(cfg.extraCidrs?.length);
     if (agentRunning && sc?.id) {
       await reloadEgressSidecars({
         docker: this.docker,

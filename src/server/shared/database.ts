@@ -962,6 +962,14 @@ const MIGRATIONS: Migration[] = [
     if (columns.some((c) => c.name === "agent_notified")) return;
     db.exec("ALTER TABLE settings_proposals ADD COLUMN agent_notified INTEGER NOT NULL DEFAULT 0");
   },
+
+  // docs/305 — SSH host grants, and the host-key fingerprint card.
+  (db) => {
+    addSessionColumnIfMissing(db, "ssh_hosts");
+    const columns = db.prepare("PRAGMA table_info(messages)").all() as { name: string }[];
+    if (columns.some((c) => c.name === "ssh_host_key")) return;
+    db.exec("ALTER TABLE messages ADD COLUMN ssh_host_key TEXT");
+  },
 ];
 
 /** Guard tests that rewind user_version and replay later migrations. */

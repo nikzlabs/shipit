@@ -1,6 +1,12 @@
 import path from "node:path";
 import type { FastifyInstance } from "fastify";
-import { composeEgressExtraHosts, composeEgressIdentityRules, sandboxLifelineEgressConfig } from "./egress-allowlist.js";
+import {
+  composeEgressExtraHosts,
+  composeEgressIdentityRules,
+  sandboxLifelineEgressConfig,
+  sshEgressTargets,
+} from "./egress-allowlist.js";
+import { ipLiteralCidr, isIpLiteral } from "./ssh-hosts.js";
 import type { ResolvedEgressConfig } from "./egress-allowlist.js";
 import { setEgressDurableSource } from "./egress-policy.js";
 import { assertWorkerUidConsistency } from "./worker-uid-guard.js";
@@ -100,17 +106,26 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   if (!isTestMode) sealLegacySessionDirs(sessionsRoot);
 
   const resolveEgressConfig = (sessionId: string): ResolvedEgressConfig => {
+    // docs/305 — derived from the durable grant, never mirrored: a rebuilt
+    // firewall and a fresh container re-apply exactly this set.
+    const granted = new Set(sessionManager.get(sessionId)?.sshHosts ?? []);
+    const ssh = sshEgressTargets(
+      credentialStore.listSshHosts().filter((h) => granted.has(h.id)),
+      { isIpLiteral, ipLiteralCidr },
+    );
     const lifeline = sandboxLifelineEgressConfig(
       sessionManager.get(sessionId),
       composeEgressIdentityRules(),
+      ssh,
     );
     if (lifeline) return lifeline;
     return {
       contained: egressAllowlistStore.resolveContained(sessionId),
       extraHosts: composeEgressExtraHosts({
         credentialStore,
-        durableHosts: egressAllowlistStore.effectiveHosts(sessionId),
+        durableHosts: [...egressAllowlistStore.effectiveHosts(sessionId), ...ssh.names],
       }),
+      ...(ssh.cidrs.length > 0 ? { extraCidrs: ssh.cidrs } : {}),
       base: egressAllowlistStore.effectiveBase(),
       identityRules: composeEgressIdentityRules(),
     };

@@ -227,7 +227,7 @@ export interface SessionSettingsChangeEntry {
 
 export interface SessionSettingsChangeCard {
   cardId: string;
-  scope: "sandbox-capabilities" | "network-mode";
+  scope: "sandbox-capabilities" | "network-mode" | "ssh-hosts";
   changes: SessionSettingsChangeEntry[];
   /** Snapshot at emit time, not live restart status. */
   pendingRestart: boolean;
