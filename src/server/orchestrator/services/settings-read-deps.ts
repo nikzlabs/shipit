@@ -30,19 +30,21 @@ export interface SettingsReadDeps {
   egressEnforcementStatus?: EgressEnforcementStatus | undefined;
   egressEnforcementActive?: boolean | undefined;
   containerManager?: {
-    get(sessionId: string): { status?: string; egressContainedAtStart?: boolean } | undefined;
+    /**
+     * What the container is actually running under. `egressUserHostsExcluded` is
+     * the exclusion its applied egress config carries, which `resolveEgress`
+     * cannot answer because that describes the next start — and it is read from
+     * the applied config rather than the session's stored capabilities, which
+     * can move without the container moving (`settings-read.ts` →
+     * `egressAllowlistEffect`). Undefined means unknown for both fields.
+     */
+    get(sessionId: string): {
+      status?: string;
+      egressContainedAtStart?: boolean;
+      egressUserHostsExcluded?: boolean;
+    } | undefined;
     /** The shipped resolver, so sandbox capabilities are honoured, not re-derived. */
     resolveEgress(sessionId: string): { contained: boolean; userHostsExcluded?: boolean } | undefined;
-    /**
-     * The capabilities the RUNNING container started with — null when none is
-     * running and for one rediscovered after a ShipIt restart, which recorded
-     * none. `resolveEgress` answers for the NEXT start, so a probe that has to
-     * say what is in force reads this instead (`settings-read.ts` →
-     * `startedUserHostsExcluded`). Required rather than optional: an effect
-     * answer sourced from the wrong one of the two is the failure req 3 exists
-     * to prevent, so a caller cannot leave it out.
-     */
-    capabilitiesAtStart(sessionId: string): { network: boolean } | null;
   } | undefined;
   /** Injected by tests; the release channel otherwise comes off the host checkout. */
   readReleaseChannel?: (() => Promise<string>) | undefined;

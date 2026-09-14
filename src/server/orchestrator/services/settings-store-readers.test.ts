@@ -638,7 +638,6 @@ describe("the global egress allowlist", () => {
       containerManager: {
         get: () => ({ status: "running", egressContainedAtStart: true }),
         resolveEgress: () => ({ contained: true }),
-        capabilitiesAtStart: () => null,
       },
     });
     expect(entry.effect.state).toBe("restart-dependent");
@@ -655,7 +654,6 @@ describe("the global egress allowlist", () => {
       containerManager: {
         get: () => ({ status: "running", egressContainedAtStart: true }),
         resolveEgress: () => ({ contained: false }),
-        capabilitiesAtStart: () => null,
       },
     });
     expect(entry.effect.state).toBe("restart-dependent");
@@ -669,7 +667,6 @@ describe("the global egress allowlist", () => {
       containerManager: {
         get: () => ({ status: "running", egressContainedAtStart: false }),
         resolveEgress: () => ({ contained: true }),
-        capabilitiesAtStart: () => null,
       },
     });
     expect(entry.effect.state).toBe("restart-dependent");
@@ -682,7 +679,6 @@ describe("the global egress allowlist", () => {
       containerManager: {
         get: () => ({ status: "running" }),
         resolveEgress: () => ({ contained: true }),
-        capabilitiesAtStart: () => null,
       },
     });
     expect(entry.effect.state).toBe("uncertain");
@@ -695,7 +691,6 @@ describe("the global egress allowlist", () => {
       containerManager: {
         get: () => undefined,
         resolveEgress: () => ({ contained: false }),
-        capabilitiesAtStart: () => null,
       },
     });
     expect(entry.effect.state).toBe("excluded");
@@ -706,10 +701,9 @@ describe("the global egress allowlist", () => {
     const entry = await detail("network.egress.hosts[].host", {
       egressEnforcementStatus: "active",
       containerManager: {
-        get: () => ({ status: "running", egressContainedAtStart: true }),
+        // Sealed when its policy was applied too: nothing changed under it.
+        get: () => ({ status: "running", egressContainedAtStart: true, egressUserHostsExcluded: true }),
         resolveEgress: () => ({ contained: true, userHostsExcluded: true }),
-        // Sealed at start too: no capability changed under this container.
-        capabilitiesAtStart: () => ({ network: false }),
       },
     });
     expect(entry.effect.state).toBe("excluded");
@@ -720,30 +714,33 @@ describe("the global egress allowlist", () => {
     Revoking a sandbox's network capability saves WITHOUT rebuilding the
     container (`services/session-settings.ts` → `updateSandboxCapabilities`,
     which emits a `pendingRestart` card), so the resolver's `userHostsExcluded`
-    answers for the next start while the container is still running under the
-    capability it took. Reading the exclusion off the resolver alone told such a
-    session it was sealed from the allowlist — req 3's exact failure, on the
-    surface that exists to explain a blocker.
+    answers for the next start while the container is still enforcing the policy
+    it was configured with. Reading the exclusion off the resolver alone told
+    such a session it was sealed from the allowlist — req 3's exact failure, on
+    the surface that exists to explain a blocker.
+
+    The container's own `egressUserHostsExcluded` is what is in force, and it is
+    NOT the session's stored capabilities: `app-lifecycle.ts` snapshots those
+    before creation resolves egress, and `reloadEgress` re-applies the current
+    policy to a running container afterwards.
   */
-  describe("a capability that changed after the container started", () => {
-    const capabilities = (
-      container: { status?: string; egressContainedAtStart?: boolean } | undefined,
+  describe("a policy that changed after the container was configured", () => {
+    const applied = (
+      container: {
+        status?: string;
+        egressContainedAtStart?: boolean;
+        egressUserHostsExcluded?: boolean;
+      } | undefined,
       resolved: { contained: boolean; userHostsExcluded?: boolean },
-      startedWith: { network: boolean } | null,
     ): Partial<SettingsReadDeps> => ({
       egressEnforcementStatus: "active",
-      containerManager: {
-        get: () => container,
-        resolveEgress: () => resolved,
-        capabilitiesAtStart: () => startedWith,
-      },
+      containerManager: { get: () => container, resolveEgress: () => resolved },
     });
 
     it("does not tell a container that started open that it is sealed from the allowlist", async () => {
-      const entry = await detail("network.egress.hosts", capabilities(
-        { status: "running", egressContainedAtStart: false },
+      const entry = await detail("network.egress.hosts", applied(
+        { status: "running", egressContainedAtStart: false, egressUserHostsExcluded: false },
         { contained: true, userHostsExcluded: true },
-        { network: true },
       ));
       expect(entry.effect.state).toBe("excluded");
       // What is in force: nothing restricts it, and the user is owed that first.
@@ -753,61 +750,79 @@ describe("the global egress allowlist", () => {
     });
 
     it("says a still-contained container is enforcing the list it took, before the sealing", async () => {
-      const entry = await detail("network.egress.hosts", capabilities(
-        { status: "running", egressContainedAtStart: true },
+      const entry = await detail("network.egress.hosts", applied(
+        { status: "running", egressContainedAtStart: true, egressUserHostsExcluded: false },
         { contained: true, userHostsExcluded: true },
-        { network: true },
       ));
       expect(entry.effect.state).toBe("excluded");
       expect(entry.effect.detail).toContain("still enforcing");
       expect(entry.effect.detail).toContain("switched off since");
     });
 
-    it("cannot say what a rediscovered container is enforcing, and does not pretend to", async () => {
-      // No boot record at all, so the start-time capability is unknown too.
-      const entry = await detail("network.egress.hosts", capabilities(
+    it("invents no history for a container it has no record of", async () => {
+      // A container rediscovered after a ShipIt restart recorded no policy at
+      // all. "Switched off since" would assert a change that may never have
+      // happened — the capability may have been off for this container's whole
+      // life.
+      const entry = await detail("network.egress.hosts", applied(
         { status: "running" },
         { contained: true, userHostsExcluded: true },
-        null,
       ));
       expect(entry.effect.state).toBe("excluded");
       expect(entry.effect.detail).toContain("rediscovered");
+      expect(entry.effect.detail).not.toContain("since");
+      expect(entry.effect.detail).toContain("no restart makes a host here reachable");
     });
 
-    it("says a container that started sealed reaches no host on the list, once the capability is back", async () => {
+    it("says the list adds nothing to a sealed container, once the capability is back", async () => {
       // The mirror image: granting the capability leaves the running container
-      // sealed to ShipIt's own lifeline hosts until it restarts.
-      const entry = await detail("network.egress.hosts", capabilities(
-        { status: "running", egressContainedAtStart: true },
+      // sealed to ShipIt's own lifeline hosts until it restarts. It is not that
+      // NO host on the list is reachable — the lifeline hosts are on the list
+      // too — it is that the list adds nothing.
+      const entry = await detail("network.egress.hosts", applied(
+        { status: "running", egressContainedAtStart: true, egressUserHostsExcluded: true },
         { contained: true },
-        { network: false },
       ));
       expect(entry.effect.state).toBe("restart-dependent");
-      expect(entry.effect.detail).toContain("no host on this list is reachable");
+      expect(entry.effect.detail).toContain("adds nothing to what it can reach");
       expect(entry.effect.detail).toContain("from its next start");
     });
 
-    it("promises no allowlist after a restart when nothing will contain the session", async () => {
-      const entry = await detail("network.egress.hosts", capabilities(
-        { status: "running", egressContainedAtStart: true },
+    it("does not call a contained container uncontained when its next start is open", async () => {
+      const entry = await detail("network.egress.hosts", applied(
+        { status: "running", egressContainedAtStart: true, egressUserHostsExcluded: true },
         { contained: false },
-        { network: false },
       ));
       expect(entry.effect.state).toBe("excluded");
-      expect(entry.effect.detail).toContain("no host on this list is reachable");
-      expect(entry.effect.detail).toContain("nothing contains the session");
+      expect(entry.effect.detail).toContain("adds nothing to what it can reach");
+      // The session IS contained right now; only its next start is open.
+      expect(entry.effect.detail).not.toContain("nothing contains the session");
+      expect(entry.effect.detail).toContain("next start is open");
     });
 
     it("leaves a sandbox nothing changed under saying exactly what it said before", async () => {
-      const entry = await detail("network.egress.hosts", capabilities(
-        { status: "running", egressContainedAtStart: true },
+      const entry = await detail("network.egress.hosts", applied(
+        { status: "running", egressContainedAtStart: true, egressUserHostsExcluded: true },
         { contained: true, userHostsExcluded: true },
-        { network: false },
       ));
       expect(entry.effect).toEqual({
         state: "excluded",
         detail: "This session's own network capability excludes it from the allowlist, and no restart makes a host here reachable from it. The session's network capability is what has to change.",
       });
+    });
+
+    it("follows a live reload rather than the policy the container started with", async () => {
+      // `reloadEgress` re-applies the currently resolved policy to a RUNNING
+      // container (`session-container.ts`), so a session host add after the
+      // capability was granted puts it back under the ordinary allowlist
+      // without a restart. Reading a start-time capability snapshot would still
+      // be reporting it sealed.
+      const entry = await detail("network.egress.hosts", applied(
+        { status: "running", egressContainedAtStart: true, egressUserHostsExcluded: false },
+        { contained: true },
+      ));
+      expect(entry.effect.state).toBe("restart-dependent");
+      expect(entry.effect.detail).not.toContain("adds nothing to what it can reach");
     });
   });
 

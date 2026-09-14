@@ -746,6 +746,9 @@ export async function createContainer(
 
     const egressCfg = deps.resolveEgressConfig?.(config.sessionId) ?? { contained: true, extraHosts: [] };
     sc.egressContainedAtStart = egressCfg.contained;
+    // From the config that is about to be applied, not from the capability
+    // snapshot `app-lifecycle.ts` took before this resolved.
+    sc.egressUserHostsExcluded = egressCfg.userHostsExcluded === true;
     // Network joins must append ACCEPT rules after the installer's OUTPUT flush. Resolve on failure too.
     sc.egressFirewallReady = new Promise<void>((resolve) => {
       signalEgressFirewallReady = resolve;

@@ -299,14 +299,10 @@ describe("scopeUnreadableReason", () => {
 });
 
 describe("saved is not effective", () => {
-  // `startedWith` is the capability the RUNNING container took, which is not the
-  // stored one: revoking a sandbox's network capability saves without rebuilding
-  // the container.
   const network = (
     over: Parameters<typeof egressStore>[0],
     container?: { status?: string; egressContainedAtStart?: boolean },
     resolved?: { contained: boolean; userHostsExcluded?: boolean },
-    startedWith?: { network: boolean } | null,
   ) =>
     deps({
       egressAllowlistStore: egressStore(over),
@@ -314,7 +310,6 @@ describe("saved is not effective", () => {
       containerManager: {
         get: () => container,
         resolveEgress: () => resolved,
-        capabilitiesAtStart: () => startedWith ?? null,
       },
     });
 
@@ -365,7 +360,6 @@ describe("saved is not effective", () => {
         { globalEnabled: false },
         { status: "running", egressContainedAtStart: false },
         { contained: true, userHostsExcluded: true },
-        { network: true },
       ),
       "s1",
       "network.egressContained",
@@ -457,11 +451,7 @@ describe("saved is not effective", () => {
       deps({
         egressAllowlistStore: egressStore(over),
         egressEnforcementStatus: "no-sidecar",
-        containerManager: {
-          get: () => container,
-          resolveEgress: () => undefined,
-          capabilitiesAtStart: () => null,
-        },
+        containerManager: { get: () => container, resolveEgress: () => undefined },
       });
 
     it("names the refusal on the containment setting rather than calling it irrelevant", async () => {
@@ -514,7 +504,6 @@ describe("saved is not effective", () => {
           containerManager: {
             get: () => undefined,
             resolveEgress: () => ({ contained: true, userHostsExcluded: true }),
-            capabilitiesAtStart: () => null,
           },
         }),
         "s1",

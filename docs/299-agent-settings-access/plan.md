@@ -588,10 +588,19 @@ revoking a sandbox's network capability saves *without* rebuilding the container
 (`services/session-settings.ts` → `updateSandboxCapabilities`, which emits a
 `pendingRestart` card). So the stored capability describes the next start while
 the container the user is asking about is still running under the one it took.
-Each probe now reads whichever of the two its own question is about, and the
-read's `containerManager` dependency carries `capabilitiesAtStart` for the second
-— required rather than optional, because an effect answer sourced from the wrong
-one is exactly the failure req 3 exists to prevent.
+Each probe now reads whichever of the two its own question is about.
+
+**What is in force is read from the container's own record, not from the
+session's stored capabilities.** `SessionContainer.egressUserHostsExcluded` is
+written from the egress config that was actually applied, at the two moments a
+container's egress is configured: creation (`container-lifecycle.ts`, beside
+`egressContainedAtStart`) and `reloadEgress` (`session-container.ts`). The stored
+capabilities are wrong for this twice over — `app-lifecycle.ts` snapshots them
+*before* creation resolves egress, and a reload re-applies the current policy to
+a *running* container, so a session host add after a capability grant puts it
+back under the ordinary allowlist with no restart at all. Undefined means
+unknown, exactly as for `egressContainedAtStart`, and the two are recorded
+together so a rediscovered container is unknown in both.
 
 - **Which setting DECIDES containment is the STORED capability.**
   `sandboxLifelineEgressConfig` intercepts a network-off sandbox at every
@@ -603,26 +612,35 @@ one is exactly the failure req 3 exists to prevent.
   sandbox whose capability was revoked mid-life is told both: the global setting
   will never apply to it, *and* its container started open and stays open until
   it is restarted.
-- **Whether the ALLOWLIST is restricting the session is the RUNNING container's
-  capability; whether a change to the list can ever reach it is the stored one.**
-  A global host add reloads nothing live (`services/settings-apply.ts` →
-  `applyEgressHostAdd` returns early for the global scope), so a change reaches
-  this session only through its next start — which the stored capability decides.
-  But "your network capability excludes it from the allowlist" describes the
-  session *now*, and for a container that started before the revoke it is false:
-  it is still enforcing the list it took, or still open. Both halves are now said
-  in the one detail, and the state stays `excluded` because the forward answer is
-  what the state means.
+- **Whether the ALLOWLIST is shutting the session out is the RUNNING container's
+  applied policy; whether a change to the list can ever reach it is the stored
+  capability.** A global host add reloads nothing live
+  (`services/settings-apply.ts` → `applyEgressHostAdd` returns early for the
+  global scope), so a change reaches this session only through its next start —
+  which the stored capability decides. But "your network capability excludes it
+  from the allowlist" describes the session *now*, and for a container
+  configured before the revoke it is false: it is still enforcing the list it
+  took, or still open. Both halves are now said in the one detail, and the state
+  stays `excluded` because the forward answer is what the state means.
 - **The grant direction is the mirror image and is reported as its own case.** A
-  container that started with the capability off is sealed to ShipIt's lifeline
-  hosts whatever the list says, so granting the capability leaves it reaching no
-  host on the list until it restarts: `restart-dependent` where the next start is
-  contained, `excluded` where nothing will contain it.
-- **A running container ShipIt has no start-time record for is not described as
-  sealed.** `capabilitiesAtStart` and `egressContainedAtStart` are recorded
-  together at creation, so the missing pair means a container rediscovered after
-  a ShipIt restart — the probe says that instead of guessing from the stored
-  capability.
+  container running under the capability switched off is sealed to ShipIt's
+  lifeline hosts whatever the list says, so granting the capability leaves the
+  list adding nothing to it until it restarts: `restart-dependent` where the next
+  start is contained, `excluded` where the next start is open. Not "nothing
+  contains the session" — that container *is* contained; it is its next start
+  that is not.
+- **A container ShipIt has no record for gets no history invented for it.** An
+  unknown record is not "not excluded": a rediscovered container may have been
+  sealed for its whole life, so saying the capability "has been switched off
+  since" would assert a change that never happened. The probe says it cannot tell
+  what the container is enforcing, and states the stored capability's effect on
+  the next start without claiming a transition.
+- **A sealed container is not told the list is empty to it.** The lifeline base
+  is a subset of the shipped allowlist defaults (`.anthropic.com`, `.openai.com`
+  and the rest), so "no host on this list is reachable" is false — those hosts
+  are on the list and are reachable. The claim is that the list *adds* nothing
+  beyond the lifeline and any granted SSH destination, which is the part the user
+  can act on.
 
 **The refusal is a suffix on every branch, never a branch of its own.** It
 answers a different question from the rest of the probe: those say what is true

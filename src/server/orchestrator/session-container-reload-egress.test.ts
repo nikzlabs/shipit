@@ -97,6 +97,42 @@ describe("reloadEgress — the return value is the agent's reload (planning#380)
     await expect(manager.reloadEgress(SESSION_ID)).resolves.toBe(false);
     expect(reloadEgressSidecars).not.toHaveBeenCalled();
   });
+
+  /*
+    A reload replaces the resolver and proxy with the CURRENTLY resolved policy,
+    so what the container shuts out changes without a restart. The record has to
+    move with it: `services/settings-read.ts` tells the user whether the egress
+    allowlist is doing anything to this session, and a record frozen at creation
+    would have it describing a policy that was replaced (docs/299 req 3).
+  */
+  it("records the exclusion the reload actually applied", async () => {
+    const manager = await buildManager({
+      contained: true, extraHosts: [], base: ["lifeline.example"], userHostsExcluded: true,
+    });
+    // Rediscovered, so nothing is recorded until something is applied.
+    expect(manager.get(SESSION_ID)?.egressUserHostsExcluded).toBeUndefined();
+
+    await manager.reloadEgress(SESSION_ID);
+
+    expect(manager.get(SESSION_ID)?.egressUserHostsExcluded).toBe(true);
+  });
+
+  it("records the ordinary allowlist coming back, not only the sealing", async () => {
+    const manager = await buildManager({ contained: true, extraHosts: ["fal.run"] });
+    await manager.reloadEgress(SESSION_ID);
+    expect(manager.get(SESSION_ID)?.egressUserHostsExcluded).toBe(false);
+  });
+
+  it("records nothing when no reload reached the container", async () => {
+    const manager = await buildManager({
+      contained: true, extraHosts: [], userHostsExcluded: true,
+    });
+    manager.get(SESSION_ID)!.status = "stopped";
+
+    await manager.reloadEgress(SESSION_ID);
+
+    expect(manager.get(SESSION_ID)?.egressUserHostsExcluded).toBeUndefined();
+  });
 });
 
 /**

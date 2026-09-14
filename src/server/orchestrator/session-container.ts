@@ -157,6 +157,19 @@ export interface SessionContainer {
   overlayVolumesRecreated?: boolean;
   /** Undefined means boot policy unknown, not uncontained. */
   egressContainedAtStart?: boolean;
+  /**
+   * Whether the egress policy this container is CURRENTLY configured with shuts
+   * the user's hosts out (a network-off sandbox's lifeline). Undefined means
+   * unknown, as for `egressContainedAtStart` — the two are recorded together.
+   *
+   * Not `AtStart`, deliberately: containment cannot change without a restart,
+   * but `reloadEgress` replaces the resolver and proxy of a running container
+   * with the currently resolved policy, so this one can. It is recorded from the
+   * config that was actually applied, never from the session's stored
+   * capabilities, which `app-lifecycle.ts` snapshots before creation resolves
+   * egress.
+   */
+  egressUserHostsExcluded?: boolean;
   /** Separate from containment: both network-on and network-off sandboxes are contained. */
   capabilitiesAtStart?: SessionCapabilities;
   /** Subnet rules must wait until installation finishes flushing OUTPUT. */
@@ -520,6 +533,8 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
         reloadResolver,
         reloadProxy,
       });
+      // The container now enforces THIS policy, not the one it started with.
+      sc.egressUserHostsExcluded = cfg.userHostsExcluded === true;
     }
     try {
       await this.containComposeServices(sessionId, this.composeServiceNames.get(sessionId) ?? [], true);

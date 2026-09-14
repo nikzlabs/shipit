@@ -431,22 +431,6 @@ function alsoSay(effect: SettingEffect, sentence: string): SettingEffect {
 }
 
 /**
- * Whether the RUNNING container excludes the user's hosts — null when nothing
- * running answers, which is a container rediscovered after a ShipIt restart as
- * well as no container at all.
- *
- * Deliberately NOT `resolveEgress`'s `userHostsExcluded`: revoking a sandbox's
- * network capability saves without rebuilding the container
- * (`services/session-settings.ts` → `updateSandboxCapabilities`, which emits a
- * `pendingRestart` card), so the resolver answers for the next start while this
- * answers for the container the user is asking about.
- */
-function startedUserHostsExcluded(deps: SettingsReadDeps, sessionId: string): boolean | null {
-  const started = deps.containerManager?.capabilitiesAtStart(sessionId);
-  return started ? !started.network : null;
-}
-
-/**
  * What the RUNNING container is doing about containment, or null when it agrees
  * with the resolved policy and there is nothing extra to say. Computed once and
  * carried by the branches above it: a capability or a per-session override
@@ -546,9 +530,16 @@ function egressContainmentEffect(deps: SettingsReadDeps, sessionId: string): Set
  * session is the next start's capability, because a global host add reloads
  * nothing live (`services/settings-apply.ts` → `applyEgressHostAdd`) and the
  * next container start resolves the capability afresh. Whether the list is
- * restricting the session NOW is the running container's start-time capability:
- * revoking a sandbox's leaves the container as it was, so the stored one says a
- * session is sealed while it is still reaching every host it started with.
+ * shutting the session out NOW is `egressUserHostsExcluded`, the exclusion the
+ * container's applied egress config carries: revoking a sandbox's network
+ * capability leaves the container as it was, so the resolver says a session is
+ * sealed while it is still reaching every host it started with.
+ *
+ * That record, and not the session's stored capabilities, because the two
+ * diverge twice over: `app-lifecycle.ts` snapshots the capabilities BEFORE
+ * creation resolves egress, and `reloadEgress` re-applies the current policy to
+ * a running container afterwards. It is written at both of those moments, so it
+ * describes what the container is enforcing rather than what someone asked for.
  */
 function egressAllowlistEffect(deps: SettingsReadDeps, sessionId: string): SettingEffect {
   const disabled = enforcementDisabledEffect(deps, "the allowlist restricts nothing");
@@ -570,25 +561,32 @@ function egressAllowlistEffect(deps: SettingsReadDeps, sessionId: string): Setti
   const blocked = startupRefusal(deps, contained);
   const container = deps.containerManager?.get(sessionId);
   const running = container?.status === "running";
-  // Only a running container has an exclusion in force; nothing running means
-  // the stored capability answers both halves.
-  const startedExcluded = running ? startedUserHostsExcluded(deps, sessionId) : null;
+  // Only a running container shuts anything out; with none, the resolved policy
+  // answers both halves. Undefined is UNKNOWN and never `false`: a container
+  // rediscovered after a ShipIt restart recorded nothing.
+  const excludedNow = running ? container?.egressUserHostsExcluded : undefined;
   if (config?.userHostsExcluded) {
-    // A running container ShipIt cannot vouch for is not one it may describe as
-    // sealed: it started before the capability was read here, or recorded
-    // nothing at all.
-    const stale = running && startedExcluded !== true;
+    if (excludedNow === true || !running) {
+      return alsoSay({
+        state: "excluded",
+        detail: "This session's own network capability excludes it from the allowlist, and no restart makes a host here reachable from it. The session's network capability is what has to change.",
+      }, blocked);
+    }
+    // A container ShipIt has no record for gets no history invented for it: the
+    // capability may have been off all along.
     return alsoSay({
       state: "excluded",
-      detail: stale
-        ? `${allowlistInForce(container)} This session's network capability has been switched off since, so restarting it seals the session and no restart makes a host here reachable from it.`
-        : "This session's own network capability excludes it from the allowlist, and no restart makes a host here reachable from it. The session's network capability is what has to change.",
+      detail: excludedNow === undefined
+        ? `${allowlistInForce(container)} This session's network capability is off, so no restart makes a host here reachable from it either.`
+        : `${allowlistInForce(container)} This session's network capability has been switched off since, so restarting it seals the session and no restart makes a host here reachable from it.`,
     }, blocked);
   }
-  if (startedExcluded) {
-    // The mirror image: the capability was granted after this container started,
-    // so it is still sealed to ShipIt's own lifeline hosts.
-    const now = "This session's container started with its network capability switched off, so no host on this list is reachable from it.";
+  if (excludedNow === true) {
+    // The mirror image: the capability was granted after this container's policy
+    // was applied, so it is still sealed to ShipIt's own lifeline hosts. The list
+    // is not empty to it — a lifeline host is on the list too — it just adds
+    // nothing, which is the claim the user can act on.
+    const now = "This session's container is running under its network capability switched off, so this list adds nothing to what it can reach: only ShipIt's own lifeline hosts, and any SSH destination granted to it.";
     return alsoSay(
       contained
         ? {
@@ -597,7 +595,7 @@ function egressAllowlistEffect(deps: SettingsReadDeps, sessionId: string): Setti
           }
         : {
             state: "excluded",
-            detail: `${now} The capability is on again now and nothing contains the session, so a restart does not put it under the allowlist either.`,
+            detail: `${now} The capability is on again now and its next start is open, so the allowlist will not restrict it then either.`,
           },
       blocked,
     );
