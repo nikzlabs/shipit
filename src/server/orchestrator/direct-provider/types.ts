@@ -49,6 +49,14 @@ export class DirectCallError extends Error {
      * never reached a response body.
      */
     readonly usage?: DirectCallUsage,
+    /**
+     * The call may have been billed and no amount can ever be read: these
+     * styles report their counts only in a whole response body, and this one
+     * was cut off. The run is knowable, its amount is not
+     * (docs/299-direct-provider-calls req 7). Distinct from `usage` being
+     * absent, which also covers failures nobody was charged for.
+     */
+    readonly spendUnknown = false,
   ) {
     super(message);
     this.name = "DirectCallError";
