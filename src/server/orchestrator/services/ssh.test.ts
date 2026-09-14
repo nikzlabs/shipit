@@ -41,7 +41,8 @@ function harness(opts: { granted?: boolean; pinTo?: FakeServerKey } = {}): Harne
     port: 22,
     user: "deploy",
     publicKeyBlob: generated.publicKeyBlob,
-    publicLine: generated.publicLine,
+    identityLine: generated.identityLine,
+    authorizedKeysLine: generated.authorizedKeysLine,
     fingerprint: generated.fingerprint,
     createdAt: "2026-09-14T00:00:00.000Z",
   };
@@ -205,6 +206,28 @@ describe("the signer contract", () => {
     });
   });
 
+  /**
+   * The pin is account-wide and permanent, so a request that is about to be
+   * refused must not be able to set it. Otherwise a granted session mints its
+   * own "server" key, posts that bind with junk to sign, and every later
+   * legitimate connection from every granted session fails against its pin.
+   */
+  it("does not record a pin from a request it refuses", () => {
+    const h = harness();
+    const attacker = fakeEd25519ServerKey();
+    expect(() => signSshRequest(h.deps, SESSION, {
+      keyBlob: h.host.publicKeyBlob,
+      data: Buffer.from("not a userauth request at all").toString("base64"),
+      bind: buildSessionBind(attacker, SSH_SESSION_ID),
+    })).toThrow();
+
+    expect(h.recorded()).toBeUndefined();
+    expect(h.appended).toEqual([]);
+    // The real server's first connection still gets to set it.
+    signSshRequest(h.deps, SESSION, validRequest(h));
+    expect(h.recorded()).toBe(h.server.blob);
+  });
+
   it("refuses a host key that differs from the recorded one, with a warning card", () => {
     const h = harness();
     signSshRequest(h.deps, SESSION, validRequest(h));
@@ -221,6 +244,55 @@ describe("the signer contract", () => {
     // The pin does not move on a mismatch; the original key still authenticates.
     expect(h.recorded()).toBe(h.server.blob);
     expect(() => signSshRequest(h.deps, SESSION, validRequest(h))).not.toThrow();
+  });
+
+  /**
+   * OpenSSH 8.9+ prefers `publickey-hostbound-v00@openssh.com` whenever the
+   * server advertises it, which every sshd of that vintage does — so this, not
+   * plain `publickey`, is what a real connection sends.
+   */
+  it("signs the host-bound form a modern OpenSSH client actually sends", () => {
+    const h = harness();
+    const request = {
+      ...validRequest(h),
+      data: buildUserauthData({
+        sessionId: SSH_SESSION_ID,
+        user: h.host.user,
+        publicKeyBlob: h.host.publicKeyBlob,
+        serverHostKeyBlob: h.server.blob,
+      }),
+    };
+    expect(() => signSshRequest(h.deps, SESSION, request)).not.toThrow();
+  });
+
+  it("refuses a host-bound request naming a server other than the bound one", () => {
+    const h = harness();
+    const request = {
+      ...validRequest(h),
+      data: buildUserauthData({
+        sessionId: SSH_SESSION_ID,
+        user: h.host.user,
+        publicKeyBlob: h.host.publicKeyBlob,
+        serverHostKeyBlob: fakeEd25519ServerKey().blob,
+      }),
+    };
+    expect(() => signSshRequest(h.deps, SESSION, request)).toThrow(/different server/);
+  });
+
+  // An unchecked field is free space inside what we sign, and the destination's
+  // key is always ed25519 so no other name can be a valid request for it.
+  it("refuses an arbitrary algorithm field", () => {
+    const h = harness();
+    const request = {
+      ...validRequest(h),
+      data: buildUserauthData({
+        sessionId: SSH_SESSION_ID,
+        user: h.host.user,
+        publicKeyBlob: h.host.publicKeyBlob,
+        algorithm: "not-an-ssh-algorithm arbitrary-attacker-content",
+      }),
+    };
+    expect(() => signSshRequest(h.deps, SESSION, request)).toThrow(/only ssh-ed25519/);
   });
 
   // Rule 4 — userauth only, this connection, this user.

@@ -22,7 +22,8 @@ function host(id: string, label: string, over: Partial<SshHostPublic> = {}): Ssh
     port: 22,
     user: "deploy",
     publicKeyBlob: key.publicKeyBlob,
-    publicLine: key.publicLine,
+    identityLine: key.identityLine,
+    authorizedKeysLine: key.authorizedKeysLine,
     fingerprint: key.fingerprint,
     createdAt: "2026-09-14T00:00:00.000Z",
     ...over,
@@ -102,7 +103,7 @@ describe("provisionSessionSshFromGrant", () => {
     provision(hosts, ["a", "b"], { a: key.blob });
 
     expect(fs.readdirSync(sshDir).sort()).toEqual(["config", "known_hosts", "prod.pub", "staging.pub"]);
-    expect(fs.readFileSync(path.join(sshDir, "prod.pub"), "utf8")).toBe(`${hosts[0].publicLine}\n`);
+    expect(fs.readFileSync(path.join(sshDir, "prod.pub"), "utf8")).toBe(`${hosts[0].identityLine}\n`);
     expect(fs.readFileSync(path.join(sshDir, "known_hosts"), "utf8")).toContain(key.blob);
   });
 
@@ -139,6 +140,23 @@ describe("provisionSessionSshFromGrant", () => {
     }
   });
 
+  /**
+   * It runs inside a turn's environment preparation. A throw there would fail
+   * the turn over a feature the session may not even use, so every read is
+   * inside the guard too — not just the filesystem write.
+   */
+  it("does not throw when the store cannot answer", () => {
+    const broken = {
+      credentialsDir: root,
+      credentialStore: {
+        listSshHosts: () => { throw new Error("store unavailable"); },
+        getSshHostKeyBlob: () => undefined,
+      },
+      sessionManager: { get: () => ({ sshHosts: ["a"] }) },
+    };
+    expect(() => provisionSessionSshFromGrant(broken, "sess-1")).not.toThrow();
+  });
+
   it("picks up a host key recorded after the grant was made", () => {
     const key = fakeEd25519ServerKey();
     const hosts = [host("a", "prod")];
@@ -149,6 +167,39 @@ describe("provisionSessionSshFromGrant", () => {
   });
 
   /**
+   * `~/.ssh` is inside the subtree the container mounts, so the agent owns it
+   * and can replace any of it with a symlink. Provisioning runs as the
+   * orchestrator and both writes AND deletes in there — pointed out of the
+   * subtree, its sweep would remove another session's credentials.
+   */
+  it("refuses to follow a symlink planted where the directory should be", () => {
+    const outside = path.join(root, "sessions");
+    fs.mkdirSync(path.join(outside, "OTHER-SESSION"), { recursive: true });
+    fs.writeFileSync(path.join(outside, "OTHER-SESSION", "token.json"), "another session's token");
+    fs.mkdirSync(path.dirname(sshDir), { recursive: true });
+    fs.symlinkSync("..", sshDir);
+
+    provision([host("a", "prod")], ["a"]);
+
+    expect(fs.existsSync(path.join(outside, "OTHER-SESSION", "token.json"))).toBe(true);
+    expect(fs.lstatSync(sshDir).isSymbolicLink()).toBe(false);
+    expect(fs.readdirSync(sshDir).sort()).toEqual(["config", "known_hosts", "prod.pub"]);
+  });
+
+  it("refuses to follow a symlink planted at one of the files", () => {
+    const decoy = path.join(root, "decoy.txt");
+    fs.writeFileSync(decoy, "untouched");
+    provision([host("a", "prod")], ["a"]);
+    fs.rmSync(path.join(sshDir, "config"));
+    fs.symlinkSync(decoy, path.join(sshDir, "config"));
+
+    provision([host("a", "prod"), host("b", "staging")], ["a", "b"]);
+
+    expect(fs.readFileSync(decoy, "utf8")).toBe("untouched");
+    expect(fs.readFileSync(path.join(sshDir, "config"), "utf8")).toContain("Host staging");
+  });
+
+  /**
    * req 3 — `~/.ssh` is mounted into the session container, so anything written
    * here is readable by the agent. Only public material may land in it.
    */
@@ -156,7 +207,8 @@ describe("provisionSessionSshFromGrant", () => {
     const generated = generateSshHostKey("shipit-prod");
     const only = host("a", "prod", {
       publicKeyBlob: generated.publicKeyBlob,
-      publicLine: generated.publicLine,
+      identityLine: generated.identityLine,
+      authorizedKeysLine: generated.authorizedKeysLine,
       fingerprint: generated.fingerprint,
     });
     provision([only], ["a"]);

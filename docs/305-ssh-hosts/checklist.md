@@ -15,7 +15,7 @@ All twelve requirements are resolved and the design is reviewed. Implementation 
 
 ## Signing path
 - [x] Worker SSH agent socket: identities, `session-bind@openssh.com` held per connection, sign relayed with the bind; everything else refused
-- [x] Orchestrator sign endpoint: grant gate, bind verification, `is_forwarding` refusal, host-key pin (record on first bind, refuse mismatch + warning card), userauth-only data with matching session id and user, per-session rate/concurrency bound, one audit line per attempt with outcome and refusal reason
+- [x] Orchestrator sign endpoint: grant gate, bind verification, `is_forwarding` refusal, host-key pin (record on first bind, refuse mismatch + warning card), userauth-only data with matching session id and user, per-session rate bound, one audit line per attempt with outcome and refusal reason
 - [x] Fingerprint card on first bind and warning card on mismatch, both persisted (docs/188 recipe)
 
 ## Reachability
@@ -28,6 +28,24 @@ All twelve requirements are resolved and the design is reviewed. Implementation 
 - [x] Static prompt fragment (points at `~/.ssh/config`) + `shipit-docs/ssh.md` (aliases, revocation limits, local-mode caveat) + the wiki page
 - [x] Tests listed in `plan.md`, each signer rule proven red alone
 
+## Open — the design's own guarantees, with the human
+
+An independent review (run `21b663a1-c44f-4371-8058-6d35e38e1ef0`) found two claims in `plan.md` that the mechanism cannot support. Both are reported to the design session and neither is decided here.
+
+- [ ] **First-use trust.** A `session-bind` proves possession of *a* host key, not of the *destination's*: nothing ties the caller-supplied key to the configured address. A granted session can pin a key it minted itself before the first real connection. Recording is now deferred until every other rule has passed, which narrows it to an otherwise-valid request; closing it needs a trusted association with the address.
+- [ ] **`is_forwarding`.** The server signs only the session identifier, so the flag is an unsigned byte the caller controls — flipping it turns the refusal into a signature. The check still stops honest and accidental forwarding; the claim that it holds against a hostile in-container agent does not.
+
+## Fixed after review, each with a guard proven red alone
+
+- [x] `~/.ssh` provisioning followed an agent-planted symlink, deleting another session's credentials and writing into the global credentials root
+- [x] The `.pub` file carried `authorized_keys` options, which OpenSSH's identity loader rejects — the feature could not authenticate at all
+- [x] `publickey-hostbound-v00@openssh.com`, which every OpenSSH 8.9+ client prefers, was refused by the parser; now accepted, with the appended host key checked against the bound one
+- [x] The `algorithm` field was unchecked, making the signer a constrained oracle
+- [x] A revoked IP destination's firewall rule was never withdrawn
+- [x] An open agent connection could block worker shutdown indefinitely
+- [x] Attacker-influenceable values reached the whitespace-delimited audit line unescaped
+
 ## Not in this feature
 - The SFTP-backed remote file tree from docs/228 phase 3 stays a separate future item.
 - Importing an existing private key (requirements.md req 5 puts generation in scope, not import).
+- An end-to-end test against a real `sshd`. The container has no `openssh-server` and no root to install one, so protocol conformance is argued from OpenSSH's sources and checked against the real `ssh-keygen` loader and the pinned client binary. That is weaker than a handshake and is why two of the defects above survived the first round of tests.

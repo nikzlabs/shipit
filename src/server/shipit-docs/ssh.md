@@ -30,15 +30,19 @@ If `~/.ssh/config` contains no `Host` block, this session has no destination gra
 When `ssh` needs a signature it asks ShipIt, which signs only if all of the following hold:
 
 - the destination is granted to **this** session;
-- the connection really reached the server whose host key ShipIt recorded (the server proves this by signing the session identifier — no relay can fake it);
-- the connection is not a forwarded agent;
-- the thing being signed is an SSH public-key authentication request for that connection, as that destination's configured user.
+- the connection really reached the server whose host key ShipIt recorded — the server proves this by signing the session identifier, which no relay can fake;
+- the connection does not declare itself a forwarded agent;
+- the thing being signed is an SSH public-key authentication request (plain or host-bound) for that connection, with this destination's key, as its configured user.
 
-Anything else is refused, and each attempt — signed or refused, with the reason — is one line in the orchestrator log. You will see a refusal only as `ssh` failing with "Permission denied (publickey)"; the reason is in the log, and the user can read it.
+Anything else is refused. Every attempt that reaches the signer is one line in the orchestrator log, with the outcome and the reason for a refusal. Note what that does **not** cover: `ssh` offers a key unsigned first, so if the server has not been given this destination's public line it rejects the offer and no sign request is ever made — that failure is invisible to ShipIt and appears only as `ssh` failing with "Permission denied (publickey)".
 
 ## Host keys
 
-The first connection to a destination records the server's host key and shows its fingerprint in a card in the chat. Later connections require that key. If the server's key changes — a rebuild, a reinstall, or something worse — the connection is refused and a warning card says so. The user clears the recorded key in Settings → Integrations → SSH hosts; you cannot, and editing `known_hosts` will not help, because the signer never reads it.
+The first connection to a destination records the server's host key and shows its fingerprint in a card in the chat. The record is made only once the whole request has passed every check, so a failed attempt cannot pin the wrong key.
+
+Later connections require that key, and it is enforced in two places. ShipIt writes it into `~/.ssh/known_hosts`, so a changed key usually makes **`ssh` itself** refuse with its own loud host-key warning before ShipIt is asked for anything. The signer refuses a mismatch too, and posts a warning card — that is the backstop for the case where `known_hosts` has been edited.
+
+The user clears the recorded key with **Forget** in Settings → Integrations → SSH hosts. You cannot, and editing `known_hosts` will not help: the signer never reads it.
 
 ## Reachability
 
@@ -48,7 +52,7 @@ A **network-off sandbox** is the one deliberate exception to "no user host widen
 
 ## Limits worth knowing
 
-- **Revoking a grant stops new authentications only.** A connection that already authenticated continues until it closes — the firewall accepts established flows.
+- **Revoking a grant stops new authentications, and closes the address to new connections.** A connection that already authenticated continues until it closes — the firewall accepts established flows.
 - **ShipIt cannot limit what you do once the server accepts you.** Bound that on the server side with a restricted user or a forced command. The public line ShipIt shows the user carries `no-agent-forwarding,no-port-forwarding,no-X11-forwarding`.
 - **Nothing is installed on the remote host** and no agent or model credential is stored there. It receives commands; that is all.
 - **Local runtime mode is different.** When ShipIt runs with `RUNTIME_MODE=local` the agent is an in-process child of the orchestrator with no mount boundary, so "the key is out of reach" does not hold. Nor does it hold if a destination is the ShipIt host itself, which hands you a path to the store from the outside.

@@ -31,15 +31,24 @@ export interface GeneratedSshKey {
   privateKeyPem: string;
   /** base64 of the SSH public-key blob. */
   publicKeyBlob: string;
-  /** The `authorized_keys` line, restrictions included. */
-  publicLine: string;
+  /**
+   * The CLIENT's public-key file: `ssh-ed25519 <blob> <comment>` and nothing
+   * else. This is what `IdentityFile` names, and it must stay bare — OpenSSH's
+   * identity loader parses the first field as the key type, so an
+   * `authorized_keys` options prefix makes it fail with "error in libcrypto"
+   * and, under `IdentitiesOnly yes`, leaves the session with no usable identity.
+   */
+  identityLine: string;
+  /** What the user installs on the SERVER: the same key, with restrictions. */
+  authorizedKeysLine: string;
   fingerprint: string;
 }
 
 /**
- * The restrictions ShipIt prints with every public line. They are advisory —
- * the server enforces them, and a user who edits them out gets what they asked
- * for — but forwarding is refused at the signer regardless (plan.md, rule 2).
+ * The restrictions ShipIt prints with the line the user installs on the server.
+ * They are advisory — the server enforces them, and a user who edits them out
+ * gets what they asked for. They belong ONLY on that line: `authorized_keys`
+ * options are not part of a client public-key file.
  */
 export const AUTHORIZED_KEYS_RESTRICTIONS =
   "no-agent-forwarding,no-port-forwarding,no-X11-forwarding";
@@ -57,10 +66,12 @@ export function generateSshHostKey(comment: string): GeneratedSshKey {
   const raw = spki.subarray(spki.length - 32);
   const blob = Buffer.concat([sshString(SSH_ED25519), sshString(raw)]);
   const blobB64 = blob.toString("base64");
+  const identityLine = `${SSH_ED25519} ${blobB64}${comment ? ` ${comment}` : ""}`;
   return {
     privateKeyPem: privateKey.export({ type: "pkcs8", format: "pem" }),
     publicKeyBlob: blobB64,
-    publicLine: `${AUTHORIZED_KEYS_RESTRICTIONS} ${SSH_ED25519} ${blobB64}${comment ? ` ${comment}` : ""}`,
+    identityLine,
+    authorizedKeysLine: `${AUTHORIZED_KEYS_RESTRICTIONS} ${identityLine}`,
     fingerprint: sshFingerprint(blob, sha256),
   };
 }
@@ -100,21 +111,35 @@ export function parseSessionBind(payload: Buffer): SessionBind | null {
   }
 }
 
+export const USERAUTH_PUBLICKEY = "publickey";
+
+/**
+ * OpenSSH 8.9+ prefers this over plain `publickey` whenever the server
+ * advertises it, which every sshd of that vintage does. It appends the server's
+ * host key to the signed request, binding the signature to the host as well as
+ * the session — so it is the form a modern connection actually uses, and
+ * refusing it means refusing to authenticate at all.
+ */
+export const USERAUTH_PUBLICKEY_HOSTBOUND = "publickey-hostbound-v00@openssh.com";
+
 export interface UserauthRequest {
   sessionId: Buffer;
   user: string;
   service: string;
-  method: string;
+  method: typeof USERAUTH_PUBLICKEY | typeof USERAUTH_PUBLICKEY_HOSTBOUND;
   hasSignature: boolean;
   algorithm: string;
   /** base64 of the public-key blob the request authenticates with. */
   publicKeyBlob: string;
+  /** base64 of the server host key, on the host-bound form only. */
+  serverHostKeyBlob?: string;
 }
 
 /**
- * The only shape the signer will ever sign (plan.md, rule 4). Anything else —
- * including trailing bytes — parses as null, so the endpoint cannot be used as
- * a general signing oracle.
+ * The only two shapes the signer will ever sign (plan.md, rule 4, extended for
+ * the host-bound form). Anything else — an unknown method, a different message
+ * type, trailing bytes — parses as null, so the endpoint cannot be used as a
+ * general signing oracle.
  */
 export function parseUserauthRequest(data: Buffer): UserauthRequest | null {
   try {
@@ -125,9 +150,11 @@ export function parseUserauthRequest(data: Buffer): UserauthRequest | null {
     const user = r.readText();
     const service = r.readText();
     const method = r.readText();
+    if (method !== USERAUTH_PUBLICKEY && method !== USERAUTH_PUBLICKEY_HOSTBOUND) return null;
     const hasSignature = r.readBool();
     const algorithm = r.readText();
     const publicKey = r.readString();
+    const serverHostKey = method === USERAUTH_PUBLICKEY_HOSTBOUND ? r.readString() : null;
     if (!r.atEnd) return null;
     return {
       sessionId: Buffer.from(sessionId),
@@ -137,6 +164,7 @@ export function parseUserauthRequest(data: Buffer): UserauthRequest | null {
       hasSignature,
       algorithm,
       publicKeyBlob: publicKey.toString("base64"),
+      ...(serverHostKey ? { serverHostKeyBlob: serverHostKey.toString("base64") } : {}),
     };
   } catch {
     return null;

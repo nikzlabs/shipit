@@ -224,6 +224,28 @@ describe("SshAgentSocket", () => {
     await closed;
   });
 
+  /**
+   * `SessionWorker.stop()` awaits this before closing its HTTP server, and
+   * `server.close()` waits for open connections — so an `ssh` session holding
+   * one open would stall shutdown indefinitely.
+   */
+  it("stops promptly with a connection still open", async () => {
+    const conn = open();
+    await conn.send(sshByte(SSH_AGENTC_REQUEST_IDENTITIES));
+
+    let settled = false;
+    const stopped = agent.stop();
+    void stopped.finally(() => { settled = true; });
+    await Promise.race([
+      stopped,
+      new Promise((resolve) => setTimeout(resolve, 2000)),
+    ]);
+    expect(settled, "stop() did not settle while a connection was open").toBe(true);
+
+    // The socket file is gone, so `afterEach`'s second stop is a no-op.
+    expect(fs.existsSync(socketPath)).toBe(false);
+  });
+
   it("replaces a socket file left by a previous start", async () => {
     await agent.stop();
     fs.writeFileSync(socketPath, "stale");

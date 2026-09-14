@@ -75,6 +75,9 @@ function makeFakeCredentialStore(
     },
     getSelectionMode: () => "strict" as const,
     getFailoverCutoffs: () => ({ session: 90, weekly: 90 }),
+    // docs/305 — env prep derives ~/.ssh from the grant on every turn.
+    listSshHosts: () => [],
+    getSshHostKeyBlob: () => undefined,
   };
   return stub as unknown as CredentialStore;
 }

@@ -105,15 +105,19 @@ export function buildUserauthData(fields: {
   service?: string;
   method?: string;
   hasSignature?: boolean;
+  /** base64; present makes this the host-bound form OpenSSH 8.9+ prefers. */
+  serverHostKeyBlob?: string;
 }): string {
+  const hostbound = fields.serverHostKeyBlob !== undefined;
   return Buffer.concat([
     sshString(fields.sessionId),
     sshByte(SSH_MSG_USERAUTH_REQUEST),
     sshString(fields.user),
     sshString(fields.service ?? "ssh-connection"),
-    sshString(fields.method ?? "publickey"),
+    sshString(fields.method ?? (hostbound ? "publickey-hostbound-v00@openssh.com" : "publickey")),
     Buffer.from([fields.hasSignature === false ? 0 : 1]),
     sshString(fields.algorithm ?? "ssh-ed25519"),
     sshString(Buffer.from(fields.publicKeyBlob, "base64")),
+    ...(hostbound ? [sshString(Buffer.from(fields.serverHostKeyBlob!, "base64"))] : []),
   ]).toString("base64");
 }

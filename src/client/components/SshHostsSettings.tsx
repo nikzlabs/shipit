@@ -133,7 +133,7 @@ export function SshHostsSettings() {
             </div>
             <div className="ml-auto flex items-center gap-1">
               <CopyButton
-                text={host.publicLine}
+                text={host.authorizedKeysLine}
                 label="Copy public key"
                 copiedLabel="Copied"
                 size="md"

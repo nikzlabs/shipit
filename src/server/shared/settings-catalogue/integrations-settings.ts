@@ -257,12 +257,17 @@ export const INTEGRATIONS_SETTINGS = {
       + "can neither reach it nor authenticate to it.",
     type: collection<string>({ operations: ["add", "remove"], patchableFields: [] }),
     store: { kind: "bespoke", ownedBy: "credential-store SSH hosts (/api/ssh-hosts)" },
+    // The same shape gate the other name-addressed collections use. A
+    // destination's label is free text — the route caps its length and rejects
+    // control characters and nothing more — so a pasted URL, which carries a
+    // credential in its userinfo and its query as a matter of routine, is a
+    // possible stored value here in a way an MCP server name is not.
     emits: derived("the destinations' names", (raw) =>
-      Array.isArray(raw)
-        ? raw
-            .map((host) => (host as { label?: unknown })?.label)
-            .filter((label): label is string => typeof label === "string")
-        : []),
+      userNamesProjection(
+        Array.isArray(raw)
+          ? raw.map((host) => ({ name: (host as { label?: unknown })?.label }))
+          : raw,
+      )),
     // A destination is inert until its public line is installed on the server,
     // which is the user's act on a machine ShipIt does not reach.
     propose: { kind: "no", reason: "external_flow" },

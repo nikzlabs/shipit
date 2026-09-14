@@ -90,13 +90,15 @@ export function provisionSessionSsh(
   entries: readonly AliasedSshHost[],
 ): void {
   const dir = path.join(perSessionCredentialsDir(credentialsRoot, sessionId), SSH_SUBDIR);
-  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  materializeSshDir(dir);
 
   const wanted = new Map<string, string>([
     ["config", renderSshConfig(entries)],
     ["known_hosts", renderKnownHosts(entries)],
   ]);
-  for (const { alias, host } of entries) wanted.set(`${alias}.pub`, `${host.publicLine}\n`);
+  // The bare identity line: `IdentityFile` names this file, and OpenSSH's
+  // loader refuses an authorized_keys options prefix.
+  for (const { alias, host } of entries) wanted.set(`${alias}.pub`, `${host.identityLine}\n`);
 
   // This runs at every turn, not only at a grant edit, so an unchanged grant
   // must cost nothing: a rewrite would re-chown the subtree each time.
@@ -104,9 +106,11 @@ export function provisionSessionSsh(
   for (const [name, contents] of wanted) {
     const file = path.join(dir, name);
     if (readIfPresent(file) === contents) continue;
-    fs.writeFileSync(file, contents, { mode: name === "config" ? 0o600 : 0o644 });
+    writeNoFollow(file, contents, name === "config" ? 0o600 : 0o644);
     changed = true;
   }
+  // `rmSync` unlinks a symlink rather than following it, so this is safe once
+  // `dir` itself is known to be a real directory.
   for (const entry of fs.readdirSync(dir)) {
     if (wanted.has(entry)) continue;
     fs.rmSync(path.join(dir, entry), { recursive: true, force: true });
@@ -120,9 +124,70 @@ export function provisionSessionSsh(
   sealDirMode(dir);
 }
 
+/**
+ * `~/.ssh` is inside the subtree mounted into the container, so the agent owns
+ * it and can replace it with a symlink. This runs as the orchestrator, which
+ * then writes and — worse — *deletes* through that link: pointed at `../..` it
+ * resolves to the shared credentials root, where the sweep below removes every
+ * entry it does not recognize, including other sessions' credentials.
+ *
+ * So the directory is materialized before anything reads or writes inside it,
+ * exactly as `materializeCredentialDestination` already does for the agent
+ * credential paths (`session-credentials-scaffold.ts`). `lstat` is the check:
+ * `existsSync` and a plain `mkdirSync` both follow the link and see success.
+ */
+function materializeSshDir(dir: string): void {
+  const stat = fs.lstatSync(dir, { throwIfNoEntry: false });
+  if (stat && !stat.isDirectory()) {
+    let target = "?";
+    try {
+      target = fs.readlinkSync(dir);
+    } catch {
+      // Unreadable or not a link — removed either way.
+    }
+    fs.rmSync(dir, { recursive: true, force: true });
+    console.warn(
+      `[ssh] removed a non-directory at ${dir} -> ${target} before provisioning; `
+        + "only ShipIt writes this path, so it was replaced from inside the container.",
+    );
+  }
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+}
+
+/**
+ * O_NOFOLLOW so a symlink planted at `config`, `known_hosts` or an alias's
+ * `.pub` cannot redirect the write out of the session's subtree. It fails with
+ * ELOOP rather than following, and the entry is then replaced.
+ */
+function writeNoFollow(file: string, contents: string, mode: number): void {
+  const flags = fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_TRUNC
+    | fs.constants.O_NOFOLLOW;
+  let fd: number;
+  try {
+    fd = fs.openSync(file, flags, mode);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ELOOP") throw err;
+    fs.rmSync(file, { force: true });
+    console.warn(`[ssh] replaced a symlink planted at ${file}`);
+    fd = fs.openSync(file, flags, mode);
+  }
+  try {
+    fs.writeFileSync(fd, contents);
+    fs.fchmodSync(fd, mode);
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+/** Never follows a link: a redirected read would report the wrong current state. */
 function readIfPresent(file: string): string | null {
   try {
-    return fs.readFileSync(file, "utf8");
+    const fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+    try {
+      return fs.readFileSync(fd, "utf8");
+    } finally {
+      fs.closeSync(fd);
+    }
   } catch {
     return null;
   }
@@ -144,14 +209,18 @@ export interface SshGrantSource {
  * of those events still gets the current config.
  */
 export function provisionSessionSshFromGrant(deps: SshGrantSource, sessionId: string): void {
-  const granted = new Set(deps.sessionManager.get(sessionId)?.sshHosts ?? []);
-  const hosts = deps.credentialStore.listSshHosts().filter((h) => granted.has(h.id));
-  const keys = new Map<string, string>();
-  for (const host of hosts) {
-    const blob = deps.credentialStore.getSshHostKeyBlob(host.id);
-    if (blob) keys.set(host.id, blob);
-  }
+  // The WHOLE body is best-effort, reads included. This runs inside a turn's
+  // environment preparation, where a throw would take the turn down over a
+  // feature the session may not even use — and the reads are the part that
+  // reaches outside this module.
   try {
+    const granted = new Set(deps.sessionManager.get(sessionId)?.sshHosts ?? []);
+    const hosts = deps.credentialStore.listSshHosts().filter((h) => granted.has(h.id));
+    const keys = new Map<string, string>();
+    for (const host of hosts) {
+      const blob = deps.credentialStore.getSshHostKeyBlob(host.id);
+      if (blob) keys.set(host.id, blob);
+    }
     provisionSessionSsh(deps.credentialsDir, sessionId, aliasSshHosts(hosts, keys));
   } catch (err) {
     console.error(`[ssh] provisioning ~/.ssh for ${sessionId} failed:`, getErrorMessage(err));

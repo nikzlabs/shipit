@@ -762,6 +762,9 @@ export async function createContainer(
       const inputs = await buildTierAEgressInputs(
         egressCfg.extraCidrs ? { extraCidrs: egressCfg.extraCidrs } : {},
       );
+      // What this firewall now admits, so a later revoke knows a rule is there
+      // to withdraw (docs/305).
+      sc.appliedSshCidrs = [...(egressCfg.extraCidrs ?? [])];
       await installEgressFirewall(deps.docker, {
         agentContainerId: container.id,
         sidecarImage: deps.egressSidecarImage,

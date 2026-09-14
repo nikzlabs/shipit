@@ -36,16 +36,59 @@ function haveSshKeygen(): boolean {
   }
 }
 
-describe("generateSshHostKey", () => {
-  it("derives an authorized_keys line OpenSSH reads back with our fingerprint", () => {
-    const key = generateSshHostKey("shipit-prod");
-    expect(key.publicLine.startsWith(`${AUTHORIZED_KEYS_RESTRICTIONS} ssh-ed25519 `)).toBe(true);
-    expect(key.fingerprint).toBe(fingerprintOf(key.publicKeyBlob));
+/**
+ * `ssh-keygen -e` is the load OpenSSH's own identity loader performs, and it is
+ * the assertion that matters here. An earlier version of this test used
+ * `ssh-keygen -l`, which accepts an `authorized_keys` line — so it passed while
+ * the provisioned `IdentityFile` was one OpenSSH refuses outright, and the
+ * feature could not authenticate at all.
+ */
+function loadsAsAnIdentity(line: string): { ok: boolean; error: string } {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ssh-host-"));
+  const file = path.join(dir, "id.pub");
+  try {
+    fs.writeFileSync(file, `${line}\n`, { mode: 0o600 });
+    execFileSync("ssh-keygen", ["-e", "-f", file], { stdio: ["ignore", "ignore", "pipe"] });
+    return { ok: true, error: "" };
+  } catch (err) {
+    return { ok: false, error: String((err as { stderr?: Buffer }).stderr ?? err) };
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
 
+describe("generateSshHostKey", () => {
+  it("derives both lines, with the restrictions only on the server's", () => {
+    const key = generateSshHostKey("shipit-prod");
+    expect(key.identityLine).toBe(`ssh-ed25519 ${key.publicKeyBlob} shipit-prod`);
+    expect(key.authorizedKeysLine).toBe(`${AUTHORIZED_KEYS_RESTRICTIONS} ${key.identityLine}`);
+    expect(key.fingerprint).toBe(fingerprintOf(key.publicKeyBlob));
+  });
+
+  // The whole feature rests on this: with `IdentitiesOnly yes`, a file OpenSSH
+  // cannot load leaves the session with no identity to offer.
+  it("produces an identity line OpenSSH's own loader accepts", () => {
     if (!haveSshKeygen()) return;
+    const key = generateSshHostKey("shipit-prod");
+    expect(loadsAsAnIdentity(key.identityLine)).toEqual({ ok: true, error: "" });
+  });
+
+  // Guards the bug directly: provisioning the server-side line as the identity
+  // file is what broke authentication, and `ssh-keygen -l` could not see it.
+  it("and the authorized_keys line is NOT one, which is why they are separate", () => {
+    if (!haveSshKeygen()) return;
+    const key = generateSshHostKey("shipit-prod");
+    const outcome = loadsAsAnIdentity(key.authorizedKeysLine);
+    expect(outcome.ok).toBe(false);
+    expect(outcome.error).toMatch(/libcrypto|invalid format/i);
+  });
+
+  it("is read back by ssh-keygen with our fingerprint", () => {
+    if (!haveSshKeygen()) return;
+    const key = generateSshHostKey("shipit-prod");
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ssh-host-"));
     const file = path.join(dir, "id.pub");
-    fs.writeFileSync(file, `${key.publicLine}\n`);
+    fs.writeFileSync(file, `${key.identityLine}\n`);
     const out = execFileSync("ssh-keygen", ["-l", "-f", file], { encoding: "utf8" });
     expect(out).toContain(key.fingerprint);
     expect(out).toContain("(ED25519)");
@@ -55,7 +98,7 @@ describe("generateSshHostKey", () => {
   it("keeps the private half out of every derived public field", () => {
     const key = generateSshHostKey("shipit-prod");
     const secretBody = key.privateKeyPem.replace(/-----[A-Z ]+-----|\s/g, "");
-    for (const field of [key.publicKeyBlob, key.publicLine, key.fingerprint]) {
+    for (const field of [key.publicKeyBlob, key.identityLine, key.authorizedKeysLine, key.fingerprint]) {
       expect(field).not.toContain(secretBody);
     }
   });

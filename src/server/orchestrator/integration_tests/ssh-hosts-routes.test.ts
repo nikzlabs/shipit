@@ -81,7 +81,8 @@ describe("Integration: SSH host routes", () => {
   describe("registry CRUD", () => {
     it("creates a destination with a generated key and returns only public material", async () => {
       const host = await create();
-      expect(host.publicLine).toContain("ssh-ed25519 ");
+      expect(host.identityLine.startsWith("ssh-ed25519 ")).toBe(true);
+      expect(host.authorizedKeysLine).toContain("no-agent-forwarding");
       expect(host.fingerprint).toMatch(/^SHA256:/);
       expect(JSON.stringify(host)).not.toContain("PRIVATE KEY");
       expect(host).not.toHaveProperty("privateKeyPem");

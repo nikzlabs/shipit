@@ -51,6 +51,13 @@ export interface SshAgentSocketDeps {
 
 export class SshAgentSocket {
   private server: net.Server | null = null;
+  /**
+   * `server.close()` stops accepting but WAITS for open connections, and an
+   * `ssh` session can hold one open for as long as it likes — so without this
+   * the worker's shutdown, which awaits `stop()` before closing its HTTP
+   * server, would hang on an idle agent connection.
+   */
+  private readonly open = new Set<net.Socket>();
 
   constructor(private readonly deps: SshAgentSocketDeps) {}
 
@@ -84,11 +91,16 @@ export class SshAgentSocket {
     const server = this.server;
     this.server = null;
     if (!server) return;
-    await new Promise<void>((resolve) => server.close(() => resolve()));
+    const closed = new Promise<void>((resolve) => server.close(() => resolve()));
+    for (const socket of this.open) socket.destroy();
+    this.open.clear();
+    await closed;
     fs.rmSync(this.deps.socketPath, { force: true });
   }
 
   private handleConnection(socket: net.Socket): void {
+    this.open.add(socket);
+    socket.on("close", () => this.open.delete(socket));
     // One bind per connection: `ssh` opens its own socket per process.
     let bind: string | undefined;
     let buffered = Buffer.alloc(0);

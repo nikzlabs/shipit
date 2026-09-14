@@ -17,6 +17,8 @@ import type { ChatHistoryManager } from "../chat-history.js";
 import { emitChatCard } from "../chat-card-persistence.js";
 import { ServiceError } from "./types.js";
 import {
+  SSH_ED25519,
+  USERAUTH_PUBLICKEY_HOSTBOUND,
   fingerprintOf,
   parseSessionBind,
   parseUserauthRequest,
@@ -55,6 +57,8 @@ export type SshRefusalReason =
   | "forwarding"
   | "host-key-mismatch"
   | "not-userauth"
+  | "wrong-algorithm"
+  | "hostbound-mismatch"
   | "session-id-mismatch"
   | "user-mismatch"
   | "rate-limited";
@@ -260,24 +264,13 @@ export function signSshRequest(
       "That SSH destination no longer exists.",
     );
   }
-  if (!pinned.hostKeyBlob) {
-    const recorded = deps.credentialStore.recordSshHostKey(host.id, bind.hostKeyBlob, {
-      fingerprint: seenFingerprint,
-      keyType,
-    });
-    if (recorded) {
-      emitHostKeyCard(deps, sessionId, {
-        cardId: `ssh-host-key-${randomUUID()}`,
-        hostId: host.id,
-        label: host.label,
-        address: host.address,
-        kind: "recorded",
-        fingerprint: seenFingerprint,
-        keyType,
-        createdAt: new Date().toISOString(),
-      });
-    }
-  } else if (pinned.hostKeyBlob !== bind.hostKeyBlob) {
+  // Recording is DEFERRED to the end of this function, after rule 4 has passed.
+  // The pin is account-wide and permanent, and a request that is about to be
+  // refused must not be able to set it: a caller that posts a bind it minted
+  // itself plus junk to sign would otherwise pin its own key as this
+  // destination's and break every granted session's next connection.
+  const recordPinNow = !pinned.hostKeyBlob;
+  if (pinned.hostKeyBlob && pinned.hostKeyBlob !== bind.hostKeyBlob) {
     emitHostKeyCard(deps, sessionId, {
       cardId: `ssh-host-key-${randomUUID()}`,
       hostId: host.id,
@@ -298,12 +291,33 @@ export function signSshRequest(
 
   // Rule 4 — userauth publickey only, for this connection, as this user.
   const parsed = parseUserauthRequest(Buffer.from(request.data, "base64"));
-  if (parsed?.service !== "ssh-connection" || parsed.method !== "publickey"
+  if (parsed?.service !== "ssh-connection"
     || !parsed.hasSignature || parsed.publicKeyBlob !== host.publicKeyBlob) {
     refuse(
       deps,
       { sessionId, host, reason: "not-userauth" },
       "ShipIt signs only an SSH publickey authentication request for this destination.",
+    );
+  }
+  // The destination's key is always ed25519, so any other algorithm name means
+  // the bytes are not a request this key could authenticate — and an unchecked
+  // field is free space in what we sign.
+  if (parsed.algorithm !== SSH_ED25519) {
+    refuse(
+      deps,
+      { sessionId, host, reason: "wrong-algorithm" },
+      `ShipIt signs only ${SSH_ED25519} authentication requests.`,
+    );
+  }
+  // The host-bound form names the server again inside the signed bytes; it must
+  // be the same host the bind proved, or the signature would cover a claim about
+  // a machine this connection never reached.
+  if (parsed.method === USERAUTH_PUBLICKEY_HOSTBOUND
+    && parsed.serverHostKeyBlob !== bind.hostKeyBlob) {
+    refuse(
+      deps,
+      { sessionId, host, reason: "hostbound-mismatch" },
+      "The host-bound request names a different server than the bound connection.",
     );
   }
   if (!parsed.sessionId.equals(bind.sessionId)) {
@@ -319,6 +333,23 @@ export function signSshRequest(
       { sessionId, host, user: parsed.user, reason: "user-mismatch" },
       `This destination authenticates as ${host.user}, not ${parsed.user}.`,
     );
+  }
+
+  // Trust on first use, once every other rule has passed (req 9).
+  if (recordPinNow && deps.credentialStore.recordSshHostKey(host.id, bind.hostKeyBlob, {
+    fingerprint: seenFingerprint,
+    keyType,
+  })) {
+    emitHostKeyCard(deps, sessionId, {
+      cardId: `ssh-host-key-${randomUUID()}`,
+      hostId: host.id,
+      label: host.label,
+      address: host.address,
+      kind: "recorded",
+      fingerprint: seenFingerprint,
+      keyType,
+      createdAt: new Date().toISOString(),
+    });
   }
 
   const signature = signWithHostKey(pinned.privateKeyPem, Buffer.from(request.data, "base64"));

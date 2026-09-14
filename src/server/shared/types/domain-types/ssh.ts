@@ -15,8 +15,13 @@ export interface SshHostPublic {
   user: string;
   /** base64 of ShipIt's public-key blob, offered to `ssh` as an identity. */
   publicKeyBlob: string;
-  /** The `authorized_keys` line the user installs on the server. */
-  publicLine: string;
+  /**
+   * The client public-key file's contents — bare `ssh-ed25519 <blob> <comment>`.
+   * OpenSSH's identity loader rejects anything with an options prefix.
+   */
+  identityLine: string;
+  /** What the user installs on the server: the same key, with restrictions. */
+  authorizedKeysLine: string;
   /** Of ShipIt's own key. */
   fingerprint: string;
   /** Of the server's recorded host key; absent until the first connection. */
