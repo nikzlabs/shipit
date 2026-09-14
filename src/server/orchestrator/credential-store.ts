@@ -17,6 +17,7 @@ import type {
   ReviewerPin,
   ReviewerSlot,
   RolePinnedParams,
+  UpdateNoticeRecord,
 } from "../shared/types.js";
 import {
   credentialModeKey,
@@ -82,6 +83,9 @@ interface CredentialData extends DeclaredSettingsData {
   credentialSecrets?: Record<string, string>;
   voiceProviderKeys?: Record<string, string>;
   voiceWebhook?: { url: string; token: string };
+  // docs/304 — background update check. Discarded whole when `anchor` stops
+  // matching the running build, which is what ends a dismissal after an update.
+  updateNotice?: UpdateNoticeRecord;
   // Survives credential removal so completed onboarding does not return.
   harnessOnboardingCompletedAt?: string;
   // importedValue detects manual replacement; removed prevents reimport after user deletion.
@@ -711,6 +715,27 @@ export class CredentialStore {
       delete this.data.voiceWebhook;
       this.save();
     }
+  }
+
+  /**
+   * The record for the running build, or `null`. A record left by a different
+   * build is dropped here (docs/304): after an update its dismissal and its
+   * "newer version available" result both describe code nobody is running.
+   */
+  getUpdateNotice(anchor: string): UpdateNoticeRecord | null {
+    const record = this.data.updateNotice;
+    if (!record || typeof record.anchor !== "string") return null;
+    if (record.anchor !== anchor) {
+      delete this.data.updateNotice;
+      this.save();
+      return null;
+    }
+    return record;
+  }
+
+  setUpdateNotice(record: UpdateNoticeRecord): void {
+    this.data.updateNotice = record;
+    this.save();
   }
 
   /** The configured budget in MB, or `null` for "the host is the budget". */

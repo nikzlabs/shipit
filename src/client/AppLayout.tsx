@@ -5,7 +5,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "./components/ui/popover
 import { WithTooltip } from "./components/ui/tooltip.js";
 import { ThemePicker } from "./components/ThemePicker.js";
 import { SessionSidebar } from "./components/SessionSidebar.js";
-import { ConnectionBanner } from "./components/ConnectionBanner.js";
+import { TopPanelBanner } from "./components/TopPanelBanner.js";
 import { MobileTabBar } from "./components/MobileTabBar.js";
 import { Toast } from "./components/Toast.js";
 import type { WsStatus } from "./hooks/useWebSocket.js";
@@ -159,12 +159,14 @@ export function AppLayout({
             </a>
           </h1>
         </div>
-        {showConnectionBanner && !isMobile && (
-          <div className="absolute left-1/2 top-1/2 z-20 -translate-x-1/2 -translate-y-1/2 max-w-[60vw] pointer-events-none flex justify-center">
-            <div className="pointer-events-auto">
-              <ConnectionBanner status={connectionStatus} reconnectAttempt={reconnectAttempt} onReconnect={onReconnect} />
-            </div>
-          </div>
+        {!isMobile && (
+          <TopPanelBanner
+            variant="desktop"
+            showConnection={showConnectionBanner}
+            status={connectionStatus}
+            reconnectAttempt={reconnectAttempt}
+            onReconnect={onReconnect}
+          />
         )}
         <div className="flex items-center gap-2 sm:gap-3 min-w-0">
           <div className={statusInline}>

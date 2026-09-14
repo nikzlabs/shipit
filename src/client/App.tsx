@@ -89,7 +89,7 @@ import {
 } from "./components/InteractiveTerminal.js";
 import { PreviewServicesDrawer } from "./components/PreviewServicesDrawer.js";
 import { SearchBar } from "./components/SearchBar.js";
-import { ConnectionBanner } from "./components/ConnectionBanner.js";
+import { TopPanelBanner } from "./components/TopPanelBanner.js";
 import { KeyboardShortcutsOverlay } from "./components/KeyboardShortcutsOverlay.js";
 import { HomeScreen } from "./components/HomeScreen.js";
 import { HarnessOnboardingPanel } from "./components/HarnessOnboardingPanel.js";
@@ -1583,17 +1583,14 @@ export default function App() {
             onSearch={() => setSearchOpen(true)}
           />
         ))}
-      {!showHomeScreen && !showNewSessionView && wsSessionId && isMobile && (
-        <div className="relative z-30 flex justify-center px-3 py-1.5 bg-(--color-bg-primary) pointer-events-none">
-          <div className="pointer-events-auto max-w-full">
-            <ConnectionBanner
-              status={status}
-              reconnectAttempt={reconnectAttempt}
-              onReconnect={reconnect}
-              compact
-            />
-          </div>
-        </div>
+      {isMobile && (
+        <TopPanelBanner
+          variant="mobile"
+          showConnection={!showHomeScreen && !showNewSessionView && !!wsSessionId}
+          status={status}
+          reconnectAttempt={reconnectAttempt}
+          onReconnect={reconnect}
+        />
       )}
       {showHarnessOnboarding ? (
         <HarnessOnboardingPanel agentList={agentList} />

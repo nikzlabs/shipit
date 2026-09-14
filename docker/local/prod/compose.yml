@@ -7,6 +7,11 @@ services:
       dockerfile: docker/Dockerfile.prod
       args:
         SHIPIT_HARNESSES: ${SHIPIT_HARNESSES:-}
+        # Without it the image cannot say which commit it was built from, and
+        # the running version falls back to whatever the checkout is at now —
+        # so a failed update reads as a performed one (docs/304). The VPS path
+        # has always passed this; the local ones now do too.
+        SHIPIT_BUILD_ID: ${SHIPIT_BUILD_ID:-}
     # Keep loopback as the default: this service has no built-in authentication.
     ports:
       - "${SHIPIT_BIND_ADDR:-127.0.0.1}:4123:4123"

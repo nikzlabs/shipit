@@ -167,6 +167,12 @@ shipit_build_and_up() {
   shipit_refresh_tailnet_bind
   local compose_files=()
   while IFS= read -r arg; do compose_files+=("$arg"); done < <(shipit_compose_files)
+  # Stamp the image with the commit it is built from. Without it the running
+  # version falls back to whatever the checkout is at now, so a failed update —
+  # which leaves the checkout ahead of the image that restarts — reads as a
+  # performed one, and nothing can report that it didn't finish (docs/304).
+  SHIPIT_BUILD_ID="$(git -C "$SHIPIT_HOME" rev-parse HEAD 2>/dev/null || true)"
+  export SHIPIT_BUILD_ID
   echo "==> Building ShipIt images..."
   docker compose "${compose_files[@]}" build --pull session-worker shipit egress-sidecar
   echo "==> Starting ShipIt (detached)..."

@@ -810,3 +810,58 @@ describe("useServerEvents — the redirect acts on the seed, not the viewed sess
     expect(getParkedHarness()?.agentId).toBe("claude");
   });
 });
+
+describe("useServerEvents — update_notice (docs/304)", () => {
+  beforeEach(() => {
+    vi.stubGlobal("EventSource", FakeEventSource as unknown as typeof EventSource);
+    FakeEventSource.last = null;
+    useUiStore.setState({ updateNotice: null });
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+  });
+
+  it("puts what the check found into the store", () => {
+    renderHook(() => useServerEvents());
+
+    act(() => {
+      FakeEventSource.last!.emit("update_notice", {
+        available: true, latestVersion: "v1.5.0", dismissed: false,
+      });
+    });
+
+    expect(useUiStore.getState().updateNotice).toEqual({
+      available: true, latestVersion: "v1.5.0", dismissed: false,
+    });
+  });
+
+  it("takes a dismissal made on another device", () => {
+    renderHook(() => useServerEvents());
+
+    act(() => {
+      FakeEventSource.last!.emit("update_notice", {
+        available: true, latestVersion: "v1.5.0", dismissed: false,
+      });
+      FakeEventSource.last!.emit("update_notice", {
+        available: true, latestVersion: "v1.5.0", dismissed: true,
+      });
+    });
+
+    expect(useUiStore.getState().updateNotice?.dismissed).toBe(true);
+  });
+
+  it("clears on null, which is how a reconnect says the update was installed", () => {
+    renderHook(() => useServerEvents());
+
+    act(() => {
+      FakeEventSource.last!.emit("update_notice", {
+        available: true, latestVersion: "v1.5.0", dismissed: false,
+      });
+      FakeEventSource.last!.emit("update_notice", null);
+    });
+
+    expect(useUiStore.getState().updateNotice).toBeNull();
+  });
+});
