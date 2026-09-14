@@ -40,6 +40,12 @@ census in `how-shipit-works.md`.
 - [x] Backing up and moving an installation — a section in
       `installing-and-updating.md`, since there is no whole-install backup to
       describe as a feature
+- [ ] **Consolidate the index.** Each page's PR body ends with
+      `## Rows for the index`; children do not edit `wiki/README.md` or
+      `how-shipit-works.md` themselves (see `plan.md`). Once the pages have
+      landed, add every question-map row and census row in one pass, phrased in
+      one voice. Until this is done the new pages exist but are not discoverable,
+      which is requirement 4.
 
 ## Before each page ships
 
