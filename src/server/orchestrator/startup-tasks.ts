@@ -14,7 +14,7 @@ import type { LogSource } from "../shared/types.js";
 import type { SessionLoopDetector } from "./loop-detector.js";
 import type { SessionOomCircuitBreaker } from "./oom-circuit-breaker.js";
 import { createSessionLoopDetector } from "./loop-detector.js";
-import { isCleanupContainerSession } from "./cleanup-container.js";
+import { isShipItOwnSession } from "./shipit-own-sessions.js";
 import { agentLogAppend } from "./log-emit.js";
 import { persistTurnInProgress, emitNoticePostTurn } from "./chat-card-persistence.js";
 import { deleteSession } from "./services/session.js";
@@ -424,7 +424,7 @@ export function setupContainerHealthMonitoring(
   // The cleanup container owns no session, so none of the session-shaped
   // reporting below applies to it; CleanupContainerManager recreates it instead.
   containerManager.on("container_exited", (sessionId, exitCode, error) => {
-    if (isCleanupContainerSession(sessionId)) return;
+    if (isShipItOwnSession(sessionId)) return;
     // Report before disposal. Exit 137 is a fallback when Docker omits the OOM event.
     if (oomBreaker && (error === "Out of memory" || exitCode === 137)) {
       const trip = oomBreaker.recordOom(sessionId);
@@ -441,7 +441,7 @@ export function setupContainerHealthMonitoring(
 
   // Repeated creation can trip the breaker even when exits lack usable OOM signals.
   containerManager.on("container_started", (sessionId) => {
-    if (isCleanupContainerSession(sessionId)) return;
+    if (isShipItOwnSession(sessionId)) return;
     const alert = loopDetector.recordContainerStarted(sessionId);
     if (!alert) return;
     const windowLabel = `${Math.round(alert.windowMs / 1000)}s`;
@@ -469,7 +469,7 @@ export function setupContainerHealthMonitoring(
     console.warn(`[container-health] Docker events stream resumed after ${gapLabel} gap`);
     if (!broadcastLog) return;
     for (const sc of containerManager.getAll()) {
-      if (isCleanupContainerSession(sc.sessionId)) continue;
+      if (isShipItOwnSession(sc.sessionId)) continue;
       broadcastLog(
         sc.sessionId,
         "server",

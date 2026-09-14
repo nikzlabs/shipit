@@ -6,7 +6,9 @@ import { allocateAndSealSessionDir } from "./session-uid-allocator.js";
 import { chownTreeToSessionWorker } from "./session-worker-uid.js";
 import { subAgentSpawnHomeContainerDir } from "./session-credentials.js";
 import { workerPost } from "./worker-http.js";
+import { getContainerFreshness } from "./container-freshness.js";
 import { getErrorMessage } from "./validation.js";
+import { CLEANUP_CONTAINER_SESSION_ID } from "./shipit-own-sessions.js";
 import type { SubAgentRunResult } from "../shared/sub-agent-run.js";
 import {
   BACKGROUND_HARNESS_MAX_OUTPUT_CHARS,
@@ -18,16 +20,7 @@ import {
   type BackgroundHarnessRunner,
 } from "./background-harness-run.js";
 
-/**
- * UUID-shaped because every path, label and credential subtree ShipIt keys by
- * session id expects that shape; constant because the session store never holds
- * a row for it.
- */
-export const CLEANUP_CONTAINER_SESSION_ID = "00000000-0000-4000-8000-00000c1ea409";
-
-export function isCleanupContainerSession(sessionId: string): boolean {
-  return sessionId === CLEANUP_CONTAINER_SESSION_ID;
-}
+export { CLEANUP_CONTAINER_SESSION_ID };
 
 /**
  * Caps create attempts. A container that dies immediately would otherwise be
@@ -53,10 +46,9 @@ export interface CleanupContainerDeps {
 
 /**
  * One container per install, holding no repository and no resident harness
- * process (docs/299 req 8). It is never stopped, so it is exempt from docs/284's
- * reclaim in `idle-enforcer.ts` and from the boot credential sweep in
- * `startup-janitor.ts` — both would otherwise take it, since it is idle between
- * dictations and the session store has never heard of its id.
+ * process (docs/299 req 8). It is never stopped, so a sweep that treats an id
+ * the session store has never heard of as abandoned takes it; those sweeps ask
+ * `isShipItOwnSession` (`shipit-own-sessions.ts`) instead.
  *
  * It talks to the worker directly rather than through `spawnSubAgent`, which
  * lives on a session runner this container does not have.
@@ -67,23 +59,30 @@ export class CleanupContainerManager implements BackgroundHarnessRunner {
   private consecutiveFailures = 0;
   private retryTimer: NodeJS.Timeout | null = null;
   private lastFailure: string | null = null;
+  private adoptedUnverified = false;
   private stopped = false;
   private readonly onContainerExited: (sessionId: string) => void;
+  private readonly onHealthMonitorResumed: () => void;
 
   constructor(private readonly deps: CleanupContainerDeps) {
     this.onContainerExited = (sessionId: string): void => {
-      if (!isCleanupContainerSession(sessionId) || this.stopped) return;
-      // Dying inside the create interval counts against the cap below; without
-      // that a crash loop recreates for ever, since nothing else watches this id.
-      if ((this.deps.now?.() ?? Date.now()) < this.nextAttemptAt) this.consecutiveFailures += 1;
+      if (sessionId !== CLEANUP_CONTAINER_SESSION_ID || this.stopped) return;
       console.warn("[cleanup-container] container exited — recreating");
-      this.reviveSoon();
+      this.noteContainerGone();
+    };
+    // A `die` lost to an event-stream gap is otherwise noticed only by a
+    // dictation failing, so the first user back after the gap gets no cleanup.
+    this.onHealthMonitorResumed = (): void => {
+      if (this.stopped) return;
+      const sc = this.deps.containerManager.get(CLEANUP_CONTAINER_SESSION_ID);
+      if (sc) void this.forgetIfGone(sc);
     };
   }
 
   /** Create the container now and keep recreating it when its container dies. */
   async start(): Promise<void> {
     this.deps.containerManager.on("container_exited", this.onContainerExited);
+    this.deps.containerManager.on("health_monitor_resumed", this.onHealthMonitorResumed);
     await this.ensure().catch(() => { /* ensure() records its own failure */ });
     if (!this.deps.containerManager.get(CLEANUP_CONTAINER_SESSION_ID)) this.reviveSoon();
   }
@@ -93,6 +92,23 @@ export class CleanupContainerManager implements BackgroundHarnessRunner {
     if (this.retryTimer) clearTimeout(this.retryTimer);
     this.retryTimer = null;
     this.deps.containerManager.off("container_exited", this.onContainerExited);
+    this.deps.containerManager.off("health_monitor_resumed", this.onHealthMonitorResumed);
+  }
+
+  /**
+   * The one path from "the container is gone" to a recreate. A `die` event and
+   * the liveness checks that catch a missed one all land here, so recovery
+   * cannot depend on which of them noticed. The create deadline is left alone:
+   * the death time may be unknown, but the last create time is not, and that is
+   * what `reviveSoon` paces against.
+   */
+  private noteContainerGone(): void {
+    if (this.stopped) return;
+    // Dying inside the create interval counts against the cap in reviveSoon;
+    // without that a crash loop recreates for ever, since nothing else watches
+    // this id.
+    if ((this.deps.now?.() ?? Date.now()) < this.nextAttemptAt) this.consecutiveFailures += 1;
+    this.reviveSoon();
   }
 
   /**
@@ -127,6 +143,10 @@ export class CleanupContainerManager implements BackgroundHarnessRunner {
 
   /** Null means the container is unavailable right now, with the reason logged. */
   async ensure(): Promise<SessionContainer | null> {
+    // Join an acquisition already under way rather than reading the tracked
+    // entry: adoption publishes a container before its build is checked, so a
+    // caller reading that entry can be handed one this manager is replacing.
+    if (this.ensuring) return this.ensuring;
     const existing = this.deps.containerManager.get(CLEANUP_CONTAINER_SESSION_ID);
     if (existing?.status === "running") {
       // Surviving to be found running is what clears the cap. Clearing it on a
@@ -134,8 +154,56 @@ export class CleanupContainerManager implements BackgroundHarnessRunner {
       this.consecutiveFailures = 0;
       return existing;
     }
-    this.ensuring ??= this.create().finally(() => { this.ensuring = null; });
+    this.ensuring = this.acquire().finally(() => { this.ensuring = null; });
     return this.ensuring;
+  }
+
+  private async acquire(): Promise<SessionContainer | null> {
+    const adopted = await this.adoptSurvivor();
+    // Adoption awaits Docker, so shutdown can land inside it; creating then
+    // would leave a container behind with nothing left to manage it.
+    if (this.stopped) return adopted;
+    return adopted ?? this.create();
+  }
+
+  /**
+   * Nothing else adopts this container: `rediscoverContainers` walks the session
+   * store, which has no row for its id. Without this, `create()` rebuilds a
+   * survivor — it force-removes whatever holds the container name — and the
+   * first dictation after a restart pays the start req 8 forbids.
+   *
+   * Only an exact build match is adopted, because this container is never
+   * stopped: anything else would carry another orchestrator's worker, and the
+   * configuration it was created with, for the life of the install.
+   */
+  private async adoptSurvivor(): Promise<SessionContainer | null> {
+    try {
+      const workspaceDir = path.join(
+        this.deps.sessionsRoot, CLEANUP_CONTAINER_SESSION_ID, SESSION_WORKSPACE_SUBDIR,
+      );
+      const adopted = await this.deps.containerManager.adoptRunningContainer(
+        CLEANUP_CONTAINER_SESSION_ID,
+        () => ({ workspaceDir, dockerAccess: false }),
+      );
+      if (!adopted) return null;
+      const sc = this.deps.containerManager.get(CLEANUP_CONTAINER_SESSION_ID);
+      if (!sc) return null;
+      if (getContainerFreshness(sc.workerBuildId, process.env.SHIPIT_BUILD_ID).state !== "current") {
+        if (this.stopped) return null;
+        console.log("[cleanup-container] replacing a container this orchestrator did not build");
+        await this.deps.containerManager.destroy(
+          CLEANUP_CONTAINER_SESSION_ID, { replacementFollows: true },
+        );
+        return null;
+      }
+      console.log(`[cleanup-container] adopted the running container at ${sc.workerUrl}`);
+      this.lastFailure = null;
+      this.adoptedUnverified = true;
+      return sc;
+    } catch (err) {
+      console.warn("[cleanup-container] could not adopt a running container:", getErrorMessage(err));
+      return null;
+    }
   }
 
   private async create(): Promise<SessionContainer | null> {
@@ -243,9 +311,11 @@ export class CleanupContainerManager implements BackgroundHarnessRunner {
         // timed-out run still returns its partial text rather than a socket error.
         { timeoutMs: timeoutMs + SPAWN_TRANSPORT_HEADROOM_MS },
       );
+      this.adoptedUnverified = false;
       return result as SubAgentRunResult;
     } catch (err) {
       await this.forgetIfGone(sc);
+      await this.replaceUnverifiedAdoption(sc);
       return failedRun(getErrorMessage(err), startedAt);
     } finally {
       req.signal?.removeEventListener("abort", onAbort);
@@ -254,21 +324,48 @@ export class CleanupContainerManager implements BackgroundHarnessRunner {
 
   /**
    * A `die` event missed during a Docker event-stream gap would otherwise leave
-   * the manager pointed at a dead container for the rest of the process: nothing
-   * else reconciles it, because the missing-container reconciler walks runners
-   * and this container has none.
+   * the manager pointed at a dead container for the rest of the process: the
+   * missing-container reconciler walks runners and this container has none. Run
+   * when the gap closes, and when a request finds the worker unreachable.
    */
   private async forgetIfGone(sc: SessionContainer): Promise<void> {
     try {
       // Undefined means Docker could not answer, which is not proof of death.
       if (await this.deps.containerManager.isTrackedContainerRunning(CLEANUP_CONTAINER_SESSION_ID) !== false) return;
       if (await this.deps.containerManager.markContainerGone(CLEANUP_CONTAINER_SESSION_ID, sc.id)) {
-        console.warn("[cleanup-container] container is gone — the next request recreates it");
-        this.nextAttemptAt = 0;
+        // Leaving the recreate to the next request costs that request a
+        // container start, and this one has already failed (req 8).
+        console.warn("[cleanup-container] container is gone — recreating");
+        this.noteContainerGone();
       }
     } catch (err) {
       console.warn("[cleanup-container] liveness check failed:", getErrorMessage(err));
     }
+  }
+
+  /**
+   * Adoption is provisional. "Running", under the build this orchestrator made,
+   * does not establish that the worker still answers or that its egress sidecars
+   * outlived the gap — and nothing repairs that later, because a wedged
+   * container stays running for ever and `forgetIfGone` only acts on death. So
+   * the first transport failure against an adopted container replaces it rather
+   * than trusting it again. Once, so a container that answers is not torn down
+   * by an unrelated failure.
+   */
+  private async replaceUnverifiedAdoption(sc: SessionContainer): Promise<void> {
+    if (!this.adoptedUnverified || this.stopped) return;
+    this.adoptedUnverified = false;
+    if (this.deps.containerManager.get(CLEANUP_CONTAINER_SESSION_ID)?.id !== sc.id) return;
+    console.warn("[cleanup-container] the adopted container did not answer — replacing it");
+    try {
+      await this.deps.containerManager.destroy(
+        CLEANUP_CONTAINER_SESSION_ID, { replacementFollows: true },
+      );
+    } catch (err) {
+      console.warn("[cleanup-container] could not replace it:", getErrorMessage(err));
+      return;
+    }
+    this.noteContainerGone();
   }
 
   private async cancelSpawn(sc: SessionContainer, spawnId: string): Promise<void> {

@@ -16,7 +16,7 @@ import { getCatalogCacheRoot } from "./services/marketplace.js";
 import { reclaimSharedTreesUnder } from "./shared-tree-ownership.js";
 import { getMessage, sleep, defaultRunDocker, reclaimRegenerableSessionDirs } from "./disk-utils.js";
 import { ensureCheckoutDurable, pathState } from "./checkout-durability.js";
-import { isCleanupContainerSession } from "./cleanup-container.js";
+import { isShipItOwnSession } from "./shipit-own-sessions.js";
 import { autoCommitAllowed } from "./services/auto-commit-gate.js";
 import type { GitManager } from "../shared/git.js";
 import type { SessionInfo } from "../shared/types.js";
@@ -211,7 +211,7 @@ async function sweepOrphanCredentialDirs(
     // The cleanup container owns one of these and has no session row, by design
     // (docs/299). Removing it out from under a live mount leaves the container
     // reading a deleted inode while the orchestrator writes to its replacement.
-    if (isCleanupContainerSession(entry)) continue;
+    if (isShipItOwnSession(entry)) continue;
     if (pinned.has(entry)) continue;
     if (tracked.has(entry) && !userArchived.has(entry)) continue;
     const full = path.join(root, entry);
@@ -247,6 +247,9 @@ async function sweepOrphanSessionLogs(
 
   let removed = 0;
   for (const entry of entries) {
+    // Same live-mount hazard as the credentials sweep above: ShipIt's own
+    // session directories are never abandoned, however silent the session store is.
+    if (isShipItOwnSession(entry)) continue;
     if (pinned.has(entry)) continue;
     if (tracked.has(entry) && !userArchived.has(entry)) continue;
     const logsDir = path.join(sessionsRoot, entry, "logs");

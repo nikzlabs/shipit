@@ -6,7 +6,10 @@ import { createIdleEnforcer } from "./idle-enforcer.js";
 import { SessionRunnerRegistry } from "./session-runner.js";
 import { CLEANUP_CONTAINER_SESSION_ID } from "./cleanup-container.js";
 import { runSteadyStateReclaim } from "./steady-state-reclaim.js";
-import type { SessionContainerManager } from "./session-container.js";
+import { cleanupOrphanContainers, cleanupOrphanComposeResources } from "./container-discovery.js";
+import { CONTAINER_SESSION_ID_LABEL } from "./session-container.js";
+import type { DiscoveryDeps } from "./container-discovery.js";
+import type { SessionContainer, SessionContainerManager } from "./session-container.js";
 import type { DockerMemoryStats } from "../shared/types.js";
 import type { RepoStore } from "./repo-store.js";
 
@@ -115,6 +118,109 @@ describe("docs/299 req 8 — the cleanup container is never reclaimed", () => {
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }
+  });
+});
+
+/**
+ * The boot orphan sweep asks the session store what is live, and the session
+ * store holds no row for this container by design — so it read as an orphan and
+ * was stopped and removed at every restart, leaving the first dictation after
+ * one to wait for a container to be built.
+ */
+describe("docs/299 req 8 — the boot orphan sweep does not take the cleanup container", () => {
+  function fakeDiscovery(labelledSessionIds: string[]): {
+    deps: DiscoveryDeps;
+    removed: string[];
+  } {
+    const removed: string[] = [];
+    const byId = new Map(
+      labelledSessionIds.map((sessionId, i) => [`container-${i}`, sessionId]),
+    );
+    const docker = {
+      listContainers: async () => [...byId.entries()].map(([Id, sessionId]) => ({
+        Id,
+        State: "running",
+        Labels: { [CONTAINER_SESSION_ID_LABEL]: sessionId },
+      })),
+      getContainer: (id: string) => ({
+        stop: async () => {},
+        remove: async () => { removed.push(byId.get(id)!); },
+      }),
+    };
+    return {
+      deps: {
+        docker: docker as unknown as DiscoveryDeps["docker"],
+        containers: new Map<string, SessionContainer>(),
+        standbySessionIds: new Set<string>(),
+        networkName: "shipit-net",
+        workerPort: 9100,
+        labelFilters: () => [],
+      },
+      removed,
+    };
+  }
+
+  it("removes an ordinary container with no session row and leaves the cleanup container", async () => {
+    // Both ids are absent from the active set, so the two assertions move
+    // together: the ordinary one proves the sweep is live against this fixture.
+    const { deps, removed } = fakeDiscovery([CLEANUP_CONTAINER_SESSION_ID, ORDINARY]);
+
+    const count = await cleanupOrphanContainers(deps, new Set<string>());
+
+    expect(removed).toEqual([ORDINARY]);
+    expect(count).toBe(1);
+  });
+
+  it("leaves it even when it is the only container the sweep can see", async () => {
+    const { deps, removed } = fakeDiscovery([CLEANUP_CONTAINER_SESSION_ID]);
+
+    const count = await cleanupOrphanContainers(deps, new Set<string>());
+
+    expect(removed).toEqual([]);
+    expect(count).toBe(0);
+  });
+
+  /**
+   * The cleanup container's egress sidecars carry its reserved id under
+   * `shipit-parent-session`, so this second boot sweep reaped the resolver and
+   * SNI proxy out from under it — leaving an adopted worker with the firewall
+   * redirects installed and nothing to answer them.
+   */
+  it("leaves the cleanup container's egress sidecars", async () => {
+    const removed: string[] = [];
+    const byId = new Map([
+      ["sidecar-cleanup", CLEANUP_CONTAINER_SESSION_ID],
+      ["sidecar-ordinary", ORDINARY],
+    ]);
+    // The per-session teardown re-queries by `label=key=value`; a fixture that
+    // ignored the filter would remove every sidecar on the first orphan and hide
+    // whether the sweep ever selected the reserved id.
+    const docker = {
+      listContainers: async (opts?: { filters?: { label?: string[] } }) => {
+        const wanted = opts?.filters?.label?.[0]?.split("=")[1];
+        return [...byId.entries()]
+          .filter(([, parent]) => wanted === undefined || parent === wanted)
+          .map(([Id, parent]) => ({
+            Id,
+            State: "running",
+            Labels: { "shipit-parent-session": parent },
+          }));
+      },
+      listNetworks: async () => [],
+      listVolumes: async () => ({ Volumes: [] }),
+      getContainer: (id: string) => ({
+        stop: async () => {},
+        remove: async () => { removed.push(id); },
+      }),
+    };
+
+    const count = await cleanupOrphanComposeResources(
+      docker as unknown as Parameters<typeof cleanupOrphanComposeResources>[0],
+      new Set<string>(),
+    );
+
+    expect(removed).toEqual(["sidecar-ordinary"]);
+    expect(count).toBe(1);
   });
 });
 

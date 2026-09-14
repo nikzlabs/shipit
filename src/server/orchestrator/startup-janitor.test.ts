@@ -1236,7 +1236,9 @@ describe("runDiskJanitor", () => {
     ).run(archivedId, "Archived", "2026-05-12", "2026-05-12", "https://github.com/example/repo.git");
 
     const sessionsRoot = path.join(tmpDir, "sessions");
-    for (const id of [liveId, evictedLiveId, archivedId, goneId]) {
+    // The cleanup container's directory is live under a bind mount and has no
+    // session row, so "untracked" reads exactly like goneId here (docs/299 req 8).
+    for (const id of [liveId, evictedLiveId, archivedId, goneId, CLEANUP_CONTAINER_SESSION_ID]) {
       const dir = path.join(sessionsRoot, id, "logs");
       fs.mkdirSync(dir, { recursive: true });
       fs.writeFileSync(path.join(dir, "container.log"), "x");
@@ -1254,6 +1256,7 @@ describe("runDiskJanitor", () => {
     expect(fs.existsSync(path.join(sessionsRoot, evictedLiveId, "logs"))).toBe(true);
     expect(fs.existsSync(path.join(sessionsRoot, archivedId, "logs"))).toBe(false);
     expect(fs.existsSync(path.join(sessionsRoot, goneId, "logs"))).toBe(false);
+    expect(fs.existsSync(path.join(sessionsRoot, CLEANUP_CONTAINER_SESSION_ID, "logs"))).toBe(true);
     expect(result.logDirsRemoved).toBe(2);
   });
 

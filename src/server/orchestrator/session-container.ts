@@ -1075,6 +1075,9 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
     }
     // Reap before forgetting the entry; later teardown cannot find these sidecars.
     await reapSessionEgressSidecars(this.docker, sessionId, sc.id);
+    // A replacement can be created while that await runs, so the check above is
+    // not enough on its own to keep a second probe off it.
+    if (this.containers.get(sessionId)?.id !== expectedContainerId) return false;
     sc.status = "stopped";
     this.containers.delete(sessionId);
     this.standbySessionIds.delete(sessionId);
