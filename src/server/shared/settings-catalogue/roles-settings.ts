@@ -1,5 +1,6 @@
-import { defineSetting, derived, itemAddress, plain, userText } from "./types.js";
+import { defineSetting, derived, itemAddress, plain, userName, userText } from "./types.js";
 import type { AnySettingDeclaration } from "./types.js";
+import { userNamesProjection } from "./projection.js";
 import { collection, modelSelection, text } from "./value-types.js";
 
 /**
@@ -34,12 +35,18 @@ export const ROLES_SETTINGS = {
       patchableFields: ["description", "prompt", "harness", "model", "reasoningEffort"],
     }),
     store: { kind: "bespoke", ownedBy: "credential-store roles (PUT /api/settings `roles`)" },
-    emits: derived("the role names", (raw) =>
-      Array.isArray(raw)
-        ? raw
-            .map((role) => (typeof role === "string" ? role : (role as { name?: unknown })?.name))
-            .filter((name): name is string => typeof name === "string")
-        : []),
+    // A role name is only checked for being non-blank and short enough
+    // (`services/role-settings.ts:200`), so it goes through the same shape gate
+    // the allowlist entries do. This is the collection an item's ADDRESS is
+    // projected through, so a name emitted here is one the agent repeats back.
+    emits: derived(
+      "the role names; a name not shaped like one is dropped, since it can carry a credential",
+      userNamesProjection,
+      {
+        userText: "The names are the user's own, and the names the agent addresses a role by — "
+          + "`--role <name>` is unusable without them.",
+      },
+    ),
     propose: { kind: "yes" },
   }),
 
@@ -54,7 +61,7 @@ export const ROLES_SETTINGS = {
       + "what it runs on per review, so its name cannot be changed.",
     type: text({ maxLength: 64, noun: "Role name", required: true, trim: true }),
     store: { kind: "bespoke", ownedBy: "credential-store roles (PUT /api/settings `roles`)" },
-    emits: userText("The name the user gave their own role, and the name the agent addresses it by."),
+    emits: userName("The name the user gave their own role, and the name the agent addresses it by."),
     propose: { kind: "yes" },
   }),
 

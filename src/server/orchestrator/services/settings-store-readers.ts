@@ -7,6 +7,7 @@ import { keyRequiringProviders } from "../../shared/voice-catalog.js";
 import type { CredentialBillingMode, CredentialRoute } from "../../shared/types.js";
 import type { McpServerConfig } from "../../shared/types/mcp-types.js";
 import type { ReviewerSlotView, RoleView } from "../../shared/types/agent-types.js";
+import type { BespokeSettingKey } from "../../shared/settings-catalogue/index.js";
 import { buildReviewerSettings } from "./reviewer-settings.js";
 import { buildRoleSettings } from "./roles.js";
 import { listCredentialRoutes } from "./credential-routes.js";
@@ -498,11 +499,19 @@ function secretItems(
 }
 
 /**
- * A reader for every declaration a panel of its own owns. Keyed by declaration
- * key rather than by owner so a declaration added without one is a missing
- * entry a test can name, not a silent fall-through to a default.
+ * A reader for every declaration a panel of its own owns, keyed by declaration
+ * key rather than by owner.
+ *
+ * **The key set is DERIVED from the catalogue, not restated here**
+ * (`BespokeSettingKey`, docs/299-agent-settings-access req 7). A reader table
+ * keyed independently would be a second registry — the eighth place this
+ * feature exists to remove — and a declaration added without an entry would
+ * simply report itself unreadable forever. With the key type derived, that
+ * omission is a missing property at compile time, and a reader for a setting
+ * nobody declared is an unknown one. {@link bespokeReader} is how a caller
+ * holding a plain string looks one up.
  */
-export const BESPOKE_READERS: Record<string, StoreReader> = {
+export const BESPOKE_READERS: Record<BespokeSettingKey, StoreReader> = {
   // Roles.
   "roles": (ctx, cache) => {
     const missing = needsCredentialStore(ctx);
@@ -666,3 +675,8 @@ export const BESPOKE_READERS: Record<string, StoreReader> = {
   "project.secrets[].value": (ctx, cache) =>
     secretItems(ctx, cache, (name) => cache.secretValues()[name] ?? null),
 };
+
+/** The reader for a key held as a plain string; present for every bespoke one. */
+export function bespokeReader(key: string): StoreReader | undefined {
+  return (BESPOKE_READERS as Record<string, StoreReader | undefined>)[key];
+}

@@ -42,11 +42,17 @@ function itemLines(entry: SettingEntry & { items?: SettingItem[] }): string[] {
 
 function effectMarker(entry: SettingEntry): string {
   const state = entry.effect?.state;
-  if (!state || state === "live") return "";
+  if (!state) return "";
   // An unreadable entry already says why on the value line; repeating it as an
   // effect marker makes the index unreadable for the reader, not just for ShipIt.
   if (!entry.readable) return "";
   const detail = entry.effect?.detail ? ` — ${entry.effect.detail}` : "";
+  // A `live` setting normally has nothing to add, and marking every one of them
+  // would bury the settings that do. But `live` WITH a detail means the stored
+  // value is what the next use reads and that use fails — an install refusing to
+  // start a contained session is the case — so the detail is the whole point and
+  // dropping it left the text output saying the opposite of the JSON.
+  if (state === "live") return detail ? `  [${entry.effect?.detail}]` : "";
   return `  [${state}${detail}]`;
 }
 
@@ -247,7 +253,11 @@ export async function handleSettingsGet(args: string[], deps: RunDeps): Promise<
   // With no value there is nothing for an effect line to be about.
   if (entry.readable) {
     if (state === "live") {
-      lines.push("In effect: yes — the stored value is what ShipIt uses next.");
+      // The detail is not optional trimming here: `live` carries one only when
+      // the next use of the stored value FAILS, and saying "yes" on its own
+      // would tell the user the opposite of what ShipIt just computed.
+      lines.push(`In effect: yes — the stored value is what ShipIt uses next.${
+        entry.effect?.detail ? ` ${entry.effect.detail}` : ""}`);
     } else if (state === "uncertain") {
       // ShipIt said it could not confirm the effect, which is not the same as
       // saying the setting has none. Do not tell the user it is not working.

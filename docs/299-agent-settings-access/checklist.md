@@ -67,3 +67,35 @@ collection operations that create and delete entries, and the credential and
 provider-account labels. The notice that tells the agent about a resolved card at
 the start of its next turn (req 8's second half) is the remaining work; the read
 carries the outcome today.
+
+## Conformance against reqs 2, 3 and 7
+
+An independent review of the shipped read surface against the numbered
+requirements; each finding verified at the code before being acted on.
+
+- [x] req 2 — a name the user typed is emitted only when it is shaped like a
+      name, so a secret or role called `https://user:token@host/?token=…` is
+      named by nothing in the index, in an item address, in text or in `--json`
+- [x] req 2 — the four collections an item's address is projected through carry
+      one rule between them, and a `derived` projection emitting the user's own
+      words says so with a reason review reads
+- [x] req 2 — the reflected-input echo decided: not stored credential material,
+      so flattened and capped as presentation hygiene, and justified in `plan.md`
+- [x] req 3 — `no-sidecar` separated from `disabled`: the containment setting is
+      what refuses the container's start, and the read names it instead of
+      calling it irrelevant
+- [x] req 7 — `BESPOKE_READERS` and `OWN_ROUTE_READERS` keyed by a type derived
+      from the catalogue, so a missing reader is a compile error and the two
+      runtime guards are gone
+- [x] req 7 — a stored MCP field with no declaration is a compile error
+      (`MCP_SERVER_FIELD_SETTINGS`), which is what the DOM walk cannot see
+- [x] req 7 — the MCP form and the credential-routing band render the
+      declaration's description, and their hand-written copy moved into it
+- [x] Every new guard proven red on its own, with the defect restored
+- [x] A second independent review of the fixes themselves, its six findings each
+      verified at the code: the refusal made a suffix on every branch rather than
+      a branch of its own; the `live` detail carried through both CLI renderers,
+      not only `--json`; the MCP map's value keyed to the field's own name; the
+      routing description trimmed to what the band renders; and the name gate's
+      claim narrowed to what it does — it removes a URL, it is not a credential
+      scanner, and the design rejected scanners

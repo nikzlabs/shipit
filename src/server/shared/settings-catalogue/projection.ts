@@ -48,6 +48,8 @@ function applyProjection(emits: Projection, raw: unknown): ProjectionOutcome {
     case "plain":
     case "user_text":
       return { readable: true, value: raw ?? null };
+    case "user_name":
+      return { readable: true, value: userNameProjection(raw) };
     case "configured_only":
       return { readable: true, value: { configured: isConfigured(raw) } };
     case "derived":
@@ -92,6 +94,63 @@ export function formatSetting(declaration: AnySettingDeclaration, outcome: Proje
     return outcome.value.length === 0 ? "empty" : outcome.value.map(formatScalar).join(", ");
   }
   return formatScalar(outcome.value);
+}
+
+/**
+ * A name the user chose, emitted only when it is shaped like a name.
+ *
+ * Naming a role, an MCP server or a missing secret is the whole of what the
+ * agent has to tell the user, so these names are emitted deliberately — but
+ * nothing constrains what they are made of. `PUT /api/secrets` takes any string
+ * as a key (`api-routes-secrets.ts:46`) and a role name is only checked for
+ * being non-blank and short enough (`services/role-settings.ts:200`), so
+ * `https://user:token@host/path?token=…` is a storable name, and an item's
+ * ADDRESS is where it leaves (`settings-read.ts` → `itemAddress`).
+ *
+ * This is the same judgement {@link hostEntryProjection} and
+ * {@link mcpUrlProjection} already make: a URL carries a credential in its
+ * userinfo and its query as a matter of routine, so a name wearing that shape is
+ * named by nothing rather than repeated back. A name that fails here produces no
+ * item at all and the read reports how many it left out.
+ *
+ * **What it does NOT do is decide whether a name is itself a secret**, and it
+ * cannot: `Bearer ghp_…` typed into the name box passes, because nothing
+ * separates it from a name someone meant. That is the deny-list the design
+ * already rejected — "a token lives in a field called `args`", and the answer
+ * there was an allowlist of derived values, not a scanner. Emitting the name is
+ * the user's own decision (`requirements.md`, resolved 2026-09-13: secret NAMES
+ * are in scope, secret values are not), the dialog and every service already
+ * show it, and the `user_name` mark is what says a human chose that. What this
+ * gate adds is that the one shape which carries a credential *without* anyone
+ * choosing to — a URL pasted into a name box — is not repeated back.
+ *
+ * Deliberately permissive about what a name may CONTAIN — letters, digits,
+ * spaces and the punctuation names actually use — because the point is to emit
+ * the user's own words. What it excludes is URL-shaped punctuation
+ * (`:` `/` `@` `?` `#` `%` `&` `=`) and a length no name has.
+ */
+const NAME_MAX = 200;
+const USER_NAME = /^[\p{L}\p{N}][\p{L}\p{N} ._+()[\]-]*$/u;
+
+export function userNameProjection(raw: unknown): string | null {
+  if (typeof raw !== "string") return null;
+  const name = raw.trim();
+  if (name.length === 0 || name.length > NAME_MAX) return null;
+  return USER_NAME.test(name) ? name : null;
+}
+
+/**
+ * A collection of items the user names — roles, MCP servers. Each entry is
+ * either the name itself or an object carrying one, and each goes through
+ * {@link userNameProjection}, so an item the gate refuses is named by nothing
+ * and `settings-read.ts` produces no item for it.
+ */
+export function userNamesProjection(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .map((entry) => (typeof entry === "string" ? entry : (entry as { name?: unknown })?.name))
+    .map(userNameProjection)
+    .filter((name): name is string => name !== null);
 }
 
 /**

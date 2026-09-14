@@ -1,13 +1,14 @@
-import { mcpUrlProjection } from "./projection.js";
+import { mcpUrlProjection, userNamesProjection } from "./projection.js";
 import {
   configuredOnly,
   defineSetting,
   derived,
   itemAddress,
   plain,
-  userText,
+  userName,
 } from "./types.js";
 import type { AnySettingDeclaration } from "./types.js";
+import type { McpHttpServerConfig, McpStdioServerConfig } from "../types/mcp-types.js";
 import { bool, collection, enumOf, secretBag, text } from "./value-types.js";
 
 /**
@@ -42,12 +43,15 @@ export const INTEGRATIONS_SETTINGS = {
       patchableFields: ["enabled"],
     }),
     store: { kind: "bespoke", ownedBy: "credential-store MCP servers (/api/mcp-servers)" },
-    emits: derived("the server names", (raw) =>
-      Array.isArray(raw)
-        ? raw
-            .map((server) => (typeof server === "string" ? server : (server as { name?: unknown })?.name))
-            .filter((name): name is string => typeof name === "string")
-        : []),
+    // The same shape gate the other name-addressed collections use. It refuses
+    // nothing `validateMcpServerConfig` would have stored — a server name is
+    // already lowercase alphanumeric — so this is the rule being uniform rather
+    // than a second validator.
+    emits: derived(
+      "the server names; a name not shaped like one is dropped",
+      userNamesProjection,
+      { userText: "The names are the user's own, and how the panel and the agent both address a server." },
+    ),
     propose: { kind: "yes" },
   }),
 
@@ -62,7 +66,7 @@ export const INTEGRATIONS_SETTINGS = {
       + "lowercase alphanumeric starting with a letter, and no two servers share one.",
     type: text({ maxLength: 64, noun: "MCP server name", required: true, trim: true }),
     store: { kind: "bespoke", ownedBy: "credential-store MCP servers (/api/mcp-servers)" },
-    emits: userText(
+    emits: userName(
       "The server's name is how the panel and the agent both address it. ShipIt validates it to "
       + "lowercase alphanumerics, so it cannot carry a token.",
     ),
@@ -133,8 +137,8 @@ export const INTEGRATIONS_SETTINGS = {
     address: MCP_ADDRESS,
     label: "Arguments",
     description:
-      "The arguments the command is started with. A provider's token is routinely passed here, so "
-      + "ShipIt reports only whether any are set.",
+      "The arguments the command is started with, space-separated. A provider's token is routinely "
+      + "passed here, so ShipIt reports only whether any are set.",
     type: secretBag({ shape: "list", noun: "MCP server arguments" }),
     store: { kind: "bespoke", ownedBy: "credential-store MCP servers (/api/mcp-servers)" },
     emits: configuredOnly(),
@@ -147,7 +151,7 @@ export const INTEGRATIONS_SETTINGS = {
     scope: "global",
     address: MCP_ADDRESS,
     label: "npm package",
-    description: "Installed at session start, for a stdio server that needs it.",
+    description: "Optional. Installed at session start, for a stdio server that needs it.",
     type: text({ maxLength: 200, noun: "npm package", trim: true }),
     store: { kind: "bespoke", ownedBy: "credential-store MCP servers (/api/mcp-servers)" },
     emits: configuredOnly(),
@@ -248,3 +252,62 @@ export const INTEGRATIONS_SETTINGS = {
     propose: { kind: "no", reason: "secret" },
   }),
 } as const satisfies Record<string, AnySettingDeclaration>;
+
+/**
+ * Why a stored field is not a declared setting. The same judgement
+ * `exclusions.ts` makes about a dialog control, made about a persisted field —
+ * and, like that one, a claim in prose that review reads.
+ */
+interface NotASetting { readonly notASetting: string }
+
+/**
+ * The one declaration a stored field may name: its own.
+ *
+ * Naming *any* declaration would leave the loophole open — a new field mapped to
+ * `mcp.servers[].command` would compile, which is the same "bound to something
+ * that exists" pass the DOM walk gives. The key has to be derived from the field
+ * name, so the only way to account for a new field is to declare it under that
+ * name or to explain why it is not a setting.
+ */
+type DeclarationForField<F extends string> =
+  `mcp.servers[].${F}` extends keyof typeof INTEGRATIONS_SETTINGS
+    ? `mcp.servers[].${F}`
+    : never;
+
+/**
+ * **Every field of a stored MCP server, mapped to the declaration that
+ * describes it** (req 7: no way to ship a setting the agent cannot see).
+ *
+ * The coverage walk cannot do this. It reads the rendered DOM, so it can check
+ * that a control names *a* declaration and not that the declaration is the one
+ * the handler saves — a new box bound to `mcp.servers[].command` passes it while
+ * writing something else entirely. What the walk cannot see, the stored TYPE
+ * can: this map is keyed by `keyof McpServerConfig`, so a field added to
+ * `mcp-types.ts` is a compile error here until it is either declared or
+ * explained. That is the structural half; the walk still covers the other
+ * direction, a control nobody declared.
+ *
+ * `setup` is the field that proved the gap: it has been accepted by the stored
+ * type and by `validateMcpServerConfig` since the original MCP integration, and
+ * nothing anywhere reads it.
+ */
+export const MCP_SERVER_FIELD_SETTINGS: {
+  [F in keyof McpStdioServerConfig | keyof McpHttpServerConfig]:
+    DeclarationForField<F & string> | NotASetting;
+} = {
+  name: "mcp.servers[].name",
+  type: "mcp.servers[].type",
+  enabled: "mcp.servers[].enabled",
+  command: "mcp.servers[].command",
+  args: "mcp.servers[].args",
+  env: "mcp.servers[].env",
+  npmPackage: "mcp.servers[].npmPackage",
+  url: "mcp.servers[].url",
+  headers: "mcp.servers[].headers",
+  setup: {
+    notASetting:
+      "Accepted by `validateMcpServerConfig` and stored, and read by nothing — no panel writes it, "
+      + "no spawn runs it. It stores a value that has no effect, so there is nothing for the agent "
+      + "to report about it; dropping the field belongs with the MCP panel's own work.",
+  },
+};

@@ -83,7 +83,14 @@ hand-assembled beside it. The wire shape is unchanged.
 ### Bespoke panels declare per field
 
 The role editor, credential routing, the MCP panel and the secrets table keep
-their own components, but **a declaration is per field, not per panel**. One
+their own components, but **a declaration is per field, not per panel** — and
+each field renders the declaration's **description**, not only its label. A
+bespoke panel that shows a label and writes its own help text beside it is the
+drift req 7 forbids, in the one place the coverage walk's copy comparison has
+nothing to compare: the MCP form's suffixes ("(space-separated)") and the routing
+band's tooltips were both authored twice, and the agent read the copy the user
+could not see. Both now render `settingCopy`, and the band's one licence is to
+swap the collective noun the card shows (docs/252 req 19) and edit nothing else. One
 entry for `mcp.servers` would let a developer add a field, bind it to that entry,
 pass every test, and ship a field with no description, no projection rule and no
 refusal reason. So each editable field is its own declaration
@@ -121,6 +128,27 @@ things it cannot decide are stated there rather than implied: a bespoke panel's
 visible wording is a review matter unless the panel marks it, and a `wholeTab`
 exemption is a claim `exclusions.ts` makes in prose.
 
+**And a third, which the type system decides instead.** The walk reads rendered
+DOM, so it can establish that a control names *a* declaration and never that the
+declaration is the one whose property the handler saves — a box bound to
+`mcp.servers[].command` while writing something else passes it. The stored shape
+can say what the DOM cannot: `MCP_SERVER_FIELD_SETTINGS` is keyed by
+`keyof McpServerConfig`, so a field added to the persisted type is a compile
+error until it is declared or explained as not a setting. **The declaration it
+may name is derived from the field's own name** — `mcp.servers[].${F}`, not any
+existing key — because "mapped to something that exists" is the same pass the DOM
+walk gives, and it is the loophole being closed. The two guards run in opposite
+directions: the walk finds a control nobody declared, the map finds a stored
+field nobody declared. `setup` is what the map found — accepted by
+`validateMcpServerConfig` since the original MCP integration and read by nothing.
+
+**The reader tables are the same kind of derivation.** `BESPOKE_READERS` and
+`OWN_ROUTE_READERS` are keyed by `BespokeSettingKey` / `OwnRouteSettingKey`,
+computed from the catalogue by store kind, so a declaration with no reader is a
+missing property and a reader for a setting nobody declared is an unknown one —
+both at compile time. They were two runtime tests, which is the eighth place this
+design exists to remove; restating a `tsc` refusal at run time buys nothing.
+
 ## What a declaration says to the agent
 
 ```ts
@@ -147,10 +175,43 @@ A field-name deny-list cannot work: an MCP server entry takes arbitrary `env`,
 An MCP server emits its name, transport, connected state, and its URL's host with
 userinfo and query stripped — not args, env, headers or the URL. Where showing
 text the user typed is the point (their own instructions, a git identity), the
-field is marked `user_text` with a reason, and that mark is what review reads.
+field is marked `user_text` with a reason, and that mark is what review reads. A
+`derived` projection whose function returns the user's words rather than
+ShipIt's carries the same reason, on the same grounds: without it, `derived`
+claims the output is ShipIt's own.
+
+**A NAME the user typed is emitted only when it is shaped like a name.** Naming a
+role, an MCP server or a missing secret is the whole of what the agent has to
+tell the user, so these are emitted deliberately — but nothing constrains what
+they are made of: `PUT /api/secrets` takes any string as a key and a role name is
+checked only for being non-blank and short enough, so
+`https://user:token@host/?token=…` is a storable name. An item's **address** is
+where it would leave. So the four collections an address is projected through —
+`roles`, `mcp.servers`, `project.secrets`, `network.egress.hosts` — apply one
+rule between them, the one `hostEntryProjection` and `mcpUrlProjection` already
+made: a URL carries a credential in its userinfo and query as a matter of
+routine, so an entry wearing that shape is named by nothing and produces no item,
+and the read says how many it left out.
+
+**This is not a credential scanner and must not be read as one.** `Bearer ghp_…`
+typed into a name box passes it, because nothing separates that from a name
+someone meant — and content-matching a field is the deny-list this section opens
+by rejecting. Emitting a name is the user's own decision (`requirements.md`,
+resolved 2026-09-13), the dialog and every service already show it, and the
+`user_name` mark records that a human chose it. The gate's claim is narrower: the
+one shape that carries a credential *without* anyone choosing to is not repeated
+back.
 
 Guard: a fixture MCP entry carrying a token in `args`, `env`, `headers` and the
 URL emits none of them — in text, in `--json`, in a card's `from`, in an error.
+And a secret and a role *named* like one emit nothing of it either.
+
+**Reflected input is not this rule's business.** `list --tab` and `get <key>`
+echo the caller's own string back when it names nothing, and that string arrives
+on the agent's own query — nothing ShipIt persists reaches it, so req 2 ("reading
+a setting never exposes secret material") is not engaged. What it is engaged by
+is presentation, so the echo is flattened and capped exactly as `--reason` is:
+hygiene, not a secret defence.
 
 ### Refusals are first-class
 
@@ -316,6 +377,33 @@ DNS-control deployment, and the route returns it as `reach`
 (`api-routes-egress.ts:110`–`119`). Four answers: **live**;
 **restart-dependent**; **excluded for this session**, with the reason (here, the
 session's network capability is what must change); **uncertain**.
+
+**An install that cannot enforce containment is not an install where containment
+is irrelevant.** The enforcement status has three values and only one of them
+means nothing is decided: `disabled` (`SESSION_EGRESS_ENFORCE=0`) installs no
+firewall, so the setting really does change nothing. `no-sidecar` is enforcement
+ON with no sidecar image, and `container-lifecycle.ts:747` **throws rather than
+start a contained session** — so the setting is not irrelevant, it is what is
+blocking the container, and req 3 is precisely the requirement that the read say
+so. `detail` therefore carries either why a value is not live **or** what its
+being live costs.
+
+**The refusal is a suffix on every branch, never a branch of its own.** It
+answers a different question from the rest of the probe: those say what is true
+of the session now — a container's start-time topology, a per-session override, a
+capability it cannot change — and the refusal says what its next start does. Both
+are true at once, and returning early on the refusal silently drops the other
+answer: a sandbox read would stop at "your network capability must change" when
+granting it still leaves global containment on, and a container already running
+when the sidecar image went away would be told it cannot run. That container
+keeps the firewall and the allowlist it started with;
+`container-lifecycle.ts:747` governs creation, not an existing container.
+
+**And a `live` detail has to survive the CLI.** `shipit settings list` marks only
+the settings that are *not* live, and `get` printed "In effect: yes" and dropped
+the detail — so the refusal reached `--json` and nothing else, which is the half
+of the output the agent actually reads. A `live` entry carries a detail in
+exactly one case and it is this one, so both renderers print it.
 
 The same four apply to any setting whose stored value and live effect can differ,
 and the gap is not only egress: `setChannel` writes the channel then calls
