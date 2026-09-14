@@ -30,7 +30,7 @@ driver. It is not an ownership check, and it fails in both directions (req 1, re
   never dispatched, which takes no hold. The flow then skips its release, and the
   adopted turn's own teardown cannot release it either — `finishTurn` releases only
   for `input.systemTurn`. The hold is left set with no owner: every later dispatch
-  queues behind it and only an orchestrator restart clears it (req 3).
+  queues behind it and only an orchestrator restart clears it (req 4).
 - **The hold can change hands with no turn running.** Another owner acquiring
   mid-flow leaves `runner.running` false, so the flow cleared *their* hold and
   drained the queue under it — the docs/304 compaction-over-rebase hole, mirrored.
@@ -46,10 +46,8 @@ function takeSystemHold(runner: SessionRunnerInterface, hold: DriverHold): void 
   hold.seq = runner.systemHoldSeq;
 }
 …
-if (runner.systemHoldSeq === hold.seq) {
-  runner.systemTurnInProgress = false;
-  releaseQueuedTurn(runner);
-}
+if (runner.systemHoldSeq === hold.seq) runner.systemTurnInProgress = false;
+releaseQueuedTurn(runner);
 ```
 
 Acquisition goes through one function so no site can take the hold without
@@ -63,12 +61,24 @@ Calling `releaseQueuedTurn` while an adopted turn runs is a safe no-op — it de
 on `runner.running` — and the adopted turn's own `release-queued` step drains the
 queue when it ends.
 
-**The re-take was left on `!runner.running` deliberately.** A resolution turn
-settles from the `done` path with `running` already false, so an adopted turn cannot
-reach that branch; the only case it skips is a genuine displacement, where the flow
-is about to abort anyway. A fixture that adopts a CLI-started turn over the
-resolution turn observes `running: false` at the settlement, which is what ruled the
-wider change out.
+**The drain is deliberately NOT under that ticket check** (req 3). Review of this
+branch found the case that separates the two: the abort endpoint emits `superseded`
+*before* it clears `runner.running` (`api-routes-git.ts`), so the resolution turn
+settles with a turn still apparently running, the driver skips its re-take, and its
+ticket is stale by the time the flow unwinds. The flag is already correct there —
+`finishTurn` released the turn's own hold — but a message queued before the abort had
+nothing left to start it: a resolution turn runs under `postTurn: "none"`, so its
+teardown never drains. `releaseQueuedTurn` carries every gate itself (it declines
+while a turn runs, while any hold is held, and while a merge is held), so calling it
+unconditionally starts a turn only when nothing else can.
+
+**The re-take was left on `!runner.running`.** It is not a clean ownership test
+either — the abort path above skips it with nothing displacing the driver — but every
+state it reaches is already correct, and widening it buys nothing: in the ordinary
+`agent_result → agent_self_wake → done` order the turn settles from the `done` path
+with `running` already false, so an adopted turn never blocks it. A fixture that
+adopts a CLI-started turn over the resolution turn observes `running: false` at the
+settlement, which is what ruled the wider change out.
 
 ## Guards
 
@@ -82,10 +92,21 @@ non-turn window of the flow:
 - **leaves a hold taken over mid-flow alone, and drains nothing under it** — red
   with `!runner.running`, which cleared the other owner's hold and drained under it.
 
-Both were checked red by restoring the old condition alone.
+In `src/server/orchestrator/integration_tests/rebase-flow.test.ts`, over the real
+HTTP endpoints and the real dispatcher:
+
+- **rebase abort endpoint — drains a message queued before the abort** — red with
+  the drain placed under the ticket check: the queued turn never starts. The
+  repo's existing abort test sends its message *after* the abort, so it cannot
+  see this.
+
+Each was checked red by making that one edit alone.
 
 ## Key files
 
 - `src/server/orchestrator/services/rebase-driver.ts` — `DriverHold`,
   `takeSystemHold`, and the ticket-keyed release in `runRebaseFlow`'s `finally`.
 - `src/server/orchestrator/session-runner.ts` — `systemHoldSeq`, from docs/304.
+- `src/server/orchestrator/queue-drain.ts` — `releaseQueuedTurn`, whose own gates
+  are what make the unconditional call safe.
+- `src/server/orchestrator/api-routes-git.ts` — the abort endpoint's ordering.

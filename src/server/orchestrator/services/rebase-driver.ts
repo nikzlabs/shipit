@@ -549,16 +549,17 @@ export async function runRebaseFlow(
       }
     }
     handWorkspaceBackToWorker(runner.sessionDir);
-    // Release on the hold's own ticket. A turn that displaced the driver minted one of its own
-    // and owns the flag and the queue drain; a CLI-started turn adopted mid-flow mints none, and
-    // keying this on `runner.running` left the hold set with no owner at all (planning#554).
-    if (runner.systemHoldSeq === hold.seq) {
-      runner.systemTurnInProgress = false;
-      try {
-        releaseQueuedTurn(runner);
-      } catch (releaseErr) {
-        console.error("[rebase] post-flow queue release failed:", getErrorMessage(releaseErr));
-      }
+    // Clear on the hold's own ticket: a turn that displaced the driver, or another owner that
+    // took over mid-flow, minted one of its own. Keying this on `runner.running` left a hold a
+    // CLI-started turn was adopted under set with no owner at all (planning#554).
+    if (runner.systemHoldSeq === hold.seq) runner.systemTurnInProgress = false;
+    // The drain is NOT conditional on that: the queue can also be left by a hold that changed
+    // hands, and `releaseQueuedTurn` declines on its own while a turn, a hold or a merge holds
+    // the session — so it starts a turn only when nothing else can.
+    try {
+      releaseQueuedTurn(runner);
+    } catch (releaseErr) {
+      console.error("[rebase] post-flow queue release failed:", getErrorMessage(releaseErr));
     }
   }
 }
