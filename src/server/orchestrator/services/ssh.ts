@@ -338,7 +338,13 @@ export async function signSshRequest(
   // Recording is DEFERRED to the end of this function, after rule 4 has passed
   // and the scan has confirmed the key. The pin is account-wide and permanent,
   // and a request that is about to be refused must not be able to set it.
-  const recordPinNow = !pinned.hostKeyBlob;
+  //
+  // "Pinned" and "observed" are different questions (req 13). A pin recorded
+  // before req 13 shipped was whatever key the first bind carried, so an
+  // upgrade must not inherit it as verified: it still has to survive a scan
+  // before it authorizes anything. A different key against such a pin is a
+  // mismatch as before — only the pinned key itself gets to be confirmed.
+  const recordPinNow = !pinned.hostKeyBlob || !pinned.hostKeyObservedAt;
   if (pinned.hostKeyBlob && pinned.hostKeyBlob !== bind.hostKeyBlob) {
     refuseHostKeyMismatch(deps, sessionId, host, seenFingerprint, keyType);
   }
@@ -419,8 +425,22 @@ export async function signSshRequest(
       );
     }
     // A key observed at the old endpoint says nothing about the new one, so the
-    // scan's answer is void — whatever it found, and whichever request started it.
+    // scan's answer is void — whatever it found, and whichever request started
+    // it. The card is what makes this visible: `ssh` reports only a generic
+    // agent failure, and without it the refusal has no explanation anywhere the
+    // user looks (req 13, "the user can see why").
     if (current.address !== host.address || current.port !== host.port) {
+      emitHostKeyCard(deps, sessionId, {
+        cardId: `ssh-host-key-${randomUUID()}`,
+        hostId: host.id,
+        label: current.label,
+        address: current.address,
+        kind: "unverified",
+        fingerprint: seenFingerprint,
+        keyType,
+        scanFailure: "endpoint-changed",
+        createdAt: new Date().toISOString(),
+      });
       refuse(
         deps,
         { sessionId, host: current, reason: "host-key-unverified", detail: "endpoint-changed-during-scan" },
@@ -433,9 +453,10 @@ export async function signSshRequest(
         host.hostKeyFingerprint ?? fingerprintOf(afterScan.hostKeyBlob),
       );
     }
-    if (!afterScan.hostKeyBlob) {
+    if (!afterScan.hostKeyBlob || !afterScan.hostKeyObservedAt) {
       if (!scan.keys.includes(bind.hostKeyBlob)) {
-        const scannedFingerprint = scan.keys[0] ? fingerprintOf(scan.keys[0]) : undefined;
+        const scanned = scan.keys[0];
+        const scannedFingerprint = scanned ? fingerprintOf(scanned) : undefined;
         emitHostKeyCard(deps, sessionId, {
           cardId: `ssh-host-key-${randomUUID()}`,
           hostId: host.id,
@@ -445,6 +466,7 @@ export async function signSshRequest(
           fingerprint: seenFingerprint,
           keyType,
           ...(scannedFingerprint ? { scannedFingerprint } : {}),
+          ...(scanned ? { scannedKeyType: blobType(Buffer.from(scanned, "base64")) ?? "unknown" } : {}),
           ...(scan.failure ? { scanFailure: scan.failure } : {}),
           createdAt: new Date().toISOString(),
         });

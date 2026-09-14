@@ -25,6 +25,7 @@ const SCAN_FAILURE_TEXT: Record<SshHostKeyScanFailureKind, string> = {
   timeout: "the check timed out",
   "scan-failed": "ShipIt could not run the check",
   "unsupported-type": "ShipIt cannot check that key type",
+  "endpoint-changed": "the destination was edited mid-check",
 };
 
 function headline(card: SshHostKeyCardData): string {
@@ -37,6 +38,11 @@ function body(card: SshHostKeyCardData): string {
   if (card.kind === "mismatch") {
     return `ShipIt will not authenticate to ${card.address} until the recorded key matches again. `
       + "If you rebuilt the server, forget the recorded key in Settings → Integrations.";
+  }
+  if (card.scanFailure === "endpoint-changed") {
+    return `This destination was edited while ShipIt was checking its host key, so what the check `
+      + `found no longer said anything about ${card.address}. Nothing was recorded, and the next `
+      + "connection checks the new address.";
   }
   if (card.kind === "unverified") {
     const saw = card.scannedFingerprint
@@ -93,7 +99,9 @@ export function SshHostKeyCard({ card }: { card: SshHostKeyCardData }) {
             {card.kind === "unverified" && card.scannedFingerprint && (
               <div className="flex gap-2">
                 <dt className="text-(--color-text-tertiary) w-20 shrink-0">Seen at address</dt>
-                <dd className="font-mono break-all text-(--color-text-primary)">{card.scannedFingerprint}</dd>
+                <dd className="font-mono break-all text-(--color-text-primary)">
+                  {card.scannedKeyType ? `${card.scannedKeyType} ` : ""}{card.scannedFingerprint}
+                </dd>
               </div>
             )}
           </dl>

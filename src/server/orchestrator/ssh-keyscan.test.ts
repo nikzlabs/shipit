@@ -123,4 +123,21 @@ describe("scanSshHostKey", () => {
     child.emit("close", null);
     await expect(pending).resolves.toEqual({ keys: [], failure: "timeout" });
   });
+
+  /**
+   * `killChild`, not `child.kill()`: a spawn that never exec'd has no pid, and
+   * `child.kill()` on it signals an arbitrary unrelated process
+   * (`shared/kill-child.ts`). The timeout test above cannot see the difference,
+   * because its fake always has one.
+   */
+  it("does not signal a child that never got a pid", async () => {
+    vi.useFakeTimers();
+    const child = stageChild();
+    (child as { pid?: number }).pid = undefined;
+    const pending = scanSshHostKey({ address: "h", port: 22, keyType: "ssh-ed25519" });
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(child.kill).not.toHaveBeenCalled();
+    child.emit("close", null);
+    await expect(pending).resolves.toEqual({ keys: [], failure: "timeout" });
+  });
 });

@@ -107,6 +107,13 @@ interface StoredSshHost extends SshHostPublic {
   privateKeyPem: string;
   /** base64 of the server's recorded host key (req 9). */
   hostKeyBlob?: string;
+  /**
+   * When the ORCHESTRATOR saw this key at the destination's own address (req
+   * 13). Absent on a pin recorded before req 13 shipped, which is why the
+   * signer treats "pinned" and "observed" as different questions: an upgrade
+   * must not inherit a pin that a session, not ShipIt, chose.
+   */
+  hostKeyObservedAt?: string;
 }
 
 export interface SshHostInput {
@@ -1074,12 +1081,15 @@ export class CredentialStore {
    * The signer's accessor, and the only one that yields the private key. Named
    * so a call site that should not have it reads as wrong at the call.
    */
-  getSshHostSigningKey(id: string): { privateKeyPem: string; hostKeyBlob?: string } | undefined {
+  getSshHostSigningKey(
+    id: string,
+  ): { privateKeyPem: string; hostKeyBlob?: string; hostKeyObservedAt?: string } | undefined {
     const found = this.data.sshHosts?.find((h) => h.id === id);
     if (!found) return undefined;
     return {
       privateKeyPem: found.privateKeyPem,
       ...(found.hostKeyBlob ? { hostKeyBlob: found.hostKeyBlob } : {}),
+      ...(found.hostKeyObservedAt ? { hostKeyObservedAt: found.hostKeyObservedAt } : {}),
     };
   }
 
@@ -1120,6 +1130,7 @@ export class CredentialStore {
       delete next.hostKeyFingerprint;
       delete next.hostKeyType;
       delete next.hostKeyRecordedAt;
+      delete next.hostKeyObservedAt;
     }
     hosts[idx] = next;
     this.data.sshHosts = hosts;
@@ -1137,9 +1148,11 @@ export class CredentialStore {
   }
 
   /**
-   * Trust on first use (req 9). Refuses to overwrite a key already recorded —
+   * Record a key the orchestrator has observed at the destination's address
+   * (req 9, req 13). Refuses to overwrite a key already recorded AND observed —
    * the signer decides a mismatch, and a store that silently re-pinned would
-   * make that decision unreachable.
+   * make that decision unreachable. A pin carrying no observation is from
+   * before req 13, so re-recording it is how it acquires one.
    */
   recordSshHostKey(
     id: string,
@@ -1149,13 +1162,15 @@ export class CredentialStore {
     const hosts = [...(this.data.sshHosts ?? [])];
     const idx = hosts.findIndex((h) => h.id === id);
     if (idx < 0) return undefined;
-    if (hosts[idx].hostKeyBlob) return publicSshHost(hosts[idx]);
+    if (hosts[idx].hostKeyBlob && hosts[idx].hostKeyObservedAt) return publicSshHost(hosts[idx]);
+    const now = new Date().toISOString();
     hosts[idx] = {
       ...hosts[idx],
       hostKeyBlob,
       hostKeyFingerprint: derived.fingerprint,
       hostKeyType: derived.keyType,
-      hostKeyRecordedAt: new Date().toISOString(),
+      hostKeyRecordedAt: now,
+      hostKeyObservedAt: now,
     };
     this.data.sshHosts = hosts;
     this.save();
@@ -1172,6 +1187,7 @@ export class CredentialStore {
     delete next.hostKeyFingerprint;
     delete next.hostKeyType;
     delete next.hostKeyRecordedAt;
+    delete next.hostKeyObservedAt;
     hosts[idx] = next;
     this.data.sshHosts = hosts;
     this.save();

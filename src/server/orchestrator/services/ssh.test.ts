@@ -13,6 +13,7 @@ import type { SshHostKeyScanResult, SshHostKeyScanTarget } from "../ssh-keyscan.
 import {
   buildSessionBind,
   buildUserauthData,
+  fakeEcdsaServerKey,
   fakeEd25519ServerKey,
   fakeRsaServerKey,
   type FakeServerKey,
@@ -30,6 +31,9 @@ interface Harness {
   server: FakeServerKey;
   appended: PersistedMessage[];
   recorded: () => string | undefined;
+  observed: () => string | undefined;
+  /** A pin as a pre-req-13 ShipIt left it: recorded from a bind, never observed. */
+  plantLegacyPin: (key: FakeServerKey) => void;
   /** One entry per `ssh-keyscan` the signer asked for (req 13). */
   scans: SshHostKeyScanTarget[];
   /** Edit the destination the way the Settings routes would, mid-flight. */
@@ -40,6 +44,7 @@ interface Harness {
 
 interface HarnessOpts {
   granted?: boolean;
+  /** A pin ShipIt recorded after observing it at the address (req 13). */
   pinTo?: FakeServerKey;
   /**
    * What the address answers when the orchestrator scans it. The default is the
@@ -52,6 +57,9 @@ function harness(opts: HarnessOpts = {}): Harness {
   const generated = generateSshHostKey("shipit-prod");
   const server = fakeEd25519ServerKey();
   let hostKeyBlob: string | undefined = opts.pinTo?.blob;
+  // The store's own distinction: only the req 13 path sets an observation, and
+  // a fake that conflated the two could not fail on inheriting a legacy pin.
+  let hostKeyObservedAt: string | undefined = opts.pinTo ? "2026-09-14T00:00:00.000Z" : undefined;
 
   const host: SshHostPublic = {
     id: "ssh_1",
@@ -82,11 +90,16 @@ function harness(opts: HarnessOpts = {}): Harness {
         : []),
       getSshHostSigningKey: (id) =>
         id === live?.id
-          ? { privateKeyPem: generated.privateKeyPem, ...(hostKeyBlob ? { hostKeyBlob } : {}) }
+          ? {
+              privateKeyPem: generated.privateKeyPem,
+              ...(hostKeyBlob ? { hostKeyBlob } : {}),
+              ...(hostKeyObservedAt ? { hostKeyObservedAt } : {}),
+            }
           : undefined,
       recordSshHostKey: (id, blob) => {
-        if (id !== live?.id || hostKeyBlob) return undefined;
+        if (id !== live?.id || (hostKeyBlob && hostKeyObservedAt)) return undefined;
         hostKeyBlob = blob;
+        hostKeyObservedAt = "2026-09-14T12:00:00.000Z";
         return live;
       },
     },
@@ -121,6 +134,8 @@ function harness(opts: HarnessOpts = {}): Harness {
     server,
     appended,
     recorded: () => hostKeyBlob,
+    observed: () => hostKeyObservedAt,
+    plantLegacyPin: (key) => { hostKeyBlob = key.blob; hostKeyObservedAt = undefined; },
     scans,
     editHost: (patch) => { if (live) live = { ...live, ...patch }; },
     deleteHost: () => { live = undefined; },
@@ -460,8 +475,11 @@ describe("the first-use scan (req 13)", () => {
 
   it("refuses and records nothing when the address answers with a different key", async () => {
     const impostor = fakeEd25519ServerKey();
-    // The address answers with the real server's key; the session presents its own.
-    const h = harness({ scan: { keys: [fakeEd25519ServerKey().blob] } });
+    // The address answers with a key of another type, which is the shape a
+    // curve or algorithm disagreement takes — so the card has to name both
+    // types, not just two fingerprints the user cannot tell apart.
+    const atAddress = fakeEcdsaServerKey();
+    const h = harness({ scan: { keys: [atAddress.blob] } });
     const refusal = await refusalOf(
       signSshRequest(h.deps, SESSION, validRequest(h, impostor)),
     );
@@ -474,10 +492,12 @@ describe("the first-use scan (req 13)", () => {
       fingerprint: fingerprintOf(impostor.blob),
       keyType: "ssh-ed25519",
     });
-    // The card names what the scan saw, so a wrong address is visible without logs.
-    expect(h.appended[0].sshHostKey?.scannedFingerprint).toBeTruthy();
-    expect(h.appended[0].sshHostKey?.scannedFingerprint)
-      .not.toBe(h.appended[0].sshHostKey?.fingerprint);
+    // The card names what the scan saw, so a wrong address — or a server
+    // answering with a different key type — is visible without reading logs.
+    expect(h.appended[0].sshHostKey).toMatchObject({
+      scannedFingerprint: fingerprintOf(atAddress.blob),
+      scannedKeyType: "ecdsa-sha2-nistp256",
+    });
   });
 
   it("refuses and records nothing when nothing answers at the address", async () => {
@@ -526,6 +546,53 @@ describe("the first-use scan (req 13)", () => {
     const fresh = harness();
     await signSshRequest(fresh.deps, SESSION, validRequest(fresh));
     expect(fresh.scans).toHaveLength(1);
+  });
+
+  /**
+   * A pin from before req 13 was whatever key the first bind carried — which a
+   * hostile granted session could mint. Upgrading ShipIt must not turn that
+   * into a trusted pin, so a pin with no observation is verified like a fresh
+   * one before it authorizes anything.
+   */
+  describe("a pin recorded before req 13", () => {
+    it("is scanned and confirmed before it authorizes a signature", async () => {
+      const h = harness();
+      h.plantLegacyPin(h.server);
+      expect(h.recorded()).toBe(h.server.blob);
+      expect(h.observed()).toBeUndefined();
+
+      await expect(signSshRequest(h.deps, SESSION, validRequest(h))).resolves.toBeDefined();
+      expect(h.scans).toHaveLength(1);
+      expect(h.observed()).toBeTruthy();
+
+      // Confirmed once; the next connection is an ordinary pinned one.
+      await signSshRequest(h.deps, SESSION, validRequest(h));
+      expect(h.scans).toHaveLength(1);
+    });
+
+    it("refuses when the address does not answer with that key, and signs nothing", async () => {
+      const elsewhere = fakeEd25519ServerKey();
+      const h = harness({ scan: { keys: [elsewhere.blob] } });
+      h.plantLegacyPin(h.server);
+
+      await expect(signSshRequest(h.deps, SESSION, validRequest(h)))
+        .rejects.toThrow(/could not observe that host key/);
+      expect(h.observed()).toBeUndefined();
+      expect(h.appended[0].sshHostKey).toMatchObject({
+        kind: "unverified",
+        scannedFingerprint: fingerprintOf(elsewhere.blob),
+      });
+    });
+
+    // Only the pinned key gets a chance to be confirmed: a different one is
+    // still the mismatch it always was, decided without a scan.
+    it("still refuses a different key as a mismatch", async () => {
+      const h = harness();
+      h.plantLegacyPin(fakeEd25519ServerKey());
+      await expect(signSshRequest(h.deps, SESSION, validRequest(h)))
+        .rejects.toThrow(/does not match the one ShipIt recorded/);
+      expect(h.scans).toEqual([]);
+    });
   });
 
   /**
@@ -582,6 +649,13 @@ describe("the first-use scan (req 13)", () => {
 
       expect((await refusalOf(pending)).message).toMatch(/address changed while ShipIt was verifying/);
       expect(h.recorded()).toBeUndefined();
+      // `ssh` reports only a generic agent failure, so the card is the only
+      // place this refusal is explained (req 13, "the user can see why").
+      expect(h.appended[0].sshHostKey).toMatchObject({
+        kind: "unverified",
+        scanFailure: "endpoint-changed",
+        address: "someone-elses.example.com",
+      });
     });
 
     it("refuses when only the port changed, and pins nothing", async () => {
@@ -640,6 +714,24 @@ describe("the first-use scan (req 13)", () => {
       expect((await refusalOf(pending)).message).toMatch(/changed while ShipIt was verifying/);
       expect(h.recorded()).toBeUndefined();
     });
+  });
+
+  /**
+   * The in-flight entry is a dedupe, not a cache. A scan that saw nothing must
+   * be retried on the next connection: caching the failure would make one
+   * unreachable moment permanent for the destination's whole lifetime.
+   */
+  it("retries after a failed scan instead of remembering it", async () => {
+    let answers: SshHostKeyScanResult[] = [];
+    const h = harness({ scan: () => Promise.resolve(answers.shift() ?? { keys: [], failure: "no-answer" }) });
+    answers = [{ keys: [], failure: "no-answer" }, { keys: [h.server.blob] }];
+
+    await expect(signSshRequest(h.deps, SESSION, validRequest(h)))
+      .rejects.toThrow(/could not observe that host key/);
+    // No state reset: the second attempt must scan again of its own accord.
+    await expect(signSshRequest(h.deps, SESSION, validRequest(h))).resolves.toBeDefined();
+    expect(h.scans).toHaveLength(2);
+    expect(h.recorded()).toBe(h.server.blob);
   });
 
   it("scans once for the destination, not once per concurrent first connection", async () => {

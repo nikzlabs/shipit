@@ -43,8 +43,17 @@ export interface SessionSshHostsView {
   granted: string[];
 }
 
-/** Why the orchestrator's own scan of the address produced no usable key. */
-export type SshHostKeyScanFailureKind = "no-answer" | "timeout" | "scan-failed" | "unsupported-type";
+/**
+ * Why the orchestrator has no usable observation of the key. The first four are
+ * the scan's own outcomes; `endpoint-changed` is the destination being edited
+ * while the scan ran, which voids whatever it found.
+ */
+export type SshHostKeyScanFailureKind =
+  | "no-answer"
+  | "timeout"
+  | "scan-failed"
+  | "unsupported-type"
+  | "endpoint-changed";
 
 /**
  * req 9 — the first connection records the server's key and shows its
@@ -66,6 +75,13 @@ export interface SshHostKeyCard {
   recordedFingerprint?: string;
   /** Only for `unverified`: what the orchestrator's scan saw at the address. */
   scannedFingerprint?: string;
+  /**
+   * The scanned key's type. Worth showing beside the presented one because a
+   * server with several ECDSA host keys answers a scan with whichever curve it
+   * prefers, which `ssh-keyscan` cannot be told to override — so "same family,
+   * different curve" is a real cause of this card.
+   */
+  scannedKeyType?: string;
   /** Only for `unverified`, and only when the scan saw no key at all. */
   scanFailure?: SshHostKeyScanFailureKind;
   createdAt: string;

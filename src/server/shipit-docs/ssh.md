@@ -42,6 +42,8 @@ The first connection to a destination records the server's host key and shows it
 
 **So a first connection can be refused even though everything in this container is correct.** If the address is wrong, the port is wrong, the server is down, or a firewall sits between ShipIt and the host, the check finds nothing and `ssh` fails with "Permission denied (publickey)"; a card in the chat says what ShipIt saw at the address. There is nothing to fix from here — tell the user which destination it was, and that ShipIt could not see that host key at its configured address.
 
+Two narrower causes of the same card. If the user edits the destination while a connection is authenticating, that connection is refused and the card says so; simply retry. And if the server holds several **ECDSA** host keys of different curves, ShipIt's check gets whichever curve the server prefers, so forcing another one with `HostKeyAlgorithms` cannot pin — the card shows both key types, and the fix is to let the connection use the default.
+
 Later connections require that key, and it is enforced in two places. ShipIt writes it into `~/.ssh/known_hosts`, so a changed key usually makes **`ssh` itself** refuse with its own loud host-key warning before ShipIt is asked for anything. The signer refuses a mismatch too, and posts a warning card — that is the backstop for the case where `known_hosts` has been edited.
 
 The user clears the recorded key with **Forget** in Settings → Integrations → SSH hosts. You cannot, and editing `known_hosts` will not help: the signer never reads it.

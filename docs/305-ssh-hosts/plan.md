@@ -108,12 +108,28 @@ orchestrator, gated by `gitCredentialAllowed(session)` in `pr-target.ts`).
      that the user can change while it waits. So `signSshRequest` is async and, after the scan
      returns, it re-reads all of it and refuses on any difference: the grant (revoked), the
      destination (deleted), its address or port (a key observed at the old endpoint says
-     nothing about the new one), its user (rule 4 compared against the old one), and the pin
+     nothing about the new one, and that refusal gets its own card, since `ssh` reports only a
+     generic agent failure), its user (rule 4 compared against the old one), and the pin
      (a concurrent request may have recorded first). The rate slot is taken
      before the suspension, so a flood is bounded by attempts started rather than attempts
-     finished. `ssh-keyscan -t` names a key *family* (`ed25519`, `rsa`, `ecdsa`), not a blob
-     type, so `ssh-keyscan.ts` maps it; a type it cannot name is refused rather than passed
-     to argv.
+     finished.
+
+     **Pinned and observed are separate facts**, because a pin recorded before req 13 shipped
+     was whatever key the first bind carried — exactly what this rule exists to stop. So the
+     store records `hostKeyObservedAt` beside the key, only ever from this path, and the
+     signer verifies a pin that has none as if it were fresh: the same key gets confirmed by a
+     scan and acquires an observation, a different key is the mismatch it always was. Without
+     that distinction an upgrade would silently inherit every unverified pin.
+
+     `ssh-keyscan -t` names a key *family* (`ed25519`, `rsa`, `ecdsa`), not a blob type, so
+     `ssh-keyscan.ts` maps it; a type it cannot name is refused rather than passed to argv.
+     **The family is as specific as the scan can be**, and that is a real limit, not an
+     oversight: measured against a recording listener, `ssh-keyscan -t ecdsa-sha2-nistp384`
+     proposes `nistp256,nistp384,nistp521` exactly as a bare `-t ecdsa` does, so a server
+     holding several ECDSA host keys answers with whichever curve it prefers. A session that
+     forced the other curve is then refused for as long as both keys exist. The failure is a
+     denial, never a bypass, and the card names the scanned key's *type* beside its
+     fingerprint so the cause is readable rather than a second opaque fingerprint.
   4. The data to sign parses as an SSH userauth publickey request whose session id equals the
      bind's, whose `user` equals the destination's configured user, whose public key is the
      destination's, and whose algorithm is `ssh-ed25519`. Two layouts are accepted: the
@@ -323,7 +339,8 @@ As implemented:
 - `src/server/orchestrator/api-routes-ssh.ts` (new) — browser-only host CRUD and session
   grant edit; container-accessible identities/sign.
 - `src/server/orchestrator/credential-store.ts` — `sshHosts`, with a public projection on
-  every read and `getSshHostSigningKey` as the one accessor that yields the private half.
+  every read and `getSshHostSigningKey` as the one accessor that yields the private half;
+  `hostKeyObservedAt` records that the orchestrator, not a session, chose the pin (req 13).
 - `src/server/orchestrator/sessions.ts`, `shared/database.ts`,
   `shared/types/domain-types/session.ts` — the `ssh_hosts` grant column and `setSshHosts`.
 - `src/server/orchestrator/index.ts`, `egress-allowlist.ts`, `egress-firewall-install.ts`,
