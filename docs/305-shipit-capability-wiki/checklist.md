@@ -40,6 +40,12 @@ census in `how-shipit-works.md`.
 - [x] Backing up and moving an installation — a section in
       `installing-and-updating.md`, since there is no whole-install backup to
       describe as a feature
+- [ ] When consolidating, carry one framing out of the backup section into the
+      census: what a destroyed host actually costs is **the conversation and the
+      configuration, not the work**, because every turn commits and pushes and
+      archiving refuses to reclaim a checkout it cannot confirm is on the
+      remote. It is the reassuring and correct answer wherever data loss comes
+      up, and it is much smaller than users expect.
 - [ ] **Consolidate the index.** Each page's PR body ends with
       `## Rows for the index`; children do not edit `wiki/README.md` or
       `how-shipit-works.md` themselves (see `plan.md`). Once the pages have
