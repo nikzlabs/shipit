@@ -135,8 +135,12 @@ export interface GlobalSettingsWriteResult {
  * domain; a role, the reviewer slots and the git identity are stored objects of
  * their own, so a save touching them takes theirs too — which is what makes a
  * dialog save and a single-field write to the same role serialize.
+ *
+ * Exported because a proposal apply holds the lock across its baseline check and
+ * this write, and must name the same set from the same options rather than a
+ * second list that could drift from it.
  */
-function domainsForSettingsSave(opts: SaveGlobalSettingsOptions): ConflictDomain[] {
+export function domainsForSettingsSave(opts: SaveGlobalSettingsOptions): ConflictDomain[] {
   const domains: ConflictDomain[] = [settingsPayloadDomain];
   if (opts.gitIdentity !== undefined) domains.push(gitIdentityDomain);
   if (opts.reviewers !== undefined) domains.push(reviewerSlotsDomain);
@@ -534,6 +538,16 @@ export async function applyRepoSettings(
         const result = deps.repoStore.setAllowAgentMerge(url, patch.allowAgentMerge);
         if (result === "not-found") {
           return { repo: null, outcome: combineOutcomes(outcomes), notFound: true };
+        }
+        // `no-identity` returns BEFORE writing anything: the permission is keyed
+        // by GitHub repository id, and a remote that has none cannot hold one.
+        // Falling through would report a grant that was never stored, which is
+        // the one thing an outcome may not do.
+        if (result === "no-identity") {
+          throw new ServiceError(
+            400,
+            `${url} is not a GitHub repository, so ShipIt cannot grant agent merging on it.`,
+          );
         }
         // The permission is durable here, and recorded here — a failure in the
         // cancellation below must not report it as unchanged, because it did

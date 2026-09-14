@@ -121,6 +121,51 @@ describe("withConflictDomains", () => {
     expect(order).toEqual(["failing", "next"]);
   });
 
+  /**
+   * A proposal apply holds the target's domains across its baseline check and
+   * the `settings-apply.ts` operation that writes it, and that operation takes
+   * the same domains. Without re-entrancy the inner call waits on a lock its own
+   * caller holds and the apply never returns.
+   */
+  describe("a nested write", () => {
+    it("runs under the domains its caller already holds", async () => {
+      const order: string[] = [];
+      await withConflictDomains([settingsPayloadDomain, roleDomain("reviewer")], async () => {
+        order.push("outer");
+        await withConflictDomains([roleDomain("reviewer"), settingsPayloadDomain], () => {
+          order.push("inner");
+        });
+        order.push("outer:end");
+      });
+      expect(order).toEqual(["outer", "inner", "outer:end"]);
+      expect(conflictDomainsIdle()).toBe(true);
+    });
+
+    it("still serializes a later writer behind the whole nest", async () => {
+      const order: string[] = [];
+      const held = withConflictDomains([roleDomain("reviewer")], async () => {
+        await withConflictDomains([roleDomain("reviewer")], async () => {
+          await Promise.resolve();
+          order.push("nested");
+        });
+      });
+      const next = withConflictDomains([roleDomain("reviewer")], () => { order.push("next"); });
+      await Promise.all([held, next]);
+      expect(order).toEqual(["nested", "next"]);
+    });
+
+    it("refuses a domain its caller does not hold, rather than deadlocking on it", async () => {
+      // Acquiring a new domain while holding one is the lock-ordering deadlock:
+      // this call would wait for a domain another holder wants while that holder
+      // waits for ours. It is named and refused instead of hanging.
+      await expect(
+        withConflictDomains([roleDomain("reviewer")], () =>
+          withConflictDomains([mcpServerDomain("notion")], () => undefined)),
+      ).rejects.toThrow(/mcp-server:notion/);
+      expect(conflictDomainsIdle()).toBe(true);
+    });
+  });
+
   it("forgets a domain nobody is waiting on, so the map does not grow per role forever", async () => {
     for (const name of ["a", "b", "c"]) {
       await withConflictDomains([roleDomain(name)], () => undefined);

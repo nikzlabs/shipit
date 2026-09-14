@@ -1,8 +1,9 @@
 import { asString, fail, parseFlags, success } from "./shim-common.js";
 import { REJECTED_HELP, formatError, type RunDeps } from "./shipit.js";
 
-// Reading ShipIt's own settings from inside a session (docs/299-agent-settings-access
-// req 1): `list` indexes what the agent may see, `get` details one of them.
+// ShipIt's own settings from inside a session (docs/299-agent-settings-access):
+// `list` indexes what the agent may see, `get` details one of them (req 1), and
+// `propose` posts the card whose click is the only way a setting moves (req 4).
 
 interface SettingEntry {
   key: string;
@@ -105,6 +106,95 @@ export async function handleSettingsList(args: string[], deps: RunDeps): Promise
       `Tabs: ${tabs.join(", ")}. Narrow with --tab NAME.`,
       "Read one in full — its whole description, the values it accepts, and what it",
       "resolves to right now — with: shipit settings get <key>",
+    ].join("\n"),
+  );
+}
+
+/**
+ * `propose` — one card, one change, and the user's click is what moves the
+ * setting (docs/299-agent-settings-access req 4).
+ *
+ * The value is sent as TEXT and read against the setting's declared type on the
+ * server. The shim deliberately does not guess: `roles[].description=true` is
+ * the word "true" for a text setting and a boolean for a toggle, and only the
+ * declaration knows which.
+ */
+export async function handleSettingsPropose(args: string[], deps: RunDeps): Promise<void> {
+  const parsed = parseFlags(args, {
+    values: { "--item": "item", "--reason": "reason", "--add": "add", "--remove": "remove" },
+    booleans: { "--json": "json" },
+  });
+  if (parsed.unsupported.length > 0) {
+    fail(deps.io, `Unsupported flag for shipit settings propose: ${parsed.unsupported[0]}\n${REJECTED_HELP}`);
+  }
+
+  const add = parsed.values.add;
+  const remove = parsed.values.remove;
+  if (add !== undefined && remove !== undefined) {
+    fail(deps.io, "shipit settings propose: --add and --remove are one change each, so pass one of them.");
+  }
+  const first = parsed.positional[0] ?? "";
+  const eq = first.indexOf("=");
+  const key = eq === -1 ? first : first.slice(0, eq);
+  if (!key) {
+    fail(
+      deps.io,
+      "shipit settings propose: name the setting and the value, e.g.\n"
+        + "  shipit settings propose advanced.enableSubAgents=true --reason \"why this unblocks the work\"\n"
+        + "  shipit settings propose network.egress.hosts[].host --add registry.npmjs.org --reason \"…\"\n"
+        + "`shipit settings get <key>` is where the values it accepts are.",
+    );
+  }
+  const list = add ?? remove;
+  if (eq === -1 && list === undefined) {
+    fail(
+      deps.io,
+      `shipit settings propose: ${key} needs a value — pass ${key}=<value>, or --add/--remove for a list entry.`,
+    );
+  }
+  if (!parsed.values.reason) {
+    fail(
+      deps.io,
+      "shipit settings propose: --reason is required. The user sees it on the card, in your words, "
+        + "so say what the change unblocks.",
+    );
+  }
+
+  const body: Record<string, unknown> = {
+    key,
+    reason: parsed.values.reason,
+    ...(list !== undefined
+      ? { operation: add !== undefined ? "add" : "remove", item: list }
+      : { valueText: first.slice(eq + 1), ...(parsed.values.item ? { item: parsed.values.item } : {}) }),
+  };
+
+  const res = await deps.call("POST", "/agent-ops/settings/propose", body, deps.env);
+  if (res.status < 200 || res.status >= 300) {
+    fail(deps.io, formatError(res, `Failed to propose a change to ${key}`), 1);
+  }
+  if (parsed.booleans.has("json")) {
+    deps.io.stdout(`${JSON.stringify(res.body)}\n`);
+    deps.io.exit(0);
+    return;
+  }
+  const card = (res.body.card ?? {}) as {
+    cardId?: string;
+    label?: string;
+    path?: string;
+    from?: string;
+    to?: string;
+    target?: { item?: string };
+  };
+  success(
+    deps.io,
+    [
+      `Proposed: ${asString(card.label) || key}${card.target?.item ? ` · ${card.target.item}` : ""}`
+        + ` — ${asString(card.from)} → ${asString(card.to)}`,
+      `Card ${asString(card.cardId)} is in the chat, under ${asString(card.path)}.`,
+      "",
+      "Nothing has changed yet: the user applies or dismisses it with one click. Do not wait for",
+      "that, do not post the same card again, and do not also tell the user which control to find —",
+      "the card is the affordance. `shipit settings get` reports what became of it.",
     ].join("\n"),
   );
 }

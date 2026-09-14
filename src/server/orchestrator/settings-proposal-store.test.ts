@@ -25,6 +25,7 @@ function create(over: Partial<Parameters<SettingsProposalStore["create"]>[0]> = 
     cardId: "set-a",
     sessionId: SESSION,
     target: { key: "advanced.enableSubAgents" },
+    operation: "set",
     phase: "pending",
     from: false,
     proposed: true,
@@ -37,14 +38,17 @@ describe("SettingsProposalStore", () => {
   it("round-trips the target, the values and the phase", () => {
     create({
       target: { key: "mcp.servers[].enabled", repoUrl: "https://github.com/o/r", item: "notion" },
+      baseline: { kind: "revision", revision: "abc" },
     });
     expect(store.get("set-a")).toEqual({
       cardId: "set-a",
       sessionId: SESSION,
       target: { key: "mcp.servers[].enabled", repoUrl: "https://github.com/o/r", item: "notion" },
+      operation: "set",
       phase: "pending",
       from: false,
       proposed: true,
+      baseline: { kind: "revision", revision: "abc" },
       createdAt: "2026-06-05T00:00:00.000Z",
     });
   });
@@ -53,12 +57,11 @@ describe("SettingsProposalStore", () => {
     expect(store.get("set-missing")).toBeNull();
   });
 
-  it("starts with no baseline, and takes the one the apply layer writes", () => {
-    create();
-    expect(store.get("set-a")?.baseline).toBeUndefined();
-
-    expect(store.setBaseline("set-a", { enableSubAgents: false, revision: 7 })).toBe(true);
-    expect(store.get("set-a")?.baseline).toEqual({ enableSubAgents: false, revision: 7 });
+  it("keeps the operation a card proposed, which its value cannot say", () => {
+    // `add` and `remove` of one allowlist entry are opposite changes under one
+    // key, and both carry the same address.
+    create({ operation: "remove", target: { key: "network.egress.hosts[].host", item: "npmjs.org" } });
+    expect(store.get("set-a")?.operation).toBe("remove");
   });
 
   it("moves the phase and stamps a resolution once", () => {
@@ -85,7 +88,7 @@ describe("SettingsProposalStore", () => {
 
   it("reports a phase change against an unknown card rather than inventing a row", () => {
     expect(store.setPhase(SESSION, "set-missing", "applied")).toBe(false);
-    expect(store.setBaseline("set-missing", 1)).toBe(false);
+    expect(store.claimPhase(SESSION, "set-missing", "pending", "applying")).toBe(false);
     expect(store.get("set-missing")).toBeNull();
   });
 

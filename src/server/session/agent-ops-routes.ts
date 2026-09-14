@@ -437,6 +437,19 @@ export function registerAgentOpsRoutes(
     },
   );
 
+  app.post<{
+    Body: {
+      key?: string;
+      operation?: string;
+      item?: string;
+      valueText?: string;
+      reason?: string;
+    };
+  }>(
+    "/agent-ops/settings/propose",
+    async (request, reply) => relay("POST", "/settings/propose", request.body ?? {}, reply),
+  );
+
   app.get("/agent-ops/agent/roles", async (_request, reply) => relay("GET", "/agent/roles", undefined, reply));
 
   app.get("/agent-ops/agent/params", async (_request, reply) => relay("GET", "/agent/params", undefined, reply));

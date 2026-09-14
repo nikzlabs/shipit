@@ -941,6 +941,16 @@ const MIGRATIONS: Migration[] = [
     if (columns.some((c) => c.name === "repo_session_proposal")) return;
     db.exec("ALTER TABLE messages ADD COLUMN repo_session_proposal TEXT");
   },
+
+  // Which operation the card proposed. A decision runs what the card described
+  // and never what the client's message says, so the row has to carry it: a
+  // setting whose item can be added and removed has two opposite changes under
+  // one key, and the value alone does not tell them apart.
+  (db) => {
+    const columns = db.prepare("PRAGMA table_info(settings_proposals)").all() as { name: string }[];
+    if (columns.some((c) => c.name === "operation")) return;
+    db.exec("ALTER TABLE settings_proposals ADD COLUMN operation TEXT NOT NULL DEFAULT 'set'");
+  },
 ];
 
 /** Guard tests that rewind user_version and replay later migrations. */

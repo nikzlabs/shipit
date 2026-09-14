@@ -1,3 +1,5 @@
+import { AsyncLocalStorage } from "node:async_hooks";
+
 /**
  * The lock every settings write is taken under
  * (docs/299-agent-settings-access, plan.md → The target, and the lock).
@@ -56,6 +58,19 @@ export function credentialRouteDomain(routeId: string): ConflictDomain {
 const queues = new Map<ConflictDomain, Promise<unknown>>();
 
 /**
+ * What the current async context already holds.
+ *
+ * A settings proposal has to re-read the stored value, compare the baseline the
+ * user approved against and write, all without releasing the lock in between —
+ * otherwise a dialog save landing between the check and the write is exactly the
+ * overwrite the baseline exists to prevent. The write itself is an operation in
+ * `settings-apply.ts`, which takes the same domains, so the outer hold and the
+ * inner one are the same domains and a plain re-acquisition would wait on
+ * itself forever.
+ */
+const held = new AsyncLocalStorage<ReadonlySet<ConflictDomain>>();
+
+/**
  * Run `work` with every named domain held, and release them when it settles.
  *
  * Every predecessor is waited on in ONE `allSettled` rather than acquired one
@@ -64,18 +79,36 @@ const queues = new Map<ConflictDomain, Promise<unknown>>();
  * each hold half of what the other is waiting for. Sorting is only for a
  * canonical, deduplicated set. Rejections do not poison a queue: the next waiter
  * chains off a settled promise either way.
+ *
+ * **A nested call may only name domains its caller already holds.** Re-entrancy
+ * exists for one shape — a caller holding a target's domains across a check and
+ * the `settings-apply.ts` operation that writes it — and there the two sets are
+ * the same by construction. Acquiring a NEW domain while holding one is the
+ * classic lock-ordering deadlock (this call waits for a domain another holder
+ * wants, while that holder waits for one of ours), so it is refused by name
+ * rather than left to hang: the outer caller has to name every domain its work
+ * will take.
  */
 export async function withConflictDomains<T>(
   domains: readonly ConflictDomain[],
   work: () => Promise<T> | T,
 ): Promise<T> {
+  const outer = held.getStore();
+  if (outer) {
+    const fresh = domains.filter((domain) => !outer.has(domain));
+    if (fresh.length === 0) return work();
+    throw new Error(
+      `A nested settings write asked for ${fresh.join(", ")}, which its caller does not hold. `
+        + "The outer call must name every conflict domain its work takes.",
+    );
+  }
   const wanted = [...new Set(domains)].sort();
   if (wanted.length === 0) return work();
 
   const predecessors = wanted.map((domain) => queues.get(domain)).filter((p): p is Promise<unknown> => !!p);
   const run = (async () => {
     await Promise.allSettled(predecessors);
-    return work();
+    return held.run(new Set(wanted), work);
   })();
   // Two-arg form on purpose: the successor must wait for the predecessor to
   // SETTLE, and awaiting a rejecting `run` here would leave the rejection

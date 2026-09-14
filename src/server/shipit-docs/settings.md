@@ -1,20 +1,24 @@
-# Reading ShipIt's settings
+# ShipIt's settings
 
 ShipIt's settings are the control plane for the work you do: which reviewer
 runs, whether you may start another agent at all, which hosts this session may
 reach, how much memory ShipIt gives a session, which model does ShipIt's own
-background work. You can read them yourself.
+background work. You can read them yourself, and you can propose a change the
+user applies with one click.
 
 ```
-shipit settings list [--tab NAME] [--json]
-shipit settings get  <key> [--json]
+shipit settings list    [--tab NAME] [--json]
+shipit settings get     <key> [--json]
+shipit settings propose <key>=<value> [--item ADDRESS] --reason "..."
+shipit settings propose <key> --add|--remove <entry> --reason "..."
 ```
 
 **Read before you tell the user a setting is the problem.** The value may
 already be what you were about to ask for, and when it genuinely is the
 blocker, you can name it: *which* setting, what it is set to now, and what it
-has to become. "Change it in Settings" is not an answer — the user then has to
-hunt across ten tabs for a control you could have named.
+has to become — and then post a card that makes it one click. "Change it in
+Settings" is not an answer: the user would have to hunt across ten tabs for a
+control you could have named, or applied for them.
 
 ## Two steps: the index, then one setting
 
@@ -111,20 +115,96 @@ ignores the global one entirely. Telling that user "saved, restart and it will
 work" would be a false promise. `list` marks any setting that is not `live`;
 `get` always states it.
 
-## Changing a setting
+## Changing a setting: propose, and the user clicks
 
-**You do not change ShipIt's settings.** There is no `shipit settings set`, and
-the write verbs are refused rather than quietly ignored. What you do instead is
-say exactly what has to change, with the value you read:
+**You never change a setting yourself.** There is no `shipit settings set`, and
+the write verbs are refused rather than quietly ignored. Your one write path is a
+**proposal card**: it names the exact change, and the setting moves only when the
+user presses Apply. That holds for every setting, however small or reversible the
+change looks.
 
-> Sub-agent runs are off — `advanced.enableSubAgents` is `off`. Turning it on
-> under Settings → Advanced ("Allow spawning another agent for a sub-task") is
-> what unblocks the review you asked for.
+```
+$ shipit settings propose advanced.enableSubAgents=true \
+    --reason "The review you asked for runs as a separate agent."
+Proposed: Allow spawning another agent for a sub-task — off → on
+Card set-7f3a is in the chat, under Settings › Advanced.
+```
+
+Four rules govern it.
+
+**One card, one change.** A card that carried two changes could only be applied
+whole, and per-change failure gives that away anyway. Propose the change that
+unblocks the work; if a second one is needed, that is a second card.
+
+**The server takes the snapshot.** You supply the key, the address and the value.
+Everything the card asserts — the setting's name, its description, what it is now
+and what it would become — is ShipIt's own read, taken when the card is written.
+Your `--reason` is the one thing on the card in your words, shown quoted and
+attributed, so it can never read as ShipIt describing the change.
+
+**It does not wait, and neither do you.** `propose` returns as soon as the card
+is posted. Never poll for the answer, never post the same card twice, and do not
+also write a "[needs you]" line telling the user which control to find — the card
+IS the affordance, and repeating it in prose asks them to do the work twice.
+
+**A refusal is an answer.** A proposal is refused, before any card exists, when
+the value is invalid, when the setting is already what you asked for, when the
+change is too long for a card to show, when the instance you named does not
+exist, or when ShipIt cannot yet apply that change from a card. Read the message:
+it says which, and what to do instead.
 
 Some settings ShipIt cannot change on anyone's behalf at all, and `get` names
 which and why: a `secret` the user must type, an `external_flow` that needs a
 sign-in on the provider's own site, a `browser_local` preference that never
 reaches ShipIt's server.
+
+### Naming what to change
+
+A setting that exists once takes `key=value`, read against that setting's own
+type — `on`/`off`/`true`/`false` for a toggle, a number or `null` for a budget,
+the text itself for a box that holds prose, JSON for a model selection.
+
+A setting that exists **once per item** — a role, an MCP server, a reviewer slot,
+a (service, billing mode) pair — needs `--item` naming which, in the form
+`shipit settings get <key>` prints:
+
+```
+shipit settings propose "mcp.servers[].enabled=false" --item notion \
+  --reason "It fails to start and every turn pays for the timeout."
+```
+
+A **list** is joined and left rather than replaced, one entry at a time:
+
+```
+shipit settings propose "network.egress.hosts[].host" --add registry.npmjs.org \
+  --reason "npm install cannot reach the registry from this contained session."
+```
+
+A per-repository setting is always **this session's own repository**; there is no
+way to name another one.
+
+### What became of a card
+
+`shipit settings get <key>` carries the last proposal for that setting — from any
+session, because what was done about a setting is a fact about the setting. Read
+it before proposing.
+
+| `phase` | What it means, and what to do |
+|---|---|
+| `pending` | The card is in front of the user. Do nothing; do not re-propose. |
+| `applying` | The click landed and the write is running. The next read says how it ended. |
+| `applied` | It is done, and the value reflects it. Say nothing further. |
+| `dismissed` | The user declined. Do not propose that value again unless asked. |
+| `stale` | The setting moved after the card was written, so nothing was applied. You may propose again, from the current value. |
+| `refused` | The change was no longer valid at the click. You may propose again. |
+| `partial` | Some of a multi-part write landed. Say which, and propose the rest. |
+| `failed` | Verified that nothing changed. You may propose again, saying the last attempt failed. |
+| `uncertain` | The write could not confirm what it did. Read the value; do not claim it worked. |
+| `unknown` | ShipIt restarted mid-apply. It is never retried — read the value and say the outcome was not verified. |
+
+A pending card does **not** block a second proposal; ShipIt reports it and lets
+you proceed. One record is kept per setting, so this is not a durable veto and
+must not be described to the user as one.
 
 ## Where the settings come from
 

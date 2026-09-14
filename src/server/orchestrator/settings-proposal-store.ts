@@ -1,5 +1,9 @@
 import type { DatabaseManager } from "../shared/database.js";
-import type { SettingsProposalPhase, SettingsProposalTarget } from "../shared/types.js";
+import type {
+  SettingsProposalOperation,
+  SettingsProposalPhase,
+  SettingsProposalTarget,
+} from "../shared/types.js";
 
 /**
  * The private half of a settings proposal (docs/299-agent-settings-access
@@ -27,14 +31,16 @@ export interface SettingsProposalRow {
   cardId: string;
   sessionId: string;
   target: SettingsProposalTarget;
+  /** What the card proposed doing, which the value alone cannot say. */
+  operation: SettingsProposalOperation;
   phase: SettingsProposalPhase;
   /** The projected value at propose time — what `lastProposal` reports as `from`. */
   from: unknown;
   /** The value to write. */
   proposed: unknown;
   /**
-   * A server-only revision over the whole stored value, written by the apply
-   * layer. Absent until then, and never emitted anywhere.
+   * A server-only revision over the whole stored value, taken when the card was
+   * written. Never emitted anywhere.
    */
   baseline?: unknown;
   createdAt: string;
@@ -47,6 +53,7 @@ interface ProposalRow {
   setting_key: string;
   repo_url: string | null;
   item: string | null;
+  operation: string | null;
   phase: string;
   from_json: string | null;
   proposed_json: string | null;
@@ -73,6 +80,7 @@ function fromRow(row: ProposalRow): SettingsProposalRow {
       ...(row.repo_url ? { repoUrl: row.repo_url } : {}),
       ...(row.item ? { item: row.item } : {}),
     },
+    operation: (row.operation ?? "set") as SettingsProposalOperation,
     phase: row.phase as SettingsProposalPhase,
     from: parse(row.from_json),
     proposed: parse(row.proposed_json),
@@ -92,14 +100,15 @@ export class SettingsProposalStore {
   create(row: Omit<SettingsProposalRow, "resolvedAt">): void {
     this.db.prepare(
       `INSERT INTO settings_proposals
-         (card_id, session_id, setting_key, repo_url, item, phase, from_json, proposed_json, baseline_json, created_at, resolved_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
+         (card_id, session_id, setting_key, repo_url, item, operation, phase, from_json, proposed_json, baseline_json, created_at, resolved_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
     ).run(
       row.cardId,
       row.sessionId,
       row.target.key,
       row.target.repoUrl ?? null,
       row.target.item ?? null,
+      row.operation,
       row.phase,
       JSON.stringify(row.from ?? null),
       JSON.stringify(row.proposed ?? null),
@@ -158,10 +167,34 @@ export class SettingsProposalStore {
     return res.changes > 0;
   }
 
-  setBaseline(cardId: string, baseline: unknown): boolean {
+  /**
+   * Move a card out of ONE phase, and only from that phase.
+   *
+   * This is what makes two clicks on one card produce one apply: the update is
+   * the test, so the second caller changes no rows and is told so. A read of the
+   * phase followed by a write would leave a gap for the rival click to land in.
+   */
+  claimPhase(
+    sessionId: string,
+    cardId: string,
+    from: SettingsProposalPhase,
+    to: SettingsProposalPhase,
+    resolvedAt?: string,
+  ): boolean {
     const res = this.db
-      .prepare("UPDATE settings_proposals SET baseline_json = ? WHERE card_id = ?")
-      .run(JSON.stringify(baseline ?? null), cardId);
+      .prepare(
+        "UPDATE settings_proposals SET phase = ?, resolved_at = COALESCE(?, resolved_at) "
+          + "WHERE card_id = ? AND session_id = ? AND phase = ?",
+      )
+      .run(to, resolvedAt ?? null, cardId, sessionId, from);
     return res.changes > 0;
+  }
+
+  /** Every card in one phase, for the boot pass that resolves interrupted applies. */
+  listByPhase(phase: SettingsProposalPhase): SettingsProposalRow[] {
+    const rows = this.db
+      .prepare("SELECT * FROM settings_proposals WHERE phase = ? ORDER BY created_at")
+      .all(phase) as ProposalRow[];
+    return rows.map(fromRow);
   }
 }
