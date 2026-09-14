@@ -1,6 +1,7 @@
 import type { SessionInfo } from "../../shared/types.js";
 import type { SessionManager } from "../sessions.js";
 import { ServiceError } from "./types.js";
+import { sessionContainerName } from "../shipit-own-sessions.js";
 
 export const DEFAULT_HOST_SESSION_LIMIT = 200;
 export const MAX_HOST_SESSION_LIMIT = 500;
@@ -69,8 +70,9 @@ export function sessionIdPrefixFromContainerName(name: string): string | null {
   return rest.length > 0 ? rest : null;
 }
 
+/** Rows come from the session store, which holds none of the ids that need a stack suffix. */
 export function containerNameForSession(sessionId: string): string {
-  return `agent-${sessionId.slice(0, CONTAINER_ID_SLICE)}`;
+  return sessionContainerName(sessionId);
 }
 
 export function composeProjectForSession(sessionId: string): string {

@@ -16,7 +16,6 @@ import { ContainerSessionRunner } from "./container-session-runner.js";
 import type { PresentStore } from "./present-store.js";
 import type { InProgressPersister } from "./chat-card-persistence.js";
 import type { SessionRunnerFactory, SessionRunnerRegistry } from "./session-runner.js";
-import { cleanupOrphanComposeResources } from "./container-discovery.js";
 import { preservePartialTurnOnWorkerLoss } from "./startup-tasks.js";
 import { workerGet } from "./worker-http.js";
 import { isOverlayEnabled } from "./overlay-session.js";
@@ -183,7 +182,7 @@ export async function setupContainerManager(
       const activeIds = new Set(sessionManager.allIds());
       const orphans = await containerManager.cleanupOrphans(activeIds);
       if (orphans > 0) console.log(`[server] Cleaned up ${orphans} orphan container(s)`);
-      const composeOrphans = await cleanupOrphanComposeResources(containerManager.getDockerClient(), activeIds);
+      const composeOrphans = await containerManager.cleanupOrphanComposeResources(activeIds);
       if (composeOrphans > 0) console.log(`[server] Cleaned up ${composeOrphans} orphan compose container(s)`);
       const rediscovered = await containerManager.rediscover(activeIds, (sessionId) => {
         const session = sessionManager.get(sessionId);
@@ -216,8 +215,7 @@ export async function setupContainerManager(
     const liveIds = new Set(sessionManager.allIds());
     await containerManager.reapStandbyContainers(liveIds);
     // Compose previews carry parent-session labels, not the standby label.
-    const docker = containerManager.getDockerClient?.();
-    if (docker) await cleanupOrphanComposeResources(docker, liveIds);
+    await containerManager.cleanupOrphanComposeResources(liveIds);
   }
 
   let dockerProxyServer: HttpServer | null = null;

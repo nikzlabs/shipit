@@ -290,6 +290,7 @@ export async function startStartupMonitors(
       void (async () => {
         const reaped = await reapSurvivingComposeStacks({
           docker: containerManager.dockerClient,
+          ...(containerManager.stack ? { stackName: containerManager.stack } : {}),
           sessionManager,
           runnerRegistry,
           serviceManagers,

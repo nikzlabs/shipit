@@ -678,7 +678,11 @@ describe("SessionContainerManager", () => {
     it("reaps parent-session-labeled children on create failure (no leaked egress sidecars)", async () => {
       await expect(manager.create(buildConfig())).rejects.toThrow();
       expect(mockDocker.listContainers).toHaveBeenCalledWith(
-        expect.objectContaining({ filters: { label: ["shipit-parent-session=test-session-1"] } }),
+        expect.objectContaining({
+          filters: {
+            label: ["shipit-parent-session=test-session-1", `${CONTAINER_STACK_LABEL}=shipit-test`],
+          },
+        }),
       );
     });
   });

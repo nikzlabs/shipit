@@ -4,6 +4,7 @@ import {
   CONTAINER_BUILD_ID_LABEL,
   CONTAINER_SESSION_ID_LABEL,
   CONTAINER_STANDBY_LABEL,
+  stackLabelFilters,
 } from "./session-container.js";
 import { cleanupSessionDockerResources } from "./container-lifecycle.js";
 import { getContainerFreshness } from "./container-freshness.js";
@@ -18,6 +19,8 @@ export interface DiscoveryDeps {
   networkName: string;
   workerPort: number;
   labelFilters: () => string[];
+  /** Scopes sweeps over containers `labelFilters()` cannot match (Compose services, sidecars). */
+  stackName?: string;
 }
 
 function logAdoptedWorkerBuild(
@@ -111,7 +114,9 @@ export async function adoptRunningContainer(
   try {
     const containers = await deps.docker.listContainers({
       all: true,
-      filters: { label: [`${CONTAINER_SESSION_ID_LABEL}=${sessionId}`] },
+      // The session label alone is not an identity: ids ShipIt reserves are the
+      // same on every install, so another stack's container answers to it.
+      filters: { label: [...deps.labelFilters(), `${CONTAINER_SESSION_ID_LABEL}=${sessionId}`] },
     });
     for (const ci of containers) {
       if (ci.State !== "running") continue;
@@ -185,7 +190,8 @@ export async function reapStandbyContainers(
   try {
     const containers = await deps.docker.listContainers({
       all: true,
-      filters: { label: [`${CONTAINER_STANDBY_LABEL}=true`] },
+      // "Absent from my active set" describes another stack's warm sessions too.
+      filters: { label: [...deps.labelFilters(), `${CONTAINER_STANDBY_LABEL}=true`] },
     });
     for (const ci of containers) {
       if (ci.Labels?.[CONTAINER_STANDBY_LABEL] !== "true") continue;
@@ -256,14 +262,17 @@ export async function cleanupOrphanContainers(
 const PARENT_SESSION_LABEL = "shipit-parent-session";
 
 export async function cleanupOrphanComposeResources(
-  docker: Docker,
+  deps: DiscoveryDeps,
   activeSessionIds: Set<string>,
 ): Promise<number> {
+  const docker = deps.docker;
   let removed = 0;
   try {
     const containers = await docker.listContainers({
       all: true,
-      filters: { label: [PARENT_SESSION_LABEL] },
+      // Compose services and egress sidecars of ANOTHER stack's ordinary
+      // sessions are absent from this stack's active set by construction.
+      filters: { label: [PARENT_SESSION_LABEL, ...stackLabelFilters(deps.stackName)] },
     });
 
     const orphanedSessionIds = new Set<string>();
@@ -279,7 +288,7 @@ export async function cleanupOrphanComposeResources(
     }
 
     for (const sessionId of orphanedSessionIds) {
-      await cleanupSessionDockerResources(docker, sessionId);
+      await cleanupSessionDockerResources(docker, sessionId, deps.stackName);
     }
   } catch {
     // Docker may not be available

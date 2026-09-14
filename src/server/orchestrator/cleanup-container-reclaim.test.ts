@@ -215,7 +215,14 @@ describe("docs/299 req 8 — the boot orphan sweep does not take the cleanup con
     };
 
     const count = await cleanupOrphanComposeResources(
-      docker as unknown as Parameters<typeof cleanupOrphanComposeResources>[0],
+      {
+        docker: docker as unknown as DiscoveryDeps["docker"],
+        containers: new Map<string, SessionContainer>(),
+        standbySessionIds: new Set<string>(),
+        networkName: "shipit-net",
+        workerPort: 9100,
+        labelFilters: () => [],
+      },
       new Set<string>(),
     );
 

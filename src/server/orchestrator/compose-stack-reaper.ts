@@ -4,6 +4,7 @@ import type { SessionRunnerRegistry } from "./session-runner.js";
 import { holdsActiveReservation } from "./sessions.js";
 import { getMessage, sleep } from "./disk-utils.js";
 import { serializeStackOp } from "./stack-op-queue.js";
+import { stackLabelFilters } from "./session-container.js";
 
 export const COMPOSE_PROJECT_LABEL = "com.docker.compose.project";
 export const PARENT_SESSION_LABEL = "shipit-parent-session";
@@ -78,6 +79,8 @@ export async function downComposeStackByProject(
 
 export interface ComposeStackReapDeps {
   docker: Docker;
+  /** Another stack's sessions are untracked here, which this sweep reads as abandoned. */
+  stackName?: string;
   sessionManager: SessionManager;
   runnerRegistry: SessionRunnerRegistry;
   serviceManagers: Map<string, unknown>;
@@ -107,7 +110,9 @@ export async function reapSurvivingComposeStacks(
   try {
     containers = await deps.docker.listContainers({
       all: true,
-      filters: { label: [PARENT_SESSION_LABEL, COMPOSE_PROJECT_LABEL] },
+      filters: {
+        label: [PARENT_SESSION_LABEL, COMPOSE_PROJECT_LABEL, ...stackLabelFilters(deps.stackName)],
+      },
     });
   } catch (err) {
     console.warn("[compose-reap] listing surviving compose stacks failed:", getMessage(err));

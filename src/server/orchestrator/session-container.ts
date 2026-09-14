@@ -14,6 +14,7 @@ import {
   adoptRunningContainer,
   isTrackedContainerRunning,
   cleanupOrphanContainers,
+  cleanupOrphanComposeResources,
   reapStandbyContainers,
   getSessionByContainerIp,
   type DiscoveryDeps,
@@ -77,6 +78,7 @@ export {
   adoptRunningContainer,
   isTrackedContainerRunning,
   cleanupOrphanContainers,
+  cleanupOrphanComposeResources,
   reapStandbyContainers,
   getSessionByContainerIp,
   type DiscoveryDeps,
@@ -211,6 +213,17 @@ export const CONTAINER_STACK_LABEL = "shipit-stack";
 export const CONTAINER_STANDBY_LABEL = "shipit-standby";
 export const CONTAINER_BUILD_ID_LABEL = "shipit-build-id";
 
+/**
+ * Scopes a daemon-wide sweep to this stack without also demanding the
+ * `shipit-session` label: Compose service containers carry `shipit-stack` and
+ * `shipit-parent-session` but never `shipit-session`, so `labelFilters()` would
+ * match none of them. Empty when the install named no stack, which is the
+ * single-stack case where nothing needs scoping.
+ */
+export function stackLabelFilters(stackName: string | undefined): string[] {
+  return stackName ? [`${CONTAINER_STACK_LABEL}=${stackName}`] : [];
+}
+
 // An unknown origin receives browser trust; topology changes must invalidate cached absence.
 const ORIGIN_INDEX_REFRESH_MS = 5_000;
 const ORIGIN_INDEX_FRESH_MS = 15_000;
@@ -308,6 +321,11 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
 
   get dockerClient(): Docker {
     return this.docker;
+  }
+
+  /** Undefined on an install that named no stack; every sweep then sees the whole daemon. */
+  get stack(): string | undefined {
+    return this.stackName;
   }
 
   /** Null means unknown; an empty array means no overlay mounts. */
@@ -566,6 +584,7 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
       networkName: this.networkName,
       workerPort: this.workerPort,
       labelFilters: () => this.labelFilters(),
+      ...(this.stackName ? { stackName: this.stackName } : {}),
     };
   }
 
@@ -750,7 +769,7 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
   }
 
   async reapOrphans(sessionId: string): Promise<void> {
-    await cleanupSessionDockerResources(this.docker, sessionId);
+    await cleanupSessionDockerResources(this.docker, sessionId, this.stackName);
   }
 
   async resolveWorkerImageId(): Promise<string | undefined> {
@@ -1034,6 +1053,11 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
   // Claimed containers retain the immutable standby label; active IDs protect them.
   async reapStandbyContainers(activeSessionIds: Set<string>): Promise<number> {
     return reapStandbyContainers(this.discoveryDeps(), activeSessionIds);
+  }
+
+  /** Routed through the manager so the sweep inherits this stack, like the other two. */
+  async cleanupOrphanComposeResources(activeSessionIds: Set<string>): Promise<number> {
+    return cleanupOrphanComposeResources(this.discoveryDeps(), activeSessionIds);
   }
 
   async rediscover(

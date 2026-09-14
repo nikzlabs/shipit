@@ -10,7 +10,9 @@ import type {
 import {
   CONTAINER_BUILD_ID_LABEL,
   CONTAINER_SESSION_ID_LABEL,
+  stackLabelFilters,
 } from "./session-container.js";
+import { sessionContainerName } from "./shipit-own-sessions.js";
 import {
   CONTAINER_PLUGIN_STORE_DIR,
   CONTAINER_WORKSPACE_DIR,
@@ -649,8 +651,6 @@ export async function createContainer(
   };
   deps.containers.set(config.sessionId, sc);
 
-  const shortId = config.sessionId.slice(0, 12);
-
   let signalEgressFirewallReady: () => void = () => {};
 
   try {
@@ -674,12 +674,13 @@ export async function createContainer(
       }
     }
 
-    await removeStaleContainer(deps.docker, `agent-${shortId}`);
+    const containerName = sessionContainerName(config.sessionId, deps.stackName);
+    await removeStaleContainer(deps.docker, containerName);
 
     abortIfTornDown("before createContainer");
 
     const container = await deps.docker.createContainer({
-      name: `agent-${shortId}`,
+      name: containerName,
       Image: imageName,
       Cmd: ["node", "--import", "tsx", "src/server/session/session-worker.ts"],
       Labels: {
@@ -849,7 +850,7 @@ export async function createContainer(
     }
     if (!supersededByNewer) {
       try {
-        await cleanupSessionDockerResources(deps.docker, config.sessionId);
+        await cleanupSessionDockerResources(deps.docker, config.sessionId, deps.stackName);
       } catch {
         /* best-effort; disk-janitor is the backstop */
       }
@@ -886,16 +887,25 @@ async function removeStaleContainer(
   }
 }
 
+/**
+ * `stackName` is required rather than optional because the parent label is not
+ * an identity for every session: ids ShipIt reserves are the same on every
+ * install, so a stack tearing its own cleanup container down would otherwise
+ * remove the neighbouring stack's sidecars for the same reserved id. Pass
+ * undefined only where the install genuinely named no stack.
+ */
 export async function cleanupSessionDockerResources(
   docker: Docker,
   sessionId: string,
+  stackName: string | undefined,
 ): Promise<void> {
   const parentLabel = `shipit-parent-session=${sessionId}`;
+  const scoped = [parentLabel, ...stackLabelFilters(stackName)];
 
   try {
     const containers = await docker.listContainers({
       all: true,
-      filters: { label: [parentLabel] },
+      filters: { label: scoped },
     });
     for (const ci of containers) {
       try {
@@ -917,7 +927,7 @@ export async function cleanupSessionDockerResources(
 
   try {
     const networks = await docker.listNetworks({
-      filters: { label: [parentLabel] },
+      filters: { label: scoped },
     });
     for (const ni of networks) {
       try {
@@ -933,7 +943,7 @@ export async function cleanupSessionDockerResources(
 
   try {
     const volumes = await docker.listVolumes({
-      filters: { label: [parentLabel] },
+      filters: { label: scoped },
     });
     for (const vi of (volumes?.Volumes ?? [])) {
       try {
@@ -990,7 +1000,7 @@ export async function destroyContainer(
   }
 
   if (!opts.preserveChildResources) {
-    await cleanupSessionDockerResources(deps.docker, sessionId);
+    await cleanupSessionDockerResources(deps.docker, sessionId, deps.stackName);
   }
 
   if (sc.id) {

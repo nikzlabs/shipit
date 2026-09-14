@@ -406,7 +406,8 @@ describe("standby container pre-warming", () => {
     fakeDocker._containers.set(oldPreviewId, {
       id: oldPreviewId,
       started: true,
-      labels: { "shipit-parent-session": oldWarmId },
+      // Compose stamps the stack on every service; the orphan sweep is scoped to it.
+      labels: { "shipit-parent-session": oldWarmId, "shipit-stack": "shipit-test" },
       ip: "127.0.0.99",
       hostConfig: {},
     });
