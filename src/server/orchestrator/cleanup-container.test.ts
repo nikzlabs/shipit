@@ -242,6 +242,67 @@ describe("CleanupContainerManager", () => {
     expect(cm.createCalls).toHaveLength(1);
   });
 
+  /**
+   * "Running", under this orchestrator's build, does not establish that the
+   * worker still answers or that its egress sidecars outlived the gap — and a
+   * wedged container stays running for ever, so nothing else repairs it.
+   */
+  it("replaces an adopted container that does not answer", async () => {
+    vi.stubEnv("SHIPIT_BUILD_ID", "build-1");
+    const { mgr, cm, clock } = makeManager(root);
+    cm.survivor = { id: "survivor-1", workerBuildId: "build-1" };
+    await mgr.start();
+    clock.now += CREATE_INTERVAL_MS + 1_000;
+    expect(cm.createCalls).toHaveLength(0);
+
+    // Docker still reports it running, so the liveness check finds nothing.
+    spawnReply = async () => { throw new Error("connect ECONNREFUSED"); };
+    const failed = await mgr.run({ harnessId: "claude", prompt: "a", model: "haiku" });
+    expect(failed.status).toBe("error");
+
+    await vi.waitFor(() => { expect(cm.createCalls).toHaveLength(1); });
+    mgr.stop();
+
+    expect(cm.destroyed).toEqual([CLEANUP_CONTAINER_SESSION_ID]);
+    expect(cm.gone).toEqual([]);
+  });
+
+  it("keeps an adopted container that has answered once", async () => {
+    vi.stubEnv("SHIPIT_BUILD_ID", "build-1");
+    const { mgr, cm, clock } = makeManager(root);
+    cm.survivor = { id: "survivor-1", workerBuildId: "build-1" };
+    await mgr.start();
+    clock.now += CREATE_INTERVAL_MS + 1_000;
+    await mgr.run({ harnessId: "claude", prompt: "a", model: "haiku" });
+
+    spawnReply = async () => { throw new Error("socket hang up"); };
+    await mgr.run({ harnessId: "claude", prompt: "b", model: "haiku" });
+    await new Promise((r) => setTimeout(r, 20));
+    mgr.stop();
+
+    expect(cm.destroyed).toEqual([]);
+    expect(cm.createCalls).toHaveLength(0);
+  });
+
+  // stop() drops the listeners and clears the timer, but an acquisition already
+  // awaiting Docker runs on, and would leave a container nothing manages.
+  it("does not create or destroy when shutdown lands mid-acquisition", async () => {
+    vi.stubEnv("SHIPIT_BUILD_ID", "build-2");
+    const { mgr, cm } = makeManager(root);
+    cm.survivor = { id: "survivor-1", workerBuildId: "build-1" };
+    let release: (() => void) | null = null;
+    cm.adoptGate = new Promise<void>((r) => { release = r; });
+
+    const started = mgr.start();
+    await vi.waitFor(() => { expect(cm.get(CLEANUP_CONTAINER_SESSION_ID)).toBeDefined(); });
+    mgr.stop();
+    release!();
+    await started;
+
+    expect(cm.createCalls).toHaveLength(0);
+    expect(cm.destroyed).toEqual([]);
+  });
+
   it("refuses a harness whose tools cannot be turned off, without starting a container", async () => {
     // Antigravity's adapter reads no toolsOff flag, so spawning it would run the
     // full tool set. Refusing before ensure() also keeps an unusable run from
@@ -419,8 +480,11 @@ describe("CleanupContainerManager", () => {
    * it walks session runners and this container has none.
    */
   it("recreates after a missed exit event rather than failing every request", async () => {
-    const { mgr, cm } = makeManager(root);
+    const { mgr, cm, clock } = makeManager(root);
     await mgr.start();
+    // The container has been up longer than the create interval, so pacing a
+    // crash loop is not what is being measured here.
+    clock.now += CREATE_INTERVAL_MS + 1_000;
 
     cm.trackedRunning = false;
     spawnReply = async () => { throw new Error("connect ECONNREFUSED"); };
@@ -443,8 +507,9 @@ describe("CleanupContainerManager", () => {
    * dictations either side of an event-stream gap break req 8.
    */
   it("recreates after a missed exit event without waiting for the next dictation", async () => {
-    const { mgr, cm } = makeManager(root);
+    const { mgr, cm, clock } = makeManager(root);
     await mgr.start();
+    clock.now += CREATE_INTERVAL_MS + 1_000;
 
     cm.trackedRunning = false;
     spawnReply = async () => { throw new Error("connect ECONNREFUSED"); };
@@ -469,8 +534,9 @@ describe("CleanupContainerManager", () => {
    * dictation fails, so the first user back after the gap gets no cleanup at all.
    */
   it("reconciles a missed exit when the event stream recovers, with no dictation", async () => {
-    const { mgr, cm } = makeManager(root);
+    const { mgr, cm, clock } = makeManager(root);
     await mgr.start();
+    clock.now += CREATE_INTERVAL_MS + 1_000;
 
     cm.trackedRunning = false;
     cm.emit("health_monitor_resumed", { gapMs: 30_000 });
@@ -480,6 +546,27 @@ describe("CleanupContainerManager", () => {
 
     expect(cm.gone).toEqual(["c1"]);
     expect(posts).toHaveLength(0);
+  });
+
+  /**
+   * A death discovered by a probe is still a death inside the create interval,
+   * and that interval is what paces a container dying the moment it starts. The
+   * death time being unknown does not make the last create time unknown.
+   */
+  it("paces a missed exit discovered inside the create interval", async () => {
+    const { mgr, cm, clock } = makeManager(root);
+    await mgr.start();
+
+    cm.trackedRunning = false;
+    spawnReply = async () => { throw new Error("connect ECONNREFUSED"); };
+    await mgr.run({ harnessId: "claude", prompt: "a", model: "haiku" });
+
+    await new Promise((r) => setTimeout(r, 30));
+    expect(cm.createCalls).toHaveLength(1);
+
+    clock.now += CREATE_INTERVAL_MS + 1_000;
+    await vi.waitFor(() => { expect(cm.createCalls).toHaveLength(2); });
+    mgr.stop();
   });
 
   it("keeps a container Docker could not answer for", async () => {
