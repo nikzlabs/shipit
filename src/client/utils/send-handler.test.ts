@@ -41,7 +41,7 @@ beforeEach(() => {
     activity: undefined,
     activeRunnerSessions: new Set<string>(),
   });
-  useSettingsStore.setState({ pendingFiles: [] });
+  useSettingsStore.setState({ pendingFiles: [], enableSubAgents: true });
   useFileStore.setState({ previewFile: null, sessionUploads: [] });
   useUiStore.setState({ toast: null });
 });
@@ -153,6 +153,18 @@ describe("a refused /review dispatches nothing and says so (docs/293 req 4)", ()
     expect(runSend(d, payload({ text: "/review" }))).toBe(false);
     expect(d.send).not.toHaveBeenCalled();
     expect(useUiStore.getState().toast?.message).toMatch(/needs a file/);
+  });
+
+  it("refuses while Multi-agent sessions is off (planning#571)", () => {
+    // The brokered reviewer is the only path left, and `shipit agent run`
+    // refuses without this setting — so the turn would fail after spending it.
+    useFileStore.setState({ previewFile: "src/a.ts" });
+    useSettingsStore.setState({ enableSubAgents: false });
+    const d = deps();
+
+    expect(runSend(d, payload({ text: "/review" }))).toBe(false);
+    expect(d.send).not.toHaveBeenCalled();
+    expect(useUiStore.getState().toast?.message).toMatch(/Multi-agent sessions/);
   });
 
   it("keeps the @-mentioned files a refusal did not send", () => {

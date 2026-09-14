@@ -8,7 +8,7 @@ import { useUiStore } from "../stores/ui-store.js";
 import { sendGoalControlFrame, sendUserTurn } from "./send-user-turn.js";
 import { buildAttachmentPlan } from "./attachment-plan.js";
 import { isReviewCommand, resolveReviewRequest } from "./review-command.js";
-import { composeReviewMessage, resolveReviewer } from "./compose-review-body.js";
+import { composeReviewMessage } from "./compose-review-body.js";
 import { parseGoalCommand } from "../../server/shared/goal-command.js";
 
 export interface SendDeps {
@@ -45,6 +45,7 @@ export function runSend(deps: SendDeps, payload: SendPayload): boolean {
       sessionId: useSessionStore.getState().sessionId,
       turnRunning: useSessionStore.getState().isLoading,
       previewFile: useFileStore.getState().previewFile,
+      subAgentsEnabled: reviewSettings.enableSubAgents,
     });
 
     if (!request.ok) {
@@ -52,13 +53,7 @@ export function runSend(deps: SendDeps, payload: SendPayload): boolean {
       return false;
     }
     const { sessionId: sid, targetFile } = request;
-    const prompt = composeReviewMessage(
-      targetFile,
-      resolveReviewer({
-        enableSubAgents: useSettingsStore.getState().enableSubAgents,
-        activeAgentId: useUiStore.getState().activeAgentId,
-      }),
-    );
+    const prompt = composeReviewMessage(targetFile);
 
     // docs/218 + docs/295 — `/review` is still a composer send, so `sendUserTurn`
     // carries the per-send tick boxes and spends them when it goes.

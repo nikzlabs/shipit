@@ -20,6 +20,15 @@ description: Replace the structured submit_review_comments flow with a plain-tex
 > exists. The `aiReview` field / column and `ReviewCard` are **kept as a legacy
 > read path only** so reviews persisted before docs/220 still render. The
 > **user-comment** half of this doc (a human leaving inline notes) is unchanged.
+>
+> **The same-model reviewer described below is gone (planning#571).** There is no
+> reviewer-mode resolution and no `Task` fallback any more: `composeReviewMessage`
+> takes only the file path and always delegates to `shipit agent run --role
+> reviewer`, and the client refuses `/review` outright while Multi-agent sessions
+> is off. A `Task` subagent shares the author's model, so it was never the second
+> opinion §2 asks for, and `Task` is a Claude tool that harnesses such as
+> Antigravity never offer — the instruction could not be carried out there at all.
+> Live behaviour is `docs/261-configurable-reviewer`.
 
 ## Goal
 

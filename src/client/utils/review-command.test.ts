@@ -20,6 +20,7 @@ describe("resolveReviewRequest", () => {
     sessionId: "s1",
     turnRunning: false,
     previewFile: "src/a.ts",
+    subAgentsEnabled: true,
   };
 
   // with a message that was never sent. None of the three had a test.
@@ -35,6 +36,19 @@ describe("resolveReviewRequest", () => {
       ok: false,
       message: expect.stringMatching(/Wait for the current turn/),
     });
+  });
+
+  it("refuses while Multi-agent sessions is off — the review has no other path", () => {
+    expect(resolveReviewRequest({ ...ready, subAgentsEnabled: false })).toEqual({
+      ok: false,
+      message: expect.stringMatching(/Multi-agent sessions in Settings/),
+    });
+  });
+
+  it("names the setting before the missing file, because it blocks every file", () => {
+    expect(
+      resolveReviewRequest({ ...ready, subAgentsEnabled: false, previewFile: null }),
+    ).toEqual({ ok: false, message: expect.stringMatching(/Multi-agent sessions/) });
   });
 
   it("refuses with no target file", () => {
