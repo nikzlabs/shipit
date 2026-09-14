@@ -41,14 +41,18 @@ The driver keys its release on the hold's identity, the `systemHoldSeq` ticket
 docs/304 mints on every write of `true`:
 
 ```ts
-function takeSystemHold(runner: SessionRunnerInterface, hold: DriverHold): void {
+function takeSystemHold(runner: SessionRunnerInterface, ticket: SystemHoldTicket): void {
   runner.systemTurnInProgress = true;
-  hold.seq = runner.systemHoldSeq;
+  ticket.seq = runner.systemHoldSeq;
 }
 …
-if (runner.systemHoldSeq === hold.seq) runner.systemTurnInProgress = false;
+if (runner.systemHoldSeq === systemHold.seq) runner.systemTurnInProgress = false;
 releaseQueuedTurn(runner);
 ```
+
+`SystemHoldTicket` is deliberately a separate thing from the `RebaseRunnerHold` lease that
+planning#556 added to the same flow. That one keeps the runner out of the idle enforcer's
+reach while `running` is false; this one says who owns the flag that queues dispatches.
 
 Acquisition goes through one function so no site can take the hold without
 capturing the ticket it must release on — the driver acquires twice, once at entry
@@ -116,7 +120,7 @@ nothing will ever drain, which is a decision rather than a fix.
 
 ## Key files
 
-- `src/server/orchestrator/services/rebase-driver.ts` — `DriverHold`,
+- `src/server/orchestrator/services/rebase-driver.ts` — `SystemHoldTicket`,
   `takeSystemHold`, and the ticket-keyed release in `runRebaseFlow`'s `finally`.
 - `src/server/orchestrator/session-runner.ts` — `systemHoldSeq`, from docs/304.
 - `src/server/orchestrator/queue-drain.ts` — `releaseQueuedTurn`, whose own gates
