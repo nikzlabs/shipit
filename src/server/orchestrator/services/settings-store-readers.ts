@@ -1,6 +1,6 @@
 import { allServices } from "../../shared/catalogue/index.js";
 import { substituteMcpPlaceholders } from "../../shared/mcp-placeholders.js";
-import { selectAgentEnvForPush } from "../session-agent-env.js";
+import { collectMcpAgentEnv } from "../secret-resolver.js";
 import { buildEffectiveAllowlist } from "../egress-allowlist.js";
 import { EGRESS_GLOBAL_SCOPE } from "../egress-allowlist-store.js";
 import { keyRequiringProviders } from "../../shared/voice-catalog.js";
@@ -406,6 +406,22 @@ const ENTRIES = { one: "entry", many: "entries" };
 const ARGUMENTS = { one: "argument", many: "arguments" };
 
 /**
+ * A reference ShipIt STORES the value of: `mcp__<server>__<KEY>`, which
+ * `validateMcpSecrets` is the only writer of, and `MCP_PLATFORM_<SOURCE>`, which
+ * an MCP OAuth flow holds. These two are the whole of what this read can decide,
+ * and they are the only two the panel writes.
+ *
+ * Anything else — a hand-written `$secret:PROJECT_TOKEN`, or `$secret:PATH` — is
+ * resolved in the worker out of an environment the orchestrator cannot see: the
+ * pushed set is a Compose secrets snapshot this read has no handle on, and the
+ * worker AUGMENTS its `process.env` rather than replacing it
+ * (`session-worker.ts:277`), so the container's own variables resolve too.
+ */
+function shipItStoresReference(envKey: string): boolean {
+  return envKey.startsWith("mcp__") || envKey.startsWith("MCP_PLATFORM_");
+}
+
+/**
  * A field read against the secrets it REFERS to and not against the config
  * alone. The config holds `$secret:` references, and the panel writes one for
  * every key row even where the user left the value blank
@@ -421,36 +437,48 @@ const ARGUMENTS = { one: "argument", many: "arguments" };
  * (`session/mcp-resolve.ts:30`, `:31`, `:37`); `command`, `url` and `npmPackage`
  * are not, so a reference in one of them is literal text and blocks nothing.
  *
- * **And the environment has to be the one the WORKER resolves against.** It
- * writes the whole pushed set into its `process.env` (`session-worker.ts:283`)
- * and `resolveMcpServer` defaults to that, so checking only the `mcp__*` keys
- * calls a server blocked that starts perfectly well. One gap is left: with a
- * ServiceManager the pushed set is the Compose secrets snapshot, which this read
- * has no handle on, so a reference to a project secret still reads as missing.
+ * **A reference ShipIt does not store is not a blocker it may report.** This
+ * read cannot see the worker's environment (see {@link shipItStoresReference}),
+ * so calling such a reference missing states a blocker the server does not have
+ * — the same failure as reporting a declared default in place of a value it
+ * could not read. It says it cannot tell instead, which is what the agent has to
+ * repeat to the user.
  */
 function mcpReferences(
   ctx: StoreReadContext,
   field: McpReferringField | null,
 ): { raw: unknown; notes: string[] } {
   if (!field || field.values.length === 0) return { raw: null, notes: [] };
-  const credentialStore = ctx.deps.credentialStore;
-  const env = credentialStore
-    ? selectAgentEnvForPush({ serviceManager: null, credentialStore })
-    : {};
-  const unresolved = field.values.filter((value) => {
-    const missing: string[] = [];
-    substituteMcpPlaceholders(value, env, missing);
-    return missing.length > 0;
-  }).length;
-  if (unresolved === 0) return { raw: field.raw, notes: [] };
+  const env = ctx.deps.credentialStore ? collectMcpAgentEnv(ctx.deps.credentialStore) : {};
+  let missingStored = 0;
+  let undecidable = 0;
+  for (const value of field.values) {
+    const unresolved: string[] = [];
+    substituteMcpPlaceholders(value, env, unresolved);
+    if (unresolved.some(shipItStoresReference)) missingStored++;
+    else if (unresolved.length > 0) undecidable++;
+  }
   const total = field.values.length;
-  return {
-    raw: null,
-    notes: [
-      `${unresolved} of ${total} ${total === 1 ? field.noun.one : field.noun.many} refers to a `
-        + "stored value ShipIt does not have, so this server cannot start until it is set.",
-    ],
-  };
+  const named = (n: number): string => `${n} of ${total} ${total === 1 ? field.noun.one : field.noun.many}`;
+  if (missingStored > 0) {
+    return {
+      raw: null,
+      notes: [
+        `${named(missingStored)} refers to a stored value ShipIt does not have, so this server `
+          + "cannot start until it is set.",
+      ],
+    };
+  }
+  if (undecidable > 0) {
+    return {
+      raw: field.raw,
+      notes: [
+        `${named(undecidable)} refers to a value ShipIt does not store, so it is supplied — or not `
+          + "— by the session's own environment, and this read cannot say which.",
+      ],
+    };
+  }
+  return { raw: field.raw, notes: [] };
 }
 
 /** An environment or header bag: every value of it may be a reference. */

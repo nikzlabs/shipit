@@ -143,19 +143,21 @@ Each finding re-verified at the code before being acted on.
 - [x] req 1 — `hostEntryProjection` is the case that MAY normalize, because the
       store normalizes identically — but `normalizeHost` stripped only ONE
       trailing dot, so `a.test..` stored as `a.test.` and was advertised as
-      `a.test`, addressing no row. It strips every trailing dot now, which is
-      what makes the identical-normalization claim true
+      `a.test`, addressing no row. It strips every trailing dot now, and
+      `removeHost` matches on the normalized row rather than the stored string,
+      so a row an older build already wrote is addressable too
 - [x] req 3 — MCP `args` put through the same missing-reference check as `env`
       and `headers`, so the settings read no longer answers `{configured: true}`
       about a server whose token secret is absent and which `resolveMcpServer`
       omits from the turn. The field list taken from the resolver: `args`, `env`,
       `headers` are substituted; `command`, `url` and `npmPackage` are not
-- [x] req 3 — and the check runs against the environment the WORKER resolves
-      against (`selectAgentEnvForPush`), not the `mcp__*` keys alone: the worker
-      writes the whole pushed set into its `process.env`, so a reference to a
-      service credential was being called a blocker while the server started
-      perfectly well. The one gap left is stated in `plan.md` — a project secret,
-      which lives in a Compose snapshot this read has no handle on
+- [x] req 3 — and the check decides only the references ShipIt STORES the value
+      of, which are the two the panel writes. The orchestrator cannot see the
+      worker's environment — the pushed set is a Compose snapshot it has no
+      handle on, and the worker augments `process.env` rather than replacing it —
+      so any other reference gets "ShipIt cannot say", not a blocker the server
+      does not have. Verified that no wider environment fixes this: widening to
+      the account env trades a false blocker for a false "configured"
 - [x] req 1 — `voice.language` declared as the `enum` it is, with the Voice tab
       rendering the declaration's list rather than its own; `voice.ttsVoice` and
       `voice.ttsSpeed` carry their per-provider options as a `live` detail, which
@@ -163,14 +165,15 @@ Each finding re-verified at the code before being acted on.
       declaration's option set lives only in a component
 - [x] Every new **guard** proven red on its own, with the defect restored:
       the trimmed address, the duplicate role address, the missing argument
-      secret, the narrow environment, the trailing-dot host, the missing enum,
-      a divergent option list in the dialog, per-provider voices replaced by one
-      provider's, and the cross-layer agreement — which lives in
-      `integration_tests/` because the orchestrator may not import `session/`.
-      Two added tests are success-path coverage and are NOT guards: arguments
-      reading as configured once their secret is stored passes with the original
-      defect too, because the old reader called any non-empty argument list
-      configured
+      secret, a reference ShipIt does not store reported as a blocker, the
+      trailing-dot host on insert and the un-normalized row an older build left,
+      the missing enum, a divergent option list in the dialog, per-provider
+      voices replaced by one provider's, and the cross-layer agreement — which
+      lives in `integration_tests/` because the orchestrator may not import
+      `session/`. One added test is success-path coverage and is NOT a guard:
+      arguments reading as configured once their secret is stored passes with the
+      original defect too, because the old reader called any non-empty argument
+      list configured
 
 ## Phase 2, slice 3 — the outcome notice (req 8)
 

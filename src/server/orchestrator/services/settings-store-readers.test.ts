@@ -7,7 +7,6 @@ import type { ModelSelection } from "../../shared/catalogue/index.js";
 import { MCP_OAUTH_PROVIDERS } from "../mcp-oauth-providers.js";
 import { ALL_SETTINGS } from "../../shared/settings-catalogue/index.js";
 import type { McpStdioServerConfig } from "../../shared/types/mcp-types.js";
-import { collectAccountAgentEnv } from "../secret-resolver.js";
 import { CredentialStore } from "../credential-store.js";
 import { ProviderAccountManager } from "../provider-account-manager.js";
 import { addMcpServer } from "./mcp.js";
@@ -483,48 +482,49 @@ describe("MCP servers", () => {
     expect(JSON.stringify(entry)).not.toContain(TOKEN);
   });
 
-  it("checks references against the environment the WORKER gets, not only the mcp__ keys", async () => {
-    // `resolveMcpServer` defaults to the worker's `process.env`, which the
-    // worker fills from the whole pushed set (`session-worker.ts` PUT /secrets)
-    // — service credentials included. Checking a narrower environment reports a
-    // server that starts perfectly well as blocked, which is req 3's failure
-    // mode pointing the other way.
-    credentialStore.upsertCredentialRouteWithSecret(
-      {
-        id: "route-fixture",
-        serviceId: selection.serviceId,
-        billingMode: "key",
-        via: "string",
-        status: "ready",
-        priority: 0,
-        isPrimary: true,
-        label: "fixture",
-        createdAt: 0,
-        updatedAt: 0,
-      },
-      "sk-SENTINEL-NOT-EMITTED",
-    );
-    // Named from the environment itself rather than pinned: which variable a
-    // service stores under is catalogue data and moves.
-    const delivered = Object.keys(collectAccountAgentEnv(credentialStore))
-      .filter((name) => !name.startsWith("mcp__"));
-    expect(delivered.length).toBeGreaterThan(0);
-
+  it("does not call a reference ShipIt does not store a blocker, and says it cannot tell", async () => {
+    // The worker AUGMENTS its own `process.env` with the pushed set rather than
+    // replacing it, and the pushed set is a Compose snapshot this read has no
+    // handle on — so `$secret:PATH` and `$secret:PROJECT_TOKEN` both resolve at
+    // run time for all this read knows. Reporting them as "cannot start" states
+    // a blocker the server does not have, which is req 3 pointing the wrong way.
     addMcpServer(
       credentialStore,
       {
-        name: "wired",
+        name: "inherited",
         type: "stdio",
         command: "npx",
-        args: ["--token", `$secret:${delivered[0]}`],
+        args: ["--token", "$secret:PROJECT_TOKEN"],
         enabled: true,
       },
       {},
     );
 
-    const entry = await detail("mcp.servers[].args");
-    expect(entry.items?.find((i) => i.address === "wired")?.display).toBe("configured");
-    expect(JSON.stringify(entry)).not.toContain("sk-SENTINEL-NOT-EMITTED");
+    const item = (await detail("mcp.servers[].args")).items?.find((i) => i.address === "inherited");
+    expect(item?.display).toBe("configured");
+    expect(item?.notes?.join(" ")).toContain("this read cannot say which");
+    expect(item?.notes?.join(" ")).not.toContain("cannot start");
+  });
+
+  it("still calls a reference ShipIt DOES store a blocker when its value is absent", async () => {
+    // The two ShipIt stores the value of are `mcp__<server>__<KEY>` and an MCP
+    // OAuth `$platform:` source, and the panel writes nothing else — so the
+    // state req 3 exists for stays a definite answer.
+    addMcpServer(
+      credentialStore,
+      {
+        name: "mixed",
+        type: "stdio",
+        command: "npx",
+        args: ["--token", "$secret:mcp__mixed__TOKEN", "--host", "$secret:PROJECT_HOST"],
+        enabled: true,
+      },
+      {},
+    );
+
+    const item = (await detail("mcp.servers[].args")).items?.find((i) => i.address === "mixed");
+    expect(item?.display).toBe("not configured");
+    expect(item?.notes?.join(" ")).toContain("cannot start until it is set");
   });
 
   it("reports an env bag as configured once the secret it refers to is stored", async () => {

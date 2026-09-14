@@ -128,9 +128,10 @@ describe("VoiceTab cleanup status", () => {
 });
 
 describe("VoiceTab dictation languages", () => {
-  // The agent reads the options off the declaration (docs/299 req 1), so a
-  // second list here would be a second answer to "what can this be set to".
-  it("offers exactly the declared options, holding no list of its own", async () => {
+  // The agent reads the options off the declaration (docs/299 req 1), so what
+  // the dialog offers has to be what the declaration says — this fails on a
+  // divergence, and cannot speak to where the rendered list came from.
+  it("offers exactly the declared options", async () => {
     await renderTab();
 
     const select = screen.getByTestId("voice-language") as HTMLSelectElement;

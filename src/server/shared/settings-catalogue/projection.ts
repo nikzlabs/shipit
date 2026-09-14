@@ -134,7 +134,9 @@ export function formatSetting(declaration: AnySettingDeclaration, outcome: Proje
  * `roles[name]`; a secret is a record key) while neither write path normalizes.
  * Trimming would advertise an address resolving to a different item or to none,
  * and `" helper "` beside `"helper"` would emit one address twice. A padded name
- * is therefore named by nothing, like a URL-shaped one.
+ * is named by nothing for the same reason, one step further on: `--item` is
+ * trimmed before it is resolved (`services/settings-propose.ts:169`), so an
+ * address with an edge space could not be proposed back whatever it emitted.
  */
 const NAME_MAX = 200;
 const USER_NAME = /^[\p{L}\p{N}][\p{L}\p{N} ._+()[\]-]*$/u;
@@ -142,7 +144,7 @@ const USER_NAME = /^[\p{L}\p{N}][\p{L}\p{N} ._+()[\]-]*$/u;
 export function userNameProjection(raw: unknown): string | null {
   if (typeof raw !== "string") return null;
   if (raw.length === 0 || raw.length > NAME_MAX) return null;
-  // The regex admits a trailing space, which no lookup would survive.
+  // The regex admits a trailing space; `--item` is trimmed, so it could not come back.
   if (raw !== raw.trim()) return null;
   return USER_NAME.test(raw) ? raw : null;
 }

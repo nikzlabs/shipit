@@ -405,8 +405,6 @@ export function VoiceTab() {
           settings.
         </p>
 
-        {/* No `options`: the languages are the declaration's, so the agent reads
-            the same list this renders. */}
         <DeclaredSelect
           settingKey="voice.language"
           id="voice-language"

@@ -397,9 +397,13 @@ match.
 **That second arrangement needs the normalizer to be idempotent, and it was
 not.** `normalizeHost` stripped one trailing dot, so `a.test..` stored as
 `a.test.`, the read normalized the stored row again and advertised `a.test`, and
-removing that address matched no row. It now strips every trailing dot, which is
-what makes "the store normalizes identically" true rather than nearly true. A
-removal that matches no row still reports `applied` (`applyEgressHostRemove`
+removing that address matched no row. It strips every trailing dot now — and
+because nothing migrates a row an older build already wrote, `removeHost` matches
+on the NORMALIZED row rather than on the stored string, so the advertised address
+names its own row either way. Rows that normalize alike are the same host, so
+removing all of them is right.
+
+A removal that matches no row still reports `applied` (`applyEgressHostRemove`
 discards `removeHost`'s boolean) — a separate defect, and one this design's
 *"Saved" has to mean saved* rule already condemns.
 
@@ -434,15 +438,23 @@ layer boundary in `integration_tests/agent-settings-access.test.ts`, because the
 orchestrator may not import `session/` and neither side's own unit test can hold
 both answers.
 
-**The environment checked against is the worker's, not the MCP keys.** The worker
-writes the whole pushed set into its `process.env` and `resolveMcpServer`
-defaults to that, so a reference to a service credential resolves at run time —
-and checking only `mcp__*` called such a server blocked when it starts perfectly
-well, which is req 3 failing in the other direction. The check therefore uses
-`selectAgentEnvForPush`, the selector that decides what the worker receives. One
-gap remains and is stated rather than papered over: with a ServiceManager the
-pushed set is the Compose secrets snapshot, which this read has no handle on, so
-a reference to a *project* secret still reads as missing.
+**A reference ShipIt does not store is not a blocker it may report.** The check
+can only decide the two references ShipIt holds the value of — `mcp__<server>__…`,
+whose one writer is `validateMcpSecrets`, and an MCP OAuth `$platform:` source —
+and those are also the only two the panel writes, so the state req 3 exists for
+stays a definite answer. Every other reference resolves in the worker out of an
+environment the orchestrator cannot see: the pushed set is a Compose secrets
+snapshot this read has no handle on, and the worker AUGMENTS its `process.env`
+rather than replacing it, so the container's own variables resolve too. Calling
+such a reference missing states a blocker the server does not have — the same
+failure as reporting a declared default in place of a value that could not be
+read — so the read says it cannot tell, and the agent repeats that instead.
+
+That cuts both ways, which is why the answer is neither a wider environment nor a
+narrower one. Widening to the account env fixes `$secret:OPENAI_API_KEY` and then
+reports a stale non-MCP `agentEnv` key as configured where the real pushed
+snapshot omits it. No environment the orchestrator can assemble is the worker's,
+so the read stops claiming one.
 
 ### Saved is not effective
 

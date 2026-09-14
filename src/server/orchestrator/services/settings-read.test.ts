@@ -573,7 +573,10 @@ describe("getSettingForAgent", () => {
       expect(entry.valueType).toBe("enum");
       const options = entry.shape.options as { value: string; label: string }[];
       expect(options.length).toBeGreaterThan(1);
-      expect(options.map((o) => o.value)).toContain("ja");
+      expect(options.every((o) => typeof o.label === "string" && o.label.length > 0)).toBe(true);
+      // The one option that is a stated property rather than a list that moves:
+      // empty follows the browser's locale, which the description promises.
+      expect(options.map((o) => o.value)).toContain("");
     });
 
     it("resolves each provider's OWN voices and speeds, not one provider's for all", async () => {

@@ -45,6 +45,20 @@ describe("EgressAllowlistStore", () => {
       expect(store.listHosts(EGRESS_GLOBAL_SCOPE)).toEqual([]);
     });
 
+    it("removes a row an older normalizer left un-normalized, by the address the read shows", () => {
+      // Written before `normalizeHost` stripped every trailing dot. Nothing
+      // migrates it, and every reader normalizes it again on the way out — so
+      // removal has to match the row the advertised address names, not the
+      // string that happens to be stored.
+      dbManager.db
+        .prepare("INSERT INTO egress_allowlist (scope, host, created_at) VALUES (?, ?, ?)")
+        .run(EGRESS_GLOBAL_SCOPE, "legacy-example.test.", new Date().toISOString());
+      const advertised = normalizeHost("legacy-example.test.");
+
+      expect(store.removeHost(EGRESS_GLOBAL_SCOPE, advertised)).toBe(true);
+      expect(store.listHosts(EGRESS_GLOBAL_SCOPE)).toEqual([]);
+    });
+
     it("is idempotent — re-adding a host returns false and does not duplicate", () => {
       expect(store.addHost(EGRESS_GLOBAL_SCOPE, "x.com")).toBe(true);
       expect(store.addHost(EGRESS_GLOBAL_SCOPE, "x.com")).toBe(false);
