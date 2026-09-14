@@ -29,6 +29,12 @@ ShipIt is a browser-based, chat-driven IDE for running coding agents through you
 - **Runs on Linux, macOS, and Windows (WSL2)** — in isolated Docker containers.
 - **Ship from your phone** — mobile-first, with voice.
 
+**Everything it can do, in detail:**
+[`src/server/shipit-docs/wiki/`](src/server/shipit-docs/wiki/README.md) — a
+feature-by-feature reference written for an agent to answer from, and shipped
+inside every session. Ask the agent you're already talking to instead of reading
+it.
+
 ## Quickstart
 
 ### Let an agent install it

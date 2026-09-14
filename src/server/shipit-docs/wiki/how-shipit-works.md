@@ -1,0 +1,193 @@
+# How ShipIt works, and everything it can do
+
+Read this when the user asks what ShipIt is, why it did something structural
+("why is there a new branch again?"), or whether it can do some particular
+thing. The census at the bottom is the fastest way to answer "can it…?".
+
+## The model, in one pass
+
+ShipIt is a browser IDE shaped like a chat. The user describes what they want;
+an agent — you — does the work. Around that sit five things worth knowing,
+because most surprising behaviour comes from one of them.
+
+**A repository is added once.** From then on the user starts sessions against
+it. ShipIt keeps a shared bare clone of the repo on the host, so a new session
+is cheap.
+
+**A session is the unit of work.** One session is one conversation, one Docker
+container, one checkout, one branch, one preview, and — normally — one pull
+request. Sessions are isolated from each other by construction: separate
+containers, separate branches, separate filesystems, separate user ids. That is
+what makes it safe to run several agents at once on the same repository, which
+is the thing ShipIt is built for.
+
+**The branch and the commits are automatic.** The user does not `git checkout`,
+and neither do you. ShipIt creates the session's branch up front, and after
+every turn it commits what changed and pushes it. The commit message comes from
+the turn's summary. This is why work appears on a branch the user never made,
+and why there is nothing to "save".
+
+**The app runs inside the session.** Services declared in the project's
+`docker-compose.yml` run as real containers next to the agent container, and
+the preview pane shows the one marked for it. Every session gets its own
+instance of the whole stack, so two agents working in parallel are not fighting
+over one dev server or one database.
+
+**The GitHub loop happens in ShipIt.** Opening the pull request, reading its
+diff, CI status, review comments, the deploy, the merge — all of it renders in
+the app. Sending the user to github.com is a failure, not a feature. If
+something genuinely is not rendered inline yet, say so; do not paper over it
+with a link.
+
+### What one piece of work looks like
+
+1. The user starts a session on a repo, or types into a fresh one.
+2. ShipIt allocates a container, checks the repo out, cuts a branch.
+3. They describe what they want. You work: read, edit, run, test.
+4. Services start; the preview shows the app as it is now.
+5. The turn ends. ShipIt commits and pushes.
+6. A pull request card appears in the conversation, with CI and deploy status on
+   it as they arrive.
+7. The user reviews the diff, comments, asks for changes — in the chat.
+8. They merge from the card. The session is done; they archive it or leave it.
+
+## The screen
+
+- **Left — sessions.** Grouped by repository, with pinned sessions on top. A
+  second view, "Needs you", flattens the list to only the sessions waiting on
+  the user. See [sessions.md](sessions.md).
+- **Middle — the conversation.** Their messages and your work, including file
+  attachments, diffs, questions, permission prompts, and cards for pull
+  requests, reviews, issues, spawned sessions and releases.
+- **Right — one of ten tabs.** Preview, Files, Docs, Issues, PR, Terminal,
+  History, Plugins, Present, Host. A diff view opens over the panel when a
+  change is tapped.
+
+On a phone the middle and the preview swap rather than sit side by side, and
+dictation replaces typing.
+
+## Capability census
+
+Everything ShipIt does, grouped by what the user is trying to get done. The
+right column says where the detail is: a wiki page, one of your operating docs
+in `/shipit-docs/`, or a live command to run rather than a page to read.
+
+### Running work in parallel
+
+| Capability | Where |
+|---|---|
+| Many sessions at once, isolated by container and branch | [sessions.md](sessions.md) |
+| Start a session from a repo, an issue, or a blank prompt | [sessions.md](sessions.md) |
+| Fork a session from any point in its conversation | [sessions.md](sessions.md) |
+| Rewind — throw away the code, the chat, or both, back to a chosen point | [sessions.md](sessions.md) |
+| Pin a session so it stays at the top and is never auto-reclaimed | [sessions.md](sessions.md) |
+| Mute a session that is asking for attention it does not need | [sessions.md](sessions.md) |
+| Archive and unarchive | [sessions.md](sessions.md) |
+| "Needs you" view — only the sessions waiting on the user | [sessions.md](sessions.md) |
+| Child sessions you spawn, nested under this one, each with its own PR | `/shipit-docs/sessions.md` |
+| A one-shot consult with a different model, answering into this session | `/shipit-docs/agent.md` |
+| Sandbox sessions — an empty workspace with its own capabilities | `/shipit-docs/sandbox-session.md` |
+
+### Talking to the agent
+
+| Capability | Where |
+|---|---|
+| Attach files and images to a message; drop in uploads | `/shipit-docs/environment.md` (`/uploads`) |
+| Reference a file with `@`, a skill with `/` | Settings → Skills, `/shipit-docs/skills.md` |
+| Interrupt a running turn, or queue the next message behind it | This page — the queued message can be cancelled before it runs |
+| Answer a question or a permission prompt inline | — |
+| Dictate by voice, on desktop and phone | Settings → Voice |
+| Spoken summaries back from the agent when it needs the user | `/shipit-docs/voice-notes.md` |
+| Collapse finished turns so a long conversation stays readable | — |
+| Compact the conversation when context fills; a dial shows how full | — |
+| Set a goal condition the session works toward | — |
+| Show a diagram, mockup or rendered document in the Present tab | `/shipit-docs/present.md` |
+| Offer the user a checklist of optional follow-ups | `/shipit-docs/present.md` and the `propose_actions` tool |
+| Link straight to a place in the running app or a presented artifact | `/shipit-docs/chat-links.md` |
+
+### Seeing the app
+
+| Capability | Where |
+|---|---|
+| Live preview per session, hot-reloading as files change | `/shipit-docs/preview.md` |
+| Full Docker Compose stacks — databases, queues, workers | `/shipit-docs/compose.md` |
+| Start, stop, restart a service and read its logs | `shipit service list` / `start` / `stop` / `logs` |
+| Per-service environment and secrets | `/shipit-docs/secrets.md` |
+| Phone and tablet viewports, and freeform sizes | `/shipit-docs/preview.md` |
+| Android — build, snapshot-test, and drive an emulator as a service | `/shipit-docs/android.md` |
+| A browser you can drive yourself to check your own work | `/shipit-docs/preview.md` |
+
+### The GitHub loop
+
+| Capability | Where |
+|---|---|
+| A branch per session, commits and pushes after every turn | This page, and `/shipit-docs/github.md` |
+| Open a pull request, edit its title and body | `/shipit-docs/github.md` |
+| The PR card in the conversation: status, checks, deploys, changed docs | `/shipit-docs/github.md` |
+| Read and reply to review threads, resolve them, without leaving ShipIt | `/shipit-docs/github.md` |
+| Review the user's own way — draft file comments, then send as one review | `/shipit-docs/github.md` |
+| Merge, choose the merge method, or arm auto-merge | `/shipit-docs/github.md` |
+| Mark ready, close, reopen | `/shipit-docs/github.md` |
+| CI runs listed inline, re-run a failed one, or have the agent fix it | `/shipit-docs/github.md` |
+| Merge conflicts resolved in the session rather than locally | `/shipit-docs/github.md` |
+| Branch history, and rolling back to an earlier commit | [sessions.md](sessions.md) |
+| Be woken when a pull request merges, instead of watching it | `shipit session notify-on-merge` |
+| Cut a release — version bump, branch, tag, published notes | `/shipit-docs/release.md` |
+| Deploy targets and deploy status on the card | `/shipit-docs/deployment.md` |
+
+### Issues and documents
+
+| Capability | Where |
+|---|---|
+| GitHub Issues and Linear, in one panel and one command | `/shipit-docs/issues.md` |
+| Read, comment, label, re-prioritise, assign, change status, create | `shipit issue --help` |
+| Start a session directly from an issue | `/shipit-docs/issues.md` |
+| Close an issue by merging the PR that names it | `/shipit-docs/issues.md` |
+| Every markdown file in the repo, browsable, with tracked docs grouped | `/shipit-docs/design-docs.md` |
+| Comment on a selection inside a document | — |
+
+### Configuring it
+
+| Capability | Where |
+|---|---|
+| Ten settings tabs: Services, Roles, Integrations, Git, Instructions, Skills, Keyboard, Voice, Network, Advanced | `shipit settings list` for the live values |
+| Several agent harnesses — Claude Code, Codex, OpenCode, Grok, Antigravity | `shipit agent roles` |
+| Sign in with an existing subscription, or an API key as a fallback | Settings → Integrations |
+| Several accounts per provider, in a fallback order | Settings → Integrations |
+| Usage and subscription limits, visible before they bite | — |
+| Pick the model, the reasoning effort, and the role per session | `shipit agent params` |
+| Named roles that bundle harness, model and effort — including the reviewer | `/shipit-docs/agent.md` |
+| Per-session network access: contained, or open | Session settings, `/shipit-docs/environment.md` |
+| Project configuration — install command, ports, resources | `/shipit-docs/shipit-yaml.md` |
+| Skills, plugin repositories, and MCP servers | `/shipit-docs/plugins.md`, `/shipit-docs/skills.md` |
+| Custom instructions applied to every session | Settings → Instructions |
+| Twenty themes, light and dark, and rebindable keyboard shortcuts | Settings → Keyboard |
+
+### Running the thing itself
+
+| Capability | Where |
+|---|---|
+| Install on a laptop or a VPS, by an agent or by hand | [installing-and-updating.md](installing-and-updating.md) |
+| Update in place, and pick a release channel | [installing-and-updating.md](installing-and-updating.md) |
+| Reach it from a phone over Tailscale or a Cloudflare tunnel | [installing-and-updating.md](installing-and-updating.md) |
+| Host overview — memory, disk, uptime, what is running | The Host tab |
+| A memory budget that decides what idle sessions keep | [sessions.md](sessions.md) |
+| Session diagnostics when a container misbehaves | The session's overflow menu |
+| File a bug against ShipIt itself, redacted, with the user's consent | `/shipit-docs/bug-filing.md` |
+
+## Two things ShipIt will not do, on purpose
+
+Users sometimes ask for these. They are absent by design, and saying so is a
+better answer than a workaround.
+
+**Buttons that run commands.** There is no "run tests" button, no command
+palette that executes shell, no task-runner hotkeys. The user asks in chat and
+you run it; a long-running process is declared as a Compose service; one-time
+setup goes in `shipit.yaml`. There is a terminal for ad-hoc poking. Spending a
+turn on a routine command is the intended cost, not an inefficiency to design
+around.
+
+**Bouncing the user to GitHub.** Pull requests, diffs, CI, reviews, issues and
+deploys are rendered in ShipIt. "View on GitHub" exists as an escape hatch in
+overflow menus. If something is not rendered inline yet, that is a gap to
+report, not a reason to send them away.
