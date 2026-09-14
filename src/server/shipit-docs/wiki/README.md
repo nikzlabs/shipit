@@ -43,6 +43,24 @@ is. Nobody says "rewind" or "Tailscale" until after they have learned to.
 | "can it do X?" — anything at all | [how-shipit-works.md](how-shipit-works.md) has the capability census; start there |
 | "why is it building a new branch every time" | [how-shipit-works.md](how-shipit-works.md) |
 | "it's broken", "something's wrong", "why did that fail" | [troubleshooting.md](troubleshooting.md) — indexed by symptom |
+| "how do I give it a screenshot", "can I upload a file" | [chat.md](chat.md) — attachments and `/uploads` |
+| "how do I point it at a file", "what does the @ do" | [chat.md](chat.md) — `@` file references |
+| "what are those slash things", "how do I run one of my skills" | [chat.md](chat.md) — the `/` menu |
+| "stop, that's wrong", "how do I make it stop" | [chat.md](chat.md) — interrupt |
+| "can I tell it something while it's working", "it ignored what I typed" | [chat.md](chat.md) — live steering and the queue |
+| "where did my queued message go", "cancel that last thing I sent" | [chat.md](chat.md) — the queue strip |
+| "it keeps asking me to approve things" | [chat.md](chat.md) — permission prompts and permission mode |
+| "make it plan first, don't let it touch anything" | [chat.md](chat.md) — Plan mode |
+| "can I talk to it instead of typing", "dictate" | [chat.md](chat.md) — voice |
+| "can it read things out to me", "why did my phone buzz" | [chat.md](chat.md) — voice notes, and `/shipit-docs/voice-notes.md` |
+| "this chat is enormous", "hide all that tool spam" | [chat.md](chat.md) — collapsed turns |
+| "search this conversation", "where did it say that" | [chat.md](chat.md) — search |
+| "what's that ring", "is it running out of room", "how much has this cost" | [chat.md](chat.md) — the context dial |
+| "it's forgotten what we said", "free up space" | [chat.md](chat.md) — compaction |
+| "keep going until it works", "set it a target" | [chat.md](chat.md) — goals |
+| "show me a diagram", "where did that mockup go" | [chat.md](chat.md) — Present, and `/shipit-docs/present.md` |
+| "what were those tick boxes it gave me" | [chat.md](chat.md) — proposed actions |
+| "reply to just this bit" | [chat.md](chat.md) — quoting |
 | "can I run two of these at once", "work on something else meanwhile" | [sessions.md](sessions.md) |
 | "go back to before that change", "undo all this", "start again from there" | [sessions.md](sessions.md) — rewind and fork; [pull-requests.md](pull-requests.md) for what it does to the branch on GitHub |
 | "why did my session stop / go grey", "it lost my preview" | [sessions.md](sessions.md) — idle reclaim |
@@ -147,10 +165,12 @@ is. Nobody says "rewind" or "Tailscale" until after they have learned to.
 | [plugins-and-skills.md](plugins-and-skills.md) | Skills and where they come from, installing one from a catalogue, plugin repositories and the Plugins tab, and MCP servers |
 | [troubleshooting.md](troubleshooting.md) | Indexed by the symptom the user describes: a blank preview, a stuck agent, a disabled composer, blocked commits, a diverged branch, silent CI, a dying container, blocked egress, a crashed service |
 | [deploying.md](deploying.md) | Getting the project onto a real URL: connecting a hosting platform, deploying on every push, deploy status on the pull request, what to do when a deploy fails, and what ShipIt does not do |
+| [chat.md](chat.md) | The composer and the conversation: attachments, `@` and `/`, interrupting and queueing, permission prompts and questions, voice, collapsed turns, context and compaction, goals, Present, proposed actions |
 
-The chat surface itself has no page here yet. Answer that from the operating
-docs listed in [`/shipit-docs/README.md`](../README.md), and say plainly when
-something is outside what you can confirm rather than inventing a feature.
+Every area of the product now has a page. That does not make the set complete —
+where a page does not answer what the user asked, say plainly that you cannot
+confirm it rather than inventing a feature, and read your own operating docs in
+[`/shipit-docs/README.md`](../README.md) for your side of the same ground.
 
 ## What is never written down here
 
