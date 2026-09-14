@@ -174,6 +174,142 @@ every session and every provider sign-in — and then the install directory
 and takes the user's sessions with it: confirm it out loud before running it,
 and never infer it from "uninstall ShipIt" alone.
 
+## Backing up, and moving to another machine
+
+**Say the honest thing first: ShipIt has no backup feature.** There is no export,
+no import, no snapshot button, and no migration command — not in Settings, not in
+the installers, not in the `shipit` CLI. Do not go looking for one, and do not
+imply one exists. What there is instead is worth knowing precisely, because most
+of what the user is afraid of losing is not in ShipIt at all.
+
+**From inside a session, none of this is yours to do.** A session container
+cannot see the host's Docker volumes. Answer what the data is and where it
+lives, say what is already safe on the git remote, and say that taking or
+restoring a copy needs an agent with a shell on the host machine.
+
+### What actually holds the data
+
+Two Docker named volumes, and nothing else the user cares about. The install
+directory is not one of them.
+
+| Holds | Volume | Path in it |
+|---|---|---|
+| Chat history, the session list, rewind snapshots, usage, the repository list, per-project secrets | **workspace** | `.shipit.db` |
+| Every session's checkout and its branch | **workspace** | `sessions/<session-id>/workspace` |
+| Bare repository caches and dependency caches — rebuildable, just slow | **workspace** | `repo-cache/`, `dep-cache/` |
+| Provider sign-ins, the GitHub token, agent roles, most settings | **credentials** | `shipit-credentials.json` |
+| The key that decrypts the stored secrets | **credentials** | `secret-key` |
+| The agent's per-repository memory | **credentials** | `repo-memory/` |
+
+The volume names differ by install path, because the Compose project name does:
+
+| Install | Volumes |
+|---|---|
+| Local | `shipit-prod_workspace`, `shipit-prod_credentials` |
+| VPS | `shipit_workspace`, `shipit_credentials` |
+
+**The two volumes travel together or neither does.** Project secrets are stored
+encrypted in the database, which is in the *workspace* volume, under a key that
+is in the *credentials* volume by default. A copy of one without the other
+restores secrets that nothing can read. (An install given its key from the
+outside instead — `SHIPIT_SECRET_KEY` or `SHIPIT_SECRET_KEY_FILE` — keeps that
+key wherever the operator put it, and a restore needs it too.)
+
+**The install directory — `~/.shipit` locally, `/opt/shipit` on a server — is a
+plain git clone of ShipIt.** The installer recreates it, so it does not need
+backing up. The one part of it that is not on the remote is the env file of
+install answers (`~/.shipit/.shipit.env`, or `/etc/shipit/shipit.env`), which is
+worth reading before a move and may contain a Cloudflare API token. Treat it as
+a secret.
+
+### What survives with no backup at all
+
+A great deal, and this is usually the answer the user actually needs. ShipIt
+commits after every turn and pushes the branch, and archiving a session refuses
+to reclaim its checkout unless it can confirm the branch is on the remote. So:
+
+| The user fears losing | Reality |
+|---|---|
+| Their code and branches | On GitHub. A destroyed host does not take them. |
+| Their pull requests | On GitHub, with their review history. |
+| Their repositories | ShipIt stores a list of URLs; re-adding one re-clones it. |
+| Their sessions | **Only in the workspace volume.** The conversation, the rewind points, and the session's own history are not on any remote. |
+| Their provider sign-ins | **Only in the credentials volume.** Lost with it — the user signs in again in Settings → Integrations. |
+| Their settings and stored secrets | **Only in the volumes.** Not recoverable, and the secrets need both. |
+
+So the loss from a destroyed host without a backup is the conversation and the
+configuration, not the work. Say that plainly — it is much less alarming than
+the user expects, and it is true.
+
+### Taking a copy, from a shell on the host
+
+There is no supported procedure, so this is ordinary Docker rather than a ShipIt
+feature — say so when you offer it. Two things make it go wrong, and both are
+avoidable.
+
+**Stop ShipIt first.** The database is live and so are the checkouts; a copy
+taken while it runs can be torn. `~/.shipit/deployment/local/stop.sh`, or
+`/opt/shipit/deployment/vps/stop.sh` — **without** `--purge`, which is the
+opposite of a backup.
+
+**Preserve numeric ownership.** Each session directory is owned by its own
+dedicated uid, and ShipIt derives a session's git identity from that ownership.
+A copy that flattens it produces permission errors that read as impossible on a
+root process, and that is a genuinely expensive thing to debug.
+
+```bash
+# Back up — substitute the volume names for the install path.
+for v in shipit_workspace shipit_credentials; do
+  docker run --rm -v "$v":/src:ro -v "$PWD":/out alpine \
+    tar -C /src -cpf "/out/$v.tar" --numeric-owner .
+done
+
+# Restore onto a stopped install.
+for v in shipit_workspace shipit_credentials; do
+  docker volume create "$v" >/dev/null
+  docker run --rm -v "$v":/dst -v "$PWD":/in alpine \
+    tar -C /dst -xpf "/in/$v.tar" --numeric-owner
+done
+```
+
+**The resulting tarballs are the install.** They carry the GitHub token, every
+provider sign-in, and the key that decrypts the secrets sitting beside them. Do
+not write them anywhere the user would not put a password, and do not commit
+them.
+
+### Moving an install to another machine
+
+Same two volumes, in this order. It works in either direction — a laptop install
+and a server install use the same container paths inside the volume, so each can
+restore the other's.
+
+1. **Read the old install's env file** and install on the new machine with the
+   same answers. `SHIPIT_HARNESSES` is the one that matters: agent CLIs are baked
+   into the images, so an install built with a narrower set cannot run a harness
+   the old one could.
+2. **Stop both**, with `stop.sh` and no `--purge`.
+3. **Copy the two volumes across** with the commands above, renaming them if the
+   install paths differ.
+4. **Bring the new one up** — `/opt/shipit/deployment/vps/deploy.sh` on a server,
+   `~/.shipit/deployment/local/update.sh` locally.
+
+Three things do not come along, and none of them is data:
+
+- **The images.** The installer rebuilds them on the new machine.
+- **The access layer.** A Cloudflare tunnel and a Tailscale node are bound to the
+  old host; set up access again on the new one.
+- **Running session containers.** They are disposable — ShipIt recreates one when
+  the session is next opened, from the checkout that did travel.
+
+### The one control that destroys this
+
+**Reset Container**, in Settings → Advanced, empties the workspace volume —
+every session, all chat history, every checkout and cache — and leaves the
+credentials volume alone, so provider sign-ins survive it. It is the user's
+click, and the button arms on the first press and fires on the second. It cannot
+be undone, and no backup exists unless someone took one first — say that before
+they reach for it.
+
 ## When it will not start
 
 From a shell on the host, in this order: the orchestrator's own logs
