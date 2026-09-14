@@ -5,7 +5,7 @@ import { defineSetting, isPayloadDeclaration, plain, userText } from "./types.js
 import type {
   AnyPayloadDeclaration,
   AnySettingDeclaration,
-  OwnRouteStore,
+  NonPayloadStore,
   SettingValue,
 } from "./types.js";
 
@@ -13,10 +13,11 @@ import type {
  * Every global setting stored as a single value. Labels and descriptions are the
  * words the dialog shows, so the agent and the user read the same thing (req 7).
  *
- * Not here yet, and each its own slice: the collections (roles, reviewer slots,
- * MCP servers, egress hosts, credential routes, provider accounts, secrets), the
- * per-service routing maps, which are addressed per service rather than stored
- * once, and the project and browser scopes.
+ * Only the settings stored ONCE are here, because only those derive the payload.
+ * A setting a panel of its own owns — a collection, a per-service routing map,
+ * a project or a browser value — is declared beside its panel
+ * (`services-settings.ts` and its siblings) and reaches the agent through
+ * `registry.ts`.
  */
 export const GLOBAL_SETTINGS = {
   "advanced.enableSubAgents": defineSetting({
@@ -271,7 +272,7 @@ type Catalogue = Record<string, AnySettingDeclaration>;
 // Keyed on the store, the same discriminant `isPayloadDeclaration` uses at
 // runtime: a type that promised a field the server omits would be worse than none.
 type PayloadKeyOf<C extends Catalogue> = {
-  [K in keyof C]: C[K]["store"] extends OwnRouteStore ? never : K;
+  [K in keyof C]: C[K]["store"] extends NonPayloadStore ? never : K;
 }[keyof C];
 
 type RequiredPayloadKeyOf<C extends Catalogue> = {
