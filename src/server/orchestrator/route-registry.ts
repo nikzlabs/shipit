@@ -545,8 +545,6 @@ export async function registerRoutes(
               : null,
           ].filter((name): name is string => name !== null)
         : [];
-      // Named so the clear can be reported: a write that changes what a session
-      // runs must leave a trace for the next investigation.
       let autoClearedRole: string | undefined;
       if (movedByReconciliation.length > 0) {
         try {
@@ -592,6 +590,13 @@ export async function registerRoutes(
         } catch {
           // An unavailable browser seed does not prevent connection.
         }
+      }
+      // A clear that was NOT repaired is recorded the way the user's own clear is
+      // (req 18's `''` sentinel), because `NULL` says only "no role" and the next
+      // connect's memoized URL is then free to start a role this session never
+      // ran — one reconnect later than `repairsItsOwnClear` refused it.
+      if (autoClearedRole && !seededRoleApplied) {
+        try { sessionManager.clearRoleName(sessionId); } catch { /* ignore */ }
       }
 
       let attachedRunner: SessionRunnerInterface | null = null;

@@ -467,7 +467,7 @@ describe("the composer before a session is active (docs/272 reqs 5, 12)", () => 
     const { rerender } = render(composer());
     expect(screen.getByTestId("role-selector-trigger")).toHaveTextContent("deep dive");
 
-    // And it yields the moment a row exists, whatever that row says.
+    // And it yields the moment a row exists and says this session has no role.
     act(() => {
       useSessionStore.setState({
         sessions: [{ id: SESSION_ID, name: "s", agentId: "claude" }] as never,

@@ -382,11 +382,9 @@ describe("Integration: user-selectable roles (docs/272)", () => {
 
   /*
     The connect handler's own reconciliation is the one path that takes a role off
-    a session nobody touched. These three pin what it may and may not do: a role
-    that pinned no reasoning level keeps that decision against the browser's
-    global seed, a clear it does make is repaired inside the same connect when the
-    seed still names a runnable role, and one that stands is reported rather than
-    written silently.
+    a session nobody touched, and the tests below pin what it may and may not do.
+    The one that is easy to miss is the last: a clear that stands has to be
+    recorded as a clear, or the stale URL simply arrives again.
   */
   it("does not unname a role that pinned no level when the browser seeds one (reqs 2, 13)", async () => {
     const first = await TestClient.connect(port, undefined, {
@@ -448,6 +446,14 @@ describe("Integration: user-selectable roles (docs/272)", () => {
     expect(answer.roleAutoCleared).toBe(true);
     expect(sessionManager.get(sessionId)?.roleName).toBeUndefined();
     again.close();
+
+    // And it is still refused on the connect AFTER that one. Refusing it only
+    // while the clear is in hand postpones the wrong role by one reconnect: the
+    // row then says "no role", which is exactly what a seed is allowed to fill.
+    const third = await TestClient.connect(port, sessionId, { role: "deep dive" });
+    await third.receive();
+    expect(sessionManager.get(sessionId)?.roleName).toBeUndefined();
+    third.close();
   });
 
   it("reports a reconciliation clear it cannot repair, as the server's own (req 12)", async () => {

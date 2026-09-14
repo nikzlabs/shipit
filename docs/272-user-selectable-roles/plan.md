@@ -186,8 +186,17 @@ connect and the oscillation to the one after. **The re-read may only repair**
 (`repairsItsOwnClear`): the URL is memoized per session, so it goes on naming the role the page
 loaded with however many times the user picks another one — and answering "this role had to be
 dropped" by starting a *different* role, standing instructions and all, is something nothing
-authorised. So the seed is taken after a clear only when it names the role that was cleared. A clear
-that stands is logged, and answered with
+authorised. So the seed is taken after a clear only when it names the role that was cleared.
+
+**That guard is worth nothing on its own, because the next connect has no clear in hand.** Refusing
+the stale role while the clear is a local variable, and then writing `NULL`, leaves a row that says
+"no role" — which is precisely the row a seed is allowed to fill, so the same URL simply arrives
+again a reconnect later and starts the role it was just refused. An unrepaired clear is therefore
+recorded the way req 18's clear is, with the `''` sentinel, and the one guard that reads it refuses
+every seed on that session from then on. The user still selects a role there, because `set_role`
+writes the name and nothing about this touches it.
+
+A clear that stands is logged, and answered with
 `model_selection_changed` carrying **`roleAutoCleared`**. The flag is what lets the browser tell
 ShipIt's decision from the user's: `handleModelSelectionChanged` writes the req-12 seed from a
 user's clear, and doing that here would take the user's default role off every session they start
@@ -250,17 +259,17 @@ the composer had an active session and nothing whatever to read, and named no ro
 that graduates it arrived. No row is not an answer of "no role": `sessionRowKnown` distinguishes the
 two, and the seed stays on screen until a row exists. Where one does exist it is still the only
 authority, which is the half of this rule req 13 requires. The composer reads the row's existence
-from the session store itself rather than taking it as a prop, so the role name and the question of
-whether it means anything cannot be wired up separately, or one of them forgotten.
+from the session store rather than taking it as a prop, so a caller cannot hand it a role name
+without the fact that decides whether the name means anything.
 
-**What that buys is a rowless window that lies less often, not one that cannot lie.** "No row" says
-the list has not answered; it does not say the *server* accepted the seed. A role the connect
-refused — deleted in another tab, its credential gone, its subscription spent — is still named for
-the length of that window, and so is one the connect cleared, because the answering frame maps
-existing rows and there are none. Both are the state the composer was already in before the send,
-where the seed is the display by design, so the window extends an existing inaccuracy rather than
-introducing one; closing it needs the per-session server answer this feature deliberately does not
-keep (see the two convergence gaps above).
+**The rowless window is optimistic, and req 13 is not satisfied inside it.** "No row" says the list
+has not answered; it does not say the *server* accepted the seed. A role the connect refused —
+deleted in another tab, its credential gone — is named for the length of that window, and so is one
+the connect cleared, because the answering frame maps existing rows and finds none. That the
+composer was already in this state before the send explains the shape; it does not excuse it. What
+would close it is a per-session record of the server's own answer, which is the same mechanism the
+two convergence gaps above name and do not have: until something keeps that answer, a session with
+no row has nothing truthful to show but the seed the user last chose.
 
 Two consequences fell out of fixing it, and both are simplifications:
 
