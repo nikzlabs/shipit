@@ -32,13 +32,26 @@ describe("useChecklistSelection", () => {
   });
 
   it("applies defaultChecked the first time an item appears, and not again after it is unticked", () => {
-    const items = [item({ key: "a", defaultChecked: true }), item({ key: "b" })];
-    const { rerender } = render(<Harness items={items} />);
+    const items = () => [item({ key: "a", defaultChecked: true }), item({ key: "b" })];
+    const { rerender } = render(<Harness items={items()} />);
     expect(screen.getByTestId("selected")).toHaveTextContent("a");
 
     fireEvent.click(screen.getAllByRole("checkbox")[0]);
-    rerender(<Harness items={[...items]} />);
+    rerender(<Harness items={items()} />);
     expect(screen.getByTestId("selected")).toBeEmptyDOMElement();
+  });
+
+  it("keeps a ticked item ticked while its neighbours arrive and leave", () => {
+    const a = () => item({ key: "a" });
+    const { rerender } = render(<Harness items={[a(), item({ key: "b" })]} />);
+    fireEvent.click(screen.getAllByRole("checkbox")[0]);
+    expect(screen.getByTestId("selected")).toHaveTextContent(/^a$/);
+
+    rerender(<Harness items={[a(), item({ key: "b" }), item({ key: "c" })]} />);
+    expect(screen.getByTestId("selected")).toHaveTextContent(/^a$/);
+
+    rerender(<Harness items={[a()]} />);
+    expect(screen.getByTestId("selected")).toHaveTextContent(/^a$/);
   });
 
   it("applies defaultChecked to an item that replaces another, leaving the old key behind", () => {
