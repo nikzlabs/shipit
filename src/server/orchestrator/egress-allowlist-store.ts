@@ -1,5 +1,5 @@
 import type { DatabaseManager } from "../shared/database.js";
-import { normalizeHost, EGRESS_DEFAULT_ALLOWLIST } from "./egress-allowlist.js";
+import { isBuiltinDefault, normalizeHost, EGRESS_DEFAULT_ALLOWLIST } from "./egress-allowlist.js";
 
 export const EGRESS_GLOBAL_SCOPE = "global";
 export const EGRESS_SUPPRESSED_SCOPE = "__suppressed_defaults__";
@@ -52,6 +52,29 @@ export class EgressAllowlistStore {
     let removed = 0;
     for (const row of stored) removed += del.run(scope, row).changes;
     return removed > 0;
+  }
+
+  /**
+   * Take a host off the GLOBAL list: delete every explicit row for it AND, when
+   * it is one of the shipped defaults, record the suppression — in ONE
+   * transaction. Answers whether anything was written.
+   *
+   * Both, never one or the other: a host can be a shipped default and an
+   * explicit row at once, and suppressing the default alone leaves the row
+   * effective and advertised again as the user's own.
+   *
+   * One transaction because two writes that can half-land leave the caller with
+   * no honest outcome. A delete that commits and a suppression that throws is
+   * reported `failed` — "ShipIt verified that nothing changed" — with the user's
+   * row already gone (docs/299-agent-settings-access, plan.md → "Saved" has to
+   * mean saved; planning#537). SQLite's rollback is what makes that claim true.
+   */
+  removeGlobalHost(host: string): boolean {
+    return this.db.transaction(() => {
+      const removedRow = this.removeHost(EGRESS_GLOBAL_SCOPE, host);
+      const suppressed = isBuiltinDefault(host) && this.suppressDefault(host);
+      return removedRow || suppressed;
+    })();
   }
 
   effectiveHosts(sessionId: string): string[] {
