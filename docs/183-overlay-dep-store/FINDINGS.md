@@ -1074,3 +1074,78 @@ limits raise, so fresh template repos are in the failing class. Installs/publish
 (worker-side) are unaffected — overlay results above are untainted. Filed as its own
 follow-up: raise `AGENT_DEFAULTS`, precompile the bridges to plain JS, and/or extend
 the CLI's MCP connect timeout.
+
+## Production incident (2026-09-15) — a dep dir under an *ignored* parent was dropped, and the install that fills it was then skipped as satisfied
+
+Diagnosed read-only against the prod host on deployed build `b0dd86bdc4e3`. Repo
+`nicolasalt/reward-tag` declares three dep dirs — `tools/debug/node_modules`,
+`game/node_modules`, `.tools/blender` — and an `agent.install` whose third step
+(`sh tools/blender/install.sh`) exists only to populate `.tools/blender` with a ~1 GB
+pinned `bpy` wheel. 9 of the 12 sessions on that repo had **no** `/workspace/.tools/blender`
+at all — absent, not empty — while ShipIt reported the install successful. The repo's
+configuration was correct throughout; its own `shipit.yaml` comment shows the author
+reasoning about exactly this hazard and believing `dep-dirs` covered it.
+
+Three links, each individually reasonable:
+
+1. **`validDepDirsForOverlay` required the dep dir's parent to already exist on the clone.**
+   `.tools` is itself gitignored, so no clone ever materializes it — and the drop is
+   self-perpetuating, since nothing else creates it. `game` and `tools/debug` are tracked
+   source and survived. Same blind spot as PR #1256 above, at the *other* half of the same
+   check: that fix corrected the `check-ignore` query form and left the fresh-clone
+   assumption in the parent test next to it untouched.
+2. **The pre-stamp then wrote the marker on a partial quorum.** `preStampInstallMarker`
+   iterated the **mounted** specs, so the two surviving `node_modules` pointers alone
+   satisfied it. Marker written → install skipped → `install.sh` never ran → `install_ok=true`.
+   Evidence: `install-gate … held=1759ms`, `install_ms=9208` — against 15 753 / 17 051 ms on
+   the two sessions that did get all three mounts, and a marker-skip floor of ~5.4–6.7 s on
+   this host.
+3. **Both safety nets were no-ops for this exact shape.** `classifyEmptyDepDirs` invalidates
+   on an **empty** dep dir; `.tools/blender` was **absent**, which that file deliberately
+   exempts. `installSkipOutputWarning` exists to warn about a skipped non-dependency step,
+   but bailed out on `!isDefaultDepDirs(depDirs)` — resting on an assumption ShipIt had
+   just violated by dropping one of the declared dirs.
+
+Nothing surfaced the drop: `[overlay-measure]` lists only the dirs it acted on, so the only
+way to notice was diffing two sessions' lines.
+
+Fixed (this PR): the ignored-ancestor rule above; `prepareOverlayDirs` creates the missing
+ancestors chowned to the session worker (Docker would create them as root); the pre-stamp
+refuses when any **declared** dir is unmounted; and drops are reported per-dir with a reason
+in `[overlay-measure]` and warned at provisioning.
+
+**`installSkipOutputWarning` was deliberately left alone**, after a first cut changed it and
+CI caught the contradiction. Widening it to fire whenever a declared dep dir is absent on disk
+breaks the contract its own test states — *"says nothing when dep-dirs covers the build
+output"*: declaring the directory is how a repo opts out of that warning, and a declared dir
+is often legitimately absent (the exemption at the top of `overlay-dep-check.ts`). The useful
+signal is not "absent on disk" but "missing from the **effective** set" — a dir ShipIt itself
+dropped — and the session worker cannot tell those apart, since a dep dir is also unmounted
+when the flag is off or the repo is pnpm. The orchestrator knows, and now says so at both
+places it decides: the provisioning warning and the pre-stamp refusal. Fixing the cause
+removed the need for the backstop.
+
+**Review caught a second, narrower form of the same mistake in the fix itself.** The first cut
+asked "is this ancestor ignored?" with the bare-plus-slash query PR #1256 established. But
+`git check-ignore` answers the slash form from the *containing* rule: under `*` followed by
+`!foo` it reports `foo/` ignored while `foo` is not. Measured on git 2.x:
+
+```
+$ printf '*\n!foo\n' > .gitignore
+$ printf 'foo\nfoo/\n' | git check-ignore --stdin
+foo/                      # `foo` itself is absent from the output — it is NOT ignored
+$ git check-ignore -v -- foo
+.gitignore:2:!foo	foo    # the matching rule is a negation
+```
+
+So the slash form alone would have accepted an absent *tracked* directory — the very thing the
+parent check exists to reject. The fix reads the matching RULE via
+`check-ignore -v --non-matching` and drops any path a `!` rule re-includes. Both query forms are
+still required: the bare form alone misses a directory-only rule before the directory exists.
+
+**The generalizable lesson**: an eligibility test that reads the working tree must say which
+absences are *expected*. "The parent exists" silently encodes "the parent is tracked" — and
+for a dependency directory, whose whole point is being gitignored, that is the wrong default.
+The follow-on lesson is narrower and sharper: **a query form chosen to work around one of git's
+matching quirks carries its own**, so an eligibility answer derived from `check-ignore` output
+should come from the rule git matched, not from which spelling of the path came back.

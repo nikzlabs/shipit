@@ -305,6 +305,11 @@ agent:
   plain install.
 - An explicit empty list (`dep-dirs: []`) opts out entirely — that directory
   falls back to a plain install.
+- **Each entry must be git-ignored** — a dependency directory is build output,
+  not tracked source, and ShipIt will not shadow tracked files with an overlay.
+  An entry that is not ignored falls back to a plain install. It does **not**
+  need to exist yet, and neither do its parent directories: a path like
+  `.tools/blender` under an ignored `.tools/` is covered on a fresh clone.
 - The overlay store is **enabled by default**, so this key takes effect
   automatically. (A platform operator can disable the store for a release via
   the `OVERLAY_DEP_STORE=0` kill switch, in which case dep dirs fall back to a

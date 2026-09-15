@@ -5,7 +5,7 @@ import {
   isPnpmRepo,
   pnpmStoreDirForRuntime,
   resolveOverlayScope,
-  validDepDirsForOverlay,
+  classifyDepDirsForOverlay,
   type DepDirOverlaySpec,
 } from "./overlay-session.js";
 import { resolveVolumeMountpoint, volumeExists } from "./overlay-volume.js";
@@ -78,7 +78,16 @@ export async function prepareOverlaySpecs(
   // pnpm hardlinks cannot cross overlayfs; use a shared store on the workspace filesystem.
   if (isPnpmRepo(opts.workspaceDir)) return [];
   const declared = depDirsForSession({ workspaceDir: opts.workspaceDir });
-  const valid = await validDepDirsForOverlay(declared, opts.workspaceDir);
+  const { valid, dropped } = await classifyDepDirsForOverlay(declared, opts.workspaceDir);
+  // A dropped dir gets no overlay and no install (the marker pre-stamp refuses on a partial
+  // quorum), so say which one and why rather than leaving it out of the measurement line.
+  if (dropped.length > 0) {
+    const listed = dropped.map((d) => `${d.depDir} (${d.reason})`).join(", ");
+    console.warn(
+      `[overlay:${opts.sessionId}] ${dropped.length} declared agent.dep-dirs ` +
+      `entr${dropped.length === 1 ? "y is" : "ies are"} not overlay-eligible: ${listed}`,
+    );
+  }
   if (valid.length === 0) return [];
   const volumeMountpoint = await resolveVolumeMountpoint(deps.docker, deps.workspaceVolume);
   const stateDir = deps.stateDir;
