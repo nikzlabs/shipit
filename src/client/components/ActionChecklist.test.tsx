@@ -1,3 +1,4 @@
+import { StrictMode } from "react";
 import { describe, it, expect, afterEach } from "vitest";
 import { render, screen, cleanup, fireEvent } from "@testing-library/react";
 import {
@@ -49,6 +50,26 @@ describe("useChecklistSelection", () => {
     expect(screen.getByTestId("selected")).toHaveTextContent(/^new$/);
   });
 
+  it("applies defaults once under StrictMode's double render", () => {
+    render(
+      <StrictMode>
+        <Harness items={[item({ key: "a", defaultChecked: true })]} />
+      </StrictMode>,
+    );
+    expect(screen.getByTestId("selected")).toHaveTextContent(/^a$/);
+  });
+
+  it("treats a key that leaves and returns as arriving anew", () => {
+    const back = [item({ key: "a", defaultChecked: true })];
+    const { rerender } = render(<Harness items={back} />);
+    fireEvent.click(screen.getAllByRole("checkbox")[0]);
+    expect(screen.getByTestId("selected")).toBeEmptyDOMElement();
+
+    rerender(<Harness items={[item({ key: "b" })]} />);
+    rerender(<Harness items={back} />);
+    expect(screen.getByTestId("selected")).toHaveTextContent(/^a$/);
+  });
+
   it("drops a selected item from the selection once it is taken", () => {
     const { rerender } = render(<Harness items={[item({ key: "a" })]} />);
     fireEvent.click(screen.getAllByRole("checkbox")[0]);
@@ -65,6 +86,20 @@ describe("useChecklistSelection", () => {
 });
 
 describe("ActionChecklist", () => {
+  it("renders a taken item unchecked and disabled even when the caller has it selected", () => {
+    render(
+      <ActionChecklist
+        items={[item({ key: "a", taken: true })]}
+        selected={new Set(["a"])}
+        onToggle={() => {}}
+        ariaLabel="Offers"
+      />,
+    );
+    const box = screen.getByRole("checkbox") as HTMLInputElement;
+    expect(box.checked).toBe(false);
+    expect(box).toBeDisabled();
+  });
+
   it("renders a taken item unchecked, disabled and greyed, with no RECOMMENDED badge", () => {
     render(
       <Harness items={[item({ key: "a", label: "Add retries", defaultChecked: true, taken: true })]} />,

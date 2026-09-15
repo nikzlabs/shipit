@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useState } from "react";
 import { ArrowRightIcon, CheckIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import { Button } from "./ui/button.js";
@@ -29,45 +29,65 @@ export interface ChecklistSelection {
   clear: () => void;
 }
 
+interface SelectionState {
+  /** The keys of the previous render, so an item arriving anew can be told apart. */
+  keys: ReadonlySet<string>;
+  selected: ReadonlySet<string>;
+}
+
+function sameKeys(a: ReadonlySet<string>, b: ReadonlySet<string>): boolean {
+  return a.size === b.size && [...a].every((k) => b.has(k));
+}
+
 /**
  * Selection state for a checklist whose items may change under it: an item
- * applies its `defaultChecked` the first time it appears, and a key that
- * leaves or becomes taken leaves the selection with it.
+ * applies its `defaultChecked` when it arrives, and a key that leaves or
+ * becomes taken leaves the selection with it. A key that leaves and comes back
+ * counts as arriving anew.
+ *
+ * The seen keys live in the same state as the selection so a discarded render
+ * discards both; a ref advanced during render would survive one and lose the
+ * defaults it recorded.
  */
 export function useChecklistSelection(items: readonly ChecklistItem[]): ChecklistSelection {
-  const [selected, setSelected] = useState<ReadonlySet<string>>(EMPTY);
-  const seen = useRef<Set<string>>(new Set());
+  const [state, setState] = useState<SelectionState>({ keys: EMPTY, selected: EMPTY });
 
-  let next = selected;
+  const keys = new Set<string>();
   const live = new Set<string>();
   for (const item of items) {
+    keys.add(item.key);
     if (selectable(item)) live.add(item.key);
-    if (!seen.current.has(item.key) && item.defaultChecked && selectable(item)) {
-      next = new Set(next).add(item.key);
+  }
+
+  let selected = state.selected;
+  for (const item of items) {
+    if (!state.keys.has(item.key) && item.defaultChecked && selectable(item)) {
+      selected = new Set(selected).add(item.key);
     }
   }
-  seen.current = new Set(items.map((i) => i.key));
-  for (const key of next) {
+  for (const key of selected) {
     if (!live.has(key)) {
-      const pruned = new Set(next);
+      const pruned = new Set(selected);
       pruned.delete(key);
-      next = pruned;
+      selected = pruned;
     }
   }
-  if (next !== selected) setSelected(next);
+  if (selected !== state.selected || !sameKeys(keys, state.keys)) {
+    setState({ keys, selected });
+  }
 
   const toggle = useCallback((key: string) => {
-    setSelected((prev) => {
-      const updated = new Set(prev);
+    setState((prev) => {
+      const updated = new Set(prev.selected);
       if (updated.has(key)) updated.delete(key);
       else updated.add(key);
-      return updated;
+      return { ...prev, selected: updated };
     });
   }, []);
 
-  const clear = useCallback(() => setSelected(EMPTY), []);
+  const clear = useCallback(() => setState((prev) => ({ ...prev, selected: EMPTY })), []);
 
-  return { selected: next, toggle, clear };
+  return { selected, toggle, clear };
 }
 
 export interface ActionChecklistProps {
