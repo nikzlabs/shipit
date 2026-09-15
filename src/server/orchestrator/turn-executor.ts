@@ -750,7 +750,13 @@ export async function executeAgentTurn(
         silent: undefined,
         statusNudge: true,
       }));
-      void handle.settled.then(releaseLease, releaseLease);
+      void (async () => {
+        try {
+          await handle.settled;
+        } finally {
+          releaseLease();
+        }
+      })();
     } catch (err) {
       console.error(`[turn] dispatching the status-card nudge for ${sessionId} failed:`, err);
       releaseLease();

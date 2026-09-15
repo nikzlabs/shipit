@@ -392,8 +392,8 @@ describe("settleTurnFacts and the status-card nudge (docs/303 req 11–15)", () 
     await flush();
     await flush();
     expect(h.runner.agentBusy, "the runner is not reclaimable mid-setup").toBe(true);
-    expect(h.runner.dispose(), "an unforced dispose declines").toBeUndefined();
-    expect(h.runner.disposed).toBe(false);
+    h.runner.dispose();
+    expect(h.runner.disposed, "an unforced dispose declines").toBe(false);
 
     releaseSetup();
     await waitFor(() => h.agents.length === 2, "the nudge turn started");
