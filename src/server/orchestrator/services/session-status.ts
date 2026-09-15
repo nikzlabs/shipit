@@ -192,18 +192,34 @@ export function takeOfferedActions(
 
 /**
  * req 23 — turning the setting back on shows the earlier card, marked stale, and
- * the next turn refreshes it. Unconditional: what a stored card claimed was true
- * of the last turn ShipIt watched, and nothing watched the turns in between.
+ * the next turn refreshes it. What a stored card claimed was true of the last
+ * turn ShipIt watched, and nothing watched the turns in between.
+ *
+ * The sweep queues one session at a time, so a turn can accept a write for a
+ * later session while it runs — and that card WAS confirmed with the setting on.
+ * So each session carries the `writeSeq` the sweep saw, and the same guard
+ * `markSessionStatusStale` uses decides. The snapshot is taken before the first
+ * await, where no write can interleave.
  */
 export async function markAllSessionStatusesStale(deps: SessionStatusDeps): Promise<void> {
+  const snapshot = deps.sessionManager.sessionIdsWithStatus()
+    .map((id) => ({ id, card: deps.sessionManager.get(id)?.sessionStatus }))
+    .filter((entry): entry is { id: string; card: SessionStatus } => entry.card !== undefined);
+
   let changed = false;
-  for (const sessionId of deps.sessionManager.sessionIdsWithStatus()) {
-    await runStatusExclusive(sessionId, async () => {
-      const stored = deps.sessionManager.get(sessionId)?.sessionStatus;
-      if (!stored?.fresh) return;
-      deps.sessionManager.setSessionStatus(sessionId, { ...stored, fresh: false });
-      changed = true;
-    });
+  for (const { id, card } of snapshot) {
+    try {
+      await runStatusExclusive(id, async () => {
+        const stored = deps.sessionManager.get(id)?.sessionStatus;
+        if (!stored?.fresh || stored.writeSeq !== card.writeSeq) return;
+        deps.sessionManager.setSessionStatus(id, { ...stored, fresh: false });
+        changed = true;
+      });
+    } catch (err) {
+      // One session's failed write must not leave the rest reading as current,
+      // and must not vanish: the save that enabled the setting reports success.
+      console.error(`[session-status] failed to mark ${id} stale on re-enable:`, err);
+    }
   }
   if (changed) broadcast(deps);
 }

@@ -80,6 +80,19 @@ describe("recordSessionStatus", () => {
     expect(cleared?.needsYou).toBeUndefined();
   });
 
+  it("counts an unchanged confirmation as a write, and shows nothing new", async () => {
+    const { d, card } = await seededCard();
+    d.sseBroadcast.mockClear();
+
+    const confirmed = await recordSessionStatus(d, "s1", {});
+
+    // req 14 — the agent confirmed the whole card. Nothing a viewer reads moved,
+    // so there is nothing to broadcast, but the turn DID write.
+    expect(confirmed?.writeSeq).toBe(card.writeSeq + 1);
+    expect(confirmed?.fresh).toBe(true);
+    expect(d.sseBroadcast).not.toHaveBeenCalled();
+  });
+
   it("makes a bare call on a stale card current, and counts as a write", async () => {
     const { d, card } = await seededCard();
     await markSessionStatusStale(d, "s1", card.writeSeq);
@@ -203,6 +216,12 @@ describe("markSessionStatusStale", () => {
     expect(d.sseBroadcast).not.toHaveBeenCalled();
   });
 
+  it("leaves writeSeq alone: a freshness mark is not an agent write", async () => {
+    const { d, card } = await seededCard();
+    await markSessionStatusStale(d, "s1", card.writeSeq);
+    expect(d.sessionManager.get("s1")!.sessionStatus!.writeSeq).toBe(card.writeSeq);
+  });
+
   it("stays quiet on an already stale card and on a session with none", async () => {
     const { d, card } = await seededCard();
     await markSessionStatusStale(d, "s1", card.writeSeq);
@@ -230,6 +249,46 @@ describe("markAllSessionStatusesStale", () => {
     expect(sessions.setSessionStatus).toHaveBeenCalledTimes(1);
     expect(sessions.cards.get("s1")!.writeSeq).toBe(3);
     expect(d.sseBroadcast).toHaveBeenCalledTimes(1);
+  });
+
+  // The sweep queues sessions one at a time, so a turn can accept a write for a
+  // later session while it runs — with the setting already on, so that card was
+  // confirmed and must stay current.
+  it("does not mark a card written after the sweep began", async () => {
+    const sessions = fakeSessions({
+      s1: { status: "a", actions: [], fresh: true, writeSeq: 1 },
+      s2: { status: "b", actions: [], fresh: true, writeSeq: 1 },
+    });
+    const d = deps(sessions);
+
+    const sweep = markAllSessionStatusesStale(d);
+    await recordSessionStatus(d, "s2", { status: "written during the sweep" });
+    await sweep;
+
+    expect(sessions.cards.get("s1")!.fresh).toBe(false);
+    expect(sessions.cards.get("s2")).toMatchObject({
+      status: "written during the sweep",
+      fresh: true,
+      writeSeq: 2,
+    });
+  });
+
+  it("marks the rest when one session's write fails, and says what failed", async () => {
+    const sessions = fakeSessions({
+      s1: { status: "a", actions: [], fresh: true, writeSeq: 1 },
+      s2: { status: "b", actions: [], fresh: true, writeSeq: 1 },
+    });
+    sessions.setSessionStatus.mockImplementationOnce(() => { throw new Error("disk full"); });
+    const d = deps(sessions);
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    await markAllSessionStatusesStale(d);
+
+    expect(sessions.cards.get("s1")!.fresh).toBe(true);
+    expect(sessions.cards.get("s2")!.fresh).toBe(false);
+    expect(logged).toHaveBeenCalledWith(expect.stringContaining("s1"), expect.any(Error));
+    expect(d.sseBroadcast).toHaveBeenCalledTimes(1);
+    logged.mockRestore();
   });
 
   it("broadcasts nothing when every card is already stale", async () => {
@@ -261,6 +320,28 @@ describe("runStatusExclusive", () => {
     gate[1]();
     await second;
     expect(order).toEqual(["a:start", "other", "a:end", "b:start", "b:end"]);
+  });
+
+  // The helper test above proves the lock works; this proves each service uses
+  // it. Bypassing the wrappers leaves these assertions passing otherwise.
+  it("holds every service entry point behind the session's lock", async () => {
+    const { d, card } = await seededCard();
+    let release = () => {};
+    const held = runStatusExclusive("s1", () => new Promise<void>((resolve) => { release = resolve; }));
+    (d.sessionManager.setSessionStatus as ReturnType<typeof vi.fn>).mockClear();
+
+    const pending = [
+      recordSessionStatus(d, "s1", { status: "later" }),
+      markSessionStatusStale(d, "s1", card.writeSeq),
+      takeOfferedActions(d, "s1", [card.actions[0].offerId]),
+    ];
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(d.sessionManager.setSessionStatus).not.toHaveBeenCalled();
+
+    release();
+    await held;
+    await Promise.all(pending);
+    expect(d.sessionManager.setSessionStatus).toHaveBeenCalled();
   });
 
   it("lets the next operation run after one throws", async () => {
