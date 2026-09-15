@@ -421,7 +421,7 @@ dialog and per-repository **Project Settings**.
 | Integrations | MCP servers | derived fields only | narrow patches yes; credential fields `secret` |
 | Integrations | the Linear panel | configured / not | no — `secret`; it holds an API token, and the tracker destination is a repository declaration (`SettingsTrackers.tsx:13`) |
 | Integrations | connected services | connected / not | no — `external_flow` |
-| Integrations | SSH destinations: the name, and per destination its address, user and port | the ones THIS session is granted, never the registry (req 5's closing clause) | no — `external_flow`; the only write the dialog offers is the `add`, and the destination is inert until the user installs its public line on the server |
+| Integrations | SSH destinations: the name, and per destination its address, user and port | the ones THIS session is granted, never the registry (req 5's closing clause) | no, for two different reasons — the address and the user decide which account on which machine must hold the public line, which is the user's act somewhere ShipIt cannot reach (`external_flow`); the name and the port need no act outside ShipIt and are refused because a card cannot show what the change does (`unsafe_to_display`) |
 | Git | git identity name and email | yes | yes |
 | Instructions | your instructions, agent instructions enabled | yes | yes |
 | Keyboard | keybindings | no — `browser_local` | no |

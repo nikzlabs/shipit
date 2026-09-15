@@ -256,11 +256,20 @@ export const INTEGRATIONS_SETTINGS = {
    * Adding one is not proposable — it is only useful once the user has installed
    * its public line on the server, which ShipIt cannot do.
    *
-   * **The `add` form's four boxes are four settings.** They were an `action`
-   * exclusion — "nothing is stored until Add destination is pressed, and the
-   * collection is what carries the policy" — which was false of three of them:
-   * the collection carries labels only, while the address, the user and the port
-   * are persisted (`api-routes-ssh.ts:161`) and shown back on the row.
+   * **The destination form's four boxes are four settings.** They were an
+   * `action` exclusion — "nothing is stored until Add destination is pressed,
+   * and the collection is what carries the policy" — which was false of three of
+   * them: the collection carries labels only, while the address, the user and
+   * the port are persisted (`api-routes-ssh.ts`) and shown back on the row. The
+   * same four boxes now edit a destination in place (docs/305 req 14), so each
+   * one has TWO writes behind it, and `HostFields` renders them once for both.
+   *
+   * **Each refusal below is about the edit, since that is the write a card could
+   * otherwise carry.** They are not one reason repeated: `address` and `user`
+   * decide which account on which machine must hold the public line, which is
+   * the user's act somewhere ShipIt cannot reach; `port` and `label` need no act
+   * outside ShipIt and are refused because a card cannot show what the change
+   * actually does.
    *
    * **A read answers with the destinations THIS session is granted, and the
    * registry is not readable from a session at all.** `api-container-guard.ts`
@@ -327,7 +336,12 @@ export const INTEGRATIONS_SETTINGS = {
       + "length and rejects control characters and nothing more, so the shape gate is what keeps a "
       + "pasted URL from being repeated back.",
     ),
-    propose: { kind: "no", reason: "external_flow" },
+    // Renaming needs no act outside ShipIt, so `external_flow` would be untrue —
+    // but the alias every granted session types is DERIVED from this name, and
+    // numbered when it collides with another, so a card reading
+    // `prod → Prod Server` cannot show that `ssh prod` becomes `ssh prod-server`
+    // — or `prod-server-2`. The same reason `mcp.servers[].name` is refused.
+    propose: { kind: "no", reason: "unsafe_to_display" },
   }),
 
   "integrations.sshHosts[].address": defineSetting({
@@ -350,8 +364,9 @@ export const INTEGRATIONS_SETTINGS = {
           + "authenticates with a key ShipIt holds, and reaching the address proves nothing.",
       },
     ),
-    // The only write the dialog offers is the collection's `add`, and the
-    // destination it adds is inert until its public line is on that server.
+    // Either write — the `add` or the in-place edit — points the destination at
+    // a machine, and it is inert there until the user installs its public line
+    // on that machine. ShipIt cannot reach it to do so.
     propose: { kind: "no", reason: "external_flow" },
   }),
 
@@ -372,6 +387,9 @@ export const INTEGRATIONS_SETTINGS = {
         + "checks when a destination refuses the key — the other half is which account carries "
         + "the public line.",
     }),
+    // This names the account whose `authorized_keys` must hold the public line,
+    // so changing it is only finished by the user installing that line in the
+    // new account — on the server, where ShipIt cannot go.
     propose: { kind: "no", reason: "external_flow" },
   }),
 
@@ -387,7 +405,16 @@ export const INTEGRATIONS_SETTINGS = {
     // A number in a fixed range, gated by the route and by this value type. It
     // is neither the user's prose nor anything ShipIt derived, so it is plain.
     emits: plain(),
-    propose: { kind: "no", reason: "external_flow" },
+    // The one field here that needs nothing outside ShipIt — sshd is listening
+    // on the new port or it is not — so `external_flow` would be untrue of it.
+    // What a card cannot show is the rest of the write: saving a port change
+    // DISCARDS the recorded server host key (`credential-store.ts`
+    // → `updateSshHost`), so the next connection verifies the server again and
+    // can be refused when the orchestrator cannot observe that key there
+    // (docs/305-ssh-hosts req 13). `2222 → 22` shows none of that, which is why
+    // req 14 makes the DIALOG say it before the change is saved — a warning
+    // beside the boxes that a proposal card has no equivalent of.
+    propose: { kind: "no", reason: "unsafe_to_display" },
   }),
 
   "integrations.linear.credential": defineSetting({

@@ -533,10 +533,42 @@ function seedStores() {
   } as never);
 }
 
+/**
+ * The one panel that loads its rows over HTTP rather than from a store, and the
+ * only reason the fixture answers a request at all.
+ *
+ * Without a row there is no *Edit* button, so the whole edit form — four bound
+ * boxes, *Save changes*, *Cancel* — is a surface the crawl cannot open, and a
+ * form the walk does not open is this file's own defect. The fingerprint is set
+ * so the row's *Forget* control renders too.
+ */
+const SSH_HOST_ROW = {
+  id: "ssh_1",
+  label: "prod",
+  address: "prod.example.com",
+  port: 2222,
+  user: "deploy",
+  publicKeyBlob: "AAAA",
+  identityLine: "ssh-ed25519 AAAA shipit-prod",
+  authorizedKeysLine: "restrict ssh-ed25519 AAAA shipit-prod",
+  fingerprint: "SHA256:aaaa",
+  hostKeyFingerprint: "SHA256:bbbb",
+  hostKeyType: "ssh-ed25519",
+  createdAt: new Date(0).toISOString(),
+};
+
 beforeEach(() => {
   // Offline on purpose: every panel loads its own external state on mount, and
-  // the walk is about what the dialog renders from the stores it is handed.
-  vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("offline in this test")));
+  // the walk is about what the dialog renders from the stores it is handed. The
+  // SSH registry is the exception above — a GET of it answers, and every other
+  // request, that panel's own writes included, still rejects.
+  vi.stubGlobal("fetch", vi.fn((input: unknown, init?: { method?: string }) => {
+    const url = String(input);
+    if (url.endsWith("/api/ssh-hosts") && (init?.method ?? "GET") === "GET") {
+      return Promise.resolve({ ok: true, json: async () => ({ hosts: [SSH_HOST_ROW] }) });
+    }
+    return Promise.reject(new Error("offline in this test"));
+  }));
   seedStores();
 });
 
@@ -958,6 +990,19 @@ describe("every control in the Settings dialog is declared or excused", () => {
     expect(await opensAField("integrations", "mcp.servers[].url"), "the MCP http form").toBe(true);
     expect(await opensAField("integrations", "integrations.sshHosts[].address"), "the SSH form").toBe(true);
     expect(await opensAField("network", "network.egress.hosts[].host"), "an allowlist row").toBe(true);
+  });
+
+  /*
+    The SSH edit form is disclosed from a destination ROW, and that panel loads
+    its rows over HTTP rather than from a store — so if the fixture stopped
+    answering, the rows would vanish, the edit form would stop being reachable,
+    and nothing else here would go red: the add form binds the same four fields.
+    This guards the fixture, and the crawl's own rule does the rest.
+  */
+  it("renders a destination row, so the SSH edit form is a surface to open", async () => {
+    await renderGlobalTab("integrations");
+
+    expect(await screen.findByTestId("ssh-host-edit")).toBeInTheDocument();
   });
 });
 

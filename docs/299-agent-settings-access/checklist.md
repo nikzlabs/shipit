@@ -576,6 +576,32 @@ finding re-verified at the code first.
       such setting); and the four SSH boxes named as unaccounted by the crawl
       against the form as it was
 
+### After the rebase onto the in-place edit (docs/305 req 14)
+
+- [x] `main`'s shared `HostFields` renders the declaration-bound boxes, so the
+      new EDIT form carries the bindings and the declared copy as well as the add
+      form — one component rather than two that can drift
+- [x] Each refusal re-decided on the new facts rather than reworded. The comment
+      said "the only write the dialog offers is the collection's `add`", which
+      the edit made false. `[].address` and `[].user` stay `external_flow` — they
+      decide which account on which machine must hold the public line — while
+      `[].label` and `[].port` become `unsafe_to_display`: neither needs an act
+      outside ShipIt, and a card cannot show that a rename moves the derived
+      `~/.ssh/config` alias, or that a port change discards the recorded server
+      host key (which is why req 14 makes the DIALOG warn before saving)
+- [x] The coverage crawl reaches the edit form: it is disclosed from a
+      destination row, and the panel loads its rows over HTTP, so the fixture
+      answers a GET of `/api/ssh-hosts` with one host and rejects everything else
+      as before. Verified by instrumenting the crawl — it presses *Edit prod*,
+      then *Save changes* and *Cancel* inside the form. A test guards the fixture,
+      since a row that stopped rendering would take the surface with it silently
+- [x] Two defects the merge introduced, both caught by `main`'s own tests: the
+      declared description ran into the input's accessible name, so
+      `getByLabelText("Address")` found nothing — the label is now `aria-label`
+      and the description `aria-describedby`; and `type="number"` on the port box
+      reads back `""` for `abc`, which would have sent an empty port and coerced
+      it to 22, defeating main's "send the port as typed" contract
+
 ### Scoped to the grant, which closes a hole older than this slice
 
 - [x] req 5 — the SSH read answers with the destinations THIS session is granted

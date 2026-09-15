@@ -53,6 +53,11 @@ const EMPTY_FORM: HostForm = { label: "", address: "", user: "", port: "22" };
  * Bespoke panels declare per field). One binding for the whole form would be the
  * loophole one entry per panel leaves open, so each box names the field it
  * writes.
+ *
+ * Every box is plain text, the port included: `type="number"` reads back `""`
+ * for anything that is not a number, so `abc` would be sent as an empty port and
+ * coerced to 22 — a silent move of the destination, and on an edit one that also
+ * forgets the key recorded for the port it really had.
  */
 function SshField({
   settingKey,
@@ -60,22 +65,22 @@ function SshField({
   onChange,
   placeholder,
   disabled,
-  type,
 }: {
   settingKey: SettingKey;
   value: string;
   onChange: (value: string) => void;
   placeholder: string;
   disabled: boolean;
-  type?: "number";
 }) {
   const { label, description } = settingCopy(settingKey);
+  const describedBy = `${settingKey}-description`;
   return (
     <label className="flex flex-col gap-1">
       <span className="text-xs text-(--color-text-secondary)" data-setting-label={settingKey}>
         {label}
       </span>
       <span
+        id={describedBy}
         className="text-[11px] text-(--color-text-tertiary)"
         data-setting-description={settingKey}
       >
@@ -83,11 +88,18 @@ function SshField({
       </span>
       <input
         className={FIELD_CLASS}
-        {...(type ? { type } : {})}
         placeholder={placeholder}
         disabled={disabled}
         value={value}
         onChange={(e) => onChange(e.target.value)}
+        /*
+          The declaration's label is the accessible NAME and its description is
+          a description, rather than both running together into the name — which
+          is what a wrapping `<label>` alone produces once there is help text in
+          it, and what left `getByLabelText("Address")` with nothing to find.
+        */
+        aria-label={label}
+        aria-describedby={describedBy}
         {...bindSetting(settingKey)}
       />
     </label>
@@ -140,7 +152,6 @@ function HostFields({
       <SshField
         settingKey="integrations.sshHosts[].port"
         placeholder="22"
-        type="number"
         disabled={disabled}
         value={form.port}
         onChange={(port) => onChange({ ...form, port })}
