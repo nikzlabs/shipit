@@ -596,6 +596,24 @@ describe("SessionSidebar", () => {
       expect(screen.getByText("Reopened merged")).toBeTruthy();
     });
 
+    it("keeps a merged session with a blocked workspace in the Active group (docs/298)", () => {
+      const sessions = [
+        baseSession({
+          id: "s-blocked",
+          title: "Stuck rebase",
+          remoteUrl: repoA.url,
+          createdAt: "2024-01-01T00:00:00.000Z",
+          lastUsedAt: "2024-01-01T00:00:00.000Z",
+          mergedAt: "2024-01-01T00:00:00.000Z",
+          workspaceBlock: "conflict",
+        }),
+      ];
+      render(<SessionSidebar {...defaultProps} sessions={sessions} />);
+
+      expect(screen.queryByText("Recently resolved")).toBeNull();
+      expect(screen.getByText("Stuck rebase")).toBeTruthy();
+    });
+
     it("keeps a resolved parent with visible children in the Active group", () => {
       const sessions = [
         baseSession({

@@ -15,12 +15,16 @@ export function isTerminalPrResolved(session: SessionInfo): boolean {
   return lastUsedMs <= terminalMs;
 }
 
+// docs/298 — a broken checkout is not finished work, exactly as a pin is not.
+// The cap exemption in `filterVisibleInSidebar` only gets the row to the client;
+// without this it arrives and is then sorted into the collapsible resolved tail.
 export function isResolvedForGrouping(
   session: SessionInfo,
   context: { hasVisibleBrood: boolean; isRunning?: boolean },
 ): boolean {
   return isTerminalPrResolved(session)
     && !session.pinnedAt
+    && !session.workspaceBlock
     && !context.hasVisibleBrood
     && context.isRunning !== true;
 }
