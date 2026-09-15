@@ -91,6 +91,10 @@ export function nonTurnModelSeedCandidate(
  * Idempotent by construction, and that lives here rather than at a call site:
  * the emptiness check is inside `stampNonTurnModel` too, so a second call — or
  * a new one — cannot write over a value.
+ *
+ * Best-effort, and the retry window is now wider than it was: `stampNonTurnModel`
+ * rolls a failed disk write back, and the next attempt is the next eligibility
+ * change or the next boot rather than the next read of the settings payload.
  */
 export function seedNonTurnModel(
   credentialStore: CredentialStore | undefined,
@@ -160,7 +164,9 @@ function backgroundWorkModelOptions(
  * makes "the first service configured fills the setting in" (docs/252 req 9)
  * hold from an already-open Settings tab. `buildAgentListPayload` is the same
  * payload for a caller that is only reading — the event stream's opening
- * snapshot — and it writes nothing (planning#578).
+ * snapshot — and it writes no pin (planning#578). Not the same as writing
+ * nothing: `resolveHarnessOnboarding` still stamps on read, deliberately and for
+ * its own reasons.
  */
 export function seedAndBuildAgentListPayload(
   agentRegistry: AgentRegistry,
@@ -229,9 +235,11 @@ export async function getGlobalSettings(
   credentialStore?: CredentialStore,
   providerAccountManager?: ProviderAccountManager,
 ): Promise<GlobalSettings> {
-  // A read, and only a read: seeding the pin from here made opening the
+  // No pin is written from here: seeding on the way past made opening the
   // Settings dialog — or saving any unrelated setting, since this is what a save
-  // returns — pin a background model nobody named (planning#578).
+  // returns — choose a background model nobody named (planning#578).
+  // `resolveHarnessOnboarding` below still stamps on read; that one is on
+  // purpose and says so.
   const { nonTurnModelResolved, backgroundWorkModels } =
     buildNonTurnModelSettings(agentRegistry, credentialStore, providerAccountManager);
   // The dialog needs a complete payload, so a setting ShipIt could not read

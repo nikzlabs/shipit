@@ -19,6 +19,7 @@ import { CredentialStore } from "../credential-store.js";
 import { DatabaseManager } from "../../shared/database.js";
 import { initGlobalGitConfig, setGitIdentity } from "../git-config.js";
 import { createStringCredential } from "../services/credential-routes.js";
+import { AgentRegistry } from "../../shared/agent-registry.js";
 import {
   StubAuthManager,
   StubGitHubAuthManager,
@@ -47,7 +48,10 @@ afterEach(async () => {
   while (dirs.length) fs.rmSync(dirs.pop()!, { recursive: true, force: true, maxRetries: 5 });
 });
 
-async function bootWith(prepare: (store: CredentialStore) => void): Promise<CredentialStore> {
+async function bootWith(
+  prepare: (store: CredentialStore) => void,
+  agentRegistry?: AgentRegistry,
+): Promise<CredentialStore> {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-boot-seed-"));
   dirs.push(tmpDir);
   initGlobalGitConfig(tmpDir);
@@ -68,6 +72,7 @@ async function bootWith(prepare: (store: CredentialStore) => void): Promise<Cred
     chatHistoryManager: new ChatHistoryManager(dbManager),
     workspaceDir: tmpDir,
     serveStatic: false,
+    ...(agentRegistry ? { agentRegistry } : {}),
   });
   return credentialStore;
 }
@@ -112,6 +117,46 @@ describe("the background-work pin is seeded at boot", () => {
 
     expect(res.statusCode).toBe(200);
     expect(store.getNonTurnModel()).toMatchObject({ serviceId: "deepseek", billingMode: "key" });
+  });
+
+  /*
+    The ordering the boot seed depends on, with an observable that can fail on
+    it. The tests above cannot: DeepSeek's key is directly callable, so it seeds
+    with no harness at all and would still seed if the call moved ahead of
+    `agentRegistry.detect()`. GLM's coding plan has no `directCall` and is
+    carried by Claude Code, so seeding it requires a registry that has already
+    been probed — before `detect()` the registry lists nothing, every harness
+    reads as absent, and req 9's fill-in silently does not happen for every
+    subscription-only install.
+  */
+  it("seeds a harness-carried credential, so detection has already run", async () => {
+    const store = await bootWith(
+      (s) => {
+        createStringCredential(s, {
+          serviceId: "zai",
+          billingMode: "sub",
+          secret: "zai-coding-plan-key",
+        });
+      },
+      new AgentRegistry({ declaredHarnesses: () => ["claude"] }),
+    );
+
+    expect(store.getNonTurnModel()).toMatchObject({ serviceId: "zai", billingMode: "sub" });
+  });
+
+  it("writes nothing when the only credential needs a harness this install lacks", async () => {
+    const store = await bootWith(
+      (s) => {
+        createStringCredential(s, {
+          serviceId: "zai",
+          billingMode: "sub",
+          secret: "zai-coding-plan-key",
+        });
+      },
+      new AgentRegistry({ declaredHarnesses: () => [] }),
+    );
+
+    expect(store.getNonTurnModel()).toBeUndefined();
   });
 
   it("leaves a pin the user already chose", async () => {

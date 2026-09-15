@@ -3566,10 +3566,23 @@ background work runs, and it runs on the same model the seed then writes.
 > the first read path existed for, an install whose credentials predate the setting or arrive
 > from the environment — and `seedAndBuildAgentListPayload`, the `agent_list` builder that every
 > credential and account mutation announces through, which covers the case the second existed
-> for. The "list a path falls off" objection survives and is answered rather than dismissed:
-> falling off it now costs a *stale display* until the next restart and nothing else, because of
-> the fallback this paragraph already names, and a mutation that skips the `agent_list`
-> broadcast is a visible staleness bug the next paragraph is about. Guards:
+> for. The "list a path falls off" objection survives and is answered rather than dismissed, in
+> two parts. **What falling off it costs**: background work keeps running, on the same model the
+> seed would have written, because of the fallback this paragraph already names — but an
+> unpinned install re-derives that model on every resolution, so a *later* credential for a
+> service earlier in catalogue order moves it, where a pin would have held. So the cost is a
+> setting that follows the install instead of holding still, which is precisely the second state
+> req 9 removed; it is not, as an earlier draft of this note claimed, a stale display and
+> nothing else. **Why the list is nonetheless a safe one to be on**: it is not a hand-kept list
+> of mutation sites but the single `agent_list` builder, and a mutation that skips that
+> broadcast is already a visible staleness bug the next paragraph is about — pinned by the
+> producer census in `services/can-run-turns.test.ts`, which now names the one producer allowed
+> to use the read-only builder.
+>
+> **One thing is genuinely narrower**: a seed whose disk write fails rolls back
+> (`stampNonTurnModel`), and the retry is now the next eligibility change or the next boot,
+> where before it was the next read of the settings payload. Nothing recovers a write the disk
+> refuses; this only changes how soon the retry comes once it stops refusing. Guards:
 > `services/settings-read-purity.test.ts`, `integration_tests/non-turn-model-boot-seed.test.ts`.
 
 **The setting rides `agent_list` too**, for the reason the reviewer slots do (docs/261): an open

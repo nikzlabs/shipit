@@ -13,13 +13,18 @@ import {
 import type { AgentRegistry } from "../../shared/agent-registry.js";
 
 /**
- * Reading the global settings does not change what is stored (planning#578).
+ * Reading the global settings does not choose a background-work model
+ * (planning#578).
  *
- * The background-model pin used to be written while the payload was assembled,
- * so opening the Settings dialog, connecting the event stream, or saving an
- * unrelated setting each pinned a model nobody named. Seeding now happens where
- * eligibility changes; these tests hold the two halves apart — the read writes
- * nothing, and the change still writes.
+ * The pin used to be written while the payload was assembled, so opening the
+ * Settings dialog, connecting the event stream, or saving an unrelated setting
+ * each pinned a model nobody named. Seeding now happens where eligibility
+ * changes; these tests hold the two halves apart — the read writes no pin, and
+ * the change still writes one.
+ *
+ * Scoped to the pin on purpose, and it is not a claim that a read writes nothing
+ * at all: `resolveHarnessOnboarding` stamps `harnessOnboardingCompletedAt` on
+ * read, deliberately and for reasons of its own.
  */
 
 const dirs: string[] = [];
