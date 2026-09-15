@@ -150,7 +150,7 @@ export function numeric(
   };
 }
 
-export function text(opts: {
+interface TextOpts {
   maxLength: number;
   default?: string;
   /** Names the value in validation messages when the dialog label does not read well. */
@@ -163,32 +163,62 @@ export function text(opts: {
    * (docs/299-agent-settings-access req 9).
    */
   trim?: boolean;
-}): SettingValueType<string> {
-  const defaultValue = opts.default ?? "";
+  /**
+   * The writer stores NOTHING for an empty value, so empty and "not set" are
+   * one value rather than two — `pinned()` drops a role's reasoning level that
+   * way. `validate` therefore answers `null`, because what it returns is what
+   * the store will hold: otherwise a card clearing the field shows `"high" →
+   * ""` over a write that stores no level at all.
+   *
+   * It is deliberately NOT the default. An instructions box stores the empty
+   * string it was cleared to, and reporting that as "not set" would be the same
+   * lie the other way round.
+   */
+  emptyIsUnset?: boolean;
+}
+
+/** A lone half of a surrogate pair: text the file writers turn into U+FFFD. */
+const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+
+export function text(opts: TextOpts & { emptyIsUnset: true }): SettingValueType<string | null>;
+export function text(opts: TextOpts & { emptyIsUnset?: false }): SettingValueType<string>;
+export function text(opts: TextOpts): SettingValueType<string | null> {
+  const { emptyIsUnset } = opts;
+  const fallback = opts.default ?? "";
+  const unset = (value: string): boolean => !!emptyIsUnset && value.length === 0;
   return {
     kind: "text",
-    defaultValue,
+    defaultValue: emptyIsUnset ? null : fallback,
     shape: {
       maxLength: opts.maxLength,
       ...(opts.required ? { required: true } : {}),
+      ...(emptyIsUnset ? { nullable: true } : {}),
     },
     read(raw) {
-      return typeof raw === "string" ? raw : defaultValue;
+      if (typeof raw !== "string") return emptyIsUnset ? null : fallback;
+      return unset(raw) ? null : raw;
     },
     validate(raw, noun) {
       const name = opts.noun ?? noun;
       // Anything that is not text reads as the default, which is how sending
       // null has always cleared an instructions box.
-      const supplied = typeof raw === "string" ? raw : defaultValue;
+      const supplied = typeof raw === "string" ? raw : fallback;
       const value = opts.trim ? supplied.trim() : supplied;
       if (opts.required && !value) return fail(`${name} cannot be empty`);
       if (value.length > opts.maxLength) {
         return fail(`${name} is too long (max ${opts.maxLength.toLocaleString("en-US")} characters)`);
       }
-      return ok(value);
+      if (LONE_SURROGATE.test(value)) {
+        // The file-backed writers encode UTF-8, which replaces a lone surrogate
+        // with U+FFFD — so accepting this would store text the user never
+        // approved, and no card could have shown the substitution.
+        return fail(`${name} contains an unpaired surrogate, which cannot be stored as written`);
+      }
+      return ok(unset(value) ? null : value);
     },
     serialize(value) {
-      return value;
+      if (value === null) return undefined;
+      return unset(value) ? undefined : value;
     },
   };
 }

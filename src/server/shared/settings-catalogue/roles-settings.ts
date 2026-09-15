@@ -1,7 +1,7 @@
 import { defineSetting, derived, itemAddress, plain, userName, userText } from "./types.js";
 import type { AnySettingDeclaration } from "./types.js";
 import type { AgentRole, RoleAutoParams, RolePinnedParams } from "../types/agent-types.js";
-import { reasoningLevelProjection, userNamesProjection } from "./projection.js";
+import { userNamesProjection } from "./projection.js";
 import { collection, modelSelection, text } from "./value-types.js";
 
 /**
@@ -106,17 +106,13 @@ export const ROLES_SETTINGS = {
     description:
       "How hard the model thinks on this role's work. The levels come from the harness the role "
       + "names, for the model it names — unset means the harness's own default.",
-    type: text({ maxLength: 64, noun: "Reasoning level" }),
+    // `pinned()` stores no level for an empty string, so empty and "not set"
+    // are one value here — and the declaration is where that is said, so a card
+    // clearing the level shows the "not set" the role will hold rather than the
+    // `""` it was asked for (docs/299-agent-settings-access req 4).
+    type: text({ maxLength: 64, noun: "Reasoning level", emptyIsUnset: true }),
     store: { kind: "bespoke", ownedBy: "credential-store roles (PUT /api/settings `roles`)" },
-    emits: derived(
-      "the level this role sets, when a harness still offers it",
-      reasoningLevelProjection,
-      {
-        shipItComputed:
-          "the levels are the harnesses' own vocabulary, and an empty level is not one of them: "
-          + "a role that sets none reads as not set",
-      },
-    ),
+    emits: plain(),
     propose: { kind: "yes" },
   }),
 

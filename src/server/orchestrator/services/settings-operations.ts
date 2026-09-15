@@ -241,7 +241,9 @@ function sideChange(key: string, from: unknown, to: unknown): RenderedSideChange
     formatSetting(declaration, projectSetting(declaration, raw ?? null));
   const before = show(from);
   const after = show(to);
-  return before === after ? null : { label: declaration.label, from: before, to: after };
+  return before === after
+    ? null
+    : { key: declaration.key, label: declaration.label, from: before, to: after };
 }
 
 function sideChanges(changes: (RenderedSideChange | null)[]): RenderedSideChange[] {

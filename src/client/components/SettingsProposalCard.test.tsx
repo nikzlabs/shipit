@@ -69,8 +69,8 @@ describe("SettingsProposalCard — pending", () => {
       from: "anthropic/sub/claude-opus-5",
       to: "openai/sub/gpt-5.6-sol",
       alsoChanges: [
-        { label: "Harness", from: "claude", to: "codex" },
-        { label: "Reasoning level", from: "max", to: "not set" },
+        { key: "roles[].harness", label: "Harness", from: "claude", to: "codex" },
+        { key: "roles[].reasoningEffort", label: "Reasoning level", from: "max", to: "not set" },
       ],
     })} />);
 

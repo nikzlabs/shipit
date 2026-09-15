@@ -109,6 +109,31 @@ describe("numeric", () => {
 });
 
 describe("text", () => {
+  it("answers null for an empty value where the writer stores nothing for one", () => {
+    const level = text({ maxLength: 64, noun: "Reasoning level", emptyIsUnset: true });
+    // `pinned()` keeps no level for an empty string, so returning `""` would
+    // hand a proposal card a value the store never holds.
+    expect(level.validate("", "Reasoning level")).toEqual({ ok: true, value: null });
+    expect(level.validate("high", "Reasoning level")).toEqual({ ok: true, value: "high" });
+    expect(level.read("")).toBeNull();
+    expect(level.serialize(null)).toBeUndefined();
+    // Not the default: an instructions box stores the empty string it was
+    // cleared to, and calling that "not set" is the same lie reversed.
+    expect(text({ maxLength: 64 }).validate("", "Your Instructions")).toEqual({ ok: true, value: "" });
+  });
+
+  it("refuses text the file writers cannot store as written", () => {
+    // A lone half of a surrogate pair survives validation and JSON, and becomes
+    // U+FFFD when the instructions file is encoded — so the store would hold
+    // something no card could have shown (docs/299-agent-settings-access req 4).
+    const lone = "abc\uD800";
+    expect(Buffer.from(lone, "utf-8").toString("utf-8")).not.toBe(lone);
+    expect(text({ maxLength: 100, noun: "System prompt" }).validate(lone, "Your Instructions"))
+      .toEqual({ ok: false, message: "System prompt contains an unpaired surrogate, which cannot be stored as written" });
+    // A paired surrogate is ordinary text and round-trips.
+    expect(text({ maxLength: 100 }).validate("ok \uD83D\uDE80", "Your Instructions").ok).toBe(true);
+  });
+
   it("refuses content over the declared length, in the words the setting chose", () => {
     const type = text({ maxLength: 50_000, noun: "System prompt" });
     expect(type.validate("x".repeat(50_001), "Your Instructions")).toEqual({

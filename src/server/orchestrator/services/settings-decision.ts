@@ -138,12 +138,44 @@ async function verifyAfterApply(
   try {
     const entry = await getSettingForAgent(deps.read, sessionId, declaration.key);
     const effect = entry.effect.state === "live" ? undefined : entry.effect;
-    const mismatch = storedValueMismatch(declaration, row, card, entry);
+    const mismatch = storedValueMismatch(declaration, row, card, entry)
+      // The card promised these too, and the user approved the whole of it. A
+      // side change is the one thing a write can drop while its own field
+      // lands — which is exactly how a level a new model cannot honour stays
+      // pinned behind a card that said it would go.
+      ?? await sideChangeMismatch(deps, sessionId, row, card);
     return { ...(effect ? { effect } : {}), ...(mismatch ? { mismatch } : {}) };
   } catch (err) {
     console.error(`[settings-decision] reading ${declaration.key} back after applying failed:`, err);
     return {};
   }
+}
+
+/**
+ * The neighbouring fields the card displayed, read back at the same address.
+ *
+ * Under the same rules the target's own check follows: an unreadable setting or
+ * an instance the read does not list says nothing, because not seeing a value
+ * is not evidence about the write.
+ */
+async function sideChangeMismatch(
+  deps: SettingsDecisionDeps,
+  sessionId: string,
+  row: SettingsProposalRow,
+  card: SettingsProposalCard,
+): Promise<string | null> {
+  for (const side of card.alsoChanges ?? []) {
+    const declaration = findSetting(side.key);
+    if (!declaration) continue;
+    const entry = await getSettingForAgent(deps.read, sessionId, side.key);
+    if (!entry.readable) continue;
+    const stored = row.target.item
+      ? entry.items?.find((candidate) => candidate.address === row.target.item)
+      : entry;
+    if (!stored || stored.display === side.to) continue;
+    return `The card showed ${side.label} becoming ${side.to}, and it now reads ${stored.display}.`;
+  }
+  return null;
 }
 
 /**
@@ -154,8 +186,8 @@ async function verifyAfterApply(
  * with the value the store will hold (`value-types.ts`), a projection that
  * would not emit the value refuses the card, and an operation that writes more
  * than its own field declares it as `alsoChanges`. None of them can see what a
- * SAVE HOOK does after the write — seeding a replacement, deriving a
- * neighbour — so the last word is the store's own, read back.
+ * WRITER does after they have run — a save hook seeding a replacement, a field
+ * the write silently keeps — so the last word is the store's own, read back.
  *
  * **Not seeing a value is never evidence about the write**, which is the whole
  * shape of this check: every branch that cannot compare answers `null` rather

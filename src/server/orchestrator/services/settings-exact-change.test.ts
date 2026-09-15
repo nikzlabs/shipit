@@ -1,4 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  allHarnesses,
+  allServices,
+  catalogueModelIdsForHarness,
+  reasoningOptionsFor,
+} from "../../shared/catalogue/index.js";
 import { findSetting } from "../../shared/settings-catalogue/index.js";
 import type { SettingsProposalCard } from "../../shared/types.js";
 import { resolveSettingsProposal, storedValueMismatch } from "./settings-decision.js";
@@ -80,6 +86,42 @@ describe("a declaration that normalises shows the normalised value", () => {
   });
 });
 
+/**
+ * A model swap that costs the role its reasoning level, found in the catalogue
+ * rather than named: a test that hard-codes two model ids fails the day either
+ * is retired, about something that has nothing to do with the level.
+ */
+function levelDroppingSwap(): {
+  harnessId: string;
+  from: { serviceId: string; billingMode: string; modelId: string };
+  to: { serviceId: string; billingMode: string; modelId: string };
+  level: string;
+} {
+  for (const harness of allHarnesses()) {
+    // Only models this harness can actually run: a swap it cannot speak to is
+    // refused before the card exists, which is a different test.
+    const speaks = new Set(catalogueModelIdsForHarness(harness.id));
+    const selections = allServices().flatMap((service) =>
+      service.modes.flatMap((mode) =>
+        mode.models
+          .filter((model) => speaks.has(model.id))
+          .map((model) => ({
+            serviceId: service.id,
+            billingMode: mode.kind,
+            modelId: model.id,
+          }))));
+    for (const from of selections) {
+      for (const option of reasoningOptionsFor(harness.id, from as never)) {
+        const to = selections.find((candidate) =>
+          candidate.modelId !== from.modelId
+          && !reasoningOptionsFor(harness.id, candidate as never).some((o) => o.value === option.value));
+        if (to) return { harnessId: harness.id, from, to, level: option.value };
+      }
+    }
+  }
+  throw new Error("No catalogue pair drops a reasoning level, so this fixture cannot be built");
+}
+
 function configureDirectCredential() {
   fx.credentialStore.upsertCredentialRouteWithSecret(
     {
@@ -157,25 +199,46 @@ describe("a writer that drops an empty value", () => {
   const EFFORT = "roles[].reasoningEffort";
   const ROLE = "deep-dive";
 
+  /**
+   * A pinned role on whatever this catalogue offers a reasoning level for.
+   * Naming a model and a level here would make an unrelated catalogue edit —
+   * a retired model, a harness that stops offering a level — fail a test about
+   * an empty string.
+   */
+  function pinRole(level?: string) {
+    for (const harness of allHarnesses()) {
+      for (const service of allServices()) {
+        for (const mode of service.modes) {
+          for (const model of mode.models) {
+            const selection = { serviceId: service.id, billingMode: mode.kind, modelId: model.id };
+            const [option] = reasoningOptionsFor(harness.id, selection);
+            if (!option) continue;
+            fx.credentialStore.setRole(ROLE, {
+              name: ROLE,
+              params: {
+                kind: "pinned",
+                harnessId: harness.id,
+                ...selection,
+                ...(level ? { reasoningEffort: level === "first" ? option.value : level } : {}),
+              },
+            } as never);
+            return level === "first" ? option.value : level;
+          }
+        }
+      }
+    }
+    throw new Error("The catalogue offers no harness a reasoning level in this fixture");
+  }
+
   it("shows clearing a role's reasoning level as the 'not set' the role stores", async () => {
-    fx.credentialStore.setRole(ROLE, {
-      name: ROLE,
-      params: {
-        kind: "pinned",
-        harnessId: "claude",
-        serviceId: "anthropic",
-        billingMode: "sub",
-        modelId: "claude-opus-5",
-        reasoningEffort: "high",
-      },
-    } as never);
+    const level = pinRole("first");
 
     // `pinned()` stores nothing for an empty level, so a card showing `""`
     // named a value the role never holds — and the apply would then read the
     // level back as "not set" and report a successful clear as a mismatch.
     const card = await propose({ key: EFFORT, item: ROLE, valueText: "", reason: "use the default" });
 
-    expect(card.from).toBe('"high"');
+    expect(card.from).toBe(`"${level}"`);
     expect(card.to).toBe("not set");
 
     const { card: resolved } = await resolveSettingsProposal(fx.deps, fx.sessionId, card.cardId, "apply");
@@ -186,19 +249,25 @@ describe("a writer that drops an empty value", () => {
   });
 
   it("refuses the same clear on a role that sets no level", async () => {
-    fx.credentialStore.setRole(ROLE, {
-      name: ROLE,
-      params: {
-        kind: "pinned",
-        harnessId: "claude",
-        serviceId: "anthropic",
-        billingMode: "sub",
-        modelId: "claude-opus-5",
-      },
-    } as never);
+    pinRole();
 
     expect(await refusal({ key: EFFORT, item: ROLE, valueText: "", reason: "why" }))
       .toContain("already not set");
+  });
+
+  it("still names a stored level no harness offers, rather than hiding it as unset", async () => {
+    // The normalisation is about the EMPTY string and nothing else. Reading a
+    // stale level back as "not set" would tell the user the field is clear
+    // while the role is stranded on a level nothing honours — and would leave
+    // the clear that fixes it refused as "already not set".
+    pinRole("ultra-stale");
+
+    const entry = await getSettingForAgent(fx.deps.read, fx.sessionId, EFFORT);
+    expect(entry.items?.find((item) => item.address === ROLE)?.display).toBe('"ultra-stale"');
+
+    const card = await propose({ key: EFFORT, item: ROLE, valueText: "", reason: "clear it" });
+    expect(card.from).toBe('"ultra-stale"');
+    expect(card.to).toBe("not set");
   });
 });
 
@@ -256,6 +325,39 @@ describe("the store has the last word on what was applied", () => {
     expect(fx.credentialStore.getFailoverCutoffs("anthropic", "sub").session).toBe(80);
   });
 
+  it("reports a side change the write dropped, which the card also promised", async () => {
+    const ROLE = "deep-dive";
+    const swap = levelDroppingSwap();
+    fx.credentialStore.setRole(ROLE, {
+      name: ROLE,
+      params: { kind: "pinned", harnessId: swap.harnessId, ...swap.from, reasoningEffort: swap.level },
+    } as never);
+
+    const card = await propose({
+      key: "roles[].model",
+      item: ROLE,
+      valueText: JSON.stringify(swap.to),
+      reason: "a better model",
+    });
+    // The card promises the model AND the level the new selection cannot
+    // honour. The user approves all of it, so all of it is what "applied" has
+    // to mean.
+    expect(card.alsoChanges?.some((side) => side.key === "roles[].reasoningEffort")).toBe(true);
+
+    // A writer that lands its own field and keeps the neighbour — the one shape
+    // a check of the named field alone cannot see.
+    const real = fx.credentialStore.setRole.bind(fx.credentialStore);
+    vi.spyOn(fx.credentialStore, "setRole").mockImplementation((name, role) =>
+      real(name, role && name === ROLE
+        ? { ...role, params: { ...role.params, reasoningEffort: swap.level } } as never
+        : role));
+
+    const { card: resolved } = await resolveSettingsProposal(fx.deps, fx.sessionId, card.cardId, "apply");
+
+    expect(resolved.phase).toBe("partial");
+    expect(resolved.outcomeDetail).toContain(swap.level);
+  });
+
   it("says nothing when the store holds what the card showed", async () => {
     fx.credentialStore.setDeclaredSetting(BUDGET, 4096);
     const card = await propose({ key: BUDGET, valueText: "8192", reason: "more room" });
@@ -288,38 +390,47 @@ describe("storedValueMismatch", () => {
     expect(message).toContain("2048");
   });
 
-  it("compares the approved prose itself, not ShipIt's summary of its size", async () => {
+  describe("a prose card", () => {
     const ROLE = "deep-dive";
-    fx.credentialStore.setRole(ROLE, {
-      name: ROLE,
-      prompt: "C".repeat(300),
-      params: {
-        kind: "pinned",
-        harnessId: "claude",
-        serviceId: "anthropic",
-        billingMode: "sub",
-        modelId: "claude-opus-5",
-      },
-    } as never);
 
-    // The card's `to` for a prose change is the two sizes and a `+n −n`, so a
-    // rewrite of the same length reads identically. The text the user approved
-    // is what the click promised.
-    const message = storedValueMismatch(
-      findSetting("roles[].prompt")!,
-      {
-        operation: "set",
-        target: { key: "roles[].prompt", item: ROLE },
-        proposed: "B".repeat(300),
-      },
-      card({
-        to: "300 characters",
-        textChange: { added: 1, removed: 1 } as SettingsProposalCard["textChange"],
-      }),
-      await getSettingForAgent(fx.deps.read, fx.sessionId, "roles[].prompt"),
-    );
+    async function proseMismatch(approved: string): Promise<string | null> {
+      return storedValueMismatch(
+        findSetting("roles[].prompt")!,
+        { operation: "set", target: { key: "roles[].prompt", item: ROLE }, proposed: approved },
+        // What a prose card actually carries: ShipIt's summary of the text,
+        // never the text. The diff itself lives in `textChange`.
+        card({
+          to: "300 characters",
+          textChange: { added: 1, removed: 1 } as SettingsProposalCard["textChange"],
+        }),
+        await getSettingForAgent(fx.deps.read, fx.sessionId, "roles[].prompt"),
+      );
+    }
 
-    expect(message).toContain("roles[].prompt");
+    beforeEach(() => {
+      fx.credentialStore.setRole(ROLE, {
+        name: ROLE,
+        prompt: "C".repeat(300),
+        params: {
+          kind: "pinned",
+          harnessId: allHarnesses()[0]!.id,
+          serviceId: "anthropic",
+          billingMode: "sub",
+          modelId: "claude-opus-5",
+        },
+      } as never);
+    });
+
+    it("is quiet when the store holds the approved text", async () => {
+      // The half that makes the next case a guard rather than a coincidence:
+      // comparing the card's summary against the stored text would report a
+      // mismatch HERE, where there is none.
+      expect(await proseMismatch("C".repeat(300))).toBeNull();
+    });
+
+    it("catches a rewrite of the same length, which the summary cannot see", async () => {
+      expect(await proseMismatch("B".repeat(300))).toContain("roles[].prompt");
+    });
   });
 
   it("says nothing about an instance the read no longer lists", async () => {

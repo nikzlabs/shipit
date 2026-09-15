@@ -103,10 +103,6 @@ const DERIVED_FIXTURES: Record<string, unknown> = {
   // route never touched could hold — the projection is the door, not the route.
   "integrations.sshHosts[].address": `https://svc:${TOKEN}@prod.example.com/p?token=${TOKEN}`, // gitleaks:allow
   "integrations.sshHosts[].user": `deploy ${TOKEN}`,
-  // A level is a word from the harness's own list, and this projection exists
-  // to say that an empty one is no level at all. The fixture is still what an
-  // unconstrained store could hold: the gate is a door, not the writer.
-  "roles[].reasoningEffort": `high ${TOKEN}`,
 };
 
 /**

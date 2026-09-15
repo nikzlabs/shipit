@@ -1,4 +1,3 @@
-import { allHarnesses, reasoningOptionsFor } from "../catalogue/index.js";
 import { joinRendered, renderOwn, renderValue, type Rendered } from "./rendered.js";
 import type {
   AnySettingDeclaration,
@@ -245,25 +244,6 @@ const SSH_USER = /^[A-Za-z0-9._-]{1,64}$/;
 
 export function sshUserProjection(raw: unknown): string | null {
   return typeof raw === "string" && SSH_USER.test(raw) ? raw : null;
-}
-
-/**
- * A reasoning level, when it is one a harness offers.
- *
- * An allowlist rather than a shape gate, because the levels are the harnesses'
- * own vocabulary — `low`, `high`, `max` — and never anything the user writes.
- * Two things follow, and the second is why this exists: a stored level nothing
- * offers any more is emitted as nothing, which is what `roleModelOperation`'s
- * side change already says about a level a new model drops; and an EMPTY level
- * reads as "not set", because `pinned()` stores nothing for one — so a proposal
- * to CLEAR the level would otherwise display `"high" → ""` over a write that
- * stores no level at all (docs/299-agent-settings-access req 4).
- */
-export function reasoningLevelProjection(raw: unknown): string | null {
-  if (typeof raw !== "string" || !raw) return null;
-  const offered = allHarnesses().some((harness) =>
-    reasoningOptionsFor(harness.id, undefined).some((option) => option.value === raw));
-  return offered ? raw : null;
 }
 
 /**

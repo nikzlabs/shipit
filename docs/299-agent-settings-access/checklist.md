@@ -641,11 +641,25 @@ value and stored another. Both re-verified at the code.
       declaration added tomorrow is covered without a second step. It holds the
       class where SERIALISING drops the value, and not a writer that normalises
       on its own — the codec cannot see one, which is what the next item is for
-- [x] req 4 — a writer's own normalisation is declared too: `pinned()` stores no
-      level for an empty string, so `roles[].reasoningEffort` emits through an
-      allowlist of the levels a harness offers and an empty one reads as "not
-      set" on both sides of the card. Clearing a role's level showed `"high" →
-      ""` over params that store no level at all
+- [x] req 4 — a declared type says what the WRITER stores too, which the codec
+      round trip cannot reach: `serialize` never runs for a bespoke store, so
+      nothing there sees `pinned()` drop a role's empty reasoning level.
+      `text`'s `emptyIsUnset` declares it and `validate` answers null, so
+      clearing a level shows "not set" rather than the `""` it was asked for.
+      Opt-in on purpose: an instructions box stores the empty string it was
+      cleared to
+- [x] The first draft put that in the PROJECTION instead, and it was wrong
+      twice: a stored level no harness offers read as "not set" while still
+      stored and unclearable ("already not set"), and a real `alsoChanges`
+      deletion collapsed to "not set → not set" and vanished from the card.
+      Guarded now — a stale level is still named back
+- [x] req 4 — `text` refuses an unpaired surrogate, which the file writers turn
+      into U+FFFD: the store would hold text nobody approved, and no card could
+      have shown the substitution
+- [x] req 4 — the backstop verifies EVERYTHING the card displayed: each
+      `alsoChanges` entry carries its declaration key and is read back at the
+      same address, since a write that lands its own field while keeping a
+      neighbour is what a check of the named field alone cannot see
 - [x] req 4 — clearing `services.nonTurnModel` is refused while a model is
       eligible, rather than shown as "not set". `seedNonTurnModel` runs from the
       save hook AND from every build of the settings payload, so unset is not a

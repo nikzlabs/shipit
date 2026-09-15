@@ -1302,13 +1302,18 @@ the setting, rather than patched into whichever path noticed it.
    `store-round-trip.test.ts` holds it over the whole registry — which catches
    the class where **serialising drops the value**, and not a writer that
    normalises on its own, since the codec cannot see one.
-2. **A projection emits what the store can hold, so a value it cannot is shown
-   as the "not set" it becomes.** `roles[].reasoningEffort` is the worked case:
-   `pinned()` stores no level for an empty string, so the level is emitted
-   through an allowlist of the levels a harness offers, and an empty one reads
-   as "not set" on both sides of the card. This is where a writer's own
-   normalisation is declared, and it is the half the codec contract above
-   cannot reach.
+2. **A declared type also says what the WRITER stores**, which is the half the
+   codec contract above cannot reach: `serialize` never runs for a bespoke
+   store, so nothing in the round trip can see `pinned()` dropping a role's
+   empty reasoning level. `text`'s `emptyIsUnset` is where that is declared, and
+   `validate` answers `null` — so a card clearing the level says "not set"
+   rather than `""`. Deliberately opt-in: an instructions box stores the empty
+   string it was cleared to, and reporting *that* as "not set" is the same lie
+   reversed. The first draft of this put the normalisation in the declaration's
+   PROJECTION instead, which was wrong twice over — it made a stored level
+   nothing offers read as "not set" while it was still stored and unclearable,
+   and it collapsed a genuine `alsoChanges` deletion into "not set → not set",
+   hiding a write the card was meant to show.
 3. **A change that cannot be shown truthfully is refused**, which is the rule
    `hostPreflight` and `requireEmittable` already apply. Clearing the
    background-model pin joins them: `seedNonTurnModel` runs from the save hook
@@ -1323,6 +1328,11 @@ read that already answers `effect`, so no second round trip — and compares it
 with what the card promised. A disagreement resolves the card `partial` naming
 both values, rather than `applied`. This is what covers a save hook, whose side
 effects nothing before the write can see.
+
+It verifies **everything the card displayed**, not only the field the card is
+named for: each `alsoChanges` entry carries its declaration key and is read back
+at the same address, because a write that lands its own field while keeping a
+neighbour is exactly the shape a check of the named field alone cannot see.
 
 What it compares is chosen so that it cannot invent a defect, and **failing to
 observe a value is never treated as one** — every branch that cannot compare
