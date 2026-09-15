@@ -9,11 +9,22 @@
  * every read is the public projection. What the user needs from this screen is
  * the `authorized_keys` line to install on the server, and the fingerprint of
  * the host key ShipIt recorded, to compare with the server's own.
+ *
+ * A destination is edited in place (req 14) rather than deleted and re-added,
+ * because the grant on each session names the destination's id: re-adding mints
+ * a new id and silently revokes it everywhere.
  */
 
 // eslint-disable-next-line no-restricted-imports -- useEffect: load the account-wide registry when this panel mounts (external system sync)
 import { useEffect, useState } from "react";
-import { HardDrivesIcon, KeyIcon, PlusIcon, TrashIcon, WarningIcon } from "@phosphor-icons/react";
+import {
+  HardDrivesIcon,
+  KeyIcon,
+  PencilSimpleIcon,
+  PlusIcon,
+  TrashIcon,
+  WarningIcon,
+} from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import { Button } from "./ui/button.js";
 import { CopyButton } from "./ui/copy-button.js";
@@ -26,11 +37,74 @@ const FIELD_CLASS =
   + "text-sm text-(--color-text-primary) placeholder-(--color-text-tertiary) focus:outline-none "
   + "focus:ring-1 focus:ring-(--color-border-focus)";
 
+interface HostForm {
+  label: string;
+  address: string;
+  user: string;
+  port: string;
+}
+
+const EMPTY_FORM: HostForm = { label: "", address: "", user: "", port: "22" };
+
+/**
+ * The same four fields for a new destination and for an edit, so both validate
+ * alike. Disabled while a save is in flight: an edit typed after the request left
+ * is not in it, and the reset on success would drop it without a trace.
+ */
+function HostFields({
+  form,
+  onChange,
+  disabled,
+}: {
+  form: HostForm;
+  onChange: (next: HostForm) => void;
+  disabled: boolean;
+}) {
+  return (
+    <div className="grid grid-cols-2 gap-2">
+      <input
+        className={FIELD_CLASS}
+        placeholder="Name (e.g. prod)"
+        aria-label="Name"
+        disabled={disabled}
+        value={form.label}
+        onChange={(e) => onChange({ ...form, label: e.target.value })}
+      />
+      <input
+        className={FIELD_CLASS}
+        placeholder="Hostname or IP"
+        aria-label="Address"
+        disabled={disabled}
+        value={form.address}
+        onChange={(e) => onChange({ ...form, address: e.target.value })}
+      />
+      <input
+        className={FIELD_CLASS}
+        placeholder="User"
+        aria-label="User"
+        disabled={disabled}
+        value={form.user}
+        onChange={(e) => onChange({ ...form, user: e.target.value })}
+      />
+      <input
+        className={FIELD_CLASS}
+        placeholder="Port"
+        aria-label="Port"
+        disabled={disabled}
+        value={form.port}
+        onChange={(e) => onChange({ ...form, port: e.target.value })}
+      />
+    </div>
+  );
+}
+
+type Editor = { kind: "add" } | { kind: "edit"; id: string } | null;
+
 export function SshHostsSettings() {
   const [hosts, setHosts] = useState<SshHostPublic[] | null>(null);
-  const [adding, setAdding] = useState(false);
+  const [editor, setEditor] = useState<Editor>(null);
   const [busy, setBusy] = useState(false);
-  const [form, setForm] = useState({ label: "", address: "", user: "", port: "22" });
+  const [form, setForm] = useState<HostForm>(EMPTY_FORM);
 
   // eslint-disable-next-line no-restricted-syntax -- external system sync: read the registry on mount
   useEffect(() => {
@@ -49,29 +123,53 @@ export function SshHostsSettings() {
     return () => { cancelled = true; };
   }, []);
 
-  const add = async () => {
+  /**
+   * One submit for both modes. An edit is a PATCH of the same four fields, which
+   * keeps every session's grant — the grant names the destination's id, and
+   * delete-and-re-add would mint a new one.
+   */
+  const save = async () => {
+    if (!editor) return;
+    const editingId = editor.kind === "edit" ? editor.id : null;
     setBusy(true);
     try {
-      const res = await fetch("/api/ssh-hosts", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          label: form.label,
-          address: form.address,
-          user: form.user,
-          port: Number(form.port) || 22,
-        }),
-      });
+      const res = await fetch(
+        editingId ? `/api/ssh-hosts/${encodeURIComponent(editingId)}` : "/api/ssh-hosts",
+        {
+          method: editingId ? "PATCH" : "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            label: form.label,
+            address: form.address,
+            user: form.user,
+            // The raw field, so the route rejects "abc" or "0" and says why. Coercing
+            // here would send 22 instead, quietly moving the destination — and on an
+            // edit that also forgets the key recorded for the real port.
+            port: form.port.trim(),
+          }),
+        },
+      );
       const body = (await res.json()) as { host?: SshHostPublic; error?: string };
       if (!res.ok || !body.host) throw new Error(body.error ?? `HTTP ${res.status}`);
-      setHosts((prev) => [...(prev ?? []), body.host!]);
-      setForm({ label: "", address: "", user: "", port: "22" });
-      setAdding(false);
+      const saved = body.host;
+      setHosts((prev) =>
+        editingId
+          ? (prev ?? []).map((h) => (h.id === editingId ? saved : h))
+          : [...(prev ?? []), saved],
+      );
+      setForm(EMPTY_FORM);
+      setEditor(null);
     } catch (err) {
-      useUiStore.getState().setToast({ message: `Could not add the SSH host: ${String(err)}` });
+      const verb = editingId ? "save the changes to" : "add";
+      useUiStore.getState().setToast({ message: `Could not ${verb} the SSH host: ${String(err)}` });
     } finally {
       setBusy(false);
     }
+  };
+
+  const startEdit = (host: SshHostPublic) => {
+    setForm({ label: host.label, address: host.address, user: host.user, port: String(host.port) });
+    setEditor({ kind: "edit", id: host.id });
   };
 
   const remove = async (host: SshHostPublic) => {
@@ -109,13 +207,58 @@ export function SshHostsSettings() {
 
   return (
     <div className="flex flex-col gap-2" data-testid="ssh-hosts-settings">
-      {hosts?.length === 0 && !adding && (
+      {hosts?.length === 0 && editor === null && (
         <p className="text-xs text-(--color-text-tertiary)">
           No destinations yet. ShipIt generates a key per destination; you install its public line on the server.
         </p>
       )}
 
-      {(hosts ?? []).map((host) => (
+      {(hosts ?? []).map((host) => {
+        const isEditing = editor?.kind === "edit" && editor.id === host.id;
+        const endpointChanged =
+          isEditing
+          && (form.address.trim().toLowerCase() !== host.address || (Number(form.port) || 22) !== host.port);
+        return isEditing ? (
+          <div
+            key={host.id}
+            className="rounded-lg border border-(--color-border-secondary) bg-(--color-bg-secondary) p-3"
+            data-testid="ssh-host-row"
+          >
+            <HostFields form={form} onChange={setForm} disabled={busy} />
+            <p className="mt-2 text-xs text-(--color-text-tertiary)">
+              Sessions granted this destination keep it.
+            </p>
+            {host.hostKeyFingerprint
+              && (endpointChanged ? (
+                <p className="mt-1 flex items-start gap-1.5 text-xs text-(--color-warning)">
+                  <WarningIcon size={ICON_SIZE.SM} className="mt-0.5 shrink-0" />
+                  <span>
+                    Saving forgets the recorded server key ({host.hostKeyType} {host.hostKeyFingerprint}).
+                    The next connection verifies the server again and posts a fresh fingerprint.
+                  </span>
+                </p>
+              ) : (
+                <p className="mt-1 text-xs text-(--color-text-tertiary)">
+                  Changing the address or port forgets the recorded server key; the next connection
+                  verifies the server again.
+                </p>
+              ))}
+            <div className="mt-2 flex items-center gap-2">
+              <Button
+                size="md"
+                disabled={!canSubmit || busy}
+                onClick={() => void save()}
+                data-testid="ssh-host-save"
+                {...bindSetting("integrations.sshHosts")}
+              >
+                Save changes
+              </Button>
+              <Button variant="ghost" size="md" disabled={busy} onClick={() => setEditor(null)}>
+                Cancel
+              </Button>
+            </div>
+          </div>
+        ) : (
         <div
           key={host.id}
           className="rounded-lg border border-(--color-border-secondary) bg-(--color-bg-secondary) p-3"
@@ -139,6 +282,17 @@ export function SshHostsSettings() {
                 size="md"
                 variant="secondary"
               />
+              <Button
+                variant="ghost"
+                size="md"
+                disabled={busy}
+                onClick={() => startEdit(host)}
+                aria-label={`Edit ${host.label}`}
+                data-testid="ssh-host-edit"
+                {...bindSetting("integrations.sshHosts")}
+              >
+                <PencilSimpleIcon size={ICON_SIZE.SM} />
+              </Button>
               <Button
                 variant="ghost"
                 size="md"
@@ -182,61 +336,36 @@ export function SshHostsSettings() {
             )}
           </div>
         </div>
-      ))}
+        );
+      })}
 
-      {adding ? (
+      {editor?.kind === "add" ? (
         <div className="rounded-lg border border-(--color-border-secondary) bg-(--color-bg-secondary) p-3">
-          <div className="grid grid-cols-2 gap-2">
-            <input
-              className={FIELD_CLASS}
-              placeholder="Name (e.g. prod)"
-              aria-label="Name"
-              value={form.label}
-              onChange={(e) => setForm({ ...form, label: e.target.value })}
-            />
-            <input
-              className={FIELD_CLASS}
-              placeholder="Hostname or IP"
-              aria-label="Address"
-              value={form.address}
-              onChange={(e) => setForm({ ...form, address: e.target.value })}
-            />
-            <input
-              className={FIELD_CLASS}
-              placeholder="User"
-              aria-label="User"
-              value={form.user}
-              onChange={(e) => setForm({ ...form, user: e.target.value })}
-            />
-            <input
-              className={FIELD_CLASS}
-              placeholder="Port"
-              aria-label="Port"
-              value={form.port}
-              onChange={(e) => setForm({ ...form, port: e.target.value })}
-            />
-          </div>
+          <HostFields form={form} onChange={setForm} disabled={busy} />
           <div className="mt-2 flex items-center gap-2">
             <Button
               size="md"
               disabled={!canSubmit || busy}
-              onClick={() => void add()}
+              onClick={() => void save()}
               data-testid="ssh-host-save"
               {...bindSetting("integrations.sshHosts")}
             >
               Add destination
             </Button>
-            <Button variant="ghost" size="md" disabled={busy} onClick={() => setAdding(false)}>
+            <Button variant="ghost" size="md" disabled={busy} onClick={() => setEditor(null)}>
               Cancel
             </Button>
           </div>
         </div>
-      ) : (
+      ) : editor === null ? (
         <div>
           <Button
             variant="secondary"
             size="md"
-            onClick={() => setAdding(true)}
+            onClick={() => {
+              setForm(EMPTY_FORM);
+              setEditor({ kind: "add" });
+            }}
             data-testid="ssh-host-add"
             {...bindSetting("integrations.sshHosts")}
           >
@@ -244,7 +373,7 @@ export function SshHostsSettings() {
             Add SSH host
           </Button>
         </div>
-      )}
+      ) : null}
     </div>
   );
 }

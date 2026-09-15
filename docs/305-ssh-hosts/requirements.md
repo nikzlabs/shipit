@@ -35,9 +35,20 @@ description: The agent runs commands on a remote server over SSH from any sessio
     the configured address and port, from the orchestrator's own network. A key a session
     presents that ShipIt cannot observe there is refused, and the user can see why.
 
+14. The user can change an existing destination's name, address, user and port in place,
+    without losing the sessions that were granted it. Changing the address or port makes
+    ShipIt forget the server key it recorded, and the screen says so before the change is
+    saved.
+
 ## Open questions
 
 ## Resolved questions
+
+- 2026-09-15 — Can a destination be edited? The user asked for it in the UI: a Tailscale peer
+  had been added by its MagicDNS name, which resolves neither inside a session container nor
+  from the orchestrator's own host-key scan, so every connection failed. The only workaround
+  was delete-and-re-add, which drops the destination's key and its grant on every session
+  (req 14).
 
 - 2026-09-14 — How does ShipIt learn a destination's real host key? The first `session-bind`
   proves a key exchange with whoever holds the supplied host key, not with the configured
