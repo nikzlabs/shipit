@@ -13,6 +13,7 @@ import {
   destroyContainer,
   ContainerCreateCancelledError,
   prepareOverlayDirs,
+  ensureDepDirMountParents,
   ensurePnpmStoreDir,
   selfHealWorkspaceOwnership,
   type LifecycleDeps,
@@ -1151,19 +1152,44 @@ describe("prepareOverlayDirs (planning#147)", () => {
 
   // Docker creates a missing nested mount destination as root inside the workspace volume,
   // which the non-root worker then cannot write (docs/150).
-  it("creates a dep dir's missing ignored parent on the clone, owned by the worker uid", () => {
-    const myUid = process.getuid?.();
-    if (myUid === undefined) return;
-    process.env.SHIPIT_SESSION_WORKER_UID = String(myUid);
+  it("creates a dep dir's missing ignored parent on the clone", () => {
+    delete process.env.SHIPIT_SESSION_WORKER_UID;
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ovl-parent-"));
     const { workspaceDir } = makeWorkspaceWithMarker(tmpDir);
     const spec = { ...makeSpec(tmpDir, "7777aaaa"), depDir: ".tools/blender" };
     prepareOverlayDirs([spec], { workspaceDir });
-    const parent = path.join(workspaceDir, ".tools");
-    expect(fs.existsSync(parent)).toBe(true);
-    expect(fs.lstatSync(parent).uid).toBe(myUid);
+    expect(fs.existsSync(path.join(workspaceDir, ".tools"))).toBe(true);
     // The mount point itself is Docker's to create; only the chain above it is ours.
     expect(fs.existsSync(path.join(workspaceDir, ".tools", "blender"))).toBe(false);
+  });
+
+  // Asserting the resulting uid cannot fail here: mkdir already produces the test process's
+  // own uid, which is the only worker uid this test can set. Assert the handback itself.
+  it("hands every created parent level to the session worker", () => {
+    delete process.env.SHIPIT_SESSION_WORKER_UID;
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ovl-parent-"));
+    const { workspaceDir } = makeWorkspaceWithMarker(tmpDir);
+    const chown = vi.fn();
+    const spec = { ...makeSpec(tmpDir, "9999cccc"), depDir: "a/b/node_modules" };
+    ensureDepDirMountParents([spec], workspaceDir, chown);
+    expect(chown.mock.calls.map((c) => c[0])).toEqual([
+      path.join(workspaceDir, "a"),
+      path.join(workspaceDir, "a", "b"),
+    ]);
+  });
+
+  it("does not chown a parent that already exists", () => {
+    delete process.env.SHIPIT_SESSION_WORKER_UID;
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ovl-parent-"));
+    const { workspaceDir } = makeWorkspaceWithMarker(tmpDir);
+    fs.mkdirSync(path.join(workspaceDir, "a"), { recursive: true });
+    const chown = vi.fn();
+    ensureDepDirMountParents(
+      [{ ...makeSpec(tmpDir, "aaaa9999"), depDir: "a/node_modules" }],
+      workspaceDir,
+      chown,
+    );
+    expect(chown).not.toHaveBeenCalled();
   });
 
   it("does not touch the clone for a dep dir whose parents already exist", () => {

@@ -1115,6 +1115,27 @@ refuses when any **declared** dir is unmounted; drops are reported per-dir with 
 `[overlay-measure]` and warned at provisioning; and the skip warning fires past its
 custom-dep-dirs bail-out when a declared dir is absent.
 
+**Review caught a second, narrower form of the same mistake in the fix itself.** The first cut
+asked "is this ancestor ignored?" with the bare-plus-slash query PR #1256 established. But
+`git check-ignore` answers the slash form from the *containing* rule: under `*` followed by
+`!foo` it reports `foo/` ignored while `foo` is not. Measured on git 2.x:
+
+```
+$ printf '*\n!foo\n' > .gitignore
+$ printf 'foo\nfoo/\n' | git check-ignore --stdin
+foo/                      # `foo` itself is absent from the output — it is NOT ignored
+$ git check-ignore -v -- foo
+.gitignore:2:!foo	foo    # the matching rule is a negation
+```
+
+So the slash form alone would have accepted an absent *tracked* directory — the very thing the
+parent check exists to reject. The fix reads the matching RULE via
+`check-ignore -v --non-matching` and drops any path a `!` rule re-includes. Both query forms are
+still required: the bare form alone misses a directory-only rule before the directory exists.
+
 **The generalizable lesson**: an eligibility test that reads the working tree must say which
 absences are *expected*. "The parent exists" silently encodes "the parent is tracked" — and
 for a dependency directory, whose whole point is being gitignored, that is the wrong default.
+The follow-on lesson is narrower and sharper: **a query form chosen to work around one of git's
+matching quirks carries its own**, so an eligibility answer derived from `check-ignore` output
+should come from the rule git matched, not from which spelling of the path came back.

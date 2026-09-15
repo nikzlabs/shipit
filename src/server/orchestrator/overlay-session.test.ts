@@ -9,6 +9,7 @@ import {
   classifyDepDirsForOverlay,
   depDirsForSession,
   missingDepDirParents,
+  parseUnignoredByNegation,
   supersededSessionOverlayLayers,
   isPnpmRepo,
   preStampInstallMarker,
@@ -537,6 +538,29 @@ describe("validDepDirsForOverlay", () => {
     expect(await validDepDirsForOverlay(["packages/app/node_modules"], dir)).toEqual([]);
   });
 
+  // `git check-ignore` answers the slash form from the containing rule: under `*` + `!foo` it
+  // reports `foo/` ignored while `foo` is not. Treating that as an ignored parent would accept
+  // an absent TRACKED directory — exactly what the old parent test rejected.
+  it("drops a dep dir whose missing parent is explicitly un-ignored by a negation rule", async () => {
+    const dir = await repo({ gitignore: "*\n!foo\n" });
+    const got = await classifyDepDirsForOverlay(["foo/node_modules"], dir);
+    expect(got.valid).toEqual([]);
+    expect(got.dropped).toEqual([{ depDir: "foo/node_modules", reason: "missing-tracked-parent" }]);
+  });
+
+  it("drops a dep dir that a negation rule re-includes as tracked source", async () => {
+    const dir = await repo({ gitignore: "*\n!vendor\n", dirs: ["vendor"] });
+    const got = await classifyDepDirsForOverlay(["vendor"], dir);
+    expect(got.valid).toEqual([]);
+    expect(got.dropped).toEqual([{ depDir: "vendor", reason: "not-git-ignored" }]);
+  });
+
+  // A negation elsewhere in the file must not disqualify an unrelated ignored ancestor.
+  it("keeps an ignored dep dir when the negation applies to a SIBLING path", async () => {
+    const dir = await repo({ gitignore: "*\n!src\n.tools/\n", dirs: ["src"] });
+    expect(await validDepDirsForOverlay([".tools/blender"], dir)).toEqual([".tools/blender"]);
+  });
+
   it("reports the reason each dropped dep dir was dropped", async () => {
     const dir = await repo({ gitignore: ".tools/\n", dirs: ["src"] });
     const got = await classifyDepDirsForOverlay([".tools/blender", "src", "vendor"], dir);
@@ -587,6 +611,23 @@ describe("validDepDirsForOverlay", () => {
     tmpDirs.push(nonGit);
     fs.mkdirSync(path.join(nonGit, "node_modules"));
     expect(await validDepDirsForOverlay(["node_modules"], nonGit)).toEqual([]);
+  });
+});
+
+describe("parseUnignoredByNegation", () => {
+  it("collects only the paths whose matching rule is a negation", () => {
+    const out = [
+      ".gitignore:2:!foo\tfoo",
+      ".gitignore:1:*\tfoo/",
+      ".gitignore:1:*\tbar",
+      "::\tsrc",
+    ].join("\n");
+    expect(parseUnignoredByNegation(out)).toEqual(new Set(["foo"]));
+  });
+
+  it("tolerates a colon in the ignore file's own path and an empty output", () => {
+    expect(parseUnignoredByNegation("a:b/.gitignore:3:!keep\tkeep")).toEqual(new Set(["keep"]));
+    expect(parseUnignoredByNegation("")).toEqual(new Set());
   });
 });
 

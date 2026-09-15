@@ -222,6 +222,37 @@ function depDirAncestors(depDir: string): string[] {
   return ancestors;
 }
 
+// `<source>:<line>:<pattern>\t<path>` per queried path. A leading `!` marks a re-include rule.
+// Greedy source match: a .gitignore path may itself contain a colon.
+const CHECK_IGNORE_VERBOSE_LINE = /^(.*):(\d+):(.*)\t(.*)$/;
+
+// A path git re-includes with `!rule` is tracked source, whatever the slash form reports.
+// `git check-ignore` answers the slash form from the containing rule (`*` matches `foo/` even
+// under `!foo`), so the bare form's matching RULE is the only thing that distinguishes an
+// ignored directory from an explicitly un-ignored one.
+export function parseUnignoredByNegation(verboseOutput: string): Set<string> {
+  const unignored = new Set<string>();
+  for (const line of verboseOutput.split("\n")) {
+    const m = CHECK_IGNORE_VERBOSE_LINE.exec(line);
+    if (!m) continue;
+    if (m[3]?.startsWith("!") && m[4]) unignored.add(m[4]);
+  }
+  return unignored;
+}
+
+async function unignoredByNegation(paths: string[], workspaceDir: string): Promise<Set<string>> {
+  if (paths.length === 0) return new Set();
+  try {
+    const out = await safeSimpleGit(workspaceDir).raw([
+      "check-ignore", "-v", "--non-matching", "--", ...paths,
+    ]);
+    return parseUnignoredByNegation(out);
+  } catch {
+    // Exit 1 means nothing is ignored, so every dep dir is dropped anyway.
+    return new Set();
+  }
+}
+
 export async function classifyDepDirsForOverlay(
   depDirs: string[],
   workspaceDir: string,
@@ -236,15 +267,17 @@ export async function classifyDepDirsForOverlay(
       if (!fs.existsSync(path.join(workspaceDir, ancestor))) missingAncestors.add(ancestor);
     }
   }
+  const bare = [...depDirs, ...missingAncestors];
   let ignored: Set<string>;
   try {
     // The slash form matches directory-only ignore rules before the directory exists.
-    const queries = [...depDirs, ...missingAncestors].flatMap((p) => [p, `${p}/`]);
-    ignored = new Set(await safeSimpleGit(workspaceDir).checkIgnore(queries));
+    ignored = new Set(await safeSimpleGit(workspaceDir).checkIgnore(bare.flatMap((p) => [p, `${p}/`])));
   } catch {
     return { valid: [], dropped: depDirs.map((depDir) => ({ depDir, reason: "git-unavailable" })) };
   }
-  const isIgnored = (p: string): boolean => ignored.has(p) || ignored.has(`${p}/`);
+  const unignored = await unignoredByNegation(bare, workspaceDir);
+  const isIgnored = (p: string): boolean =>
+    !unignored.has(p) && (ignored.has(p) || ignored.has(`${p}/`));
   const result: DepDirEligibility = { valid: [], dropped: [] };
   for (const depDir of depDirs) {
     if (!isIgnored(depDir)) {

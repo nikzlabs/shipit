@@ -100,6 +100,12 @@ Split into a pure inert plumbing refactor (3a) and the flag-gated populator + in
       error (non-git dir, git failure) drops all (conservative). A dropped dir falls back to a plain
       install for that path; never fatal, and now reported with its reason
       (`not-git-ignored` / `missing-tracked-parent` / `git-unavailable`) in `[overlay-measure]`.
+      **"Ignored" here means git's own verdict, not the slash query's.** `git check-ignore` answers
+      the `foo/` form from the containing rule, so under `*` + `!foo` it reports `foo/` ignored while
+      `foo` is not — the slash form alone would accept an absent TRACKED directory. A second probe
+      (`check-ignore -v --non-matching`, `parseUnignoredByNegation`) reads the matching RULE and
+      excludes any path a `!` rule re-includes. Both forms are still needed: the bare form alone
+      misses a directory-only rule before the directory exists, which is the PR #1256 bug.
 - [x] Tests: `classifyDepDirsForOverlay`/`validDepDirsForOverlay` (ignored-kept, tracked-source-dropped,
       **ignored-missing-parent-KEPT**, missing-tracked-parent-dropped, per-drop reasons, nested,
       mixed-filter, non-git→[]); `prepareOverlaySpecs` (flag-off, ineligible, valid→spec anchored

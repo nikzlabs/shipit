@@ -310,7 +310,8 @@ describe("overlay-publish: publishDepDirOverlayBases", () => {
   it("publishes a dep dir whose parent is itself git-ignored and absent on the clone", async () => {
     workspaceDir = makeWorkspace(["node_modules"], { shipitDepDirs: ["node_modules", ".tools/blender"] });
     fs.writeFileSync(path.join(workspaceDir, ".gitignore"), "node_modules/\n.tools/\n");
-    fs.mkdirSync(path.join(workspaceDir, ".tools", "blender"), { recursive: true });
+    // `.tools` must NOT exist: creating it is what made the old parent-exists check accept this.
+    expect(fs.existsSync(path.join(workspaceDir, ".tools"))).toBe(false);
     const out = await publishDepDirOverlayBases(
       { session: { remoteUrl: REPO_URL, kind: undefined, workspaceDir }, workerUrl: "http://w", installOk: true },
       depsWith(),

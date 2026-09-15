@@ -53,4 +53,14 @@ describe("installSkipOutputWarning", () => {
   it("stays quiet on an absent dir when every install step is a plain dependency install", () => {
     expect(installSkipOutputWarning(["npm ci"], ["node_modules", "dist"], ["dist"])).toBeNull();
   });
+
+  // An implicit `node_modules` was never declared by the repo, so an absent one must not be
+  // described as a missing declared output — the default path keeps its original wording.
+  it("leaves the DEFAULT dep-dirs warning untouched when node_modules is absent", () => {
+    const withAbsent = installSkipOutputWarning(
+      ["npm ci", "npm run build"], ["node_modules"], ["node_modules"],
+    );
+    expect(withAbsent).toBe(installSkipOutputWarning(["npm ci", "npm run build"], ["node_modules"]));
+    expect(withAbsent).not.toContain("not present in this workspace");
+  });
 });

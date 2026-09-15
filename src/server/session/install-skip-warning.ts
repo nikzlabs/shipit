@@ -22,9 +22,11 @@ export function installSkipOutputWarning(
 ): string | null {
   const steps = nonDependencyInstallSteps(commands);
   if (steps.length === 0) return null;
-  // A declared dir that is absent after a skip is the one shape the custom-dep-dirs bail-out
-  // must not swallow: the repo did name it, and the step that fills it did not run (docs/183).
-  if (absentDepDirs.length > 0) {
+  // The two branches partition on the same predicate, so the default-dep-dirs wording below is
+  // reached exactly when it was before. A repo that declared dirs EXPLICITLY and is missing one
+  // is the shape the bail-out must not swallow: it named the dir, and the step filling it did
+  // not run (docs/183). An implicit `node_modules` was never "declared" and keeps the old text.
+  if (!isDefaultDepDirs(depDirs) && absentDepDirs.length > 0) {
     return (
       `[install] skipped (marker matched), but ${absentDepDirs.length} declared agent.dep-dirs ` +
       `entr${absentDepDirs.length === 1 ? "y is" : "ies are"} not present in this workspace: ` +
