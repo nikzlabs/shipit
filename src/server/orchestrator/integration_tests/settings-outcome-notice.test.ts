@@ -15,6 +15,7 @@ import {
   transitionSettingsProposal,
 } from "../services/settings-proposal.js";
 import {
+  flushTurn,
   makeDispatchTurnDeps,
   makeFakeAgent,
   testDispatch,
@@ -102,6 +103,16 @@ function postAndResolve(
     phase,
     resolvedAt: new Date().toISOString(),
   });
+}
+
+/**
+ * `waitForTurn(() => true)` returns on its first check, before `flushTurn` runs
+ * even once — so an assertion after one can read state the result handler has
+ * not reached. A result handler can await an in-flight re-arm and its whole
+ * post-turn sequence, so settling means flushing until those have run.
+ */
+async function settleHandlers(): Promise<void> {
+  for (let i = 0; i < 20; i += 1) await flushTurn();
 }
 
 /** The prompt one attempt's agent process was actually run with. */
@@ -434,7 +445,7 @@ describe("a resident streaming turn, which settles no turn of its own", () => {
     expect(agents[0]!.sendUserMessage.mock.calls).toHaveLength(0);
 
     agents[0]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
-    await waitForTurn(() => true, "flush");
+    await settleHandlers();
     expect(proposals.listUnnotifiedResolved(SESSION).map((r) => r.target.key)).toEqual([KEY]);
 
     releasePrep();
@@ -561,13 +572,13 @@ describe("a resident streaming turn, which settles no turn of its own", () => {
 
     // This result ends the woken turn. The prompt has been submitted but not read.
     agents[0]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
-    await waitForTurn(() => true, "the woken turn's result");
+    await settleHandlers();
     expect(proposals.listUnnotifiedResolved(SESSION)).toHaveLength(1);
 
     // Nor does the result after it: which of the two ended the prompt's own turn
     // is exactly what the harness does not say, so neither settles the receipt.
     agents[0]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
-    await waitForTurn(() => true, "the result after it");
+    await settleHandlers();
     expect(proposals.listUnnotifiedResolved(SESSION)).toHaveLength(1);
   });
 
@@ -588,11 +599,11 @@ describe("a resident streaming turn, which settles no turn of its own", () => {
     await waitForTurn(() => agents[0]!.sendUserMessage.mock.calls.length > 0, "the steered prompt");
 
     agents[0]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
-    await waitForTurn(() => true, "the CLI-started turn's result");
+    await settleHandlers();
     expect(proposals.listUnnotifiedResolved(SESSION)).toHaveLength(1);
 
     agents[0]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
-    await waitForTurn(() => true, "the result after it");
+    await settleHandlers();
     expect(proposals.listUnnotifiedResolved(SESSION)).toHaveLength(1);
   });
 
@@ -652,7 +663,7 @@ describe("a resident streaming turn, which settles no turn of its own", () => {
     await waitForTurn(() => agents[0]!.sendUserMessage.mock.calls.length > 0, "the steered prompt");
 
     agents[0]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
-    await waitForTurn(() => true, "the woken turn ending");
+    await settleHandlers();
 
     // The CLI works through the prompt it had queued, without replaying it, and
     // a second background task reports in while it does.
@@ -662,7 +673,7 @@ describe("a resident streaming turn, which settles no turn of its own", () => {
     });
     agents[0]!.emit("event", { type: "agent_self_wake", taskId: "bg-2", status: "completed" });
     agents[0]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
-    await waitForTurn(() => true, "the queued prompt's own result");
+    await settleHandlers();
     expect(proposals.listUnnotifiedResolved(SESSION)).toHaveLength(1);
   });
 
@@ -747,11 +758,11 @@ describe("a resident streaming turn, which settles no turn of its own", () => {
     expect(promptOfAttempt(0)).toContain("[ShipIt] Since your last turn");
 
     agents[0]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
-    await waitForTurn(() => true, "flush");
+    await settleHandlers();
     expect(proposals.listUnnotifiedResolved(SESSION)).toHaveLength(1);
 
     rejectSubmission(new Error("the session worker never accepted the prompt"));
-    await waitForTurn(() => true, "flush");
+    await settleHandlers();
     expect(proposals.listUnnotifiedResolved(SESSION)).toHaveLength(1);
   });
 
@@ -792,12 +803,12 @@ describe("a resident streaming turn, which settles no turn of its own", () => {
       "the failed turn's post-turn flow",
     );
     acceptSubmission();
-    await waitForTurn(() => true, "the confirmation landing after it");
+    await settleHandlers();
 
     // The prompt ran and its turn ended, so whatever the CLI does next is a turn
     // of its own whether or not it announces itself.
     agents[0]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
-    await waitForTurn(() => true, "the next result");
+    await settleHandlers();
     expect(proposals.listUnnotifiedResolved(SESSION)).toHaveLength(1);
 
     agents[0]!.emit("event", { type: "agent_self_wake", taskId: "bg-1", status: "completed" });
@@ -844,7 +855,7 @@ describe("a resident streaming turn, which settles no turn of its own", () => {
       "the failed turn's post-turn flow",
     );
     acceptSubmission();
-    await waitForTurn(() => true, "the confirmation landing after it");
+    await settleHandlers();
 
     agents[0]!.emit("event", { type: "agent_self_wake", taskId: "bg-1", status: "completed" });
     agents[0]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
@@ -885,16 +896,31 @@ describe("a resident streaming turn, which settles no turn of its own", () => {
 
     // A turn the CLI had already been running ends, then it takes the prompt.
     agents[0]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
-    await waitForTurn(() => true, "the earlier turn's result");
+    await settleHandlers();
     agents[0]!.emit("event", { type: "agent_user_replay", text: steered });
     acceptSubmission();
-    await waitForTurn(() => true, "the confirmation landing after both");
+    await settleHandlers();
 
     agents[0]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
     await waitForTurn(
       () => proposals.listUnnotifiedResolved(SESSION).length === 0,
       "the prompt's own outcome acknowledged",
     );
+  });
+
+  it("does not take another message's replay as proof this prompt was read", async () => {
+    // The CLI replays every user message it consumes, and a live steer the user
+    // typed is one. Only this prompt's own text says the CLI read this prompt.
+    const { release } = await dispatchIntoPreparationWindow();
+
+    agents[0]!.emit("event", { type: "agent_self_wake", taskId: "bg-1", status: "completed" });
+    release();
+    await waitForTurn(() => agents[0]!.sendUserMessage.mock.calls.length > 0, "the steered prompt");
+
+    agents[0]!.emit("event", { type: "agent_user_replay", text: "actually, check the tests first" });
+    agents[0]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+    await settleHandlers();
+    expect(proposals.listUnnotifiedResolved(SESSION)).toHaveLength(1);
   });
 
   it("does not let a replay arriving after the turn ended re-open it", async () => {
@@ -948,7 +974,7 @@ describe("a resident streaming turn, which settles no turn of its own", () => {
       content: [{ type: "text", text: "On it." }],
     });
     acceptSubmission();
-    await waitForTurn(() => true, "flush");
+    await settleHandlers();
 
     agents[0]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
     await waitForTurn(

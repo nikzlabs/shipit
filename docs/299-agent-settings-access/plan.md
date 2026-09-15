@@ -1683,13 +1683,20 @@ said the executor was serving an adopted turn right now:
 **Where an identity does survive the round trip, it is used.**
 `agent_user_replay` is the CLI echoing back a user message it has read
 (`isReplay` on Claude, synthesized by Codex — docs/140). A replay of this
-prompt's exact text means the CLI read it inside the turn now running, so the
-prompt becomes `"running"` whatever it was before. That is what keeps the common
-case whole, and ShipIt already trusts this signal exactly this far: a steer with
-no replay is treated as undelivered and re-queued
-(`requeueUndeliveredSteers`, `agent-listeners.ts`). A prompt steered into a turn
-the CLI had already woken for is absorbed by it, and the single result that ends
-that turn acknowledges the notice instead of withholding one the agent read.
+prompt's **exact text** means the CLI read it inside the turn now running, so the
+prompt becomes `"running"` whatever it was before; the text match is what stops a
+live steer the user typed from standing in for it. That is what keeps the common
+case whole: a prompt steered into a turn the CLI had already woken for is
+absorbed by it, and the single result that ends that turn acknowledges the notice
+instead of withholding one the agent read.
+
+It is a weaker signal than `requeueUndeliveredSteers` looks like it makes it, and
+the difference was found in review. That mechanism covers messages registered
+through `recordSteeredMessage` — a user's steer — and the executor's own prompt
+is submitted directly, so it is not one of them; the requeue also requires that
+no assistant group appeared after the steer. So the replay is read here as
+positive evidence when it arrives, and its absence is read as *nothing*, which is
+why the fallback is the `"queued"` rule above rather than a claim about delivery.
 
 
 `submissionSettled()` is what makes leaving `"unsubmitted"` mean the prompt was
@@ -1789,8 +1796,16 @@ a turn beginning inside the re-arm yield cannot answer an earlier result. Three
 hold the other direction: a replayed prompt IS acknowledged by the turn that
 absorbed it, a prompt the CLI takes is still acknowledged when its confirmation
 arrives late, and a freshly spawned process whose output beats its submission
-confirmation still acknowledges. Every condition in the model fails at least one
-of these when removed singly, and none of them is left unguarded.
+confirmation still acknowledges. One more holds the replay's text match, so
+another message's echo cannot stand in for this prompt's.
+
+Every condition in the model was reverted singly and fails at least one of these;
+two lines that survived that sweep were deleted as dead rather than left
+unguarded. The sweep is also how the blind assertions were found: `waitForTurn`
+with a predicate that is already true returns before `flushTurn` runs even once,
+so several negative assertions were reading state the result handler had not
+reached. They flush explicitly now (`settleHandlers`), or wait on the adopted
+turn's own post-turn commit where one follows.
 
 **What the three review rounds actually established is where the line of
 decidability is**, and each round moved a guess across it rather than adding a
@@ -1807,25 +1822,34 @@ on the woken turn's own post-turn commit instead.
 **`agentNotified` is a column on the private proposal row, not a card field** —
 it is ShipIt's bookkeeping about a delivery, and nothing a viewer reads.
 
-**A notice is delayed by a turn, and is not lost to one.** The cost falls
-entirely on the `"queued"` case above: a prompt submitted while the CLI had a
-turn of its own in flight — which needs a wake, or top-level output, inside that
-dispatch's `prepareAgentEnv` window. From there nothing acknowledges unless the
-CLI replays the prompt, so the outcome waits for the next dispatched turn, whose
-executor starts clear and acknowledges normally.
+**A notice is delayed by a turn wherever ShipIt sees the turn boundary, and one
+transport race is left where it does not.** Three shapes, named rather than
+claimed away.
 
-Both of the harnesses that can reach the case do emit the replay, so in practice
-it is narrower still: `agent_user_replay` is Claude's and Codex's, and steering
-is what makes a process reusable at all, so no other harness ever queues a
-prompt this way. Where the replay is missing, ShipIt's own steer bookkeeping
-already reads that as non-delivery and re-queues the message — so withholding the
-receipt agrees with the verdict ShipIt reaches elsewhere on the same evidence,
-rather than being a second, private guess.
+**The `"queued"` case is a repeat, not a loss.** A prompt submitted while the CLI
+had a turn of its own in flight acknowledges nothing unless the CLI replays it,
+so the outcome waits for the next dispatched turn, whose executor starts clear.
+Reaching it needs a wake or top-level output inside that dispatch's
+`prepareAgentEnv` window. A prompt whose own result beats its proxied submission
+confirmation lands in the same state by the other clause, which is rarer still —
+the worker answers `/agent/start` before the CLI has produced anything, so a
+whole turn would have to complete inside that window.
 
-This is a repeat at worst, never a loss, which is the direction the whole design
-takes. It is also strictly better than what it replaced: the previous
-acknowledgement **lost** the notice outright on a far commoner shape — any
-dispatched turn that failed after a wake.
+**The confirmation race is a loss, and it is the one the model cannot see.** The
+worker's HTTP reply and the CLI's SSE events travel separately. If a wake is in
+transit when the submission is confirmed, the prompt becomes `"running"` — the
+wake that would have queued it arrives afterwards, and by then nothing may read
+it, because after submission a wake is indistinguishable from a background task
+notifying inside the prompt's own turn. The woken turn's result then answers the
+prompt, and if the prompt's own turn later fails the notice is gone. Demoting on
+a late wake would close it and cost far more: background tasks notify mid-turn
+routinely, so every such turn would stop acknowledging and the notice would
+repeat on each one. The race needs the SSE frame to lose to a request made after
+it, and the dispatched turn to fail afterwards.
+
+All of it is strictly better than what it replaced, which **lost** the notice on a
+far commoner shape — any dispatched turn that failed after a wake — and none of
+it is closable without an identity on `agent_result`, which no harness supplies.
 
 Duplicates remain possible by design: a turn that ran and was interrupted, and a
 turn queued behind one that has not yet acknowledged, both carry the notice
