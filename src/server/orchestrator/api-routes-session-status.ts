@@ -2,6 +2,7 @@ import type { FastifyInstance, FastifyReply } from "fastify";
 import type { ApiDeps } from "./api-routes.js";
 import { resolveSessionDir } from "./api-routes.js";
 import { validateSessionStatus } from "../shared/session-status-validation.js";
+import { requireOfferDescriptions } from "../shared/session-status-offers.js";
 import { recordSessionStatus } from "./services/session-status.js";
 
 export async function registerSessionStatusRoutes(
@@ -38,6 +39,15 @@ export async function registerSessionStatusRoutes(
       });
       if ("error" in validated) {
         reply.code(400).send({ error: validated.error });
+        return;
+      }
+      // req 26 — the status card asks for a description on every offer; the
+      // shared item validator cannot, because `propose_actions` does not.
+      const missingDescription = validated.actions
+        ? requireOfferDescriptions(validated.actions)
+        : null;
+      if (missingDescription) {
+        reply.code(400).send({ error: missingDescription });
         return;
       }
 
@@ -82,7 +92,7 @@ export async function registerSessionStatusRoutes(
       return {
         ok: true,
         status: card.status,
-        ...(card.needsYou ? { needsYou: card.needsYou } : {}),
+        ...(card.needsYou?.length ? { needsYou: card.needsYou } : {}),
         actions: card.actions.map((offer) => ({
           offerId: offer.offerId,
           id: offer.id,

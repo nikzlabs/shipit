@@ -17,7 +17,10 @@ import {
 } from "./test-helpers.js";
 import type { DatabaseManager } from "../../shared/database.js";
 import type { CredentialStore } from "../credential-store.js";
-import { MAX_STATUS_LEN } from "../../shared/session-status-validation.js";
+import {
+  MAX_NEEDS_YOU_ITEMS,
+  MAX_STATUS_LEN,
+} from "../../shared/session-status-validation.js";
 
 describe("Integration: session-status route", () => {
   let app: FastifyInstance;
@@ -81,19 +84,28 @@ describe("Integration: session-status route", () => {
     await client.receive();
 
     const res = await post({
-      status: "Billing service: routes done, PR ready to merge.",
-      needsYou: "Paste the Stripe test key.",
-      actions: [{ id: "webhook", label: "Wire the webhook", payload: "Wire the Stripe webhook." }],
+      status: "Billing service.\n\n- routes done\n- webhook not started",
+      needsYou: ["Paste the Stripe test key.", "Enable the webhook endpoint in the dashboard."],
+      actions: [{
+        id: "webhook",
+        label: "Wire the webhook",
+        description: "Adds the handler and its test.",
+        payload: "Wire the Stripe webhook.",
+      }],
     });
 
     expect(res.statusCode).toBe(200);
     const body = res.json() as {
       status: string;
-      needsYou?: string;
+      needsYou?: string[];
       actions: { offerId: string; label: string; taken: boolean }[];
     };
-    expect(body.status).toContain("Billing service");
-    expect(body.needsYou).toBe("Paste the Stripe test key.");
+    // Markdown is stored as written: the card renders it (req 27).
+    expect(body.status).toContain("- routes done");
+    expect(body.needsYou).toEqual([
+      "Paste the Stripe test key.",
+      "Enable the webhook endpoint in the dashboard.",
+    ]);
     expect(body.actions).toHaveLength(1);
     expect(body.actions[0]).toMatchObject({ label: "Wire the webhook", taken: false });
     expect(body.actions[0]?.offerId).toBeTruthy();
@@ -109,7 +121,7 @@ describe("Integration: session-status route", () => {
     const client = await TestClient.connect(port, sessionId);
     await client.receive();
 
-    await post({ status: "Half done.", needsYou: "Nothing." });
+    await post({ status: "Half done.", needsYou: ["Paste the key."] });
     const before = sessionManager.get(sessionId)?.sessionStatus;
     // The settlement of an earlier turn is what leaves a card stale.
     sessionManager.setSessionStatus(sessionId, { ...before!, fresh: false });
@@ -121,7 +133,7 @@ describe("Integration: session-status route", () => {
     expect(after?.fresh).toBe(true);
     expect(after?.writeSeq).toBe((before?.writeSeq ?? 0) + 1);
     expect(after?.status).toBe(before?.status);
-    expect(after?.needsYou).toBe(before?.needsYou);
+    expect(after?.needsYou).toEqual(before?.needsYou);
   });
 
   it("refuses a bare call before the session has a card, naming status", async () => {
@@ -184,14 +196,19 @@ describe("Integration: session-status route", () => {
     await post({
       status: "Done.",
       actions: [
-        { id: "pr", label: "Open a PR", payload: "Open a PR." },
-        { id: "docs", label: "Update the docs", payload: "Update the docs." },
+        { id: "pr", label: "Open a PR", description: "Opens it against main.", payload: "Open a PR." },
+        { id: "docs", label: "Update the docs", description: "The new route.", payload: "Update the docs." },
       ],
     });
 
     const replaced = await post({
       replaceActions: true,
-      actions: [{ id: "docs", label: "Update the docs", payload: "Update the docs." }],
+      actions: [{
+        id: "docs",
+        label: "Update the docs",
+        description: "The new route.",
+        payload: "Update the docs.",
+      }],
     });
     expect((replaced.json() as { actions: { id: string }[] }).actions.map((a) => a.id))
       .toEqual(["docs"]);
@@ -199,6 +216,40 @@ describe("Integration: session-status route", () => {
     const cleared = await post({ replaceActions: true, actions: [] });
     expect((cleared.json() as { actions: unknown[] }).actions).toEqual([]);
     expect(sessionManager.get(sessionId)?.sessionStatus?.actions).toEqual([]);
+  });
+
+  it("clears the manual steps on an empty list, and refuses a bad one", async () => {
+    const client = await TestClient.connect(port, sessionId);
+    await client.receive();
+
+    await post({ status: "Waiting on a key.", needsYou: ["Paste the key."] });
+    expect(sessionManager.get(sessionId)?.sessionStatus?.needsYou).toEqual(["Paste the key."]);
+
+    const cleared = await post({ needsYou: [] });
+    expect(cleared.statusCode).toBe(200);
+    expect(sessionManager.get(sessionId)?.sessionStatus?.needsYou ?? []).toEqual([]);
+
+    const tooMany = await post({
+      needsYou: Array.from({ length: MAX_NEEDS_YOU_ITEMS + 1 }, (_, i) => `Step ${i}`),
+    });
+    expect(tooMany.statusCode).toBe(400);
+    expect((tooMany.json() as { error: string }).error).toContain(String(MAX_NEEDS_YOU_ITEMS));
+  });
+
+  it("refuses an offer with no description, naming it (req 26)", async () => {
+    const client = await TestClient.connect(port, sessionId);
+    await client.receive();
+
+    const res = await post({
+      status: "Done.",
+      actions: [{ id: "pr", label: "Open a PR", payload: "Open a PR." }],
+    });
+
+    expect(res.statusCode).toBe(400);
+    const { error } = res.json() as { error: string };
+    expect(error).toContain("description");
+    expect(error).toContain("\"pr\"");
+    expect(sessionManager.get(sessionId)?.sessionStatus).toBeUndefined();
   });
 
   it("answers 409 when the session has no runner", async () => {
@@ -214,8 +265,8 @@ describe("Integration: session-status route", () => {
     const first = await post({
       status: "Done.",
       actions: [
-        { id: "pr", label: "Open a PR", payload: "Open a PR." },
-        { id: "docs", label: "Update the docs", payload: "Update the docs." },
+        { id: "pr", label: "Open a PR", description: "Opens it against main.", payload: "Open a PR." },
+        { id: "docs", label: "Update the docs", description: "The new route.", payload: "Update the docs." },
       ],
     });
     const offers = (first.json() as { actions: { offerId: string; id: string }[] }).actions;

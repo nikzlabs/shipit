@@ -297,9 +297,14 @@ describe("session_status (docs/303)", () => {
       name: "session_status",
       arguments: {
         status: "Half done.",
-        needsYou: "",
+        needsYou: ["Paste the key."],
         replaceActions: true,
-        actions: [{ id: "pr", label: "Open a PR", payload: "Open a PR." }],
+        actions: [{
+          id: "pr",
+          label: "Open a PR",
+          description: "Opens it against main.",
+          payload: "Open a PR.",
+        }],
       },
     });
 
@@ -308,9 +313,14 @@ describe("session_status (docs/303)", () => {
     ) as Record<string, unknown>;
     expect(body).toEqual({
       status: "Half done.",
-      needsYou: "",
+      needsYou: ["Paste the key."],
       replaceActions: true,
-      actions: [{ id: "pr", label: "Open a PR", payload: "Open a PR." }],
+      actions: [{
+        id: "pr",
+        label: "Open a PR",
+        description: "Opens it against main.",
+        payload: "Open a PR.",
+      }],
     });
   });
 
@@ -339,12 +349,30 @@ describe("session_status (docs/303)", () => {
 
     const result = await bridge.client.callTool({
       name: "session_status",
-      arguments: { status: "x".repeat(1000) },
+      arguments: { status: "x".repeat(2000) },
     });
 
     expect(fetchMock).not.toHaveBeenCalled();
     expect((result as { isError?: boolean }).isError).toBe(true);
     expect(firstText(result)).toContain("session_status failed");
+  });
+
+  it("refuses an offer with no description in-box, without a round trip (req 26)", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    bridge = await connect(selectTools("session_status"));
+
+    const result = await bridge.client.callTool({
+      name: "session_status",
+      arguments: {
+        status: "Done.",
+        actions: [{ id: "pr", label: "Open a PR", payload: "Open a PR." }],
+      },
+    });
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect((result as { isError?: boolean }).isError).toBe(true);
+    expect(firstText(result)).toContain("description");
   });
 
   it("surfaces the route's refusal rather than claiming the card is current", async () => {

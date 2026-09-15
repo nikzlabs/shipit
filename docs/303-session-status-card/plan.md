@@ -95,7 +95,7 @@ rehydration) is involved.
 |---|---|---|
 | `status` | optional, markdown, ≤ 1200 chars; omitted: unchanged; required while no card is stored | What the session is about, how far it got, whether it is done or ready to merge, and agent work not yet started. The whole session, not the last turn. Markdown, so it may carry a short list (req 27). |
 | `needsYou` | optional repeated field: a list of strings, each ≤ 240 chars, at most 10; omitted: unchanged; `[]`: cleared (req 27) | One entry per decision or hand action only the user can take. Empty when nothing. |
-| `actions` | optional list; each item `id`, `label`, `description`, `defaultChecked?`, `payload` (≤ 4000 chars) — the `propose_actions` item shape, validated by `validateActionItems`, extracted from `propose-actions-validation.ts` and shared. `description` is REQUIRED here (req 26) and stays optional for `propose_actions`, so the shared validator takes that as an option | Agent work the user approves with a click. |
+| `actions` | optional list; each item `id`, `label`, `description`, `defaultChecked?`, `payload` (≤ 4000 chars) — the `propose_actions` item shape, validated by `validateActionItems`, extracted from `propose-actions-validation.ts` and shared. `description` is REQUIRED here (req 26) and stays optional for `propose_actions`, so the rule is `requireOfferDescriptions` (`shared/session-status-offers.ts`), applied by the tool and by the route on the validated items rather than by the shared item validator, which serves both tools | Agent work the user approves with a click. |
 | `replaceActions` | optional boolean, default false | `false`: add the given items to the offered list. `true`: the given list becomes the offered list; an empty list clears it. |
 
 An empty `actions` is valid only with `replaceActions: true`. There is no
@@ -367,7 +367,7 @@ and absent in the flag-off ones, never its wording.
 ## Tests
 
 - `session-status-validation.test.ts` — limits; a bare call is valid;
-  `needsYou: ""` is a clear; empty list only with `replaceActions`; items
+  `needsYou: []` is a clear; empty list only with `replaceActions`; items
   through `validateActionItems`.
 - `services/session-status.test.ts` — reconciliation (unchanged item keeps
   `offerId` and `takenAt`; changed payload → new untaken offer; replace;
@@ -465,7 +465,7 @@ Each is reversible without touching a numbered requirement.
   comment shortcut" is withdrawn — Nik ruled the card extends the action card
   rather than reducing it, req 26.)
 - Every tool field is a delta on the stored card: omitted means unchanged,
-  `needsYou: ""` clears; a bare call with no stored card is refused.
+  `needsYou: []` clears; a bare call with no stored card is refused.
 - A `session_status` call whose awaits straddle a turn reset still writes the
   card but does not set `statusUpdated`: the write is right either way, and a
   successor inheriting the credit would escape the nudge it is owed. The

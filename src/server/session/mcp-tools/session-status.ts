@@ -1,26 +1,31 @@
 import type { ToolDescriptor } from "./types.js";
 import { MAX_PAYLOAD_LEN, MAX_DESC_LEN, MAX_ID_LEN, MAX_LABEL_LEN } from "../../shared/propose-actions-validation.js";
 import {
+  MAX_NEEDS_YOU_ITEMS,
   MAX_NEEDS_YOU_LEN,
   MAX_STATUS_LEN,
   validateSessionStatus,
 } from "../../shared/session-status-validation.js";
+import { requireOfferDescriptions } from "../../shared/session-status-offers.js";
 
 const TOOL_DESCRIPTION = [
   "Write the session status card the user reads just above the input field, and offer the",
   "follow-up actions they can approve with a click. Call it as the LAST act of every turn.",
   "It describes THE SESSION, not this turn: what the session is about, how far it got,",
   "whether it is done or ready to merge, and work you have identified but not started.",
+  `\`status\` is markdown and may carry a short list (up to ${MAX_STATUS_LEN} chars).`,
+  "`needsYou` is a LIST, one entry per thing only the USER can do by hand, shown on the card",
+  "under \"Manual steps\" with a toggle each; send [] to clear it. An action is YOUR work,",
+  "shown under \"Follow-ups\", and every action needs a `description` as well as a `label`.",
   "Every field is a delta on the stored card — an omitted field is left unchanged, and a",
   "call with NO arguments is you confirming the card still holds, which is what you send",
   "when nothing moved. A turn that ends with a question needs no call. Offers persist",
   "across turns: `actions` adds to the list, `actions` with `replaceActions: true` makes",
-  "the given list the whole list (empty + replaceActions clears it). Remove an offer once",
-  "you have done it. `needsYou` is what only the USER can do by hand; an action is YOUR",
-  "work they approve with a click. Reviewing and merging the PR is ShipIt's default",
-  "workflow and is never an offered action — say \"ready to merge\" in the status instead.",
-  "Do not offer routine commands (run the tests / lint), and a choice that needs real",
-  "discussion is a question, not an offer.",
+  "the given list the whole list (empty + replaceActions clears it). Drop an offer once its",
+  "work is done. Reviewing and merging the PR is ShipIt's default workflow and is never an",
+  "offered action — say \"ready to merge\" in the status instead. Do not offer routine",
+  "commands (run the tests / lint), and a choice that needs real discussion is a question,",
+  "not an offer.",
 ].join(" ");
 
 const inputSchema = {
@@ -30,15 +35,22 @@ const inputSchema = {
       type: "string",
       maxLength: MAX_STATUS_LEN,
       description:
-        `What the session is about, how far it got, and whether it is done or ready to merge (≤${MAX_STATUS_LEN} chars). ` +
-        "Omit it to leave the stored status unchanged; it is required on the session's first call.",
+        "Markdown, and it may carry a short list: what the session is about, how far it got, "
+        + `what is done and what is not started yet (≤${MAX_STATUS_LEN} chars). `
+        + "Omit it to leave the stored status unchanged; it is required on the session's first call.",
     },
     needsYou: {
-      type: "string",
-      maxLength: MAX_NEEDS_YOU_LEN,
+      type: "array",
+      maxItems: MAX_NEEDS_YOU_ITEMS,
       description:
-        `The one decision or hand action only the user can take (≤${MAX_NEEDS_YOU_LEN} chars). ` +
-        "Omit it to leave it unchanged; pass \"\" to clear it.",
+        "The things only the user can do by hand, one self-contained step per entry — the card "
+        + "shows each with its own \"I've done this\" toggle. Omit it to leave the list unchanged; "
+        + "pass [] to clear it.",
+      items: {
+        type: "string",
+        maxLength: MAX_NEEDS_YOU_LEN,
+        description: `One step the user has to do by hand (≤${MAX_NEEDS_YOU_LEN} chars).`,
+      },
     },
     replaceActions: {
       type: "boolean",
@@ -64,7 +76,9 @@ const inputSchema = {
           description: {
             type: "string",
             maxLength: MAX_DESC_LEN,
-            description: `Optional one-line explanation shown under the label (≤${MAX_DESC_LEN} chars).`,
+            description:
+              "Required: the one-line explanation shown under the label, which is what the user "
+              + `reads to know what the action does before ticking it (≤${MAX_DESC_LEN} chars).`,
           },
           defaultChecked: {
             type: "boolean",
@@ -78,7 +92,7 @@ const inputSchema = {
               "The card outlives this turn, so it must stand alone without conversation context: name the files, docs and issues to read rather than pasting their contents.",
           },
         },
-        required: ["id", "label", "payload"],
+        required: ["id", "label", "description", "payload"],
       },
     },
   },
@@ -132,6 +146,14 @@ export const sessionStatusTool: ToolDescriptor = {
     if ("error" in pre) {
       return {
         content: [{ type: "text", text: `session_status failed: ${pre.error}` }],
+        isError: true,
+      };
+    }
+    // req 26 — the status card's own rule, so it is not in the shared item validator.
+    const missingDescription = pre.actions ? requireOfferDescriptions(pre.actions) : null;
+    if (missingDescription) {
+      return {
+        content: [{ type: "text", text: `session_status failed: ${missingDescription}` }],
         isError: true,
       };
     }
