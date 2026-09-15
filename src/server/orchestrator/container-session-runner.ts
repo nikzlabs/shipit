@@ -1,6 +1,6 @@
 import type { ProviderRouteKind } from "../shared/types/domain-types/provider.js";
 import { EventEmitter } from "node:events";
-import type { AgentProcess, AgentId, AgentEvent, AgentRunParams, TerminalProcess, WorkerAgentStatus } from "../shared/types.js";
+import type { AgentProcess, AgentId, AgentEvent, AgentRunParams, TerminalProcess, WorkerAgentStartBody, WorkerAgentStatus } from "../shared/types.js";
 import type { WsServerMessage, ClaudeContentBlockToolUse, SkillInfo, PermissionMode, PermissionDecision } from "../shared/types.js";
 import type { PresentStateEntry } from "../shared/types/ws-server-messages.js";
 import type { AgentGoalCommand, AgentGoalCommandResult, WorkerAgentGoalBody } from "../shared/types/agent-types.js";
@@ -693,19 +693,29 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     return proxy;
   }
 
-  async _startAgentViaProxy(agentId: AgentId, params: AgentRunParams, runToken?: string, deliveryId?: string): Promise<void> {
+  async _startAgentViaProxy(
+    agentId: AgentId,
+    params: AgentRunParams,
+    runToken?: string,
+    turn?: { deliveryId?: string; statusNudge?: boolean },
+  ): Promise<void> {
     const prev = this._startInFlight;
     let release: () => void = () => {};
     this._startInFlight = new Promise<void>((r) => { release = r; });
     try {
       await prev.catch(() => {});
-      await this._doStartAgentViaProxy(agentId, params, runToken, deliveryId);
+      await this._doStartAgentViaProxy(agentId, params, runToken, turn);
     } finally {
       release();
     }
   }
 
-  private async _doStartAgentViaProxy(agentId: AgentId, params: AgentRunParams, runToken?: string, deliveryId?: string): Promise<void> {
+  private async _doStartAgentViaProxy(
+    agentId: AgentId,
+    params: AgentRunParams,
+    runToken?: string,
+    turn?: { deliveryId?: string; statusNudge?: boolean },
+  ): Promise<void> {
     await this._workerReady;
     this.assertWorkerReachable("/agent/start");
 
@@ -716,14 +726,22 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
 
     await this._waitForInstallBeforeAgent();
 
+    const body: WorkerAgentStartBody = {
+      agentId,
+      params,
+      ...(runToken !== undefined ? { runToken } : {}),
+      ...(turn?.deliveryId !== undefined ? { deliveryId: turn.deliveryId } : {}),
+      ...(turn?.statusNudge ? { statusNudge: true } : {}),
+    };
+
     try {
-      await workerPost(this.workerUrl, "/agent/start", { agentId, params, runToken, deliveryId }, { timeoutMs: 0 });
+      await workerPost(this.workerUrl, "/agent/start", body, { timeoutMs: 0 });
     } catch (err) {
       // Completion can arrive before the worker clears its slot. Retry before clearing it.
       if (err instanceof Error && err.message === "Agent already running") {
         await new Promise((r) => setTimeout(r, 150));
         try {
-          await workerPost(this.workerUrl, "/agent/start", { agentId, params, runToken, deliveryId }, { timeoutMs: 0 });
+          await workerPost(this.workerUrl, "/agent/start", body, { timeoutMs: 0 });
         } catch (retryErr) {
           if (retryErr instanceof Error && retryErr.message === "Agent already running") {
             // Target the resident so a delayed kill cannot hit its replacement.
@@ -737,7 +755,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
               "/agent/kill",
               staleResidentToken !== undefined ? { runToken: staleResidentToken } : undefined,
             ).catch(() => { /* may already be gone */ });
-            await workerPost(this.workerUrl, "/agent/start", { agentId, params, runToken, deliveryId }, { timeoutMs: 0 });
+            await workerPost(this.workerUrl, "/agent/start", body, { timeoutMs: 0 });
           } else {
             throw retryErr;
           }
@@ -809,6 +827,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
       agentId,
       ...(status.runToken !== undefined ? { runToken: status.runToken } : {}),
       ...(status.deliveryId !== undefined ? { deliveryId: status.deliveryId } : {}),
+      ...(status.statusNudge ? { statusNudge: true } : {}),
       streaming: status.streaming === true,
     });
     this.emitMessage({

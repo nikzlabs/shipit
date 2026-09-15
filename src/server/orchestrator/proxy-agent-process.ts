@@ -19,7 +19,12 @@ function describeWorkerError(err: unknown, op: "start" | "stdin" | "interrupt"):
 }
 
 export interface ProxyAgentRunner {
-  _startAgentViaProxy(agentId: AgentId, params: AgentRunParams, runToken?: string, deliveryId?: string): Promise<void>;
+  _startAgentViaProxy(
+    agentId: AgentId,
+    params: AgentRunParams,
+    runToken?: string,
+    turn?: { deliveryId?: string; statusNudge?: boolean },
+  ): Promise<void>;
   writeAgentStdin(data: string): Promise<void>;
   sendAgentMessage(text: string): Promise<void>;
   interruptAgentOnWorker(): Promise<void>;
@@ -60,6 +65,9 @@ export class ProxyAgentProcess extends EventEmitter<{
   /** Durable work identity, distinct from the spawn's runToken. */
   deliveryId: string | undefined;
 
+  /** docs/303 req 15 — reported back by the worker, so an adopted nudge stays a nudge. */
+  private statusNudge = false;
+
   private runner: ProxyAgentRunner;
   private lastSubmission: Promise<unknown> | null = null;
 
@@ -75,9 +83,15 @@ export class ProxyAgentProcess extends EventEmitter<{
     this.deliveryId = deliveryId;
   }
 
+  setStatusNudge(statusNudge: boolean): void {
+    this.statusNudge = statusNudge;
+  }
+
   run(params: AgentRunParams): void {
-    const started = this.runner
-      ._startAgentViaProxy(this.agentId, params, this.runToken, this.deliveryId);
+    const started = this.runner._startAgentViaProxy(this.agentId, params, this.runToken, {
+      ...(this.deliveryId !== undefined ? { deliveryId: this.deliveryId } : {}),
+      ...(this.statusNudge ? { statusNudge: true } : {}),
+    });
     // Tracked before the catch, so a caller awaiting it sees the rejection.
     this.lastSubmission = started;
     started.catch((err: unknown) => {

@@ -53,6 +53,10 @@ export class AgentController {
   // Delivery identity belongs to the turn, not the resident process that can outlive it.
   private turnDeliveryId: string | undefined;
 
+  // docs/303 req 15 — likewise turn-scoped: a restarted orchestrator reads it back from
+  // /agent/status, so the adopted turn settles as the nudge it is and is not nudged twice.
+  private turnStatusNudge = false;
+
   private turnActive = false;
   private turnStartSseSeq = 0;
 
@@ -76,7 +80,7 @@ export class AgentController {
         return reply.code(409).send({ error: "Agent already running" });
       }
 
-      const { agentId, params, runToken, deliveryId } = request.body;
+      const { agentId, params, runToken, deliveryId, statusNudge } = request.body;
       if (!agentId || !params) {
         return reply.code(400).send({ error: "agentId and params are required" });
       }
@@ -89,7 +93,7 @@ export class AgentController {
 
       try {
         // Capture turn identity and replay position before the adapter emits anything.
-        this.beginTurn();
+        this.beginTurn(statusNudge === true);
         this.turnDeliveryId = deliveryId;
         this.residentSpawn = { runToken, streaming: params.useStreaming === true };
         this.agent = this.deps.agentFactory(agentId);
@@ -332,6 +336,7 @@ export class AgentController {
       installRunning: this.deps.otherWorkerLiveness?.().installRunning ?? false,
       ...(this.residentSpawn?.runToken !== undefined ? { runToken: this.residentSpawn.runToken } : {}),
       ...(this.turnDeliveryId !== undefined ? { deliveryId: this.turnDeliveryId } : {}),
+      ...(this.turnStatusNudge ? { statusNudge: true } : {}),
       ...(this.agent ? { agentId: this.agent.agentId } : {}),
       ...(this.residentSpawn
         ? { streaming: this.residentSpawn.streaming || this.agent?.isStreaming === true }
@@ -339,9 +344,12 @@ export class AgentController {
     }));
   }
 
-  private beginTurn(): void {
+  // The marker is set here, not only cleared at the end: a steered turn on a resident
+  // process begins without /agent/start, and must not inherit the previous turn's.
+  private beginTurn(statusNudge = false): void {
     this.turnActive = true;
     this.turnStartSseSeq = this.deps.latestSseSeq();
+    this.turnStatusNudge = statusNudge;
   }
 
   // Clear process state here: late done events fail the identity guard after a kill.
@@ -357,6 +365,7 @@ export class AgentController {
     // Background tasks can outlive a turn; retain their count until the process ends.
     this.selfWakeActive = false;
     this.turnDeliveryId = undefined;
+    this.turnStatusNudge = false;
   }
 
   stop(): void {

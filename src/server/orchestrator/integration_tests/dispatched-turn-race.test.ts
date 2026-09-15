@@ -244,6 +244,36 @@ describe("Integration: dispatched turn vs WS turn race", () => {
 
     client.close();
   });
+
+  it("a dispatched turn retires a resident spawned with the other session-status-card value (docs/303 req 21)", async () => {
+    credentialStore.setLiveSteering(true);
+    credentialStore.setSessionStatusCard(false);
+
+    const client = await TestClient.connect(port);
+    await client.receive();
+
+    client.send({ type: "send_message", text: "first turn" });
+    const streamingAgent = await waitForClaude(() => lastClaude);
+    streamingAgent.initSession("status-card-resident-session");
+
+    const runner = (app as any).runnerRegistry.get(client.sessionId);
+    await waitUntil(() => runner.running && runner.isStreamingActive && runner.getAgent());
+
+    streamingAgent.emit("event", { type: "result", subtype: "success", session_id: "status-card-resident-session" });
+    await waitUntil(() => !runner.running && runner.isStreamingActive && runner.getAgent());
+
+    // Written to the store rather than through the settings service, so the toggle's own
+    // sweep does not retire the resident: this is the session that sweep missed, and the
+    // dispatched turn is the only thing left to notice.
+    credentialStore.setSessionStatusCard(true);
+    runner.dispatch(testDispatch({ text: "second instruction" }));
+
+    await waitUntil(() => allClaudes.length === 2);
+    expect(runner.getAgent()).not.toBe(streamingAgent);
+    expect(streamingAgent.stdinData).not.toContain("second instruction");
+
+    client.close();
+  });
 });
 
 async function waitUntil(fn: () => boolean, timeoutMs = 2000): Promise<void> {

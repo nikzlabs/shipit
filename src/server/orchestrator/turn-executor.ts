@@ -1366,6 +1366,9 @@ export async function executeAgentTurn(
       noteSubmitted();
     } else {
       if (input.deliveryId !== undefined) agent.setDeliveryId?.(input.deliveryId);
+      // docs/303 req 15 — the worker reports it back, so a restart mid-nudge adopts a turn
+      // that still knows it is one and is not nudged again.
+      if (input.statusNudge === true) agent.setStatusNudge?.(true);
       const paramsBegan = Date.now();
       const runParams = await deps.buildRunParams(
         sessionId,

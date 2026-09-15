@@ -1,6 +1,6 @@
 import type { AgentId, AgentProcess, FileAttachment, ImageAttachment } from "../shared/types.js";
 import { executeAgentTurn } from "./turn-executor.js";
-import { releaseResidentOnSpawnChange } from "./resident-spawn-guard.js";
+import { releaseResidentOnSpawnChange, releaseResidentOnStatusCardChange } from "./resident-spawn-guard.js";
 import { desiredSpawnIdentity } from "./service-routing.js";
 import { buildTurnMessages, emitNoticePostTurn } from "./chat-card-persistence.js";
 import { resolveFileAttachments, resolveUploadRefs, formatFileContext, imageAttachmentRefusal } from "./validation.js";
@@ -307,6 +307,11 @@ async function runDispatchedTurnInner(
         runner,
         desiredSpawnIdentity(deps.listenerDeps.sessionManager, runner.sessionId, agentId),
       );
+      // docs/303 req 21, the same comparison the interactive path makes. Skipped when the
+      // dep is unwired, where the setting cannot be read at all.
+      if (deps.statusCardEnabled) {
+        releaseResidentOnStatusCardChange(runner, deps.statusCardEnabled());
+      }
     }
     // Reuse follows the resident process, even if live steering was since disabled.
     const resident =
