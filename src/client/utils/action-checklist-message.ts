@@ -32,24 +32,29 @@ export function formatProposalMessage(
   return `${lead} ${INTENT_GUARD}\n\n${body}`;
 }
 
-/**
- * docs/303 req 16 — the status card's offers outlive the status writes, so each
- * one carries its own provenance rather than the card carrying one for all.
- */
+/** docs/303 req 16 — provenance belongs to the offer: offers outlive status writes. */
+function offerProvenance(offer: OfferedAction): string {
+  let s = `offered ${offer.offeredAt.slice(0, 10)}`;
+  if (offer.branch) s += ` against branch \`${offer.branch}\``;
+  if (offer.headSha) s += ` @ ${offer.headSha}`;
+  return s;
+}
+
 export function formatOfferedActionsMessage(selected: readonly OfferedAction[]): string {
   const lead =
     selected.length === 1
       ? `${CARD_MARKER} I approved this action.`
       : `${CARD_MARKER} I approved these ${selected.length} actions.`;
   const body = selected
-    .map((offer, i) => {
-      let provenance = `offered ${offer.offeredAt.slice(0, 10)}`;
-      if (offer.branch) provenance += ` against branch \`${offer.branch}\``;
-      if (offer.headSha) provenance += ` @ ${offer.headSha}`;
-      return `${i + 1}. ${offer.payload}\n   (${provenance})`;
-    })
+    .map((offer, i) => `${i + 1}. ${offer.payload}\n   (${offerProvenance(offer)})`)
     .join("\n");
   return `${lead} ${INTENT_GUARD}\n\n${body}`;
+}
+
+/** The status card's "Add comment…", the transcript card's snapshot per offer. */
+export function formatOfferedActionsComment(selected: readonly OfferedAction[]): string {
+  const lines = selected.map((offer) => `- ${offer.payload} (${offerProvenance(offer)})`);
+  return `Re: offered actions\n${lines.join("\n")}\n\n`;
 }
 
 export function formatCommentSnapshot(

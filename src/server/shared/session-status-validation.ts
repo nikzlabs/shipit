@@ -1,20 +1,27 @@
 import type { ActionChecklistItem } from "./types.js";
 import { charLength, validateActionItems } from "./propose-actions-validation.js";
 
-/** docs/303 req 2 — the concision is the length, not a count of offers. */
-export const MAX_STATUS_LEN = 240;
+/**
+ * docs/303 req 2 — the concision is the length, not a count of offers.
+ *
+ * The status is markdown and may carry a short list (req 27), so its cap is
+ * what a few bullets need rather than what one sentence needs. `needsYou` caps
+ * each entry, and the list of them is the agent's to size.
+ */
+export const MAX_STATUS_LEN = 1200;
 export const MAX_NEEDS_YOU_LEN = 240;
+export const MAX_NEEDS_YOU_ITEMS = 10;
 
 /**
  * One accepted `session_status` call, as a delta on the stored card.
  *
  * Every field is optional: an omitted one leaves the stored value alone, so a
  * call with nothing in it is the agent confirming the card still holds
- * (docs/303 req 14). `needsYou: ""` is the one field that clears.
+ * (docs/303 req 14). `needsYou: []` is the one field that clears.
  */
 export interface ValidatedSessionStatus {
   status?: string;
-  needsYou?: string;
+  needsYou?: string[];
   actions?: ActionChecklistItem[];
   replaceActions?: boolean;
 }
@@ -45,14 +52,29 @@ export function validateSessionStatus(
   }
 
   if (body.needsYou !== undefined) {
-    if (typeof body.needsYou !== "string") {
-      return { error: "`needsYou` must be a string; pass \"\" to clear it." };
+    // req 27 — one entry per thing the user has to do, shown as a list.
+    if (!Array.isArray(body.needsYou)) {
+      return { error: "`needsYou` must be a list of strings, one per thing the user has to do; pass [] to clear it." };
     }
-    const needsYou = body.needsYou.trim();
-    if (charLength(needsYou) > MAX_NEEDS_YOU_LEN) {
-      return { error: overLength("needsYou", charLength(needsYou), MAX_NEEDS_YOU_LEN) };
+    if (body.needsYou.length > MAX_NEEDS_YOU_ITEMS) {
+      return { error: `\`needsYou\` has ${body.needsYou.length} entries; the cap is ${MAX_NEEDS_YOU_ITEMS}.` };
     }
-    call.needsYou = needsYou;
+    const entries: string[] = [];
+    for (const entry of body.needsYou) {
+      if (typeof entry !== "string") {
+        return { error: "Every `needsYou` entry must be a string." };
+      }
+      const trimmed = entry.trim();
+      // An empty entry is a mistake, not a clear: [] is the clear.
+      if (!trimmed) {
+        return { error: "A `needsYou` entry cannot be empty; pass [] to clear the field." };
+      }
+      if (charLength(trimmed) > MAX_NEEDS_YOU_LEN) {
+        return { error: overLength("needsYou", charLength(trimmed), MAX_NEEDS_YOU_LEN) };
+      }
+      entries.push(trimmed);
+    }
+    call.needsYou = entries;
   }
 
   if (body.replaceActions !== undefined) {

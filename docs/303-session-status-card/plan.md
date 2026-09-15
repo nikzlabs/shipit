@@ -81,9 +81,9 @@ rehydration) is involved.
 
 | Field | Limit | Meaning |
 |---|---|---|
-| `status` | optional, ≤ 240 chars; omitted: unchanged; required while no card is stored | What the session is about, how far it got, whether it is done or ready to merge, and agent work not yet started. The whole session, not the last turn. |
-| `needsYou` | optional, ≤ 240 chars; omitted: unchanged; `""`: cleared | The decision or hand action only the user can take. Empty when nothing. |
-| `actions` | optional list; each item `id`, `label`, `description?`, `defaultChecked?`, `payload` (≤ 4000 chars) — the `propose_actions` item shape, validated by `validateActionItems`, extracted from `propose-actions-validation.ts` and shared | Agent work the user approves with a click. |
+| `status` | optional, markdown, ≤ 1200 chars; omitted: unchanged; required while no card is stored | What the session is about, how far it got, whether it is done or ready to merge, and agent work not yet started. The whole session, not the last turn. Markdown, so it may carry a short list (req 27). |
+| `needsYou` | optional repeated field: a list of strings, each ≤ 240 chars, at most 10; omitted: unchanged; `[]`: cleared (req 27) | One entry per decision or hand action only the user can take. Empty when nothing. |
+| `actions` | optional list; each item `id`, `label`, `description`, `defaultChecked?`, `payload` (≤ 4000 chars) — the `propose_actions` item shape, validated by `validateActionItems`, extracted from `propose-actions-validation.ts` and shared. `description` is REQUIRED here (req 26) and stays optional for `propose_actions`, so the shared validator takes that as an option | Agent work the user approves with a click. |
 | `replaceActions` | optional boolean, default false | `false`: add the given items to the offered list. `true`: the given list becomes the offered list; an empty list clears it. |
 
 An empty `actions` is valid only with `replaceActions: true`. There is no
@@ -121,7 +121,7 @@ item's taken state, so the agent can keep or replace offers knowingly.
 ## Storage (req 10)
 
 - `sessions.session_status` column, JSON
-  `{ status, needsYou?, actions: OfferedAction[], fresh, writeSeq }`;
+  `{ status, needsYou?: string[], actions: OfferedAction[], fresh, writeSeq }`;
   `OfferedAction` is the item plus `offerId`, `offeredAt`, `branch?`,
   `headSha?`, `takenAt?`. Migration via `addSessionColumnIfMissing`
   (`database.ts`).
@@ -219,7 +219,7 @@ as does `silent`, which is not forwarded today (`dispatched-turn.ts:307`).
 `statusNudge`. An ignored nudge leaves the card stale; the next ordinary turn
 is checked afresh.
 
-## Client (req 6–9, 14, 17, 18, 20, 24)
+## Client (req 6–9, 14, 17, 18, 20, 24, 26–28)
 
 `SessionStatusCard` (`src/client/components/SessionStatusCard.tsx`), rendered
 as the last child of the `contentRef` element in
@@ -230,15 +230,39 @@ it (req 8); and `useMessageScroll`'s observer on that element already keeps
 the view pinned to the bottom when the card appears or grows. It is not a
 transcript row: it reads `currentSession.sessionStatus` from the session
 store and renders nothing without one. `text-xs`, semantic tokens only, no
-header row:
+header row; section subtitles rather than field labels:
 
 ```
-Status      Billing service: routes and tests done; PR #212 ready to merge. Webhook not started.
-Needs you   Add the Stripe test key in Settings → Secrets.
-☑ Wire the Stripe webhook   ☐ Add retry on 5xx   ☐ Add a README section (taken, greyed)   [ Send ]   Stale
+Billing service. Markdown, so a list reads as a list:
+  - routes and tests done; PR #212 ready to merge
+  - webhook not started
+
+MANUAL STEPS
+  • Add the Stripe test key in Settings → Secrets.
+  • Review and merge PR #212.
+
+FOLLOW-UPS
+☑ Wire the Stripe webhook            RECOMMENDED
+  Adds /webhooks/stripe and its signature check.
+☐ Add retry on 5xx from Stripe
+  Three attempts, with backoff.
+☐ Add a README section on billing                (taken, greyed)
+  What the service does and how to run it locally.
+[ Submit 1 action ]  Add comment…                        Stale
 ```
 
-- `Needs you` is omitted when empty.
+`mockup.html` drew the offers as one wrapping row. That was the prototype,
+not the product: the rows, the badge and the submit button are the existing
+follow-up action card's, so a checkable item reads the same wherever the user
+meets one, and every offer shows its description (req 26).
+
+- **Sections, not a labelled column (req 28).** The status opens the card
+  unlabelled and renders through `MarkdownContent`, at the card's own text
+  size; what only the user can do follows under the subtitle **"Manual steps"**
+  (`needsYou` keeps its field name), omitted when the list is empty, one line
+  for a single entry and a bulleted list for several (req 27); the offers
+  follow under the subtitle **"Follow-ups"**, which is what separates them —
+  there is no rule between the sections.
 - **Freshness.** A current card is a regular card. A stale card carries the
   word **"Stale"** (`text-[11px] font-semibold text-(--color-accent)`) in its
   bottom-right corner; the last row keeps right padding so text never runs
@@ -248,13 +272,17 @@ Needs you   Add the Stripe test key in Settings → Secrets.
   selection, the Send button — is extracted into a shared piece; the
   existing transcript-row wrapper keeps its formatting, repeat-submission,
   delivery-failure and "Add comment…" behavior unchanged, and the status
-  card gets a wrapper of its own. On the status card: selection is keyed by
+  card gets a wrapper of its own — same rows, same badge, same button (req
+  26). On the status card: selection is keyed by
   `offerId`; `defaultChecked` applies when an offer first appears; a taken
   offer renders in `--color-text-tertiary` with its checkbox disabled and
   unchecked, and leaves only when the agent removes it (req 17); untaken
-  offers stay selectable while the card is stale (req 24); there is one Send
-  and no comment shortcut and no single-button variant — a qualified
-  approval is an ordinary message. Submit composes a message of the same
+  offers stay selectable while the card is stale (req 24); an offer whose
+  message has been sent is unselectable at once, without waiting for the
+  server's `takenAt`. The card keeps the transcript card's submit button,
+  its "Add comment…" shortcut and its delivery-failure notice (req 26); it has
+  no single-button variant, because an offer list that changes shape with its
+  count would flip between two layouts and cannot show a taken offer. Submit composes a message of the same
   shape as the transcript card's, with each offer's own `offeredAt` and
   `headSha` (offers outlive status writes, so provenance is per offer, not
   per card), and carries the ticked `offerIds` as `sessionStatusOfferIds` on
@@ -396,6 +424,8 @@ Each is reversible without touching a numbered requirement.
 - A successor turn running or queued defers the check to that turn's end;
   `postTurn: "none"` driver-owned turns are not checked.
 - The setting is global scope on the advanced tab.
-- The status card has one Send: no comment shortcut, no single-button variant.
+- The status card has no single-button variant. (Its earlier "one Send, no
+  comment shortcut" is withdrawn — Nik ruled the card extends the action card
+  rather than reducing it, req 26.)
 - Every tool field is a delta on the stored card: omitted means unchanged,
   `needsYou: ""` clears; a bare call with no stored card is refused.

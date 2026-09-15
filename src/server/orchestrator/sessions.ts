@@ -95,7 +95,9 @@ function parseSessionStatus(json: string): SessionStatus | undefined {
     if (!card || typeof card.status !== "string") return undefined;
     return {
       status: card.status,
-      ...(typeof card.needsYou === "string" ? { needsYou: card.needsYou } : {}),
+      ...(Array.isArray(card.needsYou) && card.needsYou.length > 0
+        ? { needsYou: card.needsYou.filter((item: unknown): item is string => typeof item === "string") }
+        : {}),
       actions: Array.isArray(card.actions) ? card.actions : [],
       fresh: card.fresh === true,
       writeSeq: typeof card.writeSeq === "number" ? card.writeSeq : 0,

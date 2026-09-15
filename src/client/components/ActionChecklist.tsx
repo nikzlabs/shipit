@@ -1,4 +1,4 @@
-import { useCallback, useState, type ReactNode } from "react";
+import { useCallback, useState } from "react";
 import { ArrowRightIcon, CheckIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import { Button } from "./ui/button.js";
@@ -95,60 +95,9 @@ export interface ActionChecklistProps {
   selected: ReadonlySet<string>;
   onToggle: (key: string) => void;
   ariaLabel: string;
-  /**
-   * The offers of the session status card wrap in one row rather than stacking,
-   * so the card stays as short as the mockup (docs/303 req 2).
-   */
-  dense?: boolean;
-  /** Dense only: shares the wrapping row, so Send lands on its last line. */
-  trailing?: ReactNode;
 }
 
-export function ActionChecklist({ items, selected, onToggle, ariaLabel, dense, trailing }: ActionChecklistProps) {
-  if (dense) {
-    return (
-      <div className="flex flex-wrap items-center gap-x-3.5 gap-y-1.5" role="group" aria-label={ariaLabel}>
-        {items.map((item) => {
-          const taken = !selectable(item);
-          const checked = !taken && selected.has(item.key);
-          return (
-            <label
-              key={item.key}
-              className={`inline-flex items-center gap-1.5 ${taken ? "cursor-default" : "cursor-pointer"}`}
-            >
-              <input
-                type="checkbox"
-                className="sr-only"
-                checked={checked}
-                disabled={taken}
-                onChange={() => onToggle(item.key)}
-              />
-              <span
-                aria-hidden="true"
-                className={`shrink-0 inline-flex items-center justify-center w-3.5 h-3.5 rounded-sm border transition-[background-color,border-color] duration-(--duration-fast) ${
-                  checked
-                    ? "bg-(--color-accent) border-(--color-accent) text-(--color-accent-text)"
-                    : "border-(--color-border-primary) text-transparent"
-                }`}
-              >
-                <CheckIcon size={ICON_SIZE.XS} weight="bold" />
-              </span>
-              <span className={taken ? "text-(--color-text-tertiary)" : "text-(--color-text-primary)"}>
-                {item.label}
-                {item.description && (
-                  <span className={`ml-1.5 ${taken ? "text-(--color-text-tertiary)" : "text-(--color-text-secondary)"}`}>
-                    {item.description}
-                  </span>
-                )}
-              </span>
-            </label>
-          );
-        })}
-        {trailing && <span className="ml-auto">{trailing}</span>}
-      </div>
-    );
-  }
-
+export function ActionChecklist({ items, selected, onToggle, ariaLabel }: ActionChecklistProps) {
   return (
     <div className="flex flex-col gap-0.5" role="group" aria-label={ariaLabel}>
       {items.map((item) => {
@@ -210,18 +159,9 @@ export interface ChecklistSubmitButtonProps {
   label: string;
   disabled?: boolean;
   onClick: () => void;
-  /** The status card's Send sits in the wrapping offers row; it stays small and quiet. */
-  dense?: boolean;
 }
 
-export function ChecklistSubmitButton({ label, disabled, onClick, dense }: ChecklistSubmitButtonProps) {
-  if (dense) {
-    return (
-      <Button variant="secondary" size="sm" onClick={onClick} disabled={disabled}>
-        {label}
-      </Button>
-    );
-  }
+export function ChecklistSubmitButton({ label, disabled, onClick }: ChecklistSubmitButtonProps) {
   return (
     <Button variant="primary" size="md" onClick={onClick} disabled={disabled}>
       <ArrowRightIcon size={ICON_SIZE.SM} weight="bold" />

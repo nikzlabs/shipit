@@ -1,6 +1,7 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
 import { render, screen, cleanup, fireEvent } from "@testing-library/react";
 import { SessionStatusCard } from "./SessionStatusCard.js";
+import { useSessionStore } from "../stores/session-store.js";
 import type { OfferedAction, SessionStatus } from "../../server/shared/types.js";
 
 afterEach(() => cleanup());
@@ -26,17 +27,45 @@ function card(over: Partial<SessionStatus> = {}): SessionStatus {
 }
 
 describe("SessionStatusCard", () => {
-  it("shows the two fields", () => {
-    render(<SessionStatusCard status={card({ needsYou: "Add the Stripe test key." })} />);
-    expect(screen.getByText("Status")).toBeInTheDocument();
+  it("leads with the status and puts the manual steps under their own subtitle", () => {
+    render(<SessionStatusCard status={card({ needsYou: ["Add the Stripe test key."] })} />);
+    // The status carries no label of its own; it is what the card opens with.
+    expect(screen.queryByText("Status")).not.toBeInTheDocument();
     expect(screen.getByText(/routes and tests done/)).toBeInTheDocument();
-    expect(screen.getByText("Needs you")).toBeInTheDocument();
+    expect(screen.getByText("Manual steps")).toBeInTheDocument();
     expect(screen.getByText("Add the Stripe test key.")).toBeInTheDocument();
   });
 
-  it("omits the Needs you row when there is nothing for the user", () => {
+  it("puts the offers under a Follow-ups subtitle", () => {
+    render(<SessionStatusCard status={card({ actions: [offer({ offerId: "o1" })] })} />);
+    expect(screen.getByText("Follow-ups")).toBeInTheDocument();
+  });
+
+  it("renders the status as markdown, so a list in it reads as a list", () => {
+    render(
+      <SessionStatusCard
+        status={card({ status: "Billing service:\n\n- routes done\n- webhook not started" })}
+      />,
+    );
+    const bullets = screen.getAllByRole("listitem").map((li) => li.textContent);
+    expect(bullets).toEqual(["routes done", "webhook not started"]);
+  });
+
+  it("shows several things that need the user as a list, and one as a line", () => {
+    const { rerender } = render(
+      <SessionStatusCard status={card({ needsYou: ["Add the Stripe test key.", "Merge PR #212."] })} />,
+    );
+    expect(screen.getAllByRole("listitem").map((li) => li.textContent))
+      .toEqual(["Add the Stripe test key.", "Merge PR #212."]);
+
+    rerender(<SessionStatusCard status={card({ needsYou: ["Add the Stripe test key."] })} />);
+    expect(screen.queryAllByRole("listitem")).toHaveLength(0);
+    expect(screen.getByText("Add the Stripe test key.")).toBeInTheDocument();
+  });
+
+  it("omits the manual-steps section when there is nothing for the user", () => {
     render(<SessionStatusCard status={card()} />);
-    expect(screen.queryByText("Needs you")).not.toBeInTheDocument();
+    expect(screen.queryByText("Manual steps")).not.toBeInTheDocument();
   });
 
   it("carries the Stale label only while the card is stale", () => {
@@ -70,7 +99,7 @@ describe("SessionStatusCard", () => {
       />,
     );
     fireEvent.click(screen.getByRole("checkbox"));
-    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    fireEvent.click(screen.getByRole("button", { name: /submit/i }));
     expect(onSubmit).toHaveBeenCalledWith(
       expect.any(String),
       { sessionStatusOfferIds: ["o1"] },
@@ -88,7 +117,7 @@ describe("SessionStatusCard", () => {
     // Same agent-side id, new server-side identity: the tick does not carry over.
     rerender(withOffer(offer({ offerId: "o2", id: "readme" })));
     expect((screen.getByRole("checkbox") as HTMLInputElement).checked).toBe(false);
-    expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /submit/i })).toBeDisabled();
   });
 
   it("ticks an offer that arrives with defaultChecked", () => {
@@ -112,7 +141,7 @@ describe("SessionStatusCard", () => {
     const boxes = screen.getAllByRole("checkbox");
     fireEvent.click(boxes[0]);
     fireEvent.click(boxes[1]);
-    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    fireEvent.click(screen.getByRole("button", { name: /submit/i }));
 
     const [text, options] = onSubmit.mock.calls[0] as unknown as [string, { sessionStatusOfferIds: string[] }];
     expect(options.sessionStatusOfferIds).toEqual(["o1", "o2"]);
@@ -120,7 +149,7 @@ describe("SessionStatusCard", () => {
     expect(text).toContain("offered 2026-09-14 against branch `feat-a` @ aaa111");
     expect(text).toContain("offered 2026-09-15 against branch `feat-b` @ bbb222");
 
-    expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /submit/i })).toBeDisabled();
   });
 
   it("stops offering an offer whose message was sent, before the server says it is taken", () => {
@@ -129,27 +158,63 @@ describe("SessionStatusCard", () => {
       <SessionStatusCard status={card({ actions: [offer({ offerId: "o1" })] })} onSubmit={onSubmit} />,
     );
     fireEvent.click(screen.getByRole("checkbox"));
-    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    fireEvent.click(screen.getByRole("button", { name: /submit/i }));
 
     const box = screen.getByRole("checkbox") as HTMLInputElement;
     expect(box).toBeDisabled();
     fireEvent.click(box);
-    expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /submit/i })).toBeDisabled();
     expect(onSubmit).toHaveBeenCalledTimes(1);
   });
 
-  it("keeps the selection when the message was refused", () => {
+  it("keeps the selection and says so when the message was refused", () => {
     const onSubmit = vi.fn(() => false);
     render(
       <SessionStatusCard status={card({ actions: [offer({ offerId: "o1" })] })} onSubmit={onSubmit} />,
     );
     fireEvent.click(screen.getByRole("checkbox"));
-    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    fireEvent.click(screen.getByRole("button", { name: /submit/i }));
     expect((screen.getByRole("checkbox") as HTMLInputElement).checked).toBe(true);
+    expect(screen.getByRole("status")).toHaveTextContent(/couldn.t send/i);
   });
 
-  it("has no Send until an offer is ticked", () => {
+  it("prefills the composer with the ticked offers on Add comment", () => {
+    render(
+      <SessionStatusCard
+        status={card({
+          actions: [
+            offer({ offerId: "o1", payload: "Wire the webhook", branch: "feat-a", headSha: "aaa111" }),
+            offer({ offerId: "o2", payload: "Add retries" }),
+          ],
+        })}
+      />,
+    );
+    fireEvent.click(screen.getAllByRole("checkbox")[0]);
+    fireEvent.click(screen.getByRole("button", { name: /add comment/i }));
+
+    const prefill = useSessionStore.getState().prefillText;
+    expect(prefill).toContain("Wire the webhook");
+    expect(prefill).toContain("offered 2026-09-14 against branch `feat-a` @ aaa111");
+    expect(prefill).not.toContain("Add retries");
+  });
+
+  it("shows each offer's description, not only its label", () => {
+    render(
+      <SessionStatusCard
+        status={card({
+          actions: [
+            offer({ offerId: "o1", label: "Wire the Stripe webhook", description: "Adds the /webhooks/stripe route and its signature check." }),
+            offer({ offerId: "o2", label: "Add retries", description: "Retries a 5xx from Stripe three times, with backoff." }),
+          ],
+        })}
+      />,
+    );
+    expect(screen.getByText("Adds the /webhooks/stripe route and its signature check.")).toBeInTheDocument();
+    expect(screen.getByText("Retries a 5xx from Stripe three times, with backoff.")).toBeInTheDocument();
+  });
+
+  it("has no submit until an offer is ticked", () => {
     render(<SessionStatusCard status={card({ actions: [offer({ offerId: "o1" })] })} />);
-    expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /submit/i })).toBeDisabled();
   });
 });

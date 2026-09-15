@@ -118,6 +118,21 @@ taken inside one session, without building an agent that talks to many.
     two fields mean, how to offer actions. The gist is in that prompt, on
     every turn, not in a skill the agent has to load. A skill may carry a
     longer explanation of how to use the card.
+26. Every offered action carries a description as well as a label, and the
+    card shows it, so the user knows what an item is before they tick it. The
+    offers look and behave like the follow-up actions of the existing card:
+    the card's own appearance is the product's, not the prototype's. It keeps
+    what the existing card can do — the comment shortcut included — and adds to
+    it rather than removing anything.
+27. The status is markdown and may run to a short list rather than one
+    sentence; the card renders it as markdown. "Needs you" is a list: one entry
+    per thing only the user can do, carried as a repeated field in the API, and
+    shown as a list when there is more than one.
+28. The card is laid out as sections, not as a labelled column: the status
+    opens the card with no label of its own, the things only the user can do
+    follow under the subtitle "Manual steps", and the offered actions follow
+    under the subtitle "Follow-ups" — the subtitle is what separates them,
+    not a rule.
 
 ## Open questions
 
@@ -125,6 +140,28 @@ taken inside one session, without building an agent that talks to many.
 
 ## Resolved questions
 
+- 2026-09-15 — Nik, on the drawn card, fourth round: "remove Status/Needs you
+  column. Instead the 'Needs you' should be a subtitle, and rename to 'Manual
+  steps'. The actions should be separated by another subtitle 'Follow-ups'
+  instead of a separator." → req 28. The field keeps the name `needsYou` in the
+  API; "Manual steps" is what the card calls it.
+- 2026-09-15 — Nik, on the drawn card, third round: "Status: seed dogfood with
+  longer text. It needs to be markdown with a list. Needs you: should be a
+  repeated field in the API, and presented as a list, if there are multiple
+  items." → req 27. The status cap rises from 240 to 1200 characters, because a
+  list cannot fit in one sentence; each "Needs you" entry keeps the 240 cap.
+- 2026-09-15 — Nik, on the drawn card, second round: "what happened to 'add
+  comment'? ... the new card should be conceptually an extension of the action
+  card, without removing functionality." The card therefore keeps the comment
+  shortcut and the delivery-failure notice; the earlier design decision "one
+  Send, no comment shortcut" is withdrawn. → req 26.
+- 2026-09-15 — Nik, on the first drawn card: "mockup was inspiration, whereas
+  the actual UI needs to be consistent with the current cards. In particular,
+  every checkable item needs to have also description so the user can
+  understand what this item is about." The compact wrapping row of
+  `mockup.html` is therefore not the appearance; the offers use the rows of the
+  existing follow-up action card, and a description is part of every offer, not
+  an optional extra. → req 26.
 - 2026-09-15 — Second review of this document by Nik. The card must scroll
   away with the conversation, or the conversation is hard to read on mobile
   → req 6: the last element of the conversation, not a fixed one. "Current"
