@@ -7,6 +7,7 @@ import type { SessionManager } from "../sessions.js";
 import type { SessionContainerManager } from "../session-container.js";
 import type { SessionRunnerRegistry, SessionRunnerInterface } from "../session-runner.js";
 import type { ServiceManager } from "../service-manager.js";
+import type { PostInterruptCommitDeps } from "./post-interrupt-commit.js";
 import type { WsServerMessage, WsContainerRestarting } from "../../shared/types.js";
 
 type StubRunner = SessionRunnerInterface & {
@@ -518,5 +519,113 @@ describe("recovery clears BOTH the OOM breaker and the loop detector", () => {
 
     expect(oomBreaker.isTripped("rescue-1")).toBe(false);
     expect(loopDetector.countInWindow("rescue-1")).toBe(0);
+  });
+});
+
+describe("restartAgent — the killed turn's work is flushed before the runner goes away", () => {
+  function makeFlushDeps(opts: { ahead: number }) {
+    const calls: string[] = [];
+    const autoCommit = async () => {
+      calls.push("autoCommit");
+      return {
+        commitHash: null,
+        parentHash: null,
+        conflictedFiles: [],
+        rebaseInProgress: false,
+        secretFindings: [],
+        unreadable: null,
+      };
+    };
+    const git = {
+      autoCommit,
+      getHeadHash: async () => "head1",
+      currentBranchOrNull: async () => "shipit/abc",
+      aheadBehind: async () => ({ ahead: opts.ahead, behind: 0 }),
+      isAncestor: async () => true,
+      isRebaseInProgress: async () => false,
+      isMergeOrSequencerInProgress: async () => false,
+    };
+    const commitSessionManager = {
+      get: (sid: string) => ({ id: sid, title: "t", workspaceDir: "/tmp/ws" }),
+      getPrStatus: () => null,
+      getSecretBlock: () => undefined,
+      setSecretBlock: () => undefined,
+      setWorkspaceBlock: () => false,
+    } as unknown as SessionManager;
+    const postInterruptCommitDeps = {
+      sessionManager: commitSessionManager,
+      chatHistoryManager: { append: () => undefined, updateLastMessage: () => null, indexOfMessageId: () => -1 },
+      prStatusPoller: {},
+      githubAuthManager: {},
+      credentialStore: {},
+      generateText: async () => "",
+      createGitManager: () => git,
+      scheduleAutoPush: () => { calls.push("scheduleAutoPush"); },
+    } as unknown as PostInterruptCommitDeps;
+    return { calls, postInterruptCommitDeps };
+  }
+
+  it("commits and arms the push before disposing the runner", async () => {
+    const oldRunner = makeStubRunner("rescue-1", false);
+    const registry = makeStubRegistry({ "rescue-1": oldRunner }, makeStubRunner("rescue-1", false));
+    const { calls, postInterruptCommitDeps } = makeFlushDeps({ ahead: 1 });
+    const originalDispose = registry.dispose.bind(registry);
+    registry.dispose = (sid: string, o?: { force?: boolean }) => {
+      calls.push("dispose");
+      originalDispose(sid, o);
+    };
+
+    await restartAgent(
+      {
+        sessionManager,
+        containerManager: makeStubContainerManager({ hasExisting: true, finalState: "running" }),
+        runnerRegistry: registry,
+        defaultAgentId: "claude" as never,
+        postInterruptCommitDeps,
+      },
+      "rescue-1",
+    );
+
+    expect(calls).toEqual(["autoCommit", "scheduleAutoPush", "dispose"]);
+  });
+
+  // The ordinary terminal sequence is memoized and arms its own push. A second
+  // flush cannot be ordered against it, and arming mid-PR-push is the
+  // non-fast-forward rejection the post-turn ordering exists to avoid.
+  it("stands aside when the ordinary post-turn sequence is already running", async () => {
+    const oldRunner = makeStubRunner("rescue-1", false);
+    (oldRunner as unknown as { postTurnWorkInFlight: boolean }).postTurnWorkInFlight = true;
+    const registry = makeStubRegistry({ "rescue-1": oldRunner }, makeStubRunner("rescue-1", false));
+    const { calls, postInterruptCommitDeps } = makeFlushDeps({ ahead: 1 });
+
+    await restartAgent(
+      {
+        sessionManager,
+        containerManager: makeStubContainerManager({ hasExisting: true, finalState: "running" }),
+        runnerRegistry: registry,
+        defaultAgentId: "claude" as never,
+        postInterruptCommitDeps,
+      },
+      "rescue-1",
+    );
+
+    expect(calls).toEqual([]);
+  });
+
+  it("still restarts when no commit deps are wired", async () => {
+    const oldRunner = makeStubRunner("rescue-1", false);
+    const registry = makeStubRegistry({ "rescue-1": oldRunner }, makeStubRunner("rescue-1", false));
+
+    const result = await restartAgent(
+      {
+        sessionManager,
+        containerManager: makeStubContainerManager({ hasExisting: true, finalState: "running" }),
+        runnerRegistry: registry,
+        defaultAgentId: "claude" as never,
+      },
+      "rescue-1",
+    );
+
+    expect(result).toMatchObject({ ok: true });
   });
 });

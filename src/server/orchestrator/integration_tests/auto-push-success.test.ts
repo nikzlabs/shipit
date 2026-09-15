@@ -270,3 +270,54 @@ describe("auto-push: success and failure", () => {
     expect(pushResult).toBeUndefined();
   });
 });
+
+describe("auto-push: a branch left ahead converges without another turn", () => {
+  const remoteHas = (bareDir: string, file: string): boolean =>
+    execSync("git ls-tree -r --name-only --full-tree HEAD || true", {
+      cwd: bareDir,
+      env: { ...process.env, HOME: tmpDir },
+    }).toString().includes(file);
+
+  const waitForRemote = async (bareDir: string, file: string): Promise<boolean> => {
+    const deadline = Date.now() + 8000;
+    while (Date.now() < deadline && !remoteHas(bareDir, file)) {
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    return remoteHas(bareDir, file);
+  };
+
+  // Stand in for a push that was armed and never landed: the commit exists, the
+  // remote does not have it, and no turn will ever move HEAD again.
+  const commitWithoutPushing = (sessionDir: string, file: string): void => {
+    fs.writeFileSync(path.join(sessionDir, file), "stranded by a missed push");
+    const env = { ...process.env, HOME: tmpDir };
+    execSync(`git add ${file}`, { cwd: sessionDir, env });
+    execSync(`git commit -m "work that never reached the remote"`, { cwd: sessionDir, env });
+  };
+
+  it("pushes a branch the poller finds ahead", { timeout: 15_000 }, async () => {
+    await githubAuth.setToken("test-token");
+    const { sessionId, sessionDir } = await createSession();
+    const bareDir = createBareRemote(sessionDir);
+    commitWithoutPushing(sessionDir, "stranded.txt");
+
+    expect(remoteHas(bareDir, "stranded.txt")).toBe(false);
+
+    const outcome = await app.prStatusPoller!.healBranchAhead(sessionId);
+    expect(outcome).toMatchObject({ action: "scheduled" });
+    expect(await waitForRemote(bareDir, "stranded.txt")).toBe(true);
+  });
+
+  it("does not push again once the branch has caught up", { timeout: 15_000 }, async () => {
+    await githubAuth.setToken("test-token");
+    const { sessionId, sessionDir } = await createSession();
+    const bareDir = createBareRemote(sessionDir);
+    commitWithoutPushing(sessionDir, "stranded.txt");
+
+    await app.prStatusPoller!.healBranchAhead(sessionId);
+    expect(await waitForRemote(bareDir, "stranded.txt")).toBe(true);
+
+    expect(await app.prStatusPoller!.healBranchAhead(sessionId))
+      .toEqual({ action: "skip", reason: "not-ahead" });
+  });
+});

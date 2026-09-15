@@ -3,10 +3,11 @@ import type { TerminalPrFacts } from "./github-auth-prs.js";
 import type { SessionManager } from "./sessions.js";
 import type { SessionRunnerRegistry } from "./session-runner.js";
 import type { GitManager } from "../shared/git.js";
-import type { PrStatusSummary, AutoFixState, AutoMergeManagedReason, AutoMergeState, PrAutoMergeError } from "../shared/types/github-types.js";
+import type { PrStatusSummary, AutoFixState, AutoMergeManagedReason, AutoMergeState, BranchSyncStatus, PrAutoMergeError } from "../shared/types/github-types.js";
 import { parseGitHubRemote } from "./git-utils.js";
 import { getErrorMessage } from "./validation.js";
 import { readBranchSync, resolveMergeSync } from "./services/branch-sync.js";
+import { BranchAheadHealer, type AheadHealOutcome } from "./services/branch-ahead-heal.js";
 import { logMergeObserved } from "./services/merge-attribution.js";
 import {
   buildPrStatusQuery,
@@ -72,6 +73,8 @@ export class PrStatusPoller {
   private onMergedPr?: (info: MergedPrInfo) => Promise<void>;
   private onPrTerminalState?: (info: PrTerminalStateInfo) => Promise<void>;
   private createGitManager?: (dir: string) => GitManager;
+  private scheduleAutoPush?: (git: GitManager, sessionId: string) => void;
+  private readonly branchHealer: BranchAheadHealer;
 
   /**
    * A session's checkout as a GitManager, or `undefined` when it is not on
@@ -129,6 +132,9 @@ export class PrStatusPoller {
     rebaseAndResolveCb?: RebaseAndResolveCb;
     isAutoFixEnabled?: () => boolean;
     ensureRunner?: (sessionId: string) => Promise<SessionRunnerInterface | undefined>;
+    /** Wired to the process-lived AutoPushScheduler; absent leaves an ahead branch held. */
+    scheduleAutoPush?: (git: GitManager, sessionId: string) => void;
+    autoPushArmed?: (sessionId: string) => boolean;
   }) {
     this.githubAuth = opts.githubAuth;
     this.sessionManager = opts.sessionManager;
@@ -140,6 +146,12 @@ export class PrStatusPoller {
     this.createGitManager = opts.createGitManager;
     this.isAutoResolveEnabled = opts.isAutoResolveEnabled ?? (() => false);
     this.isAutoFixEnabled = opts.isAutoFixEnabled ?? (() => false);
+    this.scheduleAutoPush = opts.scheduleAutoPush;
+    const autoPushArmed = opts.autoPushArmed;
+    this.branchHealer = new BranchAheadHealer({
+      getRunner: (sessionId) => opts.runnerRegistry?.get(sessionId),
+      pushArmed: (sessionId) => autoPushArmed?.(sessionId) === true,
+    });
 
     const onSessionChange = (sessionId: string) => this.broadcastSessionStatus(sessionId);
     this.autoFix = new AutoFixManager(
@@ -294,6 +306,48 @@ export class PrStatusPoller {
     }
   }
 
+  /**
+   * Push a branch that is already ahead of its remote, when nothing else will.
+   *
+   * The poll tick supplies the `sync` it just read; a caller without one (the
+   * tests, and any future manual trigger) lets this read it. Every decision —
+   * idle, not already armed, backed off, not stacked on a merged PR — lives in
+   * `BranchAheadHealer`, and the push itself goes through the same scheduler
+   * the turn path uses, so there is still exactly one push route.
+   */
+  async healBranchAhead(
+    sessionId: string,
+    sync?: BranchSyncStatus,
+    localGit?: GitManager,
+  ): Promise<AheadHealOutcome> {
+    const schedulePush = this.scheduleAutoPush;
+    if (!schedulePush) return { action: "skip", reason: "no-scheduler" };
+    const session = this.sessionManager.get(sessionId);
+    const git = localGit ?? this.openSessionGit(session?.workspaceDir);
+    if (!git) return { action: "skip", reason: "no-checkout" };
+    // The checkout is the authority on which branch a push would send, and the
+    // session record can be empty or stale; `readBranchSync` re-checks anyway.
+    const branch = sync ? null : await git.currentBranchOrNull().catch(() => null);
+    // An unreadable state goes to the healer too, so it forgets any back-off.
+    const reading = sync ?? (branch ? await readBranchSync(git, branch) : undefined);
+    const outcome = await this.branchHealer.heal({
+      sessionId,
+      session,
+      sync: reading,
+      git,
+      getPrStatus: () => this.sessionManager.getPrStatus(sessionId),
+      schedule: () => schedulePush(git, sessionId),
+    });
+    if (outcome.action === "scheduled") {
+      console.log(
+        `[pr-poller] ${sessionId}: branch ${branch ?? session?.branch ?? "(current)"}`
+        + " is ahead of origin with no push armed"
+        + ` — scheduling one (attempt ${outcome.attempt})`,
+      );
+    }
+    return outcome;
+  }
+
   /** Caller must bound this wait; merge callbacks can require network work. */
   async awaitMergeHandling(sessionId: string): Promise<void> {
     await this.mergeHandling.get(sessionId);
@@ -308,6 +362,7 @@ export class PrStatusPoller {
     this.remediationArbiter.delete(sessionId);
     this.graceTracker.untrack(sessionId);
     this.mergeHandling.delete(sessionId);
+    this.branchHealer.forget(sessionId);
 
     if (repoKey && !this.tracker.repoHasTrackedSessions(repoKey)) {
       this.supervisor.deleteRepoCadence(repoKey);
@@ -673,6 +728,12 @@ export class PrStatusPoller {
           // This display read uses local refs; the merge path fetches fresh state.
           const sync = await readBranchSync(localGit, summary.headBranch);
           if (sync) summary.branchSync = sync;
+          // Nothing else reconsiders a branch that is already ahead — the turn
+          // path only arms a push when that turn moved HEAD — so the PR stays
+          // unmergeable until someone notices. Repair it here instead.
+          await this.healBranchAhead(session.id, sync, localGit).catch((err: unknown) => {
+            console.error(`[pr-poller] Branch-ahead heal failed for ${session.id}:`, err);
+          });
         }
 
         const prev = this.tracker.lastKnown.get(session.id);

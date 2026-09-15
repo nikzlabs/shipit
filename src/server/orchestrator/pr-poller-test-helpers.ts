@@ -118,7 +118,10 @@ export const CONVERSATION_OVERRIDES = {
 };
 
 export function makeSessionManager(
-  sessions: { id: string; branch?: string; remoteUrl?: string; workspaceDir?: string; archived?: boolean }[],
+  sessions: {
+    id: string; branch?: string; remoteUrl?: string; workspaceDir?: string; archived?: boolean;
+    kind?: string; mergedAt?: string; mergedHeadSha?: string;
+  }[],
   opts: { pendingMergeWatches?: string[] } = {},
 ): SessionManager {
   return {
@@ -133,6 +136,9 @@ export function makeSessionManager(
     })),
     get: (id: string) => sessions.find((s) => s.id === id) as never,
     setPrStatus: vi.fn(),
+    // Real: the merged-branch guard consults it, and a throwing stub would be
+    // swallowed by that guard's catch and read as "no block".
+    getPrStatus: vi.fn(() => null),
     markClosed: vi.fn(),
     setMergedHeadSha: vi.fn(),
     getAllPrStatuses: vi.fn().mockReturnValue([]),
