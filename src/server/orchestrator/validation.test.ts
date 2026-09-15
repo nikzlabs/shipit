@@ -1,5 +1,14 @@
-import { describe, it, expect } from "vitest";
-import { formatFileContext, imageAttachmentRefusal } from "./validation.js";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { execFileSync } from "node:child_process";
+import {
+  formatFileContext,
+  imageAttachmentRefusal,
+  resolveFileAttachments,
+  resolveUploadRefs,
+} from "./validation.js";
 import {
   UNTRUSTED_OPEN_MARKER,
   UNTRUSTED_CLOSE_MARKER,
@@ -80,5 +89,99 @@ describe("imageAttachmentRefusal (planning#460)", () => {
     expect(imageAttachmentRefusal(undefined, PNG, undefined)).toBeNull();
     expect(imageAttachmentRefusal(TEXT_ONLY, undefined, undefined)).toBeNull();
     expect(imageAttachmentRefusal(TEXT_ONLY, [], [])).toBeNull();
+  });
+});
+
+/**
+ * planning#575 — attachment resolution runs inside the window that decides
+ * whether a message claims the turn, and that window is now serialised per
+ * session. `fs.readFile` opens before it reads, and opening a FIFO with no
+ * writer never returns: without this refusal one attachment wedges every later
+ * send to the session, and costs the process a libuv thread permanently.
+ */
+describe("attachment resolution refuses what cannot be read", () => {
+  /** Rejects rather than hanging, so a regression is a named failure in seconds. */
+  async function within<T>(work: Promise<T>, what: string): Promise<T> {
+    let timer: NodeJS.Timeout;
+    const deadline = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`${what} never returned`)), 2000);
+    });
+    try {
+      return await Promise.race([work, deadline]);
+    } finally {
+      clearTimeout(timer!);
+    }
+  }
+
+  let root: string;
+  let dir: string;
+  beforeEach(() => {
+    // `resolveUploadRefs` reads `<parent of workspace>/uploads`, so the workspace
+    // has to be nested — a workspace at the temp root would share /tmp/uploads.
+    root = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-attach-kind-"));
+    dir = path.join(root, "workspace");
+    fs.mkdirSync(dir);
+  });
+  afterEach(() => {
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  it("refuses a workspace attachment that is a FIFO instead of blocking on it", async () => {
+    execFileSync("mkfifo", [path.join(dir, "pipe.txt")]);
+
+    const result = await within(
+      resolveFileAttachments([{ path: "pipe.txt" }], dir),
+      "resolveFileAttachments on a FIFO",
+    );
+
+    expect(result.error).toBe("Not a readable file: pipe.txt");
+    expect(result.files).toEqual([]);
+  });
+
+  it("refuses an upload that is a FIFO, on the image branch and the text branch alike", async () => {
+    const uploadsDir = path.join(root, "uploads");
+    fs.mkdirSync(uploadsDir, { recursive: true });
+    execFileSync("mkfifo", [path.join(uploadsDir, "shot.png")]);
+    execFileSync("mkfifo", [path.join(uploadsDir, "notes.txt")]);
+
+    for (const name of ["shot.png", "notes.txt"]) {
+      const result = await within(
+        resolveUploadRefs([{ path: `/uploads/${name}`, type: "upload" }], dir),
+        `resolveUploadRefs on a FIFO named ${name}`,
+      );
+      expect(result.error).toBe(`Upload is not a readable file: /uploads/${name}`);
+    }
+  });
+
+  /** The handle is judged, so what the path points AT decides — not the link itself. */
+  it("follows a symlink: refuses one pointing at a FIFO, reads one pointing at a file", async () => {
+    execFileSync("mkfifo", [path.join(dir, "real-pipe")]);
+    fs.writeFileSync(path.join(dir, "real-file.txt"), "via a link");
+    fs.symlinkSync(path.join(dir, "real-pipe"), path.join(dir, "link-to-pipe.txt"));
+    fs.symlinkSync(path.join(dir, "real-file.txt"), path.join(dir, "link-to-file.txt"));
+
+    const refused = await within(
+      resolveFileAttachments([{ path: "link-to-pipe.txt" }], dir),
+      "resolveFileAttachments on a symlink to a FIFO",
+    );
+    expect(refused.error).toBe("Not a readable file: link-to-pipe.txt");
+
+    const ok = await resolveFileAttachments([{ path: "link-to-file.txt" }], dir);
+    expect(ok.error).toBeNull();
+    expect(ok.files[0]?.content).toBe("via a link");
+  });
+
+  it("refuses a directory, and still reads an ordinary file", async () => {
+    fs.mkdirSync(path.join(dir, "src"));
+    fs.writeFileSync(path.join(dir, "hello.ts"), "const x = 42;");
+
+    expect((await resolveFileAttachments([{ path: "src" }], dir)).error)
+      .toBe("Not a readable file: src");
+    expect((await resolveFileAttachments([{ path: "gone.ts" }], dir)).error)
+      .toBe("File not found: gone.ts");
+
+    const ok = await resolveFileAttachments([{ path: "hello.ts" }], dir);
+    expect(ok.error).toBeNull();
+    expect(ok.files).toEqual([{ path: "hello.ts", content: "const x = 42;" }]);
   });
 });

@@ -21,6 +21,7 @@ import { prepareDispatch } from "../prepared-dispatch.js";
 import { toQueuedMessage } from "../session-runner.js";
 import { agentAdmissionError } from "../services/agent-auth-gate.js";
 import { imageHash, imageUrl } from "../transcript-projection.js";
+import { acquireTurnClaimGate } from "./turn-claim-gate.js";
 
 export { CONTEXT_WINDOW_TOKENS, wireAgentListeners, extractToolResults } from "./agent-listeners.js";
 export { runAgentWithMessage } from "./agent-execution.js";
@@ -141,6 +142,40 @@ export async function handleSendMessage(
     return;
   }
 
+  /**
+   * planning#575 — from here the handler reads turn state and eventually claims
+   * it, across awaits. Take the gate before the first read so sends decide in
+   * arrival order, and release it in a `finally` so no refusal below can strand
+   * the session. No target session means no turn can be claimed at all: that
+   * send is refused inside.
+   */
+  const releaseTurnClaim = await acquireSendGate(targetSessionId);
+  try {
+    await decideAndRunSend(ctx, msg, { images, isCompactRequest, compactParsed, releaseTurnClaim });
+  } finally {
+    releaseTurnClaim();
+  }
+}
+
+interface GatedSend {
+  images: ImageAttachment[] | undefined;
+  isCompactRequest: boolean;
+  compactParsed: { match: boolean; instructions?: string };
+  /** Call as soon as the turn is claimed; the `finally` covers every other exit. */
+  releaseTurnClaim: () => void;
+}
+
+/** The release is called twice on the normal path; the gate documents that as harmless. */
+async function acquireSendGate(sessionId: string | undefined): Promise<() => void> {
+  return sessionId ? acquireTurnClaimGate(sessionId) : () => {};
+}
+
+/** The region planning#575 serialises: everything that reads or claims turn state. */
+async function decideAndRunSend(
+  ctx: FullCtx,
+  msg: WsSendMessage,
+  { images, isCompactRequest, compactParsed, releaseTurnClaim }: GatedSend,
+): Promise<void> {
   const runnerForQueue = resolveRunner(ctx);
   if (runnerForQueue) runnerForQueue.assertCanDispatch();
 
@@ -495,6 +530,9 @@ export async function handleSendMessage(
     return;
   }
   if (turnRunner) turnRunner.running = true;
+  // The claim is visible now: the next send should see it and queue, not wait
+  // out the turn. No await may come between the claim and this release.
+  releaseTurnClaim();
   if (
     turnRunner && activeId && activeDir && !isCompactRequest
     && await decideCompactBeforeTurn(ctx, turnRunner, activeId, activeDir, msg.compactContext)

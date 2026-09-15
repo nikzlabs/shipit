@@ -1,5 +1,6 @@
 import path from "node:path";
 import fs from "node:fs/promises";
+import { constants } from "node:fs";
 import type { ImageAttachment, FileAttachment, FileContextRef, UploadRef } from "../shared/types.js";
 import { wrapUntrustedContent } from "../shared/untrusted-input.js";
 import { getModel, getService, visionSupportFor } from "../shared/catalogue/index.js";
@@ -77,6 +78,43 @@ export function formatFileContext(files: FileAttachment[]): string {
   return wrapUntrustedContent({ source: "file", content: inner });
 }
 
+/**
+ * Read an attachment, refusing anything that is not a regular file.
+ *
+ * `fs.readFile` opens before it reads, and opening a FIFO with no writer never
+ * returns — no timeout, no error, a wedged handler and one libuv thread fewer
+ * for the whole process. A workspace holds whatever the agent put in it, and
+ * attachment resolution runs inside the window that decides which message
+ * claims the turn (planning#575), so one such path would wedge every later send
+ * to the session.
+ *
+ * Checking the path and then reading it would resolve the path twice, leaving a
+ * window for the thing at that path to become a FIFO in between. So: open once
+ * with `O_NONBLOCK` — which returns a handle for a FIFO instead of waiting for a
+ * writer — judge THAT handle, and read through it. A symlink to a regular file
+ * still reads, which is what these callers have always done.
+ */
+async function readRegularFile(
+  p: string,
+): Promise<{ content: Buffer } | { refusal: "missing" | "not-regular" }> {
+  let handle;
+  try {
+    handle = await fs.open(p, constants.O_RDONLY | constants.O_NONBLOCK);
+  } catch {
+    return { refusal: "missing" };
+  }
+  try {
+    if (!(await handle.stat()).isFile()) return { refusal: "not-regular" };
+    return { content: await handle.readFile() };
+  } catch {
+    return { refusal: "missing" };
+  } finally {
+    try {
+      await handle.close();
+    } catch { /* the read already has its answer */ }
+  }
+}
+
 export async function resolveFileAttachments(
   refs: FileContextRef[],
   sessionDir: string,
@@ -103,12 +141,13 @@ export async function resolveFileAttachments(
       return { files: [], error: `Invalid file path: ${filePath}` };
     }
 
-    let content: string;
-    try {
-      content = await fs.readFile(resolved, "utf-8");
-    } catch {
-      return { files: [], error: `File not found: ${filePath}` };
+    const read = await readRegularFile(resolved);
+    if ("refusal" in read) {
+      return read.refusal === "not-regular"
+        ? { files: [], error: `Not a readable file: ${filePath}` }
+        : { files: [], error: `File not found: ${filePath}` };
     }
+    const content = read.content.toString("utf-8");
 
     const size = Buffer.byteLength(content, "utf-8");
 
@@ -194,38 +233,42 @@ export async function resolveUploadRefs(
     const ext = path.extname(ref.path).toLowerCase();
     const imageMime = IMAGE_EXT_TO_MIME[ext];
 
+    // The binary branch never opens the upload, so it is the one that does not read.
+    const uploadRefusal = (refusal: "missing" | "not-regular") =>
+      ({
+        files: [], images: [], imageHostPaths: [],
+        error: refusal === "not-regular"
+          ? `Upload is not a readable file: ${ref.path}`
+          : `Upload not found: ${ref.path}`,
+      });
+
     if (imageMime) {
       // Preserve the upload path so history recognizes it as already sent.
-      try {
-        const buf = await fs.readFile(hostPath);
-        imageResult.push({
-          data: buf.toString("base64"),
-          mediaType: imageMime,
-          filename,
-          existingPath: ref.path,
-        });
-        imageHostPaths.push(hostPath);
-      } catch {
-        return { files: [], images: [], imageHostPaths: [], error: `Upload not found: ${ref.path}` };
-      }
+      const read = await readRegularFile(hostPath);
+      if ("refusal" in read) return uploadRefusal(read.refusal);
+      imageResult.push({
+        data: read.content.toString("base64"),
+        mediaType: imageMime,
+        filename,
+        existingPath: ref.path,
+      });
+      imageHostPaths.push(hostPath);
     } else if (isBinaryUpload(ref.path)) {
       fileResult.push({
         path: ref.path,
         content: `[Binary file uploaded at ${ref.path} — use Bash tool to read/process this file inside the container]`,
       });
     } else {
-      try {
-        const content = await fs.readFile(hostPath, "utf-8");
-        if (Buffer.byteLength(content, "utf-8") > MAX_FILE_SIZE_BYTES) {
-          fileResult.push({
-            path: ref.path,
-            content: `[File ${ref.path} is too large to include inline (>100KB). Use Bash tool to read it at ${ref.path}]`,
-          });
-        } else {
-          fileResult.push({ path: ref.path, content });
-        }
-      } catch {
-        return { files: [], images: [], imageHostPaths: [], error: `Upload not found: ${ref.path}` };
+      const read = await readRegularFile(hostPath);
+      if ("refusal" in read) return uploadRefusal(read.refusal);
+      const content = read.content.toString("utf-8");
+      if (Buffer.byteLength(content, "utf-8") > MAX_FILE_SIZE_BYTES) {
+        fileResult.push({
+          path: ref.path,
+          content: `[File ${ref.path} is too large to include inline (>100KB). Use Bash tool to read it at ${ref.path}]`,
+        });
+      } else {
+        fileResult.push({ path: ref.path, content });
       }
     }
   }
