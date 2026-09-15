@@ -575,3 +575,26 @@ finding re-verified at the code first.
       `derived`; an SSH address the agent cannot read (`settings list` knows no
       such setting); and the four SSH boxes named as unaccounted by the crawl
       against the form as it was
+
+### Scoped to the grant, which closes a hole older than this slice
+
+- [x] req 5 — the SSH read answers with the destinations THIS session is granted
+      (`sessionSshHosts`, over the shipped `grantedSshHosts`), for the collection
+      and for every `sshHosts[]` field. `api-container-guard.ts` hard-denies
+      `/api/ssh-hosts` to every container — "a container has no business editing
+      destinations or reading the list" — while `/api/sessions/:id/settings` is
+      container-accessible, so the settings door crossed a decision the guard
+      makes at its own door
+- [x] The name list scoped too, not only this slice's new fields: the guard's
+      words are about reading THE LIST, so the label enumeration on `main` is
+      already what that decision forbids. Reachable today, not hypothetical
+- [x] A session with no grant gets an empty **readable** answer — it holds none,
+      which is not ShipIt failing to read — with the reason on the collection's
+      own description, which every `list` carries. No count of what was withheld:
+      "4 more destinations" is the same enumeration one step weaker
+- [x] The guard that matters is red against `main` and not only against this
+      branch: with `main`'s reader restored, a session granted nothing reads
+      `["prod", "staging"]` from `integrations.sshHosts`
+- [x] req 5 gained a clause and the decision a dated receipt, both in
+      `requirements.md`: a setting's per-session availability may be narrower
+      than the dialog's where ShipIt already gates the resource per session

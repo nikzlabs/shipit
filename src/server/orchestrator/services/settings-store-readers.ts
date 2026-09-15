@@ -14,6 +14,7 @@ import { buildRoleSettings } from "./roles.js";
 import { listCredentialRoutes } from "./credential-routes.js";
 import { listMcpServers } from "./mcp.js";
 import { listMcpOAuthProviders } from "./mcp-oauth.js";
+import { grantedSshHosts } from "./ssh.js";
 import type { SettingsReadDeps } from "./settings-read-deps.js";
 
 /**
@@ -519,12 +520,34 @@ function mcpReferringItems(
 // SSH destinations ----------------------------------------------------------
 
 /**
- * One field of each registered destination (docs/305-ssh-hosts). `listSshHosts`
- * returns `SshHostPublic`, the only shape any read path produces, so the private
- * key has no field here to be read by accident (req 3).
+ * **The destinations granted to THIS session, never the registry**
+ * (docs/305-ssh-hosts). `api-container-guard.ts` hard-denies `/api/ssh-hosts` to
+ * every container because "a container has no business … reading the list", and
+ * the settings routes are container-accessible — so reading the whole registry
+ * here would be that decision undone through another door. `listSshIdentities`
+ * scopes the same way, and a granted destination's address, user and port are
+ * already in the session's own `~/.ssh/config`.
  *
- * Not cached: `list` asks three readers for it and a registry is a handful of
- * rows read from memory, unlike the role views a cache entry exists for.
+ * Not cached: a grant is a handful of rows read from memory, unlike the role
+ * views a cache entry exists for.
+ */
+function sessionSshHosts(ctx: StoreReadContext): SshHostPublic[] {
+  const credentialStore = ctx.deps.credentialStore;
+  if (!credentialStore) return [];
+  return grantedSshHosts(
+    { credentialStore, sessionManager: ctx.deps.sessionManager },
+    ctx.sessionId,
+  );
+}
+
+/**
+ * One field of each granted destination. `SshHostPublic` is the only shape any
+ * read path produces, so the private key has no field here to be read by
+ * accident (req 3).
+ *
+ * A session with no grant gets no items, and no count of what it did not get:
+ * "4 more destinations" is the enumeration the guard denies, one step weaker.
+ * What says why is the collection's own description, which every read carries.
  */
 function sshItems(
   ctx: StoreReadContext,
@@ -533,7 +556,7 @@ function sshItems(
   const missing = needsCredentialStore(ctx);
   if (missing) return missing;
   return items(
-    (ctx.deps.credentialStore?.listSshHosts() ?? []).map((host) => ({
+    sessionSshHosts(ctx).map((host) => ({
       // Named through `integrations.sshHosts`, which emits these same labels —
       // so a destination whose label is not shaped like one has no item here
       // either, for the reason that collection's projection gives.
@@ -718,10 +741,10 @@ export const BESPOKE_READERS: Record<BespokeSettingKey, StoreReader> = {
     const missing = needsCredentialStore(ctx);
     return missing ?? value(ctx.deps.credentialStore?.getGithubToken() ?? null);
   },
-  // docs/305 — the public projection, which is all this store ever returns.
+  // docs/305 — the grant, not the registry; see `sessionSshHosts`.
   "integrations.sshHosts": (ctx) => {
     const missing = needsCredentialStore(ctx);
-    return missing ?? value(ctx.deps.credentialStore?.listSshHosts() ?? []);
+    return missing ?? value(sessionSshHosts(ctx));
   },
   "integrations.sshHosts[].label": (ctx) => sshItems(ctx, (host) => host.label),
   "integrations.sshHosts[].address": (ctx) => sshItems(ctx, (host) => host.address),

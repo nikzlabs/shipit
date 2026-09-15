@@ -63,7 +63,11 @@ agent is the actor.
 5. Every setting shown by the global **Settings** dialog and by the
    per-repository **Project Settings** dialog is in scope, not only the ones that
    block the agent. A setting either dialog shows but this feature cannot reach
-   is still named, with the reason it cannot be reached.
+   is still named, with the reason it cannot be reached. Where ShipIt already
+   gates the underlying resource per session, a read answers for what **this
+   session** holds rather than for everything the dialog lists; the grant is the
+   boundary and the read honours it, which the receipt below records for SSH
+   destinations.
 6. The capability has no master switch. It is always available, and the click on
    the proposal is what governs it.
 7. Adding a new setting to ShipIt makes it available to the agent
@@ -244,3 +248,27 @@ agent is the actor.
   settings notice inside a conflict-resolution prompt could only distract. That
   was a restriction the requirement's wording did not carry, and it made an
   outcome wait for an ordinary turn that may be hours away and may never come.
+- 2026-09-15 — *An agent can read SSH destinations from the settings surface.
+  Should it see every registered destination, or only the ones granted to its
+  session?* The user: **scope to granted destinations.** → requirement 5's
+  closing clause.
+
+  The constraint this carries is that a setting's per-session availability may be
+  narrower than the dialog's, where ShipIt already gates the underlying resource
+  per session. The grant is the boundary, and the settings read honours it rather
+  than adding a second gate of its own.
+
+  Three facts decided it rather than a preference. `/api/ssh-hosts` is hard-denied
+  to every container because *"a container has no business editing destinations or
+  reading the list"* (`api-container-guard.ts`); the settings read crossed that
+  decision through a container-accessible route, so on `main` a session granted
+  nothing can name every destination the user has registered; and
+  `listSshIdentities` already returns label, user and address for the granted
+  hosts. Scoping makes the settings door agree with the door beside it instead of
+  inventing a policy. For a granted destination it takes nothing away either —
+  ShipIt already writes that destination's address, user and port into the
+  session's own `~/.ssh/config`.
+
+  A per-session read-approval gate was considered and **not** chosen: it would
+  reverse requirement 6's "no master switch", which the user decided on
+  2026-09-13, and the grant boundary already answers the concern.

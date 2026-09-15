@@ -421,7 +421,7 @@ dialog and per-repository **Project Settings**.
 | Integrations | MCP servers | derived fields only | narrow patches yes; credential fields `secret` |
 | Integrations | the Linear panel | configured / not | no — `secret`; it holds an API token, and the tracker destination is a repository declaration (`SettingsTrackers.tsx:13`) |
 | Integrations | connected services | connected / not | no — `external_flow` |
-| Integrations | SSH destinations: the name, and per destination its address, user and port | yes | no — `external_flow`; the only write the dialog offers is the `add`, and the destination is inert until the user installs its public line on the server |
+| Integrations | SSH destinations: the name, and per destination its address, user and port | the ones THIS session is granted, never the registry (req 5's closing clause) | no — `external_flow`; the only write the dialog offers is the `add`, and the destination is inert until the user installs its public line on the server |
 | Git | git identity name and email | yes | yes |
 | Instructions | your instructions, agent instructions enabled | yes | yes |
 | Keyboard | keybindings | no — `browser_local` | no |
@@ -449,6 +449,30 @@ is what the coverage walk is for.
   prompt card.
 - **Deployment configuration and hosting tokens** — the Deployments tab holds one
   toggle plus copy and outbound links (`ProjectSettings.tsx:76`–`120`).
+
+### A read is scoped where ShipIt already gates the resource
+
+Req 5's closing clause, and today it has one instance: **SSH destinations**. The
+read answers with the destinations this session is granted
+(`settings-store-readers.ts` → `sessionSshHosts`, over the shipped
+`grantedSshHosts`), not with the registry.
+
+This is a fix to shipped behaviour rather than a new policy, and the decision was
+already written down elsewhere: `api-container-guard.ts` hard-denies
+`/api/ssh-hosts` to every container because *"a container has no business editing
+destinations or reading the list"*, while `/api/sessions/:id/settings` is
+container-accessible — so on `main` a session granted nothing can name every
+destination the user has registered, through the settings door. Scoping makes
+that door agree with the one beside it: `listSshIdentities` already returns
+label, user and address for the granted hosts and nothing about the rest.
+
+Two consequences are deliberate. A session with no grant gets an **empty,
+readable** answer — it has none, which is not ShipIt failing to read — and the
+reason rides the collection's own description, which every `list` carries. And no
+count of what was left out: *"4 more destinations"* is the same enumeration one
+step weaker. For a **granted** destination the read adds no exposure at all,
+because ShipIt already writes that destination's address, user and port into the
+session's own `~/.ssh/config` and `shipit-docs/ssh.md` tells the agent to read it.
 
 ### Browser-local settings
 

@@ -299,12 +299,14 @@ recorded. If a recorded key later changes, ShipIt refuses and says so; the user
 clears the recorded key with **Forget** on the destination's row.
 
 Your side of this is in `/shipit-docs/ssh.md`: `~/.ssh/config` is the list of
-what this session has, and `ssh <alias> '<command>'` is how you use it. To answer
-a question about a destination you have NOT been granted — whether it is
-registered at all, where it points, which account it logs in as — read it with
-`shipit settings get integrations.sshHosts`, which names every destination in the
-registry, and `integrations.sshHosts[].address`, `[].user` and `[].port` for
-where one points. No key material is in any of them.
+what this session has, and `ssh <alias> '<command>'` is how you use it. A
+settings read answers for the **granted** destinations and no others —
+`shipit settings get integrations.sshHosts` names them, and
+`integrations.sshHosts[].address`, `[].user` and `[].port` say where one points.
+An empty answer means this session is granted none, not that the user has
+registered none, and the rest of the registry is not readable from a session at
+all. So a question about a destination this session does not hold is one to put
+to the user, naming the panel: Settings → Integrations → SSH hosts.
 
 ## Background work
 

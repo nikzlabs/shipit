@@ -262,12 +262,14 @@ export const INTEGRATIONS_SETTINGS = {
    * the collection carries labels only, while the address, the user and the port
    * are persisted (`api-routes-ssh.ts:161`) and shown back on the row.
    *
-   * Emitting the address and the user is deliberate, against an earlier claim
-   * here that it would be "the enumeration the rest of docs/305 is built to
-   * prevent". That does not survive reading docs/305-ssh-hosts: its req 3
-   * withholds the private key from a settings read, and nothing in it makes a
-   * destination's address confidential from an ungranted session — whose
-   * membership the labels already emit account-wide.
+   * **A read answers with the destinations THIS session is granted, and the
+   * registry is not readable from a session at all.** `api-container-guard.ts`
+   * hard-denies `/api/ssh-hosts` to every container — "a container has no
+   * business … reading the list" — so the reader is scoped to the grant
+   * (`settings-store-readers.ts` → `sessionSshHosts`) rather than enumerating
+   * what the guard shuts. For a granted destination this emits nothing new:
+   * ShipIt already writes its address, user and port into the session's own
+   * `~/.ssh/config`.
    */
   "integrations.sshHosts": defineSetting({
     key: "integrations.sshHosts",
@@ -278,7 +280,9 @@ export const INTEGRATIONS_SETTINGS = {
       "Remote servers a session can reach over SSH. ShipIt generates a key for each destination "
       + "and signs with it; the private half never enters a session container. A destination is "
       + "granted to a session in that session's own settings, and until it is granted the session "
-      + "can neither reach it nor authenticate to it.",
+      + "can neither reach it nor authenticate to it. A read answers with the destinations THIS "
+      + "session is granted — an empty answer means this session has none, not that none is "
+      + "registered, and the rest of the registry is not readable from a session.",
     type: collection<string>({ operations: ["add", "remove"], patchableFields: [] }),
     store: { kind: "bespoke", ownedBy: "credential-store SSH hosts (/api/ssh-hosts)" },
     // The same shape gate the other name-addressed collections use. A
