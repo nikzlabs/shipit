@@ -55,12 +55,11 @@ is caught by the **second** mechanism when its next interactive turn starts:
 (`session-status-spawn-record.ts`, the one place the value is decided, so every
 spawning path writes it), and `releaseResidentOnStatusCardChange`
 (`ws-handlers/agent-execution.ts`) retires a resident whose record disagrees
-with the setting. A toggle therefore applies from the next turn on every
-harness. The one gap left is a session that was mid-turn at the toggle and
-whose next turn is a *dispatched* one (`dispatched-turn.ts` reuses residents
-through its own decision and cannot read the setting without a new
-`SystemTurnDeps` field): that turn runs with the previous tool list, and the
-two routes refuse its offer call, so it cannot write the wrong kind of card.
+with the setting. A *dispatched* turn makes its own reuse decision
+(`dispatched-turn.ts`) and calls the same helper on the same comparison, reading
+the setting through `SystemTurnDeps.statusCardEnabled`, so a session that was
+mid-turn at the toggle is brought in line whichever kind of turn comes next. A
+toggle therefore applies from the next turn on every harness.
 
 **Re-enable (req 23).** A save hook for the key (`services/settings.ts`,
 `SAVE_HOOKS`, the `advanced.autoFixCi` pattern) runs on false → true: every
@@ -284,12 +283,14 @@ start a turn asking for something the agent can no longer call.
 `statusNudge`. An ignored nudge leaves the card stale; the next ordinary turn
 is checked afresh.
 
-**Known gap: an orchestrator restart during a nudge turn loses the marker.**
-`statusNudge` survives queueing and ordinary dispatch, but `adoptInFlightTurn`
-rebuilds an adopted turn from what the worker reports (`agentId`, `deliveryId`,
-`streaming`), so the restarted nudge settles as an ordinary turn and can be
-nudged once more. The fix belongs with the worker's in-flight turn info rather
-than here; the cost of the gap is one extra visible turn in that window.
+**And it survives an orchestrator restart.** `adoptInFlightTurn` rebuilds an
+adopted turn from what the worker reports, so the marker travels with the turn
+rather than with the orchestrator: the spawn carries `statusNudge` in the
+`/agent/start` body (set on the process by `executeAgentTurn`, as `deliveryId`
+is), the worker holds it for the turn's life beside `turnDeliveryId` and reports
+it on `/agent/status`, and `InFlightTurnInfo` hands it back to the adopted turn.
+A nudge that spanned a restart therefore settles as the nudge it is and is not
+nudged a second time (req 15).
 
 **Its own lease spans the dispatch, not just the call.** `dispatch` sets
 `running` synchronously, but the turn epoch — what tells a predecessor its exit
@@ -446,6 +447,12 @@ and absent in the flag-off ones, never its wording.
   otherwise.
 - `prepared-dispatch.test.ts`, `queue-drain.test.ts` — `statusNudge` and
   `silent` survive `toQueuedMessage` → `queuedMessageToDispatchOptions`.
+- `integration_tests/dispatched-turn-race.test.ts` — a dispatched turn retires a
+  resident spawned with the other value of the setting.
+- `integration_tests/restart-turn-adoption.test.ts` — through a real worker: an
+  adopted ordinary turn with no update is nudged and the nudge it starts leaves
+  the marker on the worker; an adopted turn that carried the marker is not
+  nudged again.
 - `turn-status-settlement.test.ts` — the settlement and the nudge driven
   through the real executor: stale at once and one nudge on a plain turn; the
   nudge turn not nudged again; no nudge after a question, a crash, a silent
@@ -486,7 +493,8 @@ and absent in the flag-off ones, never its wording.
 - `src/server/session/mcp-tools/session-status.ts`, `src/server/session/mcp-shipit-bridge.ts` — the tool and its registry entry.
 - `src/server/session/agents/*/adapter.ts`, `src/server/session/agents/claude/process.ts`, `src/server/session/mcp-config-controller.ts`, `src/server/shared/types/agent-types.ts` — tool lists, allowlists and the flag in the config context and spawn env.
 - `src/server/session/mcp-tool-spec.ts` — `shipitToolSpec`, the one place the offer tool id is chosen, so each harness keeps its own order and the flag-off spec stays byte for byte.
-- `src/server/orchestrator/ws-handlers/agent-execution.ts` — resident reuse check against the flag.
+- `src/server/orchestrator/ws-handlers/agent-execution.ts`, `src/server/orchestrator/dispatched-turn.ts` — resident reuse check against the flag, one helper for both.
+- `src/server/session/agent-controller.ts`, `src/server/orchestrator/turn-adoption.ts`, `src/server/orchestrator/proxy-agent-process.ts` — the nudge marker on the worker's in-flight turn info, and back onto the adopted turn.
 - `src/server/orchestrator/resident-spawn-guard.ts` — `releaseResidentOnStatusCardChange` and the per-process record of the value it was spawned with.
 - `src/server/session/agent-ops-routes.ts` — worker relay.
 - `src/server/orchestrator/api-routes-session-status.ts` — the route; `api-routes-propose-actions.ts` — refuses under the flag.

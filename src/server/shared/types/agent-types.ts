@@ -482,6 +482,8 @@ export interface AgentProcess extends EventEmitter<AgentProcessEvents> {
   setPermissionRequester?(requester: PermissionRequester): void;
   /** Correlates a surviving worker turn after orchestrator restart. */
   setDeliveryId?(deliveryId: string): void;
+  /** docs/303 req 15 — carried to the worker so an adopted nudge is not nudged again. */
+  setStatusNudge?(statusNudge: boolean): void;
   /** docs/154 — works with or without a live process; `threadId` is the session's agentSessionId. */
   goalCommand?(threadId: string, command: AgentGoalCommand): Promise<AgentGoalCommandResult>;
   writeMcpConfig(ctx: AgentMcpWriteContext): AgentMcpWriteResult;
@@ -499,6 +501,8 @@ export interface WorkerAgentStartBody {
   params: AgentRunParams;
   runToken?: string;
   deliveryId?: string;
+  /** docs/303 req 15 — so a turn adopted after a restart settles as the nudge it is. */
+  statusNudge?: boolean;
 }
 
 export interface WorkerAgentKillBody {
@@ -518,6 +522,8 @@ export interface WorkerAgentStatus {
   deliveryId?: string;
   agentId?: AgentId;
   streaming?: boolean;
+  /** docs/303 req 15 — the live turn is a status-card nudge; it is nudged no further. */
+  statusNudge?: boolean;
   backgroundTaskCount?: number;
   /** Busy, but does not assert replayability from turnStartSseSeq. */
   selfWakeActive?: boolean;
