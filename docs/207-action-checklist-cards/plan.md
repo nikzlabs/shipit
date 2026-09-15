@@ -6,6 +6,17 @@ description: A transient, agent-authored card proposing one or more independent 
 
 # Action checklist cards
 
+> **Planned successor:
+> [docs/303-session-status-card](../303-session-status-card/plan.md)** (designed
+> 2026-09-14, not yet implemented). Once it ships, a setting
+> `advanced.sessionStatusCard`, off by default, will make the agent offer
+> follow-up actions through the session status card instead, with
+> `propose_actions` absent from its tool list while the setting is on. With
+> the setting off, everything here stays current; existing cards in history
+> keep rendering and submitting either way. One statement below is outdated already: a submission
+> does have a persisted lifecycle — `submittedAt` is stamped on acceptance in
+> `send-message.ts`.
+
 ## What this is
 
 A new transcript card that lets the agent propose **one or more independent
