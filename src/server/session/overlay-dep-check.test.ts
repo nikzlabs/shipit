@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, it, expect } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { classifyEmptyDepDirs, overlayMountedDepDirs } from "./overlay-dep-check.js";
+import { absentDepDirs, classifyEmptyDepDirs, overlayMountedDepDirs } from "./overlay-dep-check.js";
 
 function mounts(lines: string[]): string {
   return `${lines.join("\n")}\n`;
@@ -39,6 +39,27 @@ describe("overlayMountedDepDirs", () => {
   it("returns [] for empty input or no dep dirs", () => {
     expect(overlayMountedDepDirs("", "/workspace", ["node_modules"])).toEqual([]);
     expect(overlayMountedDepDirs("overlay /workspace/node_modules overlay rw 0 0", "/workspace", [])).toEqual([]);
+  });
+});
+
+describe("absentDepDirs", () => {
+  let workspace: string;
+
+  beforeEach(() => {
+    workspace = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-absent-"));
+  });
+
+  afterEach(() => {
+    fs.rmSync(workspace, { recursive: true, force: true });
+  });
+
+  it("names only the declared dirs that do not exist — empty is present, not absent", () => {
+    fs.mkdirSync(path.join(workspace, "node_modules"));
+    expect(absentDepDirs(workspace, ["node_modules", ".tools/blender"])).toEqual([".tools/blender"]);
+  });
+
+  it("returns [] when nothing is declared", () => {
+    expect(absentDepDirs(workspace, [])).toEqual([]);
   });
 });
 

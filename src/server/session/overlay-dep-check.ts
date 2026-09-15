@@ -35,6 +35,12 @@ export interface EmptyDepDirReport {
   hoistedAway: string[];
 }
 
+// Reported, never used to invalidate the marker: an install that does not populate a declared
+// path leaves it absent legitimately. It is still what a skipped install cannot have produced.
+export function absentDepDirs(workspaceRoot: string, depDirs: readonly string[]): string[] {
+  return depDirs.filter((depDir) => !fs.existsSync(path.join(workspaceRoot, depDir)));
+}
+
 export function classifyEmptyDepDirs(workspaceRoot: string): EmptyDepDirReport {
   const none: EmptyDepDirReport = { contradicting: [], hoistedAway: [] };
   let depDirs: string[];

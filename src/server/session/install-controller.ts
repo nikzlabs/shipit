@@ -18,7 +18,7 @@ import {
   serializeMarker,
   type InstallMarkerStamp,
 } from "../shared/install-marker.js";
-import { classifyEmptyDepDirs } from "./overlay-dep-check.js";
+import { absentDepDirs, classifyEmptyDepDirs } from "./overlay-dep-check.js";
 import { installSkipOutputWarning } from "./install-skip-warning.js";
 import {
   formatEmptyDepDirsFailureMessage,
@@ -365,7 +365,7 @@ export class InstallController {
     } catch {
       return;
     }
-    const warning = installSkipOutputWarning(commands, depDirs);
+    const warning = installSkipOutputWarning(commands, depDirs, absentDepDirs(this.workspaceDir, depDirs));
     if (!warning) return;
     console.warn(warning);
     this.broadcastSSE({ type: "install_log", data: { text: `${warning}\n`, stream: "stderr" } });

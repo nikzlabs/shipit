@@ -1149,6 +1149,31 @@ describe("prepareOverlayDirs (planning#147)", () => {
     expect(fs.existsSync(markerFile)).toBe(true);
   });
 
+  // Docker creates a missing nested mount destination as root inside the workspace volume,
+  // which the non-root worker then cannot write (docs/150).
+  it("creates a dep dir's missing ignored parent on the clone, owned by the worker uid", () => {
+    const myUid = process.getuid?.();
+    if (myUid === undefined) return;
+    process.env.SHIPIT_SESSION_WORKER_UID = String(myUid);
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ovl-parent-"));
+    const { workspaceDir } = makeWorkspaceWithMarker(tmpDir);
+    const spec = { ...makeSpec(tmpDir, "7777aaaa"), depDir: ".tools/blender" };
+    prepareOverlayDirs([spec], { workspaceDir });
+    const parent = path.join(workspaceDir, ".tools");
+    expect(fs.existsSync(parent)).toBe(true);
+    expect(fs.lstatSync(parent).uid).toBe(myUid);
+    // The mount point itself is Docker's to create; only the chain above it is ours.
+    expect(fs.existsSync(path.join(workspaceDir, ".tools", "blender"))).toBe(false);
+  });
+
+  it("does not touch the clone for a dep dir whose parents already exist", () => {
+    delete process.env.SHIPIT_SESSION_WORKER_UID;
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ovl-parent-"));
+    const { workspaceDir } = makeWorkspaceWithMarker(tmpDir);
+    prepareOverlayDirs([makeSpec(tmpDir, "8888bbbb")], { workspaceDir });
+    expect(fs.readdirSync(workspaceDir)).toEqual([]);
+  });
+
   it("leaves a freshly created upperdir group-writable", () => {
     const myUid = process.getuid?.();
     if (myUid === undefined) return;

@@ -18,10 +18,22 @@ export function nonDependencyInstallSteps(commands: readonly string[]): string[]
 export function installSkipOutputWarning(
   commands: readonly string[],
   depDirs: readonly string[],
+  absentDepDirs: readonly string[] = [],
 ): string | null {
-  if (!isDefaultDepDirs(depDirs)) return null;
   const steps = nonDependencyInstallSteps(commands);
   if (steps.length === 0) return null;
+  // A declared dir that is absent after a skip is the one shape the custom-dep-dirs bail-out
+  // must not swallow: the repo did name it, and the step that fills it did not run (docs/183).
+  if (absentDepDirs.length > 0) {
+    return (
+      `[install] skipped (marker matched), but ${absentDepDirs.length} declared agent.dep-dirs ` +
+      `entr${absentDepDirs.length === 1 ? "y is" : "ies are"} not present in this workspace: ` +
+      `${absentDepDirs.join(", ")}. agent.install runs a step that is not a plain dependency ` +
+      `install (${steps.map((s) => `\`${s}\``).join(", ")}), and a skip cannot have produced ` +
+      `those directories. Treat anything they should contain as missing.`
+    );
+  }
+  if (!isDefaultDepDirs(depDirs)) return null;
   return (
     `[install] skipped (marker matched), but agent.install runs a step that is not a plain ` +
     `dependency install: ${steps.map((s) => `\`${s}\``).join(", ")}. ` +

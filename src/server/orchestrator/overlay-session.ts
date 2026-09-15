@@ -207,21 +207,70 @@ export function depDirsForSession(session: Pick<SessionInfo, "workspaceDir">): s
   }
 }
 
+export type DepDirDropReason = "not-git-ignored" | "missing-tracked-parent" | "git-unavailable";
+
+export interface DepDirEligibility {
+  valid: string[];
+  dropped: { depDir: string; reason: DepDirDropReason }[];
+}
+
+// Shallowest first: ".tools/blender" -> [".tools"]. Entries are normalized POSIX relpaths.
+function depDirAncestors(depDir: string): string[] {
+  const segments = depDir.split("/");
+  const ancestors: string[] = [];
+  for (let i = 1; i < segments.length; i++) ancestors.push(segments.slice(0, i).join("/"));
+  return ancestors;
+}
+
+export async function classifyDepDirsForOverlay(
+  depDirs: string[],
+  workspaceDir: string,
+): Promise<DepDirEligibility> {
+  if (depDirs.length === 0) return { valid: [], dropped: [] };
+  // A missing ancestor disqualifies a dep dir only when it is TRACKED source the clone should
+  // already have. An ignored ancestor (".tools" for ".tools/blender") is absent on every fresh
+  // clone, and requiring it dropped the dep dir permanently — nothing else ever creates it.
+  const missingAncestors = new Set<string>();
+  for (const depDir of depDirs) {
+    for (const ancestor of depDirAncestors(depDir)) {
+      if (!fs.existsSync(path.join(workspaceDir, ancestor))) missingAncestors.add(ancestor);
+    }
+  }
+  let ignored: Set<string>;
+  try {
+    // The slash form matches directory-only ignore rules before the directory exists.
+    const queries = [...depDirs, ...missingAncestors].flatMap((p) => [p, `${p}/`]);
+    ignored = new Set(await safeSimpleGit(workspaceDir).checkIgnore(queries));
+  } catch {
+    return { valid: [], dropped: depDirs.map((depDir) => ({ depDir, reason: "git-unavailable" })) };
+  }
+  const isIgnored = (p: string): boolean => ignored.has(p) || ignored.has(`${p}/`);
+  const result: DepDirEligibility = { valid: [], dropped: [] };
+  for (const depDir of depDirs) {
+    if (!isIgnored(depDir)) {
+      result.dropped.push({ depDir, reason: "not-git-ignored" });
+      continue;
+    }
+    const blockedBy = depDirAncestors(depDir).find((a) => missingAncestors.has(a) && !isIgnored(a));
+    if (blockedBy !== undefined) {
+      result.dropped.push({ depDir, reason: "missing-tracked-parent" });
+      continue;
+    }
+    result.valid.push(depDir);
+  }
+  return result;
+}
+
 export async function validDepDirsForOverlay(
   depDirs: string[],
   workspaceDir: string,
 ): Promise<string[]> {
-  if (depDirs.length === 0) return [];
-  const parentExists = depDirs.filter((d) => fs.existsSync(path.join(workspaceDir, path.dirname(d))));
-  if (parentExists.length === 0) return [];
-  try {
-    // The slash form matches directory-only ignore rules before the directory exists.
-    const queries = parentExists.flatMap((d) => [d, `${d}/`]);
-    const ignored = new Set(await safeSimpleGit(workspaceDir).checkIgnore(queries));
-    return parentExists.filter((d) => ignored.has(d) || ignored.has(`${d}/`));
-  } catch {
-    return [];
-  }
+  return (await classifyDepDirsForOverlay(depDirs, workspaceDir)).valid;
+}
+
+// Ancestors of a mount point that the clone does not have. Docker would create them as root.
+export function missingDepDirParents(depDir: string, workspaceDir: string): string[] {
+  return depDirAncestors(depDir).filter((a) => !fs.existsSync(path.join(workspaceDir, a)));
 }
 
 // Keep the pnpm store on the workspace filesystem: overlayfs forces hardlinks into copies.
@@ -302,14 +351,29 @@ export async function preStampInstallMarker(args: {
 
   let installCommands: string[];
   let installInputs: string[] | null;
+  let declaredDepDirs: string[];
   try {
     const agent = resolveShipitConfig(workspaceDir).agent;
     installCommands = agent.install;
     installInputs = agent.installInputs;
+    declaredDepDirs = agent.depDirs;
   } catch {
     return false;
   }
   if (installCommands.length === 0) return false;
+
+  // A base hit covers only the dirs actually mounted. Skipping the install on a partial quorum
+  // reports success while a declared dir — and the install step that fills it — is simply absent.
+  const mounted = new Set(specs.map((s) => s.depDir));
+  const unmounted = declaredDepDirs.filter((d) => !mounted.has(d));
+  if (unmounted.length > 0) {
+    console.warn(
+      `[overlay] not pre-stamping the install marker: ${unmounted.length} declared agent.dep-dirs ` +
+        `entr${unmounted.length === 1 ? "y is" : "ies are"} not overlay-mounted ` +
+        `(${unmounted.join(", ")}), so a skipped install would leave ${unmounted.length === 1 ? "it" : "them"} empty.`,
+    );
+    return false;
+  }
 
   const depsHash = computeInstallDepsHash(workspaceDir, installCommands, installInputs);
 

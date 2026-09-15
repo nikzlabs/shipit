@@ -1074,3 +1074,47 @@ limits raise, so fresh template repos are in the failing class. Installs/publish
 (worker-side) are unaffected — overlay results above are untainted. Filed as its own
 follow-up: raise `AGENT_DEFAULTS`, precompile the bridges to plain JS, and/or extend
 the CLI's MCP connect timeout.
+
+## Production incident (2026-09-15) — a dep dir under an *ignored* parent was dropped, and the install that fills it was then skipped as satisfied
+
+Diagnosed read-only against the prod host on deployed build `b0dd86bdc4e3`. Repo
+`nicolasalt/reward-tag` declares three dep dirs — `tools/debug/node_modules`,
+`game/node_modules`, `.tools/blender` — and an `agent.install` whose third step
+(`sh tools/blender/install.sh`) exists only to populate `.tools/blender` with a ~1 GB
+pinned `bpy` wheel. 9 of the 12 sessions on that repo had **no** `/workspace/.tools/blender`
+at all — absent, not empty — while ShipIt reported the install successful. The repo's
+configuration was correct throughout; its own `shipit.yaml` comment shows the author
+reasoning about exactly this hazard and believing `dep-dirs` covered it.
+
+Three links, each individually reasonable:
+
+1. **`validDepDirsForOverlay` required the dep dir's parent to already exist on the clone.**
+   `.tools` is itself gitignored, so no clone ever materializes it — and the drop is
+   self-perpetuating, since nothing else creates it. `game` and `tools/debug` are tracked
+   source and survived. Same blind spot as PR #1256 above, at the *other* half of the same
+   check: that fix corrected the `check-ignore` query form and left the fresh-clone
+   assumption in the parent test next to it untouched.
+2. **The pre-stamp then wrote the marker on a partial quorum.** `preStampInstallMarker`
+   iterated the **mounted** specs, so the two surviving `node_modules` pointers alone
+   satisfied it. Marker written → install skipped → `install.sh` never ran → `install_ok=true`.
+   Evidence: `install-gate … held=1759ms`, `install_ms=9208` — against 15 753 / 17 051 ms on
+   the two sessions that did get all three mounts, and a marker-skip floor of ~5.4–6.7 s on
+   this host.
+3. **Both safety nets were no-ops for this exact shape.** `classifyEmptyDepDirs` invalidates
+   on an **empty** dep dir; `.tools/blender` was **absent**, which that file deliberately
+   exempts. `installSkipOutputWarning` exists to warn about a skipped non-dependency step,
+   but bailed out on `!isDefaultDepDirs(depDirs)` — resting on an assumption ShipIt had
+   just violated by dropping one of the declared dirs.
+
+Nothing surfaced the drop: `[overlay-measure]` lists only the dirs it acted on, so the only
+way to notice was diffing two sessions' lines.
+
+Fixed (this PR): the ignored-ancestor rule above; `prepareOverlayDirs` creates the missing
+ancestors chowned to the session worker (Docker would create them as root); the pre-stamp
+refuses when any **declared** dir is unmounted; drops are reported per-dir with a reason in
+`[overlay-measure]` and warned at provisioning; and the skip warning fires past its
+custom-dep-dirs bail-out when a declared dir is absent.
+
+**The generalizable lesson**: an eligibility test that reads the working tree must say which
+absences are *expected*. "The parent exists" silently encodes "the parent is tracked" — and
+for a dependency directory, whose whole point is being gitignored, that is the wrong default.

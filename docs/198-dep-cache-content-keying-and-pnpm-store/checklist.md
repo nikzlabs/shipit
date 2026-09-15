@@ -96,6 +96,14 @@ Fix (PR — content-key the pre-stamp):
       the pointer lacks `depsHash` (legacy), when this workspace has no content
       key, or when commands/runtime differ.
 - [x] **No flag defaults changed.**
+- [x] **Declared, not just mounted (2026-09-15).** The gate iterated the **mounted**
+      specs, so a declared dep dir that `validDepDirsForOverlay` had dropped simply
+      did not vote — and a repo whose `agent.install` fills that dir had its install
+      skipped as satisfied while the dir stayed absent (see docs/183 FINDINGS,
+      "Production incident (2026-09-15)"). `preStampInstallMarker` now reads
+      `agent.dep-dirs` from the same config it already reads the commands from, and
+      refuses outright when any declared entry has no spec. A partial quorum is not
+      evidence that the install is satisfied.
 
 ### Part 1 — uv allowlist too narrow (PR — uv venv / uv pip)
 

@@ -34,6 +34,7 @@ import {
 } from "./session-credentials.js";
 import { assertOverlayVolumesMatch, createOverlayVolume, removeOverlayVolume } from "./overlay-volume.js";
 import {
+  missingDepDirParents,
   preStampInstallMarker,
   sortOverlayDepDirs,
   supersededSessionOverlayLayers,
@@ -452,6 +453,7 @@ export function prepareOverlayDirs(
       `${tag} base generation rotated — reset ${superseded.length} superseded upper layer(s)${markerNote}`,
     );
   }
+  if (opts.workspaceDir) ensureDepDirMountParents(specs, opts.workspaceDir);
   for (const spec of specs) {
     if (!spec.orchDirs) continue;
     fs.mkdirSync(spec.orchDirs.lowerdir, { recursive: true });
@@ -464,6 +466,31 @@ export function prepareOverlayDirs(
     chownToSessionWorker(spec.orchDirs.workdir);
     // The upper directory sets the merged root's mode; new directories must allow Compose cache writes.
     reconcileDepDirCacheOwnership(spec.orchDirs.upperdir);
+  }
+}
+
+// A dep dir under an ignored parent (".tools/blender") has no parent on a fresh clone. Docker
+// would create the chain as root inside the workspace volume, which the non-root worker cannot
+// then write; create it here instead, owned by the session worker (docs/150).
+export function ensureDepDirMountParents(
+  specs: DepDirOverlaySpec[],
+  workspaceDir: string,
+  chown: (targetPath: string) => void = chownToSessionWorker,
+): void {
+  for (const spec of specs) {
+    for (const parent of missingDepDirParents(spec.depDir, workspaceDir)) {
+      const abs = path.join(workspaceDir, parent);
+      try {
+        fs.mkdirSync(abs, { recursive: true });
+      } catch (err) {
+        console.warn(
+          `[overlay] could not create the mount parent ${parent} for ${spec.depDir}:`,
+          err instanceof Error ? err.message : String(err),
+        );
+        continue;
+      }
+      chown(abs);
+    }
   }
 }
 

@@ -297,9 +297,39 @@ describe("overlay-publish: publishDepDirOverlayBases", () => {
       { session: { remoteUrl: REPO_URL, kind: undefined, workspaceDir }, workerUrl: "http://w", installOk: true },
       depsWith(),
     );
-    expect(out).toEqual([{ depDir: "node_modules", outcome: "created", depth: 1, generation: 1, attempts: 1 }]);
+    expect(out).toEqual([
+      { depDir: "node_modules", outcome: "created", depth: 1, generation: 1, attempts: 1 },
+      { depDir: "src/vendored", outcome: "dropped", dropReason: "not-git-ignored" },
+    ]);
     expect(baseContentFor("node_modules")).toBe("node_modules");
     expect(baseContentFor("src/vendored")).toBeNull();
+  });
+
+  // The incident: `.tools/` is ignored so no clone has it, and requiring the parent dropped the
+  // dep dir silently — the measurement line simply omitted it (docs/183 FINDINGS, 2026-09-15).
+  it("publishes a dep dir whose parent is itself git-ignored and absent on the clone", async () => {
+    workspaceDir = makeWorkspace(["node_modules"], { shipitDepDirs: ["node_modules", ".tools/blender"] });
+    fs.writeFileSync(path.join(workspaceDir, ".gitignore"), "node_modules/\n.tools/\n");
+    fs.mkdirSync(path.join(workspaceDir, ".tools", "blender"), { recursive: true });
+    const out = await publishDepDirOverlayBases(
+      { session: { remoteUrl: REPO_URL, kind: undefined, workspaceDir }, workerUrl: "http://w", installOk: true },
+      depsWith(),
+    );
+    expect(out).toEqual([
+      { depDir: "node_modules", outcome: "created", depth: 1, generation: 1, attempts: 1 },
+      { depDir: ".tools/blender", outcome: "created", depth: 1, generation: 1, attempts: 1 },
+    ]);
+    expect(baseContentFor(".tools/blender")).toBe(".tools/blender");
+  });
+
+  it("reports a dropped dep dir even when nothing is left to publish", async () => {
+    workspaceDir = makeWorkspace([], { ignore: false, shipitDepDirs: ["src/vendored"] });
+    fs.writeFileSync(path.join(workspaceDir, ".gitignore"), "node_modules/\n");
+    const out = await publishDepDirOverlayBases(
+      { session: { remoteUrl: REPO_URL, kind: undefined, workspaceDir }, workerUrl: "http://w", installOk: true },
+      depsWith(),
+    );
+    expect(out).toEqual([{ depDir: "src/vendored", outcome: "dropped", dropReason: "not-git-ignored" }]);
   });
 
   it("declines to publish an empty snapshot (no base, no pointer)", async () => {
@@ -552,6 +582,23 @@ describe("formatOverlayMeasurement", () => {
     });
     expect(line).toBe(
       "[overlay-measure] session=s repo=r install_ok=true install_ms=900 dirs=node_modules:error:a2",
+    );
+  });
+
+  it("names the reason a declared dep dir was dropped, so a silent omission is visible", () => {
+    const line = formatOverlayMeasurement({
+      sessionId: "s",
+      repoUrl: "r",
+      installOk: true,
+      installDurationMs: 900,
+      outcomes: [
+        { depDir: "node_modules", outcome: "created", depth: 1, generation: 1, attempts: 1 },
+        { depDir: ".tools/blender", outcome: "dropped", dropReason: "missing-tracked-parent" },
+      ],
+    });
+    expect(line).toBe(
+      "[overlay-measure] session=s repo=r install_ok=true install_ms=900 " +
+        "dirs=node_modules:created:d1g1,.tools/blender:dropped:missing-tracked-parent",
     );
   });
 });
