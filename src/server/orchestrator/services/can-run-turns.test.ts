@@ -103,7 +103,13 @@ interface Producer {
   usesBuilder: boolean;
   carriesStore: boolean;
   carriesAccountManager: boolean;
+  /** `seedAndBuildAgentListPayload`, the builder that writes the pin. */
+  seeds: boolean;
 }
+
+// Both shared builders: the read-only one and `seedAndBuildAgentListPayload`,
+// which is the same payload plus the pin write (planning#578).
+const BUILDER_CALL = /\b(?:seedAndB|b)uildAgentListPayload\(/;
 
 function agentListProducersIn(rawSource: string, label: string): Producer[] {
   const source = stripComments(rawSource);
@@ -123,13 +129,14 @@ function agentListProducersIn(rawSource: string, label: string): Producer[] {
       const assigned = local
         ? new RegExp(`\\b(?:const|let|var)\\s+${local}\\s*=\\s*([^;\\n]*)`).exec(source)?.[1] ?? ""
         : "";
-      const call = payload.includes("buildAgentListPayload(") ? payload : assigned;
+      const call = BUILDER_CALL.test(payload) ? payload : assigned;
       found.push({
         where: `${label}:${line}`,
         payload,
-        usesBuilder: call.includes("buildAgentListPayload("),
-        carriesStore: /buildAgentListPayload\([^)]*\bcredentialStore\b/.test(call),
-        carriesAccountManager: /buildAgentListPayload\([^)]*\bproviderAccountManager\b/.test(call),
+        usesBuilder: BUILDER_CALL.test(call),
+        carriesStore: /uildAgentListPayload\([^)]*\bcredentialStore\b/.test(call),
+        carriesAccountManager: /uildAgentListPayload\([^)]*\bproviderAccountManager\b/.test(call),
+        seeds: call.includes("seedAndBuildAgentListPayload("),
       });
     }
   }
@@ -167,6 +174,13 @@ describe("the producer scanner itself", () => {
     expect(found).toEqual([
       expect.objectContaining({ usesBuilder: true, carriesStore: true, carriesAccountManager: true }),
     ]);
+  });
+
+  it("tells the seeding builder apart from the read-only one", () => {
+    expect(scan(`sseBroadcast("agent_list", buildAgentListPayload(reg, credentialStore, providerAccountManager));`))
+      .toEqual([expect.objectContaining({ usesBuilder: true, seeds: false })]);
+    expect(scan(`sseBroadcast("agent_list", seedAndBuildAgentListPayload(reg, credentialStore, providerAccountManager));`))
+      .toEqual([expect.objectContaining({ usesBuilder: true, seeds: true })]);
   });
 
   it("rejects a builder call that hard-codes `undefined` for the store", () => {
@@ -244,6 +258,25 @@ describe("agent_list producers all carry canRunTurns", () => {
         + "reviewer resolution cannot see account-delivered routes and reports a "
         + "subscription-served reviewer as unavailable",
     ).toEqual([]);
+  });
+
+  /*
+    planning#578 — the background-model pin is written by the builder, so which
+    builder a producer picks decides whether that producer writes. Every producer
+    that follows a mutation takes the seeding one; the event stream's opening
+    snapshot is the one pure read, and a new producer that lands on the read-only
+    builder by accident shows up here as a second entry.
+  */
+  it("seeds from every producer except the event stream's opening snapshot", () => {
+    const readers = [...new Set(
+      agentListProducers().filter((p) => !p.seeds).map((p) => p.where.split(":")[0]!),
+    )];
+    expect(
+      readers,
+      "a producer announcing a credential or account change must seed "
+        + "(`seedAndBuildAgentListPayload`), or the first service configured from an "
+        + "open Settings tab leaves the background-work setting empty (docs/252 req 9)",
+    ).toEqual(["route-registry.ts"]);
   });
 
   it("finds every producer docs/257 enumerated", () => {
