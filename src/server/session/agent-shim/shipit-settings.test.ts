@@ -210,6 +210,34 @@ describe("shipit settings get", () => {
   });
 
   /*
+    Req 9 asks that the agent be told where the line is before it writes a
+    value, and a proposal card has TWO lines: characters per version, and lines
+    for the change as a whole. Printing only the first left the second to be
+    discovered by refusal — and "combined" is the half an agent gets wrong, so
+    the text says which number is added to which.
+  */
+  it("prints both bounds a proposal card enforces, and says the line one is combined", async () => {
+    const { run } = makeRunner();
+    const res = await run(["settings", "get", "instructions.userInstructions"], {
+      "GET /agent-ops/settings/get": {
+        status: 200,
+        body: {
+          ...DETAIL.body,
+          key: "instructions.userInstructions",
+          valueType: "text",
+          shape: { maxLength: 50_000 },
+          proposeMaxLength: 10_000,
+          proposeMaxLines: 1_000,
+        },
+      },
+    });
+
+    expect(res.stdout).toContain("at most 10,000 characters of this, per version");
+    expect(res.stdout).toContain("at most 1,000 lines for the change as a whole");
+    expect(res.stdout).toContain("PLUS");
+  });
+
+  /*
     A `live` effect normally has nothing to add, and marking every one of them
     would bury the settings that do — but `live` WITH a detail means the stored
     value is what the next use reads and that use FAILS. The case is an install

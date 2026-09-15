@@ -406,13 +406,46 @@ harm's way — that instance is named by nothing, exactly as a URL-shaped name i
 and the read counts it. Choosing the wrong mint costs legibility and never the
 guarantee, since all three flatten.
 
-**What the brand governs is the fields that carry a VALUE**: `formatSetting`'s
-result, an entry's and an item's `display`, an item's `address`, a
-`lastProposal`'s two halves, and both sides of a proposed change. So shortening
-a projected value afterwards, or formatting a stored one some other way, is a
-compile error rather than the one line nobody re-checks. It does not govern the
-fields carrying ShipIt's own prose — a note, an effect's detail, a refusal
-sentence — which are literals in this repository and stay plain strings.
+**The brand governs every free-text field of the read, not only the
+value-bearing ones.** It began narrower — `formatSetting`'s result, an entry's
+and an item's `display`, an item's `address`, a `lastProposal`'s two halves,
+both sides of a proposed change — on the reasoning that ShipIt's own prose is
+made of literals in this repository. One such field was not: an item's `notes`
+interpolated a credential route's stored `status` (`routeStatusNote`), so the
+same forgery walked through the door beside the value's. A fact about a value is
+not a literal because the sentence around it is, and a rule applied field by
+field recreates the omission it was written for — `CLAUDE.md` → centralise the
+act, not the read.
+
+So `notes`, `label`, `summary`, `description`, an address's `noun`, a refusal's
+`explanation` and an effect's `detail` are `Rendered` too, minted where the
+entry is built. What stays a plain string is only what cannot carry a line break
+by construction: ShipIt's own generated ids and timestamps, the union-typed
+fields (`phase`, `state`, `unreadableReason`), and `key`, which is a catalogue
+constant and the address a caller passes back. `value` is `unknown` — the
+machine-readable half, never a line.
+
+**The rule is a type assertion rather than a habit.**
+`settings-read.test.ts` holds a compile-time guard (`PlainStringFields`) over
+each view: a new string-typed field fails `npm run typecheck` until it is minted
+or named in the allow-list. The store readers mint at their own constructor
+(`unreadable()`), so a reader added later cannot supply a raw reason.
+
+**The shim renders what it composes itself and trusts what the read sent.** The
+wire is `Rendered`, so re-rendering a value there would quote what is already
+quoted; what the shim composes itself is the `--item` echo and the two JSON
+blobs in `get`, and those go through `renderValue` — `JSON.stringify` escapes
+the C0 controls and leaves U+2028, U+2029 and U+0085 as themselves.
+
+**The same enumeration exists outside the settings surface.** A role name is
+arbitrary user text, and three agent-facing messages list stored names: a
+settings operation's refusal, `shipit agent run --role` on an unknown name
+(`services/roles.ts`), and `shipit session create --role`
+(`services/session-role.ts`). The first had the projection and the other two
+joined every stored name verbatim, so `namesForMessage` moved into
+`settings-catalogue/projection.ts` beside the projection it is made of, and all
+three call it. It projects each name, emits it through `renderAddress` and
+reports the rest as a count.
 
 **Every string is quoted, with no exception.** A predicate for "plain enough to
 leave bare" is one more thing to get wrong and getting it wrong is a hole rather
@@ -1011,10 +1044,18 @@ have them (`roles[].model`, `roles[].harness`, `reviewers[].model`) write a
 harness id and a reasoning level. Long text arriving there is a declaration that
 has outgrown the card, not something to render.
 
-**The agent is told where the line is before it writes a value.** `get` on a
-proposable text setting whose declared `maxLength` is wider than the card reports
-`proposeMaxLength`, and both renderers print it — so the agent composes to the
-limit instead of discovering it in a refusal, which is the second half of req 9.
+**The agent is told where the line is before it writes a value — BOTH lines.**
+`get` on a proposable text setting reports `proposeMaxLength` where the declared
+`maxLength` is wider than the card, and `proposeMaxLines` where the declaration
+allows enough characters to reach the line bound (a side of N characters is at
+most N + 1 lines, so the two sides can only pass 1,000 once 2N + 2 does). Both
+renderers print both, and the line one says out loud that it is COMBINED —
+current plus proposed, added together — because that is the half an agent gets
+wrong: 600 one-character lines replaced by 601 is 1,201 lines and ~1,200
+characters a side, refused by a bound the read used to enforce without
+disclosing. A bound enforced and not disclosed is req 9 half met, and it leaves
+the agent to find the line by being refused, which is the dead end req 9 exists
+to remove.
 
 **And the value reaches the command through a file, not through argv.**
 `shipit settings propose <key> --value-file -` takes the prose on stdin, the same

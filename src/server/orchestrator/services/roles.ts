@@ -23,6 +23,8 @@ import {
   selectionExists,
 } from "../../shared/catalogue/index.js";
 import { isHarnessInstalled } from "../../shared/installed-harnesses.js";
+import { namesForMessage } from "../../shared/settings-catalogue/projection.js";
+import { renderOwn } from "../../shared/settings-catalogue/rendered.js";
 import type { CredentialStore } from "../credential-store.js";
 import type { ProviderRoute } from "../provider-account-manager.js";
 import {
@@ -217,12 +219,18 @@ export function resolveRoleByName(
   const role = deps.credentialStore.getRole(name);
   if (!role) throw unknownRole(name, deps);
   const overridden = hasOverride(overrides);
+  // The name the CALLER supplied, echoed back so its refusal says which role it
+  // means — flattened, because these messages are lines the agent reads and a
+  // stored name is not gated to one (`role-settings.ts` → `requireStorableName`).
+  // Echoed rather than projected: it is the argument the caller already holds,
+  // which is the same treatment `settings-read.ts` gives a key it does not know.
+  const shown = renderOwn(name);
 
   if (role.params.kind === "pinned") {
     const params = validateRolePinnedParams(
       applyOverrides(role.params, overrides, deps, "role"),
       deps,
-      overridden ? `The role "${name}" with those overrides` : `The role "${name}"`,
+      overridden ? `The role "${shown}" with those overrides` : `The role "${shown}"`,
     );
     return freezeTarget(role, params, overridden, undefined);
   }
@@ -233,7 +241,7 @@ export function resolveRoleByName(
     const params = validateRolePinnedParams(
       complete,
       deps,
-      `The role "${name}" with those overrides`,
+      `The role "${shown}" with those overrides`,
     );
     return freezeTarget(role, params, true, undefined);
   }
@@ -242,7 +250,7 @@ export function resolveRoleByName(
   if (!chosen.ok) {
     throw new ServiceError(
       400,
-      `The role "${name}" cannot run: neither configured reviewer has a credential that can run `
+      `The role "${shown}" cannot run: neither configured reviewer has a credential that can run `
         + "right now. Connect a provider in Settings, or wait for the quota to reset.",
     );
   }
@@ -261,17 +269,22 @@ export function resolveRoleByName(
   const params = validateRolePinnedParams(
     applyOverrides(base, overrides, deps, "ranked"),
     deps,
-    `The role "${name}" with those overrides`,
+    `The role "${shown}" with those overrides`,
   );
   return freezeTarget(role, params, true, chosen);
 }
 
+/**
+ * Which roles exist, named through the projection door rather than joined raw
+ * (docs/299-agent-settings-access req 2). A role name is arbitrary user text, so
+ * this message is one of the agent-facing surfaces that enumerates stored
+ * strings — and `shipit agent run --role` reaches it from inside a session.
+ * `namesForMessage` is the same treatment the settings surface gives the same
+ * store, and it reports what it will not name as a count.
+ */
 function unknownRole(name: string, deps: RoleDeps): ServiceError {
-  const known = deps.credentialStore
-    .getRoles()
-    .map((role) => role.name)
-    .join(", ");
-  return new ServiceError(400, `Unknown role "${name}". Roles on this install: ${known}.`);
+  const known = namesForMessage(deps.credentialStore.getRoles().map((role) => role.name));
+  return new ServiceError(400, `Unknown role "${renderOwn(name)}". Roles on this install: ${known}.`);
 }
 
 function hasOverride(overrides: RoleOverrides): boolean {

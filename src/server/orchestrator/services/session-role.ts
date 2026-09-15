@@ -6,6 +6,8 @@ import type {
 import { RESERVED_ROLE_NAME } from "../../shared/types/agent-types.js";
 import type { SessionManager } from "../sessions.js";
 import type { CredentialStore } from "../credential-store.js";
+import { namesForMessage } from "../../shared/settings-catalogue/projection.js";
+import { renderOwn } from "../../shared/settings-catalogue/rendered.js";
 import { checkRolePinnedParams, type RoleValidatorDeps } from "./roles.js";
 import { ServiceError } from "./types.js";
 
@@ -35,13 +37,17 @@ function unavailableMessage(name: string, reason: RoleUnavailableReason, detail:
 
 export function resolveUserRole(name: string, deps: UserRoleDeps): ResolvedUserRole {
   const role = deps.credentialStore.getRole(name);
+  // `shipit session create --role` reaches this from inside a session, so the
+  // stored names go through the projection door and the supplied one is
+  // flattened — the same treatment `roles.ts` gives the same store (req 2).
+  const shown = renderOwn(name);
   if (!role) {
     const known = listUserSelectableRoles(deps).map((r) => r.name);
     throw new ServiceError(
       400,
       known.length > 0
-        ? `Unknown role "${name}". Roles on this install: ${known.join(", ")}.`
-        : `Unknown role "${name}". No roles are configured — create one in Settings → Roles.`,
+        ? `Unknown role "${shown}". Roles on this install: ${namesForMessage(known)}.`
+        : `Unknown role "${shown}". No roles are configured — create one in Settings → Roles.`,
     );
   }
   if (role.name === RESERVED_ROLE_NAME || role.params.kind !== "pinned") {
@@ -55,7 +61,7 @@ export function resolveUserRole(name: string, deps: UserRoleDeps): ResolvedUserR
   if (!checked.ok) {
     throw new ServiceError(
       400,
-      unavailableMessage(name, checked.kind === "credential" ? "disconnected" : "stranded", checked.message),
+      unavailableMessage(shown, checked.kind === "credential" ? "disconnected" : "stranded", checked.message),
     );
   }
   return { role, params: checked.params };

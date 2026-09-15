@@ -686,3 +686,46 @@ value and stored another. Both re-verified at the code.
 - [x] The release-channel fixture stubbed a reader that could not see its own
       mocked write, so the apply's read-back was right to call it `partial`. The
       fixture now moves with the write, as the real file-backed pair does
+
+### The output boundary holds on its own, on every free-text field
+
+- [x] req 2 — an item's `notes` went through no mint: `routeStatusNote`
+      interpolated a credential route's stored `status`, `settings-read.ts`
+      copied it and the shim printed it, so a persisted status carrying a newline
+      emitted lines that read as ShipIt's own fields. The prerequisite is
+      malformed persisted data (a restore, a migration — `credential-store.ts`
+      casts what it parses without validating the field), and the boundary has to
+      hold without depending on the writer upstream being well behaved
+- [x] Branded rather than patched: `notes`, `label`, `summary`, `description`,
+      an address's `noun`, a refusal's `explanation` and an effect's `detail` are
+      all `Rendered`, minted where the entry is built. The store readers mint at
+      their own constructor, so a reader added later cannot supply a raw reason
+- [x] A compile-time guard makes it self-enforcing — `PlainStringFields` in
+      `settings-read.test.ts` fails `npm run typecheck` on a new string-typed
+      field until it is minted or named in the allow-list. Proved by reverting
+      `SettingEffect.detail` to `string`: typecheck goes red at the guard
+- [x] The same class on the surface beside it: `services/roles.ts` joined every
+      stored role name verbatim into the unknown-role error on the
+      `shipit agent run` path, and `services/session-role.ts` did the same for
+      `shipit session create --role`. `namesForMessage` moved out of
+      `settings-operations.ts` into `settings-catalogue/projection.ts` and all
+      three surfaces call it; the name each message ECHOES back is flattened,
+      since that one is the caller's own argument
+- [x] Guards red alone: a route status carrying a forged row and a forged field,
+      asserted through `list`, `get` and `--json`
+      (`integration_tests/settings-line-forgery.test.ts`); a URL-shaped role name
+      against both role surfaces (`roles.test.ts`, `session-role.test.ts`)
+
+### req 9 discloses both bounds, not one
+
+- [x] `settings-propose.ts` refuses on characters PER SIDE and on lines
+      COMBINED, and the read advertised only the characters — so a change inside
+      the advertised bound was refused by an undisclosed one (600 lines replaced
+      by 601: ~1,200 characters a side, 1,201 lines)
+- [x] `proposeMaxLines` joins `proposeMaxLength` in `get`, disclosed where the
+      declaration allows enough characters to reach it, and the CLI prints both
+      with the combined arithmetic spelled out. `shipit-docs/settings.md` says
+      the same in the agent's own reference
+- [x] Guard red alone: the read discloses the bound, then the same change is
+      refused by it (`settings-propose.test.ts`), and the CLI prints both
+      sentences (`shipit-settings.test.ts`)

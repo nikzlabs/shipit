@@ -22,8 +22,49 @@ import {
   listSettingsForAgent,
   projectSettingValue,
   scopeUnreadableReason,
+  type SettingDetailEntry,
+  type SettingEffect,
+  type SettingIndexEntry,
+  type SettingItemView,
+  type SettingProposeView,
   type SettingsReadDeps,
 } from "./settings-read.js";
+
+/**
+ * No field of the read may be a plain string — the guard that stops the next
+ * one being added raw (docs/299-agent-settings-access req 2, planning#577).
+ *
+ * `shipit settings list` and `get` are a line-oriented format, so every
+ * free-text field of these views becomes a LINE of what an LLM parses. The
+ * first version of this rule was applied field by field and missed the one that
+ * was not a literal — an item's `notes`, which interpolated a credential
+ * route's stored `status`. So the rule is stated as a TYPE here instead: a new
+ * string-typed field on any of these views fails `npm run typecheck` until it
+ * is either minted as {@link Rendered} or named below.
+ *
+ * What may stay plain is only what cannot carry a line break by construction:
+ * ShipIt's own generated ids and timestamps, and `key`, which is a declared
+ * catalogue constant and the address a caller passes back. `value` is `unknown`
+ * — it is the machine-readable half, never a line; `display` is the line.
+ */
+type PlainStringFields<T> = {
+  [K in keyof T]-?: string extends Required<T>[K] ? K : never;
+}[keyof T];
+
+type AssertPlainFields<T, Allowed> = PlainStringFields<T> extends Allowed ? true : never;
+
+const _indexFieldsAreRendered: AssertPlainFields<SettingIndexEntry, "key" | "value"> = true;
+const _detailFieldsAreRendered: AssertPlainFields<SettingDetailEntry, "key" | "value"> = true;
+const _itemFieldsAreRendered: AssertPlainFields<SettingItemView, "value"> = true;
+const _effectFieldsAreRendered: AssertPlainFields<SettingEffect, never> = true;
+const _proposeFieldsAreRendered: AssertPlainFields<SettingProposeView, never> = true;
+void [
+  _indexFieldsAreRendered,
+  _detailFieldsAreRendered,
+  _itemFieldsAreRendered,
+  _effectFieldsAreRendered,
+  _proposeFieldsAreRendered,
+];
 
 let tmpDir: string;
 let credentialStore: CredentialStore;

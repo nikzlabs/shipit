@@ -117,6 +117,58 @@ describe("a stored value cannot forge a line of `shipit settings` output", () =>
     expect(out).toContain("not listed");
   });
 
+  it("does not let a stored fact inside a NOTE become a field", async () => {
+    const now = Date.now();
+    fx.credentialStore.upsertCredentialRoute({
+      id: "cred_ok",
+      serviceId: "anthropic",
+      billingMode: "key",
+      via: "string",
+      label: "A key",
+      isPrimary: true,
+      // Malformed persisted data, which is the only way to get here: no dialog
+      // writes this, and `credential-store.ts` casts what it parses without
+      // validating the field, so a restore or a migration can leave it. The
+      // output boundary has to hold on its own — the note is the door beside
+      // the value, and it used to interpolate this straight into a line.
+      status: `expired\n${FORGED_ROW}\n${FORGED_FIELD}` as never,
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    const detail = await getSettingForAgent(
+      fx.deps.read,
+      fx.sessionId,
+      "services.credentials[].label",
+    );
+    const out = await shim(detail, ["settings", "get", "services.credentials[].label"]);
+
+    // Line-anchored, because escaping a newline leaves the REST of the text on
+    // the line it was escaped into: what must not exist is a LINE of ShipIt's
+    // own shape, not the characters anywhere.
+    const printed = out.split("\n");
+    expect(printed).not.toContain(FORGED_ROW);
+    expect(printed.some((line) => line.trim().startsWith("Last proposal:"))).toBe(false);
+
+    // Escaped at the READ, not merely escaped by JSON on the way out: an agent
+    // reading `--json` gets the note as a string of its own, and a line break
+    // surviving there forges a line the moment anything prints it.
+    const json = await shim(detail, ["settings", "get", "services.credentials[].label", "--json"]);
+    const parsed = JSON.parse(json) as { items?: { notes?: string[] }[] };
+    const notes = parsed.items?.flatMap((item) => item.notes ?? []) ?? [];
+    expect(notes).toHaveLength(1);
+    expect(notes[0]).not.toMatch(/[\n\r\u0085\u2028\u2029]/);
+    expect(notes[0]).toContain("expired");
+
+    // The index carries no item notes at all, so the same poison reaches no row
+    // there either — asserted rather than assumed, since `list` is the output
+    // whose whole format is one line per setting.
+    const index = await listSettingsForAgent(fx.deps.read, fx.sessionId);
+    const listed = (await shim(index, ["settings", "list"])).split("\n");
+    expect(listed).not.toContain(FORGED_ROW);
+    expect(listed).not.toContain(FORGED_FIELD);
+  });
+
   it("does not let a value become a field under one instance", async () => {
     const now = Date.now();
     fx.credentialStore.upsertCredentialRoute({

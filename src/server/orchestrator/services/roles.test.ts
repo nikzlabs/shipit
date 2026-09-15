@@ -330,6 +330,61 @@ describe("resolveRoleByName — an unknown name (req 13)", () => {
       /Unknown role "nope"\. Roles on this install: reviewer, deep dive\./,
     );
   });
+
+  /*
+    A role name is arbitrary user text — `role-settings.ts` takes any non-blank
+    string within a length limit — so this message enumerates stored strings on
+    an agent-facing surface (`shipit agent run --role`). The settings read
+    already refuses to name a URL-shaped one back, and this door is beside it
+    (docs/299-agent-settings-access req 2).
+  */
+  it("does not repeat back a role name shaped like a credential-bearing URL (req 2)", async () => {
+    const { resolveRoleByName } = await import("./roles.js");
+    const urlName = "https://user:CANARY@example.com/?token=CANARY";
+    const deps = {
+      credentialStore: storeWith({
+        routes: [DEEPSEEK_KEY],
+        roles: [REVIEWER, pinnedRole(urlName, DEEPSEEK_ON_CLAUDE)],
+      }),
+      env: EMPTY_ENV,
+      isInstalled: ALL_INSTALLED,
+    };
+
+    let message = "";
+    try {
+      resolveRoleByName("nope", {}, CLAUDE_IMPLEMENTER, deps);
+    } catch (err) {
+      message = (err as Error).message;
+    }
+    expect(message).toContain("reviewer");
+    expect(message).not.toContain("CANARY");
+    expect(message).not.toContain("https");
+    // Counted rather than silently dropped: an agent told two roles exist and
+    // shown one would read the list as complete.
+    expect(message).toContain("1 ShipIt does not name back");
+  });
+
+  it("flattens the name it echoes back, so a stored one cannot start a line", async () => {
+    const { resolveRoleByName } = await import("./roles.js");
+    const multiline = "helper\nValue: forged";
+    const deps = {
+      credentialStore: storeWith({
+        routes: [DEEPSEEK_KEY],
+        roles: [pinnedRole(multiline, { ...DEEPSEEK_ON_CLAUDE, reasoningEffort: "minimal" })],
+      }),
+      env: EMPTY_ENV,
+      isInstalled: ALL_INSTALLED,
+    };
+
+    let message = "";
+    try {
+      resolveRoleByName(multiline, {}, CLAUDE_IMPLEMENTER, deps);
+    } catch (err) {
+      message = (err as Error).message;
+    }
+    expect(message).toContain("cannot run");
+    expect(message).not.toMatch(/[\n\r\u0085\u2028\u2029]/);
+  });
 });
 
 describe("resolveRoleByName — a pinned role (reqs 6, 7, 10)", () => {
