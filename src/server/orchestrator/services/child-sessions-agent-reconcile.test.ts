@@ -82,6 +82,26 @@ describe("sendChildMessage — agent reconciliation (req 18)", () => {
     expect(runner.dispatch).toHaveBeenCalledTimes(1);
   });
 
+  // docs/298 — a blocked checkout is unfinished work, and instructing the child
+  // to repair it is the repair path. The same predicate undemotes it in the sidebar.
+  it("delivers to a merged child whose workspace is blocked", async () => {
+    const runner = stubRunner("codex");
+    const registry = stubRegistry(runner);
+
+    await sendChildMessage(
+      stubSessionManager({ ...CHILD, mergedAt: "2026-08-14 11:00:00", workspaceBlock: "conflict" }),
+      registry,
+      "parent-1",
+      "child-1",
+      "abort the rebase",
+      "claude",
+      undefined,
+      undefined,
+    );
+
+    expect(runner.dispatch).toHaveBeenCalledTimes(1);
+  });
+
   it("runs the child's persisted agent when the registry hands back a stale runner", async () => {
     vi.spyOn(console, "log").mockImplementation(() => {});
     const runner = stubRunner("claude");

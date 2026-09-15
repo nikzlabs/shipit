@@ -24,4 +24,6 @@
 - [x] Sweep prints its summary unconditionally, unlike its change-only neighbours
 - [x] A session evicted (or deleted) while the inspection ran is never marked from that stale answer
 - [x] Each new guard proven red with its production change reverted, including both write guards under a substituted `ensureCheckoutDurable`
+- [x] `isResolvedForGrouping` exempts a marked session from the "Recently resolved" demotion — the cap and the demotion are two independent filters and it must clear both
+- [x] The demotion exemption's reach into `sendChildMessage` decided deliberately: a parent may message a child whose workspace is blocked, and it is asserted
 - [ ] Follow-up: a click-to-repair action on the surfaced state — planning#533

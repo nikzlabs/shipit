@@ -51,3 +51,31 @@ describe("computeRepoGroups — sandbox group", () => {
     expect(groups.some((g) => g.kind === "sandbox")).toBe(false);
   });
 });
+
+describe("computeRepoGroups — resolved demotion", () => {
+  const REPO = "https://github.com/o/r.git";
+  const repos: RepoInfo[] = [{ url: REPO, addedAt: "", lastUsedAt: "", status: "ready" }];
+  const merged = (over: Partial<SessionInfo>) => session({
+    remoteUrl: REPO,
+    createdAt: "2026-01-01T00:00:00.000Z",
+    lastUsedAt: "2026-01-02T00:00:00.000Z",
+    mergedAt: "2026-01-02T00:00:00.000Z",
+    ...over,
+  });
+
+  it("sinks a merged session below an active one", () => {
+    const groups = computeRepoGroups(repos, [
+      merged({ id: "resolved" }),
+      session({ id: "active", remoteUrl: REPO, createdAt: "2025-12-01T00:00:00.000Z" }),
+    ]);
+    expect(groups[0].sessions.map((s) => s.id)).toEqual(["active", "resolved"]);
+  });
+
+  it("keeps a merged session with a blocked workspace above an older active one (docs/298)", () => {
+    const groups = computeRepoGroups(repos, [
+      session({ id: "active", remoteUrl: REPO, createdAt: "2025-12-01T00:00:00.000Z" }),
+      merged({ id: "blocked", workspaceBlock: "conflict" }),
+    ]);
+    expect(groups[0].sessions.map((s) => s.id)).toEqual(["blocked", "active"]);
+  });
+});

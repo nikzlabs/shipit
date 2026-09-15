@@ -230,9 +230,41 @@ preview reservation), still has its marker frozen between redeploys.
 
 ### How it surfaces
 
-`filterVisibleInSidebar` gains `|| !!s.workspaceBlock` beside the existing
-`pinnedAt` exemption, following the docs/110-pinned-sessions precedent (req 1).
-Archived rows are still excluded — archiving is the user's own decision.
+**Two independent filters stand between a marked session and the user, and it
+must clear both.** The first cut exempted only the cap and shipped; the marked
+incident session then reached the client, appeared correctly in "Needs you", and
+was *still* unfindable in its repo group. The second filter was the demotion.
+
+1. **The cap.** `filterVisibleInSidebar` gains `|| !!s.workspaceBlock` beside the
+   existing `pinnedAt` exemption, following the docs/110-pinned-sessions
+   precedent (req 1). Archived rows are still excluded — archiving is the user's
+   own decision. This decides whether the row reaches the client at all.
+2. **The demotion.** `isResolvedForGrouping` (`shared/session-resolution.ts`)
+   gains `&& !session.workspaceBlock` beside the same `pinnedAt` exemption. It
+   decides, on the client, whether a row that *did* arrive is filed under the
+   per-repo "Recently resolved" sub-section — which docs/161 renders collapsed
+   whenever the user has collapsed it for that repo. A broken workspace is not
+   finished work, exactly as a pin is not. "Needs you" was never affected:
+   `AttentionSessionList` is flat, with no repo grouping and no resolved tail,
+   which is why the first cut looked like it worked.
+
+`isTerminalPrResolved` is deliberately **not** changed. It answers "did this
+session's PR reach a terminal state", which stays true for a marked session and
+is what the cap's own ranking and `useAttentionSessions`'s `resolved` input both
+need. Only the grouping judgement moves.
+
+The undemoted row then sorts by `createdAt` desc among the active rows, so an old
+broken session lands near the bottom of the active list rather than the top.
+That is the existing rule; `useSessionGrouping`'s header comment rejects an
+urgency sort because it re-orders rows under the user's cursor.
+
+**`isResolvedForGrouping` has a fourth caller, and the change reaches it
+deliberately:** `sendChildMessage` (`services/child-sessions.ts`) throws
+`ResolvedChildMessageError` when a parent messages a resolved child. A parent can
+now message a child whose workspace is blocked. That is the intent — a child with
+an unresolved rebase is precisely one a parent instructs to repair itself, and it
+is not finished. A second grouping-only predicate was rejected: near-identical
+copies are how these exemptions drifted apart in the first place.
 
 `computeAttentionReason` gains `workspaceBlockKind`, placed:
 
@@ -266,7 +298,8 @@ what to do. A repair affordance is tracked as planning#533.
 |---|---|
 | `src/server/shared/types/domain-types/session.ts` | `SessionWorkspaceBlock`, `WorkspaceBlockKind`, `SessionInfo.workspaceBlock` |
 | `src/server/shared/database.ts` | `sessions.workspace_block` column |
-| `src/server/orchestrator/sessions.ts` | `SessionRow.workspace_block`; `fromRow`; `setWorkspaceBlock`; the `filterVisibleInSidebar` exemption |
+| `src/server/orchestrator/sessions.ts` | `SessionRow.workspace_block`; `fromRow`; `setWorkspaceBlock`; the `filterVisibleInSidebar` cap exemption |
+| `src/server/shared/session-resolution.ts` | `isResolvedForGrouping` exempts a marked session from the "Recently resolved" demotion |
 | `src/server/orchestrator/tier-escalation.ts` | set in `blockedEvict`, clear on the durable path; `onSessionsChanged` dep |
 | `src/server/orchestrator/services/workspace-block.ts` | `recordWorkspaceBlock` (the one writer); `evaluateCheckout` (the shared ownership rule); `refreshWorkspaceBlockOnActivation`; `sweepWorkspaceBlocksAtStartup` |
 | `src/server/orchestrator/checkout-durability.ts` | `inspectCheckoutBlock` — the read-only classifier both callers share |
