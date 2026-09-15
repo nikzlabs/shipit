@@ -1331,6 +1331,55 @@ describe("SessionManager — model selection (docs/252)", () => {
   });
 });
 
+describe("setSessionStatus (docs/303 req 10)", () => {
+  let dbManager: DatabaseManager;
+  beforeEach(() => { dbManager = new DatabaseManager(":memory:"); });
+  afterEach(() => { dbManager.close(); });
+
+  const card = {
+    status: "Routes done; PR ready to merge.",
+    needsYou: "Add the Stripe test key.",
+    actions: [{
+      id: "webhook",
+      label: "Wire the webhook",
+      payload: "Add the route.",
+      offerId: "offer-1",
+      offeredAt: "2026-09-15T00:00:00.000Z",
+      takenAt: "2026-09-15T00:01:00.000Z",
+    }],
+    fresh: true,
+    writeSeq: 2,
+  };
+
+  it("round-trips the whole card through a second manager", () => {
+    const mgr = new SessionManager(dbManager);
+    mgr.track("c1");
+    mgr.setSessionStatus("c1", card);
+    // A fresh manager, because the card has to survive an orchestrator restart.
+    expect(new SessionManager(dbManager).get("c1")?.sessionStatus).toEqual(card);
+  });
+
+  it("has no card before the first write, and none after a clear", () => {
+    const mgr = new SessionManager(dbManager);
+    mgr.track("c1");
+    expect(mgr.get("c1")?.sessionStatus).toBeUndefined();
+    expect(mgr.sessionIdsWithStatus()).toEqual([]);
+    mgr.setSessionStatus("c1", card);
+    expect(mgr.sessionIdsWithStatus()).toEqual(["c1"]);
+    mgr.setSessionStatus("c1", null);
+    expect(mgr.get("c1")?.sessionStatus).toBeUndefined();
+  });
+
+  it("reads a corrupt or shapeless card as no card", () => {
+    const mgr = new SessionManager(dbManager);
+    mgr.track("c1");
+    for (const raw of ["not json", '{"needsYou":"x"}']) {
+      dbManager.db.prepare("UPDATE sessions SET session_status = ? WHERE id = ?").run(raw, "c1");
+      expect(mgr.get("c1")?.sessionStatus).toBeUndefined();
+    }
+  });
+});
+
 describe("setAgentGoal (docs/154 req 6)", () => {
   let dbManager: DatabaseManager;
   beforeEach(() => { dbManager = new DatabaseManager(":memory:"); });

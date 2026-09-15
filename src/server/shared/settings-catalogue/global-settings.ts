@@ -69,6 +69,22 @@ export const GLOBAL_SETTINGS = {
     propose: { kind: "yes" },
   }),
 
+  "advanced.sessionStatusCard": defineSetting({
+    key: "advanced.sessionStatusCard",
+    tab: "advanced",
+    scope: "global",
+    label: "Session status card",
+    description:
+      "Shows an agent-written card just above the composer with what the session is about, "
+      + "what needs you, and the follow-up actions the agent offers. While it is on, the agent "
+      + "offers actions through that card instead of the follow-up-actions card.",
+    type: bool({ default: false }),
+    store: { kind: "credential-store", field: "sessionStatusCard" },
+    wire: "sessionStatusCard",
+    emits: plain(),
+    propose: { kind: "yes" },
+  }),
+
   "advanced.autoResolveConflicts": defineSetting({
     key: "advanced.autoResolveConflicts",
     tab: "advanced",

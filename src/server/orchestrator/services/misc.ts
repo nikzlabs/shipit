@@ -75,6 +75,7 @@ export async function getBootstrapData(deps: {
         autoFixCi: false,
         autoResetMergedBranch: true,
         enableSubAgents: true,
+        sessionStatusCard: false,
         voiceDeliveryMode: "native",
         voiceWebhookConfigured: false,
         providerAccounts: [],

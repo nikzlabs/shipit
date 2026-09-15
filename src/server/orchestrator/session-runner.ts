@@ -478,6 +478,7 @@ export function resetRunnerTurnState(runner: SessionRunnerInterface): void {
   runner.needsNewMessageGroup = true;
   runner.steeredMessages = [];
   runner.recordedCards = [];
+  runner.statusUpdated = false;
   runner.wasInterrupted = false;
   runner.pendingCommitLink = null;
   clearCommittedBodyIds(runner.committedBodyIds);
@@ -560,6 +561,8 @@ export interface SessionRunnerInterface extends EventEmitter<SessionRunnerEvents
   needsNewMessageGroup: boolean;
   steeredMessages: SteeredMessage[];
   recordedCards: RecordedChatCard[];
+  /** docs/303 — the agent wrote or confirmed the status card during this turn. */
+  statusUpdated: boolean;
   agentId: AgentId;
   /** Defer linking until final chat rows exist; an early agent_result can precede final text. */
   pendingCommitLink: { commitHash: string; parentCommitHash: string } | null;
@@ -668,6 +671,7 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
   private _needsNewMessageGroup = true;
   private _steeredMessages: SteeredMessage[] = [];
   private _recordedCards: RecordedChatCard[] = [];
+  private _statusUpdated = false;
   private _messageQueue: QueuedMessage[] = [];
   activeDeliveryId: string | undefined;
   private _terminal: TerminalProcess | null = null;
@@ -775,6 +779,8 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
   set steeredMessages(m: SteeredMessage[]) { this._steeredMessages = m; }
   get recordedCards(): RecordedChatCard[] { return this._recordedCards; }
   set recordedCards(m: RecordedChatCard[]) { this._recordedCards = m; }
+  get statusUpdated(): boolean { return this._statusUpdated; }
+  set statusUpdated(v: boolean) { this._statusUpdated = v; }
   get agentId(): AgentId { return this._agentId; }
   set agentId(id: AgentId) { this._agentId = id; }
   get subAgentSpawnsThisTurn(): number { return this._subAgentSpawnsThisTurn; }

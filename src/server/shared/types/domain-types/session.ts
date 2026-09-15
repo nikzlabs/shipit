@@ -1,4 +1,5 @@
 import type { AgentGoal, AgentId } from "../agent-types.js";
+import type { ActionChecklistItem } from "./chat.js";
 import type { ProviderRouteKind } from "./provider.js";
 import type { BillingMode } from "../../catalogue/types.js";
 import type { SecretFinding } from "../../secret-scan.js";
@@ -123,6 +124,34 @@ export interface SessionInfo {
   prRepoId?: string;
   /** docs/154 — last goal the agent CLI reported for this session's thread. */
   agentGoal?: AgentGoal;
+  /** docs/303 — the agent-written card shown at the end of the conversation. */
+  sessionStatus?: SessionStatus;
+}
+
+/**
+ * docs/303-session-status-card — an offer the agent made, as stored.
+ *
+ * `offerId` is server-assigned and is the identity the checkbox, the submit and
+ * the taken mark all use; the agent's `id` is a name that is unique only within
+ * one call.
+ */
+export interface OfferedAction extends ActionChecklistItem {
+  offerId: string;
+  offeredAt: string;
+  branch?: string;
+  headSha?: string;
+  /** When the user sent this offer to the agent; it stays on the card, greyed. */
+  takenAt?: string;
+}
+
+export interface SessionStatus {
+  status: string;
+  needsYou?: string;
+  actions: OfferedAction[];
+  /** The agent wrote or confirmed the whole card at the end of the last finished turn. */
+  fresh: boolean;
+  /** Moves only on an accepted agent write, so a settling predecessor can tell its own turn from a later one. */
+  writeSeq: number;
 }
 
 export interface PreviousMergedPr {

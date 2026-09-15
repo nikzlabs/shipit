@@ -853,6 +853,7 @@ export default function App() {
             autoFixCi?: boolean;
             autoResetMergedBranch?: boolean;
             enableSubAgents?: boolean;
+            sessionStatusCard?: boolean;
             voiceDeliveryMode?: "native" | "external" | "both";
             voiceWebhookConfigured?: boolean;
             providerAccounts?: CredentialRoute[];
@@ -934,6 +935,10 @@ export default function App() {
           {useSettingsStore
             .getState()
             .setEnableSubAgents(data.settings.enableSubAgents);}
+        if (data.settings.sessionStatusCard !== undefined)
+          {useSettingsStore
+            .getState()
+            .setSessionStatusCard(data.settings.sessionStatusCard);}
         if (data.settings.voiceDeliveryMode !== undefined)
           {useSettingsStore
             .getState()

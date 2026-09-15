@@ -270,6 +270,26 @@ describe("Integration: settings derive from the catalogue (docs/299 req 7)", () 
     expect(enabled).toBe(1);
   });
 
+  // docs/303 req 23 — turning the card back on has to mark the stored cards
+  // stale, or the user reads an old card as if the last turn had written it.
+  it("fires the status-card hook only when the setting goes off → on", async () => {
+    const enabled: number[] = [];
+    const save = (sessionStatusCard: boolean) => saveWith({
+      sessionStatusCard,
+      onSessionStatusCardEnabled: () => { enabled.push(enabled.length); },
+    });
+
+    await save(false);
+    expect(enabled).toHaveLength(0);
+
+    await save(true);
+    expect(enabled).toHaveLength(1);
+
+    await save(true);
+    await save(false);
+    expect(enabled).toHaveLength(1);
+  });
+
   it("gives every credential-store setting a field of its own", () => {
     const fields = payloadDeclarations()
       .filter((d) => d.store.kind === "credential-store")

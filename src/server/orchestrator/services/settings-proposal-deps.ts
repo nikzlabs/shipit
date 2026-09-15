@@ -97,6 +97,7 @@ function assemble(src: SettingsProposalSource, proposals: SettingsProposalStore)
       serviceManagers: src.serviceManagers,
       containerManager: src.containerManager,
       prStatusPoller: src.prStatusPoller,
+      sessionManager: src.sessionManager,
     },
   };
 }

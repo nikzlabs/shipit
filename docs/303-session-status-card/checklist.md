@@ -3,12 +3,12 @@
 Implementation of [plan.md](plan.md); the design deliverables shipped in the
 docs-only PR and their review history is on planning#550.
 
-- [ ] `advanced.sessionStatusCard` in the settings catalogue, off by default; save hook marks stored cards stale on false → true.
+- [x] `advanced.sessionStatusCard` in the settings catalogue, off by default; save hook marks stored cards stale on false → true.
 - [ ] Flag on the per-turn run params → `SHIPIT_SESSION_STATUS_CARD` in the spawn env, `writeMcpConfig` context, the five adapter tool lists, Claude's allowlists; resident reuse check against the flag.
 - [ ] `session_status` tool and its bridge registry entry; `validateActionItems` extracted and shared; envelope validation with every field optional (a bare call confirms); worker relay.
 - [ ] Orchestrator route: validate, merge the delta, provenance, reconcile offers, persist, broadcast, `statusUpdated`, reply with the offered list; refuse a bare call with no stored card. `propose_actions` route refuses under the flag.
-- [ ] `sessions.session_status` column and `SessionInfo.sessionStatus`; `recordSessionStatus`, `markSessionStatusStale(ifWriteSeq)`, `takeOfferedActions`, `runStatusExclusive`.
-- [ ] `statusUpdated` on `TurnAccumulator`.
+- [x] `sessions.session_status` column and `SessionInfo.sessionStatus`; `recordSessionStatus`, `markSessionStatusStale(ifWriteSeq)`, `takeOfferedActions`, `runStatusExclusive`.
+- [x] `statusUpdated` on `TurnAccumulator`.
 - [ ] `settleTurnFacts` on all four terminal paths before the drain, with the immediate guarded stale mark; reset on adoption; memoized decision after idle; dispatch from `finishTurn` via the drain entry.
 - [ ] `statusNudge` and `silent` through `AgentDispatchInit`, `QueuedMessage`, `toQueuedMessage`, `queuedMessageToDispatchOptions`, `TurnInput`.
 - [ ] Lifecycle: stale on rewind/reset; copy-as-stale on fork.

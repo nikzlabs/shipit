@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { EventEmitter } from "node:events";
-import { AgentTurnAdmissionError, SessionRunner, SessionRunnerRegistry, sessionHasLiveAgent } from "./session-runner.js";
+import { AgentTurnAdmissionError, SessionRunner, SessionRunnerRegistry, resetRunnerTurnState, sessionHasLiveAgent } from "./session-runner.js";
 import { ContainerSessionRunner } from "./container-session-runner.js";
 import {
   prepareSessionAgentEnvironment,
@@ -883,6 +883,32 @@ describe("SessionRunner", () => {
     runner.detachViewer();
     expect(runner.lastViewerDetachAt).toBeGreaterThanOrEqual(firstZero);
     runner.dispose();
+  });
+});
+
+describe("statusUpdated", () => {
+  // docs/303 req 11 — freshness is judged per turn, so the flag a turn set must
+  // not survive into the next one and report it as updated.
+  it("resets with the rest of the turn on both runners", () => {
+    const runner = new SessionRunner({
+      sessionId: "s1",
+      sessionDir: "/tmp/s1",
+      defaultAgentId: "claude" as AgentId,
+    });
+    const container = new ContainerSessionRunner({
+      sessionId: "s2",
+      sessionDir: "/tmp/s2",
+      defaultAgentId: "claude" as AgentId,
+      workerBaseUrl: "http://127.0.0.1:1",
+    } as never);
+
+    for (const r of [runner, container]) {
+      expect(r.statusUpdated).toBe(false);
+      r.statusUpdated = true;
+      resetRunnerTurnState(r);
+      expect(r.statusUpdated).toBe(false);
+    }
+    runner.dispose({ force: true });
   });
 });
 

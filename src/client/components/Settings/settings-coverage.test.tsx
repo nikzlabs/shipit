@@ -639,6 +639,7 @@ const EXPLAINED_IN_THE_DIALOG: readonly string[] = [
   "advanced.memoryBudgetMb",
   "advanced.notifyOnFinish",
   "advanced.releaseChannel",
+  "advanced.sessionStatusCard",
   "advanced.soundOnFinish",
   "instructions.agentInstructionsEnabled",
   "instructions.opsInstructions",

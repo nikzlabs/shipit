@@ -1,4 +1,4 @@
-import type { PreviousMergedPr, ProviderRouteKind, SessionCapabilities, SessionInfo, SessionMergeWatch, SessionSecretBlock, SessionTitleSource, WorkspaceBlockKind } from "../shared/types.js";
+import type { PreviousMergedPr, ProviderRouteKind, SessionCapabilities, SessionInfo, SessionMergeWatch, SessionSecretBlock, SessionStatus, SessionTitleSource, WorkspaceBlockKind } from "../shared/types.js";
 import { normalizeCapabilities } from "../shared/types.js";
 import { isTerminalPrResolved, resolvedAt } from "../shared/session-resolution.js";
 import type { DatabaseManager } from "../shared/database.js";
@@ -74,6 +74,7 @@ interface SessionRow {
   pr_repo_id: string | null;
   pr_number: number | null;
   agent_goal: string | null;
+  session_status: string | null;
 }
 
 function parseAgentGoal(json: string): AgentGoal | undefined {
@@ -82,6 +83,23 @@ function parseAgentGoal(json: string): AgentGoal | undefined {
     return goal && typeof goal.objective === "string" && typeof goal.status === "string"
       ? goal as AgentGoal
       : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** docs/303 — a card whose JSON no longer parses reads as no card; the next turn writes one. */
+function parseSessionStatus(json: string): SessionStatus | undefined {
+  try {
+    const card = JSON.parse(json) as Partial<SessionStatus> | null;
+    if (!card || typeof card.status !== "string") return undefined;
+    return {
+      status: card.status,
+      ...(typeof card.needsYou === "string" ? { needsYou: card.needsYou } : {}),
+      actions: Array.isArray(card.actions) ? card.actions : [],
+      fresh: card.fresh === true,
+      writeSeq: typeof card.writeSeq === "number" ? card.writeSeq : 0,
+    };
   } catch {
     return undefined;
   }
@@ -289,6 +307,10 @@ export class SessionManager {
       const goal = parseAgentGoal(row.agent_goal);
       if (goal) info.agentGoal = goal;
     }
+    if (row.session_status) {
+      const status = parseSessionStatus(row.session_status);
+      if (status) info.sessionStatus = status;
+    }
     return info;
   }
 
@@ -363,6 +385,20 @@ export class SessionManager {
     if (this.agentGoalChecked(id) && sameShownGoal(this.get(id)?.agentGoal ?? null, goal)) return false;
     this.db.prepare("UPDATE sessions SET agent_goal = ? WHERE id = ?").run(JSON.stringify(goal), id);
     return true;
+  }
+
+  /** docs/303 — the whole card is written at once; the service owns the merge. */
+  setSessionStatus(id: string, status: SessionStatus | null): void {
+    this.db.prepare("UPDATE sessions SET session_status = ? WHERE id = ?")
+      .run(status ? JSON.stringify(status) : null, id);
+  }
+
+  /** Every session holding a card, archived ones included: a restore brings its card back. */
+  sessionIdsWithStatus(): string[] {
+    const rows = this.db.prepare(
+      "SELECT id FROM sessions WHERE session_status IS NOT NULL",
+    ).all() as { id: string }[];
+    return rows.map((r) => r.id);
   }
 
   agentGoalChecked(id: string): boolean {
