@@ -23,6 +23,7 @@ export class McpConfigController {
     return agent.writeMcpConfig({
       servers: params?.mcpServers ?? [],
       shipitBridge: this.shipitBridgePaths(),
+      sessionStatusCard: params?.sessionStatusCard === true,
       onServerFailed: (name, reason) => {
         this.deps.broadcast({
           type: "mcp_server_status",

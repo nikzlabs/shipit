@@ -290,6 +290,25 @@ describe("Integration: settings derive from the catalogue (docs/299 req 7)", () 
     expect(enabled).toHaveLength(1);
   });
 
+  // docs/303 req 21 — the tool list is fixed at spawn, so a toggle in either
+  // direction has to reach the residents; only the off → on half marks cards stale.
+  it("fires the status-card toggle hook in both directions, with the new value", async () => {
+    const toggles: boolean[] = [];
+    const save = (sessionStatusCard: boolean) => saveWith({
+      sessionStatusCard,
+      onSessionStatusCardToggled: (enabled: boolean) => { toggles.push(enabled); },
+    });
+
+    await save(false);
+    expect(toggles).toEqual([]);
+
+    await save(true);
+    await save(true);
+    await save(false);
+
+    expect(toggles).toEqual([true, false]);
+  });
+
   it("gives every credential-store setting a field of its own", () => {
     const fields = payloadDeclarations()
       .filter((d) => d.store.kind === "credential-store")

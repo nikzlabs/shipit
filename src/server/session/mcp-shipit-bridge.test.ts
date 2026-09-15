@@ -52,7 +52,7 @@ describe("selectTools", () => {
 
   it("registers all internal tools", () => {
     expect(Object.keys(TOOL_REGISTRY).sort()).toEqual(
-      ["ask", "bug", "permission", "present", "propose_actions", "propose_repo_session", "voice"],
+      ["ask", "bug", "permission", "present", "propose_actions", "propose_repo_session", "session_status", "voice"],
     );
   });
 });
@@ -255,5 +255,107 @@ describe("permission tool — resilient request → await poll", () => {
     });
     expect(JSON.parse(firstText(result)).behavior).toBe("deny");
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("session_status (docs/303)", () => {
+  let bridge: { client: Client; close: () => Promise<void> };
+  afterEach(async () => {
+    await bridge.close();
+    vi.restoreAllMocks();
+  });
+
+  it("relays a bare confirmation and reports each offer's taken state", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(200, {
+      ok: true,
+      actions: [
+        { offerId: "o1", id: "pr", label: "Open a PR", taken: true },
+        { offerId: "o2", id: "docs", label: "Update the docs", taken: false },
+      ],
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+    bridge = await connect(selectTools("session_status"));
+
+    const result = await bridge.client.callTool({ name: "session_status", arguments: {} });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      `${WORKER}/agent-ops/session-status`,
+      expect.objectContaining({ method: "POST" }),
+    );
+    const text = firstText(result);
+    expect(text).toContain("pr: Open a PR (taken");
+    expect(text).toContain("Update the docs");
+    expect((result as { isError?: boolean }).isError).toBeFalsy();
+  });
+
+  it("forwards every field of the delta to the worker", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(200, { ok: true, actions: [] }));
+    vi.stubGlobal("fetch", fetchMock);
+    bridge = await connect(selectTools("session_status"));
+
+    await bridge.client.callTool({
+      name: "session_status",
+      arguments: {
+        status: "Half done.",
+        needsYou: "",
+        replaceActions: true,
+        actions: [{ id: "pr", label: "Open a PR", payload: "Open a PR." }],
+      },
+    });
+
+    const body = JSON.parse(
+      (fetchMock.mock.calls[0][1] as { body: string }).body,
+    ) as Record<string, unknown>;
+    expect(body).toEqual({
+      status: "Half done.",
+      needsYou: "",
+      replaceActions: true,
+      actions: [{ id: "pr", label: "Open a PR", payload: "Open a PR." }],
+    });
+  });
+
+  it.each([
+    ["a body that is not the envelope", { written: true }],
+    ["an envelope without the offered list", { ok: true }],
+    ["an offered list of malformed entries", { ok: true, actions: [{}] }],
+    ["an offered list with a null entry", { ok: true, actions: [null] }],
+  ])("does not claim the card is current given %s", async (_label, body) => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse(200, body)));
+    bridge = await connect(selectTools("session_status"));
+
+    const result = await bridge.client.callTool({ name: "session_status", arguments: {} });
+
+    expect((result as { isError?: boolean }).isError).toBe(true);
+    expect(firstText(result)).not.toContain("up to date");
+    // The worker answered; saying it could not be reached would send the agent
+    // looking for a connection problem that is not there.
+    expect(firstText(result)).not.toContain("could not reach");
+  });
+
+  it("rejects an over-long status in-box, without a round trip", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    bridge = await connect(selectTools("session_status"));
+
+    const result = await bridge.client.callTool({
+      name: "session_status",
+      arguments: { status: "x".repeat(1000) },
+    });
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect((result as { isError?: boolean }).isError).toBe(true);
+    expect(firstText(result)).toContain("session_status failed");
+  });
+
+  it("surfaces the route's refusal rather than claiming the card is current", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(
+      jsonResponse(400, { error: "This session has no status card yet, so `status` is required" }),
+    ));
+    bridge = await connect(selectTools("session_status"));
+
+    const result = await bridge.client.callTool({ name: "session_status", arguments: {} });
+
+    expect((result as { isError?: boolean }).isError).toBe(true);
+    expect(firstText(result)).toContain("`status` is required");
   });
 });

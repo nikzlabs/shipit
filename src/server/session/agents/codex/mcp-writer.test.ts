@@ -108,6 +108,17 @@ describe("CodexAdapter.writeMcpConfig (docs/125, docs/155 hair 10, planning#130)
     expect(runtimeEnv?.SHIPIT_MCP_TOOLS).toContain("propose_actions,propose_repo_session");
   });
 
+  it("offers session_status instead of propose_actions while the card setting is on (docs/303 req 21)", () => {
+    const runtimeEnv = adapter.writeMcpConfig({
+      servers: [],
+      shipitBridge,
+      sessionStatusCard: true,
+      onServerFailed,
+    }).runtimeEnv;
+    expect(runtimeEnv?.SHIPIT_MCP_TOOLS)
+      .toBe("present,voice,ask,bug,session_status,propose_repo_session");
+  });
+
   it("is idempotent — repeat calls do not duplicate the block", () => {
     write();
     write();

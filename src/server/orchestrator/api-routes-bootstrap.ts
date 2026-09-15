@@ -40,6 +40,7 @@ import {
   refreshAgentEnvForAllSessions,
   selectAgentEnvForPush,
 } from "./session-agent-env.js";
+import { releaseResidentsOnStatusCardToggle } from "./resident-spawn-guard.js";
 import { markAllSessionStatusesStale } from "./services/session-status.js";
 import { getErrorMessage } from "./validation.js";
 
@@ -162,6 +163,9 @@ export async function registerBootstrapRoutes(
               sessionManager: deps.sessionManager,
               sseBroadcast: deps.sseBroadcast,
             });
+          },
+          onSessionStatusCardToggled: (enabled) => {
+            releaseResidentsOnStatusCardToggle(deps.runnerRegistry, enabled);
           },
           ...pickDeclaredSettings(request.body),
           ...(request.body.failoverCutoffs !== undefined ? { failoverCutoffs: request.body.failoverCutoffs } : {}),

@@ -77,6 +77,13 @@ export function registerAgentOpsRoutes(
     async (request, reply) => relay("POST", "/propose-actions", request.body ?? {}, reply),
   );
 
+  app.post<{
+    Body: { status?: unknown; needsYou?: unknown; actions?: unknown; replaceActions?: unknown };
+  }>(
+    "/agent-ops/session-status",
+    async (request, reply) => relay("POST", "/session-status", request.body ?? {}, reply),
+  );
+
   app.post<{ Body: { repo?: string; title?: string; prompt?: string } }>(
     "/agent-ops/propose-repo-session",
     async (request, reply) => relay("POST", "/propose-repo-session", request.body ?? {}, reply),

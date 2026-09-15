@@ -605,6 +605,22 @@ describe("ClaudeProcess", () => {
       expect(spawnOpts.env.SHIPIT_AUTO_CREATE_PR).toBeUndefined();
     });
 
+    it("sets SHIPIT_SESSION_STATUS_CARD only while the card setting is on", () => {
+      const mockProc = createMockChildProcess();
+      mockChildSpawn.mockReturnValue(mockProc as any);
+
+      const claude = new ClaudeProcess();
+      claude.run({ prompt: "test", sessionStatusCard: true });
+      expect((mockChildSpawn.mock.calls[0][2] as { env: Record<string, string> }).env
+        .SHIPIT_SESSION_STATUS_CARD).toBe("1");
+
+      mockChildSpawn.mockClear();
+      mockChildSpawn.mockReturnValue(createMockChildProcess() as any);
+      new ClaudeProcess().run({ prompt: "test" });
+      expect((mockChildSpawn.mock.calls[0][2] as { env: Record<string, string> }).env
+        .SHIPIT_SESSION_STATUS_CARD).toBeUndefined();
+    });
+
     it("planning#267 — sets SHIPIT_GUARD_DESTRUCTIVE_GIT=1 when guardDestructiveGit is true", () => {
       const mockProc = createMockChildProcess();
       mockChildSpawn.mockReturnValue(mockProc as any);
@@ -736,6 +752,38 @@ describe("ClaudeProcess", () => {
       expect(tools).toContain("Write");
     });
 
+    it.each([
+      ["auto" as const, undefined],
+      ["plan" as const, "plan" as const],
+    ])("docs/303 req 21 — allowlists session_status, not propose_actions, in %s mode when the card is on", (_label, permissionMode) => {
+      const mockProc = createMockChildProcess();
+      mockChildSpawn.mockReturnValue(mockProc as any);
+
+      const claude = new ClaudeProcess();
+      claude.run({ prompt: "test", sessionStatusCard: true, ...(permissionMode ? { permissionMode } : {}) });
+
+      const args = mockChildSpawn.mock.calls[0][1] as string[];
+      const tools = args[args.indexOf("--allowedTools") + 1];
+      expect(tools).toContain("mcp__shipit__session_status");
+      expect(tools).not.toContain("mcp__shipit__propose_actions");
+    });
+
+    it.each([
+      ["auto" as const, undefined],
+      ["plan" as const, "plan" as const],
+    ])("keeps mcp__shipit__propose_actions in %s mode while the card is off", (_label, permissionMode) => {
+      const mockProc = createMockChildProcess();
+      mockChildSpawn.mockReturnValue(mockProc as any);
+
+      const claude = new ClaudeProcess();
+      claude.run({ prompt: "test", ...(permissionMode ? { permissionMode } : {}) });
+
+      const args = mockChildSpawn.mock.calls[0][1] as string[];
+      const tools = args[args.indexOf("--allowedTools") + 1];
+      expect(tools).toContain("mcp__shipit__propose_actions");
+      expect(tools).not.toContain("mcp__shipit__session_status");
+    });
+
     it("includes browser tools in allowed tools list", () => {
       const mockProc = createMockChildProcess();
       mockChildSpawn.mockReturnValue(mockProc as any);
@@ -855,6 +903,40 @@ describe("ClaudeProcess", () => {
       const args = mockChildSpawn.mock.calls[0][1] as string[];
       const tools = args[args.indexOf("--allowedTools") + 1];
       expect(tools.split(",")).toContain("ExitPlanMode");
+    });
+
+    it.each([
+      ["auto", undefined],
+      ["plan", "plan"],
+    ] as const)("docs/303 req 21 — swaps the offer tool in %s mode when the card is on", (_label, permissionMode) => {
+      const mockProc = createMockChildProcess();
+      mockChildSpawn.mockReturnValue(mockProc as never);
+
+      const streaming = new StreamingClaudeProcess();
+      streaming.run({
+        prompt: "first",
+        sessionStatusCard: true,
+        ...(permissionMode ? { permissionMode: permissionMode as any } : {}),
+      });
+
+      const args = mockChildSpawn.mock.calls[0][1] as string[];
+      const tools = args[args.indexOf("--allowedTools") + 1];
+      expect(tools).toContain("mcp__shipit__session_status");
+      expect(tools).not.toContain("mcp__shipit__propose_actions");
+      const env = (mockChildSpawn.mock.calls[0][2] as { env: Record<string, string> }).env;
+      expect(env.SHIPIT_SESSION_STATUS_CARD).toBe("1");
+    });
+
+    it("keeps the offer tool and sets no marker while the card is off", () => {
+      const mockProc = createMockChildProcess();
+      mockChildSpawn.mockReturnValue(mockProc as never);
+
+      new StreamingClaudeProcess().run({ prompt: "first" });
+
+      const args = mockChildSpawn.mock.calls[0][1] as string[];
+      expect(args[args.indexOf("--allowedTools") + 1]).toContain("mcp__shipit__propose_actions");
+      const env = (mockChildSpawn.mock.calls[0][2] as { env: Record<string, string> }).env;
+      expect(env.SHIPIT_SESSION_STATUS_CARD).toBeUndefined();
     });
   });
 

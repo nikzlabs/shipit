@@ -44,6 +44,7 @@ import { grokResultErrorText, parseGrokLine, type GrokEvent } from "./stream.js"
 import { normalizeGrokToolCall, normalizeGrokToolResult } from "./grok-tool-normalizer.js";
 import { renderGrokConfigToml, type GrokMcpServer } from "./config-toml.js";
 import { isGoalControlInFlight, runGrokGoalControl } from "./grok-goal.js";
+import { shipitToolSpec } from "../../mcp-tool-spec.js";
 
 const GROK_CAPS = HARNESSES.find((h) => h.id === "grok")?.capabilities;
 const GROK_REASONING = GROK_CAPS?.reasoning;
@@ -865,7 +866,7 @@ export class GrokAdapter
         command: ctx.shipitBridge.tsxBin,
         args: [ctx.shipitBridge.bridgePath],
         enabled: true,
-        env: { SHIPIT_MCP_TOOLS: "present,voice,bug,ask,propose_actions,propose_repo_session" },
+        env: { SHIPIT_MCP_TOOLS: shipitToolSpec("present,voice,bug,ask,propose_actions,propose_repo_session", ctx) },
       };
     }
 

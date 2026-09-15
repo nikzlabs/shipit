@@ -40,6 +40,7 @@ import { resolveAgentHome } from "../../../shared/agent-home.js";
 import type { McpServerStatus } from "../../../shared/types/mcp-types.js";
 import type { SubscriptionLimitsWindow } from "../../../shared/types/usage-limits-types.js";
 import { resolveMcpServer } from "../../mcp-resolve.js";
+import { shipitToolSpec } from "../../mcp-tool-spec.js";
 import {
   PLAYWRIGHT_MCP_ARGS,
   PLAYWRIGHT_MCP_COMMAND,
@@ -409,6 +410,7 @@ export class ClaudeAdapter
       reasoningEffort: params.reasoningEffort,
       settingsPath: params.settingsPath,
       autoCreatePr: params.autoCreatePr,
+      sessionStatusCard: params.sessionStatusCard,
       sandbox: params.sandbox,
       guardDestructiveGit: params.guardDestructiveGit,
       permissionPromptTool: this._permissionPromptTool,
@@ -578,7 +580,7 @@ export class ClaudeAdapter
       mcpServers.shipit = {
         command: ctx.shipitBridge.tsxBin,
         args: [ctx.shipitBridge.bridgePath],
-        env: { SHIPIT_MCP_TOOLS: "present,voice,bug,permission,propose_actions,propose_repo_session" },
+        env: { SHIPIT_MCP_TOOLS: shipitToolSpec("present,voice,bug,permission,propose_actions,propose_repo_session", ctx) },
       };
       // CLI-only gate; exclude this tool from the model's allowlist.
       this._permissionPromptTool = "mcp__shipit__permission_prompt";

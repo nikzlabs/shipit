@@ -411,6 +411,8 @@ export interface AgentRunParams {
   reasoningEffort?: string;
   settingsPath?: string;
   autoCreatePr?: boolean;
+  /** docs/303 req 21 — picks `session_status` over `propose_actions` in every tool list. */
+  sessionStatusCard?: boolean;
   sandbox?: boolean;
   guardDestructiveGit?: boolean;
   useStreaming?: boolean;
@@ -430,6 +432,8 @@ export interface AgentMcpWriteContext {
   servers: McpServerConfig[];
   /** null omits the bridge without failing agent start. */
   shipitBridge: AgentMcpBridge | null;
+  /** docs/303 req 21 — the offer tool the bridge exposes, chosen per turn. */
+  sessionStatusCard?: boolean;
   onServerFailed: (name: string, reason: string) => void;
 }
 

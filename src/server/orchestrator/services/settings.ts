@@ -228,6 +228,8 @@ interface SaveHookContext {
   onAutoResolveConflictsEnabled?: () => void;
   onAutoFixCiEnabled?: () => void;
   onSessionStatusCardEnabled?: () => void;
+  /** docs/303 req 21 — fires in both directions: the tool list is fixed at spawn. */
+  onSessionStatusCardToggled?: (enabled: boolean) => void;
 }
 
 /**
@@ -259,6 +261,7 @@ const SAVE_HOOKS: Partial<Record<GlobalSettingKey, SaveHook>> = {
   "advanced.sessionStatusCard": {
     after: (value, previous, ctx) => {
       if (value === true && previous !== true) ctx.onSessionStatusCardEnabled?.();
+      if (value !== previous) ctx.onSessionStatusCardToggled?.(value === true);
     },
   },
   "services.nonTurnModel": {
@@ -311,6 +314,7 @@ export interface SaveGlobalSettingsOptions extends GlobalSettingsPatch {
   onAutoResolveConflictsEnabled?: () => void;
   onAutoFixCiEnabled?: () => void;
   onSessionStatusCardEnabled?: () => void;
+  onSessionStatusCardToggled?: (enabled: boolean) => void;
   // Addressed per service or per item; not derived from the catalogue yet.
   failoverCutoffs?: Record<string, Partial<FailoverCutoffs>>;
   accountSelectionMode?: Record<string, AccountSelectionMode>;
@@ -408,6 +412,8 @@ export async function saveGlobalSettings(
     ...(opts.onAutoFixCiEnabled ? { onAutoFixCiEnabled: opts.onAutoFixCiEnabled } : {}),
     ...(opts.onSessionStatusCardEnabled
       ? { onSessionStatusCardEnabled: opts.onSessionStatusCardEnabled } : {}),
+    ...(opts.onSessionStatusCardToggled
+      ? { onSessionStatusCardToggled: opts.onSessionStatusCardToggled } : {}),
   };
 
   // Everything is validated before anything is written. A save that ends in a

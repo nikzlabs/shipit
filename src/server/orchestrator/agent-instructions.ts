@@ -19,6 +19,8 @@ export interface AgentSystemInstructionOptions {
   agentId?: AgentId;
   isOps?: boolean;
   isSandbox?: boolean;
+  /** docs/303 req 21, 25 — the status card's section replaces the action card's. */
+  sessionStatusCard?: boolean;
 }
 
 const SKELETON = loadPrompt(import.meta.url, "./prompts/skeleton.md");
@@ -38,6 +40,8 @@ const COMPOSE_SERVICES_OPS = loadPrompt(import.meta.url, "./prompts/compose-serv
 // Static: the granted list lives in ~/.ssh/config, never in the prompt, so the
 // frozen variants stay byte-stable (CLAUDE.md, Prompts).
 const SSH_HOSTS = loadPrompt(import.meta.url, "./prompts/ssh-hosts.md");
+const PROPOSE_ACTIONS = loadPrompt(import.meta.url, "./prompts/propose-actions.md");
+const SESSION_STATUS = loadPrompt(import.meta.url, "./prompts/session-status.md");
 const CODEX_IMPLIED_ACTION = loadPrompt(
   import.meta.url,
   "./agents/codex/implied-action.md",
@@ -57,6 +61,7 @@ function sessionMode(isOps: boolean, isSandbox: boolean): SessionMode {
 function renderInstructions(
   agentId: AgentId | undefined,
   mode: SessionMode,
+  sessionStatusCard: boolean,
 ): string {
   const isOps = mode === "ops";
   const isSandbox = mode === "sandbox";
@@ -75,12 +80,17 @@ function renderInstructions(
     PARALLEL_SESSIONS: parallelSessionsSection,
     IMPLIED_ACTION: agentId ? IMPLIED_ACTION_SECTIONS.get(agentId) ?? "" : "",
     NEW_PROJECT_BEST_PRACTICE: isOps || isSandbox ? "" : NEW_PROJECT_BEST_PRACTICE,
+    FOLLOW_UP_ACTIONS: sessionStatusCard ? SESSION_STATUS : PROPOSE_ACTIONS,
   });
 }
 
-function variantKey(agentId: AgentId | undefined, mode: SessionMode): string {
+function variantKey(
+  agentId: AgentId | undefined,
+  mode: SessionMode,
+  sessionStatusCard: boolean,
+): string {
   const idPart = agentId && PARALLEL_SESSIONS_SECTIONS.has(agentId) ? agentId : "";
-  return `${idPart}|${mode}`;
+  return `${idPart}|${mode}|${sessionStatusCard ? "status" : "actions"}`;
 }
 
 // Precompute session-fixed variants to keep system prompts byte-stable across turns.
@@ -93,7 +103,9 @@ const PRECOMPUTED_INSTRUCTIONS: ReadonlyMap<string, string> = (() => {
   const map = new Map<string, string>();
   for (const id of agentIds) {
     for (const mode of modes) {
-      map.set(variantKey(id, mode), renderInstructions(id, mode));
+      for (const statusCard of [false, true]) {
+        map.set(variantKey(id, mode, statusCard), renderInstructions(id, mode, statusCard));
+      }
     }
   }
   return map;
@@ -103,7 +115,11 @@ export function buildAgentSystemInstructions(
   options: AgentSystemInstructionOptions = {},
 ): string {
   return PRECOMPUTED_INSTRUCTIONS.get(
-    variantKey(options.agentId, sessionMode(options.isOps ?? false, options.isSandbox ?? false)),
+    variantKey(
+      options.agentId,
+      sessionMode(options.isOps ?? false, options.isSandbox ?? false),
+      options.sessionStatusCard === true,
+    ),
   )!;
 }
 

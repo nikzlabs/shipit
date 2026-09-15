@@ -18,6 +18,7 @@ export function scrubEnvAuthForScopedHome(env: Record<string, string>, scopedHom
 }
 
 import { applyServiceRouting, claudeModelArg } from "../../../shared/spawn-routing.js";
+import { shipitToolSpec } from "../../mcp-tool-spec.js";
 export { applyServiceRouting };
 
 const AUTH_ERROR_PATTERNS = [
@@ -89,6 +90,7 @@ export interface ClaudeRunOptions {
   reasoningEffort?: string;
   settingsPath?: string;
   autoCreatePr?: boolean;
+  sessionStatusCard?: boolean;
   sandbox?: boolean;
   guardDestructiveGit?: boolean;
   permissionPromptTool?: string;
@@ -140,13 +142,13 @@ export class ClaudeProcess extends EventEmitter {
 
   // Stdin avoids the per-argument size limit; EOF makes this process one-shot.
   run(opts: ClaudeRunOptions): void {
-    const { prompt, sessionId, systemPrompt, cwd, permissionMode, mcpConfigPath, mcpServerNames, model, reasoningEffort, settingsPath, autoCreatePr, sandbox, guardDestructiveGit, permissionPromptTool, serviceRouting, homeDir } = opts;
+    const { prompt, sessionId, systemPrompt, cwd, permissionMode, mcpConfigPath, mcpServerNames, model, reasoningEffort, settingsPath, autoCreatePr, sessionStatusCard, sandbox, guardDestructiveGit, permissionPromptTool, serviceRouting, homeDir } = opts;
     this.authRaisedThisTurn = false;
 
     // Exact ShipIt names exclude permission_prompt. ExitPlanMode needs headless approval.
     // Explicit skills can write even in plan mode.
-    const AUTO_TOOLS = "Write,Read,Edit,NotebookEdit,Bash,PowerShell,Monitor,Glob,Grep,LSP,WebFetch,WebSearch,AskUserQuestion,ExitPlanMode,Skill,ShareOnboardingGuide,Workflow,mcp__playwright__*,mcp__shipit__present,mcp__shipit__voice_note,mcp__shipit__report_shipit_bug,mcp__shipit__propose_actions";
-    const PLAN_TOOLS = "Read,Glob,Grep,WebFetch,WebSearch,AskUserQuestion,ExitPlanMode,Skill,mcp__playwright__browser_navigate,mcp__playwright__browser_snapshot,mcp__playwright__browser_take_screenshot,mcp__shipit__present,mcp__shipit__voice_note,mcp__shipit__report_shipit_bug,mcp__shipit__propose_actions";
+    const AUTO_TOOLS = shipitToolSpec("Write,Read,Edit,NotebookEdit,Bash,PowerShell,Monitor,Glob,Grep,LSP,WebFetch,WebSearch,AskUserQuestion,ExitPlanMode,Skill,ShareOnboardingGuide,Workflow,mcp__playwright__*,mcp__shipit__present,mcp__shipit__voice_note,mcp__shipit__report_shipit_bug,mcp__shipit__propose_actions", { sessionStatusCard });
+    const PLAN_TOOLS = shipitToolSpec("Read,Glob,Grep,WebFetch,WebSearch,AskUserQuestion,ExitPlanMode,Skill,mcp__playwright__browser_navigate,mcp__playwright__browser_snapshot,mcp__playwright__browser_take_screenshot,mcp__shipit__present,mcp__shipit__voice_note,mcp__shipit__report_shipit_bug,mcp__shipit__propose_actions", { sessionStatusCard });
 
     // Third-party MCP tools cannot be assumed read-only in plan mode.
     const userMcpGlobs = (mcpServerNames ?? [])
@@ -243,6 +245,11 @@ export class ClaudeProcess extends EventEmitter {
       spawnEnv.SHIPIT_AUTO_CREATE_PR = "1";
     } else {
       delete spawnEnv.SHIPIT_AUTO_CREATE_PR;
+    }
+    if (sessionStatusCard) {
+      spawnEnv.SHIPIT_SESSION_STATUS_CARD = "1";
+    } else {
+      delete spawnEnv.SHIPIT_SESSION_STATUS_CARD;
     }
     if (sandbox) {
       spawnEnv.SHIPIT_SANDBOX = "1";
@@ -431,10 +438,10 @@ export class StreamingClaudeProcess extends EventEmitter {
   }
 
   run(opts: ClaudeRunOptions): void {
-    const { prompt, sessionId, systemPrompt, cwd, permissionMode, mcpConfigPath, mcpServerNames, model, reasoningEffort, settingsPath, autoCreatePr, sandbox, guardDestructiveGit, permissionPromptTool, serviceRouting, homeDir } = opts;
+    const { prompt, sessionId, systemPrompt, cwd, permissionMode, mcpConfigPath, mcpServerNames, model, reasoningEffort, settingsPath, autoCreatePr, sessionStatusCard, sandbox, guardDestructiveGit, permissionPromptTool, serviceRouting, homeDir } = opts;
 
-    const AUTO_TOOLS = "Write,Read,Edit,NotebookEdit,Bash,PowerShell,Monitor,Glob,Grep,LSP,WebFetch,WebSearch,AskUserQuestion,ExitPlanMode,Skill,ShareOnboardingGuide,Workflow,mcp__playwright__*,mcp__shipit__present,mcp__shipit__voice_note,mcp__shipit__report_shipit_bug,mcp__shipit__propose_actions";
-    const PLAN_TOOLS = "Read,Glob,Grep,WebFetch,WebSearch,AskUserQuestion,ExitPlanMode,Skill,mcp__playwright__browser_navigate,mcp__playwright__browser_snapshot,mcp__playwright__browser_take_screenshot,mcp__shipit__present,mcp__shipit__voice_note,mcp__shipit__report_shipit_bug,mcp__shipit__propose_actions";
+    const AUTO_TOOLS = shipitToolSpec("Write,Read,Edit,NotebookEdit,Bash,PowerShell,Monitor,Glob,Grep,LSP,WebFetch,WebSearch,AskUserQuestion,ExitPlanMode,Skill,ShareOnboardingGuide,Workflow,mcp__playwright__*,mcp__shipit__present,mcp__shipit__voice_note,mcp__shipit__report_shipit_bug,mcp__shipit__propose_actions", { sessionStatusCard });
+    const PLAN_TOOLS = shipitToolSpec("Read,Glob,Grep,WebFetch,WebSearch,AskUserQuestion,ExitPlanMode,Skill,mcp__playwright__browser_navigate,mcp__playwright__browser_snapshot,mcp__playwright__browser_take_screenshot,mcp__shipit__present,mcp__shipit__voice_note,mcp__shipit__report_shipit_bug,mcp__shipit__propose_actions", { sessionStatusCard });
 
     const userMcpGlobs = (mcpServerNames ?? []).map((name) => `mcp__${name}__*`).join(",");
     const withUserMcp = (base: string): string => userMcpGlobs ? `${base},${userMcpGlobs}` : base;
@@ -494,6 +501,11 @@ export class StreamingClaudeProcess extends EventEmitter {
       spawnEnv.SHIPIT_AUTO_CREATE_PR = "1";
     } else {
       delete spawnEnv.SHIPIT_AUTO_CREATE_PR;
+    }
+    if (sessionStatusCard) {
+      spawnEnv.SHIPIT_SESSION_STATUS_CARD = "1";
+    } else {
+      delete spawnEnv.SHIPIT_SESSION_STATUS_CARD;
     }
     if (sandbox) {
       spawnEnv.SHIPIT_SANDBOX = "1";
