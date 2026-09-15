@@ -41,7 +41,10 @@ export class EgressAllowlistStore {
    * while every reader — the settings read included — normalizes it again and
    * shows `a.test`, so an exact SQL match would leave the row behind and report
    * that the address named nothing (docs/299-agent-settings-access req 1). Rows
-   * that normalize alike are the same host, so removing all of them is right.
+   * that normalize alike are the same host, so removing all of them is right —
+   * and in ONE transaction, because a delete that throws after an earlier one
+   * committed leaves the host half off the list while the caller reports
+   * `failed` over it (planning#537).
    */
   removeHost(scope: string, host: string): boolean {
     const h = normalizeEntry(host);
@@ -49,9 +52,11 @@ export class EgressAllowlistStore {
     const stored = this.listHosts(scope).filter((row) => normalizeHost(row) === h);
     if (stored.length === 0) return false;
     const del = this.db.prepare("DELETE FROM egress_allowlist WHERE scope = ? AND host = ?");
-    let removed = 0;
-    for (const row of stored) removed += del.run(scope, row).changes;
-    return removed > 0;
+    return this.db.transaction(() => {
+      let removed = 0;
+      for (const row of stored) removed += del.run(scope, row).changes;
+      return removed > 0;
+    })();
   }
 
   /**

@@ -866,3 +866,19 @@ Both findings re-verified at the code before being acted on.
       the MCP- and operator-supplied removals reporting `failed` over a store
       they had changed, and the status-card hooks firing on a write the same
       save reports as failed
+
+### The independent review of those fixes
+
+Two findings, both the same class one layer down, both reproduced at the code.
+
+- [x] `removeHost` is itself a multi-write: rows that normalize alike are one
+      host, and it deleted them one by one. A delete that threw after an earlier
+      one committed left the host half off the list and reported `failed` over
+      it — at SESSION scope too, where no suppression follows. The loop is now
+      one transaction, which `removeGlobalHost` nests inside as a savepoint
+- [x] The same helper is what `unsuppressDefault` runs, so a global ADD of a
+      suppressed default had the identical half-landing shape: one suppression
+      row deleted, the default effective again, and the add reported `failed`.
+      Fixing the helper fixes both callers rather than either call site
+- [x] Proven red alone with a `BEFORE DELETE` trigger that refuses the second
+      row: without the transaction the first row stays deleted
