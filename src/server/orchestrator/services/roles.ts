@@ -199,6 +199,21 @@ function normalize(params: RolePinnedParams): RolePinnedParams {
   };
 }
 
+/**
+ * Every refusal this module raises, on ONE line
+ * (docs/299-agent-settings-access req 2, planning#577).
+ *
+ * `shipit agent run --role` reaches these from inside a session, and each
+ * message names stored text — a role's harness, service, billing mode, model
+ * and level, or the name itself — none of which is gated to one line by the
+ * write. Rendering at the raise rather than at each message is the point: the
+ * first pass rendered the two messages it had found, and an override that
+ * failed a step earlier walked straight past them.
+ */
+function refuse(message: string): never {
+  throw new ServiceError(400, renderOwn(message));
+}
+
 export function validateRolePinnedParams(
   params: RolePinnedParams,
   deps: RoleValidatorDeps,
@@ -209,7 +224,7 @@ export function validateRolePinnedParams(
   // Flattened whole: the message names the STORED harness, service, billing
   // mode, model and reasoning level of the role, none of which is gated to one
   // line, and this error is a line the agent reads (req 2).
-  if (!checked.ok) throw new ServiceError(400, renderOwn(`${what} cannot run: ${checked.message}`));
+  if (!checked.ok) refuse(`${what} cannot run: ${checked.message}`);
   return checked.params;
 }
 
@@ -222,12 +237,13 @@ export function resolveRoleByName(
   const role = deps.credentialStore.getRole(name);
   if (!role) throw unknownRole(name, deps);
   const overridden = hasOverride(overrides);
-  // The name the CALLER supplied, echoed back so its refusal says which role it
-  // means — flattened, because these messages are lines the agent reads and a
-  // stored name is not gated to one (`role-settings.ts` → `requireStorableName`).
-  // Echoed rather than projected: it is the argument the caller already holds,
-  // which is the same treatment `settings-read.ts` gives a key it does not know.
-  const shown = renderOwn(name);
+  // The name the CALLER supplied, echoed back so a refusal says which role it
+  // means — echoed rather than projected, being the argument the caller already
+  // holds, which is the treatment `settings-read.ts` gives a key it does not
+  // know. It needs no flattening of its own: {@link refuse} renders the whole
+  // line, and a second partial defence beside it is what invites the next
+  // message to be written without one.
+  const shown = name;
 
   if (role.params.kind === "pinned") {
     const params = validateRolePinnedParams(
@@ -251,8 +267,7 @@ export function resolveRoleByName(
 
   const chosen = selectReviewer(implementer, deps);
   if (!chosen.ok) {
-    throw new ServiceError(
-      400,
+    refuse(
       `The role "${shown}" cannot run: neither configured reviewer has a credential that can run `
         + "right now. Connect a provider in Settings, or wait for the quota to reset.",
     );
@@ -287,7 +302,7 @@ export function resolveRoleByName(
  */
 function unknownRole(name: string, deps: RoleDeps): ServiceError {
   const known = namesForMessage(deps.credentialStore.getRoles().map((role) => role.name));
-  return new ServiceError(400, `Unknown role "${renderOwn(name)}". Roles on this install: ${known}.`);
+  return new ServiceError(400, renderOwn(`Unknown role "${name}". Roles on this install: ${known}.`));
 }
 
 function hasOverride(overrides: RoleOverrides): boolean {
@@ -322,8 +337,7 @@ function applyOverrides(
   if (baseKind === "ranked" && overrides.modelId !== undefined) {
     const located = locateModel(overrides.modelId, overrides, harnessId, deps);
     if (!located) {
-      throw new ServiceError(
-        400,
+      refuse(
         `No model "${overrides.modelId}" is offered by any service`
           + `${overrides.serviceId ? ` on ${overrides.serviceId}` : ""}.`,
       );
@@ -374,8 +388,7 @@ function refuseModelAwayFromRolesService(
   if (!remedy) return;
   const service = getService(params.serviceId);
   const offered = [...new Set(elsewhere.map((c) => `${c.serviceId}/${c.billingMode}`))].join(", ");
-  throw new ServiceError(
-    400,
+  refuse(
     `${service?.name ?? params.serviceId} does not offer "${params.modelId}" on the `
       + `"${params.billingMode}" billing mode. Overriding the model does not move a service or `
       + `billing mode you did not name — that came from the role. Name `
@@ -461,8 +474,7 @@ export function joinRolePrompt(
     ? `## Standing instructions for the "${target.roleName}" role\n\n${standing}\n\n## Your task\n\n${task}`
     : task;
   if (joined.length > limit) {
-    throw new ServiceError(
-      400,
+    refuse(
       standing
         ? `The "${target.roleName}" role's standing instructions plus this task exceed `
           + `${limit.toLocaleString()} characters (${joined.length.toLocaleString()}). `

@@ -44,11 +44,15 @@ import {
  * string-typed field on any of these views fails `npm run typecheck` until it
  * is either minted as {@link Rendered} or named below.
  *
- * **It looks THROUGH arrays and nested objects**, which the first version of
- * this guard did not: it tested each direct property, so `notes: string[]` —
- * the exact regression it exists to prevent — passed it, and so would a nested
- * `{ text: string }`. A leaf anywhere under a field is a leaf the shim can
- * print.
+ * **It looks THROUGH arrays, nested objects and union members**, and took three
+ * passes to get there: the first tested each direct property, so `notes:
+ * string[]` — the exact regression it exists to prevent — passed it; the second
+ * tested a union whole, so `string | null` passed; the third walked `{}` looking
+ * for a dangerous key and found none, though `{}` accepts any string at all.
+ * What it still does not catch is a template-literal type
+ * (`` `status:${string}` ``), which is a string subtype no mint produces and
+ * nothing here has ever declared — recorded as its edge rather than claimed
+ * away.
  *
  * Three names are exempt, and the exemption is a decision rather than a claim
  * about what TypeScript prevents — nothing stops `String(x)` printing an
@@ -74,12 +78,16 @@ type PlainStringIn<V> =
       ? string extends V ? true : false
       : V extends readonly (infer E)[]
         ? HasPlainString<E>
-        : V extends object
-          ? true extends { [K in keyof V]-?: HasPlainString<Required<V>[K]> }[keyof V]
-            ? true
+        // Anything a plain string is ASSIGNABLE to, before the walk: `{}`,
+        // `unknown` and `any` all take one, and `{}` has no keys for the walk
+        // below to find it in.
+        : string extends V
+          ? true
+          : V extends object
+            ? true extends { [K in keyof V]-?: HasPlainString<Required<V>[K]> }[keyof V]
+              ? true
+              : false
             : false
-          // `unknown` and `any` land here, and both accept a plain string.
-          : string extends V ? true : false
     : never;
 
 /** Collapsed to one answer, so a `true | false` from a union still reads as true. */

@@ -760,3 +760,29 @@ value and stored another. Both re-verified at the code.
       UPPER-CASES what it echoes, and the notice one asserted that no line
       EQUALS the forged text while a forged line arrives carrying whatever
       followed it in the template. Both now assert on what opens a line
+- [x] A third review round: a role run with a model override throws inside
+      `applyOverrides`, a step BEFORE the validator whose message this work had
+      flattened, and interpolates the role's stored service and billing mode. So
+      both role modules gained a `refuse()` — one entry point for raising an
+      agent-facing error — and every throw in them goes through it. The
+      per-name flattening beside it was REMOVED rather than tested twice: a
+      second partial defence is what invites the next message to be written
+      without one
+- [x] The guard's third pass: `{}` and `{}[]` accept any string and have no key
+      for the walk to find it in, so a type a plain string is assignable to is
+      flagged before the walk. Its remaining edge — a template-literal type — is
+      recorded in the comment rather than claimed away
+- [x] Doc claims corrected against the code: the mints are four not three, the
+      ids and timestamps are `Rendered` now, the allow-list is four names and
+      not one, `renderJson`'s `(not representable)` refusal is deliberately not
+      JSON, and `\s` excludes U+0085 rather than all three separators
+
+### Not fixed here — the same class, in a file this session is scoped out of
+
+- [ ] `services/settings-operations.ts:418` (`rolePreflight`) returns
+      `checked.message` straight out, and `:602` (`reviewerLevelRefusal`)
+      returns the resolver's error, both reaching the propose response and the
+      CLI unrendered. A stored harness or reviewer model carrying a newline
+      forges a line through either. Error handling runs BEFORE the `--json`
+      branch, so that flag does not cover them. Another session owns that file;
+      the fix is the `refuse()` shape the role modules now use
