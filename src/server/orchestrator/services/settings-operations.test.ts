@@ -6,7 +6,12 @@ import {
 } from "../../shared/settings-catalogue/index.js";
 import { addMcpServer } from "./mcp.js";
 import { withConflictDomains } from "./settings-conflict-domain.js";
-import { findOperation, operationsFor, registeredOperationKeys } from "./settings-operations.js";
+import {
+  findOperation,
+  operationsFor,
+  proposableFieldsOf,
+  registeredOperationKeys,
+} from "./settings-operations.js";
 import { proposalFixture, type ProposalFixture } from "./settings-proposal-test-helpers.js";
 
 /**
@@ -59,9 +64,21 @@ describe("the operation registry", () => {
   it("reports what it can do with a setting, for a refusal that says so", () => {
     expect(operationsFor("advanced.enableSubAgents")).toEqual(["set"]);
     expect(operationsFor("network.egress.hosts[].host")).toEqual(["add", "remove"]);
-    // Declared, readable, and not something a card can apply yet.
-    expect(operationsFor("services.credentials[].label")).toEqual([]);
     expect(operationsFor("nonsense.key")).toEqual([]);
+  });
+
+  it("leaves no declaration promising a proposal it has nowhere to send (req 4)", () => {
+    // `propose.allowed: true` reaches the agent from the read surface, so a
+    // declaration advertising it with no operation anywhere is a promise only
+    // attempting the change reveals as empty. A collection aggregate keeps its
+    // promise through its entry fields; anything else needs an operation of its
+    // own.
+    const stranded = ALL_SETTINGS
+      .filter((declaration) => declaration.propose.kind === "yes")
+      .filter((declaration) => operationsFor(declaration.key).length === 0)
+      .filter((declaration) => proposableFieldsOf(declaration.key).length === 0)
+      .map((declaration) => declaration.key);
+    expect(stranded).toEqual([]);
   });
 
   it("names a conflict domain for every operation it has", () => {
@@ -69,7 +86,7 @@ describe("the operation registry", () => {
       for (const kind of KINDS) {
         const operation = findOperation(declaration, kind);
         if (!operation) continue;
-        const domains = operation.domains({ key: declaration.key, item: "x", repoUrl: "u" });
+        const domains = operation.domains({ key: declaration.key, item: "x", repoUrl: "u" }, fx.deps.operations, "x");
         expect(domains.length).toBeGreaterThan(0);
       }
     }
@@ -98,8 +115,9 @@ describe("a collection entry is patched, never replaced", () => {
     // holds them: the lock refuses a nested acquisition its caller does not
     // hold, so a `domains()` that is not a superset of what the write takes
     // throws here instead of quietly working in a test that skipped the hold.
-    const outcome = await withConflictDomains(operation.domains(target), () =>
-      operation.apply(fx.deps.operations, target, "what it is for, in one line"));
+    const value = "what it is for, in one line";
+    const outcome = await withConflictDomains(operation.domains(target, fx.deps.operations, value), () =>
+      operation.apply(fx.deps.operations, target, value));
 
     expect(outcome.status).toBe("applied");
     const role = fx.credentialStore.getRole("deep-dive");
@@ -128,7 +146,7 @@ describe("a collection entry is patched, never replaced", () => {
     const operation = findOperation(findSetting("mcp.servers[].enabled")!, "set")!;
     const target = { key: "mcp.servers[].enabled", item: "notion" };
 
-    const outcome = await withConflictDomains(operation.domains(target), () =>
+    const outcome = await withConflictDomains(operation.domains(target, fx.deps.operations, false), () =>
       operation.apply(fx.deps.operations, target, false));
 
     expect(outcome.status).toBe("applied");
@@ -167,5 +185,150 @@ describe("a refusal names stored values only through the projection that emits t
     expect(message).not.toContain("CANARY");
     expect(message).not.toContain("https");
     expect(message).toContain("1 ShipIt does not name back");
+  });
+});
+
+/**
+ * The three operations a declaration advertised before one existed
+ * (docs/299-agent-settings-access req 4). Each is a narrow write: the field the
+ * card names, and nothing beside it.
+ */
+describe("renaming what the user named themselves", () => {
+  const pinned = {
+    kind: "pinned",
+    harnessId: "claude",
+    serviceId: "anthropic",
+    billingMode: "sub",
+    modelId: "claude-opus-5",
+  } as const;
+
+  async function run(key: string, item: string, value: unknown) {
+    const operation = findOperation(findSetting(key)!, "set")!;
+    const target = { key, item };
+    return withConflictDomains(operation.domains(target, fx.deps.operations, value), () =>
+      operation.apply(fx.deps.operations, target, value));
+  }
+
+  function refusal(key: string, item: string, value: unknown): string | null {
+    const operation = findOperation(findSetting(key)!, "set")!;
+    return operation.preflight!(fx.deps.operations, { key, item }, value);
+  }
+
+  it("moves a role to its new name and leaves everything else on it", async () => {
+    fx.credentialStore.setRole("deep-dive", {
+      name: "deep-dive",
+      description: "for the hard ones",
+      prompt: "standing instructions",
+      params: pinned,
+    });
+
+    const outcome = await run("roles[].name", "deep-dive", "auditor");
+
+    expect(outcome.status).toBe("applied");
+    expect(fx.credentialStore.getRole("deep-dive")).toBeUndefined();
+    expect(fx.credentialStore.getRole("auditor")).toMatchObject({
+      description: "for the hard ones",
+      prompt: "standing instructions",
+      params: { harnessId: "claude", modelId: "claude-opus-5" },
+    });
+  });
+
+  it("refuses a rename that would replace a role that already exists", () => {
+    fx.credentialStore.setRole("deep-dive", { name: "deep-dive", params: pinned });
+    fx.credentialStore.setRole("auditor", { name: "auditor", params: pinned });
+
+    expect(refusal("roles[].name", "deep-dive", "auditor")).toContain("already exists");
+  });
+
+  it("refuses renaming the reserved role, because \"review this\" has to resolve", () => {
+    expect(refusal("roles[].name", "reviewer", "auditor")).toContain("cannot be renamed");
+  });
+
+  it("renames a credential without touching the secret it delivers", async () => {
+    fx.credentialStore.upsertCredentialRouteWithSecret(
+      {
+        id: "anthropic-key-fixture",
+        serviceId: "anthropic",
+        billingMode: "key",
+        via: "string",
+        status: "ready",
+        priority: 0,
+        isPrimary: true,
+        label: "the old name",
+        createdAt: 0,
+        updatedAt: 0,
+      },
+      "sk-ant-fixture",
+    );
+
+    const outcome = await run("services.credentials[].label", "anthropic-key-fixture", "work key");
+
+    expect(outcome.status).toBe("applied");
+    expect(fx.credentialStore.getCredentialRoute("anthropic-key-fixture")?.label).toBe("work key");
+    // A label is a display string; the credential the session is handed is not
+    // part of what the card proposed.
+    expect(fx.credentialStore.getCredentialSecret("anthropic-key-fixture")).toBe("sk-ant-fixture");
+  });
+
+  it("refuses a credential id that names nothing", () => {
+    expect(refusal("services.credentials[].label", "no-such-route", "work key")).toContain("no-such-route");
+  });
+
+  it("refuses a provider account address the read does not emit", () => {
+    // The address is `service:accountId`, and the writer takes the harness whose
+    // sign-in owns that service — so a bare provider, and a service nothing
+    // signs in to, are both addresses that reach no account.
+    expect(refusal("services.providerAccounts[].label", "claude", "work account"))
+      .toContain("No provider account is addressed by");
+    expect(refusal("services.providerAccounts[].label", "nonsense:acct-1", "work account"))
+      .toContain("No provider account is addressed by");
+  });
+
+  it("refuses a name longer than the credential writers store", () => {
+    fx.credentialStore.upsertCredentialRouteWithSecret(
+      {
+        id: "anthropic-key-fixture",
+        serviceId: "anthropic",
+        billingMode: "key",
+        via: "string",
+        status: "ready",
+        priority: 0,
+        isPrimary: true,
+        label: "the old name",
+        createdAt: 0,
+        updatedAt: 0,
+      },
+      "sk-ant-fixture",
+    );
+    // The declaration allows more than the writer stores, so without this the
+    // card could only ever resolve `refused`.
+    const message = refusal("services.credentials[].label", "anthropic-key-fixture", "x".repeat(121));
+    expect(message).toContain("at most 120");
+  });
+});
+
+describe("a role card is refused when the write would be", () => {
+  it("refuses renaming a role whose pinned model the write no longer accepts", () => {
+    fx.credentialStore.setRole("deep-dive", {
+      name: "deep-dive",
+      params: {
+        kind: "pinned",
+        harnessId: "claude",
+        serviceId: "anthropic",
+        billingMode: "sub",
+        // Left the catalogue: `planRoleWrites` validates the whole role on every
+        // write, so a card proposing only the name could only resolve `refused`.
+        modelId: "claude-fable-5",
+      },
+    });
+    const operation = findOperation(findSetting("roles[].name")!, "set")!;
+
+    const message = operation.preflight!(
+      fx.deps.operations,
+      { key: "roles[].name", item: "deep-dive" },
+      "auditor",
+    );
+
+    expect(message).toContain("claude-fable-5");
   });
 });

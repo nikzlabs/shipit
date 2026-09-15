@@ -63,8 +63,9 @@ No agent-facing surface; the proposal card is the next slice.
       resolves `stale` where comparing `from` would not
 
 Not in this slice, and named in `plan.md` → *What a card can apply today*: the
-collection operations that create and delete entries, and the credential and
-provider-account labels.
+collection operations that create and delete entries. (The credential and
+provider-account labels were also out of this slice; they are registered in the
+req 4 conformance slice at the end of this file.)
 
 ## Conformance against reqs 2, 3 and 7
 
@@ -181,12 +182,10 @@ Each finding re-verified at the code before being acted on.
       arguments reading as configured once their secret is stored passes with the
       original defect too, because the old reader called any non-empty argument
       list configured
-- [ ] **Not this slice, and not this file's to fix**: `applyEgressHostRemove`
-      branches on `isBuiltinDefault` before trying the explicit row, so removing
-      a host that is both a shipped default and a global entry suppresses the
-      default and leaves the row effective — the read then advertises it again as
-      removable and every further removal reports success. `plan.md` carries the
-      reproduction (`.github.com`); the fix belongs with `settings-apply.ts`
+- [x] Fixed in the slice below: `applyEgressHostRemove` branched on
+      `isBuiltinDefault` before trying the explicit row, so removing a host that
+      was both a shipped default and a global entry suppressed the default and
+      left the row effective
 
 ## Conformance against reqs 7 and 8 — the closing review
 
@@ -312,3 +311,117 @@ Three findings, each verified at the code and each a defect rather than taste.
       of `resultIsTheAgentsOwn` are covered directly in
       `turn-settlement.test.ts`, because no shipped adapter can produce the
       `error`-without-`error`-status pair an integration test would need
+
+## Conformance against req 4 — the card's whole change, and a true outcome
+
+A third conformance review found req 4 partly met. Each finding re-verified at
+the code before being acted on.
+
+- [x] req 4 — a model proposal shows the fields it re-derives. `roles[].model`
+      reselects the harness and drops a level the new selection does not offer,
+      and `reviewers[].model` substitutes the slot's default level; both used to
+      post a card naming the model alone. Operations now declare `alsoChanges`,
+      labelled by the neighbouring declaration and formatted through the same
+      door as `from`/`to`, and the card renders them under the main change
+- [x] req 4 — those side changes are re-derived at apply time and compared with
+      the card, because they read live state the baseline does not cover (which
+      harnesses are installed); a difference is `refused`, so a click never
+      writes something the card did not display
+- [x] req 4 — a removal that cannot happen is refused rather than reported
+      applied. `buildEffectiveAllowlist` no longer inherits `removable: true`
+      from the first source when a second, unremovable one supplies the same
+      host, which is what let `.github.com` beside
+      `SESSION_EGRESS_ALLOWLIST=.github.com` read as removable
+- [x] req 4 — and the write itself now reports what it achieved:
+      `applyEgressHostRemove` deletes the explicit row AND suppresses the
+      default, then reads the resulting membership, answering `failed` with the
+      source that still supplies the host. A repeat removal of a host that is
+      genuinely off stays `applied`
+- [x] req 4 — every declaration advertising `propose.allowed: true` now has
+      somewhere a proposal can go, swept rather than fixed one at a time:
+      `roles[].name`, `services.credentials[].label` and
+      `services.providerAccounts[].label` gained operations, and a collection
+      aggregate keeps its promise through its entry fields, which the refusal now
+      names. A test fails the build for any declaration with neither
+- [x] `domains()` takes the validated value as well as the target, since a
+      rename writes the stored object under the new name too; validation moved
+      just outside the lock, where it always belonged
+- [x] Every new guard proven red on its own, with the defect restored: the four
+      `alsoChanges` cards, the apply-time comparison, the two-source
+      `removable` flag on both the operator and the MCP shape, the built-in plus
+      explicit-row removal, the operator-supplied removal reporting `applied`,
+      the broader entry that still covers a removed host, the missing baseline
+      readers, and the declarations with nowhere to send a proposal
+
+### The independent review of those fixes
+
+Three findings, each verified at the code and each a defect rather than taste.
+
+- [x] Both label operations were **registered and unreachable**:
+      `settings-baseline.ts` had no reader for either collection, so every valid
+      rename refused at `requireBaseline` before a card existed. The registry
+      guard could not see it — it checks registration, and the operation tests
+      call `apply` directly — so the two readers come with propose-then-click
+      tests that exercise the whole path
+- [x] `roles[].harness` drops a level the new harness does not honour and
+      declared no `alsoChanges`, so the same hole the model fix closed stayed
+      open one operation along. It declares them now
+- [x] A removal reported "not allowed" where a **broader entry** still covers the
+      host: entries are patterns, so taking `api.github.com` off leaves the
+      shipped `.github.com` matching it. The entry did go, so the outcome stays
+      `applied` — with a detail naming the entry that still allows it — and the
+      PENDING card is worded as membership (`on the list` → `off the list`), so
+      nothing is promised before the click that the removal cannot deliver
+- [x] Comment volume cut back where the added blocks restated `plan.md`, and the
+      card interface's own docstring put back above the interface it documents
+
+### A second review of those fixes
+
+- [x] Provider-account renames could be proposed and never applied: the read
+      addresses an account by its SERVICE and `renameProviderAccount` takes the
+      HARNESS whose sign-in owns that service, so every click answered "Unknown
+      provider". The operation converts, and a propose-then-click test covers it
+      — the fixture gained an opt-in provider-account manager for it
+- [x] A label longer than the writers store posted a card that could only ever
+      resolve `refused`; both preflights now hold it to
+      `MAX_CREDENTIAL_LABEL_LENGTH`, which is one exported constant rather than
+      the three literals the two writers and the check would otherwise be
+- [x] Each new guard proven red alone: the address passed through unconverted,
+      the length check removed, and the reachability wording restored
+
+### A third review of those fixes
+
+- [x] The shared removal writer could not see MCP-supplied hosts, so
+      `DELETE /api/egress/hosts` — which runs no proposal preflight — still
+      reported a host gone that the next container reaches.
+      `EgressApplyDeps.credentialStore` is now a **required** key, named at all
+      three construction sites
+- [x] A rename skipped the role validator every other role edit runs, so a role
+      pinned to a retired model could be proposed and only refused at the click
+- [x] Both guards proven red alone
+
+### A fourth review, after the rebase
+
+- [x] A role could be renamed to a value the card could not show: the projection
+      names no URL back, so the card read `deep-dive → not set` while Apply
+      stored the URL and deleted the old name. Propose now refuses any value the
+      declaration's own projection drops — over the projection, not over one
+      setting's shape — without quoting the value back
+- [x] Guard proven red alone; the account-address comment trimmed to the
+      constraint, with its bug history left in `plan.md`
+- [x] The rebase resolution checked from both sides: `settings-baseline.ts` holds
+      a NUL byte in a source string, so git kept main's whole version with no
+      markers and the two readers were re-applied on top
+
+### A fifth review, of that fix
+
+- [x] The removal's own detail claimed reachability — the very thing the
+      membership wording exists to stop — and in a network-off sandbox it was
+      false. It names the entry that still matches the host and says nothing
+      about what a session can reach
+- [x] And it was hiding the answer: `subLine` returned the outcome's detail
+      INSTEAD of the effect's, so a card could report the write and drop the
+      reason the write is not live for this session. The card renders both, the
+      write's first. Pre-existing for every operation that sets both; this change
+      is what made the pair common
+- [x] Guard proven red alone

@@ -450,16 +450,44 @@ on the NORMALIZED row rather than on the stored string, so the advertised addres
 names its own row either way. Rows that normalize alike are the same host, so
 removing all of them is right.
 
-**The apply path has a defect of its own that this does not reach, and it is
-worse than the documented one.** `applyEgressHostRemove` reports `applied`
-whatever `removeHost` returns, which *"Saved" has to mean saved* already
-condemns — but it also branches on `isBuiltinDefault(host)` FIRST, so removing a
-host that is both a shipped default and an explicit global row only suppresses
-the default and leaves the row effective. The read then advertises that row again
-as `user-global`, `removable: true`, and every further removal reports success
-while changing nothing. `.github.com` is the worked case. Fixing it belongs with
-that file's owner: the branch has to try the explicit row before suppressing the
-default, and report what the store actually did.
+**A host reaches the list from five places and a removal reaches two of them**,
+which is why removing one is decided by reading the resulting state rather than
+by what the store returned. Three things follow, and all three were defects.
+
+`applyEgressHostRemove` branched on `isBuiltinDefault(host)` FIRST, so a host
+that was both a shipped default and an explicit global row only had the default
+suppressed; the row stayed effective, the read advertised it again as
+`user-global`, and every further removal reported success while changing nothing.
+It now does **both** — delete the row, and suppress the default when there is one.
+
+`buildEffectiveAllowlist` deduplicated first-source-wins, so a host the operator's
+environment or a configured MCP server ALSO supplies inherited the built-in pass's
+`removable: true`. An entry is now removable only when **every** source supplying
+it is, and the entry names the source that pins it — which is what the Network
+tab's remove button and the proposal's `removableRefusal` both read.
+`.github.com` beside `SESSION_EGRESS_ALLOWLIST=.github.com` is the worked case.
+
+And the card's own words are **membership, not reachability**: entries are
+patterns, so taking `api.github.com` off leaves the shipped `.github.com`
+matching it. The removal's wording is `on the list` → `off the list`, which is
+what the write delivers; the applied detail names the entry that still covers the
+host. An `add` keeps reachability wording, because there the claim comes true.
+
+And the outcome is now read off the **resulting membership**, in two steps. The
+named entry still on the list is `failed`, naming the source that keeps it there.
+The entry gone but the host still *matched* by another — entries are patterns, so
+removing `api.github.com` changes nothing about the shipped `.github.com` — is
+`applied` with a detail naming the entry that still matches it, because the write
+did exactly what the card said and a bare "Applied" would read as the host being
+off the list altogether. That detail is membership too: whether a session reaches
+the host is the **effect**'s question, and a card renders both lines rather than
+letting the outcome's hide the session's — a sandbox with network off would
+otherwise lose the half the user is unblocking. The read-back sees every source, which is why
+`EgressApplyDeps` carries a **required** `credentialStore` key: the proposal's
+preflight refuses an MCP-supplied host before writing, and `DELETE
+/api/egress/hosts` does not, so the writer has to see one too. A session's list
+has one source and needs no read-back, and a repeat removal of a host that is
+genuinely off stays idempotent, since the end state is what the card claims.
 
 Reading a setting a panel of its own owns needs a reader per owner
 (`services/settings-store-readers.ts`), because a `bespoke` declaration names
@@ -807,6 +835,27 @@ re-derives harness and effort (`Settings/roles/RoleEditor.tsx:93`), so field-by-
 field proposals would require invalid intermediate states. The declared operation
 is the tuple, shown as one change and validated as one.
 
+**Shown means shown, and a sentence is not the values.** The re-derivation is
+real — a model the role's harness cannot speak moves the harness, and a level the
+new selection does not offer is dropped — so a card carrying `from`/`to` for the
+model alone asks the user to approve two changes it never displayed. The
+declaration's own description saying that fields are re-derived is not a
+substitute: the user approves what the card shows. So an operation declares
+`alsoChanges` — the rest of what its one write touches, each entry labelled by
+the neighbouring declaration and valued through the same `projectSetting` /
+`formatSetting` door as `from` and `to` — and the card renders them under the
+main change. Three operations have them today, and they are the three that re-derive:
+`roles[].model` (harness and level), `roles[].harness` (level), and
+`reviewers[].model`, whose writer SUBSTITUTES the slot's default level rather
+than refusing one (`services/reviewer-settings.ts` → `resolveReviewerPinPatch`).
+
+They are **re-derived at apply time and compared with the card**, not replayed
+from it. The derivation reads live state the baseline does not cover — which
+harnesses are installed, which levels a selection offers — so a card written when
+the role kept its own harness can, hours later, be a card that would move it. A
+difference is `refused`, not applied: the baseline protects the stored value, and
+this protects what the user was shown.
+
 ### Collections are patched, never replaced
 
 `roles`, `egress.hosts`, `mcp.servers`, `credentialRoutes`, provider accounts and
@@ -823,6 +872,15 @@ card shows in full. *Change its URL* is refused — the projection shows only th
 host, so the card would either display less than it changes or echo a path the
 agent may not read back. The test is not size; it is whether the card can show
 all of it.
+
+**A VALUE the projection drops fails that test too**, and propose refuses it
+before the card exists. `userNameProjection` names no URL back, so renaming a
+role to `https://user:token@host/` would have shown `deep-dive → not set` while
+the write stored the URL and deleted the old name. The check is over the
+declaration's own projection rather than over one setting's shape, so it covers
+any emitter that drops a value; and like `hostPreflight` it does not quote the
+value back, because what was typed can carry a credential and the refusal reaches
+the transcript as tool output.
 
 **The patch has to be narrow in the WRITE, not only on the card.** Reading the
 stored object and handing it back to a whole-object writer looks like the same
@@ -844,14 +902,48 @@ declaration is for discovery and is not the mutation unit. Every declared payloa
 scalar is proposable through one generic operation, so a setting declared
 tomorrow is proposable the same day (req 7). Named operations cover the release
 channel, egress containment and one allowlist entry, the two project settings, an
-MCP server's `enabled` flag, a role's description, standing instructions, model,
-harness and level, both reviewer slots, and the per-mode routing settings.
+MCP server's `enabled` flag, a role's name, description, standing instructions,
+model, harness and level, both reviewer slots, the credential and
+provider-account labels, and the per-mode routing settings.
 
 The rest is declared, readable and **refused at propose time by name**: creating
-or deleting a role, an MCP server or a credential, and the credential and
-provider-account labels. That refusal is deliberately not one of the catalogue's
-four reasons — those describe settings nobody can propose at all, and this one
-says the read works and the write has not been built.
+or deleting a role, an MCP server or a credential. That refusal is deliberately
+not one of the catalogue's four reasons — those describe settings nobody can
+propose at all, and this one says the read works and the write has not been built.
+
+**A declaration may not advertise a proposal with nowhere to go.**
+`propose.allowed: true` reaches the agent from the read surface, so a declaration
+carrying it with no operation anywhere is a promise only attempting the change
+reveals as empty — which is how `services.credentials[].label` and
+`roles[].name` shipped. Two things close it. Each of those now has an operation:
+a label is a narrow write with a narrow writer (`applyCredentialLabel`,
+`applyProviderAccountLabel`), deliberately without `propagateCredentialChange`,
+because that call refreshes auth, agent environments and resident CLIs on the
+strength of credential MATERIAL and a label is a string in a list — and a
+**baseline reader** each, without which the operation is registered and
+unreachable, since `requireBaseline` refuses a proposal whose stored value it
+cannot revision. And a
+**collection aggregate** — `roles`, `mcp.servers`, `network.egress.hosts` — keeps
+its promise through its entry fields rather than an operation of its own, since a
+card never replaces a whole list; propose names them (`proposableFieldsOf`) and
+refuses by pointing at them. `settings-operations.test.ts` fails the build for any
+declaration that has neither.
+
+Two vocabularies meet at a provider account and are **not** the same: the read
+addresses one by the SERVICE it belongs to (`anthropic:acct_…`) and
+`renameProviderAccount` takes the HARNESS whose sign-in owns that service, so the
+operation converts. And a label's declared limit is wider than what its writers
+store, so the preflight holds them to `MAX_CREDENTIAL_LABEL_LENGTH` — a card that
+could only ever resolve `refused` is not a change the user makes with one click.
+The same rule sends a **rename** through the role validator every other role edit
+runs: `planRoleWrites` validates the whole role on every write, so a role pinned
+to a retired model cannot be renamed and the card says so instead of the click.
+
+One consequence for `domains()`: it now takes the validated value as well as the
+target and the deps, because renaming a role writes the stored object under the
+new name as well as the old one's, and the lock has to hold both before either is
+read. Validation moved just outside the lock to make that possible — it is pure,
+so it never needed one.
 
 ## Apply goes through a shared layer
 

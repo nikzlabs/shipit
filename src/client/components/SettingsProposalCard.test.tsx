@@ -56,6 +56,37 @@ describe("SettingsProposalCard — pending", () => {
     expect(screen.queryByText(/·\s*\S/)).not.toBeInTheDocument();
   });
 
+  /**
+   * One operation can rewrite more than the field it is named after — picking a
+   * role's model re-derives the harness and drops a level the new selection does
+   * not offer. Those land on the same click, so the user has to be able to see
+   * them before pressing it (docs/299-agent-settings-access req 4).
+   */
+  it("shows every further field the same click would write", () => {
+    render(<SettingsProposalCard card={card({
+      target: { key: "roles[].model", item: "deep-dive" },
+      label: "Runs on",
+      from: "anthropic/sub/claude-opus-5",
+      to: "openai/sub/gpt-5.6-sol",
+      alsoChanges: [
+        { label: "Harness", from: "claude", to: "codex" },
+        { label: "Reasoning level", from: "max", to: "not set" },
+      ],
+    })} />);
+
+    const also = screen.getByTestId("settings-proposal-also");
+    expect(also).toHaveTextContent("Harness");
+    expect(also).toHaveTextContent("claude");
+    expect(also).toHaveTextContent("codex");
+    expect(also).toHaveTextContent("Reasoning level");
+    expect(also).toHaveTextContent("not set");
+  });
+
+  it("shows no further-changes block for an operation that writes one field", () => {
+    render(<SettingsProposalCard card={card()} />);
+    expect(screen.queryByTestId("settings-proposal-also")).not.toBeInTheDocument();
+  });
+
   it("attributes the agent's reason, so it cannot read as ShipIt describing the change", () => {
     render(<SettingsProposalCard card={card()} />);
     expect(screen.getByText("The agent’s reason")).toBeInTheDocument();
@@ -157,14 +188,19 @@ describe("SettingsProposalCard — resolved", () => {
     expect(screen.queryByText("never shown")).not.toBeInTheDocument();
   });
 
-  it("shows the server's own sub-line ahead of the effect's", () => {
+  it("shows the server's own sub-line AND the effect's, in that order", () => {
     render(<SettingsProposalCard card={card({
       phase: "partial",
       outcomeDetail: "The name was saved. The email failed.",
-      effect: { state: "uncertain", detail: "not this one" },
+      effect: { state: "excluded", detail: "This session's containment was fixed at start." },
     })} />);
     const el = screen.getByTestId("settings-proposal-card");
+    // Two different questions: what the write did, and whether the saved value
+    // is the one this session uses. One hiding the other loses the half the user
+    // is usually unblocking.
     expect(el).toHaveTextContent(/The name was saved\. The email failed\./);
-    expect(el).not.toHaveTextContent(/not this one/);
+    expect(el).toHaveTextContent(/containment was fixed at start/);
+    expect(el.textContent!.indexOf("The name was saved"))
+      .toBeLessThan(el.textContent!.indexOf("containment was fixed"));
   });
 });

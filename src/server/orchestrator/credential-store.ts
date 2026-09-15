@@ -141,6 +141,9 @@ function publicSshHost(host: StoredSshHost): SshHostPublic {
   };
 }
 
+/** A credential's and a provider account's display name; both writers enforce it. */
+export const MAX_CREDENTIAL_LABEL_LENGTH = 120;
+
 export const MAX_ROLE_NAME_LENGTH = 10_000;
 export const MAX_ROLE_DESCRIPTION_LENGTH = 500;
 export const MAX_ROLE_PROMPT_LENGTH = 20_000;

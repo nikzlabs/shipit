@@ -10,7 +10,7 @@ import { applyEgressHostAdd } from "../services/settings-apply.js";
 
 type EgressCtx = ConnectionCtx &
   RunnerCtx &
-  Pick<AppCtx, "chatHistoryManager" | "egressAllowlistStore" | "containerManager">;
+  Pick<AppCtx, "chatHistoryManager" | "egressAllowlistStore" | "containerManager" | "credentialStore">;
 
 export async function handleEgressDecision(ctx: EgressCtx, msg: WsEgressDecision): Promise<void> {
   const sessionId = ctx.getActiveAppSessionId();
@@ -47,7 +47,7 @@ export async function handleEgressDecision(ctx: EgressCtx, msg: WsEgressDecision
       // the phase says the host was added, and it must not be able to say so
       // ahead of the write.
       const written = await applyEgressHostAdd(
-        { sseBroadcast: ctx.sseBroadcast, egressAllowlistStore: store },
+        { sseBroadcast: ctx.sseBroadcast, egressAllowlistStore: store, credentialStore: ctx.credentialStore },
         EGRESS_GLOBAL_SCOPE,
         host,
       ).catch((error: unknown) => {

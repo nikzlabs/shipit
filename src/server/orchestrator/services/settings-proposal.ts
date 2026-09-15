@@ -3,6 +3,7 @@ import type {
   SettingsProposalCard,
   SettingsProposalOperation,
   SettingsProposalPhase,
+  SettingsProposalSideChange,
   SettingsProposalTarget,
 } from "../../shared/types.js";
 import { findSetting, settingPath } from "../../shared/settings-catalogue/index.js";
@@ -78,6 +79,8 @@ export interface PostSettingsProposalArgs {
   /** Both already through the catalogue's formatting door. */
   from: string;
   to: string;
+  /** The rest of what this one operation writes, through the same door. */
+  alsoChanges?: SettingsProposalSideChange[];
   /** The projected current value and the value to write, for the private row. */
   fromValue: unknown;
   proposedValue: unknown;
@@ -134,6 +137,7 @@ export function postSettingsProposal(
     path: settingPath(declaration.tab),
     from: args.from,
     to: args.to,
+    ...(args.alsoChanges && args.alsoChanges.length > 0 ? { alsoChanges: args.alsoChanges } : {}),
     ...(reason ? { reason } : {}),
     phase: "pending",
     createdAt,

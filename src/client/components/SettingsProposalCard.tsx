@@ -90,17 +90,25 @@ const STANDARD_DETAIL: Partial<Record<SettingsProposalPhase, string>> = {
  * A saved value is not always the one ShipIt uses, so an applied card says which
  * — reporting a global allowlist addition as a plain "Applied" would tell the
  * user the host is reachable now, in exactly the case where it is not.
+ *
+ * Both lines, never one instead of the other: they answer different questions.
+ * The server's own detail is about the write ("the entry is off the list"), and
+ * the effect is about this session ("its containment was fixed at start"), so
+ * letting the first hide the second loses the half the user is usually
+ * unblocking.
  */
-function subLine(card: SettingsProposalCardData): string | undefined {
-  if (card.outcomeDetail) return card.outcomeDetail;
-  if (card.effect && card.effect.state !== "live") return card.effect.detail;
-  return STANDARD_DETAIL[card.phase];
+function subLines(card: SettingsProposalCardData): string[] {
+  const lines = [card.outcomeDetail, card.effect?.state !== "live" ? card.effect?.detail : undefined]
+    .filter((line): line is string => Boolean(line));
+  if (lines.length > 0) return lines;
+  const standard = STANDARD_DETAIL[card.phase];
+  return standard ? [standard] : [];
 }
 
 export function SettingsProposalCard({ card, onDecide }: SettingsProposalCardProps) {
   if (card.phase !== "pending") {
     const { icon: Icon, tone, headline } = RESOLVED[card.phase];
-    const detail = subLine(card);
+    const details = subLines(card);
     return (
       <div
         data-testid="settings-proposal-card"
@@ -115,9 +123,11 @@ export function SettingsProposalCard({ card, onDecide }: SettingsProposalCardPro
           <span className="text-(--color-text-tertiary)" aria-hidden>·</span>{" "}
           {card.outcome ?? standardClause(card)}
         </span>
-        {detail && (
-          <span className="block w-full pl-6 text-xs text-(--color-text-tertiary)">{detail}</span>
-        )}
+        {details.map((detail) => (
+          <span key={detail} className="block w-full pl-6 text-xs text-(--color-text-tertiary)">
+            {detail}
+          </span>
+        ))}
       </div>
     );
   }
@@ -167,6 +177,30 @@ export function SettingsProposalCard({ card, onDecide }: SettingsProposalCardPro
                 {card.to}
               </span>
             </div>
+            {card.alsoChanges && card.alsoChanges.length > 0 && (
+              <div
+                data-testid="settings-proposal-also"
+                className="mt-2 border-t border-(--color-border-secondary) pt-2"
+              >
+                <div className="text-[11px] text-(--color-text-tertiary)">Applying this also changes</div>
+                {card.alsoChanges.map((change) => (
+                  <div
+                    key={change.label}
+                    data-testid={`settings-proposal-also-${change.label}`}
+                    className="mt-1 flex flex-wrap items-center gap-2 text-xs"
+                  >
+                    <span className="text-(--color-text-secondary)">{change.label}</span>
+                    <span className="rounded bg-(--color-bg-tertiary) px-1.5 py-0.5 font-mono text-(--color-text-secondary) line-through decoration-(--color-text-tertiary)">
+                      {change.from}
+                    </span>
+                    <span className="text-(--color-text-tertiary)" aria-hidden>→</span>
+                    <span className="rounded bg-(--color-success-subtle) px-1.5 py-0.5 font-mono font-semibold text-(--color-success)">
+                      {change.to}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
 
           {card.reason && (

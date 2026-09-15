@@ -12,6 +12,7 @@ import type {
   SubscriptionLimits,
   SubscriptionLimitsMap,
 } from "../shared/types.js";
+import { MAX_CREDENTIAL_LABEL_LENGTH } from "./credential-store.js";
 import type { CredentialStore } from "./credential-store.js";
 import type { AgentAuthManager } from "./agent-auth-manager.js";
 import {
@@ -303,7 +304,9 @@ export class ProviderAccountManager {
     const account = this.require(serviceId, accountId);
     const normalized = normalizeLabel(label);
     if (!normalized) throw new Error("Provider account label cannot be empty");
-    if (normalized.length > 120) throw new Error("Provider account label is too long (max 120 characters)");
+    if (normalized.length > MAX_CREDENTIAL_LABEL_LENGTH) {
+      throw new Error(`Provider account label is too long (max ${MAX_CREDENTIAL_LABEL_LENGTH} characters)`);
+    }
     this.credentialStore.upsertCredentialRoute({
       ...account,
       label: normalized,

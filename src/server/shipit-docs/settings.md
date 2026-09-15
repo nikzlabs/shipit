@@ -148,9 +148,14 @@ Card set-7f3a is in the chat, under Settings › Advanced.
 
 Four rules govern it.
 
-**One card, one change.** A card that carried two changes could only be applied
-whole, and per-change failure gives that away anyway. Propose the change that
-unblocks the work; if a second one is needed, that is a second card.
+**One card, one change — and the whole of that change.** A card that carried two
+changes could only be applied whole, and per-change failure gives that away
+anyway. Propose the change that unblocks the work; if a second one is needed,
+that is a second card. Some single changes move more than the field they are
+named after: a role's model is a tuple, so picking one can move the role's
+harness and drop a reasoning level the new model does not offer. That is still
+one change, and the card shows those fields too — you do not propose them
+separately, and you do not need to warn the user about them in prose.
 
 **The server takes the snapshot.** You supply the key, the address and the value.
 Everything the card asserts — the setting's name, its description, what it is now
@@ -166,8 +171,12 @@ IS the affordance, and repeating it in prose asks them to do the work twice.
 **A refusal is an answer.** A proposal is refused, before any card exists, when
 the value is invalid, when the setting is already what you asked for, when the
 change is too long for a card to show, when the instance you named does not
-exist, or when ShipIt cannot yet apply that change from a card. Read the message:
-it says which, and what to do instead.
+exist, when the change could not be made at all (a host the deployment's operator
+supplies stays allowed however many times it is removed), or when ShipIt cannot
+yet apply that change from a card. Read the message: it says which, and what to
+do instead. Naming a whole list — `roles`, `mcp.servers`, `network.egress.hosts`
+— is refused the same way, and the message names the entry field to propose
+instead.
 
 Some settings ShipIt cannot change on anyone's behalf at all, and `get` names
 which and why: a `secret` the user must type, an `external_flow` that needs a
