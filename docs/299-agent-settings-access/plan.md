@@ -125,13 +125,14 @@ Derivation cannot stop someone hand-writing a control that was never declared, s
 one backstop test renders each tab, enumerates its interactive elements and fails
 on any that is neither a declaration nor a reasoned `not-a-setting` exclusion.
 
-**The element list is every shape a control can take, not the handful the dialogs
-use today.** It was `input`, `select`, `button`, `textarea`, `[role=switch]` and
-the two menu-item roles that carry a value — so a `contenteditable` box or a
-hand-rolled `[role=checkbox]` was a control no rule could fail on, whatever it
-bound. The value-carrying ARIA roles are named beside the tags for the same
-reason the forms are crawled rather than listed: a gap in the enumeration is a
-silent pass, not a visible one.
+**The element list is widened past the handful the dialogs use today.** It was
+`input`, `select`, `button`, `textarea`, `[role=switch]` and the two menu-item
+roles that carry a value — so a `contenteditable` box or a hand-rolled
+`[role=checkbox]` was a control no rule could fail on, whatever it bound. Every
+value-carrying ARIA role is now named beside the tags, and `contenteditable`
+counts on any value but an explicit `false`. It remains an **enumeration**, so a
+gap in it is still a silent pass rather than a visible one; that is the reason to
+keep it ahead of the shapes in use rather than level with them.
 
 Match on the declaration binding, falling back to accessible name — **not** on
 `data-testid`, which identifies a control without proving it shares the
@@ -154,8 +155,18 @@ true of the toggle, and not of the field it GATES. Voice delivery renders its
 webhook boxes only once delivery is external, and the fixture had to seed that
 state by hand for them to be on screen at all; a gate nobody thought to seed was
 a form the crawl could not open. Flipping one is as safe as pressing *Reset
-Everything* already is, and for the same reason: every write in both dialogs
-leaves through `fetch`, which the fixture rejects.
+Everything* already is: a write either leaves through `fetch`, which the fixture
+rejects, or lands in the test's own `localStorage`. Neither outlives the test.
+
+One gate this does not reach, stated rather than implied. A **declared** global
+toggle saves optimistically and **rolls back** when the write fails
+(`saveDeclaredBoolean`), and the fixture makes every write fail — so a field
+gated behind one can be gone again before the crawl looks, since the walk runs
+after `userEvent.click()` resolves. No gate in either dialog is of that shape
+today: the ones that exist are browser-store values, which never call `fetch` and
+so never roll back. Closing it means a fixture that answers settings writes
+`{ ok: true }`, which is a change to what every press in both dialogs does — not
+one to make for a shape no panel has.
 
 Three bounds are stated in the test rather than hidden. Scope is the pane and
 what the pane disclosed, never the whole document, so pressing the dialog's own
@@ -234,14 +245,34 @@ same-tab check cannot: a new browser preference writing a `localStorage` key of
 its own while binding a boolean already declared on that tab. The setting it
 borrowed still renders a control of its own, so the pair is visible.
 
-Three exemptions, each stated where the rule is. An **item** declaration is one
-field per row, so a list of them is many controls binding one declaration
-honestly. A **composite** value — the git identity, a secret bag, a model tuple —
-is several boxes by construction. And a **segmented choice** is admitted only
-because each button names the value it sets: `bindSettingOption(key, value)`
-writes `data-setting-option`, so the picker SAYS it is one field, rather than a
-row of buttons being assumed to be one. A row of plain bindings on one
-declaration stays a failure.
+What is counted is a **value**, not a control. Three exemptions, each stated
+where the rule is. An **item** declaration is one field per row, so a list of
+them is many controls binding one declaration honestly. A **composite** value —
+the git identity, a secret bag, a model tuple — is several boxes by construction.
+And a **segmented choice** counts once: `bindSettingOption(key, value)` writes
+`data-setting-option`, and the **container** — `role="group"` or
+`role="radiogroup"`, which a picker ought to carry anyway — is the choice.
+
+**That last one is counted, not granted, and the difference is the whole rule.**
+Written first as an exemption — any control carrying the attribute dropped out of
+the count — it let a new box join an existing declaration by writing one word,
+which is the loophole it was added to close. Three further checks make the
+attribute a claim the walk tests rather than a password. An option must be
+**selectable**: a box is typed into, so it is a field of its own however it is
+labelled, and appending one to a real picker's container is the nearest thing to
+a plausible mistake here. The options of one choice must be **distinct**, asked
+per group rather than per declaration, because two rows of a collection each
+render a picker over the same values honestly. And where the declaration offers a
+set they must be **from it**.
+
+The container carries the grouping because the immediate parent cannot: options
+wrapped one to a `span` would read as one choice each — a false failure — and two
+pickers rendered through fragments into one parent would merge. An option outside
+any container falls through to being its own value, which fails the count rather
+than passing it. Native ARIA radios take the same rule, and it is what tells two
+of them apart: `RepoColorPicker` renders a `role="radiogroup"` of unnamed
+`role="radio"` buttons, so grouping on a `name` that is not there collapsed every
+such picker on a tab into one.
 
 What stays undecidable, and is stated rather than implied. A role-editor box
 bound to a *different role field's* declaration: the DOM cannot see which
@@ -1416,6 +1447,26 @@ executor is **re-armed** for a turn the CLI began on its own
 a non-auth, non-quota error result leaves those receipts unspent, correctly; a
 self-wake then producing a result of its own would call them, for a turn carrying
 no notice at all, and the next dispatched turn would lose the carry.
+
+**Neither condition gives identity between a result and a prompt, and one window
+is left open.** A dispatch that reuses a resident process installs fresh
+listeners and then awaits `prepareAgentEnv`. A CLI self-wake landing in that
+window finds `streamingPostTurnFired` false, so `beginRearm` returns without
+setting the adoption flag — correctly, since this executor has produced no result
+of its own to re-arm past. If preparation then completes, the submission is
+confirmed, and the woken turn's result arrives after it, that result meets every
+condition and acknowledges the NEW prompt's receipt. The notice did ride that
+prompt, so it is lost only if the dispatched turn then fails.
+
+Narrowing it means latching that a wake was observed before this executor's own
+result and holding the acknowledgement on that latch. The cost is paid in the
+common case rather than the rare one: an ordinary turn that followed a wake and
+was read perfectly well would go unacknowledged, and the notice would arrive
+again on the turn after — the reminder requirement 8's second clause exists to
+prevent. The loss it would avoid needs the wake to land inside the preparation
+window AND the dispatched turn to fail afterwards. It is recorded rather than
+traded blind, and a signal that distinguishes the two results would settle it
+properly.
 
 `promptSubmitted` is the nearest thing to prompt ownership available here, and it
 took two review rounds to get right. The executor's listeners go live before its

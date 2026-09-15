@@ -456,7 +456,14 @@ export function VoiceTab() {
 
         <div className="space-y-1.5">
           <SettingCopy settingKey="voice.ttsSpeed" />
-          <div className="flex items-center gap-2" data-testid="tts-speed">
+          {/* A named group, because the speeds are one choice over one field —
+              which is what `settings-coverage.test.tsx` counts them as. */}
+          <div
+            className="flex items-center gap-2"
+            role="group"
+            aria-label={settingCopy("voice.ttsSpeed").label}
+            data-testid="tts-speed"
+          >
             {speeds.map((s) => (
               <button
                 key={s}
