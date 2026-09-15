@@ -1338,7 +1338,7 @@ describe("setSessionStatus (docs/303 req 10)", () => {
 
   const card = {
     status: "Routes done; PR ready to merge.",
-    needsYou: "Add the Stripe test key.",
+    needsYou: ["Add the Stripe test key."],
     actions: [{
       id: "webhook",
       label: "Wire the webhook",

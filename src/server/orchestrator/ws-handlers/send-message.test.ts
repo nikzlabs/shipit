@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
-import { recordActionChecklistSubmission } from "./send-message.js";
-import type { ActionChecklistCard } from "../../shared/types.js";
+import { recordActionChecklistSubmission, recordSessionStatusOffersTaken } from "./send-message.js";
+import type { ActionChecklistCard, SessionInfo, SessionStatus } from "../../shared/types.js";
 import type { SessionRunnerInterface } from "../session-runner.js";
 
 const card: ActionChecklistCard = {
@@ -80,5 +80,54 @@ describe("recordActionChecklistSubmission", () => {
 
     expect(dbUpdates).toHaveLength(0);
     expect(runner.emitMessage).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * docs/303 req 17. WHERE this is called from — after each dispatch has been
+ * taken, never before — is covered by
+ * `integration_tests/session-status-offer-acceptance.test.ts`, which fills the
+ * queue and watches the refusal.
+ */
+describe("recordSessionStatusOffersTaken", () => {
+  function makeStatusCtx(stored: SessionStatus | undefined, written: SessionStatus[]) {
+    return {
+      getActiveAppSessionId: () => "s1",
+      sseBroadcast: vi.fn(),
+      sessionManager: {
+        get: (id: string) => (id === "s1" ? { id, sessionStatus: stored } as SessionInfo : undefined),
+        list: () => [],
+        setSessionStatus: (_id: string, card: SessionStatus) => { written.push(card); },
+      },
+    } as never;
+  }
+
+  const stored: SessionStatus = {
+    status: "Routes done",
+    fresh: true,
+    writeSeq: 3,
+    actions: [
+      { id: "a", offerId: "o1", label: "Wire it", payload: "Wire it", offeredAt: "2026-09-14T10:00:00.000Z" },
+      { id: "b", offerId: "o2", label: "Retry", payload: "Retry", offeredAt: "2026-09-14T10:00:00.000Z" },
+    ],
+  };
+
+  it("marks the offers the message was composed from, and only those", async () => {
+    const written: SessionStatus[] = [];
+    recordSessionStatusOffersTaken(makeStatusCtx(stored, written), ["o2"]);
+    await new Promise((r) => setImmediate(r));
+
+    expect(written).toHaveLength(1);
+    expect(written[0].actions.find((o) => o.offerId === "o1")?.takenAt).toBeUndefined();
+    expect(written[0].actions.find((o) => o.offerId === "o2")?.takenAt).toBeTruthy();
+  });
+
+  it("writes nothing for a message that carried no offers", async () => {
+    const written: SessionStatus[] = [];
+    recordSessionStatusOffersTaken(makeStatusCtx(stored, written), undefined);
+    recordSessionStatusOffersTaken(makeStatusCtx(stored, written), []);
+    await new Promise((r) => setImmediate(r));
+
+    expect(written).toHaveLength(0);
   });
 });

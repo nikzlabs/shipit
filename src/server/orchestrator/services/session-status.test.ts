@@ -68,15 +68,18 @@ describe("recordSessionStatus", () => {
     expect(d.sseBroadcast).toHaveBeenCalledWith("session_list", { sessions: [] });
   });
 
-  it("leaves an omitted field alone and clears needsYou on an empty string", async () => {
+  it("leaves an omitted field alone and clears needsYou on an empty list", async () => {
     const { d } = await seededCard();
 
-    await recordSessionStatus(d, "s1", { needsYou: "Add the Stripe key." });
+    await recordSessionStatus(d, "s1", { needsYou: ["Add the Stripe key.", "Merge PR #212."] });
     const withNeeds = await recordSessionStatus(d, "s1", {});
-    expect(withNeeds).toMatchObject({ status: "Routes done.", needsYou: "Add the Stripe key." });
+    expect(withNeeds).toMatchObject({
+      status: "Routes done.",
+      needsYou: ["Add the Stripe key.", "Merge PR #212."],
+    });
     expect(withNeeds?.actions).toHaveLength(2);
 
-    const cleared = await recordSessionStatus(d, "s1", { needsYou: "" });
+    const cleared = await recordSessionStatus(d, "s1", { needsYou: [] });
     expect(cleared?.needsYou).toBeUndefined();
   });
 

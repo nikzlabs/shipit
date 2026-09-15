@@ -4,6 +4,7 @@ import { MessageList, parseMessageSegments, type ChatMessage, type ChatMessageIm
 import { usePresentStore } from "../stores/present-store.js";
 import { useUiStore } from "../stores/ui-store.js";
 import { useSessionStore } from "../stores/session-store.js";
+import { useSettingsStore } from "../stores/settings-store.js";
 import type { SessionInfo } from "../../server/shared/types.js";
 
 beforeAll(() => {
@@ -1932,5 +1933,67 @@ describe("MessageList — agent-authored pointers", () => {
       />,
     );
     expect(screen.queryByRole("button", { name: "start it" })).toBeNull();
+  });
+});
+
+// docs/303 req 6 — the card is the last element of the conversation, inside the
+// scroll container, and is read from the session record rather than the transcript.
+describe("session status card slot", () => {
+  const status = {
+    status: "Billing routes done; PR #212 ready to merge.",
+    actions: [],
+    fresh: true,
+    writeSeq: 1,
+  };
+
+  function seed(sessionStatus?: typeof status): void {
+    useSessionStore.setState({
+      sessionId: "s1",
+      sessions: [{
+        id: "s1",
+        title: "Billing",
+        createdAt: "2026-01-01T00:00:00Z",
+        lastUsedAt: "2026-01-01T00:00:00Z",
+        ...(sessionStatus ? { sessionStatus } : {}),
+      } as SessionInfo],
+      activeRunnerSessions: new Set<string>(),
+    });
+    useSettingsStore.setState({ sessionStatusCard: true });
+  }
+
+  afterEach(() => {
+    useSessionStore.setState({ sessionId: undefined, sessions: [], activeRunnerSessions: new Set<string>() });
+    useSettingsStore.setState({ sessionStatusCard: false });
+  });
+
+  it("renders the card as the last child of the scrolling content, after every transcript row", () => {
+    seed(status);
+    const { container } = render(
+      <MessageList
+        messages={[msg("user", "do it"), msg("assistant", "done")]}
+        isLoading={false}
+        // The trailing rewind point renders only with the controls wired; the
+        // card sits after it (docs/303 → Client).
+        onRewindAtGap={() => {}}
+      />,
+    );
+    const card = screen.getByTestId("session-status-card");
+    const content = container.querySelector("[data-chat-transcript]")!.lastElementChild!;
+    expect(card.parentElement).toBe(content);
+    expect(content.lastElementChild).toBe(card);
+    expect(content.contains(screen.getByText("done"))).toBe(true);
+  });
+
+  it("renders nothing for a session with no stored card", () => {
+    seed(undefined);
+    render(<MessageList messages={[msg("assistant", "done")]} isLoading={false} />);
+    expect(screen.queryByTestId("session-status-card")).toBeNull();
+  });
+
+  it("renders nothing while the setting is off", () => {
+    seed(status);
+    useSettingsStore.setState({ sessionStatusCard: false });
+    render(<MessageList messages={[msg("assistant", "done")]} isLoading={false} />);
+    expect(screen.queryByTestId("session-status-card")).toBeNull();
   });
 });

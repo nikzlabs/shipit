@@ -22,6 +22,7 @@ import { toQueuedMessage } from "../session-runner.js";
 import { agentAdmissionError } from "../services/agent-auth-gate.js";
 import { imageHash, imageUrl } from "../transcript-projection.js";
 import { acquireTurnClaimGate } from "./turn-claim-gate.js";
+import { takeOfferedActions } from "../services/session-status.js";
 
 export { CONTEXT_WINDOW_TOKENS, wireAgentListeners, extractToolResults } from "./agent-listeners.js";
 export { runAgentWithMessage } from "./agent-execution.js";
@@ -71,6 +72,30 @@ export function recordActionChecklistSubmission(
     () => { ctx.chatHistoryManager.updateActionChecklistCard(sessionId, cardId, { submittedAt }); },
   );
   runner.emitMessage({ type: "action_checklist_update", sessionId, cardId, submittedAt });
+}
+
+/**
+ * docs/303 req 17 — a taken offer stays on the card, greyed, so the mark belongs
+ * with the acceptance of the message the user composed from it.
+ *
+ * Synchronous, like the action-card half: the acceptance points sit on paths
+ * that must not wait on a serialized write. `takeOfferedActions` serializes per
+ * session by itself, so chaining is enough and the order of two submits holds.
+ */
+export function recordSessionStatusOffersTaken(
+  ctx: Pick<FullCtx, "getActiveAppSessionId" | "sessionManager" | "sseBroadcast">,
+  offerIds: string[] | undefined,
+): void {
+  if (!offerIds || offerIds.length === 0) return;
+  const sessionId = ctx.getActiveAppSessionId();
+  if (!sessionId) return;
+  void takeOfferedActions(
+    { sessionManager: ctx.sessionManager, sseBroadcast: ctx.sseBroadcast },
+    sessionId,
+    offerIds,
+  ).catch((err: unknown) => {
+    console.error(`[session-status] failed to mark offers taken for ${sessionId}:`, err);
+  });
 }
 
 export async function handleSendMessage(
@@ -191,6 +216,7 @@ async function decideAndRunSend(
     if (msg.actionChecklistCardId && runnerForQueue) {
       recordActionChecklistSubmission(ctx, runnerForQueue, msg.actionChecklistCardId);
     }
+    recordSessionStatusOffersTaken(ctx, msg.sessionStatusOfferIds);
   };
   const heldByMerge = runnerForQueue?.mergeHold === true;
   if (runnerForQueue?.running || runnerForQueue?.systemTurnInProgress || heldByMerge) {
@@ -327,7 +353,9 @@ async function decideAndRunSend(
         }
       }
 
-      checklistAccepted();
+      // docs/303 — the dispatch queues the message, and a full queue still
+      // throws: accept only once it is taken, so a refused message marks
+      // nothing taken and submits no card.
       runnerForQueue.dispatch(prepareDispatch({
         text: msg.text,
         agentInterface: undefined,
@@ -346,6 +374,7 @@ async function decideAndRunSend(
         compactContext: msg.compactContext,
         silent: undefined,
       }));
+      checklistAccepted();
       return;
     }
   }
@@ -502,9 +531,9 @@ async function decideAndRunSend(
   const uploadPaths = uploadRefs?.map((u) => u.path);
 
   // Past every refusal on this path: attachments resolved, session and
-  // workspace checked. What follows queues or dispatches the message.
-  checklistAccepted();
-
+  // workspace checked. What follows queues or dispatches the message — and the
+  // queue itself can still refuse it, so each branch accepts after its own
+  // dispatch has been taken.
   const turnRunner = resolveRunner(ctx);
   // A turn or merge can start during the awaits above.
   if (turnRunner?.mergeHold || turnRunner?.running) {
@@ -527,8 +556,10 @@ async function decideAndRunSend(
       deliveryId: undefined,
       dictated: msg.dictated,
     }));
+    checklistAccepted();
     return;
   }
+  checklistAccepted();
   if (turnRunner) turnRunner.running = true;
   // The claim is visible now: the next send should see it and queue, not wait
   // out the turn. No await may come between the claim and this release.

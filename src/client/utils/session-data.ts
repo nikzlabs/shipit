@@ -91,6 +91,7 @@ interface BootstrapResponse {
     autoFixCi?: boolean;
     autoResetMergedBranch?: boolean;
     enableSubAgents?: boolean;
+    sessionStatusCard?: boolean;
     providerAccounts?: CredentialRoute[];
     credentialRoutes?: CredentialRoute[];
 
@@ -612,6 +613,7 @@ function applyGlobalSettings(settings: BootstrapResponse["settings"]): void {
   if (data.settings.autoFixCi !== undefined) useSettingsStore.getState().setAutoFixCi(data.settings.autoFixCi);
   if (data.settings.autoResetMergedBranch !== undefined) useSettingsStore.getState().setAutoResetMergedBranch(data.settings.autoResetMergedBranch);
   if (data.settings.enableSubAgents !== undefined) useSettingsStore.getState().setEnableSubAgents(data.settings.enableSubAgents);
+  if (data.settings.sessionStatusCard !== undefined) useSettingsStore.getState().setSessionStatusCard(data.settings.sessionStatusCard);
   if (data.settings.providerAccounts) useSettingsStore.getState().setProviderAccounts(data.settings.providerAccounts);
   if (data.settings.credentialRoutes) useSettingsStore.getState().setCredentialRoutes(data.settings.credentialRoutes);
 

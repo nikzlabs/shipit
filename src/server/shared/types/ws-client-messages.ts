@@ -23,6 +23,8 @@ export interface WsSendMessage {
   dictated?: boolean;
   /** The action checklist this message was composed from; marks it submitted on acceptance. */
   actionChecklistCardId?: string;
+  /** docs/303 — the status-card offers this message was composed from; marked taken on acceptance. */
+  sessionStatusOfferIds?: string[];
 }
 
 export interface WsAnswerQuestion {

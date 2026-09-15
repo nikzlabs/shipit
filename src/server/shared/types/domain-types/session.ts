@@ -145,8 +145,10 @@ export interface OfferedAction extends ActionChecklistItem {
 }
 
 export interface SessionStatus {
+  /** Markdown: the agent may use a list, so it is rendered, not printed. */
   status: string;
-  needsYou?: string;
+  /** One entry per thing only the user can do; absent when there is none. */
+  needsYou?: string[];
   actions: OfferedAction[];
   /** The agent wrote or confirmed the whole card at the end of the last finished turn. */
   fresh: boolean;

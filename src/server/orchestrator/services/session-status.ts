@@ -41,7 +41,7 @@ function shown(card: SessionStatus | undefined): string {
   if (!card) return "";
   return JSON.stringify({
     status: card.status,
-    needsYou: card.needsYou ?? "",
+    needsYou: card.needsYou ?? [],
     fresh: card.fresh,
     actions: card.actions,
   });
@@ -128,10 +128,10 @@ export function recordSessionStatus(
     if (status === undefined) return null;
 
     const now = new Date().toISOString();
-    const needsYou = write.needsYou ?? stored?.needsYou ?? "";
+    const needsYou = write.needsYou ?? stored?.needsYou ?? [];
     const card: SessionStatus = {
       status,
-      ...(needsYou ? { needsYou } : {}),
+      ...(needsYou.length > 0 ? { needsYou } : {}),
       actions: reconcileOffers(stored?.actions ?? [], write, now),
       fresh: true,
       writeSeq: (stored?.writeSeq ?? 0) + 1,
