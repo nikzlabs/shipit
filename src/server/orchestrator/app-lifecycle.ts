@@ -30,6 +30,7 @@ import { applyMergedPrIssueRefs, type MergedPrInfo } from "./issue-lifecycle.js"
 import { getErrorMessage } from "./validation.js";
 import type { LogStore } from "./log-store.js";
 import { fetchCIFailureLogs, buildCIFixPrompt } from "./services/github.js";
+import type { AutoPushScheduler } from "./services/auto-push-scheduler.js";
 import { markMergedAndPruneExcess } from "./services/session.js";
 import { announceResetStateOnMerge } from "./services/pre-turn-reset.js";
 import { runAutoResolveAttempt } from "./services/rebase-driver.js";
@@ -740,6 +741,8 @@ export interface PrPollerDeps {
   credentialStore?: CredentialStore;
   drainQueueForSession?: (sessionId: string) => Promise<void> | void;
   agentFactory?: (agentId: AgentId) => AgentProcess;
+  /** The process-lived scheduler, so the poller can heal a branch left ahead. */
+  autoPushScheduler?: AutoPushScheduler;
 }
 
 export function createPrStatusPoller(
@@ -750,7 +753,7 @@ export function createPrStatusPoller(
     runnerRegistry, defaultAgentId, createRepoGit, getBareCacheDir, pruneSessionVolumes,
     onRepoMainAdvanced, containerManager, mergeWatchManager,
     createGitManager, chatHistoryManager, usageManager, credentialStore,
-    drainQueueForSession, agentFactory,
+    drainQueueForSession, agentFactory, autoPushScheduler,
   } = pollerDeps;
 
   // The constructor needs a callback that later reads the constructed poller.
@@ -807,6 +810,13 @@ export function createPrStatusPoller(
     createGitManager,
     isAutoResolveEnabled: credentialStore ? (() => credentialStore.getAutoResolveConflicts()) : (() => false),
     isAutoFixEnabled: credentialStore ? (() => credentialStore.getAutoFixCi()) : (() => false),
+    ...(autoPushScheduler
+      ? {
+          scheduleAutoPush: (git: GitManager, sessionId: string) =>
+            autoPushScheduler.schedule(git, sessionId),
+          autoPushArmed: (sessionId: string) => autoPushScheduler.pending(sessionId),
+        }
+      : {}),
     ensureRunner: async (sessionId) => {
       const session = sessionManager.get(sessionId);
       if (!session?.workspaceDir) return undefined;

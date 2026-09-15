@@ -668,6 +668,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     usageManager,
     credentialStore,
     drainQueueForSession,
+    autoPushScheduler,
     ...(agentFactory ? { agentFactory } : {}),
   });
   prStatusPollerRef.ref = prStatusPoller;

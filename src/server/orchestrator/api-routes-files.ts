@@ -29,6 +29,7 @@ import {
   killAgent,
 } from "./services/index.js";
 import { sessionAutoCommitAllowed } from "./services/auto-commit-gate.js";
+import { postInterruptCommitDepsFrom } from "./services/post-interrupt-commit.js";
 import type { MarketplaceStore } from "./marketplace-store.js";
 import { getErrorMessage } from "./validation.js";
 import { pushToOrigin } from "./git-utils.js";
@@ -447,20 +448,7 @@ export async function registerFileRoutes(
             containerManager: deps.containerManager ?? null,
             runnerRegistry,
             defaultAgentId: deps.defaultAgentId,
-            ...(deps.prStatusPoller
-              ? {
-                  postInterruptCommitDeps: {
-                    sessionManager,
-                    chatHistoryManager: deps.chatHistoryManager,
-                    prStatusPoller: deps.prStatusPoller,
-                    githubAuthManager: deps.githubAuthManager,
-                    credentialStore: deps.credentialStore,
-                    generateText: deps.generateText,
-                    createGitManager: deps.createGitManager,
-                    sseBroadcast: deps.sseBroadcast,
-                  },
-                }
-              : {}),
+            ...postInterruptCommitDepsFrom(deps),
           }, request.params.id);
         } catch (err) {
           console.warn("[marketplace] post-install killAgent failed:", getErrorMessage(err));

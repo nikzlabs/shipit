@@ -37,7 +37,12 @@ import {
 import { PaperPlaneTiltIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../../design-tokens.js";
 import { DiffStats, PreviouslyMergedNote, useOpenPrDiff } from "./shared.js";
-import { CiIndicator, ReviewIndicator, MergeConflictIndicator } from "./indicators/index.js";
+import {
+  BranchSyncIndicator,
+  CiIndicator,
+  ReviewIndicator,
+  MergeConflictIndicator,
+} from "./indicators/index.js";
 
 function PendingReviewButton({ sessionId, count }: { sessionId: string; count: number }) {
   const [submitting, setSubmitting] = useState(false);
@@ -133,9 +138,15 @@ export function PrMergeActions({
   const canMerge = useCanMerge(card, sessionId);
 
   const autoMerge = useActiveAutoMerge(sessionId);
+  const branchSync = usePrStore((s) => s.statusBySession[sessionId]?.branchSync);
   const showMergeButton = canMerge && !autoMerge?.enabled;
+  // The merge button carries the same fact in its tooltip, but it is not
+  // rendered while auto-merge is armed — which is exactly when the hold is
+  // invisible and the PR just never merges.
+  const showSyncHold = !showMergeButton
+    && (branchSync?.state === "ahead" || branchSync?.state === "diverged");
 
-  if (!card.pr || (!canAutoMerge && !showMergeButton)) return null;
+  if (!card.pr || (!canAutoMerge && !showMergeButton && !showSyncHold)) return null;
 
   return (
     <div className="w-full basis-full mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 md:gap-x-3">
@@ -151,6 +162,7 @@ export function PrMergeActions({
           what's wanted. */}
       {canAutoMerge && <AutoMergeToggle sessionId={sessionId} autoMerge={autoMerge} className="pl-0" />}
       {showMergeButton && <MergeButton sessionId={sessionId} autoMerge={autoMerge} />}
+      {showSyncHold && <BranchSyncIndicator sync={branchSync} />}
     </div>
   );
 }
