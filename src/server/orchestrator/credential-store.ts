@@ -1127,7 +1127,7 @@ export class CredentialStore {
     return publicSshHost(host);
   }
 
-  /** Changing the address or user drops the recorded host key: it pinned a different server. */
+  /** Changing the address or port drops the recorded host key: it pinned a different endpoint. */
   updateSshHost(id: string, patch: Partial<SshHostInput>): SshHostPublic | undefined {
     const hosts = [...(this.data.sshHosts ?? [])];
     const idx = hosts.findIndex((h) => h.id === id);

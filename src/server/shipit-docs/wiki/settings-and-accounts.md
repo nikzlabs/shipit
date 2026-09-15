@@ -272,6 +272,18 @@ writes `~/.ssh/config` for that session and opens its egress to that address;
 revoking removes both, though a connection already authenticated runs until it
 closes.
 
+A destination can be changed after it is added: **Edit** on its row reopens the
+same four fields, and saving keeps the destination itself — its key, and the
+grant on every session that holds it. That is what it is for; deleting and
+re-adding makes a different destination, with a new key to install and no
+grants. Use it when a destination was entered wrongly, or when its address has
+to change — a Tailscale peer added by its MagicDNS name is the standing case,
+since that name resolves neither inside a session nor from ShipIt's own host-key
+check, and the fix is to put the peer's tailnet IP in instead. Changing the
+address or the port makes ShipIt forget the host key it recorded for the old
+endpoint; the row's edit form says so, and the next connection verifies the
+server again and posts a fresh fingerprint card.
+
 The first connection records the server's host key and posts its fingerprint as a
 card in the chat, for the user to compare with the server. ShipIt records it only
 after seeing that same key at the destination's own address itself, so a first
@@ -411,5 +423,6 @@ restarts — telling that user "saved, it will work" would be a false promise.
 | Picks the harness, model, level or role for a session | Say what the work needs; mention the harness locks at the first message |
 | Picks a theme and rebinds shortcuts | Name the control — the palette button, Settings → Keyboard — and stop |
 | Adds an SSH destination and installs its public line on the server | Say the destination is needed and what it is for; use it once granted |
+| Corrects a destination's name, address, user or port with **Edit** on its row | Say which field is wrong and what it should be; the grant survives, so nothing is re-granted |
 | Grants a destination to a session, in Session settings | Read `~/.ssh/config` to see what this session has, and say when nothing is granted |
 | Changes any setting | Read it, name it, say what it has to become. Never write it |

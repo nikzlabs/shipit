@@ -10,6 +10,7 @@ All twelve requirements are resolved and the design is reviewed. Implementation 
 ## Registry and grant
 - [x] `CredentialStore.sshHosts` + ed25519 key generation + `authorized_keys` line derivation; public projection for every read
 - [x] Browser-only destination CRUD routes; Settings → Integrations section, beside GitHub and Linear
+- [x] Edit a destination in place from its row (req 14) — the add form's fields and validation, reused; the PATCH keeps the id, so every grant survives; inline copy says the recorded server key is forgotten when the address or port changes
 - [x] `session.sshHosts` grant column, `setSshHosts`, Session settings dialog multi-select; edit route not behind `requireSandbox`
 - [x] Persisted change card on grant edit — the existing `SessionSettingsChangeCard` with an `ssh-hosts` scope, which plan.md names
 

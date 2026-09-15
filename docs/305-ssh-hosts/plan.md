@@ -352,8 +352,20 @@ As implemented:
 - `src/server/session/agent-ops-routes.ts` — `/agent-ops/ssh/identities`, `/agent-ops/ssh/sign`.
 - `src/server/orchestrator/agent-instructions.ts`, `prompts/ssh-hosts.md` — the static fragment.
 - `src/client/components/SshHostsSettings.tsx` (Settings → Integrations, beside GitHub and
-  Linear), `SessionSshHostGrants.tsx` (in `SessionSidebar/SessionSettingsDialog.tsx`, for every
+  Linear — add, edit in place (req 14), remove, and forget the recorded key),
+  `SessionSshHostGrants.tsx` (in `SessionSidebar/SessionSettingsDialog.tsx`, for every
   session kind), `SshHostKeyCard.tsx`.
+
+**Editing is a `PATCH` of the same destination, never a delete-and-re-add** (req 14). The
+grant on each session names the destination's id, so re-adding mints a new id and revokes it
+everywhere; `PATCH /api/ssh-hosts/:id` reprovisions `~/.ssh` for every granted session and
+reconciles their egress, so a corrected address reaches a running session without a restart —
+best-effort on both halves, since each logs and swallows its own failure
+(`ssh-provision.ts:226`, `api-routes-ssh.ts:322`), and the next container creation re-derives
+both from the durable grant regardless. The store drops the
+recorded host key when the address or port changes, since the pin belonged to the old endpoint
+(req 13) — the row's edit form says so before the change is saved, and the next connection
+re-verifies and posts a fresh fingerprint card.
 - `src/server/shipit-docs/ssh.md`, `shipit-docs/wiki/settings-and-accounts.md`.
 
 Two implementation choices worth naming, both inside the design rather than changes to it:
