@@ -181,14 +181,6 @@ export interface SettingsOperation {
    * the write will actually make rather than the spelling it arrived in.
    */
   normalizeItem?(item: string): string;
-  /**
-   * This operation moves the entry the card is ADDRESSED to, so reading the
-   * setting back at that address after the write finds nothing. Set it, or the
-   * read-back in `settings-decision.ts` reports a change that landed as a
-   * mismatch — a loud wrong answer rather than a silent one, which is the side
-   * to fail on.
-   */
-  renamesItem?: boolean;
   /** ShipIt's own account of what the click did, for the resolved card. */
   applied(target: SettingsOperationTarget, display: string, declaration: AnySettingDeclaration): string;
 }
@@ -853,7 +845,7 @@ const providerAccountLabelOperation: SettingsOperation = {
  * Renaming a role, expressed by the KEY of the roles map with the old name as
  * `previousName` rather than by a `name` field.
  */
-const roleNameOperation: SettingsOperation = { ...savingOperation(
+const roleNameOperation: SettingsOperation = savingOperation(
   (deps, target, value) => {
     const role = storedRole(deps, target.item);
     if (!role) throw new ServiceError(400, `No role named "${echoSupplied(target.item ?? "")}".`);
@@ -886,7 +878,7 @@ const roleNameOperation: SettingsOperation = { ...savingOperation(
       return rolePreflight(() => ({}))(deps, target, value);
     },
   },
-), renamesItem: true };
+);
 
 // ---------------------------------------------------------------------------
 // The registry

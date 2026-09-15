@@ -1,7 +1,7 @@
 import { defineSetting, derived, itemAddress, plain, userName, userText } from "./types.js";
 import type { AnySettingDeclaration } from "./types.js";
 import type { AgentRole, RoleAutoParams, RolePinnedParams } from "../types/agent-types.js";
-import { userNamesProjection } from "./projection.js";
+import { reasoningLevelProjection, userNamesProjection } from "./projection.js";
 import { collection, modelSelection, text } from "./value-types.js";
 
 /**
@@ -108,7 +108,15 @@ export const ROLES_SETTINGS = {
       + "names, for the model it names — unset means the harness's own default.",
     type: text({ maxLength: 64, noun: "Reasoning level" }),
     store: { kind: "bespoke", ownedBy: "credential-store roles (PUT /api/settings `roles`)" },
-    emits: plain(),
+    emits: derived(
+      "the level this role sets, when a harness still offers it",
+      reasoningLevelProjection,
+      {
+        shipItComputed:
+          "the levels are the harnesses' own vocabulary, and an empty level is not one of them: "
+          + "a role that sets none reads as not set",
+      },
+    ),
     propose: { kind: "yes" },
   }),
 

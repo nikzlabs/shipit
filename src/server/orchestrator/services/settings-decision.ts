@@ -1,4 +1,4 @@
-import { findSetting, renderOwn } from "../../shared/settings-catalogue/index.js";
+import { findSetting } from "../../shared/settings-catalogue/index.js";
 import type { AnySettingDeclaration, ApplyOutcome } from "../../shared/settings-catalogue/index.js";
 import type {
   SettingsProposalCard,
@@ -9,11 +9,10 @@ import type { SettingsProposalRow, SettingsProposalStore } from "../settings-pro
 import { baselineMatches, settingBaseline } from "./settings-baseline.js";
 import type { SettingBaseline, SettingBaselineDeps } from "./settings-baseline.js";
 import { withConflictDomains } from "./settings-conflict-domain.js";
-import { appliedOutcome, echoSupplied, findOperation } from "./settings-operations.js";
+import { appliedOutcome, findOperation } from "./settings-operations.js";
 import type { SettingsOperation, SettingsOperationDeps } from "./settings-operations.js";
 import { getSettingForAgent } from "./settings-read.js";
 import type { SettingDetailEntry, SettingsReadDeps } from "./settings-read.js";
-import { summarizeText } from "./settings-text-change.js";
 import { baselineTargetOf } from "./settings-propose.js";
 import { claimSettingsProposal, transitionSettingsProposal } from "./settings-proposal.js";
 import type { SettingsProposalDeps, SettingsProposalPersister } from "./settings-proposal.js";
@@ -135,12 +134,11 @@ async function verifyAfterApply(
   declaration: AnySettingDeclaration,
   row: SettingsProposalRow,
   card: SettingsProposalCard,
-  operation: SettingsOperation,
 ): Promise<AfterApply> {
   try {
     const entry = await getSettingForAgent(deps.read, sessionId, declaration.key);
     const effect = entry.effect.state === "live" ? undefined : entry.effect;
-    const mismatch = storedValueMismatch(declaration, row, card, operation, entry);
+    const mismatch = storedValueMismatch(declaration, row, card, entry);
     return { ...(effect ? { effect } : {}), ...(mismatch ? { mismatch } : {}) };
   } catch (err) {
     console.error(`[settings-decision] reading ${declaration.key} back after applying failed:`, err);
@@ -157,40 +155,50 @@ async function verifyAfterApply(
  * would not emit the value refuses the card, and an operation that writes more
  * than its own field declares it as `alsoChanges`. None of them can see what a
  * SAVE HOOK does after the write — seeding a replacement, deriving a
- * neighbour — so the last word is the store's own, read back through the same
- * two doors the card's `to` came through.
+ * neighbour — so the last word is the store's own, read back.
  *
- * Only a `set` is compared. A membership card displays ShipIt's own wording
- * rather than a value ("on the global allowlist"), and those writers already
- * answer from the resulting membership: `applyEgressHostRemove` reports
- * `failed` for a host that is still on the list.
+ * **Not seeing a value is never evidence about the write**, which is the whole
+ * shape of this check: every branch that cannot compare answers `null` rather
+ * than reporting a failure it did not observe. Only a `set` is compared — a
+ * membership card displays ShipIt's own wording rather than a value ("on the
+ * global allowlist"), and those writers already answer from the resulting
+ * membership, `applyEgressHostRemove` reporting `failed` for a host still on
+ * the list.
  */
 export function storedValueMismatch(
   declaration: AnySettingDeclaration,
-  row: Pick<SettingsProposalRow, "operation" | "target">,
+  row: Pick<SettingsProposalRow, "operation" | "target" | "proposed">,
   card: SettingsProposalCard,
-  operation: SettingsOperation,
   entry: SettingDetailEntry,
 ): string | null {
-  if (row.operation !== "set" || operation.renamesItem) return null;
+  if (row.operation !== "set") return null;
   // Unreadable is the read's own answer about the setting, not a claim about
   // this write, and `effect` is where the card already says so.
   if (!entry.readable) return null;
 
   const item = row.target.item;
   const stored = item ? entry.items?.find((candidate) => candidate.address === item) : entry;
-  if (!stored) {
-    return `The card showed ${card.to}, and ShipIt no longer reads a ${declaration.key} `
-      + `for ${echoSupplied(item ?? "")}.`;
+  // An instance leaves the read for reasons that are nothing to do with this
+  // write: a rename moves the address the card was written against, and a
+  // service/mode setting stops being listed the moment its last credential
+  // goes (`settings-store-readers.ts` → `modePairs`). Both are writes that
+  // landed, and reporting them would be the check inventing its own defect.
+  if (!stored) return null;
+
+  if (card.textChange) {
+    // The card's `to` is ShipIt's SUMMARY of the prose — two sizes and a
+    // `+n −n` — so comparing what the card displays would pass any rewrite of
+    // the same length. What the click promised is the approved TEXT.
+    const approved = typeof row.proposed === "string" ? row.proposed : "";
+    const now = typeof stored.value === "string" ? stored.value : "";
+    // Neither side is quoted back: a prose card keeps the value out of the
+    // scrollback on purpose (req 9), and this line lands in the same place.
+    return now === approved
+      ? null
+      : `${declaration.key} does not now hold the text this card showed.`;
   }
-  // Through the door the card used for the same side: a prose card's `to` is
-  // ShipIt's summary of the text rather than the text, so comparing the
-  // displays would compare a summary with a value.
-  const now = card.textChange
-    ? renderOwn(summarizeText(typeof stored.value === "string" ? stored.value : ""))
-    : stored.display;
-  if (now === card.to) return null;
-  return `The card showed ${card.to}, and ${declaration.key} now reads ${now}.`;
+  if (stored.display === card.to) return null;
+  return `The card showed ${card.to}, and ${declaration.key} now reads ${stored.display}.`;
 }
 
 /** One comparable line per side change, in the operation's own order. */
@@ -259,7 +267,7 @@ async function runApply(
     const phase = OUTCOME_PHASE[outcome.status];
     const verified = phase === "failed"
       ? {}
-      : await verifyAfterApply(deps, sessionId, declaration, row, card, operation);
+      : await verifyAfterApply(deps, sessionId, declaration, row, card);
     // Only an `applied` is overridden. A writer reporting `partial` or
     // `uncertain` already knows more about what it left behind than a read of
     // the resulting value does.
