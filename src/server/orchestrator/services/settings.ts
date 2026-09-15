@@ -77,6 +77,21 @@ export function nonTurnModelSeedCandidate(
   )?.selection;
 }
 
+/**
+ * Write the background-work pin when the install has none, so no install runs
+ * with a service configured and this setting empty (docs/252-custom-models
+ * req 9).
+ *
+ * **It runs where eligibility CHANGES, never where the payload is read**
+ * (planning#578): `app-di.ts` at boot, and `seedAndBuildAgentListPayload` below.
+ * docs/252's plan chose the read path and was reversed there — read that
+ * paragraph before moving this call, because the objection it raises is real and
+ * is answered rather than dropped.
+ *
+ * Idempotent by construction, and that lives here rather than at a call site:
+ * the emptiness check is inside `stampNonTurnModel` too, so a second call — or
+ * a new one — cannot write over a value.
+ */
 export function seedNonTurnModel(
   credentialStore: CredentialStore | undefined,
   agentRegistry: AgentRegistry,
@@ -98,7 +113,6 @@ export function buildNonTurnModelSettings(
   nonTurnModelResolved?: NonTurnModelResolved;
   backgroundWorkModels: EligibleModel[];
 } {
-  seedNonTurnModel(credentialStore, agentRegistry);
   const nonTurnModel = credentialStore?.getNonTurnModel();
   const resolution = credentialStore
     ? resolveNonTurnModel({
@@ -137,6 +151,24 @@ function backgroundWorkModelOptions(
   return backgroundWorkOptions(listConfiguredCredentials(credentialStore), {
     isInstalled: (harnessId) => installed.has(harnessId),
   });
+}
+
+/**
+ * The `agent_list` payload for an eligibility CHANGE: seed first, then build.
+ *
+ * Every credential and account mutation announces through here, which is what
+ * makes "the first service configured fills the setting in" (docs/252 req 9)
+ * hold from an already-open Settings tab. `buildAgentListPayload` is the same
+ * payload for a caller that is only reading — the event stream's opening
+ * snapshot — and it writes nothing (planning#578).
+ */
+export function seedAndBuildAgentListPayload(
+  agentRegistry: AgentRegistry,
+  credentialStore: CredentialStore | undefined,
+  providerAccountManager: ProviderAccountManager | undefined,
+): ReturnType<typeof buildAgentListPayload> {
+  seedNonTurnModel(credentialStore, agentRegistry);
+  return buildAgentListPayload(agentRegistry, credentialStore, providerAccountManager);
 }
 
 /** Shared agent_list payload so credential changes refresh all derived settings. */
@@ -197,7 +229,9 @@ export async function getGlobalSettings(
   credentialStore?: CredentialStore,
   providerAccountManager?: ProviderAccountManager,
 ): Promise<GlobalSettings> {
-  // Seeds the pin before the stored half is read, so a first read returns it.
+  // A read, and only a read: seeding the pin from here made opening the
+  // Settings dialog — or saving any unrelated setting, since this is what a save
+  // returns — pin a background model nobody named (planning#578).
   const { nonTurnModelResolved, backgroundWorkModels } =
     buildNonTurnModelSettings(agentRegistry, credentialStore, providerAccountManager);
   // The dialog needs a complete payload, so a setting ShipIt could not read

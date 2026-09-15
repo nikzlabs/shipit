@@ -37,6 +37,7 @@ import type { AgentHomeResolver } from "../shared/agent-home.js";
 import type { LocalAgentFactory } from "./local-agent-home.js";
 import type { GenerateText } from "./non-turn-model.js";
 import { recordNonTurnUsage, type NonTurnTelemetry } from "./services/non-turn-work.js";
+import { seedNonTurnModel } from "./services/settings.js";
 
 export type { RuntimeMode } from "../shared/types.js";
 
@@ -321,6 +322,13 @@ export async function initializeManagers(deps: AppDeps): Promise<ManagerSet> {
   const authStr = detectedAgents.map((a) => `${a.binary} ${a.hasRunnableModels ? "\u2713" : "\u2717"}`).join(", ");
   console.log(`[server] Agent CLIs detected: ${installedStr}`);
   console.log(`[server] Agent auth status: ${authStr}`);
+
+  // The background-work pin, for an install whose credentials were already there
+  // — adopted from the environment above, or predating the setting. It needs the
+  // probed registry, so it cannot run before `detect()`. The other seeding
+  // moment is a credential or account change (`seedAndBuildAgentListPayload`);
+  // reading the settings is not one of them (planning#578).
+  seedNonTurnModel(credentialStore, agentRegistry);
 
   const defaultAgentId: AgentId = deps.defaultAgentId
     ?? detectedAgents.find((a) => a.id === "claude" && a.installed)?.id

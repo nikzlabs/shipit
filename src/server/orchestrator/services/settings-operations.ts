@@ -735,9 +735,10 @@ function modeAddressed(preflight?: SettingsOperation["preflight"]): SettingsOper
  * setting can be left in.
  *
  * Unsetting the pin is what makes ShipIt seed one: `seedNonTurnModel` runs from
- * the save hook that stores the clear (`services/settings.ts`) and again
- * whenever the settings payload is built, so on an install with an eligible
- * model the value is a different pin before anyone reads it. A card saying
+ * the save hook that stores the clear (`services/settings.ts`), so on an install
+ * with an eligible model the value is a different pin before the write returns.
+ * Building the payload no longer seeds — that was a read with a side effect
+ * (planning#578) — and this refusal does not depend on it. A card saying
  * "not set" would therefore promise something the click cannot produce, and an
  * operation whose full effect cannot be displayed is refused rather than shown
  * wrong (docs/299-agent-settings-access req 4). The seeded model is NOT named

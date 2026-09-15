@@ -3544,11 +3544,11 @@ being tidied up in it — the sentence explaining what the default follows, the 
 which state is in force, and the model menu's "ShipIt's default" row, which existed only so the
 user could get back to the state that no longer exists.
 
-**The seed is on the READ path** (`seedNonTurnModel` in `services/settings.ts`), for the reason
+**The seed was on the READ path** (`seedNonTurnModel` in `services/settings.ts`), for the reason
 `resolveHarnessOnboarding` above it already argues: a mutation-site seed is a list that a
 newly-added credential path quietly falls off, and there are four such paths today — a pasted
 key, `upsertSingleStringCredential`, an account connecting, and boot-time env adoption. **Two**
-read paths call it, and between them they cover every way a credential can arrive:
+read paths called it, and between them they covered every way a credential can arrive:
 `getGlobalSettings`, which is every bootstrap, including an install that already had
 credentials before this existed; and `buildAgentListPayload`, which every credential mutation
 broadcasts through. The second was missing in the first cut and cross-backend review found what
@@ -3557,6 +3557,20 @@ setting, so the section read "Nothing to run it on yet" over a runnable install 
 empty-while-a-service-exists state req 9 forbids. The window before the first read is still not
 a gap: `resolveNonTurnModel` falls back to the first eligible model when nothing is stored, so
 background work runs, and it runs on the same model the seed then writes.
+
+> **Reversed on 2026-09-15 — the seed is off the read path** (planning#578). What the paragraph
+> above traded away is bigger than what it bought: `getGlobalSettings` is also what a *save*
+> returns, so applying any unrelated global setting pinned a background model no card had named,
+> and the value the agent reads depended on whether anybody had opened the Settings dialog. The
+> seed now runs from two places that are *changes*: `app-di.ts` at boot — which covers the case
+> the first read path existed for, an install whose credentials predate the setting or arrive
+> from the environment — and `seedAndBuildAgentListPayload`, the `agent_list` builder that every
+> credential and account mutation announces through, which covers the case the second existed
+> for. The "list a path falls off" objection survives and is answered rather than dismissed:
+> falling off it now costs a *stale display* until the next restart and nothing else, because of
+> the fallback this paragraph already names, and a mutation that skips the `agent_list`
+> broadcast is a visible staleness bug the next paragraph is about. Guards:
+> `services/settings-read-purity.test.ts`, `integration_tests/non-turn-model-boot-seed.test.ts`.
 
 **The setting rides `agent_list` too**, for the reason the reviewer slots do (docs/261): an open
 Settings tab that does not follow a credential change shows the answer from before it. The same

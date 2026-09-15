@@ -64,7 +64,7 @@ import type { AgentId, AgentProcess, LogSource, LogRingEntry } from "../shared/t
 import type { AppDeps, RuntimeMode } from "./app-di.js";
 import { SessionRunner } from "./session-runner.js";
 import { prepareDispatch } from "./prepared-dispatch.js";
-import { buildAgentListPayload } from "./services/settings.js";
+import { seedAndBuildAgentListPayload } from "./services/settings.js";
 import { sweepSubAgentCredentialsOnSignOut } from "./services/sub-agent.js";
 import { setEgressDecisionTokenRecovery } from "./egress-decision-auth.js";
 import { dockerEgressDecisionTokenRecovery } from "./egress-proxy-install.js";
@@ -1006,7 +1006,7 @@ export function markProviderAccountUnauthenticated(opts: {
   }
   refreshAuthForAccountHarness(agentRegistry, agentId);
   sseBroadcast("provider_accounts", { accounts: providerAccountManager.list() });
-  sseBroadcast("agent_list", buildAgentListPayload(agentRegistry, credentialStore, providerAccountManager));
+  sseBroadcast("agent_list", seedAndBuildAgentListPayload(agentRegistry, credentialStore, providerAccountManager));
 }
 
 export function markProviderAccountReauthenticated(opts: {
@@ -1028,7 +1028,7 @@ export function markProviderAccountReauthenticated(opts: {
   }
   refreshAuthForAccountHarness(agentRegistry, agentId);
   sseBroadcast("provider_accounts", { accounts: providerAccountManager.list() });
-  sseBroadcast("agent_list", buildAgentListPayload(agentRegistry, credentialStore, providerAccountManager));
+  sseBroadcast("agent_list", seedAndBuildAgentListPayload(agentRegistry, credentialStore, providerAccountManager));
 }
 
 export function wireEventHandlers(eventDeps: EventWiringDeps): void {
@@ -1093,7 +1093,7 @@ export function wireEventHandlers(eventDeps: EventWiringDeps): void {
             reason: "duplicate",
             message: refusal,
           });
-          sseBroadcast("agent_list", buildAgentListPayload(agentRegistry, credentialStore, providerAccountManager));
+          sseBroadcast("agent_list", seedAndBuildAgentListPayload(agentRegistry, credentialStore, providerAccountManager));
           sseBroadcast("provider_accounts", { accounts: providerAccountManager.list() });
           return;
         }
@@ -1112,7 +1112,7 @@ export function wireEventHandlers(eventDeps: EventWiringDeps): void {
       agentRegistry.refreshAuthForLogin(loginId);
       if (credentialHarness && accountId) repushTokenToPinnedSessions(credentialHarness, accountId);
       sseBroadcast("agent_auth_complete", { loginId, ...(accountId ? { accountId } : {}) });
-      sseBroadcast("agent_list", buildAgentListPayload(agentRegistry, credentialStore, providerAccountManager));
+      sseBroadcast("agent_list", seedAndBuildAgentListPayload(agentRegistry, credentialStore, providerAccountManager));
       sseBroadcast("provider_accounts", { accounts: providerAccountManager.list() });
     });
 
@@ -1134,7 +1134,7 @@ export function wireEventHandlers(eventDeps: EventWiringDeps): void {
         ...(payload?.message ? { message: payload.message } : {}),
       });
       agentRegistry.refreshAuthForLogin(loginId);
-      sseBroadcast("agent_list", buildAgentListPayload(agentRegistry, credentialStore, providerAccountManager));
+      sseBroadcast("agent_list", seedAndBuildAgentListPayload(agentRegistry, credentialStore, providerAccountManager));
     });
   }
 
